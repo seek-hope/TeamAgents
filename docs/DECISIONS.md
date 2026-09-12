@@ -165,3 +165,12 @@ Deep Agents 的 `permissions` 只覆盖其内置文件工具，不约束 Shell/M
   3. TS 侧零运行时依赖：`node:test` + Node 原生 TS 执行。
   4. 移植按 action kind 增量推进，Python 场景测试为 oracle；
      进度台账见 docs/RECONSTRUCT.md。
+
+## D-15 补充（重构完成后）
+
+5. runtime 的 `_finalize`/`begin_run`/`wake_info` 下沉到 Rust 核心（权威状态变更不跨进程）；
+   编排循环在 TS。
+6. deepagents(LangGraph) 后端正名为 `ChatRunner`（OpenAI 兼容工具循环）；`runtime_kind`
+   字面量保留兼容旧 spec。
+7. 会话锁用 pid 文件（Node 无 flock 内建），与 Python flock 语义等价于"进程存活即占用"。
+8. TUI 为零依赖 ANSI 实现，键位/面板/历史持久化对齐，不复刻 Textual 视觉细节。

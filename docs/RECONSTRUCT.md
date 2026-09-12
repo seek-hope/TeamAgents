@@ -17,13 +17,22 @@ main 分支保留 Python 实现作为基准；本分支逐步实现 TypeScript +
 
 | 模块 | Python 源 | 状态 | 验证 |
 |---|---|---|---|
-| models | models.py (519 行) | ✅ 枚举/结构/TeamSpec 校验全量 | `core` 3 个单测 |
-| storage | storage.py (1060 行) | ◐ DDL 全量；操作子集（session/meta/spec/action/event/task/run/delivery/agent/approval/completion） | 随 control 测试 |
-| control | control.py (1285 行) | ◐ submit 事务骨架 + 回执幂等 + payload hash + 派生 task_id；**validate/reduce/schedule 未移植**（未移植的 kind 返回可读拒绝） | `failure_receipt_commits_and_replays` |
-| views | views.py | ✗ 未开始 | — |
-| runtime/runners/codex/permissions/tools/execution/workspace/sessions | — | ✗ 未开始 | — |
-| CLI | cli.py (315 行) | ◐ 骨架（`doctor` 走 ping） | `ts` 冒烟测试 |
-| TUI | tui/ (~1700 行) | ✗ 未开始 | — |
+| models | models.py | ✅ 全量 | core 单测 |
+| storage | storage.py | ✅ 全量（含 finalize 支持函数） | engine 场景 |
+| views | views.py | ✅ 全量（audience/push/scope + build_agent_view） | views + T4 场景 |
+| control | control.py | ✅ 全量（validate/reduce/schedule/finalize/begin_run/wake_info） | 9 个 engine 场景 |
+| runtime | runtime.py | ✅ TS `SessionRuntime`（loop/reconcile/settle/mid-turn/cancel） | T1/T2/T3/T4/T5/T9 TS 场景 |
+| gateway | agents.py::ToolGateway + permissions.py | ✅ TS `ToolGateway`/`PermissionPolicy`/`ApprovalGate` | codex approval 测试 |
+| scripted member | agents.py::FakeMember | ✅ `ScriptedMember` | 全部场景测试 |
+| codex runner | codex.py | ✅ `CodexAppServer` + `CodexRunner`（thread 持久化、approval park/decide、interrupt、reconcile） | 3 个 fake-server 测试 |
+| chat runner（替代 deepagents） | runners.py | ✅ `ChatRunner`：OpenAI 兼容工具循环 + renderView + 暂停/恢复语义 | 编译 + 场景间接覆盖 |
+| tools | tools.py + execution.py | ✅ `workspaceExecutor`（文件工具沙箱、shell、bwrap、guardUrl、webFetch） | cli doctor |
+| config | config.py | ✅ 迷你 TOML + 路径 + loadUserConfig | examples/config.toml 实测 |
+| sessions | sessions.py + session.py | ✅ inventory/lock(pid 文件)/archive/delete + openSession | TUI 冒烟 |
+| CLI | cli.py | ✅ doctor/validate/sessions/version/--plain REPL/TUI | doctor 实测 |
+| TUI | tui/ (~1700 行 Textual) | ◐ `tui/app.ts`：零依赖 ANSI——标题/页签/面板/聊天/输入 + 持久历史 + 键位对齐；Textual 特有件（富表格 zebra、鼠标 hover）未复刻 | TUI 冒烟测试 |
+
+**未移植/有意简化**：deepagents 图框架本身（被 ChatRunner 取代）；TUI 的 Textual 视觉细节；session 内切换会话（提示用 --resume）；skills/memory 装配（`_skills_and_memory`）；web_search 具体 provider 绑定（webFetch 已备）。需要时补。
 
 ## 既定决策
 
