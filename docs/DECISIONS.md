@@ -177,3 +177,23 @@ Deep Agents 的 `permissions` 只覆盖其内置文件工具，不约束 Shell/M
   9. TUI 用 Ink(React) 而非手写 ANSI：手写版两次实测翻车（转义序列错误致重绘风暴），
      Ink 是 Node 生态的 Textual 对等物；TS 侧因此有且仅有 ink+react 两个运行时依赖。
   10. 渲染只 dirty 时重绘（帧级去重 + 行尾清除），修复"无限弹出/闪屏"。
+
+## D-16 Rust+ratatui TUI（reconstruct 分支，用户要求 2026-09-13）
+
+- 背景：用户要求以 Rust+ratatui（与 Codex CLI 同框架）重构 TUI，界面完美复现 main 分支。
+- 决策：
+  1. `tui/` 新 crate（ratatui+crossterm）是纯 UI 客户端；执行引擎复用已验证的 TS runtime，
+     由新增的 `ts/src/tui-worker.ts`（无头 JSON-lines stdio 服务）承载。不重复移植 runtime。
+  2. 复现基准是 main 的 Textual 界面（非 Ink 版）：七面板与列、活动行（spinner/等待批准/
+     最近活动）、Leader 流式预览（markdown，≤8 行）、作曲家（高度 3–8、历史 500、相邻去重）、
+     状态栏计数、页脚键位、中英双语（i18n.py 的 146 条消息 id 逐字移植）、偏好/历史文件
+     与 Python 同路径同格式。
+  3. 渲染差异接受项：Textual `$primary 40%` 光标行用预混色 #1F3C6A 近似（终端无 alpha）；
+     DataTable 列宽按内容自适应+超宽收缩替代 Textual 原生布局；markdown 为手写子集
+     （标题/加粗/行内码/围栏码/链接/引用/分割线），升级路径 tui-markdown crate。
+  4. 时序：状态轮询 250ms 单次 `state` 调用驱动全部面板（Ink 版 400ms 同法），替代 Python
+     的三路定时器；spinner 120ms、delta flush 80ms（渲染 200ms 节流）与 Python 一致。
+  5. core 新增 `shared_entries` 方法（唯一的核心改动，只读、向后兼容）。
+  6. `node ts/src/cli.ts` 默认启动 Rust TUI（tui/target/{release,debug}），`--ink` 回退。
+  7. 键盘焦点模型：composer 默认；Tab/点击进表格、Ctrl+N 回 composer、Ctrl+G 直达批准
+     （Textual 的焦点链在 ratatui 里没有对应物，这是最小等价物）。

@@ -80,14 +80,20 @@ Python 原版见 `src/teamagents/`（main 分支为基准）。本分支为 Type
   对外是 stdio 换行 JSON 服务 `teamagents-core`。
 - `ts/`（TypeScript，零运行时依赖，Node ≥26）：运行时循环、ToolGateway/审批、
   成员后端（`ChatRunner` LLM 工具循环、`CodexRunner` app-server）、工具执行器、
-  CLI 与零依赖 ANSI TUI。
+  CLI、`tui-worker.ts`（供 Rust TUI 的无头会话服务）与 Ink 备用 TUI。
+- `tui/`（Rust + ratatui/crossterm，与 Codex CLI 同框架）：主 TUI，逐像素复现
+  main 分支 Textual 界面（七面板/活动行/流式预览/作曲家/页脚键位，中英双语与偏好、
+  历史持久化一致）。UI 是纯客户端：执行经 stdio JSON-lines 走 `tui-worker.ts`，
+  权威状态在 teamagents-core。
 
 ```bash
 cd core && cargo build && cargo test     # Rust 核心
-cd ts && node --test test/               # TS 全部测试（T1–T5/T9、取消/暂停、Codex 适配、TUI 冒烟）
+cd tui && cargo build && cargo test      # Rust TUI（逻辑 + TestBackend 帧冒烟）
+cd ts && node --test test/               # TS 全部测试（T1–T5/T9、取消/暂停、Codex 适配、worker）
 node ts/src/cli.ts doctor                # 自检
-node ts/src/cli.ts                       # TUI
+node ts/src/cli.ts                       # TUI（默认 Rust ratatui；--ink 回退 Ink）
 node ts/src/cli.ts --plain               # 行模式 REPL
+python3 tui/scripts/pty_smoke.py         # 真终端 PTY 冒烟（需先构建 tui/ 与 core/）
 ```
 
 进度台账与取舍：docs/RECONSTRUCT.md；决策：docs/DECISIONS.md（D-15）。

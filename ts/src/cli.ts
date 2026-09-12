@@ -152,6 +152,25 @@ async function repl(args: Record<string, any>): Promise<number> {
 }
 
 async function runTui(args: Record<string, any>): Promise<number> {
+  // the ratatui (Rust) TUI is the default; Ink stays as a fallback (--ink)
+  if (!args.ink) {
+    const tuiBin = [process.env.TEAMAGENTS_TUI ?? "", "../../tui/target/release/teamagents-tui", "../../tui/target/debug/teamagents-tui"]
+      .filter(Boolean)
+      .map((p) => (p.startsWith("/") ? p : new URL(p, import.meta.url).pathname))
+      .find((p) => existsSync(p));
+    if (tuiBin) {
+      const { spawnSync } = await import("node:child_process");
+      const argv = [
+        ...(args.cwd ? ["--cwd", args.cwd] : []),
+        ...(args.resume ? ["--resume", args.resume] : []),
+        ...(args.fullAuto ? ["--full-auto"] : []),
+        ...(args.team ? ["--team", args.team] : []),
+      ];
+      const r = spawnSync(tuiBin, argv, { stdio: "inherit", env: { ...process.env, TEAMAGENTS_CORE: coreBin } });
+      return r.status ?? 1;
+    }
+    console.error("[tui] rust binary not found (tui/target/*/teamagents-tui); falling back to Ink");
+  }
   const { runInkTui } = await import("./tui/ink-app.ts");
   await runInkTui({
     cwd: args.cwd,
@@ -174,6 +193,7 @@ async function main(argv: string[]): Promise<number> {
     else if (a === "--full-auto") args.fullAuto = true;
     else if (a === "--team") args.team = argv[++i];
     else if (a === "--plain") args.plain = true;
+    else if (a === "--ink") args.ink = true;
     else if (["doctor", "validate", "sessions", "version"].includes(a)) command = a;
     else if (a === "-v" || a === "--verbose") args.verbose = true;
     else if (!a.startsWith("-")) positional = a;

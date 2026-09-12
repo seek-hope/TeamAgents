@@ -131,6 +131,13 @@ impl Server {
                     "events": ctl.store.events(&sid, after, 1000).map_err(|e| e.to_string())?,
                 }))
             }),
+            "shared_entries" => self.with(id, &params, |ctl, p| {
+                let space_ids: Vec<String> = p.get("space_ids").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+                let after = p.get("after_sequence").and_then(|v| v.as_i64()).unwrap_or(0);
+                let limit = p.get("limit").and_then(|v| v.as_i64()).unwrap_or(200);
+                let entries = ctl.store.shared_entries(&ctl.session_id.clone(), &space_ids, after, limit).map_err(|e| e.to_string())?;
+                Ok(json!({"entries": entries}))
+            }),
             "approval_find_session" => self.with(id, &params, |ctl, p| {
                 let hash = p.get("operation_hash").and_then(|v| v.as_str()).ok_or("operation_hash required")?;
                 let scope = ctl.store.find_session_approval(&ctl.session_id.clone(), hash).map_err(|e| e.to_string())?;
