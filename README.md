@@ -68,3 +68,26 @@ DEEPSEEK_API_KEY=... python examples/e2e_data_cleanup.py   # 文件/数据整理
 ```
 
 更多：`docs/USER-GUIDE.md`（配置、权限、恢复、故障处理）、`docs/ACCEPTANCE.md`（验收对照表）。
+
+---
+
+## TS+Rust 重构版（本分支）
+
+Python 原版见 `src/teamagents/`（main 分支为基准）。本分支为 TypeScript+Rust 重构：
+
+- `core/`（Rust）：权威核心——TeamSpec 模型与校验、SQLite 存储（DDL 与 Python 逐字一致）、
+  Control 事务管线（validate/reduce/schedule/finalize）、信息权限（views）。
+  对外是 stdio 换行 JSON 服务 `teamagents-core`。
+- `ts/`（TypeScript，零运行时依赖，Node ≥26）：运行时循环、ToolGateway/审批、
+  成员后端（`ChatRunner` LLM 工具循环、`CodexRunner` app-server）、工具执行器、
+  CLI 与零依赖 ANSI TUI。
+
+```bash
+cd core && cargo build && cargo test     # Rust 核心
+cd ts && node --test test/               # TS 全部测试（T1–T5/T9、取消/暂停、Codex 适配、TUI 冒烟）
+node ts/src/cli.ts doctor                # 自检
+node ts/src/cli.ts                       # TUI
+node ts/src/cli.ts --plain               # 行模式 REPL
+```
+
+进度台账与取舍：docs/RECONSTRUCT.md；决策：docs/DECISIONS.md（D-15）。
