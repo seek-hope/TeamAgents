@@ -1,0 +1,5 @@
+core/target/
+ts/node_modules/
+__pycache__/
+.venv/
+*.pyc
