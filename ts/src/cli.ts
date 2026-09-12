@@ -152,8 +152,8 @@ async function repl(args: Record<string, any>): Promise<number> {
 }
 
 async function runTui(args: Record<string, any>): Promise<number> {
-  const { runTuiApp } = await import("./tui/app.ts");
-  await runTuiApp({
+  const { runInkTui } = await import("./tui/ink-app.ts");
+  await runInkTui({
     cwd: args.cwd,
     resume: args.resume,
     fullAuto: args.fullAuto,

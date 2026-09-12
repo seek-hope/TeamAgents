@@ -174,3 +174,6 @@ Deep Agents 的 `permissions` 只覆盖其内置文件工具，不约束 Shell/M
    字面量保留兼容旧 spec。
 7. 会话锁用 pid 文件（Node 无 flock 内建），与 Python flock 语义等价于"进程存活即占用"。
 8. TUI 为零依赖 ANSI 实现，键位/面板/历史持久化对齐，不复刻 Textual 视觉细节。
+  9. TUI 用 Ink(React) 而非手写 ANSI：手写版两次实测翻车（转义序列错误致重绘风暴），
+     Ink 是 Node 生态的 Textual 对等物；TS 侧因此有且仅有 ink+react 两个运行时依赖。
+  10. 渲染只 dirty 时重绘（帧级去重 + 行尾清除），修复"无限弹出/闪屏"。

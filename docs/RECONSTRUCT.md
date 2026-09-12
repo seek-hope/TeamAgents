@@ -30,9 +30,9 @@ main 分支保留 Python 实现作为基准；本分支逐步实现 TypeScript +
 | config | config.py | ✅ 迷你 TOML + 路径 + loadUserConfig | examples/config.toml 实测 |
 | sessions | sessions.py + session.py | ✅ inventory/lock(pid 文件)/archive/delete + openSession | TUI 冒烟 |
 | CLI | cli.py | ✅ doctor/validate/sessions/version/--plain REPL/TUI | doctor 实测 |
-| TUI | tui/ (~1700 行 Textual) | ◐ `tui/app.ts`：零依赖 ANSI——标题/页签/面板/聊天/输入 + 持久历史 + 键位对齐；Textual 特有件（富表格 zebra、鼠标 hover）未复刻 | TUI 冒烟测试 |
+| TUI | tui/ (~1700 行 Textual) | ✅ `tui/ink-app.ts`：Ink(React) 版——Codex 调色板、居中标题、页签、各面板表格、边框聊天区、圆角输入框、底栏键位、持久历史；键位与操作语义对齐 | Ink 冒烟测试（帧断言+历史持久化） |
 
-**未移植/有意简化**：deepagents 图框架本身（被 ChatRunner 取代）；TUI 的 Textual 视觉细节；session 内切换会话（提示用 --resume）；skills/memory 装配（`_skills_and_memory`）；web_search 具体 provider 绑定（webFetch 已备）。需要时补。
+**未移植/有意简化**：deepagents 图框架本身（被 ChatRunner 取代）；TUI 的 zebra 条纹/鼠标 hover 与"会话内即席切换"；skills/memory 装配（`_skills_and_memory`）；web_search 具体 provider 绑定（webFetch 已备）。需要时补。
 
 ## 既定决策
 
