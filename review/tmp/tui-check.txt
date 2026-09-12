@@ -1,0 +1,10 @@
+....F.............                                                       [100%]
+=================================== FAILURES ===================================
+______________ test_tui_streaming_deltas_are_coalesced_into_chat _______________
+tests/test_p6_tui.py:105: in test_tui_streaming_deltas_are_coalesced_into_chat
+    assert live.render().markup == "流式输出测试"
+           ^^^^^^^^^^^^^^^^^^^^
+E   AttributeError: 'RichVisual' object has no attribute 'markup'
+=========================== short test summary info ============================
+FAILED tests/test_p6_tui.py::test_tui_streaming_deltas_are_coalesced_into_chat
+1 failed, 17 passed in 26.00s

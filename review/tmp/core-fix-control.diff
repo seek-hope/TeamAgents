@@ -1,0 +1,144 @@
+--- review/tmp/prefix-diff/src/teamagents/control.py	2026-09-12 01:01:22.000000000 +0800
++++ src/teamagents/control.py	2026-09-12 12:16:31.214051324 +0800
+@@ -75,30 +75,40 @@
+     # ------------------------------------------------------------------ submit
+ 
+     def submit(self, action: TeamAction) -> Receipt:
++        try:
++            return self._submit_once(action)
++        except Exception as e:
++            # malformed model input is a readable refusal, never a crash. The
++            # failed attempt's transaction rolled back every write it made; the
++            # failure receipt then commits in a clean transaction. Retrying the
++            # same action id replays that receipt; a new action id may retry
++            # against the clean state.
++            receipt = Receipt.failure(action, f"{type(e).__name__}: {e}")
++            with self.store.tx():
++                prior = self.store.get_action_receipt(action.action_id)
++                if prior is not None:  # a concurrent writer already recorded it
++                    return prior
++                self.store.record_action(
++                    action.action_id, self.session_id, action.actor_id, action.run_id,
++                    action.kind, self._payload_hash(action), receipt,
++                )
++            return receipt
++
++    def _submit_once(self, action: TeamAction) -> Receipt:
+         with self.store.tx():
+             prior = self.store.get_action_receipt(action.action_id)
+             if prior is not None:
+                 return prior
+             spec = self.store.load_team_spec(self.session_id)
+-            try:
+-                error = self._validate(action, spec)
+-                if error is not None:
+-                    receipt = Receipt.failure(action, error)
+-                    self.store.record_action(
+-                        action.action_id, self.session_id, action.actor_id, action.run_id,
+-                        action.kind, self._payload_hash(action), receipt,
+-                    )
+-                    return receipt
+-                reduction = self._reduce(action, spec)
+-            except Exception as e:
+-                # malformed model input is a readable refusal, never a crash:
+-                # the transaction rolls back and nothing half-applies
+-                receipt = Receipt.failure(action, f"{type(e).__name__}: {e}")
++            error = self._validate(action, spec)
++            if error is not None:
++                receipt = Receipt.failure(action, error)
+                 self.store.record_action(
+                     action.action_id, self.session_id, action.actor_id, action.run_id,
+                     action.kind, self._payload_hash(action), receipt,
+                 )
+                 return receipt
++            reduction = self._reduce(action, spec)
+             self._persist_events(action, spec, reduction.events)
+             self._schedule(spec)
+             self.store.record_action(
+@@ -873,6 +883,13 @@
+                                 result={"task_id": task.task_id, "status": task.status}),
+             )
+         active = self.store.active_run_for_agent(self.session_id, task.assignee)
++        if active is None:
++            # a turn parked on an approval has no executor: requesting its cancel
++            # lets _schedule converge it (approval expires, run -> CANCELLED)
++            parked = self._waiting_run(task.assignee)
++            if (parked is not None and parked.status is TurnStatus.WAITING_APPROVAL
++                    and (parked.task_id == task.task_id or parked.task_id is None)):
++                active = parked
+         events = [EventDraft(kind=EventKind.TASK_CANCELLED,
+                              payload={"task_id": task.task_id, "assignee": task.assignee,
+                                       "requester": task.requester,
+@@ -916,6 +933,18 @@
+                 a.approval_id for a in pending_approvals))
+         return blockers
+ 
++    def expire_run_approvals(self, run_id: str) -> list[EventDraft]:
++        """Void a run's PENDING approvals and return the audit events (RT-06).
++
++        A turn that reached a terminal state (or was cancelled) can never use a
++        decision on those calls; leaving them pending deadlocks `signal_done`.
++        """
++        return [EventDraft(kind=EventKind.APPROVAL_DECIDED,
++                           payload={"approval_id": a.approval_id, "agent_id": a.agent_id,
++                                    "run_id": a.run_id, "status": ApprovalStatus.EXPIRED.value,
++                                    "note": "turn ended before a decision"})
++                for a in self.store.expire_run_approvals(run_id)]
++
+     # ----------------------------------------------------------------- persist
+ 
+     def _persist_events(self, action: TeamAction, spec: TeamSpec,
+@@ -962,6 +991,13 @@
+         self._block_unrunnable_tasks(spec)
+         self._announce_ready_tasks(spec)
+         for agent in spec.agents:
++            parked = self._waiting_run(agent.id)
++            if (parked is not None and parked.status is TurnStatus.WAITING_APPROVAL
++                    and parked.cancel_requested and parked.external_turn_id is None):
++                # a turn parked on an approval has no executor to finalize it
++                # (external backends keep their own live turn and are stopped
++                # through the runtime's cancel path instead)
++                self._converge_cancelled_waiting_run(parked, spec)
+             status = self.store.agent_status(session, agent.id)
+             if status in (AgentStatus.REMOVED, AgentStatus.DRAINING):
+                 continue
+@@ -1021,6 +1057,39 @@
+             )
+             self.store.insert_run(run)
+ 
++    def _converge_cancelled_waiting_run(self, run: TurnRun, spec: TeamSpec) -> None:
++        """Finalize a run that was cancelled while parked on an approval.
++
++        Nothing is executing, so no runner will ever call `_finalize`: without
++        this the run stays WAITING_APPROVAL with a PENDING approval and blocks
++        `signal_done` forever (RT-06).
++        """
++        if not self.store.update_run_status_where(
++                run.run_id, TurnStatus.WAITING_APPROVAL, TurnStatus.CANCELLED):
++            return
++        events = self.expire_run_approvals(run.run_id)
++        if run.task_id:
++            task = self.store.get_task(run.task_id)
++            if task is not None and task.status in (TaskStatus.PENDING, TaskStatus.RUNNING):
++                if self.store.compare_and_set_task(task.task_id, task.status,
++                                                   TaskStatus.CANCELLED):
++                    events.append(EventDraft(
++                        kind=EventKind.TASK_CANCELLED,
++                        payload={"task_id": task.task_id, "assignee": task.assignee,
++                                 "requester": task.requester, "status": "CANCELLED"},
++                        task_id=task.task_id))
++        self.store.set_agent_status(self.session_id, run.agent_id, AgentStatus.IDLE)
++        self.store.ack_run_deliveries(run)
++        events.append(EventDraft(
++            kind=EventKind.RUN_CANCELLED,
++            payload={"run_id": run.run_id, "agent_id": run.agent_id,
++                     "status": TurnStatus.CANCELLED.value,
++                     "error": "cancelled while waiting for approval"}))
++        action = TeamAction(action_id=f"cancel-parked:{run.run_id}",
++                            session_id=self.session_id, actor_id="system",
++                            kind=ActionKind.CANCEL_RUN, payload={"run_id": run.run_id})
++        self._persist_events(action, spec, events)
++
+     def _block_unrunnable_tasks(self, spec: TeamSpec) -> None:
+         """Dependencies that failed/cancelled make dependents BLOCKED, never silently stuck."""
+         for task in self.store.tasks_for_session(self.session_id, [TaskStatus.PENDING]):

@@ -1,0 +1,3 @@
+outcome.status: COMPLETED
+reply_text: 'fake reply fake reply'
+progress events: ["'fake reply'", "'fake reply fake reply'"]

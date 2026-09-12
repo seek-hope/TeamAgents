@@ -1,0 +1,22 @@
+send_message receipt.ok: True None
+cx._queued_input (in-memory, deferred): {'cx': ['{"text": "IMPORTANT UPDATE", "from": "leader", "target": "cx"}']}
+deliveries for cx right after push: [(2, 'pending'), (4, 'pending')]
+Traceback (most recent call last):
+  File "/home/rimuru/Projects/Code/for_fun/TeamAgents/review/tmp/repro_codex_midturn_ack.py", line 100, in <module>
+    asyncio.run(main())
+    ~~~~~~~~~~~^^^^^^^^
+  File "/opt/miniconda3/lib/python3.13/asyncio/runners.py", line 196, in run
+    return runner.run(main)
+           ~~~~~~~~~~^^^^^^
+  File "/opt/miniconda3/lib/python3.13/asyncio/runners.py", line 119, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/miniconda3/lib/python3.13/asyncio/base_events.py", line 726, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/home/rimuru/Projects/Code/for_fun/TeamAgents/review/tmp/repro_codex_midturn_ack.py", line 86, in main
+    await wait_for(lambda: not rt._inflight, timeout=30, what="cx turn to end")
+  File "/home/rimuru/Projects/Code/for_fun/TeamAgents/review/tmp/repro_codex_midturn_ack.py", line 65, in wait_for
+    assert asyncio.get_event_loop().time() < deadline, f"timeout: {what}"
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: timeout: cx turn to end

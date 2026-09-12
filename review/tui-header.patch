@@ -1,0 +1,178 @@
+--- a/docs/DECISIONS.md
++++ b/docs/DECISIONS.md
+@@ -117,3 +117,10 @@
+ - 增加团队运行指示、活动成员数量、回合已用时间和最近活动；团队与任务状态同步显示动效。等待任务、等待批准和终态有不同的静态提示，避免将等待显示为正在执行。
+ - `Settings → Animations` 可关闭旋转动效，保留状态与计时。语言和动效偏好保存在 `$XDG_STATE_HOME/teamagents/ui.json`（默认 `~/.local/state/teamagents/ui.json`），跨会话和重启生效。
+ - 动效读取 TUI 缓存的运行状态，不为每帧查询数据库；已用时间自回合创建起计算，包含排队和等待时间。此条落实用户当前要求。
++
++
++## D-13 顶部合并为单行 ✅（用户要求 2026-09-12）
++
++- 合并标题与状态栏：仅保留应用名、会话 ID 和权限模式；有未完成任务或待批准操作时才显示数量，暂停/关闭状态按需显示。
++- 去掉时钟、装饰图标、重复会话名、常态 ACTIVE/IDLE、Leader 名称与模型、重复的活动回合数、零值计数。成员运行信息继续由下区活动提示和输入状态展示。
++- 沿用现有状态栏与中英文切换，不引入新的布局组件。
+--- a/docs/USER-GUIDE.md
++++ b/docs/USER-GUIDE.md
+@@ -157,7 +157,7 @@
+ 
+ ## Leader 对话与上下布局
+ 
+-上区是管理面板，下区是 Leader 对话与输入。缩窄终端时聊天内容重新换行，上区仍可切换到批准、任务与会话。
++顶部为一行会话与权限摘要；仅在需要时显示暂停状态、待批准和未完成任务数量。上区是管理面板，下区是 Leader 对话与输入。缩窄终端时聊天内容重新换行，上区仍可切换到批准、任务与会话。
+ 
+ 界面默认英文。进入 `Settings → Interface language`，选择 `中文` 即时切换；中文界面在「设置 → 界面语言」选择 `English` 切回英文。可用 `Tab` 聚焦语言选项，`Enter` 展开、方向键选择、`Enter` 确定，`Esc` 仅关闭下拉菜单。偏好跨会话和重启保存，切换不清空输入草稿，也不翻译用户输入或模型回复。
+ 
+--- a/src/teamagents/tui/app.py
++++ b/src/teamagents/tui/app.py
+@@ -17,7 +17,7 @@
+ from textual.app import App, ComposeResult
+ from textual.binding import Binding
+ from textual.containers import Vertical, VerticalScroll
+-from textual.widgets import DataTable, Footer, Header, Static, TabbedContent, TabPane, Select, Switch
++from textual.widgets import DataTable, Footer, Static, TabbedContent, TabPane, Select, Switch
+ 
+ from ..models import EventKind, TaskStatus, TeamAction, ActionKind, TurnStatus, new_id
+ from ..runtime import SessionRuntime
+@@ -89,7 +89,6 @@
+     Tab.-active { color: $foreground; text-style: bold; }
+     TabPane { padding: 0; }
+     #settings-body, #approvals-hint, #tasks-hint, #log-title { color: $text-muted; padding: 0 0 1 0; }
+-    Header { background: $panel; color: $text-muted; }
+     Footer { background: $panel; color: $text-muted; }
+     Footer > .footer--key { background: $boost; color: $foreground; }
+     """
+@@ -261,8 +260,7 @@
+     # ------------------------------------------------------------- layout
+ 
+     def compose(self) -> ComposeResult:
+-        yield Header(show_clock=True)
+-        yield StatusBar("", id="status")
++        yield StatusBar("TeamAgents", id="status", markup=False)
+         with Vertical(id="body"):
+             with Vertical(id="side"):
+                 with TabbedContent(initial="tab-team"):
+--- a/src/teamagents/tui/i18n.py
++++ b/src/teamagents/tui/i18n.py
+@@ -58,8 +58,8 @@
+     "会话已暂停（输入新消息即恢复）": "Session paused (send a message to resume)",
+     "权限模式切换为 {v0}": "Permission mode changed to {v0}",
+     "批准决定 {v0}：{v1}": "Approval decision {v0}: {v1}",
+-    " 会话 {v0}  |  {v1}  |  权限 {v2}  |  Leader {v3}({v4})  |  活动回合 {v5}  |  未完成任务 {v6}  |  待批准 {v7}":
+-        " Session {v0} | {v1} | Permissions {v2} | Leader {v3} ({v4}) | Active {v5} | Tasks {v6} | Approvals {v7}",
++    "预授权": "Pre-authorized", "已关闭": "Closed",
++    "未完成任务 {count}": "Tasks {count}", "待批准 {count}": "Approvals {count}",
+     "c=取消选中任务（BLOCKED 直接取消；执行中的回合收到取消请求）":
+         "Newest first · c=cancel selected task (running turns receive a stop request)",
+     "取消任务失败：{v0}": "Cannot cancel task: {v0}", "任务 {v0} 已取消": "Task {v0} cancelled",
+--- a/src/teamagents/tui/panels.py
++++ b/src/teamagents/tui/panels.py
+@@ -162,23 +162,25 @@
+ 
+ 
+ class StatusBar(Static):
+-    """One line: session, mode, session state, Leader, live turn count."""
+-
+-    def refresh_status(self, runtime, extra: str = "") -> None:
++    """Single header: session identity, permissions and actionable counts."""
++
++    def refresh_status(self, runtime) -> None:
+         store = runtime.store
+         session = store.get_session(runtime.session_id)
+-        spec = store.load_team_spec(runtime.session_id)
+-        running = [r for r in store.runs_for_session(
+-            runtime.session_id, ["RUNNING", "QUEUED"])]
++        mode = session["permissions_mode"] if session else "?"
++        state = session["status"] if session else "?"
++        mode_label = {"approved_scope": "预授权", "full_auto": "全自动"}.get(mode, mode)
++        parts = [f"TeamAgents · {runtime.session_id}", tr(self, mode_label)]
++        if state not in ("ACTIVE", "IDLE"):
++            parts.append(tr(self, {"PAUSED": "已暂停", "CLOSED": "已关闭"}.get(state, state)))
++        approvals = store.pending_approvals(runtime.session_id)
++        if approvals:
++            parts.append(tr(self, "待批准 {count}", count=len(approvals)))
+         tasks = store.tasks_for_session(
+             runtime.session_id, [TaskStatus.PENDING, TaskStatus.RUNNING, TaskStatus.BLOCKED])
+-        approvals = store.pending_approvals(runtime.session_id)
+-        mode = session["permissions_mode"] if session else "?"
+-        state = session["status"] if session else "?"
+-        leader = spec.leader
+-        self.update(
+-            tr(self, ' 会话 {v0}  |  {v1}  |  权限 {v2}  |  Leader {v3}({v4})  |  活动回合 {v5}  |  未完成任务 {v6}  |  待批准 {v7}', v0=runtime.session_id, v1=state, v2=mode, v3=leader.name, v4=leader.model_profile, v5=len(running), v6=len(tasks), v7=len(approvals))
+-            + (f"  |  {extra}" if extra else ""))
++        if tasks:
++            parts.append(tr(self, "未完成任务 {count}", count=len(tasks)))
++        self.update(" | ".join(parts))
+ 
+ 
+ class TeamPanel(Vertical):
+--- a/tests/test_p6_tui.py
++++ b/tests/test_p6_tui.py
+@@ -126,12 +126,15 @@
+         panel = app.query_one(ApprovalsPanel)
+         table = panel.query_one("#approvals-table")
+         assert table.row_count == 1
++        assert "Approvals 1" in str(app.query_one("#status").render())
+         table.focus()
+         await pilot.pause(0.1)
+         await pilot.press("s")               # session-wide approval
+         await pilot.pause(0.3)
+         stored = h.rt.store.get_approval("appr-ui-1")
+         assert stored.status == ApprovalStatus.APPROVED_SESSION
++        await app._refresh_widgets()
++        assert "Approvals" not in str(app.query_one("#status").render())
+ 
+ 
+ @pytest.mark.parametrize("size", [(120, 40), (70, 30), (80, 24)])
+--- a/tests/test_p6_tui_cancel_refresh.py
++++ b/tests/test_p6_tui_cancel_refresh.py
+@@ -103,7 +103,10 @@
+         await pilot.pause(0.4)
+         status = app.query_one("#status", StatusBar)   # must not raise WrongType
+         first = str(status.render())
+-        assert "Session" in first and "Permissions" in first, f"状态栏内容为空：{first!r}"
++        assert first == "TeamAgents · s1 | Pre-authorized"
++        assert status.region.y == 0 and status.region.height == 1
++        assert app.query_one("#side").region.y == 1
++        assert not app.query("Header")
+         assert app._refresh_errors == (), app._refresh_errors
+ 
+         tasks = app.query_one(TasksPanel).query_one("#tasks-table")
+@@ -111,13 +114,17 @@
+         _seed(h.rt, _task("task-refresh-1", TaskStatus.PENDING))
+         await pilot.pause(1.3)                         # one periodic tick
+         assert tasks.row_count == before + 1, "周期刷新必须更新面板内容"
++        assert "Tasks 1" in str(status.render())
+ 
+         assert h.rt.submit(TeamAction(
+             action_id="ui-test-mode", session_id="s1", actor_id="user",
+             kind=ActionKind.SET_PERMISSION_MODE,
+             payload={"mode": "full_auto"})).ok
+         await pilot.pause(1.3)
+-        assert "full_auto" in str(status.render()), "状态变化要反映到状态栏"
++        assert "Full auto" in str(status.render()), "状态变化要反映到状态栏"
++        app.action_pause_session()
++        await app._refresh_widgets()
++        assert "Paused" in str(status.render())
+         assert app._refresh_errors == (), app._refresh_errors
+ 
+ 
+--- a/tests/test_tui_preferences_activity.py
++++ b/tests/test_tui_preferences_activity.py
+@@ -54,7 +54,7 @@
+         tabs = app.query_one(TabbedContent)
+         assert app.ui_language == "en"
+         assert str(tabs.get_tab("tab-team").label) == "Team"
+-        assert "Session" in str(app.query_one("#status").render())
++        assert "Pre-authorized" in str(app.query_one("#status").render())
+         tabs.active = "tab-settings"
+         await pilot.pause()
+         selector = app.query_one("#language-select", Select)
+@@ -73,7 +73,7 @@
+         assert app.ui_language == "zh-CN"
+         assert str(tabs.get_tab("tab-team").label) == "团队"
+         assert "权限模式" in str(app.query_one("#settings-body").render())
+-        assert "会话" in str(app.query_one("#status").render())
++        assert "预授权" in str(app.query_one("#status").render())
+         assert app.query_one("#team-table").ordered_columns[0].label.plain == "成员"
+         assert prompt.text == "未发送草稿"
+         assert len(h.rt.store.events("s1")) == event_count

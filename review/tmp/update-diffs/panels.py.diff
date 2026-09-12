@@ -1,0 +1,142 @@
+--- .pre-fix-backup/collaboration-tui-20260912/src/teamagents/tui/panels.py	2026-09-12 12:30:47.089134898 +0800
++++ src/teamagents/tui/panels.py	2026-09-12 14:39:03.947294107 +0800
+@@ -10,6 +10,7 @@
+ import time
+ 
+ from rich.text import Text
++from rich.markdown import Markdown as RichMarkdown
+ from textual.containers import Horizontal, Vertical
+ from textual.message import Message
+ from textual.widgets import DataTable, Input, Markdown, RichLog, Static, TextArea
+@@ -33,10 +34,42 @@
+         "system": (LABEL_STYLE, NOTICE_STYLE),
+     }
+ 
++    def __init__(self, **kwargs):
++        super().__init__(**kwargs)
++        self._entries: list[tuple[str, str]] = []
++        self._width = 0
++
+     def compose(self):
+-        yield RichLog(highlight=False, markup=False, wrap=True, id="chat-stream")
++        yield RichLog(highlight=False, markup=False, wrap=True, min_width=1, id="chat-stream")
++        yield Static("", id="chat-live", markup=False)
++
++    def show_stream(self, text: str) -> None:
++        live = self.query_one("#chat-live", Static)
++        live.display = bool(text)
++        live.update(RichMarkdown(text) if text else "")
++
++    def clear(self) -> None:
++        self._entries.clear()
++        self.query_one("#chat-stream", RichLog).clear()
++        self.show_stream("")
++
++    def on_resize(self, event) -> None:
++        if event.size.width != self._width:
++            self._width = event.size.width
++            self.call_after_refresh(self._reflow)
++
++    def _reflow(self) -> None:
++        log = self.query_one("#chat-stream", RichLog)
++        log.clear()
++        for who, text in self._entries:
++            self._render_entry(who, text)
++        log.scroll_end(animate=False)
+ 
+     def write_line(self, who: str, text: str) -> None:
++        self._entries.append((who, text))
++        self._render_entry(who, text)
++
++    def _render_entry(self, who: str, text: str) -> None:
+         log = self.query_one("#chat-stream", RichLog)
+         label_style, body_style = self.STYLES.get(
+             who, (LABEL_STYLE, NOTICE_STYLE if who.startswith("system") else BODY_STYLE))
+@@ -45,7 +78,12 @@
+         elif who.endswith("（完成）"):
+             label_style, body_style = SUCCESS_STYLE, BODY_STYLE
+         if who:
+-            log.write(Text(f"{who}", style=label_style))
++            prefix = "›" if who == "你" else "•"
++            log.write(Text(f"{prefix} {who}", style=label_style))
++        if who == "Leader":
++            log.write(RichMarkdown(text or ""))
++            log.write("")
++            return
+         for line in (text or "").splitlines() or [""]:
+             if line.startswith(("✗", "⚠")):
+                 log.write(Text(line, style=ERROR_STYLE))
+@@ -58,9 +96,41 @@
+     """Multi-line input: Enter sends, Shift+Enter / Ctrl+J insert a newline."""
+ 
+     BINDINGS = [
+-        ("ctrl+j", "newline", "换行"),
++        ("ctrl+j,shift+enter", "newline", "换行"),
+     ]
+ 
++    def __init__(self, **kwargs):
++        super().__init__(**kwargs)
++        self.prompt_history: list[str] = []
++        self.prompt_history_index = 0
++        self.draft = ""
++
++    def record_submission(self, text: str) -> None:
++        # Same recall contract as Codex chat_composer_history: skip adjacent
++        # duplicates and restore the unsent draft after navigating down.
++        if text and (not self.prompt_history or self.prompt_history[-1] != text):
++            self.prompt_history.append(text)
++        self.prompt_history_index = len(self.prompt_history)
++
++    def reset_history(self) -> None:
++        self.prompt_history.clear()
++        self.prompt_history_index = 0
++        self.draft = ""
++        self.text = ""
++
++    def on_text_area_changed(self, event: TextArea.Changed) -> None:
++        self.styles.height = min(8, max(3, self.wrapped_document.height + 2))
++
++    def recall(self, direction: int) -> None:
++        if not self.prompt_history:
++            return
++        if self.prompt_history_index == len(self.prompt_history):
++            self.draft = self.text
++        self.prompt_history_index = min(len(self.prompt_history), max(0, self.prompt_history_index + direction))
++        self.load_text(self.draft if self.prompt_history_index == len(self.prompt_history)
++                       else self.prompt_history[self.prompt_history_index])
++        self.move_cursor(self.document.end)
++
+     class Submitted(Message):
+         def __init__(self, text: str) -> None:
+             super().__init__()
+@@ -82,6 +152,11 @@
+             self.action_submit_prompt()
+             event.stop()
+             event.prevent_default()
++        elif (event.key == "up" and self.cursor_location[0] == 0
++              or event.key == "down" and self.cursor_location[0] == self.document.line_count - 1):
++            self.recall(-1 if event.key == "up" else 1)
++            event.stop()
++            event.prevent_default()
+ 
+ 
+ class StatusBar(Static):
+@@ -291,11 +366,16 @@
+         return self.refresh_from(store, session_id, member, cursor)
+ 
+ 
+-class InputRow(Horizontal):
++class InputRow(Vertical):
+     """Prompt line plus a hint."""
+ 
+     def compose(self):
+-        yield PromptInput(id="prompt", language=None)
++        yield Static("就绪 · 向 Leader 输入任务或补充要求", id="composer-status", markup=False)
++        with Horizontal(id="composer"):
++            yield Static("›", id="prompt-prefix")
++            yield PromptInput(id="prompt", language=None)
++        yield Static("Enter 发送 · Shift+Enter / Ctrl+J 换行 · ↑↓ 历史 · Esc 停止 Leader",
++                     id="composer-hint", markup=False)
+ 
+     def focus_prompt(self) -> None:
+         self.query_one("#prompt", PromptInput).focus()

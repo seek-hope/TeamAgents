@@ -1,0 +1,178 @@
+--- .pre-fix-backup/collaboration-tui-20260912/src/teamagents/control.py	2026-09-12 14:01:10.388843732 +0800
++++ src/teamagents/control.py	2026-09-12 14:40:59.637413010 +0800
+@@ -258,6 +258,10 @@
+                         return f"unknown patch {patch_id!r}"
+                     if patch.status not in (PatchStatus.PROPOSED, PatchStatus.ACCEPTED):
+                         return f"patch is {patch.status}, cannot decide"
++                    if (not action.payload.get("reject")
++                            and patch.base_revision != self.store.current_revision(self.session_id)):
++                        return (f"patch base_revision {patch.base_revision} is stale; "
++                                "propose again against the current revision")
+                     return None
+                 ops = action.payload.get("operations")
+                 if not isinstance(ops, list) or not ops:
+@@ -404,7 +408,7 @@
+                 pending = [t for t in task_ids
+                            if (task := self.store.get_task(t)) is not None
+                            and task.status not in (TaskStatus.SUCCEEDED, TaskStatus.FAILED,
+-                                                   TaskStatus.CANCELLED)]
++                                                   TaskStatus.CANCELLED, TaskStatus.BLOCKED)]
+                 if pending:
+                     run = self.store.get_run(action.run_id or "")
+                     if run is not None:
+@@ -619,36 +623,18 @@
+                                     result={"patch_id": patch.patch_id, "status": "REJECTED"}),
+                 )
+             operations = p.get("operations") or patch.operations
+-            decided_by = action.actor_id
+-            new_spec, error = self._apply_operations(spec, operations)
+-            if error:
+-                return Reduction([], Receipt.failure(action, error))
+-            revision = self.store.save_team_spec(self.session_id, new_spec)
+-            self.store.set_patch_status(patch.patch_id, PatchStatus.APPLIED)
+-            self._sync_members(new_spec, spec)
+-            return Reduction(
+-                events=[EventDraft(kind=EventKind.TOPOLOGY_APPLIED,
+-                                   payload={"patch_id": patch.patch_id, "revision": revision,
+-                                            "decided_by": decided_by,
+-                                            "operations": operations})],
+-                receipt=Receipt(action_id=action.action_id, ok=True, kind=action.kind,
+-                                result={"patch_id": patch.patch_id, "revision": revision,
+-                                        "status": "APPLIED"}),
+-            )
+-
+-        operations = list(p["operations"])
++        else:
++            operations = list(p["operations"])
++            patch = TopologyPatch(
++                patch_id=new_id("patch"), base_revision=p["base_revision"],
++                proposer=action.actor_id, operations=operations)
+         new_spec, error = self._apply_operations(spec, operations)
+         if error:
+             return Reduction([], Receipt.failure(action, error))
+         affected = self._affected_agents(spec, new_spec, operations)
+-        patch = TopologyPatch(
+-            patch_id=new_id("patch"),
+-            base_revision=p["base_revision"],
+-            proposer=action.actor_id,
+-            decided_by=action.actor_id,
+-            operations=operations,
+-            affected_agents=affected,
+-        )
++        patch.decided_by = action.actor_id
++        patch.operations = operations
++        patch.affected_agents = affected
+         waiting = [a for a in affected if self._agent_has_live_run(a)]
+         operations_json = operations
+         if waiting:
+@@ -694,6 +680,10 @@
+                     agent = op.get("agent") or {}
+                     if any(a["id"] == agent.get("id") for a in data["agents"]):
+                         return None, f"member {agent.get('id')!r} already exists"
++                    if (any(a.id == agent.get("id") for a in spec.agents)
++                            or self.store.agent_status(self.session_id, agent.get("id", ""))
++                            is AgentStatus.REMOVED):
++                        return None, "removed member id cannot be reused; choose a new id"
+                     if agent.get("model_profile") not in cfg_models:
+                         return None, (f"unknown model profile {agent.get('model_profile')!r}; "
+                                       "configure it in user config first")
+@@ -722,11 +712,14 @@
+                     if not any(a["id"] == agent_id for a in data["agents"]):
+                         return None, f"unknown member {agent_id!r}"
+                     data["agents"] = [a for a in data["agents"] if a["id"] != agent_id]
++                    for channel in data["channels"]:
++                        channel["targets"] = [t for t in channel["targets"] if t != agent_id]
+                     data["channels"] = [c for c in data["channels"]
+-                                        if c["source"] != agent_id
+-                                        and agent_id not in c["targets"]]
++                                        if c["source"] != agent_id and c["targets"]]
+                     data["observers"] = [o for o in data["observers"]
+                                          if o["agent_id"] != agent_id]
++                    for observer in data["observers"]:
++                        observer["subjects"] = [s for s in observer["subjects"] if s != agent_id]
+                     for s in data["shared_spaces"]:
+                         s["readers"] = [x for x in s["readers"] if x != agent_id]
+                         s["writers"] = [x for x in s["writers"] if x != agent_id]
+@@ -736,6 +729,8 @@
+                     if target is None:
+                         return None, f"unknown member {agent_id!r}"
+                     changes = op.get("changes") or {}
++                    if "id" in changes and changes["id"] != agent_id:
++                        return None, "member id is immutable; add a new member instead"
+                     if "model_profile" in changes and changes["model_profile"] not in cfg_models:
+                         return None, f"unknown model profile {changes['model_profile']!r}"
+                     for tb in changes.get("tool_bindings") or []:
+@@ -817,7 +812,8 @@
+             new_a = next((a for a in new.agents if a.id == aid), None)
+             if old_a is None or new_a is None or old_a != new_a:
+                 result.append(aid)
+-            elif self._permissions_changed(old, new, aid):
++            elif (self._permissions_changed(old, new, aid)
++                  and any(op.get("op") not in ("add_agent", "add_channel") for op in operations)):
+                 result.append(aid)
+         return result
+ 
+@@ -845,10 +841,11 @@
+         for a in new.agents:
+             old_a = next((x for x in old.agents if x.id == a.id), None)
+             if old_a is None or old_a != a:
+-                revision = self.store.bump_config_revision(self.session_id, a.id)
+-                if self.store.agent_status(self.session_id, a.id) is AgentStatus.DRAINING:
+-                    self.store.set_agent_status(self.session_id, a.id, AgentStatus.IDLE)
+-                _ = revision
++                self.store.bump_config_revision(self.session_id, a.id)
++            # Message/shared ACLs are read from the current topology. A grant
++            # must not rebuild a parked member's graph and lose its resume state.
++            if self.store.agent_status(self.session_id, a.id) is AgentStatus.DRAINING:
++                self.store.set_agent_status(self.session_id, a.id, AgentStatus.IDLE)
+         for a in old.agents:
+             if not any(x.id == a.id for x in new.agents):
+                 self.store.set_agent_status(self.session_id, a.id, AgentStatus.REMOVED)
+@@ -988,9 +985,14 @@
+         """Create/wake runs for pending deliveries and ready tasks."""
+         session = self.session_id
+         self._apply_boundary_patches(spec)
++        spec = self.store.load_team_spec(session)
+         self._block_unrunnable_tasks(spec)
+         self._announce_ready_tasks(spec)
++        draining = {agent_id for patch in self.store.patches_in_status(
++            session, PatchStatus.WAITING_BOUNDARY) for agent_id in patch.affected_agents}
+         for agent in spec.agents:
++            if agent.id in draining:
++                self.store.set_agent_status(session, agent.id, AgentStatus.DRAINING)
+             parked = self._waiting_run(agent.id)
+             if (parked is not None and parked.status is TurnStatus.WAITING_APPROVAL
+                     and parked.cancel_requested and parked.external_turn_id is None):
+@@ -1054,7 +1056,7 @@
+                 pending_wait = [t for t in waiting.waiting_on
+                                 if (task := self.store.get_task(t)) is not None
+                                 and task.status not in (TaskStatus.SUCCEEDED, TaskStatus.FAILED,
+-                                                        TaskStatus.CANCELLED)]
++                                                        TaskStatus.CANCELLED, TaskStatus.BLOCKED)]
+                 seen = set(waiting.input_delivery_ids or [])
+                 user_input = any(d["event_kind"] == EventKind.USER_MESSAGE
+                                  and d["delivery_id"] not in seen for d in pending)
+@@ -1165,9 +1167,22 @@
+             if any(self._agent_has_live_run(a) for a in patch.affected_agents):
+                 continue
+             current = self.store.load_team_spec(self.session_id)
+-            new_spec, error = self._apply_operations(current, patch.operations)
++            if patch.base_revision != self.store.current_revision(self.session_id):
++                new_spec, error = None, "patch base_revision is stale; Leader must decide again"
++            else:
++                new_spec, error = self._apply_operations(current, patch.operations)
+             if error:
+                 self.store.set_patch_status(patch.patch_id, PatchStatus.FAILED)
++                for agent_id in patch.affected_agents:
++                    if self.store.agent_status(self.session_id, agent_id) is AgentStatus.DRAINING:
++                        self.store.set_agent_status(self.session_id, agent_id, AgentStatus.IDLE)
++                action = TeamAction(action_id=f"patch-failed:{patch.patch_id}",
++                                    session_id=self.session_id, actor_id="system",
++                                    kind=ActionKind.APPLY_TOPOLOGY_PATCH, payload={})
++                self._persist_events(action, current, [EventDraft(
++                    kind=EventKind.TOPOLOGY_REJECTED,
++                    payload={"patch_id": patch.patch_id, "proposer": patch.proposer,
++                             "error": error})])
+                 continue
+             revision = self.store.save_team_spec(self.session_id, new_spec)
+             self.store.set_patch_status(patch.patch_id, PatchStatus.APPLIED)

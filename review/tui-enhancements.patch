@@ -1,0 +1,1291 @@
+--- a/README.md
++++ b/README.md
+@@ -30,13 +30,15 @@
+ ```
+ 
+ TUI 上区为团队、任务、共享空间、批准、会话、日志与设置；下区为 Leader 对话和输入。
++界面默认英文，在 `Settings → Interface language` 选择 `中文` 可立即切换并保存偏好。
++任务按创建时间从新到旧排列；运行时显示成员动效、计时和最近活动，可在 `Settings → Animations` 关闭旋转动效。
+ 输入区支持 ↑↓ 历史与草稿恢复，`Ctrl+A`/`Ctrl+E` 移动到行首/行尾，`Esc` 请求停止 Leader。
+ 
+ TUI 常用键：`Enter` 发送、`Shift+Enter`/`Ctrl+J` 换行、`Ctrl+G` 批准队列、
+ `Ctrl+T` 切换面板、`Ctrl+P` 暂停/继续、`Ctrl+F` 全自动开关、`Ctrl+R` 刷新、`Ctrl+Q` 退出；
+ 「会话」面板支持 `s` 切换、`n` 新建、`a` 归档、`d` 删除本目录下的会话
+ （归档/删除当前会话后退出）。
+-批准队列里 `a`=本次批准、`s`=会话内批准、`d`=拒绝。窄终端自动切换为单栏。
++批准队列里 `a`=本次批准、`s`=会话内批准、`d`=拒绝。窄终端保留上下分区，上区通过标签切换。
+ 纯终端环境可用 `teamagents --plain`（行式 REPL）。
+ 
+ ## 其他入口
+--- a/TeamAgents-Implementation-Plan.zh-CN.md
++++ b/TeamAgents-Implementation-Plan.zh-CN.md
+@@ -403,6 +403,8 @@
+ 
+ 主界面采用上下分区：上区为团队、任务、共享空间、批准、会话、日志与设置，下区为 Leader 对话与输入。窄终端保留两个分区，上区通过标签切换视图。Leader 交互参考 Codex TUI，并在 Textual 中适配其输入历史、草稿恢复、键盘编辑和流式预览方式。支持中文输入、多行粘贴、流式 Markdown、键盘导航、终端缩放和清晰的焦点状态。
+ 
++界面默认英文，设置中可即时切换中文；语言与动效偏好跨会话和重启保存，不改变用户输入、模型回复或成员上下文。任务按创建时间从新到旧排列，状态更新不改变排序，刷新保留选中任务。对话区显示团队运行指示、活动成员数量、回合计时与最近活动，团队和任务行同步显示动效；等待、批准和终态采用对应提示，无执行中回合时停止旋转。用户可关闭旋转动效并保留状态反馈。回合计时包含创建后的排队和等待时间。
++
+ | 视图 | 内容与操作 |
+ |---|---|
+ | Leader 对话 | 持续输入、流式输出、任务补充；始终是自然语言交互入口 |
+@@ -411,7 +413,7 @@
+ | 成员详情 | 用户查看已记录的成员对话和工具记录，不改变其他成员的可见范围 |
+ | 共享空间 | 发现、决策、问题与制品；显示作者和更新位置 |
+ | 批准队列 | 操作、目标路径/服务、参数、权限范围及批准/拒绝 |
+-| 会话与设置 | 新建/恢复、模型 profiles、工具与 Skills、权限模式、资源上限 |
++| 会话与设置 | 新建/恢复、模型 profiles、工具与 Skills、权限模式、资源上限、界面语言、动效开关 |
+ 
+ 拟提供以下入口，均为待实现合约：
+ 
+--- a/docs/DECISIONS.md
++++ b/docs/DECISIONS.md
+@@ -108,3 +108,12 @@
+ - `Enter` 发送；`Shift+Enter`/`Ctrl+J` 换行；`↑↓` 在编辑区首末行调取本会话历史，并保留未发送草稿；`Esc` 请求停止 Leader。
+ - 批准队列改为 `Ctrl+G`，将 `Ctrl+A` 留给行首编辑；流式预览更新同一块区域，最终回复只追加一次，刷新不重放聊天。
+ - 此条落实用户当前要求；协作修复恢复原方案的调度、边界与身份约束，不引入新的团队权限模式。
++
++
++## D-12 任务时间排序、界面语言与运行反馈 ✅（用户要求 2026-09-12）
++
++- 任务列表按创建时间倒序显示，最新在最上方；同一时间按任务 ID 确定顺序。状态更新不改变排序，刷新保留选中的任务。
++- TUI 默认英文，用户在 `Settings → Interface language` 选择 `中文` 后立即切换。界面语言只影响界面文案，不修改用户输入、模型回复或团队上下文。
++- 增加团队运行指示、活动成员数量、回合已用时间和最近活动；团队与任务状态同步显示动效。等待任务、等待批准和终态有不同的静态提示，避免将等待显示为正在执行。
++- `Settings → Animations` 可关闭旋转动效，保留状态与计时。语言和动效偏好保存在 `$XDG_STATE_HOME/teamagents/ui.json`（默认 `~/.local/state/teamagents/ui.json`），跨会话和重启生效。
++- 动效读取 TUI 缓存的运行状态，不为每帧查询数据库；已用时间自回合创建起计算，包含排队和等待时间。此条落实用户当前要求。
+--- a/docs/USER-GUIDE.md
++++ b/docs/USER-GUIDE.md
+@@ -9,6 +9,7 @@
+ | 用户配置（模型 profile、工具绑定、Skills 目录、指令文件） | `$XDG_CONFIG_HOME/teamagents/config.toml`（默认 `~/.config/teamagents/config.toml`） |
+ | 项目配置（可覆盖同名模型/工具，不能开启全自动或扩大预授权） | `<项目>/.teamagents/config.toml` |
+ | 会话状态（业务库、成员私有检查点、制品、成员工作目录） | `$XDG_STATE_HOME/teamagents/sessions/<session_id>/` |
++| TUI 语言与动效偏好 | `$XDG_STATE_HOME/teamagents/ui.json`（默认 `~/.local/state/teamagents/ui.json`） |
+ | 团队定义导入/导出 | 任意路径的 JSON/YAML，`teamagents validate` 校验 |
+ 
+ ### 1.2 模型 profile
+@@ -158,6 +159,12 @@
+ 
+ 上区是管理面板，下区是 Leader 对话与输入。缩窄终端时聊天内容重新换行，上区仍可切换到批准、任务与会话。
+ 
++界面默认英文。进入 `Settings → Interface language`，选择 `中文` 即时切换；中文界面在「设置 → 界面语言」选择 `English` 切回英文。可用 `Tab` 聚焦语言选项，`Enter` 展开、方向键选择、`Enter` 确定，`Esc` 仅关闭下拉菜单。偏好跨会话和重启保存，切换不清空输入草稿，也不翻译用户输入或模型回复。
++
++`Tasks`（任务）按创建时间从新到旧排列，`Created`（创建时间）列显示本地时间；状态变化不影响顺序，列表刷新保留选中任务，避免取消时误选。
++
++对话上方持续显示团队活动，即使 Leader 空闲也能看到其他成员正在执行。旋转指示配合活动成员数量、成员 ID、回合计时与最近活动；团队和任务行同步显示状态。计时自回合创建起累计，包含排队和等待，并非模型的纯执行时长。等待批准时显示 `Approval needed`，可按 `Ctrl+G` 处理；无执行中回合时停止旋转。在 `Settings → Animations`（设置 → 动效）关闭动效后，仍保留静态状态、计时和事件提示。
++
+ | 操作 | 快捷键 |
+ |---|---|
+ | 发送 / 换行 | Enter / Shift+Enter 或 Ctrl+J |
+--- a/src/teamagents/tui/app.py
++++ b/src/teamagents/tui/app.py
+@@ -9,13 +9,15 @@
+ import asyncio
+ import contextlib
+ import os
++import time
++from dataclasses import replace
+ from pathlib import Path
+ from typing import Any
+ 
+ from textual.app import App, ComposeResult
+ from textual.binding import Binding
+ from textual.containers import Vertical, VerticalScroll
+-from textual.widgets import Footer, Header, Static, TabbedContent, TabPane
++from textual.widgets import DataTable, Footer, Header, Static, TabbedContent, TabPane, Select, Switch
+ 
+ from ..models import EventKind, TaskStatus, TeamAction, ActionKind, TurnStatus, new_id
+ from ..runtime import SessionRuntime
+@@ -23,6 +25,7 @@
+ from .panels import (ChatLog, InputRow, LogPanel, PromptInput, SettingsPanel,
+                      SessionsPanel, SharedPanel, StatusBar, TasksPanel, TeamPanel,
+                      PanelReady)
++from .i18n import tr, TABLE_HEADERS, STATIC_LABELS, read_preferences, write_preferences
+ from .theme import CODEX_THEME
+ 
+ TOP_PANELS = [("team", "团队"), ("tasks", "任务"), ("shared", "共享空间"),
+@@ -39,6 +42,14 @@
+     #body { height: 1fr; }
+     #side { height: 2fr; min-height: 6; border-bottom: solid $secondary; padding: 0 1; }
+     #chat { height: 3fr; min-height: 9; padding: 0 1; background: $background; }
++    #activity { height: 2; color: $text-muted; }
++    #activity.working { color: $primary; }
++    #activity.attention { color: $warning; }
++    .preference-row { height: 3; }
++    .preference-row Static { width: 22; padding-top: 1; }
++    #language-select { width: 24; }
++    #settings-body { height: auto; }
++    SettingsPanel { overflow-y: auto; }
+     #chat-log { height: 1fr; min-height: 1; }
+     #chat-live { height: auto; max-height: 8; padding: 0 1; color: $foreground; display: none; }
+     #input-row { height: auto; }
+@@ -98,6 +109,13 @@
+                  runtime_factory=None, cwd: Any = None,
+                  open_kwargs: dict | None = None, **kwargs: Any) -> None:
+         super().__init__(**kwargs)
++        preferences = read_preferences()
++        self.ui_language = preferences["language"]
++        self.animations = preferences["animations"]
++        self._activity_runs = {}
++        self._activity_leader = ("leader", "")
++        self._activity_frame = 0
++        self._latest_activity = ("等待输入", {})
+         self.rt = runtime
+         self._runtime_factory = runtime_factory
+         self._cwd = str(cwd) if cwd else None
+@@ -113,6 +131,133 @@
+         self._owns_runtime = runtime is None
+         self._runtime_closed = False
+ 
++    def _apply_language(self) -> None:
++        tabs = self.query_one(TabbedContent)
++        for name, label in TOP_PANELS:
++            tabs.get_tab(f"tab-{name}").label = tr(self, label)
++        for table_id, labels in TABLE_HEADERS.items():
++            for table in self.query(f"#{table_id}"):
++                table.clear(columns=True)
++                table.add_columns(*(tr(self, label) for label in labels))
++        for widget_id, label in STATIC_LABELS.items():
++            for widget in self.query(f"#{widget_id}"):
++                widget.update(tr(self, label))
++        # Textual exposes rebinding but no public binding-label update API.
++        for binding in self.BINDINGS:
++            bindings = self._bindings.key_to_bindings.get(binding.key, [])
++            self._bindings.key_to_bindings[binding.key] = [
++                replace(b, description=tr(self, binding.description))
++                if b.action == binding.action else b for b in bindings]
++        for prompt in self.query(PromptInput):
++            for key in ("ctrl+j", "shift+enter"):
++                prompt._bindings.key_to_bindings[key] = [
++                    replace(b, description=tr(self, "换行"))
++                    for b in prompt._bindings.key_to_bindings.get(key, [])]
++        self.refresh_bindings()
++        self.query_one(ChatLog)._reflow()
++        if self.rt is not None:
++            self._refresh_now()
++
++    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
++        if action == "interrupt_leader" and any(select.expanded for select in self.query(Select)):
++            return False
++        return super().check_action(action, parameters)
++
++    def on_select_changed(self, event: Select.Changed) -> None:
++        if event.select.id != "language-select" or event.value not in ("en", "zh-CN"):
++            return
++        if self.ui_language != event.value:
++            self.ui_language = event.value
++            self._apply_language()
++            self._save_preferences()
++        event.stop()
++
++    def on_switch_changed(self, event: Switch.Changed) -> None:
++        if event.switch.id == "animations-switch" and self.animations != event.value:
++            self.animations = event.value
++            self._animate_activity()
++            self._save_preferences()
++            event.stop()
++
++    def _save_preferences(self) -> None:
++        try:
++            write_preferences(self.ui_language, self.animations)
++        except OSError as error:
++            self.notify(tr(self, "偏好保存失败：{v0}", v0=str(error)), severity="error")
++
++    def activity_status(self, status: str, run=None):
++        from rich.text import Text
++
++        if run is not None and status in ("BUSY", "WAITING", "RUNNING", "PENDING", "IDLE"):
++            status = str(run.status)
++        labels = {"RUNNING": "正在处理", "BUSY": "正在处理", "IDLE": "空闲",
++                  "QUEUED": "已排队", "PENDING": "已排队", "WAITING": "等待任务",
++                  "WAITING_TASK": "等待成员结果", "WAITING_APPROVAL": "等待批准",
++                  "DRAINING": "正在停止", "REMOVED": "已移除", "SUCCEEDED": "已完成",
++                  "COMPLETED": "已完成", "FAILED": "失败", "CANCELLED": "已取消",
++                  "BLOCKED": "受阻", "OUTCOME_UNKNOWN": "结果不明"}
++        busy = status in ("BUSY", "RUNNING")
++        icon = ("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"[self._activity_frame % 10] if self.animations else "●") if busy else "○"
++        style = "#3b82f6" if busy else "#afafaf"
++        if status in ("FAILED", "OUTCOME_UNKNOWN"):
++            icon, style = "!", "red"
++        elif status in ("BLOCKED", "WAITING_APPROVAL", "DRAINING"):
++            icon, style = "!", "yellow"
++        elif status in ("SUCCEEDED", "COMPLETED"):
++            icon, style = "✓", "green"
++        elif status in ("WAITING", "WAITING_TASK", "QUEUED", "PENDING"):
++            icon = "◷"
++        label = f"{icon} {tr(self, labels.get(status, status))}"
++        if run is not None:
++            elapsed = max(0, int(time.time() - run.created_at))
++            label += f" {elapsed // 60:02}:{elapsed % 60:02}"
++        return Text(label, style=style)
++
++    def _animate_activity(self) -> None:
++        activity = next(iter(self.query("#activity")), None)
++        if self.rt is None or activity is None:
++            return
++        runs = self._activity_runs
++        working = [r for r in runs.values() if r.status == TurnStatus.RUNNING]
++        waiting_approval = any(r.status == TurnStatus.WAITING_APPROVAL for r in runs.values())
++        if self.animations and working:
++            self._activity_frame = (self._activity_frame + 1) % 10
++        else:
++            self._activity_frame = 0
++        if working:
++            summary = str(self.activity_status("RUNNING", min(working, key=lambda r: r.created_at)))
++            summary += " · " + tr(self, "{count} 个成员正在执行", count=len(working))
++            summary += " · " + ", ".join(r.agent_id for r in working)
++        elif waiting_approval:
++            summary = "! " + tr(self, "等待批准")
++        elif runs:
++            summary = str(self.activity_status(str(next(iter(runs.values())).status)))
++        else:
++            summary = "○ " + tr(self, "就绪") + " · " + tr(self, "没有正在执行的回合")
++        activity.set_class(bool(working), "working")
++        activity.set_class(waiting_approval and not working, "attention")
++        message, values = self._latest_activity
++        activity.update(summary + "\n" + tr(self, "最近活动：{text}", text=tr(self, message, **values)))
++        leader_id, profile = self._activity_leader
++        leader_run = runs.get(leader_id)
++        state = str(self.activity_status("IDLE", leader_run))
++        self.query_one("#composer-status", Static).update(tr(
++            self, "{v0} · Leader / {v1} · 可继续输入补充要求", v0=state, v1=profile))
++        for table in self.query("#team-table"):
++            if len(table.columns) < 5:
++                continue
++            column = table.ordered_columns[4].key
++            for agent_id, run in runs.items():
++                if agent_id in table.rows:
++                    table.update_cell(agent_id, column, self.activity_status(str(run.status), run), update_width=True)
++        for table in self.query("#tasks-table"):
++            if len(table.columns) < 4:
++                continue
++            column = table.ordered_columns[3].key
++            for run in runs.values():
++                if run.task_id and run.task_id in table.rows:
++                    table.update_cell(run.task_id, column, self.activity_status(str(run.status), run), update_width=True)
++
+     # ------------------------------------------------------------- layout
+ 
+     def compose(self) -> ComposeResult:
+@@ -121,21 +266,22 @@
+         with Vertical(id="body"):
+             with Vertical(id="side"):
+                 with TabbedContent(initial="tab-team"):
+-                    with TabPane("团队", id="tab-team"):
++                    with TabPane(tr(self, '团队'), id="tab-team"):
+                         yield TeamPanel(classes="panel")
+-                    with TabPane("任务", id="tab-tasks"):
++                    with TabPane(tr(self, '任务'), id="tab-tasks"):
+                         yield TasksPanel(classes="panel")
+-                    with TabPane("共享空间", id="tab-shared"):
++                    with TabPane(tr(self, '共享空间'), id="tab-shared"):
+                         yield SharedPanel(classes="panel")
+-                    with TabPane("批准", id="tab-approvals"):
++                    with TabPane(tr(self, '批准'), id="tab-approvals"):
+                         yield ApprovalsPanel(classes="panel")
+-                    with TabPane("会话", id="tab-sessions"):
++                    with TabPane(tr(self, '会话'), id="tab-sessions"):
+                         yield SessionsPanel(classes="panel")
+-                    with TabPane("日志", id="tab-log"):
++                    with TabPane(tr(self, '日志'), id="tab-log"):
+                         yield LogPanel(classes="panel")
+-                    with TabPane("设置", id="tab-settings"):
++                    with TabPane(tr(self, '设置'), id="tab-settings"):
+                         yield SettingsPanel(classes="panel")
+             with Vertical(id="chat"):
++                yield Static("", id="activity", markup=False)
+                 yield ChatLog(id="chat-log")
+                 yield InputRow(id="input-row")
+         yield Footer()
+@@ -148,13 +294,15 @@
+         self.title = "TeamAgents"
+         self.sub_title = self.rt.session_id if self.rt else ""
+         if self.rt is None:
+-            self._write_chat("system", "[没有可用会话]")
+-            return
++            self._write_chat("system", tr(self, '[没有可用会话]'))
++            return
++        self._apply_language()
+         await self.rt.start()
+         self.rt.set_stream_sink(self._on_model_delta)
+         self._startup_checks()
+         self.run_worker(self._event_loop(), name="ta-events")
+         self.set_interval(0.08, self._flush_deltas)
++        self.set_interval(0.12, self._animate_activity)
+         self.set_interval(1.0, self._refresh_widgets)
+         self.call_after_refresh(self._refresh_now)
+         await self._refresh_widgets()
+@@ -171,14 +319,11 @@
+             if profile is None:
+                 self._write_chat(
+                     "system",
+-                    f"⚠ 成员 {agent.id} 的模型 profile {agent.model_profile!r} 未配置："
+-                    f"请创建 {user_config_path()}（可直接复制仓库里的 "
+-                    f"examples/config.toml），然后重开会话。在此之前发出的消息都会失败。")
++                    tr(self, '⚠ 成员 {v0} 的模型 profile {v1!r} 未配置：请创建 {v2}（可直接复制仓库里的 examples/config.toml），然后重开会话。在此之前发出的消息都会失败。', v0=agent.id, v1=agent.model_profile, v2=user_config_path()))
+             elif profile.api_key_env and not os.environ.get(profile.api_key_env):
+                 self._write_chat(
+                     "system",
+-                    f"⚠ 模型 profile {agent.model_profile!r} 需要环境变量 "
+-                    f"{profile.api_key_env}，当前未设置：请 export 后重开会话。")
++                    tr(self, '⚠ 模型 profile {v0!r} 需要环境变量 {v1}，当前未设置：请 export 后重开会话。', v0=agent.model_profile, v1=profile.api_key_env))
+ 
+     async def on_unmount(self) -> None:
+         """Closing the UI must also close the session runtime.
+@@ -211,6 +356,10 @@
+             return
+         store = self.rt.store
+         session_id = self.rt.session_id
++        spec = store.load_team_spec(session_id)
++        self._activity_leader = (spec.leader_id, spec.leader.model_profile)
++        self._activity_runs = {r.agent_id: r for r in store.runs_for_session(session_id,
++            ["QUEUED", "RUNNING", "WAITING_TASK", "WAITING_APPROVAL"])}
+         errors: list[str] = []
+ 
+         def refresh(name: str, update) -> None:
+@@ -219,7 +368,7 @@
+             except Exception as error:  # a UI read error must not kill the app
+                 errors.append(f"{name}: {error}")
+ 
+-        refresh("状态栏",
++        refresh(tr(self, '状态栏'),
+                 lambda: self.query_one("#status", StatusBar).refresh_status(self.rt))
+         for panel_type in (TeamPanel, TasksPanel, SharedPanel, ApprovalsPanel,
+                            SettingsPanel):
+@@ -230,16 +379,9 @@
+             refresh("LogPanel", lambda p=panel: self._append_log(p))
+         if errors and tuple(errors) != self._refresh_errors:
+             # report a broken widget once, not once per tick
+-            self._write_chat("system", "[界面刷新失败] " + "；".join(errors))
++            self._write_chat("system", tr(self, '[界面刷新失败] ') + "; ".join(errors))
+         self._refresh_errors = tuple(errors)
+-        spec = store.load_team_spec(session_id)
+-        runs = [r for r in store.runs_for_session(session_id,
+-                ["QUEUED", "RUNNING", "WAITING_TASK", "WAITING_APPROVAL"])
+-                if r.agent_id == spec.leader_id]
+-        state = {"QUEUED": "准备中", "RUNNING": "正在处理", "WAITING_TASK": "等待成员结果",
+-                 "WAITING_APPROVAL": "等待批准"}.get(runs[0].status if runs else "", "就绪")
+-        self.query_one("#composer-status", Static).update(
+-            f"{state} · Leader / {spec.leader.model_profile} · 可继续输入补充要求")
++        self._animate_activity()
+ 
+     def _append_log(self, panel: LogPanel) -> None:
+         """Append new events; the log cursor is independent of the chat cursor."""
+@@ -259,7 +401,7 @@
+                 if self.rt is not None:
+                     await self._drain_events()
+             except Exception as error:  # a UI read error must not kill the app
+-                self._write_chat("system", f"[界面读取事件失败] {error}")
++                self._write_chat("system", tr(self, '[界面读取事件失败] {v0}', v0=error))
+             await asyncio.sleep(0.1)
+ 
+     async def _drain_events(self) -> None:
+@@ -268,8 +410,20 @@
+             self._cursor = max(self._cursor, event["sequence"])
+             kind = event["kind"]
+             payload = _payload(event)
++            if kind == EventKind.RUN_STARTED:
++                self._latest_activity = ("{agent} 开始处理", {"agent": payload.get("agent_id", "Leader")})
++            elif kind == EventKind.TASK_COMPLETED:
++                self._latest_activity = ("任务已完成", {})
++            elif kind == EventKind.APPROVAL_REQUESTED:
++                self._latest_activity = ("需要用户批准", {})
++            elif kind == EventKind.RUN_FAILED:
++                self._latest_activity = ("失败", {})
++            elif kind == EventKind.RUN_CANCELLED:
++                self._latest_activity = ("已取消", {})
++            elif kind == EventKind.GOAL_DONE:
++                self._latest_activity = ("已完成", {})
+             if kind == EventKind.USER_MESSAGE:
+-                self._write_chat("你", payload.get("text", ""))
++                self._write_chat("user", payload.get("text", ""))
+                 self.query_one(PromptInput).record_submission(payload.get("text", ""))
+             elif kind == EventKind.LEADER_REPLY:
+                 self._delta_buffer.pop(payload.get("run_id"), None)
+@@ -280,8 +434,7 @@
+                                  payload.get("text", ""))
+             elif kind == EventKind.TASK_CREATED:
+                 self._write_chat("system",
+-                                 f"任务 {payload.get('task_id', '')[-8:]} → "
+-                                 f"{payload.get('assignee')}：{payload.get('description', '')}")
++                                 tr(self, '任务 {v0} → {v1}：{v2}', v0=payload.get('task_id', '')[-8:], v1=payload.get('assignee'), v2=payload.get('description', '')))
+             elif kind in (EventKind.TASK_COMPLETED, EventKind.TASK_FAILED,
+                           EventKind.TASK_BLOCKED, EventKind.TASK_CANCELLED):
+                 self._write_chat("system",
+@@ -289,41 +442,39 @@
+                                  f"{payload.get('summary') or payload.get('reason') or payload.get('error') or ''}")
+             elif kind == EventKind.APPROVAL_REQUESTED:
+                 self._write_chat("system",
+-                                 f"需要批准：{_approval_line(payload)}（按 Ctrl+G 处理）")
++                                 tr(self, '需要批准：{v0}（按 Ctrl+G 处理）', v0=_approval_line(payload)))
+             elif kind == EventKind.APPROVAL_DECIDED:
+                 self._write_chat("system",
+-                                 f"批准 {payload.get('approval_id')} → {payload.get('status')}")
++                                 tr(self, '批准 {v0} → {v1}', v0=payload.get('approval_id'), v1=payload.get('status')))
+             elif kind == EventKind.RUN_FAILED:
+                 self._write_chat(
+                     "system",
+-                    f"✗ 成员 {payload.get('agent_id')} 的回合失败：{payload.get('error')}")
++                    tr(self, '✗ 成员 {v0} 的回合失败：{v1}', v0=payload.get('agent_id'), v1=payload.get('error')))
+             elif kind == EventKind.RUN_CANCELLED:
+                 self._write_chat("system",
+-                                 f"回合已停止：{payload.get('agent_id')} "
+-                                 f"({payload.get('status')})")
++                                 tr(self, '回合已停止：{v0} ({v1})', v0=payload.get('agent_id'), v1=payload.get('status')))
+             elif kind == EventKind.RUN_WAITING:
+                 waiting = payload.get("waiting_on") or []
+                 if waiting:
+                     self._write_chat("system",
+-                                     f"{payload.get('agent_id')} 正在等待 "
+-                                     f"{len(waiting)} 个任务完成")
++                                     tr(self, '{v0} 正在等待 {v1} 个任务完成', v0=payload.get('agent_id'), v1=len(waiting)))
+             elif kind == EventKind.MEMBER_STATUS:
+                 self._write_chat("system",
+-                                 f"成员状态：{payload.get('agent_id')} "
+-                                 f"{payload.get('status')} {payload.get('error', '')}")
++                                 tr(self, '成员状态：{v0} {v1} {v2}', v0=payload.get('agent_id'), v1=payload.get('status'), v2=payload.get('error', '')))
+             elif kind == EventKind.SESSION_STATUS:
+-                self._write_chat("system", f"会话状态：{payload}")
++                self._write_chat("system", tr(self, '会话状态：{v0}', v0=payload))
+             elif kind == EventKind.RUN_PROGRESS and payload.get("final"):
+-                self._write_chat(f"{payload.get('agent_id')}（完成）",
++                self._write_chat(tr(self, '{v0}（完成）', v0=payload.get('agent_id')),
+                                  payload.get("text", ""))
+             elif kind == EventKind.LIMIT_REACHED:
+-                self._write_chat("system", f"[达到上限] {payload}")
++                self._write_chat("system", tr(self, '[达到上限] {v0}', v0=payload))
+             elif kind == EventKind.GOAL_DONE:
+-                self._write_chat("system", f"目标完成：{payload.get('summary', '')}")
++                self._write_chat("system", tr(self, '目标完成：{v0}', v0=payload.get('summary', '')))
+ 
+     def _on_model_delta(self, run_id: str, agent_id: str, text: str) -> None:
+         if self.rt is None:
+             return
++        self._latest_activity = ("{agent} 正在回复", {"agent": agent_id})
+         if agent_id != self.rt.store.load_team_spec(self.rt.session_id).leader_id:
+             return
+         # Transient preview is bounded; the full final reply is persisted.
+@@ -410,7 +561,7 @@
+         try:
+             new_rt = await self._open_session(session_id)
+         except Exception as e:
+-            self._write_chat("system", f"✗ 无法打开会话 {session_id}：{e}")
++            self._write_chat("system", tr(self, '✗ 无法打开会话 {v0}：{v1}', v0=session_id, v1=e))
+             return False
+         await self._close_runtime()
+         self.rt = new_rt
+@@ -420,6 +571,8 @@
+         self.rt.set_stream_sink(self._on_model_delta)
+         self._cursor = 0
+         self._selected_member = None
++        self._activity_runs.clear()
++        self._latest_activity = ("等待输入", {})
+         self._delta_buffer.clear()
+         self.query_one(ChatLog).show_stream("")
+         self.query_one(PromptInput).reset_history()
+@@ -431,7 +584,7 @@
+             self.query_one(ChatLog).clear()
+         with contextlib.suppress(Exception):
+             self.query_one("#log-stream").clear()
+-        self._write_chat("system", f"已切换到会话 {self.rt.session_id}")
++        self._write_chat("system", tr(self, '已切换到会话 {v0}', v0=self.rt.session_id))
+         self._startup_checks()
+         self._refresh_now()
+         return True
+@@ -446,12 +599,12 @@
+         try:
+             target = archive_session(session_id)
+         except SessionInUse as e:
+-            self._write_chat("system", f"✗ 归档失败：{e}")
++            self._write_chat("system", tr(self, '✗ 归档失败：{v0}', v0=e))
+             return False
+         except Exception as e:
+-            self._write_chat("system", f"✗ 归档失败：{e}")
++            self._write_chat("system", tr(self, '✗ 归档失败：{v0}', v0=e))
+             return False
+-        self._write_chat("system", f"已归档会话 {session_id} → {target}")
++        self._write_chat("system", tr(self, '已归档会话 {v0} → {v1}', v0=session_id, v1=target))
+         if was_current:
+             self.exit()
+             return True
+@@ -469,15 +622,15 @@
+         try:
+             delete_session(session_id)
+         except SessionInUse as e:
+-            self._write_chat("system", f"✗ 删除失败：{e}")
++            self._write_chat("system", tr(self, '✗ 删除失败：{v0}', v0=e))
+             return False
+         except SessionDeleteBlocked as e:
+-            self._write_chat("system", f"✗ 删除被阻止：{e}")
++            self._write_chat("system", tr(self, '✗ 删除被阻止：{v0}', v0=e))
+             return False
+         except Exception as e:
+-            self._write_chat("system", f"✗ 删除失败：{e}")
++            self._write_chat("system", tr(self, '✗ 删除失败：{v0}', v0=e))
+             return False
+-        self._write_chat("system", f"已删除会话 {session_id}")
++        self._write_chat("system", tr(self, '已删除会话 {v0}', v0=session_id))
+         if was_current:
+             self.exit()
+             return True
+@@ -490,7 +643,7 @@
+         cwd = self._cwd or (self.rt.store.get_session(self.rt.session_id)["cwd"]
+                             if self.rt else None)
+         if not cwd:
+-            self._write_chat("system", "✗ 无法确定工作目录")
++            self._write_chat("system", tr(self, '✗ 无法确定工作目录'))
+             return False
+         return await self.switch_session(new_session_id(Path(cwd)))
+ 
+@@ -502,7 +655,7 @@
+         receipt = self.rt.user_message(message.text)
+         if not receipt.ok:
+             self.query_one(PromptInput).text = message.text
+-            self._write_chat("system", f"[输入被拒绝] {receipt.error}")
++            self._write_chat("system", tr(self, '[输入被拒绝] {v0}', v0=receipt.error))
+ 
+     def on_data_table_row_highlighted(self, event) -> None:
+         if event.data_table.id == "team-table":
+@@ -514,9 +667,7 @@
+             task = self.rt.store.get_task(task_id)
+             if task is not None:
+                 self._write_chat("system",
+-                                 f"任务 {task.task_id} | {task.status} | "
+-                                 f"{task.description} | 依赖 {task.dependencies} | "
+-                                 f"成果 {task.result_refs}")
++                                 tr(self, '任务 {v0} | {v1} | {v2} | 依赖 {v3} | 成果 {v4}', v0=task.task_id, v1=task.status, v2=task.description, v3=task.dependencies, v4=task.result_refs))
+ 
+     def action_focus_prompt(self) -> None:
+         self.query_one("#prompt", PromptInput).focus()
+@@ -551,20 +702,20 @@
+                     action_id=new_id("ui-stop"), session_id=self.rt.session_id,
+                     actor_id="user", kind=ActionKind.CANCEL_RUN,
+                     payload={"run_id": run.run_id}))
+-                self._write_chat("system", "已请求停止 Leader，等待执行结束"
+-                                 if receipt.ok else f"停止失败：{receipt.error}")
++                self._write_chat("system", tr(self, '已请求停止 Leader，等待执行结束')
++                                 if receipt.ok else tr(self, '停止失败：{v0}', v0=receipt.error))
+                 break
+ 
+     def action_pause_session(self) -> None:
+         session = self.rt.store.get_session(self.rt.session_id)
+         if session["status"] == "PAUSED":
+-            self.rt.user_message("继续执行")
++            self.rt.user_message(tr(self, '继续执行'))
+             return
+         receipt = self.rt.submit(TeamAction(
+             action_id=f"ui-pause-{self._cursor}", session_id=self.rt.session_id,
+             actor_id="user", kind=ActionKind.PAUSE_SESSION, payload={}))
+         if receipt.ok:
+-            self._write_chat("system", "会话已暂停（输入新消息即恢复）")
++            self._write_chat("system", tr(self, '会话已暂停（输入新消息即恢复）'))
+ 
+     def action_toggle_full_auto(self) -> None:
+         session = self.rt.store.get_session(self.rt.session_id)
+@@ -574,7 +725,7 @@
+             actor_id="user", kind=ActionKind.SET_PERMISSION_MODE,
+             payload={"mode": mode}))
+         if receipt.ok:
+-            self._write_chat("system", f"权限模式切换为 {mode}")
++            self._write_chat("system", tr(self, '权限模式切换为 {v0}', v0=mode))
+ 
+     def action_quit_app(self) -> None:
+         self.exit()
+@@ -588,7 +739,7 @@
+             return
+         ok = panel.decide(self.rt, approval_id, decision)
+         self._write_chat("system",
+-                         f"批准决定 {decision}：{'已提交' if ok else '提交失败'}")
++                         tr(self, '批准决定 {v0}：{v1}', v0=decision, v1=tr(self, '已提交') if ok else tr(self, '提交失败')))
+ 
+     _ = (VerticalScroll, TaskStatus, Static)
+ 
+--- a/src/teamagents/tui/approvals.py
++++ b/src/teamagents/tui/approvals.py
+@@ -7,6 +7,7 @@
+ 
+ from ..models import ActionKind, TeamAction
+ from .panels import PanelReady
++from .i18n import tr, TABLE_HEADERS
+ 
+ 
+ class ApprovalsPanel(Vertical):
+@@ -22,12 +23,12 @@
+         self.runtime = None
+ 
+     def compose(self):
+-        yield Static("待批准操作：a=本次批准  s=会话内批准  d=拒绝", id="approvals-hint")
++        yield Static(tr(self, '待批准操作：a=本次批准  s=会话内批准  d=拒绝'), id="approvals-hint")
+         yield DataTable(id="approvals-table", zebra_stripes=True)
+ 
+     def on_mount(self) -> None:
+         table = self.query_one("#approvals-table", DataTable)
+-        table.add_columns("成员", "操作", "参数", "范围")
++        table.add_columns(*(tr(self, label) for label in TABLE_HEADERS["approvals-table"]))
+         self.post_message(PanelReady())
+ 
+     def refresh_from(self, store, session_id: str, runtime=None) -> None:
+@@ -66,7 +67,7 @@
+             return
+         ok = self.decide(self.runtime, approval_id, decision)
+         try:
+-            self.app.notify(f"批准决定 {decision}：{'已提交' if ok else '提交失败'}")
++            self.app.notify(tr(self, '批准决定 {v0}：{v1}', v0=decision, v1=tr(self, '已提交') if ok else tr(self, '提交失败')))
+         except Exception:
+             pass
+         event.stop()
+--- a/src/teamagents/tui/panels.py
++++ b/src/teamagents/tui/panels.py
+@@ -13,10 +13,11 @@
+ from rich.markdown import Markdown as RichMarkdown
+ from textual.containers import Horizontal, Vertical
+ from textual.message import Message
+-from textual.widgets import DataTable, Input, Markdown, RichLog, Static, TextArea
++from textual.widgets import DataTable, Input, Markdown, RichLog, Static, TextArea, Select, Switch
+ 
+ from ..models import ActionKind, TaskStatus, TeamAction, TURN_TERMINAL_STATUSES
+ from ..storage import Store
++from .i18n import tr, TABLE_HEADERS
+ from .theme import BODY_STYLE, ERROR_STYLE, LABEL_STYLE, NOTICE_STYLE, SUCCESS_STYLE
+ 
+ 
+@@ -29,7 +30,7 @@
+ 
+     #: label -> (label style, body style)
+     STYLES = {
+-        "你": (LABEL_STYLE, BODY_STYLE),
++        "user": (LABEL_STYLE, BODY_STYLE),
+         "Leader": (LABEL_STYLE, BODY_STYLE),
+         "system": (LABEL_STYLE, NOTICE_STYLE),
+     }
+@@ -75,11 +76,12 @@
+             who, (LABEL_STYLE, NOTICE_STYLE if who.startswith("system") else BODY_STYLE))
+         if who.startswith("✗") or who.startswith("⚠"):
+             label_style, body_style = ERROR_STYLE, ERROR_STYLE
+-        elif who.endswith("（完成）"):
++        elif who.endswith(tr(self, '（完成）')):
+             label_style, body_style = SUCCESS_STYLE, BODY_STYLE
+         if who:
+-            prefix = "›" if who == "你" else "•"
+-            log.write(Text(f"{prefix} {who}", style=label_style))
++            prefix = "›" if who in ("user", "你", "You") else "•"
++            label = tr(self, "你") if who in ("user", "你", "You") else tr(self, "系统") if who == "system" else who
++            log.write(Text(f"{prefix} {label}", style=label_style))
+         if who == "Leader":
+             log.write(RichMarkdown(text or ""))
+             log.write("")
+@@ -175,9 +177,7 @@
+         state = session["status"] if session else "?"
+         leader = spec.leader
+         self.update(
+-            f" 会话 {runtime.session_id}  |  {state}  |  权限 {mode}  |  "
+-            f"Leader {leader.name}({leader.model_profile})  |  活动回合 {len(running)}  |  "
+-            f"未完成任务 {len(tasks)}  |  待批准 {len(approvals)}"
++            tr(self, ' 会话 {v0}  |  {v1}  |  权限 {v2}  |  Leader {v3}({v4})  |  活动回合 {v5}  |  未完成任务 {v6}  |  待批准 {v7}', v0=runtime.session_id, v1=state, v2=mode, v3=leader.name, v4=leader.model_profile, v5=len(running), v6=len(tasks), v7=len(approvals))
+             + (f"  |  {extra}" if extra else ""))
+ 
+ 
+@@ -189,7 +189,7 @@
+ 
+     def on_mount(self) -> None:
+         table = self.query_one("#team-table", DataTable)
+-        table.add_columns("成员", "角色", "类型", "模型", "状态", "工作目录", "可见范围")
++        table.add_columns(*(tr(self, label) for label in TABLE_HEADERS["team-table"]))
+         self.post_message(PanelReady())
+ 
+     def refresh_from(self, store: Store, session_id: str, runtime=None) -> None:
+@@ -204,13 +204,14 @@
+             observers = [o.agent_id for o in spec.observers if agent.id in o.subjects]
+             reach = []
+             if can_send:
+-                reach.append("消息→" + ",".join(can_send))
++                reach.append(tr(self, '消息→') + ",".join(can_send))
+             if can_delegate:
+-                reach.append("任务→" + ",".join(can_delegate))
++                reach.append(tr(self, '任务→') + ",".join(can_delegate))
+             if observers:
+-                reach.append("被观察:" + ",".join(observers))
++                reach.append(tr(self, '被观察:') + ",".join(observers))
+             table.add_row(agent.id, agent.role, agent.runtime_kind, agent.model_profile,
+-                          status.value, agent.workspace_policy.value,
++                          self.app.activity_status(status.value, self.app._activity_runs.get(agent.id)),
++                          agent.workspace_policy.value,
+                           " ".join(reach) or "-", key=agent.id)
+ 
+ 
+@@ -229,23 +230,24 @@
+         self.runtime = None
+ 
+     def compose(self):
+-        yield Static("c=取消选中任务（BLOCKED 直接取消；执行中的回合收到取消请求）",
++        yield Static(tr(self, 'c=取消选中任务（BLOCKED 直接取消；执行中的回合收到取消请求）'),
+                      id="tasks-hint")
+         yield DataTable(id="tasks-table", zebra_stripes=True)
+ 
+     def on_mount(self) -> None:
+         table = self.query_one("#tasks-table", DataTable)
+-        table.add_columns("任务", "委派者", "承接者", "状态", "描述", "依赖", "结果")
++        table.add_columns(*(tr(self, label) for label in TABLE_HEADERS["tasks-table"]))
+         self.post_message(PanelReady())
+ 
+     def refresh_from(self, store: Store, session_id: str, runtime=None) -> None:
+         if runtime is not None:
+             self.runtime = runtime
+         table = self.query_one("#tasks-table", DataTable)
++        selected = self.selected_task()
+         table.clear()
+-        tasks = store.tasks_for_session(session_id)
++        tasks = sorted(store.tasks_for_session(session_id),
++                       key=lambda task: (task.created_at, task.task_id), reverse=True)
+         by_id = {t.task_id: t for t in tasks}
+-        depth = {}
+ 
+         def level(task) -> int:
+             seen = set()
+@@ -261,9 +263,13 @@
+         for task in tasks:
+             indent = "  " * level(task)
+             table.add_row(f"{indent}{task.task_id[-8:]}", task.requester, task.assignee,
+-                          task.status.value, task.description[:60],
++                          self.app.activity_status(task.status.value), task.description[:60],
+                           ",".join(d[-8:] for d in task.dependencies) or "-",
+-                          ",".join(task.result_refs)[:60] or "-", key=task.task_id)
++                          ",".join(task.result_refs)[:60] or "-",
++                          time.strftime("%m-%d %H:%M:%S", time.localtime(task.created_at)),
++                          key=task.task_id)
++        if selected is not None and selected in table.rows:
++            table.move_cursor(row=table.get_row_index(selected))
+ 
+     def selected_task(self) -> str | None:
+         table = self.query_one("#tasks-table", DataTable)
+@@ -282,7 +288,7 @@
+         task_id = self.selected_task()
+         if task_id is None or self.runtime is None:
+             return
+-        _ok, message = self.cancel(self.runtime, task_id)
++        _ok, message = self.cancel(self.runtime, task_id, self.app.ui_language)
+         try:
+             self.app.notify(message)
+         except Exception:
+@@ -294,7 +300,7 @@
+         event.stop()
+ 
+     @staticmethod
+-    def cancel(runtime, task_id: str) -> tuple[bool, str]:
++    def cancel(runtime, task_id: str, language: str = "en") -> tuple[bool, str]:
+         """Submit the user-side CANCEL_TASK path; control decides the outcome."""
+         receipt = runtime.submit(TeamAction(
+             action_id=f"ui-cancel-task-{task_id}",
+@@ -302,13 +308,13 @@
+             kind=ActionKind.CANCEL_TASK, payload={"task_id": task_id}))
+         short = task_id[-8:]
+         if not receipt.ok:
+-            return False, f"取消任务失败：{receipt.error}"
++            return False, tr(language, '取消任务失败：{v0}', v0=receipt.error)
+         status = str((receipt.result or {}).get("status", ""))
+         if status == TaskStatus.CANCELLED:
+-            return True, f"任务 {short} 已取消"
++            return True, tr(language, '任务 {v0} 已取消', v0=short)
+         if status == "CANCEL_REQUESTED":
+-            return True, f"任务 {short} 已请求取消（活动回合结束后生效）"
+-        return False, f"任务 {short} 已处于终态（{status}），无需取消"
++            return True, tr(language, '任务 {v0} 已请求取消（活动回合结束后生效）', v0=short)
++        return False, tr(language, '任务 {v0} 已处于终态（{v1}），无需取消', v0=short, v1=status)
+ 
+ 
+ class SharedPanel(Vertical):
+@@ -319,7 +325,7 @@
+ 
+     def on_mount(self) -> None:
+         table = self.query_one("#shared-table", DataTable)
+-        table.add_columns("空间", "作者", "类型", "内容/引用", "序号")
++        table.add_columns(*(tr(self, label) for label in TABLE_HEADERS["shared-table"]))
+         self.post_message(PanelReady())
+ 
+     def refresh_from(self, store: Store, session_id: str, runtime=None) -> None:
+@@ -338,13 +344,13 @@
+     """Session log; filtered by member when a member is selected."""
+ 
+     def compose(self):
+-        yield Static("全部事件", id="log-title")
++        yield Static(tr(self, '全部事件'), id="log-title")
+         yield RichLog(id="log-stream", markup=False, wrap=True)
+ 
+     def refresh_from(self, store: Store, session_id: str, member: str | None,
+                      cursor: int) -> int:
+         title = self.query_one("#log-title", Static)
+-        title.update(f"事件流{f'（成员 {member}）' if member else ''}")
++        title.update(tr(self, '事件流{v0}', v0=tr(self, '（成员 {v0}）', v0=member) if member else ''))
+         log = self.query_one("#log-stream", RichLog)
+         high_water = cursor
+         for event in store.events(session_id, after_sequence=cursor, limit=500):
+@@ -370,11 +376,11 @@
+     """Prompt line plus a hint."""
+ 
+     def compose(self):
+-        yield Static("就绪 · 向 Leader 输入任务或补充要求", id="composer-status", markup=False)
++        yield Static(tr(self, '就绪 · 向 Leader 输入任务或补充要求'), id="composer-status", markup=False)
+         with Horizontal(id="composer"):
+             yield Static("›", id="prompt-prefix")
+             yield PromptInput(id="prompt", language=None)
+-        yield Static("Enter 发送 · Shift+Enter / Ctrl+J 换行 · ↑↓ 历史 · Esc 停止 Leader",
++        yield Static(tr(self, 'Enter 发送 · Shift+Enter / Ctrl+J 换行 · ↑↓ 历史 · Esc 停止 Leader'),
+                      id="composer-hint", markup=False)
+ 
+     def focus_prompt(self) -> None:
+@@ -397,7 +403,14 @@
+         self.runtime = None
+ 
+     def compose(self):
+-        yield Static("", id="settings-body")
++        with Horizontal(classes="preference-row"):
++            yield Static(tr(self, "界面语言"), id="language-label")
++            yield Select([("English", "en"), ("中文", "zh-CN")],
++                         value=self.app.ui_language, allow_blank=False, id="language-select")
++        with Horizontal(classes="preference-row"):
++            yield Static(tr(self, "动效"), id="animations-label")
++            yield Switch(value=self.app.animations, id="animations-switch")
++        yield Static("", id="settings-body", markup=False)
+ 
+     def on_mount(self) -> None:
+         self.post_message(PanelReady())
+@@ -410,29 +423,25 @@
+         catalog = runtime.catalog if runtime is not None else None
+         limits = spec.limits
+         lines = [
+-            f"会话：{session_id}",
+-            f"状态：{session['status']}    权限模式：{session['permissions_mode']}"
+-            f"    （Ctrl+F 切换）",
+-            f"工作目录：{session['cwd']}",
+-            f"团队：{len(spec.agents)} 名成员，拓扑修订 {store.current_revision(session_id)}",
+-            f"上限：并发 {limits.max_parallel_workers}、"
+-            f"成员 {limits.max_members}、单目标回合 {limits.max_turns_per_goal}、"
+-            f"单回合步骤 {limits.max_model_steps_per_turn}、"
+-            f"回合超时 {limits.turn_active_timeout_s}s",
+-            f"用户配置：{_config_path()}",
++            tr(self, '会话：{v0}', v0=session_id),
++            tr(self, '状态：{v0}    权限模式：{v1}    （Ctrl+F 切换）', v0=session['status'], v1=session['permissions_mode']),
++            tr(self, '工作目录：{v0}', v0=session['cwd']),
++            tr(self, '团队：{v0} 名成员，拓扑修订 {v1}', v0=len(spec.agents), v1=store.current_revision(session_id)),
++            tr(self, '上限：并发 {v0}、成员 {v1}、单目标回合 {v2}、单回合步骤 {v3}、回合超时 {v4}s', v0=limits.max_parallel_workers, v1=limits.max_members, v2=limits.max_turns_per_goal, v3=limits.max_model_steps_per_turn, v4=limits.turn_active_timeout_s),
++            tr(self, '用户配置：{v0}', v0=_config_path()),
+         ]
+         if catalog is not None:
+-            lines.append("模型 profiles：" + ("、".join(
++            lines.append(tr(self, '模型 profiles：') + (", ".join(
+                 f"{name}({profile.provider}/{profile.model})"
+-                for name, profile in catalog.models.items()) or "无"))
+-            lines.append("工具绑定：" + ("、".join(
++                for name, profile in catalog.models.items()) or tr(self, '无')))
++            lines.append(tr(self, '工具绑定：') + (", ".join(
+                 f"{name}[{binding.kind}]" for name, binding in catalog.tools.items())
+-                or "无（files/shell/web 为内置）"))
+-            lines.append("Skills 目录：" + ("、".join(catalog.skills_paths) or "未配置"))
+-            lines.append("指令文件：" + ("、".join(catalog.instruction_files) or "未配置"))
++                or tr(self, '无（files/shell/web 为内置）')))
++            lines.append(tr(self, 'Skills 目录：') + (", ".join(catalog.skills_paths) or tr(self, '未配置')))
++            lines.append(tr(self, '指令文件：') + (", ".join(catalog.instruction_files) or tr(self, '未配置')))
+         lines.append("")
+-        lines.append("恢复：teamagents --resume " + session_id +
+-                     "    新建：换 --cwd 或删掉会话目录")
++        lines.append(tr(self, '恢复：teamagents --resume ') + session_id +
++                     tr(self, '    新建：换 --cwd 或删掉会话目录'))
+         self.query_one("#settings-body", Static).update("\n".join(lines))
+ 
+ 
+@@ -458,13 +467,13 @@
+ 
+     def compose(self):
+         yield Static(
+-            "本目录会话：s=切换  n=新建  a=归档  d=删除（再按 d 确认，删当前会话后退出）",
++            tr(self, '本目录会话：s=切换  n=新建  a=归档  d=删除（再按 d 确认，删当前会话后退出）'),
+             id="sessions-hint")
+         yield DataTable(id="sessions-table", zebra_stripes=True)
+ 
+     def on_mount(self) -> None:
+         table = self.query_one("#sessions-table", DataTable)
+-        table.add_columns("会话", "状态", "目标", "事件", "大小", "更新", "标记")
++        table.add_columns(*(tr(self, label) for label in TABLE_HEADERS["sessions-table"]))
+         self.post_message(PanelReady())
+ 
+     def refresh_from(self, store, session_id: str, runtime=None) -> None:
+@@ -482,13 +491,13 @@
+         for info in rows:
+             marks = []
+             if info.session_id == session_id:
+-                marks.append("当前")
++                marks.append(tr(self, '当前'))
+             if info.running and info.session_id != session_id:
+-                marks.append("运行中")
++                marks.append(tr(self, '运行中'))
+             if info.archived:
+-                marks.append("已归档")
++                marks.append(tr(self, '已归档'))
+             if info.error:
+-                marks.append("读取异常")
++                marks.append(tr(self, '读取异常'))
+             updated = time.strftime("%m-%d %H:%M", time.localtime(info.updated_at)) \
+                 if info.updated_at else "-"
+             # the same id may exist as an active and an archived record (B-07);
+@@ -532,7 +541,7 @@
+                 return
+             if self.pending_delete != target:
+                 self.pending_delete = target
+-                app._write_chat("system", f"再按一次 d 确认删除会话 {target}")
++                app._write_chat("system", tr(self, '再按一次 d 确认删除会话 {v0}', v0=target))
+             else:
+                 self.pending_delete = None
+                 app.run_worker(app.delete_session_interactive(target), name="ta-delete")
+--- a/tests/test_p6_tui.py
++++ b/tests/test_p6_tui.py
+@@ -161,7 +161,7 @@
+         tabs.active = "tab-settings"
+         await pilot.pause(0.4)
+         body = str(app.query_one("#settings-body")._content if hasattr(app.query_one("#settings-body"), "_content") else app.query_one("#settings-body").render())
+-        assert "权限模式" in body and "上限" in body and "模型 profiles" in body
++        assert "Permissions" in body and "Limits" in body and "Model profiles" in body
+         await pilot.press("ctrl+f")
+         await pilot.pause(0.3)
+         assert h.rt.store.get_session("s1")["permissions_mode"] == "full_auto"
+@@ -193,10 +193,10 @@
+         while time.time() < deadline:
+             await pilot.pause(0.3)
+             text = "\n".join(str(line) for line in app.query_one("#chat-stream").lines)
+-            if "回合失败" in text:
++            if "turn failed" in text:
+                 break
+-        assert "未配置" in text, "启动时就应提示缺失的模型 profile"
+-        assert "回合失败" in text and "leader_main" in text, \
++        assert "is missing" in text, "启动时就应提示缺失的模型 profile"
++        assert "turn failed" in text and "leader_main" in text, \
+             "回合失败必须在对话视图里给出原因"
+     await rt.close()
+     rt.store.close()
+--- a/tests/test_p6_tui_cancel_refresh.py
++++ b/tests/test_p6_tui_cancel_refresh.py
+@@ -62,7 +62,7 @@
+         await pilot.press("c")
+         await pilot.pause(0.3)
+         assert h.rt.store.get_task("task-blocked-1").status == TaskStatus.CANCELLED
+-        assert "已取消" in _chat_text(app), "取消结果必须有界面反馈"
++        assert "cancelled" in _chat_text(app), "取消结果必须有界面反馈"
+ 
+ 
+ async def test_tui_task_panel_requests_cancel_of_running_task(harness_factory):
+@@ -79,7 +79,7 @@
+         await pilot.pause(0.3)
+         assert h.rt.store.run_cancel_requested("run-running-1"), \
+             "取消请求必须落到活动回合上"
+-        assert "已请求取消" in _chat_text(app)
++        assert "cancellation requested" in _chat_text(app)
+ 
+ 
+ async def test_tui_task_panel_reports_terminal_task_as_noop(harness_factory):
+@@ -92,7 +92,7 @@
+         await pilot.press("c")
+         await pilot.pause(0.3)
+         assert h.rt.store.get_task("task-done-1").status == TaskStatus.SUCCEEDED
+-        assert "无需取消" in _chat_text(app)
++        assert "no cancellation needed" in _chat_text(app)
+ 
+ 
+ async def test_tui_periodic_refresh_updates_status_and_panels(harness_factory):
+@@ -103,7 +103,7 @@
+         await pilot.pause(0.4)
+         status = app.query_one("#status", StatusBar)   # must not raise WrongType
+         first = str(status.render())
+-        assert "会话" in first and "权限" in first, f"状态栏内容为空：{first!r}"
++        assert "Session" in first and "Permissions" in first, f"状态栏内容为空：{first!r}"
+         assert app._refresh_errors == (), app._refresh_errors
+ 
+         tasks = app.query_one(TasksPanel).query_one("#tasks-table")
+--- /dev/null
++++ b/src/teamagents/tui/i18n.py
+@@ -0,0 +1,143 @@
++"""TUI-only text and local preferences; user/model content stays untouched."""
++from __future__ import annotations
++
++import json
++import os
++import tempfile
++from pathlib import Path
++
++from ..config import state_dir
++
++# Original Chinese UI text serves as the message id. English is the default.
++ENGLISH = {
++    "团队": "Team", "任务": "Tasks", "共享空间": "Shared", "批准": "Approvals",
++    "会话": "Sessions", "日志": "Log", "设置": "Settings", "退出": "Quit",
++    "暂停/继续": "Pause/resume", "刷新": "Refresh", "全自动": "Full auto",
++    "切换面板": "Panels", "停止 Leader": "Stop Leader", "输入": "Compose",
++    "换行": "Newline", "你": "You", "系统": "System", "状态栏": "Status",
++    "成员": "Member", "角色": "Role", "类型": "Type", "模型": "Model",
++    "状态": "Status", "工作目录": "Workspace", "可见范围": "Access",
++    "委派者": "Requester", "承接者": "Assignee", "描述": "Description",
++    "依赖": "Dependencies", "结果": "Result", "创建时间": "Created",
++    "空间": "Space", "作者": "Author", "内容/引用": "Content / reference",
++    "序号": "Sequence", "目标": "Goal", "事件": "Events", "大小": "Size",
++    "更新": "Updated", "标记": "Flags", "操作": "Operation", "参数": "Arguments",
++    "范围": "Scope", "消息→": "Messages → ", "任务→": "Tasks → ", "被观察:": "Observers: ",
++    "当前": "Current", "运行中": "Running", "已归档": "Archived", "读取异常": "Read error",
++    "准备中": "Queued", "正在处理": "Working", "等待成员结果": "Waiting for members",
++    "等待批准": "Approval needed", "就绪": "Ready", "无": "None", "未配置": "Not configured",
++    "已提交": "Submitted", "提交失败": "Failed", "（完成）": " (done)",
++    "全部事件": "All events", "事件流{v0}": "Event stream{v0}", "（成员 {v0}）": " (member {v0})",
++    "[没有可用会话]": "[No session available]",
++    "⚠ 成员 {v0} 的模型 profile {v1!r} 未配置：请创建 {v2}（可直接复制仓库里的 examples/config.toml），然后重开会话。在此之前发出的消息都会失败。":
++        "⚠ Member {v0}: model profile {v1!r} is missing. Create {v2} (see examples/config.toml) and reopen the session. Requests will fail until configured.",
++    "⚠ 模型 profile {v0!r} 需要环境变量 {v1}，当前未设置：请 export 后重开会话。":
++        "⚠ Model profile {v0!r} needs environment variable {v1}. Export it and reopen the session.",
++    "[界面刷新失败] ": "[UI refresh failed] ",
++    "[界面读取事件失败] {v0}": "[Event read failed] {v0}",
++    "{v0} · Leader / {v1} · 可继续输入补充要求": "{v0} · Leader / {v1} · You can send follow-up instructions",
++    "任务 {v0} → {v1}：{v2}": "Task {v0} → {v1}: {v2}",
++    "需要批准：{v0}（按 Ctrl+G 处理）": "Approval required: {v0} (Ctrl+G to review)",
++    "批准 {v0} → {v1}": "Approval {v0} → {v1}",
++    "✗ 成员 {v0} 的回合失败：{v1}": "✗ Member {v0}: turn failed: {v1}",
++    "回合已停止：{v0} ({v1})": "Turn stopped: {v0} ({v1})",
++    "{v0} 正在等待 {v1} 个任务完成": "{v0} is waiting for {v1} tasks",
++    "成员状态：{v0} {v1} {v2}": "Member status: {v0} {v1} {v2}",
++    "会话状态：{v0}": "Session status: {v0}", "{v0}（完成）": "{v0} (done)",
++    "[达到上限] {v0}": "[Limit reached] {v0}", "目标完成：{v0}": "Goal complete: {v0}",
++    "✗ 无法打开会话 {v0}：{v1}": "✗ Cannot open session {v0}: {v1}",
++    "已切换到会话 {v0}": "Switched to session {v0}", "✗ 归档失败：{v0}": "✗ Archive failed: {v0}",
++    "已归档会话 {v0} → {v1}": "Archived session {v0} → {v1}",
++    "✗ 删除失败：{v0}": "✗ Delete failed: {v0}", "✗ 删除被阻止：{v0}": "✗ Delete blocked: {v0}",
++    "已删除会话 {v0}": "Deleted session {v0}", "✗ 无法确定工作目录": "✗ Cannot determine the workspace",
++    "[输入被拒绝] {v0}": "[Input rejected] {v0}",
++    "任务 {v0} | {v1} | {v2} | 依赖 {v3} | 成果 {v4}":
++        "Task {v0} | {v1} | {v2} | Dependencies {v3} | Results {v4}",
++    "已请求停止 Leader，等待执行结束": "Leader stop requested; waiting for execution to finish",
++    "停止失败：{v0}": "Stop failed: {v0}", "继续执行": "Continue execution",
++    "会话已暂停（输入新消息即恢复）": "Session paused (send a message to resume)",
++    "权限模式切换为 {v0}": "Permission mode changed to {v0}",
++    "批准决定 {v0}：{v1}": "Approval decision {v0}: {v1}",
++    " 会话 {v0}  |  {v1}  |  权限 {v2}  |  Leader {v3}({v4})  |  活动回合 {v5}  |  未完成任务 {v6}  |  待批准 {v7}":
++        " Session {v0} | {v1} | Permissions {v2} | Leader {v3} ({v4}) | Active {v5} | Tasks {v6} | Approvals {v7}",
++    "c=取消选中任务（BLOCKED 直接取消；执行中的回合收到取消请求）":
++        "Newest first · c=cancel selected task (running turns receive a stop request)",
++    "取消任务失败：{v0}": "Cannot cancel task: {v0}", "任务 {v0} 已取消": "Task {v0} cancelled",
++    "任务 {v0} 已请求取消（活动回合结束后生效）": "Task {v0}: cancellation requested (waiting for the active turn to stop)",
++    "任务 {v0} 已处于终态（{v1}），无需取消": "Task {v0} is already terminal ({v1}); no cancellation needed",
++    "就绪 · 向 Leader 输入任务或补充要求": "Ready · Send a task or follow-up to Leader",
++    "Enter 发送 · Shift+Enter / Ctrl+J 换行 · ↑↓ 历史 · Esc 停止 Leader":
++        "Enter send · Shift+Enter / Ctrl+J newline · ↑↓ history · Esc stop Leader",
++    "会话：{v0}": "Session: {v0}",
++    "状态：{v0}    权限模式：{v1}    （Ctrl+F 切换）": "Status: {v0}    Permissions: {v1}    (Ctrl+F to toggle)",
++    "工作目录：{v0}": "Workspace: {v0}", "团队：{v0} 名成员，拓扑修订 {v1}": "Team: {v0} members, topology revision {v1}",
++    "上限：并发 {v0}、成员 {v1}、单目标回合 {v2}、单回合步骤 {v3}、回合超时 {v4}s":
++        "Limits: {v0} workers, {v1} members, {v2} turns/goal, {v3} steps/turn, {v4}s timeout",
++    "用户配置：{v0}": "User config: {v0}", "模型 profiles：": "Model profiles: ", "工具绑定：": "Tool bindings: ",
++    "无（files/shell/web 为内置）": "None (files/shell/web are built in)", "Skills 目录：": "Skills directories: ",
++    "指令文件：": "Instruction files: ", "恢复：teamagents --resume ": "Resume: teamagents --resume ",
++    "    新建：换 --cwd 或删掉会话目录": "    New session: use the Sessions panel",
++    "本目录会话：s=切换  n=新建  a=归档  d=删除（再按 d 确认，删当前会话后退出）":
++        "Sessions: s=switch  n=new  a=archive  d=delete (press d again to confirm; deleting the current session exits)",
++    "再按一次 d 确认删除会话 {v0}": "Press d again to delete session {v0}",
++    "待批准操作：a=本次批准  s=会话内批准  d=拒绝": "Pending approvals: a=allow once  s=allow for session  d=deny",
++    "界面语言": "Interface language", "动效": "Animations", "偏好保存失败：{v0}": "Could not save preferences: {v0}",
++    "空闲": "Idle", "等待任务": "Waiting for tasks", "正在停止": "Stopping", "已移除": "Removed",
++    "已完成": "Completed", "失败": "Failed", "已取消": "Cancelled", "受阻": "Blocked",
++    "已暂停": "Paused", "已排队": "Queued", "结果不明": "Outcome unknown",
++    "{count} 个成员正在执行": "Active agents: {count}", "没有正在执行的回合": "No turns executing",
++    "最近活动：{text}": "Latest: {text}", "等待输入": "Waiting for input",
++    "{agent} 开始处理": "{agent} started working", "{agent} 正在回复": "{agent} is responding",
++    "任务已完成": "Task completed", "需要用户批准": "User approval needed",
++}
++
++TABLE_HEADERS = {
++    "team-table": ("成员", "角色", "类型", "模型", "状态", "工作目录", "可见范围"),
++    "tasks-table": ("任务", "委派者", "承接者", "状态", "描述", "依赖", "结果", "创建时间"),
++    "shared-table": ("空间", "作者", "类型", "内容/引用", "序号"),
++    "approvals-table": ("成员", "操作", "参数", "范围"),
++    "sessions-table": ("会话", "状态", "目标", "事件", "大小", "更新", "标记"),
++}
++STATIC_LABELS = {
++    "tasks-hint": "c=取消选中任务（BLOCKED 直接取消；执行中的回合收到取消请求）",
++    "approvals-hint": "待批准操作：a=本次批准  s=会话内批准  d=拒绝",
++    "sessions-hint": "本目录会话：s=切换  n=新建  a=归档  d=删除（再按 d 确认，删当前会话后退出）",
++    "composer-hint": "Enter 发送 · Shift+Enter / Ctrl+J 换行 · ↑↓ 历史 · Esc 停止 Leader",
++    "language-label": "界面语言", "animations-label": "动效",
++}
++
++
++def tr(owner, message: str, **values) -> str:
++    language = (owner if isinstance(owner, str) else getattr(owner, "ui_language", None))
++    if language is None:
++        language = getattr(owner.app, "ui_language", "en")
++    return (message if language == "zh-CN" else ENGLISH.get(message, message)).format(**values)
++
++
++def preferences_path() -> Path:
++    return state_dir() / "ui.json"
++
++
++def read_preferences() -> dict:
++    try:
++        data = json.loads(preferences_path().read_text())
++    except (OSError, ValueError):
++        data = {}
++    if not isinstance(data, dict):
++        data = {}
++    return {"language": "zh-CN" if data.get("language") == "zh-CN" else "en",
++            "animations": data.get("animations") is not False}
++
++
++def write_preferences(language: str, animations: bool) -> None:
++    path = preferences_path()
++    path.parent.mkdir(parents=True, exist_ok=True)
++    temporary = None
++    try:
++        with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, prefix=".ui-", delete=False) as f:
++            temporary = Path(f.name)
++            json.dump({"language": language, "animations": animations}, f)
++        os.replace(temporary, path)
++    finally:
++        if temporary is not None:
++            temporary.unlink(missing_ok=True)
+--- /dev/null
++++ b/tests/test_tui_preferences_activity.py
+@@ -0,0 +1,143 @@
++"""Newest-first tasks, live language preferences and truthful activity feedback."""
++import ast
++import json
++import time
++from pathlib import Path
++
++import pytest
++from textual.widgets import Select, Switch, TabbedContent
++
++from conftest import leader, member, scripts, spec_of
++from teamagents.models import Task, TaskStatus, TurnRun, TurnStatus
++from teamagents.tui.app import TeamAgentsApp
++from teamagents.tui.i18n import ENGLISH, read_preferences, preferences_path, tr
++from teamagents.tui.panels import PromptInput, TasksPanel
++
++
++@pytest.fixture(autouse=True)
++def ui_preferences(tmp_path, monkeypatch):
++    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
++
++
++async def test_tasks_newest_first_across_statuses_and_refresh_keeps_selection(harness_factory):
++    h = await harness_factory(spec_of(leader()), scripts(leader=[]))
++    for task_id, status, created in [("old", TaskStatus.BLOCKED, 1),
++                                    ("middle", TaskStatus.SUCCEEDED, 2),
++                                    ("new", TaskStatus.FAILED, 3)]:
++        h.rt.store.insert_task("s1", Task(task_id=task_id, requester="leader", assignee="leader",
++                                         description=task_id, status=status, created_at=created,
++                                         updated_at=100-created))
++    app = TeamAgentsApp(runtime=h.rt)
++    async with app.run_test(size=(120, 40)) as pilot:
++        await pilot.pause()
++        app.query_one(TabbedContent).active = "tab-tasks"
++        await pilot.pause()
++        panel = app.query_one(TasksPanel)
++        table = app.query_one("#tasks-table")
++        assert [row.key.value for row in table.ordered_rows] == ["new", "middle", "old"]
++        assert table.ordered_columns[-1].label.plain == "Created"
++        table.move_cursor(row=1)
++        assert panel.selected_task() == "middle"
++        h.rt.store.insert_task("s1", Task(task_id="newest", requester="leader", assignee="leader",
++                                         description="latest", status=TaskStatus.CANCELLED,
++                                         created_at=4))
++        await app._refresh_widgets()
++        assert [row.key.value for row in table.ordered_rows] == ["newest", "new", "middle", "old"]
++        assert panel.selected_task() == "middle"
++
++
++async def test_language_switch_translates_chrome_and_persists_without_touching_chat(harness_factory):
++    h = await harness_factory(spec_of(leader()), scripts(leader=[]))
++    app = TeamAgentsApp(runtime=h.rt)
++    async with app.run_test(size=(110, 40)) as pilot:
++        await pilot.pause()
++        tabs = app.query_one(TabbedContent)
++        assert app.ui_language == "en"
++        assert str(tabs.get_tab("tab-team").label) == "Team"
++        assert "Session" in str(app.query_one("#status").render())
++        tabs.active = "tab-settings"
++        await pilot.pause()
++        selector = app.query_one("#language-select", Select)
++        selector.focus()
++        assert selector.value == "en"
++        await pilot.press("enter")
++        assert selector.expanded
++        await pilot.press("escape")
++        assert not selector.expanded
++        app._write_chat("Leader", "User content remains unchanged. 用户内容不翻译。")
++        prompt = app.query_one(PromptInput)
++        prompt.text = "未发送草稿"
++        event_count = len(h.rt.store.events("s1"))
++        await pilot.press("enter", "down", "enter")
++        await pilot.pause(0.3)
++        assert app.ui_language == "zh-CN"
++        assert str(tabs.get_tab("tab-team").label) == "团队"
++        assert "权限模式" in str(app.query_one("#settings-body").render())
++        assert "会话" in str(app.query_one("#status").render())
++        assert app.query_one("#team-table").ordered_columns[0].label.plain == "成员"
++        assert prompt.text == "未发送草稿"
++        assert len(h.rt.store.events("s1")) == event_count
++        assert any("用户内容不翻译" in text for _, text in app.query_one("ChatLog")._entries)
++        assert read_preferences()["language"] == "zh-CN"
++        assert TeamAgentsApp().ui_language == "zh-CN"
++        selector.value = "en"
++        await pilot.pause(0.3)
++        assert str(tabs.get_tab("tab-team").label) == "Team"
++        assert read_preferences()["language"] == "en"
++        assert prompt.text == "未发送草稿"
++
++
++async def test_worker_activity_animates_then_waits_and_stops(harness_factory):
++    h = await harness_factory(spec_of(leader(), member("b")), scripts(leader=[], b=[]))
++    app = TeamAgentsApp(runtime=h.rt)
++    async with app.run_test(size=(100, 36)) as pilot:
++        await pilot.pause()
++        run = TurnRun(run_id="activity-run", session_id="s1", agent_id="b", status=TurnStatus.RUNNING,
++                      config_revision=1, topology_revision=1, created_at=time.time()-65)
++        h.rt.store.insert_run(run)
++        await app._refresh_widgets()
++        text = str(app.query_one("#activity").render())
++        assert "Active agents: 1" in text and "01:" in text and "b" in text
++        assert "Idle" in str(app.query_one("#composer-status").render())
++        frame = app._activity_frame
++        app._animate_activity()
++        assert app._activity_frame != frame
++        row = app.query_one("#team-table").get_row("b")
++        assert "Working" in str(row[4])
++        prompt = app.query_one(PromptInput)
++        prompt.insert("typing during work")
++        app.query_one(TabbedContent).active = "tab-settings"
++        await pilot.pause()
++        app.query_one("#animations-switch", Switch).value = False
++        await pilot.pause(0.2)
++        app._animate_activity()
++        assert app._activity_frame == 0
++        assert "● Working" in str(app.query_one("#activity").render())
++        assert read_preferences()["animations"] is False
++        h.rt.store.set_run_status(run.run_id, TurnStatus.WAITING_APPROVAL)
++        await app._refresh_widgets()
++        assert "Approval needed" in str(app.query_one("#activity").render())
++        assert app.query_one("#activity").has_class("attention")
++        h.rt.store.set_run_status(run.run_id, TurnStatus.COMPLETED)
++        await app._refresh_widgets()
++        assert "No turns executing" in str(app.query_one("#activity").render())
++        assert not app.query_one("#activity").has_class("working")
++        assert prompt.text == "typing during work"
++
++
++def test_preference_validation_and_catalog_coverage():
++    path = preferences_path()
++    path.parent.mkdir(parents=True)
++    path.write_text(json.dumps({"language": "invalid", "animations": "invalid"}))
++    assert read_preferences() == {"language": "en", "animations": True}
++    path.write_text("not json")
++    assert read_preferences()["language"] == "en"
++    root = Path(__file__).resolve().parents[1] / "src/teamagents/tui"
++    for file in ("app.py", "panels.py", "approvals.py"):
++        for node in ast.walk(ast.parse((root/file).read_text())):
++            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
++                    and node.func.id == "tr" and isinstance(node.args[1], ast.Constant)):
++                key = node.args[1].value
++                if any("\u4e00" <= c <= "\u9fff" for c in key):
++                    assert key in ENGLISH, (file, node.lineno, key)
++    assert tr("en", "任务 {v0} → {v1}：{v2}", v0="1", v1="b", v2="中文任务") == "Task 1 → b: 中文任务"

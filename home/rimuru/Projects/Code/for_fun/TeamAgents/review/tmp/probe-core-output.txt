@@ -1,0 +1,27 @@
+
+== A) DRAINING leak (permission-only affected member) ==
+A1 receipt: True {'patch_id': 'patch_3f3545791dd54ae5', 'revision': 2, 'status': 'APPLIED', 'affected_agents': []}
+A2 affected_agents: [] | c status: BUSY
+A3 after boundary: revision = 2 | c status = BUSY | c config_revision = 1
+A4 message delivered_to: {'delivered_to': ['c']} | pending deliveries for c: 1 | new runs for c: 1 | c status: BUSY
+A5 VERDICT: no leak
+
+== B) _reduce exception commits an already-performed write ==
+B1 receipt: False 'RuntimeError: simulated failure after write'
+B2 committed entries in space 'main': []
+B3 failure receipt persisted (action cannot be retried): True
+B4 VERDICT: clean rollback
+
+== D) runtime.reconcile sets a terminal run status without _finalize ==
+D1 run status: COMPLETED | task status: SUCCEEDED | agent status: IDLE
+D2 events: ['task_completed', 'run_completed']
+D3 completion request still unapplied: True
+D4 signal_done blockers: ['active turns: leader:QUEUED']
+D5 VERDICT: clean recovery
+
+== C) run status committed before delivery ack -> duplicate injection ==
+C1 first pass runs: [('run_60b04532caf749b0', <TurnStatus.COMPLETED: 'COMPLETED'>, [1])]
+C2 pending deliveries for leader after a terminal run: []
+C3 runs after restart+schedule: [('run_60b04532caf749b0', <TurnStatus.COMPLETED: 'COMPLETED'>, [1])]
+C4 new run would inject: []
+C5 VERDICT: no duplicate

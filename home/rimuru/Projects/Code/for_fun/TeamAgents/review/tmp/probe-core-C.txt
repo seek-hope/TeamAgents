@@ -1,0 +1,14 @@
+== C-a: delivery that never gets acked -> repeated turns ==
+C-a1 settle(): True
+C-a2 total runs created: 1
+C-a3 status histogram: {'COMPLETED': 1}
+C-a4 runs whose input_delivery_ids == [1]: 1
+C-a5 pending deliveries: []
+C-a6 event kinds: {'user_message': 1, 'run_started': 1, 'run_completed': 1}
+C-a7 queued/running runs left: []
+
+== C-b: terminal run + un-acked delivery -> same input re-queued ==
+C-b1 first run: run_5f6cc3bb5e8346f5 QUEUED [1]
+C-b2 after 'crash': run = COMPLETED | pending deliveries = [(1, 'pending')]
+C-b3 runs created by the next scheduling pass: [('run_fdc15f1c6a3f436c', 'QUEUED', [1])]
+C-b4 what the re-created run would inject: [('user_message', 'hello')]

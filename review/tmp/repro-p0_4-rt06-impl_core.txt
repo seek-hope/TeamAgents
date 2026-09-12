@@ -1,0 +1,13 @@
+== P0-4: _reduce raises after a write inside the same tx ==
+P0-4 receipt ok: False | error: RuntimeError: simulated failure after write
+P0-4 committed entries: []
+P0-4 same-action retry ok: False | entry count: 0
+P0-4 VERDICT: rolled back cleanly
+
+== RT-06: cancel a WAITING_APPROVAL run -> approval stays PENDING ==
+RT-06 before: run = WAITING_APPROVAL | approval = PENDING
+RT-06 before blockers: ['active turns: leader:WAITING_APPROVAL', 'pending approvals: appr_f68704be01a949fd']
+RT-06 cancel receipt: True {'run_id': 'run_b068d4cab9974010', 'status': 'cancel_requested'}
+RT-06 after: run = CANCELLED | approval = EXPIRED
+RT-06 after blockers: []
+RT-06 VERDICT: resolved

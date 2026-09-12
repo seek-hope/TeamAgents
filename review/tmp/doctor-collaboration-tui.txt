@@ -1,0 +1,10 @@
+TeamAgents doctor (v0.1.0)
+  [ok  ] dependencies                 {"python": "3.13.15", "teamagents": "0.1.0", "deepagents": "0.7.13", "langgraph": "1.2.11", "langgraph-checkpoint-sqlite": "3.1.1", "langchain": "1.4.0", "langchain-openai": "1.6.2", "langchain-anthropic": "1.7.2", "langchain-deepseek": "1.1.0", "langchain-mcp-adapters": "0.3.2", "pydantic": "2.13.5", "textual": "8.2.8"}
+  [ok  ] user config                  models=['coding', 'leader_main', 'research'] tools=['fetch', 'web']
+  [ok  ] model profile leader_main    deepseek/deepseek-flash
+  [ok  ] model profile research       deepseek/deepseek-flash
+  [ok  ] model profile coding         deepseek/deepseek-flash
+  [ok  ] bubblewrap isolation         system files visible, home blocked under bwrap
+  [ok  ] codex app-server             codex-cli codex-cli 0.154.0
+  [ok  ] codex protocol schema        schema generated from installed CLI (99 methods)
+  [FAIL] state directory              /home/rimuru/.local/state/teamagents/sessions: [Errno 30] Read-only file system: '/home/rimuru/.local/state/teamagents/sessions/.doctor-probe'

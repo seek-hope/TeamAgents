@@ -1,0 +1,12 @@
+        try:
+            infos = socket.getaddrinfo(parsed.hostname, parsed.port or
+                                       (443 if parsed.scheme == "https" else 80))
+        except socket.gaierror as e:
+>           raise ValueError(f"cannot resolve {parsed.hostname!r}: {e}") from e
+E           ValueError: cannot resolve 'example.com': [Errno -3] Temporary failure in name resolution
+
+src/teamagents/tools.py:168: ValueError
+=========================== short test summary info ============================
+FAILED tests/test_config_cli.py::test_xhigh_maps_to_max_for_models_without_xhigh
+FAILED tests/test_p3_web_tools.py::test_ssrf_guard_blocks_internal_targets - ...
+2 failed, 158 passed, 12 deselected in 50.47s

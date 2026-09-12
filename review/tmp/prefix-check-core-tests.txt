@@ -1,0 +1,322 @@
+FF...FFFF.FFF..F                                                         [100%]
+=================================== FAILURES ===================================
+______ test_reduce_failure_rolls_back_shared_entry_and_receipt_semantics _______
+
+tmp_path = PosixPath('/tmp/pytest-of-rimuru/pytest-0/test_reduce_failure_rolls_back0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7ff11f4f6650>
+
+    def test_reduce_failure_rolls_back_shared_entry_and_receipt_semantics(tmp_path, monkeypatch):
+        store, control = build_control(tmp_path)
+        original = Store.add_shared_entry
+    
+        def boom(self, entry, session_id):
+            original(self, entry, session_id)              # the write happens ...
+            raise RuntimeError("simulated failure after write")  # ... then the step fails
+    
+        publish = TeamAction(action_id="publish-1", session_id="s1", actor_id="b",
+                             kind=ActionKind.PUBLISH_SHARED,
+                             payload={"space_id": "main", "content": "partial-write"})
+        with monkeypatch.context() as patch:
+            patch.setattr(Store, "add_shared_entry", boom)
+            receipt = control.submit(publish)
+    
+        assert not receipt.ok
+        assert "simulated failure after write" in (receipt.error or "")
+>       assert store.shared_entries("s1", ["main"]) == [], \
+            "the entry written before the exception must roll back with the attempt"
+E       AssertionError: the entry written before the exception must roll back with the attempt
+E       assert [SharedEntry(...86624.289947)] == []
+E         
+E         Left contains one more item: SharedEntry(entry_id='share_a78c4dd2e60148b4', space_id='main', author='b', kind='note', content='partial-write', ref=None, supersedes=None, sequence=1, created_at=1789186624.289947)
+E         Use -v to get more diff
+
+tests/test_p0_4_reduce_rollback.py:48: AssertionError
+_______________ test_reduce_failure_leaves_task_state_untouched ________________
+
+tmp_path = PosixPath('/tmp/pytest-of-rimuru/pytest-0/test_reduce_failure_leaves_tas0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7ff11f50ef90>
+
+    def test_reduce_failure_leaves_task_state_untouched(tmp_path, monkeypatch):
+        store, control = build_control(tmp_path)
+        original = Store.insert_task
+    
+        def boom(self, session_id, task):
+            original(self, session_id, task)
+            raise RuntimeError("boom after task insert")
+    
+        assign = TeamAction(action_id="assign-1", session_id="s1", actor_id="leader",
+                            kind=ActionKind.ASSIGN_TASK,
+                            payload={"assignee": "b", "description": "job"})
+        with monkeypatch.context() as patch:
+            patch.setattr(Store, "insert_task", boom)
+            receipt = control.submit(assign)
+    
+        assert not receipt.ok and "boom after task insert" in (receipt.error or "")
+>       assert store.tasks_for_session("s1") == [], "the task row must roll back"
+E       AssertionError: the task row must roll back
+E       assert [Task(task_id...6624.3094466)] == []
+E         
+E         Left contains one more item: Task(task_id='task_8d0dc4fedc9e', parent_task_id=None, goal_id=None, requester='leader', assignee='b', description='jo...], status=<TaskStatus.PENDING: 'PENDING'>, result_refs=[], created_at=1789186624.309446, updated_at=1789186624.3094466)
+E         Use -v to get more diff
+
+tests/test_p0_4_reduce_rollback.py:83: AssertionError
+_____ test_finalize_terminal_expires_the_runs_pending_approval[COMPLETED] ______
+
+tmp_path = PosixPath('/tmp/pytest-of-rimuru/pytest-0/test_finalize_terminal_expires0')
+status = <TurnStatus.COMPLETED: 'COMPLETED'>
+
+    @pytest.mark.parametrize("status", [TurnStatus.COMPLETED, TurnStatus.FAILED,
+                                        TurnStatus.CANCELLED, TurnStatus.OUTCOME_UNKNOWN])
+    def test_finalize_terminal_expires_the_runs_pending_approval(tmp_path, status):
+        spec = spec_of(leader())
+        store = build_store(tmp_path, spec)
+        run = TurnRun(run_id=new_id("run"), session_id="s1", agent_id="leader",
+                      config_revision=1, topology_revision=1, status=TurnStatus.RUNNING)
+        store.insert_run(run)
+        req = insert_pending_approval(store, run.run_id)
+        rt = SessionRuntime(store, "s1", UserConfig(), runners={"leader": FakeMember("leader")})
+    
+        rt._finalize(store.get_run(run.run_id), TurnOutcome(status=status))
+    
+        assert store.get_run(run.run_id).status is status
+>       assert store.get_approval(req.approval_id).status is ApprovalStatus.EXPIRED
+E       AssertionError: assert <ApprovalStatus.PENDING: 'PENDING'> is <ApprovalStatus.EXPIRED: 'EXPIRED'>
+E        +  where <ApprovalStatus.PENDING: 'PENDING'> = ApprovalRequest(approval_id='appr_1bb84796de2341e7', session_id='s1', agent_id='leader', run_id='run_214f727efa0a48be'...'shell'}, policy_revision=1, status=<ApprovalStatus.PENDING: 'PENDING'>, created_at=1789186624.320108, decided_at=None).status
+E        +    where ApprovalRequest(approval_id='appr_1bb84796de2341e7', session_id='s1', agent_id='leader', run_id='run_214f727efa0a48be'...'shell'}, policy_revision=1, status=<ApprovalStatus.PENDING: 'PENDING'>, created_at=1789186624.320108, decided_at=None) = get_approval('appr_1bb84796de2341e7')
+E        +      where get_approval = <teamagents.storage.Store object at 0x7ff11f4b5370>.get_approval
+E        +      and   'appr_1bb84796de2341e7' = ApprovalRequest(approval_id='appr_1bb84796de2341e7', session_id='s1', agent_id='leader', run_id='run_214f727efa0a48be'...'shell'}, policy_revision=1, status=<ApprovalStatus.PENDING: 'PENDING'>, created_at=1789186624.320108, decided_at=None).approval_id
+E        +  and   <ApprovalStatus.EXPIRED: 'EXPIRED'> = ApprovalStatus.EXPIRED
+
+tests/test_rt06_approval_expiry.py:72: AssertionError
+_______ test_finalize_terminal_expires_the_runs_pending_approval[FAILED] _______
+
+tmp_path = PosixPath('/tmp/pytest-of-rimuru/pytest-0/test_finalize_terminal_expires1')
+status = <TurnStatus.FAILED: 'FAILED'>
+
+    @pytest.mark.parametrize("status", [TurnStatus.COMPLETED, TurnStatus.FAILED,
+                                        TurnStatus.CANCELLED, TurnStatus.OUTCOME_UNKNOWN])
+    def test_finalize_terminal_expires_the_runs_pending_approval(tmp_path, status):
+        spec = spec_of(leader())
+        store = build_store(tmp_path, spec)
+        run = TurnRun(run_id=new_id("run"), session_id="s1", agent_id="leader",
+                      config_revision=1, topology_revision=1, status=TurnStatus.RUNNING)
+        store.insert_run(run)
+        req = insert_pending_approval(store, run.run_id)
+        rt = SessionRuntime(store, "s1", UserConfig(), runners={"leader": FakeMember("leader")})
+    
+        rt._finalize(store.get_run(run.run_id), TurnOutcome(status=status))
+    
+        assert store.get_run(run.run_id).status is status
+>       assert store.get_approval(req.approval_id).status is ApprovalStatus.EXPIRED
+E       AssertionError: assert <ApprovalStatus.PENDING: 'PENDING'> is <ApprovalStatus.EXPIRED: 'EXPIRED'>
+E        +  where <ApprovalStatus.PENDING: 'PENDING'> = ApprovalRequest(approval_id='appr_1a497f44a2dd4f4d', session_id='s1', agent_id='leader', run_id='run_c4b6e752cf824594'...shell'}, policy_revision=1, status=<ApprovalStatus.PENDING: 'PENDING'>, created_at=1789186624.3255744, decided_at=None).status
+E        +    where ApprovalRequest(approval_id='appr_1a497f44a2dd4f4d', session_id='s1', agent_id='leader', run_id='run_c4b6e752cf824594'...shell'}, policy_revision=1, status=<ApprovalStatus.PENDING: 'PENDING'>, created_at=1789186624.3255744, decided_at=None) = get_approval('appr_1a497f44a2dd4f4d')
+E        +      where get_approval = <teamagents.storage.Store object at 0x7ff11f2a0270>.get_approval
+E        +      and   'appr_1a497f44a2dd4f4d' = ApprovalRequest(approval_id='appr_1a497f44a2dd4f4d', session_id='s1', agent_id='leader', run_id='run_c4b6e752cf824594'...shell'}, policy_revision=1, status=<ApprovalStatus.PENDING: 'PENDING'>, created_at=1789186624.3255744, decided_at=None).approval_id
+E        +  and   <ApprovalStatus.EXPIRED: 'EXPIRED'> = ApprovalStatus.EXPIRED
+
+tests/test_rt06_approval_expiry.py:72: AssertionError
+_____ test_finalize_terminal_expires_the_runs_pending_approval[CANCELLED] ______
+
+tmp_path = PosixPath('/tmp/pytest-of-rimuru/pytest-0/test_finalize_terminal_expires2')
+status = <TurnStatus.CANCELLED: 'CANCELLED'>
+
+    @pytest.mark.parametrize("status", [TurnStatus.COMPLETED, TurnStatus.FAILED,
+                                        TurnStatus.CANCELLED, TurnStatus.OUTCOME_UNKNOWN])
+    def test_finalize_terminal_expires_the_runs_pending_approval(tmp_path, status):
+        spec = spec_of(leader())
+        store = build_store(tmp_path, spec)
+        run = TurnRun(run_id=new_id("run"), session_id="s1", agent_id="leader",
+                      config_revision=1, topology_revision=1, status=TurnStatus.RUNNING)
+        store.insert_run(run)
+        req = insert_pending_approval(store, run.run_id)
+        rt = SessionRuntime(store, "s1", UserConfig(), runners={"leader": FakeMember("leader")})
+    
+        rt._finalize(store.get_run(run.run_id), TurnOutcome(status=status))
+    
+        assert store.get_run(run.run_id).status is status
+>       assert store.get_approval(req.approval_id).status is ApprovalStatus.EXPIRED
+E       AssertionError: assert <ApprovalStatus.PENDING: 'PENDING'> is <ApprovalStatus.EXPIRED: 'EXPIRED'>
+E        +  where <ApprovalStatus.PENDING: 'PENDING'> = ApprovalRequest(approval_id='appr_d21c9e6480fc4c6a', session_id='s1', agent_id='leader', run_id='run_940dcf15d7904367'...shell'}, policy_revision=1, status=<ApprovalStatus.PENDING: 'PENDING'>, created_at=1789186624.3306606, decided_at=None).status
+E        +    where ApprovalRequest(approval_id='appr_d21c9e6480fc4c6a', session_id='s1', agent_id='leader', run_id='run_940dcf15d7904367'...shell'}, policy_revision=1, status=<ApprovalStatus.PENDING: 'PENDING'>, created_at=1789186624.3306606, decided_at=None) = get_approval('appr_d21c9e6480fc4c6a')
+E        +      where get_approval = <teamagents.storage.Store object at 0x7ff11f2a16a0>.get_approval
+E        +      and   'appr_d21c9e6480fc4c6a' = ApprovalRequest(approval_id='appr_d21c9e6480fc4c6a', session_id='s1', agent_id='leader', run_id='run_940dcf15d7904367'...shell'}, policy_revision=1, status=<ApprovalStatus.PENDING: 'PENDING'>, created_at=1789186624.3306606, decided_at=None).approval_id
+E        +  and   <ApprovalStatus.EXPIRED: 'EXPIRED'> = ApprovalStatus.EXPIRED
+
+tests/test_rt06_approval_expiry.py:72: AssertionError
+__ test_finalize_terminal_expires_the_runs_pending_approval[OUTCOME_UNKNOWN] ___
+
+tmp_path = PosixPath('/tmp/pytest-of-rimuru/pytest-0/test_finalize_terminal_expires3')
+status = <TurnStatus.OUTCOME_UNKNOWN: 'OUTCOME_UNKNOWN'>
+
+    @pytest.mark.parametrize("status", [TurnStatus.COMPLETED, TurnStatus.FAILED,
+                                        TurnStatus.CANCELLED, TurnStatus.OUTCOME_UNKNOWN])
+    def test_finalize_terminal_expires_the_runs_pending_approval(tmp_path, status):
+        spec = spec_of(leader())
+        store = build_store(tmp_path, spec)
+        run = TurnRun(run_id=new_id("run"), session_id="s1", agent_id="leader",
+                      config_revision=1, topology_revision=1, status=TurnStatus.RUNNING)
+        store.insert_run(run)
+        req = insert_pending_approval(store, run.run_id)
+        rt = SessionRuntime(store, "s1", UserConfig(), runners={"leader": FakeMember("leader")})
+    
+        rt._finalize(store.get_run(run.run_id), TurnOutcome(status=status))
+    
+        assert store.get_run(run.run_id).status is status
+>       assert store.get_approval(req.approval_id).status is ApprovalStatus.EXPIRED
+E       AssertionError: assert <ApprovalStatus.PENDING: 'PENDING'> is <ApprovalStatus.EXPIRED: 'EXPIRED'>
+E        +  where <ApprovalStatus.PENDING: 'PENDING'> = ApprovalRequest(approval_id='appr_0e10ed489a2847bb', session_id='s1', agent_id='leader', run_id='run_5dd6057c614c426f'...'shell'}, policy_revision=1, status=<ApprovalStatus.PENDING: 'PENDING'>, created_at=1789186624.337231, decided_at=None).status
+E        +    where ApprovalRequest(approval_id='appr_0e10ed489a2847bb', session_id='s1', agent_id='leader', run_id='run_5dd6057c614c426f'...'shell'}, policy_revision=1, status=<ApprovalStatus.PENDING: 'PENDING'>, created_at=1789186624.337231, decided_at=None) = get_approval('appr_0e10ed489a2847bb')
+E        +      where get_approval = <teamagents.storage.Store object at 0x7ff11f4ef050>.get_approval
+E        +      and   'appr_0e10ed489a2847bb' = ApprovalRequest(approval_id='appr_0e10ed489a2847bb', session_id='s1', agent_id='leader', run_id='run_5dd6057c614c426f'...'shell'}, policy_revision=1, status=<ApprovalStatus.PENDING: 'PENDING'>, created_at=1789186624.337231, decided_at=None).approval_id
+E        +  and   <ApprovalStatus.EXPIRED: 'EXPIRED'> = ApprovalStatus.EXPIRED
+
+tests/test_rt06_approval_expiry.py:72: AssertionError
+_________ test_reconcile_outcome_unknown_expires_the_pending_approval __________
+
+tmp_path = PosixPath('/tmp/pytest-of-rimuru/pytest-0/test_reconcile_outcome_unknown0')
+
+    async def test_reconcile_outcome_unknown_expires_the_pending_approval(tmp_path):
+        spec = spec_of(leader())
+        store = build_store(tmp_path, spec)
+        run = TurnRun(run_id=new_id("run"), session_id="s1", agent_id="leader",
+                      config_revision=1, topology_revision=1, status=TurnStatus.RUNNING,
+                      external_turn_id="codex-turn-1")
+        store.insert_run(run)
+        req = insert_pending_approval(store, run.run_id)
+        rt = SessionRuntime(store, "s1", UserConfig(), runners={"leader": FakeMember("leader")})
+    
+        await rt.reconcile()
+    
+        assert store.get_run(run.run_id).status is TurnStatus.OUTCOME_UNKNOWN
+>       assert store.get_approval(req.approval_id).status is ApprovalStatus.EXPIRED
+E       AssertionError: assert <ApprovalStatus.PENDING: 'PENDING'> is <ApprovalStatus.EXPIRED: 'EXPIRED'>
+E        +  where <ApprovalStatus.PENDING: 'PENDING'> = ApprovalRequest(approval_id='appr_be99c8df3a464324', session_id='s1', agent_id='leader', run_id='run_4438281e653b41a4'...shell'}, policy_revision=1, status=<ApprovalStatus.PENDING: 'PENDING'>, created_at=1789186624.3473368, decided_at=None).status
+E        +    where ApprovalRequest(approval_id='appr_be99c8df3a464324', session_id='s1', agent_id='leader', run_id='run_4438281e653b41a4'...shell'}, policy_revision=1, status=<ApprovalStatus.PENDING: 'PENDING'>, created_at=1789186624.3473368, decided_at=None) = get_approval('appr_be99c8df3a464324')
+E        +      where get_approval = <teamagents.storage.Store object at 0x7ff11f269b80>.get_approval
+E        +      and   'appr_be99c8df3a464324' = ApprovalRequest(approval_id='appr_be99c8df3a464324', session_id='s1', agent_id='leader', run_id='run_4438281e653b41a4'...shell'}, policy_revision=1, status=<ApprovalStatus.PENDING: 'PENDING'>, created_at=1789186624.3473368, decided_at=None).approval_id
+E        +  and   <ApprovalStatus.EXPIRED: 'EXPIRED'> = ApprovalStatus.EXPIRED
+
+tests/test_rt06_approval_expiry.py:108: AssertionError
+____________ test_cancel_run_on_a_parked_turn_expires_the_approval _____________
+
+tmp_path = PosixPath('/tmp/pytest-of-rimuru/pytest-0/test_cancel_run_on_a_parked_tu0')
+
+    async def test_cancel_run_on_a_parked_turn_expires_the_approval(tmp_path):
+        spec = spec_of(leader())
+        members = scripts(leader=[("call", "shell", {"command": "echo x"}), ("end",)])
+        rt = fake_session(tmp_path, spec, members, require_approval={"shell"},
+                          tool_executor=lambda name, args: "ok")
+        await rt.start()
+        try:
+            rt.user_message("go")
+            await wait_for(lambda: rt.store.pending_approvals("s1"), what="parked approval")
+            approval = rt.store.pending_approvals("s1")[0]
+            run = rt.store.get_run(approval.run_id)
+            assert run.status is TurnStatus.WAITING_APPROVAL
+            assert any("pending approvals" in b
+                       for b in rt.control._completion_blockers(spec))
+    
+            receipt = rt.submit(TeamAction(action_id="cancel-1", session_id="s1", actor_id="user",
+                                           kind=ActionKind.CANCEL_RUN,
+                                           payload={"run_id": run.run_id}))
+    
+            assert receipt.ok, receipt.error
+>           assert rt.store.get_approval(approval.approval_id).status is ApprovalStatus.EXPIRED
+E           AssertionError: assert <ApprovalStatus.PENDING: 'PENDING'> is <ApprovalStatus.EXPIRED: 'EXPIRED'>
+E            +  where <ApprovalStatus.PENDING: 'PENDING'> = ApprovalRequest(approval_id='appr_91fdb366fc2b473c', session_id='s1', agent_id='leader', run_id='run_856d63b18a784b58'...proval'}, policy_revision=1, status=<ApprovalStatus.PENDING: 'PENDING'>, created_at=1789186624.354162, decided_at=None).status
+E            +    where ApprovalRequest(approval_id='appr_91fdb366fc2b473c', session_id='s1', agent_id='leader', run_id='run_856d63b18a784b58'...proval'}, policy_revision=1, status=<ApprovalStatus.PENDING: 'PENDING'>, created_at=1789186624.354162, decided_at=None) = get_approval('appr_91fdb366fc2b473c')
+E            +      where get_approval = <teamagents.storage.Store object at 0x7ff11f26a3f0>.get_approval
+E            +        where <teamagents.storage.Store object at 0x7ff11f26a3f0> = <teamagents.runtime.SessionRuntime object at 0x7ff11f2a3790>.store
+E            +      and   'appr_91fdb366fc2b473c' = ApprovalRequest(approval_id='appr_91fdb366fc2b473c', session_id='s1', agent_id='leader', run_id='run_856d63b18a784b58'...proval'}, policy_revision=1, status=<ApprovalStatus.PENDING: 'PENDING'>, created_at=1789186624.354162, decided_at=None).approval_id
+E            +  and   <ApprovalStatus.EXPIRED: 'EXPIRED'> = ApprovalStatus.EXPIRED
+
+tests/test_rt06_approval_expiry.py:138: AssertionError
+___________ test_cancel_task_on_a_parked_turn_converges_run_and_task ___________
+
+tmp_path = PosixPath('/tmp/pytest-of-rimuru/pytest-0/test_cancel_task_on_a_parked_t0')
+
+    async def test_cancel_task_on_a_parked_turn_converges_run_and_task(tmp_path):
+        spec = spec_of(leader(), member("b"), channels=[task_channel("leader", ["b"])])
+        members = scripts(
+            leader=[("call", "assign_task", {"assignee": "b", "description": "job"}),
+                    ("call", "wait_for_tasks", {"task_ids": ["$r0.result.task_id"]}),
+                    ("wait",), ("end",)],
+            b=[("call", "shell", {"command": "echo x"}), ("end",)],
+        )
+        rt = fake_session(tmp_path, spec, members, require_approval={"shell"},
+                          tool_executor=lambda name, args: "ok")
+        await rt.start()
+        try:
+            rt.user_message("go")
+            await wait_for(lambda: rt.store.pending_approvals("s1"), what="parked approval")
+            approval = rt.store.pending_approvals("s1")[0]
+            task = rt.store.tasks_for_session("s1")[0]
+            assert rt.store.get_run(approval.run_id).status is TurnStatus.WAITING_APPROVAL
+    
+            receipt = rt.submit(TeamAction(action_id="cancel-2", session_id="s1", actor_id="user",
+                                           kind=ActionKind.CANCEL_TASK,
+                                           payload={"task_id": task.task_id}))
+    
+            assert receipt.ok, receipt.error
+>           assert rt.store.get_approval(approval.approval_id).status is ApprovalStatus.EXPIRED
+E           AssertionError: assert <ApprovalStatus.PENDING: 'PENDING'> is <ApprovalStatus.EXPIRED: 'EXPIRED'>
+E            +  where <ApprovalStatus.PENDING: 'PENDING'> = ApprovalRequest(approval_id='appr_972693dc823345e0', session_id='s1', agent_id='b', run_id='run_371152655bad46a9', too...proval'}, policy_revision=1, status=<ApprovalStatus.PENDING: 'PENDING'>, created_at=1789186624.371893, decided_at=None).status
+E            +    where ApprovalRequest(approval_id='appr_972693dc823345e0', session_id='s1', agent_id='b', run_id='run_371152655bad46a9', too...proval'}, policy_revision=1, status=<ApprovalStatus.PENDING: 'PENDING'>, created_at=1789186624.371893, decided_at=None) = get_approval('appr_972693dc823345e0')
+E            +      where get_approval = <teamagents.storage.Store object at 0x7ff11f1f4910>.get_approval
+E            +        where <teamagents.storage.Store object at 0x7ff11f1f4910> = <teamagents.runtime.SessionRuntime object at 0x7ff11f178af0>.store
+E            +      and   'appr_972693dc823345e0' = ApprovalRequest(approval_id='appr_972693dc823345e0', session_id='s1', agent_id='b', run_id='run_371152655bad46a9', too...proval'}, policy_revision=1, status=<ApprovalStatus.PENDING: 'PENDING'>, created_at=1789186624.371893, decided_at=None).approval_id
+E            +  and   <ApprovalStatus.EXPIRED: 'EXPIRED'> = ApprovalStatus.EXPIRED
+
+tests/test_rt06_approval_expiry.py:181: AssertionError
+_______________ test_cancel_confirm_timeout_expires_the_approval _______________
+
+tmp_path = PosixPath('/tmp/pytest-of-rimuru/pytest-0/test_cancel_confirm_timeout_ex0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7ff11f26ba70>
+
+    async def test_cancel_confirm_timeout_expires_the_approval(tmp_path, monkeypatch):
+        """When the backend never confirms the stop, the run goes OUTCOME_UNKNOWN and
+        its parked approval must expire with it."""
+        spec = spec_of(leader())
+        store = build_store(tmp_path, spec)
+        run = TurnRun(run_id=new_id("run"), session_id="s1", agent_id="leader",
+                      config_revision=1, topology_revision=1, status=TurnStatus.RUNNING,
+                      external_turn_id="codex-turn-1", cancel_requested=True)
+        store.insert_run(run)
+        req = insert_pending_approval(store, run.run_id)
+        # Limits only accepts positive ints; zero makes the confirm timeout immediate
+        fast = spec.model_copy(update={"limits": spec.limits.model_copy(
+            update={"cancel_confirm_timeout_s": 0})})
+        monkeypatch.setattr(Store, "load_team_spec",
+                            lambda self, session_id, revision=None: fast)
+    
+        class HangingRunner(FakeMember):
+            async def request_interrupt(self, run_id):
+                await asyncio.sleep(30)
+                return TurnStatus.CANCELLED
+    
+        rt = SessionRuntime(store, "s1", UserConfig(), runners={"leader": HangingRunner("leader")})
+        try:
+            await rt._request_stop(store.get_run(run.run_id), rt.runners["leader"])
+            assert store.get_run(run.run_id).status is TurnStatus.OUTCOME_UNKNOWN
+>           assert store.get_approval(req.approval_id).status is ApprovalStatus.EXPIRED
+E           AssertionError: assert <ApprovalStatus.PENDING: 'PENDING'> is <ApprovalStatus.EXPIRED: 'EXPIRED'>
+E            +  where <ApprovalStatus.PENDING: 'PENDING'> = ApprovalRequest(approval_id='appr_47f17e28bfbe426c', session_id='s1', agent_id='leader', run_id='run_fb62aaca211d441d'...shell'}, policy_revision=1, status=<ApprovalStatus.PENDING: 'PENDING'>, created_at=1789186624.4209504, decided_at=None).status
+E            +    where ApprovalRequest(approval_id='appr_47f17e28bfbe426c', session_id='s1', agent_id='leader', run_id='run_fb62aaca211d441d'...shell'}, policy_revision=1, status=<ApprovalStatus.PENDING: 'PENDING'>, created_at=1789186624.4209504, decided_at=None) = get_approval('appr_47f17e28bfbe426c')
+E            +      where get_approval = <teamagents.storage.Store object at 0x7ff11f1cd490>.get_approval
+E            +      and   'appr_47f17e28bfbe426c' = ApprovalRequest(approval_id='appr_47f17e28bfbe426c', session_id='s1', agent_id='leader', run_id='run_fb62aaca211d441d'...shell'}, policy_revision=1, status=<ApprovalStatus.PENDING: 'PENDING'>, created_at=1789186624.4209504, decided_at=None).approval_id
+E            +  and   <ApprovalStatus.EXPIRED: 'EXPIRED'> = ApprovalStatus.EXPIRED
+
+tests/test_rt06_approval_expiry.py:269: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_p0_4_reduce_rollback.py::test_reduce_failure_rolls_back_shared_entry_and_receipt_semantics
+FAILED tests/test_p0_4_reduce_rollback.py::test_reduce_failure_leaves_task_state_untouched
+FAILED tests/test_rt06_approval_expiry.py::test_finalize_terminal_expires_the_runs_pending_approval[COMPLETED]
+FAILED tests/test_rt06_approval_expiry.py::test_finalize_terminal_expires_the_runs_pending_approval[FAILED]
+FAILED tests/test_rt06_approval_expiry.py::test_finalize_terminal_expires_the_runs_pending_approval[CANCELLED]
+FAILED tests/test_rt06_approval_expiry.py::test_finalize_terminal_expires_the_runs_pending_approval[OUTCOME_UNKNOWN]
+FAILED tests/test_rt06_approval_expiry.py::test_reconcile_outcome_unknown_expires_the_pending_approval
+FAILED tests/test_rt06_approval_expiry.py::test_cancel_run_on_a_parked_turn_expires_the_approval
+FAILED tests/test_rt06_approval_expiry.py::test_cancel_task_on_a_parked_turn_converges_run_and_task
+FAILED tests/test_rt06_approval_expiry.py::test_cancel_confirm_timeout_expires_the_approval
+10 failed, 6 passed in 0.17s

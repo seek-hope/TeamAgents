@@ -1,0 +1,90 @@
+..........FF.F                                                           [100%]
+=================================== FAILURES ===================================
+_________________ test_tui_settings_panel_and_full_auto_toggle _________________
+tests/test_p6_tui.py:164: in test_tui_settings_panel_and_full_auto_toggle
+    assert "权限模式" in body and "上限" in body and "模型 profiles" in body
+E   AssertionError: assert ('权限模式' in 'Session: s1\nStatus: ACTIVE    Permissions: approved_scope    (Ctrl+F to toggle)\nWorkspace: /tmp/pytest-of-rimuru/py...configured\nInstruction files: Not configured\n\nResume: teamagents --resume s1    New session: use the Sessions panel')
+________________ test_tui_surfaces_run_failures_and_config_gaps ________________
+tests/test_p6_tui.py:198: in test_tui_surfaces_run_failures_and_config_gaps
+    assert "未配置" in text, "启动时就应提示缺失的模型 profile"
+E   AssertionError: 启动时就应提示缺失的模型 profile
+E   assert '未配置' in "Strip([Segment('• System', Style(color=Color('#5d5d5d', ColorType.TRUECOLOR, triplet=ColorTriplet(red=93, green=93, b... from the repository ', Style())], 80)\nStrip([Segment('as a starting point)', Style())], 20)\nStrip([Segment('')], 0)"
+------------------------------ Captured log call -------------------------------
+ERROR    teamagents.runtime:runtime.py:392 run run_ba477303660e4e16 crashed
+Traceback (most recent call last):
+  File "/home/rimuru/Projects/Code/for_fun/TeamAgents/src/teamagents/runtime.py", line 388, in _execute
+    await self._execute_inner(run)
+  File "/home/rimuru/Projects/Code/for_fun/TeamAgents/src/teamagents/runtime.py", line 440, in _execute_inner
+    outcome = await asyncio.wait_for(
+              ^^^^^^^^^^^^^^^^^^^^^^^
+        runner.start_or_resume(run, view, gateway, wake), timeout=timeout)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/miniconda3/lib/python3.13/asyncio/tasks.py", line 507, in wait_for
+    return await fut
+           ^^^^^^^^^
+  File "/home/rimuru/Projects/Code/for_fun/TeamAgents/src/teamagents/runners.py", line 577, in start_or_resume
+    graph = self._ensure_graph(run)
+  File "/home/rimuru/Projects/Code/for_fun/TeamAgents/src/teamagents/runners.py", line 537, in _ensure_graph
+    profile = resolve_profile(self.catalog, self.agent.model_profile)
+  File "/home/rimuru/Projects/Code/for_fun/TeamAgents/src/teamagents/providers.py", line 43, in resolve_profile
+    raise ModelConfigError(
+    ...<2 lines>...
+        "repository as a starting point)")
+teamagents.providers.ModelConfigError: unknown model profile 'leader_main'; configure it under [models.leader_main] in ~/.config/teamagents/config.toml (copy examples/config.toml from the repository as a starting point)
+________________________ test_tui_uses_codex_like_theme ________________________
+tests/test_p6_tui.py:237: in test_tui_uses_codex_like_theme
+    async with app.run_test(size=(120, 40)) as pilot:
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/miniconda3/lib/python3.13/contextlib.py:221: in __aexit__
+    await anext(self.gen)
+.venv/lib/python3.13/site-packages/textual/app.py:2218: in run_test
+    raise self._exception
+.venv/lib/python3.13/site-packages/textual/timer.py:189: in _tick
+    await invoke(self._callback)
+.venv/lib/python3.13/site-packages/textual/_callback.py:96: in invoke
+    return await _invoke(callback, *params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/textual/_callback.py:56: in _invoke
+    result = callback(*params[:parameter_count])
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/teamagents/tui/app.py:230: in _animate_activity
+    activity = self.query_one("#activity", Static)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/textual/dom.py:1505: in query_one
+    raise NoMatches(f"No nodes match {query_selector!r} on {base_node!r}")
+E   textual.css.query.NoMatches: No nodes match '#activity' on Screen(id='_default')
+----------------------------- Captured stderr call -----------------------------
+╭───────────────────── Traceback (most recent call last) ──────────────────────╮
+│ /home/rimuru/Projects/Code/for_fun/TeamAgents/src/teamagents/tui/app.py:230  │
+│ in _animate_activity                                                         │
+│                                                                              │
+│   227 │   │   │   summary = str(self.activity_status(str(next(iter(runs.valu │
+│   228 │   │   else:                                                          │
+│   229 │   │   │   summary = "○ " + tr(self, "就绪") + " · " + tr(self, "没有 │
+│ ❱ 230 │   │   activity = self.query_one("#activity", Static)                 │
+│   231 │   │   activity.set_class(bool(working), "working")                   │
+│   232 │   │   activity.set_class(waiting_approval and not working, "attentio │
+│   233 │   │   message, values = self._latest_activity                        │
+│                                                                              │
+│ ╭────────────────────────────── locals ──────────────────────────────╮       │
+│ │             runs = {}                                              │       │
+│ │             self = TeamAgentsApp(                                  │       │
+│ │                    │   title='TeamAgents',                         │       │
+│ │                    │   classes={'-theme-codex', '-dark-mode'},     │       │
+│ │                    │   pseudo_classes={                            │       │
+│ │                    │   │   'nocolor',                              │       │
+│ │                    │   │   'dark',                                 │       │
+│ │                    │   │   'focus'                                 │       │
+│ │                    │   }                                           │       │
+│ │                    )                                               │       │
+│ │          summary = '○ Ready · No turns executing'                  │       │
+│ │ waiting_approval = False                                           │       │
+│ │          working = []                                              │       │
+│ ╰────────────────────────────────────────────────────────────────────╯       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+NoMatches: No nodes match '#activity' on Screen(id='_default')
+=========================== short test summary info ============================
+FAILED tests/test_p6_tui.py::test_tui_settings_panel_and_full_auto_toggle - A...
+FAILED tests/test_p6_tui.py::test_tui_surfaces_run_failures_and_config_gaps
+FAILED tests/test_p6_tui.py::test_tui_uses_codex_like_theme - textual.css.que...
+3 failed, 11 passed in 27.02s

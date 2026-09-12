@@ -1,0 +1,35 @@
+--- review/tmp/prefix-diff/src/teamagents/storage.py	2026-09-12 11:11:56.000000000 +0800
++++ src/teamagents/storage.py	2026-09-12 12:13:37.563607353 +0800
+@@ -901,13 +901,29 @@
+         return self.get_approval(row["approval_id"]) if row else None
+ 
+     def expire_approval(self, approval_id: str) -> None:
+-        """A once-approval is single use: consumed after the operation runs."""
++        """A once-approval is single use (consumed after the operation runs); a
++        pending approval is void once its turn can no longer use it."""
+         self.conn.execute(
+-            "UPDATE approvals SET status=?, decided_at=? WHERE approval_id=? AND status=?",
++            "UPDATE approvals SET status=?, decided_at=? WHERE approval_id=? AND status IN (?,?)",
+             (ApprovalStatus.EXPIRED, time.time(), approval_id,
+-             ApprovalStatus.APPROVED_ONCE),
++             ApprovalStatus.APPROVED_ONCE, ApprovalStatus.PENDING),
+         )
+ 
++    def expire_run_approvals(self, run_id: str) -> list[ApprovalRequest]:
++        """Void every still-PENDING approval of a run (terminal/cancelled turns).
++
++        Returns the expired requests so the caller can emit an audit event.
++        """
++        with self.tx():
++            rows = self.conn.execute(
++                "SELECT approval_id FROM approvals WHERE run_id=? AND status='PENDING'",
++                (run_id,),
++            ).fetchall()
++            expired = [req for r in rows if (req := self.get_approval(r["approval_id"]))]
++            for req in expired:
++                self.expire_approval(req.approval_id)
++            return expired
++
+     # -- topology patches ----------------------------------------------------
+ 
+     def insert_patch(self, patch: TopologyPatch, session_id: str) -> None:

@@ -1,0 +1,51 @@
+### AD-1 repro_worktree_reopen.py (after fix)
+1st prepare -> git_worktree /tmp/ta-repro-wt2/members/b/work teamagents/b-1789187742
+git worktree list:
+/tmp/ta-repro-wt2/project        5e9f385 [master]
+/tmp/ta-repro-wt2/members/b/work 5e9f385 [teamagents/b-1789187742]
+2nd prepare -> git_worktree /tmp/ta-repro-wt2/members/b/work teamagents/b-1789187742
+branches after: ['*', 'master', '+', 'teamagents/b-1789187742']
+3rd prepare (1s later) -> git_worktree /tmp/ta-repro-wt2/members/b/work teamagents/b-1789187742
+
+### AD-1 repro_worktree_open_session.py (after fix)
+project dirty before 1st open: False
+1st open OK; dirty now: False
+git status: 
+2nd open OK: <teamagents.runtime.SessionRuntime object at 0x7fd4f01cf250>
+
+### AD-2 repro_lock_leak_forced.py (after fix)
+open_session RAISED RuntimeError: injected failure while opening the session
+after FAILED open: locked = False lock fds: []
+retry open OK: s1
+after clean close: locked = False lock fds: []
+
+### AD-3 repro_session_id_collision.py (after fix)
+  File "/home/rimuru/Projects/Code/for_fun/TeamAgents/.venv/lib/python3.13/site-packages/textual/widgets/_data_table.py", line 1638, in add_column
+    content_width = measure(self.app.console, label, 1)
+                            ^^^^^^^^
+  File "/home/rimuru/Projects/Code/for_fun/TeamAgents/.venv/lib/python3.13/site-packages/textual/message_pump.py", line 264, in app
+    raise NoActiveAppError()
+textual._context.NoActiveAppError
+
+### AD-3 repro_session_id_collision.py (after fix, pre-Textual lines)
+default id for this dir: proj_5f6e98b6c554
+new_session_id (nothing exists): proj_5f6e98b6c554
+archived: ['proj_5f6e98b6c554']
+new_session_id after archiving: proj_5f6e98b6c554_2 -> collides: False
+list_sessions ids+archived: [('proj_5f6e98b6c554_2', False), ('proj_5f6e98b6c554', True)]
+duplicate session ids visible to the UI: False
+Traceback (most recent call last):
+
+### AD-3 repro_session_id_collision_a.py (after fix)
+new_session_id (nothing exists): proj_5f6e98b6c554
+archived: ['proj_5f6e98b6c554']
+new_session_id after archiving: proj_5f6e98b6c554_2 -> collides: False
+list_sessions ids+archived: [('proj_5f6e98b6c554_2', False), ('proj_5f6e98b6c554', True)]
+duplicate session ids visible to the UI: False
+
+### B-01 repro_plain_repl.py (after fix, real runtime)
+hasattr(rt, 'ui_cursor') -> False
+session: s1 (Ctrl-D to exit)
+  [input received: goal_9f4f362f5a124781]
+  [Leader] 计划已就位：先做 A，再做 B
+cli.main returned 0

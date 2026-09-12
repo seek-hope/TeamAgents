@@ -1,0 +1,4 @@
+after clean close: locked = False lock fds: []
+2nd open RAISED WorkspaceError: git worktree add failed: Preparing worktree (new branch 'teamagents/b-1789182997
+after FAILED open: locked = True lock fds: ['6']
+retry RAISED SessionInUse: session is already running in another process (lock: /home/rimuru/Projects/Code/

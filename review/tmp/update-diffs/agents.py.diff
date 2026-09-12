@@ -1,0 +1,37 @@
+--- .pre-fix-backup/collaboration-tui-20260912/src/teamagents/agents.py	2026-09-12 01:24:31.116577071 +0800
++++ src/teamagents/agents.py	2026-09-12 14:26:03.759866835 +0800
+@@ -38,6 +38,8 @@
+     "propose_team_change": ActionKind.PROPOSE_TEAM_CHANGE,
+     "apply_topology_patch": ActionKind.APPLY_TOPOLOGY_PATCH,
+     "signal_done": ActionKind.SIGNAL_DONE,
++    "cancel_task": ActionKind.CANCEL_TASK,
++    "cancel_run": ActionKind.CANCEL_RUN,
+ }
+ 
+ 
+@@ -77,13 +79,15 @@
+ 
+     def __init__(self, control: Control, session_id: str, agent_id: str,
+                  run_id: str, approvals: ApprovalGate,
+-                 executor: Callable[[str, dict[str, Any]], Any] | None = None):
++                 executor: Callable[[str, dict[str, Any]], Any] | None = None,
++                 submit: Callable[[TeamAction], Receipt] | None = None):
+         self.control = control
+         self.session_id = session_id
+         self.agent_id = agent_id
+         self.run_id = run_id
+         self.approvals = approvals
+         self.executor = executor
++        self.submit = submit or control.submit
+         self._seq = 0
+         self.pending_approval_id: str | None = None
+ 
+@@ -103,7 +107,7 @@
+                 kind=TEAM_TOOLS[tool_name],
+                 payload=dict(args),
+             )
+-            return self.control.submit(action)
++            return self.submit(action)
+         return self._execute_tool(tool_name, args, call_id)
+ 
+     def _execute_tool(self, tool_name: str, args: dict[str, Any], call_id: str) -> Receipt:

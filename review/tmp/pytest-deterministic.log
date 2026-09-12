@@ -1,0 +1,40 @@
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       socket.gaierror: [Errno -3] Temporary failure in name resolution
+
+/opt/miniconda3/lib/python3.13/socket.py:983: gaierror
+
+The above exception was the direct cause of the following exception:
+
+    def test_ssrf_guard_blocks_internal_targets():
+        for bad in ("http://127.0.0.1/", "http://localhost:8080/", "http://10.0.0.5/",
+                    "http://169.254.169.254/latest/meta-data/", "file:///etc/passwd",
+                    "http://[::1]/"):
+            with pytest.raises(Exception):
+                guard_url(bad)
+>       assert guard_url("https://example.com/").startswith("https://")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_p3_web_tools.py:29: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+url = 'https://example.com/', allow_private = False
+
+    def guard_url(url: str, *, allow_private: bool = False) -> str:
+        """SSRF guard for fetch tools: http(s) only, no localhost/private targets."""
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            raise ValueError(f"only http(s) URLs can be fetched, got {url!r}")
+        if allow_private:
+            return url
+        try:
+            infos = socket.getaddrinfo(parsed.hostname, parsed.port or
+                                       (443 if parsed.scheme == "https" else 80))
+        except socket.gaierror as e:
+>           raise ValueError(f"cannot resolve {parsed.hostname!r}: {e}") from e
+E           ValueError: cannot resolve 'example.com': [Errno -3] Temporary failure in name resolution
+
+src/teamagents/tools.py:168: ValueError
+=========================== short test summary info ============================
+FAILED tests/test_config_cli.py::test_xhigh_maps_to_max_for_models_without_xhigh
+FAILED tests/test_p3_web_tools.py::test_ssrf_guard_blocks_internal_targets - ...
+2 failed, 75 passed, 12 deselected in 29.90s

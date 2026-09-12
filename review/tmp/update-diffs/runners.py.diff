@@ -1,0 +1,136 @@
+--- .pre-fix-backup/collaboration-tui-20260912/src/teamagents/runners.py	2026-09-12 12:15:16.480953901 +0800
++++ src/teamagents/runners.py	2026-09-12 14:40:59.637587124 +0800
+@@ -39,6 +39,10 @@
+     """Raised inside the graph when the per-turn model-step budget is spent."""
+ 
+ 
++class TurnInterrupted(Exception):
++    """Stop at a model/tool boundary after outstanding work returns."""
++
++
+ class TeamMemberState(AgentState):
+     """Checkpointed member state. `applied_batch` brackets the last delivery
+     batch that reached the conversation, so a restart can tell whether a batch
+@@ -135,13 +139,15 @@
+                            "Leader can apply it. " + TOPOLOGY_OPS_DOC,
+     "apply_topology_patch": "Leader only: apply (or reject) a topology patch from a "
+                             "base revision. " + TOPOLOGY_OPS_DOC,
++    "cancel_task": "Leader only: cancel an unfinished or blocked task; running work stops first.",
++    "cancel_run": "Leader only: request a turn to stop; side effects are not rolled back.",
+     "signal_done": "Leader only: declare the current user goal complete; the runtime "
+                    "verifies no work, approvals or unknown outcomes are outstanding.",
+ }
+ 
+ 
+ def build_team_tools(runner: "DeepAgentsRunner") -> list[BaseTool]:
+-    """The eleven team actions. Identity comes from the runner's *current* turn
++    """Team actions. Identity comes from the runner's *current* turn
+     (one active turn per member), so a cached graph never reuses a stale run."""
+ 
+     async def call(name: str, args: dict[str, Any], tool_call_id: str) -> str:
+@@ -217,7 +223,8 @@
+                                             "rationale": rationale}, tool_call_id)
+ 
+     @tool
+-    async def apply_topology_patch(operations: list[dict[str, Any]], base_revision: int,
++    async def apply_topology_patch(operations: list[dict[str, Any]] | None = None,
++                             base_revision: int | None = None,
+                              patch_id: str | None = None, reject: bool = False,
+                              tool_call_id: Annotated[str, InjectedToolCallId] = "") -> str:
+         """Leader only: apply (or reject) a topology patch."""
+@@ -232,9 +239,21 @@
+         """Leader only: declare the current user goal complete."""
+         return await call("signal_done", {"summary": summary}, tool_call_id)
+ 
++    @tool
++    async def cancel_task(task_id: str,
++                          tool_call_id: Annotated[str, InjectedToolCallId] = "") -> str:
++        """Leader only: cancel an unfinished or blocked task."""
++        return await call("cancel_task", {"task_id": task_id}, tool_call_id)
++
++    @tool
++    async def cancel_run(run_id: str,
++                         tool_call_id: Annotated[str, InjectedToolCallId] = "") -> str:
++        """Leader only: request a turn to stop."""
++        return await call("cancel_run", {"run_id": run_id}, tool_call_id)
++
+     tools = [send_message, assign_task, complete_task, wait_for_tasks, publish_shared,
+              read_shared, list_shared, request_help, propose_team_change,
+-             apply_topology_patch, signal_done]
++             apply_topology_patch, signal_done, cancel_task, cancel_run]
+     for t in tools:
+         t.description = TEAM_TOOL_DOCS.get(t.name, t.description)
+     return tools
+@@ -270,6 +289,7 @@
+         return {"messages": [HumanMessage(content=text)], "applied_batch": batch}
+ 
+     async def awrap_model_call(self, request, handler):
++        self.runner.raise_if_interrupted()
+         self.model_steps += 1
+         if self.model_steps > self.max_model_steps:
+             raise TurnLimitExceeded(
+@@ -277,6 +297,7 @@
+         return await handler(request)
+ 
+     async def awrap_tool_call(self, request, handler):
++        self.runner.raise_if_interrupted()
+         tool_call = request.tool_call
+         name = tool_call["name"]
+         if name in TEAM_TOOLS:
+@@ -357,6 +378,7 @@
+         self.steps = steps
+ 
+     async def awrap_model_call(self, request, handler):
++        self.runner.raise_if_interrupted()
+         self.steps.model_steps += 1
+         if self.steps.model_steps > self.steps.max_model_steps:
+             raise TurnLimitExceeded(
+@@ -364,6 +386,7 @@
+         return await handler(request)
+ 
+     async def awrap_tool_call(self, request, handler):
++        self.runner.raise_if_interrupted()
+         name = request.tool_call["name"]
+         args = request.tool_call.get("args") or {}
+         tool_call_id = request.tool_call.get("id") or f"subagent:{name}"
+@@ -416,6 +439,7 @@
+         self._inboxes: dict[str, Inbox] = {}
+         self._threads: dict[str, str] = {}
+         self._paused_kind: dict[str, str] = {}
++        self._interrupt_requested: set[str] = set()
+         self._effort_fallback_used = False
+         self._active_run: TurnRun | None = None
+         self._active_gateway: ToolGateway | None = None
+@@ -578,6 +602,9 @@
+                 text = render_view(view, wake, str(self.workdir))
+                 graph_input = {"messages": [HumanMessage(content=text)]}
+             result, reply = await self._stream_graph(graph, graph_input, cfg, run)
++        except TurnInterrupted:
++            self._states[run.run_id] = TurnStatus.CANCELLED
++            return TurnOutcome(status=TurnStatus.CANCELLED)
+         except TurnLimitExceeded as e:
+             self._states[run.run_id] = TurnStatus.FAILED
+             return TurnOutcome(status=TurnStatus.FAILED, error=str(e), note="turn_limit")
+@@ -656,10 +683,19 @@
+         reply = "".join(parts).strip()
+         return state or {}, reply or None
+ 
++    def raise_if_interrupted(self) -> None:
++        run = self._active_run
++        if run is not None and (run.run_id in self._interrupt_requested
++                or self.approvals.store.run_cancel_requested(run.run_id)):
++            raise TurnInterrupted()
++
+     async def request_interrupt(self, run_id: str) -> TurnStatus:
+-        """Cancellation reports a confirmed stop at the next model boundary;
+-        side effects already produced are never rolled back (plan section 9.3)."""
+-        self._states[run_id] = TurnStatus.CANCELLED
++        # Do not claim a stop while a tool (including a threaded shell) is still
++        # executing. Its completion is the next safe cancellation boundary.
++        import asyncio
++        self._interrupt_requested.add(run_id)
++        while self._states.get(run_id) is TurnStatus.RUNNING:
++            await asyncio.sleep(0.01)
+         return TurnStatus.CANCELLED
+ 
+     def query_state(self, run_id: str) -> TurnStatus | None:

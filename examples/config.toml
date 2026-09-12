@@ -1,0 +1,76 @@
+# TeamAgents 用户配置示例 -> ~/.config/teamagents/config.toml
+# 密钥只引用环境变量，不写进本文件。
+
+[models.leader_main]
+provider = "deepseek"
+protocol = "deepseek"
+model = "deepseek-flash"
+api_key_env = "DEEPSEEK_API_KEY"
+timeout = 120
+max_retries = 2
+generation_options = { reasoning_effort = "max" }    # 默认档位；测试用 high（max 简单回合≈240s）
+
+[models.research]
+provider = "deepseek"
+protocol = "deepseek"
+model = "deepseek-flash"
+api_key_env = "DEEPSEEK_API_KEY"
+generation_options = { reasoning_effort = "max" }    # 默认档位；测试用 high（max 简单回合≈240s）
+
+[models.coding]
+provider = "deepseek"
+protocol = "deepseek"
+model = "deepseek-flash"
+api_key_env = "DEEPSEEK_API_KEY"
+generation_options = { reasoning_effort = "max" }    # 默认档位；测试用 high（max 简单回合≈240s）
+
+# --- 其他服务示例（按需启用；都是“逻辑名 -> 实际接入”的映射） --------------
+# [models.research_kimi]
+# provider = "openai"          # Kimi 走 OpenAI 兼容协议
+# protocol = "openai"
+# model = "kimi-k2-turbo-preview"
+# base_url = "https://api.kimi.com/coding/v1"
+# api_key_env = "KIMI_API_KEY"
+#
+# [models.leader_apexin]       # gpt-6-astra（apexin 中转）
+# provider = "openai"
+# protocol = "openai"
+# model = "gpt-6-astra"
+# base_url = "https://api.apexin.ai/v1"
+# api_key_env = "APEXIN_API_KEY"
+# generation_options = { reasoning_effort = "xhigh" }
+#
+# [models.claude]
+# provider = "anthropic"
+# protocol = "anthropic"
+# model = "claude-sonnet-4-5"
+# api_key_env = "ANTHROPIC_API_KEY"
+#
+# [models.glm]
+# provider = "openai"
+# protocol = "openai"
+# model = "glm-4.6"
+# base_url = "https://open.bigmodel.cn/api/paas/v4/"
+# api_key_env = "ZHIPU_API_KEY"
+
+# --- 工具绑定（成员通过名字引用；绑定即授权） -------------------------------
+
+[tools.web]
+kind = "web_search"
+provider = "anysearch"
+url = "https://api.anysearch.com/v1/search"
+api_key_env = "ANYSEARCH_API_KEY"
+
+[tools.fetch]
+kind = "web_fetch"
+provider = "anysearch"
+
+# 示例：Tavily 走 MCP（需要 TAVILY_API_KEY），替换 [tools.web] 即可
+# [tools.web]
+# kind = "mcp"
+# mcp_server = "tavily"
+# mcp_transport = "stdio"
+# command = "npx"
+# args = ["-y", "tavily-mcp@latest"]
+# env = { TAVILY_API_KEY = "${TAVILY_API_KEY}" }
+# tool_names = ["tavily-search", "tavily-extract"]

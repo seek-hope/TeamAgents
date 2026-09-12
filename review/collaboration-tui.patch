@@ -1,0 +1,1425 @@
+--- before/README.md
++++ after/README.md
+@@ -29,7 +29,10 @@
+ teamagents --cwd /path/to/project
+ ```
+ 
+-TUI 常用键：`Enter` 发送、`Shift+Enter`/`Ctrl+J` 换行、`Ctrl+A` 批准队列、
++TUI 上区为团队、任务、共享空间、批准、会话、日志与设置；下区为 Leader 对话和输入。
++输入区支持 ↑↓ 历史与草稿恢复，`Ctrl+A`/`Ctrl+E` 移动到行首/行尾，`Esc` 请求停止 Leader。
++
++TUI 常用键：`Enter` 发送、`Shift+Enter`/`Ctrl+J` 换行、`Ctrl+G` 批准队列、
+ `Ctrl+T` 切换面板、`Ctrl+P` 暂停/继续、`Ctrl+F` 全自动开关、`Ctrl+R` 刷新、`Ctrl+Q` 退出；
+ 「会话」面板支持 `s` 切换、`n` 新建、`a` 归档、`d` 删除本目录下的会话
+ （归档/删除当前会话后退出）。
+--- before/TeamAgents-Implementation-Plan.zh-CN.md
++++ after/TeamAgents-Implementation-Plan.zh-CN.md
+@@ -401,7 +401,7 @@
+ 
+ ## 13. TUI 与使用流程
+ 
+-主界面包含 Leader 对话、成员/任务列表和按需展开的详情；窄终端通过切换视图显示，不强迫固定多栏。支持中文输入、多行粘贴、流式 Markdown、键盘导航、终端缩放和清晰的焦点状态。
++主界面采用上下分区：上区为团队、任务、共享空间、批准、会话、日志与设置，下区为 Leader 对话与输入。窄终端保留两个分区，上区通过标签切换视图。Leader 交互参考 Codex TUI，并在 Textual 中适配其输入历史、草稿恢复、键盘编辑和流式预览方式。支持中文输入、多行粘贴、流式 Markdown、键盘导航、终端缩放和清晰的焦点状态。
+ 
+ | 视图 | 内容与操作 |
+ |---|---|
+--- before/docs/DECISIONS.md
++++ after/docs/DECISIONS.md
+@@ -100,3 +100,11 @@
+ - **修复 bug**：`DeepAgentsRunner` 的回合步数上限原先硬编码 50，与
+   `limits.max_model_steps_per_turn` 脱节（把 spec 调大也仍会在 50 步被掐断）。
+   现改为在图（重）建时读取会话 TeamSpec，`max_model_steps_per_turn` 真正生效。
++
++## D-11 TUI 上下分区与 Codex 交互参考 ✅（用户要求 2026-09-12）
++
++- 上区显示原右侧所有管理面板，下区显示原左侧 Leader 对话与输入；窄屏同样保留两区。
++- 沿用方案中的 Textual；参考 Codex 的 composer/history 与流式消息展示，在现有组件上适配交互逻辑。来源和对应关系见 `TUI-CODEX-REFERENCE.md`。
++- `Enter` 发送；`Shift+Enter`/`Ctrl+J` 换行；`↑↓` 在编辑区首末行调取本会话历史，并保留未发送草稿；`Esc` 请求停止 Leader。
++- 批准队列改为 `Ctrl+G`，将 `Ctrl+A` 留给行首编辑；流式预览更新同一块区域，最终回复只追加一次，刷新不重放聊天。
++- 此条落实用户当前要求；协作修复恢复原方案的调度、边界与身份约束，不引入新的团队权限模式。
+--- before/docs/USER-GUIDE.md
++++ after/docs/USER-GUIDE.md
+@@ -153,3 +153,21 @@
+   上限为正数；通过 `teamagents validate` 可离线检查。
+ - 工作目录策略：`shared`（同一目录）、`isolated`（成员目录 + 明确输入/制品引用）、
+   `git_worktree`（从明确提交建分支与 worktree；原目录脏时自动退回 shared 并说明原因）。
++
++## Leader 对话与上下布局
++
++上区是管理面板，下区是 Leader 对话与输入。缩窄终端时聊天内容重新换行，上区仍可切换到批准、任务与会话。
++
++| 操作 | 快捷键 |
++|---|---|
++| 发送 / 换行 | Enter / Shift+Enter 或 Ctrl+J |
++| 调取本会话输入历史 | 首行按 ↑，末行按 ↓；返回最新位置恢复草稿 |
++| 行首 / 行尾 | Ctrl+A / Ctrl+E |
++| 输入框 / 管理面板 | Ctrl+N / Ctrl+T |
++| 批准队列 | Ctrl+G |
++| 请求停止 Leader | Esc；成员的其他工作继续 |
++| 刷新界面 | Ctrl+R；保留草稿和聊天记录 |
++
++原生成员在模型/工具边界响应停止。已经执行中的工具要先返回，界面显示停止请求；超过确认时限会显示结果不明，不承诺回滚文件或外部操作。
++
++任务进入 BLOCKED 会唤醒等待者处理。Leader 可用 `cancel_task` 结清无需继续的任务，再按需求重新委派；用户也可在上区「任务」选中任务按 `c`。重新创建同名成员必须使用新的成员 ID，原身份不能复用。
+--- before/review/REVIEW-REPORT.md
++++ after/review/REVIEW-REPORT.md
+@@ -222,3 +222,8 @@
+ - 复现脚本与输出：`review/tmp/*.py`、`review/tmp/out/*.txt`、`review/tmp/probe-core-*.txt`、`review/tmp/pytest-deterministic.log`
+ - 审查快照：2026-09-12 11:30 前后；`src/**` 最后一次外部改动 11:11–11:12（D-10）；此后未再变化。
+ - 现场收尾（审查后运营补充）：`review/tmp/unblock_session.py` —— 宿主机以 user 身份经产品控制面清理 BLOCKED 任务与残留批准（验证 `review/tmp/verify_unblock_recipe.py`、输出 `review/tmp/unblock-recipe-check.txt`、演示 `review/tmp/unblock-demo.txt`）。对应用户侧实测复现：TUI 无任务取消入口（A-03）、被取消回合残留 PENDING 批准（RT-06）。
++
++
++## 本轮协作与 TUI 修复增量（2026-09-12）
++
++当前修复、回归证据与验证边界见 [协作与 TUI 修复审查](collaboration-tui-review.md)。本节为后续工作增量；上方早期快照中的发现状态须结合该报告及已有 fix-notes 阅读。
+--- before/src/teamagents/agents.py
++++ after/src/teamagents/agents.py
+@@ -38,6 +38,8 @@
+     "propose_team_change": ActionKind.PROPOSE_TEAM_CHANGE,
+     "apply_topology_patch": ActionKind.APPLY_TOPOLOGY_PATCH,
+     "signal_done": ActionKind.SIGNAL_DONE,
++    "cancel_task": ActionKind.CANCEL_TASK,
++    "cancel_run": ActionKind.CANCEL_RUN,
+ }
+ 
+ 
+@@ -77,13 +79,15 @@
+ 
+     def __init__(self, control: Control, session_id: str, agent_id: str,
+                  run_id: str, approvals: ApprovalGate,
+-                 executor: Callable[[str, dict[str, Any]], Any] | None = None):
++                 executor: Callable[[str, dict[str, Any]], Any] | None = None,
++                 submit: Callable[[TeamAction], Receipt] | None = None):
+         self.control = control
+         self.session_id = session_id
+         self.agent_id = agent_id
+         self.run_id = run_id
+         self.approvals = approvals
+         self.executor = executor
++        self.submit = submit or control.submit
+         self._seq = 0
+         self.pending_approval_id: str | None = None
+ 
+@@ -103,7 +107,7 @@
+                 kind=TEAM_TOOLS[tool_name],
+                 payload=dict(args),
+             )
+-            return self.control.submit(action)
++            return self.submit(action)
+         return self._execute_tool(tool_name, args, call_id)
+ 
+     def _execute_tool(self, tool_name: str, args: dict[str, Any], call_id: str) -> Receipt:
+--- before/src/teamagents/control.py
++++ after/src/teamagents/control.py
+@@ -258,6 +258,10 @@
+                         return f"unknown patch {patch_id!r}"
+                     if patch.status not in (PatchStatus.PROPOSED, PatchStatus.ACCEPTED):
+                         return f"patch is {patch.status}, cannot decide"
++                    if (not action.payload.get("reject")
++                            and patch.base_revision != self.store.current_revision(self.session_id)):
++                        return (f"patch base_revision {patch.base_revision} is stale; "
++                                "propose again against the current revision")
+                     return None
+                 ops = action.payload.get("operations")
+                 if not isinstance(ops, list) or not ops:
+@@ -404,7 +408,7 @@
+                 pending = [t for t in task_ids
+                            if (task := self.store.get_task(t)) is not None
+                            and task.status not in (TaskStatus.SUCCEEDED, TaskStatus.FAILED,
+-                                                   TaskStatus.CANCELLED)]
++                                                   TaskStatus.CANCELLED, TaskStatus.BLOCKED)]
+                 if pending:
+                     run = self.store.get_run(action.run_id or "")
+                     if run is not None:
+@@ -619,36 +623,18 @@
+                                     result={"patch_id": patch.patch_id, "status": "REJECTED"}),
+                 )
+             operations = p.get("operations") or patch.operations
+-            decided_by = action.actor_id
+-            new_spec, error = self._apply_operations(spec, operations)
+-            if error:
+-                return Reduction([], Receipt.failure(action, error))
+-            revision = self.store.save_team_spec(self.session_id, new_spec)
+-            self.store.set_patch_status(patch.patch_id, PatchStatus.APPLIED)
+-            self._sync_members(new_spec, spec)
+-            return Reduction(
+-                events=[EventDraft(kind=EventKind.TOPOLOGY_APPLIED,
+-                                   payload={"patch_id": patch.patch_id, "revision": revision,
+-                                            "decided_by": decided_by,
+-                                            "operations": operations})],
+-                receipt=Receipt(action_id=action.action_id, ok=True, kind=action.kind,
+-                                result={"patch_id": patch.patch_id, "revision": revision,
+-                                        "status": "APPLIED"}),
+-            )
+-
+-        operations = list(p["operations"])
++        else:
++            operations = list(p["operations"])
++            patch = TopologyPatch(
++                patch_id=new_id("patch"), base_revision=p["base_revision"],
++                proposer=action.actor_id, operations=operations)
+         new_spec, error = self._apply_operations(spec, operations)
+         if error:
+             return Reduction([], Receipt.failure(action, error))
+         affected = self._affected_agents(spec, new_spec, operations)
+-        patch = TopologyPatch(
+-            patch_id=new_id("patch"),
+-            base_revision=p["base_revision"],
+-            proposer=action.actor_id,
+-            decided_by=action.actor_id,
+-            operations=operations,
+-            affected_agents=affected,
+-        )
++        patch.decided_by = action.actor_id
++        patch.operations = operations
++        patch.affected_agents = affected
+         waiting = [a for a in affected if self._agent_has_live_run(a)]
+         operations_json = operations
+         if waiting:
+@@ -694,6 +680,10 @@
+                     agent = op.get("agent") or {}
+                     if any(a["id"] == agent.get("id") for a in data["agents"]):
+                         return None, f"member {agent.get('id')!r} already exists"
++                    if (any(a.id == agent.get("id") for a in spec.agents)
++                            or self.store.agent_status(self.session_id, agent.get("id", ""))
++                            is AgentStatus.REMOVED):
++                        return None, "removed member id cannot be reused; choose a new id"
+                     if agent.get("model_profile") not in cfg_models:
+                         return None, (f"unknown model profile {agent.get('model_profile')!r}; "
+                                       "configure it in user config first")
+@@ -722,11 +712,14 @@
+                     if not any(a["id"] == agent_id for a in data["agents"]):
+                         return None, f"unknown member {agent_id!r}"
+                     data["agents"] = [a for a in data["agents"] if a["id"] != agent_id]
++                    for channel in data["channels"]:
++                        channel["targets"] = [t for t in channel["targets"] if t != agent_id]
+                     data["channels"] = [c for c in data["channels"]
+-                                        if c["source"] != agent_id
+-                                        and agent_id not in c["targets"]]
++                                        if c["source"] != agent_id and c["targets"]]
+                     data["observers"] = [o for o in data["observers"]
+                                          if o["agent_id"] != agent_id]
++                    for observer in data["observers"]:
++                        observer["subjects"] = [s for s in observer["subjects"] if s != agent_id]
+                     for s in data["shared_spaces"]:
+                         s["readers"] = [x for x in s["readers"] if x != agent_id]
+                         s["writers"] = [x for x in s["writers"] if x != agent_id]
+@@ -736,6 +729,8 @@
+                     if target is None:
+                         return None, f"unknown member {agent_id!r}"
+                     changes = op.get("changes") or {}
++                    if "id" in changes and changes["id"] != agent_id:
++                        return None, "member id is immutable; add a new member instead"
+                     if "model_profile" in changes and changes["model_profile"] not in cfg_models:
+                         return None, f"unknown model profile {changes['model_profile']!r}"
+                     for tb in changes.get("tool_bindings") or []:
+@@ -817,7 +812,8 @@
+             new_a = next((a for a in new.agents if a.id == aid), None)
+             if old_a is None or new_a is None or old_a != new_a:
+                 result.append(aid)
+-            elif self._permissions_changed(old, new, aid):
++            elif (self._permissions_changed(old, new, aid)
++                  and any(op.get("op") not in ("add_agent", "add_channel") for op in operations)):
+                 result.append(aid)
+         return result
+ 
+@@ -845,10 +841,11 @@
+         for a in new.agents:
+             old_a = next((x for x in old.agents if x.id == a.id), None)
+             if old_a is None or old_a != a:
+-                revision = self.store.bump_config_revision(self.session_id, a.id)
+-                if self.store.agent_status(self.session_id, a.id) is AgentStatus.DRAINING:
+-                    self.store.set_agent_status(self.session_id, a.id, AgentStatus.IDLE)
+-                _ = revision
++                self.store.bump_config_revision(self.session_id, a.id)
++            # Message/shared ACLs are read from the current topology. A grant
++            # must not rebuild a parked member's graph and lose its resume state.
++            if self.store.agent_status(self.session_id, a.id) is AgentStatus.DRAINING:
++                self.store.set_agent_status(self.session_id, a.id, AgentStatus.IDLE)
+         for a in old.agents:
+             if not any(x.id == a.id for x in new.agents):
+                 self.store.set_agent_status(self.session_id, a.id, AgentStatus.REMOVED)
+@@ -988,9 +985,14 @@
+         """Create/wake runs for pending deliveries and ready tasks."""
+         session = self.session_id
+         self._apply_boundary_patches(spec)
++        spec = self.store.load_team_spec(session)
+         self._block_unrunnable_tasks(spec)
+         self._announce_ready_tasks(spec)
++        draining = {agent_id for patch in self.store.patches_in_status(
++            session, PatchStatus.WAITING_BOUNDARY) for agent_id in patch.affected_agents}
+         for agent in spec.agents:
++            if agent.id in draining:
++                self.store.set_agent_status(session, agent.id, AgentStatus.DRAINING)
+             parked = self._waiting_run(agent.id)
+             if (parked is not None and parked.status is TurnStatus.WAITING_APPROVAL
+                     and parked.cancel_requested and parked.external_turn_id is None):
+@@ -1054,7 +1056,7 @@
+                 pending_wait = [t for t in waiting.waiting_on
+                                 if (task := self.store.get_task(t)) is not None
+                                 and task.status not in (TaskStatus.SUCCEEDED, TaskStatus.FAILED,
+-                                                        TaskStatus.CANCELLED)]
++                                                        TaskStatus.CANCELLED, TaskStatus.BLOCKED)]
+                 seen = set(waiting.input_delivery_ids or [])
+                 user_input = any(d["event_kind"] == EventKind.USER_MESSAGE
+                                  and d["delivery_id"] not in seen for d in pending)
+@@ -1165,9 +1167,22 @@
+             if any(self._agent_has_live_run(a) for a in patch.affected_agents):
+                 continue
+             current = self.store.load_team_spec(self.session_id)
+-            new_spec, error = self._apply_operations(current, patch.operations)
++            if patch.base_revision != self.store.current_revision(self.session_id):
++                new_spec, error = None, "patch base_revision is stale; Leader must decide again"
++            else:
++                new_spec, error = self._apply_operations(current, patch.operations)
+             if error:
+                 self.store.set_patch_status(patch.patch_id, PatchStatus.FAILED)
++                for agent_id in patch.affected_agents:
++                    if self.store.agent_status(self.session_id, agent_id) is AgentStatus.DRAINING:
++                        self.store.set_agent_status(self.session_id, agent_id, AgentStatus.IDLE)
++                action = TeamAction(action_id=f"patch-failed:{patch.patch_id}",
++                                    session_id=self.session_id, actor_id="system",
++                                    kind=ActionKind.APPLY_TOPOLOGY_PATCH, payload={})
++                self._persist_events(action, current, [EventDraft(
++                    kind=EventKind.TOPOLOGY_REJECTED,
++                    payload={"patch_id": patch.patch_id, "proposer": patch.proposer,
++                             "error": error})])
+                 continue
+             revision = self.store.save_team_spec(self.session_id, new_spec)
+             self.store.set_patch_status(patch.patch_id, PatchStatus.APPLIED)
+--- before/src/teamagents/runners.py
++++ after/src/teamagents/runners.py
+@@ -37,6 +37,10 @@
+ 
+ class TurnLimitExceeded(RuntimeError):
+     """Raised inside the graph when the per-turn model-step budget is spent."""
++
++
++class TurnInterrupted(Exception):
++    """Stop at a model/tool boundary after outstanding work returns."""
+ 
+ 
+ class TeamMemberState(AgentState):
+@@ -135,13 +139,15 @@
+                            "Leader can apply it. " + TOPOLOGY_OPS_DOC,
+     "apply_topology_patch": "Leader only: apply (or reject) a topology patch from a "
+                             "base revision. " + TOPOLOGY_OPS_DOC,
++    "cancel_task": "Leader only: cancel an unfinished or blocked task; running work stops first.",
++    "cancel_run": "Leader only: request a turn to stop; side effects are not rolled back.",
+     "signal_done": "Leader only: declare the current user goal complete; the runtime "
+                    "verifies no work, approvals or unknown outcomes are outstanding.",
+ }
+ 
+ 
+ def build_team_tools(runner: "DeepAgentsRunner") -> list[BaseTool]:
+-    """The eleven team actions. Identity comes from the runner's *current* turn
++    """Team actions. Identity comes from the runner's *current* turn
+     (one active turn per member), so a cached graph never reuses a stale run."""
+ 
+     async def call(name: str, args: dict[str, Any], tool_call_id: str) -> str:
+@@ -217,7 +223,8 @@
+                                             "rationale": rationale}, tool_call_id)
+ 
+     @tool
+-    async def apply_topology_patch(operations: list[dict[str, Any]], base_revision: int,
++    async def apply_topology_patch(operations: list[dict[str, Any]] | None = None,
++                             base_revision: int | None = None,
+                              patch_id: str | None = None, reject: bool = False,
+                              tool_call_id: Annotated[str, InjectedToolCallId] = "") -> str:
+         """Leader only: apply (or reject) a topology patch."""
+@@ -232,9 +239,21 @@
+         """Leader only: declare the current user goal complete."""
+         return await call("signal_done", {"summary": summary}, tool_call_id)
+ 
++    @tool
++    async def cancel_task(task_id: str,
++                          tool_call_id: Annotated[str, InjectedToolCallId] = "") -> str:
++        """Leader only: cancel an unfinished or blocked task."""
++        return await call("cancel_task", {"task_id": task_id}, tool_call_id)
++
++    @tool
++    async def cancel_run(run_id: str,
++                         tool_call_id: Annotated[str, InjectedToolCallId] = "") -> str:
++        """Leader only: request a turn to stop."""
++        return await call("cancel_run", {"run_id": run_id}, tool_call_id)
++
+     tools = [send_message, assign_task, complete_task, wait_for_tasks, publish_shared,
+              read_shared, list_shared, request_help, propose_team_change,
+-             apply_topology_patch, signal_done]
++             apply_topology_patch, signal_done, cancel_task, cancel_run]
+     for t in tools:
+         t.description = TEAM_TOOL_DOCS.get(t.name, t.description)
+     return tools
+@@ -270,6 +289,7 @@
+         return {"messages": [HumanMessage(content=text)], "applied_batch": batch}
+ 
+     async def awrap_model_call(self, request, handler):
++        self.runner.raise_if_interrupted()
+         self.model_steps += 1
+         if self.model_steps > self.max_model_steps:
+             raise TurnLimitExceeded(
+@@ -277,6 +297,7 @@
+         return await handler(request)
+ 
+     async def awrap_tool_call(self, request, handler):
++        self.runner.raise_if_interrupted()
+         tool_call = request.tool_call
+         name = tool_call["name"]
+         if name in TEAM_TOOLS:
+@@ -357,6 +378,7 @@
+         self.steps = steps
+ 
+     async def awrap_model_call(self, request, handler):
++        self.runner.raise_if_interrupted()
+         self.steps.model_steps += 1
+         if self.steps.model_steps > self.steps.max_model_steps:
+             raise TurnLimitExceeded(
+@@ -364,6 +386,7 @@
+         return await handler(request)
+ 
+     async def awrap_tool_call(self, request, handler):
++        self.runner.raise_if_interrupted()
+         name = request.tool_call["name"]
+         args = request.tool_call.get("args") or {}
+         tool_call_id = request.tool_call.get("id") or f"subagent:{name}"
+@@ -416,6 +439,7 @@
+         self._inboxes: dict[str, Inbox] = {}
+         self._threads: dict[str, str] = {}
+         self._paused_kind: dict[str, str] = {}
++        self._interrupt_requested: set[str] = set()
+         self._effort_fallback_used = False
+         self._active_run: TurnRun | None = None
+         self._active_gateway: ToolGateway | None = None
+@@ -578,6 +602,9 @@
+                 text = render_view(view, wake, str(self.workdir))
+                 graph_input = {"messages": [HumanMessage(content=text)]}
+             result, reply = await self._stream_graph(graph, graph_input, cfg, run)
++        except TurnInterrupted:
++            self._states[run.run_id] = TurnStatus.CANCELLED
++            return TurnOutcome(status=TurnStatus.CANCELLED)
+         except TurnLimitExceeded as e:
+             self._states[run.run_id] = TurnStatus.FAILED
+             return TurnOutcome(status=TurnStatus.FAILED, error=str(e), note="turn_limit")
+@@ -656,10 +683,19 @@
+         reply = "".join(parts).strip()
+         return state or {}, reply or None
+ 
++    def raise_if_interrupted(self) -> None:
++        run = self._active_run
++        if run is not None and (run.run_id in self._interrupt_requested
++                or self.approvals.store.run_cancel_requested(run.run_id)):
++            raise TurnInterrupted()
++
+     async def request_interrupt(self, run_id: str) -> TurnStatus:
+-        """Cancellation reports a confirmed stop at the next model boundary;
+-        side effects already produced are never rolled back (plan section 9.3)."""
+-        self._states[run_id] = TurnStatus.CANCELLED
++        # Do not claim a stop while a tool (including a threaded shell) is still
++        # executing. Its completion is the next safe cancellation boundary.
++        import asyncio
++        self._interrupt_requested.add(run_id)
++        while self._states.get(run_id) is TurnStatus.RUNNING:
++            await asyncio.sleep(0.01)
+         return TurnStatus.CANCELLED
+ 
+     def query_state(self, run_id: str) -> TurnStatus | None:
+--- before/src/teamagents/runtime.py
++++ after/src/teamagents/runtime.py
+@@ -146,19 +146,16 @@
+             if state is None and runner is not None and hasattr(runner, "reconcile"):
+                 state = await runner.reconcile(run)
+             if state is not None:
+-                events = (self.control.expire_run_approvals(run.run_id)
+-                          if state in TURN_TERMINAL_STATUSES else [])
+-                self.store.set_run_status(run.run_id, state)
+-                if events:
+-                    self._emit(events, actor_id="system")
++                if state in TURN_TERMINAL_STATUSES or state in (
++                        TurnStatus.WAITING_TASK, TurnStatus.WAITING_APPROVAL):
++                    self._finalize(run, TurnOutcome(status=state))
++                else:
++                    self.store.set_run_status(run.run_id, state)
+                 continue
+             if run.external_turn_id:
+-                events = self.control.expire_run_approvals(run.run_id)
+-                self.store.set_run_status(run.run_id, TurnStatus.OUTCOME_UNKNOWN)
+-                self._emit([EventDraft(kind=EventKind.RUN_FAILED,
+-                                       payload={"run_id": run.run_id, "agent_id": run.agent_id,
+-                                                "status": "OUTCOME_UNKNOWN"})] + events,
+-                           actor_id="system")
++                self._finalize(run, TurnOutcome(
++                    status=TurnStatus.OUTCOME_UNKNOWN,
++                    error="external turn outcome could not be confirmed"))
+             else:
+                 # in-process runner only: safe to re-run the segment
+                 self.store.update_run_status_where(
+@@ -400,7 +397,8 @@
+                    actor_id=run.agent_id)
+ 
+         gateway = ToolGateway(self.control, self.session_id, run.agent_id, run.run_id,
+-                              self.approvals, self._guarded_executor(run))
++                              self.approvals, self._guarded_executor(run),
++                              submit=self.submit)
+         view = build_agent_view(self.store, spec, self.session_id, run.agent_id, run)
+         if view.delivery_ids:
+             # hand-off record: these deliveries are now part of the turn's context
+@@ -528,6 +526,16 @@
+                                      "requester": task.requester, "error": outcome.error},
+                             task_id=task.task_id,
+                         ))
++            elif outcome.status is TurnStatus.OUTCOME_UNKNOWN and run.task_id:
++                task = self.store.get_task(run.task_id)
++                if task is not None and task.status in (TaskStatus.PENDING, TaskStatus.RUNNING):
++                    self.store.compare_and_set_task(task.task_id, task.status, TaskStatus.BLOCKED)
++                    events.append(EventDraft(
++                        kind=EventKind.TASK_BLOCKED,
++                        payload={"task_id": task.task_id, "assignee": task.assignee,
++                                 "requester": task.requester, "reason": outcome.error
++                                 or "external turn outcome could not be confirmed"},
++                        task_id=task.task_id))
+             elif outcome.status is TurnStatus.CANCELLED and run.task_id:
+                 task = self.store.get_task(run.task_id)
+                 if task is not None and task.status in (TaskStatus.PENDING, TaskStatus.RUNNING):
+@@ -553,48 +561,50 @@
+                 self._ack_injected(run)
+             self._step_counts.pop(run.run_id, None)
+ 
++            if outcome.status is TurnStatus.WAITING_APPROVAL:
++                pending = [a for a in self.store.pending_approvals(self.session_id)
++                           if a is not None and a.run_id == run.run_id]
++                for a in pending:
++                    events.append(EventDraft(
++                        kind=EventKind.APPROVAL_REQUESTED,
++                        payload={"approval_id": a.approval_id, "agent_id": a.agent_id,
++                                 "run_id": a.run_id, "scope": a.requested_scope},
++                    ))
++
++            if terminal:
++                if outcome.note == "turn_limit":
++                    events.append(EventDraft(
++                        kind=EventKind.LIMIT_REACHED,
++                        payload={"kind": "max_model_steps_per_turn", "run_id": run.run_id,
++                                 "agent_id": run.agent_id, "detail": outcome.error}))
++                if (outcome.status is TurnStatus.COMPLETED and outcome.reply_text
++                        and run.agent_id == self.store.load_team_spec(self.session_id).leader_id):
++                    events.append(EventDraft(kind=EventKind.LEADER_REPLY,
++                                             payload={"text": outcome.reply_text,
++                                                      "run_id": run.run_id}))
++                elif outcome.status is TurnStatus.COMPLETED and outcome.reply_text:
++                    events.append(EventDraft(
++                        kind=EventKind.RUN_PROGRESS,
++                        payload={"run_id": run.run_id, "agent_id": run.agent_id,
++                                 "text": outcome.reply_text[:2000], "final": True,
++                                 "task_id": run.task_id}))
++                events.append(EventDraft(
++                    kind={TurnStatus.COMPLETED: EventKind.RUN_COMPLETED,
++                          TurnStatus.FAILED: EventKind.RUN_FAILED,
++                          TurnStatus.CANCELLED: EventKind.RUN_CANCELLED,
++                          TurnStatus.OUTCOME_UNKNOWN: EventKind.RUN_FAILED}[outcome.status],
++                    payload={"run_id": run.run_id, "agent_id": run.agent_id,
++                             "status": outcome.status, "error": outcome.error},
++                ))
++            if events:
++                self._emit(events, actor_id=run.agent_id)
++            self.control.schedule()
++
+         if terminal:
+             # drop the hand-off ledger only after the acknowledgement committed:
+             # a rolled-back finalize must retry with the same evidence (F-C3)
+             self._offered.pop(run.run_id, None)
+ 
+-        if outcome.status is TurnStatus.WAITING_APPROVAL:
+-            pending = [a for a in self.store.pending_approvals(self.session_id)
+-                       if a is not None and a.run_id == run.run_id]
+-            for a in pending:
+-                events.append(EventDraft(
+-                    kind=EventKind.APPROVAL_REQUESTED,
+-                    payload={"approval_id": a.approval_id, "agent_id": a.agent_id,
+-                             "run_id": a.run_id, "scope": a.requested_scope},
+-                ))
+-
+-        if terminal:
+-            if outcome.note == "turn_limit":
+-                events.append(EventDraft(
+-                    kind=EventKind.LIMIT_REACHED,
+-                    payload={"kind": "max_model_steps_per_turn", "run_id": run.run_id,
+-                             "agent_id": run.agent_id, "detail": outcome.error}))
+-            if (outcome.status is TurnStatus.COMPLETED and outcome.reply_text
+-                    and run.agent_id == self.store.load_team_spec(self.session_id).leader_id):
+-                events.append(EventDraft(kind=EventKind.LEADER_REPLY,
+-                                         payload={"text": outcome.reply_text}))
+-            elif outcome.status is TurnStatus.COMPLETED and outcome.reply_text:
+-                events.append(EventDraft(
+-                    kind=EventKind.RUN_PROGRESS,
+-                    payload={"run_id": run.run_id, "agent_id": run.agent_id,
+-                             "text": outcome.reply_text[:2000], "final": True,
+-                             "task_id": run.task_id}))
+-            events.append(EventDraft(
+-                kind={TurnStatus.COMPLETED: EventKind.RUN_COMPLETED,
+-                      TurnStatus.FAILED: EventKind.RUN_FAILED,
+-                      TurnStatus.CANCELLED: EventKind.RUN_CANCELLED,
+-                      TurnStatus.OUTCOME_UNKNOWN: EventKind.RUN_FAILED}[outcome.status],
+-                payload={"run_id": run.run_id, "agent_id": run.agent_id,
+-                         "status": outcome.status, "error": outcome.error},
+-            ))
+-        if events:
+-            self._emit(events, actor_id=run.agent_id)
+-        self.control.schedule()
+         self._drain_mid_turn()
+ 
+     def _ack_injected(self, run: TurnRun) -> None:
+--- before/src/teamagents/storage.py
++++ after/src/teamagents/storage.py
+@@ -954,7 +954,10 @@
+     def insert_patch(self, patch: TopologyPatch, session_id: str) -> None:
+         self.conn.execute(
+             "INSERT INTO topology_patches(patch_id, session_id, base_revision, proposer, decided_by,"
+-            " operations, affected_agents, status, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
++            " operations, affected_agents, status, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)"
++            " ON CONFLICT(patch_id) DO UPDATE SET decided_by=excluded.decided_by,"
++            " operations=excluded.operations, affected_agents=excluded.affected_agents,"
++            " status=excluded.status, updated_at=excluded.updated_at",
+             (patch.patch_id, session_id, patch.base_revision, patch.proposer, patch.decided_by,
+              json.dumps(patch.operations), json.dumps(patch.affected_agents), patch.status,
+              patch.created_at, patch.updated_at),
+--- before/src/teamagents/tui/app.py
++++ after/src/teamagents/tui/app.py
+@@ -14,10 +14,10 @@
+ 
+ from textual.app import App, ComposeResult
+ from textual.binding import Binding
+-from textual.containers import Horizontal, Vertical, VerticalScroll
++from textual.containers import Vertical, VerticalScroll
+ from textual.widgets import Footer, Header, Static, TabbedContent, TabPane
+ 
+-from ..models import EventKind, TaskStatus, TeamAction, ActionKind
++from ..models import EventKind, TaskStatus, TeamAction, ActionKind, TurnStatus, new_id
+ from ..runtime import SessionRuntime
+ from .approvals import ApprovalsPanel
+ from .panels import (ChatLog, InputRow, LogPanel, PromptInput, SettingsPanel,
+@@ -25,7 +25,7 @@
+                      PanelReady)
+ from .theme import CODEX_THEME
+ 
+-RIGHT_PANELS = [("team", "团队"), ("tasks", "任务"), ("shared", "共享空间"),
++TOP_PANELS = [("team", "团队"), ("tasks", "任务"), ("shared", "共享空间"),
+                 ("approvals", "批准"), ("sessions", "会话"), ("log", "日志"),
+                 ("settings", "设置")]
+ 
+@@ -37,18 +37,25 @@
+     /* Codex-like: flat, monochrome, one accent, thin borders */
+     Screen { layout: vertical; background: $background; color: $foreground; }
+     #body { height: 1fr; }
+-    #chat { width: 2fr; padding: 0 1; background: $background; }
+-    #side { width: 3fr; border-left: solid $secondary; padding: 0 1; }
+-    #side.narrow { display: none; }
+-    #chat.narrow { width: 1fr; }
++    #side { height: 2fr; min-height: 6; border-bottom: solid $secondary; padding: 0 1; }
++    #chat { height: 3fr; min-height: 9; padding: 0 1; background: $background; }
++    #chat-log { height: 1fr; min-height: 1; }
++    #chat-live { height: auto; max-height: 8; padding: 0 1; color: $foreground; display: none; }
++    #input-row { height: auto; }
++    #composer { height: auto; }
++    #prompt-prefix { width: 2; padding-top: 1; color: $primary; text-style: bold; }
++    #composer-status, #composer-hint { height: 1; color: $text-muted; }
++    #chat-stream { height: 1fr; }
+     .panel { height: 1fr; }
+     #prompt {
+-        height: 4;
+-        border: round $secondary;
+-        background: $background;
++        height: 3;
++        width: 1fr;
++        border: none;
++        padding: 1;
++        background: $panel;
+         color: $foreground;
+     }
+-    #prompt:focus { border: round $primary; }
++    #prompt:focus { background: $panel; }
+     #status {
+         height: 1;
+         background: $panel;
+@@ -77,13 +84,13 @@
+     """
+ 
+     BINDINGS = [
+-        # priority: the prompt area would otherwise swallow Ctrl+A (select all)
+         Binding("ctrl+q", "quit_app", "退出", priority=True),
+         Binding("ctrl+p", "pause_session", "暂停/继续", priority=True),
+         Binding("ctrl+r", "refresh_all", "刷新", priority=True),
+         Binding("ctrl+f", "toggle_full_auto", "全自动", priority=True),
+         Binding("ctrl+t", "cycle_panel", "切换面板", priority=True),
+-        Binding("ctrl+a", "focus_approvals", "批准", priority=True),
++        Binding("ctrl+g", "focus_approvals", "批准", priority=True),
++        Binding("escape", "interrupt_leader", "停止 Leader", priority=True),
+         Binding("ctrl+n", "focus_prompt", "输入", priority=True),
+     ]
+ 
+@@ -97,7 +104,8 @@
+         self._open_kwargs = dict(open_kwargs or {})
+         self._cursor = 0
+         self._selected_member: str | None = None
+-        self._delta_buffer: dict[str, list[str]] = {}
++        self._delta_buffer: dict[str, str] = {}
++        self._stream_dirty = False
+         self._log_cursor = 0
+         self._log_member: str | None = None
+         self._refresh_errors: tuple[str, ...] = ()
+@@ -110,10 +118,7 @@
+     def compose(self) -> ComposeResult:
+         yield Header(show_clock=True)
+         yield StatusBar("", id="status")
+-        with Horizontal(id="body"):
+-            with Vertical(id="chat"):
+-                yield ChatLog(id="chat-log")
+-                yield InputRow(id="input-row")
++        with Vertical(id="body"):
+             with Vertical(id="side"):
+                 with TabbedContent(initial="tab-team"):
+                     with TabPane("团队", id="tab-team"):
+@@ -130,6 +135,9 @@
+                         yield LogPanel(classes="panel")
+                     with TabPane("设置", id="tab-settings"):
+                         yield SettingsPanel(classes="panel")
++            with Vertical(id="chat"):
++                yield ChatLog(id="chat-log")
++                yield InputRow(id="input-row")
+         yield Footer()
+ 
+     async def on_mount(self) -> None:
+@@ -195,13 +203,6 @@
+     def _refresh_now(self) -> None:
+         self.run_worker(self._refresh_widgets(), name="ta-refresh")
+ 
+-    def on_resize(self, event) -> None:
+-        """Narrow terminals switch to a single column (plan section 13)."""
+-        narrow = event.size.width < 100
+-        with contextlib.suppress(Exception):
+-            self.query_one("#side").set_class(narrow, "narrow")
+-            self.query_one("#chat").set_class(narrow, "narrow")
+-
+     # ------------------------------------------------------------- rendering
+ 
+     async def _refresh_widgets(self) -> None:
+@@ -231,6 +232,14 @@
+             # report a broken widget once, not once per tick
+             self._write_chat("system", "[界面刷新失败] " + "；".join(errors))
+         self._refresh_errors = tuple(errors)
++        spec = store.load_team_spec(session_id)
++        runs = [r for r in store.runs_for_session(session_id,
++                ["QUEUED", "RUNNING", "WAITING_TASK", "WAITING_APPROVAL"])
++                if r.agent_id == spec.leader_id]
++        state = {"QUEUED": "准备中", "RUNNING": "正在处理", "WAITING_TASK": "等待成员结果",
++                 "WAITING_APPROVAL": "等待批准"}.get(runs[0].status if runs else "", "就绪")
++        self.query_one("#composer-status", Static).update(
++            f"{state} · Leader / {spec.leader.model_profile} · 可继续输入补充要求")
+ 
+     def _append_log(self, panel: LogPanel) -> None:
+         """Append new events; the log cursor is independent of the chat cursor."""
+@@ -261,7 +270,10 @@
+             payload = _payload(event)
+             if kind == EventKind.USER_MESSAGE:
+                 self._write_chat("你", payload.get("text", ""))
++                self.query_one(PromptInput).record_submission(payload.get("text", ""))
+             elif kind == EventKind.LEADER_REPLY:
++                self._delta_buffer.pop(payload.get("run_id"), None)
++                self.query_one(ChatLog).show_stream("")
+                 self._write_chat("Leader", payload.get("text", ""))
+             elif kind == EventKind.MESSAGE:
+                 self._write_chat(f"{event['actor_id']}→{payload.get('target')}",
+@@ -277,7 +289,7 @@
+                                  f"{payload.get('summary') or payload.get('reason') or payload.get('error') or ''}")
+             elif kind == EventKind.APPROVAL_REQUESTED:
+                 self._write_chat("system",
+-                                 f"需要批准：{_approval_line(payload)}（按 Ctrl+A 处理）")
++                                 f"需要批准：{_approval_line(payload)}（按 Ctrl+G 处理）")
+             elif kind == EventKind.APPROVAL_DECIDED:
+                 self._write_chat("system",
+                                  f"批准 {payload.get('approval_id')} → {payload.get('status')}")
+@@ -310,22 +322,26 @@
+                 self._write_chat("system", f"目标完成：{payload.get('summary', '')}")
+ 
+     def _on_model_delta(self, run_id: str, agent_id: str, text: str) -> None:
+-        self._delta_buffer.setdefault(agent_id, []).append(text)
++        if self.rt is None:
++            return
++        if agent_id != self.rt.store.load_team_spec(self.rt.session_id).leader_id:
++            return
++        # Transient preview is bounded; the full final reply is persisted.
++        self._delta_buffer[run_id] = (self._delta_buffer.get(run_id, "") + text)[-32000:]
++        self._stream_dirty = True
+ 
+     def _flush_deltas(self) -> None:
+-        """Coalesced refresh: bounded queue, no per-character repaint."""
+-        if not self._delta_buffer or self.rt is None:
+-            return
+-        try:
+-            leader_id = self.rt.store.load_team_spec(self.rt.session_id).leader_id
+-        except Exception:
+-            self._delta_buffer.clear()
+-            return
+-        for agent_id, chunks in list(self._delta_buffer.items()):
+-            text = "".join(chunks)[-4000:]
+-            del self._delta_buffer[agent_id]
+-            if agent_id == leader_id:
+-                self._write_chat("Leader（生成中）", text[-1500:])
++        if self.rt is None:
++            return
++        for run_id in list(self._delta_buffer):
++            run = self.rt.store.get_run(run_id)
++            if run is not None and run.status in (TurnStatus.COMPLETED, TurnStatus.FAILED,
++                                                 TurnStatus.CANCELLED, TurnStatus.OUTCOME_UNKNOWN):
++                del self._delta_buffer[run_id]
++                self._stream_dirty = True
++        if self._stream_dirty:
++            self.query_one(ChatLog).show_stream("\n\n".join(self._delta_buffer.values()))
++            self._stream_dirty = False
+ 
+     def on_tabbed_content_tab_activated(self, event) -> None:
+         """A pane mounts lazily: refresh it as soon as it becomes visible."""
+@@ -405,12 +421,14 @@
+         self._cursor = 0
+         self._selected_member = None
+         self._delta_buffer.clear()
++        self.query_one(ChatLog).show_stream("")
++        self.query_one(PromptInput).reset_history()
+         self._log_cursor = 0
+         self._log_member = None
+         self._refresh_errors = ()
+         self.sub_title = self.rt.session_id
+         with contextlib.suppress(Exception):
+-            self.query_one(ChatLog).query_one("#chat-stream").clear()
++            self.query_one(ChatLog).clear()
+         with contextlib.suppress(Exception):
+             self.query_one("#log-stream").clear()
+         self._write_chat("system", f"已切换到会话 {self.rt.session_id}")
+@@ -483,6 +501,7 @@
+     async def on_prompt_input_submitted(self, message: PromptInput.Submitted) -> None:
+         receipt = self.rt.user_message(message.text)
+         if not receipt.ok:
++            self.query_one(PromptInput).text = message.text
+             self._write_chat("system", f"[输入被拒绝] {receipt.error}")
+ 
+     def on_data_table_row_highlighted(self, event) -> None:
+@@ -511,7 +530,7 @@
+ 
+     def action_cycle_panel(self) -> None:
+         tabs = self.query_one(TabbedContent)
+-        ids = [f"tab-{name}" for name, _ in RIGHT_PANELS]
++        ids = [f"tab-{name}" for name, _ in TOP_PANELS]
+         try:
+             index = (ids.index(tabs.active) + 1) % len(ids)
+         except ValueError:
+@@ -519,8 +538,22 @@
+         tabs.active = ids[index]
+ 
+     def action_refresh_all(self) -> None:
+-        self._cursor = 0
+-        self._write_chat("system", "[已刷新视图]")
++        self._refresh_now()
++
++    def action_interrupt_leader(self) -> None:
++        if self.rt is None:
++            return
++        leader_id = self.rt.store.load_team_spec(self.rt.session_id).leader_id
++        for run in self.rt.store.runs_for_session(self.rt.session_id,
++                ["QUEUED", "RUNNING", "WAITING_TASK", "WAITING_APPROVAL"]):
++            if run.agent_id == leader_id:
++                receipt = self.rt.submit(TeamAction(
++                    action_id=new_id("ui-stop"), session_id=self.rt.session_id,
++                    actor_id="user", kind=ActionKind.CANCEL_RUN,
++                    payload={"run_id": run.run_id}))
++                self._write_chat("system", "已请求停止 Leader，等待执行结束"
++                                 if receipt.ok else f"停止失败：{receipt.error}")
++                break
+ 
+     def action_pause_session(self) -> None:
+         session = self.rt.store.get_session(self.rt.session_id)
+--- before/src/teamagents/tui/panels.py
++++ after/src/teamagents/tui/panels.py
+@@ -10,6 +10,7 @@
+ import time
+ 
+ from rich.text import Text
++from rich.markdown import Markdown as RichMarkdown
+ from textual.containers import Horizontal, Vertical
+ from textual.message import Message
+ from textual.widgets import DataTable, Input, Markdown, RichLog, Static, TextArea
+@@ -33,10 +34,42 @@
+         "system": (LABEL_STYLE, NOTICE_STYLE),
+     }
+ 
+-    def compose(self):
+-        yield RichLog(highlight=False, markup=False, wrap=True, id="chat-stream")
++    def __init__(self, **kwargs):
++        super().__init__(**kwargs)
++        self._entries: list[tuple[str, str]] = []
++        self._width = 0
++
++    def compose(self):
++        yield RichLog(highlight=False, markup=False, wrap=True, min_width=1, id="chat-stream")
++        yield Static("", id="chat-live", markup=False)
++
++    def show_stream(self, text: str) -> None:
++        live = self.query_one("#chat-live", Static)
++        live.display = bool(text)
++        live.update(RichMarkdown(text) if text else "")
++
++    def clear(self) -> None:
++        self._entries.clear()
++        self.query_one("#chat-stream", RichLog).clear()
++        self.show_stream("")
++
++    def on_resize(self, event) -> None:
++        if event.size.width != self._width:
++            self._width = event.size.width
++            self.call_after_refresh(self._reflow)
++
++    def _reflow(self) -> None:
++        log = self.query_one("#chat-stream", RichLog)
++        log.clear()
++        for who, text in self._entries:
++            self._render_entry(who, text)
++        log.scroll_end(animate=False)
+ 
+     def write_line(self, who: str, text: str) -> None:
++        self._entries.append((who, text))
++        self._render_entry(who, text)
++
++    def _render_entry(self, who: str, text: str) -> None:
+         log = self.query_one("#chat-stream", RichLog)
+         label_style, body_style = self.STYLES.get(
+             who, (LABEL_STYLE, NOTICE_STYLE if who.startswith("system") else BODY_STYLE))
+@@ -45,7 +78,12 @@
+         elif who.endswith("（完成）"):
+             label_style, body_style = SUCCESS_STYLE, BODY_STYLE
+         if who:
+-            log.write(Text(f"{who}", style=label_style))
++            prefix = "›" if who == "你" else "•"
++            log.write(Text(f"{prefix} {who}", style=label_style))
++        if who == "Leader":
++            log.write(RichMarkdown(text or ""))
++            log.write("")
++            return
+         for line in (text or "").splitlines() or [""]:
+             if line.startswith(("✗", "⚠")):
+                 log.write(Text(line, style=ERROR_STYLE))
+@@ -58,8 +96,40 @@
+     """Multi-line input: Enter sends, Shift+Enter / Ctrl+J insert a newline."""
+ 
+     BINDINGS = [
+-        ("ctrl+j", "newline", "换行"),
++        ("ctrl+j,shift+enter", "newline", "换行"),
+     ]
++
++    def __init__(self, **kwargs):
++        super().__init__(**kwargs)
++        self.prompt_history: list[str] = []
++        self.prompt_history_index = 0
++        self.draft = ""
++
++    def record_submission(self, text: str) -> None:
++        # Same recall contract as Codex chat_composer_history: skip adjacent
++        # duplicates and restore the unsent draft after navigating down.
++        if text and (not self.prompt_history or self.prompt_history[-1] != text):
++            self.prompt_history.append(text)
++        self.prompt_history_index = len(self.prompt_history)
++
++    def reset_history(self) -> None:
++        self.prompt_history.clear()
++        self.prompt_history_index = 0
++        self.draft = ""
++        self.text = ""
++
++    def on_text_area_changed(self, event: TextArea.Changed) -> None:
++        self.styles.height = min(8, max(3, self.wrapped_document.height + 2))
++
++    def recall(self, direction: int) -> None:
++        if not self.prompt_history:
++            return
++        if self.prompt_history_index == len(self.prompt_history):
++            self.draft = self.text
++        self.prompt_history_index = min(len(self.prompt_history), max(0, self.prompt_history_index + direction))
++        self.load_text(self.draft if self.prompt_history_index == len(self.prompt_history)
++                       else self.prompt_history[self.prompt_history_index])
++        self.move_cursor(self.document.end)
+ 
+     class Submitted(Message):
+         def __init__(self, text: str) -> None:
+@@ -80,6 +150,11 @@
+         """TextArea owns Enter; intercept it here (Shift+Enter keeps the newline)."""
+         if event.key == "enter":
+             self.action_submit_prompt()
++            event.stop()
++            event.prevent_default()
++        elif (event.key == "up" and self.cursor_location[0] == 0
++              or event.key == "down" and self.cursor_location[0] == self.document.line_count - 1):
++            self.recall(-1 if event.key == "up" else 1)
+             event.stop()
+             event.prevent_default()
+ 
+@@ -291,11 +366,16 @@
+         return self.refresh_from(store, session_id, member, cursor)
+ 
+ 
+-class InputRow(Horizontal):
++class InputRow(Vertical):
+     """Prompt line plus a hint."""
+ 
+     def compose(self):
+-        yield PromptInput(id="prompt", language=None)
++        yield Static("就绪 · 向 Leader 输入任务或补充要求", id="composer-status", markup=False)
++        with Horizontal(id="composer"):
++            yield Static("›", id="prompt-prefix")
++            yield PromptInput(id="prompt", language=None)
++        yield Static("Enter 发送 · Shift+Enter / Ctrl+J 换行 · ↑↓ 历史 · Esc 停止 Leader",
++                     id="composer-hint", markup=False)
+ 
+     def focus_prompt(self) -> None:
+         self.query_one("#prompt", PromptInput).focus()
+--- before/tests/test_p6_tui.py
++++ after/tests/test_p6_tui.py
+@@ -99,9 +99,14 @@
+         for chunk in ["流式", "输出", "测试"]:
+             h.rt.note_stream_chunk("run-x", "leader", chunk)
+         await pilot.pause(0.3)               # coalesced refresh interval
+-        text = "\n".join(str(line) for line in log.lines[before:])
+-        for chunk in ("流式", "输出", "测试"):
+-            assert chunk in text, "增量输出要合并进对话视图"
++        assert len(log.lines) == before, "流式预览不能反复追加到历史"
++        live = app.query_one("#chat-live")
++        assert live.display
++        assert live.content.markup == "流式输出测试"
++        for _ in range(100):
++            h.rt.note_stream_chunk("run-x", "leader", "中" * 1000)
++        await pilot.pause(0.2)
++        assert len(app._delta_buffer["run-x"]) <= 32000
+ 
+ 
+ async def test_tui_approval_queue_actions(harness_factory):
+@@ -116,7 +121,7 @@
+     app = TeamAgentsApp(runtime=h.rt)
+     async with app.run_test(size=(120, 40)) as pilot:
+         await pilot.pause()
+-        await pilot.press("ctrl+a")          # jump to approvals
++        await pilot.press("ctrl+g")          # jump to approvals
+         await pilot.pause(0.6)
+         panel = app.query_one(ApprovalsPanel)
+         table = panel.query_one("#approvals-table")
+@@ -129,18 +134,21 @@
+         assert stored.status == ApprovalStatus.APPROVED_SESSION
+ 
+ 
+-async def test_tui_narrow_terminal_switches_layout(harness_factory):
+-    h = await _session(harness_factory)
+-    app = TeamAgentsApp(runtime=h.rt)
+-    async with app.run_test(size=(120, 40)) as pilot:
+-        await pilot.pause()
+-        wide_hidden = app.query_one("#side").has_class("narrow")
+-    app2 = TeamAgentsApp(runtime=h.rt)
+-    async with app2.run_test(size=(70, 30)) as pilot:
+-        await pilot.pause()
+-        narrow_hidden = app2.query_one("#side").has_class("narrow")
+-    assert not wide_hidden, "宽终端显示侧栏"
+-    assert narrow_hidden, "窄终端切换为单栏，不强迫多栏"
++@pytest.mark.parametrize("size", [(120, 40), (70, 30), (80, 24)])
++async def test_tui_vertical_layout_keeps_both_sections_accessible(harness_factory, size):
++    h = await _session(harness_factory)
++    app = TeamAgentsApp(runtime=h.rt)
++    async with app.run_test(size=size) as pilot:
++        await pilot.pause()
++        top, bottom = app.query_one("#side"), app.query_one("#chat")
++        prompt = app.query_one("#prompt")
++        assert top.display and bottom.display
++        assert top.region.bottom <= bottom.region.y
++        assert top.region.width == bottom.region.width
++        assert prompt.region.bottom <= size[1] - 1
++        await pilot.press("ctrl+g")
++        await pilot.pause(0.3)
++        assert app.query_one("TabbedContent").active == "tab-approvals"
+ 
+ 
+ async def test_tui_settings_panel_and_full_auto_toggle(harness_factory):
+@@ -239,5 +247,5 @@
+         def rgb(color) -> tuple:
+             return (color.r, color.g, color.b)
+         assert rgb(app.query_one("#status").styles.background) == (24, 24, 24)
+-        assert rgb(app.query_one("#side").styles.border_left[1]) == (93, 93, 93)
+-        assert rgb(app.query_one("#prompt").styles.border_top[1]) == (59, 130, 246)
++        assert rgb(app.query_one("#side").styles.border_bottom[1]) == (93, 93, 93)
++        assert rgb(app.query_one("#prompt-prefix").styles.color) == (59, 130, 246)
+--- /dev/null
++++ after/tests/test_collaboration_regressions.py
+@@ -0,0 +1,266 @@
++"""Cooperation regressions: dispatch, safe topology boundaries and recovery."""
++import asyncio
++
++import pytest
++
++from conftest import leader, member, msg_channel, scripts, spec_of, task_channel
++from teamagents.agents import FakeMember, TurnOutcome
++from teamagents.models import (ActionKind, AgentStatus, ModelProfile, TaskStatus,
++                               TeamAction, TurnRun, TurnStatus, UserConfig, new_id)
++from teamagents.runtime import fake_session
++
++
++def action(rt, kind, payload, actor="leader", run_id=None):
++    return rt.submit(TeamAction(action_id=new_id("test"), session_id="s1",
++                               actor_id=actor, kind=kind, payload=payload, run_id=run_id))
++
++
++@pytest.fixture
++def rt(tmp_path):
++    spec = spec_of(leader(), member("b"), channels=[task_channel("leader", ["b"]),
++                                                  msg_channel("b", ["leader"])])
++    runtime = fake_session(tmp_path, spec, scripts(leader=[], b=[]),
++                           catalog=UserConfig(models={"test": ModelProfile(
++                               provider="openai", model="test")}))
++    yield runtime
++    runtime.store.close()
++
++
++def live_run(rt, agent="b", task_id=None):
++    run = TurnRun(run_id=new_id("run"), session_id="s1", agent_id=agent,
++                  task_id=task_id, config_revision=1, topology_revision=1,
++                  status=TurnStatus.RUNNING)
++    rt.store.insert_run(run)
++    rt.store.set_agent_status("s1", agent, AgentStatus.BUSY)
++    return run
++
++
++async def test_tool_dispatch_starts_worker_before_leader_finishes(tmp_path):
++    started = asyncio.Event()
++
++    class WaitingLeader(FakeMember):
++        async def start_or_resume(self, run, view, gateway, wake):
++            if run.run_id != leader_run.run_id:
++                return TurnOutcome(TurnStatus.COMPLETED)
++            await asyncio.sleep(0.05)
++            assert gateway.call("assign_task", {"assignee": "b", "description": "start now"}, "assign").ok
++            await asyncio.wait_for(started.wait(), 1)
++            return TurnOutcome(TurnStatus.COMPLETED)
++
++    class Worker(FakeMember):
++        async def start_or_resume(self, run, view, gateway, wake):
++            started.set()
++            assert gateway.call("send_message", {"target": "leader", "text": "working"}, "progress").ok
++            assert runtime.runners["leader"]._mid_turn.get(leader_run.run_id), "mid-turn message must be delivered now"
++            assert gateway.call("complete_task", {"task_id": run.task_id}, "done").ok
++            return TurnOutcome(TurnStatus.COMPLETED)
++
++    runtime = fake_session(tmp_path, spec_of(leader(), member("b"), channels=[
++        task_channel("leader", ["b"]), msg_channel("b", ["leader"])]),
++        {"leader": WaitingLeader("leader"), "b": Worker("b")})
++    runtime.user_message("go")
++    leader_run = runtime.store.runs_for_session("s1")[0]
++    await runtime.start()
++    try:
++        await asyncio.wait_for(started.wait(), 2)
++        assert await runtime.settle(3)
++        assert runtime.store.get_run(leader_run.run_id).status == TurnStatus.COMPLETED
++        assert runtime.store.tasks_for_session("s1")[0].status == TaskStatus.SUCCEEDED
++    finally:
++        await runtime.close()
++        runtime.store.close()
++
++
++def test_member_proposal_uses_boundary_and_records_decider(rt):
++    run = live_run(rt)
++    proposal = action(rt, ActionKind.PROPOSE_TEAM_CHANGE, {"operations": [
++        {"op": "update_agent", "agent_id": "b", "changes": {"instructions": "updated"}}]}, "b")
++    result = action(rt, ActionKind.APPLY_TOPOLOGY_PATCH, {"patch_id": proposal.result["patch_id"]})
++    assert result.ok and result.result["status"] == "WAITING_BOUNDARY"
++    assert rt.store.load_team_spec("s1").agent("b").instructions != "updated"
++    rt._finalize(run, TurnOutcome(TurnStatus.COMPLETED))
++    patch = rt.store.get_patch(proposal.result["patch_id"])
++    assert patch.status == "APPLIED" and patch.decided_by == "leader"
++    assert rt.store.load_team_spec("s1").agent("b").instructions == "updated"
++
++
++def test_stale_proposal_is_rejected(rt):
++    proposal = action(rt, ActionKind.PROPOSE_TEAM_CHANGE, {"operations": [
++        {"op": "update_agent", "agent_id": "b", "changes": {"instructions": "old"}}]}, "b")
++    assert action(rt, ActionKind.APPLY_TOPOLOGY_PATCH, {"base_revision": 1, "operations": [
++        {"op": "update_agent", "agent_id": "b", "changes": {"instructions": "new"}}]}).ok
++    result = action(rt, ActionKind.APPLY_TOPOLOGY_PATCH, {"patch_id": proposal.result["patch_id"]})
++    assert not result.ok and "stale" in result.error
++    assert rt.store.load_team_spec("s1").agent("b").instructions == "new"
++
++
++def test_removed_identity_cannot_be_reused(rt):
++    old = rt.store.load_team_spec("s1").agent("b").model_dump(mode="json")
++    assert action(rt, ActionKind.APPLY_TOPOLOGY_PATCH, {"base_revision": 1, "operations": [
++        {"op": "remove_agent", "agent_id": "b"}]}).ok
++    result = action(rt, ActionKind.APPLY_TOPOLOGY_PATCH, {"base_revision": 2, "operations": [
++        {"op": "add_agent", "agent": old}]})
++    assert not result.ok and "id" in result.error
++    old["id"] = "b-new"
++    assert action(rt, ActionKind.APPLY_TOPOLOGY_PATCH, {"base_revision": 2, "operations": [
++        {"op": "add_agent", "agent": old}]}).ok
++    assert rt.store.agent_status("s1", "b-new") == AgentStatus.IDLE
++
++
++async def test_recovery_applies_completed_task_and_wakes_requester(rt):
++    task = action(rt, ActionKind.ASSIGN_TASK, {"assignee": "b", "description": "recover"})
++    run = next(r for r in rt.store.runs_for_session("s1") if r.agent_id == "b")
++    rt.store.set_run_status(run.run_id, TurnStatus.RUNNING)
++    rt.store.compare_and_set_task(run.task_id, TaskStatus.PENDING, TaskStatus.RUNNING)
++    rt.store.set_agent_status("s1", "b", AgentStatus.BUSY)
++    assert action(rt, ActionKind.COMPLETE_TASK, {"task_id": task.result["task_id"]}, "b", run.run_id).ok
++    rt.runners["b"].state[run.run_id] = TurnStatus.COMPLETED
++    await rt.reconcile()
++    assert rt.store.get_task(run.task_id).status == TaskStatus.SUCCEEDED
++    assert rt.store.agent_status("s1", "b") == AgentStatus.IDLE
++    assert any(e["kind"] == "task_completed" for e in rt.store.events("s1"))
++
++
++def test_blocked_task_wakes_waiter_for_intervention(rt):
++    task = action(rt, ActionKind.ASSIGN_TASK, {"assignee": "b", "description": "cannot finish"})
++    run = live_run(rt, "leader")
++    assert action(rt, ActionKind.WAIT_FOR_TASKS, {"task_ids": [task.result["task_id"]]}, "leader", run.run_id).ok
++    worker = next(r for r in rt.store.runs_for_session("s1") if r.agent_id == "b")
++    rt._finalize(worker, TurnOutcome(TurnStatus.COMPLETED))
++    assert rt.store.get_task(worker.task_id).status == TaskStatus.BLOCKED
++    assert rt.store.get_run(run.run_id).status == TurnStatus.RUNNING
++
++
++async def test_native_cancel_waits_for_tool_and_prevents_next_side_effect(tmp_path):
++    from langchain_core.tools import tool
++    from scripted_model import ScriptedChatModel, ai_text, ai_tool
++    from test_p3_deepagents_runner import build_runtime
++
++    entered, release = asyncio.Event(), asyncio.Event()
++
++    @tool
++    async def slow_tool() -> str:
++        """Wait for a controlled operation to finish."""
++        entered.set()
++        await release.wait()
++        return "finished"
++
++    model = ScriptedChatModel(script=[ai_tool("slow_tool", {}),
++        ai_tool("write_file", {"file_path": "/must-not-exist", "content": "bad"}), ai_text("done")])
++    runtime = build_runtime(tmp_path, spec_of(leader()), {"leader": model})
++    runtime.runners["leader"].extra_tools.append(slow_tool)
++    await runtime.start()
++    try:
++        runtime.user_message("go")
++        await asyncio.wait_for(entered.wait(), 3)
++        run = runtime.store.runs_for_session("s1", ["RUNNING"])[0]
++        assert action(runtime, ActionKind.CANCEL_RUN, {"run_id": run.run_id}, "user").ok
++        await asyncio.sleep(0.05)
++        assert runtime.store.get_run(run.run_id).status == TurnStatus.RUNNING
++        release.set()
++        assert await runtime.settle(3)
++        assert runtime.store.get_run(run.run_id).status == TurnStatus.CANCELLED
++        assert not (tmp_path / "work" / "must-not-exist").exists()
++        assert len(model.calls) == 1
++    finally:
++        release.set()
++        await runtime.close()
++        runtime.store.close()
++
++
++def test_leader_can_create_delegate_and_cancel_without_waiting_for_itself(rt):
++    from teamagents.agents import ToolGateway
++    run = live_run(rt, "leader")
++    gateway = ToolGateway(rt.control, "s1", "leader", run.run_id, rt.approvals, submit=rt.submit)
++    result = gateway.call("apply_topology_patch", {"base_revision": 1, "operations": [{
++        "op": "add_agent", "agent": member("c").model_dump(mode="json"),
++        "channels": [task_channel("leader", ["c"]).model_dump(mode="json")]}]}, "add")
++    assert result.ok and result.result["status"] == "APPLIED"
++    assigned = gateway.call("assign_task", {"assignee": "c", "description": "work"}, "assign")
++    assert assigned.ok
++    task_id = assigned.result["task_id"]
++    rt.store.compare_and_set_task(task_id, TaskStatus.PENDING, TaskStatus.BLOCKED)
++    for queued in rt.store.runs_for_session("s1", ["QUEUED"]):
++        rt.store.set_run_status(queued.run_id, TurnStatus.COMPLETED)
++    cancelled = gateway.call("cancel_task", {"task_id": task_id}, "cancel")
++    assert cancelled.ok and rt.store.get_task(task_id).status == TaskStatus.CANCELLED
++    other = ToolGateway(rt.control, "s1", "b", live_run(rt).run_id, rt.approvals)
++    assert not other.call("cancel_task", {"task_id": task_id}, "deny").ok
++
++
++def test_waiting_patch_conflict_cannot_overwrite_new_decision(rt):
++    run = live_run(rt)
++    first = action(rt, ActionKind.APPLY_TOPOLOGY_PATCH, {"base_revision": 1, "operations": [
++        {"op": "update_agent", "agent_id": "b", "changes": {"instructions": "stale"}}]})
++    assert first.result["status"] == "WAITING_BOUNDARY"
++    assert action(rt, ActionKind.APPLY_TOPOLOGY_PATCH, {"base_revision": 1, "operations": [
++        {"op": "update_agent", "agent_id": "leader", "changes": {"instructions": "new"}}]}).ok
++    rt._finalize(run, TurnOutcome(TurnStatus.COMPLETED))
++    assert rt.store.get_patch(first.result["patch_id"]).status == "FAILED"
++    assert rt.store.load_team_spec("s1").agent("b").instructions != "stale"
++    assert rt.store.agent_status("s1", "b") == AgentStatus.IDLE
++    assert any(e["kind"] == "topology_rejected" for e in rt.store.events("s1"))
++
++
++def test_final_event_failure_rolls_back_task_run_and_ack(rt, monkeypatch):
++    assigned = action(rt, ActionKind.ASSIGN_TASK, {"assignee": "b", "description": "atomic"})
++    run = next(r for r in rt.store.runs_for_session("s1") if r.agent_id == "b")
++    rt.store.set_run_status(run.run_id, TurnStatus.RUNNING)
++    assert action(rt, ActionKind.COMPLETE_TASK, {"task_id": assigned.result["task_id"]}, "b", run.run_id).ok
++    rt._offered[run.run_id] = set(run.input_delivery_ids)
++    append = rt.store.append_event
++
++    def fail(event):
++        if event.kind == EventKind.TASK_COMPLETED:
++            raise RuntimeError("simulated crash at result event")
++        return append(event)
++
++    from teamagents.models import EventKind
++    monkeypatch.setattr(rt.store, "append_event", fail)
++    with pytest.raises(RuntimeError, match="simulated crash"):
++        rt._finalize(run, TurnOutcome(TurnStatus.COMPLETED))
++    assert rt.store.get_task(run.task_id).status == TaskStatus.PENDING
++    assert rt.store.get_run(run.run_id).status == TurnStatus.RUNNING
++    assert rt.store.pending_deliveries("s1", "b")
++    assert rt._offered[run.run_id]
++    monkeypatch.setattr(rt.store, "append_event", append)
++    rt._finalize(run, TurnOutcome(TurnStatus.COMPLETED))
++    assert rt.store.get_task(run.task_id).status == TaskStatus.SUCCEEDED
++
++
++def test_remove_member_keeps_other_channel_targets_and_observer_scope(rt):
++    from teamagents.models import ObserverSpec
++    spec = rt.store.load_team_spec("s1")
++    spec.agents.append(member("c"))
++    spec.channels[0].targets.append("c")
++    spec.observers = [ObserverSpec(agent_id="leader", subjects=["b", "c"],
++                                   event_types=["task_completed"], payload_scope="status")]
++    revision = rt.store.save_team_spec("s1", spec)
++    rt.store.ensure_agent("s1", "c")
++    result = action(rt, ActionKind.APPLY_TOPOLOGY_PATCH, {"base_revision": revision,
++        "operations": [{"op": "remove_agent", "agent_id": "b"}]})
++    assert result.ok, result.error
++    after = rt.store.load_team_spec("s1")
++    assert after.can_delegate("leader", "c")
++    assert after.observers[0].subjects == ["c"]
++
++
++@pytest.mark.parametrize("operations", [
++    [{"op": "remove_agent", "agent_id": "b"},
++     {"op": "add_agent", "agent": member("b").model_dump(mode="json")}],
++    [{"op": "update_agent", "agent_id": "b", "changes": {"id": "renamed"}}],
++])
++def test_identity_cannot_change_inside_patch(rt, operations):
++    result = action(rt, ActionKind.APPLY_TOPOLOGY_PATCH,
++                    {"base_revision": 1, "operations": operations})
++    assert not result.ok and "id" in result.error
++    assert rt.store.load_team_spec("s1").agent("b")
++    assert rt.store.current_revision("s1") == 1
++
++
++async def test_recovery_keeps_confirmed_running_member_busy(rt):
++    run = live_run(rt)
++    rt.runners["b"].state[run.run_id] = TurnStatus.RUNNING
++    await rt.reconcile()
++    assert rt.store.get_run(run.run_id).status == TurnStatus.RUNNING
++    assert rt.store.agent_status("s1", "b") == AgentStatus.BUSY
+--- /dev/null
++++ after/tests/test_tui_composer.py
+@@ -0,0 +1,84 @@
++"""Codex-style composer behavior over the production Textual widgets."""
++import json
++
++from conftest import leader, scripts, spec_of
++from teamagents.control import EventDraft
++from teamagents.models import EventKind, TurnRun, TurnStatus
++from teamagents.tui.app import TeamAgentsApp
++from teamagents.tui.panels import PromptInput
++
++
++async def test_composer_multiline_history_draft_and_readline_keys(harness_factory):
++    h = await harness_factory(spec_of(leader()), scripts(leader=[]))
++    app = TeamAgentsApp(runtime=h.rt)
++    async with app.run_test(size=(80, 30)) as pilot:
++        await pilot.pause()
++        prompt = app.query_one(PromptInput)
++        prompt.text = "第一行"
++        prompt.move_cursor(prompt.document.end)
++        await pilot.press("shift+enter")
++        prompt.insert("第二行")
++        await pilot.press("ctrl+j")
++        prompt.insert("第三行")
++        await pilot.pause()
++        assert prompt.text == "第一行\n第二行\n第三行"
++        assert prompt.region.height >= 5
++        await pilot.press("enter")
++        await pilot.pause(0.3)
++        users = [json.loads(e["payload_json"])["text"] for e in h.rt.store.events("s1")
++                 if e["kind"] == "user_message"]
++        assert users == ["第一行\n第二行\n第三行"]
++        prompt.text = "未发送草稿"
++        prompt.move_cursor(prompt.document.end)
++        await pilot.press("up")
++        assert prompt.text == users[0]
++        await pilot.press("down")
++        assert prompt.text == "未发送草稿"
++        await pilot.press("ctrl+a")
++        assert prompt.cursor_location == (0, 0)
++        await pilot.press("ctrl+e")
++        assert prompt.cursor_location == prompt.document.end
++        prompt.reset_history()
++        await pilot.press("up")
++        assert prompt.text == ""
++
++
++async def test_stream_final_once_refresh_preserves_history_and_draft(harness_factory):
++    h = await harness_factory(spec_of(leader()), scripts(leader=[]))
++    app = TeamAgentsApp(runtime=h.rt)
++    async with app.run_test(size=(100, 36)) as pilot:
++        await pilot.pause()
++        run = TurnRun(run_id="streaming-run", session_id="s1", agent_id="leader",
++                      config_revision=1, topology_revision=1, status=TurnStatus.RUNNING)
++        h.rt.store.insert_run(run)
++        h.rt.note_stream_chunk(run.run_id, "leader", "**唯一回复标记**")
++        await pilot.pause(0.15)
++        assert app.query_one("#chat-live").display
++        h.rt.store.set_run_status(run.run_id, TurnStatus.COMPLETED)
++        h.rt.control.emit([EventDraft(kind=EventKind.LEADER_REPLY,
++            payload={"run_id": run.run_id, "text": "**唯一回复标记**"})])
++        await pilot.pause(0.3)
++        prompt = app.query_one(PromptInput)
++        prompt.text = "保留草稿"
++        await pilot.press("ctrl+r", "ctrl+r")
++        await pilot.pause(0.3)
++        text = "\n".join(str(line) for line in app.query_one("#chat-stream").lines)
++        assert text.count("唯一回复标记") == 1
++        assert not app.query_one("#chat-live").display
++        assert app._delta_buffer == {}
++        assert prompt.text == "保留草稿"
++
++
++async def test_resize_reflows_chinese_reply_and_keeps_latest_content(harness_factory):
++    h = await harness_factory(spec_of(leader()), scripts(leader=[]))
++    app = TeamAgentsApp(runtime=h.rt)
++    async with app.run_test(size=(120, 40)) as pilot:
++        await pilot.pause()
++        app._write_chat("Leader", "中文回复" * 18 + "结束标记")
++        await pilot.resize_terminal(60, 26)
++        await pilot.pause(0.3)
++        log = app.query_one("#chat-stream")
++        assert not log.show_horizontal_scrollbar
++        assert log.is_vertical_scroll_end
++        text = "\n".join(str(line) for line in log.lines)
++        assert text.count("结束标记") == 1
+--- /dev/null
++++ after/docs/TUI-CODEX-REFERENCE.md
+@@ -0,0 +1,15 @@
++# Codex TUI 参考与 Textual 适配
++
++参考版本：OpenAI Codex 源码 `c4017a87aacc7558002b7cb510025e967c1d765e`（2026-09-12 获取）。
++
++TeamAgents 继续使用方案约定的 Python/Textual。Codex 的 Rust TUI 组件不能直接作为 Textual Widget 加载；本次复用其交互约定，在现有 TextArea、RichLog、Static 组件上实现，不引入 Rust 构建依赖，也不复制整套 TUI。
++
++| 上游参考 | TeamAgents 对应实现 |
++|---|---|
++| [chat_composer.rs](https://github.com/openai/codex/blob/c4017a87aacc7558002b7cb510025e967c1d765e/codex-rs/tui/src/bottom_pane/chat_composer.rs)：输入提交、换行、状态提示 | `tui/panels.py::PromptInput` / `InputRow`：› 提示符、多行编辑、自适应高度、快捷键提示 |
++| [chat_composer_history.rs](https://github.com/openai/codex/blob/c4017a87aacc7558002b7cb510025e967c1d765e/codex-rs/tui/src/bottom_pane/chat_composer_history.rs)：历史导航、相邻去重、草稿恢复 | `PromptInput.record_submission` / `recall`：历史来自本会话已提交用户事件，切换会话清空并从新会话事件重建 |
++| [history_cell.rs](https://github.com/openai/codex/blob/c4017a87aacc7558002b7cb510025e967c1d765e/codex-rs/tui/src/history_cell.rs)：角色区分与消息展示 | `ChatLog`：角色前缀、Markdown 回复；独立流式预览，在最终事件到达后归档一次；缩放时重排 |
++
++运行状态与输入区分开渲染；新输入仍直接交给 Leader，成员消息与权限继续由 TeamAgents 控制层处理。预览只保留最近 32,000 字符，最终回复仍从持久事件完整显示。
++
++验证：`tests/test_tui_composer.py`、`tests/test_p6_tui.py`；预览生成脚本 `review/tmp/render_tui.py`。

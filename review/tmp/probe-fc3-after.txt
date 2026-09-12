@@ -1,0 +1,9 @@
+== F-C3 after: ack failure rolls the terminal transaction back ==
+finalize raised: ack write failed
+run status after failure: RUNNING | agent: BUSY
+deliveries after failure: [(1, 'pending')]
+runs after the next scheduling pass: 1
+
+-- the executor retries the same run once the ack works --
+run status after retry: COMPLETED | deliveries: [(1, 'applied')]
+total runs: 1 | pending deliveries: []
