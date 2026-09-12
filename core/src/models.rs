@@ -274,20 +274,27 @@ impl TeamSpec {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelProfile {
-    #[serde(default)]
     pub provider: String,
-    #[serde(default)]
+    #[serde(default = "default_protocol")]
+    pub protocol: String, // "openai" | "anthropic" | "deepseek"
     pub model: String,
-    #[serde(default)]
-    pub reasoning_effort: Option<String>,
     #[serde(default)]
     pub base_url: Option<String>,
     #[serde(default)]
     pub api_key_env: Option<String>,
+    #[serde(default = "default_timeout")]
+    pub timeout: i64,
+    #[serde(default = "default_retries")]
+    pub max_retries: i64,
+    #[serde(default)]
+    pub generation_options: HashMap<String, Json>,
 }
+fn default_protocol() -> String { "openai".into() }
+fn default_timeout() -> i64 { 120 }
+fn default_retries() -> i64 { 5 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]

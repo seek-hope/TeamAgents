@@ -1861,6 +1861,364 @@ impl Control {
     }
 }
 
+/// Outcome of a finished turn segment (runtime.py::TurnOutcome).
+#[derive(Debug, Clone)]
+pub struct TurnOutcome {
+    pub status: TurnStatus,
+    pub error: Option<String>,
+    pub note: Option<String>,
+    pub reply_text: Option<String>,
+}
+
+impl Control {
+    /// runtime.py::_execute_inner start semantics: mark RUNNING, start the
+    /// attached task, emit lifecycle events. Returns the fresh run row.
+    pub fn begin_run(&mut self, run_id: &str) -> Result<TurnRun, String> {
+        let _ = self.store.begin();
+        let r = self.begin_run_inner(run_id);
+        match r {
+            Ok(run) => {
+                let _ = self.store.commit();
+                Ok(run)
+            }
+            Err(e) => {
+                let _ = self.store.rollback();
+                Err(e)
+            }
+        }
+    }
+
+    fn begin_run_inner(&mut self, run_id: &str) -> Result<TurnRun, String> {
+        let mut run = self.store.get_run(run_id).map_err(|e| e.to_string())?.ok_or("unknown run")?;
+        if run.status == TurnStatus::Queued {
+            self.store.set_run_status(run.run_id.as_str(), TurnStatus::Running).map_err(|e| e.to_string())?;
+            run.status = TurnStatus::Running;
+        }
+        self.store.set_agent_status(&self.session_id, &run.agent_id, AgentStatus::Busy).map_err(|e| e.to_string())?;
+        if let Some(task_id) = &run.task_id {
+            if let Ok(Some(task)) = self.store.get_task(task_id) {
+                if self
+                    .store
+                    .compare_and_set_task(&task.task_id, "PENDING", TaskStatus::Running, None)
+                    .map_err(|e| e.to_string())?
+                {
+                    let spec = self.store.load_team_spec(&self.session_id, None).map_err(|e| e.to_string())?;
+                    let action = self.sys_action(ActionKind::SendMessage, &run.agent_id);
+                    self.persist_events(
+                        &action,
+                        &spec,
+                        &[EventDraft {
+                            kind: EventKind::TaskStarted,
+                            payload: json!({"task_id": task.task_id, "assignee": task.assignee,
+                                            "requester": task.requester, "status": "RUNNING"}),
+                            task_id: Some(task.task_id.clone()),
+                            actor_id: Some(run.agent_id.clone()),
+                            ..EventDraft::new(EventKind::TaskStarted, json!({}))
+                        }],
+                    )?;
+                }
+            }
+        }
+        Ok(run)
+    }
+
+    /// runtime.py::_request_stop timeout path: mark OUTCOME_UNKNOWN and expire
+    /// the run's pending approvals with audit events.
+    pub fn stop_timeout(&mut self, run_id: &str) -> Result<(), String> {
+        let _ = self.store.begin();
+        let r = (|ctl: &mut Self| {
+            let run = ctl.store.get_run(run_id).map_err(|e| e.to_string())?.ok_or("unknown run")?;
+            let changed = ctl
+                .store
+                .update_run_status_where(run_id, TurnStatus::Running, TurnStatus::OutcomeUnknown)
+                .map_err(|e| e.to_string())?;
+            if !changed {
+                return Ok(());
+            }
+            let events = ctl.expire_run_approvals(run_id);
+            if !events.is_empty() {
+                let spec = ctl.store.load_team_spec(&ctl.session_id.clone(), None).map_err(|e| e.to_string())?;
+                let action = ctl.sys_action(ActionKind::CancelRun, &run.agent_id);
+                ctl.persist_events(&action, &spec, &events)?;
+            }
+            Ok(())
+        })(self);
+        match r {
+            Ok(()) => { let _ = self.store.commit(); Ok(()) }
+            Err(e) => { let _ = self.store.rollback(); Err(e) }
+        }
+    }
+
+    /// Drain mid-turn pushes recorded by schedule (runtime.py::_drain_mid_turn).
+    pub fn drain_mid_turn_pushes(&mut self) -> Vec<(String, Vec<Json>)> {
+        std::mem::take(&mut self.mid_turn_pushes)
+    }
+
+    /// runtime.py::WakeInfo — why this turn is waking.
+    pub fn wake_info(&self, run: &TurnRun) -> Json {
+        let decisions = self.store.decided_approvals_for_run(&run.run_id).unwrap_or_default();
+        if !decisions.is_empty() {
+            let denied = decisions.iter().any(|d| d.status == ApprovalStatus::Denied);
+            return json!({"reason": "approval",
+                          "payload": {"decisions": decisions.iter().map(|d| json!({
+                              "approval_id": d.approval_id, "status": enum_name(d.status)})).collect::<Vec<_>>(),
+                              "denied": denied}});
+        }
+        let kinds = self.store.delivery_event_kinds(&run.input_delivery_ids).unwrap_or_default();
+        if kinds.last().map(|k| k.as_str()) == Some("user_message") {
+            return json!({"reason": "user_input", "payload": {"kinds": kinds}});
+        }
+        if !run.waiting_on.is_empty() {
+            let results: Vec<Json> = run.waiting_on.iter().map(|tid| {
+                match self.store.get_task(tid).ok().flatten() {
+                    Some(t) => json!({"task_id": t.task_id, "status": enum_name(t.status), "result_refs": t.result_refs}),
+                    None => json!({"task_id": tid, "status": "UNKNOWN"}),
+                }
+            }).collect();
+            return json!({"reason": "task_results", "payload": {"task_ids": run.waiting_on, "results": results}});
+        }
+        json!({"reason": "new_input", "payload": {}})
+    }
+
+    fn sys_action(&self, kind: ActionKind, actor: &str) -> TeamAction {
+        TeamAction {
+            action_id: new_id("sys"),
+            session_id: self.session_id.clone(),
+            actor_id: actor.to_string(),
+            run_id: None,
+            kind,
+            payload: json!({}),
+        }
+    }
+
+    /// runtime.py::_finalize — apply the turn result: completion requests,
+    /// task semantics, run status, member state, delivery ack, one transaction.
+    /// `ack_ids` = the deliveries actually handed to the runner (RT-05 ledger).
+    pub fn finalize_run(&mut self, run_id: &str, outcome: &TurnOutcome, ack_ids: &[i64]) -> Result<(), String> {
+        let _ = self.store.begin();
+        let r = self.finalize_run_inner(run_id, outcome, ack_ids);
+        match r {
+            Ok(()) => {
+                let _ = self.store.commit();
+                Ok(())
+            }
+            Err(e) => {
+                let _ = self.store.rollback();
+                Err(e)
+            }
+        }
+    }
+
+    fn finalize_run_inner(&mut self, run_id: &str, outcome: &TurnOutcome, ack_ids: &[i64]) -> Result<(), String> {
+        let run = self.store.get_run(run_id).map_err(|e| e.to_string())?.ok_or("unknown run")?;
+        let req = self.store.completion_request(&run.run_id).map_err(|e| e.to_string())?;
+        let terminal = matches!(
+            outcome.status,
+            TurnStatus::Completed | TurnStatus::Failed | TurnStatus::Cancelled | TurnStatus::OutcomeUnknown
+        );
+        let mut events: Vec<EventDraft> = vec![];
+        if terminal {
+            // a turn that ended can never use a pending decision (RT-06)
+            events.extend(self.expire_run_approvals(&run.run_id));
+        }
+        if outcome.status == TurnStatus::Completed {
+            if let Some(req) = &req {
+                let req_task = req["task_id"].as_str().unwrap_or("");
+                let refs: Vec<String> = req["result_refs"]
+                    .as_array()
+                    .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+                    .unwrap_or_default();
+                if !req_task.is_empty() {
+                    if let Ok(Some(task)) = self.store.get_task(req_task) {
+                        if self
+                            .store
+                            .compare_and_set_task(&task.task_id, &enum_name(task.status), TaskStatus::Succeeded, Some(&refs))
+                            .map_err(|e| e.to_string())?
+                        {
+                            let mut waiters = self.store.waiters_for_task(&self.session_id, &task.task_id).map_err(|e| e.to_string())?;
+                            waiters.push(task.requester.clone());
+                            waiters.sort();
+                            waiters.dedup();
+                            events.push(EventDraft {
+                                kind: EventKind::TaskCompleted,
+                                payload: json!({"task_id": task.task_id, "assignee": task.assignee,
+                                                "requester": task.requester, "status": "SUCCEEDED",
+                                                "result_refs": refs, "summary": req["summary"]}),
+                                task_id: Some(task.task_id.clone()),
+                                push: Some(waiters),
+                                ..EventDraft::new(EventKind::TaskCompleted, json!({}))
+                            });
+                        }
+                    }
+                } else {
+                    self.store
+                        .set_goal_state(&self.session_id, run.goal_id.as_deref().unwrap_or(""), "done")
+                        .map_err(|e| e.to_string())?;
+                    events.push(EventDraft {
+                        kind: EventKind::GoalDone,
+                        payload: json!({"goal_id": run.goal_id, "agent_id": run.agent_id, "summary": req["summary"]}),
+                        push: Some(vec![]),
+                        ..EventDraft::new(EventKind::GoalDone, json!({}))
+                    });
+                }
+            }
+        }
+        // Python: outcome COMPLETED and run.task_id and (req is None or req
+        // completes a *different* task) — its own task was left unfinished.
+        let req_other = match &req {
+            None => true, // no completion request at all
+            Some(r) => {
+                let t = r["task_id"].as_str().unwrap_or("");
+                !t.is_empty() && run.task_id.as_deref() != Some(t)
+            }
+        };
+        if outcome.status == TurnStatus::Completed && run.task_id.is_some() && req_other {
+            // its own task was left unfinished: block it for intervention
+            if let Some(tid) = &run.task_id {
+                if let Ok(Some(task)) = self.store.get_task(tid) {
+                    if matches!(task.status, TaskStatus::Pending | TaskStatus::Running)
+                        && self
+                            .store
+                            .compare_and_set_task(&task.task_id, &enum_name(task.status), TaskStatus::Blocked, None)
+                            .map_err(|e| e.to_string())?
+                    {
+                        events.push(EventDraft {
+                            kind: EventKind::TaskBlocked,
+                            payload: json!({"task_id": task.task_id, "assignee": task.assignee,
+                                            "requester": task.requester,
+                                            "reason": "turn ended without complete_task or wait_for_tasks"}),
+                            task_id: Some(task.task_id.clone()),
+                            ..EventDraft::new(EventKind::TaskBlocked, json!({}))
+                        });
+                    }
+                }
+            }
+        } else if outcome.status == TurnStatus::Failed && run.task_id.is_some() {
+            if let Some(tid) = &run.task_id {
+                if let Ok(Some(task)) = self.store.get_task(tid) {
+                    if matches!(task.status, TaskStatus::Pending | TaskStatus::Running)
+                        && self
+                            .store
+                            .compare_and_set_task(&task.task_id, &enum_name(task.status), TaskStatus::Failed, None)
+                            .map_err(|e| e.to_string())?
+                    {
+                        events.push(EventDraft {
+                            kind: EventKind::TaskFailed,
+                            payload: json!({"task_id": task.task_id, "assignee": task.assignee,
+                                            "requester": task.requester, "error": outcome.error}),
+                            task_id: Some(task.task_id.clone()),
+                            ..EventDraft::new(EventKind::TaskFailed, json!({}))
+                        });
+                    }
+                }
+            }
+        } else if outcome.status == TurnStatus::OutcomeUnknown && run.task_id.is_some() {
+            if let Some(tid) = &run.task_id {
+                if let Ok(Some(task)) = self.store.get_task(tid) {
+                    if matches!(task.status, TaskStatus::Pending | TaskStatus::Running) {
+                        let _ = self.store.compare_and_set_task(&task.task_id, &enum_name(task.status), TaskStatus::Blocked, None);
+                        events.push(EventDraft {
+                            kind: EventKind::TaskBlocked,
+                            payload: json!({"task_id": task.task_id, "assignee": task.assignee,
+                                            "requester": task.requester,
+                                            "reason": outcome.error.clone().unwrap_or_else(|| "external turn outcome could not be confirmed".into())}),
+                            task_id: Some(task.task_id.clone()),
+                            ..EventDraft::new(EventKind::TaskBlocked, json!({}))
+                        });
+                    }
+                }
+            }
+        } else if outcome.status == TurnStatus::Cancelled && run.task_id.is_some() {
+            if let Some(tid) = &run.task_id {
+                if let Ok(Some(task)) = self.store.get_task(tid) {
+                    if matches!(task.status, TaskStatus::Pending | TaskStatus::Running)
+                        && self
+                            .store
+                            .compare_and_set_task(&task.task_id, &enum_name(task.status), TaskStatus::Cancelled, None)
+                            .map_err(|e| e.to_string())?
+                    {
+                        events.push(EventDraft {
+                            kind: EventKind::TaskCancelled,
+                            payload: json!({"task_id": task.task_id, "assignee": task.assignee,
+                                            "requester": task.requester, "status": "CANCELLED"}),
+                            task_id: Some(task.task_id.clone()),
+                            ..EventDraft::new(EventKind::TaskCancelled, json!({}))
+                        });
+                    }
+                }
+            }
+        }
+
+        // the terminal status, the member state and the delivery acknowledgement
+        // are one write: a crash can never leave "run ended + input un-acked" (F-C3)
+        self.store.set_run_status(&run.run_id, outcome.status).map_err(|e| e.to_string())?;
+        if matches!(outcome.status, TurnStatus::WaitingTask | TurnStatus::WaitingApproval) {
+            self.store.set_agent_status(&self.session_id, &run.agent_id, AgentStatus::Waiting).map_err(|e| e.to_string())?;
+        } else {
+            self.store.set_agent_status(&self.session_id, &run.agent_id, AgentStatus::Idle).map_err(|e| e.to_string())?;
+        }
+        if terminal && !ack_ids.is_empty() {
+            // ack exactly the deliveries handed to the runner (RT-05)
+            for id in ack_ids {
+                self.store.ack_delivery_by_id(*id).map_err(|e| e.to_string())?;
+            }
+        }
+
+        if outcome.status == TurnStatus::WaitingApproval {
+            let pending = self.store.pending_approvals(&self.session_id).map_err(|e| e.to_string())?;
+            for a in pending.into_iter().filter(|a| a.run_id == run.run_id) {
+                events.push(EventDraft::new(
+                    EventKind::ApprovalRequested,
+                    json!({"approval_id": a.approval_id, "agent_id": a.agent_id,
+                           "run_id": a.run_id, "scope": a.requested_scope}),
+                ));
+            }
+        }
+
+        if terminal {
+            if outcome.note.as_deref() == Some("turn_limit") {
+                events.push(EventDraft::new(
+                    EventKind::LimitReached,
+                    json!({"kind": "max_model_steps_per_turn", "run_id": run.run_id,
+                           "agent_id": run.agent_id, "detail": outcome.error}),
+                ));
+            }
+            let leader = self.store.load_team_spec(&self.session_id, None).map_err(|e| e.to_string())?.leader_id;
+            if outcome.status == TurnStatus::Completed && outcome.reply_text.is_some() && run.agent_id == leader {
+                events.push(EventDraft::new(
+                    EventKind::LeaderReply,
+                    json!({"text": outcome.reply_text, "run_id": run.run_id}),
+                ));
+            } else if outcome.status == TurnStatus::Completed && outcome.reply_text.is_some() {
+                let text: String = outcome.reply_text.clone().unwrap_or_default().chars().take(2000).collect();
+                events.push(EventDraft::new(
+                    EventKind::RunProgress,
+                    json!({"run_id": run.run_id, "agent_id": run.agent_id,
+                           "text": text, "final": true, "task_id": run.task_id}),
+                ));
+            }
+            let kind = match outcome.status {
+                TurnStatus::Completed => EventKind::RunCompleted,
+                TurnStatus::Failed | TurnStatus::OutcomeUnknown => EventKind::RunFailed,
+                TurnStatus::Cancelled => EventKind::RunCancelled,
+                _ => EventKind::RunFailed,
+            };
+            events.push(EventDraft::new(
+                kind,
+                json!({"run_id": run.run_id, "agent_id": run.agent_id,
+                       "status": enum_name(outcome.status), "error": outcome.error}),
+            ));
+        }
+        if !events.is_empty() {
+            let spec = self.store.load_team_spec(&self.session_id, None).map_err(|e| e.to_string())?;
+            let action = self.sys_action(ActionKind::SendMessage, &run.agent_id);
+            self.persist_events(&action, &spec, &events)?;
+        }
+        let spec = self.store.load_team_spec(&self.session_id, None).map_err(|e| e.to_string())?;
+        self.schedule_inner(&spec)
+    }
+}
+
 /// Enum wire string (matches Python StrEnum `.value`).
 pub fn enum_name<T: serde::Serialize>(v: T) -> String {
     serde_json::to_value(v).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default()

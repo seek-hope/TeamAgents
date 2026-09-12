@@ -218,3 +218,78 @@ fn signal_done_blocked_by_unfinished_work() {
     let blockers = r.result["blockers"].as_array().unwrap();
     assert!(blockers.iter().any(|b| b.as_str().unwrap().contains("unfinished tasks")));
 }
+
+// -- finalize_run (runtime.py::_finalize port) ----------------------------------
+
+use teamagents_core::control::TurnOutcome;
+
+fn completed(reply: Option<&str>) -> TurnOutcome {
+    TurnOutcome { status: TurnStatus::Completed, error: None, note: None, reply_text: reply.map(str::to_string) }
+}
+
+#[test]
+fn finalize_commits_task_and_wakes_waiter() {
+    let mut ctl = harness();
+    ctl.submit(&user("a1", "go"));
+    let leader_run = ctl.store.runs_for_session("s1", &[TurnStatus::Queued]).unwrap().remove(0);
+
+    // leader assigns to b; b's run is queued by schedule
+    let a = action("f1", "leader", ActionKind::AssignTask, json!({"assignee": "b", "description": "report"}), Some(leader_run.run_id.clone()));
+    let task_id = derived_task_id(&a);
+    ctl.submit(&a);
+
+    // leader run must be RUNNING before wait_for_tasks can park it
+    ctl.begin_run(&leader_run.run_id).unwrap();
+    // leader waits on the task: its run parks in WAITING_TASK
+    let r = ctl.submit(&action("f2", "leader", ActionKind::WaitForTasks, json!({"task_ids": [task_id]}), Some(leader_run.run_id.clone())));
+    assert!(r.ok && r.result["waiting"] == json!(true));
+
+    // b begins + completes with a completion request
+    let b_run = ctl.store.runs_for_session("s1", &[TurnStatus::Queued]).unwrap().into_iter().find(|r| r.agent_id == "b").unwrap();
+    ctl.begin_run(&b_run.run_id).unwrap();
+    let task = ctl.store.get_task(&task_id).unwrap().unwrap();
+    assert_eq!(task.status, TaskStatus::Running); // begin_run started the task
+
+    ctl.submit(&action("f3", "b", ActionKind::CompleteTask, json!({"task_id": task_id, "result_refs": ["artifacts/report.md"], "summary": "wrote it"}), Some(b_run.run_id.clone())));
+    ctl.finalize_run(&b_run.run_id, &completed(Some("done")), &[b_run.input_delivery_ids[0]]).unwrap();
+
+    let task = ctl.store.get_task(&task_id).unwrap().unwrap();
+    assert_eq!(task.status, TaskStatus::Succeeded);
+    assert_eq!(task.result_refs, vec!["artifacts/report.md"]);
+
+    // waiter (leader) run resumed and received the completion event delivery
+    let leader_run = ctl.store.get_run(&leader_run.run_id).unwrap().unwrap();
+    assert_eq!(leader_run.status, TurnStatus::Running);
+
+    let events = ctl.store.events("s1", 0, 100).unwrap();
+    let kinds: Vec<&str> = events.iter().map(|e| e["kind"].as_str().unwrap()).collect();
+    assert!(kinds.contains(&"task_started"));
+    assert!(kinds.contains(&"task_completed"));
+    assert!(kinds.contains(&"run_completed"));
+
+    // b's delivery acked: nothing pending for b
+    assert_eq!(ctl.store.pending_deliveries("s1", "b").unwrap().len(), 0);
+}
+
+#[test]
+fn finalize_goal_done_after_signal_done() {
+    let mut ctl = harness();
+    ctl.submit(&user("a1", "say hello"));
+    let run = ctl.store.runs_for_session("s1", &[TurnStatus::Queued]).unwrap().remove(0);
+    ctl.begin_run(&run.run_id).unwrap();
+    let r = ctl.submit(&action("g1", "leader", ActionKind::SignalDone, json!({"summary": "answered"}), Some(run.run_id.clone())));
+    assert!(r.ok, "{}", r.error.unwrap_or_default());
+    ctl.finalize_run(&run.run_id, &completed(Some("hello!")), &[]).unwrap();
+
+    let session = ctl.store.get_session("s1").unwrap().unwrap();
+    assert_eq!(session["goal_state"], json!("done"));
+    let events = ctl.store.events("s1", 0, 100).unwrap();
+    let kinds: Vec<&str> = events.iter().map(|e| e["kind"].as_str().unwrap()).collect();
+    assert!(kinds.contains(&"goal_done"));
+    assert!(kinds.contains(&"leader_reply"));
+
+    // a fresh user message starts a new goal
+    let r = ctl.submit(&user("a2", "second question"));
+    let goal2 = r.result["goal_id"].as_str().unwrap().to_string();
+    assert_ne!(goal2, session["goal_id"].as_str().unwrap());
+}

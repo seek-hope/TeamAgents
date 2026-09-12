@@ -154,3 +154,14 @@ Deep Agents 的 `permissions` 只覆盖其内置文件工具，不约束 Shell/M
   解释说明行（`#team-hint`/`#approvals-hint`/`#tasks-hint`/`#log-title`）与索引行间距 1→0
   （移除 `padding-bottom: 1`；`#settings-body` 不受影响）；随后按用户要求把各面板解释说明行
   （含 `#sessions-hint`）从面板顶部移到底部，即上下区分割线正上方，上下 padding 均为 0。
+
+## D-15 TS+Rust 重构（reconstruct 分支）
+
+- 背景：用户要求以 TypeScript+Rust 重构 TeamAgents；main 保留 Python 基准。
+- 决策：
+  1. Rust 承载权威核心（models/storage/control），以 stdio 换行 JSON 服务暴露，
+     不引入 napi/socket；TS 承载 runtime/runners/Codex/CLI/TUI。
+  2. DB DDL 与枚举字符串与 Python 版逐字一致，两版可共享会话 DB 与事件流。
+  3. TS 侧零运行时依赖：`node:test` + Node 原生 TS 执行。
+  4. 移植按 action kind 增量推进，Python 场景测试为 oracle；
+     进度台账见 docs/RECONSTRUCT.md。

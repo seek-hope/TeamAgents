@@ -210,3 +210,80 @@ mod tests {
         assert_eq!(event_push(&s, EventKind::UserMessage, "user", &payload, None), vec!["lead"]);
     }
 }
+
+// -- AgentView (views.py::build_agent_view) --------------------------------------
+
+use crate::storage::Store;
+
+/// What one member may see at a delivery boundary (plan §5.2).
+pub fn build_agent_view(store: &Store, spec: &TeamSpec, session_id: &str, agent_id: &str) -> Json {
+    let all_tasks = store.tasks_for_session(session_id, &[]).unwrap_or_default();
+    let assignment: Vec<&Task> = all_tasks.iter().filter(|t| t.assignee == agent_id).collect();
+    let pending = store.pending_deliveries_joined(session_id, agent_id).unwrap_or_default();
+    let mut inbox = vec![];
+    let mut delivery_ids: Vec<i64> = vec![];
+    let mut batch_max = 0_i64;
+    for d in &pending {
+        let payload = d["payload_override"]
+            .as_str()
+            .and_then(|o| serde_json::from_str(o).ok())
+            .or_else(|| serde_json::from_str(d["payload_json"].as_str().unwrap_or("null")).ok())
+            .unwrap_or(Json::Null);
+        inbox.push(serde_json::json!({
+            "event_id": d["event_id"],
+            "kind": d["event_kind"],
+            "from": d["event_actor"],
+            "task_id": d["event_task_id"],
+            "payload": payload,
+        }));
+        if let Some(id) = d["delivery_id"].as_i64() {
+            delivery_ids.push(id);
+        }
+        batch_max = batch_max.max(d["batch_no"].as_i64().unwrap_or(0));
+    }
+    let readable: Vec<String> = spec
+        .shared_spaces
+        .iter()
+        .filter(|s| s.readers.iter().any(|r| r == agent_id) || s.writers.iter().any(|w| w == agent_id))
+        .map(|s| s.id.clone())
+        .collect();
+    let mut shared_delta: Vec<SharedEntry> = vec![];
+    for sid in &readable {
+        let cursor = store.shared_cursor(session_id, agent_id, sid).unwrap_or(0);
+        shared_delta.extend(store.shared_entries(session_id, &[sid.clone()], cursor, 50).unwrap_or_default());
+    }
+    let capabilities: Vec<String> = spec.agent(agent_id).map(|a| a.tool_bindings.clone()).unwrap_or_default();
+    let members: Vec<Json> = spec
+        .agents
+        .iter()
+        .map(|a| {
+            serde_json::json!({
+                "id": a.id, "name": a.name, "role": a.role,
+                "runtime_kind": a.runtime_kind,
+                "status": store.agent_status(session_id, &a.id).ok().flatten()
+                    .map(|s| serde_json::to_value(s).unwrap_or(Json::Null)).unwrap_or(Json::Null),
+            })
+        })
+        .collect();
+    let mut can_send_to: Vec<String> = spec.agents.iter().filter(|a| spec.can_send(agent_id, &a.id)).map(|a| a.id.clone()).collect();
+    can_send_to.sort();
+    let mut can_delegate_to: Vec<String> = spec.agents.iter().filter(|a| spec.can_delegate(agent_id, &a.id)).map(|a| a.id.clone()).collect();
+    can_delegate_to.sort();
+    serde_json::json!({
+        "agent_id": agent_id,
+        "assignment": assignment,
+        "inbox_delta": inbox,
+        "permitted_shared_delta": shared_delta,
+        "relevant_topology": {
+            "revision": store.current_revision(session_id).unwrap_or(0),
+            "members": members,
+            "can_send_to": can_send_to,
+            "can_delegate_to": can_delegate_to,
+            "shared_spaces": readable,
+            "leader": spec.leader_id,
+        },
+        "capabilities": capabilities,
+        "delivery_ids": delivery_ids,
+        "batch_no": batch_max,
+    })
+}

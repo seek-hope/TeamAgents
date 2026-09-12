@@ -24,13 +24,14 @@ export interface TeamAction {
 
 export class CoreClient {
   private proc: ChildProcess;
+  private rl: ReturnType<typeof readline.createInterface> | null = null;
   private nextId = 1;
   private pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
 
   constructor(coreBin: string, dbPath = ":memory:") {
     this.proc = spawn(coreBin, [dbPath], { stdio: ["pipe", "pipe", "inherit"] });
-    const rl = readline.createInterface({ input: this.proc.stdout! });
-    rl.on("line", (line) => {
+    this.rl = readline.createInterface({ input: this.proc.stdout! });
+    this.rl.on("line", (line) => {
       if (!line.trim()) return;
       const msg = JSON.parse(line);
       const slot = this.pending.get(msg.id);
@@ -62,6 +63,10 @@ export class CoreClient {
   }
 
   close() {
-    this.proc.kill();
+    this.rl?.close();
+    this.proc.stdin?.destroy();
+    this.proc.stdout?.destroy();
+    this.proc.kill("SIGKILL");
+    this.proc.unref();
   }
 }
