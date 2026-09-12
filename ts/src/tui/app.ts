@@ -47,6 +47,8 @@ export class TuiApp {
   private selectedRow = 0;
   private state: any = null;
   private memberFilter: string | null = null;
+  private dirty = true;
+  private rendered = ""; // last frame actually written
 
   private opened: OpenedSession;
   private out: NodeJS.WritableStream;
@@ -58,6 +60,11 @@ export class TuiApp {
   }
 
   static async run(opts: { cwd?: string; resume?: string; fullAuto?: boolean; team?: string; coreBin?: string }) {
+    if (!process.stdout.isTTY) {
+      console.error("TUI 需要真实终端；哑终端请用 --plain");
+      process.exitCode = 1;
+      return;
+    }
     const opened = await openSession({
       cwd: opts.cwd,
       sessionId: opts.resume,
@@ -96,6 +103,7 @@ export class TuiApp {
   // -- input -------------------------------------------------------------------
 
   private async onKey(ch: string | undefined, key: { name?: string; ctrl?: boolean }) {
+    this.dirty = true;
     const name = key.name ?? ch ?? "";
     if (key.ctrl) {
       switch (name) {
@@ -124,6 +132,7 @@ export class TuiApp {
     }
     switch (name) {
       case "escape":
+        this.dirty = true;
         return this.interruptLeader();
       case "return":
         return this.submitInput();
@@ -230,6 +239,7 @@ export class TuiApp {
       payload: {},
     });
     if (receipt.ok) this.chatLines.push("[system] 会话已暂停（输入新消息即恢复）");
+    this.dirty = true;
     await this.refresh();
   }
 
@@ -243,6 +253,7 @@ export class TuiApp {
       payload: { mode },
     });
     if (receipt.ok) this.chatLines.push(`[system] 权限模式切换为 ${mode}`);
+    this.dirty = true;
     await this.refresh();
   }
 
@@ -258,12 +269,14 @@ export class TuiApp {
       payload: { run_id: run.run_id },
     });
     this.chatLines.push(receipt.ok ? "[system] 已请求停止 Leader，等待执行结束" : `[system] 停止失败：${receipt.error}`);
+    this.dirty = true;
     await this.refresh();
   }
 
   private async switchSession(_sessionId: string) {
     // session switch re-opens; keep it simple: note and ask for CLI resume
     this.chatLines.push(`[system] 切换会话：退出后用 teamagents --resume ${_sessionId}`);
+    this.dirty = true;
     await this.render();
   }
 
@@ -271,11 +284,19 @@ export class TuiApp {
 
   async refresh() {
     const core = this.opened.core;
+    const prevApprovals = this.state?.pending_approvals?.length ?? -1;
+    const prevStatus = this.state?.session?.status ?? "";
     this.state = await core.call("state", { session_id: this.opened.sessionId, after_sequence: this.cursor });
     for (const event of this.state.events) {
       this.cursor = event.sequence;
       this.chatLines.push(...this.formatEvent(event));
+      this.dirty = true;
     }
+    if (
+      (this.state.pending_approvals?.length ?? 0) !== prevApprovals ||
+      this.state.session?.status !== prevStatus
+    )
+      this.dirty = true;
     this.render();
   }
 
@@ -316,7 +337,7 @@ export class TuiApp {
   }
 
   render() {
-    if (!this.state) return;
+    if (!this.state || !this.dirty) return;
     const { out } = this;
     const cols = (out as any).columns ?? 100;
     const rows = (out as any).rows ?? 30;
@@ -340,7 +361,17 @@ export class TuiApp {
     lines.push("─".repeat(cols));
     const prompt = `you> ${this.input.slice(0, this.cursorPos)}\x1b[7m \x1b[0m${this.input.slice(this.cursorPos)}`;
     lines.push(prompt);
-    out.write(`${ESC}H${ESC}J` + lines.slice(0, rows).join("\n"));
+    const frame = lines
+      .slice(0, rows)
+      .map((l) => l + `${ESC}[K`) // clear to EOL: no residue from longer previous frames
+      .join("\n");
+    if (frame === this.rendered) {
+      this.dirty = false;
+      return;
+    }
+    this.rendered = frame;
+    this.dirty = false;
+    out.write(`${ESC}[H` + frame);
   }
 
   private panelBody(cols: number, maxRows: number): string[] {
