@@ -195,6 +195,8 @@ fn enum_str<T: serde::Serialize>(v: &T) -> String {
 
 pub struct Store {
     pub conn: Connection,
+    /// Re-entrant transaction depth (storage.py::_Tx: BEGIN IMMEDIATE at depth 0).
+    tx_depth: std::cell::Cell<usize>,
 }
 
 impl Store {
@@ -204,7 +206,7 @@ impl Store {
         conn.pragma_update(None, "busy_timeout", 5000_i64)?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.execute_batch(SCHEMA)?;
-        let store = Self { conn };
+        let store = Self { conn, tx_depth: std::cell::Cell::new(0) };
         store.check_schema_version()?;
         Ok(store)
     }
@@ -212,7 +214,7 @@ impl Store {
     pub fn open_memory() -> rusqlite::Result<Self> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch(SCHEMA)?;
-        let store = Self { conn };
+        let store = Self { conn, tx_depth: std::cell::Cell::new(0) };
         store.check_schema_version()?;
         Ok(store)
     }
@@ -234,6 +236,32 @@ impl Store {
                 "database schema version {v} != supported {DB_SCHEMA_VERSION}; back up and migrate before opening"
             ),
         }
+        Ok(())
+    }
+
+    // -- transactions (storage.py::_Tx) ----------------------------------------
+
+    pub fn begin(&self) -> rusqlite::Result<()> {
+        if self.tx_depth.get() == 0 {
+            self.conn.execute_batch("BEGIN IMMEDIATE")?;
+        }
+        self.tx_depth.set(self.tx_depth.get() + 1);
+        Ok(())
+    }
+
+    /// Ok(true)=commit, Err/Ok(false) semantics handled by caller via rollback.
+    pub fn commit(&self) -> rusqlite::Result<()> {
+        let d = self.tx_depth.get().saturating_sub(1);
+        self.tx_depth.set(d);
+        if d == 0 {
+            self.conn.execute_batch("COMMIT")?;
+        }
+        Ok(())
+    }
+
+    pub fn rollback(&self) -> rusqlite::Result<()> {
+        self.tx_depth.set(0);
+        self.conn.execute_batch("ROLLBACK")?;
         Ok(())
     }
 
@@ -553,7 +581,7 @@ impl Store {
     pub fn active_run_for_agent(&self, session_id: &str, agent_id: &str) -> rusqlite::Result<Option<TurnRun>> {
         self.conn
             .query_row(
-                &format!("SELECT {RUN_COLS} FROM turn_runs WHERE session_id=?1 AND agent_id=?2 AND status IN ('QUEUED','RUNNING') ORDER BY created_at LIMIT 1"),
+                &format!("SELECT {RUN_COLS} FROM turn_runs WHERE session_id=?1 AND agent_id=?2 AND status='RUNNING'"),
                 params![session_id, agent_id],
                 row_to_run,
             )
@@ -636,10 +664,10 @@ fn row_to_task(row: &Row) -> rusqlite::Result<Task> {
         description: row.get(5)?,
         acceptance: row.get(6)?,
         dependencies: serde_json::from_str(&row.get::<_, String>(7)?).unwrap_or_default(),
-        status: serde_json::from_value(Json::String(row.get::<_, String>(9)?)).expect("task status"),
-        result_refs: serde_json::from_str(&row.get::<_, String>(10)?).unwrap_or_default(),
-        created_at: row.get(11)?,
-        updated_at: row.get(12)?,
+        status: serde_json::from_value(Json::String(row.get::<_, String>(8)?)).expect("task status"),
+        result_refs: serde_json::from_str(&row.get::<_, String>(9)?).unwrap_or_default(),
+        created_at: row.get(10)?,
+        updated_at: row.get(11)?,
     })
 }
 
@@ -676,4 +704,371 @@ fn event_row(row: &Row) -> rusqlite::Result<Json> {
         "causation_id": row.get::<_, Option<String>>(8)?,
         "created_at": row.get::<_, f64>(9)?,
     }))
+}
+
+// ---------------------------------------------------------------------------
+// Extended ops (control-layer needs), ported from storage.py
+// ---------------------------------------------------------------------------
+
+impl Store {
+    pub fn del_meta(&self, key: &str) -> rusqlite::Result<()> {
+        self.conn.execute("DELETE FROM meta WHERE key=?1", params![key])?;
+        Ok(())
+    }
+
+    pub fn set_task_cancel_requested(&self, task_id: &str) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE tasks SET cancel_requested=1, updated_at=?1 WHERE task_id=?2",
+            params![now(), task_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn reassign_tasks(&self, assignee: &str, new_assignee: &str, statuses: &[TaskStatus]) -> rusqlite::Result<Vec<String>> {
+        let marks = statuses.iter().map(|s| format!("'{}'", enum_str(s))).collect::<Vec<_>>().join(",");
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT task_id FROM tasks WHERE assignee=?1 AND status IN ({marks})"
+        ))?;
+        let ids: Vec<String> = stmt
+            .query_map(params![assignee], |r| r.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        for id in &ids {
+            self.conn.execute(
+                "UPDATE tasks SET assignee=?1, updated_at=?2 WHERE task_id=?3",
+                params![new_assignee, now(), id],
+            )?;
+        }
+        Ok(ids)
+    }
+
+    pub fn drop_pending_deliveries(&self, session_id: &str, agent_id: &str, _reason: &str) -> rusqlite::Result<usize> {
+        let n = self.conn.execute(
+            "UPDATE deliveries SET status='dropped', applied_at=?1
+             WHERE session_id=?2 AND agent_id=?3 AND status='pending'",
+            params![now(), session_id, agent_id],
+        )?;
+        Ok(n)
+    }
+
+    pub fn append_run_inputs(&self, run_id: &str, delivery_ids: &[i64]) -> rusqlite::Result<()> {
+        let mut run = self.get_run(run_id)?.expect("run exists");
+        let mut seen: std::collections::HashSet<i64> = run.input_delivery_ids.iter().copied().collect();
+        for id in delivery_ids {
+            if seen.insert(*id) {
+                run.input_delivery_ids.push(*id);
+            }
+        }
+        self.conn.execute(
+            "UPDATE turn_runs SET input_delivery_ids=?1, updated_at=?2 WHERE run_id=?3",
+            params![j(&run.input_delivery_ids), now(), run_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn deliver_wait_registration(&self, run_id: &str, task_ids: &[String]) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE turn_runs SET waiting_on=?1, updated_at=?2 WHERE run_id=?3",
+            params![j(&task_ids), now(), run_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn runs_for_session(&self, session_id: &str, statuses: &[TurnStatus]) -> rusqlite::Result<Vec<TurnRun>> {
+        let sql = if statuses.is_empty() {
+            format!("SELECT {RUN_COLS} FROM turn_runs WHERE session_id=?1 ORDER BY created_at")
+        } else {
+            let marks = statuses.iter().map(|s| format!("'{}'", enum_str(s))).collect::<Vec<_>>().join(",");
+            format!("SELECT {RUN_COLS} FROM turn_runs WHERE session_id=?1 AND status IN ({marks}) ORDER BY created_at")
+        };
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![session_id], row_to_run)?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    pub fn count_goal_runs(&self, session_id: &str, goal_id: &str) -> rusqlite::Result<i64> {
+        self.conn.query_row(
+            "SELECT COUNT(*) FROM turn_runs WHERE session_id=?1 AND goal_id=?2",
+            params![session_id, goal_id],
+            |r| r.get(0),
+        )
+    }
+
+    pub fn agent_config_revision(&self, session_id: &str, agent_id: &str) -> rusqlite::Result<i64> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT config_revision FROM agent_runtime WHERE session_id=?1 AND agent_id=?2",
+                params![session_id, agent_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or(1))
+    }
+
+    pub fn bump_config_revision(&self, session_id: &str, agent_id: &str) -> rusqlite::Result<i64> {
+        self.ensure_agent(session_id, agent_id)?;
+        self.conn.execute(
+            "UPDATE agent_runtime SET config_revision=config_revision+1, updated_at=?1
+             WHERE session_id=?2 AND agent_id=?3",
+            params![now(), session_id, agent_id],
+        )?;
+        self.agent_config_revision(session_id, agent_id)
+    }
+
+    pub fn agent_context_epoch(&self, session_id: &str, agent_id: &str) -> rusqlite::Result<i64> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT context_epoch FROM agent_runtime WHERE session_id=?1 AND agent_id=?2",
+                params![session_id, agent_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or(1))
+    }
+
+    pub fn set_run_cancel_requested(&self, run_id: &str) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE turn_runs SET cancel_requested=1, updated_at=?1 WHERE run_id=?2",
+            params![now(), run_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn ack_run_deliveries(&self, run: &TurnRun) -> rusqlite::Result<()> {
+        if run.input_delivery_ids.is_empty() {
+            return Ok(());
+        }
+        let marks = run.input_delivery_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let mut p: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(now())];
+        for id in &run.input_delivery_ids {
+            p.push(Box::new(*id));
+        }
+        let refs: Vec<&dyn rusqlite::ToSql> = p.iter().map(|b| b.as_ref()).collect();
+        self.conn.execute(
+            &format!("UPDATE deliveries SET status='applied', applied_at=?1 WHERE delivery_id IN ({marks}) AND status='pending'"),
+            refs.as_slice(),
+        )?;
+        Ok(())
+    }
+
+    // -- approvals (extended) --------------------------------------------------
+
+    fn row_to_approval(row: &Row) -> rusqlite::Result<ApprovalRequest> {
+        Ok(ApprovalRequest {
+            approval_id: row.get(0)?,
+            session_id: row.get(1)?,
+            agent_id: row.get(2)?,
+            run_id: row.get(3)?,
+            tool_call_id: row.get(4)?,
+            operation_hash: row.get(5)?,
+            requested_scope: serde_json::from_str(&row.get::<_, String>(6)?).unwrap_or(Json::Null),
+            policy_revision: row.get(7)?,
+            status: serde_json::from_value(Json::String(row.get::<_, String>(8)?)).expect("approval status"),
+            created_at: row.get(9)?,
+            decided_at: row.get(10)?,
+        })
+    }
+
+    pub fn get_approval(&self, approval_id: &str) -> rusqlite::Result<Option<ApprovalRequest>> {
+        self.conn
+            .query_row(
+                "SELECT approval_id, session_id, agent_id, run_id, tool_call_id, operation_hash, requested_scope, policy_revision, status, created_at, decided_at
+                 FROM approvals WHERE approval_id=?1",
+                params![approval_id],
+                Self::row_to_approval,
+            )
+            .optional()
+    }
+
+    pub fn pending_approvals(&self, session_id: &str) -> rusqlite::Result<Vec<ApprovalRequest>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT approval_id, session_id, agent_id, run_id, tool_call_id, operation_hash, requested_scope, policy_revision, status, created_at, decided_at
+             FROM approvals WHERE session_id=?1 AND status='PENDING' ORDER BY created_at",
+        )?;
+        let rows = stmt.query_map(params![session_id], Self::row_to_approval)?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    pub fn expire_run_approvals(&self, run_id: &str) -> rusqlite::Result<Vec<ApprovalRequest>> {
+        let pending = self.pending_approvals_for_run(run_id)?;
+        for a in &pending {
+            self.conn.execute(
+                "UPDATE approvals SET status='EXPIRED', decided_at=?1 WHERE approval_id=?2",
+                params![now(), a.approval_id],
+            )?;
+        }
+        Ok(pending)
+    }
+
+    pub fn pending_approvals_for_run(&self, run_id: &str) -> rusqlite::Result<Vec<ApprovalRequest>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT approval_id, session_id, agent_id, run_id, tool_call_id, operation_hash, requested_scope, policy_revision, status, created_at, decided_at
+             FROM approvals WHERE run_id=?1 AND status='PENDING' ORDER BY created_at",
+        )?;
+        let rows = stmt.query_map(params![run_id], Self::row_to_approval)?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    pub fn cache_session_approval(&self, session_id: &str, operation_hash: &str, scope: &Json) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT INTO session_approval_cache(session_id, operation_hash, scope_json, created_at) VALUES(?1, ?2, ?3, ?4)
+             ON CONFLICT(session_id, operation_hash) DO UPDATE SET scope_json=excluded.scope_json",
+            params![session_id, operation_hash, j(scope), now()],
+        )?;
+        Ok(())
+    }
+
+    // -- shared spaces -----------------------------------------------------------
+
+    pub fn add_shared_entry(&self, entry: &SharedEntry, session_id: &str) -> rusqlite::Result<i64> {
+        self.conn.execute(
+            "INSERT INTO shared_entries(entry_id, session_id, space_id, author, kind, content, ref, supersedes, created_at)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![entry.entry_id, session_id, entry.space_id, entry.author, entry.kind,
+                    entry.content, entry.r#ref, entry.supersedes, entry.created_at],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    fn row_to_shared(row: &Row) -> rusqlite::Result<SharedEntry> {
+        Ok(SharedEntry {
+            sequence: row.get(0)?,
+            entry_id: row.get(1)?,
+            space_id: row.get(3)?,
+            author: row.get(4)?,
+            kind: row.get(5)?,
+            content: row.get(6)?,
+            r#ref: row.get(7)?,
+            supersedes: row.get(8)?,
+            created_at: row.get(9)?,
+        })
+    }
+
+    pub fn shared_entries(&self, session_id: &str, space_ids: &[String], after_sequence: i64, limit: i64) -> rusqlite::Result<Vec<SharedEntry>> {
+        if space_ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let marks = space_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT sequence, entry_id, session_id, space_id, author, kind, content, ref, supersedes, created_at
+             FROM shared_entries WHERE session_id=? AND space_id IN ({marks}) AND sequence>? ORDER BY sequence LIMIT ?"
+        );
+        let mut p: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(session_id.to_string())];
+        for s in space_ids {
+            p.push(Box::new(s.clone()));
+        }
+        p.push(Box::new(after_sequence));
+        p.push(Box::new(limit));
+        let refs: Vec<&dyn rusqlite::ToSql> = p.iter().map(|b| b.as_ref()).collect();
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(refs.as_slice(), Self::row_to_shared)?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    pub fn shared_cursor(&self, session_id: &str, agent_id: &str, space_id: &str) -> rusqlite::Result<i64> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT sequence FROM shared_cursors WHERE session_id=?1 AND agent_id=?2 AND space_id=?3",
+                params![session_id, agent_id, space_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or(0))
+    }
+
+    pub fn advance_shared_cursor(&self, session_id: &str, agent_id: &str, space_id: &str, sequence: i64) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT INTO shared_cursors(session_id, agent_id, space_id, sequence) VALUES(?1, ?2, ?3, ?4)
+             ON CONFLICT(session_id, agent_id, space_id) DO UPDATE SET sequence=MAX(sequence, excluded.sequence)",
+            params![session_id, agent_id, space_id, sequence],
+        )?;
+        Ok(())
+    }
+
+    // -- topology patches ----------------------------------------------------------
+
+    pub fn insert_patch(&self, patch: &TopologyPatch, session_id: &str) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT INTO topology_patches(patch_id, session_id, base_revision, proposer, decided_by, operations, affected_agents, status, created_at, updated_at)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT(patch_id) DO UPDATE SET decided_by=excluded.decided_by,
+               operations=excluded.operations, affected_agents=excluded.affected_agents,
+               status=excluded.status, updated_at=excluded.updated_at",
+            params![patch.patch_id, session_id, patch.base_revision, patch.proposer,
+                    patch.decided_by, j(&patch.operations), j(&patch.affected_agents),
+                    enum_str(&patch.status), patch.created_at, patch.updated_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_patch_status(&self, patch_id: &str, status: PatchStatus) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE topology_patches SET status=?1, updated_at=?2 WHERE patch_id=?3",
+            params![enum_str(&status), now(), patch_id],
+        )?;
+        Ok(())
+    }
+
+    fn row_to_patch(row: &Row) -> rusqlite::Result<TopologyPatch> {
+        Ok(TopologyPatch {
+            patch_id: row.get(0)?,
+            base_revision: row.get(2)?,
+            proposer: row.get(3)?,
+            decided_by: row.get(4)?,
+            operations: serde_json::from_str(&row.get::<_, String>(5)?).unwrap_or_default(),
+            affected_agents: serde_json::from_str(&row.get::<_, String>(6)?).unwrap_or_default(),
+            status: serde_json::from_value(Json::String(row.get::<_, String>(7)?)).expect("patch status"),
+            created_at: row.get(8)?,
+            updated_at: row.get(9)?,
+        })
+    }
+
+    pub fn get_patch(&self, patch_id: &str) -> rusqlite::Result<Option<TopologyPatch>> {
+        self.conn
+            .query_row(
+                "SELECT patch_id, session_id, base_revision, proposer, decided_by, operations, affected_agents, status, created_at, updated_at
+                 FROM topology_patches WHERE patch_id=?1",
+                params![patch_id],
+                Self::row_to_patch,
+            )
+            .optional()
+    }
+
+    pub fn patches_in_status(&self, session_id: &str, status: PatchStatus) -> rusqlite::Result<Vec<TopologyPatch>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT patch_id, session_id, base_revision, proposer, decided_by, operations, affected_agents, status, created_at, updated_at
+             FROM topology_patches WHERE session_id=?1 AND status=?2 ORDER BY created_at",
+        )?;
+        let rows = stmt.query_map(params![session_id, enum_str(&status)], Self::row_to_patch)?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// pending_deliveries joined with event data (storage.py::pending_deliveries).
+    pub fn pending_deliveries_joined(&self, session_id: &str, agent_id: &str) -> rusqlite::Result<Vec<Json>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT d.delivery_id, d.event_id, d.batch_no, d.payload_override, d.created_at,
+                    e.kind AS event_kind, e.payload_json, e.actor_id AS event_actor, e.task_id AS event_task_id, e.sequence AS event_sequence
+             FROM deliveries d JOIN events e ON e.event_id = d.event_id
+             WHERE d.session_id=?1 AND d.agent_id=?2 AND d.status='pending'
+             ORDER BY d.batch_no, e.sequence",
+        )?;
+        let rows = stmt.query_map(params![session_id, agent_id], |r| {
+            Ok(serde_json::json!({
+                "delivery_id": r.get::<_, i64>(0)?,
+                "event_id": r.get::<_, String>(1)?,
+                "batch_no": r.get::<_, i64>(2)?,
+                "payload_override": r.get::<_, Option<String>>(3)?,
+                "created_at": r.get::<_, f64>(4)?,
+                "event_kind": r.get::<_, String>(5)?,
+                "payload_json": r.get::<_, String>(6)?,
+                "event_actor": r.get::<_, String>(7)?,
+                "event_task_id": r.get::<_, Option<String>>(8)?,
+                "event_sequence": r.get::<_, i64>(9)?,
+            }))
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
 }

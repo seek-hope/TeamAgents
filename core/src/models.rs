@@ -65,7 +65,7 @@ impl TurnStatus {
 pub type Json = serde_json::Value;
 pub fn obj() -> serde_json::Map<String, Json> { serde_json::Map::new() }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentSpec {
     pub id: String,
@@ -84,7 +84,7 @@ pub struct AgentSpec {
 }
 fn default_workspace_policy() -> WorkspacePolicy { WorkspacePolicy::Shared }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChannelSpec {
     pub source: String,
@@ -92,7 +92,7 @@ pub struct ChannelSpec {
     pub mode: ChannelMode,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ObserverSpec {
     pub agent_id: String,
@@ -110,7 +110,7 @@ pub struct ObserverSpec {
 fn default_payload_scope() -> String { "status".into() }
 fn default_wake_policy() -> String { "none".into() }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SharedSpaceSpec {
     pub id: String,
@@ -127,7 +127,7 @@ fn default_max_steps() -> i64 { 200 }
 fn default_turn_timeout() -> i64 { 1200 }
 fn default_cancel_timeout() -> i64 { 60 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Limits {
     #[serde(default = "default_max_parallel_workers")]
