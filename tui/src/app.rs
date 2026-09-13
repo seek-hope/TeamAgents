@@ -1000,6 +1000,10 @@ impl App {
                     self.focus = Focus::Panel;
                 }
             }
+            KeyCode::Char('a') if key.modifiers.contains(Mod::CONTROL) => self.composer.move_home(),
+            KeyCode::Char('e') if key.modifiers.contains(Mod::CONTROL) => self.composer.move_end(),
+            // an unhandled control chord must never type a letter into the composer
+            KeyCode::Char(_) if key.modifiers.contains(Mod::CONTROL) => {}
             KeyCode::Char(c) => self.composer.insert_char(c),
             _ => {}
         }

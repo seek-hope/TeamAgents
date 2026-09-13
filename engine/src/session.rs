@@ -13,7 +13,7 @@ use serde_json::{json, Value as Json};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use teamagents_core::models::{AgentSpec, ModelProfile, RuntimeKind, TeamAction, UserConfig};
+use teamagents_core::models::{AgentSpec, ModelProfile, RuntimeKind, TeamAction, UserConfig, WorkspacePolicy};
 
 pub const LEADER_INSTRUCTIONS: &str = "You are the Leader of a team of agents. Understand the user's goal, decide
 whether to work alone or build a team, delegate with assign_task, coordinate
@@ -79,6 +79,18 @@ fn member_workdir(session_id: &str, agent_id: &str) -> PathBuf {
     let dir = session_paths(session_id).base.join("workspaces").join(agent_id);
     let _ = std::fs::create_dir_all(&dir);
     dir
+}
+
+/// Workspace policy decides one member's working directory — and therefore
+/// what its file tools and its backend can reach (plan §8/P5).
+fn member_root(policy: WorkspacePolicy, cwd: &std::path::Path, session_id: &str, agent_id: &str) -> Result<PathBuf, String> {
+    match policy {
+        WorkspacePolicy::Shared => Ok(cwd.to_path_buf()),
+        WorkspacePolicy::Isolated => Ok(member_workdir(session_id, agent_id)),
+        WorkspacePolicy::GitWorktree => Err(
+            "workspace_policy=git_worktree is not implemented in the Rust build (plan P5); use shared or isolated".into(),
+        ),
+    }
 }
 
 pub fn open_session(opts: OpenOptions) -> Result<Arc<OpenedSession>, String> {
@@ -149,6 +161,7 @@ pub fn open_session(opts: OpenOptions) -> Result<Arc<OpenedSession>, String> {
             approvals.clone(),
             catalog.clone(),
             session_id.clone(),
+            cwd.clone(),
             opts.scripts.clone(),
             barriers,
         );
@@ -158,7 +171,7 @@ pub fn open_session(opts: OpenOptions) -> Result<Arc<OpenedSession>, String> {
             let runner = make_runner(agent)?;
             runners.insert(agent.id.clone(), runner);
         }
-        let executor: ToolExecutor = Arc::new(crate::tools::session_executor(cwd.clone(), catalog.clone()));
+        let executor = member_executor_factory(core.clone(), catalog.clone(), session_id.clone(), cwd.clone());
         let limits = RuntimeLimits {
             turn_active_timeout_s: state.get("limits").and_then(|l| l.get("turn_active_timeout_s")).and_then(|v| v.as_i64()).unwrap_or(1200),
             cancel_confirm_timeout_s: state.get("limits").and_then(|l| l.get("cancel_confirm_timeout_s")).and_then(|v| v.as_i64()).unwrap_or(60),
@@ -191,6 +204,7 @@ fn make_runner_factory(
     approvals: Arc<ApprovalGate>,
     catalog: UserConfig,
     session_id: String,
+    cwd: PathBuf,
     scripts: Option<HashMap<String, Vec<Step>>>,
     barriers: BarrierRegistry,
 ) -> RunnerFactory {
@@ -216,7 +230,7 @@ fn make_runner_factory(
                 CodexOptions {
                     agent_id: agent.id.clone(),
                     session_id: session_id.clone(),
-                    workdir: member_workdir(&session_id, &agent.id),
+                    workdir: member_root(agent.workspace_policy, &cwd, &session_id, &agent.id)?,
                     sandbox: "workspace-write".into(),
                     approval_policy: "on-request".into(),
                     effort: Some("xhigh".into()),
@@ -238,8 +252,37 @@ fn make_runner_factory(
         Ok(ChatRunner::new(
             &agent_json,
             profile,
-            Some(member_workdir(&session_id, &agent.id).to_string_lossy().into_owned()),
+            Some(member_root(agent.workspace_policy, &cwd, &session_id, &agent.id)?.to_string_lossy().into_owned()),
             notify.clone(),
         ))
+    })
+}
+
+/// One executor per member root, resolved from the session spec on first use
+/// (members added mid-session resolve on their first tool call).
+fn member_executor_factory(
+    core: Arc<CoreClient>,
+    catalog: UserConfig,
+    session_id: String,
+    cwd: PathBuf,
+) -> ToolExecutor {
+    type MemberExecutor = Arc<dyn Fn(&str, &Json) -> Result<Json, String> + Send + Sync>;
+    let cache: Mutex<HashMap<String, MemberExecutor>> = Mutex::new(HashMap::new());
+    Arc::new(move |agent_id: &str, tool: &str, args: &Json| {
+        if let Some(executor) = cache.lock().unwrap().get(agent_id).cloned() {
+            return executor(tool, args);
+        }
+        let policy = core
+            .state()
+            .ok()
+            .and_then(|state| state.get("spec").and_then(|spec| spec.get("agents")).cloned())
+            .and_then(|agents| serde_json::from_value::<Vec<AgentSpec>>(agents).ok())
+            .and_then(|agents| agents.into_iter().find(|a| a.id == agent_id))
+            .map(|agent| agent.workspace_policy)
+            .unwrap_or(WorkspacePolicy::Shared);
+        let root = member_root(policy, &cwd, &session_id, agent_id)?;
+        let executor: MemberExecutor = Arc::new(crate::tools::member_executor(root, catalog.clone()));
+        cache.lock().unwrap().insert(agent_id.to_string(), executor.clone());
+        executor(tool, args)
     })
 }

@@ -30,7 +30,7 @@ main 分支保留 Python 实现作为基准；本分支是**完整的 Rust 实�
 | codex runner | codex.py | ✅ `engine::codex`（app-server JSON-RPC、thread 持久化、批准 park/decide、interrupt、reconcile） | fake-server 3 项 + 真实 CLI live 用例 |
 | chat runner（替代 deepagents） | runners.py | ✅ `engine::chat`（工具循环 + renderView + 暂停/恢复 + provider→base_url + 按 `tool_bindings` 暴露 files/shell/web 执行工具） | 单测 + 真实 DeepSeek live 冒烟 |
 | tools | tools.py + execution.py | ✅ `engine::tools`（文件工具沙箱；bwrap argv 与 execution.py 对齐、缺 bwrap 直接报错不降级、环境白名单；guardUrl + web_fetch；AnySearch web_search） | 单测（含真实 bwrap 运行）+ cli doctor |
-| config | config.py | ✅ toml crate + XDG 路径 + catalog | 单测 |
+| config | config.py | ✅ toml crate + XDG 路径 + catalog；TeamSpec 支持 JSON/YAML | 单测 + CLI 用例 |
 | sessions | sessions.py + session.py | ✅ 清单/pid 锁/归档/删除/open_session | worker 协议测试 + TUI 冒烟 |
 | CLI | cli.py | ✅ doctor/validate/sessions/version/--plain REPL/TUI 启动 | engine CLI 测试 |
 | TUI | tui/（Textual ~1700 行） | ✅ ratatui/crossterm，D-16 复现基准不变 | Rust 单元 + TestBackend 帧 + PTY 冒烟 |
@@ -51,9 +51,20 @@ hover 与"会话内即席切换"；skills/memory 装配（`_skills_and_memory`�
 ## 快速命令
 
 ```bash
-cd core   && cargo test      # 权威核心（14 项）
-cd engine && cargo test      # 引擎：单测 + T1–T5/T9 场景 + Codex 适配 + worker 协议 + CLI（24 项）
-cd tui    && cargo test      # TUI 逻辑与帧冒烟（11 项）
+# 构建（三个 crate）
+for c in core engine tui; do (cd "$c" && cargo build); done
+
+# 测试
+cd core   && cargo test      # 14：权威核心
+cd engine && cargo test      # 27：单测 + T1–T5/T9 场景 + 取消/暂停 + 审批/全自动 +
+                             #     Codex 适配 + worker 协议 + CLI + bwrap argv
+cd tui    && cargo test      # 21：TUI 逻辑与帧冒烟
 python3 tui/scripts/pty_smoke.py      # 真终端端到端冒烟（构建后）
-cd engine && TEAMAGENTS_LIVE_CODEX=1 cargo test --test live_codex   # 真实 codex CLI 联调
+cd engine && TEAMAGENTS_LIVE_CODEX=1 cargo test --test live_codex   # 真实 codex CLI 联调（可选）
+
+# 运行
+engine/target/debug/teamagents doctor          # 自检
+engine/target/debug/teamagents                 # TUI（自动找 tui/target/*/teamagents-tui）
+engine/target/debug/teamagents --plain         # 行模式 REPL
+engine/target/debug/teamagents --team examples/team.yaml
 ```

@@ -89,10 +89,10 @@ pub fn validate_spec(path: &str) -> i32 {
             return 1;
         }
     };
-    let spec: Json = match serde_json::from_str(&text) {
+    let spec: Json = match crate::config::parse_spec(&text) {
         Ok(spec) => spec,
         Err(e) => {
-            println!("invalid: bad JSON: {e}");
+            println!("invalid: {e}");
             return 1;
         }
     };
@@ -154,7 +154,7 @@ pub fn list_sessions_cmd(verbose: bool) -> i32 {
             flags.push(format!("读取异常:{}", error.chars().take(40).collect::<String>()));
         }
         println!(
-            "  {:24} {:7} 目标 {:7} 事件 {:5} 任务 {:3} {:6}MB  {}  {}  {}",
+            "  {:24} {:7} 目标 {:7} 事件 {:5} 任务 {:3} {:>6}MB  {}  {}  {}",
             row.session_id,
             row.status,
             row.goal_state,
@@ -233,10 +233,10 @@ fn print_event(event: &Json) {
 
 pub fn repl(cwd: Option<String>, resume: Option<String>, full_auto: bool, team: Option<String>) -> i32 {
     let initial_spec = match &team {
-        Some(path) => match std::fs::read_to_string(path).ok().and_then(|text| serde_json::from_str::<Json>(&text).ok()) {
-            Some(spec) => Some(spec),
-            None => {
-                eprintln!("cannot read team spec {path}");
+        Some(path) => match crate::config::load_spec_file(std::path::Path::new(path)) {
+            Ok(spec) => Some(spec),
+            Err(e) => {
+                eprintln!("{e}");
                 return 1;
             }
         },

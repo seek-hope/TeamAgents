@@ -1,6 +1,7 @@
 //! User config and XDG paths (config.py, minus project-local config merging).
 
 use std::collections::HashMap;
+use serde_json::Value as Json;
 use std::path::{Path, PathBuf};
 use teamagents_core::models::UserConfig;
 
@@ -34,6 +35,19 @@ pub fn state_dir() -> PathBuf {
 
 pub fn sessions_dir() -> PathBuf {
     state_dir().join("sessions")
+}
+
+/// TeamSpec import: JSON or YAML (config.py::load_team_spec parity).
+pub fn parse_spec(text: &str) -> Result<Json, String> {
+    if let Ok(spec) = serde_json::from_str::<Json>(text) {
+        return Ok(spec);
+    }
+    serde_yaml::from_str::<Json>(text).map_err(|e| format!("bad spec (JSON/YAML): {e}"))
+}
+
+pub fn load_spec_file(path: &std::path::Path) -> Result<Json, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    parse_spec(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// Missing file is not an error (a fresh install has no config yet).
@@ -70,6 +84,17 @@ pub fn missing_key_envs(catalog: &UserConfig) -> HashMap<String, bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn specs_load_from_json_or_yaml() {
+        let yaml = "leader_id: leader\nagents:\n  - id: leader\n    name: L\n    role: leader\n    runtime_kind: deepagents\n    model_profile: m\n";
+        let spec = parse_spec(yaml).unwrap();
+        assert_eq!(spec["leader_id"], "leader");
+        assert_eq!(spec["agents"][0]["id"], "leader");
+        let json_spec = parse_spec(r#"{"leader_id": "leader", "agents": []}"#).unwrap();
+        assert_eq!(json_spec["agents"].as_array().unwrap().len(), 0);
+        assert!(parse_spec("leader_id: [unclosed").is_err());
+    }
 
     #[test]
     fn parses_models_and_ignores_other_sections() {

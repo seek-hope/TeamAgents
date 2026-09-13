@@ -218,3 +218,21 @@ fn sessions_double_delete_and_zh_rendering() {
     let rows = zh.team_rows();
     assert!(rows.iter().find(|(k, _)| k == "leader").unwrap().1[6].0.contains("任务→"));
 }
+
+#[test]
+fn composer_control_chords_navigate_and_never_insert_letters() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut app = app_with(state(vec![]));
+    for c in "hello".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    // Ctrl+A / Ctrl+E move the cursor instead of typing "a" / "e" (D-14 contract)
+    app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+    app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL));
+    app.handle_key(KeyEvent::new(KeyCode::Char('!'), KeyModifiers::NONE));
+    assert_eq!(app.composer.text(), "xhello!");
+    // an unrelated control chord is swallowed, not typed
+    app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL));
+    assert_eq!(app.composer.text(), "xhello!");
+}

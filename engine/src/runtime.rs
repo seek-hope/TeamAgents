@@ -31,7 +31,7 @@ pub trait AgentRunner: Send + Sync {
 }
 
 pub type RunnerFactory = Box<dyn Fn(&AgentSpec) -> Result<Arc<dyn AgentRunner>, String> + Send + Sync>;
-pub type ToolExecutor = Arc<dyn Fn(&str, &Json) -> Result<Json, String> + Send + Sync>;
+pub type ToolExecutor = Arc<dyn Fn(&str, &str, &Json) -> Result<Json, String> + Send + Sync>;
 
 #[derive(Debug, Clone)]
 pub struct RuntimeLimits {
@@ -564,7 +564,7 @@ impl Runtime {
             &fresh.agent_id,
             &fresh.run_id,
             self.approvals.clone(),
-            Some(self.guarded_executor(&fresh.run_id, limits.max_model_steps_per_turn)),
+            Some(self.guarded_executor(&fresh.agent_id, &fresh.run_id, limits.max_model_steps_per_turn)),
         );
         let mut outcome = self.run_with_timeout(runner.clone(), &fresh, &view, gateway, &wake, timeout);
 
@@ -635,10 +635,18 @@ impl Runtime {
         }
     }
 
-    fn guarded_executor(&self, run_id: &str, max_steps: i64) -> ToolExecutor {
+    /// What the gateway calls: (tool, args), with the step budget applied and
+    /// the session-level executor addressed by agent (per-member roots).
+    fn guarded_executor(
+        &self,
+        agent_id: &str,
+        run_id: &str,
+        max_steps: i64,
+    ) -> Arc<dyn Fn(&str, &Json) -> Result<Json, String> + Send + Sync> {
         let steps = self.steps.clone();
         let base = self.executor.clone();
         let run_id = run_id.to_string();
+        let agent_id = agent_id.to_string();
         Arc::new(move |tool: &str, args: &Json| {
             let used = {
                 let mut counts = steps.lock().unwrap();
@@ -649,7 +657,7 @@ impl Runtime {
             if used > max_steps {
                 return Err(format!("step limit {max_steps} reached for this turn"));
             }
-            base(tool, args)
+            base(&agent_id, tool, args)
         })
     }
 

@@ -68,10 +68,7 @@ impl Worker {
         *self.team.lock().unwrap() = team.clone();
 
         let initial_spec = match &team {
-            Some(path) => {
-                let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read team spec {path}: {e}"))?;
-                Some(serde_json::from_str::<Json>(&text).map_err(|e| format!("bad team spec {path}: {e}"))?)
-            }
+            Some(path) => Some(config::load_spec_file(std::path::Path::new(path))?),
             None => None,
         };
         let scripts: Option<HashMap<String, Vec<Step>>> = params

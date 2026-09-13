@@ -39,5 +39,15 @@ fn version_validate_and_sessions_smoke() {
 
     let sessions = teamagents(&["sessions"], &home);
     assert!(sessions.contains("会话"), "{sessions}");
+
+    // YAML TeamSpec (the format examples/team.yaml uses) validates too
+    let yaml_path = home.join("team.yaml");
+    std::fs::write(
+        &yaml_path,
+        "leader_id: leader\nagents:\n  - id: leader\n    name: L\n    role: leader\n    runtime_kind: deepagents\n    model_profile: leader_main\n",
+    )
+    .unwrap();
+    let yaml_ok = teamagents(&["validate", yaml_path.to_string_lossy().as_ref()], &home);
+    assert!(yaml_ok.contains("ok:"), "{yaml_ok}");
     let _ = std::fs::remove_dir_all(&home);
 }

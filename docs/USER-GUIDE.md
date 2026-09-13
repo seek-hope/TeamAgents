@@ -1,5 +1,26 @@
 # 用户指南：配置、权限、恢复与故障处理
 
+## 0. 版本适用性（先读）
+
+本文档同时覆盖两个实现；标 ⚠ 的条目是 **Python（main）版专有**，Rust 重构版（`reconstruct`
+分支，入口 `engine/target/debug/teamagents`）尚未移植，遇到时按“Rust 版差异”一列处理。
+
+| 能力 | Python（main） | Rust（reconstruct 分支） |
+|---|---|---|
+| 用户配置 TOML | ✅ | ✅（`models`/`tools`/`skills_paths`/`instruction_files`；其余段落忽略） |
+| 项目配置 `.teamagents/config.toml` | ✅ | ⚠ 未实现：只读用户配置 |
+| `[permissions]` 配置项 | ✅ | ⚠ 未实现：全自动只用 `--full-auto` 或 TUI `Ctrl+F` |
+| 模型接入 | langchain-* provider | 仅 OpenAI 兼容 HTTP：`provider`/`protocol` 决定默认端点（`deepseek` → api.deepseek.com/v1，其余 → api.openai.com/v1）；`anthropic` 原生协议需把 `base_url` 指向 OpenAI 兼容网关 |
+| 内置工具 `files`/`shell` | ✅ | ✅ |
+| `web_search`/`web_fetch` 绑定 | ✅ | ✅（`web_search` 目前只支持 `provider="anysearch"`） |
+| MCP 工具服务 | ✅ | ⚠ 未实现（成员只会看到 files/shell/web 三类工具） |
+| Skills / AGENTS.md 注入 | ✅ | ⚠ 未实现 |
+| `workspace_policy` | shared / isolated / git_worktree | shared / isolated ✅；**git_worktree 显式报错**（不静默降级） |
+| 会话锁 | flock | pid 文件 + `/proc` 存活检查（语义等价） |
+| TeamSpec 导入 | JSON / YAML | JSON / YAML（`--team` 与 `validate` 均可） |
+| TUI | Textual | ratatui（面板与键位一致，见文末键位表） |
+| deepagents 子代理 / 图框架 | ✅ | ⚠ 未实现（`ChatRunner` 工具循环取代） |
+
 ## 1. 配置
 
 ### 1.1 位置
@@ -7,7 +28,7 @@
 | 内容 | 位置 |
 |---|---|
 | 用户配置（模型 profile、工具绑定、Skills 目录、指令文件） | `$XDG_CONFIG_HOME/teamagents/config.toml`（默认 `~/.config/teamagents/config.toml`） |
-| 项目配置（可覆盖同名模型/工具，不能开启全自动或扩大预授权） | `<项目>/.teamagents/config.toml` |
+| ⚠ 项目配置（Python 版；可覆盖同名模型/工具，不能开启全自动或扩大预授权） | `<项目>/.teamagents/config.toml` |
 | 会话状态（业务库、成员私有检查点、制品、成员工作目录） | `$XDG_STATE_HOME/teamagents/sessions/<session_id>/` |
 | TUI 语言与动效偏好 | `$XDG_STATE_HOME/teamagents/ui.json`（默认 `~/.local/state/teamagents/ui.json`） |
 | TUI 输入历史 | `$XDG_STATE_HOME/teamagents/composer-history.json`（上限 500 条，跨会话与重启保留） |
@@ -29,8 +50,11 @@ generation_options = { reasoning_effort = "max" }     # 默认档位；嫌慢改
 推理档位规则：模型不支持 `xhigh` 时，配置里的 `xhigh` 会自动映射为 `max`
 （DeepSeek 这类已知不支持的在构建模型时就映射；其他供应商在被拒绝后自动改判 `max` 重试一次）。
 
-接入：OpenAI 用 `langchain-openai`，Anthropic 用 `langchain-anthropic`，
+接入（Python 版）：OpenAI 用 `langchain-openai`，Anthropic 用 `langchain-anthropic`，
 DeepSeek 用 `langchain-deepseek`；Kimi/GLM 走 OpenAI 兼容路径（填 `base_url` 与模型名即可）。
+Rust 版只走 OpenAI 兼容 HTTP：省略 `base_url` 时按 `provider`/`protocol` 取默认端点
+（`deepseek` → `https://api.deepseek.com/v1`，其他 → `https://api.openai.com/v1`），
+因此第三方服务要么与这两者同源，要么显式填 `base_url`。
 
 ### 1.3 工具绑定（绑定即授权）
 
@@ -44,7 +68,7 @@ api_key_env = "ANYSEARCH_API_KEY"
 [tools.fetch]
 kind = "web_fetch"
 
-[tools.notes]                  # 任意 MCP 服务（stdio 或 HTTP）
+[tools.notes]                  # ⚠ Python 版：任意 MCP 服务（stdio 或 HTTP）——Rust 版尚未实现
 kind = "mcp"
 mcp_server = "notes"
 mcp_transport = "stdio"
@@ -55,7 +79,7 @@ required = false               # 必需服务不可用会明确阻塞；可选�
 
 内置能力名 `files` / `shell` / `web` 不需要配置条目：成员在 TeamSpec 里引用即可。
 
-### 1.4 Skills 与指令文件
+### 1.4 Skills 与指令文件（⚠ Python 版；Rust 版尚未移植）
 
 ```toml
 skills_paths = ["~/.agents/skills", "~/.config/teamagents/skills"]
@@ -74,8 +98,9 @@ instruction_files = ["~/.config/teamagents/AGENTS.md"]
 - **full_auto（仅用户可开启）**：跳过逐次批准，仍保留团队通信 ACL、动作校验、记录与执行上限；
   不绕过操作系统与外部服务的限制。TUI 状态栏始终显示当前模式。
 
-切换：TUI `Ctrl+F`，或 `teamagents --full-auto`，或用户配置 `[permissions] mode = "full_auto"`。
-项目配置**不能**开启全自动。
+切换：TUI `Ctrl+F`，或 `teamagents --full-auto`，或（⚠ Python 版）用户配置
+`[permissions] mode = "full_auto"`。项目配置**不能**开启全自动。
+Rust 版以会话行为准：审批门每次调用前读取会话的权限模式，所以切换立即生效、无需重开。
 
 ### 2.2 批准语义
 
@@ -87,7 +112,8 @@ instruction_files = ["~/.config/teamagents/AGENTS.md"]
 ### 2.3 隔离边界（诚实说明）
 
 - Shell 走 bubblewrap：只挂载系统只读目录 + 授权工作目录，隔离 PID/网络/临时目录；
-  网络默认关闭，需要联网的操作要批准。
+  网络默认关闭，需要联网的操作要批准。Rust 版**要求** bwrap：缺失时命令直接失败
+  （`IsolationUnavailable`），不会退化成不隔离执行；命令环境是白名单（不含模型密钥）。
 - 文件工具做符号链接与路径穿越防护，越界即拒绝。
 - “私有上下文隔离”是运行时投递与工具授权合约；full_auto 允许程序按当前用户权限访问主机，
   不能同时承诺对恶意同用户进程的强保密隔离。
@@ -107,10 +133,11 @@ instruction_files = ["~/.config/teamagents/AGENTS.md"]
 ```
 $XDG_STATE_HOME/teamagents/sessions/<会话 id>/     # 默认 ~/.local/state/teamagents/sessions/
 ├── team.db            业务事实：动作回执、事件流、任务、回合、投递、批准、共享条目、拓扑补丁
-├── checkpoints.sqlite 成员私有线程（LangGraph 检查点，按 会话+成员+上下文代次 命名）
+├── checkpoints.sqlite ⚠ Python 版：成员私有线程（LangGraph 检查点）
 ├── artifacts/         长输出与制品（工具结果里的 /artifacts/xxx 指向这里）
-├── members/<成员>/work/  隔离/ worktree 成员的专属工作目录
-└── session.lock       执行所有权文件锁（同一会话同时只允许一个运行实例）
+├── members/<成员>/work/  ⚠ Python 版：隔离/worktree 成员的专属工作目录
+├── workspaces/<成员>/   Rust 版：workspace_policy=isolated 成员的工作目录（文件工具的执行根）
+└── session.lock       执行所有权文件（同一会话同时只允许一个运行实例；Rust 版记 pid）
 ```
 
 ```bash
@@ -121,7 +148,8 @@ teamagents --resume <会话 id>   # 恢复该会话（团队版本、待办、�
 TUI 里同一件事在「会话」面板完成（`Ctrl+T` 循环到该面板）：
 `s` 或 `Enter` 切换、`n` 在当前目录新建会话、`a` 归档、`d` 删除（连按两次确认）。
 **归档/删除的是当前会话时会直接退出 TUI**；其他会话操作后留在原地并刷新列表。
-运行中的会话（其他进程持有文件锁）不允许切换/归档/删除，会明确告知。
+运行中的会话（其他进程持有文件锁）不允许切换/归档/删除，会明确告知
+（Rust 版提示 `session <id> is already running (pid <n>)`）。
 
 - **默认会话 id** 由工作目录派生（`proj_<12位哈希>`），即“一个项目一条会话线”；换目录或 `--resume` 指定其它会话即为隔离的新会话，互不继承（T6/T24）。
 - **删除**：删掉对应会话目录即可；若成员用过 `git_worktree`，先在项目里 `git worktree remove <路径>`（未合并成果要先处理，见 §5 与 `workspace.py`）。
@@ -145,7 +173,10 @@ TUI 里同一件事在「会话」面板完成（`Ctrl+T` 循环到该面板）�
 | 回合因 `LIMIT_REACHED` 停止 | 达到目标回合/步骤上限；调整 `limits` 后继续，不是失败终态 |
 | 任务长期 `BLOCKED` | 依赖失败或成员回合未提交完成申请；Leader 会收到事件，可在 TUI 里取消或重派 |
 | 需要查看发生了什么 | TUI 日志面板 / `sessions/<id>/team.db` 的 events 表 / `run_progress` 事件 |
-| 隔离或协议自检 | `teamagents doctor`（依赖、配置、bubblewrap、codex schema、状态目录） |
+| 隔离或协议自检 | `teamagents doctor`（依赖、配置、bubblewrap、codex、状态目录） |
+| Rust 版提示“找不到 teamagents-tui” | 先 `cd tui && cargo build`；或用 `TEAMAGENTS_TUI=/路径/teamagents-tui` 指定 |
+| Rust 版成员命令报 `IsolationUnavailable` | 未安装 bubblewrap；装上再试（不要用降低隔离的方式绕过） |
+| Rust 版 `--team` 报 `bad spec` | TeamSpec 需为 JSON 或 YAML；`examples/team.yaml` 可直接使用 |
 
 ## 5. 团队定义（TeamSpec）要点
 
@@ -155,6 +186,8 @@ TUI 里同一件事在「会话」面板完成（`Ctrl+T` 循环到该面板）�
   上限为正数；通过 `teamagents validate` 可离线检查。
 - 工作目录策略：`shared`（同一目录）、`isolated`（成员目录 + 明确输入/制品引用）、
   `git_worktree`（从明确提交建分支与 worktree；原目录脏时自动退回 shared 并说明原因）。
+  ⚠ Rust 版实现 `shared`/`isolated`；`git_worktree` 成员会明确失败
+  （`workspace_policy=git_worktree is not implemented…`），不会静默按 shared 运行。
 
 ## Leader 对话与上下布局
 
@@ -174,7 +207,7 @@ TUI 里同一件事在「会话」面板完成（`Ctrl+T` 循环到该面板）�
 | 输入框 / 管理面板 | Ctrl+N / Ctrl+T |
 | 批准队列 | Ctrl+G |
 | 请求停止 Leader | Esc；成员的其他工作继续 |
-| 刷新界面 | Ctrl+R；保留草稿和聊天记录 |
+| 刷新界面 | Ctrl+R（Rust 版为兼容占位：状态轮询本就是实时的，界面无需手动刷新） |
 
 原生成员在模型/工具边界响应停止。已经执行中的工具要先返回，界面显示停止请求；超过确认时限会显示结果不明，不承诺回滚文件或外部操作。
 

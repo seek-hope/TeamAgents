@@ -4,99 +4,120 @@
 协调多个成员（内置 Deep Agents 成员 + 本机 Codex 执行成员）完成目标。
 团队结构、通信权限、观察权限都是**运行时校验的数据**，不是提示词约定。
 
-产品与实现的基准文档是 `TeamAgents-Implementation-Plan.zh-CN.md`；实施状态见
-`docs/STATUS.md`，已确认的设计决定见 `docs/DECISIONS.md`。
+**本分支（`reconstruct`）= 全 Rust 实现**：`core/`（权威核心）、`engine/`（运行时/成员/CLI）、
+`tui/`（ratatui 界面）。main 分支是 Python 基准实现，`src/teamagents/` 在本分支保留供对照。
+基准文档：`TeamAgents-Implementation-Plan.zh-CN.md`；进度台账 `docs/RECONSTRUCT.md`；
+设计决策 `docs/DECISIONS.md`。
 
-## 安装
+---
+
+## 启动（Rust 版）
+
+### 1) 构建
 
 ```bash
-uv venv && uv pip install -e .            # 或: pip install .
+for c in core engine tui; do (cd "$c" && cargo build); done
+# 联网受限时加 --offline（依赖已在本机 cargo 缓存中）
 ```
 
-要求：Python ≥ 3.12、Linux（bubblewrap 做命令隔离）、可选的 `codex` CLI（外部执行成员）。
+要求：Linux + Rust 1.8x 工具链；`bubblewrap` 提供成员 shell 工具的隔离（缺失时明确报错，
+不会退化成不隔离执行）；`codex` CLI 仅 Codex 执行成员需要。
 
-## 快速开始
+### 2) 配置
 
 ```bash
-# 1) 配置模型与工具（示例见 examples/config.toml；密钥只放环境变量）
-mkdir -p ~/.config/teamagents && cp examples/config.toml ~/.config/teamagents/config.toml
-export DEEPSEEK_API_KEY=... KIMI_API_KEY=... ANYSEARCH_API_KEY=...
-
-# 2) 自检：依赖、配置、隔离、Codex 协议
-teamagents doctor
-
-# 3) 进入 TUI（默认单 Leader；也可以 --team examples/team.yaml 带外部 Codex 成员）
-teamagents --cwd /path/to/project
+mkdir -p ~/.config/teamagents
+cp examples/config.toml ~/.config/teamagents/config.toml
+export DEEPSEEK_API_KEY=...      # examples/config.toml 里 profile 引用的密钥
+export ANYSEARCH_API_KEY=...     # 可选：web_search / web_fetch
 ```
 
-TUI 上区为团队、任务、共享空间、批准、会话、日志与设置；下区为 Leader 对话和输入。
-界面默认英文，在 `Settings → Interface language` 选择 `中文` 可立即切换并保存偏好。
-任务按创建时间从新到旧排列；运行时显示成员动效、计时和最近活动，可在 `Settings → Animations` 关闭旋转动效。
-输入区支持 ↑↓ 历史（跨会话与重启保留）与草稿恢复，`Ctrl+A`/`Ctrl+E` 移动到行首/行尾，`Esc` 请求停止 Leader。
+只读用户配置 `$XDG_CONFIG_HOME/teamagents/config.toml`（本版**不读项目内配置**、不读 MCP 与
+skills 配置，见 `docs/USER-GUIDE.md` §0）。
 
-TUI 常用键：`Enter` 发送、`Shift+Enter`/`Ctrl+J` 换行、`Ctrl+G` 批准队列、
-`Ctrl+T` 切换面板、`Ctrl+P` 暂停/继续、`Ctrl+F` 全自动开关、`Ctrl+R` 刷新、`Ctrl+Q` 退出；
-「会话」面板支持 `s` 切换、`n` 新建、`a` 归档、`d` 删除本目录下的会话
-（归档/删除当前会话后退出）。
-批准队列里 `a`=本次批准、`s`=会话内批准、`d`=拒绝。窄终端保留上下分区，上区通过标签切换。
-纯终端环境可用 `teamagents --plain`（行式 REPL）。
-
-## 其他入口
+### 3) 自检并进入界面
 
 ```bash
-teamagents validate TEAM_SPEC     # 校验导入的团队定义（TeamSpec）
-teamagents sessions               # 列出本机会话记录（状态/事件数/占用空间/路径）
-teamagents --team TEAM_SPEC       # 用指定团队开启新会话
-teamagents --resume SESSION_ID    # 恢复会话（团队版本、待办、消息位置、成员线程）
-teamagents --full-auto            # 用户显式选择全自动模式
-teamagents version                # 依赖版本
+engine/target/debug/teamagents doctor       # 核心/配置/密钥/隔离/codex/状态目录自检
+engine/target/debug/teamagents              # TUI（默认；自动寻找 tui/target/*/teamagents-tui）
+engine/target/debug/teamagents --plain      # 哑终端或脚本用行模式 REPL
+```
+
+常用参数与子命令：
+
+| 用法 | 含义 |
+|---|---|
+| `--cwd DIR` | 以 DIR 为工作目录（默认当前目录；默认会话 id 由它派生） |
+| `--resume <会话 id>` | 恢复会话（团队版本、待办、消息位置、成员线程、批准队列） |
+| `--team SPEC` | 以指定 TeamSpec 开新会话（JSON 或 YAML） |
+| `--full-auto` | 用户显式开启全自动（等价于 TUI 里 `Ctrl+F`） |
+| `--plain` | 行模式 REPL（不发 TUI） |
+| `doctor` / `validate SPEC` / `sessions [-v]` / `version` | 自检 / 校验 TeamSpec / 会话清单 / 版本 |
+
+TUI 键位：`Enter` 发送、`Shift+Enter`/`Ctrl+J` 换行、`Ctrl+T` 切面板、`Ctrl+G` 批准队列、
+`Ctrl+F` 全自动、`Ctrl+P` 暂停、`Ctrl+N` 回输入框、`Esc` 请求停止 Leader、`Ctrl+Q` 退出；
+会话面板 `s`/`Enter` 切换、`n` 新建、`a` 归档、`d` 删除（连按两次确认）。
+找不到 TUI 二进制时用 `TEAMAGENTS_TUI=/path/to/teamagents-tui` 指定。
+
+### 4) 测试
+
+```bash
+cd core   && cargo test        # 14：权威核心（models/storage/control/views/server）
+cd engine && cargo test        # 27：运行时 + T1–T5/T9 场景 + 取消/暂停 + 审批/全自动 +
+                               #     Codex 适配 + worker 协议 + CLI + 沙箱 argv
+cd tui    && cargo test        # 21：TUI 逻辑 + TestBackend 帧冒烟
+python3 tui/scripts/pty_smoke.py                        # 真终端端到端冒烟（先构建）
+cd engine && TEAMAGENTS_LIVE_CODEX=1 cargo test --test live_codex   # 真实 codex CLI 联调（可选）
 ```
 
 ## 示例
 
 ```bash
-DEEPSEEK_API_KEY=... python examples/e2e_project_fix.py    # 项目修改并测试（worktree 成员 + Leader 合并）
-DEEPSEEK_API_KEY=... ANYSEARCH_API_KEY=... python examples/e2e_research.py "问题"   # 联网调研并附来源
-DEEPSEEK_API_KEY=... python examples/e2e_data_cleanup.py   # 文件/数据整理并交付制品
+# 单 Leader，一条命令验证端到端（真实模型）
+printf '1+1 等于几？直接回答，然后 signal_done。\n' | \
+  engine/target/debug/teamagents --plain --cwd /tmp/demo
+
+# 带 Codex 执行成员的团队（examples/team.yaml 是 YAML，engine 直接读）
+engine/target/debug/teamagents --team examples/team.yaml
 ```
 
-## 测试
+`examples/config.toml` 给出模型 profile 与工具绑定样例；`examples/e2e_*.py` 是 Python 版的
+端到端示例（见下节）。
+
+## 文档地图
+
+| 文档 | 内容 | 适用版本 |
+|---|---|---|
+| `docs/RECONSTRUCT.md` | Rust 重构架构、移植台账、未移植项、快速命令 | Rust（本分支） |
+| `docs/DECISIONS.md` | 全部已确认决策（D-1..D-17），含移植取舍 | 两版 |
+| `docs/USER-GUIDE.md` | 配置、权限、恢复、故障处理、TeamSpec；§0 列出 Rust 版差异 | 两版（有标注） |
+| `docs/ACCEPTANCE.md` | T1–T24 验收对照；末尾给出 Rust 版证据映射 | 两版（有标注） |
+| `docs/STATUS.md` | P0–P7 阶段状态（Python 基准） | main（Python） |
+| `TeamAgents-Implementation-Plan.zh-CN.md` | 产品与实现基准 | 两版 |
+
+---
+
+## Python 版（main 分支基准，本分支保留对照）
+
+安装与使用（需要 Python ≥ 3.12、`uv`）：
+
+```bash
+uv venv && uv pip install -e .            # 或: pip install .
+cp examples/config.toml ~/.config/teamagents/config.toml
+.venv/bin/python -m teamagents doctor
+.venv/bin/python -m teamagents --cwd /path/to/project     # Textual TUI
+.venv/bin/python -m teamagents --plain                    # 行式 REPL
+.venv/bin/python -m teamagents validate examples/team.yaml
+```
+
+Python 版额外特性（Rust 版尚未移植，见 `docs/RECONSTRUCT.md`）：项目内 `.teamagents/config.toml`、
+MCP 工具服务、Skills/AGENTS.md 注入、`git_worktree` 工作目录策略、deepagents 子代理。
 
 ```bash
 .venv/bin/python -m pytest tests/ -q            # 确定性套件（脚本化成员）
 .venv/bin/python -m pytest tests/ -q -m live    # 真实服务套件（需要密钥/本机 codex）
+DEEPSEEK_API_KEY=... python examples/e2e_project_fix.py     # 项目修改并测试
+DEEPSEEK_API_KEY=... ANYSEARCH_API_KEY=... python examples/e2e_research.py "问题"
 ```
 
 更多：`docs/USER-GUIDE.md`（配置、权限、恢复、故障处理）、`docs/ACCEPTANCE.md`（验收对照表）。
-
----
-
-## Rust 重构版（本分支，全 Rust）
-
-Python 原版见 `src/teamagents/`（main 分支为基准）。本分支是**完整的 Rust 实现**：
-
-- `core/`（Rust）：权威核心——TeamSpec 模型与校验、SQLite 存储（DDL 与 Python 逐字一致）、
-  Control 事务管线（validate/reduce/schedule/finalize）、信息权限（views）。
-  对外是 stdio 换行 JSON 服务 `teamagents-core`，也可被 engine 直接进程内调用。
-- `engine/`（Rust）：产品层——运行时会话循环（运行时循环/取消/暂停/收敛）、
-  ToolGateway 与审批、成员后端（`ChatRunner` LLM 工具循环、`CodexRunner` app-server）、
-  沙箱工具执行器（bwrap/文件工具/SSRF 防护的抓取）、会话清单与锁、CLI。
-  二进制 `teamagents` 同时是 CLI、TUI 启动器与 TUI 的无头会话服务（`serve`）。
-- `tui/`（Rust + ratatui/crossterm，与 Codex CLI 同框架）：主 TUI，逐像素复现
-  main 分支 Textual 界面（七面板/活动行/流式预览/作曲家/页脚键位，中英双语与偏好、
-  历史持久化一致）。UI 是纯客户端：执行经 stdio JSON-lines 走 `teamagents serve`，
-  权威状态在 teamagents-core。
-
-```bash
-cd core   && cargo build && cargo test     # 权威核心
-cd engine && cargo build && cargo test     # 引擎（CLI + 运行时 + 成员后端）
-cd tui    && cargo build && cargo test     # TUI（逻辑 + TestBackend 帧冒烟）
-
-engine/target/debug/teamagents doctor            # 自检
-engine/target/debug/teamagents                   # TUI（自动寻找 tui/target/*/teamagents-tui）
-engine/target/debug/teamagents --plain           # 行模式 REPL
-python3 tui/scripts/pty_smoke.py                 # 真终端 PTY 冒烟（需先构建 tui/ 与 engine/）
-cd engine && TEAMAGENTS_LIVE_CODEX=1 cargo test --test live_codex   # 真实 codex app-server 联调（可选）
-```
-
-进度台账与取舍：docs/RECONSTRUCT.md；决策：docs/DECISIONS.md（D-15/D-16/D-17）。

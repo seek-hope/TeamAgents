@@ -1,7 +1,9 @@
 # 验收对照表（T1–T24）
 
-基准：方案 §17。证据列给出可运行的测试（`pytest tests/ -q` 为确定性套件，
-`-m live` 为真实服务套件）。**skip 不计入通过**：Anthropic / GLM / OpenAI 官方
+> 表格主体是 **main 分支 Python 基准实现**的验收证据（`pytest tests/ -q` 确定性套件、
+> `-m live` 真实服务套件）。**Rust 重构版（`reconstruct` 分支）的对照见文末**。
+
+基准：方案 §17。**skip 不计入通过**：Anthropic / GLM / OpenAI 官方
 三家在缺少有效密钥时显式 skip，相关用例已就绪，导出密钥即可跑。
 
 | ID | 场景 | 证据 | 状态 |
@@ -43,3 +45,42 @@
 
 1. **Anthropic / GLM / OpenAI 官方**：需要有效密钥后跑 `pytest -m live`（T7 剩余 3 家）。
 2. 真实服务的限流/超时回归（T22 的供应商侧）建议在发布候选版本上再跑一轮。
+
+
+---
+
+## Rust 重构版（`reconstruct` 分支）对照
+
+证据一律是可运行的：`cd core|engine|tui && cargo test`、`python3 tui/scripts/pty_smoke.py`、
+`cd engine && TEAMAGENTS_LIVE_CODEX=1 cargo test --test live_codex`。
+✅ = 有自动化证据；🔶 = 仅部分覆盖/仅人工实测；⚠ = 该能力未移植到 Rust 版。
+
+| ID | Rust 版状态 | 证据 / 说明 |
+|---|---|---|
+| T1 | ✅ | `engine/tests/scenarios.rs::t1_delegation_and_summary_full_lifecycle` |
+| T2 | ✅ | `scenarios.rs::t2_parallel_members_and_mid_run_supplement`（含执行中补充） |
+| T3 | ✅ | `scenarios.rs::t3_channel_enforcement_and_exactly_once_delivery` |
+| T4 | ✅ | `scenarios.rs::t4_observer_scoped_events_without_extra_rights` |
+| T5 | ✅ | `scenarios.rs::t5_shared_space_permissions_and_discovery` |
+| T6 | 🔶 | 会话按目录隔离、新会话不继承是核心语义（`core`）；Rust 侧无专属用例 |
+| T7 | 🔶 | 真实 DeepSeek 单 Leader 回合实测（`--plain` 到 `goal_done`）；五家契约测试未移植 |
+| T8 | 🔶 | 人工实测：`kill -9` 打断回合 → 重启 `reconcile` 收敛（requeue → COMPLETED）；无自动化用例 |
+| T9 | ✅ | `scenarios.rs::t9_baseline_leader_alone_executes_and_keeps_talking` |
+| T10 | 🔶 | 核心校验在内核（`core`）与 `teamagents validate`；自然语言组队的实时用例未移植 |
+| T11 | 🔶 | 工具与内核在（`propose_team_change`/`apply_topology_patch`），Rust 无拓扑用例 |
+| T12 | 🔶 | 版本冲突语义在 `core`（与 Python 同源）；Rust 无专属用例 |
+| T13 | 🔶 | 同上 |
+| T14 | ✅ | `scenarios.rs::t2_...`（supplement 到运行中的 Leader） |
+| T15 | 🔶 | 审批门单测 + Codex 批准 park/decide 用例；ChatRunner 的批准暂停/恢复无专属用例 |
+| T16 | ✅ | `scenarios.rs::full_auto_toggle_reaches_the_approval_gate`；仅 `actor=user` 可改模式（`core/src/control.rs` 校验） |
+| T17 | ✅ | `engine/tests/codex_adapter.rs`（simple/approval/slow）+ 真实 CLI `live_codex.rs` |
+| T18 | 🔶 | `shared`/`isolated` 已实现并人工实测（隔离成员文件落在自己 workspace）；`git_worktree` ⚠ 未移植（显式报错） |
+| T19 | 🔶 | files/shell/web_search/web_fetch ✅（单测 + 真实 `echo` 回合）；MCP ⚠、Skills/AGENTS.md ⚠ 未移植 |
+| T20 | ✅ | TUI 单测 + TestBackend 帧冒烟 + 真终端 PTY 冒烟；真实模型 + 真界面用例未移植 |
+| T21 | 🔶 | 回执去重在内核（Python 同源测试）；Rust 侧靠 `worker_protocol.rs` 与人工重启验证 |
+| T22 | 🔶 | 步骤上限/超时/取消在 runtime 内实现并有取消相关用例；限流类用例未移植 |
+| T23 | 🔶 | `tools.rs::bwrap_argv_matches_python_and_runs_isolated`（真实 bwrap 运行）+ 越界路径单测；穿越/符号链接用例未系统移植 |
+| T24 | 🔶 | 复用的 `context_epoch` 机制在核心；Rust 无专属用例 |
+
+**Rust 版尚未移植（⚠）**：项目内配置、MCP 工具服务、Skills/AGENTS.md 注入、deepagents
+子代理、`git_worktree` 工作目录策略、Anthropic 原生线协议。台账见 `docs/RECONSTRUCT.md`。

@@ -213,6 +213,26 @@ fn tools_payload(bindings: &[String]) -> Json {
     )
 }
 
+
+/// An assistant message that carries `tool_calls` must be followed by one tool
+/// message per call id, otherwise the provider rejects the whole conversation.
+/// Pausing/interrupting mid-batch would leave the tail unanswered, so the
+/// skipped calls get an explicit "not executed" result.
+fn fill_unanswered_tool_calls(history: &mut Vec<Json>, calls: &[Json], answered: &[String], kind: &str) {
+    let reason = if kind == "TurnInterrupted" {
+        "not executed: the turn was interrupted before this call"
+    } else {
+        "not executed: the turn paused (approval or waiting) before this call"
+    };
+    for call in calls {
+        let Some(call_id) = call.get("id").and_then(|v| v.as_str()) else { continue };
+        if answered.iter().any(|id| id == call_id) {
+            continue;
+        }
+        history.push(json!({"role": "tool", "tool_call_id": call_id, "content": reason}));
+    }
+}
+
 pub struct ChatRunner {
     agent: serde_json::Value,
     profile: ModelProfile,
@@ -366,9 +386,14 @@ impl ChatRunner {
             if calls.is_empty() {
                 return Ok(message.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string());
             }
-            for call in calls {
+            // One tool message per tool_call is mandatory: an unanswered call
+            // makes the provider reject the next request (live-reproduced 400).
+            let mut answered: Vec<String> = vec![];
+            let mut paused: Option<(String, String)> = None;
+            for call in &calls {
                 if self.has_paused(&run.run_id) {
-                    return Err(("TurnInterrupted".into(), "interrupted".into()));
+                    paused = Some(("TurnInterrupted".into(), "interrupted".into()));
+                    break;
                 }
                 let call_id = call.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
                 let name = call
@@ -385,7 +410,8 @@ impl ChatRunner {
                 let args: Json = match serde_json::from_str(arguments) {
                     Ok(args) => args,
                     Err(_) => {
-                        history.push(json!({"role": "tool", "tool_call_id": call_id, "content": "invalid JSON arguments"}));
+                        history.push(json!({"role": "tool", "tool_call_id": call_id.clone(), "content": "invalid JSON arguments"}));
+                        answered.push(call_id);
                         continue;
                     }
                 };
@@ -393,20 +419,30 @@ impl ChatRunner {
                 if receipt.error.as_deref() == Some("approval_required") {
                     self.paused_kind.lock().unwrap().insert(run.run_id.clone(), "approval".into());
                     let note = receipt.result.get("approval_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    return Err(("TurnPaused".into(), note));
+                    history.push(json!({"role": "tool", "tool_call_id": call_id.clone(),
+                                        "content": json!({"approval_required": note}).to_string()}));
+                    answered.push(call_id);
+                    paused = Some(("TurnPaused".into(), note));
+                    break;
                 }
-                if name == "wait_for_tasks"
-                    && receipt.result.get("waiting").and_then(|v| v.as_bool()).unwrap_or(false)
-                {
-                    self.paused_kind.lock().unwrap().insert(run.run_id.clone(), "waiting".into());
-                    return Err(("TurnPaused".into(), "waiting".into()));
-                }
+                let waiting = name == "wait_for_tasks"
+                    && receipt.result.get("waiting").and_then(|v| v.as_bool()).unwrap_or(false);
                 let content = if receipt.ok {
                     receipt.result.to_string()
                 } else {
                     json!({"error": receipt.error}).to_string()
                 };
-                history.push(json!({"role": "tool", "tool_call_id": call_id, "content": content}));
+                history.push(json!({"role": "tool", "tool_call_id": call_id.clone(), "content": content}));
+                answered.push(call_id);
+                if waiting {
+                    self.paused_kind.lock().unwrap().insert(run.run_id.clone(), "waiting".into());
+                    paused = Some(("TurnPaused".into(), "waiting".into()));
+                    break;
+                }
+            }
+            if let Some((kind, note)) = paused {
+                fill_unanswered_tool_calls(history, &calls, &answered, &kind);
+                return Err((kind, note));
             }
         }
         Err(("TurnLimitExceeded".into(), format!("step limit {max_steps} reached")))
@@ -518,6 +554,21 @@ mod tests {
         for expected in ["read_file", "shell", "web_search", "web_fetch", "signal_done"] {
             assert!(names.contains(&expected), "{expected} missing from {names:?}");
         }
+        // a paused/interrupted batch never leaves an assistant tool_call unanswered
+        let calls = vec![
+            json!({"id": "c1", "type": "function", "function": {"name": "shell", "arguments": "{}"}}),
+            json!({"id": "c2", "type": "function", "function": {"name": "shell", "arguments": "{}"}}),
+        ];
+        let mut history = vec![json!({"role": "assistant", "content": null, "tool_calls": calls.clone()})];
+        history.push(json!({"role": "tool", "tool_call_id": "c1", "content": "{}"}));
+        fill_unanswered_tool_calls(&mut history, &calls, &["c1".to_string()], "TurnPaused");
+        let answered: Vec<&str> = history
+            .iter()
+            .filter(|m| m.get("role").and_then(|v| v.as_str()) == Some("tool"))
+            .filter_map(|m| m.get("tool_call_id").and_then(|v| v.as_str()))
+            .collect();
+        assert_eq!(answered, vec!["c1", "c2"], "every tool_call must be answered exactly once");
+
         let files_only = tools_payload(&["files".into()]);
         let names: Vec<&str> = files_only
             .as_array()

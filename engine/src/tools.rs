@@ -147,7 +147,9 @@ pub fn workspace_executor(root: PathBuf) -> impl Fn(&str, &Json) -> Result<Json,
 
 /// Executor for one session: file/shell tools rooted at the session workspace,
 /// plus the user's configured web tools (tools.py::build_bound_tools).
-pub fn session_executor(
+/// Executor for one member root: file/shell tools rooted there plus the user's
+/// configured web tools (tools.py::build_bound_tools).
+pub fn member_executor(
     root: PathBuf,
     catalog: teamagents_core::models::UserConfig,
 ) -> impl Fn(&str, &Json) -> Result<Json, String> + Send + Sync + 'static {
@@ -638,14 +640,14 @@ mod tests {
 
         // web tools resolve their binding from the catalog ("no binding" = no capability)
         let catalog = teamagents_core::models::UserConfig::default();
-        let executor = session_executor(std::env::temp_dir(), catalog.clone());
+        let executor = member_executor(std::env::temp_dir(), catalog.clone());
         assert!(executor("web_search", &json!({"query": "q"})).is_err());
         let mut catalog = catalog;
         catalog.tools.insert(
             "web".into(),
             serde_json::from_value(json!({"kind": "web_search", "provider": "unknown"})).unwrap(),
         );
-        let executor = session_executor(std::env::temp_dir(), catalog);
+        let executor = member_executor(std::env::temp_dir(), catalog);
         assert!(executor("web_search", &json!({"query": "q"})).unwrap_err().contains("unsupported"));
     }
 }

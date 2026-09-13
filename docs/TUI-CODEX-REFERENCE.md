@@ -1,5 +1,9 @@
 # Codex TUI 参考与 Textual 适配
 
+> 下面的 Textual 映射描述 **Python（main）版**；Rust 版（`tui/`，ratatui/crossterm）实现同一套
+> 交互契约（提交/换行/历史/草稿、面板焦点、批准队列、语言与动效偏好、历史持久化文件），
+> 组件名对应 `tui/src/app.rs`、`tui/src/ui.rs`、`tui/src/text.rs`。
+
 参考版本：OpenAI Codex 源码 `c4017a87aacc7558002b7cb510025e967c1d765e`（2026-09-12 获取）。
 
 TeamAgents 继续使用方案约定的 Python/Textual。Codex 的 Rust TUI 组件不能直接作为 Textual Widget 加载；本次复用其交互约定，在现有 TextArea、RichLog、Static 组件上实现，不引入 Rust 构建依赖，也不复制整套 TUI。

@@ -237,3 +237,29 @@ Deep Agents 的 `permissions` 只覆盖其内置文件工具，不约束 Shell/M
   回合（--plain：直接回答 + 调 shell 工具执行 `echo`，均到 goal_done）、真实
   `codex app-server` 回合（engine/tests/live_codex.rs）、kill -9 崩溃窗口 reconcile 收敛，
   均实测通过。
+
+## D-17 补充（文档核对轮，2026-09-13）
+
+用户要求「检查文档是否与实现同步」后，逐条核对文档与代码，修掉了发现的三处**实现**问题
+（能改代码的要改代码，不能只改文档）：
+
+1. **TeamSpec 只认 JSON**：实现与 USER-GUIDE/方案（JSON/YAML）不一致，且仓库示例
+   `examples/team.yaml` 本身就是 YAML。现 `--team` 与 `validate` 均支持 JSON/YAML
+   （`serde_yaml`，本地 cargo 缓存已有）。
+2. **`workspace_policy` 被静默忽略**：之前所有成员的文件工具根都是会话目录（等价 shared），
+   `isolated`/`git_worktree` 静默失效。现按策略取根：`shared` = 会话目录、`isolated` =
+   `sessions/<id>/workspaces/<成员>/`（文件工具与成员后端同根），`git_worktree` 显式报错
+   （Rust 版未移植该策略，拒绝静默降级）。实测：isolated 成员写出的文件落在自己的
+   workspace 内，项目目录保持为空。
+3. **暂停/中断后的对话历史不合法**：回合在 `wait_for_tasks`/批准处暂停时，assistant 的
+   `tool_calls` 没有对应的 tool 消息，恢复时被供应商拒绝
+   （真实 DeepSeek 复现：`400 assistant message with 'tool_calls' must be followed by tool messages`）。
+   现暂停/中断路径补齐未执行调用的显式结果，保证每次请求的历史合法。
+4. **TUI `Ctrl+A`/`Ctrl+E`**：未处理的 Ctrl 组合会当普通字符插进输入框（`Ctrl+A` 打字出 "a"）。
+   现按文档实现行首/行尾移动，并吞掉其余未处理的控制组合。
+5. 文档侧：README 重写为「先讲怎么启动」；USER-GUIDE 增加 §0 版本适用性表（Python 专有项
+   逐条标 ⚠）；STATUS/ACCEPTANCE/TUI-CODEX-REFERENCE 标注适用版本；ACCEPTANCE 增加 Rust 版
+   T1–T24 对照表（✅/🔶/⚠，未移植项单列）。
+
+验证：core 14 + engine 27 + tui 21 全绿；PTY 冒烟；真实 DeepSeek 两次端到端
+（单 Leader；Leader→isolated 成员委派→恢复→goal_done，文件落在成员 workspace）。
