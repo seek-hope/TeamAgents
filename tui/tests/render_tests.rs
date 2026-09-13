@@ -155,7 +155,7 @@ fn full_frame_shows_all_regions() {
     let text = frame_text(terminal.backend().buffer());
 
     // status bar
-    assert!(text.contains("TeamAgents · proj_abc123"), "status bar missing");
+    assert!(text.contains("TeamAgents  proj_abc123"), "status bar missing");
     assert!(text.contains("Pre-authorized"), "mode missing");
     // tab row (all seven panels, active translated)
     for label in ["Team", "Tasks", "Shared", "Approvals", "Sessions", "Log", "Settings"] {
@@ -167,22 +167,21 @@ fn full_frame_shows_all_regions() {
     assert!(text.contains("leader_main"), "model missing");
     // chat: user + leader entries
     assert!(text.contains("› You"), "user label missing");
-    assert!(text.contains("╸"), "active tab underline missing");
-    assert!(text.contains("\n  Member"), "table padding missing");
+    assert!(text.contains("▍"), "active tab marker missing");
     assert!(text.contains("build me a thing"), "user text missing");
     assert!(text.contains("• Leader"), "leader label missing");
     assert!(text.contains("on it"), "leader text missing");
-    // composer: status, prefix, hint
-    assert!(text.contains("Leader / leader_main"), "composer status missing");
-    assert!(text.contains("Enter send · Shift+Enter / Ctrl+J newline"), "hint missing");
-    // activity line
+    // composer: title (Leader state/profile), prompt, hint
+    assert!(text.contains("Leader / leader_main"), "composer title missing");
+    assert!(text.contains("Enter send · Shift+Enter newline"), "hint missing");
+    // activity line: status chips + the latest-activity text
     assert!(text.contains("Ready"), "activity missing");
-    assert!(text.contains("Latest:"), "latest activity missing");
-    // footer keys (Textual chips: ^q / ^p / ^f ...)
+    assert!(text.contains("Waiting for input"), "latest activity missing");
+    // footer keys (dim chips) + focus label
     assert!(text.contains("^q Quit"), "footer missing");
     assert!(text.contains("^p Pause/resume"), "footer pause missing");
     assert!(text.contains("esc Stop Leader"), "footer stop missing");
-    assert!(text.contains("^j Newline"), "footer newline missing");
+    assert!(text.contains("Compose") || text.contains("输入"), "footer focus missing");
 }
 
 #[test]
@@ -202,24 +201,91 @@ fn zh_frame_uses_message_ids() {
 }
 
 #[test]
-fn frame_matches_textual_layout_details() {
-    // Details verified against the Textual frame (review/tmp/diff_frames.py):
-    // #side/#chat padding, the ContentTabs rule with the active-tab underline,
-    // DataTable's extra cell pad, and the wrapping panel hint.
+fn frame_shows_the_rust_shell_regions() {
+    // The Rust-native shell (D-20): status chips, a sidebar box with tabs and
+    // counts, an accented selection, an activity chip line, a rounded composer
+    // and a dim footer. Textual parity is no longer a goal.
     let mut app = parity_app();
-    let backend = TestBackend::new(110, 32);
+    app.focus = teamagents_tui::app::Focus::Panel;
+    let backend = TestBackend::new(120, 34);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| ui::render(f, &mut app)).unwrap();
+    let text = frame_text(terminal.backend().buffer());
+    assert!(text.contains("TeamAgents  s1"), "{text}");
+    assert!(text.contains("Pre-authorized") || text.contains("预授权"), "mode chip missing");
+    assert!(text.contains("Approvals 1"), "approval chip missing");
+    assert!(text.contains("Tasks 2"), "task chip missing");
+    assert!(text.contains("▍Team"), "active tab marker missing");
+    assert!(text.contains("╭"), "sidebar box missing");
+    assert!(text.contains("▌"), "selection bar missing");
+    assert!(text.contains("○ Ready") || text.contains("Ready"), "activity chips missing");
+    assert!(text.contains("pane: Team") || text.contains("面板：团队"), "footer focus label missing");
+    assert!(text.contains("^q") && text.contains("Quit"), "footer keys missing");
+}
+
+#[test]
+fn narrow_terminals_stack_the_sidebar_above_the_chat() {
+    let mut app = parity_app();
+    let backend = TestBackend::new(96, 30);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| ui::render(f, &mut app)).unwrap();
     let text = frame_text(terminal.backend().buffer());
     let lines: Vec<&str> = text.split('\n').collect();
-    assert!(lines[0].contains("TeamAgents · s1 | Pre-authorized | Approvals 1 | Tasks 2"), "{:?}", lines[0]);
-    assert!(lines[2].starts_with("  Team  Tasks"), "{:?}", lines[2]);
-    assert!(lines[3].starts_with(" ╸━━━━╺━━━"), "{:?}", lines[3]);
-    assert!(lines[4].starts_with("  Member"), "{:?}", lines[4]);
-    assert!(lines[5].starts_with("  leader"), "{:?}", lines[5]);
-    assert!(lines[13].starts_with(" ○ Ready · No turns executing"), "{:?}", lines[13]);
-    assert!(lines[28].starts_with(" ›  请继续验证"), "{:?}", lines[28]);
-    assert!(lines[31].starts_with(" ^j Newline  ^q Quit"), "{:?}", lines[31]);
+    // sidebar box on top, chat (activity line) below it
+    assert!(lines[1].contains("╭"), "sidebar box should start at the top: {:?}", lines[1]);
+    let activity = lines.iter().position(|l| l.contains("Ready")).expect("activity line");
+    let box_bottom = lines.iter().position(|l| l.contains("╰")).expect("box bottom");
+    assert!(activity > box_bottom, "chat sits below the stacked sidebar: {lines:?}");
+}
+
+#[test]
+fn chat_scroll_and_new_message_marker() {
+    let mut app = parity_app();
+    for i in 0..40 {
+        app.chat.push(("Leader".into(), format!("line {i}")));
+    }
+    let backend = TestBackend::new(120, 34);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| ui::render(f, &mut app)).unwrap();
+    let before = frame_text(terminal.backend().buffer());
+    app.scroll_up(4);
+    terminal.draw(|f| ui::render(f, &mut app)).unwrap();
+    let after = frame_text(terminal.backend().buffer());
+    assert_ne!(before, after, "scrolling changes the visible window");
+    assert!(after.contains("lines up") || after.contains("已上翻"), "scroll marker missing");
+    app.scroll_to_bottom();
+    terminal.draw(|f| ui::render(f, &mut app)).unwrap();
+    assert_eq!(frame_text(terminal.backend().buffer()), before, "bottom is the pinned default");
+}
+
+#[test]
+fn empty_panels_state_their_case() {
+    let mut app = App::new(
+        "s1",
+        json!({"models": {}, "tools": {}, "skills_paths": [], "instruction_files": []}),
+        "/tmp/config.toml".into(),
+        "en",
+        true,
+        vec![],
+    );
+    app.apply_state(&json!({
+        "session": {"session_id": "s1", "status": "ACTIVE", "cwd": "/tmp",
+                    "permissions_mode": "approved_scope", "goal_id": null, "goal_state": "idle"},
+        "spec": {"leader_id": "leader", "agents": [{"id": "leader", "name": "L", "role": "leader",
+                  "runtime_kind": "deepagents", "model_profile": "m"}], "channels": [], "observers": [],
+                  "shared_spaces": []},
+        "leader_id": "leader", "revision": 1, "limits": {},
+        "agents": [{"id": "leader", "status": "IDLE"}], "runs": [], "tasks": [],
+        "pending_approvals": [], "events": [],
+    }));
+    for (panel, needle) in [(1, "No tasks yet"), (3, "Nothing waiting"), (4, "No sessions")] {
+        app.panel = panel;
+        let backend = TestBackend::new(120, 34);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| ui::render(f, &mut app)).unwrap();
+        let text = frame_text(terminal.backend().buffer());
+        assert!(text.contains(needle), "panel {panel} empty state: {text}");
+    }
 }
 
 #[test]

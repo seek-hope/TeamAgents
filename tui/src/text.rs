@@ -110,6 +110,62 @@ impl Composer {
     }
 
     /// action_submit_prompt: strip; empty is a no-op; returns Some(text).
+    fn word_boundary_left(line: &[char], col: usize) -> usize {
+        let mut i = col;
+        while i > 0 && line[i - 1].is_whitespace() {
+            i -= 1;
+        }
+        while i > 0 && !line[i - 1].is_whitespace() {
+            i -= 1;
+        }
+        i
+    }
+
+    fn word_boundary_right(line: &[char], col: usize) -> usize {
+        let mut i = col;
+        while i < line.len() && line[i].is_whitespace() {
+            i += 1;
+        }
+        while i < line.len() && !line[i].is_whitespace() {
+            i += 1;
+        }
+        i
+    }
+
+    /// Ctrl+← / Ctrl+→: jump to the previous/next word (across soft wraps).
+    pub fn move_word_left(&mut self) {
+        if self.col == 0 && self.row > 0 {
+            self.row -= 1;
+            self.col = self.lines[self.row].len();
+        }
+        self.col = Self::word_boundary_left(&self.lines[self.row], self.col);
+    }
+
+    pub fn move_word_right(&mut self) {
+        if self.col >= self.lines[self.row].len() && self.row + 1 < self.lines.len() {
+            self.row += 1;
+            self.col = 0;
+        }
+        self.col = Self::word_boundary_right(&self.lines[self.row], self.col);
+    }
+
+    /// Ctrl+W / Alt+Backspace: delete the word before the cursor.
+    pub fn delete_word(&mut self) {
+        if self.col == 0 {
+            if self.row == 0 {
+                return;
+            }
+            let current = self.lines.remove(self.row);
+            self.row -= 1;
+            self.col = self.lines[self.row].len();
+            self.lines[self.row].extend(current);
+            return;
+        }
+        let start = Self::word_boundary_left(&self.lines[self.row], self.col);
+        self.lines[self.row].drain(start..self.col);
+        self.col = start;
+    }
+
     pub fn submit(&mut self) -> Option<String> {
         let text = self.text().trim().to_string();
         if text.is_empty() {

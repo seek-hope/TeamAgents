@@ -54,8 +54,10 @@ engine/target/debug/teamagents --plain      # 哑终端或脚本用行模式 REP
 | `--plain` | 行模式 REPL（不发 TUI） |
 | `doctor` / `validate SPEC` / `sessions [-v]` / `version` | 自检 / 校验 TeamSpec / 会话清单 / 版本 |
 
-TUI 键位：`Enter` 发送、`Shift+Enter`/`Ctrl+J` 换行、`Ctrl+T` 切面板、`Ctrl+G` 批准队列、
-`Ctrl+F` 全自动、`Ctrl+P` 暂停、`Ctrl+N` 回输入框、`Esc` 请求停止 Leader、`Ctrl+Q` 退出；
+TUI 键位：`Enter` 发送、`Shift+Enter`/`Ctrl+J` 换行、`Ctrl+W`/`Alt+Backspace` 删词、
+`Ctrl+←/→` 按词移动、`PgUp/PgDn`（或滚轮）滚动对话、`Ctrl+Home/End` 跳到最早/最新、
+`Ctrl+T` 切面板、`Ctrl+G` 批准队列、`Ctrl+F` 全自动、`Ctrl+P` 暂停、`Ctrl+N` 回输入框、
+`Esc` 面板内=回输入框 / 输入框内=停止 Leader、`Ctrl+Q` 退出；
 会话面板 `s`/`Enter` 切换、`n` 新建、`a` 归档、`d` 删除（连按两次确认）。
 找不到 TUI 二进制时用 `TEAMAGENTS_TUI=/path/to/teamagents-tui` 指定。
 

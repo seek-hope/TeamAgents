@@ -35,11 +35,12 @@ main 分支保留 Python 实现作为基准；本分支是**完整的 Rust 实�
 | config | config.py | ✅ toml crate + XDG 路径 + catalog；项目配置合并（用户优先、`trust_project_tools`）；`[permissions] mode`；TeamSpec 支持 JSON/YAML | 单测 + CLI 用例 |
 | sessions | sessions.py + session.py | ✅ 清单/pid 锁/归档/删除/open_session | worker 协议测试 + TUI 冒烟 |
 | CLI | cli.py | ✅ doctor/validate/sessions/version/--plain REPL/TUI 启动 | engine CLI 测试 |
-| TUI | tui/（Textual ~1700 行） | ✅ ratatui/crossterm，D-16 复现基准不变 | Rust 单元 + TestBackend 帧 + PTY 冒烟 |
+| TUI | tui/（Textual ~1700 行） | ✅ ratatui/crossterm，**Rust 原生设计**（D-20：响应式双栏/滚动/胶囊/自适应列；D-18 的逐像素对齐已不再追求） | Rust 单元 + TestBackend 帧 + PTY 冒烟 |
 
-**未移植/有意简化**：deepagents 图框架本身（被 ChatRunner 取代）；TUI 的 zebra 条纹/鼠标
-hover 与"会话内即席切换"；skills/memory 装配（`_skills_and_memory`）；MCP 工具服务与
-`general-purpose` 子代理；anthropic 原生线协议（需 base_url 指向 OpenAI 兼容网关）。
+**未移植/有意简化**：deepagents 图框架与 `general-purpose` 子代理（被 ChatRunner 工具循环
+取代）；skills 走"内容注入系统提示词"而非 Python 版的虚拟文件系统（8KB/文件、32KB/成员上限）；
+MCP 的 http/sse 传输（stdio 已实现）；TUI 以 Rust/终端习惯为准，不复刻 Textual 的组件外观
+（D-20；Python 帧对比脚本保留为参考工具）。
 
 ## 既定决策
 
@@ -60,8 +61,9 @@ for c in core engine tui; do (cd "$c" && cargo build); done
 cd core   && cargo test      # 14：权威核心
 cd engine && cargo test      # 42：单测 + T1–T5/T9/T11–T13/T22 场景 + 取消/暂停 + 审批/全自动 +
                              #     Codex 适配 + worker 协议 + CLI + bwrap + workspace + MCP + 崩溃恢复
-cd tui    && cargo test      # 25：TUI 逻辑 + 帧冒烟 + Python 帧对齐断言
+cd tui    && cargo test      # 31：TUI 逻辑 + 帧冒烟 + Rust 外壳（胶囊/滚动/空状态/自适应列）断言
 python3 tui/scripts/pty_smoke.py      # 真终端端到端冒烟（构建后）
+python3 review/tmp/dump_py_frame.py /tmp/py.txt 110 32   # 参考：Python 帧（不再是验收门槛）
 cd engine && TEAMAGENTS_LIVE_CODEX=1 cargo test --test live_codex   # 真实 codex CLI 联调（可选）
 
 # 运行

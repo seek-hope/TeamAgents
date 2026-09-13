@@ -236,3 +236,53 @@ fn composer_control_chords_navigate_and_never_insert_letters() {
     app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL));
     assert_eq!(app.composer.text(), "xhello!");
 }
+
+#[test]
+fn esc_leaves_the_panel_before_it_stops_the_leader() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use teamagents_tui::app::Focus;
+    let mut app = app_with(state(vec![]));
+    app.focus = Focus::Panel;
+    let effects = app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(effects.is_empty(), "Esc in a panel only leaves the panel");
+    assert_eq!(app.focus, Focus::Composer);
+
+    let effects = app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(effects.iter().any(|e| matches!(e, Effect::Submit { .. })), "Esc in the composer stops the Leader");
+}
+
+#[test]
+fn page_keys_scroll_the_chat_and_clamp_at_both_ends() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut app = app_with(state(vec![]));
+    for i in 0..50 {
+        app.chat.push(("Leader".into(), format!("line {i}")));
+    }
+    app.handle_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE));
+    assert_eq!(app.chat_scroll, 10);
+    app.handle_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
+    assert_eq!(app.chat_scroll, 0);
+    app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL));
+    assert_eq!(app.chat_scroll, 0);
+    app.handle_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE));
+    assert!(app.chat_scroll > 0);
+    // typing snaps back to the newest entry
+    app.composer.set_text("hello");
+    app.handle_key(KeyEvent::new(KeyCode::Char('!'), KeyModifiers::NONE));
+    assert_eq!(app.chat_scroll, 0);
+}
+
+#[test]
+fn composer_word_motion_and_deletion() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut app = app_with(state(vec![]));
+    app.composer.set_text("fix the failing test");
+    app.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL));
+    assert_eq!(app.composer.text(), "fix the failing ");
+    app.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL));
+    assert_eq!(app.composer.text(), "fix the ");
+    app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
+    assert_eq!(app.composer.col, 4, "Ctrl+← lands on the previous word");
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
+    assert_eq!(app.composer.col, 7);
+}

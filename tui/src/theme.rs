@@ -13,3 +13,7 @@ pub const ERROR: Color = Color::Red;
 pub const WARNING: Color = Color::Yellow;
 /// Textual `$primary 40%` (DataTable cursor) over the #0d0d0d background.
 pub const CURSOR_ROW: Color = Color::Rgb(0x1f, 0x3c, 0x6a);
+/// Selected table row: a barely lighter block under the accent bar.
+pub const SELECT_BG: Color = Color::Rgb(0x1a, 0x1a, 0x1a);
+/// Alternating table rows, one step above the background.
+pub const ZEBRA_BG: Color = Color::Rgb(0x11, 0x11, 0x11);

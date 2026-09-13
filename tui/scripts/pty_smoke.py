@@ -43,11 +43,11 @@ def main():
             failures.append(f"{label}: {needle!r} not on screen")
 
     boot = read_all(fd, 4.0)
-    expect("TeamAgents ·", "status bar", boot)
+    expect("TeamAgents", "status bar", boot)
     expect("Team", "team tab", boot)
     expect("›", "composer prefix", boot)
     expect("^q", "footer", boot)
-    expect("Ready", "activity", boot)  # en default: "○ Ready · No turns executing"
+    expect("Ready", "activity", boot)  # en default: status chips start with "○ Ready"
 
     # type a message (no model configured → the turn fails; that's fine here)
     os.write(fd, b"hello leader")

@@ -9,6 +9,10 @@ use crate::i18n::{status_label_id, tr};
 use crate::text::Composer;
 
 pub const PANELS: [&str; 7] = ["team", "tasks", "shared", "approvals", "sessions", "log", "settings"];
+/// Below this width the sidebar sits above the chat instead of beside it.
+pub const WIDE_LAYOUT_MIN: u16 = 110;
+/// Sidebar width in the wide layout (log payloads stay readable at ~46).
+pub const SIDEBAR_WIDTH: u16 = 46;
 const PANEL_TAB_LABELS: [&str; 7] = ["团队", "任务", "共享空间", "批准", "会话", "日志", "设置"];
 pub const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
@@ -175,6 +179,10 @@ pub struct App {
     pub log_cursor: i64,
     pub log_member: Option<String>,
     pub log_lines: Vec<String>,
+    /// chat lines scrolled up from the bottom (0 = pinned to the newest entry)
+    pub chat_scroll: usize,
+    /// log panel lines scrolled up from the bottom
+    pub log_scroll: usize,
     pub toasts: Vec<Toast>,
     pub sessions: Vec<Json>,
     pub shared: Vec<Json>,
@@ -210,6 +218,8 @@ impl App {
             log_cursor: 0,
             log_member: None,
             log_lines: vec![],
+            chat_scroll: 0,
+            log_scroll: 0,
             toasts: vec![],
             sessions: vec![],
             shared: vec![],
@@ -487,6 +497,56 @@ impl App {
         let arg_refs: Vec<(&str, &str)> = args.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
         let line2 = self.t("最近活动：{text}", &[("text", &tr(self.lang, &msg, &arg_refs))]);
         (summary, color, line2)
+    }
+
+    /// Activity line: one chip per visible run (or a single idle chip) plus the
+    /// latest-activity text. Chips carry (text, colour-name).
+    pub fn activity_chips(&mut self) -> (Vec<(String, &'static str)>, String) {
+        if self.animations
+            && self.activity_runs.iter().any(|r| r.status == "RUNNING")
+        {
+            self.activity_frame = (self.activity_frame + 1) % 10;
+        } else {
+            self.activity_frame = 0;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0);
+        let elapsed = |created: f64| -> String {
+            let total = (now - created).max(0.0) as i64;
+            format!("{:02}:{:02}", total / 60, total % 60)
+        };
+        let mut chips: Vec<(String, &'static str)> = vec![];
+        for run in self.activity_runs.iter() {
+            let (icon, style) = activity_status(self.lang, self.animations, self.activity_frame, &run.status, Some(run));
+            let icon_char = icon.chars().next().unwrap_or('○');
+            chips.push((format!("{icon_char} {} {}", run.agent_id, elapsed(run.created_at)), style));
+        }
+        if chips.is_empty() {
+            chips.push((format!("○ {}", self.t("就绪", &[])), "notice"));
+        }
+        if self.activity_runs.iter().any(|r| r.status == "WAITING_APPROVAL") {
+            chips.push((format!("! {}", self.t("等待批准", &[])), "warning"));
+        }
+        let (msg, args) = self.latest_activity.clone();
+        let arg_refs: Vec<(&str, &str)> = args.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        (chips, tr(self.lang, &msg, &arg_refs))
+    }
+
+    /// Short form for the composer's border title (the hint row explains keys).
+    pub fn composer_title(&self) -> String {
+        let leader = self.leader_id();
+        let run = self.activity_runs.iter().find(|r| r.agent_id == leader);
+        let (state, _) = activity_status(self.lang, self.animations, self.activity_frame, "IDLE", run);
+        let profile = self
+            .spec()
+            .get("agents")
+            .and_then(|v| v.as_array())
+            .and_then(|a| a.iter().find(|x| jstr(x, "id") == leader))
+            .map(|a| jstr(a, "model_profile"))
+            .unwrap_or_default();
+        format!("{state} · Leader / {profile}")
     }
 
     pub fn composer_status(&self) -> String {
@@ -813,6 +873,34 @@ impl App {
         self.t("事件流{v0}", &[("v0", &suffix)])
     }
 
+    /// Public wrapper for the mouse hit-test on the tab strip.
+    pub fn tab_badge(&self, index: usize) -> Option<String> {
+        crate::ui::tab_badge_for(self, index)
+    }
+
+    /// Clicking a table row selects it (the renderer keeps the row key).
+    pub fn select_row(&mut self, index: usize) {
+        let panel = PANELS[self.panel];
+        let key = match panel {
+            "team" => self.team_rows().get(index).map(|(k, _)| k.clone()),
+            "tasks" => self.tasks_rows().get(index).map(|(k, _)| k.clone()),
+            "approvals" => self.approvals_rows().get(index).map(|(k, _)| k.clone()),
+            "sessions" => self.sessions_rows().get(index).map(|(k, _)| k.clone()),
+            _ => None,
+        };
+        if let Some(key) = key {
+            self.table_cursors.insert(panel, (Some(key), index));
+        }
+    }
+
+    /// "(member X · Enter 取消)" suffix for the log title, empty without a filter.
+    pub fn log_filter_suffix(&self) -> String {
+        match &self.log_member {
+            Some(m) => self.t("（成员 {v0} · Enter 取消）", &[("v0", m)]),
+            None => String::new(),
+        }
+    }
+
     /// LogPanel::refresh_from — append event lines after the log cursor.
     pub fn append_log(&mut self, events: &[Json]) {
         if let Some(m) = &self.log_member {
@@ -905,7 +993,13 @@ impl App {
 
     /// Global priority bindings (app.py::BINDINGS) fire before widget keys.
     /// Bracketed paste goes straight into the composer.
+    /// Any deliberate input snaps the chat back to the newest entry.
+    pub fn pin_to_bottom(&mut self) {
+        self.chat_scroll = 0;
+    }
+
     pub fn handle_paste(&mut self, text: &str) {
+        self.pin_to_bottom();
         for c in text.chars() {
             if c == '\n' {
                 self.composer.insert_newline();
@@ -925,7 +1019,10 @@ impl App {
         match (key.code, ctrl) {
             (KeyCode::Char('q'), true) => return vec![Effect::Quit],
             (KeyCode::Char('p'), true) => return self.action_pause(),
-            (KeyCode::Char('r'), true) => return vec![], // the poll loop is always fresh; kept for parity
+            (KeyCode::Char('r'), true) => {
+                // force a repaint (the poll loop is already live)
+                return vec![];
+            }
             (KeyCode::Char('f'), true) => return self.action_toggle_full_auto(),
             (KeyCode::Char('t'), true) => {
                 self.panel = (self.panel + 1) % PANELS.len();
@@ -941,13 +1038,94 @@ impl App {
                 self.focus = Focus::Composer;
                 return vec![];
             }
-            (KeyCode::Esc, false) => return self.action_interrupt_leader(),
+            (KeyCode::Esc, false) => {
+                // one key, two obvious meanings: leave the panel, or stop the Leader
+                if self.focus == Focus::Panel {
+                    self.focus = Focus::Composer;
+                    return vec![];
+                }
+                return self.action_interrupt_leader();
+            }
+            // scrolling belongs to the pane under the pointer of attention
+            (KeyCode::PageUp, false) | (KeyCode::Char('u'), true) => {
+                self.scroll_up(10);
+                return vec![];
+            }
+            (KeyCode::PageDown, false) | (KeyCode::Char('d'), true) if self.focus == Focus::Composer && ctrl => {
+                self.scroll_down(10);
+                return vec![];
+            }
+            (KeyCode::PageDown, _) => {
+                self.scroll_down(10);
+                return vec![];
+            }
+            (KeyCode::Home, _) if ctrl => {
+                self.scroll_to_top();
+                return vec![];
+            }
+            (KeyCode::End, _) if ctrl => {
+                self.scroll_to_bottom();
+                return vec![];
+            }
             _ => {}
         }
         if self.focus == Focus::Panel {
             return self.panel_key(key);
         }
         self.composer_key(key)
+    }
+
+    /// Wheel/keyboard scrolling: the log panel scrolls its stream, everywhere
+    /// else the chat history scrolls (0 = newest entry pinned to the bottom).
+    pub fn scroll_target(&self) -> &'static str {
+        if self.focus == Focus::Panel && PANELS[self.panel] == "log" {
+            "log"
+        } else {
+            "chat"
+        }
+    }
+
+    pub fn scroll_up(&mut self, lines: usize) {
+        match self.scroll_target() {
+            "log" => self.log_scroll = self.log_scroll.saturating_add(lines),
+            _ => self.chat_scroll = self.chat_scroll.saturating_add(lines),
+        }
+    }
+
+    pub fn scroll_down(&mut self, lines: usize) {
+        match self.scroll_target() {
+            "log" => self.log_scroll = self.log_scroll.saturating_sub(lines),
+            _ => self.chat_scroll = self.chat_scroll.saturating_sub(lines),
+        }
+    }
+
+    pub fn scroll_to_top(&mut self) {
+        let lines = self.chat_wrapped_lines().len().max(self.log_wrapped_lines().len());
+        match self.scroll_target() {
+            "log" => self.log_scroll = lines,
+            _ => self.chat_scroll = lines,
+        }
+    }
+
+    pub fn scroll_to_bottom(&mut self) {
+        self.chat_scroll = 0;
+        self.log_scroll = 0;
+    }
+
+    /// Wrapped chat lines (needs a width; the renderer uses its own, this is
+    /// only for clamping the scroll offset).
+    fn chat_wrapped_lines(&self) -> Vec<String> {
+        let mut out: Vec<String> = vec![];
+        for (who, text) in &self.chat {
+            for line in crate::ui::chat_entry_lines(&self.lang, who, text, 80) {
+                out.push(line.spans.iter().map(|s| s.content.to_string()).collect());
+            }
+        }
+        out
+    }
+
+    fn log_wrapped_lines(&self) -> Vec<String> {
+        self.log_lines.clone()
     }
 
     fn settings_dropdown_key(&mut self, key: crossterm::event::KeyEvent) -> Vec<Effect> {
@@ -974,6 +1152,8 @@ impl App {
 
     fn composer_key(&mut self, key: crossterm::event::KeyEvent) -> Vec<Effect> {
         use crossterm::event::{KeyCode, KeyModifiers as Mod};
+        // any interaction with the composer means "show me the latest"
+        self.pin_to_bottom();
         match key.code {
             KeyCode::Enter if key.modifiers.contains(Mod::SHIFT) || key.modifiers.contains(Mod::CONTROL) => {
                 self.composer.insert_newline();
@@ -988,6 +1168,14 @@ impl App {
             KeyCode::Down if self.composer.row + 1 == self.composer.lines.len() => self.composer.recall(1),
             KeyCode::Up => self.composer.move_up(),
             KeyCode::Down => self.composer.move_down(),
+            KeyCode::Char('w') if key.modifiers.contains(Mod::CONTROL) => self.composer.delete_word(),
+            KeyCode::Left if key.modifiers.contains(Mod::CONTROL) || key.modifiers.contains(Mod::ALT) => {
+                self.composer.move_word_left()
+            }
+            KeyCode::Right if key.modifiers.contains(Mod::CONTROL) || key.modifiers.contains(Mod::ALT) => {
+                self.composer.move_word_right()
+            }
+            KeyCode::Backspace if key.modifiers.contains(Mod::ALT) => self.composer.delete_word(),
             KeyCode::Left => self.composer.move_left(),
             KeyCode::Right => self.composer.move_right(),
             KeyCode::Home => self.composer.move_home(),

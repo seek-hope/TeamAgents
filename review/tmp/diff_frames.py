@@ -1,4 +1,10 @@
-"""Diff the Python and Rust TUI frames across panels/sizes/languages."""
+"""Reference tool: diff the Python and Rust TUI frames.
+
+Since D-20 the Rust TUI is designed for Rust/terminal idioms instead of Textual
+parity, so this is a reference for spotting regressions in the *shared* text
+(values, labels, statuses), not an acceptance gate. The Rust-side fixtures it
+compares against live in tui/tests/render_tests.rs::frame_dump.
+"""
 import pathlib, subprocess, sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]

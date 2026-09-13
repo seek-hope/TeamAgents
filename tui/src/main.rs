@@ -450,29 +450,87 @@ fn run_effect(e: Effect, worker: &Arc<Worker>, app: &mut App, bg: &std::sync::mp
 }
 
 fn handle_mouse(m: event::MouseEvent, terminal: &Terminal<CrosstermBackend<std::io::Stdout>>, app: &mut App) {
-    if m.kind != MouseEventKind::Down(event::MouseButton::Left) {
+    let area = terminal.size().unwrap_or(ratatui::layout::Size { width: 80, height: 24 });
+    // wheel scrolls whichever pane the pointer is over
+    match m.kind {
+        MouseEventKind::ScrollUp => {
+            app.scroll_up(3);
+            return;
+        }
+        MouseEventKind::ScrollDown => {
+            app.scroll_down(3);
+            return;
+        }
+        MouseEventKind::Down(event::MouseButton::Left) => {}
+        _ => return,
+    }
+    let (side, chat) = layout_rects(area);
+    let in_side = m.column >= side.x
+        && m.column < side.x + side.width
+        && m.row >= side.y
+        && m.row < side.y + side.height;
+    if in_side {
+        // the tab strip is the first inner row of the sidebar box
+        if m.row == side.y + 1 {
+            let mut x = side.x + 1;
+            for i in 0..app::PANELS.len() {
+                let label = app::panel_tab_label(app.lang, i);
+                let badge = app.tab_badge(i);
+                let w = unicode_width::UnicodeWidthStr::width(label.as_str()) as u16
+                    + 1
+                    + badge.map(|b| b.len() as u16 + 2).unwrap_or(0);
+                if m.column >= x && m.column < x + w {
+                    app.panel = i;
+                    app.focus = app::Focus::Panel;
+                    return;
+                }
+                x += w;
+            }
+            return;
+        }
+        // rows start two lines below the tabs (header + rule)
+        let first_row = side.y + 4;
+        if m.row >= first_row {
+            app.focus = app::Focus::Panel;
+            app.select_row((m.row - first_row) as usize);
+        }
         return;
     }
-    let area = terminal.size().unwrap_or(ratatui::layout::Size { width: 80, height: 24 });
-    let body_h = area.height.saturating_sub(2);
-    let side_h = ((body_h as usize) * 2 / 5).max(6) as u16;
-    // tab row is y=2 (status 1 + blank 1); approximate x hit by label widths
-    if m.row == 2 {
-        let mut x = 0u16;
-        for (i, _) in app::PANELS.iter().enumerate() {
-            let label = app::panel_tab_label(app.lang, i);
-            let w = unicode_width::UnicodeWidthStr::width(label.as_str()) as u16 + 2;
-            if m.column >= x && m.column < x + w {
-                app.panel = i;
-                app.focus = app::Focus::Composer;
-                return;
-            }
-            x += w;
-        }
-    }
-    if m.row > 2 && m.row < 1 + side_h {
-        app.focus = app::Focus::Panel;
-    } else if m.row >= 1 + side_h {
+    let in_chat = m.column >= chat.x && m.column < chat.x + chat.width && m.row >= chat.y;
+    if in_chat {
         app.focus = app::Focus::Composer;
+    }
+}
+
+/// Body geometry for the current terminal size (mirrors ui::render_body).
+fn layout_rects(area: ratatui::layout::Size) -> (ratatui::layout::Rect, ratatui::layout::Rect) {
+    let body = ratatui::layout::Rect {
+        x: 0,
+        y: 1,
+        width: area.width,
+        height: area.height.saturating_sub(2),
+    };
+    if body.width >= app::WIDE_LAYOUT_MIN && body.height >= 12 {
+        let side_w =
+            ((body.width as usize * 34 / 100).clamp(38, app::SIDEBAR_WIDTH as usize)) as u16;
+        let side = ratatui::layout::Rect {
+            x: body.x + body.width - side_w,
+            width: side_w,
+            ..body
+        };
+        let chat = ratatui::layout::Rect {
+            width: body.width.saturating_sub(side_w + 1),
+            ..body
+        };
+        (side, chat)
+    } else {
+        let side_h = ((body.height as usize) * 2 / 5).max(6).min(body.height as usize) as u16;
+        let side = ratatui::layout::Rect { height: side_h, ..body };
+        let chat = ratatui::layout::Rect {
+            y: body.y + side_h,
+            height: body.height.saturating_sub(side_h),
+            ..body
+        };
+        (side, chat)
     }
 }
