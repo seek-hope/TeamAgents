@@ -623,10 +623,23 @@ fn render_panel(frame: &mut Frame, app: &mut App, area: Rect) {
 fn render_settings_overlay(frame: &mut Frame, app: &App, area: Rect) {
     let info = app.settings_lines();
     let width = ((area.width as usize * 7 / 10).clamp(48, 92)) as u16;
-    let height = ((info.len() + 7) as u16).min(area.height.saturating_sub(2));
+    let height = ((info.len() + 5) as u16).min(area.height.saturating_sub(2));
     let x = area.x + (area.width.saturating_sub(width)) / 2;
     let y = area.y + (area.height.saturating_sub(height)) / 2;
     let box_area = Rect { x, y, width, height };
+    // ratatui's buffer diff never emits a cell that follows a wide grapheme, so a
+    // CJK chat line ending right under the frame would silently erase the border.
+    // Blank the column just left of the box and keep the inner text one column
+    // short of the right border; the borders then always reach the terminal.
+    frame.render_widget(
+        ratatui::widgets::Clear,
+        Rect {
+            x: box_area.x.saturating_sub(1),
+            y: box_area.y,
+            width: 1,
+            height: box_area.height,
+        },
+    );
     frame.render_widget(ratatui::widgets::Clear, box_area);
     let block = ratatui::widgets::Block::default()
         .borders(ratatui::widgets::Borders::ALL)
@@ -639,6 +652,10 @@ fn render_settings_overlay(frame: &mut Frame, app: &App, area: Rect) {
         )))
         .title_alignment(ratatui::layout::Alignment::Left);
     let inner = block.inner(box_area);
+    let text = Rect {
+        width: inner.width.saturating_sub(1),
+        ..inner
+    };
     frame.render_widget(block, box_area);
     if inner.height < 4 {
         return;
@@ -662,9 +679,9 @@ fn render_settings_overlay(frame: &mut Frame, app: &App, area: Rect) {
             label(format!("{:<16}", name)),
             value(value_text, true),
         ])),
-        Rect { y: inner.y, height: 1, ..inner },
+        Rect { y: text.y, height: 1, ..text },
     );
-    let body_y = inner.y + 3;
+    let body_y = inner.y + 2; // one blank line under the language row
     let body: Vec<Line> = info
         .iter()
         .map(|l| Line::from(Span::styled(format!(" {l}"), Style::default().fg(NOTICE))))
@@ -673,8 +690,8 @@ fn render_settings_overlay(frame: &mut Frame, app: &App, area: Rect) {
         Paragraph::new(body),
         Rect {
             y: body_y,
-            height: inner.y + inner.height.saturating_sub(1).saturating_sub(body_y),
-            ..inner
+            height: text.y + text.height.saturating_sub(1).saturating_sub(body_y),
+            ..text
         },
     );
     frame.render_widget(
@@ -685,7 +702,7 @@ fn render_settings_overlay(frame: &mut Frame, app: &App, area: Rect) {
             ),
             Style::default().fg(GREY),
         ))),
-        Rect { y: inner.y + inner.height - 1, height: 1, ..inner },
+        Rect { y: text.y + text.height - 1, height: 1, ..text },
     );
     if app.lang_open {
         for (i, option) in ["English", "中文"].iter().enumerate() {
@@ -990,6 +1007,19 @@ fn render_slash_menu(frame: &mut Frame, app: &App, area: Rect, composer: Rect) {
     let y = composer.y.saturating_sub(height).max(area.y + 1);
     let x = area.x + 2;
     let box_area = Rect { x, y, width, height };
+    // ratatui's buffer diff never emits a cell that follows a wide grapheme, so a
+    // CJK chat line ending right under the frame would silently erase the border.
+    // Blank the column just left of the box and keep the inner text one column
+    // short of the right border; the borders then always reach the terminal.
+    frame.render_widget(
+        ratatui::widgets::Clear,
+        Rect {
+            x: box_area.x.saturating_sub(1),
+            y: box_area.y,
+            width: 1,
+            height: box_area.height,
+        },
+    );
     frame.render_widget(ratatui::widgets::Clear, box_area);
     let block = ratatui::widgets::Block::default()
         .borders(ratatui::widgets::Borders::ALL)

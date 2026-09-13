@@ -641,3 +641,40 @@ fn animations_switch_actually_changes_the_spinner() {
     assert_ne!(animated, static_, "the switch has a visible effect");
     assert!(static_.starts_with('●'), "disabled animations freeze the spinner: {static_}");
 }
+
+#[test]
+fn settings_overlay_keeps_its_borders_next_to_wide_text() {
+    // Regression: ratatui's buffer diff never emits a cell that follows a wide
+    // grapheme, so a CJK chat line ending under the frame silently erased the
+    // border. The overlay keeps a one-column gutter for exactly that reason.
+    let mut app = parity_app(); // the fixture's chat lines are Chinese
+    app.settings_open = true;
+    let backend = TestBackend::new(120, 34);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| ui::render(f, &mut app)).unwrap();
+    let buffer = terminal.backend().buffer();
+    let text = frame_text(buffer);
+    let lines: Vec<&str> = text.split('\n').collect();
+    let top = lines.iter().position(|l| l.contains("╭ Settings")).expect("overlay top border");
+    let left = lines[top].chars().position(|c| c == '╭').expect("left corner") as u16;
+    let right = lines[top].chars().position(|c| c == '╮').expect("right corner") as u16;
+    // the last box row is the one whose left column still holds a corner/edge
+    let bottom = lines
+        .iter()
+        .rposition(|l| l.contains('╰'))
+        .expect("bottom border");
+    let bottom = (top + 1..=bottom)
+        .filter(|row| {
+            let sym = buffer[(left, *row as u16)].symbol();
+            sym == "│" || sym == "╰"
+        })
+        .last()
+        .expect("box rows");
+    assert!(bottom > top + 4, "overlay box drawn");
+    for row in (top + 1)..bottom {
+        // the interior rows only: the last row is the bottom border
+        let row = row as u16;
+        assert_eq!(buffer[(left, row)].symbol(), "│", "left border lost on row {row}");
+        assert_eq!(buffer[(right, row)].symbol(), "│", "right border lost on row {row}");
+    }
+}
