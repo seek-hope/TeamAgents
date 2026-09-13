@@ -141,7 +141,7 @@ fn main() {
         opened.get("catalog").cloned().unwrap_or(Json::Null),
         opened.get("user_config_path").and_then(|v| v.as_str()).unwrap_or("").to_string(),
         prefs.language,
-        prefs.animations,
+        true, // the activity spinner is always animated (no settings switch any more)
         history,
     );
 

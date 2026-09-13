@@ -187,7 +187,7 @@ static ENGLISH: &[(&str, &str)] = &[
      "Enter send · Shift+Enter newline · ↑↓ history · PgUp/PgDn scroll · Esc stops the Leader"),
     ("共享空间条目：作者 / 类型 / 内容或引用", "Shared entries: author / kind / content or reference"),
     ("↑↓ 选择成员筛选 · Enter 取消 · PgUp/PgDn 滚动", "↑↓ filter by member · Enter clears · PgUp/PgDn scroll"),
-    ("↑↓ 移动 · Enter 切换 · Esc 关闭", "↑↓ move · Enter toggle · Esc close"),
+    ("Enter 选择语言 · Esc 关闭", "Enter picks the language · Esc closes"),
     ("需要用户批准", "User approval needed"),
 ];
 

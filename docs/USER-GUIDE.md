@@ -30,7 +30,7 @@
 | 用户配置（模型 profile、工具绑定、Skills 目录、指令文件） | `$XDG_CONFIG_HOME/teamagents/config.toml`（默认 `~/.config/teamagents/config.toml`） |
 | ⚠ 项目配置（Python 版；可覆盖同名模型/工具，不能开启全自动或扩大预授权） | `<项目>/.teamagents/config.toml` |
 | 会话状态（业务库、成员私有检查点、制品、成员工作目录） | `$XDG_STATE_HOME/teamagents/sessions/<session_id>/` |
-| TUI 语言与动效偏好 | `$XDG_STATE_HOME/teamagents/ui.json`（默认 `~/.local/state/teamagents/ui.json`） |
+| TUI 语言偏好 | `$XDG_STATE_HOME/teamagents/ui.json`（默认 `~/.local/state/teamagents/ui.json`） |
 | TUI 输入历史 | `$XDG_STATE_HOME/teamagents/composer-history.json`（上限 500 条，跨会话与重启保留） |
 | 团队定义导入/导出 | 任意路径的 JSON/YAML，`teamagents validate` 校验 |
 
@@ -210,10 +210,10 @@ TUI 里同一件事在「会话」面板完成（`Ctrl+T` 循环到该面板）�
 - **斜杠命令**：输入框里以 `/` 开头即弹出候选菜单（可按前缀过滤，如 `/s`），
   `↑↓` 选择、`Tab` 补全、`Enter` 执行、`Esc` 关闭菜单。内置：
   `/help`（键位与命令说明写入对话）、`/quit`（退出）、`/settings`（打开设置浮层）。
-- **设置（`/settings`）**：居中浮层——`↑↓` 选择、`Enter/Space` 切换界面语言与动效、`Esc` 关闭；
-  偏好保存在 `$XDG_STATE_HOME/teamagents/ui.json`。关闭动效后活动行的 spinner 由动画帧变为静态 `●`。
+- **设置（`/settings`）**：居中浮层，仅一项可调——界面语言（`Enter` 打开语言下拉、`Esc` 逐层关闭）；
+  偏好保存在 `$XDG_STATE_HOME/teamagents/ui.json`。活动行 spinner 始终动画。
 - **权限模式**：显示在页脚右下角——`Pre-authorized` 暗灰、`Full auto` 强调色粗体（均无底色）。
-- **鼠标**：指针悬停在**页签或表格行**上时该处变为灰底白字（提示"可点"）；
+- **鼠标**：指针悬停在**页签或表格行**上时**只有该处**变为灰底白字（提示"可点"）；
   滚轮悬停在管理面板上等同 ↑/↓ 移动选中行，在聊天/日志上滚动内容；
   点击页签切换面板、点击表格行选中、点击聊天区回到输入框（浮层打开时忽略鼠标）。
 

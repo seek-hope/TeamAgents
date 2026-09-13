@@ -199,14 +199,12 @@ pub struct App {
     /// the `/` menu: highlighted entry, and the query it was dismissed for
     pub slash_index: usize,
     pub slash_dismissed_for: Option<String>,
-    /// tab strip position recorded by the renderer: (row, x_range)
+    /// tab strip row recorded by the renderer (hover + hit-test)
     pub tab_row: u16,
-    pub tab_cols: (u16, u16),
     pub toasts: Vec<Toast>,
     pub sessions: Vec<Json>,
     pub shared: Vec<Json>,
     pub pending_delete: Option<String>,
-    pub settings_row: usize, // 0 = language, 1 = animations
     pub lang_open: bool,
     pub lang_choice: usize, // 0 = en, 1 = zh-CN
     pub should_quit: bool,
@@ -244,12 +242,10 @@ impl App {
             slash_index: 0,
             slash_dismissed_for: None,
             tab_row: 0,
-            tab_cols: (0, 0),
             toasts: vec![],
             sessions: vec![],
             shared: vec![],
             pending_delete: None,
-            settings_row: 0,
             lang_open: false,
             lang_choice: if lang == "zh-CN" { 1 } else { 0 },
             should_quit: false,
@@ -1058,12 +1054,12 @@ impl App {
     pub fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> Vec<Effect> {
         use crossterm::event::{KeyCode, KeyModifiers as Mod};
         let ctrl = key.modifiers.contains(Mod::CONTROL);
-        // overlays swallow keys while open
-        if self.settings_open {
-            return self.settings_overlay_key(key);
-        }
+        // overlays swallow keys while open; the picker is the innermost layer
         if self.lang_open {
             return self.settings_dropdown_key(key);
+        }
+        if self.settings_open {
+            return self.settings_overlay_key(key);
         }
         match (key.code, ctrl) {
             (KeyCode::Char('q'), true) => return vec![Effect::Quit],
@@ -1246,30 +1242,16 @@ impl App {
         }
     }
 
-    /// `/settings`: ↑↓ move, Enter/Space activates, Esc (or /settings again) closes.
+    /// `/settings`: Enter opens the language picker, Esc closes the overlay.
     fn settings_overlay_key(&mut self, key: crossterm::event::KeyEvent) -> Vec<Effect> {
         use crossterm::event::KeyCode;
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => self.settings_open = false,
-            KeyCode::Up => self.settings_row = self.settings_row.saturating_sub(1),
-            KeyCode::Down => self.settings_row = (self.settings_row + 1).min(1),
-            KeyCode::Tab => self.settings_row = (self.settings_row + 1) % 2,
-            KeyCode::Enter | KeyCode::Char(' ') => return self.activate_setting(),
-            _ => {}
-        }
-        vec![]
-    }
-
-    fn activate_setting(&mut self) -> Vec<Effect> {
-        if self.settings_row == 0 {
-            self.lang_open = true;
-            self.lang_choice = if self.lang == "zh-CN" { 1 } else { 0 };
-        } else {
-            self.animations = !self.animations;
-            if let Err(e) = crate::i18n::write_preferences(self.lang, self.animations) {
-                let msg = self.t("偏好保存失败：{v0}", &[("v0", &e.to_string())]);
-                self.notify(msg, Severity::Error, 10);
+            KeyCode::Enter | KeyCode::Char(' ') => {
+                self.lang_open = true;
+                self.lang_choice = if self.lang == "zh-CN" { 1 } else { 0 };
             }
+            _ => {}
         }
         vec![]
     }

@@ -400,12 +400,11 @@ fn settings_lives_behind_the_slash_command() {
     assert!(app.settings_open, "/settings opens the overlay");
     assert_eq!(app.composer.text(), "", "the command is not sent as a message");
 
-    // ↑↓ + Enter edit a setting; Esc closes
-    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    assert_eq!(app.settings_row, 1);
-    let before = app.animations;
+    // Enter opens the language picker; Esc closes the picker, then the overlay
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert_ne!(app.animations, before, "Enter toggles the selected row");
+    assert!(app.lang_open, "Enter opens the language picker");
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(!app.lang_open && app.settings_open, "Esc closes only the picker");
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(!app.settings_open, "Esc closes the overlay");
 
@@ -417,6 +416,7 @@ fn settings_lives_behind_the_slash_command() {
     let text = frame_text(terminal.backend().buffer());
     assert!(text.contains("Settings"), "overlay title: {text}");
     assert!(text.contains("Interface language"), "language row missing");
+    assert!(!text.contains("Animations"), "the animations switch is gone");
     assert!(text.contains("Session: s1"), "info lines missing");
     assert!(text.contains("Esc") && text.contains("close"), "overlay hint missing");
 }
@@ -609,6 +609,16 @@ fn hover_highlights_the_tab_under_the_pointer() {
     let cell = &buffer[(sessions_col, tab_y)];
     assert_eq!(cell.style().bg, Some(Color::Rgb(0x3a, 0x3a, 0x3a)), "hover surface missing");
     assert_eq!(cell.style().fg, Some(Color::Rgb(0xff, 0xff, 0xff)), "hover text missing");
+    // …and only that tab: its neighbours stay on the plain surface
+    let sessions_start = frame_text(terminal.backend().buffer())
+        .split('\n')
+        .find(|l| l.contains("▍Team"))
+        .and_then(|l| l.chars().collect::<String>().find("Team"))
+        .map(|byte| 0usize)
+        .unwrap_or(0);
+    let _ = sessions_start;
+    let team_cell = &buffer[(3u16, tab_y)];
+    assert_ne!(team_cell.style().bg, Some(Color::Rgb(0x3a, 0x3a, 0x3a)), "other tabs must not hover");
     // moving the pointer away clears it
     app.pointer = Some((0, 0));
     terminal.draw(|f| ui::render(f, &mut app)).unwrap();
