@@ -52,6 +52,11 @@
 
 ## 当前 Rust 实现对照
 
+2026-09-13 追加审查的 6 项修复与 10 项新增回归检查见
+[`review/fix-notes-rust-followup-2026-09-13.md`](../review/fix-notes-rust-followup-2026-09-13.md)，
+补充 T8/T21 的真实 Chat 崩溃恢复、T11 配置生效、T19 MCP 模型调用、T22 运行中 shell
+中断及 T23 悬空符号链接证据。
+
 证据一律是可运行的：`cd core|engine|tui && cargo test`、`python3 tui/scripts/pty_smoke.py`、
 `python3 tui/scripts/pty_click_check.py`、`cd engine && TEAMAGENTS_LIVE_CODEX=1 cargo test --test live_codex`。
 ✅ = 有自动化证据；🔶 = 仅部分覆盖/仅人工实测；⚠ = 该能力未移植到 Rust 版。

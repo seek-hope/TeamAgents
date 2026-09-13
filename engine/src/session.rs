@@ -5,7 +5,7 @@ use crate::chat::ChatRunner;
 use crate::codex::{CodexOptions, CodexRunner};
 use crate::config::{expand_home, load_user_config_for, user_config_path};
 use crate::core_client::CoreClient;
-use crate::gateway::{ApprovalGate, PermissionPolicy};
+use crate::gateway::{ApprovalGate, PermissionPolicy, TurnControl};
 use crate::runtime::{AgentRunner, Notify, RunnerFactory, Runtime, RuntimeLimits, ToolExecutor};
 use crate::scripted::{BarrierRegistry, ScriptedMember, Step};
 use crate::sessions::{acquire_session_lock, new_session_id, session_paths, SessionLock};
@@ -351,7 +351,7 @@ fn make_runner_factory(
     })
 }
 
-/// One executor per member root, resolved from the session spec on first use
+/// One executor per member root, refreshed when its config revision changes
 /// (members added mid-session resolve on their first tool call).
 fn member_executor_factory(
     core: Arc<CoreClient>,
@@ -359,32 +359,30 @@ fn member_executor_factory(
     session_id: String,
     cwd: PathBuf,
 ) -> ToolExecutor {
-    type MemberExecutor = Arc<dyn Fn(&str, &Json) -> Result<Json, String> + Send + Sync>;
-    let cache: Mutex<HashMap<String, MemberExecutor>> = Mutex::new(HashMap::new());
+    type MemberExecutor = Arc<dyn Fn(&str, &Json, &TurnControl) -> Result<Json, String> + Send + Sync>;
+    let cache: Mutex<HashMap<String, (i64, MemberExecutor)>> = Mutex::new(HashMap::new());
     let artifacts = session_paths(&session_id).artifacts;
-    Arc::new(move |agent_id: &str, tool: &str, args: &Json| {
-        if let Some(executor) = cache.lock().unwrap().get(agent_id).cloned() {
-            return executor(tool, args);
+    Arc::new(move |agent_id: &str, tool: &str, args: &Json, control: &TurnControl| {
+        control.check()?;
+        let state = core.state()?;
+        let revision = state["agents"].as_array()
+            .and_then(|agents| agents.iter().find(|a| a["id"] == agent_id))
+            .and_then(|a| a["config_revision"].as_i64()).ok_or("member is no longer configured")?;
+        let cached = cache.lock().unwrap().get(agent_id).cloned();
+        if let Some((cached_revision, executor)) = cached {
+            if cached_revision == revision { return executor(tool, args, control); }
         }
-        let agent = core
-            .state()
-            .ok()
-            .and_then(|state| state.get("spec").and_then(|spec| spec.get("agents")).cloned())
+        let agent = state.get("spec").and_then(|spec| spec.get("agents")).cloned()
             .and_then(|agents| serde_json::from_value::<Vec<AgentSpec>>(agents).ok())
-            .and_then(|agents| agents.into_iter().find(|a| a.id == agent_id));
-        // a member that vanished from the spec: conservative default, no bindings
-        let (root, bindings) = match agent {
-            Some(agent) => (member_root(&agent, &cwd, &session_id)?, agent.tool_bindings.clone()),
-            None => (cwd.clone(), vec![]),
-        };
-        let executor: MemberExecutor = Arc::new(crate::tools::member_executor(
-            root,
+            .and_then(|agents| agents.into_iter().find(|a| a.id == agent_id)).ok_or("member is no longer configured")?;
+        let executor: MemberExecutor = Arc::new(crate::tools::member_executor_with_control(
+            member_root(&agent, &cwd, &session_id)?,
             catalog.clone(),
-            bindings,
+            agent.tool_bindings.clone(),
             Some(artifacts.clone()),
         ));
-        cache.lock().unwrap().insert(agent_id.to_string(), executor.clone());
-        executor(tool, args)
+        cache.lock().unwrap().insert(agent_id.to_string(), (revision, executor.clone()));
+        executor(tool, args, control)
     })
 }
 

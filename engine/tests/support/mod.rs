@@ -75,7 +75,7 @@ pub fn scripted(id: &str, steps: &Json, barriers: BarrierRegistry) -> Arc<Script
 pub fn harness_with(core: Arc<CoreClient>, members: Vec<(&str, Arc<dyn AgentRunner>)>) -> Harness {
     let notify = Notify::new(core.clone());
     let approvals = ApprovalGate::new(core.clone(), PermissionPolicy::default());
-    let executor: ToolExecutor = Arc::new(|_agent: &str, tool: &str, _args: &Json| {
+    let executor: ToolExecutor = Arc::new(|_agent: &str, tool: &str, _args: &Json, _control: &teamagents_engine::gateway::TurnControl| {
         Err(format!("no tool executor configured for {tool}"))
     });
     let runtime = Runtime::new(core.clone(), notify, approvals, executor, None, RuntimeLimits::default());

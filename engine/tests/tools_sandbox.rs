@@ -27,6 +27,30 @@ fn has_bwrap() -> bool {
     false
 }
 
+#[test]
+fn file_tools_reject_dangling_links_and_keep_in_root_links_working() {
+    use std::os::unix::fs::symlink;
+    let base = scratch("dangling-links");
+    let root = base.join("workspace");
+    let outside = base.join("outside");
+    std::fs::create_dir_all(&root).unwrap();
+    symlink(&outside, root.join("leaf")).unwrap();
+    symlink(base.join("missing-dir"), root.join("parent")).unwrap();
+    let executor = tools::workspace_executor(root.clone(), None);
+    for name in ["leaf", "parent/nested/file"] {
+        assert!(executor("write_file", &json!({"path":name, "content":"escaped"})).is_err());
+    }
+    assert!(!outside.exists());
+    assert!(!base.join("missing-dir").exists());
+    executor("write_file", &json!({"path":"nested/target", "content":"old"})).unwrap();
+    symlink(root.join("nested/target"), root.join("safe")).unwrap();
+    executor("write_file", &json!({"path":"safe", "content":"new"})).unwrap();
+    executor("edit_file", &json!({"path":"safe", "old_string":"new", "new_string":"edited"})).unwrap();
+    assert_eq!(executor("read_file", &json!({"path":"safe"})).unwrap(), json!("edited"));
+    assert_eq!(std::fs::read_to_string(root.join("nested/target")).unwrap(), "edited");
+    std::fs::remove_dir_all(base).unwrap();
+}
+
 /// finding 1: a child that fills the 64KiB pipe buffer must not be mistaken
 /// for a hang, and a real hang must still be killed.
 #[test]

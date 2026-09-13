@@ -20,7 +20,7 @@ python3 tui/scripts/pty_smoke.py         # 真终端冒烟
 python3 tui/scripts/pty_click_check.py   # 真终端点击命中检查
 ```
 
-- 当前基线：core 38 / engine 67 / tui 55 项测试全绿。验收清单 `docs/ACCEPTANCE.md`，
+- 当前基线：core 38 / engine 77 / tui 55 项测试全绿。验收清单 `docs/ACCEPTANCE.md`，
   迁移台账与未移植项 `docs/RECONSTRUCT.md`，决策记录 `docs/DECISIONS.md`。
 
 ## 架构速览（改代码前先读这 6 行）

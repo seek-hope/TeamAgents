@@ -3,7 +3,7 @@
 //! decides *when* a member turn runs, and reports its outcome.
 
 use crate::core_client::CoreClient;
-use crate::gateway::{ApprovalGate, ToolGateway};
+use crate::gateway::{ApprovalGate, ToolGateway, TurnControl};
 use serde_json::{json, Value as Json};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -26,6 +26,8 @@ pub trait AgentRunner: Send + Sync {
     fn start_or_resume(&self, run: &TurnRun, view: &Json, gateway: &ToolGateway, wake: &Json) -> TurnOutcome;
     fn request_interrupt(&self, run_id: &str) -> TurnStatus;
     fn query_state(&self, run_id: &str) -> Option<TurnStatus>;
+    /// Durable input IDs, when a backend checkpoints its own delivery boundary.
+    fn applied_delivery_ids(&self, _run: &TurnRun) -> Option<Vec<i64>> { None }
     fn deliver_mid_turn(&self, run_id: &str, items: Vec<Json>);
     /// Optional restart convergence (RT-04): a backend that survives our
     /// restart reports the live status of a parked turn.
@@ -40,7 +42,7 @@ pub trait AgentRunner: Send + Sync {
 }
 
 pub type RunnerFactory = Box<dyn Fn(&AgentSpec) -> Result<Arc<dyn AgentRunner>, String> + Send + Sync>;
-pub type ToolExecutor = Arc<dyn Fn(&str, &str, &Json) -> Result<Json, String> + Send + Sync>;
+pub type ToolExecutor = Arc<dyn Fn(&str, &str, &Json, &TurnControl) -> Result<Json, String> + Send + Sync>;
 
 #[derive(Debug, Clone)]
 pub struct RuntimeLimits {
@@ -69,11 +71,12 @@ pub struct Notify {
     core: Arc<CoreClient>,
     stream: Mutex<Option<Sink>>,
     waker: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    accepting: Mutex<bool>,
 }
 
 impl Notify {
     pub fn new(core: Arc<CoreClient>) -> Arc<Self> {
-        Arc::new(Self { core, stream: Mutex::new(None), waker: Mutex::new(None) })
+        Arc::new(Self { core, stream: Mutex::new(None), waker: Mutex::new(None), accepting: Mutex::new(true) })
     }
 
     pub fn set_stream_sink(&self, sink: Sink) {
@@ -99,6 +102,8 @@ impl Notify {
     }
 
     pub fn note_stream_chunk(&self, run_id: &str, agent_id: &str, text: &str) {
+        let accepting = self.accepting.lock().unwrap();
+        if !*accepting { return; }
         if text.is_empty() {
             return;
         }
@@ -111,6 +116,8 @@ impl Notify {
 
     /// codex.py::_on_status — live status changes from an external backend.
     pub fn note_external_status(&self, run_id: &str, status: TurnStatus) {
+        let accepting = self.accepting.lock().unwrap();
+        if !*accepting { return; }
         let Ok(state) = self.core.state() else { return };
         let runs: Vec<TurnRun> = serde_json::from_value(state.get("runs").cloned().unwrap_or(Json::Null)).unwrap_or_default();
         let Some(run) = runs.iter().find(|r| r.run_id == run_id) else { return };
@@ -149,6 +156,8 @@ impl Notify {
 
     /// codex.py::_on_progress — a human-readable progress line from a backend.
     pub fn note_external_progress(&self, run_id: &str, text: &str) {
+        let accepting = self.accepting.lock().unwrap();
+        if !*accepting { return; }
         if text.is_empty() {
             return;
         }
@@ -183,12 +192,13 @@ impl Notify {
 struct RunSlot {
     handle: Mutex<Option<std::thread::JoinHandle<()>>>,
     cancel_started: AtomicBool,
+    control: Arc<TurnControl>,
 }
 
 pub struct Runtime {
     pub core: Arc<CoreClient>,
     pub notify: Arc<Notify>,
-    runners: Mutex<HashMap<String, Arc<dyn AgentRunner>>>,
+    runners: Mutex<HashMap<String, (i64, Arc<dyn AgentRunner>)>>,
     factory: Option<RunnerFactory>,
     inflight: Mutex<HashMap<String, Arc<RunSlot>>>,
     approvals: Arc<ApprovalGate>,
@@ -238,11 +248,14 @@ impl Runtime {
     }
 
     pub fn add_runner(&self, agent_id: &str, runner: Arc<dyn AgentRunner>) {
-        self.runners.lock().unwrap().insert(agent_id.to_string(), runner);
+        let revision = self.core.state().ok()
+            .and_then(|s| s["agents"].as_array()?.iter().find(|a| a["id"] == agent_id)?["config_revision"].as_i64())
+            .unwrap_or(0);
+        self.runners.lock().unwrap().insert(agent_id.to_string(), (revision, runner));
     }
 
     pub fn runner(&self, agent_id: &str) -> Option<Arc<dyn AgentRunner>> {
-        self.runners.lock().unwrap().get(agent_id).cloned()
+        self.runners.lock().unwrap().get(agent_id).map(|(_, runner)| runner.clone())
     }
 
     pub fn me(&self) -> Option<Arc<Runtime>> {
@@ -275,22 +288,29 @@ impl Runtime {
         *self.loop_thread.lock().unwrap() = Some(handle);
     }
 
-    /// Stop scheduling and release member backends.
-    ///
-    /// ponytail: in-flight turns are NOT waited for. A member mid-HTTP-call
-    /// cannot be aborted here, and blocking quit/switch on it made closing a
-    /// session wait for the whole model call. The turn stays RUNNING in the DB
-    /// and the next start reconciles it (RT-04) — the same recovery path a
-    /// killed process uses.
+    /// Revoke turns before releasing ownership. Model HTTP calls may finish
+    /// later, but their tools/checkpoint writes can no longer enter the gate.
     pub fn close(&self) {
-        self.closed.store(true, Ordering::SeqCst);
+        let slots: Vec<Arc<RunSlot>> = {
+            // Keep wrappers from removing their tool scope before we drain it.
+            let inflight = self.inflight.lock().unwrap();
+            self.closed.store(true, Ordering::SeqCst);
+            let slots: Vec<_> = inflight.values().cloned().collect();
+            for slot in &slots { slot.control.cancel(); }
+            slots
+        };
         self.signal();
         if let Some(handle) = self.loop_thread.lock().unwrap().take() {
             let _ = handle.join();
         }
-        let runners: Vec<Arc<dyn AgentRunner>> = self.runners.lock().unwrap().values().cloned().collect();
+        *self.notify.accepting.lock().unwrap() = false;
+        let runners: Vec<Arc<dyn AgentRunner>> = self.runners.lock().unwrap().values().map(|(_, r)| r.clone()).collect();
         for runner in runners {
             runner.close();
+        }
+        for slot in slots {
+            while !slot.control.wait_idle(Duration::from_millis(50)) {}
+            if let Some(handle) = slot.handle.lock().unwrap().take() { let _ = handle.join(); }
         }
     }
 
@@ -420,6 +440,14 @@ impl Runtime {
             if self.inflight.lock().unwrap().contains_key(&run.run_id) {
                 continue;
             }
+            if self.factory.is_some() {
+                let stale = self.runners.lock().unwrap().get(&run.agent_id)
+                    .map(|(revision, _)| *revision != run.config_revision).unwrap_or(false);
+                if stale {
+                    let old = self.runners.lock().unwrap().remove(&run.agent_id);
+                    if let Some((_, runner)) = old { runner.close(); }
+                }
+            }
             let runner = match self.runner(&run.agent_id) {
                 Some(runner) => Some(runner),
                 None => {
@@ -471,12 +499,17 @@ impl Runtime {
     }
 
     fn spawn_execute(&self, run: TurnRun, _runner: Arc<dyn AgentRunner>) {
-        let slot = Arc::new(RunSlot { handle: Mutex::new(None), cancel_started: AtomicBool::new(false) });
-        self.inflight.lock().unwrap().insert(run.run_id.clone(), slot.clone());
         let Some(runtime) = self.me() else { return };
+        let slot = Arc::new(RunSlot { handle: Mutex::new(None), cancel_started: AtomicBool::new(false), control: Arc::new(TurnControl::default()) });
+        {
+            let mut inflight = self.inflight.lock().unwrap();
+            if self.closed.load(Ordering::SeqCst) { return; }
+            inflight.insert(run.run_id.clone(), slot.clone());
+        }
         let run_id = run.run_id.clone();
+        let control = slot.control.clone();
         let handle = std::thread::spawn(move || {
-            runtime.execute(&run);
+            runtime.execute(&run, &control);
             runtime.inflight.lock().unwrap().remove(&run_id);
             runtime.signal();
         });
@@ -495,6 +528,7 @@ impl Runtime {
             }
             let Some(runner) = self.runner(&run.agent_id) else { continue };
             slot.cancel_started.store(true, Ordering::SeqCst);
+            slot.control.cancel();
             stopping.push((run.clone(), runner));
         }
         for (run, runner) in stopping {
@@ -514,6 +548,7 @@ impl Runtime {
         });
         // confirmation timeout: mark OUTCOME_UNKNOWN + expire approvals (RT-06)
         if let Err(RecvTimeoutError::Timeout) = rx.recv_timeout(timeout) {
+            if self.closed.load(Ordering::SeqCst) { return; }
             core_best_effort(&self.core, "stop timeout bookkeeping", "stop_timeout", json!({"run_id": run.run_id}));
         }
         self.signal();
@@ -521,8 +556,8 @@ impl Runtime {
 
     // -- executor ------------------------------------------------------------
 
-    fn execute(&self, run: &TurnRun) {
-        let guard = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.execute_inner(run)));
+    fn execute(&self, run: &TurnRun, control: &Arc<TurnControl>) {
+        let guard = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.execute_inner(run, control)));
         match guard {
             Ok(Ok(())) => {}
             Ok(Err(e)) => self.finalize(
@@ -551,7 +586,8 @@ impl Runtime {
         self.signal();
     }
 
-    fn execute_inner(&self, run: &TurnRun) -> Result<(), String> {
+    fn execute_inner(&self, run: &TurnRun, control: &Arc<TurnControl>) -> Result<(), String> {
+        if self.closed.load(Ordering::SeqCst) { return Ok(()); }
         let Some(runner) = self.runner(&run.agent_id) else {
             self.finalize(
                 run,
@@ -582,12 +618,13 @@ impl Runtime {
         }
         let limits = self.effective_limits();
         let timeout = Duration::from_secs(limits.turn_active_timeout_s.max(1) as u64);
-        let gateway = ToolGateway::new(
+        let gateway = ToolGateway::with_control(
             self.core.clone(),
             &fresh.agent_id,
             &fresh.run_id,
             self.approvals.clone(),
-            Some(self.guarded_executor(&fresh.agent_id, &fresh.run_id, limits.max_model_steps_per_turn)),
+            Some(self.guarded_executor(&fresh.agent_id, &fresh.run_id, limits.max_model_steps_per_turn, control.clone())),
+            control.clone(),
         );
         let mut outcome = self.run_with_timeout(runner.clone(), &fresh, &view, gateway, &wake, timeout);
 
@@ -632,34 +669,43 @@ impl Runtime {
         let (tx, rx) = channel();
         let (run_clone, view_clone, wake_clone) = (run.clone(), view.clone(), wake.clone());
         let runner_for_interrupt = runner.clone();
+        let control = gateway.control.clone();
         std::thread::spawn(move || {
             let outcome = runner.start_or_resume(&run_clone, &view_clone, &gateway, &wake_clone);
             let _ = tx.send(outcome);
         });
-        match rx.recv_timeout(timeout) {
-            Ok(outcome) => outcome,
-            Err(RecvTimeoutError::Timeout) => {
-                // the interrupt itself must not block the timeout path
-                let run_id = run.run_id.clone();
-                std::thread::spawn(move || {
-                    runner_for_interrupt.request_interrupt(&run_id);
-                });
-                TurnOutcome {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if self.closed.load(Ordering::SeqCst) {
+                return TurnOutcome { status: TurnStatus::Cancelled, error: None, note: None, reply_text: None };
+            }
+            match rx.recv_timeout(Duration::from_millis(20)) {
+                Ok(outcome) => return outcome,
+                Err(RecvTimeoutError::Timeout) if Instant::now() >= deadline => {
+                    control.cancel();
+                    let run_id = run.run_id.clone();
+                    std::thread::spawn(move || {
+                        runner_for_interrupt.request_interrupt(&run_id);
+                    });
+                    let stopped = control.wait_idle(Duration::from_secs(self.effective_limits().cancel_confirm_timeout_s.max(1) as u64));
+                    return TurnOutcome {
+                        status: if stopped { TurnStatus::Failed } else { TurnStatus::OutcomeUnknown },
+                        error: Some(format!("turn active-time limit {}s reached", timeout.as_secs())),
+                        note: None,
+                        reply_text: None,
+                    };
+                }
+                Err(RecvTimeoutError::Timeout) => continue,
+                // the member thread panicked before sending: never report that as a
+                // timeout (a 1200s claim for an immediate crash sends debugging the
+                // wrong way)
+                Err(RecvTimeoutError::Disconnected) => return TurnOutcome {
                     status: TurnStatus::Failed,
-                    error: Some(format!("turn active-time limit {}s reached", timeout.as_secs())),
+                    error: Some("member runner crashed before reporting an outcome".into()),
                     note: None,
                     reply_text: None,
-                }
+                },
             }
-            // the member thread panicked before sending: never report that as a
-            // timeout (a 1200s claim for an immediate crash sends debugging the
-            // wrong way)
-            Err(RecvTimeoutError::Disconnected) => TurnOutcome {
-                status: TurnStatus::Failed,
-                error: Some("member runner crashed before reporting an outcome".into()),
-                note: None,
-                reply_text: None,
-            },
         }
     }
 
@@ -683,6 +729,7 @@ impl Runtime {
         agent_id: &str,
         run_id: &str,
         max_steps: i64,
+        control: Arc<TurnControl>,
     ) -> Arc<dyn Fn(&str, &Json) -> Result<Json, String> + Send + Sync> {
         let steps = self.steps.clone();
         let base = self.executor.clone();
@@ -698,7 +745,7 @@ impl Runtime {
             if used > max_steps {
                 return Err(format!("step limit {max_steps} reached for this turn"));
             }
-            base(&agent_id, tool, args)
+            base(&agent_id, tool, args, &control)
         })
     }
 
@@ -720,13 +767,17 @@ impl Runtime {
     }
 
     fn finalize(&self, run: &TurnRun, outcome: TurnOutcome) {
-        let ack: Vec<i64> = self
+        if self.closed.load(Ordering::SeqCst) { return; }
+        let mut ack: Vec<i64> = self
             .offered
             .lock()
             .unwrap()
             .remove(&run.run_id)
             .map(|ids| ids.into_iter().collect())
             .unwrap_or_default();
+        if let Some(applied) = self.runner(&run.agent_id).and_then(|r| r.applied_delivery_ids(run)) {
+            ack.retain(|id| applied.contains(id));
+        }
         core_best_effort(&self.core, "run finalization", "finalize_run", json!({
             "run_id": run.run_id,
             "status": outcome.status,
@@ -757,6 +808,10 @@ impl Runtime {
                 if let Some(runner) = &runner {
                     status = runner.reconcile(&run);
                 }
+            }
+            if status == Some(TurnStatus::Queued) {
+                core_best_effort(&self.core, "checkpoint resume", "requeue_run", json!({"run_id": run.run_id}));
+                continue;
             }
             if run.status != TurnStatus::Running {
                 if status == Some(run.status) {

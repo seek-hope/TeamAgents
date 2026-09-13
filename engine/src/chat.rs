@@ -2,9 +2,11 @@
 //! endpoint (runners.py::DeepAgentsRunner, with the graph framework replaced
 //! by this loop — team semantics stay in the core).
 
-use crate::gateway::ToolGateway;
+use crate::gateway::{ToolGateway, TurnControl, TEAM_TOOLS};
 use crate::runtime::{AgentRunner, Notify};
 use serde_json::{json, Value as Json};
+use serde::{Deserialize, Serialize};
+use std::io::Write;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -216,6 +218,7 @@ fn tools_payload(bindings: &[String], web: (bool, bool), bound: &[Json]) -> Json
         .iter()
         .map(|(name, _)| *name)
         .chain(bound_tool_names(bindings, web))
+        .chain(bound.iter().filter_map(|tool| tool.get("name").and_then(Json::as_str)))
         .collect();
     let mut schemas = team_tool_schemas().as_array().cloned().unwrap_or_default();
     schemas.extend(bound_tool_schemas().as_array().cloned().unwrap_or_default());
@@ -233,7 +236,8 @@ fn tools_payload(bindings: &[String], web: (bool, bool), bound: &[Json]) -> Json
                     "type": "function",
                     "function": {
                         "name": name,
-                        "description": docs.get(name).copied().unwrap_or(name),
+                        "description": tool.get("description").and_then(Json::as_str)
+                            .unwrap_or_else(|| docs.get(name).copied().unwrap_or(name)),
                         "parameters": tool.get("parameters").cloned().unwrap_or(json!({})),
                     }
                 })
@@ -262,6 +266,40 @@ fn fill_unanswered_tool_calls(history: &mut Vec<Json>, calls: &[Json], answered:
     }
 }
 
+/// A private execution checkpoint, saved before tools and after each result.
+/// An external call without a recorded result requires reconciliation; team
+/// actions can safely replay their persisted call IDs through core receipts.
+/// ponytail: full snapshots per turn; compact finalized snapshots if long
+/// sessions make checkpoint storage or serialization dominate.
+#[derive(Serialize, Deserialize, Default)]
+struct ChatCheckpoint {
+    history: Vec<Json>,
+    model_steps: i64,
+    pending_external: Option<String>,
+    outcome: Option<TurnOutcome>,
+    input_events: HashSet<String>,
+    delivery_ids: HashSet<i64>,
+}
+
+fn write_json_atomic(path: &std::path::Path, value: &Json) -> Result<(), String> {
+    let parent = path.parent().ok_or("checkpoint parent missing")?;
+    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    let tmp = path.with_extension("tmp");
+    let mut file = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
+    file.write_all(value.to_string().as_bytes()).map_err(|e| e.to_string())?;
+    file.sync_all().map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, path).map_err(|e| e.to_string())?;
+    std::fs::File::open(parent).and_then(|dir| dir.sync_all()).map_err(|e| e.to_string())
+}
+
+fn pending_tool_calls(history: &[Json]) -> Vec<Json> {
+    let Some(index) = history.iter().rposition(|m| m["role"] == "assistant") else { return vec![] };
+    let answered: HashSet<&str> = history[index + 1..].iter()
+        .filter_map(|m| m.get("tool_call_id").and_then(Json::as_str)).collect();
+    history[index]["tool_calls"].as_array().cloned().unwrap_or_default().into_iter()
+        .filter(|c| !c["id"].as_str().map(|id| answered.contains(id)).unwrap_or(false)).collect()
+}
+
 pub struct ChatRunner {
     agent: serde_json::Value,
     profile: ModelProfile,
@@ -277,9 +315,10 @@ pub struct ChatRunner {
     history_path: Option<std::path::PathBuf>,
     messages: Mutex<HashMap<String, Vec<Json>>>,
     states: Mutex<HashMap<String, TurnStatus>>,
-    paused_kind: Mutex<HashMap<String, String>>,
     mid_turn: Mutex<HashMap<String, Vec<Json>>>,
     interrupted: Mutex<HashSet<String>>,
+    controls: Mutex<HashMap<String, Arc<TurnControl>>>,
+    closed: AtomicBool,
     /// runners.py::_switch_effort_to_max — at most one effort fallback per runner
     effort_max: AtomicBool,
     effort_fallback_used: AtomicBool,
@@ -315,9 +354,10 @@ impl ChatRunner {
             history_path,
             messages: Mutex::new(HashMap::new()),
             states: Mutex::new(HashMap::new()),
-            paused_kind: Mutex::new(HashMap::new()),
             mid_turn: Mutex::new(HashMap::new()),
             interrupted: Mutex::new(HashSet::new()),
+            controls: Mutex::new(HashMap::new()),
+            closed: AtomicBool::new(false),
             effort_max: AtomicBool::new(false),
             effort_fallback_used: AtomicBool::new(false),
         })
@@ -338,25 +378,41 @@ impl ChatRunner {
     /// Atomic write (tmp + rename) so a crash never truncates the history.
     /// ponytail: the whole conversation is kept, unbounded like the in-memory
     /// map; trim to a message window if a long session ever hits provider limits.
-    fn save_history(&self, thread: &str, history: &[Json]) {
-        let Some(path) = &self.history_path else { return };
-        let mut data = std::fs::read_to_string(path)
-            .ok()
-            .and_then(|text| serde_json::from_str::<Json>(&text).ok())
-            .unwrap_or_else(|| json!({}));
-        if !data.is_object() {
-            data = json!({});
-        }
+    fn save_history(&self, thread: &str, history: &[Json]) -> Result<(), String> {
+        let path = self.history_path.as_ref().ok_or("member history path missing")?;
+        let mut data = match std::fs::read_to_string(path) {
+            Ok(text) => serde_json::from_str::<Json>(&text).map_err(|e| e.to_string())?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => json!({}),
+            Err(e) => return Err(e.to_string()),
+        };
+        if !data.is_object() { return Err("invalid member history".into()); }
         data[thread] = Json::Array(history.to_vec());
-        if let Some(parent) = path.parent() {
-            if std::fs::create_dir_all(parent).is_err() {
-                return;
-            }
+        write_json_atomic(path, &data)
+    }
+
+    fn checkpoint_path(&self, run: &TurnRun) -> Result<std::path::PathBuf, String> {
+        if run.run_id.is_empty() || !run.run_id.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+            return Err("invalid checkpoint run id".into());
         }
-        let tmp = path.with_extension("tmp");
-        if std::fs::write(&tmp, data.to_string()).is_ok() {
-            let _ = std::fs::rename(&tmp, path);
+        Ok(self.history_path.as_ref().and_then(|p| p.parent()).ok_or("member history path missing")?
+            .join("turns").join(format!("{}.json", run.run_id)))
+    }
+
+    fn load_checkpoint(&self, run: &TurnRun) -> Result<Option<ChatCheckpoint>, String> {
+        match std::fs::read(self.checkpoint_path(run)?) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|e| format!("invalid turn checkpoint: {e}")),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.to_string()),
         }
+    }
+
+    fn save_checkpoint(&self, run: &TurnRun, checkpoint: &ChatCheckpoint, gateway: &ToolGateway) -> Result<(), (String, String)> {
+        let _execution = gateway.control.enter().map_err(|e| ("TurnInterrupted".into(), e))?;
+        let write = || -> Result<(), String> {
+            write_json_atomic(&self.checkpoint_path(run)?, &serde_json::to_value(checkpoint).map_err(|e| e.to_string())?)?;
+            self.save_history(run.context_ref.as_deref().unwrap_or(&run.run_id), &checkpoint.history)
+        };
+        write().map_err(|e| ("CheckpointError".into(), e))
     }
 
     fn bindings(&self) -> Vec<String> {
@@ -410,7 +466,7 @@ impl ChatRunner {
     }
 
     fn has_paused(&self, run_id: &str) -> bool {
-        self.interrupted.lock().unwrap().contains(run_id)
+        self.closed.load(Ordering::SeqCst) || self.interrupted.lock().unwrap().contains(run_id)
     }
 
     /// generation_options for the request body, with the effort rewritten when
@@ -457,9 +513,9 @@ impl ChatRunner {
             .unwrap_or(200)
     }
 
-    fn chat(&self, messages: &[Json], tools: &Json) -> Result<Json, String> {
+    fn chat(&self, messages: &[Json], tools: &Json, control: &TurnControl) -> Result<Json, String> {
         if self.profile.protocol == "anthropic" {
-            return self.chat_anthropic(messages, tools);
+            return self.chat_anthropic(messages, tools, control);
         }
         let api_key = match &self.profile.api_key_env {
             Some(env) => std::env::var(env).map_err(|_| format!("missing API key env {env}"))?,
@@ -476,6 +532,7 @@ impl ChatRunner {
         let mut last_error = "chat call failed".to_string();
         let retries = self.profile.max_retries.max(0);
         for attempt in 0..=retries {
+            control.check()?;
             let mut request = ureq::post(&url)
                 .set("content-type", "application/json")
                 .timeout(std::time::Duration::from_secs(self.profile.timeout.max(1) as u64));
@@ -523,7 +580,7 @@ impl ChatRunner {
 
     /// Anthropic Messages API (providers.py uses langchain-anthropic natively).
     /// ponytail: text/tool_use/tool_result blocks only — no images or thinking blocks.
-    fn chat_anthropic(&self, messages: &[Json], tools: &Json) -> Result<Json, String> {
+    fn chat_anthropic(&self, messages: &[Json], tools: &Json, control: &TurnControl) -> Result<Json, String> {
         let api_key = match &self.profile.api_key_env {
             Some(env) => std::env::var(env).map_err(|_| format!("missing API key env {env}"))?,
             None => String::new(),
@@ -571,6 +628,7 @@ impl ChatRunner {
         let mut last_error = "chat call failed".to_string();
         let retries = self.profile.max_retries.max(0);
         for attempt in 0..=retries {
+            control.check()?;
             let mut request = ureq::post(&url)
                 .set("content-type", "application/json")
                 .set("anthropic-version", "2023-06-01")
@@ -609,237 +667,214 @@ impl ChatRunner {
     }
 
     fn run_loop(
-        &self,
-        run: &TurnRun,
-        history: &mut Vec<Json>,
-        gateway: &ToolGateway,
-        max_steps: i64,
+        &self, run: &TurnRun, checkpoint: &mut ChatCheckpoint, gateway: &ToolGateway,
+        view: &Json, wake: &Json,
     ) -> Result<String, (String, String)> {
         let tools = tools_payload(&self.bindings(), self.web_flags(), &self.bound.schemas());
-        let agent_id = self.agent_id();
-        // Python has two gates on the same budget: the tool-call executor in the
-        // runtime and a model-request counter (runners.py TurnAgentMiddleware).
-        // This is the model-request gate — it also covers bound MCP tools, which
-        // never reach the gateway's executor.
-        let mut model_steps = 0i64;
+        let max_steps = self.max_model_steps();
+        let mut input = Some(view.clone());
         loop {
-            model_steps += 1;
-            if model_steps > max_steps {
-                return Err((
-                    "TurnLimitExceeded".into(),
-                    format!("model-step limit {max_steps} reached for this turn"),
-                ));
-            }
-            if self.has_paused(&run.run_id) {
+            if self.has_paused(&run.run_id) || gateway.control.check().is_err() {
                 return Err(("TurnInterrupted".into(), "interrupted".into()));
             }
-            let mid = self.mid_turn.lock().unwrap().remove(&run.run_id).unwrap_or_default();
-            if !mid.is_empty() {
-                let text = mid
-                    .iter()
-                    .map(|i| {
-                        format!(
-                            "<inbox from=\"{}\" kind=\"{}\">{}</inbox>",
-                            i.get("from").and_then(|v| v.as_str()).unwrap_or(""),
-                            i.get("kind").and_then(|v| v.as_str()).unwrap_or(""),
-                            i.get("payload").cloned().unwrap_or(json!({}))
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                history.push(json!({"role": "user", "content": text}));
-            }
-            let message = match self.chat(history, &tools) {
-                Ok(message) => message,
-                Err(e) => {
-                    // a provider that rejects the configured effort maps to
-                    // `max` once, then the call is retried (runners.py:614-627)
-                    if looks_like_effort_error(&e)
-                        && self.configured_effort()
-                        && !self.effort_fallback_used.swap(true, Ordering::SeqCst)
-                    {
-                        self.effort_max.store(true, Ordering::SeqCst);
-                        match self.chat(history, &tools) {
-                            Ok(message) => message,
-                            Err(retry_error) => return Err(("ChatError".into(), retry_error)),
-                        }
-                    } else {
-                        return Err(("ChatError".into(), e));
+            let calls = pending_tool_calls(&checkpoint.history);
+            if calls.is_empty() {
+                // Includes recovery after the final model response was saved but
+                // before the runtime archived its outcome. Never ask again.
+                if let Some(last) = checkpoint.history.last().filter(|m| m["role"] == "assistant") {
+                    if last["tool_calls"].as_array().map(|c| c.is_empty()).unwrap_or(true) {
+                        return Ok(last["content"].as_str().unwrap_or("").to_string());
                     }
                 }
-            };
-            history.push(message.clone());
-            if let Some(content) = message.get("content").and_then(|v| v.as_str()) {
-                if !content.is_empty() {
-                    self.notify.note_stream_chunk(&run.run_id, &agent_id, content);
+                if let Some(input) = input.take() {
+                    self.append_input(checkpoint, input, wake, false);
                 }
-            }
-            let calls = message.get("tool_calls").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-            if calls.is_empty() {
-                return Ok(message.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string());
-            }
-            // One tool message per tool_call is mandatory: an unanswered call
-            // makes the provider reject the next request (live-reproduced 400).
-            let mut answered: Vec<String> = vec![];
-            let mut paused: Option<(String, String)> = None;
-            for call in &calls {
-                if self.has_paused(&run.run_id) {
-                    paused = Some(("TurnInterrupted".into(), "interrupted".into()));
-                    break;
+                let mid = self.mid_turn.lock().unwrap().remove(&run.run_id).unwrap_or_default();
+                if !mid.is_empty() {
+                    self.append_input(checkpoint, json!({"inbox_delta": mid}), &Json::Null, false);
                 }
-                let call_id = call.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let name = call
-                    .get("function")
-                    .and_then(|f| f.get("name"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let arguments = call
-                    .get("function")
-                    .and_then(|f| f.get("arguments"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("{}");
+                if checkpoint.model_steps >= max_steps {
+                    return Err(("TurnLimitExceeded".into(), format!("model-step limit {max_steps} reached for this turn")));
+                }
+                checkpoint.model_steps += 1;
+                self.save_checkpoint(run, checkpoint, gateway)?;
+                let message = match self.chat(&checkpoint.history, &tools, &gateway.control) {
+                    Ok(message) => message,
+                    Err(e) if looks_like_effort_error(&e) && self.configured_effort()
+                        && !self.effort_fallback_used.swap(true, Ordering::SeqCst) => {
+                        self.effort_max.store(true, Ordering::SeqCst);
+                        self.chat(&checkpoint.history, &tools, &gateway.control).map_err(|e| ("ChatError".into(), e))?
+                    }
+                    Err(e) => return Err(("ChatError".into(), e)),
+                };
+                checkpoint.history.push(message.clone());
+                // Persist model-assigned tool IDs BEFORE any team/external call.
+                self.save_checkpoint(run, checkpoint, gateway)?;
+                if let Some(text) = message["content"].as_str() {
+                    if !self.has_paused(&run.run_id) && gateway.control.check().is_ok() {
+                        self.notify.note_stream_chunk(&run.run_id, &self.agent_id(), text);
+                    }
+                }
+                continue;
+            }
+            for call in calls {
+                if self.has_paused(&run.run_id) || gateway.control.check().is_err() {
+                    return Err(("TurnInterrupted".into(), "interrupted".into()));
+                }
+                let call_id = call["id"].as_str().filter(|id| !id.is_empty())
+                    .ok_or_else(|| ("ChatError".to_string(), "tool call id missing".to_string()))?.to_string();
+                let name = call["function"]["name"].as_str().unwrap_or("");
+                let arguments = call["function"]["arguments"].as_str().unwrap_or("{}");
                 let args: Json = match serde_json::from_str(arguments) {
                     Ok(args) => args,
                     Err(_) => {
-                        history.push(json!({"role": "tool", "tool_call_id": call_id.clone(), "content": "invalid JSON arguments"}));
-                        answered.push(call_id);
+                        checkpoint.history.push(json!({"role":"tool", "tool_call_id":call_id, "content":"invalid JSON arguments"}));
+                        self.save_checkpoint(run, checkpoint, gateway)?;
                         continue;
                     }
                 };
-                // A configured+bound service is the authorization for its tools
-                // (plan §12.1); everything else goes through the gateway.
-                let receipt = match self.bound.call(&name, &args) {
-                    Some(Ok(output)) => teamagents_core::models::Receipt {
-                        action_id: call_id.clone(),
-                        ok: true,
-                        kind: teamagents_core::models::ActionKind::CompleteTask,
-                        result: json!({"output": output}),
-                        error: None,
-                    },
-                    Some(Err(e)) => teamagents_core::models::Receipt {
-                        action_id: call_id.clone(),
-                        ok: false,
-                        kind: teamagents_core::models::ActionKind::CompleteTask,
-                        result: json!({}),
-                        error: Some(e),
-                    },
-                    None => gateway.call(&name, &args, &call_id),
-                };
-                if receipt.error.as_deref() == Some("approval_required") {
-                    self.paused_kind.lock().unwrap().insert(run.run_id.clone(), "approval".into());
-                    let note = receipt.result.get("approval_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    history.push(json!({"role": "tool", "tool_call_id": call_id.clone(),
-                                        "content": json!({"approval_required": note}).to_string()}));
-                    answered.push(call_id);
-                    paused = Some(("TurnPaused".into(), note));
-                    break;
+                if !TEAM_TOOLS.contains(&name) {
+                    checkpoint.pending_external = Some(call_id.clone());
+                    self.save_checkpoint(run, checkpoint, gateway)?;
                 }
-                // the runtime's step guard failing ends the turn (Python raises
-                // TurnLimitExceeded from the middleware)
-                if let Some(error) = receipt.error.as_deref() {
-                    if error.contains("step limit") {
-                        return Err(("TurnLimitExceeded".into(), error.to_string()));
+                let receipt = if self.bound.names().contains(name) {
+                    let _execution = gateway.control.enter().map_err(|e| ("TurnInterrupted".into(), e))?;
+                    match self.bound.call(name, &args).expect("bound tool has a client") {
+                        Ok(output) => teamagents_core::models::Receipt {
+                            action_id: call_id.clone(), ok: true, kind: teamagents_core::models::ActionKind::CompleteTask,
+                            result: json!({"output":output}), error: None,
+                        },
+                        Err(e) => teamagents_core::models::Receipt {
+                            action_id: call_id.clone(), ok: false, kind: teamagents_core::models::ActionKind::CompleteTask,
+                            result: json!({}), error: Some(e),
+                        },
+                    }
+                } else { gateway.call(name, &args, &call_id) };
+                checkpoint.pending_external = None;
+                let approval = receipt.error.as_deref() == Some("approval_required");
+                let waiting = name == "wait_for_tasks" && receipt.result["waiting"].as_bool().unwrap_or(false);
+                let step_limit = receipt.error.as_deref().map(|e| e.contains("step limit")).unwrap_or(false);
+                let content = if receipt.ok { receipt.result.to_string() } else { json!({"error":receipt.error}).to_string() };
+                checkpoint.history.push(json!({"role":"tool", "tool_call_id":call_id, "content":content}));
+                if approval || waiting || step_limit {
+                    let remaining = pending_tool_calls(&checkpoint.history);
+                    fill_unanswered_tool_calls(&mut checkpoint.history, &remaining, &[], "TurnPaused");
+                    if !step_limit {
+                        let status = if approval { TurnStatus::WaitingApproval } else { TurnStatus::WaitingTask };
+                        let note = if approval { receipt.result["approval_id"].as_str().unwrap_or("").to_string() } else { "waiting".into() };
+                        checkpoint.outcome = Some(TurnOutcome { status, error: None, note: Some(note.clone()), reply_text: None });
+                        self.save_checkpoint(run, checkpoint, gateway)?;
+                        return Err(("TurnPaused".into(), note));
                     }
                 }
-                let waiting = name == "wait_for_tasks"
-                    && receipt.result.get("waiting").and_then(|v| v.as_bool()).unwrap_or(false);
-                let content = if receipt.ok {
-                    receipt.result.to_string()
-                } else {
-                    json!({"error": receipt.error}).to_string()
-                };
-                history.push(json!({"role": "tool", "tool_call_id": call_id.clone(), "content": content}));
-                answered.push(call_id);
-                if waiting {
-                    self.paused_kind.lock().unwrap().insert(run.run_id.clone(), "waiting".into());
-                    paused = Some(("TurnPaused".into(), "waiting".into()));
-                    break;
-                }
-            }
-            if let Some((kind, note)) = paused {
-                fill_unanswered_tool_calls(history, &calls, &answered, &kind);
-                return Err((kind, note));
+                self.save_checkpoint(run, checkpoint, gateway)?;
+                if step_limit { return Err(("TurnLimitExceeded".into(), receipt.error.unwrap_or_default())); }
             }
         }
+    }
+
+    fn append_input(&self, checkpoint: &mut ChatCheckpoint, mut view: Json, wake: &Json, force: bool) {
+        let items = view["inbox_delta"].as_array().cloned().unwrap_or_default();
+        let fresh: Vec<Json> = items.into_iter().filter(|item| {
+            if let Some(id) = item["event_id"].as_str() {
+                if !checkpoint.input_events.insert(id.to_string()) { return false; }
+            }
+            if let Some(id) = item["delivery_id"].as_i64() { checkpoint.delivery_ids.insert(id); }
+            true
+        }).collect();
+        if force || !fresh.is_empty() {
+            view["inbox_delta"] = json!(fresh);
+            checkpoint.history.push(json!({"role":"user", "content":render_view(&view, wake, self.workdir.as_deref())}));
+        }
+    }
+
+    fn run_segment(&self, run: &TurnRun, view: &Json, gateway: &ToolGateway, wake: &Json) -> Result<TurnOutcome, (String, String)> {
+        let loaded = self.load_checkpoint(run).map_err(|e| ("CheckpointError".into(), e))?;
+        let fresh = loaded.is_none();
+        let mut checkpoint = loaded.unwrap_or_default();
+        if checkpoint.pending_external.is_some() {
+            return Err(("OutcomeUnknown".into(), "external tool result missing; inspect its side effects before retrying".into()));
+        }
+        if let Some(outcome) = checkpoint.outcome.clone().filter(|o| o.status.is_terminal()) {
+            self.save_checkpoint(run, &checkpoint, gateway)?;
+            return Ok(outcome);
+        }
+        let resumed = checkpoint.outcome.take().is_some();
+        let thread = run.context_ref.as_deref().unwrap_or(&run.run_id);
+        if fresh {
+            checkpoint.history = self.messages.lock().unwrap().get(thread).cloned().unwrap_or_else(|| self.load_history(thread));
+            // A different, terminated turn may have left an unanswered tool in
+            // the shared thread. It must not become work for this new run ID.
+            for call in pending_tool_calls(&checkpoint.history) {
+                checkpoint.history.push(json!({"role":"tool", "tool_call_id":call["id"],
+                    "content":"Previous turn ended without a recorded result; outcome unknown. Inspect before retrying."}));
+            }
+        }
+        let instructions = self.agent["instructions"].as_str().unwrap_or("");
+        if checkpoint.history.first().map(|m| m["role"] == "system").unwrap_or(false) {
+            checkpoint.history[0]["content"] = json!(self.system_prompt());
+        } else if !instructions.is_empty() || !self.context.is_empty() {
+            checkpoint.history.insert(0, json!({"role":"system", "content":self.system_prompt()}));
+        }
+        // New turns/explicit resumes need their new input before examining an
+        // old final assistant message from the preceding turn/segment.
+        if fresh || resumed {
+            self.append_input(&mut checkpoint, view.clone(), wake, true);
+            self.save_checkpoint(run, &checkpoint, gateway)?;
+        }
+        let result = self.run_loop(run, &mut checkpoint, gateway, view, wake);
+        let outcome = match result {
+            Ok(reply) => TurnOutcome { status: TurnStatus::Completed, error: None, note: None, reply_text: Some(reply) },
+            Err((name, _)) if name == "TurnPaused" => checkpoint.outcome.clone().expect("pause checkpoint"),
+            Err((name, message)) if name == "TurnLimitExceeded" => TurnOutcome {
+                status: TurnStatus::Failed, error: Some(message), note: Some("turn_limit".into()), reply_text: None,
+            },
+            Err(e) => return Err(e),
+        };
+        checkpoint.outcome = Some(outcome.clone());
+        self.save_checkpoint(run, &checkpoint, gateway)?;
+        self.messages.lock().unwrap().insert(thread.to_string(), checkpoint.history);
+        Ok(outcome)
     }
 }
 
 impl AgentRunner for ChatRunner {
     fn start_or_resume(&self, run: &TurnRun, view: &Json, gateway: &ToolGateway, wake: &Json) -> TurnOutcome {
+        {
+            let mut controls = self.controls.lock().unwrap();
+            if self.closed.load(Ordering::SeqCst) { gateway.control.cancel(); }
+            controls.insert(run.run_id.clone(), gateway.control.clone());
+        }
         self.states.lock().unwrap().insert(run.run_id.clone(), TurnStatus::Running);
         self.interrupted.lock().unwrap().remove(&run.run_id);
-        let thread = run.context_ref.clone().unwrap_or_else(|| run.run_id.clone());
-        // the spec limit is read once per turn, like the Python graph build
-        let max_steps = self.max_model_steps();
-        let mut history = match self.messages.lock().unwrap().get(&thread).cloned() {
-            Some(history) => history,
-            None => self.load_history(&thread),
-        };
-        let instructions = self.agent.get("instructions").and_then(|v| v.as_str()).unwrap_or("");
-        if history.is_empty() && (!instructions.is_empty() || !self.context.is_empty()) {
-            history.push(json!({"role": "system", "content": self.system_prompt()}));
-        }
-        // the rendered view is authoritative for what this segment saw
-        history.push(json!({"role": "user", "content": render_view(view, wake, self.workdir.as_deref())}));
-
-        let result = self.run_loop(run, &mut history, gateway, max_steps);
-        self.messages.lock().unwrap().insert(thread.clone(), history.clone());
-        self.save_history(&thread, &history);
-        let outcome = match result {
-            Ok(reply) => {
-                self.states.lock().unwrap().insert(run.run_id.clone(), TurnStatus::Completed);
-                TurnOutcome {
-                    status: TurnStatus::Completed,
-                    error: None,
-                    note: None,
-                    reply_text: Some(reply),
-                }
-            }
-            Err((name, message)) => match name.as_str() {
-                "TurnInterrupted" => {
-                    self.states.lock().unwrap().insert(run.run_id.clone(), TurnStatus::Cancelled);
-                    TurnOutcome { status: TurnStatus::Cancelled, error: None, note: None, reply_text: None }
-                }
-                "TurnPaused" => {
-                    let paused = self.paused_kind.lock().unwrap().get(&run.run_id).cloned().unwrap_or_default();
-                    let status = if paused == "approval" { TurnStatus::WaitingApproval } else { TurnStatus::WaitingTask };
-                    self.states.lock().unwrap().insert(run.run_id.clone(), status);
-                    TurnOutcome {
-                        status,
-                        error: None,
-                        note: if message.is_empty() { None } else { Some(message) },
-                        reply_text: None,
-                    }
-                }
-                // Python raises TurnLimitExceeded for both gates; the note is what
-                // makes the core emit `limit_reached` (runners.py:608-610)
-                "TurnLimitExceeded" => {
-                    self.states.lock().unwrap().insert(run.run_id.clone(), TurnStatus::Failed);
-                    TurnOutcome {
-                        status: TurnStatus::Failed,
-                        error: Some(message),
-                        note: Some("turn_limit".into()),
-                        reply_text: None,
-                    }
-                }
-                other => {
-                    self.states.lock().unwrap().insert(run.run_id.clone(), TurnStatus::Failed);
-                    TurnOutcome {
-                        status: TurnStatus::Failed,
-                        error: Some(format!("{other}: {message}")),
-                        note: None,
-                        reply_text: None,
-                    }
-                }
+        let outcome = match self.run_segment(run, view, gateway, wake) {
+            Ok(outcome) => outcome,
+            Err((name, message)) => TurnOutcome {
+                status: match name.as_str() {
+                    "TurnInterrupted" => TurnStatus::Cancelled,
+                    "OutcomeUnknown" | "CheckpointError" => TurnStatus::OutcomeUnknown,
+                    _ => TurnStatus::Failed,
+                },
+                error: Some(format!("{name}: {message}")), note: None, reply_text: None,
             },
         };
-        self.notify.wake();
+        self.states.lock().unwrap().insert(run.run_id.clone(), outcome.status);
+        self.controls.lock().unwrap().remove(&run.run_id);
+        if !self.closed.load(Ordering::SeqCst) { self.notify.wake(); }
         outcome
     }
 
     fn request_interrupt(&self, run_id: &str) -> TurnStatus {
         self.interrupted.lock().unwrap().insert(run_id.to_string());
+        let control = self.controls.lock().unwrap().get(run_id).cloned();
+        if let Some(control) = control {
+            control.cancel();
+            let timeout = self.notify.core().state().ok()
+                .and_then(|s| s["limits"]["cancel_confirm_timeout_s"].as_u64()).unwrap_or(60);
+            if !control.wait_idle(std::time::Duration::from_secs(timeout)) {
+                return TurnStatus::OutcomeUnknown;
+            }
+        }
         self.states.lock().unwrap().insert(run_id.to_string(), TurnStatus::Cancelled);
         TurnStatus::Cancelled
     }
@@ -848,12 +883,36 @@ impl AgentRunner for ChatRunner {
         self.states.lock().unwrap().get(run_id).copied()
     }
 
+    fn applied_delivery_ids(&self, run: &TurnRun) -> Option<Vec<i64>> {
+        Some(self.load_checkpoint(run).ok().flatten()
+            .map(|c| c.delivery_ids.into_iter().collect()).unwrap_or_default())
+    }
+
+    fn reconcile(&self, run: &TurnRun) -> Option<TurnStatus> {
+        Some(match self.load_checkpoint(run) {
+            Ok(Some(checkpoint)) if checkpoint.pending_external.is_none() => {
+                if matches!(run.status, TurnStatus::WaitingTask | TurnStatus::WaitingApproval) {
+                    run.status
+                } else { TurnStatus::Queued }
+            }
+            // Old/corrupt/missing checkpoints cannot prove a safe replay.
+            _ => TurnStatus::OutcomeUnknown,
+        })
+    }
+
     fn deliver_mid_turn(&self, run_id: &str, items: Vec<Json>) {
         self.mid_turn.lock().unwrap().entry(run_id.to_string()).or_default().extend(items);
     }
 
     fn close(&self) {
+        self.closed.store(true, Ordering::SeqCst);
+        let controls: Vec<_> = self.controls.lock().unwrap().values().cloned().collect();
+        for control in &controls { control.cancel(); }
         self.bound.close();
+        // Also drain a tool whose timeout already removed its runtime wrapper.
+        for control in controls {
+            while !control.wait_idle(std::time::Duration::from_millis(50)) {}
+        }
     }
 }
 

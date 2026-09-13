@@ -8,7 +8,8 @@
 Python 原版在迁移完成后已从仓库移除，只保留在 git 历史里（最后一个含 Python 实现的提交是
 `ba1caed`：`git show ba1caed:src/teamagents/control.py` 之类的路径仍可查阅）。
 基准文档：`TeamAgents-Implementation-Plan.zh-CN.md`；迁移台账 `docs/RECONSTRUCT.md`；
-设计决策 `docs/DECISIONS.md`。
+设计决策 `docs/DECISIONS.md`；追加审查修复见
+[`review/fix-notes-rust-followup-2026-09-13.md`](review/fix-notes-rust-followup-2026-09-13.md)。
 
 ---
 
@@ -71,7 +72,7 @@ Ctrl/Alt 组合不会误触发）、
 
 ```bash
 cd core   && cargo test        # 38（17 unit + 21 integration）：权威核心（models/storage/control/views/server）
-cd engine && cargo test        # 67（21 lib + 46 integration）：运行时 + T1–T5/T9/T11–T13/T22 场景 +
+cd engine && cargo test        # 77（21 lib + 56 integration）：运行时 + T1–T5/T9/T11–T13/T22 场景 +
                                #     取消/暂停 + 审批/全自动 + Codex 适配与合同 + worker 协议 +
                                #     CLI/doctor + bwrap 沙箱 + workspace + MCP + 崩溃恢复
 cd tui    && cargo test        # 55（9 lib + 19 app + 27 render）：TUI 逻辑 + TestBackend 帧冒烟
@@ -110,6 +111,6 @@ TeamSpec 示例。
 
 Python 实现（`src/teamagents/`、`tests/`、`pyproject.toml`）完成对照使命后已删除：Rust 三 crate
 通过全部验收场景，`review/findings-rust-review-2026-09-13.md` 与 `review/fix-notes-rust-review-2026-09-13.md`
-记录了最后一轮全面审查与修复。需要旧实现时用 git 查阅（例如 `git show ba1caed:src/teamagents/control.py`）。
+记录了迁移完成时的全面审查与修复。需要旧实现时用 git 查阅（例如 `git show ba1caed:src/teamagents/control.py`）。
 仍与旧版存在的行为差异集中在 `docs/DECISIONS.md` D-21（MCP http/sse 与 `general-purpose`
 子代理未移植等）。

@@ -1541,6 +1541,7 @@ impl Control {
                             .iter()
                             .map(|d| {
                                 json!({"kind": d["event_kind"], "from": d["event_actor"],
+                                       "event_id": d["event_id"], "delivery_id": d["delivery_id"],
                                        "task_id": d["event_task_id"],
                                        "payload": serde_json::from_str::<Json>(d["payload_json"].as_str().unwrap_or("null")).unwrap_or(Json::Null)})
                             })
@@ -1932,7 +1933,7 @@ impl Control {
 }
 
 /// Outcome of a finished turn segment (runtime.py::TurnOutcome).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TurnOutcome {
     pub status: TurnStatus,
     pub error: Option<String>,

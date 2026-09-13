@@ -3,7 +3,9 @@
 //! guard.
 
 use serde_json::{json, Value as Json};
-use std::io::Read;
+use crate::gateway::TurnControl;
+use std::io::{Read, Write};
+use std::os::fd::AsRawFd;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -17,7 +19,7 @@ const ARTIFACTS_PREFIX: &str = "/artifacts/";
 
 /// Resolve `key` inside root; reject traversal and symlinks escaping root.
 pub fn resolve_in_root(root: &Path, key: &str) -> Result<PathBuf, String> {
-    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let root = std::fs::canonicalize(root).map_err(|e| e.to_string())?;
     let joined = if Path::new(key).is_absolute() { PathBuf::from(key) } else { root.join(key) };
     let normalized = normalize(&joined);
     if !normalized.starts_with(&root) {
@@ -31,7 +33,15 @@ pub fn resolve_in_root(root: &Path, key: &str) -> Result<PathBuf, String> {
     }
     // the file may not exist yet: the deepest existing ancestor must stay inside
     let mut probe = normalized.as_path();
-    while let Some(parent) = probe.parent() {
+    loop {
+        // canonicalize also fails for dangling/cyclic links. They are not a
+        // missing ordinary path: a later create would follow them on the host.
+        match std::fs::symlink_metadata(probe) {
+            Ok(meta) if meta.file_type().is_symlink() => return Err(format!("unresolved symlink: {key}")),
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.to_string()),
+            _ => {}
+        }
+        let Some(parent) = probe.parent() else { break };
         if let Ok(real) = std::fs::canonicalize(parent) {
             if !real.starts_with(&root) {
                 return Err(format!("path escapes workspace: {key}"));
@@ -41,6 +51,47 @@ pub fn resolve_in_root(root: &Path, key: &str) -> Result<PathBuf, String> {
         probe = parent;
     }
     Ok(normalized)
+}
+
+/// Pin the parent directory before opening a member file. Linux /proc fd paths
+/// keep a concurrent symlink replacement from redirecting creates or writes.
+fn open_member_file(root: &Path, path: &Path, write: bool) -> Result<std::fs::File, String> {
+    let root = std::fs::canonicalize(root).map_err(|e| e.to_string())?;
+    let check = |file: &std::fs::File| -> Result<(), String> {
+        let real = std::fs::canonicalize(format!("/proc/self/fd/{}", file.as_raw_fd())).map_err(|e| e.to_string())?;
+        if !real.starts_with(&root) { return Err("path escapes workspace".into()); }
+        Ok(())
+    };
+    let relative = path.strip_prefix(&root).map_err(|_| "path escapes workspace")?;
+    let name = relative.file_name().ok_or("file path required")?;
+    let mut parent = std::fs::File::open(&root).map_err(|e| e.to_string())?;
+    check(&parent)?;
+    for part in relative.parent().unwrap_or(Path::new("")).components() {
+        let Component::Normal(part) = part else { return Err("invalid file path".into()) };
+        let next = PathBuf::from(format!("/proc/self/fd/{}", parent.as_raw_fd())).join(part);
+        if write && !next.exists() {
+            // create_dir never follows/replaces an existing dangling symlink.
+            match std::fs::create_dir(&next) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(e) => return Err(e.to_string()),
+            }
+        }
+        parent = std::fs::File::open(next).map_err(|e| e.to_string())?;
+        check(&parent)?;
+    }
+    let leaf = PathBuf::from(format!("/proc/self/fd/{}", parent.as_raw_fd())).join(name);
+    let opened = std::fs::OpenOptions::new().read(!write).write(write).open(&leaf);
+    let file = match opened {
+        Ok(file) => file,
+        Err(e) if write && e.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::OpenOptions::new().write(true).create_new(true).open(&leaf).map_err(|e| e.to_string())?
+        }
+        Err(e) => return Err(e.to_string()),
+    };
+    check(&file)?;
+    if !file.metadata().map_err(|e| e.to_string())?.is_file() { return Err("not a regular file".into()); }
+    Ok(file)
 }
 
 fn normalize(path: &Path) -> PathBuf {
@@ -57,12 +108,15 @@ fn normalize(path: &Path) -> PathBuf {
     out
 }
 
-fn cap_read(path: &Path) -> Result<String, String> {
-    let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
+fn cap_read(file: std::fs::File) -> Result<String, String> {
+    let meta = file.metadata().map_err(|e| e.to_string())?;
     if meta.len() > MAX_FILE_BYTES {
         return Err(format!("file too large ({} bytes)", meta.len()));
     }
-    std::fs::read_to_string(path).map_err(|e| e.to_string())
+    let mut text = String::new();
+    file.take(MAX_FILE_BYTES + 1).read_to_string(&mut text).map_err(|e| e.to_string())?;
+    if text.len() as u64 > MAX_FILE_BYTES { return Err("file too large".into()); }
+    Ok(text)
 }
 
 /// Resolve a member-visible artifact reference (`/artifacts/<name>`) inside the
@@ -80,7 +134,15 @@ pub fn workspace_executor(
     root: PathBuf,
     artifacts: Option<PathBuf>,
 ) -> impl Fn(&str, &Json) -> Result<Json, String> + Send + Sync + 'static {
-    move |tool: &str, args: &Json| -> Result<Json, String> {
+    let executor = workspace_executor_with_control(root, artifacts);
+    move |tool, args| executor(tool, args, &TurnControl::default())
+}
+
+fn workspace_executor_with_control(
+    root: PathBuf, artifacts: Option<PathBuf>,
+) -> impl Fn(&str, &Json, &TurnControl) -> Result<Json, String> + Send + Sync + 'static {
+    move |tool: &str, args: &Json, control: &TurnControl| -> Result<Json, String> {
+        control.check()?;
         let arg = |key: &str| args.get(key).and_then(|v| v.as_str()).unwrap_or("").to_string();
         let arg_or = |args: &Json, key: &str, default: &str| -> String {
             args.get(key).and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or(default).to_string()
@@ -93,6 +155,11 @@ pub fn workspace_executor(
             } else {
                 resolve_in_root(&root, key)
             }
+        };
+        let member_file = |key: &str, write: bool| {
+            let path = member_path(key)?;
+            let file_root = if key.starts_with(ARTIFACTS_PREFIX) { artifacts.as_ref().unwrap() } else { &root };
+            open_member_file(file_root, &path, write)
         };
         match tool {
             "ls" => {
@@ -113,11 +180,12 @@ pub fn workspace_executor(
                 names.sort();
                 Ok(json!(names.join("\n")))
             }
-            "read_file" => Ok(json!(cap_read(&member_path(&arg("path"))?)?)),
+            "read_file" => Ok(json!(cap_read(member_file(&arg("path"), false)?)?)),
             "read_artifact" => {
                 let key = arg("path");
                 let key = if key.is_empty() { arg("name") } else { key };
-                Ok(json!(cap_read(&resolve_artifact(artifacts.as_ref(), &key)?)?))
+                let path = resolve_artifact(artifacts.as_ref(), &key)?;
+                Ok(json!(cap_read(open_member_file(artifacts.as_ref().unwrap(), &path, false)?)?))
             }
             "write_file" => {
                 let path = member_path(&arg("path"))?;
@@ -125,21 +193,22 @@ pub fn workspace_executor(
                 if content.len() as u64 > MAX_FILE_BYTES {
                     return Err("content too large".into());
                 }
-                if let Some(parent) = path.parent() {
-                    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-                }
-                std::fs::write(&path, content).map_err(|e| e.to_string())?;
+                let mut file = member_file(&arg("path"), true)?;
+                file.set_len(0).map_err(|e| e.to_string())?;
+                file.write_all(content.as_bytes()).map_err(|e| e.to_string())?;
                 Ok(json!(format!("wrote {}", path.display())))
             }
             "edit_file" => {
                 let path = member_path(&arg("path"))?;
-                let text = cap_read(&path)?;
+                let text = cap_read(member_file(&arg("path"), false)?)?;
                 let old = arg("old_string");
                 let new = arg("new_string");
                 if !text.contains(&old) {
                     return Err("old_string not found".into());
                 }
-                std::fs::write(&path, text.replacen(&old, &new, 1)).map_err(|e| e.to_string())?;
+                let mut file = member_file(&arg("path"), true)?;
+                file.set_len(0).map_err(|e| e.to_string())?;
+                file.write_all(text.replacen(&old, &new, 1).as_bytes()).map_err(|e| e.to_string())?;
                 Ok(json!(format!("edited {}", path.display())))
             }
             "delete" => {
@@ -165,14 +234,14 @@ pub fn workspace_executor(
             "grep" => {
                 let pattern = shell_quote(&arg("pattern"));
                 let path = shell_quote(&arg_or(args, "path", "."));
-                shell_run(&format!("grep -rn -- {pattern} {path} | head -100"), &root, 30, false, artifacts.as_deref())
+                shell_run_with_control(&format!("grep -rn -- {pattern} {path} | head -100"), &root, 30, false, artifacts.as_deref(), control)
                     .map(Json::String)
             }
             "shell" => {
                 let command = arg("command");
                 let timeout = args.get("timeout").and_then(|v| v.as_u64()).unwrap_or(120);
                 let network = args.get("network").and_then(|v| v.as_bool()).unwrap_or(false);
-                shell_run(&command, &root, timeout, network, artifacts.as_deref()).map(Json::String)
+                shell_run_with_control(&command, &root, timeout, network, artifacts.as_deref(), control).map(Json::String)
             }
             other => Err(format!("unknown tool {other}")),
         }
@@ -257,9 +326,16 @@ pub fn member_executor(
     bindings: Vec<String>,
     artifacts: Option<PathBuf>,
 ) -> impl Fn(&str, &Json) -> Result<Json, String> + Send + Sync + 'static {
-    let workspace = workspace_executor(root, artifacts);
+    let executor = member_executor_with_control(root, catalog, bindings, artifacts);
+    move |tool, args| executor(tool, args, &TurnControl::default())
+}
+
+pub(crate) fn member_executor_with_control(
+    root: PathBuf, catalog: teamagents_core::models::UserConfig, bindings: Vec<String>, artifacts: Option<PathBuf>,
+) -> impl Fn(&str, &Json, &TurnControl) -> Result<Json, String> + Send + Sync + 'static {
+    let workspace = workspace_executor_with_control(root, artifacts);
     let web: OnceLock<Result<WebTools, String>> = OnceLock::new();
-    move |tool: &str, args: &Json| match tool {
+    move |tool: &str, args: &Json, control: &TurnControl| match tool {
         "web_search" => {
             let binding = web
                 .get_or_init(|| web_tools(&catalog, &bindings))
@@ -290,7 +366,13 @@ pub fn member_executor(
             let allow_private = binding.env.get("allow_private").map(|v| v == "1").unwrap_or(false);
             web_fetch(url, max, allow_private)
         }
-        other => workspace(other, args),
+        other => {
+            let capability = if other == "shell" { "shell" } else { "files" };
+            if !bindings.iter().any(|b| b == capability) {
+                return Err(format!("tool {other} is not bound to this member"));
+            }
+            workspace(other, args, control)
+        }
     }
 }
 
@@ -480,6 +562,13 @@ pub fn shell_run(
     network: bool,
     artifacts: Option<&Path>,
 ) -> Result<String, String> {
+    shell_run_with_control(command, workdir, timeout_s, network, artifacts, &TurnControl::default())
+}
+
+fn shell_run_with_control(
+    command: &str, workdir: &Path, timeout_s: u64, network: bool, artifacts: Option<&Path>, control: &TurnControl,
+) -> Result<String, String> {
+    control.check()?;
     if !bwrap_available() {
         return Err("IsolationUnavailable: bwrap is not available: refusing to run commands without isolation".into());
     }
@@ -508,6 +597,14 @@ pub fn shell_run(
     let mut timed_out = false;
     let mut status = None;
     loop {
+        if control.check().is_err() {
+            // Killing bwrap tears down its private PID namespace and command
+            // tree (--unshare-pid + --die-with-parent).
+            child.kill().map_err(|e| e.to_string())?;
+            child.wait().map_err(|e| e.to_string())?;
+            join_bounded(vec![stdout_reader, stderr_reader], Duration::from_secs(5));
+            return Err("turn interrupted".into());
+        }
         match child.try_wait() {
             Ok(Some(exit)) => {
                 status = Some(exit);

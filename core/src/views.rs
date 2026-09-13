@@ -230,6 +230,7 @@ pub fn build_agent_view(store: &Store, spec: &TeamSpec, session_id: &str, agent_
             .or_else(|| serde_json::from_str(d["payload_json"].as_str().unwrap_or("null")).ok())
             .unwrap_or(Json::Null);
         inbox.push(serde_json::json!({
+            "delivery_id": d["delivery_id"],
             "event_id": d["event_id"],
             "kind": d["event_kind"],
             "from": d["event_actor"],

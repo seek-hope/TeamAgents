@@ -5,7 +5,9 @@ use crate::core_client::CoreClient;
 use serde_json::{json, Value as Json};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 use teamagents_core::models::{ActionKind, ApprovalRequest, ApprovalStatus, Receipt};
 
 pub const TEAM_TOOLS: &[&str] = &[
@@ -331,6 +333,42 @@ impl ApprovalGate {
 
 type Executor = Arc<dyn Fn(&str, &Json) -> Result<Json, String> + Send + Sync>;
 
+/// Revocable ownership for a turn segment. The mutex drains tools and private
+/// checkpoint writes before the session releases its execution lock.
+#[derive(Default)]
+pub struct TurnControl {
+    cancelled: AtomicBool,
+    active: Mutex<()>,
+}
+
+impl TurnControl {
+    pub fn check(&self) -> Result<(), String> {
+        if self.cancelled.load(Ordering::SeqCst) { Err("turn interrupted".into()) } else { Ok(()) }
+    }
+
+    pub fn enter(&self) -> Result<MutexGuard<'_, ()>, String> {
+        let guard = self.active.lock().map_err(|_| "turn execution lock poisoned")?;
+        self.check()?;
+        Ok(guard)
+    }
+
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+    }
+
+    pub fn wait_idle(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            match self.active.try_lock() {
+                Ok(_) | Err(std::sync::TryLockError::Poisoned(_)) => return true,
+                Err(std::sync::TryLockError::WouldBlock) => {}
+            }
+            if Instant::now() >= deadline { return false; }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
 /// The single path for a member's tool calls, team actions and approvals.
 /// Identity is injected here, never trusted from model fields (§5.2).
 pub struct ToolGateway {
@@ -340,6 +378,7 @@ pub struct ToolGateway {
     approvals: Arc<ApprovalGate>,
     executor: Option<Executor>,
     pub pending_approval_id: Mutex<Option<String>>,
+    pub control: Arc<TurnControl>,
 }
 
 impl ToolGateway {
@@ -350,6 +389,13 @@ impl ToolGateway {
         approvals: Arc<ApprovalGate>,
         executor: Option<Executor>,
     ) -> Arc<Self> {
+        Self::with_control(core, agent_id, run_id, approvals, executor, Arc::new(TurnControl::default()))
+    }
+
+    pub(crate) fn with_control(
+        core: Arc<CoreClient>, agent_id: &str, run_id: &str,
+        approvals: Arc<ApprovalGate>, executor: Option<Executor>, control: Arc<TurnControl>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             core,
             agent_id: agent_id.to_string(),
@@ -357,6 +403,7 @@ impl ToolGateway {
             approvals,
             executor,
             pending_approval_id: Mutex::new(None),
+            control,
         })
     }
 
@@ -372,6 +419,10 @@ impl ToolGateway {
 
     pub fn call(&self, tool: &str, args: &Json, tool_call_id: &str) -> Receipt {
         let call_id = format!("{}:{}", self.run_id, tool_call_id);
+        let _execution = match self.control.enter() {
+            Ok(guard) => guard,
+            Err(e) => return self.receipt_placeholder(&call_id, false, json!({}), Some(e)),
+        };
         if let Some(kind) = team_action_kind(tool) {
             let action = teamagents_core::models::TeamAction {
                 action_id: call_id.clone(),

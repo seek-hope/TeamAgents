@@ -47,6 +47,10 @@ MCP 的 http/sse 传输（stdio 已实现）；TUI 以 Rust/终端习惯为准�
 web 前缀预授权、`/artifacts/` 可见性）见 `docs/DECISIONS.md` D-21；artifacts、成员历史持久化、
 effort 归一化、doctor 探针、web 执行层 fail-closed 等已在 D-21 批次完成，不再是未移植项。
 
+2026-09-13 追加审查修复了文件链接边界、Chat 回合检查点恢复、关闭与 shell 中断、
+成员配置缓存以及 MCP 工具暴露，详见
+[`追加修复台账`](../review/fix-notes-rust-followup-2026-09-13.md)。
+
 ## 既定决策
 
 - 枚举线路格式与 Python StrEnum 完全一致（SCREAMING_SNAKE / snake_case），
@@ -64,7 +68,7 @@ for c in core engine tui; do (cd "$c" && cargo build); done
 
 # 测试
 cd core   && cargo test      # 38（17 unit + 21 integration）：权威核心
-cd engine && cargo test      # 67（21 lib + 46 integration）：单测 + T1–T5/T9/T11–T13/T22 场景 +
+cd engine && cargo test      # 77（21 lib + 56 integration）：单测 + T1–T5/T9/T11–T13/T22 场景 +
                              #     取消/暂停 + 审批/全自动 + Codex 适配与合同 + worker 协议 +
                              #     CLI/doctor + bwrap + workspace + MCP + 崩溃恢复
 cd tui    && cargo test      # 55（9 lib + 19 app + 27 render）：TUI 逻辑 + 帧冒烟 + 外壳断言

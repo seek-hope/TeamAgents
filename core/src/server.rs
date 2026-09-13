@@ -129,10 +129,11 @@ impl Server {
                 let agents: Vec<Json> = spec
                     .agents
                     .iter()
-                    .map(|a| {
-                        json!({"id": a.id, "status": ctl.store.agent_status(&sid, &a.id).ok().flatten()})
+                    .map(|a| -> rusqlite::Result<Json> {
+                        Ok(json!({"id": a.id, "status": ctl.store.agent_status(&sid, &a.id)?,
+                                  "config_revision": ctl.store.agent_config_revision(&sid, &a.id)?}))
                     })
-                    .collect();
+                    .collect::<Result<_, _>>().map_err(|e| e.to_string())?;
                 Ok(json!({
                     "session": ctl.store.get_session(&sid).map_err(|e| e.to_string())?,
                     "spec": spec,

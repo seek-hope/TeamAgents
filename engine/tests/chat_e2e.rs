@@ -186,7 +186,7 @@ fn start_runtime(
 fn recording_executor() -> (ToolExecutor, Arc<Mutex<Vec<(String, Json)>>>) {
     let calls: Arc<Mutex<Vec<(String, Json)>>> = Arc::new(Mutex::new(vec![]));
     let sink = calls.clone();
-    let executor: ToolExecutor = Arc::new(move |_agent: &str, tool: &str, args: &Json| {
+    let executor: ToolExecutor = Arc::new(move |_agent: &str, tool: &str, args: &Json, _control: &teamagents_engine::gateway::TurnControl| {
         sink.lock().unwrap().push((tool.to_string(), args.clone()));
         Ok(json!({"output": "executed"}))
     });
@@ -514,7 +514,7 @@ fn a_crashed_member_is_not_reported_as_a_timeout() {
     );
     let notify = Notify::new(core.clone());
     let approvals = ApprovalGate::new(core.clone(), PermissionPolicy::default());
-    let executor: ToolExecutor = Arc::new(|_agent: &str, tool: &str, _args: &Json| Err(format!("no executor for {tool}")));
+    let executor: ToolExecutor = Arc::new(|_agent: &str, tool: &str, _args: &Json, _control: &teamagents_engine::gateway::TurnControl| Err(format!("no executor for {tool}")));
     let runtime = Runtime::new(core.clone(), notify, approvals, executor, None, RuntimeLimits::default());
     runtime.add_runner("leader", Arc::new(PanicRunner));
     runtime.start();
@@ -727,4 +727,339 @@ fn effort_normalization_and_fallback() {
     assert_eq!(rejected.calls(), 2, "one rejection plus one fallback retry");
     assert_eq!(rejected.body(0)["reasoning_effort"], json!("xhigh"));
     assert_eq!(rejected.body(1)["reasoning_effort"], json!("max"));
+}
+
+// Follow-up review regressions: real member, process and sandbox boundaries.
+use teamagents_engine::session::{open_session, OpenOptions};
+use std::time::Duration;
+
+fn isolated_project(tag: &str) -> std::path::PathBuf {
+    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let dir = std::env::temp_dir().join(format!("ta-review-{tag}-{}-{nonce}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::env::set_var("XDG_CONFIG_HOME", dir.join("config"));
+    dir
+}
+
+fn open_chat_session(cwd: &std::path::Path, api: &FakeOpenAi, bindings: &[&str], mut catalog: UserConfig) -> Arc<teamagents_engine::session::OpenedSession> {
+    catalog.models.insert("m".into(), profile(&api.base_url(), "openai", json!({}), 0));
+    catalog.models.insert("other".into(), ModelProfile { model: "new-model".into(), ..profile(&api.base_url(), "openai", json!({}), 0) });
+    open_session(OpenOptions {
+        cwd: Some(cwd.to_path_buf()), session_id: Some("review".into()),
+        initial_spec: Some(json!({"leader_id":"leader", "agents":[agent_json("leader", "leader", bindings)]})),
+        catalog: Some(catalog), ..Default::default()
+    }).unwrap()
+}
+
+#[test]
+fn review_topology_update_must_rebuild_runner() {
+    let _env = env_guard("review-update");
+    let cwd = isolated_project("update");
+    let api = FakeOpenAi::start(|_, _| (200, text_response("done")));
+    let opened = open_chat_session(&cwd, &api, &["files"], UserConfig::default());
+    opened.runtime.start();
+    opened.runtime.user_message("first", false).unwrap();
+    assert!(opened.runtime.settle(5));
+    assert_eq!(api.body(0)["model"], "test");
+    let receipt = submit(&opened.core, "update-model", "leader", "apply_topology_patch", json!({
+        "base_revision":1, "operations":[{"op":"update_agent", "agent_id":"leader",
+        "changes":{"model_profile":"other", "instructions":"NEW INSTRUCTIONS", "tool_bindings":[]}}]
+    }));
+    assert!(receipt.ok, "{receipt:?}");
+    assert_eq!(receipt.result["status"], "APPLIED");
+    opened.runtime.user_message("second", false).unwrap();
+    assert!(opened.runtime.settle(5));
+    let second = api.body(1);
+    opened.close();
+    eprintln!("spec updated to other, actual request model={}", second["model"]);
+    assert_eq!(second["model"], "new-model", "APPLIED patch left the old model active");
+    assert!(second["messages"][0]["content"].as_str().unwrap().contains("NEW INSTRUCTIONS"));
+    assert!(!second["tools"].as_array().unwrap().iter().any(|t| t["function"]["name"] == "write_file"));
+}
+
+#[test]
+fn review_bound_mcp_must_be_advertised_to_model() {
+    let _env = env_guard("review-mcp");
+    let cwd = isolated_project("mcp");
+    let api = FakeOpenAi::start(|_, index| {
+        (200, if index == 0 { tool_call_response("mcp-1", "echo_echo", json!({"text":"ping"})) }
+        else { text_response("done") })
+    });
+    let mut catalog = UserConfig::default();
+    catalog.tools.insert("echo_service".into(), serde_json::from_value(json!({
+        "kind":"mcp", "mcp_server":"echo", "command":env!("CARGO_BIN_EXE_fake-mcp-server"),
+        "tool_names":["echo"], "required":true
+    })).unwrap());
+    let bound = BoundTools::load(&catalog, &["echo_service".to_string()]).unwrap();
+    assert!(bound.names().contains("echo_echo"));
+    assert_eq!(bound.call("echo_echo", &json!({"text":"ping"})).unwrap().unwrap(), json!("ping"));
+    bound.close();
+    let opened = open_chat_session(&cwd, &api, &["echo_service"], catalog);
+    opened.runtime.start();
+    opened.runtime.user_message("use echo", false).unwrap();
+    assert!(opened.runtime.settle(5));
+    let body = api.body(0);
+    opened.close();
+    assert!(api.body(1)["messages"].as_array().unwrap().iter()
+        .any(|m| m["role"] == "tool" && m["content"].as_str().unwrap_or("").contains("ping")));
+    let names: Vec<&str> = body["tools"].as_array().unwrap().iter().filter_map(|t| t["function"]["name"].as_str()).collect();
+    eprintln!("actual model tools={names:?}");
+    assert!(names.contains(&"echo_echo"), "loaded and callable MCP tool vanished from the model request");
+}
+
+#[test]
+fn review_closed_session_must_not_execute_late_tool_call() {
+    let _env = env_guard("review-close");
+    let cwd = isolated_project("close");
+    let api = FakeOpenAi::start(|_, index| {
+        if index == 0 {
+            std::thread::sleep(Duration::from_millis(400));
+            (200, tool_call_response("late", "write_file", json!({"path":"after-close.txt", "content":"late write"})))
+        } else { (200, text_response("done")) }
+    });
+    let opened = open_chat_session(&cwd, &api, &["files"], UserConfig::default());
+    opened.runtime.start();
+    opened.runtime.user_message("wait", false).unwrap();
+    assert!(wait_for(|| api.calls() == 1, 5000));
+    opened.close();
+    let lock = teamagents_engine::sessions::acquire_session_lock("review").expect("close released the lock");
+    let events_after_close = opened.core.state().unwrap()["events"].clone();
+    let wrote = wait_for(|| cwd.join("after-close.txt").exists(), 2000);
+    assert_eq!(opened.core.state().unwrap()["events"], events_after_close, "old runtime finalized after releasing ownership");
+    drop(lock);
+    eprintln!("session lock was released; post-close write={wrote}");
+    assert!(!wrote, "old runner still executed a model tool call after close returned");
+    let resumed = open_chat_session(&cwd, &api, &["files"], UserConfig::default());
+    resumed.runtime.start();
+    assert!(resumed.runtime.settle(5), "checkpoint should resume on a new runtime");
+    assert!(!cwd.join("after-close.txt").exists());
+    resumed.close();
+}
+
+struct ProbeWorker {
+    child: std::process::Child,
+    input: std::process::ChildStdin,
+    replies: std::sync::mpsc::Receiver<Json>,
+    next_id: u64,
+}
+impl ProbeWorker {
+    fn spawn(base: &std::path::Path) -> Self {
+        use std::io::BufRead;
+        use std::process::{Command, Stdio};
+        let mut child = Command::new(env!("CARGO_BIN_EXE_teamagents"))
+            .arg("serve").env("XDG_CONFIG_HOME", base.join("config")).env("XDG_STATE_HOME", base.join("state"))
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
+        let input = child.stdin.take().unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let (tx, replies) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
+                let message: Json = serde_json::from_str(&line).unwrap();
+                if message.get("id").is_some() { let _ = tx.send(message); }
+            }
+        });
+        Self { child, input, replies, next_id: 0 }
+    }
+    fn call(&mut self, method: &str, params: Json) -> Result<Json, String> {
+        self.next_id += 1;
+        writeln!(self.input, "{}", json!({"id":self.next_id,"method":method,"params":params})).unwrap();
+        self.input.flush().unwrap();
+        let r = self.replies.recv_timeout(Duration::from_secs(3)).map_err(|e| format!("{method}: {e}"))?;
+        assert_eq!(r["id"], self.next_id);
+        if let Some(err) = r.get("error") { Err(err.to_string()) } else { Ok(r["result"].clone()) }
+    }
+    fn entries(&mut self) -> Json {
+        self.call("call", json!({"method":"shared_entries", "params":{"space_ids":["main"]}})).unwrap()["entries"].clone()
+    }
+    fn kill(&mut self) { let _ = self.child.kill(); let _ = self.child.wait(); }
+}
+impl Drop for ProbeWorker { fn drop(&mut self) { self.kill(); } }
+
+fn worker_files(base: &std::path::Path, api: Option<&FakeOpenAi>) -> std::path::PathBuf {
+    std::fs::create_dir_all(base.join("config/teamagents")).unwrap();
+    let mut config = "[models.m]\nprovider='openai'\nprotocol='openai'\nmodel='test'\nmax_retries=0\n".to_string();
+    if let Some(api) = api { config.push_str(&format!("base_url='{}'\n", api.base_url())); }
+    std::fs::write(base.join("config/teamagents/config.toml"), config).unwrap();
+    let team = base.join("team.json");
+    std::fs::write(&team, json!({"leader_id":"leader", "agents":[agent_json("leader", "leader", &["files"])],
+        "shared_spaces":[{"id":"main", "readers":["leader"], "writers":["leader"]}]}).to_string()).unwrap();
+    team
+}
+
+#[test]
+fn review_crash_after_committed_chat_action_must_not_replay_it() {
+    let _env = env_guard("review-recovery");
+    for lost_receipt in [false, true] {
+    let base = isolated_project("recovery");
+    let api = FakeOpenAi::start(|body, index| {
+        // The model must see the committed result after restart. An API that
+        // deliberately requests the same operation again is a different task.
+        if index == 1 { std::thread::sleep(Duration::from_millis(500)); }
+        let has_result = body["messages"].as_array().unwrap().iter().any(|m| m["role"] == "tool");
+        (200, if has_result { text_response("done") } else {
+            tool_call_response(&format!("publish-{index}"), "publish_shared", json!({"space_id":"main", "content":"once-only"}))
+        })
+    });
+    let team = worker_files(&base, Some(&api));
+    let mut worker = ProbeWorker::spawn(&base);
+    let opened = worker.call("open", json!({"cwd":base,"team":team})).unwrap();
+    worker.call("user_message", json!({"text":"publish once"})).unwrap();
+    assert!(wait_for(|| api.calls() >= 2, 5000));
+    assert_eq!(worker.entries().as_array().unwrap().len(), 1);
+    let state = worker.call("call", json!({"method":"state", "params":{}})).unwrap();
+    let run_id = state["runs"][0]["run_id"].as_str().unwrap();
+    worker.kill();
+    if lost_receipt {
+        // Inject exactly the commit -> receipt-checkpoint crash window, using
+        // the real model ID and already committed SQLite action receipt.
+        let path = base.join("state/teamagents/sessions").join(opened["session_id"].as_str().unwrap())
+            .join("members/leader/turns").join(format!("{run_id}.json"));
+        let mut checkpoint: Json = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(checkpoint["history"].as_array_mut().unwrap().pop().unwrap()["role"], "tool");
+        std::fs::write(path, checkpoint.to_string()).unwrap();
+    }
+    let mut worker = ProbeWorker::spawn(&base);
+    worker.call("open", json!({"cwd":base,"team":team,"resume":opened["session_id"]})).unwrap();
+    assert!(wait_for(|| api.calls() >= 3, 5000));
+    assert!(api.body(2)["messages"].as_array().unwrap().iter()
+        .any(|m| m["role"] == "tool" && m["tool_call_id"] == "publish-0"), "recovery lost the original tool result");
+    let entries = worker.entries();
+    eprintln!("entries after kill/restart: {entries}");
+    assert_eq!(entries.as_array().unwrap().len(), 1, "a committed model action was replayed with a new tool_call_id");
+    }
+}
+
+#[test]
+fn review_close_must_stop_running_shell_before_unlocking() {
+    let _env = env_guard("review-shell-close");
+    let cwd = isolated_project("shell-close");
+    let api = FakeOpenAi::start(|_, _| (200, tool_call_response("shell-close", "shell", json!({
+        "command":"touch started; sleep 2; printf late > after-close.txt", "timeout":10
+    }))));
+    let opened = open_chat_session(&cwd, &api, &["shell"], UserConfig::default());
+    opened.runtime.start();
+    opened.runtime.user_message("run command", false).unwrap();
+    assert!(wait_for(|| cwd.join("started").exists(), 5000), "real sandbox never executed");
+    opened.close();
+    let _lock = teamagents_engine::sessions::acquire_session_lock("review").expect("close released the lock");
+    let events = opened.core.state().unwrap()["events"].clone();
+    assert!(!wait_for(|| cwd.join("after-close.txt").exists(), 2500), "old shell outlived its session lock");
+    assert_eq!(opened.core.state().unwrap()["events"], events);
+}
+
+#[test]
+fn review_turn_timeout_must_stop_running_shell() {
+    let _env = env_guard("review-shell-timeout");
+    let cwd = isolated_project("shell-timeout");
+    let control = teamagents_engine::tools::shell_run("printf works", &cwd, 5, false, None).unwrap();
+    assert_eq!(control, "works", "real sandbox must be working for the probe");
+    let api = FakeOpenAi::start(|_, index| {
+        if index == 0 { (200, tool_call_response("shell-1", "shell", json!({
+            "command":"touch started; sleep 2; printf late > after-timeout.txt", "timeout":10
+        }))) } else { (200, text_response("done")) }
+    });
+    let opened = open_chat_session(&cwd, &api, &["shell"], UserConfig::default());
+    let mut spec = opened.core.state().unwrap()["spec"].clone();
+    spec["limits"]["turn_active_timeout_s"] = json!(1);
+    opened.core.call_in_session("save_spec", json!({"spec":spec})).unwrap();
+    opened.runtime.start();
+    opened.runtime.user_message("run command", false).unwrap();
+    assert!(wait_for(|| cwd.join("started").exists(), 5000));
+    assert!(wait_for(|| runs(&opened.core).iter().any(|r| r.status == TurnStatus::Failed), 5000));
+    assert!(!cwd.join("after-timeout.txt").exists(), "write has not happened when run becomes FAILED");
+    let wrote = wait_for(|| cwd.join("after-timeout.txt").exists(), 4000);
+    opened.close();
+    eprintln!("run FAILED after 1s; shell wrote after failure={wrote}");
+    assert!(!wrote, "timed-out turn left its shell alive to perform further writes");
+}
+
+#[test]
+fn review_unknown_external_effect_is_not_replayed_after_crash() {
+    let _env = env_guard("review-unknown-external");
+    let base = isolated_project("unknown-external");
+    let api = FakeOpenAi::start(|_, _| (200, tool_call_response("external-1", "shell", json!({
+        "command":"printf x >> count.txt; sleep 30; touch late.txt", "timeout":40
+    }))));
+    let team = worker_files(&base, Some(&api));
+    let mut spec: Json = serde_json::from_slice(&std::fs::read(&team).unwrap()).unwrap();
+    spec["agents"][0]["tool_bindings"] = json!(["shell"]);
+    std::fs::write(&team, spec.to_string()).unwrap();
+    let mut worker = ProbeWorker::spawn(&base);
+    let opened = worker.call("open", json!({"cwd":base,"team":team})).unwrap();
+    worker.call("user_message", json!({"text":"run once"})).unwrap();
+    assert!(wait_for(|| base.join("count.txt").exists(), 5000), "real sandbox never executed");
+    worker.kill();
+    let mut worker = ProbeWorker::spawn(&base);
+    worker.call("open", json!({"cwd":base,"team":team,"resume":opened["session_id"]})).unwrap();
+    let state = worker.call("call", json!({"method":"state", "params":{}})).unwrap();
+    assert_eq!(state["runs"][0]["status"], "OUTCOME_UNKNOWN", "{state}");
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(api.calls(), 1, "uncertain external effect must not trigger a new model/tool call");
+    assert_eq!(std::fs::read_to_string(base.join("count.txt")).unwrap(), "x");
+    assert!(!base.join("late.txt").exists());
+}
+
+#[test]
+fn review_executor_refreshes_workspace_and_revoked_bindings() {
+    let _env = env_guard("review-executor-revision");
+    let cwd = isolated_project("executor-revision");
+    let api = FakeOpenAi::start(|_, index| {
+        (200, match index {
+            0 | 2 => tool_call_response(&format!("write-{index}"), "write_file", json!({"path":"result.txt", "content":index.to_string()})),
+            4 => tool_call_response("revoked", "write_file", json!({"path":"revoked.txt", "content":"bad"})),
+            _ => text_response("done"),
+        })
+    });
+    let opened = open_chat_session(&cwd, &api, &["files"], UserConfig::default());
+    opened.runtime.start();
+    opened.runtime.user_message("first", false).unwrap();
+    assert!(opened.runtime.settle(5));
+    let patch = |id: &str, revision: i64, changes: Json| {
+        let receipt = submit(&opened.core, id, "leader", "apply_topology_patch", json!({
+            "base_revision":revision,"operations":[{"op":"update_agent","agent_id":"leader","changes":changes}]
+        }));
+        assert!(receipt.ok, "{receipt:?}");
+        assert_eq!(receipt.result["status"], "APPLIED");
+    };
+    patch("new-root", 1, json!({"workspace_policy":"isolated"}));
+    opened.runtime.user_message("second", false).unwrap();
+    assert!(opened.runtime.settle(5));
+    let isolated = teamagents_engine::sessions::session_paths("review").base.join("members/leader/work");
+    assert_eq!(std::fs::read_to_string(cwd.join("result.txt")).unwrap(), "0");
+    assert_eq!(std::fs::read_to_string(isolated.join("result.txt")).unwrap(), "2");
+    patch("revoke-files", 2, json!({"tool_bindings":[]}));
+    opened.runtime.user_message("third", false).unwrap();
+    assert!(opened.runtime.settle(5));
+    opened.close();
+    assert!(!isolated.join("revoked.txt").exists());
+    assert!(api.body(5)["messages"].as_array().unwrap().iter().any(|m|
+        m["role"] == "tool" && m["tool_call_id"] == "revoked" && m["content"].as_str().unwrap_or("").contains("not bound")
+    ));
+}
+
+#[test]
+fn review_completed_checkpoint_restores_reply_without_another_model_call() {
+    let _env = env_guard("review-final-checkpoint");
+    let agent = agent_json("leader", "leader", &[]);
+    let core = core_with_spec("final-checkpoint", json!({"leader_id":"leader", "agents":[agent]}));
+    let api = FakeOpenAi::start(|_, _| (200, text_response("original final reply")));
+    let run: TurnRun = serde_json::from_value(json!({
+        "run_id":"finished", "session_id":"final-checkpoint", "agent_id":"leader",
+        "config_revision":1, "topology_revision":1, "context_ref":"ctx:leader:1"
+    })).unwrap();
+    let view = json!({"inbox_delta":[], "delivery_ids":[]});
+    let gateway = ToolGateway::new(core.clone(), "leader", "finished",
+        ApprovalGate::new(core.clone(), PermissionPolicy::default()), None);
+    let first = chat_runner(&core, &agent, profile(&api.base_url(), "openai", json!({}), 0), "/tmp");
+    assert_eq!(first.start_or_resume(&run, &view, &gateway, &Json::Null).status, TurnStatus::Completed);
+    first.close();
+    let restored = chat_runner(&core, &agent, profile(&api.base_url(), "openai", json!({}), 0), "/tmp");
+    let restored_gateway = ToolGateway::new(core.clone(), "leader", "finished",
+        ApprovalGate::new(core, PermissionPolicy::default()), None);
+    assert_eq!(restored.reconcile(&run), Some(TurnStatus::Queued));
+    let outcome = restored.start_or_resume(&run, &view, &restored_gateway, &Json::Null);
+    assert_eq!(outcome.status, TurnStatus::Completed);
+    assert_eq!(outcome.reply_text.as_deref(), Some("original final reply"));
+    assert_eq!(api.calls(), 1);
+    restored.close();
 }
