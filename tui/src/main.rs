@@ -452,6 +452,9 @@ fn run_effect(e: Effect, worker: &Arc<Worker>, app: &mut App, bg: &std::sync::mp
 fn handle_mouse(m: event::MouseEvent, terminal: &Terminal<CrosstermBackend<std::io::Stdout>>, app: &mut App) {
     let size = terminal.size().unwrap_or(ratatui::layout::Size { width: 80, height: 24 });
     let area = ratatui::layout::Rect { x: 0, y: 0, width: size.width, height: size.height };
+    if app.settings_open {
+        return; // the settings overlay is modal
+    }
     let geo = ui::geometry(app, area);
     let on_side = |row: u16, col: u16| -> bool {
         col >= geo.side.x
@@ -462,7 +465,7 @@ fn handle_mouse(m: event::MouseEvent, terminal: &Terminal<CrosstermBackend<std::
     match m.kind {
         MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
             let up = m.kind == MouseEventKind::ScrollUp;
-            if on_side(m.row, m.column) && !matches!(app::PANELS[app.panel], "log" | "settings") {
+            if on_side(m.row, m.column) && app::PANELS[app.panel] != "log" {
                 // the wheel drives the table cursor, exactly like ↑/↓
                 let code = if up {
                     crossterm::event::KeyCode::Up

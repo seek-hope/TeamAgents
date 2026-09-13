@@ -88,7 +88,10 @@ fn frame_text(buf: &ratatui::buffer::Buffer) -> String {
 fn dump_frame(app: &mut App, name: &str) {
     let Ok(path) = std::env::var("TEAMAGENTS_DUMP_FRAME") else { return };
     if let Ok(panel) = std::env::var("TEAMAGENTS_DUMP_PANEL") {
-        app.panel = panel.parse().unwrap_or(0);
+        app.panel = panel.parse::<usize>().unwrap_or(0).min(teamagents_tui::app::PANELS.len() - 1);
+    }
+    if std::env::var("TEAMAGENTS_DUMP_SETTINGS").is_ok() {
+        app.settings_open = true;
     }
     if let Ok(lang) = std::env::var("TEAMAGENTS_DUMP_LANG") {
         app.lang = if lang == "zh-CN" { "zh-CN" } else { "en" };
@@ -161,10 +164,11 @@ fn full_frame_shows_all_regions() {
     // status bar
     assert!(text.contains("TeamAgents  proj_abc123"), "status bar missing");
     assert!(text.contains("Pre-authorized"), "mode missing");
-    // tab row (all seven panels, active translated)
-    for label in ["Team", "Tasks", "Shared", "Approvals", "Sessions", "Log", "Settings"] {
+    // tab row: the six panes (Settings moved behind /settings)
+    for label in ["Team", "Tasks", "Shared", "Approvals", "Sessions", "Log"] {
         assert!(text.contains(label), "tab {label} missing");
     }
+    assert!(!text.contains("▍Settings"), "settings must not be a tab");
     // team table header + row
     assert!(text.contains("Member"), "team header missing");
     assert!(text.contains("leader"), "team row missing");
@@ -196,7 +200,7 @@ fn zh_frame_uses_message_ids() {
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| ui::render(f, &mut app)).unwrap();
     let text = frame_text(terminal.backend().buffer());
-    for label in ["团队", "任务", "共享空间", "批准", "会话", "日志", "设置"] {
+    for label in ["团队", "任务", "共享空间", "批准", "会话", "日志"] {
         assert!(text.contains(label), "zh tab {label} missing");
     }
     assert!(text.contains("预授权"), "zh mode missing");
@@ -348,38 +352,65 @@ fn debug_row_indent() {
 }
 
 #[test]
-fn sidebar_sizes_to_content_and_keeps_one_tab_row() {
+fn panes_use_the_fixed_top_bottom_split() {
     use teamagents_tui::app::Focus;
     let mut app = parity_app();
-    let wide = ui::sidebar_width(&app, 150);
-    let narrow = ui::sidebar_width(&app, 100);
-    assert!(wide > narrow, "sidebar follows the content and the space: {wide} vs {narrow}");
-    assert!(150 - wide as usize >= 44, "the chat keeps a usable share");
-
-    // the tab bar never wraps: it either fits or windows around the active tab
     app.focus = Focus::Panel;
-    app.panel = 6; // settings (a narrow pane)
-    let backend = TestBackend::new(120, 30);
-    let mut terminal = Terminal::new(backend).unwrap();
-    terminal.draw(|f| ui::render(f, &mut app)).unwrap();
-    let text = frame_text(terminal.backend().buffer());
-    let tab_rows: Vec<usize> = text
-        .split('\n')
-        .enumerate()
-        .filter(|(_, l)| l.contains("▍Settings"))
-        .map(|(i, _)| i)
-        .collect();
-    assert_eq!(tab_rows.len(), 1, "one tab row only: {tab_rows:?}");
-
-    // windowing itself: a tight budget keeps the active tab and marks the edges
-    let widths = [6usize, 8, 9, 12, 9, 4, 9];
-    assert_eq!(ui::tab_window(&widths, 6, 100), (0, 6), "everything fits");
-    let (lo, hi) = ui::tab_window(&widths, 6, 20);
-    assert_eq!(hi, 6, "the active tab is always shown");
+    // wide and narrow terminals produce the same pane order: box on top, chat below
+    for width in [80u16, 120, 200] {
+        let backend = TestBackend::new(width, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| ui::render(f, &mut app)).unwrap();
+        let text = frame_text(terminal.backend().buffer());
+        let lines: Vec<&str> = text.split('\n').collect();
+        let box_top = lines.iter().position(|l| l.contains('╭')).expect("panel box");
+        let box_bottom = lines.iter().position(|l| l.contains('╰')).expect("box bottom");
+        let activity = lines.iter().position(|l| l.contains("Ready")).expect("activity");
+        assert!(box_top < box_bottom && box_bottom < activity, "layout at {width}: {lines:?}");
+        assert!(lines[box_top].starts_with('╭'), "the box starts at column 0 at {width}");
+    }
+    // the tab strip is a single row in every case
+    let widths = [6usize, 8, 9, 12, 9, 4];
+    assert_eq!(ui::tab_window(&widths, 5, 100), (0, 5), "everything fits");
+    let (lo, hi) = ui::tab_window(&widths, 5, 20);
+    assert_eq!(hi, 5, "the active tab is always shown");
     assert!(lo > 0, "older tabs are dropped first");
     let (lo, hi) = ui::tab_window(&widths, 0, 20);
     assert_eq!(lo, 0);
-    assert!(hi < 6);
+    assert!(hi < 5);
+}
+
+#[test]
+fn settings_lives_behind_the_slash_command() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut app = parity_app();
+    // no settings tab any more
+    assert!(!teamagents_tui::app::PANELS.contains(&"settings"));
+
+    app.composer.set_text("/settings");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.settings_open, "/settings opens the overlay");
+    assert_eq!(app.composer.text(), "", "the command is not sent as a message");
+
+    // ↑↓ + Enter edit a setting; Esc closes
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(app.settings_row, 1);
+    let before = app.animations;
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_ne!(app.animations, before, "Enter toggles the selected row");
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(!app.settings_open, "Esc closes the overlay");
+
+    // and the overlay renders as a centred box with the info lines
+    app.settings_open = true;
+    let backend = TestBackend::new(120, 36);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| ui::render(f, &mut app)).unwrap();
+    let text = frame_text(terminal.backend().buffer());
+    assert!(text.contains("Settings"), "overlay title: {text}");
+    assert!(text.contains("Interface language"), "language row missing");
+    assert!(text.contains("Session: s1"), "info lines missing");
+    assert!(text.contains("Esc") && text.contains("close"), "overlay hint missing");
 }
 
 #[test]
@@ -422,4 +453,52 @@ fn long_tables_scroll_with_the_selection() {
     let text = frame_text(terminal.backend().buffer());
     assert!(text.contains("proj_0029"), "the selected row stays visible: {text}");
     assert!(text.contains('┃'), "a scrollbar marks the hidden rows");
+}
+
+#[test]
+fn ascii_frame_has_no_cjk_leaks() {
+    // every hint/label must be translated in English mode; only user/model
+    // content may contain non-ASCII text
+    let mut app = App::new(
+        "s1",
+        json!({"models": {"m": {"provider": "openai", "model": "m"}}, "tools": {},
+               "skills_paths": [], "instruction_files": []}),
+        "/tmp/config.toml".into(),
+        "en",
+        true,
+        vec![],
+    );
+    app.apply_state(&json!({
+        "session": {"session_id": "s1", "status": "ACTIVE", "cwd": "/tmp",
+                    "permissions_mode": "approved_scope", "goal_id": null, "goal_state": "idle"},
+        "spec": {"leader_id": "leader", "agents": [{"id": "leader", "name": "L", "role": "leader",
+                  "runtime_kind": "deepagents", "model_profile": "m"}], "channels": [], "observers": [],
+                  "shared_spaces": []},
+        "leader_id": "leader", "revision": 1, "limits": {},
+        "agents": [{"id": "leader", "status": "IDLE"}], "runs": [],
+        "tasks": [{"task_id": "task_1", "requester": "leader", "assignee": "leader",
+                   "description": "demo", "acceptance": "", "dependencies": [], "status": "PENDING",
+                   "result_refs": [], "created_at": 0.0, "updated_at": 0.0}],
+        "pending_approvals": [], "events": [],
+    }));
+    let mut cases: Vec<usize> = (0..teamagents_tui::app::PANELS.len()).collect();
+    cases.push(usize::MAX); // the /settings overlay
+    for panel in cases {
+        if panel != usize::MAX {
+            app.panel = panel;
+        } else {
+            app.settings_open = true;
+        }
+        let backend = TestBackend::new(140, 36);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| ui::render(f, &mut app)).unwrap();
+        let text = frame_text(terminal.backend().buffer());
+        let cjk: Vec<char> = text.chars().filter(|c| ('\u{4e00}'..='\u{9fff}').contains(c)).collect();
+        let name = if panel == usize::MAX { "settings overlay".to_string() } else { teamagents_tui::app::PANELS[panel].to_string() };
+        assert!(
+            cjk.is_empty(),
+            "{name} leaks untranslated text: {:?}",
+            cjk.iter().collect::<String>()
+        );
+    }
 }

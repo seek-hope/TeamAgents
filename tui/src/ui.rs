@@ -10,7 +10,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::app::{panel_tab_label, App, Cell, Focus, Severity, PANELS, WIDE_LAYOUT_MIN};
+use crate::app::{panel_tab_label, App, Cell, Focus, Severity, PANELS};
 use crate::i18n::{table_headers, tr};
 use crate::md;
 use crate::theme::*;
@@ -202,15 +202,14 @@ impl JoinSpans for Vec<Span<'static>> {
 //   footer(1)  dim keys, focus label on the right
 
 /// One source of truth for the shell's rectangles, shared by the renderer and
-/// the mouse hit-test (duplicated math is what put clicks one row off).
+/// the mouse hit-test. The shell is always a top/bottom split (status row, panel
+/// box, chat, footer): the pane keys stay put no matter how wide the terminal is.
 #[derive(Clone, Copy, Debug)]
 pub struct Geometry {
-    pub wide: bool,
-    /// status line: inside the chat column in the wide layout, full width when stacked
     pub status: Rect,
     /// chat area (without the status line)
     pub chat: Rect,
-    /// the sidebar box, top border included
+    /// the panel box, top border included
     pub side: Rect,
     pub footer: Rect,
     /// first row of the tab strip (inside the box)
@@ -219,42 +218,19 @@ pub struct Geometry {
     pub rows_y: u16,
 }
 
-pub fn geometry(app: &App, area: Rect) -> Geometry {
+pub fn geometry(_app: &App, area: Rect) -> Geometry {
     let footer = Rect { y: area.height.saturating_sub(1), height: 1, ..area };
     let body = Rect { height: area.height.saturating_sub(1), ..area };
-    let wide = body.width >= WIDE_LAYOUT_MIN && body.height >= 14;
-    if wide {
-        let side_w = sidebar_width(app, body.width);
-        let side = Rect {
-            x: body.x + body.width - side_w,
-            width: side_w,
-            ..body
-        };
-        let chat = Rect {
-            width: body.width.saturating_sub(side_w + 1),
-            ..body
-        };
-        Geometry {
-            wide,
-            status: Rect { height: 1, ..chat },
-            chat: Rect { y: chat.y + 1, height: chat.height.saturating_sub(1), ..chat },
-            side,
-            footer,
-            tabs_y: side.y + 1,
-            rows_y: side.y + 5,
-        }
-    } else {
-        let status = Rect { height: 1, ..body };
-        let stacked = Rect { y: body.y + 1, height: body.height.saturating_sub(1), ..body };
-        let side_h = ((stacked.height as usize) * 2 / 5).max(6).min(stacked.height as usize) as u16;
-        let side = Rect { height: side_h, ..stacked };
-        let chat = Rect {
-            y: stacked.y + side_h,
-            height: stacked.height.saturating_sub(side_h),
-            ..stacked
-        };
-        Geometry { wide, status, chat, side, footer, tabs_y: side.y + 1, rows_y: side.y + 5 }
-    }
+    let status = Rect { height: 1, ..body };
+    let stacked = Rect { y: body.y + 1, height: body.height.saturating_sub(1), ..body };
+    let side_h = ((stacked.height as usize) * 2 / 5).max(6).min(stacked.height as usize) as u16;
+    let side = Rect { height: side_h, ..stacked };
+    let chat = Rect {
+        y: stacked.y + side_h,
+        height: stacked.height.saturating_sub(side_h),
+        ..stacked
+    };
+    Geometry { status, chat, side, footer, tabs_y: side.y + 1, rows_y: side.y + 5 }
 }
 
 pub fn render(frame: &mut Frame, app: &mut App) {
@@ -262,17 +238,12 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     frame.render_widget(ratatui::widgets::Clear, area);
     let geo = geometry(app, area);
     render_status(frame, app, geo.status);
-    render_chat(frame, app, geo.chat);
-    if geo.wide {
-        frame.render_widget(
-            ratatui::widgets::Block::default()
-                .borders(ratatui::widgets::Borders::LEFT)
-                .border_style(Style::default().fg(PANEL_BG)),
-            Rect { x: geo.chat.x + geo.chat.width, width: 1, ..geo.side },
-        );
-    }
     render_sidebar(frame, app, geo.side);
+    render_chat(frame, app, geo.chat);
     render_footer(frame, app, geo.footer);
+    if app.settings_open {
+        render_settings_overlay(frame, app, area);
+    }
     render_toasts(frame, app, geo.status);
 }
 
@@ -515,11 +486,11 @@ fn render_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
     let hint = match PANELS[app.panel] {
         "team" => "高亮成员=筛选日志 · Enter 取消筛选",
         "tasks" => "c=取消选中任务（BLOCKED 直接取消；执行中的回合收到取消请求）",
-        "approvals" => "a=本次批准  s=会话内批准  d=拒绝",
-        "sessions" => "s=切换  n=新建  a=归档  d=删除（再按 d 确认，删当前会话后退出）",
+        "approvals" => "待批准操作：a=本次批准  s=会话内批准  d=拒绝",
+        "sessions" => "本目录会话：s=切换  n=新建  a=归档  d=删除（再按 d 确认，删当前会话后退出）",
         "shared" => "共享空间条目：作者 / 类型 / 内容或引用",
         "log" => "↑↓ 选择成员筛选 · Enter 取消 · PgUp/PgDn 滚动",
-        _ => "Enter 打开/选择 · ↑↓ 移动",
+        _ => "高亮成员=筛选日志 · Enter 取消筛选",
     };
     let hint_rows = wrap_lines(
         vec![Line::from(Span::styled(tr(app.lang, hint, &[]), Style::default().fg(GREY)))],
@@ -594,8 +565,101 @@ fn render_panel(frame: &mut Frame, app: &mut App, area: Rect) {
                 title,
             );
         }
-        "settings" => render_settings(frame, app, area),
         _ => {}
+    }
+}
+
+/// `/settings` overlay: a centred box over the chat, Esc closes it.
+fn render_settings_overlay(frame: &mut Frame, app: &App, area: Rect) {
+    let info = app.settings_lines();
+    let width = ((area.width as usize * 7 / 10).clamp(48, 92)) as u16;
+    let height = ((info.len() + 7) as u16).min(area.height.saturating_sub(2));
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    let box_area = Rect { x, y, width, height };
+    frame.render_widget(ratatui::widgets::Clear, box_area);
+    let block = ratatui::widgets::Block::default()
+        .borders(ratatui::widgets::Borders::ALL)
+        .border_type(ratatui::widgets::BorderType::Rounded)
+        .border_style(Style::default().fg(ACCENT))
+        .style(Style::default().bg(PANEL_BG))
+        .title(Line::from(Span::styled(
+            format!(" {} ", tr(app.lang, "设置", &[])),
+            Style::default().fg(FG).add_modifier(Modifier::BOLD),
+        )))
+        .title_alignment(ratatui::layout::Alignment::Left);
+    let inner = block.inner(box_area);
+    frame.render_widget(block, box_area);
+    if inner.height < 4 {
+        return;
+    }
+    let label = |text: String| Span::styled(format!(" {text}"), Style::default().fg(GREY));
+    let value = |text: String, selected: bool| {
+        Span::styled(
+            format!(" {text} "),
+            if selected {
+                Style::default().fg(BG).bg(ACCENT).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(FG).bg(PANEL_BG)
+            },
+        )
+    };
+    let rows = [
+        (
+            tr(app.lang, "界面语言", &[]),
+            if app.lang == "zh-CN" { "中文".to_string() } else { "English".to_string() },
+            app.settings_row == 0,
+        ),
+        (
+            tr(app.lang, "动效", &[]),
+            if app.animations { "on".to_string() } else { "off".to_string() },
+            app.settings_row == 1,
+        ),
+    ];
+    for (i, (name, value_text, selected)) in rows.iter().enumerate() {
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                label(format!("{:<16}", name)),
+                value(value_text.clone(), *selected),
+            ])),
+            Rect { y: inner.y + i as u16 * 2, height: 1, ..inner },
+        );
+    }
+    let body_y = inner.y + 5;
+    let body: Vec<Line> = info
+        .iter()
+        .map(|l| Line::from(Span::styled(format!(" {l}"), Style::default().fg(NOTICE))))
+        .collect();
+    frame.render_widget(
+        Paragraph::new(body),
+        Rect {
+            y: body_y,
+            height: inner.y + inner.height.saturating_sub(1).saturating_sub(body_y),
+            ..inner
+        },
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!(
+                " {}",
+                tr(app.lang, "↑↓ 移动 · Enter 切换 · Esc 关闭", &[])
+            ),
+            Style::default().fg(GREY),
+        ))),
+        Rect { y: inner.y + inner.height - 1, height: 1, ..inner },
+    );
+    if app.lang_open {
+        for (i, option) in ["English", "中文"].iter().enumerate() {
+            let style = if i == app.lang_choice {
+                Style::default().fg(BG).bg(ACCENT)
+            } else {
+                Style::default().fg(FG).bg(PANEL_BG)
+            };
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(format!(" {option} "), style))),
+                Rect { x: inner.x + 17, y: inner.y + 1 + i as u16, width: 12, height: 1 },
+            );
+        }
     }
 }
 
@@ -651,36 +715,6 @@ pub fn table_start(rows: usize, sel: usize, view: usize) -> usize {
     }
     let max_start = rows - view;
     sel.saturating_sub(view / 2).min(max_start)
-}
-
-/// Sidebar width in the wide layout: sized to the active pane's content, then
-/// clamped so the chat keeps a comfortable share.
-pub fn sidebar_width(app: &App, total: u16) -> u16 {
-    const MIN: usize = 40;
-    let max = crate::app::SIDEBAR_WIDTH as usize;
-    let natural = match PANELS[app.panel] {
-        "settings" => {
-            // the pane also renders wrapped settings lines; size to the longest
-            let body = app
-                .settings_lines()
-                .iter()
-                .map(|l| UnicodeWidthStr::width(l.as_str()))
-                .max()
-                .unwrap_or(0);
-            (body + 4).max(30)
-        }
-        "log" => 84,
-        _ => {
-            let (header, rows, _) = panel_table(app);
-            let refs: Vec<&str> = header.iter().map(|s| s.as_str()).collect();
-            let widths = col_widths(&refs, &rows, usize::MAX);
-            // borders(2) + marker column(1) + cell paddings
-            widths.iter().sum::<usize>() + 2 * widths.len().saturating_sub(1) + 4
-        }
-    };
-    let chat_share = (total as usize).saturating_sub(44); // keep the chat usable
-    let cap = max.min(chat_share).min(((total as usize) * 62 / 100).max(MIN));
-    natural.clamp(MIN, cap.max(MIN)) as u16
 }
 
 fn render_table(
@@ -815,66 +849,6 @@ fn render_table(
             &mut state,
         );
     }
-}
-
-fn render_settings(frame: &mut Frame, app: &App, area: Rect) {
-    let focused = app.focus == Focus::Panel;
-    let label = |text: String| Span::styled(format!(" {text}"), Style::default().fg(GREY));
-    let value = |text: String, selected: bool| {
-        Span::styled(
-            format!(" {text} "),
-            if selected {
-                Style::default().fg(BG).bg(ACCENT).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(FG).bg(PANEL_BG)
-            },
-        )
-    };
-    let y1 = area.y;
-    let y2 = area.y + 2;
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            label(format!("{:<16}", tr(app.lang, "界面语言", &[]))),
-            value(
-                if app.lang == "zh-CN" { "中文".into() } else { "English".into() },
-                focused && app.settings_row == 0,
-            ),
-        ])),
-        Rect { y: y1, height: 1, ..area },
-    );
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            label(format!("{:<16}", tr(app.lang, "动效", &[]))),
-            value(
-                if app.animations { "on".into() } else { "off".into() },
-                focused && app.settings_row == 1,
-            ),
-        ])),
-        Rect { y: y2, height: 1, ..area },
-    );
-    if app.lang_open {
-        for (i, option) in ["English", "中文"].iter().enumerate() {
-            let style = if i == app.lang_choice {
-                Style::default().fg(BG).bg(ACCENT)
-            } else {
-                Style::default().fg(FG).bg(PANEL_BG)
-            };
-            frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(format!(" {option} "), style))),
-                Rect { x: area.x + 17, y: y1 + 1 + i as u16, width: 12, height: 1 },
-            );
-        }
-    }
-    let body_y = area.y + 5;
-    let body: Vec<Line> = app
-        .settings_lines()
-        .iter()
-        .map(|l| Line::from(Span::styled(format!(" {l}"), Style::default().fg(NOTICE))))
-        .collect();
-    frame.render_widget(
-        Paragraph::new(body),
-        Rect { y: body_y, height: (area.y + area.height).saturating_sub(body_y), ..area },
-    );
 }
 
 fn render_chat(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -1049,7 +1023,7 @@ fn render_composer(frame: &mut Frame, app: &App, area: Rect) {
             ),
             if text.is_empty() && empty && first {
                 Span::styled(
-                    tr(app.lang, "输入你的目标，或向 Leader 补充要求", &[]),
+                    tr(app.lang, "输入你的目标，或向 Leader 补充要求（/settings 打开设置）", &[]),
                     Style::default().fg(GREY).add_modifier(Modifier::DIM),
                 )
             } else {

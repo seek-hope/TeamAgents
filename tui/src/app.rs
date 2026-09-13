@@ -8,13 +8,8 @@ use std::time::{Duration, Instant};
 use crate::i18n::{status_label_id, tr};
 use crate::text::Composer;
 
-pub const PANELS: [&str; 7] = ["team", "tasks", "shared", "approvals", "sessions", "log", "settings"];
-/// Below this width the sidebar sits above the chat instead of beside it.
-pub const WIDE_LAYOUT_MIN: u16 = 110;
-/// Hard cap for the sidebar in the wide layout (ui::sidebar_width sizes to the
-/// active pane's content and clamps to this, leaving the chat at least ~44 cols).
-pub const SIDEBAR_WIDTH: u16 = 92;
-const PANEL_TAB_LABELS: [&str; 7] = ["团队", "任务", "共享空间", "批准", "会话", "日志", "设置"];
+pub const PANELS: [&str; 6] = ["team", "tasks", "shared", "approvals", "sessions", "log"];
+const PANEL_TAB_LABELS: [&str; 6] = ["团队", "任务", "共享空间", "批准", "会话", "日志"];
 pub const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -184,6 +179,8 @@ pub struct App {
     pub chat_scroll: usize,
     /// log panel lines scrolled up from the bottom
     pub log_scroll: usize,
+    /// `/settings` overlay (Esc closes; ↑↓ move, Enter toggles)
+    pub settings_open: bool,
     pub toasts: Vec<Toast>,
     pub sessions: Vec<Json>,
     pub shared: Vec<Json>,
@@ -221,6 +218,7 @@ impl App {
             log_lines: vec![],
             chat_scroll: 0,
             log_scroll: 0,
+            settings_open: false,
             toasts: vec![],
             sessions: vec![],
             shared: vec![],
@@ -1034,7 +1032,10 @@ impl App {
     pub fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> Vec<Effect> {
         use crossterm::event::{KeyCode, KeyModifiers as Mod};
         let ctrl = key.modifiers.contains(Mod::CONTROL);
-        // settings dropdown swallows navigation while open
+        // overlays swallow keys while open
+        if self.settings_open {
+            return self.settings_overlay_key(key);
+        }
         if self.lang_open {
             return self.settings_dropdown_key(key);
         }
@@ -1150,6 +1151,34 @@ impl App {
         self.log_lines.clone()
     }
 
+    /// `/settings`: ↑↓ move, Enter/Space activates, Esc (or /settings again) closes.
+    fn settings_overlay_key(&mut self, key: crossterm::event::KeyEvent) -> Vec<Effect> {
+        use crossterm::event::KeyCode;
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => self.settings_open = false,
+            KeyCode::Up => self.settings_row = self.settings_row.saturating_sub(1),
+            KeyCode::Down => self.settings_row = (self.settings_row + 1).min(1),
+            KeyCode::Tab => self.settings_row = (self.settings_row + 1) % 2,
+            KeyCode::Enter | KeyCode::Char(' ') => return self.activate_setting(),
+            _ => {}
+        }
+        vec![]
+    }
+
+    fn activate_setting(&mut self) -> Vec<Effect> {
+        if self.settings_row == 0 {
+            self.lang_open = true;
+            self.lang_choice = if self.lang == "zh-CN" { 1 } else { 0 };
+        } else {
+            self.animations = !self.animations;
+            if let Err(e) = crate::i18n::write_preferences(self.lang, self.animations) {
+                let msg = self.t("偏好保存失败：{v0}", &[("v0", &e.to_string())]);
+                self.notify(msg, Severity::Error, 10);
+            }
+        }
+        vec![]
+    }
+
     fn settings_dropdown_key(&mut self, key: crossterm::event::KeyEvent) -> Vec<Effect> {
         use crossterm::event::KeyCode;
         match key.code {
@@ -1183,6 +1212,10 @@ impl App {
             KeyCode::Char('j') if key.modifiers.contains(Mod::CONTROL) => self.composer.insert_newline(),
             KeyCode::Enter => {
                 if let Some(text) = self.composer.submit() {
+                    if text.trim() == "/settings" {
+                        self.settings_open = true;
+                        return vec![];
+                    }
                     return vec![Effect::UserMessage(text)];
                 }
             }
@@ -1314,20 +1347,6 @@ impl App {
                     } else {
                         self.pending_delete = None;
                         return vec![Effect::DeleteSession(target)];
-                    }
-                }
-            }
-            ("settings", KeyCode::Up) => self.settings_row = self.settings_row.saturating_sub(1),
-            ("settings", KeyCode::Down) => self.settings_row = (self.settings_row + 1).min(1),
-            ("settings", KeyCode::Enter) | ("settings", KeyCode::Char(' ')) => {
-                if self.settings_row == 0 {
-                    self.lang_open = true;
-                    self.lang_choice = if self.lang == "zh-CN" { 1 } else { 0 };
-                } else {
-                    self.animations = !self.animations;
-                    if let Err(e) = crate::i18n::write_preferences(self.lang, self.animations) {
-                        let msg = self.t("偏好保存失败：{v0}", &[("v0", &e.to_string())]);
-                        self.notify(msg, Severity::Error, 10);
                     }
                 }
             }

@@ -160,7 +160,8 @@ static ENGLISH: &[(&str, &str)] = &[
     ("没有待批准操作", "Nothing waiting for approval"),
     ("没有共享条目", "No shared entries yet"),
     ("没有会话记录", "No sessions in this directory"),
-    ("输入你的目标，或向 Leader 补充要求", "Ask the Leader…"),
+    ("输入你的目标，或向 Leader 补充要求（/settings 打开设置）",
+     "Ask the Leader…  (/settings opens preferences)"),
     ("已上翻{count}行 · Ctrl+End 回到底部", "{count} lines up · Ctrl+End for newest"),
     ("面板：{v0}", "pane: {v0}"),
     ("滚动", "Scroll"),
@@ -173,7 +174,7 @@ static ENGLISH: &[(&str, &str)] = &[
      "Enter send · Shift+Enter newline · ↑↓ history · PgUp/PgDn scroll · Esc stops the Leader"),
     ("共享空间条目：作者 / 类型 / 内容或引用", "Shared entries: author / kind / content or reference"),
     ("↑↓ 选择成员筛选 · Enter 取消 · PgUp/PgDn 滚动", "↑↓ filter by member · Enter clears · PgUp/PgDn scroll"),
-    ("Enter 打开/选择 · ↑↓ 移动", "Enter opens/selects · ↑↓ moves"),
+    ("↑↓ 移动 · Enter 切换 · Esc 关闭", "↑↓ move · Enter toggle · Esc close"),
     ("需要用户批准", "User approval needed"),
 ];
 
