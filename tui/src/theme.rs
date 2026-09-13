@@ -17,3 +17,5 @@ pub const CURSOR_ROW: Color = Color::Rgb(0x1f, 0x3c, 0x6a);
 pub const SELECT_BG: Color = Color::Rgb(0x1a, 0x1a, 0x1a);
 /// Alternating table rows, one step above the background.
 pub const ZEBRA_BG: Color = Color::Rgb(0x11, 0x11, 0x11);
+/// Hovered clickable thing: grey surface + white text (the tab/row hint).
+pub const HOVER_BG: Color = Color::Rgb(0x3a, 0x3a, 0x3a);

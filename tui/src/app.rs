@@ -18,6 +18,19 @@ pub enum Focus {
     Panel, // the active tab's table/list owns keys
 }
 
+/// One entry of the `/` command menu (Codex-style: type "/" to list them all).
+#[derive(Clone, Copy, Debug)]
+pub struct SlashCommand {
+    pub name: &'static str,
+    pub description: &'static str, // message id, translated on render
+}
+
+pub const SLASH_COMMANDS: &[SlashCommand] = &[
+    SlashCommand { name: "/help", description: "显示快捷键与斜杠命令说明" },
+    SlashCommand { name: "/quit", description: "退出 TeamAgents" },
+    SlashCommand { name: "/settings", description: "打开设置浮层（语言、动效）" },
+];
+
 #[derive(Clone, Debug)]
 pub struct Toast {
     pub text: String,
@@ -181,6 +194,14 @@ pub struct App {
     pub log_scroll: usize,
     /// `/settings` overlay (Esc closes; ↑↓ move, Enter toggles)
     pub settings_open: bool,
+    /// last mouse position, for hover feedback (row, column)
+    pub pointer: Option<(u16, u16)>,
+    /// the `/` menu: highlighted entry, and the query it was dismissed for
+    pub slash_index: usize,
+    pub slash_dismissed_for: Option<String>,
+    /// tab strip position recorded by the renderer: (row, x_range)
+    pub tab_row: u16,
+    pub tab_cols: (u16, u16),
     pub toasts: Vec<Toast>,
     pub sessions: Vec<Json>,
     pub shared: Vec<Json>,
@@ -219,6 +240,11 @@ impl App {
             chat_scroll: 0,
             log_scroll: 0,
             settings_open: false,
+            pointer: None,
+            slash_index: 0,
+            slash_dismissed_for: None,
+            tab_row: 0,
+            tab_cols: (0, 0),
             toasts: vec![],
             sessions: vec![],
             shared: vec![],
@@ -960,7 +986,7 @@ impl App {
         let revision = self.state.as_ref().and_then(|s| s.get("revision")).map(|v| v.to_string()).unwrap_or_else(|| "0".into());
         let mut lines = vec![
             self.t("会话：{v0}", &[("v0", &self.session_id)]),
-            self.t("状态：{v0}    权限模式：{v1}    （Ctrl+F 切换）", &[
+            self.t("状态：{v0}    权限模式：{v1}", &[
                 ("v0", &jstr(session, "status")),
                 ("v1", &jstr(session, "permissions_mode")),
             ]),
@@ -1062,6 +1088,11 @@ impl App {
                 return vec![];
             }
             (KeyCode::Esc, false) => {
+                if self.focus == Focus::Composer && self.slash_open() {
+                    // close the command menu, keep what was typed
+                    self.slash_dismissed_for = self.slash_query();
+                    return vec![];
+                }
                 // one key, two obvious meanings: leave the panel, or stop the Leader
                 if self.focus == Focus::Panel {
                     self.focus = Focus::Composer;
@@ -1151,6 +1182,70 @@ impl App {
         self.log_lines.clone()
     }
 
+    /// The token being typed after "/" (None when the composer is not a command).
+    pub fn slash_query(&self) -> Option<String> {
+        let text = self.composer.text();
+        let first = text.lines().next().unwrap_or("").trim_start();
+        if !first.starts_with('/') || !text.trim().contains('\n') && first.contains(' ') {
+            return None;
+        }
+        if text.lines().count() > 1 || first.contains(' ') {
+            return None;
+        }
+        Some(first.to_string())
+    }
+
+    /// Commands matching the current query (all of them when it is just "/").
+    pub fn slash_matches(&self) -> Vec<&'static SlashCommand> {
+        let Some(query) = self.slash_query() else { return vec![] };
+        SLASH_COMMANDS
+            .iter()
+            .filter(|c| c.name.starts_with(query.as_str()))
+            .collect()
+    }
+
+    /// The menu is open while a query is typed and Esc has not dismissed it.
+    pub fn slash_open(&self) -> bool {
+        let Some(query) = self.slash_query() else { return false };
+        if self.slash_dismissed_for.as_deref() == Some(query.as_str()) {
+            return false;
+        }
+        !self.slash_matches().is_empty()
+    }
+
+    pub fn slash_selected(&self) -> Option<&'static SlashCommand> {
+        let matches = self.slash_matches();
+        if matches.is_empty() {
+            return None;
+        }
+        let index = self.slash_index.min(matches.len() - 1);
+        Some(matches[index])
+    }
+
+    /// Run the highlighted command (Enter in the menu) and clear the composer.
+    fn run_slash(&mut self) -> Vec<Effect> {
+        let Some(command) = self.slash_selected() else { return vec![] };
+        self.composer.clear();
+        self.slash_index = 0;
+        match command.name {
+            "/settings" => {
+                self.settings_open = true;
+                vec![]
+            }
+            "/quit" => vec![Effect::Quit],
+            "/help" => {
+                let lines = vec![
+                    self.t("斜杠命令：/help 本说明 · /settings 设置 · /quit 退出", &[]),
+                    self.t("输入：Enter 发送 · Shift+Enter 换行 · ↑↓ 历史 · PgUp/PgDn 滚动", &[]),
+                    self.t("界面：Ctrl+T 切面板 · Ctrl+G 批准 · Ctrl+F 全自动 · Ctrl+P 暂停 · Esc 停止 Leader · Ctrl+Q 退出", &[]),
+                ];
+                self.write_chat("system", &lines.join("\n"));
+                vec![]
+            }
+            _ => vec![],
+        }
+    }
+
     /// `/settings`: ↑↓ move, Enter/Space activates, Esc (or /settings again) closes.
     fn settings_overlay_key(&mut self, key: crossterm::event::KeyEvent) -> Vec<Effect> {
         use crossterm::event::KeyCode;
@@ -1205,6 +1300,28 @@ impl App {
         use crossterm::event::{KeyCode, KeyModifiers as Mod};
         // any interaction with the composer means "show me the latest"
         self.pin_to_bottom();
+        if self.slash_open() {
+            match key.code {
+                KeyCode::Up => {
+                    self.slash_index = self.slash_index.saturating_sub(1);
+                    return vec![];
+                }
+                KeyCode::Down => {
+                    let last = self.slash_matches().len().saturating_sub(1);
+                    self.slash_index = (self.slash_index + 1).min(last);
+                    return vec![];
+                }
+                KeyCode::Tab => {
+                    if let Some(command) = self.slash_selected() {
+                        self.composer.set_text(command.name);
+                        self.slash_index = 0;
+                    }
+                    return vec![];
+                }
+                KeyCode::Enter => return self.run_slash(),
+                _ => {}
+            }
+        }
         match key.code {
             KeyCode::Enter if key.modifiers.contains(Mod::SHIFT) || key.modifiers.contains(Mod::CONTROL) => {
                 self.composer.insert_newline();
@@ -1212,9 +1329,11 @@ impl App {
             KeyCode::Char('j') if key.modifiers.contains(Mod::CONTROL) => self.composer.insert_newline(),
             KeyCode::Enter => {
                 if let Some(text) = self.composer.submit() {
-                    if text.trim() == "/settings" {
-                        self.settings_open = true;
-                        return vec![];
+                    if text.trim().starts_with('/') {
+                        if let Some(command) = SLASH_COMMANDS.iter().find(|c| c.name == text.trim()) {
+                            self.composer.set_text(command.name);
+                            return self.run_slash();
+                        }
                     }
                     return vec![Effect::UserMessage(text)];
                 }

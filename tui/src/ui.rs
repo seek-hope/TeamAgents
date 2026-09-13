@@ -379,6 +379,65 @@ fn tab_badge(app: &App, panel: &str) -> Option<String> {
     }
 }
 
+/// One tab's rendered spans, its width, and the panel index it switches to.
+/// The renderer and the hit-test share this so they can never disagree.
+pub fn tab_pieces(app: &App) -> Vec<(Vec<Span<'static>>, usize, usize)> {
+    let mut pieces = vec![];
+    for (i, panel) in PANELS.iter().enumerate() {
+        let label = panel_tab_label(app.lang, i);
+        let active = i == app.panel;
+        let hovered = matches!(app.pointer, Some((row, col))
+            if row == app.tab_row && col >= app.tab_cols.0 && col < app.tab_cols.1 && !app.settings_open);
+        let mut label_style = if active {
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(GREY)
+        };
+        let mut badge_style = Style::default()
+            .fg(if active { ACCENT } else { NOTICE })
+            .add_modifier(Modifier::DIM);
+        if hovered {
+            // grey background + white text marks what a click would hit
+            label_style = label_style.fg(FG).bg(HOVER_BG);
+            badge_style = badge_style.fg(FG).bg(HOVER_BG);
+        }
+        let mut spans: Vec<Span> = vec![Span::styled(
+            if active { format!("▍{label}") } else { format!(" {label}") },
+            label_style,
+        )];
+        match tab_badge(app, panel) {
+            Some(badge) => spans.push(Span::styled(format!(" {badge}"), badge_style)),
+            None => spans.push(Span::styled(" ", if hovered { Style::default().bg(HOVER_BG) } else { Style::default() })),
+        }
+        let w: usize = spans.iter().map(|s| UnicodeWidthStr::width(s.content.as_ref())).sum();
+        pieces.push((spans, w, i));
+    }
+    pieces
+}
+
+/// Which panel a click at `col` hits, using the same geometry the renderer used.
+pub fn tab_at(app: &App, inner_x: u16, inner_width: u16, col: u16) -> Option<usize> {
+    let pieces = tab_pieces(app);
+    let budget = inner_width as usize;
+    let total: usize = pieces.iter().map(|(_, w, _)| *w).sum();
+    let (lo, hi, offset) = if total + 1 <= budget {
+        (0, pieces.len() - 1, 1usize)
+    } else {
+        let widths: Vec<usize> = pieces.iter().map(|(_, w, _)| *w).collect();
+        let (lo, hi) = tab_window(&widths, app.panel, budget.saturating_sub(3));
+        let offset = 1 + usize::from(lo > 0);
+        (lo, hi, offset)
+    };
+    let mut x = inner_x as usize + offset;
+    for (_, width, index) in pieces.iter().skip(lo).take(hi - lo + 1) {
+        if (col as usize) >= x && (col as usize) < x + width {
+            return Some(*index);
+        }
+        x += width;
+    }
+    None
+}
+
 /// Visible tab range for a strip that cannot fit: the active tab is always
 /// included, neighbours fill the budget outward, and the cut edges get markers
 /// (the caller prints ‹ / › from the returned bounds).
@@ -424,48 +483,25 @@ fn render_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 
     // tab strip: one row, windowed around the active tab (a tab bar never
-    // wraps); ‹ › mark tabs that are scrolled out of view
-    let mut pieces: Vec<(Vec<Span>, usize)> = vec![];
-    for (i, panel) in PANELS.iter().enumerate() {
-        let label = panel_tab_label(app.lang, i);
-        let active = i == app.panel;
-        let mut spans: Vec<Span> = vec![Span::styled(
-            if active { format!("▍{label}") } else { format!(" {label}") },
-            if active {
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(GREY)
-            },
-        )];
-        if let Some(badge) = tab_badge(app, panel) {
-            spans.push(Span::styled(
-                format!(" {badge}"),
-                Style::default()
-                    .fg(if active { ACCENT } else { NOTICE })
-                    .add_modifier(Modifier::DIM),
-            ));
-        } else {
-            spans.push(Span::raw(" "));
-        }
-        let w: usize = spans.iter().map(|s| UnicodeWidthStr::width(s.content.as_ref())).sum();
-        pieces.push((spans, w));
-    }
+    // wraps); ‹ › mark tabs that are scrolled out of view. The same pieces feed
+    // the mouse hit-test, so a click can never land on a neighbouring tab.
+    let pieces = tab_pieces(app);
     let budget = inner.width as usize;
-    let total: usize = pieces.iter().map(|(_, w)| *w).sum();
+    let total: usize = pieces.iter().map(|(_, w, _)| *w).sum();
     let mut shown: Vec<Span> = vec![Span::raw(" ")];
     if total + 1 <= budget {
-        for (spans, _) in pieces {
+        for (spans, _, _) in pieces {
             shown.extend(spans);
         }
     } else {
         // keep the active tab visible, fill outward, and mark the cut edges
         let budget = budget.saturating_sub(3); // leading space + two markers
-        let widths: Vec<usize> = pieces.iter().map(|(_, w)| *w).collect();
+        let widths: Vec<usize> = pieces.iter().map(|(_, w, _)| *w).collect();
         let (lo, hi) = tab_window(&widths, app.panel, budget);
         if lo > 0 {
             shown.push(Span::styled("‹", Style::default().fg(ACCENT)));
         }
-        for (spans, _) in pieces.iter().skip(lo).take(hi - lo + 1) {
+        for (spans, _, _) in pieces.iter().skip(lo).take(hi - lo + 1) {
             shown.extend(spans.clone());
         }
         if hi + 1 < pieces.len() {
@@ -473,6 +509,8 @@ fn render_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
         }
     }
     frame.render_widget(Paragraph::new(Line::from(shown)), Rect { height: 1, ..inner });
+    app.tab_row = inner.y;
+    app.tab_cols = (inner.x, inner.x + inner.width);
     let divider_y = inner.y + 1;
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
@@ -535,6 +573,7 @@ fn render_panel(frame: &mut Frame, app: &mut App, area: Rect) {
                 .unwrap_or_else(|| saved.1.min(keyed.len().saturating_sub(1)));
             let sel = if keyed.is_empty() { None } else { Some(sel) };
             render_table(
+                app,
                 frame,
                 area,
                 &header_refs,
@@ -718,6 +757,7 @@ pub fn table_start(rows: usize, sel: usize, view: usize) -> usize {
 }
 
 fn render_table(
+    app: &App,
     frame: &mut Frame,
     area: Rect,
     header: &[&str],
@@ -794,8 +834,13 @@ fn render_table(
     let mut lines: Vec<Line> = vec![];
     for (i, row) in rows.iter().enumerate().skip(start).take((body.height as usize).max(1)) {
         let selected = sel == Some(i);
+        let first_row = body.y;
+        let hovered = matches!(app.pointer, Some((row, _))
+            if row >= first_row && (row - first_row) as usize == i - start && !app.settings_open);
         let bg = if selected {
             SELECT_BG
+        } else if hovered {
+            HOVER_BG
         } else if i % 2 == 1 {
             ZEBRA_BG
         } else {
@@ -812,7 +857,7 @@ fn render_table(
                 let (text, style) = row.get(*j).cloned().unwrap_or((String::new(), None));
                 let fg = match style {
                     Some(name) => style_named(name),
-                    None => Style::default().fg(if selected { FG } else { NOTICE }),
+                    None => Style::default().fg(if selected || hovered { FG } else { NOTICE }),
                 };
                 let modifier = if selected { Modifier::BOLD } else { Modifier::empty() };
                 Span::styled(
@@ -919,6 +964,61 @@ fn render_chat(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 
     render_composer(frame, app, chunks[3]);
+    render_slash_menu(frame, app, area, chunks[3]);
+}
+
+/// `/` completion menu: matches listed above the composer, the highlighted one
+/// on a lighter surface (same hover language as the tabs).
+fn render_slash_menu(frame: &mut Frame, app: &App, area: Rect, composer: Rect) {
+    if !app.slash_open() {
+        return;
+    }
+    let matches = app.slash_matches();
+    let selected = app.slash_index.min(matches.len().saturating_sub(1));
+    let name_w = matches
+        .iter()
+        .map(|c| UnicodeWidthStr::width(c.name))
+        .max()
+        .unwrap_or(0);
+    let desc_w = matches
+        .iter()
+        .map(|c| UnicodeWidthStr::width(tr(app.lang, c.description, &[]).as_str()))
+        .max()
+        .unwrap_or(0);
+    let width = ((name_w + desc_w + 6) as u16).clamp(24, area.width.saturating_sub(4));
+    let height = (matches.len() as u16 + 2).min(8);
+    let y = composer.y.saturating_sub(height).max(area.y + 1);
+    let x = area.x + 2;
+    let box_area = Rect { x, y, width, height };
+    frame.render_widget(ratatui::widgets::Clear, box_area);
+    let block = ratatui::widgets::Block::default()
+        .borders(ratatui::widgets::Borders::ALL)
+        .border_type(ratatui::widgets::BorderType::Rounded)
+        .border_style(Style::default().fg(GREY))
+        .style(Style::default().bg(BG))
+        .title(Line::from(Span::styled(
+            format!(" {} ", tr(app.lang, "命令", &[])),
+            Style::default().fg(GREY).add_modifier(Modifier::DIM),
+        )));
+    let inner = block.inner(box_area);
+    frame.render_widget(block, box_area);
+    let rows: Vec<Line> = matches
+        .iter()
+        .enumerate()
+        .take(inner.height as usize)
+        .map(|(i, command)| {
+            let style = if i == selected {
+                Style::default().fg(FG).bg(HOVER_BG)
+            } else {
+                Style::default().fg(GREY).bg(BG)
+            };
+            Line::from(Span::styled(
+                format!(" {:<name_w$}  {}", command.name, tr(app.lang, command.description, &[])),
+                style,
+            ))
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(rows), inner);
 }
 
 fn render_composer(frame: &mut Frame, app: &App, area: Rect) {

@@ -452,6 +452,9 @@ fn run_effect(e: Effect, worker: &Arc<Worker>, app: &mut App, bg: &std::sync::mp
 fn handle_mouse(m: event::MouseEvent, terminal: &Terminal<CrosstermBackend<std::io::Stdout>>, app: &mut App) {
     let size = terminal.size().unwrap_or(ratatui::layout::Size { width: 80, height: 24 });
     let area = ratatui::layout::Rect { x: 0, y: 0, width: size.width, height: size.height };
+    // every mouse event updates the hover position (grey surface + white text marks
+    // what a click would hit)
+    app.pointer = Some((m.row, m.column));
     if app.settings_open {
         return; // the settings overlay is modal
     }
@@ -489,31 +492,23 @@ fn handle_mouse(m: event::MouseEvent, terminal: &Terminal<CrosstermBackend<std::
 
     if on_side(m.row, m.column) {
         if m.row == geo.tabs_y {
-            let mut x = geo.side.x + 1;
-            for i in 0..app::PANELS.len() {
-                let label = app::panel_tab_label(app.lang, i);
-                let badge = app.tab_badge(i);
-                let w = unicode_width::UnicodeWidthStr::width(label.as_str()) as u16
-                    + 1
-                    + badge.map(|b| b.len() as u16 + 2).unwrap_or(0);
-                if m.column >= x && m.column < x + w {
-                    app.panel = i;
-                    app.focus = app::Focus::Panel;
-                    return;
-                }
-                x += w;
+            // same piece widths the renderer used: clicking a tab hits that tab
+            if let Some(index) = ui::tab_at(app, geo.side.x + 1, geo.side.width.saturating_sub(2), m.column) {
+                app.panel = index;
+                app.focus = app::Focus::Panel;
             }
             return;
         }
         if m.row >= geo.rows_y {
             app.focus = app::Focus::Panel;
-            let view = (geo.side.y + geo.side.height)
-                .saturating_sub(1 + geo.rows_y) as usize;
+            let view = (geo.side.y + geo.side.height).saturating_sub(1 + geo.rows_y) as usize;
             app.select_row_visible((m.row - geo.rows_y) as usize, view);
         }
         return;
     }
-    if m.row >= geo.chat.y && m.row < geo.chat.y + geo.chat.height && m.column < geo.chat.x + geo.chat.width
+    if m.row >= geo.chat.y
+        && m.row < geo.chat.y + geo.chat.height
+        && m.column < geo.chat.x + geo.chat.width
     {
         app.focus = app::Focus::Composer;
     }

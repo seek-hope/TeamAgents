@@ -93,6 +93,14 @@ fn dump_frame(app: &mut App, name: &str) {
     if std::env::var("TEAMAGENTS_DUMP_SETTINGS").is_ok() {
         app.settings_open = true;
     }
+    if let Ok(pointer) = std::env::var("TEAMAGENTS_DUMP_POINTER") {
+        if let Some((row, col)) = pointer.split_once(',') {
+            app.pointer = Some((row.parse().unwrap_or(0), col.parse().unwrap_or(0)));
+        }
+    }
+    if let Ok(text) = std::env::var("TEAMAGENTS_DUMP_COMPOSER") {
+        app.composer.set_text(&text);
+    }
     if let Ok(lang) = std::env::var("TEAMAGENTS_DUMP_LANG") {
         app.lang = if lang == "zh-CN" { "zh-CN" } else { "en" };
     }
@@ -501,4 +509,125 @@ fn ascii_frame_has_no_cjk_leaks() {
             cjk.iter().collect::<String>()
         );
     }
+}
+
+#[test]
+fn slash_command_menu_lists_navigates_and_runs() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut app = parity_app();
+    app.composer.set_text("/");
+    let matches = app.slash_matches();
+    assert_eq!(matches.len(), teamagents_tui::app::SLASH_COMMANDS.len(), "typing / lists every command");
+    assert!(app.slash_open());
+
+    // narrowing by prefix + keyboard navigation
+    app.composer.set_text("/s");
+    assert_eq!(app.slash_matches().len(), 1);
+    assert_eq!(app.slash_matches()[0].name, "/settings");
+    app.composer.set_text("/");
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(app.slash_index, 1);
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert_eq!(app.slash_index, 0);
+
+    // Tab completes the highlighted command
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    assert_eq!(app.composer.text(), app.slash_selected().unwrap().name);
+
+    // Esc closes the menu without touching the text
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(!app.slash_open(), "Esc dismisses the menu");
+    assert!(app.composer.text().starts_with('/'));
+
+    // Enter runs the highlighted command
+    app.composer.set_text("/set");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.settings_open, "/settings ran from the menu");
+    assert_eq!(app.composer.text(), "");
+
+    // /quit is a real command too
+    let mut app = parity_app();
+    app.composer.set_text("/quit");
+    let effects = app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(effects.iter().any(|e| matches!(e, teamagents_tui::app::Effect::Quit)));
+
+    // the menu renders above the composer
+    let mut app = parity_app();
+    app.composer.set_text("/");
+    let backend = TestBackend::new(120, 36);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| ui::render(f, &mut app)).unwrap();
+    let text = frame_text(terminal.backend().buffer());
+    assert!(text.contains("Commands"), "menu title missing");
+    assert!(text.contains("/settings") && text.contains("settings overlay"), "menu entries missing");
+}
+
+#[test]
+fn tab_click_hits_the_tab_under_the_pointer() {
+    let mut app = parity_app();
+    let backend = TestBackend::new(120, 30);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| ui::render(f, &mut app)).unwrap();
+    let text = frame_text(terminal.backend().buffer());
+    let tabs_line = text
+        .split('\n')
+        .find(|l| l.contains("▍Team"))
+        .expect("tab strip");
+    // every tab label maps back to its own index, including tabs after a badge
+    // NOTE: str::find returns a byte offset; the hit-test works in display columns
+    let column_of = |needle: &str| -> u16 {
+        let bytes = tabs_line.find(needle).expect("needle");
+        tabs_line[..bytes].chars().count() as u16
+    };
+    for (index, label) in ["Team", "Tasks", "Shared", "Approvals", "Sessions", "Log"].iter().enumerate() {
+        let marked = format!("▍{label}");
+        let col = if tabs_line.contains(&marked) { column_of(&marked) } else { column_of(label) };
+        let hit = ui::tab_at(&app, 1, 118, col);
+        assert_eq!(hit, Some(index), "clicking {label} selected {hit:?}");
+    }
+    // a click on the badge still belongs to that tab
+    let badge_col = column_of("Tasks 2") + 6;
+    assert_eq!(ui::tab_at(&app, 1, 118, badge_col), Some(1));
+}
+
+#[test]
+fn hover_highlights_the_tab_under_the_pointer() {
+    use ratatui::style::Color;
+    let mut app = parity_app();
+    let backend = TestBackend::new(120, 30);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| ui::render(f, &mut app)).unwrap();
+    let tab_y = app.tab_row;
+    let sessions_col = frame_text(terminal.backend().buffer())
+        .split('\n')
+        .find(|l| l.contains("▍Team"))
+        .and_then(|l| l.find("Sessions"))
+        .expect("sessions tab") as u16;
+    app.pointer = Some((tab_y, sessions_col));
+    terminal.draw(|f| ui::render(f, &mut app)).unwrap();
+    let buffer = terminal.backend().buffer();
+    let cell = &buffer[(sessions_col, tab_y)];
+    assert_eq!(cell.style().bg, Some(Color::Rgb(0x3a, 0x3a, 0x3a)), "hover surface missing");
+    assert_eq!(cell.style().fg, Some(Color::Rgb(0xff, 0xff, 0xff)), "hover text missing");
+    // moving the pointer away clears it
+    app.pointer = Some((0, 0));
+    terminal.draw(|f| ui::render(f, &mut app)).unwrap();
+    let cell = &terminal.backend().buffer()[(sessions_col, tab_y)];
+    assert_ne!(cell.style().bg, Some(Color::Rgb(0x3a, 0x3a, 0x3a)));
+}
+
+#[test]
+fn animations_switch_actually_changes_the_spinner() {
+    use teamagents_tui::app::{activity_status, RunInfo};
+    let run = RunInfo {
+        run_id: "r".into(),
+        agent_id: "leader".into(),
+        status: "RUNNING".into(),
+        task_id: None,
+        created_at: 0.0,
+    };
+    let (animated, _) = activity_status("en", true, 3, "RUNNING", Some(&run));
+    let (static_, _) = activity_status("en", false, 3, "RUNNING", Some(&run));
+    assert_ne!(animated, static_, "the switch has a visible effect");
+    assert!(static_.starts_with('●'), "disabled animations freeze the spinner: {static_}");
 }

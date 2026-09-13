@@ -123,14 +123,32 @@ def main() -> int:
     rows = screen.lines()
     ok = any("▌beta" in l for l in rows)
     selected = next((l for l in rows if "▌" in l), "")
+    if not ok:
+        os.write(fd, b"\x11")
+        time.sleep(0.5)
+        os.kill(pid, 9)
+        print("FAIL: the click did not select the row it pointed at")
+        return 1
+
+    # click a tab: the panel must switch to the one under the pointer
+    rows = screen.lines()
+    tabs_row = next((i for i, l in enumerate(rows) if "▍Team" in l or ("Team" in l and "Tasks" in l)), None)
+    ok_tab = False
+    if tabs_row is not None:
+        line = rows[tabs_row]
+        col = line.index("Log")
+        os.write(fd, f"\x1b[<0;{col + 1};{tabs_row + 1}M\x1b[<0;{col + 1};{tabs_row + 1}m".encode())
+        screen.feed(read_all(fd, 1.5).decode("utf-8", "replace"))
+        rows = screen.lines()
+        ok_tab = any("▍Log" in l for l in rows)
     os.write(fd, b"\x11")
     time.sleep(0.5)
     os.kill(pid, 9)
     print(f"clicked row {target} (beta); selection now: {selected.strip()[:60]!r}")
-    if not ok:
-        print("FAIL: the click did not select the row it pointed at")
+    print("clicked the Log tab:", "switched" if ok_tab else "FAILED")
+    if not ok_tab:
         return 1
-    print("PTY click check ok: clicked row == selected row")
+    print("PTY click check ok: row click == selection, tab click == panel")
     return 0
 
 
