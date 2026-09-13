@@ -5,56 +5,52 @@
 - `TeamAgents-Implementation-Plan.zh-CN.md` 是产品与实现的基准（P0–P7、T1–T24、DP-1..12）。
 - **任何与方案不同的实现（更简单或更好的方案）必须先告知用户并得到确认，才可写进代码。**
   已确认的偏离记录在 `docs/DECISIONS.md`；未确认的只讨论，不落码。
-- 阶段的完成条件是方案 §16 的「完成条件」，不能把后续阶段降级为「之后再做」。
+- 本仓库现在**只有 Rust 实现**：Python 原版已在迁移完成后移除（历史保留在 git；`review/`
+  与 `docs/RECONSTRUCT.md` 里出现的 `src/teamagents/...`、`tests/test_*.py` 均为历史引用）。
+- 不要再引入 Node/TypeScript（D-17）或 Python 实现代码；`tui/scripts/*.py` 只是真终端测试工具。
 
 ## 快速命令
 
 ```bash
-UV_CACHE_DIR=/tmp/uv-cache uv sync            # 依赖（uv.lock 已锁定）
-.venv/bin/python -m pytest tests/ -q          # 全部验收测试
-.venv/bin/python -m teamagents doctor         # 依赖/配置/隔离/Codex 协议自检
-```
-
-### reconstruct 分支（全 Rust 版；TS 层已全量移植，不要再引入 Node 依赖）
-
-```bash
-cd core   && cargo test        # 权威核心（models/storage/control/views/server）
-cd engine && cargo test        # 引擎（runtime/gateway/runners/tools/CLI/worker 协议）
-cd tui    && cargo test        # ratatui TUI（逻辑 + TestBackend 帧）
+cd core   && cargo test --offline    # 权威核心（models/storage/control/views/server）
+cd engine && cargo test --offline    # 引擎（runtime/chat/gateway/codex/tools/CLI/worker）
+cd tui    && cargo test --offline    # ratatui TUI（逻辑 + TestBackend 帧）
 engine/target/debug/teamagents {doctor,validate,sessions,version,--plain}   # 入口
-python3 tui/scripts/pty_smoke.py                                          # 真终端冒烟
+python3 tui/scripts/pty_smoke.py         # 真终端冒烟
+python3 tui/scripts/pty_click_check.py   # 真终端点击命中检查
 ```
 
-验收对标 `src/teamagents/`（main 分支的 Python 实现）；移植取舍见 docs/DECISIONS.md
-D-15/D-16/D-17 与 docs/RECONSTRUCT.md。
+- 当前基线：core 38 / engine 67 / tui 55 项测试全绿。验收清单 `docs/ACCEPTANCE.md`，
+  迁移台账与未移植项 `docs/RECONSTRUCT.md`，决策记录 `docs/DECISIONS.md`。
 
 ## 架构速览（改代码前先读这 6 行）
 
-- 唯一团队事务入口：`control.py::Control.submit`（ingest→validate→reduce→schedule→persist，单个 SQLite 事务）
-- 权威状态：`storage.py`（SQLite，WAL，动作去重回执、事件序列、投递批次确认）
-- 执行：`runtime.py`（asyncio，成员独立回合；`QUEUED` TurnRun = 持久化执行意图）
-- 工具/权限唯一入口：`agents.py::ToolGateway` → `permissions.py`（批准/全自动）
-- 信息权限：`views.py`（`audience` 可见 ≠ `push` 注入；观察者按 scope 裁剪载荷）
-- 验收测试按场景编号：`tests/test_t*.py`、`tests/test_p*_*.py`，假成员脚本驱动（`agents.py::FakeMember`）
+- 唯一团队事务入口：`core/src/control.rs::Control::submit`（ingest→validate→reduce→schedule→persist，
+  单个 SQLite 事务；错误向上传播，不再 `let _ =` 吞掉）
+- 权威状态：`core/src/storage.rs`（SQLite，WAL，动作去重回执、事件序列、投递批次账本、`expire_approval`）
+- 执行：`engine/src/runtime.rs`（线程化回合循环；`QUEUED` TurnRun = 持久化执行意图；超时会中断成员）
+- 工具/权限唯一入口：`engine/src/gateway.rs::ToolGateway`（批准/全自动；web/MCP 工具执行层 fail-closed）
+- 信息权限：`core/src/views.rs`（`audience` 可见 ≠ `push` 注入；观察者按 scope 裁剪载荷）
+- 产品层：`engine/src/{session,worker,cli}.rs`（会话服务、`serve` 协议、CLI）；TUI 的 `ui::geometry`
+  是渲染与鼠标命中的唯一几何来源（不要再在别处重算行号/列号）
 
-## 代码审查（review/*）工作区备忘
+## 代码审查与证据（review/*）
 
-- 文件工具与 shell 的挂载视图**每个会话可能不同，动手前先核实**。实测两种映射：(a) 文件工具 `/**` = 资源仓库根（`/src`、`/tests`、`/review`、`/tmp` 均落在 repo 下；写 `/tmp/foo` 实际生成 `<repo>/tmp/foo`，shell 的 `/tmp` 与仓库 `/tmp` 不是同一目录）；(b) 文件工具看到的 `/home/rimuru/Projects/Code/for_fun/TeamAgents/**` 是共享 review 空间（物理 `<repo>/home/rimuru/Projects/Code/for_fun/TeamAgents/**`）。写盘后一律用 shell `ls` 核实真实路径。
-  - 此时**改 `src/`、`tests/` 必须用 shell**（heredoc + python 精确替换脚本、断言锚点唯一），文件工具会报 not found；改完用 shell `diff -u` 对仓库内备份自证。
-  - shell 的 `/tmp` **每次 shell 调用之间会被清空**（沙箱每次调用是新环境）：把"稍后要用的备份/副本"放 `/tmp` 会失效；备份与证据一律放仓库内（如 `<repo>/.pre-fix-backup/`、`review/tmp/`），"改动→回退→再改回"的对比测试必须在**同一次 shell 调用**内完成（或从仓库内副本恢复）。
-- 报告写 `<repo>/home/rimuru/Projects/Code/for_fun/TeamAgents/review/findings-<域>.md`，探针脚本放同目录 `tmp/`；只读审查不得改被审文件（本仓库非 git 仓库，无法用 git status 自证）。
-- 汇总时以 `<repo>/review/` 为准（nested 副本出现后需合并；`review/REVIEW-REPORT.md` 为终稿）。
-- 审查回合模型步数有限：先跑确定性套件（`.venv/bin/python -m pytest tests/ -q`），**尽早**把报告骨架 + 已确认发现落盘，再补探针与其余章节。
-- 对抗性验证先核实再定级：把"疑似缺陷"实读代码复核（例：曾疑 `runners.py` 步数上限硬编码 50，实读为按 `limits.max_model_steps_per_turn` 读取，runners.py:540-543，且记于 D-10）；探针要能证伪自己的假设。
-  - 主副本在 `<repo>/review/`（findings/fix-notes/REVIEW-REPORT、exploit 型探针如 `review/tmp/exp_escape.py`、`repro_*.py`），file 工具路径的 `review/` 是镜像；发现文件只在镜像不见时，用 shell `cp` 从镜像同步回主副本。
-  - 修复批次 1 核对已完成（reviewer_verify）：6 项全部证实；报告 `review/fix-verify-report.md`、25 项探针 `review/tmp/verify_fix_batch1.py`（A1-E2，可复跑）。教训：探针前置条件（如目录不存在）会造成假「证伪」，报结论前先排除探针自身误差。
+- 现行审查报告：`review/findings-rust-review-2026-09-13.md`（发现+证据）、
+  `review/fix-notes-rust-review-2026-09-13.md`（修复台账+测试名）；更早的 `review/*` 是迁移期历史资料。
+- 只读审查不得修改被审文件；结论必须带可复跑的命令或探针（探针放 /tmp 或 `review/tmp/`），
+  报"证伪"前先排除探针自身误差。
 
 ## 团队运行操作备忘（实测）
 
-- **中断的任务会卡住整个目标**：成员回合被中断/超时后其任务落 `BLOCKED`；而 `COMPLETE_TASK` 只接受 PENDING/RUNNING（control.py:217）、只允许承接者提交 → BLOCKED 任务任何 Agent 都无法结清，唯一路径是用户侧 `CANCEL_TASK`（TUI 已有入口：任务面板选中按 `c`；BLOCKED 无活动回合，直接落 CANCELLED，验收见 tests/test_p6_tui_cancel_refresh.py A-03）。**避免中断成员回合**（步数/时限留足，或拆小任务）；重派任务时用新任务，旧 BLOCKED 任务用任务面板的 `c` 结清。
-- **RT-06 已修复**：回合进入终态（含被取消）时其 PENDING 批准自动置 EXPIRED（`control.expire_run_approvals`，在 `_finalize`/`_reconcile` 中调用；验收 tests/test_rt06_approval_expiry.py），`signal_done` 不再被残留批准卡住；个别残留仍可在批准面板 `d` 拒绝。
-- 派发审查这类"读很多、写报告"的重任务时：写明**尽早落盘**要求（模型步数上限会在半途掐断回合）。
-- **卡住目标的收尾清理（宿主机执行，已端到端验证并在真实会话上执行成功）**：`.venv/bin/python review/tmp/unblock_session.py --apply` 以 user 身份经 `Control.submit` 提交 `CANCEL_TASK` + `APPROVAL_DECISION(deny)`（自动定位含目标 id 的会话 DB；TUI 开着时亦可，WAL+busy_timeout；回执幂等）。取消任务会向 Leader 推 `task_cancelled` 并调度一次通知回合，该回合走完后完成阻塞项清空。验证：`review/tmp/verify_unblock_recipe.py`（live 连接 + 子进程执行），输出 `review/tmp/unblock-recipe-check.txt`。
+- **中断的任务会卡住整个目标**：成员回合被中断/超时后其任务落 `BLOCKED`；`COMPLETE_TASK`
+  只接受 PENDING/RUNNING 且只允许承接者提交 → BLOCKED 任务任何 Agent 都无法结清，唯一路径是
+  用户侧 `CANCEL_TASK`（TUI 任务面板选中按 `c`，BLOCKED 无活动回合直接落 CANCELLED）。
+  **避免中断成员回合**（步数/时限留足，或拆小任务）；重派任务时用新任务。
+- **RT-06**：回合进入终态（含被取消）时其 PENDING 批准自动置 EXPIRED（`core/src/control.rs` 的
+  finalize/reconcile 路径），`signal_done` 不会被残留批准卡住；个别残留可在批准面板 `d` 拒绝。
+- 派发"读很多、写报告"的重任务时写明**尽早落盘**要求：模型步数上限
+  `limits.max_model_steps_per_turn` 会在半途结束回合（产生 `limit_reached` 事件）。
 
 ## 代码风格
 

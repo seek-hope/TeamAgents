@@ -476,3 +476,24 @@ tui 54（9 lib + 18 app + 27 render）全绿；PTY 冒烟与点击检查通过�
 6. web 工具策略层仍按 `web_` 前缀预授权（执行层已 fail-closed：未绑定必拒，但不会弹批准）。
 7. `/artifacts/` 只挂进文件工具：`ls`/`glob` 与 bwrap 内 shell 看不到（与 Python 基准一致）。
 8. MCP 的 http/sse 与 deepagents `general-purpose` 子代理仍未移植（既有台账项）。
+
+## D-22 Python 原版移除、main 指向 Rust 实现（2026-09-13）
+
+用户确认：`main` 用 Rust 版覆盖，仓库只保留 Rust 实现。
+
+1. **移除 Python 原版**：删除 `src/teamagents/`、`tests/`、`pyproject.toml`、`uv.lock`、
+   `dist/`（Python wheel/sdist）与 `examples/e2e_*.py`；同时清掉迁移期残留
+   （`.pre-fix-backup/`、`conversation_history/`、`large_tool_results/`、`home/`、
+   `tmp/probe_tui_mount.py`）。旧实现保留在 git 历史里：最后一个含 Python 的提交是
+   `ba1caed`（`git show ba1caed:src/teamagents/control.py` 等仍可查阅）。
+2. **测试自包含**：MCP 测试原先依赖 `.venv` 的 `mcp` 包与 `tests/mcp_echo_server.py`，
+   现改用仓库内 Rust 二进制 `engine/src/bin/fake-mcp-server.rs`（支持 `--noisy-stderr`），
+   `mcp_tools`/`mcp_stdio` 不再需要 Python 环境；`tui/scripts/*.py` 只是真终端测试工具。
+3. **两个尾巴修复**（对应 D-21 之前审查报告"未修复"清单的最后两项）：
+   - 聊天工具宣传改为按**解析后的 web 绑定**（`tools::web_tools`）：显式绑定名（如
+     `anysearch`）也会向模型暴露 `web_search`/`web_fetch`，且只暴露实际绑定的那种
+     （`ChatRunner::web_flags`）。
+   - 日志面板 `↑↓` 真正生效：在"全部 → 各成员 → 全部"之间循环筛选
+     （`App::cycle_log_member`），`Enter` 清除筛选，与面板提示及旧版语义一致。
+4. **验收（实跑）**：core 38 / engine 67 / tui 55 全绿；PTY 冒烟与点击检查通过。
+5. **分支状态**：`main` 与 `reconstruct` 指向同一提交（覆盖为快进，无历史丢失）。

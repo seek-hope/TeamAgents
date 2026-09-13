@@ -1397,11 +1397,19 @@ impl App {
                 return vec![];
             }
             KeyCode::Up => {
-                self.move_table_selection(-1);
+                if panel == "log" {
+                    self.cycle_log_member(-1);
+                } else {
+                    self.move_table_selection(-1);
+                }
                 return vec![];
             }
             KeyCode::Down => {
-                self.move_table_selection(1);
+                if panel == "log" {
+                    self.cycle_log_member(1);
+                } else {
+                    self.move_table_selection(1);
+                }
                 return vec![];
             }
             _ => {}
@@ -1410,6 +1418,9 @@ impl App {
         let (_, idx) = self.table_cursors.get(panel).cloned().unwrap_or((None, 0));
         let selected = rows.get(idx).cloned();
         match (panel, key.code) {
+            ("log", KeyCode::Enter) => {
+                self.log_member = None; // Enter clears the member filter (panels.py)
+            }
             ("team", KeyCode::Enter) => {
                 if selected.is_some() && self.log_member == selected {
                     self.log_member = None; // Enter on the highlighted member clears the filter
@@ -1488,6 +1499,19 @@ impl App {
             "sessions" => self.sessions_rows().into_iter().map(|(k, _)| k).collect(),
             _ => vec![],
         }
+    }
+
+    /// Log panel filter: ↑↓ walks "all → each member → all" (panels.py: the log
+    /// stream is filtered by the highlighted member; Enter clears the filter).
+    fn cycle_log_member(&mut self, delta: isize) {
+        let mut ring: Vec<Option<String>> = vec![None];
+        ring.extend(self.panel_row_keys("team").into_iter().map(Some));
+        if ring.len() <= 1 {
+            return;
+        }
+        let current = ring.iter().position(|member| *member == self.log_member).unwrap_or(0);
+        let next = (current as isize + delta).rem_euclid(ring.len() as isize) as usize;
+        self.log_member = ring[next].take();
     }
 
     fn find_task(&self, task_id: &str) -> Option<Json> {

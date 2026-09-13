@@ -1,7 +1,8 @@
-# 实施状态（2026-09-12）
+# 实施状态（2026-09-12，历史快照）
 
-> 本文描述 **main 分支的 Python 基准实现**（`src/teamagents/`，pytest 证据）。
-> Rust 重构版（`reconstruct` 分支）的进度、证据与未移植项见 `docs/RECONSTRUCT.md`。
+> **本文是迁移期 Python 基准实现的状态快照，保留作历史记录。**
+> Python 源码已从仓库移除；当前实现的进度、证据与未移植项见 `docs/RECONSTRUCT.md`，
+> 最近的全面审查见 `review/findings-rust-review-2026-09-13.md`。
 
 基准：`TeamAgents-Implementation-Plan.zh-CN.md`。偏离均记于 `docs/DECISIONS.md`。
 

@@ -334,8 +334,10 @@ fn make_runner_factory(
         };
         let agent_json = serde_json::to_value(agent).map_err(|e| e.to_string())?;
         let bound = crate::bound::BoundTools::load(&catalog, &agent.tool_bindings)?;
-        // a required web service that cannot load fails the member, not the call
-        crate::tools::validate_web_bindings(&catalog, &agent.tool_bindings)?;
+        // a required web service that cannot load fails the member, not the call;
+        // the resolved set is also what the model gets advertised, so an explicit
+        // binding name (anything but the literal "web") still exposes the tools
+        let web = crate::tools::web_tools(&catalog, &agent.tool_bindings)?;
         let context = member_context(&catalog, &cwd, &session_id, &agent.id);
         Ok(ChatRunner::new(
             &agent_json,
@@ -344,6 +346,7 @@ fn make_runner_factory(
             notify.clone(),
             bound,
             context,
+            (web.search.is_some(), web.fetch.is_some()),
         ))
     })
 }

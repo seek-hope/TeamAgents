@@ -440,3 +440,24 @@ fn tab_enters_the_panel_from_any_tab() {
         assert_eq!(app.focus, Focus::Panel, "Tab must enter the {name} panel");
     }
 }
+
+#[test]
+fn log_panel_up_down_cycle_the_member_filter() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use teamagents_tui::app::{Focus, PANELS};
+    let mut app = app_with(state(vec![])); // team: leader, worker
+    app.panel = PANELS.iter().position(|p| *p == "log").unwrap();
+    app.focus = Focus::Panel;
+    let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+
+    app.handle_key(key(KeyCode::Down));
+    assert_eq!(app.log_member.as_deref(), Some("leader"), "Down starts at the first member");
+    app.handle_key(key(KeyCode::Down));
+    assert_eq!(app.log_member.as_deref(), Some("worker"));
+    app.handle_key(key(KeyCode::Down));
+    assert_eq!(app.log_member, None, "Down wraps back to the unfiltered stream");
+    app.handle_key(key(KeyCode::Up));
+    assert_eq!(app.log_member.as_deref(), Some("worker"), "Up wraps to the last member");
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(app.log_member, None, "Enter clears the filter");
+}

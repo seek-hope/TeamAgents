@@ -238,7 +238,7 @@ DENIED → 拒绝；EXPIRED → 重新请求。
 |---|---|---|
 | core `cargo test --offline` | 14 | **38** |
 | engine `cargo test --offline` | 42 | **67** |
-| tui `cargo test --offline` | 40 | **54** |
+| tui `cargo test --offline` | 40 | **55** |
 | PTY 冒烟 / 点击检查 | — | 通过 |
 | 真实模型冒烟（DeepSeek `--plain`，`/tmp/ta-live`） | — | 通过（goal_done + 回复） |
 | `teamagents doctor` | — | 通过（bwrap 实跑、codex schema 99 方法） |
@@ -249,3 +249,7 @@ DENIED → 拒绝；EXPIRED → 重新请求。
 集成期补充修复（主流程直接改的跨域尾巴）：engine `runtime.rs` 的 7 处 `let _ =` 改为
 `core_best_effort`（失败打日志）；engine `gateway.rs::canonical_json` 分隔符对齐
 Python `json.dumps` 默认（新增 `operation_hash_matches_python_json_dumps` 向量测试）。
+
+收尾（2026-09-13 晚，见 D-22）：两个小尾巴修复 —— 聊天工具宣传按解析后的 web 绑定
+（显式绑定名也生效）、日志面板 ↑↓ 真正循环筛选成员；随后 Python 原版从工作树移除、
+`main` 覆盖为 Rust 实现（细节见 `docs/DECISIONS.md` D-22）。

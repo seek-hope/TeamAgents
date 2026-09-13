@@ -190,9 +190,10 @@ fn bound_tool_schemas() -> Json {
 }
 
 /// Which execution tools a member's bindings expose. `files`/`shell` are the
-/// built-ins; `web` unlocks the configured web bindings. Anything else is an
-/// MCP service the Rust port does not implement yet (not advertised).
-fn bound_tool_names(bindings: &[String]) -> Vec<&'static str> {
+/// built-ins; the web flags come from the resolved bindings (tools.rs web_tools),
+/// so explicit service names work too, not just the literal `web`. MCP tools are
+/// advertised from the bound tool set separately.
+fn bound_tool_names(bindings: &[String], web: (bool, bool)) -> Vec<&'static str> {
     let mut names: Vec<&'static str> = vec![];
     if bindings.iter().any(|b| b == "files") {
         names.extend(["ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep"]);
@@ -200,18 +201,21 @@ fn bound_tool_names(bindings: &[String]) -> Vec<&'static str> {
     if bindings.iter().any(|b| b == "shell") {
         names.push("shell");
     }
-    if bindings.iter().any(|b| b == "web") {
-        names.extend(["web_search", "web_fetch"]);
+    if web.0 {
+        names.push("web_search");
+    }
+    if web.1 {
+        names.push("web_fetch");
     }
     names
 }
 
-fn tools_payload(bindings: &[String], bound: &[Json]) -> Json {
+fn tools_payload(bindings: &[String], web: (bool, bool), bound: &[Json]) -> Json {
     let docs: HashMap<&str, &str> = TEAM_TOOL_DOCS.iter().chain(BOUND_TOOL_DOCS).copied().collect();
     let allowed: Vec<&str> = TEAM_TOOL_DOCS
         .iter()
         .map(|(name, _)| *name)
-        .chain(bound_tool_names(bindings))
+        .chain(bound_tool_names(bindings, web))
         .collect();
     let mut schemas = team_tool_schemas().as_array().cloned().unwrap_or_default();
     schemas.extend(bound_tool_schemas().as_array().cloned().unwrap_or_default());
@@ -264,6 +268,9 @@ pub struct ChatRunner {
     workdir: Option<String>,
     notify: Arc<Notify>,
     bound: crate::bound::BoundTools,
+    /// Resolved web capability (explicit binding names or the `web` umbrella).
+    has_web_search: bool,
+    has_web_fetch: bool,
     /// (label, content) pairs from skills/instruction files (session.py::_skills_and_memory)
     context: Vec<(String, String)>,
     /// Member conversation history survives a restart (USER-GUIDE §5).
@@ -286,6 +293,7 @@ impl ChatRunner {
         notify: Arc<Notify>,
         bound: crate::bound::BoundTools,
         context: Vec<(String, String)>,
+        web: (bool, bool),
     ) -> Arc<Self> {
         let agent_id = agent.get("id").and_then(|v| v.as_str()).unwrap_or("");
         let history_path = (!agent_id.is_empty()).then(|| {
@@ -301,6 +309,8 @@ impl ChatRunner {
             workdir,
             notify,
             bound,
+            has_web_search: web.0,
+            has_web_fetch: web.1,
             context,
             history_path,
             messages: Mutex::new(HashMap::new()),
@@ -361,6 +371,11 @@ impl ChatRunner {
         self.agent.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string()
     }
 
+    /// Whether the member's resolved bindings include each web tool.
+    fn web_flags(&self) -> (bool, bool) {
+        (self.has_web_search, self.has_web_fetch)
+    }
+
     fn system_prompt(&self) -> String {
         let name = self.agent.get("name").and_then(|v| v.as_str()).unwrap_or("member");
         let role = self.agent.get("role").and_then(|v| v.as_str()).unwrap_or("worker");
@@ -370,7 +385,7 @@ impl ChatRunner {
         } else {
             instructions.to_string()
         };
-        let allowed = bound_tool_names(&self.bindings());
+        let allowed = bound_tool_names(&self.bindings(), self.web_flags());
         let bound_docs = self.bound.docs();
         let tools = TEAM_TOOL_DOCS
             .iter()
@@ -600,7 +615,7 @@ impl ChatRunner {
         gateway: &ToolGateway,
         max_steps: i64,
     ) -> Result<String, (String, String)> {
-        let tools = tools_payload(&self.bindings(), &self.bound.schemas());
+        let tools = tools_payload(&self.bindings(), self.web_flags(), &self.bound.schemas());
         let agent_id = self.agent_id();
         // Python has two gates on the same budget: the tool-call executor in the
         // runtime and a model-request counter (runners.py TurnAgentMiddleware).
@@ -1001,8 +1016,8 @@ mod tests {
         // a plain new_input wake adds no wake block
         assert!(!render_view(&view, &json!({"reason": "new_input"}), None).contains("<wake"));
         // tool payload: team tools always, execution tools per binding
-        assert_eq!(tools_payload(&[], &[]).as_array().unwrap().len(), TEAM_TOOL_DOCS.len());
-        let bound = tools_payload(&["files".into(), "shell".into(), "web".into()], &[]);
+        assert_eq!(tools_payload(&[], (false, false), &[]).as_array().unwrap().len(), TEAM_TOOL_DOCS.len());
+        let bound = tools_payload(&["files".into(), "shell".into(), "web".into()], (true, true), &[]);
         let names: Vec<&str> = bound
             .as_array()
             .unwrap()
@@ -1012,6 +1027,17 @@ mod tests {
         for expected in ["read_file", "shell", "web_search", "web_fetch", "signal_done"] {
             assert!(names.contains(&expected), "{expected} missing from {names:?}");
         }
+        // an explicit binding name (not the literal "web") advertises its tools:
+        // the flags come from tools.rs::web_tools over the real catalog
+        let explicit = tools_payload(&["anysearch".into()], (true, false), &[]);
+        let names: Vec<&str> = explicit
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t.pointer("/function/name").and_then(|v| v.as_str()))
+            .collect();
+        assert!(names.contains(&"web_search"), "explicit web binding missing from {names:?}");
+        assert!(!names.contains(&"web_fetch"), "only the bound kind is advertised: {names:?}");
         // a paused/interrupted batch never leaves an assistant tool_call unanswered
         let calls = vec![
             json!({"id": "c1", "type": "function", "function": {"name": "shell", "arguments": "{}"}}),
@@ -1027,7 +1053,7 @@ mod tests {
             .collect();
         assert_eq!(answered, vec!["c1", "c2"], "every tool_call must be answered exactly once");
 
-        let files_only = tools_payload(&["files".into()], &[]);
+        let files_only = tools_payload(&["files".into()], (false, false), &[]);
         let names: Vec<&str> = files_only
             .as_array()
             .unwrap()

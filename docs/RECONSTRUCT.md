@@ -1,7 +1,8 @@
-# TeamAgents Rust 重构（reconstruct 分支）
+# TeamAgents 实现说明（Rust）
 
-main 分支保留 Python 实现作为基准；本分支是**完整的 Rust 实现**（TypeScript 层已于
-2026-09-13 全部移植进 Rust 并删除，见 docs/DECISIONS.md D-17）。
+仓库现在**只保留 Rust 实现**：Python 原版在迁移完成后已从工作树移除（历史见 git，
+`git show ba1caed:src/teamagents/...` 可查阅），TypeScript 层更早已全量移植并删除（D-17）。
+本文中出现的 `src/teamagents/…`、`tests/test_*.py`、pytest 命令都是迁移期的历史引用。
 
 ## 架构划分
 
@@ -66,10 +67,9 @@ cd core   && cargo test      # 38（17 unit + 21 integration）：权威核心
 cd engine && cargo test      # 67（21 lib + 46 integration）：单测 + T1–T5/T9/T11–T13/T22 场景 +
                              #     取消/暂停 + 审批/全自动 + Codex 适配与合同 + worker 协议 +
                              #     CLI/doctor + bwrap + workspace + MCP + 崩溃恢复
-cd tui    && cargo test      # 54（9 lib + 18 app + 27 render）：TUI 逻辑 + 帧冒烟 + 外壳断言
+cd tui    && cargo test      # 55（9 lib + 19 app + 27 render）：TUI 逻辑 + 帧冒烟 + 外壳断言
 python3 tui/scripts/pty_smoke.py      # 真终端端到端冒烟（构建后）
 python3 tui/scripts/pty_click_check.py  # 真终端点击命中检查（滚动后行命中）
-python3 review/tmp/dump_py_frame.py /tmp/py.txt 110 32   # 参考：Python 帧（不再是验收门槛）
 cd engine && TEAMAGENTS_LIVE_CODEX=1 cargo test --test live_codex   # 真实 codex CLI 联调（可选）
 
 # 运行

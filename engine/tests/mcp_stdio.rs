@@ -2,62 +2,27 @@
 //! handshake, and server processes must not inherit the engine's environment
 //! (findings 3/4).
 
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use teamagents_engine::mcp::McpClient;
 
-fn scratch(tag: &str) -> PathBuf {
+fn scratch(tag: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("ta-mcp-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
 
-fn python3() -> Option<String> {
-    std::process::Command::new("python3")
-        .args(["-c", "print(1)"])
-        .output()
-        .ok()
-        .filter(|out| out.status.success())
-        .map(|_| "python3".to_string())
-}
-
 /// finding 3: the server's stderr is not a pipe nobody drains. 70_000 bytes is
 /// past the 64KiB pipe capacity for a stdio server that never got to its reply.
 #[test]
 fn noisy_stderr_does_not_block_the_handshake() {
-    let Some(python) = python3() else {
-        eprintln!("skip: python3 is not available");
-        return;
-    };
-    let dir = scratch("noisy");
-    let script = dir.join("noisy_server.py");
-    std::fs::write(
-        &script,
-        r#"
-import json, sys
-sys.stderr.write("x" * 70000)
-sys.stderr.flush()
-def send(o):
-    sys.stdout.write(json.dumps(o) + "\n"); sys.stdout.flush()
-for line in sys.stdin:
-    line = line.strip()
-    if not line: continue
-    try: msg = json.loads(line)
-    except Exception: continue
-    if msg.get("method") == "initialize":
-        send({"jsonrpc": "2.0", "id": msg["id"], "result": {"protocolVersion": "2025-06-18",
-              "capabilities": {}, "serverInfo": {"name": "noisy", "version": "0"}}})
-    elif "id" in msg:
-        send({"jsonrpc": "2.0", "id": msg["id"], "result": {"tools": [{"name": "echo", "inputSchema": {"type": "object"}}]}})
-"#,
-    )
-    .unwrap();
+    let server = env!("CARGO_BIN_EXE_fake-mcp-server");
+    let noisy = vec!["--noisy-stderr".to_string(), "70000".to_string()];
 
     let (tx, rx) = std::sync::mpsc::channel();
     let started = Instant::now();
     std::thread::spawn(move || {
-        let result = McpClient::connect_stdio(&python, &[script.to_string_lossy().into_owned()], &[])
+        let result = McpClient::connect_stdio(server, &noisy, &[])
             .and_then(|client| {
                 let tools = client.tools()?;
                 client.close();
@@ -73,16 +38,11 @@ for line in sys.stdin:
         Ok(Err(e)) => panic!("handshake failed: {e}"),
         Err(_) => panic!("handshake still blocked after 10s: the server's stderr is not drained"),
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// finding 4: only the SDK's safe variables (plus binding.env) reach the child.
 #[test]
 fn server_environment_is_whitelisted() {
-    let Some(_python) = python3() else {
-        eprintln!("skip: python3 is not available");
-        return;
-    };
     let dir = scratch("env");
     let dump = dir.join("env.txt");
     std::env::set_var("TA_MCP_SENTINEL_KEY", "sk-should-never-leak");

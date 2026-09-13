@@ -2,11 +2,11 @@
 
 ## 0. 版本适用性（先读）
 
-本文档同时覆盖两个实现；标 ⚠ 的条目是 **Python（main）版专有**且 Rust 重构版
-（`reconstruct` 分支，入口 `engine/target/debug/teamagents`）尚未移植的少数项
-（其余能力两版均已实现），遇到时按“Rust 版差异”一列处理。
+仓库现在只有 Rust 实现（入口 `engine/target/debug/teamagents`）；Python 版已归档到 git 历史。
+下表左列是**旧 Python 版**、右列是当前 Rust 实现；标 ⚠ 的是旧版专有、当前尚未移植的少数项
+（其余能力均已实现）。
 
-| 能力 | Python（main） | Rust（reconstruct 分支） |
+| 能力 | 旧 Python 版（已归档） | Rust（当前实现） |
 |---|---|---|
 | 用户配置 TOML | ✅ | ✅（`models`/`tools`/`skills_paths`/`instruction_files`；其余段落忽略） |
 | 项目配置 `.teamagents/config.toml` | ✅ | ✅（同名用户定义优先；项目工具需 `[permissions] trust_project_tools = true`） |
@@ -19,7 +19,7 @@
 | `workspace_policy` | shared / isolated / git_worktree | ✅ 三者齐全（worktree 复用、脏仓库回退 shared 并说明、未合并成果拒绝清理；删除会话同样受保护） |
 | 会话锁 | flock | flock（`File::try_lock`；kill -9 自动回收，文件里的 pid 仅作诊断） |
 | TeamSpec 导入 | JSON / YAML | JSON / YAML（`--team` 与 `validate` 均可） |
-| TUI | Textual | ratatui（面板与键位一致，见文末键位表） |
+| TUI | Textual | ratatui（Rust 原生设计：固定上下分区、六页签、`/settings` 浮层；键位见文末） |
 | deepagents 子代理 / 图框架 | ✅ | ⚠ 未移植（`ChatRunner` 工具循环取代；`general-purpose` 子代理没有等价物） |
 
 ## 1. 配置
@@ -237,6 +237,7 @@ TUI 里同一件事在「会话」面板完成（`Tab` 把焦点移入管理面�
 | 批准队列 | Ctrl+G |
 | 请求停止 Leader | Esc；成员的其他工作继续 |
 | 滚动对话 / 日志 | PgUp/PgDn 或 Ctrl+U/Ctrl+D（任何焦点下都滚动：团队等面板滚对话、日志面板滚日志），滚轮同样可用；Ctrl+Home/Ctrl+End 跳到最早/最新 |
+| 日志成员筛选 | 日志面板聚焦时 ↑↓ 循环"全部 → 各成员 → 全部"，Enter 清除筛选；在团队面板高亮成员同样筛选日志 |
 | 按词编辑 | Ctrl+W 或 Alt+Backspace 删词；Ctrl+←/Ctrl+→ 按词移动光标 |
 
 原生成员在模型/工具边界响应停止。已经执行中的工具要先返回，界面显示停止请求；超过确认时限会显示结果不明，不承诺回滚文件或外部操作。

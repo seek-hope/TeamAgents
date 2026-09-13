@@ -4,9 +4,10 @@
 协调多个成员（内置 Deep Agents 成员 + 本机 Codex 执行成员）完成目标。
 团队结构、通信权限、观察权限都是**运行时校验的数据**，不是提示词约定。
 
-**本分支（`reconstruct`）= 全 Rust 实现**：`core/`（权威核心）、`engine/`（运行时/成员/CLI）、
-`tui/`（ratatui 界面）。main 分支是 Python 基准实现，`src/teamagents/` 在本分支保留供对照。
-基准文档：`TeamAgents-Implementation-Plan.zh-CN.md`；进度台账 `docs/RECONSTRUCT.md`；
+**全 Rust 实现**：`core/`（权威核心）、`engine/`（运行时/成员/CLI）、`tui/`（ratatui 界面）。
+Python 原版在迁移完成后已从仓库移除，只保留在 git 历史里（最后一个含 Python 实现的提交是
+`ba1caed`：`git show ba1caed:src/teamagents/control.py` 之类的路径仍可查阅）。
+基准文档：`TeamAgents-Implementation-Plan.zh-CN.md`；迁移台账 `docs/RECONSTRUCT.md`；
 设计决策 `docs/DECISIONS.md`。
 
 ---
@@ -35,8 +36,8 @@ export ANYSEARCH_API_KEY=...     # 可选：web_search / web_fetch
 读取用户配置 `$XDG_CONFIG_HOME/teamagents/config.toml`，并合并项目配置
 `<cwd>/.teamagents/config.toml`（同名条目用户定义优先；项目工具绑定需
 `[permissions] trust_project_tools = true`）。MCP（stdio）与 Skills/指令文件均已支持：
-Skills 走提示词注入（非 Python 的虚拟文件系统），MCP 仅 stdio（无 http/sse）。
-两版差异全表见 `docs/USER-GUIDE.md` §0。
+Skills 走提示词注入（不是虚拟文件系统），MCP 仅 stdio（无 http/sse）。
+与旧 Python 版的全部差异见 `docs/USER-GUIDE.md` §0 与 `docs/DECISIONS.md` D-21。
 
 ### 3) 自检并进入界面
 
@@ -73,7 +74,7 @@ cd core   && cargo test        # 38（17 unit + 21 integration）：权威核心
 cd engine && cargo test        # 67（21 lib + 46 integration）：运行时 + T1–T5/T9/T11–T13/T22 场景 +
                                #     取消/暂停 + 审批/全自动 + Codex 适配与合同 + worker 协议 +
                                #     CLI/doctor + bwrap 沙箱 + workspace + MCP + 崩溃恢复
-cd tui    && cargo test        # 54（9 lib + 18 app + 27 render）：TUI 逻辑 + TestBackend 帧冒烟
+cd tui    && cargo test        # 55（9 lib + 19 app + 27 render）：TUI 逻辑 + TestBackend 帧冒烟
 python3 tui/scripts/pty_smoke.py                        # 真终端端到端冒烟（先构建）
 cd engine && TEAMAGENTS_LIVE_CODEX=1 cargo test --test live_codex   # 真实 codex CLI 联调（可选）
 ```
@@ -89,44 +90,26 @@ printf '1+1 等于几？直接回答，然后 signal_done。\n' | \
 engine/target/debug/teamagents --team examples/team.yaml
 ```
 
-`examples/config.toml` 给出模型 profile 与工具绑定样例；`examples/e2e_*.py` 是 Python 版的
-端到端示例（见下节）。
+`examples/config.toml` 给出模型 profile 与工具绑定样例；`examples/team.yaml` 是可直接运行的
+TeamSpec 示例。
 
 ## 文档地图
 
 | 文档 | 内容 | 适用版本 |
 |---|---|---|
 | `docs/RECONSTRUCT.md` | Rust 重构架构、移植台账、未移植项、快速命令 | Rust（本分支） |
-| `docs/DECISIONS.md` | 全部已确认决策（D-1..D-21），含移植取舍与审查保留项（D-21） | 两版 |
-| `docs/USER-GUIDE.md` | 配置、权限、恢复、故障处理、TeamSpec；§0 列出 Rust 版差异 | 两版（有标注） |
-| `docs/ACCEPTANCE.md` | T1–T24 验收对照；末尾给出 Rust 版证据映射 | 两版（有标注） |
-| `docs/STATUS.md` | P0–P7 阶段状态（Python 基准） | main（Python） |
+| `docs/DECISIONS.md` | 全部已确认决策（D-1..D-22），含迁移取舍、审查修复批次与保留差异 | Rust |
+| `docs/USER-GUIDE.md` | 配置、权限、恢复、故障处理、TeamSpec；§0 列出与旧 Python 版的差异 | Rust |
+| `docs/ACCEPTANCE.md` | T1–T24 验收对照；证据以 Rust 测试为主（Python 侧为历史证据） | Rust |
+| `docs/STATUS.md` | P0–P7 阶段状态（迁移期 Python 基准的历史快照） | 历史 |
 | `TeamAgents-Implementation-Plan.zh-CN.md` | 产品与实现基准 | 两版 |
 
 ---
 
-## Python 版（main 分支基准，本分支保留对照）
+## 迁移历史
 
-安装与使用（需要 Python ≥ 3.12、`uv`）：
-
-```bash
-uv venv && uv pip install -e .            # 或: pip install .
-cp examples/config.toml ~/.config/teamagents/config.toml
-.venv/bin/python -m teamagents doctor
-.venv/bin/python -m teamagents --cwd /path/to/project     # Textual TUI
-.venv/bin/python -m teamagents --plain                    # 行式 REPL
-.venv/bin/python -m teamagents validate examples/team.yaml
-```
-
-两版主要能力已对齐；Rust 版仍保留的差异（完整清单见 `docs/DECISIONS.md` D-21）：
-MCP 仅支持 stdio 传输（http/sse 未实现）、Skills 走提示词注入而非虚拟文件系统、
-没有 deepagents 的 `general-purpose` 子代理、TUI 为 Rust 原生设计而非 Textual 像素复刻。
-
-```bash
-.venv/bin/python -m pytest tests/ -q            # 确定性套件（脚本化成员）
-.venv/bin/python -m pytest tests/ -q -m live    # 真实服务套件（需要密钥/本机 codex）
-DEEPSEEK_API_KEY=... python examples/e2e_project_fix.py     # 项目修改并测试
-DEEPSEEK_API_KEY=... ANYSEARCH_API_KEY=... python examples/e2e_research.py "问题"
-```
-
-更多：`docs/USER-GUIDE.md`（配置、权限、恢复、故障处理）、`docs/ACCEPTANCE.md`（验收对照表）。
+Python 实现（`src/teamagents/`、`tests/`、`pyproject.toml`）完成对照使命后已删除：Rust 三 crate
+通过全部验收场景，`review/findings-rust-review-2026-09-13.md` 与 `review/fix-notes-rust-review-2026-09-13.md`
+记录了最后一轮全面审查与修复。需要旧实现时用 git 查阅（例如 `git show ba1caed:src/teamagents/control.py`）。
+仍与旧版存在的行为差异集中在 `docs/DECISIONS.md` D-21（MCP http/sse 与 `general-purpose`
+子代理未移植等）。

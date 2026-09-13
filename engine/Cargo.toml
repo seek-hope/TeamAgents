@@ -25,3 +25,7 @@ path = "src/main.rs"
 [[bin]]
 name = "fake-codex"
 path = "src/bin/fake-codex.rs"
+
+[[bin]]
+name = "fake-mcp-server"
+path = "src/bin/fake-mcp-server.rs"

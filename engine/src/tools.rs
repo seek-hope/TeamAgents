@@ -183,9 +183,9 @@ pub fn workspace_executor(
 /// (tools.py::build_bound_tools): a member that did not bind a web service has
 /// no web tool, and the executor says so instead of failing open.
 #[derive(Default, Clone)]
-struct WebTools {
-    search: Option<teamagents_core::models::ToolBinding>,
-    fetch: Option<teamagents_core::models::ToolBinding>,
+pub(crate) struct WebTools {
+    pub(crate) search: Option<teamagents_core::models::ToolBinding>,
+    pub(crate) fetch: Option<teamagents_core::models::ToolBinding>,
 }
 
 fn is_web_kind(kind: &str) -> bool {
@@ -195,7 +195,7 @@ fn is_web_kind(kind: &str) -> bool {
 /// Resolve the member's web bindings: explicitly bound names win, in binding
 /// order, then `web` expands to every configured web binding. The catalog is a
 /// HashMap (unstable order), so the expansion is sorted by name.
-fn web_tools(
+pub(crate) fn web_tools(
     catalog: &teamagents_core::models::UserConfig,
     bindings: &[String],
 ) -> Result<WebTools, String> {

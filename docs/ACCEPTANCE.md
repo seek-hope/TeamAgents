@@ -1,7 +1,8 @@
 # 验收对照表（T1–T24）
 
-> 表格主体是 **main 分支 Python 基准实现**的验收证据（`pytest tests/ -q` 确定性套件、
-> `-m live` 真实服务套件）。**Rust 重构版（`reconstruct` 分支）的对照见文末**。
+> 表格主体是**迁移期 Python 基准实现**的验收证据（`pytest tests/ -q` 确定性套件、`-m live`
+> 真实服务套件）；Python 源码已从仓库移除，这些用例作为历史证据保留。
+> **当前实现的验收证据以 Rust 测试为准，对照见文末**。
 
 基准：方案 §17。**skip 不计入通过**：Anthropic / GLM / OpenAI 官方
 三家在缺少有效密钥时显式 skip，相关用例已就绪，导出密钥即可跑。

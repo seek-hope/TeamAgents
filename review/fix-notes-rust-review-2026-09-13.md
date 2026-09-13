@@ -8,7 +8,7 @@
 |---|---|---|
 | core `cargo test --offline` | 14 | **38**（17 unit + 21 integration） |
 | engine `cargo test --offline` | 42 | **67**（21 lib + 46 integration） |
-| tui `cargo test --offline` | 40 | **54**（9 lib + 18 app + 27 render；集成期补 Tab 可达性修复与测试） |
+| tui `cargo test --offline` | 40 | **55**（9 lib + 19 app + 27 render；集成期补 Tab 可达性、日志面板成员筛选） |
 | PTY `tui/scripts/pty_smoke.py` / `pty_click_check.py` | — | 通过（含粘贴近 composer、滚动后点击命中、页签点击） |
 | 真实模型冒烟（DeepSeek，`--plain`） | — | 通过（goal_done + Leader 回复） |
 

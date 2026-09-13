@@ -163,6 +163,7 @@ fn chat_runner(core: &Arc<CoreClient>, agent: &Json, profile: ModelProfile, work
         Notify::new(core.clone()),
         bound,
         vec![],
+        (false, false),
     )
 }
 
