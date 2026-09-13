@@ -110,8 +110,9 @@ cp examples/config.toml ~/.config/teamagents/config.toml
 .venv/bin/python -m teamagents validate examples/team.yaml
 ```
 
-Python 版额外特性（Rust 版尚未移植，见 `docs/RECONSTRUCT.md`）：项目内 `.teamagents/config.toml`、
-MCP 工具服务、Skills/AGENTS.md 注入、`git_worktree` 工作目录策略、deepagents 子代理。
+两版能力已经对齐，Rust 版仍有以下已知差异（见 `docs/RECONSTRUCT.md` / `docs/DECISIONS.md`）：
+MCP 仅支持 stdio 传输（http/sse 未实现）、Skills 走提示词注入而非虚拟文件系统、
+没有 deepagents 的 `general-purpose` 子代理、TUI 不画 Textual 的滚动条字形。
 
 ```bash
 .venv/bin/python -m pytest tests/ -q            # 确定性套件（脚本化成员）
