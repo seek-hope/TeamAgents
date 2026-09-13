@@ -1,6 +1,6 @@
 //! teamagents-tui: ratatui front-end for TeamAgents (visual parity with the
 //! Textual TUI on main). The UI is a pure client: execution lives in the
-//! headless TS worker (tui-worker.ts), state in teamagents-core.
+//! headless engine (`teamagents serve`), authoritative state in the core.
 
 use std::io::Write;
 use std::sync::mpsc::channel;
@@ -26,25 +26,51 @@ struct Args {
     resume: Option<String>,
     full_auto: bool,
     team: Option<String>,
-    worker_ts: String,
-    core_bin: String,
+    engine_bin: String,
 }
 
 fn usage() -> ! {
     eprintln!("teamagents-tui [--cwd DIR] [--resume ID] [--full-auto] [--team SPEC.json]");
-    eprintln!("  env: TEAMAGENTS_WORKER (tui-worker.ts path), TEAMAGENTS_CORE (core binary)");
+    eprintln!("  env: TEAMAGENTS_ENGINE (teamagents binary), --engine PATH");
     std::process::exit(2);
 }
 
-fn repo_root_from_exe() -> Option<std::path::PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    // <repo>/tui/target/{debug,release}/teamagents-tui
-    for anc in exe.ancestors() {
-        if anc.join("ts/src/tui-worker.ts").exists() {
-            return Some(anc.to_path_buf());
+/// Locate the engine binary: --engine, TEAMAGENTS_ENGINE, a sibling of this
+/// executable, the repo's engine/target/{release,debug}/teamagents, then PATH.
+fn find_engine_binary(explicit: Option<String>) -> String {
+    if let Some(path) = explicit {
+        return path;
+    }
+    if let Some(path) = std::env::var_os("TEAMAGENTS_ENGINE").filter(|v| !v.is_empty()) {
+        return path.to_string_lossy().into_owned();
+    }
+    let exe = std::env::current_exe().ok();
+    if let Some(dir) = exe.as_ref().and_then(|p| p.parent()) {
+        let sibling = dir.join("teamagents");
+        if sibling.exists() {
+            return sibling.to_string_lossy().into_owned();
         }
     }
-    None
+    let mut roots: Vec<std::path::PathBuf> = vec![];
+    if let Ok(cwd) = std::env::current_dir() {
+        roots.push(cwd);
+    }
+    if let Some(exe) = &exe {
+        roots.extend(exe.ancestors().map(std::path::Path::to_path_buf));
+    }
+    for root in roots {
+        for candidate in [
+            root.join("engine/target/release/teamagents"),
+            root.join("engine/target/debug/teamagents"),
+            root.join("target/release/teamagents"),
+            root.join("target/debug/teamagents"),
+        ] {
+            if candidate.exists() {
+                return candidate.to_string_lossy().into_owned();
+            }
+        }
+    }
+    "teamagents".to_string()
 }
 
 fn parse_args() -> Args {
@@ -53,25 +79,14 @@ fn parse_args() -> Args {
         resume: None,
         full_auto: false,
         team: None,
-        worker_ts: String::new(),
-        core_bin: String::new(),
+        engine_bin: String::new(),
     };
-    let repo = repo_root_from_exe()
-        .or_else(|| {
-            let cwd = std::env::current_dir().ok()?;
-            for anc in cwd.ancestors() {
-                if anc.join("ts/src/tui-worker.ts").exists() {
-                    return Some(anc.to_path_buf());
-                }
-            }
-            None
-        })
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
     let takes_value = |a: &mut Args, i: usize, argv: &[String]| -> usize {
         // value flags consume the next argument
         let _ = a;
         if i + 1 < argv.len() { 2 } else { 1 }
     };
+    let mut engine_flag: Option<String> = None;
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
     while i < argv.len() {
@@ -80,27 +95,12 @@ fn parse_args() -> Args {
             "--resume" => { a.resume = argv.get(i + 1).cloned(); takes_value(&mut a, i, &argv) }
             "--full-auto" => { a.full_auto = true; 1 }
             "--team" => { a.team = argv.get(i + 1).cloned(); takes_value(&mut a, i, &argv) }
-            "--worker" => { a.worker_ts = argv.get(i + 1).cloned().unwrap_or_default(); takes_value(&mut a, i, &argv) }
-            "--core" => { a.core_bin = argv.get(i + 1).cloned().unwrap_or_default(); takes_value(&mut a, i, &argv) }
+            "--engine" => { engine_flag = argv.get(i + 1).cloned(); takes_value(&mut a, i, &argv) }
             _ => usage(),
         };
         i += step;
     }
-    if a.worker_ts.is_empty() {
-        a.worker_ts = std::env::var("TEAMAGENTS_WORKER")
-            .unwrap_or_else(|_| repo.join("ts/src/tui-worker.ts").to_string_lossy().into_owned());
-    }
-    if a.core_bin.is_empty() {
-        a.core_bin = std::env::var("TEAMAGENTS_CORE").unwrap_or_else(|_| {
-            let debug = repo.join("core/target/debug/teamagents-core");
-            let release = repo.join("core/target/release/teamagents-core");
-            if release.exists() && !debug.exists() {
-                release.to_string_lossy().into_owned()
-            } else {
-                debug.to_string_lossy().into_owned()
-            }
-        });
-    }
+    a.engine_bin = find_engine_binary(engine_flag);
     a
 }
 
@@ -110,10 +110,10 @@ fn main() {
         eprintln!("TUI 需要真实终端；哑终端请用 --plain (TS CLI)");
         std::process::exit(1);
     }
-    let worker = match Worker::spawn(&args.worker_ts) {
+    let worker = match Worker::spawn(&args.engine_bin) {
         Ok(w) => Arc::new(w),
         Err(e) => {
-            eprintln!("无法启动 worker (node {}): {e}", args.worker_ts);
+            eprintln!("无法启动引擎 ({} serve): {e}", args.engine_bin);
             std::process::exit(1);
         }
     };
@@ -124,7 +124,6 @@ fn main() {
             "resume": args.resume,
             "fullAuto": args.full_auto,
             "team": args.team,
-            "coreBin": args.core_bin,
         }),
     );
     let opened = match opened {

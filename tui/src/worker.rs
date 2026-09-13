@@ -1,6 +1,6 @@
-//! Client for the tui-worker.ts stdio JSON-lines service.
-//! Same shape as ts/src/core-client.ts: one request per line, id-matched
-//! responses, plus unsolicited {"push": ...} messages forwarded to the UI.
+//! Client for the engine's `serve` stdio JSON-lines service (teamagents
+//! engine, src/worker.rs): one request per line, id-matched responses, plus
+//! unsolicited {"push": ...} messages forwarded to the UI.
 
 use serde_json::{json, Value as Json};
 use std::collections::HashMap;
@@ -27,10 +27,11 @@ pub struct Worker {
 }
 
 impl Worker {
-    /// Spawn `node <worker_ts>`; stderr is inherited so runtime errors surface.
-    pub fn spawn(worker_ts: &str) -> std::io::Result<Worker> {
-        let mut child = Command::new("node")
-            .arg(worker_ts)
+    /// Spawn the engine worker (`teamagents serve`); stderr is inherited so
+    /// runtime errors surface in the terminal.
+    pub fn spawn(engine_bin: &str) -> std::io::Result<Worker> {
+        let mut child = Command::new(engine_bin)
+            .arg("serve")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()?;

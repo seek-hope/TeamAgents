@@ -1,0 +1,26 @@
+[package]
+name = "teamagents-engine"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+teamagents-core = { path = "../core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+ureq = { version = "2", features = ["json"] }
+toml = "0.8"
+uuid = { version = "1", features = ["v4"] }
+sha2 = "0.10"
+
+[lib]
+name = "teamagents_engine"
+path = "src/lib.rs"
+
+[[bin]]
+name = "teamagents"
+path = "src/main.rs"
+
+[[bin]]
+name = "fake-codex"
+path = "src/bin/fake-codex.rs"

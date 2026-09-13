@@ -71,29 +71,32 @@ DEEPSEEK_API_KEY=... python examples/e2e_data_cleanup.py   # 文件/数据整理
 
 ---
 
-## TS+Rust 重构版（本分支）
+## Rust 重构版（本分支，全 Rust）
 
-Python 原版见 `src/teamagents/`（main 分支为基准）。本分支为 TypeScript+Rust 重构：
+Python 原版见 `src/teamagents/`（main 分支为基准）。本分支是**完整的 Rust 实现**：
 
 - `core/`（Rust）：权威核心——TeamSpec 模型与校验、SQLite 存储（DDL 与 Python 逐字一致）、
   Control 事务管线（validate/reduce/schedule/finalize）、信息权限（views）。
-  对外是 stdio 换行 JSON 服务 `teamagents-core`。
-- `ts/`（TypeScript，零运行时依赖，Node ≥26）：运行时循环、ToolGateway/审批、
-  成员后端（`ChatRunner` LLM 工具循环、`CodexRunner` app-server）、工具执行器、
-  CLI、`tui-worker.ts`（供 Rust TUI 的无头会话服务）与 Ink 备用 TUI。
+  对外是 stdio 换行 JSON 服务 `teamagents-core`，也可被 engine 直接进程内调用。
+- `engine/`（Rust）：产品层——运行时会话循环（运行时循环/取消/暂停/收敛）、
+  ToolGateway 与审批、成员后端（`ChatRunner` LLM 工具循环、`CodexRunner` app-server）、
+  沙箱工具执行器（bwrap/文件工具/SSRF 防护的抓取）、会话清单与锁、CLI。
+  二进制 `teamagents` 同时是 CLI、TUI 启动器与 TUI 的无头会话服务（`serve`）。
 - `tui/`（Rust + ratatui/crossterm，与 Codex CLI 同框架）：主 TUI，逐像素复现
   main 分支 Textual 界面（七面板/活动行/流式预览/作曲家/页脚键位，中英双语与偏好、
-  历史持久化一致）。UI 是纯客户端：执行经 stdio JSON-lines 走 `tui-worker.ts`，
+  历史持久化一致）。UI 是纯客户端：执行经 stdio JSON-lines 走 `teamagents serve`，
   权威状态在 teamagents-core。
 
 ```bash
-cd core && cargo build && cargo test     # Rust 核心
-cd tui && cargo build && cargo test      # Rust TUI（逻辑 + TestBackend 帧冒烟）
-cd ts && node --test test/               # TS 全部测试（T1–T5/T9、取消/暂停、Codex 适配、worker）
-node ts/src/cli.ts doctor                # 自检
-node ts/src/cli.ts                       # TUI（默认 Rust ratatui；--ink 回退 Ink）
-node ts/src/cli.ts --plain               # 行模式 REPL
-python3 tui/scripts/pty_smoke.py         # 真终端 PTY 冒烟（需先构建 tui/ 与 core/）
+cd core   && cargo build && cargo test     # 权威核心
+cd engine && cargo build && cargo test     # 引擎（CLI + 运行时 + 成员后端）
+cd tui    && cargo build && cargo test     # TUI（逻辑 + TestBackend 帧冒烟）
+
+engine/target/debug/teamagents doctor            # 自检
+engine/target/debug/teamagents                   # TUI（自动寻找 tui/target/*/teamagents-tui）
+engine/target/debug/teamagents --plain           # 行模式 REPL
+python3 tui/scripts/pty_smoke.py                 # 真终端 PTY 冒烟（需先构建 tui/ 与 engine/）
+cd engine && TEAMAGENTS_LIVE_CODEX=1 cargo test --test live_codex   # 真实 codex app-server 联调（可选）
 ```
 
-进度台账与取舍：docs/RECONSTRUCT.md；决策：docs/DECISIONS.md（D-15）。
+进度台账与取舍：docs/RECONSTRUCT.md；决策：docs/DECISIONS.md（D-15/D-16/D-17）。

@@ -197,3 +197,33 @@ Deep Agents 的 `permissions` 只覆盖其内置文件工具，不约束 Shell/M
   6. `node ts/src/cli.ts` 默认启动 Rust TUI（tui/target/{release,debug}），`--ink` 回退。
   7. 键盘焦点模型：composer 默认；Tab/点击进表格、Ctrl+N 回 composer、Ctrl+G 直达批准
      （Textual 的焦点链在 ratatui 里没有对应物，这是最小等价物）。
+
+## D-17 重构收尾：TypeScript 层全部移植进 Rust（reconstruct 分支，2026-09-13）
+
+- 背景：用户要求「完成 TeamAgents 的 Rust 重构」。D-15/D-16 之后仍剩 TS 编排层
+  （runtime/gateway/runners/tools/config/sessions/CLI/tui-worker）；本轮把它整体移植为
+  Rust 并删除 TS 与 Node 依赖。
+- 决策：
+  1. 新增 `engine/` crate（lib + 二进制 `teamagents`）：runtime、gateway、成员后端、
+     工具执行器、config、sessions、CLI、worker 协议全部 Rust。
+  2. core 的 stdio 方法分发下沉为 `core::server::Server`（lib）：`teamagents-core` 二进制与
+     engine 共用同一份实现，engine 直接进程内调用（不再有第二条 JSON 通道）。
+  3. 二进制 `teamagents` 身兼三职：CLI（doctor/validate/sessions/version/--plain）、
+     TUI 启动器（spawn `tui/target/*/teamagents-tui`，并注入 `TEAMAGENTS_ENGINE`）、
+     `serve`（TUI 的无头会话服务，与原 `tui-worker.ts` 协议逐字兼容）。
+  4. 运行模型：asyncio → 线程。回合执行、取消确认、超时各用一个线程；进程内 core 用
+     `Mutex<Server>` 串行化（SQLite 单写者）。`Runtime::close` 不再等待在飞回合
+     （TS 版会等整段模型调用，导致退出/切会话卡住）；留下的 RUNNING 回合由下次启动的
+     `reconcile`（RT-04）收敛。
+  5. 会话锁：pid 文件 + `/proc/<pid>` 存活检查（Python 用 flock），语义等价，
+     不引入 libc 绑定。
+  6. 修两个移植版共有的缺陷：① `ChatRunner` 缺 `base_url` 时一律打 api.openai.com——
+     现按 provider/protocol 解析默认端点（deepseek → api.deepseek.com/v1），与 providers.py
+     对齐；② 权限模式切换（TUI Ctrl+F / set_permission_mode）不生效——审批门现在每次
+     check 前从会话行同步 mode，用户开全自动立即生效。为此 core 增加只读方法
+     `session_mode`（与 D-16 的 `shared_entries` 同类）。
+  7. 删除 `ts/`、根 `package.json`/`package-lock.json`/`node_modules` 与 Ink 备用 TUI；
+     仓库运行时不再依赖 Node。
+- 验证：core 14 项、engine 24 项（含 T1–T5/T9、取消/暂停、full-auto、Codex 适配、
+  worker 协议、CLI）、tui 11 项全绿；真终端 PTY 冒烟通过；真实 DeepSeek 回合
+  （--plain，goal_done）与真实 `codex app-server` 回合（engine/tests/live_codex.rs）实测通过。

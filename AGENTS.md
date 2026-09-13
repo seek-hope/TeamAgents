@@ -15,6 +15,19 @@ UV_CACHE_DIR=/tmp/uv-cache uv sync            # 依赖（uv.lock 已锁定）
 .venv/bin/python -m teamagents doctor         # 依赖/配置/隔离/Codex 协议自检
 ```
 
+### reconstruct 分支（全 Rust 版；TS 层已全量移植，不要再引入 Node 依赖）
+
+```bash
+cd core   && cargo test        # 权威核心（models/storage/control/views/server）
+cd engine && cargo test        # 引擎（runtime/gateway/runners/tools/CLI/worker 协议）
+cd tui    && cargo test        # ratatui TUI（逻辑 + TestBackend 帧）
+engine/target/debug/teamagents {doctor,validate,sessions,version,--plain}   # 入口
+python3 tui/scripts/pty_smoke.py                                          # 真终端冒烟
+```
+
+验收对标 `src/teamagents/`（main 分支的 Python 实现）；移植取舍见 docs/DECISIONS.md
+D-15/D-16/D-17 与 docs/RECONSTRUCT.md。
+
 ## 架构速览（改代码前先读这 6 行）
 
 - 唯一团队事务入口：`control.py::Control.submit`（ingest→validate→reduce→schedule→persist，单个 SQLite 事务）

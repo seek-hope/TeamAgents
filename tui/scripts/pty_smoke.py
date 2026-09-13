@@ -3,7 +3,7 @@
 message, cycles panels, quits. Asserts on what lands on the screen.
 
 Usage: XDG_STATE_HOME=/tmp/ta-pty python3 tui/scripts/pty_smoke.py
-Requires: built tui + core binaries, node on PATH.
+Requires: built tui + engine binaries (tui/target/... and engine/target/...).
 """
 import fcntl, os, pty, termios, re, select, struct, subprocess, sys, time
 
