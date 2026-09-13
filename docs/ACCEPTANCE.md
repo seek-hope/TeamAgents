@@ -50,7 +50,7 @@
 
 ---
 
-## Rust 重构版（`reconstruct` 分支）对照
+## 当前 Rust 实现对照
 
 证据一律是可运行的：`cd core|engine|tui && cargo test`、`python3 tui/scripts/pty_smoke.py`、
 `python3 tui/scripts/pty_click_check.py`、`cd engine && TEAMAGENTS_LIVE_CODEX=1 cargo test --test live_codex`。
