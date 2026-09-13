@@ -173,7 +173,7 @@ fn full_frame_shows_all_regions() {
     assert!(text.contains("on it"), "leader text missing");
     // composer: title (Leader state/profile), prompt, hint
     assert!(text.contains("Leader / leader_main"), "composer title missing");
-    assert!(text.contains("Enter send · Shift+Enter newline"), "hint missing");
+    assert!(text.contains("Enter send"), "composer hint missing from the box border");
     // activity line: status chips + the latest-activity text
     assert!(text.contains("Ready"), "activity missing");
     assert!(text.contains("Waiting for input"), "latest activity missing");
@@ -338,25 +338,30 @@ fn sidebar_sizes_to_content_and_keeps_one_tab_row() {
     assert!(wide > narrow, "sidebar follows the content and the space: {wide} vs {narrow}");
     assert!(150 - wide as usize >= 44, "the chat keeps a usable share");
 
-    // the tab bar is a single row even when it cannot fit: the settings pane
-    // only needs 46 columns, so the strip has to window around the active tab
+    // the tab bar never wraps: it either fits or windows around the active tab
     app.focus = Focus::Panel;
-    app.panel = 6; // settings
-    assert!(ui::sidebar_width(&app, 120) < 58, "narrow strip case");
+    app.panel = 6; // settings (a narrow pane)
     let backend = TestBackend::new(120, 30);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| ui::render(f, &mut app)).unwrap();
     let text = frame_text(terminal.backend().buffer());
-    let lines: Vec<&str> = text.split('\n').collect();
-    let tab_rows: Vec<usize> = lines
-        .iter()
+    let tab_rows: Vec<usize> = text
+        .split('\n')
         .enumerate()
-        .filter(|(_, l)| l.contains("▍Team") || l.contains("Sessions") && l.contains("Log"))
+        .filter(|(_, l)| l.contains("▍Settings"))
         .map(|(i, _)| i)
         .collect();
     assert_eq!(tab_rows.len(), 1, "one tab row only: {tab_rows:?}");
-    assert!(lines[tab_rows[0]].contains('‹') || lines[tab_rows[0]].contains('›'),
-            "hidden tabs are marked: {:?}", lines[tab_rows[0]]);
+
+    // windowing itself: a tight budget keeps the active tab and marks the edges
+    let widths = [6usize, 8, 9, 12, 9, 4, 9];
+    assert_eq!(ui::tab_window(&widths, 6, 100), (0, 6), "everything fits");
+    let (lo, hi) = ui::tab_window(&widths, 6, 20);
+    assert_eq!(hi, 6, "the active tab is always shown");
+    assert!(lo > 0, "older tabs are dropped first");
+    let (lo, hi) = ui::tab_window(&widths, 0, 20);
+    assert_eq!(lo, 0);
+    assert!(hi < 6);
 }
 
 #[test]

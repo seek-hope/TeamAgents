@@ -450,15 +450,21 @@ fn run_effect(e: Effect, worker: &Arc<Worker>, app: &mut App, bg: &std::sync::mp
 }
 
 fn handle_mouse(m: event::MouseEvent, terminal: &Terminal<CrosstermBackend<std::io::Stdout>>, app: &mut App) {
-    let area = terminal.size().unwrap_or(ratatui::layout::Size { width: 80, height: 24 });
-    // wheel scrolls whichever pane the pointer is over
+    let size = terminal.size().unwrap_or(ratatui::layout::Size { width: 80, height: 24 });
+    let area = ratatui::layout::Rect { x: 0, y: 0, width: size.width, height: size.height };
+    let geo = ui::geometry(app, area);
+    let on_side = |row: u16, col: u16| -> bool {
+        col >= geo.side.x
+            && col < geo.side.x + geo.side.width
+            && row >= geo.side.y
+            && row < geo.side.y + geo.side.height
+    };
     match m.kind {
         MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
-            let (side, _chat) = layout_rects(app, area);
-            let over_side = m.column >= side.x && m.column < side.x + side.width && m.row >= side.y;
-            if over_side && !matches!(app::PANELS[app.panel], "log" | "settings") {
+            let up = m.kind == MouseEventKind::ScrollUp;
+            if on_side(m.row, m.column) && !matches!(app::PANELS[app.panel], "log" | "settings") {
                 // the wheel drives the table cursor, exactly like ↑/↓
-                let code = if m.kind == MouseEventKind::ScrollUp {
+                let code = if up {
                     crossterm::event::KeyCode::Up
                 } else {
                     crossterm::event::KeyCode::Down
@@ -467,7 +473,7 @@ fn handle_mouse(m: event::MouseEvent, terminal: &Terminal<CrosstermBackend<std::
                     code,
                     crossterm::event::KeyModifiers::NONE,
                 ));
-            } else if m.kind == MouseEventKind::ScrollUp {
+            } else if up {
                 app.scroll_up(3);
             } else {
                 app.scroll_down(3);
@@ -477,15 +483,10 @@ fn handle_mouse(m: event::MouseEvent, terminal: &Terminal<CrosstermBackend<std::
         MouseEventKind::Down(event::MouseButton::Left) => {}
         _ => return,
     }
-    let (side, chat) = layout_rects(app, area);
-    let in_side = m.column >= side.x
-        && m.column < side.x + side.width
-        && m.row >= side.y
-        && m.row < side.y + side.height;
-    if in_side {
-        // the tab strip is the first inner row of the sidebar box
-        if m.row == side.y + 1 {
-            let mut x = side.x + 1;
+
+    if on_side(m.row, m.column) {
+        if m.row == geo.tabs_y {
+            let mut x = geo.side.x + 1;
             for i in 0..app::PANELS.len() {
                 let label = app::panel_tab_label(app.lang, i);
                 let badge = app.tab_badge(i);
@@ -501,49 +502,16 @@ fn handle_mouse(m: event::MouseEvent, terminal: &Terminal<CrosstermBackend<std::
             }
             return;
         }
-        // rows start below the tab strip, its rule, the header and its rule
-        let first_row = side.y + 4;
-        if m.row >= first_row {
+        if m.row >= geo.rows_y {
             app.focus = app::Focus::Panel;
-            let view = (side.y + side.height).saturating_sub(2 + first_row) as usize;
-            app.select_row_visible((m.row - first_row) as usize, view);
+            let view = (geo.side.y + geo.side.height)
+                .saturating_sub(1 + geo.rows_y) as usize;
+            app.select_row_visible((m.row - geo.rows_y) as usize, view);
         }
         return;
     }
-    let in_chat = m.column >= chat.x && m.column < chat.x + chat.width && m.row >= chat.y;
-    if in_chat {
+    if m.row >= geo.chat.y && m.row < geo.chat.y + geo.chat.height && m.column < geo.chat.x + geo.chat.width
+    {
         app.focus = app::Focus::Composer;
-    }
-}
-
-/// Body geometry for the current terminal size (mirrors ui::render_body).
-fn layout_rects(app: &App, area: ratatui::layout::Size) -> (ratatui::layout::Rect, ratatui::layout::Rect) {
-    let body = ratatui::layout::Rect {
-        x: 0,
-        y: 1,
-        width: area.width,
-        height: area.height.saturating_sub(2),
-    };
-    if body.width >= app::WIDE_LAYOUT_MIN && body.height >= 12 {
-        let side_w = ui::sidebar_width(app, body.width);
-        let side = ratatui::layout::Rect {
-            x: body.x + body.width - side_w,
-            width: side_w,
-            ..body
-        };
-        let chat = ratatui::layout::Rect {
-            width: body.width.saturating_sub(side_w + 1),
-            ..body
-        };
-        (side, chat)
-    } else {
-        let side_h = ((body.height as usize) * 2 / 5).max(6).min(body.height as usize) as u16;
-        let side = ratatui::layout::Rect { height: side_h, ..body };
-        let chat = ratatui::layout::Rect {
-            y: body.y + side_h,
-            height: body.height.saturating_sub(side_h),
-            ..body
-        };
-        (side, chat)
     }
 }

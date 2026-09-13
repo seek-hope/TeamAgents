@@ -201,14 +201,79 @@ impl JoinSpans for Vec<Span<'static>> {
 //   body: wide → chat | sidebar(box)      narrow → sidebar(box) over chat
 //   footer(1)  dim keys, focus label on the right
 
+/// One source of truth for the shell's rectangles, shared by the renderer and
+/// the mouse hit-test (duplicated math is what put clicks one row off).
+#[derive(Clone, Copy, Debug)]
+pub struct Geometry {
+    pub wide: bool,
+    /// status line: inside the chat column in the wide layout, full width when stacked
+    pub status: Rect,
+    /// chat area (without the status line)
+    pub chat: Rect,
+    /// the sidebar box, top border included
+    pub side: Rect,
+    pub footer: Rect,
+    /// first row of the tab strip (inside the box)
+    pub tabs_y: u16,
+    /// first data row of the panel table
+    pub rows_y: u16,
+}
+
+pub fn geometry(app: &App, area: Rect) -> Geometry {
+    let footer = Rect { y: area.height.saturating_sub(1), height: 1, ..area };
+    let body = Rect { height: area.height.saturating_sub(1), ..area };
+    let wide = body.width >= WIDE_LAYOUT_MIN && body.height >= 14;
+    if wide {
+        let side_w = sidebar_width(app, body.width);
+        let side = Rect {
+            x: body.x + body.width - side_w,
+            width: side_w,
+            ..body
+        };
+        let chat = Rect {
+            width: body.width.saturating_sub(side_w + 1),
+            ..body
+        };
+        Geometry {
+            wide,
+            status: Rect { height: 1, ..chat },
+            chat: Rect { y: chat.y + 1, height: chat.height.saturating_sub(1), ..chat },
+            side,
+            footer,
+            tabs_y: side.y + 1,
+            rows_y: side.y + 5,
+        }
+    } else {
+        let status = Rect { height: 1, ..body };
+        let stacked = Rect { y: body.y + 1, height: body.height.saturating_sub(1), ..body };
+        let side_h = ((stacked.height as usize) * 2 / 5).max(6).min(stacked.height as usize) as u16;
+        let side = Rect { height: side_h, ..stacked };
+        let chat = Rect {
+            y: stacked.y + side_h,
+            height: stacked.height.saturating_sub(side_h),
+            ..stacked
+        };
+        Geometry { wide, status, chat, side, footer, tabs_y: side.y + 1, rows_y: side.y + 5 }
+    }
+}
+
 pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     frame.render_widget(ratatui::widgets::Clear, area);
-    let root = Layout::vertical([Constraint::Length(1), Constraint::Fill(1), Constraint::Length(1)]).split(area);
-    render_status(frame, app, root[0]);
-    render_body(frame, app, root[1]);
-    render_footer(frame, app, root[2]);
-    render_toasts(frame, app, root[0]);
+    let geo = geometry(app, area);
+    render_status(frame, app, geo.status);
+    render_chat(frame, app, geo.chat);
+    if geo.wide {
+        frame.render_widget(
+            ratatui::widgets::Block::default()
+                .borders(ratatui::widgets::Borders::LEFT)
+                .border_style(Style::default().fg(PANEL_BG)),
+            Rect { x: geo.chat.x + geo.chat.width, width: 1, ..geo.side },
+        );
+    }
+    render_sidebar(frame, app, geo.side);
+    render_footer(frame, app, geo.footer);
+    render_toasts(frame, app, geo.status);
 }
 
 fn chip(text: &str, fg: ratatui::style::Color, bg: Option<ratatui::style::Color>) -> Span<'static> {
@@ -233,8 +298,8 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
         .and_then(|s| s.pointer("/session/session_id"))
         .and_then(|v| v.as_str())
         .unwrap_or("-");
-    let mut left: Vec<Span> = vec![
-        Span::styled("TeamAgents", Style::default().fg(FG).add_modifier(Modifier::BOLD)),
+    let mut spans: Vec<Span> = vec![
+        Span::styled(" TeamAgents", Style::default().fg(FG).add_modifier(Modifier::BOLD)),
         Span::styled(format!("  {session}"), Style::default().fg(GREY)),
     ];
     let paused = app
@@ -244,22 +309,22 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
         .and_then(|v| v.as_str())
         .map(|status| status == "PAUSED")
         .unwrap_or(false);
-    if paused {
-        left.push(Span::raw(" "));
-        left.push(chip(&tr(app.lang, "已暂停", &[]), BG, Some(WARNING)));
-    }
-
-    let mut right: Vec<Span> = vec![];
     let mode = app
         .state
         .as_ref()
         .and_then(|s| s.pointer("/session/permissions_mode"))
         .and_then(|v| v.as_str())
         .unwrap_or("approved_scope");
+
+    // chips in priority order; anything that does not fit is dropped (never clipped)
+    let mut chips: Vec<Span> = vec![];
     if mode == "full_auto" {
-        right.push(chip(&tr(app.lang, "全自动", &[]), FG, Some(ACCENT)));
+        chips.push(chip(&tr(app.lang, "全自动", &[]), FG, Some(ACCENT)));
     } else {
-        right.push(chip(&tr(app.lang, "预授权", &[]), GREY, Some(PANEL_BG)));
+        chips.push(chip(&tr(app.lang, "预授权", &[]), GREY, Some(PANEL_BG)));
+    }
+    if paused {
+        chips.push(chip(&tr(app.lang, "已暂停", &[]), BG, Some(WARNING)));
     }
     let approvals = app
         .state
@@ -269,9 +334,8 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
         .map(|a| a.len())
         .unwrap_or(0);
     if approvals > 0 {
-        right.push(Span::raw(" "));
         let count = approvals.to_string();
-        right.push(chip(
+        chips.push(chip(
             &format!("⚠ {}", app.t("待批准 {count}", &[("count", &count)])),
             BG,
             Some(WARNING),
@@ -295,48 +359,23 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
         })
         .unwrap_or(0);
     if open_tasks > 0 {
-        right.push(Span::raw(" "));
         let count = open_tasks.to_string();
-        right.push(chip(
+        chips.push(chip(
             &format!("▸ {}", app.t("未完成任务 {count}", &[("count", &count)])),
             FG,
             Some(PANEL_BG),
         ));
     }
-    right.push(Span::raw(" "));
-
-    let width = area.width as usize;
-    let left_w: usize = left.iter().map(|s| UnicodeWidthStr::width(s.content.as_ref())).sum();
-    let right_w: usize = right.iter().map(|s| UnicodeWidthStr::width(s.content.as_ref())).sum();
-    let mut spans = left;
-    spans.push(Span::raw(" ".repeat(width.saturating_sub(left_w + right_w))));
-    spans.extend(right);
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
-}
-
-fn render_body(frame: &mut Frame, app: &mut App, area: Rect) {
-    if area.width >= WIDE_LAYOUT_MIN && area.height >= 12 {
-        let side_w = sidebar_width(app, area.width);
-        let split = Layout::horizontal([
-            Constraint::Fill(1),
-            Constraint::Length(1),
-            Constraint::Length(side_w),
-        ])
-        .split(area);
-        render_chat(frame, app, split[0]);
-        frame.render_widget(
-            ratatui::widgets::Block::default()
-                .borders(ratatui::widgets::Borders::LEFT)
-                .border_style(Style::default().fg(PANEL_BG)),
-            split[1],
-        );
-        render_sidebar(frame, app, split[2]);
-    } else {
-        let side_h = ((area.height as usize) * 2 / 5).max(6).min(area.height as usize) as u16;
-        let split = Layout::vertical([Constraint::Length(side_h), Constraint::Fill(1)]).split(area);
-        render_sidebar(frame, app, split[0]);
-        render_chat(frame, app, split[1]);
+    let mut used: usize = spans.iter().map(|s| UnicodeWidthStr::width(s.content.as_ref())).sum();
+    for c in chips {
+        let w = UnicodeWidthStr::width(c.content.as_ref());
+        if used + w > area.width as usize {
+            break;
+        }
+        used += w;
+        spans.push(c);
     }
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 /// Public form used by the mouse hit-test in main.rs.
@@ -384,6 +423,34 @@ fn tab_badge(app: &App, panel: &str) -> Option<String> {
     } else {
         Some(count.to_string())
     }
+}
+
+/// Visible tab range for a strip that cannot fit: the active tab is always
+/// included, neighbours fill the budget outward, and the cut edges get markers
+/// (the caller prints ‹ / › from the returned bounds).
+pub fn tab_window(widths: &[usize], active: usize, budget: usize) -> (usize, usize) {
+    if widths.is_empty() {
+        return (0, 0);
+    }
+    let active = active.min(widths.len() - 1);
+    let (mut lo, mut hi) = (active, active);
+    let mut used = widths[active];
+    loop {
+        let left = lo.checked_sub(1).map(|i| widths[i] + 1);
+        let right = if hi + 1 < widths.len() { Some(widths[hi + 1] + 1) } else { None };
+        match (left, right) {
+            (Some(l), _) if used + l <= budget => {
+                lo -= 1;
+                used += l;
+            }
+            (_, Some(r)) if used + r <= budget => {
+                hi += 1;
+                used += r;
+            }
+            _ => break,
+        }
+    }
+    (lo, hi)
 }
 
 fn render_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -439,23 +506,8 @@ fn render_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
     } else {
         // keep the active tab visible, fill outward, and mark the cut edges
         let budget = budget.saturating_sub(3); // leading space + two markers
-        let (mut lo, mut hi) = (app.panel, app.panel);
-        let mut used = pieces[app.panel].1;
-        loop {
-            let left = lo.checked_sub(1).map(|i| pieces[i].1 + 1);
-            let right = if hi + 1 < pieces.len() { Some(pieces[hi + 1].1 + 1) } else { None };
-            match (left, right) {
-                (Some(l), _) if used + l <= budget => {
-                    lo -= 1;
-                    used += l;
-                }
-                (_, Some(r)) if used + r <= budget => {
-                    hi += 1;
-                    used += r;
-                }
-                _ => break,
-            }
-        }
+        let widths: Vec<usize> = pieces.iter().map(|(_, w)| *w).collect();
+        let (lo, hi) = tab_window(&widths, app.panel, budget);
         if lo > 0 {
             shown.push(Span::styled("‹", Style::default().fg(ACCENT)));
         }
@@ -855,12 +907,13 @@ fn render_chat(frame: &mut Frame, app: &mut App, area: Rect) {
     let live_h = (live_lines.len() as u16 + 1).min(9);
     let composer_text_w = (area.width as usize).saturating_sub(5).max(1);
     let composer_h = app.composer.widget_height(composer_text_w) as u16;
+    // the key hint lives on the composer's bottom border, so the column ends
+    // exactly where the sidebar box does (their bottom borders line up)
     let chunks = Layout::vertical([
         Constraint::Length(2),          // activity chips + latest
         Constraint::Fill(1),            // chat log
         Constraint::Length(live_h),     // streaming preview
         Constraint::Length(composer_h), // composer box
-        Constraint::Length(1),          // hint
     ])
     .split(area);
 
@@ -909,19 +962,6 @@ fn render_chat(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 
     render_composer(frame, app, chunks[3]);
-
-    let hint = tr(
-        app.lang,
-        "Enter 发送 · Shift+Enter 换行 · ↑↓ 历史 · PgUp/PgDn 滚动 · Esc 停止 Leader",
-        &[],
-    );
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            format!(" {hint}"),
-            Style::default().fg(GREY),
-        ))),
-        chunks[4],
-    );
 }
 
 fn render_composer(frame: &mut Frame, app: &App, area: Rect) {
@@ -936,11 +976,34 @@ fn render_composer(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         title
     };
+    // the key hint rides the bottom border and drops parts that do not fit
+    let hint_parts = [
+        tr(app.lang, "Enter 发送", &[]),
+        tr(app.lang, "Shift+Enter 换行", &[]),
+        tr(app.lang, "↑↓ 历史", &[]),
+        tr(app.lang, "PgUp/PgDn 滚动", &[]),
+        tr(app.lang, "Esc 停止 Leader", &[]),
+    ];
+    let mut hint = String::new();
+    for (i, part) in hint_parts.iter().enumerate() {
+        let candidate = if hint.is_empty() { part.clone() } else { format!("{hint} · {part}") };
+        if UnicodeWidthStr::width(candidate.as_str()) + 6 > area.width as usize {
+            break;
+        }
+        hint = candidate;
+        let _ = i;
+    }
+    let hint: String = if hint.is_empty() { String::new() } else { format!(" {hint} ") };
     let block = ratatui::widgets::Block::default()
         .borders(ratatui::widgets::Borders::ALL)
         .border_type(ratatui::widgets::BorderType::Rounded)
         .title(Line::from(Span::styled(
             title,
+            Style::default().fg(GREY).add_modifier(Modifier::DIM),
+        )))
+        .title_alignment(ratatui::layout::Alignment::Right)
+        .title_bottom(Line::from(Span::styled(
+            hint,
             Style::default().fg(GREY).add_modifier(Modifier::DIM),
         )))
         .title_alignment(ratatui::layout::Alignment::Right)
