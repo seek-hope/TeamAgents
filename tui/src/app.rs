@@ -623,8 +623,10 @@ impl App {
         let mut rows = vec![];
         for agent in &agents {
             let id = jstr(agent, "id");
-            let can_send: Vec<&str> = ids.iter().filter(|t| can(&id, t, false)).map(|s| s.as_str()).collect();
-            let can_delegate: Vec<&str> = ids.iter().filter(|t| can(&id, t, true)).map(|s| s.as_str()).collect();
+            let mut can_send: Vec<&str> = ids.iter().filter(|t| can(&id, t, false)).map(|s| s.as_str()).collect();
+            let mut can_delegate: Vec<&str> = ids.iter().filter(|t| can(&id, t, true)).map(|s| s.as_str()).collect();
+            can_send.sort();
+            can_delegate.sort();
             let observed_by: Vec<&str> = observers
                 .iter()
                 .filter(|o| {
@@ -728,7 +730,7 @@ impl App {
                 let scope = a.get("requested_scope").cloned().unwrap_or(Json::Null);
                 let tool = ["tool", "kind"].iter().find_map(|k| scope.get(k).and_then(|v| v.as_str())).unwrap_or("?");
                 let args = scope.get("args").or_else(|| scope.get("request")).cloned().unwrap_or(Json::Null);
-                let args = if args.is_object() || args.is_array() { compact_json(&args) } else { args.as_str().unwrap_or("").to_string() };
+                let args = py_repr(&args);
                 (jstr(a, "approval_id"), vec![
                     cell(jstr(a, "agent_id")),
                     cell(tool.to_string()),
@@ -803,10 +805,12 @@ impl App {
 
     /// LogPanel title line.
     pub fn log_title(&self) -> String {
-        match &self.log_member {
-            Some(m) => self.t("事件流{v0}", &[("v0", &self.t("（成员 {v0} · Enter 取消）", &[("v0", m)]))]),
-            None => self.t("全部事件", &[]),
-        }
+        // panels.py::LogPanel.refresh_from — the title is always 事件流{filter}
+        let suffix = match &self.log_member {
+            Some(m) => self.t("（成员 {v0} · Enter 取消）", &[("v0", m)]),
+            None => String::new(),
+        };
+        self.t("事件流{v0}", &[("v0", &suffix)])
     }
 
     /// LogPanel::refresh_from — append event lines after the log cursor.
@@ -815,7 +819,7 @@ impl App {
             let member = m.clone();
             for ev in events {
                 self.log_cursor = self.log_cursor.max(ev.get("sequence").and_then(|v| v.as_i64()).unwrap_or(0));
-                let payload = compact_json(ev.get("payload").unwrap_or(&Json::Null));
+                let payload = py_json_dumps(ev.get("payload").unwrap_or(&Json::Null));
                 if jstr(ev, "actor_id") != member && !payload.contains(&member) {
                     continue;
                 }
@@ -824,7 +828,7 @@ impl App {
         } else {
             for ev in events {
                 self.log_cursor = self.log_cursor.max(ev.get("sequence").and_then(|v| v.as_i64()).unwrap_or(0));
-                let payload = compact_json(ev.get("payload").unwrap_or(&Json::Null));
+                let payload = py_json_dumps(ev.get("payload").unwrap_or(&Json::Null));
                 self.log_lines.push(format_log_line(ev, &payload));
             }
         }
@@ -1246,15 +1250,82 @@ fn compact_json(v: &Json) -> String {
     serde_json::to_string(v).unwrap_or_default()
 }
 
+/// Python `str(value)` for JSON data — the approvals panel shows `str(args)[:60]`
+/// (`{'command': 'curl x', 'network': True}`), not JSON.
+pub fn py_repr(value: &Json) -> String {
+    match value {
+        Json::Null => "None".into(),
+        Json::Bool(b) => if *b { "True".into() } else { "False".into() },
+        Json::Number(n) => n.to_string(),
+        Json::String(s) => format!("'{s}'"),
+        Json::Array(items) => format!(
+            "[{}]",
+            items.iter().map(py_repr).collect::<Vec<_>>().join(", ")
+        ),
+        Json::Object(map) => format!(
+            "{{{}}}",
+            map.iter()
+                .map(|(k, v)| format!("'{k}': {}", py_repr(v)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+/// Python `json.dumps(value)` defaults: `", "` / `": "` separators and non-ASCII
+/// escaped — the log panel stores and shows exactly that text.
+pub fn py_json_dumps(value: &Json) -> String {
+    fn escape(text: &str) -> String {
+        let mut out = String::new();
+        for ch in text.chars() {
+            if ch.is_ascii() {
+                match ch {
+                    '"' => out.push_str("\\\""),
+                    '\\' => out.push_str("\\\\"),
+                    '\n' => out.push_str("\\n"),
+                    '\r' => out.push_str("\\r"),
+                    '\t' => out.push_str("\\t"),
+                    c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+                    c => out.push(c),
+                }
+            } else {
+                let mut buf = [0u16; 2];
+                for unit in ch.encode_utf16(&mut buf).iter() {
+                    out.push_str(&format!("\\u{unit:04x}"));
+                }
+            }
+        }
+        out
+    }
+    match value {
+        Json::Null => "null".into(),
+        Json::Bool(b) => if *b { "true".into() } else { "false".into() },
+        Json::Number(n) => n.to_string(),
+        Json::String(s) => format!("\"{}\"", escape(s)),
+        Json::Array(items) => format!(
+            "[{}]",
+            items.iter().map(py_json_dumps).collect::<Vec<_>>().join(", ")
+        ),
+        Json::Object(map) => format!(
+            "{{{}}}",
+            map.iter()
+                .map(|(k, v)| format!("\"{}\": {}", escape(k), py_json_dumps(v)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
 /// app.py::_approval_line
 pub fn approval_line(payload: &Json) -> String {
     let scope = payload.get("scope").cloned().unwrap_or(Json::Null);
     let tool = ["tool", "kind"].iter().find_map(|k| scope.get(k).and_then(|v| v.as_str())).unwrap_or("?");
     let args = scope.get("args").or_else(|| scope.get("request")).cloned().unwrap_or(Json::Null);
-    let args = if args.is_object() || args.is_array() { compact_json(&args) } else { args.as_str().unwrap_or("").to_string() };
+    let args = py_repr(&args);
     format!("{} {tool} {}", jstr(payload, "agent_id"), head_chars(&args, 60))
 }
 
+/// panels.py::LogPanel — `{seq:>5} {kind:<18} {actor:<10} {payload_json[:160]}`
 fn format_log_line(ev: &Json, payload: &str) -> String {
     let seq = ev.get("sequence").and_then(|v| v.as_i64()).unwrap_or(0);
     let kind = jstr(ev, "kind");

@@ -46,7 +46,7 @@ def main():
     expect("TeamAgents ·", "status bar", boot)
     expect("Team", "team tab", boot)
     expect("›", "composer prefix", boot)
-    expect("ctrl+q", "footer", boot)
+    expect("^q", "footer", boot)
     expect("Ready", "activity", boot)  # en default: "○ Ready · No turns executing"
 
     # type a message (no model configured → the turn fails; that's fine here)

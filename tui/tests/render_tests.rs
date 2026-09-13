@@ -33,8 +33,23 @@ fn sample_app() -> App {
         "revision": 1,
         "agents": [{"id": "leader", "status": "IDLE"}],
         "runs": [],
-        "tasks": [],
-        "pending_approvals": [],
+        "tasks": [
+            {"task_id": "task_11112222", "parent_task_id": null, "goal_id": null,
+             "requester": "leader", "assignee": "researcher", "description": "调研协作文档并给出三条改进建议",
+             "acceptance": "三条建议", "dependencies": [], "status": "RUNNING", "result_refs": [],
+             "created_at": 1757740000.0, "updated_at": 1757740000.0},
+            {"task_id": "task_33334444", "parent_task_id": null, "goal_id": null,
+             "requester": "leader", "assignee": "coder", "description": "实现输入历史持久化",
+             "acceptance": "重启后仍可调取", "dependencies": ["task_11112222"], "status": "PENDING",
+             "result_refs": [], "created_at": 1757740100.0, "updated_at": 1757740100.0}
+        ],
+        "pending_approvals": [
+            {"approval_id": "appr_abcdef1234567890", "session_id": "s1", "agent_id": "coder",
+             "run_id": "run_coder_1", "tool_call_id": "call_1", "operation_hash": "deadbeefdeadbeefdeadbeefdeadbeef",
+             "requested_scope": {"tool": "shell", "args": {"command": "curl https://example.com", "network": true},
+                                 "reason": "shell network access is off by default"},
+             "policy_revision": 1, "status": "PENDING", "created_at": 1757740200.0, "decided_at": null}
+        ],
         "events": [
             {"sequence": 1, "kind": "user_message", "actor_id": "user", "payload": {"text": "build me a thing"}},
             {"sequence": 2, "kind": "leader_reply", "actor_id": "leader", "payload": {"text": "on it", "run_id": "r"}},
@@ -63,10 +78,78 @@ fn frame_text(buf: &ratatui::buffer::Buffer) -> String {
     out
 }
 
+/// Parity tool: with TEAMAGENTS_DUMP_FRAME=<path> and TEAMAGENTS_DUMP_SIZE=WxH
+/// this writes the rendered frame as plain text so it can be diffed against the
+/// Python (Textual) TUI. See review/tmp/dump_py_frame.py.
+fn dump_frame(app: &mut App, name: &str) {
+    let Ok(path) = std::env::var("TEAMAGENTS_DUMP_FRAME") else { return };
+    if let Ok(panel) = std::env::var("TEAMAGENTS_DUMP_PANEL") {
+        app.panel = panel.parse().unwrap_or(0);
+    }
+    if let Ok(lang) = std::env::var("TEAMAGENTS_DUMP_LANG") {
+        app.lang = if lang == "zh-CN" { "zh-CN" } else { "en" };
+    }
+    let size = std::env::var("TEAMAGENTS_DUMP_SIZE").unwrap_or_else(|_| "110x32".into());
+    let (w, h) = size.split_once('x').map(|(w, h)| (w.parse().unwrap_or(110), h.parse().unwrap_or(32))).unwrap_or((110, 32));
+    let backend = TestBackend::new(w, h);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| ui::render(f, app)).unwrap();
+    let target = if name.is_empty() { path } else { format!("{path}/{name}.txt") };
+    std::fs::write(target, frame_text(terminal.backend().buffer())).unwrap();
+}
+
+/// The same scenario the Python dump script renders: one JSON file feeds both
+/// sides (review/tmp/parity_scenario.json) so the frames stay comparable.
+fn scenario() -> Json {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../review/tmp/parity_scenario.json");
+    serde_json::from_str(&std::fs::read_to_string(path).expect("parity scenario")).expect("json")
+}
+
+fn parity_app() -> App {
+    let scenario = scenario();
+    let mut app = App::new(
+        "s1",
+        json!({"models": {"test": {"provider": "openai", "model": "test", "api_key_env": ""}},
+               "tools": {}, "skills_paths": [], "instruction_files": []}),
+        "/home/u/.config/teamagents/config.toml".into(),
+        "en",
+        true,
+        vec![],
+    );
+    app.apply_state(&json!({
+        "session": scenario["session"],
+        "spec": scenario["spec"],
+        "leader_id": scenario["spec"]["leader_id"],
+        "limits": scenario["limits"],
+        "revision": 1,
+        "agents": scenario["agents_status"],
+        "runs": scenario["runs"],
+        "tasks": scenario["tasks"],
+        "pending_approvals": scenario["pending_approvals"],
+        "events": scenario["events"],
+    }));
+    app.composer.set_text(scenario["composer_text"].as_str().unwrap_or(""));
+    // main.rs replays the log when the log tab is active; the dump does the same
+    app.replay_log(scenario["events"].as_array().cloned().unwrap_or_default().as_slice());
+    app.shared = scenario["shared_entries"].as_array().cloned().unwrap_or_default();
+    app.sessions = scenario["sessions"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    app
+}
+
+#[test]
+fn frame_dump_for_parity() {
+    let mut app = parity_app();
+    dump_frame(&mut app, "");
+}
+
 #[test]
 fn full_frame_shows_all_regions() {
     let mut app = sample_app();
-    let backend = TestBackend::new(100, 40);
+    let backend = TestBackend::new(120, 40); // wide enough for the whole footer
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| ui::render(f, &mut app)).unwrap();
     let text = frame_text(terminal.backend().buffer());
@@ -84,6 +167,8 @@ fn full_frame_shows_all_regions() {
     assert!(text.contains("leader_main"), "model missing");
     // chat: user + leader entries
     assert!(text.contains("› You"), "user label missing");
+    assert!(text.contains("╸"), "active tab underline missing");
+    assert!(text.contains("\n  Member"), "table padding missing");
     assert!(text.contains("build me a thing"), "user text missing");
     assert!(text.contains("• Leader"), "leader label missing");
     assert!(text.contains("on it"), "leader text missing");
@@ -93,9 +178,11 @@ fn full_frame_shows_all_regions() {
     // activity line
     assert!(text.contains("Ready"), "activity missing");
     assert!(text.contains("Latest:"), "latest activity missing");
-    // footer keys
-    assert!(text.contains("ctrl+q"), "footer missing");
-    assert!(text.contains("Quit"), "footer labels missing");
+    // footer keys (Textual chips: ^q / ^p / ^f ...)
+    assert!(text.contains("^q Quit"), "footer missing");
+    assert!(text.contains("^p Pause/resume"), "footer pause missing");
+    assert!(text.contains("esc Stop Leader"), "footer stop missing");
+    assert!(text.contains("^j Newline"), "footer newline missing");
 }
 
 #[test]
@@ -115,6 +202,41 @@ fn zh_frame_uses_message_ids() {
 }
 
 #[test]
+fn frame_matches_textual_layout_details() {
+    // Details verified against the Textual frame (review/tmp/diff_frames.py):
+    // #side/#chat padding, the ContentTabs rule with the active-tab underline,
+    // DataTable's extra cell pad, and the wrapping panel hint.
+    let mut app = parity_app();
+    let backend = TestBackend::new(110, 32);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| ui::render(f, &mut app)).unwrap();
+    let text = frame_text(terminal.backend().buffer());
+    let lines: Vec<&str> = text.split('\n').collect();
+    assert!(lines[0].contains("TeamAgents · s1 | Pre-authorized | Approvals 1 | Tasks 2"), "{:?}", lines[0]);
+    assert!(lines[2].starts_with("  Team  Tasks"), "{:?}", lines[2]);
+    assert!(lines[3].starts_with(" ╸━━━━╺━━━"), "{:?}", lines[3]);
+    assert!(lines[4].starts_with("  Member"), "{:?}", lines[4]);
+    assert!(lines[5].starts_with("  leader"), "{:?}", lines[5]);
+    assert!(lines[13].starts_with(" ○ Ready · No turns executing"), "{:?}", lines[13]);
+    assert!(lines[28].starts_with(" ›  请继续验证"), "{:?}", lines[28]);
+    assert!(lines[31].starts_with(" ^j Newline  ^q Quit"), "{:?}", lines[31]);
+}
+
+#[test]
+fn python_repr_and_json_dumps_match_the_panels() {
+    // approvals.py uses str(args) (Python repr); panels.py logs json.dumps() text
+    let args = json!({"command": "curl https://example.com", "network": true});
+    assert_eq!(
+        teamagents_tui::app::py_repr(&args),
+        "{'command': 'curl https://example.com', 'network': True}"
+    );
+    assert_eq!(
+        teamagents_tui::app::py_json_dumps(&json!({"text": "审查", "ok": true})),
+        "{\"text\": \"\\u5ba1\\u67e5\", \"ok\": true}"
+    );
+}
+
+#[test]
 fn streaming_preview_renders_markdown_bounded() {
     let mut app = sample_app();
     app.on_delta("r1", "leader", "# Heading\nsome **bold** text");
@@ -127,4 +249,16 @@ fn streaming_preview_renders_markdown_bounded() {
     terminal.draw(|f| ui::render(f, &mut app)).unwrap();
     let text = frame_text(terminal.backend().buffer());
     assert!(text.contains("Heading"), "live markdown missing");
+}
+
+#[test]
+fn debug_row_indent() {
+    let mut app = parity_app();
+    let backend = TestBackend::new(110, 32);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| ui::render(f, &mut app)).unwrap();
+    let text = frame_text(terminal.backend().buffer());
+    for (i, line) in text.split('\n').enumerate().skip(3).take(6) {
+        println!("{i:02}|{line}");
+    }
 }

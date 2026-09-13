@@ -1,0 +1,248 @@
+{
+  "spec": {
+    "leader_id": "leader",
+    "agents": [
+      {
+        "id": "leader",
+        "name": "Leader",
+        "role": "leader",
+        "runtime_kind": "deepagents",
+        "instructions": "",
+        "model_profile": "test",
+        "tool_bindings": [
+          "files",
+          "shell",
+          "web"
+        ],
+        "workspace_policy": "shared"
+      },
+      {
+        "id": "researcher",
+        "name": "Researcher",
+        "role": "worker",
+        "runtime_kind": "deepagents",
+        "instructions": "",
+        "model_profile": "test",
+        "tool_bindings": [
+          "files"
+        ],
+        "workspace_policy": "shared"
+      },
+      {
+        "id": "coder",
+        "name": "Coder",
+        "role": "worker",
+        "runtime_kind": "codex",
+        "instructions": "",
+        "model_profile": "test",
+        "tool_bindings": [
+          "files",
+          "shell"
+        ],
+        "workspace_policy": "isolated"
+      }
+    ],
+    "channels": [
+      {
+        "source": "leader",
+        "targets": [
+          "researcher",
+          "coder"
+        ],
+        "mode": "task"
+      },
+      {
+        "source": "researcher",
+        "targets": [
+          "leader"
+        ],
+        "mode": "message"
+      },
+      {
+        "source": "coder",
+        "targets": [
+          "leader"
+        ],
+        "mode": "message"
+      }
+    ],
+    "observers": [],
+    "shared_spaces": [
+      {
+        "id": "main",
+        "readers": [
+          "leader",
+          "researcher",
+          "coder"
+        ],
+        "writers": [
+          "leader",
+          "researcher"
+        ]
+      }
+    ]
+  },
+  "session": {
+    "session_id": "s1",
+    "status": "ACTIVE",
+    "cwd": "/tmp",
+    "permissions_mode": "approved_scope",
+    "goal_id": null,
+    "goal_state": "idle"
+  },
+  "limits": {
+    "max_parallel_workers": 8,
+    "max_members": 20,
+    "max_turns_per_goal": 1000,
+    "max_model_steps_per_turn": 200,
+    "turn_active_timeout_s": 1200,
+    "cancel_confirm_timeout_s": 60
+  },
+  "agents_status": [
+    {
+      "id": "leader",
+      "status": "IDLE"
+    },
+    {
+      "id": "researcher",
+      "status": "IDLE"
+    },
+    {
+      "id": "coder",
+      "status": "IDLE"
+    }
+  ],
+  "runs": [],
+  "events": [
+    {
+      "sequence": 1,
+      "kind": "user_message",
+      "actor_id": "user",
+      "payload": {
+        "text": "审查 Agent 协作问题，并改进终端交互。"
+      }
+    },
+    {
+      "sequence": 2,
+      "kind": "task_created",
+      "actor_id": "leader",
+      "payload": {
+        "task_id": "task_11112222",
+        "assignee": "researcher",
+        "requester": "leader",
+        "description": "调研协作文档并给出三条改进建议"
+      }
+    },
+    {
+      "sequence": 3,
+      "kind": "leader_reply",
+      "actor_id": "leader",
+      "payload": {
+        "text": "已完成协作修复，正在验证终端交互。\n\n- 成员独立执行\n- 支持 **多行输入**",
+        "run_id": "r1"
+      }
+    },
+    {
+      "sequence": 4,
+      "kind": "message",
+      "actor_id": "researcher",
+      "payload": {
+        "target": "leader",
+        "text": "调研完成：三个候选方案"
+      }
+    }
+  ],
+  "tasks": [
+    {
+      "task_id": "task_11112222",
+      "parent_task_id": null,
+      "goal_id": null,
+      "requester": "leader",
+      "assignee": "researcher",
+      "description": "调研协作文档并给出三条改进建议",
+      "acceptance": "三条建议",
+      "dependencies": [],
+      "status": "RUNNING",
+      "result_refs": [],
+      "created_at": 1757740000.0,
+      "updated_at": 1757740000.0
+    },
+    {
+      "task_id": "task_33334444",
+      "parent_task_id": null,
+      "goal_id": null,
+      "requester": "leader",
+      "assignee": "coder",
+      "description": "实现输入历史持久化",
+      "acceptance": "重启后仍可调取",
+      "dependencies": [
+        "task_11112222"
+      ],
+      "status": "PENDING",
+      "result_refs": [],
+      "created_at": 1757740100.0,
+      "updated_at": 1757740100.0
+    }
+  ],
+  "pending_approvals": [
+    {
+      "approval_id": "appr_abcdef1234567890",
+      "session_id": "s1",
+      "agent_id": "coder",
+      "run_id": "run_coder_1",
+      "tool_call_id": "call_1",
+      "operation_hash": "deadbeefdeadbeefdeadbeefdeadbeef",
+      "requested_scope": {
+        "tool": "shell",
+        "args": {
+          "command": "curl https://example.com",
+          "network": true
+        },
+        "reason": "shell network access is off by default"
+      },
+      "policy_revision": 1,
+      "status": "PENDING",
+      "created_at": 1757740200.0,
+      "decided_at": null
+    }
+  ],
+  "shared_entries": [
+    {
+      "entry_id": "e1",
+      "space_id": "main",
+      "author": "researcher",
+      "kind": "finding",
+      "content": "输入历史应按提交时间写入，避免回放重复",
+      "ref": null,
+      "sequence": 1,
+      "created_at": 1757740000.0
+    },
+    {
+      "entry_id": "e2",
+      "space_id": "main",
+      "author": "leader",
+      "kind": "decision",
+      "content": "采用原子写 + 500 条上限",
+      "ref": "artifacts/history.md",
+      "sequence": 2,
+      "created_at": 1757740100.0
+    }
+  ],
+  "composer_text": "请继续验证窄屏下的批准与会话切换",
+  "sessions": [
+    {
+      "sessionId": "s1",
+      "path": "/tmp/sessions/s1",
+      "cwd": "/tmp",
+      "status": "ACTIVE",
+      "goalState": "idle",
+      "permissionsMode": "approved_scope",
+      "updatedAt": 1757740000.0,
+      "events": 4,
+      "tasks": 2,
+      "sizeMb": 0.2,
+      "archived": false,
+      "locked": false
+    }
+  ]
+}

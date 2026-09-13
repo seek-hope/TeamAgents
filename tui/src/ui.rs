@@ -42,12 +42,12 @@ pub fn wrap_line(line: &Line, width: usize) -> Vec<Line<'static>> {
                     cur.push(Span::styled(rest.to_string(), style));
                     break;
                 }
-                if *cur_w > 0 && !rest.trim().is_empty() && ww <= width {
+                if *cur_w > 0 && !rest.trim().is_empty() {
+                    // Rich never leaves a partial word on the current row: a word
+                    // starts on a fresh line (and is folded there if still too long)
                     out.push(Line::from(std::mem::take(cur)));
                     *cur_w = 0;
-                    if rest.starts_with(' ') {
-                        rest = rest.trim_start();
-                    }
+                    rest = rest.trim_start();
                     continue;
                 }
                 // longer than a full row (or row partly full): split by chars
@@ -91,7 +91,7 @@ pub fn wrap_lines(lines: Vec<Line<'static>>, width: usize) -> Vec<Line<'static>>
 // ------------------------------------------------------------------ chat log
 
 /// ChatLog::_render_entry — one chat entry to styled (unwrapped) lines.
-pub fn chat_entry_lines(lang: &str, who: &str, text: &str) -> Vec<Line<'static>> {
+pub fn chat_entry_lines(lang: &str, who: &str, text: &str, width: usize) -> Vec<Line<'static>> {
     let label_style = Style::default().fg(GREY).add_modifier(Modifier::BOLD);
     let (mut label_style, mut body_style) = match who {
         "user" | "Leader" => (label_style, Style::default().fg(FG)),
@@ -118,7 +118,7 @@ pub fn chat_entry_lines(lang: &str, who: &str, text: &str) -> Vec<Line<'static>>
         lines.push(Line::from(Span::styled(format!("{prefix} {label}"), label_style)));
     }
     if who == "Leader" {
-        lines.extend(md::render(text));
+        lines.extend(md::render(text, width));
         lines.push(Line::raw(""));
         return lines;
     }
@@ -138,7 +138,7 @@ pub fn chat_entry_lines(lang: &str, who: &str, text: &str) -> Vec<Line<'static>>
 
 fn col_widths(header: &[&str], rows: &[Vec<Cell>], avail: usize) -> Vec<usize> {
     let n = header.len();
-    let mut w: Vec<usize> = (0..n)
+    let w: Vec<usize> = (0..n)
         .map(|i| {
             let mut m = UnicodeWidthStr::width(header[i]);
             for row in rows {
@@ -146,17 +146,12 @@ fn col_widths(header: &[&str], rows: &[Vec<Cell>], avail: usize) -> Vec<usize> {
                     m = m.max(UnicodeWidthStr::width(c.0.as_str()));
                 }
             }
-            m.clamp(3, 60)
+            m.clamp(3, 100)
         })
         .collect();
-    let sep = 2 * (n - 1);
-    while w.iter().sum::<usize>() + sep > avail {
-        let Some((i, _)) = w.iter().enumerate().max_by_key(|(_, v)| *v) else { break };
-        if w[i] <= 3 {
-            break;
-        }
-        w[i] -= 1;
-    }
+    // DataTable keeps natural widths and scrolls horizontally; long rows are
+    // clipped at the viewport edge rather than squeezing columns.
+    let _ = avail;
     w
 }
 
@@ -180,10 +175,13 @@ fn ellipsize(text: &str, width: usize) -> String {
 
 /// A DataTable: bold muted header on panel bg, accent-40% cursor row.
 fn render_table(frame: &mut Frame, area: Rect, header: &[&str], rows: &[Vec<Cell>], sel: Option<usize>, focused: bool) {
-    if area.height == 0 {
+    if area.height == 0 || area.width < 3 {
         return;
     }
-    let widths = col_widths(header, rows, area.width as usize);
+    // #side padding (1) + DataTable's own cell padding (1) = content col 2
+    let table = Rect { x: area.x + 1, width: area.width - 2, ..area };
+    let pad = Span::styled(" ", Style::default().bg(BG));
+    let widths = col_widths(header, rows, table.width as usize);
     let header_line: Vec<Span> = header
         .iter()
         .enumerate()
@@ -195,13 +193,16 @@ fn render_table(frame: &mut Frame, area: Rect, header: &[&str], rows: &[Vec<Cell
         })
         .collect::<Vec<_>>()
         .join(Span::styled("  ", Style::default().bg(PANEL_BG)));
-    frame.render_widget(Paragraph::new(Line::from(header_line)), Rect { height: 1, ..area });
-    let body = Rect { y: area.y + 1, height: area.height - 1, ..area };
+    let header_line: Vec<Span> = std::iter::once(Span::styled(" ", Style::default().fg(GREY).bg(PANEL_BG).add_modifier(Modifier::BOLD)))
+        .chain(header_line)
+        .collect();
+    frame.render_widget(Paragraph::new(Line::from(header_line)), Rect { height: 1, ..table });
+    let body = Rect { y: table.y + 1, height: table.height - 1, ..table };
     let mut lines: Vec<Line> = vec![];
     for (i, row) in rows.iter().enumerate() {
         let selected = sel == Some(i);
         let bg = if selected { CURSOR_ROW } else { BG };
-        let spans: Vec<Span> = row
+        let cells: Vec<Span> = row
             .iter()
             .enumerate()
             .map(|(j, (text, style))| {
@@ -213,9 +214,12 @@ fn render_table(frame: &mut Frame, area: Rect, header: &[&str], rows: &[Vec<Cell
             })
             .collect::<Vec<_>>()
             .join(Span::styled("  ", Style::default().bg(bg)));
+        let spans: Vec<Span> = std::iter::once(Span::styled(" ", Style::default().bg(bg)))
+            .chain(cells)
+            .collect();
         lines.push(Line::from(spans));
     }
-    let _ = focused;
+    let _ = (focused, pad);
     frame.render_widget(Paragraph::new(lines), body);
 }
 
@@ -265,13 +269,16 @@ fn render_body(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn render_side(frame: &mut Frame, app: &mut App, area: Rect) {
-    if area.height < 3 {
+    if area.height < 4 {
         return;
     }
-    // ContentTabs: one blank row, one label row, then content; #side has a
-    // solid $secondary bottom border.
+    // ContentTabs: padding row, label row, then its solid $secondary border
+    // with the active tab underlined (╸━━━╺); #side itself has the same border
+    // as its last row (app.py::CSS / Textual TabbedContent).
     let tabs_row = Rect { y: area.y + 1, height: 1, ..area };
-    let mut spans: Vec<Span> = vec![];
+    let mut spans: Vec<Span> = vec![Span::raw(" ")]; // #side padding: 0 1
+    let mut active_range = (0usize, 0usize);
+    let mut col = 1usize;
     for (i, _) in PANELS.iter().enumerate() {
         let label = panel_tab_label(app.lang, i);
         let style = if i == app.panel {
@@ -279,12 +286,38 @@ fn render_side(frame: &mut Frame, app: &mut App, area: Rect) {
         } else {
             Style::default().fg(GREY)
         };
-        spans.push(Span::styled(format!(" {label} "), style));
+        let text = format!(" {label} ");
+        if i == app.panel {
+            let w = UnicodeWidthStr::width(text.as_str());
+            active_range = (col, col + w);
+        }
+        col += UnicodeWidthStr::width(text.as_str());
+        spans.push(Span::styled(text, style));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), tabs_row);
+
+    let rule_y = area.y + 2;
+    let width = area.width as usize;
+    let (start, end) = active_range;
+    let mut rule = String::from(" "); // #side padding 1 (tabs live inside it)
+    for x in 1..width.saturating_sub(1) {
+        // "╸" under the tab's own padding + label + "╺" (Textual ContentTabs)
+        if x == start {
+            rule.push('╸');
+        } else if x + 1 == end {
+            rule.push('╺');
+        } else {
+            rule.push('━');
+        }
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(rule, Style::default().fg(GREY)))),
+        Rect { x: area.x, y: rule_y, width: area.width, height: 1 },
+    );
+
     let content = Rect {
-        y: area.y + 2,
-        height: area.height.saturating_sub(3), // leave the bottom border line
+        y: area.y + 3,
+        height: area.height.saturating_sub(4), // tabs(3) + bottom border(1)
         ..area
     };
     render_panel(frame, app, content);
@@ -315,12 +348,19 @@ fn render_panel(frame: &mut Frame, app: &mut App, area: Rect) {
                 .and_then(|k| rows.iter().position(|(rk, _)| rk == &k))
                 .unwrap_or_else(|| saved.1.min(rows.len().saturating_sub(1)));
             let sel = if rows.is_empty() { None } else { Some(sel) };
-            let table_area = Rect { height: area.height.saturating_sub(1), ..area };
+            // the hint is a wrapping Static at the bottom of the panel
+            let hint_rows = wrap_lines(
+                vec![Line::from(Span::styled(hint_line(app, hint), Style::default().fg(NOTICE)))],
+                (area.width as usize).saturating_sub(2).max(1),
+            );
+            let hint_h = (hint_rows.len() as u16).min(area.height);
+            let table_h = area.height.saturating_sub(hint_h);
+            let table_area = Rect { height: table_h, ..area };
             render_table(frame, table_area, &header_refs, &rows.iter().map(|(_, r)| r.clone()).collect::<Vec<_>>(), sel, focused);
-            let hint_y = area.y + area.height - 1;
+            let hints: Vec<Line> = hint_rows.into_iter().map(pad_left_line).collect();
             frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(hint_line(app, hint), Style::default().fg(NOTICE)))),
-                Rect { x: area.x, y: hint_y, width: area.width, height: 1 },
+                Paragraph::new(hints),
+                Rect { x: area.x, y: area.y + table_h, width: area.width, height: hint_h },
             );
         }
         "shared" => {
@@ -330,15 +370,23 @@ fn render_panel(frame: &mut Frame, app: &mut App, area: Rect) {
             render_table(frame, area, &header_refs, &rows, None, false);
         }
         "log" => {
-            let body = Rect { height: area.height.saturating_sub(1), ..area };
+            let body = Rect {
+                x: area.x + 1,
+                width: area.width.saturating_sub(2),
+                height: area.height.saturating_sub(1),
+                ..area
+            };
+            // RichLog(min_width=78) wraps the log at 80 columns (Rich word wrap),
+            // independent of a wider panel — verified against the Textual frame.
+            let wrap_w = (body.width as usize).min(80);
             let lines = wrap_lines(
                 app.log_lines.iter().map(|l| Line::from(Span::styled(l.clone(), Style::default().fg(NOTICE)))).collect(),
-                body.width as usize,
+                wrap_w,
             );
             render_scrolled(frame, body, lines);
             let title_y = area.y + area.height - 1;
             frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(app.log_title(), Style::default().fg(NOTICE)))),
+                Paragraph::new(Line::from(Span::styled(format!(" {}", app.log_title()), Style::default().fg(NOTICE)))),
                 Rect { x: area.x, y: title_y, width: area.width, height: 1 },
             );
         }
@@ -347,57 +395,103 @@ fn render_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-fn render_settings(frame: &mut Frame, app: &App, area: Rect) {
-    let mut y = area.y;
-    let row_h = 3u16;
-    // language row
-    let label_style = Style::default().fg(FG);
-    let sel_style = Style::default().bg(CURSOR_ROW);
-    let focused = app.focus == Focus::Panel;
-    let lang_value = if app.lang == "zh-CN" { "中文" } else { "English" };
-    let line1 = Line::from(vec![
-        Span::styled(format!("{:22}", tr(app.lang, "界面语言", &[])), label_style),
-        Span::styled(format!(" {lang_value} "), if focused && app.settings_row == 0 { sel_style } else { Style::default().fg(FG) }),
+/// Textual Select: `▊`/`▎` sides, `▔` top border, the value on the last row.
+fn render_select(frame: &mut Frame, x: u16, y: u16, width: u16, value: &str, focused: bool) {
+    let border = Style::default().fg(GREY);
+    let inner = width.saturating_sub(2) as usize;
+    let top = Line::from(Span::styled(format!("▊{}▎", "▔".repeat(inner)), border));
+    let mid = Line::from(vec![Span::styled("▊", border), Span::raw(" ".repeat(inner)), Span::styled("▎", border)]);
+    let value_style = if focused { Style::default().fg(FG).bg(CURSOR_ROW) } else { Style::default().fg(FG) };
+    let bottom = Line::from(vec![
+        Span::styled("▊", border),
+        Span::styled(format!("  {value:<pad$}", pad = inner.saturating_sub(2)), value_style),
+        Span::styled("▎", border),
     ]);
-    frame.render_widget(Paragraph::new(line1), Rect { x: area.x, y: y + 1, width: area.width, height: 1 });
-    y += row_h;
-    let switch = if app.animations { "■ on" } else { "□ off" };
-    let line2 = Line::from(vec![
-        Span::styled(format!("{:22}", tr(app.lang, "动效", &[])), label_style),
-        Span::styled(format!(" {switch} "), if focused && app.settings_row == 1 { sel_style } else { Style::default().fg(FG) }),
-    ]);
-    frame.render_widget(Paragraph::new(line2), Rect { x: area.x, y: y + 1, width: area.width, height: 1 });
-    y += row_h;
-    let body: Vec<Line> = app
-        .settings_lines()
-        .iter()
-        .map(|l| Line::from(Span::styled(l.clone(), Style::default().fg(NOTICE))))
-        .collect();
     frame.render_widget(
-        Paragraph::new(body),
-        Rect { x: area.x, y, width: area.width, height: area.y + area.height - y },
+        Paragraph::new(vec![top, mid, bottom]),
+        Rect { x, y, width, height: 3 },
     );
+}
+
+/// Textual Switch: same box shape; the handle is painted (no glyph of its own)
+/// so the state reads through colour, exactly like the Python widget.
+fn render_switch(frame: &mut Frame, x: u16, y: u16, width: u16, on: bool) {
+    let border = Style::default().fg(GREY);
+    let inner = width.saturating_sub(2) as usize;
+    let handle_w = inner / 2;
+    let middle = Line::from(vec![
+        Span::styled("▊", border),
+        Span::styled(" ".repeat(inner.saturating_sub(handle_w)), Style::default().bg(BG)),
+        Span::styled(
+            " ".repeat(handle_w),
+            Style::default().bg(if on { ACCENT } else { GREY }),
+        ),
+        Span::styled("▎", border),
+    ]);
+    let top = Line::from(Span::styled(format!("▊{}▎", "▔".repeat(inner)), border));
+    let bottom = Line::from(Span::styled(format!("▊{}▎", "▁".repeat(inner)), border));
+    frame.render_widget(
+        Paragraph::new(vec![top, middle, bottom]).style(Style::default().bg(BG)),
+        Rect { x, y, width, height: 3 },
+    );
+}
+
+fn render_settings(frame: &mut Frame, app: &App, area: Rect) {
+    // app.py: .preference-row (3 rows) with a 22-wide label Static + the widget
+    let label_style = Style::default().fg(FG);
+    let row1 = area.y;
+    let row2 = area.y + 3;
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!(" {:21}", tr(app.lang, "界面语言", &[])),
+            label_style,
+        ))),
+        Rect { x: area.x, y: row1 + 1, width: area.width, height: 1 },
+    );
+    render_select(frame, area.x + 23, row1, 24, if app.lang == "zh-CN" { "中文" } else { "English" }, app.lang_open);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!(" {:21}", tr(app.lang, "动效", &[])),
+            label_style,
+        ))),
+        Rect { x: area.x, y: row2 + 1, width: area.width, height: 1 },
+    );
+    render_switch(frame, area.x + 23, row2, 10, app.animations);
     if app.lang_open {
-        // dropdown under the language value
-        let opts = ["English", "中文"];
-        let width = 12u16;
-        let x = area.x + 22;
-        let dy = area.y + 2;
-        for (i, o) in opts.iter().enumerate() {
-            let style = if i == app.lang_choice { sel_style } else { Style::default().fg(FG).bg(PANEL_BG) };
+        // expanded: the options draw over the rows below (Textual overlay)
+        for (i, option) in ["English", "中文"].iter().enumerate() {
+            let style = if i == app.lang_choice {
+                Style::default().fg(FG).bg(CURSOR_ROW)
+            } else {
+                Style::default().fg(FG).bg(PANEL_BG)
+            };
             frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(format!(" {o:9}"), style))),
-                Rect { x, y: dy + i as u16, width, height: 1 },
+                Paragraph::new(Line::from(Span::styled(
+                    format!("▊  {option:<20}▎"),
+                    style,
+                ))),
+                Rect { x: area.x + 23, y: row1 + 3 + i as u16, width: 24, height: 1 },
             );
         }
     }
+    let body_y = row2 + 3;
+    let body: Vec<Line> = app
+        .settings_lines()
+        .iter()
+        .map(|l| Line::from(Span::styled(format!(" {l}"), Style::default().fg(NOTICE))))
+        .collect();
+    frame.render_widget(
+        Paragraph::new(body),
+        Rect { x: area.x, y: body_y, width: area.width, height: (area.y + area.height).saturating_sub(body_y) },
+    );
 }
 
 fn render_chat(frame: &mut Frame, app: &mut App, area: Rect) {
-    let live_lines = if app.stream_text.is_empty() { vec![] } else { md::render(&app.stream_text) };
+    let live_width = (area.width as usize).saturating_sub(2).max(1);
+    let live_lines = if app.stream_text.is_empty() { vec![] } else { md::render(&app.stream_text, live_width) };
     let live_h = (live_lines.len() as u16).min(8);
     let composer_w = area.width as usize;
-    let composer_text_w = composer_w.saturating_sub(4).max(1);
+    let composer_text_w = composer_w.saturating_sub(5).max(1); // padding 1 + prefix 2 + prompt pad 1
     let composer_h = app.composer.widget_height(composer_text_w) as u16;
     let chunks = Layout::vertical([
         Constraint::Length(2),          // #activity
@@ -412,8 +506,8 @@ fn render_chat(frame: &mut Frame, app: &mut App, area: Rect) {
     // activity
     let (summary, color, latest) = app.activity_lines();
     let activity = vec![
-        Line::from(Span::styled(summary, style_named(color))),
-        Line::from(Span::styled(latest, Style::default().fg(NOTICE))),
+        Line::from(Span::styled(format!(" {summary}"), style_named(color))),
+        Line::from(Span::styled(format!(" {latest}"), Style::default().fg(NOTICE))),
     ];
     frame.render_widget(Paragraph::new(activity), chunks[0]);
 
@@ -421,26 +515,32 @@ fn render_chat(frame: &mut Frame, app: &mut App, area: Rect) {
     let log_area = chunks[1];
     let mut lines: Vec<Line<'static>> = vec![];
     for (who, text) in &app.chat {
-        lines.extend(chat_entry_lines(app.lang, who, text));
+        lines.extend(chat_entry_lines(app.lang, who, text, log_area.width as usize));
     }
+    let log_area = Rect { x: log_area.x + 1, width: log_area.width.saturating_sub(2), ..log_area };
     let wrapped = wrap_lines(lines, log_area.width as usize);
     render_scrolled(frame, log_area, wrapped);
 
     // live stream preview
     if live_h > 0 {
-        let wrapped = wrap_lines(live_lines, chunks[2].width as usize);
-        render_scrolled(frame, chunks[2], wrapped);
+        let live_area = Rect {
+            x: chunks[2].x + 1,
+            width: chunks[2].width.saturating_sub(2),
+            ..chunks[2]
+        };
+        let wrapped = wrap_lines(live_lines, live_area.width as usize);
+        render_scrolled(frame, live_area, wrapped);
     }
 
     // composer status + hint
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(app.composer_status(), Style::default().fg(NOTICE)))),
+        Paragraph::new(Line::from(Span::styled(format!(" {}", app.composer_status()), Style::default().fg(NOTICE)))),
         chunks[3],
     );
     render_composer(frame, app, chunks[4]);
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            tr(app.lang, "Enter 发送 · Shift+Enter / Ctrl+J 换行 · ↑↓ 历史 · Esc 停止 Leader", &[]),
+            format!(" {}", tr(app.lang, "Enter 发送 · Shift+Enter / Ctrl+J 换行 · ↑↓ 历史 · Esc 停止 Leader", &[])),
             Style::default().fg(NOTICE),
         ))),
         chunks[5],
@@ -458,10 +558,11 @@ fn render_composer(frame: &mut Frame, app: &App, area: Rect) {
     }
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled("›", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)))),
-        Rect { x: area.x, y: area.y + 1, width: 1, height: 1 },
+        Rect { x: area.x + 1, y: area.y + 1, width: 1, height: 1 },
     );
-    let text_x = area.x + 3; // prefix width 2 + prompt padding-left 1
-    let text_w = (area.width as usize).saturating_sub(4).max(1);
+    // #chat padding 1 + #prompt-prefix width 2 + #prompt padding-left 1
+    let text_x = area.x + 4;
+    let text_w = (area.width as usize).saturating_sub(5).max(1);
     let text_y = area.y + 1;
     let visible_h = (area.height as usize).saturating_sub(2);
     // wrap each logical line; cursor position in visual coords
@@ -527,27 +628,43 @@ fn render_scrolled(frame: &mut Frame, area: Rect, lines: Vec<Line<'static>>) {
     frame.render_widget(Paragraph::new(lines).scroll((offset, 0)), area);
 }
 
+/// Textual Footer: the focused widget's bindings first, then the app's priority
+/// bindings in order; keys render as ^x / esc, entries joined by two spaces and
+/// clipped at the right edge.
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     let keys: [(&str, &str); 9] = [
-        ("ctrl+q", "退出"),
-        ("ctrl+p", "暂停/继续"),
-        ("ctrl+r", "刷新"),
-        ("ctrl+f", "全自动"),
-        ("ctrl+t", "切换面板"),
-        ("ctrl+g", "批准"),
+        ("^j", "换行"),
+        ("^q", "退出"),
+        ("^p", "暂停/继续"),
+        ("^r", "刷新"),
+        ("^f", "全自动"),
+        ("^t", "切换面板"),
+        ("^g", "批准"),
         ("esc", "停止 Leader"),
-        ("ctrl+n", "输入"),
-        ("ctrl+j", "换行"),
+        ("^n", "输入"),
     ];
-    let mut spans: Vec<Span> = vec![];
-    for (key, label) in keys {
-        spans.push(Span::styled(format!(" {key} "), Style::default().fg(FG).bg(CURSOR_ROW)));
-        spans.push(Span::styled(format!(" {}  ", tr(app.lang, label, &[])), Style::default().fg(NOTICE).bg(PANEL_BG)));
+    let mut text = String::from(" ");
+    for (i, (key, label)) in keys.iter().enumerate() {
+        if i > 0 {
+            text.push_str("  ");
+        }
+        text.push_str(key);
+        text.push(' ');
+        text.push_str(&tr(app.lang, label, &[]));
     }
+    let width = area.width as usize;
+    let clipped: String = text.chars().take(width).collect();
     frame.render_widget(
-        Paragraph::new(Line::from(spans)).style(Style::default().bg(PANEL_BG)),
+        Paragraph::new(Line::from(Span::styled(clipped, Style::default().fg(NOTICE).bg(PANEL_BG)))),
         area,
     );
+}
+
+/// #chat / #activity padding: 0 1
+fn pad_left_line(line: Line<'static>) -> Line<'static> {
+    let mut spans = vec![Span::raw(" ")];
+    spans.extend(line.spans);
+    Line::from(spans)
 }
 
 fn render_toasts(frame: &mut Frame, app: &mut App, status_area: Rect) {
