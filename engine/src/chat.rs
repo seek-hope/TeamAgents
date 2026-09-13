@@ -135,14 +135,69 @@ fn team_tool_schemas() -> Json {
     ])
 }
 
-fn tools_payload() -> Json {
-    let docs: HashMap<&str, &str> = TEAM_TOOL_DOCS.iter().copied().collect();
+/// Execution tools a member sees when its TeamSpec binds the capability
+/// (runners.py::_ensure_graph: team tools + shell + bound file/web tools).
+pub const BOUND_TOOL_DOCS: &[(&str, &str)] = &[
+    ("ls", "List files in your workspace (path defaults to '.')."),
+    ("read_file", "Read a UTF-8 text file from your workspace (path is relative to the workspace root)."),
+    ("write_file", "Write a text file in your workspace, creating parent directories."),
+    ("edit_file", "Replace the first occurrence of old_string with new_string in a workspace file."),
+    ("delete", "Delete a file (a directory when recursive=true) from your workspace."),
+    ("glob", "Find workspace files matching a glob pattern, e.g. '**/*.py' (max 500 hits)."),
+    ("grep", "Search workspace files for a pattern; returns matching lines (max 100)."),
+    ("shell", "Run a shell command in the isolated Linux sandbox (no network by default; network=true requires user approval)."),
+    ("web_search", "Search the web and return title, source URL, snippet, fetch time (and full content when include_content=true)."),
+    ("web_fetch", "Fetch a web page and return title, source URL, fetch time and the readable text body (HTML only; capped)."),
+];
+
+fn bound_tool_schemas() -> Json {
+    json!([
+      {"name": "ls", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}},
+      {"name": "read_file", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
+      {"name": "write_file", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}},
+      {"name": "edit_file", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "old_string": {"type": "string"}, "new_string": {"type": "string"}}, "required": ["path", "old_string", "new_string"]}},
+      {"name": "delete", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "recursive": {"type": "boolean"}}, "required": ["path"]}},
+      {"name": "glob", "parameters": {"type": "object", "properties": {"pattern": {"type": "string"}}, "required": ["pattern"]}},
+      {"name": "grep", "parameters": {"type": "object", "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}}, "required": ["pattern"]}},
+      {"name": "shell", "parameters": {"type": "object", "properties": {"command": {"type": "string"}, "timeout": {"type": "integer"}, "network": {"type": "boolean"}}, "required": ["command"]}},
+      {"name": "web_search", "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "max_results": {"type": "integer"}, "include_content": {"type": "boolean"}}, "required": ["query"]}},
+      {"name": "web_fetch", "parameters": {"type": "object", "properties": {"url": {"type": "string"}, "max_bytes": {"type": "integer"}}, "required": ["url"]}},
+    ])
+}
+
+/// Which execution tools a member's bindings expose. `files`/`shell` are the
+/// built-ins; `web` unlocks the configured web bindings. Anything else is an
+/// MCP service the Rust port does not implement yet (not advertised).
+fn bound_tool_names(bindings: &[String]) -> Vec<&'static str> {
+    let mut names: Vec<&'static str> = vec![];
+    if bindings.iter().any(|b| b == "files") {
+        names.extend(["ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep"]);
+    }
+    if bindings.iter().any(|b| b == "shell") {
+        names.push("shell");
+    }
+    if bindings.iter().any(|b| b == "web") {
+        names.extend(["web_search", "web_fetch"]);
+    }
+    names
+}
+
+fn tools_payload(bindings: &[String]) -> Json {
+    let docs: HashMap<&str, &str> = TEAM_TOOL_DOCS.iter().chain(BOUND_TOOL_DOCS).copied().collect();
+    let allowed: Vec<&str> = TEAM_TOOL_DOCS
+        .iter()
+        .map(|(name, _)| *name)
+        .chain(bound_tool_names(bindings))
+        .collect();
+    let mut schemas = team_tool_schemas().as_array().cloned().unwrap_or_default();
+    schemas.extend(bound_tool_schemas().as_array().cloned().unwrap_or_default());
     Json::Array(
-        team_tool_schemas()
-            .as_array()
-            .cloned()
-            .unwrap_or_default()
+        schemas
             .into_iter()
+            .filter(|tool| {
+                let name = tool.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                allowed.contains(&name)
+            })
             .map(|tool| {
                 let name = tool.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 json!({
@@ -185,6 +240,14 @@ impl ChatRunner {
         })
     }
 
+    fn bindings(&self) -> Vec<String> {
+        self.agent
+            .get("tool_bindings")
+            .and_then(|v| v.as_array())
+            .map(|items| items.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+            .unwrap_or_default()
+    }
+
     fn agent_id(&self) -> String {
         self.agent.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string()
     }
@@ -198,8 +261,10 @@ impl ChatRunner {
         } else {
             instructions.to_string()
         };
+        let allowed = bound_tool_names(&self.bindings());
         let tools = TEAM_TOOL_DOCS
             .iter()
+            .chain(BOUND_TOOL_DOCS.iter().filter(|(n, _)| allowed.contains(n)))
             .map(|(n, d)| format!("- {n}: {d}"))
             .collect::<Vec<_>>()
             .join("\n");
@@ -264,7 +329,7 @@ impl ChatRunner {
     }
 
     fn run_loop(&self, run: &TurnRun, history: &mut Vec<Json>, gateway: &ToolGateway) -> Result<String, (String, String)> {
-        let tools = tools_payload();
+        let tools = tools_payload(&self.bindings());
         let agent_id = self.agent_id();
         let max_steps = 200; // the core enforces the configured cap via the gateway executor
         for _ in 0..max_steps {
@@ -441,8 +506,26 @@ mod tests {
         assert!(rendered.contains("<your_workspace>/w</your_workspace>"));
         // a plain new_input wake adds no wake block
         assert!(!render_view(&view, &json!({"reason": "new_input"}), None).contains("<wake"));
-        // tool payload carries every documented name
-        assert_eq!(tools_payload().as_array().unwrap().len(), TEAM_TOOL_DOCS.len());
+        // tool payload: team tools always, execution tools per binding
+        assert_eq!(tools_payload(&[]).as_array().unwrap().len(), TEAM_TOOL_DOCS.len());
+        let bound = tools_payload(&["files".into(), "shell".into(), "web".into()]);
+        let names: Vec<&str> = bound
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t.pointer("/function/name").and_then(|v| v.as_str()))
+            .collect();
+        for expected in ["read_file", "shell", "web_search", "web_fetch", "signal_done"] {
+            assert!(names.contains(&expected), "{expected} missing from {names:?}");
+        }
+        let files_only = tools_payload(&["files".into()]);
+        let names: Vec<&str> = files_only
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t.pointer("/function/name").and_then(|v| v.as_str()))
+            .collect();
+        assert!(names.contains(&"read_file") && !names.contains(&"shell"));
         // the profile's protocol decides the endpoint (D-8 deepseek default)
         let profile = |base: Option<&str>, protocol: &str, provider: &str| ModelProfile {
             provider: provider.into(),

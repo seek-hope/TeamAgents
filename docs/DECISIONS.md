@@ -224,6 +224,16 @@ Deep Agents 的 `permissions` 只覆盖其内置文件工具，不约束 Shell/M
      `session_mode`（与 D-16 的 `shared_entries` 同类）。
   7. 删除 `ts/`、根 `package.json`/`package-lock.json`/`node_modules` 与 Ink 备用 TUI；
      仓库运行时不再依赖 Node。
-- 验证：core 14 项、engine 24 项（含 T1–T5/T9、取消/暂停、full-auto、Codex 适配、
-  worker 协议、CLI）、tui 11 项全绿；真终端 PTY 冒烟通过；真实 DeepSeek 回合
-  （--plain，goal_done）与真实 `codex app-server` 回合（engine/tests/live_codex.rs）实测通过。
+  8. 成员执行工具对齐 runners.py：ChatRunner 按成员 `tool_bindings` 暴露
+     `files`（ls/read_file/write_file/edit_file/delete/glob/grep）、`shell`、
+     `web`（web_search/web_fetch）工具，仍全部经 ToolGateway（审批 + 审计）。
+  9. 修 TS 版的 shell 沙箱缺陷：bwrap argv 与 execution.py 逐项对齐（ro-bind /usr,/etc,/opt；
+     /lib /lib64 /bin /sbin 用 symlink 重建；tmpfs /tmp；unshare-pid/ipc/uts；die-with-parent）
+     ——TS 版直接 `--ro-bind /bin /bin` 在宿主 /bin 是符号链接时会让沙箱里找不到 bash；
+     且 **缺 bwrap 时不再降级为裸 bash**（plan §12.2 不允许静默降级），环境变量改为白名单
+     （不把模型密钥带进沙箱命令）。
+- 验证：core 14 项、engine 25 项（含 T1–T5/T9、取消/暂停、full-auto、Codex 适配、
+  worker 协议、CLI、bwrap 真实运行）、tui 11 项全绿；真终端 PTY 冒烟通过；真实 DeepSeek
+  回合（--plain：直接回答 + 调 shell 工具执行 `echo`，均到 goal_done）、真实
+  `codex app-server` 回合（engine/tests/live_codex.rs）、kill -9 崩溃窗口 reconcile 收敛，
+  均实测通过。

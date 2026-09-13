@@ -28,16 +28,16 @@ main 分支保留 Python 实现作为基准；本分支是**完整的 Rust 实�
 | gateway | agents.py + permissions.py | ✅ `engine::gateway`（ToolGateway/PermissionPolicy/ApprovalGate，含权限模式实时同步） | 单测 + full-auto 场景 |
 | scripted member | agents.py::FakeMember | ✅ `engine::scripted`（含模板引用/barrier/取消） | 全部场景测试 |
 | codex runner | codex.py | ✅ `engine::codex`（app-server JSON-RPC、thread 持久化、批准 park/decide、interrupt、reconcile） | fake-server 3 项 + 真实 CLI live 用例 |
-| chat runner（替代 deepagents） | runners.py | ✅ `engine::chat`（工具循环 + renderView + 暂停/恢复 + provider→base_url） | 单测 + 真实 DeepSeek live 冒烟 |
-| tools | tools.py + execution.py | ✅ `engine::tools`（文件工具沙箱、shell/bwrap、guardUrl、webFetch） | 单测 + cli doctor |
+| chat runner（替代 deepagents） | runners.py | ✅ `engine::chat`（工具循环 + renderView + 暂停/恢复 + provider→base_url + 按 `tool_bindings` 暴露 files/shell/web 执行工具） | 单测 + 真实 DeepSeek live 冒烟 |
+| tools | tools.py + execution.py | ✅ `engine::tools`（文件工具沙箱；bwrap argv 与 execution.py 对齐、缺 bwrap 直接报错不降级、环境白名单；guardUrl + web_fetch；AnySearch web_search） | 单测（含真实 bwrap 运行）+ cli doctor |
 | config | config.py | ✅ toml crate + XDG 路径 + catalog | 单测 |
 | sessions | sessions.py + session.py | ✅ 清单/pid 锁/归档/删除/open_session | worker 协议测试 + TUI 冒烟 |
 | CLI | cli.py | ✅ doctor/validate/sessions/version/--plain REPL/TUI 启动 | engine CLI 测试 |
 | TUI | tui/（Textual ~1700 行） | ✅ ratatui/crossterm，D-16 复现基准不变 | Rust 单元 + TestBackend 帧 + PTY 冒烟 |
 
 **未移植/有意简化**：deepagents 图框架本身（被 ChatRunner 取代）；TUI 的 zebra 条纹/鼠标
-hover 与"会话内即席切换"；skills/memory 装配（`_skills_and_memory`）；web_search 具体
-provider 绑定（webFetch 已备）；anthropic 原生线协议（需 base_url 指向 OpenAI 兼容网关）。
+hover 与"会话内即席切换"；skills/memory 装配（`_skills_and_memory`）；MCP 工具服务与
+`general-purpose` 子代理；anthropic 原生线协议（需 base_url 指向 OpenAI 兼容网关）。
 
 ## 既定决策
 

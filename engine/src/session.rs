@@ -158,7 +158,7 @@ pub fn open_session(opts: OpenOptions) -> Result<Arc<OpenedSession>, String> {
             let runner = make_runner(agent)?;
             runners.insert(agent.id.clone(), runner);
         }
-        let executor: ToolExecutor = Arc::new(crate::tools::workspace_executor(cwd.clone()));
+        let executor: ToolExecutor = Arc::new(crate::tools::session_executor(cwd.clone(), catalog.clone()));
         let limits = RuntimeLimits {
             turn_active_timeout_s: state.get("limits").and_then(|l| l.get("turn_active_timeout_s")).and_then(|v| v.as_i64()).unwrap_or(1200),
             cancel_confirm_timeout_s: state.get("limits").and_then(|l| l.get("cancel_confirm_timeout_s")).and_then(|v| v.as_i64()).unwrap_or(60),
