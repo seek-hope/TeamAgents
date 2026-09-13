@@ -15,6 +15,11 @@ use std::time::Duration;
 
 type Pending = Mutex<HashMap<u64, Sender<Result<Json, String>>>>;
 
+/// Only these variables are inherited by a stdio MCP server
+/// (mcp.client.stdio.get_default_environment: HOME/LOGNAME/PATH/SHELL/TERM/USER);
+/// binding.env is layered on top. Model API keys must never leak to a server.
+const INHERITED_ENV: &[&str] = &["HOME", "LOGNAME", "PATH", "SHELL", "TERM", "USER"];
+
 pub struct McpClient {
     child: Mutex<Option<Child>>,
     stdin: Mutex<ChildStdin>,
@@ -25,10 +30,22 @@ pub struct McpClient {
 impl McpClient {
     pub fn connect_stdio(command: &str, args: &[String], env: &[(String, String)]) -> Result<Arc<Self>, String> {
         let mut cmd = Command::new(command);
+        cmd.env_clear();
+        for key in INHERITED_ENV {
+            if let Ok(value) = std::env::var(key) {
+                if !value.starts_with("()") {
+                    cmd.env(key, value);
+                }
+            }
+        }
         cmd.args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            // the server's stderr is the engine's stderr (the Python SDK forwards
+            // it to errlog): piping it without draining deadlocks a chatty server
+            // ponytail: server logs land on the engine's stderr; drain into a
+            // bounded buffer if the TUI needs that stream clean.
+            .stderr(Stdio::inherit());
         for (key, value) in env {
             cmd.env(key, value);
         }

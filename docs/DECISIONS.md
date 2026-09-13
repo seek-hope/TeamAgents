@@ -95,7 +95,8 @@ Deep Agents 的 `permissions` 只覆盖其内置文件工具，不约束 Shell/M
   `max_turns_per_goal` 200→**1000**、`max_model_steps_per_turn` 50→**200**、
   `turn_active_timeout_s` 900→**1200**、`cancel_confirm_timeout_s` 30→**60**。
 - `ModelProfile.max_retries` 2→**5**（模型请求的 SDK 级重试）。
-- 沙箱命令输出上限 100 KB→**200 KB**（超出仍转存 artifact 文件）。
+- 沙箱命令输出上限 100 KB→**200 KB**（超出仍转存 artifact 文件；Rust 版已于 D-21 对齐：
+  落 `<session>/artifacts/exec-*.log`，工具结果给 `/artifacts/...` 引用，成员经同一前缀读回）。
 - **删除未被任何代码读取的配置**：`leader_reserve`、`model_request_timeout_s`、
   `max_auto_retries`（`Limits` 为 `extra="forbid"`，旧 TeamSpec 里若仍写这三个键会校验失败）。
   真正生效的模型请求超时/重试是 `ModelProfile.timeout` / `ModelProfile.max_retries`。
@@ -216,7 +217,8 @@ Deep Agents 的 `permissions` 只覆盖其内置文件工具，不约束 Shell/M
      （TS 版会等整段模型调用，导致退出/切会话卡住）；留下的 RUNNING 回合由下次启动的
      `reconcile`（RT-04）收敛。
   5. 会话锁：pid 文件 + `/proc/<pid>` 存活检查（Python 用 flock），语义等价，
-     不引入 libc 绑定。
+     不引入 libc 绑定。（2026-09-13 起改为 `File::try_lock` 的 flock 语义，见 D-21：
+     kill -9 自动回收，pid 仅作诊断。）
   6. 修两个移植版共有的缺陷：① `ChatRunner` 缺 `base_url` 时一律打 api.openai.com——
      现按 provider/protocol 解析默认端点（deepseek → api.deepseek.com/v1），与 providers.py
      对齐；② 权限模式切换（TUI Ctrl+F / set_permission_mode）不生效——审批门现在每次
@@ -328,6 +330,9 @@ Textual 的实现细节，新设计以 Ratatui 的能力与终端习惯为准。
 
 ## D-20 补充（用户反馈两处 bug + 打磨，2026-09-13）
 
+> **本组第 1 条的 `ui::sidebar_width` 已被「D-20 补充四」（固定上下分区）取代，
+> 代码中已无该函数；以下保留作历史记录。**
+
 反馈：右侧栏宽度不随内容伸缩导致内容显示不全；侧栏顶部导航变成两行。
 
 1. **侧栏宽度改为按内容计算**（`ui::sidebar_width`）：取当前面板的自然宽度——表格面板按
@@ -423,3 +428,51 @@ Textual 的实现细节，新设计以 Ratatui 的能力与终端习惯为准。
    单元格"一律跳过，所以中文聊天行正好压到浮层左框线时，那条框线会被静默丢弃（人工核对
    150 列帧时发现第 21 行左框线消失）。修法：浮层左侧预留 1 列 gutter（先清空该列），
    内部文本区再比右框线少 1 列；新增回归测试逐行断言框线单元格存在。
+
+## D-21 Rust 版全面审查与修复批次 ✅（2026-09-13）
+
+对 `core/`、`engine/`、`tui/` 三个 crate 做了一轮对照 Python 基准的全面审查
+（5 个只读审查域：core、engine 运行时、engine 工具/沙箱、tui、文档），随后四个修复批次
+（core / engine-runtime / engine-tools / tui）与文档同步落地。发现与修复台账：
+
+- `review/findings-rust-review-2026-09-13.md`（严重 2 · 高 11 · 中 22 · 低 17，含重复归并）
+- `review/fix-notes-rust-review-2026-09-13.md`（逐条修复与关键测试）
+
+主要修复（摘要，细节见台账）：
+
+- **core**：事务内错误不再静默吞掉（`submit`/`emit` 等返回错误）、载入路径不再 panic
+  （损坏 spec 报错、旧 limits 键按 Python 语义丢弃）、投递批次账本回写、`run_started`
+  事件恢复生产、`wait_for_tasks`/`wake_info` 结果按 task_id 建键、`payload_hash` 与
+  Python `json.dumps` 逐字节一致；新增跨版本合同方法 `expire_approval`、`approval_find_run`。
+- **engine 运行时**：`limits.max_model_steps_per_turn` 真实约束模型请求数（超限 → `limit_reached`
+  事件 + 回合 FAILED）、回合活动超时中断成员（消除幽灵写入）、once 批准执行后消费
+  （EXPIRED 重请求、session 批准不消费、DENIED 阻断）、Codex reconcile 改用
+  `thread/read {includeTurns:true}`、xhigh→max 归一化与重试、成员对话历史落盘重启装载、
+  HTTP 重试只针对瞬时错误。
+- **engine 工具/沙箱/配置**：shell 大输出不再死锁、超 200KB 落 `/artifacts/exec-*.log`
+  且成员可经 `/artifacts/` 前缀读回、MCP stderr 直通不阻塞 + 子进程环境白名单、
+  会话锁改 flock（kill -9 自动回收）、`guard_url` 与 Python 判定表逐条对齐（含 IPv6）、
+  web 工具执行层 fail-closed、`[permissions]` 非法值报错、doctor 实跑 bwrap 与
+  codex `generate-json-schema` 方法集合探针（D-3 兑现）。
+- **tui**：窄终端浮层/菜单/toast 不再 panic（矩形夹取 + panic 后恢复终端）、几何单一来源
+  （滚动后点击命中不再错位）、面板动作键拒绝 Ctrl/Alt 组合、`Ctrl+D`/`Ctrl+U` 任何焦点下滚动、
+  开启 bracketed paste、中文光标按显示宽度定位、`/settings` 浮层只剩界面语言（Animations 已删）。
+  集成期补：`Tab` 对任意页签都进面板（此前列表残留已删除的 settings 项、且共享/日志页签
+  无法用键盘进入）。
+
+验证（实跑）：core 38（17 unit + 21 integration）、engine 67（21 lib + 46 integration）、
+tui 54（9 lib + 18 app + 27 render）全绿；PTY 冒烟与点击检查通过；真实 DeepSeek `--plain`
+回合通过；`teamagents doctor` 通过（bwrap 实跑、codex schema 99 方法）。
+
+**与 Python 的已知保留差异（如实记录，不粉饰）**：
+
+1. DENIED 跨进程重启后重发同一操作会重新请求批准（engine 的 (run, op_hash)→approval 记忆表
+   是进程内的；方向安全——只会多问，不会放行；完全对齐需 core 透出最新 DENIED 记录）。
+2. Codex 审批等待保留 600s 有界超时（Python 无界），超时把该批准置 EXPIRED；
+   `TEAMAGENTS_CODEX_APPROVAL_WAIT_S` 仅供测试覆盖。
+3. Codex 进程组清理经系统 `kill` 二进制（未引入 libc 依赖）；`kill` 缺失时退化为只杀直接子进程。
+4. 成员历史 JSON 无长度上限（`ponytail:` 已注明，可改为按窗口裁剪）。
+5. 会话面板 size 有 30s TTL 缓存，最长滞后 30s。
+6. web 工具策略层仍按 `web_` 前缀预授权（执行层已 fail-closed：未绑定必拒，但不会弹批准）。
+7. `/artifacts/` 只挂进文件工具：`ls`/`glob` 与 bwrap 内 shell 看不到（与 Python 基准一致）。
+8. MCP 的 http/sse 与 deepagents `general-purpose` 子代理仍未移植（既有台账项）。

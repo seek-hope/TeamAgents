@@ -13,6 +13,15 @@ use std::time::{Duration, Instant};
 use teamagents_core::control::TurnOutcome;
 use teamagents_core::models::{AgentSpec, AgentStatus, Receipt, TeamAction, TurnRun, TurnStatus};
 
+/// Best-effort core call: the core now reports real write failures, so log them
+/// loudly instead of dropping them (silent loss is how the emit/schedule bug
+/// went unnoticed; review/findings-rust-review-2026-09-13.md S3).
+fn core_best_effort(core: &CoreClient, what: &str, method: &str, params: Json) {
+    if let Err(e) = core.call_in_session(method, params) {
+        eprintln!("teamagents: {what} failed: {e}");
+    }
+}
+
 pub trait AgentRunner: Send + Sync {
     fn start_or_resume(&self, run: &TurnRun, view: &Json, gateway: &ToolGateway, wake: &Json) -> TurnOutcome;
     fn request_interrupt(&self, run_id: &str) -> TurnStatus;
@@ -71,6 +80,12 @@ impl Notify {
         *self.stream.lock().unwrap() = Some(sink);
     }
 
+    /// The core client behind this notifier. Runners read per-turn config
+    /// (spec limits) and record follow-up state through it.
+    pub fn core(&self) -> Arc<CoreClient> {
+        self.core.clone()
+    }
+
     pub fn set_waker(&self, waker: Box<dyn Fn() + Send + Sync>) {
         *self.waker.lock().unwrap() = Some(waker);
     }
@@ -103,7 +118,7 @@ impl Notify {
             return;
         }
         let agent_id = run.agent_id.clone();
-        let _ = self.core.call_in_session("set_run_status", json!({"run_id": run_id, "status": status}));
+        core_best_effort(&self.core, "run status update", "set_run_status", json!({"run_id": run_id, "status": status}));
         if status == TurnStatus::WaitingApproval {
             let pending: Vec<Json> = state
                 .get("pending_approvals")
@@ -115,7 +130,7 @@ impl Notify {
                 .filter(|a| a.get("run_id").and_then(|v| v.as_str()) == Some(run_id))
                 .next_back()
             {
-                let _ = self.core.call_in_session("emit", json!({
+                core_best_effort(&self.core, "approval_requested event", "emit", json!({
                     "actor_id": agent_id,
                     "events": [{
                         "kind": "approval_requested",
@@ -148,7 +163,7 @@ impl Notify {
                 .and_then(|task| task.get("requester"))
                 .cloned()
         });
-        let _ = self.core.call_in_session("emit", json!({
+        core_best_effort(&self.core, "run_progress event", "emit", json!({
             "actor_id": run.agent_id,
             "events": [{
                 "kind": "run_progress",
@@ -326,7 +341,15 @@ impl Runtime {
         let runs: Vec<TurnRun> = serde_json::from_value(state.get("runs").cloned().unwrap_or(Json::Null)).unwrap_or_default();
         let Some(run) = runs.iter().find(|r| r.run_id == run_id) else { return };
         if let Some(runner) = self.runner(&run.agent_id) {
-            runner.resolve_approval(approval_id, decision);
+            // false = the backend has no waiter for it (the wait timed out and
+            // the approval was already voided, or the run moved on). At least
+            // leave a trace instead of dropping the user's decision silently.
+            if !runner.resolve_approval(approval_id, decision) {
+                eprintln!(
+                    "approval {approval_id} decided as {decision} but member {} has no waiter for it",
+                    run.agent_id
+                );
+            }
         }
     }
 
@@ -491,7 +514,7 @@ impl Runtime {
         });
         // confirmation timeout: mark OUTCOME_UNKNOWN + expire approvals (RT-06)
         if let Err(RecvTimeoutError::Timeout) = rx.recv_timeout(timeout) {
-            let _ = self.core.call_in_session("stop_timeout", json!({"run_id": run.run_id}));
+            core_best_effort(&self.core, "stop timeout bookkeeping", "stop_timeout", json!({"run_id": run.run_id}));
         }
         self.signal();
     }
@@ -593,9 +616,10 @@ impl Runtime {
         Ok(())
     }
 
-    /// Run the member on its own thread so the active-time limit can fire; the
-    /// timed-out turn keeps running in the background exactly like the TS port
-    /// (`withTimeout`), and its eventual writes are rejected by core re-checks.
+    /// Run the member on its own thread so the active-time limit can fire.
+    /// On timeout the member is interrupted (Python's `asyncio.wait_for`
+    /// cancels the coroutine): without it the thread keeps calling the model
+    /// and writing team state after the run is already FAILED.
     fn run_with_timeout(
         &self,
         runner: Arc<dyn AgentRunner>,
@@ -607,15 +631,32 @@ impl Runtime {
     ) -> TurnOutcome {
         let (tx, rx) = channel();
         let (run_clone, view_clone, wake_clone) = (run.clone(), view.clone(), wake.clone());
+        let runner_for_interrupt = runner.clone();
         std::thread::spawn(move || {
             let outcome = runner.start_or_resume(&run_clone, &view_clone, &gateway, &wake_clone);
             let _ = tx.send(outcome);
         });
         match rx.recv_timeout(timeout) {
             Ok(outcome) => outcome,
-            Err(_) => TurnOutcome {
+            Err(RecvTimeoutError::Timeout) => {
+                // the interrupt itself must not block the timeout path
+                let run_id = run.run_id.clone();
+                std::thread::spawn(move || {
+                    runner_for_interrupt.request_interrupt(&run_id);
+                });
+                TurnOutcome {
+                    status: TurnStatus::Failed,
+                    error: Some(format!("turn active-time limit {}s reached", timeout.as_secs())),
+                    note: None,
+                    reply_text: None,
+                }
+            }
+            // the member thread panicked before sending: never report that as a
+            // timeout (a 1200s claim for an immediate crash sends debugging the
+            // wrong way)
+            Err(RecvTimeoutError::Disconnected) => TurnOutcome {
                 status: TurnStatus::Failed,
-                error: Some(format!("turn active-time limit {}s reached", timeout.as_secs())),
+                error: Some("member runner crashed before reporting an outcome".into()),
                 note: None,
                 reply_text: None,
             },
@@ -686,7 +727,7 @@ impl Runtime {
             .remove(&run.run_id)
             .map(|ids| ids.into_iter().collect())
             .unwrap_or_default();
-        let _ = self.core.call_in_session("finalize_run", json!({
+        core_best_effort(&self.core, "run finalization", "finalize_run", json!({
             "run_id": run.run_id,
             "status": outcome.status,
             "error": outcome.error,
@@ -749,10 +790,10 @@ impl Runtime {
                 );
             } else {
                 // in-process runner only: safe to re-run the segment
-                let _ = self.core.call_in_session("requeue_run", json!({"run_id": run.run_id}));
+                core_best_effort(&self.core, "run requeue", "requeue_run", json!({"run_id": run.run_id}));
             }
         }
-        let _ = self.core.call_in_session("schedule", json!({}));
+        core_best_effort(&self.core, "scheduling pass", "schedule", json!({}));
         self.signal();
     }
 

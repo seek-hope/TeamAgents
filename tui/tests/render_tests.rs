@@ -1,7 +1,7 @@
 //! Full-frame render smoke on ratatui's TestBackend: the layout must show the
 //! status bar, tab row, active table, chat, composer and footer keys.
 
-use ratatui::backend::TestBackend;
+use ratatui::backend::{Backend, TestBackend};
 use ratatui::Terminal;
 use serde_json::{json, Value as Json};
 use teamagents_tui::app::App;
@@ -489,20 +489,32 @@ fn ascii_frame_has_no_cjk_leaks() {
                    "result_refs": [], "created_at": 0.0, "updated_at": 0.0}],
         "pending_approvals": [], "events": [],
     }));
-    let mut cases: Vec<usize> = (0..teamagents_tui::app::PANELS.len()).collect();
-    cases.push(usize::MAX); // the /settings overlay
-    for panel in cases {
-        if panel != usize::MAX {
-            app.panel = panel;
-        } else {
-            app.settings_open = true;
-        }
-        let backend = TestBackend::new(140, 36);
-        let mut terminal = Terminal::new(backend).unwrap();
+    // CJK ideographs + kana + CJK punctuation + fullwidth forms: anything a
+    // forgotten translation could leak
+   let backend = TestBackend::new(140, 36);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let cases: Vec<(usize, bool, bool)> = (0..teamagents_tui::app::PANELS.len())
+        .map(|p| (p, false, false))
+        .chain((0..teamagents_tui::app::PANELS.len()).map(|p| (p, false, true))) // slash menu open
+        .chain(std::iter::once((0, true, false))) // the /settings overlay
+        .collect();
+    for (panel, settings, slash) in cases {
+        app.panel = panel;
+        app.settings_open = settings;
+        app.composer.set_text(if slash { "/" } else { "" });
         terminal.draw(|f| ui::render(f, &mut app)).unwrap();
         let text = frame_text(terminal.backend().buffer());
-        let cjk: Vec<char> = text.chars().filter(|c| ('\u{4e00}'..='\u{9fff}').contains(c)).collect();
-        let name = if panel == usize::MAX { "settings overlay".to_string() } else { teamagents_tui::app::PANELS[panel].to_string() };
+        let wide = |c: char| {
+            matches!(c as u32,
+                0x2E80..=0x2EFF | 0x3000..=0x303F | 0x3040..=0x30FF | 0x4E00..=0x9FFF
+                | 0xFE30..=0xFE4F | 0xFF00..=0xFFEF | 0x20000..=0x2FA1F)
+        };
+        let cjk: Vec<char> = text.chars().filter(|c| wide(*c)).collect();
+        let name = if settings {
+            "settings overlay".to_string()
+        } else {
+            format!("{} (slash={slash})", teamagents_tui::app::PANELS[panel])
+        };
         assert!(
             cjk.is_empty(),
             "{name} leaks untranslated text: {:?}",
@@ -610,13 +622,6 @@ fn hover_highlights_the_tab_under_the_pointer() {
     assert_eq!(cell.style().bg, Some(Color::Rgb(0x3a, 0x3a, 0x3a)), "hover surface missing");
     assert_eq!(cell.style().fg, Some(Color::Rgb(0xff, 0xff, 0xff)), "hover text missing");
     // …and only that tab: its neighbours stay on the plain surface
-    let sessions_start = frame_text(terminal.backend().buffer())
-        .split('\n')
-        .find(|l| l.contains("▍Team"))
-        .and_then(|l| l.chars().collect::<String>().find("Team"))
-        .map(|byte| 0usize)
-        .unwrap_or(0);
-    let _ = sessions_start;
     let team_cell = &buffer[(3u16, tab_y)];
     assert_ne!(team_cell.style().bg, Some(Color::Rgb(0x3a, 0x3a, 0x3a)), "other tabs must not hover");
     // moving the pointer away clears it
@@ -677,4 +682,309 @@ fn settings_overlay_keeps_its_borders_next_to_wide_text() {
         assert_eq!(buffer[(left, row)].symbol(), "│", "left border lost on row {row}");
         assert_eq!(buffer[(right, row)].symbol(), "│", "right border lost on row {row}");
     }
+}
+
+// ------------------------------------------------- narrow-frame regressions
+
+fn narrow_app() -> App {
+    let mut app = App::new(
+        "s1",
+        json!({"models": {"m": {"provider": "openai", "model": "m", "api_key_env": ""}},
+               "tools": {}, "skills_paths": [], "instruction_files": []}),
+        "/tmp/config.toml".into(),
+        "en",
+        true,
+        vec![],
+    );
+    app.apply_state(&json!({
+        "session": {"session_id": "s1", "status": "ACTIVE", "cwd": "/tmp",
+                    "permissions_mode": "approved_scope", "goal_id": null, "goal_state": "idle"},
+        "spec": {"leader_id": "leader", "agents": [{"id": "leader", "name": "L", "role": "leader",
+                  "runtime_kind": "deepagents", "model_profile": "m"}], "channels": [], "observers": [],
+                  "shared_spaces": []},
+        "leader_id": "leader", "revision": 1, "limits": {},
+        "agents": [{"id": "leader", "status": "IDLE"}], "runs": [], "tasks": [],
+        "pending_approvals": [], "events": [],
+    }));
+    app
+}
+
+/// The same shell with `n` workers in the team spec.
+fn team_app(n: usize) -> App {
+    let agents: Vec<Json> = (0..n)
+        .map(|i| {
+            json!({"id": format!("m{i}"), "name": format!("M{i}"), "role": "worker",
+                   "runtime_kind": "deepagents", "model_profile": "m", "tool_bindings": [],
+                   "workspace_policy": "shared"})
+        })
+        .collect();
+    let mut app = narrow_app();
+    app.apply_state(&json!({
+        "session": {"session_id": "s1", "status": "ACTIVE", "cwd": "/tmp",
+                    "permissions_mode": "approved_scope", "goal_id": null, "goal_state": "idle"},
+        "spec": {"leader_id": "leader", "agents": agents, "channels": [], "observers": [],
+                 "shared_spaces": []},
+        "leader_id": "leader", "revision": 1, "limits": {},
+        "agents": [], "runs": [], "tasks": [], "pending_approvals": [], "events": [],
+    }));
+    app
+}
+
+/// Draw the frame and report a panic instead of unwinding the test.
+fn draw_ok(app: &mut App, w: u16, h: u16) -> Result<(), String> {
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let backend = TestBackend::new(w, h);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| ui::render(f, app)).unwrap();
+    }));
+    r.map_err(|e| {
+        e.downcast_ref::<String>()
+            .cloned()
+            .or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()))
+            .unwrap_or_default()
+    })
+}
+
+/// An over-wide `Clear` used to panic ("index outside of buffer") and leave the
+/// terminal in raw mode: the settings overlay and the toasts must stay inside
+/// the frame on any narrow terminal, and the slash menu must never clamp with
+/// min > max.
+#[test]
+fn narrow_frames_render_without_panicking() {
+    let sizes = [
+        (0u16, 0u16), (1, 1), (3, 40), (4, 3), (12, 6), (20, 6), (20, 20), (26, 20), (28, 20),
+        (30, 20), (40, 8), (40, 20), (40, 24), (47, 20), (48, 20), (60, 24), (70, 24), (120, 5),
+    ];
+    let mut report: Vec<String> = vec![];
+    for (w, h) in sizes {
+        for mode in ["plain", "slash", "settings", "toast"] {
+            let mut app = narrow_app();
+            match mode {
+                "slash" => app.composer.set_text("/"),
+                // the dropdown is the innermost layer: exercise it too
+                "settings" => {
+                    app.settings_open = true;
+                    app.lang_open = true;
+                }
+                "toast" => app.notify(
+                    "任务 task-1 已取消：这是一条很长的提示文本，用来把 toast 宽度顶到 58 列上限".into(),
+                    teamagents_tui::app::Severity::Warning,
+                    30,
+                ),
+                _ => {}
+            }
+            if let Err(e) = draw_ok(&mut app, w, h) {
+                report.push(format!("{mode} at {w}x{h}: PANIC {e}"));
+            }
+        }
+    }
+    assert!(report.is_empty(), "{}", report.join("\n"));
+}
+
+/// The overlay must fit inside the frame with a margin, and it must keep its
+/// content visible even at 40 columns (48 was the old hard minimum).
+#[test]
+fn settings_overlay_fits_narrow_frames() {
+    for w in [20u16, 30, 40, 47] {
+        let mut app = narrow_app();
+        app.settings_open = true;
+        let backend = TestBackend::new(w, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| ui::render(f, &mut app)).unwrap();
+        let text = frame_text(terminal.backend().buffer());
+        let lines: Vec<&str> = text.split('\n').collect();
+        let top = lines.iter().position(|l| l.contains("╭ Settings")).expect("overlay title");
+        let left = lines[top].chars().position(|c| c == '╭').expect("left corner");
+        let right = lines[top].chars().position(|c| c == '╮').expect("right corner");
+        assert!(left >= 1, "{w} cols: no left margin");
+        assert!(right + 1 < w as usize, "{w} cols: the box touches the right edge");
+        if w >= 40 {
+            assert!(text.contains("Session: s1"), "{w} cols: the overlay body must still show");
+        }
+    }
+}
+
+/// The dropdown unfolds under the language row, aligned with the value cell,
+/// and pushes the info body down instead of covering its first line.
+#[test]
+fn settings_dropdown_aligns_with_the_language_value_cell() {
+    let display_col = |line: &str, needle: &str| -> usize {
+        let bytes = line.find(needle).expect("needle");
+        unicode_width::UnicodeWidthStr::width(&line[..bytes])
+    };
+    for lang in ["en", "zh-CN"] {
+        let mut app = narrow_app();
+        app.lang = lang;
+        app.settings_open = true;
+        app.lang_open = true;
+        let backend = TestBackend::new(120, 34);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| ui::render(f, &mut app)).unwrap();
+        let text = frame_text(terminal.backend().buffer());
+        let lines: Vec<&str> = text.split('\n').collect();
+        let title = if lang == "en" { "╭ Settings" } else { "╭ 设置" };
+        let top = lines.iter().position(|l| l.contains(title)).expect("overlay title");
+        let value = if lang == "en" { "English" } else { "中文" };
+        let value_col = display_col(lines[top + 1], value);
+        for (i, option) in ["English", "中文"].iter().enumerate() {
+            let row = lines[top + 2 + i];
+            assert_eq!(display_col(row, option), value_col, "{lang}: dropdown row {i} is not aligned with the value cell");
+            assert!(!row.contains("Session:"), "{lang}: the dropdown overlaps an info line: {row:?}");
+        }
+        // the first info line sits below the dropdown, untouched
+        let info = if lang == "en" { "Session: s1" } else { "会话：s1" };
+        let info_row = lines.iter().skip(top).position(|l| l.contains(info)).expect("info line") + top;
+        assert!(info_row > top + 3, "{lang}: the info body must start under the dropdown");
+        assert!(info_row < lines.len() - 1, "{lang}: the info body must stay inside the box");
+    }
+}
+
+/// Every visible table row must round-trip through the click mapping, including
+/// after the window scrolled and with a hint that wraps to two lines — the
+/// renderer and the hit-test share `ui::geometry::rows`.
+#[test]
+fn clicking_a_scrolled_row_selects_the_row_under_the_pointer() {
+    for (w, h) in [(96u16, 30u16), (60, 30), (40, 30)] {
+        let mut app = team_app(8);
+        let keys: Vec<String> = app.team_rows().into_iter().map(|(k, _)| k).collect();
+        let last = keys.last().cloned().unwrap();
+        // the cursor is on the last row, so the window is scrolled to its end
+        app.table_cursors.insert("team", (Some(last.clone()), keys.len() - 1));
+        let backend = TestBackend::new(w, h);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| ui::render(f, &mut app)).unwrap();
+        let text = frame_text(terminal.backend().buffer());
+        let lines: Vec<String> = text.split('\n').map(str::to_string).collect();
+        let geo = ui::geometry(&app, ratatui::layout::Rect { x: 0, y: 0, width: w, height: h });
+        assert!(geo.rows.height > 0, "{w}x{h}: the table body must be visible");
+        // the row right below the body is the (translated) hint, never a data row
+        let boundary = &lines[(geo.rows.y + geo.rows.height) as usize];
+        assert!(
+            !keys.iter().any(|k| boundary.contains(&format!("{k} "))),
+            "{w}x{h}: the hint row holds table data: {boundary:?}"
+        );
+        for row in geo.rows.y..geo.rows.y + geo.rows.height {
+            let line = &lines[row as usize];
+            // rows may repeat a member id in the reach column: the leftmost hit wins
+            let shown = keys
+                .iter()
+                .filter_map(|k| line.find(&format!("{k} ")).map(|pos| (pos, k)))
+                .min_by_key(|(pos, _)| *pos)
+                .map(|(_, k)| k.clone())
+                .unwrap_or_else(|| panic!("{w}x{h}: no member shown on row {row}: {line:?}"));
+            app.table_cursors.insert("team", (Some(last.clone()), keys.len() - 1));
+            app.select_row_visible((row - geo.rows.y) as usize, geo.rows.height as usize);
+            let selected = app.table_cursors.get("team").and_then(|(k, _)| k.clone());
+            assert_eq!(
+                selected.as_deref(),
+                Some(shown.as_str()),
+                "{w}x{h}: row {row} shows {shown} but the click selected {selected:?}"
+            );
+        }
+    }
+}
+
+/// Wide glyphs take two cells: the caret must follow display columns, not char
+/// indices (a CJK prefix used to leave it two columns short).
+#[test]
+fn composer_caret_follows_display_columns() {
+    let text_start = |line: &str| -> u16 { line.chars().position(|c| c == '中').unwrap() as u16 };
+    let mut app = narrow_app();
+    app.composer.set_text("中文ab"); // caret at the end
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| ui::render(f, &mut app)).unwrap();
+    let cursor = terminal.backend_mut().get_cursor_position().unwrap();
+    let line = frame_text(terminal.backend().buffer())
+        .split('\n')
+        .find(|l| l.contains("中文ab"))
+        .expect("composer line")
+        .to_string();
+    assert_eq!(cursor.x, text_start(&line) + 6, "caret after 2 CJK + 2 ASCII cells");
+
+    // and in the middle: "ab中文" with the caret after "ab"
+    let mut app = narrow_app();
+    app.composer.set_text("ab中文");
+    app.composer.move_home();
+    app.composer.move_right();
+    app.composer.move_right();
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| ui::render(f, &mut app)).unwrap();
+    let cursor = terminal.backend_mut().get_cursor_position().unwrap();
+    let line = frame_text(terminal.backend().buffer())
+        .split('\n')
+        .find(|l| l.contains("ab中文"))
+        .expect("composer line")
+        .to_string();
+    let start = line.chars().position(|c| c == 'a').unwrap() as u16;
+    assert_eq!(cursor.x, start + 2, "caret after the two ASCII cells");
+}
+
+/// `/settings` only configures the language now: no menu entry or overlay line
+/// may mention the removed animations switch.
+#[test]
+fn settings_text_does_not_mention_animations() {
+    let mut app = narrow_app();
+    app.composer.set_text("/");
+    let backend = TestBackend::new(120, 36);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| ui::render(f, &mut app)).unwrap();
+    let text = frame_text(terminal.backend().buffer());
+    assert!(text.contains("/settings") && text.contains("settings overlay"), "menu entry lost");
+    assert!(!text.contains("animations") && !text.contains("Animations"), "stale menu text: {text}");
+
+    app.composer.set_text("");
+    app.settings_open = true;
+    terminal.draw(|f| ui::render(f, &mut app)).unwrap();
+    let text = frame_text(terminal.backend().buffer());
+    assert!(!text.contains("animations") && !text.contains("Animations"), "stale overlay text");
+}
+
+/// The wheel scrolls the pane under the pointer, not the focused one: over the
+/// panel box it drives the log stream, over the chat it drives the chat, while
+/// the keyboard keeps following the focus.
+#[test]
+fn wheel_targets_the_pane_under_the_pointer() {
+    use teamagents_tui::app::Focus;
+    let (w, h) = (96u16, 30u16);
+    let app = narrow_app();
+    let geo = ui::geometry(&app, ratatui::layout::Rect { x: 0, y: 0, width: w, height: h });
+    let side_point = (geo.side.y + 2, geo.side.x + 3);
+    let chat_point = (geo.chat.y + geo.chat.height / 2, geo.chat.x + 3);
+    for focus in [Focus::Composer, Focus::Panel] {
+        let mut app = narrow_app();
+        app.focus = focus;
+        let over_side = ui::wheel_target(&geo, side_point.0, side_point.1);
+        let over_chat = ui::wheel_target(&geo, chat_point.0, chat_point.1);
+        assert_eq!(over_side, "log", "pointer over the panel ({focus:?})");
+        assert_eq!(over_chat, "chat", "pointer over the chat ({focus:?})");
+        app.scroll_up_target(over_side, 3);
+        assert_eq!((app.log_scroll, app.chat_scroll), (3, 0), "wheel over the panel ({focus:?})");
+        app.scroll_up_target(over_chat, 3);
+        assert_eq!((app.log_scroll, app.chat_scroll), (3, 3), "wheel over the chat ({focus:?})");
+    }
+}
+
+/// Ctrl+Home must reach the oldest entry even on a narrow terminal: the offset
+/// is clamped against the height the renderer actually wrapped, not a guess.
+#[test]
+fn ctrl_home_reaches_the_oldest_entry_on_a_narrow_frame() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut app = narrow_app();
+    for i in 0..40 {
+        app.chat.push((
+            "Leader".into(),
+            format!("第{i}条消息：这是一段中文文本，用来把聊天记录撑到超过窗口高度，方便检查 Ctrl+Home 是否真的回到最早的一条。"),
+        ));
+    }
+    let backend = TestBackend::new(50, 30);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| ui::render(f, &mut app)).unwrap();
+    app.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL));
+    terminal.draw(|f| ui::render(f, &mut app)).unwrap();
+    let text = frame_text(terminal.backend().buffer());
+    assert!(app.chat_scroll > 0, "Ctrl+Home must scroll up");
+    assert!(text.contains("第0条"), "the oldest entry is still out of reach: {text}");
+    assert!(text.contains("lines up") || text.contains("已上翻"), "the scroll marker must show the offset");
 }

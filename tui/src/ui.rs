@@ -211,14 +211,42 @@ pub struct Geometry {
     pub chat: Rect,
     /// the panel box, top border included
     pub side: Rect,
+    /// the box interior (`Block::inner`) — tab strip, table and hit-test share it
+    pub side_inner: Rect,
     pub footer: Rect,
     /// first row of the tab strip (inside the box)
     pub tabs_y: u16,
-    /// first data row of the panel table
-    pub rows_y: u16,
+    /// the panel table's body rows (below the rule, above the hint). A click
+    /// maps a screen row to a table row through this rect, so its height must
+    /// match what `render_table` draws — including the wrapped hint rows.
+    pub rows: Rect,
 }
 
-pub fn geometry(_app: &App, area: Rect) -> Geometry {
+/// The hint line pinned to the bottom of the panel box (message id; translated
+/// on render). Its wrapped height is part of the table geometry.
+pub fn panel_hint(panel: &str) -> &'static str {
+    match panel {
+        "team" => "高亮成员=筛选日志 · Enter 取消筛选",
+        "tasks" => "c=取消选中任务（BLOCKED 直接取消；执行中的回合收到取消请求）",
+        "approvals" => "待批准操作：a=本次批准  s=会话内批准  d=拒绝",
+        "sessions" => "本目录会话：s=切换  n=新建  a=归档  d=删除（再按 d 确认，删当前会话后退出）",
+        "shared" => "共享空间条目：作者 / 类型 / 内容或引用",
+        "log" => "↑↓ 选择成员筛选 · Enter 取消 · PgUp/PgDn 滚动",
+        _ => "高亮成员=筛选日志 · Enter 取消筛选",
+    }
+}
+
+/// Display rows the panel hint wraps to (same wrap the renderer uses).
+fn hint_rows(app: &App, inner: Rect) -> usize {
+    let hint = tr(app.lang, panel_hint(PANELS[app.panel]), &[]);
+    wrap_lines(
+        vec![Line::from(hint)],
+        (inner.width as usize).saturating_sub(1).max(1),
+    )
+    .len()
+}
+
+pub fn geometry(app: &App, area: Rect) -> Geometry {
     let footer = Rect { y: area.height.saturating_sub(1), height: 1, ..area };
     let body = Rect { height: area.height.saturating_sub(1), ..area };
     let status = Rect { height: 1, ..body };
@@ -230,15 +258,51 @@ pub fn geometry(_app: &App, area: Rect) -> Geometry {
         height: stacked.height.saturating_sub(side_h),
         ..stacked
     };
-    Geometry { status, chat, side, footer, tabs_y: side.y + 1, rows_y: side.y + 5 }
+    let side_inner = Rect {
+        x: side.x + 1,
+        y: side.y + 1,
+        width: side.width.saturating_sub(2),
+        height: side.height.saturating_sub(2),
+    };
+    // `render_sidebar` draws the table only when the box has room (width ≥ 10,
+    // inner height ≥ 4); the row rect is empty when it does not.
+    let rows = if side.width >= 10 && side.height >= 6 {
+        let hint_h = (hint_rows(app, side_inner) as u16).min(side_inner.height.saturating_sub(2));
+        Rect {
+            y: side.y + 5, // border, tab row, divider, header, rule
+            height: side.height.saturating_sub(6).saturating_sub(hint_h),
+            ..side
+        }
+    } else {
+        Rect { y: side.y + 5, height: 0, ..side }
+    };
+    Geometry { status, chat, side, side_inner, footer, tabs_y: side.y + 1, rows }
+}
+
+/// Where the mouse wheel scrolls: the pane under the pointer, not the focused
+/// one (D-20 #7) — over the panel box it is the log stream, elsewhere the chat.
+/// Table panels turn the wheel into cursor movement before asking this.
+pub fn wheel_target(geo: &Geometry, row: u16, col: u16) -> &'static str {
+    let on_side = col >= geo.side.x
+        && col < geo.side.x + geo.side.width
+        && row >= geo.side.y
+        && row < geo.side.y + geo.side.height;
+    if on_side {
+        "log"
+    } else {
+        "chat"
+    }
 }
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     frame.render_widget(ratatui::widgets::Clear, area);
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
     let geo = geometry(app, area);
     render_status(frame, app, geo.status);
-    render_sidebar(frame, app, geo.side);
+    render_sidebar(frame, app, &geo);
     render_chat(frame, app, geo.chat);
     render_footer(frame, app, geo.footer);
     if app.settings_open {
@@ -490,7 +554,8 @@ pub fn tab_window(widths: &[usize], active: usize, budget: usize) -> (usize, usi
     (lo, hi)
 }
 
-fn render_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
+fn render_sidebar(frame: &mut Frame, app: &mut App, geo: &Geometry) {
+    let area = geo.side;
     if area.width < 10 || area.height < 5 {
         return;
     }
@@ -500,7 +565,7 @@ fn render_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
         .borders(ratatui::widgets::Borders::ALL)
         .border_type(ratatui::widgets::BorderType::Rounded)
         .border_style(Style::default().fg(border));
-    let inner = block.inner(area);
+    let inner = geo.side_inner; // == block.inner(area); the geometry owns it
     frame.render_widget(block, area);
     if inner.height < 4 {
         return;
@@ -532,15 +597,7 @@ fn render_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
     );
 
     // the hint is a wrapping, dim line pinned to the bottom of the box
-    let hint = match PANELS[app.panel] {
-        "team" => "高亮成员=筛选日志 · Enter 取消筛选",
-        "tasks" => "c=取消选中任务（BLOCKED 直接取消；执行中的回合收到取消请求）",
-        "approvals" => "待批准操作：a=本次批准  s=会话内批准  d=拒绝",
-        "sessions" => "本目录会话：s=切换  n=新建  a=归档  d=删除（再按 d 确认，删当前会话后退出）",
-        "shared" => "共享空间条目：作者 / 类型 / 内容或引用",
-        "log" => "↑↓ 选择成员筛选 · Enter 取消 · PgUp/PgDn 滚动",
-        _ => "高亮成员=筛选日志 · Enter 取消筛选",
-    };
+    let hint = panel_hint(PANELS[app.panel]);
     let hint_rows = wrap_lines(
         vec![Line::from(Span::styled(tr(app.lang, hint, &[]), Style::default().fg(GREY)))],
         (inner.width as usize).saturating_sub(1).max(1),
@@ -605,6 +662,9 @@ fn render_panel(frame: &mut Frame, app: &mut App, area: Rect) {
                     .collect(),
                 wrap_w,
             );
+            // the renderer owns the wrapped height: Ctrl+Home asks for "as far as
+            // it goes" and the clamp here turns that into the real offset
+            app.log_scroll = app.log_scroll.min(lines.len().saturating_sub(body.height as usize));
             render_scrolled_lang(frame, body, lines, app.log_scroll, true, app.lang);
             let title = Rect { y: area.y + area.height - 1, height: 1, ..area };
             frame.render_widget(
@@ -622,8 +682,11 @@ fn render_panel(frame: &mut Frame, app: &mut App, area: Rect) {
 /// `/settings` overlay: a centred box over the chat, Esc closes it.
 fn render_settings_overlay(frame: &mut Frame, app: &App, area: Rect) {
     let info = app.settings_lines();
-    let width = ((area.width as usize * 7 / 10).clamp(48, 92)) as u16;
-    let height = ((info.len() + 5) as u16).min(area.height.saturating_sub(2));
+    // stay inside the frame: ratatui's Clear writes every cell of its rect, and
+    // a rect that pokes out of the buffer panics on narrow terminals
+    let width = ((area.width as usize * 7 / 10).clamp(48, 92))
+        .min(area.width.saturating_sub(2).max(1) as usize) as u16;
+    let height = ((info.len() + 5) as u16).min(area.height.saturating_sub(2)).max(1);
     let x = area.x + (area.width.saturating_sub(width)) / 2;
     let y = area.y + (area.height.saturating_sub(height)) / 2;
     let box_area = Rect { x, y, width, height };
@@ -657,7 +720,7 @@ fn render_settings_overlay(frame: &mut Frame, app: &App, area: Rect) {
         ..inner
     };
     frame.render_widget(block, box_area);
-    if inner.height < 4 {
+    if inner.height < 4 || inner.width < 4 {
         return;
     }
     let label = |text: String| Span::styled(format!(" {text}"), Style::default().fg(GREY));
@@ -674,14 +737,48 @@ fn render_settings_overlay(frame: &mut Frame, app: &App, area: Rect) {
     // only the interface language is configurable here (the spinner is always on)
     let name = tr(app.lang, "界面语言", &[]);
     let value_text = if app.lang == "zh-CN" { "中文".to_string() } else { "English".to_string() };
+    // the value cell starts at a fixed display column so the dropdown can line
+    // up with it in either language (the label pads by display width, not chars)
+    let value_col = (1 + UnicodeWidthStr::width(name.as_str())).max(17);
+    let pad = value_col.saturating_sub(1 + UnicodeWidthStr::width(name.as_str()));
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            label(format!("{:<16}", name)),
+            label(format!("{name}{}", " ".repeat(pad))),
             value(value_text, true),
         ])),
         Rect { y: text.y, height: 1, ..text },
     );
-    let body_y = inner.y + 2; // one blank line under the language row
+    // the dropdown unfolds onto the blank row under the language row and pushes
+    // the info body down while it is open (it used to overlap the first info line)
+    let dropdown_h = if app.lang_open
+        && inner.height >= 6
+        && (text.width as usize) >= value_col + 9
+    {
+        2u16
+    } else {
+        0
+    };
+    if dropdown_h > 0 {
+        let dd = Rect {
+            x: text.x + value_col as u16,
+            y: inner.y + 1, // the blank row under the language line
+            width: ((text.width as usize) - value_col).min(14) as u16,
+            height: 2,
+        };
+        frame.render_widget(ratatui::widgets::Clear, dd);
+        for (i, option) in ["English", "中文"].iter().enumerate() {
+            let style = if i == app.lang_choice {
+                Style::default().fg(BG).bg(ACCENT)
+            } else {
+                Style::default().fg(FG).bg(PANEL_BG)
+            };
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(format!(" {option} "), style))),
+                Rect { y: inner.y + 1 + i as u16, width: dd.width, ..dd },
+            );
+        }
+    }
+    let body_y = inner.y + 2 + dropdown_h; // one blank line under the language row
     let body: Vec<Line> = info
         .iter()
         .map(|l| Line::from(Span::styled(format!(" {l}"), Style::default().fg(NOTICE))))
@@ -704,19 +801,6 @@ fn render_settings_overlay(frame: &mut Frame, app: &App, area: Rect) {
         ))),
         Rect { y: text.y + text.height - 1, height: 1, ..text },
     );
-    if app.lang_open {
-        for (i, option) in ["English", "中文"].iter().enumerate() {
-            let style = if i == app.lang_choice {
-                Style::default().fg(BG).bg(ACCENT)
-            } else {
-                Style::default().fg(FG).bg(PANEL_BG)
-            };
-            frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(format!(" {option} "), style))),
-                Rect { x: inner.x + 17, y: inner.y + 1 + i as u16, width: 14, height: 1 },
-            );
-        }
-    }
 }
 
 /// A table in the Rust spirit: dim header with a rule under it, subtle zebra,
@@ -963,6 +1047,9 @@ fn render_chat(frame: &mut Frame, app: &mut App, area: Rect) {
     }
     let wrapped = wrap_lines(lines, (chunks[1].width as usize).saturating_sub(3).max(1));
     let wrapped: Vec<Line> = wrapped.into_iter().map(pad_left_line).collect();
+    // Ctrl+Home sets the offset to "the top"; the wrapped height is only known
+    // here (it depends on the live width), so clamp the request to it.
+    app.chat_scroll = app.chat_scroll.min(wrapped.len().saturating_sub(chunks[1].height as usize));
     render_scrolled_lang(frame, chunks[1], wrapped, app.chat_scroll, true, app.lang);
 
     // streaming preview carries an accent bar so it reads as "in progress"
@@ -987,7 +1074,8 @@ fn render_chat(frame: &mut Frame, app: &mut App, area: Rect) {
 /// `/` completion menu: matches listed above the composer, the highlighted one
 /// on a lighter surface (same hover language as the tabs).
 fn render_slash_menu(frame: &mut Frame, app: &App, area: Rect, composer: Rect) {
-    if !app.slash_open() {
+    if !app.slash_open() || area.width < 16 {
+        // too narrow for a bordered menu; the composer still runs the command
         return;
     }
     let matches = app.slash_matches();
@@ -1002,11 +1090,12 @@ fn render_slash_menu(frame: &mut Frame, app: &App, area: Rect, composer: Rect) {
         .map(|c| UnicodeWidthStr::width(tr(app.lang, c.description, &[]).as_str()))
         .max()
         .unwrap_or(0);
-    let width = ((name_w + desc_w + 6) as u16).clamp(24, area.width.saturating_sub(4));
+    // min must stay ≤ max (a 12–27 col terminal used to panic here)
+    let width = ((name_w + desc_w + 6) as u16).clamp(8, area.width.saturating_sub(4).max(8));
     let height = (matches.len() as u16 + 2).min(8);
     let y = composer.y.saturating_sub(height).max(area.y + 1);
     let x = area.x + 2;
-    let box_area = Rect { x, y, width, height };
+    let box_area = Rect { x, y, width, height }.intersection(area);
     // ratatui's buffer diff never emits a cell that follows a wide grapheme, so a
     // CJK chat line ending right under the frame would silently erase the border.
     // Blank the column just left of the box and keep the inner text one column
@@ -1133,7 +1222,12 @@ fn render_composer(frame: &mut Frame, app: &App, area: Rect) {
                 end += 1;
             }
             if r == app.composer.row && app.composer.col >= start && app.composer.col <= end {
-                cursor_v = (visual.len(), app.composer.col - start);
+                // the caret is placed by display column: CJK glyphs take two cells
+                let col_w: usize = chars[start..app.composer.col]
+                    .iter()
+                    .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
+                    .sum();
+                cursor_v = (visual.len(), col_w);
             }
             visual.push(chars[start..end].iter().collect());
             start = end;
@@ -1166,7 +1260,7 @@ fn render_composer(frame: &mut Frame, app: &App, area: Rect) {
         Rect { x: inner.x, y: inner.y, width: inner.width, height: inner.height },
     );
     if focused {
-        let cx = text_x as usize + cursor_v.1.min(text_w.saturating_sub(1));
+        let cx = text_x as usize + cursor_v.1.min(text_w);
         let cy = inner.y as usize + cursor_v.0.saturating_sub(scroll).min(visible_h.saturating_sub(1));
         frame.set_cursor_position((cx as u16, cy as u16));
     }
@@ -1295,7 +1389,8 @@ fn render_toasts(frame: &mut Frame, app: &mut App, status_area: Rect) {
     if visible.is_empty() {
         return;
     }
-    let width = frame.area().width;
+    let area_frame = frame.area();
+    let width = area_frame.width;
     let mut y = status_area.y + 1;
     for toast in visible.iter().take(3) {
         let (icon, color) = match toast.severity {
@@ -1303,7 +1398,12 @@ fn render_toasts(frame: &mut Frame, app: &mut App, status_area: Rect) {
             Severity::Error => ("✖", ERROR),
             Severity::Info => ("✔", ACCENT),
         };
-        let text_w = UnicodeWidthStr::width(toast.text.as_str()).min(58);
+        // the box must fit the terminal: 58 is the comfortable cap, but a narrow
+        // frame wins (Clear outside the buffer panics)
+        let avail = (width as usize).saturating_sub(2).max(8);
+        let text_w = UnicodeWidthStr::width(toast.text.as_str())
+            .min(58)
+            .min(avail.saturating_sub(6).max(4));
         let w = (text_w + 6) as u16;
         let x = width.saturating_sub(w + 1);
         let body = wrap_line(
@@ -1319,7 +1419,10 @@ fn render_toasts(frame: &mut Frame, app: &mut App, status_area: Rect) {
             .border_type(ratatui::widgets::BorderType::Rounded)
             .border_style(Style::default().fg(color))
             .style(Style::default().bg(PANEL_BG));
-        let area = Rect { x, y, width: w, height: h };
+        let area = Rect { x, y, width: w, height: h }.intersection(area_frame);
+        if area.width < 4 || area.height < 2 {
+            break; // no room left below the status row
+        }
         frame.render_widget(ratatui::widgets::Clear, area);
         frame.render_widget(Paragraph::new(body).block(block), area);
         y += h;

@@ -7,7 +7,7 @@ that row — the display/click alignment the user reported as off by one.
 
 Usage: XDG_STATE_HOME=/tmp/ta-click python3 tui/scripts/pty_click_check.py
 """
-import fcntl, os, pty, re, select, struct, subprocess, sys, termios, time
+import fcntl, json, os, pty, re, select, struct, subprocess, sys, termios, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 BIN = os.path.join(ROOT, "tui", "target", "debug", "teamagents-tui")
@@ -90,18 +90,19 @@ class Screen:
 
 def main() -> int:
     os.makedirs(os.path.dirname(SPEC), exist_ok=True)
+    workers = ["alpha", "beta", "gamma"] + [f"w{i}" for i in range(6)]
+    agents = [
+        '{"id": "leader", "name": "L", "role": "leader", "runtime_kind": "deepagents",'
+        ' "model_profile": "leader_main", "tool_bindings": []}'
+    ] + [
+        f'{{"id": "{w}", "name": "{w[:1].upper()}", "role": "worker", "runtime_kind": "deepagents",'
+        f' "model_profile": "leader_main", "tool_bindings": []}}'
+        for w in workers
+    ]
     with open(SPEC, "w") as fh:
         fh.write(
-            '{"leader_id": "leader", "agents": ['
-            '{"id": "leader", "name": "L", "role": "leader", "runtime_kind": "deepagents",'
-            ' "model_profile": "leader_main", "tool_bindings": []},'
-            '{"id": "alpha", "name": "A", "role": "worker", "runtime_kind": "deepagents",'
-            ' "model_profile": "leader_main", "tool_bindings": []},'
-            '{"id": "beta", "name": "B", "role": "worker", "runtime_kind": "deepagents",'
-            ' "model_profile": "leader_main", "tool_bindings": []},'
-            '{"id": "gamma", "name": "G", "role": "worker", "runtime_kind": "deepagents",'
-            ' "model_profile": "leader_main", "tool_bindings": []}],'
-            ' "channels": [{"source": "leader", "targets": ["alpha", "beta", "gamma"], "mode": "task"}]}'
+            '{"leader_id": "leader", "agents": [' + ", ".join(agents) + "],"
+            ' "channels": [{"source": "leader", "targets": ' + json.dumps(workers) + ', "mode": "task"}]}'
         )
     pid, fd = pty.fork()
     if pid == 0:
@@ -110,6 +111,22 @@ def main() -> int:
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 96, 0, 0))
     screen = Screen(96, 30)
     screen.feed(read_all(fd, 4.0).decode("utf-8", "replace"))
+
+    def first_column_key(line: str):
+        """The member id in the table's first column (the reach column also lists
+        ids, so only a hit near the row start counts)."""
+        best = None
+        for key in ["leader"] + workers:
+            pos = line.find(f"{key} ")
+            if pos != -1 and (best is None or pos < best[0]):
+                best = (pos, key)
+        return best[1] if best and best[0] < 12 else None
+
+    def click(col: int, row: int, timeout: float = 1.5):
+        os.write(fd, f"\x1b[<0;{col + 1};{row + 1}M\x1b[<0;{col + 1};{row + 1}m".encode())
+        screen.feed(read_all(fd, timeout).decode("utf-8", "replace"))
+        return screen.lines()
+
     rows = screen.lines()
     target = next((i for i, l in enumerate(rows) if " beta " in l), None)
     if target is None:
@@ -117,10 +134,7 @@ def main() -> int:
         os.kill(pid, 9)
         return 1
     # click column 6 (inside the sidebar), the row that shows beta
-    seq = f"\x1b[<0;6;{target + 1}M\x1b[<0;6;{target + 1}m"
-    os.write(fd, seq.encode())
-    screen.feed(read_all(fd, 1.5).decode("utf-8", "replace"))
-    rows = screen.lines()
+    rows = click(6, target)
     ok = any("▌beta" in l for l in rows)
     selected = next((l for l in rows if "▌" in l), "")
     if not ok:
@@ -130,6 +144,34 @@ def main() -> int:
         print("FAIL: the click did not select the row it pointed at")
         return 1
 
+    # scrolled table: the wheel moves the selection, the window follows, and a
+    # click must still land on the row it points at (the hint wraps at 96 cols)
+    for _ in range(5):
+        os.write(fd, b"\x1b[<65;6;6M")  # wheel down over the sidebar
+        time.sleep(0.08)
+    screen.feed(read_all(fd, 1.5).decode("utf-8", "replace"))
+    rows = screen.lines()
+    marked = next((l for l in rows if "▌" in l), "")
+    if "▌beta" in marked:
+        os.kill(pid, 9)
+        print("FAIL: the wheel did not move the table selection")
+        return 1
+    data_rows = [i for i, l in enumerate(rows) if first_column_key(l)]
+    if len(data_rows) < 3:
+        os.kill(pid, 9)
+        print("FAIL: too few table rows on screen:", rows[:16])
+        return 1
+    row = data_rows[-2]
+    key = first_column_key(rows[row])
+    rows = click(6, row)
+    if not any(f"▌{key}" in l for l in rows):
+        os.write(fd, b"\x11")
+        time.sleep(0.5)
+        os.kill(pid, 9)
+        print(f"FAIL: after scrolling, clicking the {key} row selected "
+              + next((l for l in rows if "▌" in l), "").strip()[:60])
+        return 1
+
     # click a tab: the panel must switch to the one under the pointer
     rows = screen.lines()
     tabs_row = next((i for i, l in enumerate(rows) if "▍Team" in l or ("Team" in l and "Tasks" in l)), None)
@@ -137,18 +179,17 @@ def main() -> int:
     if tabs_row is not None:
         line = rows[tabs_row]
         col = line.index("Log")
-        os.write(fd, f"\x1b[<0;{col + 1};{tabs_row + 1}M\x1b[<0;{col + 1};{tabs_row + 1}m".encode())
-        screen.feed(read_all(fd, 1.5).decode("utf-8", "replace"))
-        rows = screen.lines()
+        rows = click(col, tabs_row)
         ok_tab = any("▍Log" in l for l in rows)
     os.write(fd, b"\x11")
     time.sleep(0.5)
     os.kill(pid, 9)
     print(f"clicked row {target} (beta); selection now: {selected.strip()[:60]!r}")
+    print(f"wheel-scrolled, then clicked the {key} row: selection followed the pointer")
     print("clicked the Log tab:", "switched" if ok_tab else "FAILED")
     if not ok_tab:
         return 1
-    print("PTY click check ok: row click == selection, tab click == panel")
+    print("PTY click check ok: row click == selection (plain + scrolled), tab click == panel")
     return 0
 
 

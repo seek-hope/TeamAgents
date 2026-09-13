@@ -28,7 +28,7 @@ pub struct SlashCommand {
 pub const SLASH_COMMANDS: &[SlashCommand] = &[
     SlashCommand { name: "/help", description: "显示快捷键与斜杠命令说明" },
     SlashCommand { name: "/quit", description: "退出 TeamAgents" },
-    SlashCommand { name: "/settings", description: "打开设置浮层（语言、动效）" },
+    SlashCommand { name: "/settings", description: "打开设置浮层（界面语言）" },
 ];
 
 #[derive(Clone, Debug)]
@@ -935,6 +935,31 @@ impl App {
         }
     }
 
+    /// Move the active panel's selection by `delta`: the wheel does this over the
+    /// table rect, ↑/↓ do it while the panel has the focus. It never touches the
+    /// composer (the wheel used to fall through to the history recall).
+    pub fn move_table_selection(&mut self, delta: i64) {
+        let panel = PANELS[self.panel];
+        let rows = self.panel_row_keys(panel);
+        if rows.is_empty() {
+            return;
+        }
+        let (_, idx) = self.table_cursors.get(panel).cloned().unwrap_or((None, 0));
+        let idx = if delta < 0 {
+            idx.saturating_sub(delta.unsigned_abs() as usize)
+        } else {
+            (idx + delta as usize).min(rows.len() - 1)
+        };
+        let key = rows.get(idx).cloned();
+        self.table_cursors.insert(panel, (key.clone(), idx));
+        if panel == "team" {
+            // on_data_table_row_highlighted: highlighting a member filters the log
+            if let Some(member) = key {
+                self.log_member = Some(member);
+            }
+        }
+    }
+
     /// "(member X · Enter 取消)" suffix for the log title, empty without a filter.
     pub fn log_filter_suffix(&self) -> String {
         match &self.log_member {
@@ -1096,16 +1121,14 @@ impl App {
                 }
                 return self.action_interrupt_leader();
             }
-            // scrolling belongs to the pane under the pointer of attention
+            // scrolling belongs to the pane under the pointer of attention; the
+            // Ctrl+D/U chords scroll in every focus (the docs bind them to the
+            // scroll, so a panel-focused Ctrl+D must never reach a table action)
             (KeyCode::PageUp, false) | (KeyCode::Char('u'), true) => {
                 self.scroll_up(10);
                 return vec![];
             }
-            (KeyCode::PageDown, false) | (KeyCode::Char('d'), true) if self.focus == Focus::Composer && ctrl => {
-                self.scroll_down(10);
-                return vec![];
-            }
-            (KeyCode::PageDown, _) => {
+            (KeyCode::PageDown, _) | (KeyCode::Char('d'), true) => {
                 self.scroll_down(10);
                 return vec![];
             }
@@ -1127,6 +1150,8 @@ impl App {
 
     /// Wheel/keyboard scrolling: the log panel scrolls its stream, everywhere
     /// else the chat history scrolls (0 = newest entry pinned to the bottom).
+    /// Keyboard scrolling follows the focus; the mouse wheel passes the pane
+    /// under the pointer explicitly (`scroll_up_target`).
     pub fn scroll_target(&self) -> &'static str {
         if self.focus == Focus::Panel && PANELS[self.panel] == "log" {
             "log"
@@ -1136,46 +1161,39 @@ impl App {
     }
 
     pub fn scroll_up(&mut self, lines: usize) {
-        match self.scroll_target() {
+        self.scroll_up_target(self.scroll_target(), lines);
+    }
+
+    pub fn scroll_up_target(&mut self, target: &str, lines: usize) {
+        match target {
             "log" => self.log_scroll = self.log_scroll.saturating_add(lines),
             _ => self.chat_scroll = self.chat_scroll.saturating_add(lines),
         }
     }
 
     pub fn scroll_down(&mut self, lines: usize) {
-        match self.scroll_target() {
+        self.scroll_down_target(self.scroll_target(), lines);
+    }
+
+    pub fn scroll_down_target(&mut self, target: &str, lines: usize) {
+        match target {
             "log" => self.log_scroll = self.log_scroll.saturating_sub(lines),
             _ => self.chat_scroll = self.chat_scroll.saturating_sub(lines),
         }
     }
 
+    /// Ctrl+Home: ask for "everything"; the renderer clamps the request to the
+    /// wrapped height it actually drew (the width is only known there).
     pub fn scroll_to_top(&mut self) {
-        let lines = self.chat_wrapped_lines().len().max(self.log_wrapped_lines().len());
         match self.scroll_target() {
-            "log" => self.log_scroll = lines,
-            _ => self.chat_scroll = lines,
+            "log" => self.log_scroll = usize::MAX,
+            _ => self.chat_scroll = usize::MAX,
         }
     }
 
     pub fn scroll_to_bottom(&mut self) {
         self.chat_scroll = 0;
         self.log_scroll = 0;
-    }
-
-    /// Wrapped chat lines (needs a width; the renderer uses its own, this is
-    /// only for clamping the scroll offset).
-    fn chat_wrapped_lines(&self) -> Vec<String> {
-        let mut out: Vec<String> = vec![];
-        for (who, text) in &self.chat {
-            for line in crate::ui::chat_entry_lines(&self.lang, who, text, 80) {
-                out.push(line.spans.iter().map(|s| s.content.to_string()).collect());
-            }
-        }
-        out
-    }
-
-    fn log_wrapped_lines(&self) -> Vec<String> {
-        self.log_lines.clone()
     }
 
     /// The token being typed after "/" (None when the composer is not a command).
@@ -1311,11 +1329,22 @@ impl App {
             KeyCode::Char('j') if key.modifiers.contains(Mod::CONTROL) => self.composer.insert_newline(),
             KeyCode::Enter => {
                 if let Some(text) = self.composer.submit() {
-                    if text.trim().starts_with('/') {
-                        if let Some(command) = SLASH_COMMANDS.iter().find(|c| c.name == text.trim()) {
-                            self.composer.set_text(command.name);
-                            return self.run_slash();
-                        }
+                    let trimmed = text.trim();
+                    if trimmed.starts_with('/') {
+                        // an unknown or argument-carrying command must never be
+                        // sent to the Leader as a normal message
+                        return match SLASH_COMMANDS.iter().find(|c| c.name == trimmed) {
+                            Some(command) => {
+                                self.composer.set_text(command.name);
+                                self.run_slash()
+                            }
+                            None => {
+                                self.composer.set_text(&text); // keep the draft for editing
+                                let msg = self.t("未知命令：{v0}（/help 查看可用命令）", &[("v0", trimmed)]);
+                                self.write_chat("system", &msg);
+                                vec![]
+                            }
+                        };
                     }
                     return vec![Effect::UserMessage(text)];
                 }
@@ -1338,16 +1367,10 @@ impl App {
             KeyCode::End => self.composer.move_end(),
             KeyCode::Backspace => self.composer.backspace(),
             KeyCode::Delete => self.composer.delete(),
-            KeyCode::Tab => {
-                if matches!(PANELS[self.panel], "team" | "tasks" | "approvals" | "sessions" | "settings") {
-                    self.focus = Focus::Panel;
-                }
-            }
-            KeyCode::BackTab => {
-                if matches!(PANELS[self.panel], "team" | "tasks" | "approvals" | "sessions" | "settings") {
-                    self.focus = Focus::Panel;
-                }
-            }
+            // Tab enters the panel whatever tab is shown (the removal of the
+            // settings tab left shared/log unreachable by keyboard otherwise);
+            // the panel's own Tab/Esc returns to the composer.
+            KeyCode::Tab | KeyCode::BackTab => self.focus = Focus::Panel,
             KeyCode::Char('a') if key.modifiers.contains(Mod::CONTROL) => self.composer.move_home(),
             KeyCode::Char('e') if key.modifiers.contains(Mod::CONTROL) => self.composer.move_end(),
             // an unhandled control chord must never type a letter into the composer
@@ -1359,31 +1382,32 @@ impl App {
     }
 
     fn panel_key(&mut self, key: crossterm::event::KeyEvent) -> Vec<Effect> {
-        use crossterm::event::KeyCode;
+        use crossterm::event::{KeyCode, KeyModifiers as Mod};
+        // panel actions are plain keys: Ctrl+A/E are line motions and Ctrl+D/U
+        // scroll (docs), so a chord must never archive/deny/cancel a row
+        if key.modifiers.intersects(Mod::CONTROL | Mod::ALT)
+            && !matches!(key.code, KeyCode::Tab | KeyCode::BackTab)
+        {
+            return vec![];
+        }
         let panel = PANELS[self.panel];
-        let rows: Vec<String> = self.panel_row_keys(panel);
-        let (key_saved, mut idx) = self.table_cursors.get(panel).cloned().unwrap_or((None, 0));
         match key.code {
             KeyCode::Tab | KeyCode::BackTab => {
                 self.focus = Focus::Composer;
                 return vec![];
             }
-            KeyCode::Up => idx = idx.saturating_sub(1),
-            KeyCode::Down => idx = (idx + 1).min(rows.len().saturating_sub(1)),
+            KeyCode::Up => {
+                self.move_table_selection(-1);
+                return vec![];
+            }
+            KeyCode::Down => {
+                self.move_table_selection(1);
+                return vec![];
+            }
             _ => {}
         }
-        if matches!(key.code, KeyCode::Up | KeyCode::Down) {
-            let new_key = rows.get(idx).cloned();
-            self.table_cursors.insert(panel, (new_key.clone(), idx));
-            if panel == "team" {
-                // on_data_table_row_highlighted: highlight filters the log
-                if let Some(member) = new_key {
-                    self.log_member = Some(member);
-                }
-            }
-            let _ = key_saved;
-            return vec![];
-        }
+        let rows: Vec<String> = self.panel_row_keys(panel);
+        let (_, idx) = self.table_cursors.get(panel).cloned().unwrap_or((None, 0));
         let selected = rows.get(idx).cloned();
         match (panel, key.code) {
             ("team", KeyCode::Enter) => {

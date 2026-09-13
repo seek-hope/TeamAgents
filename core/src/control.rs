@@ -66,6 +66,29 @@ fn pbool(p: &Json, key: &str) -> bool {
     p.get(key).map(|v| v.as_bool().unwrap_or(!v.is_null() && *v != Json::from(0))).unwrap_or(false)
 }
 
+/// Python truthiness for `payload.get(k) or payload.get(j)` style checks.
+fn truthy(v: Option<&Json>) -> bool {
+    match v {
+        None | Some(Json::Null) => false,
+        Some(Json::Bool(b)) => *b,
+        Some(Json::String(s)) => !s.is_empty(),
+        Some(Json::Number(n)) => n.as_f64().map(|f| f != 0.0).unwrap_or(true),
+        Some(Json::Array(a)) => !a.is_empty(),
+        Some(Json::Object(o)) => !o.is_empty(),
+    }
+}
+
+/// Python `int(x)` over wire JSON: numbers truncate, bools are 0/1, integer
+/// strings parse; anything else is None (callers turn that into an error).
+fn py_int(v: &Json) -> Option<i64> {
+    match v {
+        Json::Bool(b) => Some(*b as i64),
+        Json::Number(n) => n.as_i64().or_else(|| n.as_f64().map(|f| f.trunc() as i64)),
+        Json::String(s) => s.trim().parse::<i64>().ok(),
+        _ => None,
+    }
+}
+
 /// control.py::Control._derived_task_id — deterministic per action id.
 pub fn derived_task_id(action: &TeamAction) -> String {
     if let Some(explicit) = action.payload.get("task_id").and_then(|v| v.as_str()) {
@@ -79,6 +102,7 @@ pub fn payload_hash(action: &TeamAction) -> String {
     hex_prefix(&Sha256::digest(canonical_json(&action.payload).as_bytes()), 32)
 }
 
+/// json.dumps(payload, sort_keys=True) with Python's default separators.
 fn canonical_json(v: &Json) -> String {
     match v {
         Json::Object(m) => {
@@ -86,13 +110,13 @@ fn canonical_json(v: &Json) -> String {
             keys.sort();
             let inner: Vec<String> = keys
                 .into_iter()
-                .map(|k| format!("{}:{}", serde_json::to_string(k).unwrap(), canonical_json(&m[k])))
+                .map(|k| format!("{}: {}", serde_json::to_string(k).unwrap(), canonical_json(&m[k])))
                 .collect();
-            format!("{{{}}}", inner.join(","))
+            format!("{{{}}}", inner.join(", "))
         }
         Json::Array(a) => {
             let inner: Vec<String> = a.iter().map(canonical_json).collect();
-            format!("[{}]", inner.join(","))
+            format!("[{}]", inner.join(", "))
         }
         other => other.to_string(),
     }
@@ -107,34 +131,64 @@ impl Control {
         Self { store, session_id: session_id.into(), catalog: UserConfig::default(), mid_turn_pushes: vec![] }
     }
 
+    /// storage.py::_Tx — one re-entrant transaction: BEGIN IMMEDIATE at depth 0,
+    /// COMMIT on success, ROLLBACK on error. Store failures are returned, never
+    /// swallowed (Python lets OperationalError out of every caller here).
+    fn in_tx<T>(&mut self, f: impl FnOnce(&mut Self) -> Result<T, String>) -> Result<T, String> {
+        self.store.begin().map_err(|e| e.to_string())?;
+        match f(self) {
+            Ok(v) => match self.store.commit() {
+                Ok(()) => Ok(v),
+                Err(e) => {
+                    let _ = self.store.rollback();
+                    Err(e.to_string())
+                }
+            },
+            Err(e) => {
+                let _ = self.store.rollback();
+                Err(e)
+            }
+        }
+    }
+
     // ------------------------------------------------------------------ submit
 
     /// control.py::Control.submit — a failed attempt rolls back every write it
     /// made; the failure receipt then commits in a clean transaction.
-    pub fn submit(&mut self, action: &TeamAction) -> Receipt {
+    /// Err means even that receipt could not be recorded (store still busy).
+    pub fn submit(&mut self, action: &TeamAction) -> Result<Receipt, String> {
         match self.submit_in_tx(action) {
-            Ok(r) => r,
+            Ok(r) => Ok(r),
             Err(e) => {
                 let _ = self.store.rollback();
                 let receipt = Receipt::failure(action, e);
-                let _ = self.store.begin();
-                if let Ok(Some(prior)) = self.store.get_action_receipt(&action.action_id) {
-                    let _ = self.store.commit();
-                    return prior;
+                let recorded = self.in_tx(|ctl| {
+                    if let Some(prior) = ctl
+                        .store
+                        .get_action_receipt(&action.action_id)
+                        .map_err(|e| e.to_string())?
+                    {
+                        return Ok(Some(prior));
+                    }
+                    ctl.store
+                        .record_action(
+                            &action.action_id, &ctl.session_id, &action.actor_id,
+                            action.run_id.as_deref(), action.kind, &payload_hash(action), &receipt,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    Ok(None)
+                });
+                match recorded {
+                    Ok(Some(prior)) => Ok(prior),
+                    Ok(None) => Ok(receipt),
+                    Err(e) => Err(e),
                 }
-                let _ = self.store.record_action(
-                    &action.action_id, &self.session_id, &action.actor_id,
-                    action.run_id.as_deref(), action.kind, &payload_hash(action), &receipt,
-                );
-                let _ = self.store.commit();
-                receipt
             }
         }
     }
 
     fn submit_in_tx(&mut self, action: &TeamAction) -> Result<Receipt, String> {
-        self.store.begin().map_err(|e| e.to_string())?;
-        let result = (|ctl: &mut Self| {
+        self.in_tx(|ctl| {
             if let Some(prior) = ctl.store.get_action_receipt(&action.action_id).map_err(|e| e.to_string())? {
                 return Ok(prior);
             }
@@ -155,42 +209,32 @@ impl Control {
                 action.run_id.as_deref(), action.kind, &payload_hash(action), &reduction.receipt,
             ).map_err(|e| e.to_string())?;
             Ok(reduction.receipt)
-        })(self);
-        match result {
-            Ok(r) => {
-                self.store.commit().map_err(|e| e.to_string())?;
-                Ok(r)
-            }
-            Err(e) => {
-                let _ = self.store.rollback();
-                Err(e)
-            }
-        }
+        })
     }
 
     /// control.py::Control.schedule — re-run scheduling against committed state.
-    pub fn schedule(&mut self) {
-        let _ = self.store.begin();
-        let spec = self.store.load_team_spec(&self.session_id, None).expect("spec");
-        let _ = self.schedule_inner(&spec);
-        let _ = self.store.commit();
+    pub fn schedule(&mut self) -> Result<(), String> {
+        self.in_tx(|ctl| {
+            let spec = ctl.store.load_team_spec(&ctl.session_id.clone(), None).map_err(|e| e.to_string())?;
+            ctl.schedule_inner(&spec)
+        })
     }
 
     /// control.py::Control.emit — persist runtime-originated events and schedule.
-    pub fn emit(&mut self, drafts: Vec<EventDraft>, actor_id: &str) {
-        let _ = self.store.begin();
-        let spec = self.store.load_team_spec(&self.session_id, None).expect("spec");
-        let action = TeamAction {
-            action_id: new_id("sys"),
-            session_id: self.session_id.clone(),
-            actor_id: actor_id.to_string(),
-            run_id: None,
-            kind: ActionKind::SendMessage,
-            payload: json!({}),
-        };
-        let _ = self.persist_events(&action, &spec, &drafts);
-        let _ = self.schedule_inner(&spec);
-        let _ = self.store.commit();
+    pub fn emit(&mut self, drafts: Vec<EventDraft>, actor_id: &str) -> Result<(), String> {
+        self.in_tx(|ctl| {
+            let spec = ctl.store.load_team_spec(&ctl.session_id.clone(), None).map_err(|e| e.to_string())?;
+            let action = TeamAction {
+                action_id: new_id("sys"),
+                session_id: ctl.session_id.clone(),
+                actor_id: actor_id.to_string(),
+                run_id: None,
+                kind: ActionKind::SendMessage,
+                payload: json!({}),
+            };
+            ctl.persist_events(&action, &spec, &drafts)?;
+            ctl.schedule_inner(&spec)
+        })
     }
 
     // -------------------------------------------------------------- validation
@@ -312,7 +356,7 @@ impl Control {
                 if !space.writers.iter().any(|w| w == actor) {
                     return Some(format!("{actor:?} has no write access to shared space {space_id:?}"));
                 }
-                if pget(p, "content").is_none() && pget(p, "ref").is_none() {
+                if !truthy(pget(p, "content")) && !truthy(pget(p, "ref")) {
                     return Some("shared entry needs content or a ref".into());
                 }
                 None
@@ -467,9 +511,9 @@ impl Control {
         match kind {
             ActionKind::UserMessage | ActionKind::UserSupplement => {
                 // user input resumes a paused session (plan §9.3)
-                if let Ok(Some(session)) = self.store.get_session(&self.session_id) {
+                if let Some(session) = self.store.get_session(&self.session_id).map_err(|e| e.to_string())? {
                     if session.get("status").and_then(|v| v.as_str()) == Some("PAUSED") {
-                        let _ = self.store.set_session_status(&self.session_id, SessionStatus::Active);
+                        self.store.set_session_status(&self.session_id, SessionStatus::Active).map_err(|e| e.to_string())?;
                     }
                 }
                 let goal_id = self.ensure_goal(spec)?;
@@ -571,9 +615,11 @@ impl Control {
                     .collect();
                 if !pending.is_empty() {
                     if let Some(run_id) = action.run_id.as_deref() {
-                        if let Ok(Some(run)) = self.store.get_run(run_id) {
-                            let _ = self.store.update_run_status_where(&run.run_id, TurnStatus::Running, TurnStatus::WaitingTask);
-                            let _ = self.store.deliver_wait_registration(&run.run_id, &pending);
+                        if let Some(run) = self.store.get_run(run_id).map_err(|e| e.to_string())? {
+                            self.store
+                                .update_run_status_where(&run.run_id, TurnStatus::Running, TurnStatus::WaitingTask)
+                                .map_err(|e| e.to_string())?;
+                            self.store.deliver_wait_registration(&run.run_id, &pending).map_err(|e| e.to_string())?;
                         }
                     }
                     return Ok(Reduction {
@@ -584,7 +630,9 @@ impl Control {
                         receipt: ok(json!({"waiting": true, "task_ids": pending})),
                     });
                 }
-                let results: Vec<Json> = task_ids.iter().map(|t| self.task_result(t)).collect();
+                // control.py: `{tid: self._task_result(tid) for tid in task_ids}`
+                let results: serde_json::Map<String, Json> =
+                    task_ids.iter().map(|t| (t.clone(), self.task_result(t))).collect();
                 Ok(Reduction {
                     events: vec![],
                     receipt: ok(json!({"waiting": false, "results": results})),
@@ -709,7 +757,11 @@ impl Control {
 
             ActionKind::CancelRun => {
                 let run_id = pstr(p, "run_id");
-                let run = self.store.get_run(&run_id).map_err(|e| e.to_string())?.expect("validated");
+                let run = self
+                    .store
+                    .get_run(&run_id)
+                    .map_err(|e| e.to_string())?
+                    .ok_or_else(|| format!("unknown run {run_id:?}"))?;
                 self.store.set_run_cancel_requested(&run.run_id).map_err(|e| e.to_string())?;
                 Ok(Reduction {
                     events: vec![EventDraft::new(
@@ -722,7 +774,11 @@ impl Control {
 
             ActionKind::ApprovalDecision => {
                 let aid = pstr(p, "approval_id");
-                let req = self.store.get_approval(&aid).map_err(|e| e.to_string())?.expect("validated");
+                let req = self
+                    .store
+                    .get_approval(&aid)
+                    .map_err(|e| e.to_string())?
+                    .ok_or_else(|| format!("unknown approval {aid:?}"))?;
                 let status = match pstr(p, "decision").as_str() {
                     "once" => ApprovalStatus::ApprovedOnce,
                     "session" => ApprovalStatus::ApprovedSession,
@@ -782,15 +838,20 @@ impl Control {
                 .collect(),
             Some(sid) => vec![sid.to_string()],
         };
-        let after: i64 = match p.get("after_sequence").and_then(|v| v.as_i64()) {
-            Some(a) => a,
-            None => spaces
+        let after: i64 = match p.get("after_sequence") {
+            None | Some(Json::Null) => spaces
                 .iter()
                 .map(|s| self.store.shared_cursor(&self.session_id, actor, s).unwrap_or(0))
                 .min()
                 .unwrap_or(0),
+            // control.py does int(after_sequence) and lets ValueError become a
+            // failed receipt — a malformed cursor must never read from 0 silently.
+            Some(v) => py_int(v).ok_or_else(|| format!("bad after_sequence {v}"))?,
         };
-        let limit = p.get("limit").and_then(|v| v.as_i64()).unwrap_or(50);
+        let limit: i64 = match p.get("limit") {
+            None => 50,
+            Some(v) => py_int(v).ok_or_else(|| format!("bad limit {v}"))?,
+        };
         let entries = self.store.shared_entries(&self.session_id, &spaces, after, limit).map_err(|e| e.to_string())?;
         if advance && !entries.is_empty() {
             for s in &spaces {
@@ -815,7 +876,11 @@ impl Control {
         let p = &action.payload;
         let patch_id = p.get("patch_id").and_then(|v| v.as_str()).map(str::to_string);
         let mut patch = if let Some(pid) = &patch_id {
-            let patch = self.store.get_patch(pid).map_err(|e| e.to_string())?.expect("validated");
+            let patch = self
+                .store
+                .get_patch(pid)
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("unknown patch {pid:?}"))?;
             if pbool(p, "reject") {
                 self.store.set_patch_status(&patch.patch_id, PatchStatus::Rejected).map_err(|e| e.to_string())?;
                 return Ok(Reduction {
@@ -841,7 +906,12 @@ impl Control {
             }
         };
         let operations = if patch_id.is_some() {
-            p.get("operations").and_then(|v| v.as_array()).cloned().unwrap_or(patch.operations.clone())
+            // control.py: `p.get("operations") or patch.operations` — an explicit
+            // empty list is falsy and falls back to the stored patch's operations.
+            match p.get("operations").and_then(|v| v.as_array()) {
+                Some(ops) if !ops.is_empty() => ops.clone(),
+                _ => patch.operations.clone(),
+            }
         } else {
             patch.operations.clone()
         };
@@ -859,7 +929,7 @@ impl Control {
             self.store.insert_patch(&patch, &self.session_id).map_err(|e| e.to_string())?;
             for a in &affected {
                 if self.agent_has_live_run(a) {
-                    let _ = self.store.set_agent_status(&self.session_id, a, AgentStatus::Draining);
+                    self.store.set_agent_status(&self.session_id, a, AgentStatus::Draining).map_err(|e| e.to_string())?;
                 }
             }
             return Ok(Reduction {
@@ -1201,7 +1271,7 @@ impl Control {
             .map_err(|e| e.to_string())?;
         for task_id in &handed {
             // a handed-over task must be announced to its new assignee
-            let _ = self.store.del_meta(&format!("task_ready_announced:{task_id}"));
+            self.store.del_meta(&format!("task_ready_announced:{task_id}")).map_err(|e| e.to_string())?;
         }
         let dropped = self
             .store
@@ -1232,7 +1302,7 @@ impl Control {
             .store
             .get_task(&pstr(&action.payload, "task_id"))
             .map_err(|e| e.to_string())?
-            .expect("validated");
+            .ok_or("unknown task")?;
         if matches!(task.status, TaskStatus::Succeeded | TaskStatus::Failed | TaskStatus::Cancelled) {
             return Ok(Reduction {
                 events: vec![],
@@ -1405,7 +1475,7 @@ impl Control {
             .collect();
         for agent in &spec.agents {
             if draining.contains(&agent.id) {
-                let _ = self.store.set_agent_status(&session, &agent.id, AgentStatus::Draining);
+                self.store.set_agent_status(&session, &agent.id, AgentStatus::Draining).map_err(|e| e.to_string())?;
             }
             let parked = self.waiting_run(&agent.id)?;
             if let Some(parked) = &parked {
@@ -1679,7 +1749,7 @@ impl Control {
                 self.store.set_patch_status(&patch.patch_id, PatchStatus::Failed).map_err(|e| e.to_string())?;
                 for agent_id in &patch.affected_agents {
                     if matches!(self.store.agent_status(&self.session_id, agent_id), Ok(Some(AgentStatus::Draining))) {
-                        let _ = self.store.set_agent_status(&self.session_id, agent_id, AgentStatus::Idle);
+                        self.store.set_agent_status(&self.session_id, agent_id, AgentStatus::Idle).map_err(|e| e.to_string())?;
                     }
                 }
                 let action = TeamAction {
@@ -1874,18 +1944,7 @@ impl Control {
     /// runtime.py::_execute_inner start semantics: mark RUNNING, start the
     /// attached task, emit lifecycle events. Returns the fresh run row.
     pub fn begin_run(&mut self, run_id: &str) -> Result<TurnRun, String> {
-        let _ = self.store.begin();
-        let r = self.begin_run_inner(run_id);
-        match r {
-            Ok(run) => {
-                let _ = self.store.commit();
-                Ok(run)
-            }
-            Err(e) => {
-                let _ = self.store.rollback();
-                Err(e)
-            }
-        }
+        self.in_tx(|ctl| ctl.begin_run_inner(run_id))
     }
 
     fn begin_run_inner(&mut self, run_id: &str) -> Result<TurnRun, String> {
@@ -1919,14 +1978,29 @@ impl Control {
                 }
             }
         }
+        // runtime.py::_execute_inner — every turn announces its start; the wake
+        // reason tells the member why this segment is running.
+        let spec = self.store.load_team_spec(&self.session_id, None).map_err(|e| e.to_string())?;
+        let wake = self.wake_info(&run)["reason"].clone();
+        let action = self.sys_action(ActionKind::SendMessage, &run.agent_id);
+        self.persist_events(
+            &action,
+            &spec,
+            &[EventDraft {
+                kind: EventKind::RunStarted,
+                payload: json!({"run_id": run.run_id, "agent_id": run.agent_id,
+                                "status": "RUNNING", "wake": wake}),
+                actor_id: Some(run.agent_id.clone()),
+                ..EventDraft::new(EventKind::RunStarted, json!({}))
+            }],
+        )?;
         Ok(run)
     }
 
     /// runtime.py::_request_stop timeout path: mark OUTCOME_UNKNOWN and expire
     /// the run's pending approvals with audit events.
     pub fn stop_timeout(&mut self, run_id: &str) -> Result<(), String> {
-        let _ = self.store.begin();
-        let r = (|ctl: &mut Self| {
+        self.in_tx(|ctl| {
             let run = ctl.store.get_run(run_id).map_err(|e| e.to_string())?.ok_or("unknown run")?;
             let changed = ctl
                 .store
@@ -1942,11 +2016,7 @@ impl Control {
                 ctl.persist_events(&action, &spec, &events)?;
             }
             Ok(())
-        })(self);
-        match r {
-            Ok(()) => { let _ = self.store.commit(); Ok(()) }
-            Err(e) => { let _ = self.store.rollback(); Err(e) }
-        }
+        })
     }
 
     /// Drain mid-turn pushes recorded by schedule (runtime.py::_drain_mid_turn).
@@ -1969,12 +2039,13 @@ impl Control {
             return json!({"reason": "user_input", "payload": {"kinds": kinds}});
         }
         if !run.waiting_on.is_empty() {
-            let results: Vec<Json> = run.waiting_on.iter().map(|tid| {
+            // runtime.py::_wake_info — results are keyed by task id
+            let results: serde_json::Map<String, Json> = run.waiting_on.iter().map(|tid| (tid.clone(), {
                 match self.store.get_task(tid).ok().flatten() {
                     Some(t) => json!({"task_id": t.task_id, "status": enum_name(t.status), "result_refs": t.result_refs}),
                     None => json!({"task_id": tid, "status": "UNKNOWN"}),
                 }
-            }).collect();
+            })).collect();
             return json!({"reason": "task_results", "payload": {"task_ids": run.waiting_on, "results": results}});
         }
         json!({"reason": "new_input", "payload": {}})
@@ -1995,18 +2066,7 @@ impl Control {
     /// task semantics, run status, member state, delivery ack, one transaction.
     /// `ack_ids` = the deliveries actually handed to the runner (RT-05 ledger).
     pub fn finalize_run(&mut self, run_id: &str, outcome: &TurnOutcome, ack_ids: &[i64]) -> Result<(), String> {
-        let _ = self.store.begin();
-        let r = self.finalize_run_inner(run_id, outcome, ack_ids);
-        match r {
-            Ok(()) => {
-                let _ = self.store.commit();
-                Ok(())
-            }
-            Err(e) => {
-                let _ = self.store.rollback();
-                Err(e)
-            }
-        }
+        self.in_tx(|ctl| ctl.finalize_run_inner(run_id, outcome, ack_ids))
     }
 
     fn finalize_run_inner(&mut self, run_id: &str, outcome: &TurnOutcome, ack_ids: &[i64]) -> Result<(), String> {
@@ -2116,7 +2176,9 @@ impl Control {
             if let Some(tid) = &run.task_id {
                 if let Ok(Some(task)) = self.store.get_task(tid) {
                     if matches!(task.status, TaskStatus::Pending | TaskStatus::Running) {
-                        let _ = self.store.compare_and_set_task(&task.task_id, &enum_name(task.status), TaskStatus::Blocked, None);
+                        self.store
+                            .compare_and_set_task(&task.task_id, &enum_name(task.status), TaskStatus::Blocked, None)
+                            .map_err(|e| e.to_string())?;
                         events.push(EventDraft {
                             kind: EventKind::TaskBlocked,
                             payload: json!({"task_id": task.task_id, "assignee": task.assignee,

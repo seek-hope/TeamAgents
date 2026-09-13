@@ -13,7 +13,8 @@ main 分支保留 Python 实现作为基准；本分支是**完整的 Rust 实�
   成员后端（`ChatRunner` OpenAI 兼容工具循环、`CodexRunner` app-server、`ScriptedMember`）、
   工具执行器（文件沙箱/bwrap/SSRF 防护）、用户配置、会话清单与锁、CLI。
   二进制 `teamagents`：CLI + TUI 启动器 + `serve`（TUI 的无头会话服务，JSON-lines stdio）。
-- **Rust（`tui/`）= 界面**：ratatui/crossterm 纯客户端，逐像素复现 main 的 Textual 界面。
+- **Rust（`tui/`）= 界面**：ratatui/crossterm 纯客户端；**Rust 原生设计**（D-20），
+  不再追求与 main 的 Textual 界面逐像素一致。
 
 ## 移植进度台账
 
@@ -27,20 +28,23 @@ main 分支保留 Python 实现作为基准；本分支是**完整的 Rust 实�
 | runtime | runtime.py | ✅ `engine::runtime`（loop/reconcile/settle/mid-turn/cancel/timeout/步骤上限） | T1–T5/T9、取消/暂停场景 |
 | gateway | agents.py + permissions.py | ✅ `engine::gateway`（ToolGateway/PermissionPolicy/ApprovalGate，含权限模式实时同步） | 单测 + full-auto 场景 |
 | scripted member | agents.py::FakeMember | ✅ `engine::scripted`（含模板引用/barrier/取消） | 全部场景测试 |
-| codex runner | codex.py | ✅ `engine::codex`（app-server JSON-RPC、thread 持久化、批准 park/decide、interrupt、reconcile） | fake-server 3 项 + 真实 CLI live 用例 |
-| chat runner（替代 deepagents） | runners.py | ✅ `engine::chat`（工具循环 + renderView + 暂停/恢复 + provider→base_url + 按 `tool_bindings` 暴露 files/shell/web 执行工具 + Anthropic Messages 协议 + skills/指令注入） | 单测 + 真实 DeepSeek live 冒烟 |
-| tools | tools.py + execution.py | ✅ `engine::tools`（文件工具沙箱；bwrap argv 与 execution.py 对齐、缺 bwrap 直接报错不降级、环境白名单；guardUrl + web_fetch；AnySearch web_search） | 单测（含真实 bwrap 运行）+ cli doctor |
+| codex runner | codex.py | ✅ `engine::codex`（app-server JSON-RPC、thread 持久化、批准 park/decide、interrupt、`thread/read` reconcile、进程组清理） | fake-server + 合同测试 + 真实 CLI live 用例 |
+| chat runner（替代 deepagents） | runners.py | ✅ `engine::chat`（工具循环 + renderView + 暂停/恢复 + provider→base_url + 按 `tool_bindings` 暴露 files/shell/web 执行工具 + Anthropic Messages 协议 + skills/指令注入 + 成员历史持久化） | chat_e2e 假 OpenAI harness + 真实 DeepSeek live 冒烟 |
+| tools | tools.py + execution.py | ✅ `engine::tools`（文件工具沙箱；bwrap argv 与 execution.py 对齐、缺 bwrap 直接报错不降级、环境白名单；guardUrl 判定表与 Python 差分一致；web_fetch；AnySearch web_search；长输出落 artifacts 并可经 `/artifacts/` 前缀读回） | 单测（含真实 bwrap 运行）+ cli doctor |
 | MCP 工具服务 | tools.py::build_bound_tools | ✅ `engine::bound` + `engine::mcp`（stdio 会话、`<service>_<tool>` 命名、tool_names 过滤、required/optional 语义、绑定即授权） | 真实 MCP stdio 服务器集成测试 |
 | workspace 策略 | workspace.py | ✅ `engine::workspace`（shared/isolated/git_worktree、复用与回退规则、清理守卫、Leader 合并助手、会话删除守卫） | 单测（真实 git worktree 生命周期） |
 | config | config.py | ✅ toml crate + XDG 路径 + catalog；项目配置合并（用户优先、`trust_project_tools`）；`[permissions] mode`；TeamSpec 支持 JSON/YAML | 单测 + CLI 用例 |
-| sessions | sessions.py + session.py | ✅ 清单/pid 锁/归档/删除/open_session | worker 协议测试 + TUI 冒烟 |
-| CLI | cli.py | ✅ doctor/validate/sessions/version/--plain REPL/TUI 启动 | engine CLI 测试 |
-| TUI | tui/（Textual ~1700 行） | ✅ ratatui/crossterm，**Rust 原生设计**（D-20：响应式双栏/滚动/胶囊/自适应列；D-18 的逐像素对齐已不再追求） | Rust 单元 + TestBackend 帧 + PTY 冒烟 |
+| sessions | sessions.py + session.py | ✅ 清单/flock 锁/归档/删除/open_session | worker 协议测试 + session_boot 锁用例 + TUI 冒烟 |
+| CLI | cli.py | ✅ doctor/validate/sessions/version/--plain REPL/TUI 启动；doctor 实跑 bwrap 隔离探针与 codex schema 方法集合校验 | engine CLI 测试 |
+| TUI | tui/（Textual ~1700 行） | ✅ ratatui/crossterm，**Rust 原生设计**（D-20：固定上下分区/滚动/胶囊/自适应列；D-18 的逐像素对齐已不再追求） | Rust 单元 + TestBackend 帧 + PTY 冒烟（含点击检查） |
 
 **未移植/有意简化**：deepagents 图框架与 `general-purpose` 子代理（被 ChatRunner 工具循环
 取代）；skills 走"内容注入系统提示词"而非 Python 版的虚拟文件系统（8KB/文件、32KB/成员上限）；
 MCP 的 http/sse 传输（stdio 已实现）；TUI 以 Rust/终端习惯为准，不复刻 Textual 的组件外观
-（D-20；Python 帧对比脚本保留为参考工具）。
+（D-20；Python 帧对比脚本保留为参考工具）。2026-09-13 全面审查后的其余保留差异（DENIED
+重启记忆、Codex 审批 600s 上限、`kill` 退化路径、成员历史无上限、会话面板 size TTL、
+web 前缀预授权、`/artifacts/` 可见性）见 `docs/DECISIONS.md` D-21；artifacts、成员历史持久化、
+effort 归一化、doctor 探针、web 执行层 fail-closed 等已在 D-21 批次完成，不再是未移植项。
 
 ## 既定决策
 
@@ -58,11 +62,13 @@ MCP 的 http/sse 传输（stdio 已实现）；TUI 以 Rust/终端习惯为准�
 for c in core engine tui; do (cd "$c" && cargo build); done
 
 # 测试
-cd core   && cargo test      # 14：权威核心
-cd engine && cargo test      # 42：单测 + T1–T5/T9/T11–T13/T22 场景 + 取消/暂停 + 审批/全自动 +
-                             #     Codex 适配 + worker 协议 + CLI + bwrap + workspace + MCP + 崩溃恢复
-cd tui    && cargo test      # 33：TUI 逻辑 + 帧冒烟 + Rust 外壳（胶囊/滚动/空状态/自适应列/侧栏宽度与页签窗口）断言
+cd core   && cargo test      # 38（17 unit + 21 integration）：权威核心
+cd engine && cargo test      # 67（21 lib + 46 integration）：单测 + T1–T5/T9/T11–T13/T22 场景 +
+                             #     取消/暂停 + 审批/全自动 + Codex 适配与合同 + worker 协议 +
+                             #     CLI/doctor + bwrap + workspace + MCP + 崩溃恢复
+cd tui    && cargo test      # 54（9 lib + 18 app + 27 render）：TUI 逻辑 + 帧冒烟 + 外壳断言
 python3 tui/scripts/pty_smoke.py      # 真终端端到端冒烟（构建后）
+python3 tui/scripts/pty_click_check.py  # 真终端点击命中检查（滚动后行命中）
 python3 review/tmp/dump_py_frame.py /tmp/py.txt 110 32   # 参考：Python 帧（不再是验收门槛）
 cd engine && TEAMAGENTS_LIVE_CODEX=1 cargo test --test live_codex   # 真实 codex CLI 联调（可选）
 

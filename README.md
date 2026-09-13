@@ -32,13 +32,16 @@ export DEEPSEEK_API_KEY=...      # examples/config.toml 里 profile 引用的密
 export ANYSEARCH_API_KEY=...     # 可选：web_search / web_fetch
 ```
 
-只读用户配置 `$XDG_CONFIG_HOME/teamagents/config.toml`（本版**不读项目内配置**、不读 MCP 与
-skills 配置，见 `docs/USER-GUIDE.md` §0）。
+读取用户配置 `$XDG_CONFIG_HOME/teamagents/config.toml`，并合并项目配置
+`<cwd>/.teamagents/config.toml`（同名条目用户定义优先；项目工具绑定需
+`[permissions] trust_project_tools = true`）。MCP（stdio）与 Skills/指令文件均已支持：
+Skills 走提示词注入（非 Python 的虚拟文件系统），MCP 仅 stdio（无 http/sse）。
+两版差异全表见 `docs/USER-GUIDE.md` §0。
 
 ### 3) 自检并进入界面
 
 ```bash
-engine/target/debug/teamagents doctor       # 核心/配置/密钥/隔离/codex/状态目录自检
+engine/target/debug/teamagents doctor       # 自检：依赖/配置/密钥/隔离/codex 协议（实跑 bwrap 与 codex schema 探针）/状态目录
 engine/target/debug/teamagents              # TUI（默认；自动寻找 tui/target/*/teamagents-tui）
 engine/target/debug/teamagents --plain      # 哑终端或脚本用行模式 REPL
 ```
@@ -55,19 +58,22 @@ engine/target/debug/teamagents --plain      # 哑终端或脚本用行模式 REP
 | `doctor` / `validate SPEC` / `sessions [-v]` / `version` | 自检 / 校验 TeamSpec / 会话清单 / 版本 |
 
 TUI 键位：`Enter` 发送、`Shift+Enter`/`Ctrl+J` 换行、`Ctrl+W`/`Alt+Backspace` 删词、
-`Ctrl+←/→` 按词移动、`PgUp/PgDn`（或滚轮）滚动对话、`Ctrl+Home/End` 跳到最早/最新、
+`Ctrl+←/→` 按词移动、`PgUp/PgDn`、`Ctrl+D`/`Ctrl+U`（或滚轮）滚动、`Ctrl+Home/End` 跳到最早/最新、
+`Tab` 进管理面板（任意页签；面板内 `Esc`/`Tab` 返回输入框；面板动作只认无修饰字母键，
+Ctrl/Alt 组合不会误触发）、
 `Ctrl+T` 切面板、`Ctrl+G` 批准队列、`Ctrl+F` 全自动、`Ctrl+P` 暂停、`Ctrl+N` 回输入框、
-`Esc` 面板内=回输入框 / 输入框内=停止 Leader、`Ctrl+Q` 退出；
+`Esc` 输入框内=停止 Leader、`Ctrl+Q` 退出；
 会话面板 `s`/`Enter` 切换、`n` 新建、`a` 归档、`d` 删除（连按两次确认）。
 找不到 TUI 二进制时用 `TEAMAGENTS_TUI=/path/to/teamagents-tui` 指定。
 
 ### 4) 测试
 
 ```bash
-cd core   && cargo test        # 14：权威核心（models/storage/control/views/server）
-cd engine && cargo test        # 27：运行时 + T1–T5/T9 场景 + 取消/暂停 + 审批/全自动 +
-                               #     Codex 适配 + worker 协议 + CLI + 沙箱 argv
-cd tui    && cargo test        # 21：TUI 逻辑 + TestBackend 帧冒烟
+cd core   && cargo test        # 38（17 unit + 21 integration）：权威核心（models/storage/control/views/server）
+cd engine && cargo test        # 67（21 lib + 46 integration）：运行时 + T1–T5/T9/T11–T13/T22 场景 +
+                               #     取消/暂停 + 审批/全自动 + Codex 适配与合同 + worker 协议 +
+                               #     CLI/doctor + bwrap 沙箱 + workspace + MCP + 崩溃恢复
+cd tui    && cargo test        # 54（9 lib + 18 app + 27 render）：TUI 逻辑 + TestBackend 帧冒烟
 python3 tui/scripts/pty_smoke.py                        # 真终端端到端冒烟（先构建）
 cd engine && TEAMAGENTS_LIVE_CODEX=1 cargo test --test live_codex   # 真实 codex CLI 联调（可选）
 ```
@@ -91,7 +97,7 @@ engine/target/debug/teamagents --team examples/team.yaml
 | 文档 | 内容 | 适用版本 |
 |---|---|---|
 | `docs/RECONSTRUCT.md` | Rust 重构架构、移植台账、未移植项、快速命令 | Rust（本分支） |
-| `docs/DECISIONS.md` | 全部已确认决策（D-1..D-17），含移植取舍 | 两版 |
+| `docs/DECISIONS.md` | 全部已确认决策（D-1..D-21），含移植取舍与审查保留项（D-21） | 两版 |
 | `docs/USER-GUIDE.md` | 配置、权限、恢复、故障处理、TeamSpec；§0 列出 Rust 版差异 | 两版（有标注） |
 | `docs/ACCEPTANCE.md` | T1–T24 验收对照；末尾给出 Rust 版证据映射 | 两版（有标注） |
 | `docs/STATUS.md` | P0–P7 阶段状态（Python 基准） | main（Python） |
@@ -112,9 +118,9 @@ cp examples/config.toml ~/.config/teamagents/config.toml
 .venv/bin/python -m teamagents validate examples/team.yaml
 ```
 
-两版能力已经对齐，Rust 版仍有以下已知差异（见 `docs/RECONSTRUCT.md` / `docs/DECISIONS.md`）：
+两版主要能力已对齐；Rust 版仍保留的差异（完整清单见 `docs/DECISIONS.md` D-21）：
 MCP 仅支持 stdio 传输（http/sse 未实现）、Skills 走提示词注入而非虚拟文件系统、
-没有 deepagents 的 `general-purpose` 子代理、TUI 不画 Textual 的滚动条字形。
+没有 deepagents 的 `general-purpose` 子代理、TUI 为 Rust 原生设计而非 Textual 像素复刻。
 
 ```bash
 .venv/bin/python -m pytest tests/ -q            # 确定性套件（脚本化成员）

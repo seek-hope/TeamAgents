@@ -190,6 +190,29 @@ CREATE TABLE IF NOT EXISTS session_approval_cache(
 
 fn j<T: serde::Serialize>(v: &T) -> String { serde_json::to_string(v).expect("json encode") }
 
+/// A stored enum string is data, not an invariant: a value this build does not
+/// know is a readable error for the caller instead of a process abort.
+fn stored_enum<T: serde::de::DeserializeOwned>(v: String, what: &str) -> rusqlite::Result<T> {
+    serde_json::from_value(Json::String(v.clone())).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(
+            usize::MAX,
+            rusqlite::types::Type::Text,
+            Box::<dyn std::error::Error + Send + Sync>::from(format!("bad {what} {v:?} stored in the database: {e}")),
+        )
+    })
+}
+
+/// `Limits` fields that still exist; anything else in a stored spec is a key
+/// removed from the model since (D-10) and is dropped on load, like Python.
+const LIMITS_KEYS: &[&str] = &[
+    "max_parallel_workers",
+    "max_members",
+    "max_turns_per_goal",
+    "max_model_steps_per_turn",
+    "turn_active_timeout_s",
+    "cancel_confirm_timeout_s",
+];
+
 fn enum_str<T: serde::Serialize>(v: &T) -> String {
     serde_json::to_value(v).expect("enum").as_str().expect("str enum").to_string()
 }
@@ -205,7 +228,7 @@ impl Store {
         let conn = Connection::open(path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "busy_timeout", 5000_i64)?;
-        conn.pragma_update(None, "synchronous", "NORMAL")?;
+        // storage.py sets no `synchronous` pragma; keep SQLite's FULL default.
         conn.execute_batch(SCHEMA)?;
         let store = Self { conn, tx_depth: std::cell::Cell::new(0) };
         store.check_schema_version()?;
@@ -356,43 +379,55 @@ impl Store {
             .unwrap_or(0))
     }
 
-    pub fn load_team_spec(&self, session_id: &str, revision: Option<i64>) -> rusqlite::Result<TeamSpec> {
-        let blob: Option<String> = match revision {
-            Some(r) => self
-                .conn
-                .query_row(
-                    "SELECT spec_json FROM team_specs WHERE session_id=?1 AND revision=?2",
-                    params![session_id, r],
-                    |row| row.get(0),
-                )
-                .optional()?,
-            None => self
-                .conn
-                .query_row(
-                    "SELECT spec_json FROM team_specs WHERE session_id=?1 ORDER BY revision DESC LIMIT 1",
-                    params![session_id],
-                    |row| row.get(0),
-                )
-                .optional()?,
+    /// storage.py::load_team_spec — stored specs are read for their own errors
+    /// (no panic), and limits keys removed since the row was written are dropped
+    /// so old sessions keep loading (TeamSpec *files* stay strict).
+    pub fn load_team_spec(&self, session_id: &str, revision: Option<i64>) -> Result<TeamSpec, String> {
+        let revision = match revision {
+            Some(r) => r,
+            None => self.current_revision(session_id).map_err(|e| e.to_string())?,
         };
-        match blob {
-            Some(b) => Ok(serde_json::from_str(&b).expect("stored spec is valid")),
-            // QueryReturnedNoRows keeps submit a readable refusal, not a crash.
-            None => Err(rusqlite::Error::QueryReturnedNoRows),
+        let blob: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT spec_json FROM team_specs WHERE session_id=?1 AND revision=?2",
+                params![session_id, revision],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        let Some(b) = blob else {
+            // storage.py raises KeyError("no team spec revision ...") — readable refusal, not a crash
+            return Err(format!("no team spec revision {revision} for session {session_id:?}"));
+        };
+        let mut data: Json = serde_json::from_str(&b).map_err(|e| format!("stored spec is invalid: {e}"))?;
+        if let Some(Json::Object(limits)) = data.get_mut("limits") {
+            limits.retain(|k, _| LIMITS_KEYS.contains(&k.as_str()));
         }
+        serde_json::from_value(data).map_err(|e| format!("stored spec is invalid: {e}"))
     }
 
     // -- actions / receipts ----------------------------------------------------
 
     pub fn get_action_receipt(&self, action_id: &str) -> rusqlite::Result<Option<Receipt>> {
-        self.conn
+        let blob: Option<String> = self
+            .conn
             .query_row(
                 "SELECT receipt_json FROM actions WHERE action_id=?1",
                 params![action_id],
-                |r| r.get::<_, String>(0),
+                |r| r.get(0),
             )
-            .optional()
-            .map(|opt| opt.map(|blob| serde_json::from_str(&blob).expect("stored receipt is valid")))
+            .optional()?;
+        match blob {
+            None => Ok(None),
+            Some(b) => serde_json::from_str(&b).map(Some).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    usize::MAX,
+                    rusqlite::types::Type::Text,
+                    Box::<dyn std::error::Error + Send + Sync>::from(format!("stored receipt is invalid: {e}")),
+                )
+            }),
+        }
     }
 
     pub fn record_action(
@@ -434,7 +469,7 @@ impl Store {
              FROM events WHERE session_id=?1 AND sequence>?2 ORDER BY sequence LIMIT ?3",
         )?;
         let rows = stmt.query_map(params![session_id, after_sequence, limit], event_row)?;
-        Ok(rows.filter_map(|r| r.ok()).collect())
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     pub fn create_delivery(
@@ -453,13 +488,51 @@ impl Store {
         Ok(self.conn.last_insert_rowid())
     }
 
+    /// storage.py::next_batch_no — hand out the member's next batch number and
+    /// advance the ledger in the same transaction (caller holds the tx).
     pub fn next_batch_no(&self, session_id: &str, agent_id: &str) -> rusqlite::Result<i64> {
-        let n: i64 = self.conn.query_row(
-            "SELECT COALESCE(MAX(batch_no), 0) + 1 FROM deliveries WHERE session_id=?1 AND agent_id=?2",
-            params![session_id, agent_id],
-            |r| r.get(0),
+        let batch: i64 = self
+            .conn
+            .query_row(
+                "SELECT next_batch_no FROM agent_runtime WHERE session_id=?1 AND agent_id=?2",
+                params![session_id, agent_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or(1);
+        self.conn.execute(
+            "INSERT INTO agent_runtime(session_id, agent_id, next_batch_no, updated_at) VALUES(?1, ?2, ?3, ?4)
+             ON CONFLICT(session_id, agent_id) DO UPDATE SET next_batch_no=excluded.next_batch_no,
+               updated_at=excluded.updated_at",
+            params![session_id, agent_id, batch + 1, now()],
         )?;
-        Ok(n)
+        Ok(batch)
+    }
+
+    /// storage.py::applied_batch — the member's consume cursor.
+    pub fn applied_batch(&self, session_id: &str, agent_id: &str) -> rusqlite::Result<i64> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT last_applied_batch FROM agent_runtime WHERE session_id=?1 AND agent_id=?2",
+                params![session_id, agent_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or(0))
+    }
+
+    /// storage.py::ack_deliveries_exact's cursor half: advance the member's
+    /// applied-batch ledger to at least `batch_no`.
+    fn advance_applied_batch(&self, session_id: &str, agent_id: &str, batch_no: i64) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT INTO agent_runtime(session_id, agent_id, last_applied_batch, updated_at) VALUES(?1, ?2, ?3, ?4)
+             ON CONFLICT(session_id, agent_id) DO UPDATE SET
+               last_applied_batch=MAX(last_applied_batch, excluded.last_applied_batch),
+               updated_at=excluded.updated_at",
+            params![session_id, agent_id, batch_no, now()],
+        )?;
+        Ok(())
     }
 
     pub fn pending_deliveries(&self, session_id: &str, agent_id: &str) -> rusqlite::Result<Vec<Json>> {
@@ -476,18 +549,33 @@ impl Store {
                 "created_at": r.get::<_, f64>(4)?,
             }))
         })?;
-        Ok(rows.filter_map(|r| r.ok()).collect())
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    pub fn ack_deliveries_exact(&self, session_id: &str, agent_id: &str, batch_no: i64, delivery_ids: &[i64]) -> rusqlite::Result<i64> {
-        // storage.py::ack_deliveries_exact — mark the exact ids of one batch applied.
-        let mut n = 0;
+    /// storage.py::ack_deliveries_exact — mark exactly these ids applied (never a
+    /// batch range) and advance the member's applied-batch cursor.
+    /// `_batch_no` is kept for existing callers; matching is by id like Python.
+    pub fn ack_deliveries_exact(&self, session_id: &str, agent_id: &str, _batch_no: i64, delivery_ids: &[i64]) -> rusqlite::Result<i64> {
+        if delivery_ids.is_empty() {
+            return Ok(0);
+        }
+        let marks = delivery_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let mut p: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(now())];
         for id in delivery_ids {
-            n += self.conn.execute(
-                "UPDATE deliveries SET status='applied', applied_at=?1
-                 WHERE delivery_id=?2 AND session_id=?3 AND agent_id=?4 AND batch_no=?5 AND status='pending'",
-                params![now(), id, session_id, agent_id, batch_no],
-            )?;
+            p.push(Box::new(*id));
+        }
+        let refs: Vec<&dyn rusqlite::ToSql> = p.iter().map(|b| b.as_ref()).collect();
+        let n = self.conn.execute(
+            &format!("UPDATE deliveries SET status='applied', applied_at=?1 WHERE delivery_id IN ({marks}) AND status='pending'"),
+            refs.as_slice(),
+        )?;
+        let max: Option<i64> = self.conn.query_row(
+            &format!("SELECT MAX(batch_no) FROM deliveries WHERE delivery_id IN ({marks})"),
+            &refs[1..],
+            |r| r.get(0),
+        )?;
+        if let Some(b) = max {
+            self.advance_applied_batch(session_id, agent_id, b)?;
         }
         Ok(n as i64)
     }
@@ -523,7 +611,7 @@ impl Store {
         };
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params![session_id], row_to_task)?;
-        Ok(rows.filter_map(|r| r.ok()).collect())
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     /// storage.py::compare_and_set_task — optimistic status transition.
@@ -616,8 +704,11 @@ impl Store {
                 params![session_id, agent_id],
                 |r| r.get(0),
             )
-            .optional()?;
-        Ok(s.map(|v| serde_json::from_value(Json::String(v)).expect("stored agent status")))
+                .optional()?;
+        match s {
+            None => Ok(None),
+            Some(v) => Ok(Some(stored_enum(v, "agent status")?)),
+        }
     }
 
     // -- approvals / completion requests -------------------------------------------
@@ -666,7 +757,7 @@ fn row_to_task(row: &Row) -> rusqlite::Result<Task> {
         description: row.get(5)?,
         acceptance: row.get(6)?,
         dependencies: serde_json::from_str(&row.get::<_, String>(7)?).unwrap_or_default(),
-        status: serde_json::from_value(Json::String(row.get::<_, String>(8)?)).expect("task status"),
+        status: stored_enum(row.get::<_, String>(8)?, "task status")?,
         result_refs: serde_json::from_str(&row.get::<_, String>(9)?).unwrap_or_default(),
         created_at: row.get(10)?,
         updated_at: row.get(11)?,
@@ -682,7 +773,7 @@ fn row_to_run(row: &Row) -> rusqlite::Result<TurnRun> {
         agent_id: row.get(4)?,
         config_revision: row.get(5)?,
         topology_revision: row.get(6)?,
-        status: serde_json::from_value(Json::String(row.get::<_, String>(7)?)).expect("turn status"),
+        status: stored_enum(row.get::<_, String>(7)?, "turn status")?,
         input_delivery_ids: serde_json::from_str(&row.get::<_, String>(8)?).unwrap_or_default(),
         context_ref: row.get(9)?,
         external_turn_id: row.get(10)?,
@@ -733,8 +824,7 @@ impl Store {
         ))?;
         let ids: Vec<String> = stmt
             .query_map(params![assignee], |r| r.get(0))?
-            .filter_map(|r| r.ok())
-            .collect();
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         for id in &ids {
             self.conn.execute(
                 "UPDATE tasks SET assignee=?1, updated_at=?2 WHERE task_id=?3",
@@ -744,11 +834,12 @@ impl Store {
         Ok(ids)
     }
 
-    pub fn drop_pending_deliveries(&self, session_id: &str, agent_id: &str, _reason: &str) -> rusqlite::Result<usize> {
+    /// storage.py::drop_pending_deliveries — undelivered messages keep the reason.
+    pub fn drop_pending_deliveries(&self, session_id: &str, agent_id: &str, reason: &str) -> rusqlite::Result<usize> {
         let n = self.conn.execute(
-            "UPDATE deliveries SET status='dropped', applied_at=?1
+            "UPDATE deliveries SET status='dropped', payload_override=?1
              WHERE session_id=?2 AND agent_id=?3 AND status='pending'",
-            params![now(), session_id, agent_id],
+            params![json!({"dropped_reason": reason}).to_string(), session_id, agent_id],
         )?;
         Ok(n)
     }
@@ -785,7 +876,7 @@ impl Store {
         };
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params![session_id], row_to_run)?;
-        Ok(rows.filter_map(|r| r.ok()).collect())
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     pub fn count_goal_runs(&self, session_id: &str, goal_id: &str) -> rusqlite::Result<i64> {
@@ -867,7 +958,7 @@ impl Store {
             operation_hash: row.get(5)?,
             requested_scope: serde_json::from_str(&row.get::<_, String>(6)?).unwrap_or(Json::Null),
             policy_revision: row.get(7)?,
-            status: serde_json::from_value(Json::String(row.get::<_, String>(8)?)).expect("approval status"),
+            status: stored_enum(row.get::<_, String>(8)?, "approval status")?,
             created_at: row.get(9)?,
             decided_at: row.get(10)?,
         })
@@ -890,18 +981,41 @@ impl Store {
              FROM approvals WHERE session_id=?1 AND status='PENDING' ORDER BY created_at",
         )?;
         let rows = stmt.query_map(params![session_id], Self::row_to_approval)?;
-        Ok(rows.filter_map(|r| r.ok()).collect())
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     pub fn expire_run_approvals(&self, run_id: &str) -> rusqlite::Result<Vec<ApprovalRequest>> {
         let pending = self.pending_approvals_for_run(run_id)?;
         for a in &pending {
-            self.conn.execute(
-                "UPDATE approvals SET status='EXPIRED', decided_at=?1 WHERE approval_id=?2",
-                params![now(), a.approval_id],
-            )?;
+            self.expire_approval(&a.approval_id)?;
         }
         Ok(pending)
+    }
+
+    /// storage.py::expire_approval — a once-approval is single use; a pending
+    /// approval is void once its turn can no longer use it. Other states stay
+    /// untouched and report false.
+    pub fn expire_approval(&self, approval_id: &str) -> rusqlite::Result<bool> {
+        let n = self.conn.execute(
+            "UPDATE approvals SET status='EXPIRED', decided_at=?1
+             WHERE approval_id=?2 AND status IN ('PENDING', 'APPROVED_ONCE')",
+            params![now(), approval_id],
+        )?;
+        Ok(n == 1)
+    }
+
+    /// Newest still-usable approval for this run + operation: PENDING or
+    /// APPROVED_ONCE (the engine replays a re-sent call under a once-approval).
+    pub fn find_run_approval(&self, run_id: &str, operation_hash: &str) -> rusqlite::Result<Option<ApprovalRequest>> {
+        self.conn
+            .query_row(
+                "SELECT approval_id, session_id, agent_id, run_id, tool_call_id, operation_hash, requested_scope, policy_revision, status, created_at, decided_at
+                 FROM approvals WHERE run_id=?1 AND operation_hash=?2 AND status IN ('PENDING', 'APPROVED_ONCE')
+                 ORDER BY created_at DESC LIMIT 1",
+                params![run_id, operation_hash],
+                Self::row_to_approval,
+            )
+            .optional()
     }
 
     pub fn pending_approvals_for_run(&self, run_id: &str) -> rusqlite::Result<Vec<ApprovalRequest>> {
@@ -910,7 +1024,7 @@ impl Store {
              FROM approvals WHERE run_id=?1 AND status='PENDING' ORDER BY created_at",
         )?;
         let rows = stmt.query_map(params![run_id], Self::row_to_approval)?;
-        Ok(rows.filter_map(|r| r.ok()).collect())
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     pub fn cache_session_approval(&self, session_id: &str, operation_hash: &str, scope: &Json) -> rusqlite::Result<()> {
@@ -994,7 +1108,7 @@ impl Store {
         let refs: Vec<&dyn rusqlite::ToSql> = p.iter().map(|b| b.as_ref()).collect();
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(refs.as_slice(), Self::row_to_shared)?;
-        Ok(rows.filter_map(|r| r.ok()).collect())
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     pub fn shared_cursor(&self, session_id: &str, agent_id: &str, space_id: &str) -> rusqlite::Result<i64> {
@@ -1050,7 +1164,7 @@ impl Store {
             decided_by: row.get(4)?,
             operations: serde_json::from_str(&row.get::<_, String>(5)?).unwrap_or_default(),
             affected_agents: serde_json::from_str(&row.get::<_, String>(6)?).unwrap_or_default(),
-            status: serde_json::from_value(Json::String(row.get::<_, String>(7)?)).expect("patch status"),
+            status: stored_enum(row.get::<_, String>(7)?, "patch status")?,
             created_at: row.get(8)?,
             updated_at: row.get(9)?,
         })
@@ -1073,7 +1187,7 @@ impl Store {
              FROM topology_patches WHERE session_id=?1 AND status=?2 ORDER BY created_at",
         )?;
         let rows = stmt.query_map(params![session_id, enum_str(&status)], Self::row_to_patch)?;
-        Ok(rows.filter_map(|r| r.ok()).collect())
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     pub fn delivery_event_kinds(&self, delivery_ids: &[i64]) -> rusqlite::Result<Vec<String>> {
@@ -1091,15 +1205,30 @@ impl Store {
              WHERE d.delivery_id IN ({marks}) ORDER BY e.sequence"
         ))?;
         let rows = stmt.query_map(refs.as_slice(), |r| r.get::<_, String>(0))?;
-        Ok(rows.filter_map(|r| r.ok()).collect())
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     /// RT-05: ack exactly one delivery (runtime ledger passes the offered ids).
     pub fn ack_delivery_by_id(&self, delivery_id: i64) -> rusqlite::Result<()> {
-        self.conn.execute(
+        let n = self.conn.execute(
             "UPDATE deliveries SET status='applied', applied_at=?1 WHERE delivery_id=?2 AND status='pending'",
             params![now(), delivery_id],
         )?;
+        if n == 0 {
+            return Ok(());
+        }
+        // the consume cursor advances with the ack (storage.py::ack_deliveries_exact)
+        let row: Option<(String, String, i64)> = self
+            .conn
+            .query_row(
+                "SELECT session_id, agent_id, batch_no FROM deliveries WHERE delivery_id=?1",
+                params![delivery_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        if let Some((session_id, agent_id, batch_no)) = row {
+            self.advance_applied_batch(&session_id, &agent_id, batch_no)?;
+        }
         Ok(())
     }
 
@@ -1126,7 +1255,7 @@ impl Store {
                 "event_sequence": r.get::<_, i64>(9)?,
             }))
         })?;
-        Ok(rows.filter_map(|r| r.ok()).collect())
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 }
 
@@ -1149,7 +1278,7 @@ impl Store {
              FROM approvals WHERE run_id=?1 AND status!='PENDING' ORDER BY created_at",
         )?;
         let rows = stmt.query_map(params![run_id], Self::row_to_approval)?;
-        Ok(rows.filter_map(|r| r.ok()).collect())
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     pub fn run_cancel_requested(&self, run_id: &str) -> rusqlite::Result<bool> {
@@ -1214,5 +1343,200 @@ impl Store {
             params![external_turn_id, now(), run_id],
         )?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{ApprovalStatus, EventKind};
+
+    fn store_with_spec() -> Store {
+        let store = Store::open_memory().unwrap();
+        store.create_session("s1", "/tmp", "approved_scope").unwrap();
+        let spec: TeamSpec = serde_json::from_value(json!({
+            "leader_id": "lead",
+            "agents": [{"id": "lead", "name": "L", "role": "leader",
+                        "runtime_kind": "deepagents", "model_profile": "m"}]
+        }))
+        .unwrap();
+        store.save_team_spec("s1", &spec).unwrap();
+        store.ensure_agent("s1", "lead").unwrap();
+        store
+    }
+
+    fn event(store: &Store, event_id: &str) -> String {
+        store
+            .append_event(&TeamEvent {
+                event_id: event_id.into(),
+                session_id: "s1".into(),
+                sequence: 0,
+                actor_id: "system".into(),
+                task_id: None,
+                kind: EventKind::SessionStatus,
+                payload: json!({}),
+                audience: vec![],
+                topology_revision: 1,
+                causation_id: None,
+                created_at: now(),
+            })
+            .unwrap();
+        event_id.into()
+    }
+
+    fn approval(id: &str, status: ApprovalStatus, created_at: f64, hash: &str) -> ApprovalRequest {
+        ApprovalRequest {
+            approval_id: id.into(),
+            session_id: "s1".into(),
+            agent_id: "lead".into(),
+            run_id: "run_1".into(),
+            tool_call_id: format!("call_{id}"),
+            operation_hash: hash.into(),
+            requested_scope: json!({}),
+            policy_revision: 1,
+            status,
+            created_at,
+            decided_at: None,
+        }
+    }
+
+    #[test]
+    fn legacy_limits_keys_are_dropped_on_load() {
+        let store = store_with_spec();
+        // a session written before D-10: removed limit keys plus one live override
+        let mut data: Json = serde_json::to_value(store.load_team_spec("s1", None).unwrap()).unwrap();
+        data["limits"]["leader_reserve"] = json!(2);
+        data["limits"]["model_request_timeout_s"] = json!(30);
+        data["limits"]["max_auto_retries"] = json!(3);
+        data["limits"]["max_members"] = json!(5);
+        store
+            .conn
+            .execute(
+                "INSERT INTO team_specs(session_id, revision, spec_json, created_at) VALUES('s1', 2, ?1, ?2)",
+                params![data.to_string(), now()],
+            )
+            .unwrap();
+
+        let spec = store.load_team_spec("s1", None).unwrap();
+        assert_eq!(spec.limits.max_members, 5, "live key preserved");
+        assert_eq!(spec.limits.max_turns_per_goal, 1000, "unknown keys dropped, defaults apply");
+    }
+
+    #[test]
+    fn missing_or_corrupt_spec_is_an_error_not_a_panic() {
+        let store = Store::open_memory().unwrap();
+        let err = store.load_team_spec("ghost", None).unwrap_err();
+        assert!(err.contains("no team spec revision"), "{err}");
+
+        store.create_session("s1", "/tmp", "approved_scope").unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO team_specs(session_id, revision, spec_json, created_at) VALUES('s1', 1, '{not json', 0.0)",
+                [],
+            )
+            .unwrap();
+        let err = store.load_team_spec("s1", None).unwrap_err();
+        assert!(err.contains("stored spec is invalid"), "{err}");
+    }
+
+    #[test]
+    fn unknown_stored_status_is_an_error_not_a_dropped_row() {
+        let store = store_with_spec();
+        store
+            .conn
+            .execute(
+                "INSERT INTO tasks(task_id, session_id, requester, assignee, description, status, created_at, updated_at)
+                 VALUES('t1', 's1', 'lead', 'lead', 'x', 'ANCIENT_STATUS', 0.0, 0.0)",
+                [],
+            )
+            .unwrap();
+        let err = store.tasks_for_session("s1", &[]).unwrap_err().to_string();
+        assert!(err.contains("bad task status"), "{err}");
+        assert!(store.get_task("t1").unwrap_err().to_string().contains("bad task status"));
+    }
+
+    #[test]
+    fn next_batch_no_advances_the_runtime_ledger() {
+        let store = store_with_spec();
+        assert_eq!(store.next_batch_no("s1", "lead").unwrap(), 1);
+        assert_eq!(store.next_batch_no("s1", "lead").unwrap(), 2);
+        let next: i64 = store
+            .conn
+            .query_row("SELECT next_batch_no FROM agent_runtime WHERE session_id='s1' AND agent_id='lead'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(next, 3);
+    }
+
+    #[test]
+    fn ack_advances_last_applied_batch() {
+        let store = store_with_spec();
+        event(&store, "evt_1");
+        event(&store, "evt_2");
+        let d1 = store.create_delivery("s1", "lead", "evt_1", 1, None).unwrap();
+        let d2 = store.create_delivery("s1", "lead", "evt_2", 2, None).unwrap();
+
+        // acking only the first batch must not claim the second
+        assert_eq!(store.ack_deliveries_exact("s1", "lead", 1, &[d1]).unwrap(), 1);
+        assert_eq!(store.applied_batch("s1", "lead").unwrap(), 1);
+
+        // per-id ack (the runtime path) advances it too
+        store.ack_delivery_by_id(d2).unwrap();
+        assert_eq!(store.applied_batch("s1", "lead").unwrap(), 2);
+        let applied: i64 = store
+            .conn
+            .query_row("SELECT COUNT(*) FROM deliveries WHERE status='applied'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(applied, 2);
+    }
+
+    #[test]
+    fn expire_approval_only_touches_pending_and_approved_once() {
+        let store = store_with_spec();
+        store.insert_approval(&approval("a_pending", ApprovalStatus::Pending, 1.0, "h1")).unwrap();
+        store.insert_approval(&approval("a_once", ApprovalStatus::ApprovedOnce, 2.0, "h1")).unwrap();
+        store.insert_approval(&approval("a_denied", ApprovalStatus::Denied, 3.0, "h1")).unwrap();
+        store.insert_approval(&approval("a_session", ApprovalStatus::ApprovedSession, 4.0, "h1")).unwrap();
+
+        assert!(store.expire_approval("a_pending").unwrap());
+        assert!(store.expire_approval("a_once").unwrap());
+        assert!(!store.expire_approval("a_denied").unwrap(), "other states stay untouched");
+        assert!(!store.expire_approval("a_session").unwrap());
+        assert!(!store.expire_approval("ghost").unwrap());
+        assert_eq!(store.get_approval("a_pending").unwrap().unwrap().status, ApprovalStatus::Expired);
+        assert_eq!(store.get_approval("a_denied").unwrap().unwrap().status, ApprovalStatus::Denied);
+    }
+
+    #[test]
+    fn find_run_approval_returns_the_newest_usable_decision() {
+        let store = store_with_spec();
+        store.insert_approval(&approval("old_pending", ApprovalStatus::Pending, 1.0, "h1")).unwrap();
+        store.insert_approval(&approval("new_denied", ApprovalStatus::Denied, 2.0, "h1")).unwrap();
+        store.insert_approval(&approval("newer_once", ApprovalStatus::ApprovedOnce, 3.0, "h1")).unwrap();
+        store.insert_approval(&approval("other_hash", ApprovalStatus::Pending, 4.0, "h2")).unwrap();
+
+        let found = store.find_run_approval("run_1", "h1").unwrap().unwrap();
+        assert_eq!(found.approval_id, "newer_once", "denied is not usable, newest usable wins");
+        assert!(store.find_run_approval("run_2", "h1").unwrap().is_none());
+        assert!(store.find_run_approval("run_1", "h3").unwrap().is_none());
+    }
+
+    #[test]
+    fn drop_pending_deliveries_keeps_the_reason() {
+        let store = store_with_spec();
+        event(&store, "evt_1");
+        let d1 = store.create_delivery("s1", "lead", "evt_1", 1, None).unwrap();
+
+        assert_eq!(store.drop_pending_deliveries("s1", "lead", "member removed").unwrap(), 1);
+        let (status, override_json): (String, String) = store
+            .conn
+            .query_row(
+                "SELECT status, payload_override FROM deliveries WHERE delivery_id=?1",
+                params![d1],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "dropped");
+        assert_eq!(serde_json::from_str::<Json>(&override_json).unwrap()["dropped_reason"], json!("member removed"));
     }
 }

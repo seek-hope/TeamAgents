@@ -6,6 +6,7 @@ use crate::gateway::ToolGateway;
 use crate::runtime::{AgentRunner, Notify};
 use serde_json::{json, Value as Json};
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use teamagents_core::control::TurnOutcome;
 use teamagents_core::models::{ModelProfile, TurnRun, TurnStatus};
@@ -26,6 +27,30 @@ pub fn resolve_base_url(profile: &ModelProfile) -> String {
             _ => "https://api.openai.com/v1".into(),
         },
     }
+}
+
+/// providers.py::normalize_effort — a model that lacks `xhigh` maps to `max`
+/// instead of erroring out (user decision: deepseek has no xhigh level).
+pub fn normalize_effort(protocol: &str, effort: &str) -> String {
+    if effort.eq_ignore_ascii_case("xhigh") && protocol == "deepseek" {
+        "max".into()
+    } else {
+        effort.to_string()
+    }
+}
+
+/// runners.py::_looks_like_effort_error — a provider rejecting the requested
+/// reasoning effort; the caller retries once with `max`.
+pub fn looks_like_effort_error(text: &str) -> bool {
+    let text = text.to_lowercase();
+    ["reasoning_effort", "reasoning effort", "effort", "unsupported value"]
+        .iter()
+        .any(|token| text.contains(token))
+}
+
+/// Python SDK retry semantics: transient statuses and transport errors only.
+fn retryable_status(code: u16) -> bool {
+    matches!(code, 408 | 409 | 429) || (500..600).contains(&code)
 }
 
 /// runners.py::render_view — compact text view for the next model call.
@@ -241,11 +266,16 @@ pub struct ChatRunner {
     bound: crate::bound::BoundTools,
     /// (label, content) pairs from skills/instruction files (session.py::_skills_and_memory)
     context: Vec<(String, String)>,
+    /// Member conversation history survives a restart (USER-GUIDE §5).
+    history_path: Option<std::path::PathBuf>,
     messages: Mutex<HashMap<String, Vec<Json>>>,
     states: Mutex<HashMap<String, TurnStatus>>,
     paused_kind: Mutex<HashMap<String, String>>,
     mid_turn: Mutex<HashMap<String, Vec<Json>>>,
     interrupted: Mutex<HashSet<String>>,
+    /// runners.py::_switch_effort_to_max — at most one effort fallback per runner
+    effort_max: AtomicBool,
+    effort_fallback_used: AtomicBool,
 }
 
 impl ChatRunner {
@@ -257,6 +287,14 @@ impl ChatRunner {
         bound: crate::bound::BoundTools,
         context: Vec<(String, String)>,
     ) -> Arc<Self> {
+        let agent_id = agent.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        let history_path = (!agent_id.is_empty()).then(|| {
+            crate::sessions::session_paths(&notify.core().session_id)
+                .base
+                .join("members")
+                .join(agent_id)
+                .join("chat_history.json")
+        });
         Arc::new(Self {
             agent: agent.clone(),
             profile,
@@ -264,12 +302,51 @@ impl ChatRunner {
             notify,
             bound,
             context,
+            history_path,
             messages: Mutex::new(HashMap::new()),
             states: Mutex::new(HashMap::new()),
             paused_kind: Mutex::new(HashMap::new()),
             mid_turn: Mutex::new(HashMap::new()),
             interrupted: Mutex::new(HashSet::new()),
+            effort_max: AtomicBool::new(false),
+            effort_fallback_used: AtomicBool::new(false),
         })
+    }
+
+    /// Conversation history from disk: `{thread_id: [messages]}`. Best effort —
+    /// an unreadable file degrades to a fresh conversation, never a failure.
+    fn load_history(&self, thread: &str) -> Vec<Json> {
+        let Some(path) = &self.history_path else { return vec![] };
+        let Ok(text) = std::fs::read_to_string(path) else { return vec![] };
+        let Ok(data) = serde_json::from_str::<Json>(&text) else { return vec![] };
+        data.get(thread)
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Atomic write (tmp + rename) so a crash never truncates the history.
+    /// ponytail: the whole conversation is kept, unbounded like the in-memory
+    /// map; trim to a message window if a long session ever hits provider limits.
+    fn save_history(&self, thread: &str, history: &[Json]) {
+        let Some(path) = &self.history_path else { return };
+        let mut data = std::fs::read_to_string(path)
+            .ok()
+            .and_then(|text| serde_json::from_str::<Json>(&text).ok())
+            .unwrap_or_else(|| json!({}));
+        if !data.is_object() {
+            data = json!({});
+        }
+        data[thread] = Json::Array(history.to_vec());
+        if let Some(parent) = path.parent() {
+            if std::fs::create_dir_all(parent).is_err() {
+                return;
+            }
+        }
+        let tmp = path.with_extension("tmp");
+        if std::fs::write(&tmp, data.to_string()).is_ok() {
+            let _ = std::fs::rename(&tmp, path);
+        }
     }
 
     fn bindings(&self) -> Vec<String> {
@@ -321,6 +398,50 @@ impl ChatRunner {
         self.interrupted.lock().unwrap().contains(run_id)
     }
 
+    /// generation_options for the request body, with the effort rewritten when
+    /// the provider rejected it once (`_switch_effort_to_max`).
+    fn apply_generation_options(&self, body: &mut Json) {
+        let Json::Object(map) = body else { return };
+        for (key, value) in &self.profile.generation_options {
+            if key == "reasoning_effort" {
+                if let Some(effort) = value.as_str() {
+                    let effort = if self.effort_max.load(Ordering::SeqCst) {
+                        "max".to_string()
+                    } else {
+                        normalize_effort(&self.profile.protocol, effort)
+                    };
+                    map.insert(key.clone(), json!(effort));
+                    continue;
+                }
+            }
+            map.insert(key.clone(), value.clone());
+        }
+    }
+
+    fn configured_effort(&self) -> bool {
+        self.profile
+            .generation_options
+            .get("reasoning_effort")
+            .map(|v| v.is_string())
+            .unwrap_or(false)
+    }
+
+    /// The session TeamSpec limit for model requests per turn (runners.py reads
+    /// it when the graph is built; here once per turn).
+    fn max_model_steps(&self) -> i64 {
+        self.notify
+            .core()
+            .state()
+            .ok()
+            .and_then(|state| {
+                state
+                    .get("limits")
+                    .and_then(|limits| limits.get("max_model_steps_per_turn"))
+                    .and_then(|v| v.as_i64())
+            })
+            .unwrap_or(200)
+    }
+
     fn chat(&self, messages: &[Json], tools: &Json) -> Result<Json, String> {
         if self.profile.protocol == "anthropic" {
             return self.chat_anthropic(messages, tools);
@@ -335,20 +456,18 @@ impl ChatRunner {
             "messages": messages,
             "tools": tools,
         });
-        if let (Json::Object(base_map), Json::Object(options)) = (&mut body, json!(self.profile.generation_options)) {
-            for (k, v) in options {
-                base_map.insert(k, v);
-            }
-        }
+        self.apply_generation_options(&mut body);
         let url = format!("{base}/chat/completions");
         let mut last_error = "chat call failed".to_string();
-        for attempt in 0..=self.profile.max_retries.max(0) {
+        let retries = self.profile.max_retries.max(0);
+        for attempt in 0..=retries {
             let mut request = ureq::post(&url)
                 .set("content-type", "application/json")
                 .timeout(std::time::Duration::from_secs(self.profile.timeout.max(1) as u64));
             if !api_key.is_empty() {
                 request = request.set("authorization", &format!("Bearer {api_key}"));
             }
+            let mut retry_in: Option<std::time::Duration> = None;
             match request.send_string(&body.to_string()) {
                 Ok(response) => match response.into_json::<Json>() {
                     Ok(data) => {
@@ -363,14 +482,26 @@ impl ChatRunner {
                     Err(e) => last_error = format!("chat API: bad json: {e}"),
                 },
                 Err(ureq::Error::Status(code, response)) => {
+                    let retry_after = response
+                        .header("retry-after")
+                        .and_then(|v| v.trim().parse::<u64>().ok())
+                        .map(std::time::Duration::from_secs);
                     let text = response.into_string().unwrap_or_default();
                     let text: String = text.chars().take(500).collect();
                     last_error = format!("chat API {code}: {text}");
+                    if !retryable_status(code) {
+                        return Err(last_error);
+                    }
+                    retry_in = retry_after;
                 }
                 Err(e) => last_error = format!("chat API: {e}"),
             }
-            let backoff = std::time::Duration::from_millis((500u64 << attempt.min(5)).min(8000));
-            std::thread::sleep(backoff);
+            // never sleep after the final attempt
+            if attempt < retries {
+                let backoff = retry_in
+                    .unwrap_or_else(|| std::time::Duration::from_millis((500u64 << attempt.min(5)).min(8000)));
+                std::thread::sleep(backoff.min(std::time::Duration::from_secs(30)));
+            }
         }
         Err(last_error)
     }
@@ -423,7 +554,8 @@ impl ChatRunner {
         }
         let url = format!("{base}/v1/messages");
         let mut last_error = "chat call failed".to_string();
-        for attempt in 0..=self.profile.max_retries.max(0) {
+        let retries = self.profile.max_retries.max(0);
+        for attempt in 0..=retries {
             let mut request = ureq::post(&url)
                 .set("content-type", "application/json")
                 .set("anthropic-version", "2023-06-01")
@@ -431,29 +563,58 @@ impl ChatRunner {
             if !api_key.is_empty() {
                 request = request.set("x-api-key", &api_key);
             }
+            let mut retry_in: Option<std::time::Duration> = None;
             match request.send_string(&body.to_string()) {
                 Ok(response) => match response.into_json::<Json>() {
                     Ok(data) => return Ok(from_anthropic_message(&data)),
                     Err(e) => last_error = format!("chat API: bad json: {e}"),
                 },
                 Err(ureq::Error::Status(code, response)) => {
+                    let retry_after = response
+                        .header("retry-after")
+                        .and_then(|v| v.trim().parse::<u64>().ok())
+                        .map(std::time::Duration::from_secs);
                     let text = response.into_string().unwrap_or_default();
                     let text: String = text.chars().take(500).collect();
                     last_error = format!("chat API {code}: {text}");
+                    if !retryable_status(code) {
+                        return Err(last_error);
+                    }
+                    retry_in = retry_after;
                 }
                 Err(e) => last_error = format!("chat API: {e}"),
             }
-            let backoff = std::time::Duration::from_millis((500u64 << attempt.min(5)).min(8000));
-            std::thread::sleep(backoff);
+            if attempt < retries {
+                let backoff = retry_in
+                    .unwrap_or_else(|| std::time::Duration::from_millis((500u64 << attempt.min(5)).min(8000)));
+                std::thread::sleep(backoff.min(std::time::Duration::from_secs(30)));
+            }
         }
         Err(last_error)
     }
 
-    fn run_loop(&self, run: &TurnRun, history: &mut Vec<Json>, gateway: &ToolGateway) -> Result<String, (String, String)> {
+    fn run_loop(
+        &self,
+        run: &TurnRun,
+        history: &mut Vec<Json>,
+        gateway: &ToolGateway,
+        max_steps: i64,
+    ) -> Result<String, (String, String)> {
         let tools = tools_payload(&self.bindings(), &self.bound.schemas());
         let agent_id = self.agent_id();
-        let max_steps = 200; // the core enforces the configured cap via the gateway executor
-        for _ in 0..max_steps {
+        // Python has two gates on the same budget: the tool-call executor in the
+        // runtime and a model-request counter (runners.py TurnAgentMiddleware).
+        // This is the model-request gate — it also covers bound MCP tools, which
+        // never reach the gateway's executor.
+        let mut model_steps = 0i64;
+        loop {
+            model_steps += 1;
+            if model_steps > max_steps {
+                return Err((
+                    "TurnLimitExceeded".into(),
+                    format!("model-step limit {max_steps} reached for this turn"),
+                ));
+            }
             if self.has_paused(&run.run_id) {
                 return Err(("TurnInterrupted".into(), "interrupted".into()));
             }
@@ -475,7 +636,22 @@ impl ChatRunner {
             }
             let message = match self.chat(history, &tools) {
                 Ok(message) => message,
-                Err(e) => return Err(("ChatError".into(), e)),
+                Err(e) => {
+                    // a provider that rejects the configured effort maps to
+                    // `max` once, then the call is retried (runners.py:614-627)
+                    if looks_like_effort_error(&e)
+                        && self.configured_effort()
+                        && !self.effort_fallback_used.swap(true, Ordering::SeqCst)
+                    {
+                        self.effort_max.store(true, Ordering::SeqCst);
+                        match self.chat(history, &tools) {
+                            Ok(message) => message,
+                            Err(retry_error) => return Err(("ChatError".into(), retry_error)),
+                        }
+                    } else {
+                        return Err(("ChatError".into(), e));
+                    }
+                }
             };
             history.push(message.clone());
             if let Some(content) = message.get("content").and_then(|v| v.as_str()) {
@@ -571,7 +747,6 @@ impl ChatRunner {
                 return Err((kind, note));
             }
         }
-        Err(("TurnLimitExceeded".into(), format!("step limit {max_steps} reached")))
     }
 }
 
@@ -580,7 +755,12 @@ impl AgentRunner for ChatRunner {
         self.states.lock().unwrap().insert(run.run_id.clone(), TurnStatus::Running);
         self.interrupted.lock().unwrap().remove(&run.run_id);
         let thread = run.context_ref.clone().unwrap_or_else(|| run.run_id.clone());
-        let mut history = self.messages.lock().unwrap().get(&thread).cloned().unwrap_or_default();
+        // the spec limit is read once per turn, like the Python graph build
+        let max_steps = self.max_model_steps();
+        let mut history = match self.messages.lock().unwrap().get(&thread).cloned() {
+            Some(history) => history,
+            None => self.load_history(&thread),
+        };
         let instructions = self.agent.get("instructions").and_then(|v| v.as_str()).unwrap_or("");
         if history.is_empty() && (!instructions.is_empty() || !self.context.is_empty()) {
             history.push(json!({"role": "system", "content": self.system_prompt()}));
@@ -588,8 +768,9 @@ impl AgentRunner for ChatRunner {
         // the rendered view is authoritative for what this segment saw
         history.push(json!({"role": "user", "content": render_view(view, wake, self.workdir.as_deref())}));
 
-        let result = self.run_loop(run, &mut history, gateway);
-        self.messages.lock().unwrap().insert(thread, history);
+        let result = self.run_loop(run, &mut history, gateway, max_steps);
+        self.messages.lock().unwrap().insert(thread.clone(), history.clone());
+        self.save_history(&thread, &history);
         let outcome = match result {
             Ok(reply) => {
                 self.states.lock().unwrap().insert(run.run_id.clone(), TurnStatus::Completed);
@@ -613,6 +794,17 @@ impl AgentRunner for ChatRunner {
                         status,
                         error: None,
                         note: if message.is_empty() { None } else { Some(message) },
+                        reply_text: None,
+                    }
+                }
+                // Python raises TurnLimitExceeded for both gates; the note is what
+                // makes the core emit `limit_reached` (runners.py:608-610)
+                "TurnLimitExceeded" => {
+                    self.states.lock().unwrap().insert(run.run_id.clone(), TurnStatus::Failed);
+                    TurnOutcome {
+                        status: TurnStatus::Failed,
+                        error: Some(message),
+                        note: Some("turn_limit".into()),
                         reply_text: None,
                     }
                 }
@@ -858,5 +1050,25 @@ mod tests {
         assert_eq!(resolve_base_url(&profile(Some("https://x/v1/"), "deepseek", "deepseek")), "https://x/v1");
         assert_eq!(resolve_base_url(&profile(None, "openai", "openai")), "https://api.openai.com/v1");
         assert_eq!(resolve_base_url(&profile(None, "anthropic", "anthropic")), "https://api.anthropic.com");
+    }
+
+    #[test]
+    fn effort_normalization_and_retry_classification_match_python() {
+        // providers.py::normalize_effort — deepseek has no xhigh level
+        assert_eq!(normalize_effort("deepseek", "xhigh"), "max");
+        assert_eq!(normalize_effort("deepseek", "XHIGH"), "max");
+        assert_eq!(normalize_effort("openai", "xhigh"), "xhigh");
+        assert_eq!(normalize_effort("deepseek", "low"), "low");
+        // runners.py::_looks_like_effort_error
+        assert!(looks_like_effort_error("chat API 400: unsupported value: xhigh"));
+        assert!(looks_like_effort_error("Reasoning effort 'xhigh' is not supported"));
+        assert!(!looks_like_effort_error("chat API 400: bad request"));
+        // Python SDK retry semantics: transient statuses only
+        for code in [408, 409, 429, 500, 503] {
+            assert!(retryable_status(code), "{code} is transient");
+        }
+        for code in [400, 401, 403, 404, 422] {
+            assert!(!retryable_status(code), "{code} must not be retried");
+        }
     }
 }

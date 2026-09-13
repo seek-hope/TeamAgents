@@ -43,6 +43,9 @@ fn team_action_kind(tool: &str) -> Option<ActionKind> {
     })
 }
 
+/// Byte-compatible with Python `json.dumps(..., sort_keys=True, ensure_ascii=False)`:
+/// `", "` / `": "` separators and raw UTF-8 (permissions.py::operation_hash).
+/// The hash must match across versions because approvals share one DB (D-15).
 fn canonical_json(v: &Json) -> String {
     match v {
         Json::Object(map) => {
@@ -50,11 +53,11 @@ fn canonical_json(v: &Json) -> String {
             keys.sort();
             let inner: Vec<String> = keys
                 .into_iter()
-                .map(|k| format!("{}:{}", serde_json::to_string(k).unwrap(), canonical_json(&map[k])))
+                .map(|k| format!("{}: {}", serde_json::to_string(k).unwrap(), canonical_json(&map[k])))
                 .collect();
-            format!("{{{}}}", inner.join(","))
+            format!("{{{}}}", inner.join(", "))
         }
-        Json::Array(a) => format!("[{}]", a.iter().map(canonical_json).collect::<Vec<_>>().join(",")),
+        Json::Array(a) => format!("[{}]", a.iter().map(canonical_json).collect::<Vec<_>>().join(", ")),
         other => other.to_string(),
     }
 }
@@ -138,16 +141,32 @@ fn bound_tool(tool: &str) -> bool {
     )
 }
 
+fn approval_from(value: Option<&Json>) -> Option<ApprovalRequest> {
+    value
+        .filter(|v| !v.is_null())
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+}
+
 pub struct ApprovalGate {
     pub policy_revision: Mutex<i64>,
     policy: Mutex<PermissionPolicy>,
     core: Arc<CoreClient>,
+    /// (run_id, operation_hash) → the approval row this gate parked the call
+    /// on. Python's graph replay re-uses the original tool_call_id; the plain
+    /// loop gets a fresh one, so the row is remembered instead of re-matched
+    /// by call id.
+    parked: Mutex<std::collections::HashMap<(String, String), String>>,
 }
 
 impl ApprovalGate {
     pub fn new(core: Arc<CoreClient>, policy: PermissionPolicy) -> Arc<Self> {
         let mode_full_auto = policy.mode == "full_auto";
-        let gate = Arc::new(Self { policy_revision: Mutex::new(1), policy: Mutex::new(policy), core });
+        let gate = Arc::new(Self {
+            policy_revision: Mutex::new(1),
+            policy: Mutex::new(policy),
+            core,
+            parked: Mutex::new(std::collections::HashMap::new()),
+        });
         if mode_full_auto {
             // nothing extra: the policy already allows everything
         }
@@ -207,26 +226,22 @@ impl ApprovalGate {
         if !cached.get("scope").map(|v| v.is_null()).unwrap_or(true) {
             return Ok((Decision::allow(), None));
         }
-        let existing: Option<ApprovalRequest> = self
-            .core
-            .call("approval_for_call", json!({
-                "session_id": self.core.session_id,
-                "run_id": run_id,
-                "tool_call_id": tool_call_id,
-                "operation_hash": op_hash,
-            }))
-            .ok()
-            .and_then(|v| serde_json::from_value(v.get("approval").cloned().unwrap_or(Json::Null)).ok())
-            .flatten();
-        if let Some(existing) = &existing {
+        if let Some(existing) = self.decided_for_run(run_id, tool_call_id, &op_hash) {
             match existing.status {
-                ApprovalStatus::Pending => return Ok((decision, existing.clone().into())),
+                ApprovalStatus::Pending => {
+                    self.remember(run_id, &op_hash, &existing.approval_id);
+                    return Ok((decision, Some(existing)));
+                }
                 ApprovalStatus::Denied => {
                     let denied = Decision { allow: false, scope: decision.scope.clone(), reason: Some("denied by the user".into()) };
-                    return Ok((denied, Some(existing.clone())));
+                    return Ok((denied, Some(existing)));
                 }
-                _ if existing.policy_revision == self.revision() => {
-                    return Ok((Decision::allow(), Some(existing.clone())))
+                // only an unconsumed once/session approval with the same policy
+                // revision authorizes the call; EXPIRED asks again (permissions.py)
+                ApprovalStatus::ApprovedOnce | ApprovalStatus::ApprovedSession
+                    if existing.policy_revision == self.revision() =>
+                {
+                    return Ok((Decision::allow(), Some(existing)))
                 }
                 _ => {}
             }
@@ -237,7 +252,7 @@ impl ApprovalGate {
             agent_id: agent_id.to_string(),
             run_id: run_id.to_string(),
             tool_call_id: tool_call_id.to_string(),
-            operation_hash: op_hash,
+            operation_hash: op_hash.clone(),
             requested_scope: decision
                 .scope
                 .clone()
@@ -248,7 +263,69 @@ impl ApprovalGate {
             decided_at: None,
         };
         self.core.call_in_session("insert_approval", json!({"approval": request}))?;
+        self.remember(run_id, &op_hash, &request.approval_id);
         Ok((decision, Some(request)))
+    }
+
+    fn remember(&self, run_id: &str, op_hash: &str, approval_id: &str) {
+        self.parked
+            .lock()
+            .unwrap()
+            .insert((run_id.to_string(), op_hash.to_string()), approval_id.to_string());
+    }
+
+    /// The decision recorded for this run+operation, whatever tool_call_id the
+    /// model re-sent it under. Sources, in order: the row this gate parked on
+    /// (any status — the only way a DENIED/EXPIRED answer survives a fresh call
+    /// id), then the core's newest still-usable row for the run, then the
+    /// exact-call lookup for a core without the `approval_find_run` contract.
+    fn decided_for_run(&self, run_id: &str, tool_call_id: &str, op_hash: &str) -> Option<ApprovalRequest> {
+        let parked = self
+            .parked
+            .lock()
+            .unwrap()
+            .get(&(run_id.to_string(), op_hash.to_string()))
+            .cloned();
+        if let Some(approval_id) = parked {
+            if let Ok(reply) = self.core.call_in_session("get_approval", json!({"approval_id": approval_id})) {
+                if let Some(row) = approval_from(reply.get("approval")) {
+                    // EXPIRED is the absence of a decision: ask again
+                    if row.status != ApprovalStatus::Expired {
+                        return Some(row);
+                    }
+                }
+            }
+        }
+        if let Ok(reply) = self
+            .core
+            .call_in_session("approval_find_run", json!({"run_id": run_id, "operation_hash": op_hash}))
+        {
+            return approval_from(reply.get("approval"));
+        }
+        self.core
+            .call("approval_for_call", json!({
+                "session_id": self.core.session_id,
+                "run_id": run_id,
+                "tool_call_id": tool_call_id,
+                "operation_hash": op_hash,
+            }))
+            .ok()
+            .and_then(|v| approval_from(v.get("approval")))
+    }
+
+    /// permissions.py::consume_once — a once-approval is single use, consumed
+    /// after the operation ran (success or failure).
+    pub fn consume_once(&self, approval_id: &str) {
+        if let Err(e) = self.core.call_in_session("expire_approval", json!({"approval_id": approval_id})) {
+            eprintln!("teamagents: approval {approval_id} could not be consumed: {e}");
+        }
+        self.parked.lock().unwrap().retain(|_, id| id != approval_id);
+    }
+
+    /// Void a pending approval whose waiter is gone (a declined codex approval
+    /// or an abandoned turn) so the core never shows a dead PENDING row.
+    pub fn expire(&self, approval_id: &str) {
+        self.consume_once(approval_id);
     }
 }
 
@@ -313,17 +390,32 @@ impl ToolGateway {
             Ok(pair) => pair,
             Err(e) => return self.receipt_placeholder(&call_id, false, json!({}), Some(e)),
         };
+        let mut consume_once: Option<String> = None;
         if let Some(approval) = &approval {
-            if !decision.allow && approval.status == ApprovalStatus::Pending {
-                if let Ok(mut pending) = self.pending_approval_id.lock() {
-                    *pending = Some(approval.approval_id.clone());
+            match approval.status {
+                ApprovalStatus::Pending if !decision.allow => {
+                    if let Ok(mut pending) = self.pending_approval_id.lock() {
+                        *pending = Some(approval.approval_id.clone());
+                    }
+                    return self.receipt_placeholder(
+                        &call_id,
+                        false,
+                        json!({"approval_id": approval.approval_id, "scope": approval.requested_scope}),
+                        Some("approval_required".into()),
+                    );
                 }
-                return self.receipt_placeholder(
-                    &call_id,
-                    false,
-                    json!({"approval_id": approval.approval_id, "scope": approval.requested_scope}),
-                    Some("approval_required".into()),
-                );
+                ApprovalStatus::Denied => {
+                    return self.receipt_placeholder(
+                        &call_id,
+                        false,
+                        json!({}),
+                        Some("The user denied this operation. Do not retry it; choose another approach or ask the user.".into()),
+                    );
+                }
+                // consumed after the operation runs, even when it fails
+                // (runners.py: handler then consume_once)
+                ApprovalStatus::ApprovedOnce => consume_once = Some(approval.approval_id.clone()),
+                _ => {}
             }
         }
         if !decision.allow {
@@ -337,10 +429,14 @@ impl ToolGateway {
         let Some(executor) = &self.executor else {
             return self.receipt_placeholder(&call_id, false, json!({}), Some(format!("no executor for tool {tool}")));
         };
-        match executor(tool, args) {
+        let receipt = match executor(tool, args) {
             Ok(output) => self.receipt_placeholder(&call_id, true, json!({"output": output}), None),
             Err(e) => self.receipt_placeholder(&call_id, false, json!({}), Some(e)),
+        };
+        if let Some(approval_id) = consume_once {
+            self.approvals.consume_once(&approval_id);
         }
+        receipt
     }
 }
 
@@ -355,6 +451,25 @@ mod tests {
         assert_eq!(a, b);
         assert_eq!(a.len(), 32);
         assert_ne!(a, operation_hash("shell", &json!({"command": "rm -rf /"})));
+    }
+
+    #[test]
+    fn operation_hash_matches_python_json_dumps() {
+        // Vectors from .venv/bin/python:
+        //   hashlib.sha256(json.dumps({"tool": t, "args": a}, sort_keys=True,
+        //                              ensure_ascii=False).encode()).hexdigest()[:32]
+        assert_eq!(
+            operation_hash("shell", &json!({"command": "ls", "network": false})),
+            "3b029cd4d67fd563bc49494e01f94404"
+        );
+        assert_eq!(
+            operation_hash("shell", &json!({"command": "echo 你好"})),
+            "7e78ae54357806e4c55d0a7b8cad4a8d"
+        );
+        assert_eq!(
+            operation_hash("web_fetch", &json!({"url": "https://example.com/a?b=1", "n": null})),
+            "c8ce429c3fc12927f239b7e72c84c5a3"
+        );
     }
 
     #[test]

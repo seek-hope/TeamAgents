@@ -145,6 +145,14 @@ fn main() {
         history,
     );
 
+    // a panic while the terminal is raw must still hand it back (raw mode +
+    // alternate screen + mouse/paste reporting)
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        restore_terminal();
+        default_hook(info);
+    }));
+
     // terminal setup
     let mut stdout = std::io::stdout();
     enable_raw_mode().expect("raw mode");
@@ -155,25 +163,37 @@ fn main() {
                 | crossterm::event::KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES,
         ));
     }
-    execute!(stdout, crossterm::event::EnableMouseCapture).ok();
+    execute!(
+        stdout,
+        crossterm::event::EnableMouseCapture,
+        crossterm::event::EnableBracketedPaste
+    )
+    .ok();
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).expect("terminal");
 
     let code = run(&mut terminal, &worker, &mut app);
 
     // teardown
-    let _ = execute!(
-        terminal.backend_mut(),
-        crossterm::event::DisableMouseCapture,
-        LeaveAlternateScreen
-    );
-    if supports_keyboard_enhancement().unwrap_or(false) {
-        let _ = terminal.backend_mut().execute(crossterm::event::PopKeyboardEnhancementFlags);
-    }
-    let _ = disable_raw_mode();
+    restore_terminal();
     drop(terminal);
     Arc::try_unwrap(worker).map(|w| w.close()).ok();
     std::process::exit(code);
+}
+
+/// Undo everything the TUI turns on; safe to call twice (teardown + panic hook).
+fn restore_terminal() {
+    let mut out = std::io::stdout();
+    let _ = execute!(
+        out,
+        crossterm::event::DisableMouseCapture,
+        crossterm::event::DisableBracketedPaste,
+        LeaveAlternateScreen
+    );
+    if supports_keyboard_enhancement().unwrap_or(false) {
+        let _ = out.execute(crossterm::event::PopKeyboardEnhancementFlags);
+    }
+    let _ = disable_raw_mode();
 }
 
 fn atty_stdout() -> bool {
@@ -459,30 +479,26 @@ fn handle_mouse(m: event::MouseEvent, terminal: &Terminal<CrosstermBackend<std::
         return; // the settings overlay is modal
     }
     let geo = ui::geometry(app, area);
-    let on_side = |row: u16, col: u16| -> bool {
-        col >= geo.side.x
-            && col < geo.side.x + geo.side.width
-            && row >= geo.side.y
-            && row < geo.side.y + geo.side.height
+    let in_rect = |r: ratatui::layout::Rect, row: u16, col: u16| -> bool {
+        col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height
     };
+    let on_side = in_rect(geo.side, m.row, m.column);
     match m.kind {
         MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
             let up = m.kind == MouseEventKind::ScrollUp;
-            if on_side(m.row, m.column) && app::PANELS[app.panel] != "log" {
-                // the wheel drives the table cursor, exactly like ↑/↓
-                let code = if up {
-                    crossterm::event::KeyCode::Up
-                } else {
-                    crossterm::event::KeyCode::Down
-                };
-                app.handle_key(crossterm::event::KeyEvent::new(
-                    code,
-                    crossterm::event::KeyModifiers::NONE,
-                ));
-            } else if up {
-                app.scroll_up(3);
+            if on_side && app::PANELS[app.panel] != "log" {
+                // the wheel drives the table selection, exactly like ↑/↓ — no
+                // matter which pane has the focus
+                app.move_table_selection(if up { -1 } else { 1 });
             } else {
-                app.scroll_down(3);
+                // the wheel scrolls the pane under the pointer, not the focused
+                // one (D-20 #7): over the box it is the log, elsewhere the chat
+                let target = ui::wheel_target(&geo, m.row, m.column);
+                if up {
+                    app.scroll_up_target(target, 3);
+                } else {
+                    app.scroll_down_target(target, 3);
+                }
             }
             return;
         }
@@ -490,26 +506,27 @@ fn handle_mouse(m: event::MouseEvent, terminal: &Terminal<CrosstermBackend<std::
         _ => return,
     }
 
-    if on_side(m.row, m.column) {
+    if on_side {
         if m.row == geo.tabs_y {
-            // same piece widths the renderer used: clicking a tab hits that tab
-            if let Some(index) = ui::tab_at(app, geo.side.x + 1, geo.side.width.saturating_sub(2), m.column) {
+            // same layout the renderer used: clicking a tab hits that tab
+            let inner = geo.side_inner;
+            if let Some(index) = ui::tab_at(app, inner.x, inner.width, m.column) {
                 app.panel = index;
                 app.focus = app::Focus::Panel;
             }
             return;
         }
-        if m.row >= geo.rows_y {
+        if m.row >= geo.rows.y {
             app.focus = app::Focus::Panel;
-            let view = (geo.side.y + geo.side.height).saturating_sub(1 + geo.rows_y) as usize;
-            app.select_row_visible((m.row - geo.rows_y) as usize, view);
+            // the table body rect is the single source: renderer and hit-test
+            // read it from `ui::geometry` (hint rows and borders included)
+            if in_rect(geo.rows, m.row, m.column) {
+                app.select_row_visible((m.row - geo.rows.y) as usize, geo.rows.height as usize);
+            }
         }
         return;
     }
-    if m.row >= geo.chat.y
-        && m.row < geo.chat.y + geo.chat.height
-        && m.column < geo.chat.x + geo.chat.width
-    {
+    if in_rect(geo.chat, m.row, m.column) {
         app.focus = app::Focus::Composer;
     }
 }

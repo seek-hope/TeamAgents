@@ -1,14 +1,13 @@
 //! Session inventory / lock / archive / delete (sessions.py, session paths).
-//!
-//! ponytail: the lock is a pid file checked against /proc (Python uses flock);
-//! the semantic both versions need — "a live process holds this session" —
-//! is identical, and this works without libc bindings.
 
 use crate::config::sessions_dir;
 use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 pub struct SessionPaths {
     pub base: PathBuf,
@@ -35,49 +34,56 @@ pub fn default_session_id(cwd: &Path) -> String {
     format!("proj_{}", &hex[..12])
 }
 
-fn pid_alive(pid: i32) -> bool {
-    Path::new(&format!("/proc/{pid}")).exists()
+/// An flock held for as long as the session runs (session.py::acquire_session_lock).
+/// The kernel releases it when the process dies — kill -9 included — so a
+/// crashed run never leaves the session "already running".
+pub struct SessionLock {
+    file: std::fs::File,
 }
 
-/// Returns a release closure; Err means another live process holds the session.
-pub fn acquire_session_lock(session_id: &str) -> Result<impl FnOnce(), String> {
+impl Drop for SessionLock {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
+
+/// Err means another process holds the session lock.
+pub fn acquire_session_lock(session_id: &str) -> Result<SessionLock, String> {
     let paths = session_paths(session_id);
     std::fs::create_dir_all(&paths.base).map_err(|e| e.to_string())?;
-    if try_create_lock(&paths.lock).is_err() {
-        let holder = std::fs::read_to_string(&paths.lock)
-            .ok()
-            .and_then(|s| s.trim().parse::<i32>().ok());
-        match holder {
-            Some(pid) if pid_alive(pid) => {
-                return Err(format!("session {session_id} is already running (pid {pid})"))
-            }
-            _ => {
-                // stale lock: the recorded process is gone
-                let _ = std::fs::remove_file(&paths.lock);
-                try_create_lock(&paths.lock)
-                    .map_err(|e| format!("cannot lock session {session_id}: {e}"))?;
-            }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&paths.lock)
+        .map_err(|e| format!("cannot lock session {session_id}: {e}"))?;
+    match file.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => {
+            let holder = std::fs::read_to_string(&paths.lock).unwrap_or_default();
+            let holder = holder.trim();
+            return Err(if holder.is_empty() {
+                format!("session {session_id} is already running in another process")
+            } else {
+                format!("session {session_id} is already running (pid {holder})")
+            });
+        }
+        Err(std::fs::TryLockError::Error(e)) => {
+            return Err(format!("cannot lock session {session_id}: {e}"))
         }
     }
-    let lock = paths.lock.clone();
-    Ok(move || {
-        let _ = std::fs::remove_file(&lock);
-    })
-}
-
-fn try_create_lock(lock: &Path) -> std::io::Result<()> {
+    // diagnostic only: the pid is not what makes the lock exclusive
     use std::io::Write;
-    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(lock)?;
-    file.write_all(std::process::id().to_string().as_bytes())
+    let _ = file.set_len(0);
+    let _ = write!(&file, "{}", std::process::id());
+    Ok(SessionLock { file })
 }
 
 pub fn is_session_locked(session_id: &str, base: Option<&Path>) -> bool {
     let lock = base.unwrap_or(&sessions_dir()).join(session_id).join("session.lock");
-    std::fs::read_to_string(&lock)
-        .ok()
-        .and_then(|s| s.trim().parse::<i32>().ok())
-        .map(pid_alive)
-        .unwrap_or(false)
+    let Ok(file) = std::fs::File::open(&lock) else { return false };
+    matches!(file.try_lock(), Err(std::fs::TryLockError::WouldBlock))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -151,7 +157,25 @@ struct Meta {
     error: Option<String>,
 }
 
+/// Size of a session directory. The walk is O(files) and the TUI polls
+/// list_sessions every second, so the result is cached for a short TTL.
+/// ponytail: sizes lag up to 30s; push updates from the writer side if the
+/// panel must be live.
 fn dir_size_mb(path: &Path) -> f64 {
+    const TTL: Duration = Duration::from_secs(30);
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, (Instant, f64)>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some((computed_at, size)) = cache.lock().unwrap().get(path) {
+        if computed_at.elapsed() < TTL {
+            return *size;
+        }
+    }
+    let size = compute_dir_size_mb(path);
+    cache.lock().unwrap().insert(path.to_path_buf(), (Instant::now(), size));
+    size
+}
+
+fn compute_dir_size_mb(path: &Path) -> f64 {
     fn walk(dir: &Path, total: &mut u64) {
         let Ok(entries) = std::fs::read_dir(dir) else { return };
         for entry in entries.flatten() {
@@ -307,17 +331,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lock_rejects_live_holder_and_reclaims_stale() {
+    fn lock_is_held_by_the_live_holder_not_by_file_content() {
+        let _env = crate::env_lock();
         let dir = std::env::temp_dir().join(format!("ta-lock-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
+        std::env::set_var("XDG_STATE_HOME", dir.join("state"));
         let session = "proj_test";
-        // point the module at a scratch root via a hand-made lock file
-        let base = dir.join(session);
-        std::fs::create_dir_all(&base).unwrap();
-        std::fs::write(base.join("session.lock"), std::process::id().to_string()).unwrap();
-        assert!(is_session_locked(session, Some(&dir)));
-        std::fs::write(base.join("session.lock"), "999999").unwrap();
-        assert!(!is_session_locked(session, Some(&dir)));
+        assert!(!is_session_locked(session, None), "no lock file yet");
+        let lock = acquire_session_lock(session).expect("first lock");
+        assert!(is_session_locked(session, None));
+        // the old pid-file window: an emptied lock file must not free the session
+        let paths = session_paths(session);
+        std::fs::write(&paths.lock, "").unwrap();
+        assert!(is_session_locked(session, None), "content is not the lock");
+        assert!(acquire_session_lock(session).is_err(), "second holder is refused");
+        drop(lock);
+        assert!(!is_session_locked(session, None), "dropping the handle releases it");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dir_size_is_cached_between_calls() {
+        let dir = std::env::temp_dir().join(format!("ta-size-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.bin"), vec![0u8; 100_000]).unwrap();
+        let first = dir_size_mb(&dir);
+        assert!((first - 0.1).abs() < 0.001, "{first}");
+        std::fs::write(dir.join("b.bin"), vec![0u8; 100_000]).unwrap();
+        assert_eq!(dir_size_mb(&dir), first, "second call inside the TTL is cached");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

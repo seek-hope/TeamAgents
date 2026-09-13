@@ -48,13 +48,27 @@ def main():
     expect("›", "composer prefix", boot)
     expect("^q", "footer", boot)
     expect("Ready", "activity", boot)  # en default: status chips start with "○ Ready"
+    # terminal modes: mouse reporting and bracketed paste must be on (without
+    # bracketed paste a multi-line clipboard submits its first line)
+    if b"\x1b[?2004h" not in boot:
+        failures.append("bracketed paste is not enabled (?2004h missing)")
+    if b"\x1b[?1000h" not in boot and b"\x1b[?1002h" not in boot and b"\x1b[?1003h" not in boot:
+        failures.append("mouse reporting is not enabled")
 
-    # type a message (no model configured → the turn fails; that's fine here)
-    os.write(fd, b"hello leader")
-    read_all(fd, 0.5)
+    # a bracketed paste stays a draft: both lines land in the composer, nothing
+    # is submitted to the Leader until Enter
+    os.write(fd, b"\x1b[200~paste one\npaste two\x1b[201~")
+    pasted = read_all(fd, 1.2)
+    expect("paste one", "paste first line in the composer", pasted)
+    expect("paste two", "paste second line in the composer", pasted)
+    if "› You" in screen(pasted):
+        failures.append("the paste was submitted instead of staying a draft")
+    # Enter sends the whole draft as one message (no model configured → the turn
+    # fails; that's fine here)
     os.write(fd, b"\r")
     sent = read_all(fd, 3.0)
     expect("You", "user echo", sent)
+    expect("paste one", "the pasted draft reached the chat", sent)
 
     # cycle to tasks panel
     os.write(fd, b"\x14")  # ctrl+t
@@ -67,10 +81,12 @@ def main():
     expect("Approvals", "approvals tab", appr)
 
     # quit (dumb PTYs stall on crossterm's enhancement query; allow a few s)
+    quit_raw = b""
     os.write(fd, b"\x11")  # ctrl+q
     exited = False
     for _ in range(12):
         time.sleep(0.5)
+        quit_raw += read_all(fd, 0.15)
         try:
             done_pid, _ = os.waitpid(pid, os.WNOHANG)
             if done_pid:
@@ -82,13 +98,19 @@ def main():
     if not exited:
         os.kill(pid, 9)
         failures.append("ctrl+q did not exit")
+    else:
+        # the terminal is handed back: alt screen and paste reporting are off
+        if b"\x1b[?1049l" not in quit_raw:
+            failures.append("the alternate screen was not left on exit (?1049l missing)")
+        if b"\x1b[?2004l" not in quit_raw:
+            failures.append("bracketed paste was not disabled on exit (?2004l missing)")
 
     if failures:
         print("FAIL:")
         for f in failures:
             print(" -", f)
         return 1
-    print("PTY smoke ok: boot, message send, panel cycle, approvals jump, quit")
+    print("PTY smoke ok: boot, paste, message send, panel cycle, approvals jump, restore, quit")
     return 0
 
 if __name__ == "__main__":

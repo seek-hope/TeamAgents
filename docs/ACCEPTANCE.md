@@ -52,7 +52,7 @@
 ## Rust 重构版（`reconstruct` 分支）对照
 
 证据一律是可运行的：`cd core|engine|tui && cargo test`、`python3 tui/scripts/pty_smoke.py`、
-`cd engine && TEAMAGENTS_LIVE_CODEX=1 cargo test --test live_codex`。
+`python3 tui/scripts/pty_click_check.py`、`cd engine && TEAMAGENTS_LIVE_CODEX=1 cargo test --test live_codex`。
 ✅ = 有自动化证据；🔶 = 仅部分覆盖/仅人工实测；⚠ = 该能力未移植到 Rust 版。
 
 | ID | Rust 版状态 | 证据 / 说明 |
@@ -71,17 +71,18 @@
 | T12 | ✅ | `topology.rs::t12_conflicting_patches_never_partially_apply` |
 | T13 | ✅ | `topology.rs::t13_removed_member_hands_tasks_to_leader_and_keeps_results` |
 | T14 | ✅ | `scenarios.rs::t2_...`（supplement 到运行中的 Leader） |
-| T15 | 🔶 | 审批门单测 + Codex 批准 park/decide 用例；ChatRunner 的批准暂停/恢复无专属用例 |
+| T15 | ✅ | 审批门单测 + Codex 批准 park/decide 用例；ChatRunner 端到端：`engine/tests/chat_e2e.rs::once_approval_is_consumed_and_the_turn_completes`（once 执行后消费）、`expired_once_approval_requires_a_new_request`（EXPIRED 重请求）、`denied_approval_blocks_the_operation`；Codex 超时闭环 `codex_contract.rs::codex_approval_timeout_expires_the_row` |
 | T16 | ✅ | `scenarios.rs::full_auto_toggle_reaches_the_approval_gate`；仅 `actor=user` 可改模式（`core/src/control.rs` 校验） |
-| T17 | ✅ | `engine/tests/codex_adapter.rs`（simple/approval/slow）+ 真实 CLI `live_codex.rs` |
+| T17 | ✅ | `engine/tests/codex_adapter.rs`（simple/approval/slow）+ 真实 CLI `live_codex.rs`；重启收敛 `codex_contract.rs::reconcile_reads_the_thread_history`、进程组清理 `closing_the_app_server_kills_its_process_group` |
 | T18 | ✅ | `engine/src/workspace.rs` + 单测（worktree 生命周期/复用/合并/未合并拒绝清理/脏仓库回退 shared）；`tui` 会话删除守卫同源 |
-| T19 | ✅ | files/shell/web_search/web_fetch + MCP stdio（`engine/tests/mcp_tools.rs` 真实 MCP 服务器）+ Skills/AGENTS.md 注入（`session.rs` 单测）；http/sse MCP ⚠ |
-| T20 | ✅ | TUI 单测 + TestBackend 帧冒烟 + 真终端 PTY 冒烟；真实模型 + 真界面用例未移植 |
+| T19 | ✅ | files/shell/web_search/web_fetch + MCP stdio（`engine/tests/mcp_tools.rs` 真实 MCP 服务器；`mcp_stdio.rs::server_environment_is_whitelisted` 环境白名单、`noisy_stderr_does_not_block_the_handshake`）+ Skills/AGENTS.md 注入（`session.rs` 单测）+ web 执行层 fail-closed（`tools_sandbox.rs::web_tools_are_fail_closed_and_ordered_by_member_binding`）+ 长输出 artifacts（`long_shell_output_is_stored_as_a_readable_artifact`）；http/sse MCP ⚠ |
+| T20 | ✅ | TUI 单测 + TestBackend 帧冒烟 + 真终端 PTY 冒烟（冒烟 + 点击检查）；新增回归：`render_tests.rs::narrow_frames_render_without_panicking`、`tab_click_hits_the_tab_under_the_pointer`、`app_tests.rs::paste_fills_the_composer_without_submitting`、`panel_chords_never_fire_destructive_actions`；真实模型 + 真界面用例未移植 |
 | T21 | ✅ | `recovery.rs::t8_...` 断言重放步骤不重复产生副作用（shared 条目仍为 1 条） |
-| T22 | ✅ | `recovery.rs::t22_goal_turn_budget_is_enforced`（LIMIT_REACHED）+ 取消/暂停场景 + 步骤上限（`ChatRunner` 收到 step limit 即结束回合） |
-| T23 | 🔶 | `tools.rs::bwrap_argv_matches_python_and_runs_isolated`（真实 bwrap 运行）+ 越界路径单测；穿越/符号链接用例未系统移植 |
+| T22 | ✅ | `recovery.rs::t22_goal_turn_budget_is_enforced`（LIMIT_REACHED）+ 取消/暂停场景 + 模型步数上限 `chat_e2e.rs::model_step_limit_reports_limit_reached`（超限 → `limit_reached` + FAILED）+ 活动超时中断 `timeout_interrupts_the_member_before_further_side_effects`、崩溃不误报超时 `a_crashed_member_is_not_reported_as_a_timeout` |
+| T23 | 🔶 | `tools.rs::bwrap_argv_matches_python_and_runs_isolated`（真实 bwrap 运行）+ 越界路径单测 + `tools_sandbox.rs::guard_url_matches_the_python_guard_table`（32 条与 Python 判定表逐行差分）+ `shell_survives_output_larger_than_the_pipe_buffer`；穿越/符号链接用例未系统移植 |
 | T24 | 🔶 | 复用的 `context_epoch` 机制在核心；Rust 无专属用例 |
 
-**Rust 版尚未移植（⚠）**：deepagents 子代理（`general-purpose`）、MCP 的 http/sse 传输、
-TUI 的 Textual 滚动条字形与页脚溢出滚动（其余界面已逐行对齐）。
-台账与取舍见 `docs/RECONSTRUCT.md`、`docs/DECISIONS.md`（D-17/D-18/D-19）。
+**Rust 版尚未移植（⚠）**：deepagents 子代理（`general-purpose`）、MCP 的 http/sse 传输；
+TUI 为 Rust 原生设计（D-20），不再追求与 Textual 逐像素一致（不复刻滚动条字形与页脚溢出滚动）。
+其余保留差异（部分覆盖而非缺失）见 `docs/DECISIONS.md` D-21。
+台账与取舍见 `docs/RECONSTRUCT.md`、`docs/DECISIONS.md`（D-17/D-19/D-20/D-21）。

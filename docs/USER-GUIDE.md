@@ -2,8 +2,9 @@
 
 ## 0. 版本适用性（先读）
 
-本文档同时覆盖两个实现；标 ⚠ 的条目是 **Python（main）版专有**，Rust 重构版（`reconstruct`
-分支，入口 `engine/target/debug/teamagents`）尚未移植，遇到时按“Rust 版差异”一列处理。
+本文档同时覆盖两个实现；标 ⚠ 的条目是 **Python（main）版专有**且 Rust 重构版
+（`reconstruct` 分支，入口 `engine/target/debug/teamagents`）尚未移植的少数项
+（其余能力两版均已实现），遇到时按“Rust 版差异”一列处理。
 
 | 能力 | Python（main） | Rust（reconstruct 分支） |
 |---|---|---|
@@ -16,7 +17,7 @@
 | MCP 工具服务 | ✅ | ✅ stdio 传输（http/sse ⚠ 未实现）；工具名 `<service>_<tool>`，`tool_names` 过滤，绑定即授权 |
 | Skills / AGENTS.md 注入 | ✅ | ✅（内容注入系统提示词，上限 8KB/文件、32KB/成员；Python 版是虚拟文件系统） |
 | `workspace_policy` | shared / isolated / git_worktree | ✅ 三者齐全（worktree 复用、脏仓库回退 shared 并说明、未合并成果拒绝清理；删除会话同样受保护） |
-| 会话锁 | flock | pid 文件 + `/proc` 存活检查（语义等价） |
+| 会话锁 | flock | flock（`File::try_lock`；kill -9 自动回收，文件里的 pid 仅作诊断） |
 | TeamSpec 导入 | JSON / YAML | JSON / YAML（`--team` 与 `validate` 均可） |
 | TUI | Textual | ratatui（面板与键位一致，见文末键位表） |
 | deepagents 子代理 / 图框架 | ✅ | ⚠ 未移植（`ChatRunner` 工具循环取代；`general-purpose` 子代理没有等价物） |
@@ -28,7 +29,7 @@
 | 内容 | 位置 |
 |---|---|
 | 用户配置（模型 profile、工具绑定、Skills 目录、指令文件） | `$XDG_CONFIG_HOME/teamagents/config.toml`（默认 `~/.config/teamagents/config.toml`） |
-| ⚠ 项目配置（Python 版；可覆盖同名模型/工具，不能开启全自动或扩大预授权） | `<项目>/.teamagents/config.toml` |
+| 项目配置（两版；同名条目用户定义优先，不能开启全自动或扩大预授权） | `<项目>/.teamagents/config.toml` |
 | 会话状态（业务库、成员私有检查点、制品、成员工作目录） | `$XDG_STATE_HOME/teamagents/sessions/<session_id>/` |
 | TUI 语言偏好 | `$XDG_STATE_HOME/teamagents/ui.json`（默认 `~/.local/state/teamagents/ui.json`） |
 | TUI 输入历史 | `$XDG_STATE_HOME/teamagents/composer-history.json`（上限 500 条，跨会话与重启保留） |
@@ -68,7 +69,7 @@ api_key_env = "ANYSEARCH_API_KEY"
 [tools.fetch]
 kind = "web_fetch"
 
-[tools.notes]                  # ⚠ Python 版：任意 MCP 服务（stdio 或 HTTP）——Rust 版尚未实现
+[tools.notes]                  # MCP 服务（两版支持 stdio；http/sse 仅 Python 版）
 kind = "mcp"
 mcp_server = "notes"
 mcp_transport = "stdio"
@@ -79,7 +80,7 @@ required = false               # 必需服务不可用会明确阻塞；可选�
 
 内置能力名 `files` / `shell` / `web` 不需要配置条目：成员在 TeamSpec 里引用即可。
 
-### 1.4 Skills 与指令文件（⚠ Python 版；Rust 版尚未移植）
+### 1.4 Skills 与指令文件（两版；Rust 版为提示词注入）
 
 ```toml
 skills_paths = ["~/.agents/skills", "~/.config/teamagents/skills"]
@@ -98,16 +99,20 @@ instruction_files = ["~/.config/teamagents/AGENTS.md"]
 - **full_auto（仅用户可开启）**：跳过逐次批准，仍保留团队通信 ACL、动作校验、记录与执行上限；
   不绕过操作系统与外部服务的限制。TUI 状态栏始终显示当前模式。
 
-切换：TUI `Ctrl+F`，或 `teamagents --full-auto`，或（⚠ Python 版）用户配置
-`[permissions] mode = "full_auto"`。项目配置**不能**开启全自动。
+切换：TUI `Ctrl+F`，或 `teamagents --full-auto`，或用户配置
+`[permissions] mode = "full_auto"`（两版均支持；非法取值会直接报错，doctor 可见）。项目配置**不能**开启全自动。
 Rust 版以会话行为准：审批门每次调用前读取会话的权限模式，所以切换立即生效、无需重开。
 
 ### 2.2 批准语义
 
 - 批准绑定**具体操作与参数**；参数变化需要重新批准。
-- 提供三种决定：本次批准、会话内批准（同操作哈希复用）、拒绝。
+- 提供三种决定：本次批准（once）、会话内批准（session）、拒绝。
+- **once 批准在执行后即消费**（置 EXPIRED），同一操作再次执行需重新批准；session 批准（以及尚未
+  消费的 once 批准）只在策略修订（revision）不变时放行；EXPIRED 的记录按“需重新请求”处理，
+  而不是放行。
 - 等待批准只暂停相关操作，其他成员继续；`WAITING_APPROVAL` 不算回合结束。
 - 恢复时重新核对参数、配置版本与权限，历史批准不会沿用失效范围。
+- Rust 版 Codex 成员的批准等待有 600s 上限，超时把该批准置 EXPIRED（需重新批准）；其他成员不受影响。
 
 ### 2.3 隔离边界（诚实说明）
 
@@ -121,7 +126,8 @@ Rust 版以会话行为准：审批门每次调用前读取会话的权限模式
 ## 3. 恢复
 
 - 正常退出默认保存并暂停；异常退出后下次启动自动恢复：团队版本、待办任务、消息位置、
-  成员私有线程与批准队列都会重新装载。
+  成员私有线程与批准队列都会重新装载（Rust 版 ChatRunner 的成员对话历史落盘在
+  `members/<成员>/chat_history.json`，重启后装载）。
 - 执行意图（`QUEUED` 回合）先持久化再执行，恢复后继续；正在执行且无外部线程的回合可安全重跑，
   有外部线程（Codex）的回合先核对历史。
 - **四类崩溃窗口**都有处理：提交后尚未启动、模型已完成但结果未归档、团队动作已提交但回执未落、
@@ -134,10 +140,11 @@ Rust 版以会话行为准：审批门每次调用前读取会话的权限模式
 $XDG_STATE_HOME/teamagents/sessions/<会话 id>/     # 默认 ~/.local/state/teamagents/sessions/
 ├── team.db            业务事实：动作回执、事件流、任务、回合、投递、批准、共享条目、拓扑补丁
 ├── checkpoints.sqlite ⚠ Python 版：成员私有线程（LangGraph 检查点）
-├── artifacts/         长输出与制品（工具结果里的 /artifacts/xxx 指向这里）
-├── members/<成员>/work/  ⚠ Python 版：隔离/worktree 成员的专属工作目录
-├── workspaces/<成员>/   Rust 版：workspace_policy=isolated 成员的工作目录（文件工具的执行根）
-└── session.lock       执行所有权文件（同一会话同时只允许一个运行实例；Rust 版记 pid）
+├── artifacts/         长输出与制品：shell 输出超 200KB 落 exec-*.log，工具结果用 /artifacts/xxx 引用
+│                      （成员用 read_file/read_artifact/write_file 等按 /artifacts/ 前缀读写；ls/glob 与隔离 shell 看不到）
+├── members/<成员>/work/  隔离/worktree 成员的专属工作目录（两版同路径，文件工具的执行根）
+├── members/<成员>/chat_history.json  Rust 版：成员对话历史（重启后装载）
+└── session.lock       执行所有权（flock；同一会话同时只允许一个运行实例，kill -9 自动回收）
 ```
 
 ```bash
@@ -145,8 +152,9 @@ teamagents sessions            # 列出会话：状态、目标、事件/任务�
 teamagents --resume <会话 id>   # 恢复该会话（团队版本、待办、消息位置、成员线程、批准队列）
 ```
 
-TUI 里同一件事在「会话」面板完成（`Ctrl+T` 循环到该面板）：
+TUI 里同一件事在「会话」面板完成（`Tab` 把焦点移入管理面板，或 `Ctrl+T` 切页签后点击面板）：
 `s` 或 `Enter` 切换、`n` 在当前目录新建会话、`a` 归档、`d` 删除（连按两次确认）。
+面板动作只认无修饰的字母键：`Ctrl+A/S/D/C` 不会误触发归档/删除/批准/取消（`Ctrl+D`/`Ctrl+U` 是滚动）。
 **归档/删除的是当前会话时会直接退出 TUI**；其他会话操作后留在原地并刷新列表。
 运行中的会话（其他进程持有文件锁）不允许切换/归档/删除，会明确告知
 （Rust 版提示 `session <id> is already running (pid <n>)`）。
@@ -170,7 +178,8 @@ TUI 里同一件事在「会话」面板完成（`Ctrl+T` 循环到该面板）�
 | 报缺少某环境变量 | profile 的 `api_key_env` 指向的变量未导出；导出后重跑 |
 | 命令因“refusing to run without isolation”失败 | 安装 bubblewrap；不要以降低隔离来绕过 |
 | Codex 成员卡在“Reconnecting” | codex 的 provider 凭据不可达：检查 `~/.codex/config.toml` 的默认 provider 与密钥，或给成员配置走环境变量密钥的 profile |
-| 回合因 `LIMIT_REACHED` 停止 | 达到目标回合/步骤上限；调整 `limits` 后继续，不是失败终态 |
+| 回合因 `LIMIT_REACHED` 停止 | 达到目标回合数或模型请求步数上限（`limits.max_model_steps_per_turn` 真实约束模型请求数）；该回合记为 FAILED 并发 `limit_reached` 事件，调整 `limits` 后可继续 |
+| 成员回合活动超时 | 超过 `limits.turn_active_timeout_s`（默认 1200s）会中断成员回合（不再继续执行）；回合记为 FAILED，按需重派任务 |
 | 任务长期 `BLOCKED` | 依赖失败或成员回合未提交完成申请；Leader 会收到事件，可在 TUI 里取消或重派 |
 | 需要查看发生了什么 | TUI 日志面板 / `sessions/<id>/team.db` 的 events 表 / `run_progress` 事件 |
 | 隔离或协议自检 | `teamagents doctor`（依赖、配置、bubblewrap、codex、状态目录） |
@@ -185,9 +194,9 @@ TUI 里同一件事在「会话」面板完成（`Ctrl+T` 循环到该面板）�
 - 校验：Leader 唯一且存在、成员 ID 唯一、引用有效、任务依赖无环、Codex 成员只能由 Leader 委派、
   上限为正数；通过 `teamagents validate` 可离线检查。
 - 工作目录策略：`shared`（同一目录）、`isolated`（成员目录 + 明确输入/制品引用）、
-  `git_worktree`（从明确提交建分支与 worktree；原目录脏时自动退回 shared 并说明原因）。
-  ⚠ Rust 版实现 `shared`/`isolated`；`git_worktree` 成员会明确失败
-  （`workspace_policy=git_worktree is not implemented…`），不会静默按 shared 运行。
+  `git_worktree`（从明确提交建分支与 worktree；原目录脏时自动退回 shared 并说明原因；
+  重开会话复用既有 worktree，未合并成果拒绝清理，删除会话同样受保护）。
+  三者在两版均已实现（Rust 见 `docs/DECISIONS.md` D-19）。
 
 ## TUI（Rust 版布局与交互）
 
@@ -223,11 +232,11 @@ TUI 里同一件事在「会话」面板完成（`Ctrl+T` 循环到该面板）�
 | 发送 / 换行 | Enter / Shift+Enter 或 Ctrl+J |
 | 调取输入历史 | 首行按 ↑，末行按 ↓；返回最新位置恢复草稿；历史跨会话与重启保留 |
 | 行首 / 行尾 | Ctrl+A / Ctrl+E |
-| 输入框 / 管理面板 | Ctrl+N / Ctrl+T（面板内 Esc 返回输入框） |
+| 输入框 / 管理面板 | Tab 进面板（任意页签）；面板内 Esc 或 Tab 返回输入框；Ctrl+T 切页签、Ctrl+N 回输入框 |
 | 打开设置 | 输入 `/settings` 回车；浮层内 ↑↓ 选择、Enter 切换、Esc 关闭 |
 | 批准队列 | Ctrl+G |
 | 请求停止 Leader | Esc；成员的其他工作继续 |
-| 滚动对话 / 日志 | PgUp/PgDn 或 Ctrl+U/Ctrl+D，滚轮同样可用；Ctrl+Home/Ctrl+End 跳到最早/最新 |
+| 滚动对话 / 日志 | PgUp/PgDn 或 Ctrl+U/Ctrl+D（任何焦点下都滚动：团队等面板滚对话、日志面板滚日志），滚轮同样可用；Ctrl+Home/Ctrl+End 跳到最早/最新 |
 | 按词编辑 | Ctrl+W 或 Alt+Backspace 删词；Ctrl+←/Ctrl+→ 按词移动光标 |
 
 原生成员在模型/工具边界响应停止。已经执行中的工具要先返回，界面显示停止请求；超过确认时限会显示结果不明，不承诺回滚文件或外部操作。

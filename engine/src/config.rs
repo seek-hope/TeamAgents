@@ -63,6 +63,9 @@ pub fn load_user_config(path: &Path) -> Result<UserConfig, String> {
 pub fn parse_user_config(text: &str) -> Result<UserConfig, String> {
     let value: toml::Value = text.parse().map_err(|e| format!("bad TOML: {e}"))?;
     let table = value.as_table().ok_or("config root must be a table")?;
+    // the permissions section is not a catalog field, but a wrong type there is
+    // an error, never a silent default (config.py::_trust_project_tools)
+    project_permissions(&value)?;
     let mut filtered = toml::map::Map::new();
     for key in ["models", "tools", "skills_paths", "instruction_files"] {
         if let Some(v) = table.get(key) {
@@ -97,7 +100,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_models_and_ignores_other_sections() {
+    fn parses_models_and_validates_the_permissions_section() {
         let cfg = parse_user_config(
             r#"
 [permissions]
@@ -119,6 +122,13 @@ provider = "anysearch"
         assert_eq!(cfg.models["leader_main"].model, "deepseek-flash");
         assert_eq!(cfg.tools["web"].kind, "web_search");
         assert!(parse_user_config("[models.a]\nmodel = 1\n").is_err());
+        // a malformed [permissions] section is an error, never a silent default
+        assert!(parse_user_config("[permissions]\ntrust_project_tools = \"yes\"\n")
+            .unwrap_err()
+            .contains("must be true/false"));
+        assert!(parse_user_config("permissions = 1\n").unwrap_err().contains("must be a table"));
+        assert!(parse_user_config("[permissions]\nmode = \"yolo\"\n").unwrap_err().contains("invalid permission mode"));
+        assert!(parse_user_config("[permissions]\ntrust_project_tools = true\nmode = \"full_auto\"\n").is_ok());
     }
 }
 
@@ -192,16 +202,25 @@ pub fn load_user_config_for(cwd: &Path) -> Result<UserConfig, String> {
 }
 
 fn project_permissions(user: &toml::Value) -> Result<(bool, String), String> {
-    let permissions = user.get("permissions");
-    let Some(table) = permissions.and_then(|p| p.as_table()) else {
+    let Some(permissions) = user.get("permissions") else {
         return Ok((false, "approved_scope".into()));
     };
-    let trusted = table.get("trust_project_tools").and_then(|v| v.as_bool()).unwrap_or(false);
-    let mode = table
-        .get("mode")
-        .and_then(|v| v.as_str())
-        .unwrap_or("approved_scope")
-        .to_string();
+    let table = permissions
+        .as_table()
+        .ok_or_else(|| "[permissions] must be a table in user config".to_string())?;
+    let trusted = match table.get("trust_project_tools") {
+        None => false,
+        Some(value) => value.as_bool().ok_or_else(|| {
+            format!("permissions.trust_project_tools must be true/false, got {value}")
+        })?,
+    };
+    let mode = match table.get("mode") {
+        None => "approved_scope".to_string(),
+        Some(value) => value
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| format!("permissions.mode must be a string, got {value}"))?,
+    };
     if mode != "approved_scope" && mode != "full_auto" {
         return Err(format!("invalid permission mode {mode:?} in user config"));
     }

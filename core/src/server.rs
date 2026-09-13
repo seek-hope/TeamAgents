@@ -55,7 +55,8 @@ impl Server {
                 Ok(action) => {
                     let sid = action.session_id.clone();
                     let ctl = self.control_for(&sid)?;
-                    Ok(serde_json::to_value(ctl.submit(&action)).map_err(|e| e.to_string())?)
+                    let receipt = ctl.submit(&action)?;
+                    Ok(serde_json::to_value(receipt).map_err(|e| e.to_string())?)
                 }
                 Err(e) => Err(format!("bad action: {e}")),
             },
@@ -79,22 +80,20 @@ impl Server {
                 ctl.finalize_run(run_id, &outcome, &ack_ids).map(|_| json!({"ok": true}))
             }),
             "emit" => self.with(params, |ctl, p| {
-                let drafts: Vec<EventDraft> = p
-                    .get("events")
-                    .and_then(|v| v.as_array())
-                    .unwrap_or(&vec![])
-                    .iter()
-                    .filter_map(|d| {
-                        let kind: EventKind = serde_json::from_value(d.get("kind").cloned()?).ok()?;
-                        let mut draft = EventDraft::new(kind, d.get("payload").cloned().unwrap_or(json!({})));
-                        draft.task_id = d.get("task_id").and_then(|v| v.as_str()).map(str::to_string);
-                        draft.targets = d.get("targets").and_then(|v| serde_json::from_value(v.clone()).ok());
-                        draft.actor_id = d.get("actor_id").and_then(|v| v.as_str()).map(str::to_string);
-                        Some(draft)
-                    })
-                    .collect();
-                let actor = p.get("actor_id").and_then(|v| v.as_str()).unwrap_or("system").to_string();
-                ctl.emit(drafts, &actor);
+                // malformed events are an error, never a silently dropped write
+                let events = p.get("events").and_then(|v| v.as_array()).ok_or("events must be an array")?;
+                let mut drafts: Vec<EventDraft> = Vec::with_capacity(events.len());
+                for d in events {
+                    let kind_json = d.get("kind").cloned().ok_or("event.kind required")?;
+                    let kind: EventKind = serde_json::from_value(kind_json).map_err(|e| format!("bad event kind: {e}"))?;
+                    let mut draft = EventDraft::new(kind, d.get("payload").cloned().unwrap_or(json!({})));
+                    draft.task_id = d.get("task_id").and_then(|v| v.as_str()).map(str::to_string);
+                    draft.targets = d.get("targets").and_then(|v| serde_json::from_value(v.clone()).ok());
+                    draft.actor_id = d.get("actor_id").and_then(|v| v.as_str()).map(str::to_string);
+                    drafts.push(draft);
+                }
+                let actor = p.get("actor_id").and_then(|v| v.as_str()).unwrap_or("system");
+                ctl.emit(drafts, actor)?;
                 Ok(json!({"ok": true}))
             }),
             // the engine owns the user config; the control validates against it
@@ -105,7 +104,7 @@ impl Server {
                 Ok(json!({"ok": true}))
             }),
             "schedule" => self.with(params, |ctl, _p| {
-                ctl.schedule();
+                ctl.schedule()?;
                 Ok(json!({"ok": true}))
             }),
             // cheap permission-mode read (the approval gate refreshes from it,
@@ -202,6 +201,27 @@ impl Server {
                 let aid = p.get("approval_id").and_then(|v| v.as_str()).ok_or("approval_id required")?;
                 Ok(json!({"approval": ctl.store.get_approval(aid).map_err(|e| e.to_string())?}))
             }),
+            // engine contract: a once-approval is single use and a pending one is
+            // void once its turn can no longer use it (storage.py::expire_approval)
+            "expire_approval" => {
+                let aid = params.get("approval_id").and_then(|v| v.as_str()).ok_or("approval_id required")?;
+                let ctl = match params.get("session_id").and_then(|v| v.as_str()) {
+                    Some(sid) => self.control_for(sid)?,
+                    // a stdio process with one open session may omit it
+                    None => self.sole_control_mut()?,
+                };
+                let ok = ctl.store.expire_approval(aid).map_err(|e| e.to_string())?;
+                Ok(json!({"ok": ok}))
+            }
+            // engine contract: the newest still-usable decision for this run+call,
+            // so a re-sent once-approved call can be released again and a repeat
+            // call does not insert a second PENDING row.
+            "approval_find_run" => self.with(params, |ctl, p| {
+                let run_id = p.get("run_id").and_then(|v| v.as_str()).ok_or("run_id required")?;
+                let hash = p.get("operation_hash").and_then(|v| v.as_str()).ok_or("operation_hash required")?;
+                let found = ctl.store.find_run_approval(run_id, hash).map_err(|e| e.to_string())?;
+                Ok(json!({"approval": found}))
+            }),
             "requeue_run" => self.with(params, |ctl, p| {
                 let run_id = p.get("run_id").and_then(|v| v.as_str()).ok_or("run_id required")?;
                 let ok = ctl.store.update_run_status_where(run_id, TurnStatus::Running, TurnStatus::Queued).map_err(|e| e.to_string())?;
@@ -212,12 +232,16 @@ impl Server {
                 let status: TurnStatus = serde_json::from_value(p.get("status").cloned().unwrap_or(Json::Null)).map_err(|e| e.to_string())?;
                 ctl.store.set_run_status(run_id, status).map_err(|e| e.to_string())?;
                 if status == TurnStatus::WaitingApproval {
-                    if let Ok(Some(run)) = ctl.store.get_run(run_id) {
-                        let _ = ctl.store.set_agent_status(&ctl.session_id.clone(), &run.agent_id, AgentStatus::Waiting);
+                    if let Some(run) = ctl.store.get_run(run_id).map_err(|e| e.to_string())? {
+                        ctl.store
+                            .set_agent_status(&ctl.session_id.clone(), &run.agent_id, AgentStatus::Waiting)
+                            .map_err(|e| e.to_string())?;
                     }
                 } else if status == TurnStatus::Running {
-                    if let Ok(Some(run)) = ctl.store.get_run(run_id) {
-                        let _ = ctl.store.set_agent_status(&ctl.session_id.clone(), &run.agent_id, AgentStatus::Busy);
+                    if let Some(run) = ctl.store.get_run(run_id).map_err(|e| e.to_string())? {
+                        ctl.store
+                            .set_agent_status(&ctl.session_id.clone(), &run.agent_id, AgentStatus::Busy)
+                            .map_err(|e| e.to_string())?;
                     }
                 }
                 Ok(json!({"ok": true}))
@@ -254,6 +278,14 @@ impl Server {
         f(ctl, params)
     }
 
+    /// The only open session, for requests that may omit session_id.
+    fn sole_control_mut(&mut self) -> Result<&mut Control, String> {
+        if self.controls.len() != 1 {
+            return Err("session_id required".into());
+        }
+        Ok(self.controls.values_mut().next().expect("one control"))
+    }
+
     fn create_session(&mut self, params: &Json) -> Result<Json, String> {
         let sid = params.get("session_id").and_then(|v| v.as_str());
         let cwd = params.get("cwd").and_then(|v| v.as_str());
@@ -264,5 +296,113 @@ impl Server {
         let ctl = self.control_for(sid)?;
         ctl.store.create_session(sid, cwd, mode).map_err(|e| format!("create_session: {e}"))?;
         Ok(json!({"session_id": sid}))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn spec_json() -> Json {
+        json!({
+            "leader_id": "lead",
+            "agents": [{"id": "lead", "name": "Lead", "role": "leader",
+                        "runtime_kind": "deepagents", "model_profile": "m"}]
+        })
+    }
+
+    fn server_with_session() -> Server {
+        let mut server = Server::new(":memory:");
+        server.dispatch("create_session", &json!({"session_id": "s1", "cwd": "/tmp"})).unwrap();
+        server.dispatch("save_spec", &json!({"session_id": "s1", "spec": spec_json()})).unwrap();
+        server
+    }
+
+    fn approval_json(id: &str, status: &str, hash: &str, created_at: f64) -> Json {
+        json!({
+            "approval_id": id, "session_id": "s1", "agent_id": "lead", "run_id": "run_1",
+            "tool_call_id": format!("call_{id}"), "operation_hash": hash,
+            "requested_scope": {}, "policy_revision": 1,
+            "status": status, "created_at": created_at,
+        })
+    }
+
+    fn insert(server: &mut Server, id: &str, status: &str, hash: &str, created_at: f64) {
+        server
+            .dispatch("insert_approval", &json!({"session_id": "s1", "approval": approval_json(id, status, hash, created_at)}))
+            .unwrap();
+    }
+
+    #[test]
+    fn malformed_params_are_errors_not_crashes() {
+        let mut server = Server::new(":memory:");
+        assert!(server.dispatch("create_session", &json!({})).is_err());
+        assert!(server.dispatch("submit", &json!({"action_id": "a"})).is_err());
+        assert!(server.dispatch("unknown_method", &json!({})).is_err());
+        assert!(server.dispatch("expire_approval", &json!({})).is_err(), "approval_id required");
+        assert!(server.dispatch("approval_find_run", &json!({"session_id": "s1"})).is_err());
+        // emit on a session that has no spec is a readable error (it used to abort)
+        let err = server.dispatch("emit", &json!({"session_id": "s1", "events": []})).unwrap_err();
+        assert!(err.contains("no team spec revision"), "{err}");
+
+        let mut server = server_with_session();
+        assert!(server.dispatch("emit", &json!({"session_id": "s1", "events": "nope"})).is_err());
+        let err = server
+            .dispatch("emit", &json!({"session_id": "s1", "events": [{"kind": "no_such_kind"}]}))
+            .unwrap_err();
+        assert!(err.contains("bad event kind"), "{err}");
+        assert!(server.dispatch("finalize_run", &json!({"session_id": "s1", "run_id": "r", "status": "NOPE"})).is_err());
+        assert!(server.dispatch("save_spec", &json!({"session_id": "s1", "spec": {"bogus": 1}})).is_err());
+    }
+
+    #[test]
+    fn emit_persists_events_and_reports_ok() {
+        let mut server = server_with_session();
+        let r = server
+            .dispatch("emit", &json!({"session_id": "s1", "events": [{"kind": "session_status", "payload": {"status": "PAUSED"}}]}))
+            .unwrap();
+        assert_eq!(r["ok"], json!(true));
+        let events = server.controls.get("s1").unwrap().store.events("s1", 0, 10).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["kind"], json!("session_status"));
+    }
+
+    #[test]
+    fn expire_approval_endpoint_contract() {
+        let mut server = server_with_session();
+        insert(&mut server, "a1", "PENDING", "h1", 1.0);
+        insert(&mut server, "a2", "PENDING", "h1", 2.0);
+        insert(&mut server, "a3", "DENIED", "h1", 3.0);
+
+        let r = server.dispatch("expire_approval", &json!({"session_id": "s1", "approval_id": "a1"})).unwrap();
+        assert_eq!(r["ok"], json!(true));
+        // a single open session may omit session_id
+        let r = server.dispatch("expire_approval", &json!({"approval_id": "a2"})).unwrap();
+        assert_eq!(r["ok"], json!(true));
+        // wrong state and unknown ids report false, they do not fail the request
+        assert_eq!(server.dispatch("expire_approval", &json!({"session_id": "s1", "approval_id": "a3"})).unwrap()["ok"], json!(false));
+        assert_eq!(server.dispatch("expire_approval", &json!({"session_id": "s1", "approval_id": "ghost"})).unwrap()["ok"], json!(false));
+        // and both idempotently became EXPIRED
+        for id in ["a1", "a2"] {
+            let r = server.dispatch("get_approval", &json!({"session_id": "s1", "approval_id": id})).unwrap();
+            assert_eq!(r["approval"]["status"], json!("EXPIRED"));
+        }
+    }
+
+    #[test]
+    fn approval_find_run_endpoint_returns_newest_usable() {
+        let mut server = server_with_session();
+        insert(&mut server, "old_pending", "PENDING", "h1", 1.0);
+        insert(&mut server, "new_denied", "DENIED", "h1", 2.0);
+        insert(&mut server, "newer_once", "APPROVED_ONCE", "h1", 3.0);
+
+        let r = server
+            .dispatch("approval_find_run", &json!({"session_id": "s1", "run_id": "run_1", "operation_hash": "h1"}))
+            .unwrap();
+        assert_eq!(r["approval"]["approval_id"], json!("newer_once"));
+        let r = server
+            .dispatch("approval_find_run", &json!({"session_id": "s1", "run_id": "run_1", "operation_hash": "h9"}))
+            .unwrap();
+        assert_eq!(r["approval"], Json::Null);
     }
 }

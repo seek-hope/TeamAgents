@@ -64,7 +64,12 @@ pub fn prepare(agent: &AgentSpec, project_cwd: &Path, member_dir: &Path) -> Resu
         WorkspacePolicy::Isolated => {
             let path = member_dir.join("work");
             std::fs::create_dir_all(&path).map_err(|e| e.to_string())?;
-            let _ = std::fs::File::create(path.join("INPUTS.md"));
+            // touch, not truncate: reopening a session must keep member notes
+            // (workspace.py: `INPUTS.md.touch(exist_ok=True)`)
+            let _ = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path.join("INPUTS.md"));
             Ok(Workspace {
                 path,
                 policy: WorkspacePolicy::Isolated,

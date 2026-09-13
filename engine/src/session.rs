@@ -8,7 +8,7 @@ use crate::core_client::CoreClient;
 use crate::gateway::{ApprovalGate, PermissionPolicy};
 use crate::runtime::{AgentRunner, Notify, RunnerFactory, Runtime, RuntimeLimits, ToolExecutor};
 use crate::scripted::{BarrierRegistry, ScriptedMember, Step};
-use crate::sessions::{acquire_session_lock, new_session_id, session_paths};
+use crate::sessions::{acquire_session_lock, new_session_id, session_paths, SessionLock};
 use serde_json::{json, Value as Json};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -59,7 +59,9 @@ pub struct OpenedSession {
     pub session_id: String,
     pub cwd: PathBuf,
     pub catalog: UserConfig,
-    release: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    /// Held for the session's lifetime; dropping it (normal close or any error
+    /// path during open) releases the session for other processes.
+    lock: Mutex<Option<SessionLock>>,
 }
 
 impl OpenedSession {
@@ -69,9 +71,7 @@ impl OpenedSession {
 
     pub fn close(&self) {
         self.runtime.close();
-        if let Some(release) = self.release.lock().unwrap().take() {
-            release();
-        }
+        let _ = self.lock.lock().unwrap().take();
     }
 }
 
@@ -173,7 +173,8 @@ pub fn open_session(opts: OpenOptions) -> Result<Arc<OpenedSession>, String> {
     let session_id = opts.session_id.clone().unwrap_or_else(|| new_session_id(&cwd));
     let paths = session_paths(&session_id);
     std::fs::create_dir_all(&paths.artifacts).map_err(|e| e.to_string())?;
-    let release: Box<dyn FnOnce() + Send> = Box::new(acquire_session_lock(&session_id)?);
+    // dropped on every early return below, so a failed open never keeps the lock
+    let lock = acquire_session_lock(&session_id)?;
     let db = paths.db.to_string_lossy().into_owned();
     let core = CoreClient::open(&db, &session_id)?;
 
@@ -185,13 +186,29 @@ pub fn open_session(opts: OpenOptions) -> Result<Arc<OpenedSession>, String> {
             .map(|session| !session.is_null())
             .unwrap_or(false);
         if !exists {
-            core.call("create_session", json!({
+            match core.call("create_session", json!({
                 "session_id": session_id,
                 "cwd": cwd.to_string_lossy(),
                 "permissions_mode": if full_auto { "full_auto" } else { "approved_scope" },
-            }))?;
-            let spec = opts.initial_spec.clone().unwrap_or_else(|| default_leader_spec("leader_main", &["files", "shell", "web"]));
-            core.call("save_spec", json!({"session_id": session_id, "spec": spec}))?;
+            })) {
+                Ok(_) => {
+                    let spec = opts
+                        .initial_spec
+                        .clone()
+                        .unwrap_or_else(|| default_leader_spec("leader_main", &["files", "shell", "web"]));
+                    core.call("save_spec", json!({"session_id": session_id, "spec": spec}))?;
+                }
+                // the row exists but `state` failed: a session left without a
+                // loadable spec by an earlier failed open. An explicitly given
+                // spec repairs it; otherwise keep going so the real problem is
+                // reported instead of a UNIQUE-constraint error.
+                Err(e) if e.contains("UNIQUE") => {
+                    if let Some(spec) = opts.initial_spec.clone() {
+                        core.call("save_spec", json!({"session_id": session_id, "spec": spec}))?;
+                    }
+                }
+                Err(e) => return Err(e),
+            }
         } else if full_auto {
             if let Ok(state) = core.state() {
                 if state.get("session").and_then(|s| s.get("permissions_mode")).and_then(|v| v.as_str()) != Some("full_auto") {
@@ -259,14 +276,10 @@ pub fn open_session(opts: OpenOptions) -> Result<Arc<OpenedSession>, String> {
             session_id,
             cwd,
             catalog,
-            release: Mutex::new(Some(release)),
+            lock: Mutex::new(Some(lock)),
         }))
     })();
-
-    match result {
-        Ok(opened) => Ok(opened),
-        Err(e) => Err(e),
-    }
+    result
 }
 
 fn make_runner_factory(
@@ -321,6 +334,8 @@ fn make_runner_factory(
         };
         let agent_json = serde_json::to_value(agent).map_err(|e| e.to_string())?;
         let bound = crate::bound::BoundTools::load(&catalog, &agent.tool_bindings)?;
+        // a required web service that cannot load fails the member, not the call
+        crate::tools::validate_web_bindings(&catalog, &agent.tool_bindings)?;
         let context = member_context(&catalog, &cwd, &session_id, &agent.id);
         Ok(ChatRunner::new(
             &agent_json,
@@ -343,6 +358,7 @@ fn member_executor_factory(
 ) -> ToolExecutor {
     type MemberExecutor = Arc<dyn Fn(&str, &Json) -> Result<Json, String> + Send + Sync>;
     let cache: Mutex<HashMap<String, MemberExecutor>> = Mutex::new(HashMap::new());
+    let artifacts = session_paths(&session_id).artifacts;
     Arc::new(move |agent_id: &str, tool: &str, args: &Json| {
         if let Some(executor) = cache.lock().unwrap().get(agent_id).cloned() {
             return executor(tool, args);
@@ -353,12 +369,17 @@ fn member_executor_factory(
             .and_then(|state| state.get("spec").and_then(|spec| spec.get("agents")).cloned())
             .and_then(|agents| serde_json::from_value::<Vec<AgentSpec>>(agents).ok())
             .and_then(|agents| agents.into_iter().find(|a| a.id == agent_id));
-        let root = match agent {
-            Some(agent) => member_root(&agent, &cwd, &session_id)?,
-            // a member that vanished from the spec: keep the conservative default
-            None => cwd.clone(),
+        // a member that vanished from the spec: conservative default, no bindings
+        let (root, bindings) = match agent {
+            Some(agent) => (member_root(&agent, &cwd, &session_id)?, agent.tool_bindings.clone()),
+            None => (cwd.clone(), vec![]),
         };
-        let executor: MemberExecutor = Arc::new(crate::tools::member_executor(root, catalog.clone()));
+        let executor: MemberExecutor = Arc::new(crate::tools::member_executor(
+            root,
+            catalog.clone(),
+            bindings,
+            Some(artifacts.clone()),
+        ));
         cache.lock().unwrap().insert(agent_id.to_string(), executor.clone());
         executor(tool, args)
     })

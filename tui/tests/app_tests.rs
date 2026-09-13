@@ -286,3 +286,157 @@ fn composer_word_motion_and_deletion() {
     app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
     assert_eq!(app.composer.col, 7);
 }
+
+/// The panel actions are plain keys: Ctrl+A/E are line motions, Ctrl+D/U scroll
+/// (per the docs), so a chord in the panels must never archive, deny, delete or
+/// cancel the selected row.
+#[test]
+fn panel_chords_never_fire_destructive_actions() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use teamagents_tui::app::Focus;
+    let ctrl = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+    let cases: [(usize, &str, Vec<char>); 3] = [
+        (4, "s2", vec!['a', 'd', 'd']),      // sessions: archive / delete
+        (3, "ap1", vec!['a', 's', 'd']),     // approvals: approve / deny
+        (1, "task-aaaaaaaabbbb", vec!['c']), // tasks: cancel
+    ];
+    for (panel, cursor_key, chords) in cases {
+        let mut app = app_with(state(vec![]));
+        app.sessions = vec![json!({"sessionId": "s2", "status": "CLOSED", "goalState": "done",
+            "events": 1, "sizeMb": 0.1, "updatedAt": 0.0, "archived": false, "locked": false})];
+        app.panel = panel;
+        app.focus = Focus::Panel;
+        app.table_cursors.insert(teamagents_tui::app::PANELS[panel], (Some(cursor_key.to_string()), 0));
+        for c in chords {
+            let effects = app.handle_key(ctrl(c));
+            assert!(
+                effects.is_empty(),
+                "{} + Ctrl+{} produced {effects:?}",
+                teamagents_tui::app::PANELS[panel],
+                c.to_ascii_uppercase()
+            );
+        }
+        assert!(app.pending_delete.is_none(), "a chord armed the delete confirmation");
+        assert_eq!(app.focus, Focus::Panel, "a chord moved the focus");
+    }
+    // the plain keys still work: sessions + 'a' archives, approvals + 's' allows
+    let mut app = app_with(state(vec![]));
+    app.sessions = vec![json!({"sessionId": "s2", "status": "CLOSED", "goalState": "done",
+        "events": 1, "sizeMb": 0.1, "updatedAt": 0.0, "archived": false, "locked": false})];
+    app.panel = 4;
+    app.focus = Focus::Panel;
+    app.table_cursors.insert("sessions", (Some("s2".into()), 0));
+    let effects = app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+    assert!(matches!(&effects[0], Effect::ArchiveSession(s) if s == "s2"));
+    let mut app = app_with(state(vec![]));
+    app.panel = 3;
+    app.focus = Focus::Panel;
+    app.table_cursors.insert("approvals", (Some("ap1".into()), 0));
+    let effects = app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+    assert!(matches!(&effects[0], Effect::DecideApproval { decision, .. } if decision == "session"));
+}
+
+/// Ctrl+U/D are documented scrolls: with the panel focused they must scroll the
+/// pane (the log inside the log panel, the chat elsewhere), never table actions.
+#[test]
+fn ctrl_d_and_ctrl_u_scroll_while_the_panel_is_focused() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use teamagents_tui::app::Focus;
+    let ctrl = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+    let mut app = app_with(state(vec![]));
+    app.focus = Focus::Panel; // team panel: the chat scrolls
+    app.handle_key(ctrl('u'));
+    assert_eq!(app.chat_scroll, 10);
+    assert_eq!(app.log_scroll, 0);
+    app.handle_key(ctrl('d'));
+    assert_eq!(app.chat_scroll, 0);
+
+    let mut app = app_with(state(vec![]));
+    app.panel = 5; // log panel: the log stream scrolls, the chat does not
+    app.focus = Focus::Panel;
+    app.handle_key(ctrl('u'));
+    assert_eq!(app.log_scroll, 10);
+    assert_eq!(app.chat_scroll, 0);
+    app.handle_key(ctrl('d'));
+    assert_eq!(app.log_scroll, 0);
+}
+
+/// `/foo` and `/settings now` must never reach the Leader: they leave a system
+/// note in the chat and keep the draft in the composer for editing.
+#[test]
+fn unknown_slash_commands_stay_out_of_the_chat() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+    for (typed, keeps_draft) in [("/foo", true), ("/settings now", true), ("/set", false)] {
+        let mut app = app_with(state(vec![]));
+        app.composer.set_text(typed);
+        let effects = app.handle_key(enter);
+        let sent = effects.iter().find(|e| matches!(e, Effect::UserMessage(_)));
+        assert!(sent.is_none(), "{typed} was sent to the Leader: {effects:?}");
+        if keeps_draft {
+            assert_eq!(app.composer.text(), typed, "{typed} must stay editable in the composer");
+            let note = app.chat.last().expect("a system note").clone();
+            assert_eq!(note.0, "system");
+            assert!(note.1.contains(typed) || note.1.contains("Unknown command"), "note: {note:?}");
+        } else {
+            // a known command still runs from the composer
+            assert!(app.settings_open, "/set must complete to /settings and open the overlay");
+            assert_eq!(app.composer.text(), "");
+        }
+    }
+}
+
+/// Bracketed paste drops the whole clipboard into the composer: newlines become
+/// soft breaks and nothing is submitted to the Leader.
+#[test]
+fn paste_fills_the_composer_without_submitting() {
+    let mut app = app_with(state(vec![]));
+    app.handle_paste("first line\nsecond line\r\nthird");
+    assert_eq!(app.composer.text(), "first line\nsecond line\nthird");
+    assert!(app.chat.is_empty(), "a paste must not answer for the user");
+    // the draft is what Enter would send later
+    assert_eq!(app.composer.submit().as_deref(), Some("first line\nsecond line\nthird"));
+}
+
+/// The wheel moves the table selection wherever the focus is — in particular it
+/// must not fall through to the composer's history recall.
+#[test]
+fn table_selection_moves_without_touching_the_composer() {
+    use teamagents_tui::app::Focus;
+    let mut app = app_with(state(vec![])); // team panel: leader, worker
+    app.focus = Focus::Composer;
+    app.composer.record_submission("an older message");
+    app.move_table_selection(1);
+    assert_eq!(
+        app.table_cursors.get("team").and_then(|(k, _)| k.clone()).as_deref(),
+        Some("worker"),
+        "the wheel moves the row selection"
+    );
+    assert_eq!(app.log_member.as_deref(), Some("worker"), "highlighting a member filters the log");
+    assert_eq!(app.composer.text(), "", "the wheel must not recall the composer history");
+    app.move_table_selection(-5);
+    assert_eq!(
+        app.table_cursors.get("team").and_then(|(k, _)| k.clone()).as_deref(),
+        Some("leader"),
+        "the selection clamps at the first row"
+    );
+    app.move_table_selection(5);
+    assert_eq!(
+        app.table_cursors.get("team").and_then(|(k, _)| k.clone()).as_deref(),
+        Some("worker"),
+        "the selection clamps at the last row"
+    );
+}
+
+#[test]
+fn tab_enters_the_panel_from_any_tab() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use teamagents_tui::app::{Focus, PANELS};
+    let mut app = app_with(state(vec![]));
+    for (idx, name) in PANELS.iter().enumerate() {
+        app.panel = idx;
+        app.focus = Focus::Composer;
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.focus, Focus::Panel, "Tab must enter the {name} panel");
+    }
+}

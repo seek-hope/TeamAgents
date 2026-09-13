@@ -76,6 +76,14 @@ impl CodexAppServer {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        // own process group (Python: start_new_session + killpg): the shell
+        // commands an app-server spawns are its children, and killing only the
+        // direct child would leave them running
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
         if let Some(home) = &self.opts.codex_home {
             command.env("CODEX_HOME", home);
         }
@@ -201,6 +209,14 @@ impl CodexAppServer {
         let child = self.child.lock().unwrap().take();
         *self.stdin.lock().unwrap() = None;
         if let Some(mut child) = child {
+            #[cfg(unix)]
+            {
+                // SIGTERM to the whole group via `kill`, then SIGKILL the child
+                // (no libc dependency in this crate)
+                let pgid = child.id().to_string();
+                let _ = Command::new("kill").args(["-TERM", &format!("-{pgid}")]).status();
+                std::thread::sleep(Duration::from_millis(100));
+            }
             let _ = child.kill();
             let _ = child.wait();
         }
@@ -228,6 +244,17 @@ fn turn_status(name: &str) -> TurnStatus {
         "inProgress" => TurnStatus::Running,
         _ => TurnStatus::Failed,
     }
+}
+
+/// How long an app-server approval request may wait for the user before it is
+/// declined. ponytail: Python waits forever; the bound keeps a cancelled turn
+/// from leaking this thread. The env override exists for the timeout test.
+fn approval_wait_timeout() -> Duration {
+    std::env::var("TEAMAGENTS_CODEX_APPROVAL_WAIT_S")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(Duration::from_secs(600))
 }
 
 pub struct CodexRunner {
@@ -462,11 +489,15 @@ impl CodexRunner {
         self.notify.note_external_status(run_id, TurnStatus::WaitingApproval);
         let (tx, rx) = channel();
         self.approval_waits.lock().unwrap().insert(request.approval_id.clone(), tx);
-        // ponytail: bounded wait (10 min) so a cancelled turn cannot leak this
-        // thread forever; the app-server takes the decline and moves on.
-        let decision = match rx.recv_timeout(Duration::from_secs(600)) {
+        let decision = match rx.recv_timeout(approval_wait_timeout()) {
             Ok(decision) => decision,
-            Err(_) => "decline".to_string(),
+            Err(_) => {
+                // the app-server moves on, so nobody can consume this approval
+                // anymore: void it in the core too, else the user keeps seeing
+                // a PENDING row whose decision is silently dropped
+                self.approvals.expire(&request.approval_id);
+                "decline".to_string()
+            }
         };
         self.approval_waits.lock().unwrap().remove(&request.approval_id);
         self.states.lock().unwrap().insert(run_id.to_string(), TurnStatus::Running);
@@ -699,13 +730,25 @@ impl AgentRunner for CodexRunner {
         let server = self.server.lock().unwrap().clone()?;
         let thread = self.thread_id.lock().unwrap().clone()?;
         run.external_turn_id.as_ref()?;
-        let result = server.call("thread/status", json!({"threadId": thread}), 30_000).ok()?;
-        let active = result.get("activeTurnId").and_then(|v| v.as_str());
-        if active.is_some() {
-            Some(TurnStatus::Running)
-        } else {
-            None
-        }
+        // codex.py: no `thread/status` method exists (it is a notification);
+        // the history is read instead.
+        let result = server
+            .call("thread/read", json!({"threadId": thread, "includeTurns": true}), 30_000)
+            .ok()?;
+        let turns = result
+            .get("thread")
+            .and_then(|t| t.get("turns"))
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let last = turns.last()?;
+        // a live turn is unverifiable after our restart, same as an unknown status
+        Some(match last.get("status").and_then(|v| v.as_str()).unwrap_or("") {
+            "completed" => TurnStatus::Completed,
+            "interrupted" => TurnStatus::Cancelled,
+            "failed" => TurnStatus::Failed,
+            _ => TurnStatus::OutcomeUnknown,
+        })
     }
 
     fn resolve_approval(&self, approval_id: &str, decision: &str) -> bool {
