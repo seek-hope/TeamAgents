@@ -63,24 +63,25 @@
 | T4 | ✅ | `scenarios.rs::t4_observer_scoped_events_without_extra_rights` |
 | T5 | ✅ | `scenarios.rs::t5_shared_space_permissions_and_discovery` |
 | T6 | 🔶 | 会话按目录隔离、新会话不继承是核心语义（`core`）；Rust 侧无专属用例 |
-| T7 | 🔶 | 真实 DeepSeek 单 Leader 回合实测（`--plain` 到 `goal_done`）；五家契约测试未移植 |
-| T8 | 🔶 | 人工实测：`kill -9` 打断回合 → 重启 `reconcile` 收敛（requeue → COMPLETED）；无自动化用例 |
+| T7 | 🔶 | 真实 DeepSeek 单 Leader 回合实测（`--plain` 到 `goal_done`）；Anthropic 原生协议已实现（转换单测，缺密钥未实跑）；其余三家走 OpenAI 兼容路径未逐一实跑 |
+| T8 | ✅ | `engine/tests/recovery.rs::t8_killed_turn_is_reconciled_and_stays_exactly_once`（kill -9 → 重启 requeue 重跑 → 取消收敛） |
 | T9 | ✅ | `scenarios.rs::t9_baseline_leader_alone_executes_and_keeps_talking` |
 | T10 | 🔶 | 核心校验在内核（`core`）与 `teamagents validate`；自然语言组队的实时用例未移植 |
-| T11 | 🔶 | 工具与内核在（`propose_team_change`/`apply_topology_patch`），Rust 无拓扑用例 |
-| T12 | 🔶 | 版本冲突语义在 `core`（与 Python 同源）；Rust 无专属用例 |
-| T13 | 🔶 | 同上 |
+| T11 | ✅ | `engine/tests/topology.rs::t11_member_proposal_is_leader_decision`（提案→Leader 应用→生效，审计保留提案人） |
+| T12 | ✅ | `topology.rs::t12_conflicting_patches_never_partially_apply` |
+| T13 | ✅ | `topology.rs::t13_removed_member_hands_tasks_to_leader_and_keeps_results` |
 | T14 | ✅ | `scenarios.rs::t2_...`（supplement 到运行中的 Leader） |
 | T15 | 🔶 | 审批门单测 + Codex 批准 park/decide 用例；ChatRunner 的批准暂停/恢复无专属用例 |
 | T16 | ✅ | `scenarios.rs::full_auto_toggle_reaches_the_approval_gate`；仅 `actor=user` 可改模式（`core/src/control.rs` 校验） |
 | T17 | ✅ | `engine/tests/codex_adapter.rs`（simple/approval/slow）+ 真实 CLI `live_codex.rs` |
-| T18 | 🔶 | `shared`/`isolated` 已实现并人工实测（隔离成员文件落在自己 workspace）；`git_worktree` ⚠ 未移植（显式报错） |
-| T19 | 🔶 | files/shell/web_search/web_fetch ✅（单测 + 真实 `echo` 回合）；MCP ⚠、Skills/AGENTS.md ⚠ 未移植 |
+| T18 | ✅ | `engine/src/workspace.rs` + 单测（worktree 生命周期/复用/合并/未合并拒绝清理/脏仓库回退 shared）；`tui` 会话删除守卫同源 |
+| T19 | ✅ | files/shell/web_search/web_fetch + MCP stdio（`engine/tests/mcp_tools.rs` 真实 MCP 服务器）+ Skills/AGENTS.md 注入（`session.rs` 单测）；http/sse MCP ⚠ |
 | T20 | ✅ | TUI 单测 + TestBackend 帧冒烟 + 真终端 PTY 冒烟；真实模型 + 真界面用例未移植 |
-| T21 | 🔶 | 回执去重在内核（Python 同源测试）；Rust 侧靠 `worker_protocol.rs` 与人工重启验证 |
-| T22 | 🔶 | 步骤上限/超时/取消在 runtime 内实现并有取消相关用例；限流类用例未移植 |
+| T21 | ✅ | `recovery.rs::t8_...` 断言重放步骤不重复产生副作用（shared 条目仍为 1 条） |
+| T22 | ✅ | `recovery.rs::t22_goal_turn_budget_is_enforced`（LIMIT_REACHED）+ 取消/暂停场景 + 步骤上限（`ChatRunner` 收到 step limit 即结束回合） |
 | T23 | 🔶 | `tools.rs::bwrap_argv_matches_python_and_runs_isolated`（真实 bwrap 运行）+ 越界路径单测；穿越/符号链接用例未系统移植 |
 | T24 | 🔶 | 复用的 `context_epoch` 机制在核心；Rust 无专属用例 |
 
-**Rust 版尚未移植（⚠）**：项目内配置、MCP 工具服务、Skills/AGENTS.md 注入、deepagents
-子代理、`git_worktree` 工作目录策略、Anthropic 原生线协议。台账见 `docs/RECONSTRUCT.md`。
+**Rust 版尚未移植（⚠）**：deepagents 子代理（`general-purpose`）、MCP 的 http/sse 传输、
+TUI 的 Textual 滚动条字形与页脚溢出滚动（其余界面已逐行对齐）。
+台账与取舍见 `docs/RECONSTRUCT.md`、`docs/DECISIONS.md`（D-17/D-18/D-19）。

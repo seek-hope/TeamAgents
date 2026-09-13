@@ -36,8 +36,25 @@ pub fn task_channel(source: &str, targets: &[&str]) -> Json {
 pub fn core_with_spec(session: &str, spec: Json) -> Arc<CoreClient> {
     let core = CoreClient::open(":memory:", session).expect("core");
     core.call("create_session", json!({"session_id": session, "cwd": "/tmp"})).expect("create");
+    // the test catalog mirrors the Python harness (profile "test"/"m")
+    core.call("set_catalog", json!({"session_id": session, "catalog": test_catalog()}))
+        .expect("catalog");
     core.call("save_spec", json!({"session_id": session, "spec": spec})).expect("spec");
     core
+}
+
+/// Minimal user config for tests: one model profile per name used by specs.
+pub fn test_catalog() -> Json {
+    json!({
+        "models": {
+            "m": {"provider": "openai", "protocol": "openai", "model": "test"},
+            "test": {"provider": "openai", "protocol": "openai", "model": "test"},
+            "other": {"provider": "openai", "protocol": "openai", "model": "other"},
+            "leader_main": {"provider": "openai", "protocol": "openai", "model": "test"},
+            "coding": {"provider": "openai", "protocol": "openai", "model": "test"},
+        },
+        "tools": {}, "skills_paths": [], "instruction_files": [],
+    })
 }
 
 pub fn barriers() -> BarrierRegistry {

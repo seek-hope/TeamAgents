@@ -97,6 +97,13 @@ impl Server {
                 ctl.emit(drafts, &actor);
                 Ok(json!({"ok": true}))
             }),
+            // the engine owns the user config; the control validates against it
+            "set_catalog" => self.with(params, |ctl, p| {
+                let catalog: UserConfig = serde_json::from_value(p.get("catalog").cloned().unwrap_or(Json::Null))
+                    .map_err(|e| format!("bad catalog: {e}"))?;
+                ctl.catalog = catalog;
+                Ok(json!({"ok": true}))
+            }),
             "schedule" => self.with(params, |ctl, _p| {
                 ctl.schedule();
                 Ok(json!({"ok": true}))

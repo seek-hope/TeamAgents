@@ -256,12 +256,45 @@ pub fn archive_session(session_id: &str, base: Option<&Path>) -> Result<String, 
     Ok(target.to_string_lossy().into_owned())
 }
 
+/// Refuses while it runs elsewhere, and refuses to delete member worktrees
+/// that still hold uncommitted or unmerged work (sessions.py::delete_session).
 pub fn delete_session(session_id: &str, base: Option<&Path>) -> Result<(), String> {
     let root = base.map(Path::to_path_buf).unwrap_or_else(sessions_dir);
     if is_session_locked(session_id, Some(&root)) {
         return Err(format!("session {session_id} is running"));
     }
     let path = root.join(session_id);
+    let worktrees = crate::workspace::member_worktrees(&path);
+    if !worktrees.is_empty() {
+        let project_cwd = read_meta(&path).cwd;
+        if project_cwd.is_empty() {
+            return Err(
+                "session has member worktrees but its project directory is unknown; remove them manually first".into(),
+            );
+        }
+        for work in worktrees {
+            let branch = std::process::Command::new("git")
+                .args(["-C", &work.to_string_lossy(), "rev-parse", "--abbrev-ref", "HEAD"])
+                .output()
+                .ok()
+                .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+                .filter(|b| !b.is_empty());
+            let workspace = crate::workspace::Workspace {
+                path: work.clone(),
+                policy: teamagents_core::models::WorkspacePolicy::GitWorktree,
+                note: None,
+                branch,
+                base_commit: None,
+            };
+            let (ok, reason) = crate::workspace::cleanup(&workspace, Path::new(&project_cwd), false);
+            if !ok {
+                return Err(format!(
+                    "member worktree {} keeps unmerged or uncommitted work: {reason}",
+                    work.display()
+                ));
+            }
+        }
+    }
     match std::fs::remove_dir_all(&path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),

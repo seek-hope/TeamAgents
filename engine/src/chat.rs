@@ -22,8 +22,7 @@ pub fn resolve_base_url(profile: &ModelProfile) -> String {
         "deepseek" => "https://api.deepseek.com/v1".into(),
         _ => match profile.protocol.as_str() {
             "deepseek" => "https://api.deepseek.com/v1".into(),
-            // ponytail: anthropic-native wire protocol is not implemented; such
-            // profiles must point base_url at an OpenAI-compatible gateway.
+            "anthropic" => "https://api.anthropic.com".into(),
             _ => "https://api.openai.com/v1".into(),
         },
     }
@@ -182,7 +181,7 @@ fn bound_tool_names(bindings: &[String]) -> Vec<&'static str> {
     names
 }
 
-fn tools_payload(bindings: &[String]) -> Json {
+fn tools_payload(bindings: &[String], bound: &[Json]) -> Json {
     let docs: HashMap<&str, &str> = TEAM_TOOL_DOCS.iter().chain(BOUND_TOOL_DOCS).copied().collect();
     let allowed: Vec<&str> = TEAM_TOOL_DOCS
         .iter()
@@ -191,6 +190,7 @@ fn tools_payload(bindings: &[String]) -> Json {
         .collect();
     let mut schemas = team_tool_schemas().as_array().cloned().unwrap_or_default();
     schemas.extend(bound_tool_schemas().as_array().cloned().unwrap_or_default());
+    schemas.extend(bound.iter().cloned());
     Json::Array(
         schemas
             .into_iter()
@@ -238,6 +238,9 @@ pub struct ChatRunner {
     profile: ModelProfile,
     workdir: Option<String>,
     notify: Arc<Notify>,
+    bound: crate::bound::BoundTools,
+    /// (label, content) pairs from skills/instruction files (session.py::_skills_and_memory)
+    context: Vec<(String, String)>,
     messages: Mutex<HashMap<String, Vec<Json>>>,
     states: Mutex<HashMap<String, TurnStatus>>,
     paused_kind: Mutex<HashMap<String, String>>,
@@ -246,12 +249,21 @@ pub struct ChatRunner {
 }
 
 impl ChatRunner {
-    pub fn new(agent: &Json, profile: ModelProfile, workdir: Option<String>, notify: Arc<Notify>) -> Arc<Self> {
+    pub fn new(
+        agent: &Json,
+        profile: ModelProfile,
+        workdir: Option<String>,
+        notify: Arc<Notify>,
+        bound: crate::bound::BoundTools,
+        context: Vec<(String, String)>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             agent: agent.clone(),
             profile,
             workdir,
             notify,
+            bound,
+            context,
             messages: Mutex::new(HashMap::new()),
             states: Mutex::new(HashMap::new()),
             paused_kind: Mutex::new(HashMap::new()),
@@ -282,14 +294,26 @@ impl ChatRunner {
             instructions.to_string()
         };
         let allowed = bound_tool_names(&self.bindings());
+        let bound_docs = self.bound.docs();
         let tools = TEAM_TOOL_DOCS
             .iter()
-            .chain(BOUND_TOOL_DOCS.iter().filter(|(n, _)| allowed.contains(n)))
+            .map(|(n, d)| (*n, *d))
+            .chain(BOUND_TOOL_DOCS.iter().filter(|(n, _)| allowed.contains(n)).map(|(n, d)| (*n, *d)))
+            .chain(bound_docs.iter().map(|(n, d)| (n.as_str(), d.as_str())))
             .map(|(n, d)| format!("- {n}: {d}"))
             .collect::<Vec<_>>()
             .join("\n");
+        let context = if self.context.is_empty() {
+            String::new()
+        } else {
+            let mut blocks = String::new();
+            for (label, content) in &self.context {
+                blocks.push_str(&format!("\n<{label}>\n{content}\n</{}>\n", label.split(' ').next().unwrap_or("context")));
+            }
+            blocks
+        };
         format!(
-            "{head}\n\nTeam tools available:\n{tools}\n\nRules: use complete_task to finish your assigned task; use signal_done only when the whole user goal is complete (Leader only)."
+            "{head}\n\nTeam tools available:\n{tools}\n\nRules: use complete_task to finish your assigned task; use signal_done only when the whole user goal is complete (Leader only).\n{context}"
         )
     }
 
@@ -298,6 +322,9 @@ impl ChatRunner {
     }
 
     fn chat(&self, messages: &[Json], tools: &Json) -> Result<Json, String> {
+        if self.profile.protocol == "anthropic" {
+            return self.chat_anthropic(messages, tools);
+        }
         let api_key = match &self.profile.api_key_env {
             Some(env) => std::env::var(env).map_err(|_| format!("missing API key env {env}"))?,
             None => String::new(),
@@ -348,8 +375,82 @@ impl ChatRunner {
         Err(last_error)
     }
 
+    /// Anthropic Messages API (providers.py uses langchain-anthropic natively).
+    /// ponytail: text/tool_use/tool_result blocks only — no images or thinking blocks.
+    fn chat_anthropic(&self, messages: &[Json], tools: &Json) -> Result<Json, String> {
+        let api_key = match &self.profile.api_key_env {
+            Some(env) => std::env::var(env).map_err(|_| format!("missing API key env {env}"))?,
+            None => String::new(),
+        };
+        let base = self
+            .profile
+            .base_url
+            .clone()
+            .unwrap_or_else(|| "https://api.anthropic.com".into())
+            .trim_end_matches('/')
+            .trim_end_matches("/v1")
+            .to_string();
+        let (system, converted) = to_anthropic_messages(messages);
+        let tool_specs: Vec<Json> = tools
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|tool| {
+                let f = tool.get("function")?;
+                Some(json!({
+                    "name": f.get("name")?,
+                    "description": f.get("description").cloned().unwrap_or(Json::Null),
+                    "input_schema": f.get("parameters").cloned().unwrap_or(json!({"type": "object"})),
+                }))
+            })
+            .collect();
+        let mut body = json!({
+            "model": self.profile.model,
+            "max_tokens": self.profile.generation_options.get("max_tokens").and_then(|v| v.as_i64()).unwrap_or(8192),
+            "messages": converted,
+        });
+        if !system.is_empty() {
+            body["system"] = json!(system);
+        }
+        if !tool_specs.is_empty() {
+            body["tools"] = json!(tool_specs);
+        }
+        for (key, value) in &self.profile.generation_options {
+            if key != "max_tokens" && key != "reasoning_effort" {
+                body[key] = value.clone();
+            }
+        }
+        let url = format!("{base}/v1/messages");
+        let mut last_error = "chat call failed".to_string();
+        for attempt in 0..=self.profile.max_retries.max(0) {
+            let mut request = ureq::post(&url)
+                .set("content-type", "application/json")
+                .set("anthropic-version", "2023-06-01")
+                .timeout(std::time::Duration::from_secs(self.profile.timeout.max(1) as u64));
+            if !api_key.is_empty() {
+                request = request.set("x-api-key", &api_key);
+            }
+            match request.send_string(&body.to_string()) {
+                Ok(response) => match response.into_json::<Json>() {
+                    Ok(data) => return Ok(from_anthropic_message(&data)),
+                    Err(e) => last_error = format!("chat API: bad json: {e}"),
+                },
+                Err(ureq::Error::Status(code, response)) => {
+                    let text = response.into_string().unwrap_or_default();
+                    let text: String = text.chars().take(500).collect();
+                    last_error = format!("chat API {code}: {text}");
+                }
+                Err(e) => last_error = format!("chat API: {e}"),
+            }
+            let backoff = std::time::Duration::from_millis((500u64 << attempt.min(5)).min(8000));
+            std::thread::sleep(backoff);
+        }
+        Err(last_error)
+    }
+
     fn run_loop(&self, run: &TurnRun, history: &mut Vec<Json>, gateway: &ToolGateway) -> Result<String, (String, String)> {
-        let tools = tools_payload(&self.bindings());
+        let tools = tools_payload(&self.bindings(), &self.bound.schemas());
         let agent_id = self.agent_id();
         let max_steps = 200; // the core enforces the configured cap via the gateway executor
         for _ in 0..max_steps {
@@ -415,7 +516,25 @@ impl ChatRunner {
                         continue;
                     }
                 };
-                let receipt = gateway.call(&name, &args, &call_id);
+                // A configured+bound service is the authorization for its tools
+                // (plan §12.1); everything else goes through the gateway.
+                let receipt = match self.bound.call(&name, &args) {
+                    Some(Ok(output)) => teamagents_core::models::Receipt {
+                        action_id: call_id.clone(),
+                        ok: true,
+                        kind: teamagents_core::models::ActionKind::CompleteTask,
+                        result: json!({"output": output}),
+                        error: None,
+                    },
+                    Some(Err(e)) => teamagents_core::models::Receipt {
+                        action_id: call_id.clone(),
+                        ok: false,
+                        kind: teamagents_core::models::ActionKind::CompleteTask,
+                        result: json!({}),
+                        error: Some(e),
+                    },
+                    None => gateway.call(&name, &args, &call_id),
+                };
                 if receipt.error.as_deref() == Some("approval_required") {
                     self.paused_kind.lock().unwrap().insert(run.run_id.clone(), "approval".into());
                     let note = receipt.result.get("approval_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -424,6 +543,13 @@ impl ChatRunner {
                     answered.push(call_id);
                     paused = Some(("TurnPaused".into(), note));
                     break;
+                }
+                // the runtime's step guard failing ends the turn (Python raises
+                // TurnLimitExceeded from the middleware)
+                if let Some(error) = receipt.error.as_deref() {
+                    if error.contains("step limit") {
+                        return Err(("TurnLimitExceeded".into(), error.to_string()));
+                    }
                 }
                 let waiting = name == "wait_for_tasks"
                     && receipt.result.get("waiting").and_then(|v| v.as_bool()).unwrap_or(false);
@@ -456,7 +582,7 @@ impl AgentRunner for ChatRunner {
         let thread = run.context_ref.clone().unwrap_or_else(|| run.run_id.clone());
         let mut history = self.messages.lock().unwrap().get(&thread).cloned().unwrap_or_default();
         let instructions = self.agent.get("instructions").and_then(|v| v.as_str()).unwrap_or("");
-        if history.is_empty() && !instructions.is_empty() {
+        if history.is_empty() && (!instructions.is_empty() || !self.context.is_empty()) {
             history.push(json!({"role": "system", "content": self.system_prompt()}));
         }
         // the rendered view is authoritative for what this segment saw
@@ -518,11 +644,151 @@ impl AgentRunner for ChatRunner {
     fn deliver_mid_turn(&self, run_id: &str, items: Vec<Json>) {
         self.mid_turn.lock().unwrap().entry(run_id.to_string()).or_default().extend(items);
     }
+
+    fn close(&self) {
+        self.bound.close();
+    }
+}
+
+/// OpenAI-style history → (system prompt, Anthropic messages).
+fn to_anthropic_messages(history: &[Json]) -> (String, Vec<Json>) {
+    let mut system = String::new();
+    let mut out: Vec<Json> = vec![];
+    for message in history {
+        let role = message.get("role").and_then(|v| v.as_str()).unwrap_or("");
+        let content = message.get("content").and_then(|v| v.as_str()).unwrap_or("");
+        match role {
+            "system" => {
+                if !system.is_empty() {
+                    system.push_str("\n\n");
+                }
+                system.push_str(content);
+            }
+            "user" => {
+                // consecutive tool results must share one user message (API rule)
+                if message.get("tool_call_id").is_none() {
+                    out.push(json!({"role": "user", "content": [{"type": "text", "text": content}]}));
+                }
+            }
+            "assistant" => {
+                let calls = message.get("tool_calls").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+                let mut blocks: Vec<Json> = vec![];
+                if !content.is_empty() {
+                    blocks.push(json!({"type": "text", "text": content}));
+                }
+                for call in calls {
+                    let name = call.get("function").and_then(|f| f.get("name")).and_then(|v| v.as_str()).unwrap_or("");
+                    let arguments = call
+                        .get("function")
+                        .and_then(|f| f.get("arguments"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("{}");
+                    let input: Json = serde_json::from_str(arguments).unwrap_or(json!({}));
+                    blocks.push(json!({
+                        "type": "tool_use",
+                        "id": call.get("id").cloned().unwrap_or(Json::Null),
+                        "name": name,
+                        "input": input,
+                    }));
+                }
+                if !blocks.is_empty() {
+                    out.push(json!({"role": "assistant", "content": blocks}));
+                }
+            }
+            "tool" => {
+                let block = json!({
+                    "type": "tool_result",
+                    "tool_use_id": message.get("tool_call_id").cloned().unwrap_or(Json::Null),
+                    "content": content,
+                });
+                match out.last_mut() {
+                    Some(last) if last.get("role").and_then(|v| v.as_str()) == Some("user")
+                        && last.get("content").and_then(|c| c.as_array())
+                            .map(|blocks| blocks.iter().all(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_result")))
+                            .unwrap_or(false) =>
+                    {
+                        last["content"].as_array_mut().unwrap().push(block);
+                    }
+                    _ => out.push(json!({"role": "user", "content": [block]})),
+                }
+            }
+            _ => {}
+        }
+    }
+    (system, out)
+}
+
+/// Anthropic response → the OpenAI-style assistant message the loop expects.
+fn from_anthropic_message(data: &Json) -> Json {
+    let mut text = String::new();
+    let mut calls: Vec<Json> = vec![];
+    for block in data.get("content").and_then(|v| v.as_array()).cloned().unwrap_or_default() {
+        match block.get("type").and_then(|v| v.as_str()).unwrap_or("") {
+            "text" => {
+                if let Some(part) = block.get("text").and_then(|v| v.as_str()) {
+                    if !text.is_empty() {
+                        text.push('\n');
+                    }
+                    text.push_str(part);
+                }
+            }
+            "tool_use" => calls.push(json!({
+                "id": block.get("id").cloned().unwrap_or(Json::Null),
+                "type": "function",
+                "function": {
+                    "name": block.get("name").cloned().unwrap_or(Json::Null),
+                    "arguments": block.get("input").cloned().unwrap_or(json!({})).to_string(),
+                },
+            })),
+            _ => {}
+        }
+    }
+    let mut message = json!({
+        "role": "assistant",
+        "content": if text.is_empty() { Json::Null } else { Json::String(text) },
+    });
+    if !calls.is_empty() {
+        message["tool_calls"] = json!(calls);
+    }
+    message
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn anthropic_conversion_keeps_tool_pairs_and_merges_results() {
+        let history = vec![
+            json!({"role": "system", "content": "be brief"}),
+            json!({"role": "user", "content": "go"}),
+            json!({"role": "assistant", "content": null, "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "assign_task", "arguments": "{\"assignee\":\"b\"}"}},
+                {"id": "c2", "type": "function", "function": {"name": "send_message", "arguments": "{}"}},
+            ]}),
+            json!({"role": "tool", "tool_call_id": "c1", "content": "{\"ok\":true}"}),
+            json!({"role": "tool", "tool_call_id": "c2", "content": "{\"ok\":true}"}),
+        ];
+        let (system, messages) = to_anthropic_messages(&history);
+        assert_eq!(system, "be brief");
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[1]["role"], "assistant");
+        assert_eq!(messages[1]["content"][0]["type"], "tool_use");
+        assert_eq!(messages[1]["content"][0]["input"]["assignee"], "b");
+        // both tool results share one user message (Anthropic requires it)
+        assert_eq!(messages[2]["role"], "user");
+        let blocks = messages[2]["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0]["type"], "tool_result");
+
+        let reply = from_anthropic_message(&json!({"content": [
+            {"type": "text", "text": "done"},
+            {"type": "tool_use", "id": "t1", "name": "signal_done", "input": {"summary": "s"}},
+        ]}));
+        assert_eq!(reply["content"], "done");
+        assert_eq!(reply["tool_calls"][0]["function"]["name"], "signal_done");
+        assert_eq!(reply["tool_calls"][0]["function"]["arguments"], "{\"summary\":\"s\"}");
+    }
 
     #[test]
     fn render_view_matches_runners_py_shape() {
@@ -543,8 +809,8 @@ mod tests {
         // a plain new_input wake adds no wake block
         assert!(!render_view(&view, &json!({"reason": "new_input"}), None).contains("<wake"));
         // tool payload: team tools always, execution tools per binding
-        assert_eq!(tools_payload(&[]).as_array().unwrap().len(), TEAM_TOOL_DOCS.len());
-        let bound = tools_payload(&["files".into(), "shell".into(), "web".into()]);
+        assert_eq!(tools_payload(&[], &[]).as_array().unwrap().len(), TEAM_TOOL_DOCS.len());
+        let bound = tools_payload(&["files".into(), "shell".into(), "web".into()], &[]);
         let names: Vec<&str> = bound
             .as_array()
             .unwrap()
@@ -569,7 +835,7 @@ mod tests {
             .collect();
         assert_eq!(answered, vec!["c1", "c2"], "every tool_call must be answered exactly once");
 
-        let files_only = tools_payload(&["files".into()]);
+        let files_only = tools_payload(&["files".into()], &[]);
         let names: Vec<&str> = files_only
             .as_array()
             .unwrap()
@@ -591,5 +857,6 @@ mod tests {
         assert_eq!(resolve_base_url(&profile(None, "deepseek", "deepseek")), "https://api.deepseek.com/v1");
         assert_eq!(resolve_base_url(&profile(Some("https://x/v1/"), "deepseek", "deepseek")), "https://x/v1");
         assert_eq!(resolve_base_url(&profile(None, "openai", "openai")), "https://api.openai.com/v1");
+        assert_eq!(resolve_base_url(&profile(None, "anthropic", "anthropic")), "https://api.anthropic.com");
     }
 }

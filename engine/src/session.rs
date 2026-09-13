@@ -3,7 +3,7 @@
 
 use crate::chat::ChatRunner;
 use crate::codex::{CodexOptions, CodexRunner};
-use crate::config::{load_user_config, user_config_path};
+use crate::config::{expand_home, load_user_config_for, user_config_path};
 use crate::core_client::CoreClient;
 use crate::gateway::{ApprovalGate, PermissionPolicy};
 use crate::runtime::{AgentRunner, Notify, RunnerFactory, Runtime, RuntimeLimits, ToolExecutor};
@@ -13,7 +13,7 @@ use serde_json::{json, Value as Json};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use teamagents_core::models::{AgentSpec, ModelProfile, RuntimeKind, TeamAction, UserConfig, WorkspacePolicy};
+use teamagents_core::models::{AgentSpec, ModelProfile, RuntimeKind, TeamAction, UserConfig};
 
 pub const LEADER_INSTRUCTIONS: &str = "You are the Leader of a team of agents. Understand the user's goal, decide
 whether to work alone or build a team, delegate with assign_task, coordinate
@@ -75,22 +75,88 @@ impl OpenedSession {
     }
 }
 
-fn member_workdir(session_id: &str, agent_id: &str) -> PathBuf {
-    let dir = session_paths(session_id).base.join("workspaces").join(agent_id);
+/// session.py::_skills_and_memory — the member's skills directories and
+/// instruction (memory) files, with their contents read for prompt injection.
+///
+/// ponytail: the Python build mounts them as a virtual filesystem the member
+/// reads with file tools; here the bounded contents go straight into the system
+/// prompt (upgrade path: a read_skill tool once skills outgrow the prompt).
+fn member_context(catalog: &UserConfig, cwd: &std::path::Path, session_id: &str, agent_id: &str) -> Vec<(String, String)> {
+    const PER_FILE: usize = 8_000;
+    const TOTAL: usize = 32_000;
+    let mut out: Vec<(String, String)> = vec![];
+    let mut budget = TOTAL;
+
+    let mut skills: Vec<PathBuf> = catalog.skills_paths.iter().map(|p| expand_home(p)).collect();
+    skills.push(cwd.join(".teamagents").join("skills"));
+    skills.push(session_paths(session_id).base.join("members").join(agent_id).join("skills"));
+    for dir in skills {
+        let mut candidates = vec![dir.join("SKILL.md")];
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            candidates.extend(
+                entries
+                    .flatten()
+                    .map(|entry| entry.path().join("SKILL.md"))
+                    .filter(|path| path.is_file()),
+            );
+        }
+        for path in candidates {
+            if !path.is_file() {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else { continue };
+            let text: String = text.chars().take(PER_FILE).collect();
+            if text.chars().count() > budget {
+                break;
+            }
+            budget -= text.chars().count();
+            let name = path
+                .parent()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "skill".into());
+            out.push((format!("skill {name}"), text));
+        }
+    }
+
+    let mut memory: Vec<PathBuf> = catalog.instruction_files.iter().map(|p| expand_home(p)).collect();
+    for candidate in [cwd.join("AGENTS.md"), user_config_path().parent().map(|p| p.join("AGENTS.md")).unwrap_or_default()] {
+        if candidate.is_file() {
+            memory.push(candidate);
+        }
+    }
+    for path in memory {
+        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        let text: String = text.chars().take(PER_FILE).collect();
+        if text.chars().count() > budget {
+            break;
+        }
+        budget -= text.chars().count();
+        let label = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "instructions".into());
+        out.push((format!("instructions {label}"), text));
+    }
+    out
+}
+
+/// `sessions/<id>/members/<agent>/` — the member's private directory
+/// (session.py::_member_workspace, same layout as the Python build).
+fn member_dir(session_id: &str, agent_id: &str) -> PathBuf {
+    let dir = session_paths(session_id).base.join("members").join(agent_id);
     let _ = std::fs::create_dir_all(&dir);
     dir
 }
 
 /// Workspace policy decides one member's working directory — and therefore
-/// what its file tools and its backend can reach (plan §8/P5).
-fn member_root(policy: WorkspacePolicy, cwd: &std::path::Path, session_id: &str, agent_id: &str) -> Result<PathBuf, String> {
-    match policy {
-        WorkspacePolicy::Shared => Ok(cwd.to_path_buf()),
-        WorkspacePolicy::Isolated => Ok(member_workdir(session_id, agent_id)),
-        WorkspacePolicy::GitWorktree => Err(
-            "workspace_policy=git_worktree is not implemented in the Rust build (plan P5); use shared or isolated".into(),
-        ),
+/// what its file tools and its backend can reach (plan §8/P5, workspace.py).
+fn member_root(agent: &AgentSpec, cwd: &std::path::Path, session_id: &str) -> Result<PathBuf, String> {
+    let workspace = crate::workspace::prepare(agent, cwd, &member_dir(session_id, &agent.id))?;
+    if let Some(note) = &workspace.note {
+        eprintln!("member {}: {}", agent.id, note);
     }
+    Ok(workspace.path)
 }
 
 pub fn open_session(opts: OpenOptions) -> Result<Arc<OpenedSession>, String> {
@@ -100,8 +166,10 @@ pub fn open_session(opts: OpenOptions) -> Result<Arc<OpenedSession>, String> {
     };
     let catalog = match opts.catalog {
         Some(catalog) => catalog,
-        None => load_user_config(&user_config_path())?,
+        None => load_user_config_for(&cwd)?,
     };
+    let config_full_auto = crate::config::permission_mode_from_config()? == "full_auto";
+    let full_auto = opts.full_auto || config_full_auto;
     let session_id = opts.session_id.clone().unwrap_or_else(|| new_session_id(&cwd));
     let paths = session_paths(&session_id);
     std::fs::create_dir_all(&paths.artifacts).map_err(|e| e.to_string())?;
@@ -120,11 +188,11 @@ pub fn open_session(opts: OpenOptions) -> Result<Arc<OpenedSession>, String> {
             core.call("create_session", json!({
                 "session_id": session_id,
                 "cwd": cwd.to_string_lossy(),
-                "permissions_mode": if opts.full_auto { "full_auto" } else { "approved_scope" },
+                "permissions_mode": if full_auto { "full_auto" } else { "approved_scope" },
             }))?;
             let spec = opts.initial_spec.clone().unwrap_or_else(|| default_leader_spec("leader_main", &["files", "shell", "web"]));
             core.call("save_spec", json!({"session_id": session_id, "spec": spec}))?;
-        } else if opts.full_auto {
+        } else if full_auto {
             if let Ok(state) = core.state() {
                 if state.get("session").and_then(|s| s.get("permissions_mode")).and_then(|v| v.as_str()) != Some("full_auto") {
                     let receipt = core.submit(&TeamAction {
@@ -142,6 +210,9 @@ pub fn open_session(opts: OpenOptions) -> Result<Arc<OpenedSession>, String> {
             }
         }
 
+        // keep validation (topology patches, member profiles) in sync with the
+        // user config the engine loaded
+        core.call("set_catalog", json!({"session_id": session_id, "catalog": catalog}))?;
         let state = core.state()?;
         let mode = state
             .get("session")
@@ -230,7 +301,7 @@ fn make_runner_factory(
                 CodexOptions {
                     agent_id: agent.id.clone(),
                     session_id: session_id.clone(),
-                    workdir: member_root(agent.workspace_policy, &cwd, &session_id, &agent.id)?,
+                    workdir: member_root(agent, &cwd, &session_id)?,
                     sandbox: "workspace-write".into(),
                     approval_policy: "on-request".into(),
                     effort: Some("xhigh".into()),
@@ -249,11 +320,15 @@ fn make_runner_factory(
             return Err(format!("unknown model profile {}", agent.model_profile));
         };
         let agent_json = serde_json::to_value(agent).map_err(|e| e.to_string())?;
+        let bound = crate::bound::BoundTools::load(&catalog, &agent.tool_bindings)?;
+        let context = member_context(&catalog, &cwd, &session_id, &agent.id);
         Ok(ChatRunner::new(
             &agent_json,
             profile,
-            Some(member_root(agent.workspace_policy, &cwd, &session_id, &agent.id)?.to_string_lossy().into_owned()),
+            Some(member_root(agent, &cwd, &session_id)?.to_string_lossy().into_owned()),
             notify.clone(),
+            bound,
+            context,
         ))
     })
 }
@@ -272,17 +347,52 @@ fn member_executor_factory(
         if let Some(executor) = cache.lock().unwrap().get(agent_id).cloned() {
             return executor(tool, args);
         }
-        let policy = core
+        let agent = core
             .state()
             .ok()
             .and_then(|state| state.get("spec").and_then(|spec| spec.get("agents")).cloned())
             .and_then(|agents| serde_json::from_value::<Vec<AgentSpec>>(agents).ok())
-            .and_then(|agents| agents.into_iter().find(|a| a.id == agent_id))
-            .map(|agent| agent.workspace_policy)
-            .unwrap_or(WorkspacePolicy::Shared);
-        let root = member_root(policy, &cwd, &session_id, agent_id)?;
+            .and_then(|agents| agents.into_iter().find(|a| a.id == agent_id));
+        let root = match agent {
+            Some(agent) => member_root(&agent, &cwd, &session_id)?,
+            // a member that vanished from the spec: keep the conservative default
+            None => cwd.clone(),
+        };
         let executor: MemberExecutor = Arc::new(crate::tools::member_executor(root, catalog.clone()));
         cache.lock().unwrap().insert(agent_id.to_string(), executor.clone());
         executor(tool, args)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn member_context_collects_skills_and_instruction_files() {
+        let _env = crate::env_lock();
+        let root = std::env::temp_dir().join(format!("ta-skills-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let cwd = root.join("project");
+        let home = root.join("home");
+        std::fs::create_dir_all(cwd.join(".teamagents/skills/review")).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(cwd.join("AGENTS.md"), "project instructions").unwrap();
+        std::fs::write(cwd.join(".teamagents/skills/review/SKILL.md"), "review skill body").unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", home.join(".config"));
+        std::env::set_var("XDG_STATE_HOME", home.join(".state"));
+        std::fs::create_dir_all(crate::config::user_config_path().parent().unwrap()).unwrap();
+        std::fs::write(crate::config::user_config_path().parent().unwrap().join("AGENTS.md"), "user memory").unwrap();
+
+        let catalog = UserConfig::default();
+        let context = member_context(&catalog, &cwd, "s1", "leader");
+        let labels: Vec<&str> = context.iter().map(|(l, _)| l.as_str()).collect();
+        assert!(labels.contains(&"skill review"), "{labels:?}");
+        assert!(labels.contains(&"instructions AGENTS.md"), "{labels:?}");
+        let bodies: Vec<&str> = context.iter().map(|(_, c)| c.as_str()).collect();
+        assert!(bodies.iter().any(|b| b.contains("review skill body")));
+        assert!(bodies.iter().any(|b| b.contains("project instructions")));
+        assert!(bodies.iter().any(|b| b.contains("user memory")));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

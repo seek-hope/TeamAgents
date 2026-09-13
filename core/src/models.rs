@@ -302,6 +302,8 @@ pub struct ToolBinding {
     #[serde(default)]
     pub kind: String,
     #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
     pub provider: Option<String>,
     #[serde(default)]
     pub api_key_env: Option<String>,

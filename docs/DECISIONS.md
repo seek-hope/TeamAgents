@@ -263,3 +263,35 @@ Deep Agents 的 `permissions` 只覆盖其内置文件工具，不约束 Shell/M
 
 验证：core 14 + engine 27 + tui 21 全绿；PTY 冒烟；真实 DeepSeek 两次端到端
 （单 Leader；Leader→isolated 成员委派→恢复→goal_done，文件落在成员 workspace）。
+
+## D-19 功能补全：MCP / Skills / 项目配置 / worktree / Anthropic（2026-09-13）
+
+用户要求「把 main 分支的 Python 版在 reconstruct 上完全用 Rust 重构」，本轮补齐 D-17 之后
+剩余的 Python 专有能力，全部以 Python 实现为基准：
+
+1. **workspace 策略齐全**（`engine::workspace`，workspace.py 逐条对齐）：`shared`（会话目录）、
+   `isolated`（`members/<成员>/work` + `INPUTS.md`）、`git_worktree`（`teamagents/<成员>-<时间戳>`
+   分支与 worktree；重开会话复用既有 worktree；非 git 仓库或有未提交改动时回退 shared 并说明；
+   未提交/未合并成果拒绝清理；`merge_branch` 供 Leader 合并；删除会话时先做同样的守卫检查）。
+2. **MCP 工具服务**（`engine::mcp` + `engine::bound`）：stdio JSON-RPC（initialize →
+   notifications/initialized → tools/list → tools/call），工具名 `<service>_<工具>`、
+   `tool_names` 过滤、`required` 失败即成员启动失败、可选失败只丢能力；**绑定即授权**
+   （命中绑定集合的调用不经批准门，其余仍走 ToolGateway 审批与审计），与 runners.py 的
+   middleware 行为一致。http/sse 传输未实现（记入未移植项）。
+3. **Skills 与指令文件**：`session` 解析 `skills_paths` + 项目 `.teamagents/skills` +
+   成员目录 skills，以及 `instruction_files` + 项目 `AGENTS.md` + 用户配置目录 `AGENTS.md`，
+   内容注入成员系统提示词（8KB/文件、32KB/成员上限）。Python 版用虚拟文件系统挂载，
+   这里是提示词注入（ponytail 已注明升级路径）。
+4. **项目配置与权限配置**（`config::load_user_config_for` / `permission_mode_from_config`）：
+   项目文件可加模型 profile（同名用户定义优先并告警）、工具绑定仅在
+   `[permissions] trust_project_tools = true` 时生效、`[permissions] mode` 决定缺省权限模式
+   （`--full-auto` 仍可覆盖）；配置里声明的 skills/instruction 路径不存在即报错。
+5. **Anthropic 原生协议**：`ChatRunner` 增加 Messages API 分支（`x-api-key` +
+   `anthropic-version`；system 提炼、assistant/tool_use 与 tool_result 合并规则、
+   `max_tokens`、工具 schema 用 `input_schema`），响应转回内部 OpenAI 风格消息。
+6. **core 增强**：`set_catalog`（把用户配置交给内核做拓扑校验，与 Python 的
+   `Control(store, session, catalog)` 等价）；`ToolBinding.required` 字段补上。
+7. **新增验收**：`engine/tests/topology.rs`（T11–T13）、`engine/tests/recovery.rs`
+   （T8/T21 崩溃恢复与去重、T22 目标回合上限）、`engine/tests/mcp_tools.rs`（真实 MCP stdio
+   服务器）、`workspace.rs`/`config.rs`/`session.rs` 单测（worktree 生命周期、项目配置信任、
+   skills 收集）。

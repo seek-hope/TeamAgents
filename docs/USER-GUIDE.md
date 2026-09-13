@@ -8,18 +8,18 @@
 | 能力 | Python（main） | Rust（reconstruct 分支） |
 |---|---|---|
 | 用户配置 TOML | ✅ | ✅（`models`/`tools`/`skills_paths`/`instruction_files`；其余段落忽略） |
-| 项目配置 `.teamagents/config.toml` | ✅ | ⚠ 未实现：只读用户配置 |
-| `[permissions]` 配置项 | ✅ | ⚠ 未实现：全自动只用 `--full-auto` 或 TUI `Ctrl+F` |
-| 模型接入 | langchain-* provider | 仅 OpenAI 兼容 HTTP：`provider`/`protocol` 决定默认端点（`deepseek` → api.deepseek.com/v1，其余 → api.openai.com/v1）；`anthropic` 原生协议需把 `base_url` 指向 OpenAI 兼容网关 |
+| 项目配置 `.teamagents/config.toml` | ✅ | ✅（同名用户定义优先；项目工具需 `[permissions] trust_project_tools = true`） |
+| `[permissions]` 配置项 | ✅ | ✅（`mode` 与 `trust_project_tools`；`--full-auto` 仍可覆盖） |
+| 模型接入 | langchain-* provider | OpenAI 兼容 HTTP + **Anthropic Messages API**（`protocol = "anthropic"`）；默认端点按 `provider`/`protocol` 解析（deepseek → api.deepseek.com/v1，anthropic → api.anthropic.com） |
 | 内置工具 `files`/`shell` | ✅ | ✅ |
 | `web_search`/`web_fetch` 绑定 | ✅ | ✅（`web_search` 目前只支持 `provider="anysearch"`） |
-| MCP 工具服务 | ✅ | ⚠ 未实现（成员只会看到 files/shell/web 三类工具） |
-| Skills / AGENTS.md 注入 | ✅ | ⚠ 未实现 |
-| `workspace_policy` | shared / isolated / git_worktree | shared / isolated ✅；**git_worktree 显式报错**（不静默降级） |
+| MCP 工具服务 | ✅ | ✅ stdio 传输（http/sse ⚠ 未实现）；工具名 `<service>_<tool>`，`tool_names` 过滤，绑定即授权 |
+| Skills / AGENTS.md 注入 | ✅ | ✅（内容注入系统提示词，上限 8KB/文件、32KB/成员；Python 版是虚拟文件系统） |
+| `workspace_policy` | shared / isolated / git_worktree | ✅ 三者齐全（worktree 复用、脏仓库回退 shared 并说明、未合并成果拒绝清理；删除会话同样受保护） |
 | 会话锁 | flock | pid 文件 + `/proc` 存活检查（语义等价） |
 | TeamSpec 导入 | JSON / YAML | JSON / YAML（`--team` 与 `validate` 均可） |
 | TUI | Textual | ratatui（面板与键位一致，见文末键位表） |
-| deepagents 子代理 / 图框架 | ✅ | ⚠ 未实现（`ChatRunner` 工具循环取代） |
+| deepagents 子代理 / 图框架 | ✅ | ⚠ 未移植（`ChatRunner` 工具循环取代；`general-purpose` 子代理没有等价物） |
 
 ## 1. 配置
 

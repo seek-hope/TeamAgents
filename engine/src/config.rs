@@ -121,3 +121,182 @@ provider = "anysearch"
         assert!(parse_user_config("[models.a]\nmodel = 1\n").is_err());
     }
 }
+
+// -- project config + permissions (config.py::load_user_config / permission_mode_from_config) --
+
+pub fn project_config_path(cwd: &Path) -> PathBuf {
+    cwd.join(".teamagents").join("config.toml")
+}
+
+/// User config plus repository-local project config (user-defined names win).
+/// A project file may add model profiles, but never replace a user-defined name,
+/// and its tool bindings only load after the user opts in with
+/// `[permissions] trust_project_tools = true` (plan §12.2/14).
+pub fn load_user_config_for(cwd: &Path) -> Result<UserConfig, String> {
+    let user_text = std::fs::read_to_string(user_config_path()).unwrap_or_default();
+    let project_text = std::fs::read_to_string(project_config_path(cwd)).unwrap_or_default();
+    let user: toml::Value = if user_text.trim().is_empty() {
+        toml::Value::Table(Default::default())
+    } else {
+        user_text.parse().map_err(|e| format!("bad TOML: {e}"))?
+    };
+    let project: toml::Value = if project_text.trim().is_empty() {
+        toml::Value::Table(Default::default())
+    } else {
+        project_text.parse().map_err(|e| format!("bad TOML: {e}"))?
+    };
+    let trusted = project_permissions(&user).map(|p| p.0).unwrap_or(false);
+    let mut merged = toml::map::Map::new();
+    let empty = toml::map::Map::new();
+    let table = |v: &toml::Value, key: &str| -> toml::map::Map<String, toml::Value> {
+        v.get(key).and_then(|t| t.as_table()).cloned().unwrap_or_default()
+    };
+    let merge = |user_part: toml::map::Map<String, toml::Value>,
+                 project_part: toml::map::Map<String, toml::Value>,
+                 allow_project: bool|
+     -> toml::Value {
+        let mut out = user_part;
+        for (name, value) in project_part {
+            if out.contains_key(&name) {
+                eprintln!("teamagents: 项目配置定义的同名条目 {name:?} 已忽略（用户配置优先）");
+                continue;
+            }
+            if !allow_project {
+                eprintln!("teamagents: 项目配置定义了 {name:?}，默认不信任项目工具，已忽略");
+                continue;
+            }
+            out.insert(name, value);
+        }
+        toml::Value::Table(out)
+    };
+    merged.insert("models".into(), merge(table(&user, "models"), table(&project, "models"), true));
+    merged.insert("tools".into(), merge(table(&user, "tools"), table(&project, "tools"), trusted));
+    let list = |v: &toml::Value, key: &str| -> Vec<toml::Value> {
+        v.get(key)
+            .and_then(|t| t.as_array())
+            .cloned()
+            .unwrap_or_default()
+    };
+    let mut skills = list(&user, "skills_paths");
+    skills.extend(list(&project, "skills_paths"));
+    let mut instructions = list(&user, "instruction_files");
+    instructions.extend(list(&project, "instruction_files"));
+    merged.insert("skills_paths".into(), toml::Value::Array(skills));
+    merged.insert("instruction_files".into(), toml::Value::Array(instructions));
+    let _ = empty;
+    let catalog: UserConfig = toml::Value::Table(merged)
+        .try_into()
+        .map_err(|e| format!("bad config: {e}"))?;
+    validate_configured_paths(&catalog)?;
+    Ok(catalog)
+}
+
+fn project_permissions(user: &toml::Value) -> Result<(bool, String), String> {
+    let permissions = user.get("permissions");
+    let Some(table) = permissions.and_then(|p| p.as_table()) else {
+        return Ok((false, "approved_scope".into()));
+    };
+    let trusted = table.get("trust_project_tools").and_then(|v| v.as_bool()).unwrap_or(false);
+    let mode = table
+        .get("mode")
+        .and_then(|v| v.as_str())
+        .unwrap_or("approved_scope")
+        .to_string();
+    if mode != "approved_scope" && mode != "full_auto" {
+        return Err(format!("invalid permission mode {mode:?} in user config"));
+    }
+    Ok((trusted, mode))
+}
+
+/// Full-auto must be user-chosen in config or CLI; never from a project file.
+pub fn permission_mode_from_config() -> Result<String, String> {
+    let text = std::fs::read_to_string(user_config_path()).unwrap_or_default();
+    if text.trim().is_empty() {
+        return Ok("approved_scope".into());
+    }
+    let user: toml::Value = text.parse().map_err(|e| format!("bad TOML: {e}"))?;
+    Ok(project_permissions(&user)?.1)
+}
+
+fn validate_configured_paths(catalog: &UserConfig) -> Result<(), String> {
+    for path in catalog.skills_paths.iter().chain(catalog.instruction_files.iter()) {
+        let expanded = expand_home(path);
+        if !expanded.exists() {
+            return Err(format!("configured skills/instruction path does not exist: {path}"));
+        }
+    }
+    Ok(())
+}
+
+pub fn expand_home(path: &str) -> PathBuf {
+    if let Some(rest) = path.strip_prefix("~/") {
+        return home_dir().join(rest);
+    }
+    PathBuf::from(path)
+}
+
+#[cfg(test)]
+mod project_config_tests {
+    use super::*;
+
+    fn write(path: &Path, text: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+
+    #[test]
+    fn project_config_merges_with_user_priority_and_trust() {
+        let _env = crate::env_lock();
+        let root = std::env::temp_dir().join(format!("ta-config-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let home = root.join("home");
+        let project = root.join("proj");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&project).unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", home.join(".config"));
+        std::env::set_var("XDG_STATE_HOME", home.join(".state"));
+        write(
+            &user_config_path(),
+            r#"
+[permissions]
+trust_project_tools = true
+
+[models.user_model]
+provider = "openai"
+model = "gpt"
+
+[models.shared]
+provider = "openai"
+model = "user-wins"
+"#,
+        );
+        write(
+            &project_config_path(&project),
+            r#"
+[models.project_model]
+provider = "openai"
+model = "proj"
+
+[models.shared]
+provider = "openai"
+model = "project-loses"
+"#,
+        );
+        let catalog = load_user_config_for(&project).unwrap();
+        assert!(catalog.models.contains_key("project_model"), "project adds models");
+        assert_eq!(catalog.models["shared"].model, "user-wins", "user definitions win");
+        assert_eq!(permission_mode_from_config().unwrap(), "approved_scope");
+
+        // without the opt-in the project tools stay out
+        let mut user_text = std::fs::read_to_string(user_config_path()).unwrap();
+        user_text = user_text.replace("trust_project_tools = true", "trust_project_tools = false");
+        std::fs::write(user_config_path(), user_text).unwrap();
+        write(
+            &project_config_path(&project),
+            "[tools.sneaky]\nkind = \"mcp\"\ncommand = \"rm\"\n",
+        );
+        let catalog = load_user_config_for(&project).unwrap();
+        assert!(!catalog.tools.contains_key("sneaky"), "untrusted project tools are ignored");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}

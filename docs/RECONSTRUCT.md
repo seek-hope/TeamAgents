@@ -28,9 +28,11 @@ main 分支保留 Python 实现作为基准；本分支是**完整的 Rust 实�
 | gateway | agents.py + permissions.py | ✅ `engine::gateway`（ToolGateway/PermissionPolicy/ApprovalGate，含权限模式实时同步） | 单测 + full-auto 场景 |
 | scripted member | agents.py::FakeMember | ✅ `engine::scripted`（含模板引用/barrier/取消） | 全部场景测试 |
 | codex runner | codex.py | ✅ `engine::codex`（app-server JSON-RPC、thread 持久化、批准 park/decide、interrupt、reconcile） | fake-server 3 项 + 真实 CLI live 用例 |
-| chat runner（替代 deepagents） | runners.py | ✅ `engine::chat`（工具循环 + renderView + 暂停/恢复 + provider→base_url + 按 `tool_bindings` 暴露 files/shell/web 执行工具） | 单测 + 真实 DeepSeek live 冒烟 |
+| chat runner（替代 deepagents） | runners.py | ✅ `engine::chat`（工具循环 + renderView + 暂停/恢复 + provider→base_url + 按 `tool_bindings` 暴露 files/shell/web 执行工具 + Anthropic Messages 协议 + skills/指令注入） | 单测 + 真实 DeepSeek live 冒烟 |
 | tools | tools.py + execution.py | ✅ `engine::tools`（文件工具沙箱；bwrap argv 与 execution.py 对齐、缺 bwrap 直接报错不降级、环境白名单；guardUrl + web_fetch；AnySearch web_search） | 单测（含真实 bwrap 运行）+ cli doctor |
-| config | config.py | ✅ toml crate + XDG 路径 + catalog；TeamSpec 支持 JSON/YAML | 单测 + CLI 用例 |
+| MCP 工具服务 | tools.py::build_bound_tools | ✅ `engine::bound` + `engine::mcp`（stdio 会话、`<service>_<tool>` 命名、tool_names 过滤、required/optional 语义、绑定即授权） | 真实 MCP stdio 服务器集成测试 |
+| workspace 策略 | workspace.py | ✅ `engine::workspace`（shared/isolated/git_worktree、复用与回退规则、清理守卫、Leader 合并助手、会话删除守卫） | 单测（真实 git worktree 生命周期） |
+| config | config.py | ✅ toml crate + XDG 路径 + catalog；项目配置合并（用户优先、`trust_project_tools`）；`[permissions] mode`；TeamSpec 支持 JSON/YAML | 单测 + CLI 用例 |
 | sessions | sessions.py + session.py | ✅ 清单/pid 锁/归档/删除/open_session | worker 协议测试 + TUI 冒烟 |
 | CLI | cli.py | ✅ doctor/validate/sessions/version/--plain REPL/TUI 启动 | engine CLI 测试 |
 | TUI | tui/（Textual ~1700 行） | ✅ ratatui/crossterm，D-16 复现基准不变 | Rust 单元 + TestBackend 帧 + PTY 冒烟 |
@@ -56,9 +58,9 @@ for c in core engine tui; do (cd "$c" && cargo build); done
 
 # 测试
 cd core   && cargo test      # 14：权威核心
-cd engine && cargo test      # 27：单测 + T1–T5/T9 场景 + 取消/暂停 + 审批/全自动 +
-                             #     Codex 适配 + worker 协议 + CLI + bwrap argv
-cd tui    && cargo test      # 21：TUI 逻辑与帧冒烟
+cd engine && cargo test      # 42：单测 + T1–T5/T9/T11–T13/T22 场景 + 取消/暂停 + 审批/全自动 +
+                             #     Codex 适配 + worker 协议 + CLI + bwrap + workspace + MCP + 崩溃恢复
+cd tui    && cargo test      # 25：TUI 逻辑 + 帧冒烟 + Python 帧对齐断言
 python3 tui/scripts/pty_smoke.py      # 真终端端到端冒烟（构建后）
 cd engine && TEAMAGENTS_LIVE_CODEX=1 cargo test --test live_codex   # 真实 codex CLI 联调（可选）
 
