@@ -309,20 +309,8 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
         .and_then(|v| v.as_str())
         .map(|status| status == "PAUSED")
         .unwrap_or(false);
-    let mode = app
-        .state
-        .as_ref()
-        .and_then(|s| s.pointer("/session/permissions_mode"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("approved_scope");
-
     // chips in priority order; anything that does not fit is dropped (never clipped)
     let mut chips: Vec<Span> = vec![];
-    if mode == "full_auto" {
-        chips.push(chip(&tr(app.lang, "全自动", &[]), FG, Some(ACCENT)));
-    } else {
-        chips.push(chip(&tr(app.lang, "预授权", &[]), GREY, Some(PANEL_BG)));
-    }
     if paused {
         chips.push(chip(&tr(app.lang, "已暂停", &[]), BG, Some(WARNING)));
     }
@@ -410,11 +398,6 @@ fn tab_badge(app: &App, panel: &str) -> Option<String> {
             .and_then(|v| v.as_array())
             .map(|a| a.len())
             .unwrap_or(0),
-        "sessions" => app
-            .sessions
-            .iter()
-            .filter(|s| s.get("locked").and_then(|v| v.as_bool()).unwrap_or(false))
-            .count(),
         "shared" => app.shared.len(),
         _ => 0,
     };
@@ -1155,13 +1138,20 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
         ("esc", "停止 Leader"),
         ("PgUp", "滚动"),
     ];
-    let focus = if app.focus == Focus::Panel {
-        tr(app.lang, "面板：{v0}", &[("v0", &panel_tab_label(app.lang, app.panel))])
+    // bottom-right: the session's permission mode, plain dim text (no chip)
+    let mode = app
+        .state
+        .as_ref()
+        .and_then(|s| s.pointer("/session/permissions_mode"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("approved_scope");
+    let (mode_label, mode_style) = if mode == "full_auto" {
+        (tr(app.lang, "全自动", &[]), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD))
     } else {
-        tr(app.lang, "输入", &[])
+        (tr(app.lang, "预授权", &[]), Style::default().fg(GREY).add_modifier(Modifier::DIM))
     };
-    let focus_w = UnicodeWidthStr::width(focus.as_str());
-    let budget = (area.width as usize).saturating_sub(focus_w + 3);
+    let mode_w = UnicodeWidthStr::width(mode_label.as_str());
+    let budget = (area.width as usize).saturating_sub(mode_w + 3);
 
     let mut spans: Vec<Span> = vec![Span::raw(" ")];
     let mut used = 1usize;
@@ -1188,9 +1178,9 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
         spans.push(Span::styled(" …", Style::default().fg(GREY)));
         used += 2;
     }
-    let pad = (area.width as usize).saturating_sub(used + focus_w + 1);
+    let pad = (area.width as usize).saturating_sub(used + mode_w + 1);
     spans.push(Span::raw(" ".repeat(pad)));
-    spans.push(Span::styled(focus, Style::default().fg(GREY).add_modifier(Modifier::DIM)));
+    spans.push(Span::styled(mode_label, mode_style));
     spans.push(Span::raw(" "));
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }

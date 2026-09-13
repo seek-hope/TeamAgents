@@ -59,6 +59,10 @@ fn sample_app() -> App {
     app
 }
 
+fn lines_of(text: &str) -> Vec<String> {
+    text.split('\n').map(str::to_string).collect()
+}
+
 fn frame_text(buf: &ratatui::buffer::Buffer) -> String {
     let area = buf.area;
     let mut out = String::new();
@@ -219,8 +223,22 @@ fn frame_shows_the_rust_shell_regions() {
     assert!(text.contains("╭"), "sidebar box missing");
     assert!(text.contains("▌"), "selection bar missing");
     assert!(text.contains("○ Ready") || text.contains("Ready"), "activity chips missing");
-    assert!(text.contains("pane: Team") || text.contains("面板：团队"), "footer focus label missing");
+    // bottom-right is the permission mode in plain dim text (no chip, no pane label)
+    let last = lines_of(&text)
+        .into_iter()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or_default();
+    assert!(last.trim_end().ends_with("Pre-authorized"), "mode label missing: {last:?}");
+    assert!(!text.contains("pane:"), "the pane label is gone");
+    assert!(!text.contains("面板："), "the pane label is gone");
     assert!(text.contains("^q") && text.contains("Quit"), "footer keys missing");
+    // the sessions tab carries no count
+    let tabs = lines_of(&text)
+        .into_iter()
+        .find(|l| l.contains("▍Team"))
+        .unwrap_or_default();
+    assert!(tabs.contains("Sessions") && !tabs.contains("Sessions 1"), "sessions badge: {tabs:?}");
 }
 
 #[test]
