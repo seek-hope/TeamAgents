@@ -11,8 +11,9 @@ use crate::text::Composer;
 pub const PANELS: [&str; 7] = ["team", "tasks", "shared", "approvals", "sessions", "log", "settings"];
 /// Below this width the sidebar sits above the chat instead of beside it.
 pub const WIDE_LAYOUT_MIN: u16 = 110;
-/// Sidebar width in the wide layout (log payloads stay readable at ~46).
-pub const SIDEBAR_WIDTH: u16 = 46;
+/// Hard cap for the sidebar in the wide layout (ui::sidebar_width sizes to the
+/// active pane's content and clamps to this, leaving the chat at least ~44 cols).
+pub const SIDEBAR_WIDTH: u16 = 92;
 const PANEL_TAB_LABELS: [&str; 7] = ["团队", "任务", "共享空间", "批准", "会话", "日志", "设置"];
 pub const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
@@ -876,6 +877,27 @@ impl App {
     /// Public wrapper for the mouse hit-test on the tab strip.
     pub fn tab_badge(&self, index: usize) -> Option<String> {
         crate::ui::tab_badge_for(self, index)
+    }
+
+    /// Clicking a table row selects it: the click lands on a *visible* row, so
+    /// the window offset the renderer used has to be added back.
+    pub fn select_row_visible(&mut self, visible_row: usize, view: usize) {
+        let panel = PANELS[self.panel];
+        let rows = self.panel_rows(panel);
+        let sel = self.table_cursors.get(panel).map(|(_, i)| *i).unwrap_or(0);
+        let start = crate::ui::table_start(rows.len(), sel, view);
+        self.select_row(start + visible_row);
+    }
+
+    /// Row count for the active panel (used by the click hit-test).
+    fn panel_rows(&self, panel: &str) -> Vec<String> {
+        match panel {
+            "team" => self.team_rows().into_iter().map(|(k, _)| k).collect(),
+            "tasks" => self.tasks_rows().into_iter().map(|(k, _)| k).collect(),
+            "approvals" => self.approvals_rows().into_iter().map(|(k, _)| k).collect(),
+            "sessions" => self.sessions_rows().into_iter().map(|(k, _)| k).collect(),
+            _ => vec![],
+        }
     }
 
     /// Clicking a table row selects it (the renderer keeps the row key).

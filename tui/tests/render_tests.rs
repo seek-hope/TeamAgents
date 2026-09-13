@@ -328,3 +328,75 @@ fn debug_row_indent() {
         println!("{i:02}|{line}");
     }
 }
+
+#[test]
+fn sidebar_sizes_to_content_and_keeps_one_tab_row() {
+    use teamagents_tui::app::Focus;
+    let mut app = parity_app();
+    let wide = ui::sidebar_width(&app, 150);
+    let narrow = ui::sidebar_width(&app, 100);
+    assert!(wide > narrow, "sidebar follows the content and the space: {wide} vs {narrow}");
+    assert!(150 - wide as usize >= 44, "the chat keeps a usable share");
+
+    // the tab bar is a single row even when it cannot fit: the settings pane
+    // only needs 46 columns, so the strip has to window around the active tab
+    app.focus = Focus::Panel;
+    app.panel = 6; // settings
+    assert!(ui::sidebar_width(&app, 120) < 58, "narrow strip case");
+    let backend = TestBackend::new(120, 30);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| ui::render(f, &mut app)).unwrap();
+    let text = frame_text(terminal.backend().buffer());
+    let lines: Vec<&str> = text.split('\n').collect();
+    let tab_rows: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.contains("▍Team") || l.contains("Sessions") && l.contains("Log"))
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(tab_rows.len(), 1, "one tab row only: {tab_rows:?}");
+    assert!(lines[tab_rows[0]].contains('‹') || lines[tab_rows[0]].contains('›'),
+            "hidden tabs are marked: {:?}", lines[tab_rows[0]]);
+}
+
+#[test]
+fn long_tables_scroll_with_the_selection() {
+    // the window follows the cursor (pure function) and the frame shows it
+    assert_eq!(ui::table_start(30, 25, 10), 20);
+    assert_eq!(ui::table_start(5, 4, 10), 0);
+    assert_eq!(ui::table_start(30, 0, 10), 0);
+
+    let mut app = App::new(
+        "s1",
+        json!({"models": {}, "tools": {}, "skills_paths": [], "instruction_files": []}),
+        "/tmp/config.toml".into(),
+        "en",
+        true,
+        vec![],
+    );
+    let sessions: Vec<Json> = (0..30)
+        .map(|i| json!({"sessionId": format!("proj_{i:04}"), "path": "/tmp", "cwd": "/tmp",
+                        "status": "ACTIVE", "goalState": "idle", "permissionsMode": "approved_scope",
+                        "updatedAt": 0.0, "events": i, "tasks": 0, "sizeMb": 0.1,
+                        "archived": false, "locked": false}))
+        .collect();
+    app.apply_state(&json!({
+        "session": {"session_id": "s1", "status": "ACTIVE", "cwd": "/tmp",
+                    "permissions_mode": "approved_scope", "goal_id": null, "goal_state": "idle"},
+        "spec": {"leader_id": "leader", "agents": [{"id": "leader", "name": "L", "role": "leader",
+                  "runtime_kind": "deepagents", "model_profile": "m"}], "channels": [], "observers": [],
+                  "shared_spaces": []},
+        "leader_id": "leader", "revision": 1, "limits": {},
+        "agents": [{"id": "leader", "status": "IDLE"}], "runs": [], "tasks": [],
+        "pending_approvals": [], "events": [],
+    }));
+    app.sessions = sessions;
+    app.panel = 4; // sessions
+    app.table_cursors.insert("sessions", (None, 29));
+    let backend = TestBackend::new(150, 30);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| ui::render(f, &mut app)).unwrap();
+    let text = frame_text(terminal.backend().buffer());
+    assert!(text.contains("proj_0029"), "the selected row stays visible: {text}");
+    assert!(text.contains('┃'), "a scrollbar marks the hidden rows");
+}

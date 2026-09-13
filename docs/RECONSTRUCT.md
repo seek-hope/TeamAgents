@@ -61,7 +61,7 @@ for c in core engine tui; do (cd "$c" && cargo build); done
 cd core   && cargo test      # 14：权威核心
 cd engine && cargo test      # 42：单测 + T1–T5/T9/T11–T13/T22 场景 + 取消/暂停 + 审批/全自动 +
                              #     Codex 适配 + worker 协议 + CLI + bwrap + workspace + MCP + 崩溃恢复
-cd tui    && cargo test      # 31：TUI 逻辑 + 帧冒烟 + Rust 外壳（胶囊/滚动/空状态/自适应列）断言
+cd tui    && cargo test      # 33：TUI 逻辑 + 帧冒烟 + Rust 外壳（胶囊/滚动/空状态/自适应列/侧栏宽度与页签窗口）断言
 python3 tui/scripts/pty_smoke.py      # 真终端端到端冒烟（构建后）
 python3 review/tmp/dump_py_frame.py /tmp/py.txt 110 32   # 参考：Python 帧（不再是验收门槛）
 cd engine && TEAMAGENTS_LIVE_CODEX=1 cargo test --test live_codex   # 真实 codex CLI 联调（可选）

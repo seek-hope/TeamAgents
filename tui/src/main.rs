@@ -453,18 +453,31 @@ fn handle_mouse(m: event::MouseEvent, terminal: &Terminal<CrosstermBackend<std::
     let area = terminal.size().unwrap_or(ratatui::layout::Size { width: 80, height: 24 });
     // wheel scrolls whichever pane the pointer is over
     match m.kind {
-        MouseEventKind::ScrollUp => {
-            app.scroll_up(3);
-            return;
-        }
-        MouseEventKind::ScrollDown => {
-            app.scroll_down(3);
+        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+            let (side, _chat) = layout_rects(app, area);
+            let over_side = m.column >= side.x && m.column < side.x + side.width && m.row >= side.y;
+            if over_side && !matches!(app::PANELS[app.panel], "log" | "settings") {
+                // the wheel drives the table cursor, exactly like ↑/↓
+                let code = if m.kind == MouseEventKind::ScrollUp {
+                    crossterm::event::KeyCode::Up
+                } else {
+                    crossterm::event::KeyCode::Down
+                };
+                app.handle_key(crossterm::event::KeyEvent::new(
+                    code,
+                    crossterm::event::KeyModifiers::NONE,
+                ));
+            } else if m.kind == MouseEventKind::ScrollUp {
+                app.scroll_up(3);
+            } else {
+                app.scroll_down(3);
+            }
             return;
         }
         MouseEventKind::Down(event::MouseButton::Left) => {}
         _ => return,
     }
-    let (side, chat) = layout_rects(area);
+    let (side, chat) = layout_rects(app, area);
     let in_side = m.column >= side.x
         && m.column < side.x + side.width
         && m.row >= side.y
@@ -488,11 +501,12 @@ fn handle_mouse(m: event::MouseEvent, terminal: &Terminal<CrosstermBackend<std::
             }
             return;
         }
-        // rows start two lines below the tabs (header + rule)
+        // rows start below the tab strip, its rule, the header and its rule
         let first_row = side.y + 4;
         if m.row >= first_row {
             app.focus = app::Focus::Panel;
-            app.select_row((m.row - first_row) as usize);
+            let view = (side.y + side.height).saturating_sub(2 + first_row) as usize;
+            app.select_row_visible((m.row - first_row) as usize, view);
         }
         return;
     }
@@ -503,7 +517,7 @@ fn handle_mouse(m: event::MouseEvent, terminal: &Terminal<CrosstermBackend<std::
 }
 
 /// Body geometry for the current terminal size (mirrors ui::render_body).
-fn layout_rects(area: ratatui::layout::Size) -> (ratatui::layout::Rect, ratatui::layout::Rect) {
+fn layout_rects(app: &App, area: ratatui::layout::Size) -> (ratatui::layout::Rect, ratatui::layout::Rect) {
     let body = ratatui::layout::Rect {
         x: 0,
         y: 1,
@@ -511,8 +525,7 @@ fn layout_rects(area: ratatui::layout::Size) -> (ratatui::layout::Rect, ratatui:
         height: area.height.saturating_sub(2),
     };
     if body.width >= app::WIDE_LAYOUT_MIN && body.height >= 12 {
-        let side_w =
-            ((body.width as usize * 34 / 100).clamp(38, app::SIDEBAR_WIDTH as usize)) as u16;
+        let side_w = ui::sidebar_width(app, body.width);
         let side = ratatui::layout::Rect {
             x: body.x + body.width - side_w,
             width: side_w,

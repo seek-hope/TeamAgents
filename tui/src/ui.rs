@@ -10,7 +10,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::app::{panel_tab_label, App, Cell, Focus, Severity, PANELS, SIDEBAR_WIDTH, WIDE_LAYOUT_MIN};
+use crate::app::{panel_tab_label, App, Cell, Focus, Severity, PANELS, WIDE_LAYOUT_MIN};
 use crate::i18n::{table_headers, tr};
 use crate::md;
 use crate::theme::*;
@@ -316,7 +316,7 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
 
 fn render_body(frame: &mut Frame, app: &mut App, area: Rect) {
     if area.width >= WIDE_LAYOUT_MIN && area.height >= 12 {
-        let side_w = ((area.width as usize * 34 / 100).clamp(38, SIDEBAR_WIDTH as usize)) as u16;
+        let side_w = sidebar_width(app, area.width);
         let split = Layout::horizontal([
             Constraint::Fill(1),
             Constraint::Length(1),
@@ -402,10 +402,9 @@ fn render_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
-    // tab strip: the active tab is marked and accented, counts follow the label;
-    // long strips wrap onto another row instead of clipping
-    let mut rows: Vec<Vec<Span>> = vec![vec![Span::raw(" ")]];
-    let mut row_w = 1usize;
+    // tab strip: one row, windowed around the active tab (a tab bar never
+    // wraps); ‹ › mark tabs that are scrolled out of view
+    let mut pieces: Vec<(Vec<Span>, usize)> = vec![];
     for (i, panel) in PANELS.iter().enumerate() {
         let label = panel_tab_label(app.lang, i);
         let active = i == app.panel;
@@ -417,35 +416,58 @@ fn render_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
                 Style::default().fg(GREY)
             },
         )];
-        let badge = tab_badge(app, panel);
-        if let Some(badge) = &badge {
+        if let Some(badge) = tab_badge(app, panel) {
             spans.push(Span::styled(
                 format!(" {badge}"),
                 Style::default()
                     .fg(if active { ACCENT } else { NOTICE })
                     .add_modifier(Modifier::DIM),
             ));
-        }
-        let w: usize = spans.iter().map(|s| UnicodeWidthStr::width(s.content.as_ref())).sum();
-        let w = if badge.is_none() { w + 1 } else { w };
-        if row_w + w > inner.width as usize && row_w > 1 {
-            rows.push(vec![]);
-            row_w = 0;
-        }
-        if badge.is_none() {
+        } else {
             spans.push(Span::raw(" "));
         }
-        rows.last_mut().unwrap().extend(spans);
-        row_w += w;
+        let w: usize = spans.iter().map(|s| UnicodeWidthStr::width(s.content.as_ref())).sum();
+        pieces.push((spans, w));
     }
-    let tab_rows = rows.len().min(2);
-    for (i, spans) in rows.into_iter().take(tab_rows).enumerate() {
-        frame.render_widget(
-            Paragraph::new(Line::from(spans)),
-            Rect { y: inner.y + i as u16, height: 1, ..inner },
-        );
+    let budget = inner.width as usize;
+    let total: usize = pieces.iter().map(|(_, w)| *w).sum();
+    let mut shown: Vec<Span> = vec![Span::raw(" ")];
+    if total + 1 <= budget {
+        for (spans, _) in pieces {
+            shown.extend(spans);
+        }
+    } else {
+        // keep the active tab visible, fill outward, and mark the cut edges
+        let budget = budget.saturating_sub(3); // leading space + two markers
+        let (mut lo, mut hi) = (app.panel, app.panel);
+        let mut used = pieces[app.panel].1;
+        loop {
+            let left = lo.checked_sub(1).map(|i| pieces[i].1 + 1);
+            let right = if hi + 1 < pieces.len() { Some(pieces[hi + 1].1 + 1) } else { None };
+            match (left, right) {
+                (Some(l), _) if used + l <= budget => {
+                    lo -= 1;
+                    used += l;
+                }
+                (_, Some(r)) if used + r <= budget => {
+                    hi += 1;
+                    used += r;
+                }
+                _ => break,
+            }
+        }
+        if lo > 0 {
+            shown.push(Span::styled("‹", Style::default().fg(ACCENT)));
+        }
+        for (spans, _) in pieces.iter().skip(lo).take(hi - lo + 1) {
+            shown.extend(spans.clone());
+        }
+        if hi + 1 < pieces.len() {
+            shown.push(Span::styled("›", Style::default().fg(ACCENT)));
+        }
     }
-    let divider_y = inner.y + tab_rows as u16;
+    frame.render_widget(Paragraph::new(Line::from(shown)), Rect { height: 1, ..inner });
+    let divider_y = inner.y + 1;
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             "─".repeat(inner.width as usize),
@@ -471,7 +493,7 @@ fn render_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
     let hint_h = (hint_rows.len() as u16).min(inner.height.saturating_sub(2));
     let content = Rect {
         y: divider_y + 1,
-        height: inner.height.saturating_sub(tab_rows as u16 + 1 + hint_h),
+        height: inner.height.saturating_sub(2 + hint_h),
         ..inner
     };
     render_panel(frame, app, content);
@@ -487,30 +509,30 @@ fn render_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focus == Focus::Panel;
     match panel {
         "team" | "tasks" | "approvals" | "sessions" | "shared" => {
-            let (header, rows, empty): (&[&str], Vec<(String, Vec<Cell>)>, &str) = match panel {
+            let (header, keyed, empty) = match panel {
                 "team" => (table_headers("team"), app.team_rows(), "没有成员"),
                 "tasks" => (table_headers("tasks"), app.tasks_rows(), "没有任务"),
                 "approvals" => (table_headers("approvals"), app.approvals_rows(), "没有待批准操作"),
-                "shared" => (
+                "sessions" => (table_headers("sessions"), app.sessions_rows(), "没有会话记录"),
+                _ => (
                     table_headers("shared"),
                     app.shared_rows().into_iter().map(|r| (String::new(), r)).collect(),
                     "没有共享条目",
                 ),
-                _ => (table_headers("sessions"), app.sessions_rows(), "没有会话记录"),
             };
             let header: Vec<String> = header.iter().map(|h| tr(app.lang, h, &[])).collect();
             let header_refs: Vec<&str> = header.iter().map(|s| s.as_str()).collect();
             let saved = app.table_cursors.get(panel).cloned().unwrap_or((None, 0));
             let sel = saved
                 .0
-                .and_then(|k| rows.iter().position(|(rk, _)| rk == &k))
-                .unwrap_or_else(|| saved.1.min(rows.len().saturating_sub(1)));
-            let sel = if rows.is_empty() { None } else { Some(sel) };
+                .and_then(|k| keyed.iter().position(|(rk, _)| rk == &k))
+                .unwrap_or_else(|| saved.1.min(keyed.len().saturating_sub(1)));
+            let sel = if keyed.is_empty() { None } else { Some(sel) };
             render_table(
                 frame,
                 area,
                 &header_refs,
-                &rows.iter().map(|(_, r)| r.clone()).collect::<Vec<_>>(),
+                &keyed.iter().map(|(_, r)| r.clone()).collect::<Vec<_>>(),
                 sel,
                 focused,
                 &tr(app.lang, empty, &[]),
@@ -544,6 +566,37 @@ fn render_panel(frame: &mut Frame, app: &mut App, area: Rect) {
 
 /// A table in the Rust spirit: dim header with a rule under it, subtle zebra,
 /// an accent bar on the selected row, centred empty state.
+/// The active panel's table: translated headers, rows, and its empty-state id.
+pub fn panel_table(app: &App) -> (Vec<String>, Vec<Vec<Cell>>, &'static str) {
+    match PANELS[app.panel] {
+        "tasks" => (
+            table_headers("tasks").iter().map(|h| tr(app.lang, h, &[])).collect(),
+            app.tasks_rows().into_iter().map(|(_, r)| r).collect(),
+            "没有任务",
+        ),
+        "approvals" => (
+            table_headers("approvals").iter().map(|h| tr(app.lang, h, &[])).collect(),
+            app.approvals_rows().into_iter().map(|(_, r)| r).collect(),
+            "没有待批准操作",
+        ),
+        "sessions" => (
+            table_headers("sessions").iter().map(|h| tr(app.lang, h, &[])).collect(),
+            app.sessions_rows().into_iter().map(|(_, r)| r).collect(),
+            "没有会话记录",
+        ),
+        "shared" => (
+            table_headers("shared").iter().map(|h| tr(app.lang, h, &[])).collect(),
+            app.shared_rows(),
+            "没有共享条目",
+        ),
+        _ => (
+            table_headers("team").iter().map(|h| tr(app.lang, h, &[])).collect(),
+            app.team_rows().into_iter().map(|(_, r)| r).collect(),
+            "没有成员",
+        ),
+    }
+}
+
 /// Which columns a table gives up first when the pane is narrow.
 fn drop_order(panel: &str) -> &'static [usize] {
     match panel {
@@ -553,6 +606,46 @@ fn drop_order(panel: &str) -> &'static [usize] {
         "sessions" => &[5, 4, 3, 2, 6],      // Updated, Size, Events, Goal, Flags
         _ => &[4, 2, 0, 1],                  // Shared: Sequence, Kind, Space, Author
     }
+}
+
+/// First visible row index: keeps the selection on screen, preferring to
+/// centre it (the click hit-test reuses this).
+pub fn table_start(rows: usize, sel: usize, view: usize) -> usize {
+    if view == 0 || rows <= view {
+        return 0;
+    }
+    let max_start = rows - view;
+    sel.saturating_sub(view / 2).min(max_start)
+}
+
+/// Sidebar width in the wide layout: sized to the active pane's content, then
+/// clamped so the chat keeps a comfortable share.
+pub fn sidebar_width(app: &App, total: u16) -> u16 {
+    const MIN: usize = 40;
+    let max = crate::app::SIDEBAR_WIDTH as usize;
+    let natural = match PANELS[app.panel] {
+        "settings" => {
+            // the pane also renders wrapped settings lines; size to the longest
+            let body = app
+                .settings_lines()
+                .iter()
+                .map(|l| UnicodeWidthStr::width(l.as_str()))
+                .max()
+                .unwrap_or(0);
+            (body + 4).max(30)
+        }
+        "log" => 84,
+        _ => {
+            let (header, rows, _) = panel_table(app);
+            let refs: Vec<&str> = header.iter().map(|s| s.as_str()).collect();
+            let widths = col_widths(&refs, &rows, usize::MAX);
+            // borders(2) + marker column(1) + cell paddings
+            widths.iter().sum::<usize>() + 2 * widths.len().saturating_sub(1) + 4
+        }
+    };
+    let chat_share = (total as usize).saturating_sub(44); // keep the chat usable
+    let cap = max.min(chat_share).min(((total as usize) * 62 / 100).max(MIN));
+    natural.clamp(MIN, cap.max(MIN)) as u16
 }
 
 fn render_table(
@@ -628,8 +721,9 @@ fn render_table(
     );
 
     let body = Rect { y: area.y + 2, height: area.height.saturating_sub(2), ..area };
+    let start = table_start(rows.len(), sel.unwrap_or(0), body.height as usize);
     let mut lines: Vec<Line> = vec![];
-    for (i, row) in rows.iter().enumerate() {
+    for (i, row) in rows.iter().enumerate().skip(start).take((body.height as usize).max(1)) {
         let selected = sel == Some(i);
         let bg = if selected {
             SELECT_BG
@@ -664,7 +758,28 @@ fn render_table(
         ));
     }
     let _ = focused;
-    frame.render_widget(Paragraph::new(lines), body);
+    let view = body.height as usize;
+    let text_area = if rows.len() > view && body.width > 3 {
+        Rect { width: body.width.saturating_sub(1), ..body }
+    } else {
+        body
+    };
+    frame.render_widget(Paragraph::new(lines), text_area);
+    if rows.len() > view && body.width > 3 {
+        let max_scroll = rows.len() - view;
+        let mut state = ratatui::widgets::ScrollbarState::new(max_scroll + 1).position(start);
+        frame.render_stateful_widget(
+            ratatui::widgets::Scrollbar::new(ratatui::widgets::ScrollbarOrientation::VerticalRight)
+                .style(Style::default().fg(GREY))
+                .thumb_symbol("┃")
+                .track_symbol(Some(" "))
+                .thumb_style(Style::default().fg(GREY))
+                .begin_symbol(None)
+                .end_symbol(None),
+            Rect { x: body.x + body.width - 1, width: 1, ..body },
+            &mut state,
+        );
+    }
 }
 
 fn render_settings(frame: &mut Frame, app: &App, area: Rect) {
