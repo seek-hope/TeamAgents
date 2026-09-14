@@ -175,6 +175,7 @@ pub const BOUND_TOOL_DOCS: &[(&str, &str)] = &[
     ("web_search", "Search the web and return title, source URL, snippet, fetch time (and full content when include_content=true)."),
     ("web_fetch", "Fetch a web page and return title, source URL, fetch time and the readable text body (HTML only; capped)."),
     ("skill", "Discover and load agent skills. action='search' with query keywords lists matching skills (name — summary); action='read' with a skill name loads its full instructions. Read a skill before applying it."),
+    ("read_history", "Retrieve the original output of an earlier tool call by its tool_call_id. Older tool outputs may be hidden from your context to save space; this fetches them back."),
 ];
 
 fn bound_tool_schemas() -> Json {
@@ -190,6 +191,7 @@ fn bound_tool_schemas() -> Json {
       {"name": "web_search", "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "max_results": {"type": "integer"}, "include_content": {"type": "boolean"}}, "required": ["query"]}},
       {"name": "web_fetch", "parameters": {"type": "object", "properties": {"url": {"type": "string"}, "max_bytes": {"type": "integer"}}, "required": ["url"]}},
       {"name": "skill", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["search", "read"]}, "query": {"type": "string"}, "name": {"type": "string"}}, "required": ["action"]}},
+      {"name": "read_history", "parameters": {"type": "object", "properties": {"tool_call_id": {"type": "string"}}, "required": ["tool_call_id"]}},
     ])
 }
 
@@ -214,6 +216,9 @@ fn bound_tool_names(bindings: &[String], web: (bool, bool)) -> Vec<&'static str>
     if bindings.iter().any(|b| b == "skills") {
         names.push("skill");
     }
+    // Runtime-provided, not a capability: every chat-runtime member has a
+    // history tree its masked outputs can be read back from.
+    names.push("read_history");
     names
 }
 
@@ -271,6 +276,62 @@ fn fill_unanswered_tool_calls(history: &mut Vec<Json>, calls: &[Json], answered:
     }
 }
 
+/// L0 (Codex/Claude Code's first defence): cap one tool result at write
+/// time, keeping head+tail with a marker.
+/// ponytail: fixed 50k-char cap; per-tool budgets if specific tools dominate.
+const TOOL_OUTPUT_CAP: usize = 50_000;
+
+fn cap_tool_output(content: String) -> String {
+    if content.len() <= TOOL_OUTPUT_CAP {
+        return content;
+    }
+    let half = TOOL_OUTPUT_CAP / 2;
+    let head: String = content.chars().take(half).collect();
+    let tail: String = content.chars().skip(content.chars().count().saturating_sub(half)).collect();
+    format!("{head}\n[...{} chars truncated...]\n{tail}", content.chars().count().saturating_sub(head.chars().count() + tail.chars().count()))
+}
+
+/// L1: view-only masking of old tool outputs (Complexity Trap, arXiv
+/// 2508.21433: masking is as efficient as LLM summarization). The checkpoint
+/// and history tree keep the originals — only the wire copy sent to the model
+/// is masked, so `read_history` can always fetch the full output back.
+/// ponytail: fixed 16k trailing budget; make it window-relative if needed.
+const MASK_KEEP_RECENT: usize = 16_000;
+
+fn mask_old_tool_outputs(messages: &[Json]) -> Vec<Json> {
+    let last_assistant = messages.iter().rposition(|m| m["role"] == "assistant").unwrap_or(0);
+    let mut out = messages.to_vec();
+    let mut budget = MASK_KEEP_RECENT;
+    for i in (0..=last_assistant).rev() {
+        let message = &out[i];
+        if message["role"] != "tool" {
+            continue;
+        }
+        let len = message["content"].as_str().map(|c| c.len()).unwrap_or(0);
+        if budget >= len {
+            budget -= len;
+            continue;
+        }
+        budget = 0;
+        let id = message["tool_call_id"].as_str().unwrap_or("");
+        out[i] = json!({
+            "role": "tool",
+            "tool_call_id": id,
+            "content": format!("[tool output hidden ({len} bytes) — call read_history with tool_call_id={id:?} to retrieve it]"),
+        });
+    }
+    out
+}
+
+/// L2 trigger: last prompt over this fraction of the configured context
+/// window (Codex's model_auto_compact_token_limit defaults to ~90%).
+const COMPACT_AT: f64 = 0.9;
+/// ponytail: the summary request itself is capped head+tail; a history larger
+/// than this summarizes the middle away before the model ever sees it.
+const SUMMARY_INPUT_CAP: usize = 100_000;
+
+const SUMMARY_PROMPT: &str = "You are compacting an agent conversation to free context space. Summarize it for continuation, in this exact structure:\n1. Goal: the user's overall objective and constraints\n2. Progress: what has been done, with key decisions and why\n3. Files: paths created/modified/read that matter, one line each\n4. Errors: unresolved errors and what was tried\n5. Tasks: pending tasks and their ids/assignees if mentioned\n6. Next: the immediate next step\nMention tool_call_ids of tool calls whose full output may be needed later. Be dense; omit small talk.\n\nConversation to compact:\n\n";
+
 /// A private execution checkpoint, saved before tools and after each result.
 /// An external call without a recorded result requires reconciliation; team
 /// actions can safely replay their persisted call IDs through core receipts.
@@ -307,6 +368,12 @@ pub struct ChatTree {
 struct TreeNode {
     id: String,
     parent: Option<String>,
+    /// Compaction summary nodes only: resume walking at this ancestor instead
+    /// of `parent`, hiding the covered range from the materialized view while
+    /// keeping it in the tree (lossless compaction; rewind onto the covered
+    /// branch still sees the full history).
+    #[serde(default)]
+    skip_to: Option<String>,
     message: Json,
 }
 
@@ -318,7 +385,12 @@ impl ChatTree {
         while let Some(id) = cur {
             let Some(node) = self.nodes.iter().find(|n| n.id == id) else { break };
             out.push(node.message.clone());
-            cur = node.parent.as_deref();
+            cur = match &node.skip_to {
+                // "" means the covered range runs to the root.
+                Some(target) if target.is_empty() => None,
+                Some(target) => Some(target.as_str()),
+                None => node.parent.as_deref(),
+            };
         }
         out.reverse();
         out
@@ -328,9 +400,17 @@ impl ChatTree {
     fn append(&mut self, messages: &[Json]) {
         for message in messages {
             let id = format!("n{}", self.nodes.len() + 1);
-            self.nodes.push(TreeNode { id: id.clone(), parent: self.leaf.take(), message: message.clone() });
+            self.nodes.push(TreeNode { id: id.clone(), parent: self.leaf.take(), skip_to: None, message: message.clone() });
             self.leaf = Some(id);
         }
+    }
+
+    /// Append a compaction summary covering everything above `skip_to`
+    /// ("" = the whole current chain).
+    fn append_summary(&mut self, message: Json, skip_to: &str) {
+        let id = format!("n{}", self.nodes.len() + 1);
+        self.nodes.push(TreeNode { id: id.clone(), parent: self.leaf.take(), skip_to: Some(skip_to.to_string()), message });
+        self.leaf = Some(id);
     }
 
     /// Rewind targets: user-input nodes, newest first, as (id, depth, preview).
@@ -448,6 +528,10 @@ pub struct ChatRunner {
     /// runners.py::_switch_effort_to_max — at most one effort fallback per runner
     effort_max: AtomicBool,
     effort_fallback_used: AtomicBool,
+    /// Claude Code's circuit breaker: stop auto-compacting for this runner
+    /// after 3 consecutive failures (the failure cause may be the oversized
+    /// context itself — retrying forever deadlocks the turn).
+    compact_failures: AtomicU64,
 }
 
 impl ChatRunner {
@@ -489,6 +573,7 @@ impl ChatRunner {
             closed: AtomicBool::new(false),
             effort_max: AtomicBool::new(false),
             effort_fallback_used: AtomicBool::new(false),
+            compact_failures: AtomicU64::new(0),
         })
     }
 
@@ -686,6 +771,17 @@ impl ChatRunner {
         format!(
             "{head}\n\nTeam tools available:\n{tools}\n\nRules: use complete_task to finish your assigned task; use signal_done only when the whole user goal is complete (Leader only).\n{context}"
         )
+    }
+
+    /// The system prompt is refreshed from the agent config on every segment
+    /// (and after compaction rebases the history from the tree).
+    fn refresh_system(&self, history: &mut Vec<Json>) {
+        let instructions = self.agent["instructions"].as_str().unwrap_or("");
+        if history.first().map(|m| m["role"] == "system").unwrap_or(false) {
+            history[0]["content"] = json!(self.system_prompt());
+        } else if !instructions.is_empty() || !self.context.is_empty() {
+            history.insert(0, json!({"role":"system", "content":self.system_prompt()}));
+        }
     }
 
     fn has_paused(&self, run_id: &str) -> bool {
@@ -893,6 +989,95 @@ impl ChatRunner {
         Err(last_error)
     }
 
+    /// L2 trigger (pre-turn/between-steps only — never with tool calls
+    /// pending, so no assistant message is orphaned mid-batch).
+    fn over_threshold(&self, thread: &str) -> bool {
+        let Some(window) = self.profile.context_window else { return false };
+        if self.compact_failures.load(Ordering::SeqCst) >= 3 {
+            return false;
+        }
+        let last = self.usage.lock().unwrap().get(thread).map(|u| u.last_prompt).unwrap_or(0);
+        last > 0 && last as f64 > window as f64 * COMPACT_AT
+    }
+
+    /// Codex-style handoff compaction: one LLM call condenses the history to a
+    /// structured summary node with `skip_to` set, so the covered messages
+    /// stay in the tree (lossless — /rewind and read_history can still reach
+    /// them) while materialize() jumps over them.
+    fn compact(&self, thread: &str, checkpoint: &mut ChatCheckpoint, control: &TurnControl) -> Result<(), String> {
+        let mut blob = String::new();
+        for message in checkpoint.history.iter().skip_while(|m| m["role"] == "system") {
+            let role = message["role"].as_str().unwrap_or("?");
+            let mut content = message["content"].as_str().unwrap_or("").to_string();
+            if let Some(calls) = message["tool_calls"].as_array() {
+                let names: Vec<&str> = calls.iter().filter_map(|c| c["function"]["name"].as_str()).collect();
+                content = format!("{content} [calls: {}]", names.join(", "));
+            }
+            if content.len() > 2_000 {
+                content = format!("{}…[{} chars]", content.chars().take(2_000).collect::<String>(), content.len());
+            }
+            blob.push_str(&format!("{role}: {content}\n\n"));
+        }
+        if blob.len() > SUMMARY_INPUT_CAP {
+            let half = SUMMARY_INPUT_CAP / 2;
+            blob = format!(
+                "{}\n[...middle omitted...]\n{}",
+                blob.chars().take(half).collect::<String>(),
+                blob.chars().skip(blob.chars().count().saturating_sub(half)).collect::<String>()
+            );
+        }
+        let ask = vec![json!({"role": "user", "content": format!("{SUMMARY_PROMPT}{blob}")})];
+        let reply = self.chat(thread, &ask, &json!([]), control)?;
+        let summary = reply["content"].as_str().unwrap_or("").trim().to_string();
+        if summary.is_empty() {
+            return Err("compaction returned an empty summary".into());
+        }
+        let mut tree = self.load_tree(thread);
+        // Commit the not-yet-persisted tail first: compaction may only cover
+        // messages that are safely in the tree (read_history / rewind reach
+        // them through the covered branch).
+        if checkpoint.history.len() > checkpoint.tree_base {
+            tree.append(&checkpoint.history[checkpoint.tree_base..]);
+        }
+        // Keep the system root verbatim; everything else is covered.
+        let keep = tree.nodes.first().filter(|n| n.message["role"] == "system").map(|n| n.id.clone()).unwrap_or_default();
+        tree.append_summary(
+            json!({"role": "user", "content": format!("[Compacted conversation summary]\n{summary}\n\n[Earlier tool outputs and replies were removed from context. Call read_history with a tool_call_id to retrieve a tool output.]")}),
+            &keep,
+        );
+        self.save_tree(thread, &tree)?;
+        checkpoint.history = tree.materialize();
+        self.refresh_system(&mut checkpoint.history);
+        checkpoint.tree_base = checkpoint.history.len();
+        checkpoint.tree_leaf = tree.leaf.clone();
+        // The summary call's huge prompt must not retrigger compaction; the
+        // next real call overwrites this with the true value.
+        if let Some(entry) = self.usage.lock().unwrap().get_mut(thread) {
+            entry.last_prompt = (summary.len() / 4 + 1024) as u64;
+        }
+        Ok(())
+    }
+
+    /// ④ read-back pointer: the original output of an earlier tool call,
+    /// looked up in the live history first, then every branch of the tree.
+    fn read_history(&self, thread: &str, history: &[Json], tool_call_id: &str) -> Result<Json, String> {
+        if tool_call_id.is_empty() {
+            return Err("read_history requires tool_call_id".into());
+        }
+        for message in history {
+            if message["tool_call_id"].as_str() == Some(tool_call_id) {
+                return Ok(json!({"output": message["content"].as_str().unwrap_or("")}));
+            }
+        }
+        let tree = self.load_tree(thread);
+        for node in &tree.nodes {
+            if node.message["tool_call_id"].as_str() == Some(tool_call_id) {
+                return Ok(json!({"output": node.message["content"].as_str().unwrap_or("")}));
+            }
+        }
+        Err(format!("no tool output recorded for tool_call_id {tool_call_id:?}"))
+    }
+
     fn run_loop(
         &self, run: &TurnRun, checkpoint: &mut ChatCheckpoint, gateway: &ToolGateway,
         view: &Json, wake: &Json,
@@ -923,15 +1108,30 @@ impl ChatRunner {
                 if checkpoint.model_steps >= max_steps {
                     return Err(("TurnLimitExceeded".into(), format!("model-step limit {max_steps} reached for this turn")));
                 }
+                let thread = run.context_ref.as_deref().unwrap_or(&run.run_id);
+                if self.over_threshold(thread) {
+                    match self.compact(thread, checkpoint, &gateway.control) {
+                        Ok(()) => {
+                            self.compact_failures.store(0, Ordering::SeqCst);
+                            self.save_checkpoint(run, checkpoint, gateway)?;
+                        }
+                        // A failed compaction must not kill the turn: continue
+                        // uncompacted and let any provider error surface; the
+                        // breaker stops hammering after 3 failures.
+                        Err(_) => {
+                            self.compact_failures.fetch_add(1, Ordering::SeqCst);
+                        }
+                    }
+                }
                 checkpoint.model_steps += 1;
                 self.save_checkpoint(run, checkpoint, gateway)?;
-                let thread = run.context_ref.as_deref().unwrap_or(&run.run_id);
-                let message = match self.chat(thread, &checkpoint.history, &tools, &gateway.control) {
+                let wire = mask_old_tool_outputs(&checkpoint.history);
+                let message = match self.chat(thread, &wire, &tools, &gateway.control) {
                     Ok(message) => message,
                     Err(e) if looks_like_effort_error(&e) && self.configured_effort()
                         && !self.effort_fallback_used.swap(true, Ordering::SeqCst) => {
                         self.effort_max.store(true, Ordering::SeqCst);
-                        self.chat(thread, &checkpoint.history, &tools, &gateway.control).map_err(|e| ("ChatError".into(), e))?
+                        self.chat(thread, &wire, &tools, &gateway.control).map_err(|e| ("ChatError".into(), e))?
                     }
                     Err(e) => return Err(("ChatError".into(), e)),
                 };
@@ -965,7 +1165,19 @@ impl ChatRunner {
                     checkpoint.pending_external = Some(call_id.clone());
                     self.save_checkpoint(run, checkpoint, gateway)?;
                 }
-                let receipt = if self.bound.names().contains(name) {
+                let thread = run.context_ref.as_deref().unwrap_or(&run.run_id);
+                let receipt = if name == "read_history" {
+                    match self.read_history(thread, &checkpoint.history, args["tool_call_id"].as_str().unwrap_or("")) {
+                        Ok(result) => teamagents_core::models::Receipt {
+                            action_id: call_id.clone(), ok: true, kind: teamagents_core::models::ActionKind::CompleteTask,
+                            result, error: None,
+                        },
+                        Err(e) => teamagents_core::models::Receipt {
+                            action_id: call_id.clone(), ok: false, kind: teamagents_core::models::ActionKind::CompleteTask,
+                            result: json!({}), error: Some(e),
+                        },
+                    }
+                } else if self.bound.names().contains(name) {
                     let _execution = gateway.control.enter().map_err(|e| ("TurnInterrupted".into(), e))?;
                     match self.bound.call(name, &args).expect("bound tool has a client") {
                         Ok(output) => teamagents_core::models::Receipt {
@@ -983,7 +1195,7 @@ impl ChatRunner {
                 let waiting = name == "wait_for_tasks" && receipt.result["waiting"].as_bool().unwrap_or(false);
                 let step_limit = receipt.error.as_deref().map(|e| e.contains("step limit")).unwrap_or(false);
                 let content = if receipt.ok { receipt.result.to_string() } else { json!({"error":receipt.error}).to_string() };
-                checkpoint.history.push(json!({"role":"tool", "tool_call_id":call_id, "content":content}));
+                checkpoint.history.push(json!({"role":"tool", "tool_call_id":call_id, "content":cap_tool_output(content)}));
                 if approval || waiting || step_limit {
                     let remaining = pending_tool_calls(&checkpoint.history);
                     fill_unanswered_tool_calls(&mut checkpoint.history, &remaining, &[], "TurnPaused");
@@ -1044,12 +1256,7 @@ impl ChatRunner {
                     "content":"Previous turn ended without a recorded result; outcome unknown. Inspect before retrying."}));
             }
         }
-        let instructions = self.agent["instructions"].as_str().unwrap_or("");
-        if checkpoint.history.first().map(|m| m["role"] == "system").unwrap_or(false) {
-            checkpoint.history[0]["content"] = json!(self.system_prompt());
-        } else if !instructions.is_empty() || !self.context.is_empty() {
-            checkpoint.history.insert(0, json!({"role":"system", "content":self.system_prompt()}));
-        }
+        self.refresh_system(&mut checkpoint.history);
         // New turns/explicit resumes need their new input before examining an
         // old final assistant message from the preceding turn/segment.
         if fresh || resumed {
@@ -1374,7 +1581,8 @@ mod tests {
         // a plain new_input wake adds no wake block
         assert!(!render_view(&view, &json!({"reason": "new_input"}), None).contains("<wake"));
         // tool payload: team tools always, execution tools per binding
-        assert_eq!(tools_payload(&[], (false, false), &[]).as_array().unwrap().len(), TEAM_TOOL_DOCS.len());
+        // +1: read_history is runtime-provided, not a capability binding
+        assert_eq!(tools_payload(&[], (false, false), &[]).as_array().unwrap().len(), TEAM_TOOL_DOCS.len() + 1);
         let bound = tools_payload(&["files".into(), "shell".into(), "web".into()], (true, true), &[]);
         let names: Vec<&str> = bound
             .as_array()
@@ -1489,6 +1697,96 @@ mod tests {
         assert_eq!(tree.materialize().last().unwrap()["content"], "a1-alt");
         assert!(tree.rewind_to(Some("n999")).is_err());
         assert_eq!(tree.rewind_to(None).unwrap(), 0);
+    }
+
+    #[test]
+    fn cap_tool_output_keeps_head_and_tail() {
+        let short = "x".repeat(100);
+        assert_eq!(cap_tool_output(short.clone()), short);
+        let long = format!("{}MID{}", "H".repeat(30_000), "T".repeat(30_000));
+        let capped = cap_tool_output(long);
+        assert!(capped.starts_with('H') && capped.ends_with('T'));
+        assert!(capped.contains("chars truncated"));
+        assert!(capped.len() < 51_000, "cap plus marker stays near the cap");
+        assert!(!capped.contains("MID"));
+    }
+
+    #[test]
+    fn mask_old_tool_outputs_masks_beyond_trailing_budget() {
+        let big = "x".repeat(MASK_KEEP_RECENT + 1_000);
+        let history = vec![
+            json!({"role":"system","content":"s"}),
+            json!({"role":"user","content":"u"}),
+            json!({"role":"assistant","content":null,"tool_calls":[{"id":"old","type":"function","function":{"name":"shell","arguments":"{}"}}]}),
+            json!({"role":"tool","tool_call_id":"old","content":big}),
+            json!({"role":"assistant","content":null,"tool_calls":[{"id":"new","type":"function","function":{"name":"shell","arguments":"{}"}}]}),
+            json!({"role":"tool","tool_call_id":"new","content":"fresh"}),
+        ];
+        let masked = mask_old_tool_outputs(&history);
+        assert!(masked[3]["content"].as_str().unwrap().contains("tool_call_id=\"old\""), "old output masked with its id");
+        assert_eq!(masked[5]["content"], "fresh", "latest answers never masked");
+        // a small old output within budget stays verbatim
+        let small = vec![
+            json!({"role":"assistant","content":null,"tool_calls":[{"id":"a","type":"function","function":{"name":"shell","arguments":"{}"}}]}),
+            json!({"role":"tool","tool_call_id":"a","content":"tiny"}),
+        ];
+        assert_eq!(mask_old_tool_outputs(&small)[1]["content"], "tiny");
+    }
+
+    #[test]
+    fn summary_node_hides_covered_range_but_tree_keeps_it() {
+        let mut tree = ChatTree::default();
+        tree.append(&[json!({"role":"system","content":"s"})]);
+        tree.append(&[json!({"role":"user","content":"u1"}), json!({"role":"assistant","content":"a1"})]);
+        tree.append(&[json!({"role":"user","content":"u2"}), json!({"role":"assistant","content":"a2"})]);
+        // compact: keep the system root, cover the rest
+        tree.append_summary(json!({"role":"user","content":"[Compacted conversation summary] SUM"}), "n1");
+        assert_eq!(tree.materialize().len(), 2, "view = system + summary");
+        assert_eq!(tree.materialize()[1]["content"].as_str().unwrap(), "[Compacted conversation summary] SUM");
+        // new turns chain on top of the summary
+        tree.append(&[json!({"role":"assistant","content":"a3"})]);
+        let view = tree.materialize();
+        assert_eq!(view.len(), 3);
+        assert_eq!(view[2]["content"], "a3");
+        // rewinding onto the covered branch restores the full history
+        assert_eq!(tree.rewind_to(Some("n3")).unwrap(), 3, "u1/a1 visible again");
+        assert_eq!(tree.materialize()[2]["content"], "a1");
+        // skip_to: "" covers back to the root (no system kept)
+        let mut bare = ChatTree::default();
+        bare.append(&[json!({"role":"user","content":"u"})]);
+        bare.append_summary(json!({"role":"user","content":"SUM"}), "");
+        assert_eq!(bare.materialize().len(), 1);
+    }
+
+    #[test]
+    fn read_history_finds_outputs_in_history_and_tree() {
+        let _env = crate::env_lock();
+        let root = std::env::temp_dir().join(format!("ta-readhist-{}", std::process::id()));
+        std::env::set_var("XDG_STATE_HOME", root.join("state"));
+        std::fs::create_dir_all(root.join("state")).unwrap();
+        let runner = ChatRunner::new(
+            &json!({"id": "lead", "name": "L", "role": "leader"}),
+            ModelProfile {
+                provider: "openai".into(), protocol: "openai".into(), model: "test".into(),
+                base_url: None, api_key_env: None, timeout: 30, max_retries: 0,
+                generation_options: Default::default(), context_window: None,
+            },
+            None,
+            crate::runtime::Notify::new(crate::core_client::CoreClient::open(":memory:", "readhist-test").unwrap()),
+            crate::bound::BoundTools { tools: vec![] },
+            vec![],
+            (false, false),
+        );
+        let live = vec![json!({"role":"tool","tool_call_id":"c1","content":"live output"})];
+        assert_eq!(runner.read_history("t", &live, "c1").unwrap()["output"], "live output");
+        // committed to the tree but no longer in the live view (compacted away)
+        let mut tree = runner.load_tree("t");
+        tree.append(&[json!({"role":"tool","tool_call_id":"c2","content":"archived output"})]);
+        runner.save_tree("t", &tree).unwrap();
+        assert_eq!(runner.read_history("t", &live, "c2").unwrap()["output"], "archived output");
+        assert!(runner.read_history("t", &live, "nope").is_err());
+        assert!(runner.read_history("t", &live, "").is_err());
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]

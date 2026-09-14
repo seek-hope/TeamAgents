@@ -565,3 +565,25 @@ streamable HTTP 最小语义（POST、JSON 与 SSE 两种响应、mcp-session-id
 drop_runner 使下一回合生效（在跑回合只摘缓存不 close，避免打断落成 BLOCKED）。
 出口：worker `model`/`set_model`、TUI `/model`（无参列表，覆盖值标 *）、--plain `model`。
 证据：session/model_override/worker/app 各层测试。
+
+## D-28 上下文自动压缩：分层管线 + 读回指针（2026-09-14）
+
+用户从调研候选中选定 ①+④（依据：arXiv 2508.21433 遮蔽≈摘要的效率实证、Codex/Claude Code
+工业配方、Git Context Controller 的读回思想）。落法（只对 chat 运行时；codex 成员由
+app-server 自行压缩，为已知天花板）：
+
+1. **L0 写入时限流**：单个工具结果 >50k 字符时保头尾截断（chat.rs::cap_tool_output）。
+2. **L1 视图遮蔽**：发给模型的线稿（非 checkpoint/树）里，尾部 16k 字符预算之外的旧
+   tool 输出替换为占位符（含 tool_call_id 指针）；最后一个 assistant 之后的未答工具结果
+   永不遮蔽。
+3. **L2 阈值摘要**：`usage.last_prompt > 0.9 × ModelProfile.context_window` 且回合内无
+   待答工具调用时，调一次模型生成六段式交接摘要（目标/进展/文件/错误/任务/下一步），
+   作为带 `skip_to` 的摘要节点提交到 ChatTree——materialize 跳过被覆盖区间，但**覆盖
+   内容留在树里**（压缩无损：/rewind 回旧分支仍见全文）；连续失败 3 次熔断本 runner。
+   关键不变量：压缩前先把未落树的尾部提交进树（覆盖的对象必须已在树中）。
+4. **④ read_history 工具**：chat 运行时成员恒有（非能力绑定）；按 tool_call_id 查活
+   历史→全树分支，取回被遮蔽/覆盖的原始输出。
+出口：自动生效，无命令；触发信号复用 D-24 的 usage 采集。可调常量（50k/16k/0.9/100k）
+在 chat.rs 顶部，均为 ponytail 注释的已知天花板。
+证据：chat.rs 单测 4 项（截断/遮蔽/摘要节点+rewind/read_history）、chat_e2e.rs
+compaction_triggers_on_threshold_and_read_history_recovers_output。

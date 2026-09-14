@@ -253,6 +253,19 @@ impl AgentRunner for PanicRunner {
     fn deliver_mid_turn(&self, _run_id: &str, _items: Vec<Json>) {}
 }
 
+
+fn tool_call_with_usage(call_id: &str, tool: &str, args: Json, prompt: u64) -> Json {
+    let mut response = tool_call_response(call_id, tool, args);
+    response["usage"] = json!({"prompt_tokens": prompt, "completion_tokens": 10, "total_tokens": prompt + 10});
+    response
+}
+
+fn text_with_usage(text: &str, prompt: u64) -> Json {
+    let mut response = text_response(text);
+    response["usage"] = json!({"prompt_tokens": prompt, "completion_tokens": 10, "total_tokens": prompt + 10});
+    response
+}
+
 // ---- tests -----------------------------------------------------------------
 
 /// F-3: a once approval must be found again when the model re-sends the call
@@ -1063,4 +1076,70 @@ fn review_completed_checkpoint_restores_reply_without_another_model_call() {
     assert_eq!(outcome.reply_text.as_deref(), Some("original final reply"));
     assert_eq!(api.calls(), 1);
     restored.close();
+}
+
+/// D-28 ①+④: over-threshold usage triggers a handoff compaction (summary
+/// replaces history, originals stay in the tree) and the model can fetch a
+/// covered tool output back with read_history.
+#[test]
+fn compaction_triggers_on_threshold_and_read_history_recovers_output() {
+    let _env = env_guard("chat-compact");
+    let server = FakeOpenAi::start(|_body, index| match index {
+        // first call returns a shell call plus usage way over the 90% of
+        // context_window = 10_000 threshold
+        0 => (200, tool_call_with_usage("call-1", "shell", shell_args(), 10_000)),
+        // the compaction summary call
+        1 => (200, text_with_usage("SUMMARY: ran shell, got output", 400)),
+        // after compaction the model asks for the covered tool output back
+        2 => (200, tool_call_with_usage("call-2", "read_history", json!({"tool_call_id": "call-1"}), 500)),
+        _ => (200, text_with_usage("final answer", 500)),
+    });
+    let spec = json!({
+        "leader_id": "leader",
+        "agents": [agent_json("leader", "leader", &["shell"])],
+    });
+    let core = core_with_spec("s-compact", spec.clone());
+    let agent = agent_json("leader", "leader", &["shell"]);
+    let mut prof = profile(&server.base_url(), "openai", json!({}), 0);
+    prof.context_window = Some(10_000);
+    let runner = chat_runner(&core, &agent, prof, "/tmp");
+    let (executor, tool_calls) = recording_executor();
+    let policy = PermissionPolicy {
+        mode: "approved_scope".into(),
+        pre_authorized: ["shell"].iter().map(|s| s.to_string()).collect(),
+        require_approval: Default::default(),
+    };
+    let runtime = start_runtime(&core, runner, "leader", policy, RuntimeLimits::default(), executor);
+
+    runtime.user_message("run the shell", false).unwrap();
+    assert!(
+        wait_for(
+            || {
+                let rows = runs(&core);
+                rows.iter().any(|r| r.status == TurnStatus::Completed)
+                    && !rows.iter().any(|r| r.status.is_active())
+            },
+            15_000
+        ),
+        "the turn completes through compaction and readback"
+    );
+    assert_eq!(server.calls(), 4, "tool call -> summary -> read_history -> final");
+
+    // call 1 is the summary request: the compactor saw the real tool output
+    let summary_request = server.body(1)["messages"][0]["content"].as_str().unwrap_or("").to_string();
+    assert!(summary_request.contains("compacting an agent conversation"), "summary prompt, got: {}", &summary_request[..summary_request.len().min(120)]);
+    assert!(summary_request.contains("executed"), "compactor input includes the tool output");
+
+    // call 2 runs on the compacted history: summary present, output gone
+    let compacted = server.body(2).to_string();
+    assert!(compacted.contains("SUMMARY: ran shell"), "summary carried into the wire history");
+    assert!(!compacted.contains("\"executed\""), "original tool output compacted away: {}", &compacted[..compacted.len().min(400)]);
+
+    // call 3 carries the read_history result: the covered output was recovered
+    let recovered = server.body(3).to_string();
+    assert!(recovered.contains("executed"), "read_history returned the original output");
+
+    // shell actually ran once; read_history never reaches the executor
+    let called = tool_calls.lock().unwrap().clone();
+    assert_eq!(called.iter().map(|(t, _)| t.as_str()).collect::<Vec<_>>(), vec!["shell"]);
 }
