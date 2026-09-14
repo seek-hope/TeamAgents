@@ -181,3 +181,91 @@ fn drop_runner_keeps_an_inflight_turn_alive() {
     assert!(idle_closed.load(Ordering::SeqCst), "idle runner closed on drop");
     h.runtime.close();
 }
+
+/// D-29: /model overrides persist across reopening the same session; restoring
+/// the default removes the persisted entry.
+#[test]
+fn model_overrides_survive_session_reopen() {
+    let home = isolated_state_home("model-override-reopen");
+    let cwd = home.join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let open = || {
+        let scripts: HashMap<String, Vec<Step>> =
+            HashMap::from([("leader".to_string(), vec![Step::End]), ("cod".to_string(), vec![Step::End])]);
+        open_session(OpenOptions {
+            cwd: Some(cwd.clone()),
+            session_id: Some("proj_model_reopen".into()),
+            full_auto: false,
+            initial_spec: Some(spec()),
+            catalog: Some(catalog()),
+            scripts: Some(scripts),
+        })
+        .expect("open")
+    };
+    let effective = |opened: &teamagents_engine::session::OpenedSession, id: &str| {
+        let report = opened.model_report();
+        report["agents"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .find(|a| a["agent_id"] == id)
+            .unwrap_or_else(|| panic!("agent {id} in {report}"))
+    };
+
+    let first = open();
+    first.set_model_selection("leader", Some("claude".into()), None, Some("low".into())).expect("set");
+    first.close();
+
+    let second = open();
+    let leader = effective(&second, "leader");
+    assert_eq!(leader["model_profile"], json!("claude"), "{leader}");
+    assert_eq!(leader["model"], json!("claude-test"));
+    assert_eq!(leader["effort"], json!("low"));
+    assert_eq!(leader["overridden"], json!(true));
+    assert_eq!(effective(&second, "cod")["overridden"], json!(false), "unset member stays default");
+
+    second.set_model_override("leader", None, None).expect("restore default");
+    second.close();
+    let third = open();
+    let leader = effective(&third, "leader");
+    assert_eq!(leader["model_profile"], json!("m"), "{leader}");
+    assert_eq!(leader["overridden"], json!(false));
+    third.close();
+}
+
+/// Overrides referencing members/profiles that no longer exist (or that violate
+/// the codex/effort rules) are dropped at load instead of failing the open.
+#[test]
+fn stale_model_overrides_are_dropped_on_open() {
+    let home = isolated_state_home("model-override-stale");
+    let cwd = home.join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let dir = home.join("teamagents/sessions/proj_model_stale");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("model_overrides.json"),
+        serde_json::to_string(&json!({
+            "ghost": {"profile": null, "model": "x", "effort": null},
+            "cod": {"profile": "claude", "model": null, "effort": null},
+            "leader": {"profile": "gone", "model": null, "effort": null},
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let scripts: HashMap<String, Vec<Step>> =
+        HashMap::from([("leader".to_string(), vec![Step::End]), ("cod".to_string(), vec![Step::End])]);
+    let opened = open_session(OpenOptions {
+        cwd: Some(cwd),
+        session_id: Some("proj_model_stale".into()),
+        full_auto: false,
+        initial_spec: Some(spec()),
+        catalog: Some(catalog()),
+        scripts: Some(scripts),
+    })
+    .expect("open despite stale overrides");
+    let report = opened.model_report();
+    let agents = report["agents"].as_array().cloned().unwrap_or_default();
+    assert!(agents.iter().all(|a| a["overridden"] == json!(false)), "{report}");
+    opened.close();
+}

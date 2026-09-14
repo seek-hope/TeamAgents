@@ -59,14 +59,38 @@ type UsageProbe = Box<dyn Fn() -> Json + Send + Sync>;
 type UsageProbes = Arc<Mutex<HashMap<String, UsageProbe>>>;
 
 /// Feature 5 (/model): per-member session-level model/effort override. Either
-/// field left None falls back to the member's ModelProfile.
-#[derive(Clone, Debug, Default)]
+/// field left None falls back to the member's ModelProfile. Persisted per
+/// session (D-29), so a reopened session keeps its /model choices.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct ModelOverride {
     pub profile: Option<String>,
     pub model: Option<String>,
     pub effort: Option<String>,
 }
 pub type ModelOverrides = Arc<Mutex<HashMap<String, ModelOverride>>>;
+
+/// `sessions/<id>/model_overrides.json` (D-29).
+fn overrides_path(session_id: &str) -> PathBuf {
+    session_paths(session_id).base.join("model_overrides.json")
+}
+
+/// Load persisted overrides, dropping entries that no longer validate against
+/// the current spec/catalog (members or profiles may have changed since).
+fn load_model_overrides(session_id: &str, catalog: &UserConfig, agents: &[AgentSpec]) -> HashMap<String, ModelOverride> {
+    let Ok(text) = std::fs::read_to_string(overrides_path(session_id)) else { return HashMap::new() };
+    let parsed: HashMap<String, ModelOverride> = serde_json::from_str(&text).unwrap_or_default();
+    parsed
+        .into_iter()
+        .filter(|(id, ov)| {
+            let Some(agent) = agents.iter().find(|a| &a.id == id) else { return false };
+            let Some(profile) = catalog.models.get(ov.profile.as_ref().unwrap_or(&agent.model_profile)) else { return false };
+            if ov.profile.is_some() && agent.runtime_kind == RuntimeKind::Codex && profile.protocol != "openai" {
+                return false;
+            }
+            ov.effort.as_ref().is_none_or(|e| model_efforts(&profile.protocol).contains(&e.as_str()))
+        })
+        .collect()
+}
 
 pub struct OpenedSession {
     pub runtime: Arc<Runtime>,
@@ -257,6 +281,7 @@ impl OpenedSession {
                 overrides.insert(agent_id.to_string(), ModelOverride { profile, model, effort });
             }
         }
+        self.persist_model_overrides()?;
         self.runtime.drop_runner(agent_id);
         Ok(self.effective_model(agent))
     }
@@ -304,6 +329,17 @@ impl OpenedSession {
             }
         }
         Ok(json!({"session_id":self.session_id, "provider":provider, "models":models, "errors":errors}))
+    }
+
+    /// Atomic rewrite of `model_overrides.json` (tmp + rename).
+    fn persist_model_overrides(&self) -> Result<(), String> {
+        let map = self.model_overrides.lock().unwrap();
+        let path = overrides_path(&self.session_id);
+        let tmp = path.with_extension("tmp");
+        let text = serde_json::to_string_pretty(&*map).map_err(|e| e.to_string())?;
+        std::fs::write(&tmp, text)
+            .and_then(|_| std::fs::rename(&tmp, &path))
+            .map_err(|e| format!("persist model overrides: {e}"))
     }
 
     pub fn close(&self) {
@@ -533,7 +569,8 @@ pub fn open_session(opts: OpenOptions) -> Result<Arc<OpenedSession>, String> {
         let barriers: BarrierRegistry = Arc::new(Mutex::new(HashMap::new()));
         let notify = Notify::new(core.clone());
         let usage_probes: UsageProbes = Arc::new(Mutex::new(HashMap::new()));
-        let model_overrides: ModelOverrides = Arc::new(Mutex::new(HashMap::new()));
+        let model_overrides: ModelOverrides =
+            Arc::new(Mutex::new(load_model_overrides(&session_id, &catalog, &agents)));
         let make_runner: RunnerFactory = make_runner_factory(
             core.clone(),
             notify.clone(),

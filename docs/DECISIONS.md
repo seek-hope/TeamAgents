@@ -565,7 +565,7 @@ MCP-Protocol-Version 回带、多行 SSE 按事件拼接并匹配请求 ID、Bea
 
 用户确认补充（对照 Codex CLI /model，审查 A6）；本轮追加供应商选择和交互式选择器。
 会话级 ModelOverride（profile/model/effort），
-不写回 TeamSpec、不落盘（注释留持久化路径）；runner 工厂构建时应用覆盖，设置后
+不写回 TeamSpec（落盘由 D-29 追加）；runner 工厂构建时应用覆盖，设置后
 drop_runner 使下一回合生效（在跑回合保持 runner 可达并标记配置过期；取消、批准与补充输入
 仍能找到它，取消信号也直接撤销 TurnControl）。
 出口：worker `model`/`set_model`、TUI `/model`（成员 → 供应商 → 模型 → 思考强度）、
@@ -605,3 +605,14 @@ app-server 自行压缩，为已知天花板）：
 在 chat.rs 顶部，均为 ponytail 注释的已知天花板。
 证据：chat.rs 单测 4 项（截断/遮蔽/摘要节点+rewind/read_history）、chat_e2e.rs
 compaction_triggers_on_threshold_and_read_history_recovers_output。
+
+## D-29 /model 覆盖随会话落盘（2026-09-14）
+
+用户明确要求：会话内调整的模型在重开该会话时保留，取代 D-27 的「不落盘、重开恢复默认」边界。
+覆盖存 `sessions/<id>/model_overrides.json`（tmp+rename 原子写，每次 set 全量重写）；
+打开会话时加载并按当时的 spec/catalog 重新校验——成员不存在、profile 消失、
+Codex 成员选了非 OpenAI 兼容 profile、档位超出协议白名单的条目丢弃（配置可能已变），
+不让陈旧覆盖阻断会话打开。恢复默认即删除对应条目。在线发现的模型本身仍不落盘：
+重开后若该模型不在 config.toml，覆盖条目保留 model 名，连接复用所选 profile。
+证据：model_override::model_overrides_survive_session_reopen（设置→重开生效→恢复默认→重开还原）、
+stale_model_overrides_are_dropped_on_open（未知成员/未知 profile/越规条目全部丢弃）。
