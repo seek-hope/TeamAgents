@@ -346,7 +346,17 @@ impl CodexRunner {
         );
         server.start()?;
         let reply = self.core.call_in_session("get_codex_thread", json!({"agent_id": self.opts.agent_id}))?;
-        *self.thread_id.lock().unwrap() = reply.get("thread_id").and_then(|v| v.as_str()).map(str::to_string);
+        let thread = reply.get("thread_id").and_then(|v| v.as_str()).map(str::to_string);
+        if let Some(id) = &thread {
+            let mut params = json!({"threadId": id, "cwd": self.opts.workdir.to_string_lossy(),
+                "approvalPolicy": self.opts.approval_policy, "sandbox": self.opts.sandbox});
+            if let Some(model) = &self.opts.model { params["model"] = json!(model); }
+            if let Some((_, provider)) = self.opts.config_overrides.iter().rev().find(|(key, _)| key == "model_provider") {
+                params["modelProvider"] = provider.clone();
+            }
+            if let Err(e) = server.call("thread/resume", params, 60_000) { server.close(); return Err(e); }
+        }
+        *self.thread_id.lock().unwrap() = thread;
         *self.server.lock().unwrap() = Some(server.clone());
         Ok(server)
     }
@@ -599,6 +609,7 @@ impl AgentRunner for CodexRunner {
             "approvalsReviewer": "user",
         });
         let effort = self.opts.effort.clone();
+        if let Some(model) = &self.opts.model { params["model"] = json!(model); }
         if let Some(value) = &effort {
             params["effort"] = json!(value);
         }

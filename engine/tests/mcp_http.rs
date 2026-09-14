@@ -23,6 +23,7 @@ struct Seen {
     method: String,
     session: Option<String>,
     authorization: Option<String>,
+    protocol: Option<String>,
 }
 
 const SESSION_ID: &str = "ta-test-session";
@@ -70,6 +71,8 @@ fn handle(stream: TcpStream, seen: Arc<Mutex<Vec<Seen>>>, mode: Mode) {
             record.session = Some(v.to_string());
         } else if let Some(v) = value("authorization:") {
             record.authorization = Some(v.to_string());
+        } else if let Some(v) = value("mcp-protocol-version:") {
+            record.protocol = Some(v.to_string());
         }
     }
     let mut body = vec![0u8; content_length];
@@ -88,7 +91,8 @@ fn handle(stream: TcpStream, seen: Arc<Mutex<Vec<Seen>>>, mode: Mode) {
             "200 OK",
             "content-type: application/json\r\nmcp-session-id: ta-test-session\r\n",
             &json!({"jsonrpc": "2.0", "id": id, "result": {
-                "protocolVersion": "2025-06-18",
+                // Negotiate a different supported version to catch hardcoding.
+                "protocolVersion": "2025-03-26",
                 "capabilities": {"tools": {}},
                 "serverInfo": {"name": "fake-http-mcp", "version": "0"},
             }})
@@ -122,7 +126,8 @@ fn handle(stream: TcpStream, seen: Arc<Mutex<Vec<Seen>>>, mode: Mode) {
                 &mut stream,
                 "200 OK",
                 "content-type: text/event-stream\r\n",
-                &format!("event: message\r\ndata: {payload}\r\n\r\n"),
+                &format!("data: {{\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\"}}\r\n\r\nevent: message\r\n{}\r\n\r\ndata: {{\"id\":999,\"result\":\"unrelated\"}}\r\n\r\n",
+                    serde_json::to_string_pretty(&payload).unwrap().lines().map(|line| format!("data: {line}")).collect::<Vec<_>>().join("\r\n")),
             )
         }
         _ => respond(
@@ -174,10 +179,11 @@ fn http_transport_binds_and_calls_tools() {
     let seen = seen.lock().unwrap();
     assert!(seen.iter().any(|r| r.method == "initialize"), "{seen:?}");
     assert!(seen.iter().any(|r| r.method == "notifications/initialized"), "{seen:?}");
-    for method in ["tools/list", "tools/call"] {
+    for method in ["notifications/initialized", "tools/list", "tools/call"] {
         let request = seen.iter().find(|r| r.method == method).unwrap_or_else(|| panic!("{method} was called"));
         assert_eq!(request.session.as_deref(), Some(SESSION_ID), "{method} carries the session id");
         assert_eq!(request.authorization.as_deref(), Some("Bearer test-secret"), "{method} carries the token");
+        assert_eq!(request.protocol.as_deref(), Some("2025-03-26"), "{method} carries the negotiated version");
     }
 }
 

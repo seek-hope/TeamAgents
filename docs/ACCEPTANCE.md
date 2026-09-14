@@ -52,6 +52,13 @@
 
 ## 当前 Rust 实现对照
 
+2026-09-14 更新：树历史/检查点恢复、取消与迟到压缩、工具输出索引、MCP HTTP 协议、
+Skills YAML 描述共 7 项缺陷已修复；另完成 `/model` 成员/供应商/模型/思考强度选择器和
+slash 菜单末项显示修复；模型候选合并本机配置和供应商在线目录，后台获取不阻塞操作。
+离线测试 **core 43 / engine 116 / tui 70** 通过，真终端冒烟、
+点击及模型选择检查通过。测试名、复跑命令和边界见
+[`修复台账`](../review/fix-notes-rust-updates-2026-09-14.md)。
+
 2026-09-13 追加审查的 6 项修复与 10 项新增回归检查见
 [`review/fix-notes-rust-followup-2026-09-13.md`](../review/fix-notes-rust-followup-2026-09-13.md)，
 补充 T8/T21 的真实 Chat 崩溃恢复、T11 配置生效、T19 MCP 模型调用、T22 运行中 shell
@@ -88,7 +95,8 @@
 | T23 | 🔶 | `tools.rs::bwrap_argv_matches_python_and_runs_isolated`（真实 bwrap 运行）+ 越界路径单测 + `tools_sandbox.rs::guard_url_matches_the_python_guard_table`（32 条与 Python 判定表逐行差分）+ `shell_survives_output_larger_than_the_pipe_buffer`；穿越/符号链接用例未系统移植 |
 | T24 | 🔶 | 复用的 `context_epoch` 机制在核心；Rust 无专属用例 |
 
-**Rust 版尚未移植（⚠）**：deepagents 子代理（`general-purpose`）、MCP 的 http/sse 传输；
+**Rust 版尚未移植（⚠）**：deepagents 子代理（`general-purpose`）、旧式独立 SSE MCP 传输；
+MCP Streamable HTTP（含 SSE 响应）已实现，见 D-25 与 `engine/tests/mcp_http.rs`。
 TUI 为 Rust 原生设计（D-20），不再追求与 Textual 逐像素一致（不复刻滚动条字形与页脚溢出滚动）。
 其余保留差异（部分覆盖而非缺失）见 `docs/DECISIONS.md` D-21。
 台账与取舍见 `docs/RECONSTRUCT.md`、`docs/DECISIONS.md`（D-17/D-19/D-20/D-21）。

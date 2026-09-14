@@ -574,6 +574,49 @@ fn slash_command_menu_lists_navigates_and_runs() {
     let text = frame_text(terminal.backend().buffer());
     assert!(text.contains("Commands"), "menu title missing");
     assert!(text.contains("/settings") && text.contains("settings overlay"), "menu entries missing");
+    assert!(text.contains("/model"), "the seventh command must be visible");
+    for _ in 0..20 {
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    }
+    assert_eq!(app.slash_index, app.slash_matches().len() - 1);
+    for height in [20, 36] {
+        let mut terminal = Terminal::new(TestBackend::new(120, height)).unwrap();
+        terminal.draw(|f| ui::render(f, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let text = frame_text(buffer);
+        assert!(text.contains("/model"), "selection must scroll into view: {text}");
+        let row = text.lines().position(|l| l.contains("/model")).unwrap();
+        let selected = (0..120).any(|x| buffer[(x, row as u16)].symbol() == "/" && buffer[(x, row as u16)].bg == teamagents_tui::theme::HOVER_BG);
+        assert!(selected && row < height as usize);
+    }
+}
+
+#[test]
+fn model_picker_keeps_selected_model_visible_and_renders_both_languages() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    for lang in ["en", "zh-CN"] {
+        let mut app = parity_app();
+        app.lang = lang;
+        let profiles: Vec<_> = (0..25).map(|i| json!({"id":format!("p{i:02}"), "provider":"vendor",
+            "model":format!("model-{i:02}"), "protocol":"openai", "efforts":["low","medium","high"]})).collect();
+        app.show_models(Ok(json!({"agents":[{"agent_id":"leader", "name":"Leader"}], "profiles":profiles})));
+        for _ in 0..2 { app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)); }
+        for _ in 0..40 { app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)); }
+        assert_eq!(app.model_picker.as_ref().unwrap().index, 24);
+        for (width, height) in [(120,36),(60,20),(12,6),(1,1)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|f| ui::render(f, &mut app)).unwrap();
+            if width >= 60 {
+                let text = frame_text(terminal.backend().buffer());
+                assert!(text.contains("› model-24 (p24)"), "{text}");
+                assert!(text.contains(if lang == "en" { "Choose a model" } else { "选择模型" }), "{text}");
+                if lang == "en" {
+                    assert!(text.contains("Search:") && text.contains("Esc back/close"));
+                    assert!(!text.contains("搜索：") && !text.contains("返回/关闭"));
+                }
+            }
+        }
+    }
 }
 
 #[test]

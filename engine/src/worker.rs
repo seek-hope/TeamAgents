@@ -191,7 +191,9 @@ impl Worker {
                 let agent_id = params.get("agent_id").and_then(|v| v.as_str()).ok_or("agent_id required")?;
                 let model = params.get("model").and_then(|v| v.as_str()).map(str::to_string);
                 let effort = params.get("effort").and_then(|v| v.as_str()).map(str::to_string);
-                opened.set_model_override(agent_id, model, effort)
+                let profile = params.get("profile").and_then(|v| v.as_str()).map(str::to_string);
+                if profile.is_some() { opened.set_model_selection(agent_id, profile, model, effort) }
+                else { opened.set_model_override(agent_id, model, effort) }
             }
             // D-26 rewind/fork (pi-style tree history, leader conversation)
             "rewind_points" => Ok(self.current()?.rewind_points()?),
@@ -258,6 +260,20 @@ pub fn serve() -> i32 {
         let id = request.get("id").cloned().unwrap_or(Json::Null);
         let method = request.get("method").and_then(|v| v.as_str()).unwrap_or("").to_string();
         let params = request.get("params").cloned().unwrap_or(json!({}));
+        // Slow read-only discovery must not block cancellation, polling or close.
+        if method == "discover_models" {
+            match (worker.current(), params["provider"].as_str().map(str::to_string)) {
+                (Ok(opened), Some(provider)) => { std::thread::spawn(move || {
+                    match opened.discover_models(&provider) {
+                        Ok(result) => out(&json!({"id":id, "result":result})),
+                        Err(error) => out(&json!({"id":id, "error":error})),
+                    }
+                }); }
+                (Err(error), _) => out(&json!({"id":id, "error":error})),
+                (_, None) => out(&json!({"id":id, "error":"provider required"})),
+            }
+            continue;
+        }
         match worker.handle(&method, &params) {
             Ok(result) => out(&json!({"id": id, "result": result})),
             Err(e) => out(&json!({"id": id, "error": e})),

@@ -536,7 +536,8 @@ chat.rs 按 thread 累计 OpenAI/Anthropic 两种 usage 形状；codex 成员解
 
 方案 §12.1 本规划项落地。ToolBinding 加 `url`/`bearer_token_env_var`/`startup_timeout_s`/
 `tool_timeout_s`（全 optional）；mcp.rs 重构为 Transport 枚举，`connect_http` 实现
-streamable HTTP 最小语义（POST、JSON 与 SSE 两种响应、mcp-session-id 回带、Bearer 仅来自
+streamable HTTP 最小语义（POST、JSON 与 SSE 两种响应、mcp-session-id 与协商后的
+MCP-Protocol-Version 回带、多行 SSE 按事件拼接并匹配请求 ID、Bearer 仅来自
 环境变量）；bound.rs 按 transport 分发，"sse" 明确报错改用 "http"。
 天花板：不支持服务器主动推送（GET SSE 流）与会话终止 DELETE，遇到需要的服务再加。
 证据：engine/tests/mcp_http.rs 三项 + bound.rs 单测。
@@ -552,19 +553,34 @@ streamable HTTP 最小语义（POST、JSON 与 SSE 两种响应、mcp-session-id
    分支留在树里，可反复回退，不丢信息。leader 回合进行中拒绝 rewind（graft 天花板有注释）。
 3. `fork` = 新会话 = 同 TeamSpec（含拓扑补丁后的活 spec）+ leader 对话树复制；**团队事实
    （任务/回合/事件/共享空间）不复制，文件改动不回滚**——rewind/fork 只管对话记忆。
-4. 检查点一致性：checkpoint 记录 tree_base/tree_leaf，树提交先于 checkpoint 落盘；
-   rewind 后旧 checkpoint 因 leaf 失配自动作废。codex 成员不支持 rewind（历史在
+4. 检查点一致性：首次执行前固定旧线性历史的树迁移；checkpoint 记录 tree_base/tree_leaf
+   及待追加节点，按「检查点追加日志 → 原子替换树 → 清除日志」提交。恢复可幂等补齐
+   提交两侧的崩溃窗口。仅显式 rewind 的 rewind_epoch 变化使旧 checkpoint 作废；
+   其他无法恢复的失配报 OUTCOME_UNKNOWN，禁止丢弃动作身份重新执行。codex 成员不支持 rewind（历史在
    app-server 侧，trait 默认返回不支持；其原生 /fork 未接线，需要再说）。
 出口：worker `rewind_points`/`rewind`/`fork_session`、TUI `/rewind` `/fork`、--plain `rewind`。
 证据：chat.rs 树单测两项、engine/tests/fork_rewind.rs、tui app_tests 两项。
 
 ## D-27 会话内切换模型/档位（/model，2026-09-14）
 
-用户确认补充（对照 Codex CLI /model，审查 A6）。会话级 ModelOverride（model/effort），
+用户确认补充（对照 Codex CLI /model，审查 A6）；本轮追加供应商选择和交互式选择器。
+会话级 ModelOverride（profile/model/effort），
 不写回 TeamSpec、不落盘（注释留持久化路径）；runner 工厂构建时应用覆盖，设置后
-drop_runner 使下一回合生效（在跑回合只摘缓存不 close，避免打断落成 BLOCKED）。
-出口：worker `model`/`set_model`、TUI `/model`（无参列表，覆盖值标 *）、--plain `model`。
-证据：session/model_override/worker/app 各层测试。
+drop_runner 使下一回合生效（在跑回合保持 runner 可达并标记配置过期；取消、批准与补充输入
+仍能找到它，取消信号也直接撤销 TurnControl）。
+出口：worker `model`/`set_model`、TUI `/model`（成员 → 供应商 → 模型 → 思考强度）、
+原有手输参数与 --plain `model`。候选合并现有 config.toml 的 models 和供应商在线目录，按 provider 分组，
+同名模型以 profile 名区分；选 profile 一并切换地址、协议、认证环境变量及窗口配置。
+选择器支持搜索/粘贴、上下移动、Esc 返回、恢复默认，普通菜单显示完整命令，矮屏滚动到选中项。
+用户确认两种候选同时提供：进入供应商时配置候选立即可用，后台调用其 models 接口；
+OpenAI 兼容接口读取 data，Anthropic 支持 after_id 分页，同一地址/协议/认证的配置只请求一次。
+在线结果以已有 profile 为连接配置，再覆盖模型 ID；worker 专门并发处理只读 discover_models，
+不阻塞轮询、取消或关闭。失败保留配置候选并显示原因；迟到结果按会话和请求代次过滤。
+请求有超时/页数/响应大小上限，不落盘缓存；退出并重进供应商可重新获取。
+Codex 成员仅列 OpenAI 兼容配置，端点须支持 Responses API；重建连接时显式 thread/resume
+并覆盖 model/modelProvider，后续 turn/start 也带 model。Anthropic 的档位传到 output_config.effort。
+档位是否被具体模型接受仍由服务端校验，不承诺 provider 下所有模型能力相同。
+证据：session/model_override/worker/codex_contract/chat_e2e/app/render 各层测试及真终端 /model 在线模型检查。
 
 ## D-28 上下文自动压缩：分层管线 + 读回指针（2026-09-14）
 
@@ -583,6 +599,8 @@ app-server 自行压缩，为已知天花板）：
    关键不变量：压缩前先把未落树的尾部提交进树（覆盖的对象必须已在树中）。
 4. **④ read_history 工具**：chat 运行时成员恒有（非能力绑定）；按 tool_call_id 查活
    历史→全树分支，取回被遮蔽/覆盖的原始输出。
+   摘要请求和结果均附工具输出 ID 索引，从当前分支完整祖先链生成；连续压缩也保留旧索引，
+   不依赖模型在摘要正文中复述 ID。摘要树与检查点写入共用 TurnControl，关闭会话后的迟到结果不能落盘。
 出口：自动生效，无命令；触发信号复用 D-24 的 usage 采集。可调常量（50k/16k/0.9/100k）
 在 chat.rs 顶部，均为 ponytail 注释的已知天花板。
 证据：chat.rs 单测 4 项（截断/遮蔽/摘要节点+rewind/read_history）、chat_e2e.rs

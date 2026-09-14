@@ -62,6 +62,7 @@ type UsageProbes = Arc<Mutex<HashMap<String, UsageProbe>>>;
 /// field left None falls back to the member's ModelProfile.
 #[derive(Clone, Debug, Default)]
 pub struct ModelOverride {
+    pub profile: Option<String>,
     pub model: Option<String>,
     pub effort: Option<String>,
 }
@@ -100,7 +101,8 @@ impl OpenedSession {
             .iter()
             .map(|agent| {
                 let id = agent.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                let profile_name = agent.get("model_profile").and_then(|v| v.as_str()).unwrap_or("");
+                let ov = self.model_overrides.lock().unwrap().get(id).cloned().unwrap_or_default();
+                let profile_name = ov.profile.as_deref().unwrap_or_else(|| agent.get("model_profile").and_then(|v| v.as_str()).unwrap_or(""));
                 let profile = self.catalog.models.get(profile_name);
                 let usage = probes.get(id).map(|probe| probe());
                 // codex reports its own window; the profile wins when set
@@ -111,7 +113,7 @@ impl OpenedSession {
                     "agent_id": id,
                     "name": agent.get("name").and_then(|v| v.as_str()).unwrap_or(id),
                     "model_profile": profile_name,
-                    "model": profile.map(|p| p.model.as_str()),
+                    "model": ov.model.as_deref().or_else(|| profile.map(|p| p.model.as_str())),
                     "context_window": context_window,
                     "usage": usage,
                 })
@@ -184,24 +186,24 @@ impl OpenedSession {
     /// rest falls back to the profile (codex effort defaults to the runner's
     /// built-in "xhigh").
     fn effective_model(&self, agent: &AgentSpec) -> Json {
-        let profile = self.catalog.models.get(&agent.model_profile);
         let ov = self.model_overrides.lock().unwrap().get(&agent.id).cloned();
+        let profile_name = ov.as_ref().and_then(|o| o.profile.as_ref()).unwrap_or(&agent.model_profile);
+        let profile = self.catalog.models.get(profile_name);
         let (o_model, o_effort) = ov.as_ref().map(|o| (o.model.clone(), o.effort.clone())).unwrap_or_default();
         let model = o_model.or_else(|| profile.map(|p| p.model.clone()));
         let effort = o_effort.or_else(|| {
             if agent.runtime_kind == RuntimeKind::Codex {
                 Some("xhigh".into())
             } else {
-                profile
-                    .and_then(|p| p.generation_options.get("reasoning_effort"))
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string)
+                profile.and_then(profile_effort).map(str::to_string)
             }
         });
         json!({
             "agent_id": agent.id,
             "name": agent.name,
-            "model_profile": agent.model_profile,
+            "runtime_kind": agent.runtime_kind,
+            "model_profile": profile_name,
+            "provider": profile.map(|p| p.provider.as_str()),
             "model": model,
             "effort": effort,
             "overridden": ov.is_some(),
@@ -210,32 +212,49 @@ impl OpenedSession {
 
     /// Feature 5 (/model): switch one member's model / reasoning effort for
     /// this session; both None clears the override (profile default). The
-    /// cached runner is dropped so the change lands on the member's next turn.
+    /// cached runner is invalidated so the change lands on the next turn.
     /// ponytail: session memory only, never written back to the TeamSpec —
     /// persist overrides when a user actually asks for cross-session sticky.
     pub fn set_model_override(&self, agent_id: &str, model: Option<String>, effort: Option<String>) -> Result<Json, String> {
+        let profile = if model.is_none() && effort.is_none() { None } else {
+            self.model_overrides.lock().unwrap().get(agent_id).and_then(|o| o.profile.clone())
+        };
+        self.set_model_selection(agent_id, profile, model, effort)
+    }
+
+    /// A selected profile owns the provider endpoint, auth reference and protocol.
+    pub fn set_model_selection(&self, agent_id: &str, profile: Option<String>, model: Option<String>, effort: Option<String>) -> Result<Json, String> {
         let agents = self.spec_agents()?;
         let agent = agents
             .iter()
             .find(|a| a.id == agent_id)
             .ok_or_else(|| format!("unknown member {agent_id}"))?;
+        let selected = match &profile {
+            Some(name) => Some(self.catalog.models.get(name).ok_or_else(|| format!("unknown model profile {name}"))?),
+            None => self.catalog.models.get(&agent.model_profile),
+        };
+        if profile.is_some() && agent.runtime_kind == RuntimeKind::Codex
+            && selected.is_some_and(|p| p.protocol != "openai") {
+            return Err("Codex 成员需要支持 Responses API 的 OpenAI 兼容供应商".into());
+        }
         if let Some(model) = &model {
             if model.trim().is_empty() {
                 return Err("model must be a non-empty string".into());
             }
         }
+        let effort = effort.map(|s| s.to_ascii_lowercase());
         if let Some(effort) = &effort {
-            const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
-            if !EFFORTS.contains(&effort.to_ascii_lowercase().as_str()) {
-                return Err(format!("effort must be one of {}", EFFORTS.join("/")));
+            let choices = model_efforts(selected.map(|p| p.protocol.as_str()).unwrap_or("openai"));
+            if !choices.contains(&effort.as_str()) {
+                return Err(format!("effort must be one of {}", choices.join("/")));
             }
         }
         {
             let mut overrides = self.model_overrides.lock().unwrap();
-            if model.is_none() && effort.is_none() {
+            if profile.is_none() && model.is_none() && effort.is_none() {
                 overrides.remove(agent_id);
             } else {
-                overrides.insert(agent_id.to_string(), ModelOverride { model, effort });
+                overrides.insert(agent_id.to_string(), ModelOverride { profile, model, effort });
             }
         }
         self.runtime.drop_runner(agent_id);
@@ -245,16 +264,104 @@ impl OpenedSession {
     /// `/model` with no args / worker "model": every member's effective values.
     pub fn model_report(&self) -> Json {
         let agents = self.spec_agents().unwrap_or_default();
+        let mut profiles: Vec<_> = self.catalog.models.iter().collect();
+        profiles.sort_by_key(|(name, p)| (&p.provider, &p.model, *name));
         json!({
             "session_id": self.session_id,
+            "leader_id": self.core.state().ok().and_then(|s| s.get("leader_id").cloned()),
             "agents": agents.iter().map(|a| self.effective_model(a)).collect::<Vec<_>>(),
+            "profiles": profiles.iter().map(|(name, p)| json!({
+                "id": name, "provider": p.provider, "model": p.model, "protocol": p.protocol,
+                "effort": profile_effort(p), "efforts": model_efforts(&p.protocol),
+            })).collect::<Vec<_>>(),
         })
+    }
+
+    /// Read-only network discovery. The worker runs it outside its request loop.
+    pub fn discover_models(&self, provider: &str) -> Result<Json, String> {
+        let mut profiles: Vec<_> = self.catalog.models.iter().filter(|(_, p)| p.provider == provider).collect();
+        profiles.sort_by_key(|(name, _)| *name);
+        if profiles.is_empty() { return Err(format!("unknown provider {provider}")); }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut seen = std::collections::HashSet::new();
+        let mut models = vec![];
+        let mut errors = vec![];
+        for (name, profile) in profiles {
+            let base = crate::chat::resolve_base_url(profile);
+            if !seen.insert((base, profile.protocol.clone(), profile.api_key_env.clone())) { continue; }
+            match fetch_model_ids(profile, deadline) {
+                Ok(ids) => {
+                    for model in ids {
+                        // Keep explicitly configured models with their own options.
+                        if self.catalog.models.values().any(|p| p.provider == provider && p.model == model
+                            && p.protocol == profile.protocol && p.api_key_env == profile.api_key_env
+                            && crate::chat::resolve_base_url(p) == crate::chat::resolve_base_url(profile)) { continue; }
+                        models.push(json!({"id": name, "provider": provider, "model": model,
+                            "protocol": profile.protocol, "efforts": model_efforts(&profile.protocol), "discovered": true}));
+                    }
+                }
+                Err(error) => errors.push(format!("{name}: {error}")),
+            }
+        }
+        Ok(json!({"session_id":self.session_id, "provider":provider, "models":models, "errors":errors}))
     }
 
     pub fn close(&self) {
         self.runtime.close();
         let _ = self.lock.lock().unwrap().take();
     }
+}
+
+fn profile_effort(profile: &ModelProfile) -> Option<&str> {
+    profile.generation_options.get("reasoning_effort").and_then(Json::as_str)
+        .or_else(|| profile.generation_options.get("output_config")?.get("effort")?.as_str())
+}
+
+fn model_efforts(protocol: &str) -> &'static [&'static str] {
+    match protocol {
+        "anthropic" => &["low", "medium", "high", "xhigh", "max"],
+        "deepseek" => &["low", "medium", "high", "max"],
+        _ => &["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+    }
+}
+
+fn fetch_model_ids(profile: &ModelProfile, deadline: std::time::Instant) -> Result<Vec<String>, String> {
+    let anthropic = profile.protocol == "anthropic";
+    let base = crate::chat::resolve_base_url(profile);
+    let url = if anthropic { format!("{}/v1/models", base.trim_end_matches("/v1")) } else { format!("{base}/models") };
+    let key = profile.api_key_env.as_ref().map(|name| std::env::var(name).map_err(|_| format!("缺少环境变量 {name}"))).transpose()?;
+    let client = ureq::AgentBuilder::new().redirects(0).build();
+    let mut ids = std::collections::BTreeSet::new();
+    let mut cursor = String::new();
+    // ponytail: bounded catalog reads, no persistent cache; raise these limits
+    // if a configured provider actually publishes more than 20 pages / 2 MB.
+    for _ in 0..20 {
+        let remaining = deadline.checked_duration_since(std::time::Instant::now()).ok_or("获取模型列表超时")?;
+        let mut request = client.get(&url).timeout(remaining.min(std::time::Duration::from_secs(8)));
+        if anthropic {
+            request = request.set("anthropic-version", "2023-06-01").query("limit", "1000");
+            if !cursor.is_empty() { request = request.query("after_id", &cursor); }
+        }
+        if let Some(key) = &key {
+            request = if anthropic { request.set("x-api-key", key) } else { request.set("authorization", &format!("Bearer {key}")) };
+        }
+        let response = request.call().map_err(|error| match error {
+            ureq::Error::Status(code, _) => format!("HTTP {code}"),
+            ureq::Error::Transport(t) => format!("模型目录连接失败：{:?}", t.kind()),
+        })?;
+        let data: Json = serde_json::from_reader(std::io::Read::take(response.into_reader(), 2_000_000))
+            .map_err(|_| "模型目录不是有效 JSON，或响应超过 2 MB")?;
+        let rows = data["data"].as_array().ok_or("模型目录缺少 data 数组")?;
+        for row in rows {
+            let id = row["id"].as_str().filter(|s| !s.trim().is_empty() && s.len() <= 512 && !s.chars().any(char::is_control))
+                .ok_or("模型目录包含无效模型 ID")?;
+            ids.insert(id.to_string());
+        }
+        if !anthropic || data["has_more"] != true { return Ok(ids.into_iter().collect()); }
+        let next = data["last_id"].as_str().filter(|s| !s.is_empty() && *s != cursor).ok_or("模型目录分页游标无效")?;
+        cursor = next.into();
+    }
+    Err("模型目录超过 20 页".into())
 }
 
 /// session.py::_skills_and_memory — the member's skills directories and
@@ -487,9 +594,9 @@ fn make_runner_factory(
             let steps = scripts.get(&agent.id).cloned().unwrap_or_else(|| vec![Step::End]);
             return Ok(ScriptedMember::new(&agent.id, steps, barriers.clone()));
         }
-        let profile: Option<ModelProfile> = catalog.models.get(&agent.model_profile).cloned();
         // feature 5 (/model): a session-level override wins over the profile
         let ov = model_overrides.lock().unwrap().get(&agent.id).cloned().unwrap_or_default();
+        let profile: Option<ModelProfile> = catalog.models.get(ov.profile.as_ref().unwrap_or(&agent.model_profile)).cloned();
         if agent.runtime_kind == RuntimeKind::Codex {
             let opts = codex_options(agent, profile.as_ref(), &ov, &session_id, &cwd)?;
             let runner = CodexRunner::new(
@@ -560,6 +667,17 @@ fn codex_options(
         model = Some(profile.model.clone());
         if !profile.provider.is_empty() {
             config.push(("model_provider".into(), json!(profile.provider)));
+        }
+        if ov.profile.is_some() && profile.base_url.is_some() {
+            // A private provider id avoids inheriting built-in OpenAI auth flags.
+            config.retain(|(key, _)| key != "model_provider");
+            config.push(("model_provider".into(), json!("teamagents_session")));
+            for (key, value) in [("name", json!(profile.provider)), ("base_url", json!(profile.base_url)), ("wire_api", json!("responses"))] {
+                config.push((format!("model_providers.teamagents_session.{key}"), value));
+            }
+            if let Some(env) = &profile.api_key_env {
+                config.push(("model_providers.teamagents_session.env_key".into(), json!(env)));
+            }
         }
         for (key, value) in &profile.generation_options {
             config.push((key.clone(), value.clone()));
@@ -718,7 +836,7 @@ mod tests {
             generation_options: HashMap::from([("reasoning_effort".to_string(), json!("medium"))]),
             context_window: None,
         };
-        let ov = ModelOverride { model: Some("gpt-5".into()), effort: Some("high".into()) };
+        let ov = ModelOverride { model: Some("gpt-5".into()), effort: Some("high".into()), ..Default::default() };
         let rewritten = apply_model_override(profile.clone(), &ov);
         assert_eq!(rewritten.model, "gpt-5");
         assert_eq!(rewritten.generation_options["reasoning_effort"], json!("high"));
@@ -742,12 +860,77 @@ mod tests {
         // model-only override keeps the runner's default effort
         let opts = codex_options(
             &agent, Some(&profile),
-            &ModelOverride { model: Some("gpt-5-codex".into()), effort: None },
+            &ModelOverride { model: Some("gpt-5-codex".into()), ..Default::default() },
             "s-ov", &root.join("project"),
         ).unwrap();
         assert_eq!(opts.model.as_deref(), Some("gpt-5-codex"));
         assert_eq!(opts.effort.as_deref(), Some("xhigh"));
+        let custom = ModelProfile { base_url: Some("http://127.0.0.1:1234/v1".into()), api_key_env: Some("TEST_MODEL_KEY".into()), ..profile };
+        let opts = codex_options(&agent, Some(&custom), &ModelOverride { profile: Some("custom".into()), ..Default::default() }, "s-ov", &root.join("project")).unwrap();
+        assert!(opts.config_overrides.contains(&("model_provider".into(), json!("teamagents_session"))));
+        assert!(opts.config_overrides.contains(&("model_providers.teamagents_session.base_url".into(), json!("http://127.0.0.1:1234/v1"))));
+        assert!(opts.config_overrides.contains(&("model_providers.teamagents_session.env_key".into(), json!("TEST_MODEL_KEY"))));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn model_discovery_uses_auth_pagination_and_keeps_configured_models_on_failure() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        let _env = crate::env_lock();
+        std::env::set_var("TA_DISCOVERY_TEST_KEY", "fake-discovery-key");
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            for step in 0..4 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = vec![];
+                while !request.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0]; stream.read_exact(&mut byte).unwrap(); request.push(byte[0]);
+                }
+                let request = String::from_utf8(request).unwrap().to_lowercase();
+                assert!(request.starts_with("get /v1/models"));
+                if step == 0 { assert!(request.contains("authorization: bearer fake-discovery-key")); }
+                else { assert!(request.contains("x-api-key: fake-discovery-key") && request.contains("anthropic-version: 2023-06-01")); }
+                let data = match step {
+                    0 => json!({"data":[{"id":"configured"},{"id":"remote"},{"id":"remote"}]}),
+                    1 => json!({"data":[{"id":"claude-a"}],"has_more":true,"last_id":"claude-a"}),
+                    2 => {
+                        assert!(request.contains("after_id=claude-a"));
+                        json!({"data":[{"id":"claude-b"}],"has_more":false})
+                    }
+                    _ => json!({"error":"fake-discovery-key must not be echoed in UI errors"}),
+                }.to_string();
+                let status = if step == 3 { "403 Forbidden" } else { "200 OK" };
+                write!(stream, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{data}", data.len()).unwrap();
+            }
+        });
+        // Use open_session's existing scripted mode: discovery never invokes a model.
+        let root = std::env::temp_dir().join(format!("ta-discovery-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::env::set_var("XDG_STATE_HOME", &root);
+        let profile = json!({"provider":"local","protocol":"openai","model":"configured","base_url":format!("{base}/v1"),"api_key_env":"TA_DISCOVERY_TEST_KEY"});
+        let catalog: UserConfig = serde_json::from_value(json!({"models":{"a":profile,"duplicate":profile,
+            "claude":{"provider":"anthropic","protocol":"anthropic","model":"configured-claude","base_url":base,"api_key_env":"TA_DISCOVERY_TEST_KEY"}}})).unwrap();
+        let opened = open_session(OpenOptions { cwd: Some(root.clone()), session_id: Some("discovery".into()), catalog: Some(catalog),
+            initial_spec: Some(default_leader_spec("a", &[])), scripts: Some(HashMap::new()), ..Default::default() }).unwrap();
+        let openai = opened.discover_models("local").unwrap();
+        assert_eq!(openai["models"].as_array().unwrap().len(), 1, "deduplicate endpoint, configured IDs and response IDs");
+        assert_eq!(openai["models"][0]["id"], "a");
+        assert_eq!(openai["models"][0]["model"], "remote");
+        let anthropic = opened.discover_models("anthropic").unwrap();
+        assert_eq!(anthropic["models"].as_array().unwrap().len(), 2);
+        let failed = opened.discover_models("anthropic").unwrap();
+        assert!(failed["models"].as_array().unwrap().is_empty());
+        assert!(failed["errors"].to_string().contains("HTTP 403"));
+        assert!(!failed.to_string().contains("fake-discovery-key"));
+        assert!(opened.model_report()["profiles"].as_array().unwrap().iter().any(|p| p["model"] == "configured-claude"));
+        assert!(opened.discover_models("missing").is_err());
+        opened.close();
+        server.join().unwrap();
+        std::env::remove_var("TA_DISCOVERY_TEST_KEY");
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

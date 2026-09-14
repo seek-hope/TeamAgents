@@ -371,16 +371,19 @@ fn skill_index(roots: &[PathBuf]) -> Vec<(String, PathBuf)> {
     out
 }
 
-/// Frontmatter `description:` line, capped; enough for search hits without
-/// parsing full YAML (ponytail: line scan, upgrade to a YAML parse if skills
-/// start needing nested frontmatter).
+/// Read the YAML description, including folded/literal block scalars.
 fn skill_blurb(path: &Path) -> String {
-    let mut text = String::new();
-    if std::fs::File::open(path).and_then(|f| f.take(4_096).read_to_string(&mut text)).is_err() {
+    let mut bytes = vec![];
+    if std::fs::File::open(path).and_then(|f| f.take(32_000).read_to_end(&mut bytes)).is_err() {
         return String::new();
     }
-    let line = text.lines().find(|l| l.starts_with("description:")).unwrap_or("");
-    line.trim_start_matches("description:").trim().trim_matches('"').chars().take(200).collect()
+    let text = String::from_utf8_lossy(&bytes);
+    let mut lines = text.trim_start_matches('\u{feff}').lines();
+    if lines.next().map(str::trim) != Some("---") { return String::new(); }
+    let frontmatter = lines.take_while(|line| !matches!(line.trim(), "---" | "...")).collect::<Vec<_>>().join("\n");
+    serde_yaml::from_str::<Json>(&frontmatter).ok()
+        .and_then(|value| value["description"].as_str().map(|s| s.chars().take(200).collect()))
+        .unwrap_or_default()
 }
 
 /// `skill` tool: action "search" (keyword match over name+blurb; empty query
@@ -1180,6 +1183,11 @@ mod tests {
         let hits = skill_tool(&catalog, &json!({"action": "search", "query": "single-cell"})).unwrap();
         let hits = hits.as_str().unwrap();
         assert!(hits.contains("scanpy") && !hits.contains("ponytail"), "{hits}");
+        for description in [">\n  single-cell\n  analysis", "|\n  single-cell\n  analysis", "'single-cell analysis'"] {
+            std::fs::write(root.join("scanpy/SKILL.md"), format!("---\nname: scanpy\ndescription: {description}\n---\nscanpy body")).unwrap();
+            let hits = skill_tool(&catalog, &json!({"action":"search", "query":"single-cell"})).unwrap();
+            assert!(hits.as_str().unwrap().contains("scanpy"), "{description}: {hits}");
+        }
         // empty query lists everything
         let all = skill_tool(&catalog, &json!({"action": "search", "query": ""})).unwrap();
         assert!(all.as_str().unwrap().contains("ponytail"));

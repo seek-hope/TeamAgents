@@ -345,26 +345,33 @@ struct ChatCheckpoint {
     outcome: Option<TurnOutcome>,
     input_events: HashSet<String>,
     delivery_ids: HashSet<i64>,
-    /// Tree node count when this turn started (delta base) + the leaf it was
-    /// taken against; a rewind moves the leaf and thereby invalidates the
-    /// checkpoint (D-26).
+    /// Materialized history length already committed to the tree (delta base)
+    /// and its leaf. Only rewind_epoch invalidates execution identity.
     #[serde(default)]
     tree_base: usize,
     #[serde(default)]
     tree_leaf: Option<String>,
+    /// Only an explicit rewind invalidates a checkpoint's execution identity.
+    #[serde(default)]
+    rewind_epoch: u64,
+    /// Write-ahead record for a tree append, replayed idempotently on recovery.
+    #[serde(default)]
+    tree_pending: Vec<TreeNode>,
 }
 
 /// pi-style tree-structured conversation history (D-26): per thread an
 /// append-only node tree plus the live tip in `leaf`. `rewind` moves the leaf
 /// to an ancestor; new turns branch off it, so rewinding never destroys the
 /// abandoned branch (unlike truncation, it is undoable).
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default, Clone)]
 pub struct ChatTree {
     nodes: Vec<TreeNode>,
     leaf: Option<String>,
+    #[serde(default)]
+    rewind_epoch: u64,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, PartialEq)]
 struct TreeNode {
     id: String,
     parent: Option<String>,
@@ -413,6 +420,24 @@ impl ChatTree {
         self.leaf = Some(id);
     }
 
+    /// Include earlier compactions' calls, but never an abandoned branch.
+    fn tool_references(&self) -> Vec<String> {
+        let mut references = vec![];
+        let mut cur = self.leaf.as_deref();
+        // Parents precede their children in the append-only node array.
+        for node in self.nodes.iter().rev() {
+            if cur != Some(node.id.as_str()) { continue; }
+            for call in node.message["tool_calls"].as_array().into_iter().flatten() {
+                if let Some(id) = call["id"].as_str() {
+                    references.push(format!("- {id}: {}", call["function"]["name"].as_str().unwrap_or("?")));
+                }
+            }
+            cur = node.parent.as_deref();
+        }
+        references.reverse();
+        references
+    }
+
     /// Rewind targets: user-input nodes, newest first, as (id, depth, preview).
     fn rewind_points(&self) -> Vec<Json> {
         let chain: Vec<&TreeNode> = {
@@ -437,19 +462,21 @@ impl ChatTree {
     }
 
     fn rewind_to(&mut self, node_id: Option<&str>) -> Result<usize, String> {
-        match node_id {
+        let depth = match node_id {
             None => {
                 self.leaf = None;
-                Ok(0)
+                0
             }
             Some(id) => {
                 if !self.nodes.iter().any(|n| n.id == id) {
                     return Err(format!("unknown history node {id:?}"));
                 }
                 self.leaf = Some(id.to_string());
-                Ok(self.materialize().len())
+                self.materialize().len()
             }
-        }
+        };
+        self.rewind_epoch = self.rewind_epoch.checked_add(1).ok_or("rewind epoch exhausted")?;
+        Ok(depth)
     }
 }
 
@@ -511,7 +538,6 @@ pub struct ChatRunner {
     context: Vec<(String, String)>,
     /// Member conversation history survives a restart (USER-GUIDE §5).
     history_path: Option<std::path::PathBuf>,
-    messages: Mutex<HashMap<String, Vec<Json>>>,
     states: Mutex<HashMap<String, TurnStatus>>,
     mid_turn: Mutex<HashMap<String, Vec<Json>>>,
     interrupted: Mutex<HashSet<String>>,
@@ -562,7 +588,6 @@ impl ChatRunner {
             has_web_fetch: web.1,
             context,
             history_path,
-            messages: Mutex::new(HashMap::new()),
             trees: Mutex::new(HashMap::new()),
             states: Mutex::new(HashMap::new()),
             mid_turn: Mutex::new(HashMap::new()),
@@ -610,32 +635,31 @@ impl ChatRunner {
 
     /// Tree file is `{thread: {nodes, leaf}}` per member. A member with only a
     /// legacy linear chat_history.json migrates lazily: chain it in memory,
-    /// persist as a tree on the next save.
-    fn load_tree(&self, thread: &str) -> ChatTree {
+    /// freeze the migration before the first execution checkpoint is written.
+    fn load_tree(&self, thread: &str) -> Result<ChatTree, String> {
         if let Some(tree) = self.trees.lock().unwrap().get(thread) {
-            // ChatTree is not Clone-costly at this size; hand back a copy so
-            // callers never hold the lock while mutating.
-            return serde_json::from_value(serde_json::to_value(tree).unwrap_or_default()).unwrap_or_default();
+            return Ok(tree.clone());
         }
         if let Some(path) = self.tree_path() {
-            if let Ok(text) = std::fs::read_to_string(&path) {
-                if let Ok(data) = serde_json::from_str::<Json>(&text) {
+            match std::fs::read_to_string(&path) {
+                Ok(text) => {
+                    let data: Json = serde_json::from_str(&text).map_err(|e| format!("invalid history tree: {e}"))?;
+                    if !data.is_object() { return Err("invalid member history tree".into()); }
                     if let Some(value) = data.get(thread) {
-                        if let Ok(tree) = serde_json::from_value::<ChatTree>(value.clone()) {
-                            return tree;
-                        }
+                        return serde_json::from_value(value.clone()).map_err(|e| format!("invalid history tree: {e}"));
                     }
                 }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.to_string()),
             }
         }
         let mut tree = ChatTree::default();
         tree.append(&self.load_history(thread));
-        tree
+        Ok(tree)
     }
 
     fn save_tree(&self, thread: &str, tree: &ChatTree) -> Result<(), String> {
         let Some(path) = self.tree_path() else { return Ok(()) };
-        self.trees.lock().unwrap().insert(thread.to_string(), serde_json::from_value(serde_json::to_value(tree).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?);
         let mut data = match std::fs::read_to_string(&path) {
             Ok(text) => serde_json::from_str::<Json>(&text).map_err(|e| e.to_string())?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => json!({}),
@@ -643,23 +667,23 @@ impl ChatRunner {
         };
         if !data.is_object() { return Err("invalid member history tree".into()); }
         data[thread] = serde_json::to_value(tree).map_err(|e| e.to_string())?;
-        write_json_atomic(&path, &data)
+        write_json_atomic(&path, &data)?;
+        self.trees.lock().unwrap().insert(thread.to_string(), tree.clone());
+        Ok(())
     }
 
     /// Rewind targets for a thread (user inputs, newest first) — the /rewind picker.
     pub fn rewind_points(&self, thread: &str) -> Vec<Json> {
-        self.load_tree(thread).rewind_points()
+        self.load_tree(thread).map(|t| t.rewind_points()).unwrap_or_default()
     }
 
     /// Move the thread's live tip to `node_id` (None = empty conversation).
-    /// The abandoned branch stays in the tree. In-memory copies are dropped so
-    /// the next turn re-materializes from the tree; stale turn checkpoints are
-    /// discarded via their tree_leaf marker.
+    /// The abandoned branch stays in the tree. Only this explicit epoch change
+    /// discards checkpoints; a partially committed append must be recovered.
     pub fn rewind(&self, thread: &str, node_id: Option<&str>) -> Result<usize, String> {
-        let mut tree = self.load_tree(thread);
+        let mut tree = self.load_tree(thread)?;
         let depth = tree.rewind_to(node_id)?;
         self.save_tree(thread, &tree)?;
-        self.messages.lock().unwrap().remove(thread);
         Ok(depth)
     }
 
@@ -686,11 +710,44 @@ impl ChatRunner {
 
     fn save_checkpoint(&self, run: &TurnRun, checkpoint: &ChatCheckpoint, gateway: &ToolGateway) -> Result<(), (String, String)> {
         let _execution = gateway.control.enter().map_err(|e| ("TurnInterrupted".into(), e))?;
-        let write = || -> Result<(), String> {
-            write_json_atomic(&self.checkpoint_path(run)?, &serde_json::to_value(checkpoint).map_err(|e| e.to_string())?)?;
-            self.save_history(run.context_ref.as_deref().unwrap_or(&run.run_id), &checkpoint.history)
-        };
-        write().map_err(|e| ("CheckpointError".into(), e))
+        self.write_checkpoint(run, checkpoint).map_err(|e| ("CheckpointError".into(), e))
+    }
+
+    /// Caller holds the turn's execution guard across all private-file writes.
+    fn write_checkpoint(&self, run: &TurnRun, checkpoint: &ChatCheckpoint) -> Result<(), String> {
+        write_json_atomic(&self.checkpoint_path(run)?, &serde_json::to_value(checkpoint).map_err(|e| e.to_string())?)?;
+        self.save_history(run.context_ref.as_deref().unwrap_or(&run.run_id), &checkpoint.history)
+    }
+
+    fn commit_tree(&self, run: &TurnRun, checkpoint: &mut ChatCheckpoint, tree: &ChatTree, base: usize, control: &TurnControl) -> Result<(), String> {
+        let _execution = control.enter()?;
+        checkpoint.tree_pending = tree.nodes[base..].to_vec();
+        checkpoint.tree_base = checkpoint.history.len();
+        checkpoint.tree_leaf = tree.leaf.clone();
+        checkpoint.rewind_epoch = tree.rewind_epoch;
+        self.write_checkpoint(run, checkpoint)?;
+        self.save_tree(run.context_ref.as_deref().unwrap_or(&run.run_id), tree)?;
+        checkpoint.tree_pending.clear();
+        self.write_checkpoint(run, checkpoint)
+    }
+
+    /// Recover either side of the journal -> atomic tree rename boundary.
+    /// Caller holds the execution guard; mismatched content fails closed.
+    fn restore_tree_commit(&self, run: &TurnRun, checkpoint: &mut ChatCheckpoint, tree: &mut ChatTree) -> Result<(), String> {
+        let Some(first) = checkpoint.tree_pending.first() else { return Ok(()) };
+        if checkpoint.tree_pending.last().map(|n| &n.id) != checkpoint.tree_leaf.as_ref() {
+            return Err("invalid pending tree leaf".into());
+        }
+        if tree.leaf != checkpoint.tree_leaf || !tree.nodes.ends_with(&checkpoint.tree_pending) {
+            if tree.leaf != first.parent || checkpoint.tree_pending.iter().any(|n| tree.nodes.iter().any(|old| old.id == n.id)) {
+                return Err("pending history commit conflicts with the tree".into());
+            }
+            tree.nodes.extend(checkpoint.tree_pending.iter().cloned());
+            tree.leaf = checkpoint.tree_leaf.clone();
+            self.save_tree(run.context_ref.as_deref().unwrap_or(&run.run_id), tree)?;
+        }
+        checkpoint.tree_pending.clear();
+        self.write_checkpoint(run, checkpoint)
     }
 
     fn record_usage(&self, thread: &str, data: &Json) {
@@ -944,6 +1001,12 @@ impl ChatRunner {
                 body[key] = value.clone();
             }
         }
+        let mut options = json!({});
+        self.apply_generation_options(&mut options);
+        if let Some(effort) = options.get("reasoning_effort") {
+            if body["output_config"].is_null() { body["output_config"] = json!({}); }
+            body["output_config"]["effort"] = effort.clone();
+        }
         let url = format!("{base}/v1/messages");
         let mut last_error = "chat call failed".to_string();
         let retries = self.profile.max_retries.max(0);
@@ -1004,17 +1067,32 @@ impl ChatRunner {
     /// structured summary node with `skip_to` set, so the covered messages
     /// stay in the tree (lossless — /rewind and read_history can still reach
     /// them) while materialize() jumps over them.
-    fn compact(&self, thread: &str, checkpoint: &mut ChatCheckpoint, control: &TurnControl) -> Result<(), String> {
+    fn compact(&self, run: &TurnRun, checkpoint: &mut ChatCheckpoint, control: &TurnControl) -> Result<(), (String, String)> {
+        let thread = run.context_ref.as_deref().unwrap_or(&run.run_id);
+        let mut tree = self.load_tree(thread).map_err(|e| ("CheckpointError".into(), e))?;
+        let base = tree.nodes.len();
+        // The tail and summary are committed together after the model reply.
+        if checkpoint.history.len() > checkpoint.tree_base {
+            tree.append(&checkpoint.history[checkpoint.tree_base..]);
+        }
         let mut blob = String::new();
         for message in checkpoint.history.iter().skip_while(|m| m["role"] == "system") {
             let role = message["role"].as_str().unwrap_or("?");
             let mut content = message["content"].as_str().unwrap_or("").to_string();
-            if let Some(calls) = message["tool_calls"].as_array() {
-                let names: Vec<&str> = calls.iter().filter_map(|c| c["function"]["name"].as_str()).collect();
-                content = format!("{content} [calls: {}]", names.join(", "));
-            }
             if content.len() > 2_000 {
                 content = format!("{}…[{} chars]", content.chars().take(2_000).collect::<String>(), content.len());
+            }
+            if let Some(calls) = message["tool_calls"].as_array() {
+                for call in calls {
+                    if let Some(id) = call["id"].as_str() {
+                        let name = call["function"]["name"].as_str().unwrap_or("?");
+                        let args: String = call["function"]["arguments"].as_str().unwrap_or("").chars().take(200).collect();
+                        content.push_str(&format!("\n[tool_call_id={id}: {name} {args}]"));
+                    }
+                }
+            }
+            if let Some(id) = message["tool_call_id"].as_str() {
+                content = format!("[tool_call_id={id}] {content}");
             }
             blob.push_str(&format!("{role}: {content}\n\n"));
         }
@@ -1026,30 +1104,26 @@ impl ChatRunner {
                 blob.chars().skip(blob.chars().count().saturating_sub(half)).collect::<String>()
             );
         }
-        let ask = vec![json!({"role": "user", "content": format!("{SUMMARY_PROMPT}{blob}")})];
-        let reply = self.chat(thread, &ask, &json!([]), control)?;
+        // Keep the covered calls discoverable even when the model omits IDs
+        // from its prose or the summary input's middle was truncated.
+        // ponytail: inline the full live-branch index; paginate if IDs alone
+        // become a significant part of the model's context window.
+        let index = format!("Tool output index (read_history tool_call_id):\n{}", tree.tool_references().join("\n"));
+        let ask = vec![json!({"role": "user", "content": format!("{SUMMARY_PROMPT}{blob}\n{index}")})];
+        let reply = self.chat(thread, &ask, &json!([]), control).map_err(|e| ("ChatError".into(), e))?;
         let summary = reply["content"].as_str().unwrap_or("").trim().to_string();
         if summary.is_empty() {
-            return Err("compaction returned an empty summary".into());
-        }
-        let mut tree = self.load_tree(thread);
-        // Commit the not-yet-persisted tail first: compaction may only cover
-        // messages that are safely in the tree (read_history / rewind reach
-        // them through the covered branch).
-        if checkpoint.history.len() > checkpoint.tree_base {
-            tree.append(&checkpoint.history[checkpoint.tree_base..]);
+            return Err(("ChatError".into(), "compaction returned an empty summary".into()));
         }
         // Keep the system root verbatim; everything else is covered.
         let keep = tree.nodes.first().filter(|n| n.message["role"] == "system").map(|n| n.id.clone()).unwrap_or_default();
         tree.append_summary(
-            json!({"role": "user", "content": format!("[Compacted conversation summary]\n{summary}\n\n[Earlier tool outputs and replies were removed from context. Call read_history with a tool_call_id to retrieve a tool output.]")}),
+            json!({"role": "user", "content": format!("[Compacted conversation summary]\n{summary}\n\n{index}\n\n[Earlier tool outputs and replies were removed from context. Call read_history with a tool_call_id to retrieve a tool output.]")}),
             &keep,
         );
-        self.save_tree(thread, &tree)?;
         checkpoint.history = tree.materialize();
         self.refresh_system(&mut checkpoint.history);
-        checkpoint.tree_base = checkpoint.history.len();
-        checkpoint.tree_leaf = tree.leaf.clone();
+        self.commit_tree(run, checkpoint, &tree, base, control).map_err(|e| ("CheckpointError".into(), e))?;
         // The summary call's huge prompt must not retrigger compaction; the
         // next real call overwrites this with the true value.
         if let Some(entry) = self.usage.lock().unwrap().get_mut(thread) {
@@ -1069,7 +1143,7 @@ impl ChatRunner {
                 return Ok(json!({"output": message["content"].as_str().unwrap_or("")}));
             }
         }
-        let tree = self.load_tree(thread);
+        let tree = self.load_tree(thread)?;
         for node in &tree.nodes {
             if node.message["tool_call_id"].as_str() == Some(tool_call_id) {
                 return Ok(json!({"output": node.message["content"].as_str().unwrap_or("")}));
@@ -1110,12 +1184,13 @@ impl ChatRunner {
                 }
                 let thread = run.context_ref.as_deref().unwrap_or(&run.run_id);
                 if self.over_threshold(thread) {
-                    match self.compact(thread, checkpoint, &gateway.control) {
+                    match self.compact(run, checkpoint, &gateway.control) {
                         Ok(()) => {
                             self.compact_failures.store(0, Ordering::SeqCst);
                             self.save_checkpoint(run, checkpoint, gateway)?;
                         }
-                        // A failed compaction must not kill the turn: continue
+                        Err((kind, message)) if kind == "CheckpointError" => return Err((kind, message)),
+                        // A failed model summary must not kill the turn: continue
                         // uncompacted and let any provider error surface; the
                         // breaker stops hammering after 3 failures.
                         Err(_) => {
@@ -1230,10 +1305,24 @@ impl ChatRunner {
 
     fn run_segment(&self, run: &TurnRun, view: &Json, gateway: &ToolGateway, wake: &Json) -> Result<TurnOutcome, (String, String)> {
         let loaded = self.load_checkpoint(run).map_err(|e| ("CheckpointError".into(), e))?;
-        // A checkpoint taken before a rewind belongs to an abandoned branch:
-        // discard it and restart the turn from the tree's current leaf (D-26).
         let thread = run.context_ref.as_deref().unwrap_or(&run.run_id);
-        let loaded = loaded.filter(|cp| cp.tree_leaf == self.load_tree(thread).leaf);
+        let mut tree = self.load_tree(thread).map_err(|e| ("CheckpointError".into(), e))?;
+        // An epoch changes only on explicit rewind; a leaf mismatch alone can
+        // instead be a partially committed segment and must never cause replay.
+        let mut loaded = loaded.filter(|cp| cp.rewind_epoch == tree.rewind_epoch);
+        {
+            let _execution = gateway.control.enter().map_err(|e| ("TurnInterrupted".into(), e))?;
+            if let Some(checkpoint) = &mut loaded {
+                self.restore_tree_commit(run, checkpoint, &mut tree).map_err(|e| ("CheckpointError".into(), e))?;
+                if checkpoint.tree_leaf != tree.leaf {
+                    return Err(("CheckpointError".into(), "history tree differs from checkpoint without an explicit rewind".into()));
+                }
+            }
+            // Freeze a legacy/empty tree BEFORE chat_history receives this turn.
+            if !self.trees.lock().unwrap().contains_key(thread) {
+                self.save_tree(thread, &tree).map_err(|e| ("CheckpointError".into(), e))?;
+            }
+        }
         let fresh = loaded.is_none();
         let mut checkpoint = loaded.unwrap_or_default();
         if checkpoint.pending_external.is_some() {
@@ -1245,10 +1334,10 @@ impl ChatRunner {
         }
         let resumed = checkpoint.outcome.take().is_some();
         if fresh {
-            let tree = self.load_tree(thread);
-            checkpoint.tree_base = tree.materialize().len();
+            checkpoint.history = tree.materialize();
+            checkpoint.tree_base = checkpoint.history.len();
             checkpoint.tree_leaf = tree.leaf.clone();
-            checkpoint.history = self.messages.lock().unwrap().get(thread).cloned().unwrap_or_else(|| tree.materialize());
+            checkpoint.rewind_epoch = tree.rewind_epoch;
             // A different, terminated turn may have left an unanswered tool in
             // the shared thread. It must not become work for this new run ID.
             for call in pending_tool_calls(&checkpoint.history) {
@@ -1256,7 +1345,11 @@ impl ChatRunner {
                     "content":"Previous turn ended without a recorded result; outcome unknown. Inspect before retrying."}));
             }
         }
+        let before_refresh = checkpoint.history.len();
         self.refresh_system(&mut checkpoint.history);
+        if checkpoint.tree_base > 0 {
+            checkpoint.tree_base += checkpoint.history.len() - before_refresh;
+        }
         // New turns/explicit resumes need their new input before examining an
         // old final assistant message from the preceding turn/segment.
         if fresh || resumed {
@@ -1273,20 +1366,14 @@ impl ChatRunner {
             Err(e) => return Err(e),
         };
         checkpoint.outcome = Some(outcome.clone());
-        // Commit the segment to the history tree first, then stamp the
-        // checkpoint with the post-commit base/leaf: a checkpoint is only
-        // valid against the tree tip it was last synced with (D-26).
-        // ponytail: rewinding mid-turn grafts the in-flight tail onto the
-        // new leaf; rewind is meant for idle sessions.
-        let mut tree = self.load_tree(thread);
+        // Journal the append before the tree rename; either crash boundary
+        // recovers the same outcome and IDs without asking the model again.
+        let mut tree = self.load_tree(thread).map_err(|e| ("CheckpointError".into(), e))?;
+        let base = tree.nodes.len();
         if checkpoint.history.len() > checkpoint.tree_base {
             tree.append(&checkpoint.history[checkpoint.tree_base..]);
-            self.save_tree(thread, &tree).map_err(|e| ("CheckpointError".into(), e))?;
         }
-        checkpoint.tree_base = checkpoint.history.len();
-        checkpoint.tree_leaf = tree.leaf.clone();
-        self.save_checkpoint(run, &checkpoint, gateway)?;
-        self.messages.lock().unwrap().insert(thread.to_string(), checkpoint.history);
+        self.commit_tree(run, &mut checkpoint, &tree, base, &gateway.control).map_err(|e| ("CheckpointError".into(), e))?;
         Ok(outcome)
     }
 }
@@ -1780,7 +1867,7 @@ mod tests {
         let live = vec![json!({"role":"tool","tool_call_id":"c1","content":"live output"})];
         assert_eq!(runner.read_history("t", &live, "c1").unwrap()["output"], "live output");
         // committed to the tree but no longer in the live view (compacted away)
-        let mut tree = runner.load_tree("t");
+        let mut tree = runner.load_tree("t").unwrap();
         tree.append(&[json!({"role":"tool","tool_call_id":"c2","content":"archived output"})]);
         runner.save_tree("t", &tree).unwrap();
         assert_eq!(runner.read_history("t", &live, "c2").unwrap()["output"], "archived output");
@@ -1808,18 +1895,17 @@ mod tests {
             vec![],
             (false, false),
         );
-        let mut tree = runner.load_tree("user-dialog");
+        let mut tree = runner.load_tree("user-dialog").unwrap();
         tree.append(&[json!({"role":"user","content":"u1"}), json!({"role":"assistant","content":"a1"})]);
         runner.save_tree("user-dialog", &tree).unwrap();
         // fresh load sees the persisted tree
-        let reloaded = runner.load_tree("user-dialog");
+        let reloaded = runner.load_tree("user-dialog").unwrap();
         assert_eq!(reloaded.materialize().len(), 2);
         assert_eq!(runner.rewind_points("user-dialog").len(), 1);
-        // rewind to empty; messages cache for the thread is dropped
-        runner.messages.lock().unwrap().insert("user-dialog".into(), vec![json!({"role":"user","content":"stale"})]);
+        // rewind to empty; the epoch distinguishes it from a pending commit
         assert_eq!(runner.rewind("user-dialog", None).unwrap(), 0);
-        assert!(runner.messages.lock().unwrap().get("user-dialog").is_none());
-        assert_eq!(runner.load_tree("user-dialog").materialize().len(), 0);
+        assert_eq!(runner.load_tree("user-dialog").unwrap().materialize().len(), 0);
+        assert_eq!(runner.load_tree("user-dialog").unwrap().rewind_epoch, 1);
         assert!(runner.history_dir().is_some());
         std::fs::remove_dir_all(&root).ok();
     }

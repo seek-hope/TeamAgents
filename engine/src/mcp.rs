@@ -37,6 +37,7 @@ enum Transport {
         url: String,
         token: Option<String>,
         session: Mutex<Option<String>>,
+        protocol: Mutex<Option<String>>,
     },
 }
 
@@ -130,16 +131,22 @@ impl McpClient {
                 url: url.to_string(),
                 token,
                 session: Mutex::new(None),
+                protocol: Mutex::new(None),
             },
             next_id: AtomicU64::new(1),
             startup_ms: startup_timeout_s.max(1) * 1000,
             tool_ms: tool_timeout_s.max(1) * 1000,
         });
-        client.call("initialize", json!({
+        let initialized = client.call("initialize", json!({
             "protocolVersion": "2025-06-18",
             "capabilities": {},
             "clientInfo": {"name": "teamagents", "version": env!("CARGO_PKG_VERSION")},
         }), client.startup_ms)?;
+        let version = initialized["protocolVersion"].as_str().filter(|v| !v.is_empty())
+            .ok_or("MCP initialize response has no protocolVersion")?;
+        if let Transport::Http { protocol, .. } = &client.transport {
+            *protocol.lock().unwrap() = Some(version.to_string());
+        }
         client.notify("notifications/initialized", json!({}))?;
         Ok(client)
     }
@@ -160,8 +167,9 @@ impl McpClient {
                     }
                 }
             }
-            Transport::Http { url, token, session } => {
-                let payload = http_roundtrip(url, token.as_deref(), session, &body, timeout_ms)?
+            Transport::Http { url, token, session, protocol } => {
+                let version = protocol.lock().unwrap().clone();
+                let payload = http_roundtrip(url, token.as_deref(), session, version.as_deref(), &body, timeout_ms)?
                     .ok_or_else(|| format!("MCP {method} returned no response"))?;
                 match payload.get("error") {
                     Some(error) if !error.is_null() => Err(format!("{error}")),
@@ -175,8 +183,9 @@ impl McpClient {
         let body = json!({"jsonrpc": "2.0", "method": method, "params": params});
         match &self.transport {
             Transport::Stdio { stdin, .. } => write_line(stdin, &body),
-            Transport::Http { url, token, session } => {
-                http_roundtrip(url, token.as_deref(), session, &body, self.startup_ms)?;
+            Transport::Http { url, token, session, protocol } => {
+                let version = protocol.lock().unwrap().clone();
+                http_roundtrip(url, token.as_deref(), session, version.as_deref(), &body, self.startup_ms)?;
                 Ok(())
             }
         }
@@ -238,6 +247,7 @@ fn http_roundtrip(
     url: &str,
     token: Option<&str>,
     session: &Mutex<Option<String>>,
+    protocol: Option<&str>,
     body: &Json,
     timeout_ms: u64,
 ) -> Result<Option<Json>, String> {
@@ -251,6 +261,9 @@ fn http_roundtrip(
     if let Some(id) = session.lock().unwrap().clone() {
         request = request.set("mcp-session-id", &id);
     }
+    if let Some(version) = protocol {
+        request = request.set("mcp-protocol-version", version);
+    }
     let response = request.send_string(&body.to_string()).map_err(|e| format!("MCP HTTP request failed: {e}"))?;
     if let Some(id) = response.header("mcp-session-id") {
         *session.lock().unwrap() = Some(id.to_string());
@@ -260,17 +273,30 @@ fn http_roundtrip(
     }
     let content_type = response.header("content-type").unwrap_or("").to_string();
     if content_type.contains("text/event-stream") {
-        let body = response.into_string().map_err(|e| format!("MCP HTTP bad SSE body: {e}"))?;
-        return sse_json(&body).map(Some).ok_or_else(|| "MCP HTTP SSE stream carried no JSON-RPC message".into());
+        let stream = response.into_string().map_err(|e| format!("MCP HTTP bad SSE body: {e}"))?;
+        return sse_json(&stream, &body["id"]).map(Some).ok_or_else(|| "MCP HTTP SSE stream carried no matching JSON-RPC response".into());
     }
     let payload: Json = response.into_json().map_err(|e| format!("MCP HTTP bad json: {e}"))?;
+    if body.get("id").is_some() && payload.get("id") != body.get("id") {
+        return Err("MCP HTTP response id does not match request".into());
+    }
     Ok(Some(payload))
 }
 
-/// The JSON-RPC message inside an SSE stream is the last `data:` frame.
-fn sse_json(body: &str) -> Option<Json> {
-    body.lines()
-        .filter_map(|line| line.strip_prefix("data:"))
-        .filter_map(|data| serde_json::from_str::<Json>(data.trim()).ok())
-        .last()
+/// Blank lines delimit events; all data fields in one event form one payload.
+fn sse_json(body: &str, id: &Json) -> Option<Json> {
+    let normalized = body.trim_start_matches('\u{feff}').replace("\r\n", "\n").replace('\r', "\n");
+    for event in normalized.split_inclusive("\n\n") {
+        if !event.ends_with("\n\n") { continue; }
+        let data = event.lines().filter_map(|line| {
+            if line == "data" { return Some(""); }
+            line.strip_prefix("data:").map(|s| s.strip_prefix(' ').unwrap_or(s))
+        }).collect::<Vec<_>>().join("\n");
+        if let Ok(message) = serde_json::from_str::<Json>(&data) {
+            if message.get("id") == Some(id) && (message.get("result").is_some() || message.get("error").is_some()) {
+                return Some(message);
+            }
+        }
+    }
+    None
 }

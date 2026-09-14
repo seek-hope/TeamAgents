@@ -20,7 +20,7 @@ python3 tui/scripts/pty_smoke.py         # 真终端冒烟
 python3 tui/scripts/pty_click_check.py   # 真终端点击命中检查
 ```
 
-- 当前基线：core 43 / engine 109 / tui 67 项测试全绿。验收清单 `docs/ACCEPTANCE.md`，
+- 当前基线：core 43 / engine 116 / tui 70 项测试全绿。验收清单 `docs/ACCEPTANCE.md`，
   迁移台账与未移植项 `docs/RECONSTRUCT.md`，决策记录 `docs/DECISIONS.md`。
 
 ## 架构速览（改代码前先读这 6 行）
@@ -38,6 +38,7 @@ python3 tui/scripts/pty_click_check.py   # 真终端点击命中检查
 
 - 现行审查报告：`review/findings-deep-review-2026-09-14.md`（发现+证据）、
   `review/fix-notes-deep-review-2026-09-14.md`（修复台账+测试名）；更早的 `review/*` 是历史资料。
+- 后续更新修复与 `/model` 扩展：`review/fix-notes-rust-updates-2026-09-14.md`。
 - 只读审查不得修改被审文件；结论必须带可复跑的命令或探针（探针放 /tmp 或 `review/tmp/`），
   报"证伪"前先排除探针自身误差。
 

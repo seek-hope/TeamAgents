@@ -21,6 +21,7 @@ impl WorkerClient {
         let mut child = Command::new(env!("CARGO_BIN_EXE_teamagents"))
             .arg("serve")
             .env("XDG_STATE_HOME", state_home)
+            .env("XDG_CONFIG_HOME", state_home.join("config"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -72,6 +73,9 @@ fn state_home(tag: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("ta-worker-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
+    std::fs::create_dir_all(dir.join("config/teamagents")).unwrap();
+    std::fs::write(dir.join("config/teamagents/config.toml"),
+        "[models.leader_main]\nprovider='openai'\nmodel='test'\nbase_url='http://127.0.0.1:9'\nmax_retries=0\n[models.other]\nprovider='openai'\nmodel='other'\n").unwrap();
     dir
 }
 
@@ -183,6 +187,15 @@ fn worker_set_model_switches_and_clears_overrides() {
     assert_eq!(leader.get("model").and_then(|v| v.as_str()), Some("gpt-5-mini"));
     assert_eq!(leader.get("overridden").and_then(|v| v.as_bool()), Some(true));
 
+    let profiles = report["profiles"].as_array().expect("configured model choices");
+    assert!(profiles.iter().any(|p| p["id"] == "other"));
+    let selected = worker.call("set_model", json!({"agent_id":"leader", "profile":"other", "effort":"HIGH"})).unwrap();
+    assert_eq!(selected["model_profile"], "other");
+    assert_eq!(selected["model"], "other");
+    assert_eq!(selected["provider"], "openai");
+    assert_eq!(selected["effort"], "high");
+    assert!(worker.call("set_model", json!({"agent_id":"leader", "profile":"missing"})).unwrap_err().contains("unknown model profile"));
+
     // unknown member / unknown effort are clean protocol errors
     let err = worker.call("set_model", json!({"agent_id": "ghost", "model": "x"})).expect_err("ghost");
     assert!(err.contains("unknown member"), "{err}");
@@ -195,6 +208,47 @@ fn worker_set_model_switches_and_clears_overrides() {
     let cleared = worker.call("set_model", json!({"agent_id": "leader"})).expect("clear");
     assert_eq!(cleared.get("overridden").and_then(|v| v.as_bool()), Some(false));
     worker.close();
+}
+
+#[test]
+fn model_discovery_does_not_block_worker_requests() {
+    use std::io::Read;
+    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+    let home = state_home("discovery");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    std::fs::write(home.join("config/teamagents/config.toml"), format!(
+        "[models.leader_main]\nprovider='local'\nmodel='configured'\nbase_url='{base}/v1'\n")).unwrap();
+    let released = Arc::new(AtomicBool::new(false));
+    let release = released.clone();
+    let (tx, rx) = channel();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut header = vec![];
+        while !header.ends_with(b"\r\n\r\n") { let mut b = [0]; stream.read_exact(&mut b).unwrap(); header.push(b[0]); }
+        tx.send(()).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !release.load(Ordering::SeqCst) && std::time::Instant::now() < deadline { std::thread::sleep(std::time::Duration::from_millis(10)); }
+        let body = json!({"data":[{"id":"online"}]}).to_string();
+        let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+    });
+    let mut worker = WorkerClient::spawn(&home);
+    worker.call("open", json!({"cwd":"/tmp","scripts":{"leader":[["end"]]}})).unwrap();
+    writeln!(worker.stdin, "{}", json!({"id":999,"method":"discover_models","params":{"provider":"local"}})).unwrap();
+    worker.stdin.flush().unwrap();
+    rx.recv_timeout(std::time::Duration::from_secs(3)).unwrap();
+    let started = std::time::Instant::now();
+    worker.call("ping", json!({})).unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_secs(2), "network discovery blocked the worker");
+    released.store(true, Ordering::SeqCst);
+    let reply = worker.responses.recv_timeout(std::time::Duration::from_secs(3)).unwrap();
+    assert_eq!(reply["id"], 999);
+    assert_eq!(reply["result"]["models"][0]["model"], "online");
+    let selected = worker.call("set_model", json!({"agent_id":"leader","profile":"leader_main","model":"online","effort":"high"})).unwrap();
+    assert_eq!(selected["model"], "online");
+    assert_eq!(selected["provider"], "local");
+    worker.close();
+    server.join().unwrap();
 }
 
 #[test]

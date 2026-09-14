@@ -208,6 +208,7 @@ extern "C" {
 
 enum BgMsg {
     Op(OpResult),
+    Models { session: String, generation: u64, provider: String, result: Result<Json, String> },
     SlowTick { shared: Vec<Json>, sessions: Vec<Json> },
 }
 
@@ -272,6 +273,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, worker: &Arc<
                     app.shared = shared;
                     app.sessions = sessions;
                 }
+                BgMsg::Models { session, generation, provider, result } => app.show_discovered_models(&session, generation, &provider, result),
             }
             dirty = true;
         }
@@ -449,8 +451,18 @@ fn run_effect(e: Effect, worker: &Arc<Worker>, app: &mut App, bg: &std::sync::mp
             let report = worker.call("model", json!({}));
             app.show_models(report);
         }
-        Effect::SetModel { agent_id, model, effort } => {
-            let result = worker.call("set_model", json!({"agent_id": agent_id, "model": model, "effort": effort}));
+        Effect::DiscoverModels { provider } => {
+            let worker = worker.clone();
+            let tx = bg.clone();
+            let session = app.session_id.clone();
+            let generation = app.model_generation;
+            std::thread::spawn(move || {
+                let result = worker.call("discover_models", json!({"provider":provider}));
+                let _ = tx.send(BgMsg::Models { session, generation, provider, result });
+            });
+        }
+        Effect::SetModel { agent_id, profile, model, effort } => {
+            let result = worker.call("set_model", json!({"agent_id": agent_id, "profile": profile, "model": model, "effort": effort}));
             app.show_model_set(result);
         }
         Effect::UserMessage(text) => match worker.call("user_message", json!({"text": text})) {
@@ -533,7 +545,7 @@ fn handle_mouse(m: event::MouseEvent, terminal: &Terminal<CrosstermBackend<std::
     // every mouse event updates the hover position (grey surface + white text marks
     // what a click would hit)
     app.pointer = Some((m.row, m.column));
-    if app.settings_open {
+    if app.settings_open || app.model_picker.is_some() {
         return; // the settings overlay is modal
     }
     let geo = ui::geometry(app, area);

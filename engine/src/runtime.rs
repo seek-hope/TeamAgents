@@ -270,16 +270,19 @@ impl Runtime {
 
     /// Drop the cached runner so the next turn rebuilds it from the factory
     /// (session-level model override). Same remove+close pattern as the
-    /// stale-rebuild path in start_ready_runs, except a runner with a turn in
-    /// flight is left open: closing it would interrupt the live turn (the
-    /// override then applies from the member's next turn).
+    /// stale-rebuild path in start_ready_runs. An active runner stays reachable
+    /// for cancellation, approval decisions and mid-turn input until it exits.
     pub fn drop_runner(&self, agent_id: &str) {
-        let old = self.runners.lock().unwrap().remove(agent_id);
-        let Some((_, runner)) = old else { return };
-        let busy = self.inflight.lock().unwrap().values().any(|slot| slot.agent_id == agent_id);
-        if !busy {
-            runner.close();
-        }
+        let old = {
+            let inflight = self.inflight.lock().unwrap();
+            let mut runners = self.runners.lock().unwrap();
+            if inflight.values().any(|slot| slot.agent_id == agent_id) {
+                if let Some((revision, _)) = runners.get_mut(agent_id) { *revision = -1; }
+                return;
+            }
+            runners.remove(agent_id)
+        };
+        if let Some((_, runner)) = old { runner.close(); }
     }
 
     pub fn me(&self) -> Option<Arc<Runtime>> {
@@ -552,9 +555,9 @@ impl Runtime {
             if !run.cancel_requested {
                 continue;
             }
+            slot.control.cancel();
             let Some(runner) = self.runner(&run.agent_id) else { continue };
             slot.cancel_started.store(true, Ordering::SeqCst);
-            slot.control.cancel();
             stopping.push((run.clone(), runner));
         }
         for (run, runner) in stopping {

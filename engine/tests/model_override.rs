@@ -18,7 +18,9 @@ use support::*;
 fn catalog() -> UserConfig {
     serde_json::from_value(json!({
         "models": {"m": {"provider": "openai", "protocol": "openai", "model": "gpt-default",
-                         "generation_options": {"reasoning_effort": "medium"}}},
+                         "generation_options": {"reasoning_effort": "medium"}},
+                   "claude": {"provider":"anthropic", "protocol":"anthropic", "model":"claude-test",
+                              "generation_options":{"output_config":{"effort":"high"}}}},
     }))
     .unwrap()
 }
@@ -90,6 +92,15 @@ fn set_model_override_applies_reports_and_clears() {
     assert!(err.contains("non-empty"), "{err}");
     let err = opened.set_model_override("leader", None, Some("insane".into())).unwrap_err();
     assert!(err.contains("effort"), "{err}");
+    let selected = opened.set_model_selection("leader", Some("claude".into()), None, None).unwrap();
+    assert_eq!(selected["provider"], "anthropic");
+    assert_eq!(selected["model"], "claude-test");
+    assert_eq!(selected["effort"], "high");
+    let selected = opened.set_model_override("leader", Some("claude-other".into()), Some("LOW".into())).unwrap();
+    assert_eq!(selected["provider"], "anthropic", "manual model names keep the selected provider");
+    assert_eq!(selected["effort"], "low");
+    assert!(opened.set_model_selection("cod", Some("claude".into()), None, None).unwrap_err().contains("Responses"));
+    assert_eq!(opened.set_model_override("leader", None, None).unwrap()["model_profile"], "m");
     opened.close();
 }
 
@@ -158,7 +169,7 @@ fn drop_runner_keeps_an_inflight_turn_alive() {
     assert!(running, "w's turn started");
 
     h.runtime.drop_runner("w");
-    assert!(h.runtime.runner("w").is_none(), "dropped from the cache");
+    assert!(h.runtime.runner("w").is_some(), "active runner remains reachable until the next turn");
     std::thread::sleep(std::time::Duration::from_millis(800)); // outlives the 400ms turn
     assert!(!closed.load(Ordering::SeqCst), "a busy runner is not closed under the live turn");
 

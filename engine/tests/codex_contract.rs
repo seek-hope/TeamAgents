@@ -59,11 +59,12 @@ fn runner_with(core: &Arc<CoreClient>, session: &str, bin: &str, extra_env: Vec<
             sandbox: "workspace-write".into(),
             approval_policy: "on-request".into(),
             effort: None,
-            model: None,
+            model: extra_env.iter().find(|(k, _)| *k == "FAKE_MODEL").map(|(_, v)| v.to_string()),
             codex_bin: Some(bin.into()),
             codex_home: None,
+            config_overrides: extra_env.iter().find(|(k, _)| *k == "FAKE_PROVIDER")
+                .map(|(_, v)| vec![("model_provider".into(), json!(v))]).unwrap_or_default(),
             env: extra_env.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
-            config_overrides: vec![],
         },
         core.clone(),
         ApprovalGate::new(core.clone(), PermissionPolicy::default()),
@@ -89,6 +90,9 @@ for line in sys.stdin:
     if not line:
         continue
     message = json.loads(line)
+    if os.environ.get("FAKE_REQUEST_LOG"):
+        with open(os.environ["FAKE_REQUEST_LOG"], "a") as fh:
+            fh.write(json.dumps(message) + "\n")
     method = message.get("method")
     if method is None:
         continue
@@ -98,7 +102,7 @@ for line in sys.stdin:
     result = {}
     if method == "initialize":
         result = {"userAgent": "fake-history/0.1"}
-    elif method == "thread/start":
+    elif method in ("thread/start", "thread/resume"):
         result = {"thread": {"id": "thr-1"}}
     elif method == "turn/start":
         result = {"turn": {"id": "turn-1", "status": "inProgress"}}
@@ -121,6 +125,34 @@ fn fake_history_server(dir: &std::path::Path) -> String {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
     path.to_string_lossy().into_owned()
+}
+
+#[test]
+fn model_switch_resumes_codex_thread_with_selected_provider_and_model() {
+    let _env = env_guard("codex-model-switch");
+    let dir = std::env::temp_dir().join(format!("ta-codex-model-switch-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let bin = fake_history_server(&dir);
+    let log = dir.join("requests.jsonl");
+    let log_str = log.to_string_lossy();
+    let core = core_with_spec("cx-model", json!({"leader_id":"leader", "agents":[member("leader","leader"),codex_agent()]}));
+    for model in ["old-model", "new-model"] {
+        let runner = runner_with(&core, "cx-model", &bin, vec![
+            ("FAKE_MODEL", model), ("FAKE_PROVIDER", model), ("FAKE_REQUEST_LOG", &log_str)
+        ]);
+        let outcome = runner.start_or_resume(&run_for("cx-model", model, None), &view(), &gateway(&core, model), &json!({"reason":"new_input"}));
+        assert_eq!(outcome.status, TurnStatus::Completed);
+        runner.close();
+    }
+    let requests: Vec<Json> = std::fs::read_to_string(&log).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let resume = requests.iter().find(|r| r["method"] == "thread/resume").expect("must load the persisted thread");
+    assert_eq!(resume["params"]["threadId"], "thr-1");
+    assert_eq!(resume["params"]["model"], "new-model");
+    assert_eq!(resume["params"]["modelProvider"], "new-model");
+    let models: Vec<_> = requests.iter().filter(|r| r["method"] == "turn/start").map(|r| r["params"]["model"].as_str().unwrap()).collect();
+    assert_eq!(models, ["old-model", "new-model"]);
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 fn python_available() -> bool {

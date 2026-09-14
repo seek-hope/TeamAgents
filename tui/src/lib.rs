@@ -3,6 +3,7 @@
 pub mod app;
 pub mod i18n;
 pub mod md;
+pub mod model_picker;
 pub mod text;
 pub mod theme;
 pub mod ui;

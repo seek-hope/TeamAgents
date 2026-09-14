@@ -624,6 +624,7 @@ fn model_slash_command_lists_effective_models() {
     assert!(text.contains("Member models"), "{text}");
     assert!(text.contains("Leader | model gpt-5 | effort high*"), "{text}");
     assert!(text.contains("W | model gpt-default | effort Not configured"), "{text}");
+    assert!(app.composer_title().contains("gpt-5 · high *"), "the selected model appears in the composer title");
 
     // zh-CN rendering
     let mut zh = App::new("s1", json!({"models": {}}), "/tmp/cfg".into(), "zh-CN", true, vec![]);
@@ -648,7 +649,7 @@ fn model_slash_command_with_args_sets_or_clears() {
     let mut app = app_with(state(vec![]));
     let fx = type_and_enter(&mut app, "/model worker gpt-5 high");
     assert!(
-        matches!(fx.as_slice(), [Effect::SetModel { agent_id, model, effort }]
+        matches!(fx.as_slice(), [Effect::SetModel { agent_id, model, effort, .. }]
             if agent_id == "worker" && model.as_deref() == Some("gpt-5") && effort.as_deref() == Some("high")),
         "{fx:?}"
     );
@@ -656,7 +657,7 @@ fn model_slash_command_with_args_sets_or_clears() {
     let mut app = app_with(state(vec![]));
     let fx = type_and_enter(&mut app, "/model worker clear");
     assert!(
-        matches!(fx.as_slice(), [Effect::SetModel { agent_id, model: None, effort: None }] if agent_id == "worker"),
+        matches!(fx.as_slice(), [Effect::SetModel { agent_id, model: None, effort: None, .. }] if agent_id == "worker"),
         "{fx:?}"
     );
 
@@ -673,6 +674,89 @@ fn model_slash_command_with_args_sets_or_clears() {
     assert!(app.chat.last().unwrap().1.contains("Restored worker to the profile default: model gpt-default · effort medium"), "{}", app.chat.last().unwrap().1);
     app.show_model_set(Err("boom".into()));
     assert!(app.chat.last().unwrap().1.contains("Model switch failed: boom"), "{}", app.chat.last().unwrap().1);
+}
+
+#[test]
+fn model_picker_selects_members_profiles_effort_and_restores_defaults() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let key = |app: &mut App, code| app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+    let report = json!({"leader_id":"leader", "agents":[
+        {"agent_id":"worker", "name":"W", "runtime_kind":"deepagents", "provider":"old", "model_profile":"old"},
+        {"agent_id":"leader", "name":"Leader", "runtime_kind":"deepagents", "provider":"old", "model_profile":"old"}
+    ], "profiles":[
+        {"id":"old", "provider":"old", "model":"old-model", "protocol":"openai", "efforts":["low","high"]},
+        {"id":"new", "provider":"vendor", "model":"chosen-model", "protocol":"openai", "efforts":["low","high","max"]}
+    ]});
+    for (member_index, member) in [(0,"leader"), (1,"worker")] {
+        let mut app = app_with(state(vec![]));
+        app.show_models(Ok(report.clone()));
+        for _ in 0..member_index { key(&mut app, KeyCode::Down); }
+        assert!(key(&mut app, KeyCode::Enter).is_empty());
+        for c in "vendor".chars() { key(&mut app, KeyCode::Char(c)); }
+        key(&mut app, KeyCode::Enter); // provider
+        key(&mut app, KeyCode::Enter); // model
+        app.handle_paste("high");
+        assert!(app.composer.text().is_empty(), "picker paste must not enter the composer");
+        for _ in 0..10 { key(&mut app, KeyCode::Down); }
+        assert_eq!(app.model_picker.as_ref().unwrap().index, 0, "filtered selection stays in bounds");
+        let effects = key(&mut app, KeyCode::Enter);
+        assert!(matches!(effects.as_slice(), [Effect::SetModel { agent_id, profile, model: None, effort }]
+            if agent_id == member && profile.as_deref() == Some("new") && effort.as_deref() == Some("high")));
+        assert!(app.model_picker.is_none());
+    }
+    let mut app = app_with(state(vec![]));
+    app.show_models(Ok(report.clone()));
+    key(&mut app, KeyCode::Enter);
+    key(&mut app, KeyCode::Esc); // back to members, without interrupting leader
+    assert!(app.model_picker.is_some());
+    assert!(key(&mut app, KeyCode::Esc).is_empty());
+    assert!(app.model_picker.is_none());
+    app.show_models(Ok(report));
+    key(&mut app, KeyCode::Enter);
+    for _ in 0..10 { key(&mut app, KeyCode::Down); }
+    let effects = key(&mut app, KeyCode::Enter);
+    assert!(matches!(effects.as_slice(), [Effect::SetModel { agent_id, profile: None, model: None, effort: None }] if agent_id == "leader"));
+}
+
+#[test]
+fn dynamic_models_merge_without_moving_selection_or_reviving_closed_pickers() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let key = |app: &mut App, code| app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+    let report = json!({"agents":[{"agent_id":"leader", "name":"Leader"}], "profiles":[
+        {"id":"p", "provider":"local", "model":"configured", "protocol":"openai", "efforts":["low","high"]}
+    ]});
+    let remote = json!({"models":[
+        {"id":"p", "provider":"local", "model":"online", "protocol":"openai", "discovered":true,"efforts":["low","high"]}
+    ],"errors":[]});
+    let mut app = app_with(state(vec![]));
+    app.show_models(Ok(report.clone()));
+    key(&mut app, KeyCode::Enter);
+    assert!(matches!(key(&mut app, KeyCode::Enter).as_slice(), [Effect::DiscoverModels {provider}] if provider == "local"));
+    let generation = app.model_generation;
+    app.show_discovered_models("old-session", generation, "local", Ok(remote.clone()));
+    assert_eq!(app.model_picker.as_ref().unwrap().options("en").len(), 1);
+    app.show_discovered_models("s1", generation, "local", Ok(remote.clone()));
+    let picker = app.model_picker.as_ref().unwrap();
+    assert_eq!(picker.options("en").len(), 2);
+    assert_eq!(picker.index, 0);
+    assert!(!picker.loading);
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::Enter);
+    app.handle_paste("high");
+    let selected = key(&mut app, KeyCode::Enter);
+    assert!(matches!(selected.as_slice(), [Effect::SetModel {profile, model, effort, ..}]
+        if profile.as_deref() == Some("p") && model.as_deref() == Some("online") && effort.as_deref() == Some("high")));
+    app.show_discovered_models("s1", generation, "local", Ok(remote.clone()));
+    assert!(app.model_picker.is_none());
+    app.show_models(Ok(report));
+    key(&mut app, KeyCode::Enter);
+    key(&mut app, KeyCode::Enter);
+    app.show_discovered_models("s1", generation, "local", Ok(remote));
+    assert_eq!(app.model_picker.as_ref().unwrap().options("en").len(), 1, "old responses must not alter a new picker");
+    app.show_discovered_models("s1", app.model_generation, "local", Err("HTTP 403".into()));
+    let picker = app.model_picker.as_ref().unwrap();
+    assert_eq!(picker.options("en").len(), 1);
+    assert!(picker.notice.contains("configured models remain available") && picker.notice.contains("HTTP 403"));
 }
 
 

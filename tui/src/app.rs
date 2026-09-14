@@ -69,8 +69,9 @@ pub enum Effect {
     Fork,
     /// /model with no args: worker "model" → App::show_models.
     ModelStatus,
+    DiscoverModels { provider: String },
     /// /model <member> <model> [effort]; None/None clears the override.
-    SetModel { agent_id: String, model: Option<String>, effort: Option<String> },
+    SetModel { agent_id: String, profile: Option<String>, model: Option<String>, effort: Option<String> },
     SwitchSession(String),
     NewSession,
     ArchiveSession(String),
@@ -210,6 +211,9 @@ pub struct App {
     pub log_scroll: usize,
     /// `/settings` overlay (Esc closes; ↑↓ move, Enter toggles)
     pub settings_open: bool,
+    pub model_picker: Option<crate::model_picker::ModelPicker>,
+    model_labels: std::collections::HashMap<String, String>,
+    pub model_generation: u64,
     /// node ids of the last shown /rewind list (newest first)
     rewind_list: Vec<String>,
     /// last mouse position, for hover feedback (row, column)
@@ -258,6 +262,9 @@ impl App {
             chat_scroll: 0,
             log_scroll: 0,
             settings_open: false,
+            model_picker: None,
+            model_labels: Default::default(),
+            model_generation: 0,
             rewind_list: vec![],
             pointer: None,
             slash_index: 0,
@@ -591,7 +598,7 @@ impl App {
             .get("agents")
             .and_then(|v| v.as_array())
             .and_then(|a| a.iter().find(|x| jstr(x, "id") == leader))
-            .map(|a| jstr(a, "model_profile"))
+            .map(|a| self.model_label(a))
             .unwrap_or_default();
         format!("{state} · Leader / {profile}")
     }
@@ -605,7 +612,7 @@ impl App {
             .get("agents")
             .and_then(|v| v.as_array())
             .and_then(|a| a.iter().find(|x| jstr(x, "id") == leader))
-            .map(|a| jstr(a, "model_profile"))
+            .map(|a| self.model_label(a))
             .unwrap_or_default();
         self.t("{v0} · Leader / {v1} · 可继续输入补充要求", &[("v0", &state), ("v1", &profile)])
     }
@@ -759,7 +766,7 @@ impl App {
                 cell(id.clone()),
                 cell(jstr(agent, "role")),
                 cell(jstr(agent, "runtime_kind")),
-                cell(jstr(agent, "model_profile")),
+                cell(self.model_label(agent)),
                 (status_label, Some(style)),
                 cell(agent.get("workspace_policy").and_then(|v| v.as_str()).unwrap_or("shared").to_string()),
                 cell(if reach.is_empty() { "-".into() } else { reach.join(" ") }),
@@ -1084,6 +1091,11 @@ impl App {
     }
 
     pub fn handle_paste(&mut self, text: &str) {
+        if let Some(picker) = &mut self.model_picker {
+            picker.query.extend(text.chars().filter(|c| !c.is_control()));
+            picker.index = 0;
+            return;
+        }
         self.pin_to_bottom();
         for c in text.chars() {
             if c == '\n' {
@@ -1097,6 +1109,12 @@ impl App {
     pub fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> Vec<Effect> {
         use crossterm::event::{KeyCode, KeyModifiers as Mod};
         let ctrl = key.modifiers.contains(Mod::CONTROL);
+        if let Some(mut picker) = self.model_picker.take() {
+            let effects = picker.handle_key(key, self.lang);
+            if effects.iter().any(|e| matches!(e, Effect::DiscoverModels { .. })) { self.model_generation += 1; }
+            if !picker.closed { self.model_picker = Some(picker); }
+            return effects;
+        }
         // overlays swallow keys while open; the picker is the innermost layer
         if self.lang_open {
             return self.settings_dropdown_key(key);
@@ -1359,6 +1377,8 @@ impl App {
         self.state = None;
         self.pending_delete = None;
         self.rewind_list.clear();
+        self.model_picker = None;
+        self.model_labels.clear();
     }
 
     pub fn show_fork_done(&mut self, result: Result<Json, String>) {
@@ -1384,10 +1404,11 @@ impl App {
     fn run_model_args(&mut self, rest: &str) -> Vec<Effect> {
         let tokens: Vec<&str> = rest.split_whitespace().collect();
         match tokens.as_slice() {
-            [member, "clear"] => vec![Effect::SetModel { agent_id: member.to_string(), model: None, effort: None }],
-            [member, model] => vec![Effect::SetModel { agent_id: member.to_string(), model: Some(model.to_string()), effort: None }],
+            [member, "clear"] => vec![Effect::SetModel { agent_id: member.to_string(), profile: None, model: None, effort: None }],
+            [member, model] => vec![Effect::SetModel { agent_id: member.to_string(), profile: None, model: Some(model.to_string()), effort: None }],
             [member, model, effort] => vec![Effect::SetModel {
                 agent_id: member.to_string(),
+                profile: None,
                 model: Some(model.to_string()),
                 effort: Some(effort.to_string()),
             }],
@@ -1410,6 +1431,10 @@ impl App {
                 return;
             }
         };
+        self.model_labels.clear();
+        for agent in report["agents"].as_array().into_iter().flatten() { self.record_model_label(agent); }
+        self.model_generation += 1;
+        self.model_picker = Some(crate::model_picker::ModelPicker::new(&report));
         let mut lines = vec![self.t("成员模型（* = 会话内覆盖，重开会话失效）：", &[])];
         for agent in report.get("agents").and_then(|v| v.as_array()).cloned().unwrap_or_default() {
             let not_configured = self.t("未配置", &[]);
@@ -1424,6 +1449,11 @@ impl App {
         self.write_chat("system", &lines.join("\n"));
     }
 
+    pub fn show_discovered_models(&mut self, session: &str, generation: u64, provider: &str, result: Result<Json, String>) {
+        if session != self.session_id || generation != self.model_generation { return; }
+        if let Some(picker) = &mut self.model_picker { picker.merge_discovered(provider, result, self.lang); }
+    }
+
     /// `/model <member> …` result: the effective values after the change.
     pub fn show_model_set(&mut self, result: Result<Json, String>) {
         let v = match result {
@@ -1434,6 +1464,7 @@ impl App {
                 return;
             }
         };
+        self.record_model_label(&v);
         let not_configured = self.t("未配置", &[]);
         let get = |key: &str| {
             let value = v.get(key).and_then(|x| x.as_str()).unwrap_or("").to_string();
@@ -1447,8 +1478,24 @@ impl App {
         } else {
             "已恢复 {v0} 的 profile 默认：模型 {v1} · 档位 {v2}"
         };
-        let msg = self.t(id, &refs);
+        let mut msg = self.t(id, &refs);
+        if let Some(provider) = v.get("provider").and_then(Json::as_str) {
+            msg.push_str(&self.t(" · 供应商 {v0}", &[("v0", provider)]));
+        }
         self.write_chat("system", &msg);
+    }
+
+    fn record_model_label(&mut self, agent: &Json) {
+        let id = jstr(agent, "agent_id");
+        if agent["overridden"] == true {
+            self.model_labels.insert(id, format!("{} / {} · {} *", jstr(agent, "provider"), jstr(agent, "model"), jstr(agent, "effort")));
+        } else {
+            self.model_labels.remove(&id);
+        }
+    }
+
+    fn model_label(&self, agent: &Json) -> String {
+        self.model_labels.get(&jstr(agent, "id")).cloned().unwrap_or_else(|| jstr(agent, "model_profile"))
     }
 
     /// `/status` result: one line per member — model | context window |

@@ -909,7 +909,8 @@ fn review_crash_after_committed_chat_action_must_not_replay_it() {
         // The model must see the committed result after restart. An API that
         // deliberately requests the same operation again is a different task.
         if index == 1 { std::thread::sleep(Duration::from_millis(500)); }
-        let has_result = body["messages"].as_array().unwrap().iter().any(|m| m["role"] == "tool");
+        let has_result = body["messages"].as_array().unwrap().iter().any(|m|
+            m["role"] == "tool" && m["content"].as_str().unwrap_or("").contains("sequence"));
         (200, if has_result { text_response("done") } else {
             tool_call_response(&format!("publish-{index}"), "publish_shared", json!({"space_id":"main", "content":"once-only"}))
         })
@@ -930,7 +931,13 @@ fn review_crash_after_committed_chat_action_must_not_replay_it() {
             .join("members/leader/turns").join(format!("{run_id}.json"));
         let mut checkpoint: Json = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(checkpoint["history"].as_array_mut().unwrap().pop().unwrap()["role"], "tool");
-        std::fs::write(path, checkpoint.to_string()).unwrap();
+        checkpoint["model_steps"] = json!(1);
+        std::fs::write(&path, checkpoint.to_string()).unwrap();
+        // The actual pre-result boundary has no result in either file.
+        let history_path = path.parent().unwrap().parent().unwrap().join("chat_history.json");
+        let mut history: Json = serde_json::from_slice(&std::fs::read(&history_path).unwrap()).unwrap();
+        history[state["runs"][0]["context_ref"].as_str().unwrap()] = checkpoint["history"].clone();
+        std::fs::write(history_path, history.to_string()).unwrap();
     }
     let mut worker = ProbeWorker::spawn(&base);
     worker.call("open", json!({"cwd":base,"team":team,"resume":opened["session_id"]})).unwrap();
@@ -1078,20 +1085,173 @@ fn review_completed_checkpoint_restores_reply_without_another_model_call() {
     restored.close();
 }
 
+#[test]
+fn review_tree_commit_recovers_on_both_sides_of_rename() {
+    let _env = env_guard("review-tree-journal");
+    let agent = agent_json("leader", "leader", &[]);
+    let core = core_with_spec("tree-journal", json!({"leader_id":"leader", "agents":[agent]}));
+    let api = FakeOpenAi::start(|_, _| (200, text_response("durable reply")));
+    let run: TurnRun = serde_json::from_value(json!({
+        "run_id":"journal", "session_id":"tree-journal", "agent_id":"leader",
+        "config_revision":1, "topology_revision":1, "context_ref":"ctx:leader:1"
+    })).unwrap();
+    let view = json!({"inbox_delta":[], "delivery_ids":[]});
+    let build = || chat_runner(&core, &agent, profile(&api.base_url(), "openai", json!({}), 0), "/tmp");
+    let gateway = || ToolGateway::new(core.clone(), "leader", "journal",
+        ApprovalGate::new(core.clone(), PermissionPolicy::default()), None);
+    let first = build();
+    assert_eq!(first.start_or_resume(&run, &view, &gateway(), &Json::Null).status, TurnStatus::Completed);
+    first.close();
+    let dir = first.history_dir().unwrap();
+    let tree_path = dir.join("chat_tree.json");
+    let cp_path = dir.join("turns/journal.json");
+    let tree: Json = serde_json::from_slice(&std::fs::read(&tree_path).unwrap()).unwrap();
+    let mut checkpoint: Json = serde_json::from_slice(&std::fs::read(&cp_path).unwrap()).unwrap();
+    checkpoint["tree_pending"] = tree["ctx:leader:1"]["nodes"].clone();
+    for renamed in [false, true] {
+        std::fs::write(&cp_path, checkpoint.to_string()).unwrap();
+        std::fs::write(&tree_path, if renamed { tree.to_string() }
+            else { json!({"ctx:leader:1":{"nodes":[], "leaf":null, "rewind_epoch":0}}).to_string() }).unwrap();
+        let restored = build();
+        let outcome = restored.start_or_resume(&run, &view, &gateway(), &Json::Null);
+        assert_eq!(outcome.status, TurnStatus::Completed, "renamed={renamed}: {outcome:?}");
+        assert_eq!(outcome.reply_text.as_deref(), Some("durable reply"));
+        let actual: Json = serde_json::from_slice(&std::fs::read(&tree_path).unwrap()).unwrap();
+        assert_eq!(actual, tree, "journal replay must not duplicate nodes");
+        assert_eq!(api.calls(), 1, "saved final response must not be requested again");
+        restored.close();
+    }
+    // Only a deliberate rewind invalidates the old completed checkpoint.
+    let restored = build();
+    restored.rewind("ctx:leader:1", None).unwrap();
+    assert_eq!(restored.start_or_resume(&run, &view, &gateway(), &Json::Null).status, TurnStatus::Completed);
+    assert_eq!(api.calls(), 2);
+    restored.close();
+}
+
+#[test]
+fn review_completed_turns_survive_tree_migration_and_restart() {
+    let _env = env_guard("review-history-roundtrip");
+    let cwd = isolated_project("history-roundtrip");
+    let api = FakeOpenAi::start(|_, index| (200, text_response(&format!("UNIQUE_REPLY_{index}"))));
+    let opened = open_chat_session(&cwd, &api, &[], UserConfig::default());
+    let dir = teamagents_engine::sessions::session_paths("review").base.join("members/leader");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("chat_history.json"), json!({"ctx:leader:1":[
+        {"role":"user","content":"legacy input"}, {"role":"assistant","content":"legacy reply"}
+    ]}).to_string()).unwrap();
+    opened.runtime.start();
+    for text in ["first", "second"] {
+        opened.runtime.user_message(text, false).unwrap();
+        assert!(opened.runtime.settle(5));
+    }
+    opened.close();
+    let tree: Json = serde_json::from_slice(&std::fs::read(dir.join("chat_tree.json")).unwrap()).unwrap();
+    let replies: Vec<_> = tree["ctx:leader:1"]["nodes"].as_array().unwrap().iter()
+        .filter(|n| n["message"]["role"] == "assistant").map(|n| n["message"]["content"].as_str().unwrap()).collect();
+    assert_eq!(replies, vec!["legacy reply", "UNIQUE_REPLY_0", "UNIQUE_REPLY_1"]);
+    let resumed = open_chat_session(&cwd, &api, &[], UserConfig::default());
+    resumed.runtime.start();
+    resumed.runtime.user_message("third", false).unwrap();
+    assert!(resumed.runtime.settle(5));
+    assert!(api.body(2)["messages"].to_string().contains("UNIQUE_REPLY_1"));
+    resumed.close();
+}
+
+#[test]
+fn review_model_override_preserves_cancellation_and_applies_next_turn() {
+    let _env = env_guard("review-model-cancel");
+    let cwd = isolated_project("model-cancel");
+    let api = FakeOpenAi::start(|_, index| (200, if index == 0 {
+        tool_call_response("shell-1", "shell", json!({"command":"touch started; sleep 2; echo BAD > late", "timeout":10}))
+    } else { text_response("done") }));
+    let replacement = FakeOpenAi::start(|_, _| (200, json!({"content":[{"type":"text","text":"replacement done"}]})));
+    let mut catalog = UserConfig::default();
+    catalog.models.insert("replacement".into(), ModelProfile {
+        provider: "anthropic".into(), model: "replacement-model".into(), context_window: Some(200000),
+        ..profile(&replacement.base_url(), "anthropic", json!({"max_tokens":4321}), 0)
+    });
+    let opened = open_chat_session(&cwd, &api, &["shell"], catalog);
+    opened.runtime.start();
+    opened.runtime.user_message("run shell", false).unwrap();
+    assert!(wait_for(|| cwd.join("started").exists(), 5000), "real sandbox did not start");
+    let run = runs(&opened.core).into_iter().find(|r| r.status == TurnStatus::Running).unwrap();
+    opened.set_model_selection("leader", Some("replacement".into()), None, Some("HIGH".into())).unwrap();
+    let receipt = submit(&opened.core, "cancel", "user", "cancel_run", json!({"run_id":run.run_id}));
+    assert!(receipt.ok);
+    assert!(wait_for(|| runs(&opened.core).iter().any(|r| r.run_id == run.run_id && r.status == TurnStatus::Cancelled), 5000));
+    assert!(!wait_for(|| cwd.join("late").exists(), 2300), "cancelled shell continued writing");
+    opened.runtime.user_message("next turn", false).unwrap();
+    assert!(opened.runtime.settle(5));
+    assert_eq!(api.calls(), 1, "the next turn must use the new provider endpoint");
+    assert_eq!(replacement.body(0)["model"], "replacement-model");
+    assert_eq!(replacement.body(0)["output_config"]["effort"], "high");
+    assert_eq!(replacement.body(0)["max_tokens"], 4321);
+    assert!(replacement.body(0).get("reasoning_effort").is_none(), "Anthropic uses output_config.effort");
+    assert_eq!(opened.usage_report()["agents"][0]["context_window"], 200000);
+    opened.close();
+}
+
+#[test]
+fn review_late_compaction_cannot_write_after_session_close() {
+    let _env = env_guard("review-late-compaction");
+    let cwd = isolated_project("late-compaction");
+    let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let release = released.clone();
+    let api = FakeOpenAi::start(move |body, index| {
+        if index == 1 {
+            assert!(body["messages"][0]["content"].as_str().unwrap().contains("compacting"));
+            assert!(wait_for(|| release.load(Ordering::SeqCst), 5000));
+        }
+        (200, text_with_usage(if index == 1 { "late summary" } else { "done" }, if index == 0 { 950 } else { 30 }))
+    });
+    let mut catalog = UserConfig::default();
+    let mut prof = profile(&api.base_url(), "openai", json!({}), 0);
+    prof.context_window = Some(1000);
+    catalog.models.insert("m".into(), prof);
+    let opened = open_session(OpenOptions {
+        cwd: Some(cwd), session_id: Some("late-compact".into()), catalog: Some(catalog),
+        initial_spec: Some(json!({"leader_id":"leader", "agents":[agent_json("leader", "leader", &[])]})),
+        ..Default::default()
+    }).unwrap();
+    opened.runtime.start();
+    opened.runtime.user_message("first", false).unwrap();
+    assert!(opened.runtime.settle(5));
+    opened.runtime.user_message("second", false).unwrap();
+    assert!(wait_for(|| api.calls() == 2, 5000));
+    opened.close();
+    let _lock = teamagents_engine::sessions::acquire_session_lock("late-compact").expect("old ownership released");
+    let dir = teamagents_engine::sessions::session_paths("late-compact").base.join("members/leader");
+    let before = std::fs::read(dir.join("chat_tree.json")).unwrap();
+    released.store(true, Ordering::SeqCst);
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(std::fs::read(dir.join("chat_tree.json")).unwrap(), before);
+    assert_eq!(api.calls(), 2);
+}
+
 /// D-28 ①+④: over-threshold usage triggers a handoff compaction (summary
 /// replaces history, originals stay in the tree) and the model can fetch a
 /// covered tool output back with read_history.
 #[test]
 fn compaction_triggers_on_threshold_and_read_history_recovers_output() {
     let _env = env_guard("chat-compact");
-    let server = FakeOpenAi::start(|_body, index| match index {
+    let server = FakeOpenAi::start(|body, index| match index {
         // first call returns a shell call plus usage way over the 90% of
         // context_window = 10_000 threshold
         0 => (200, tool_call_with_usage("call-1", "shell", shell_args(), 10_000)),
         // the compaction summary call
-        1 => (200, text_with_usage("SUMMARY: ran shell, got output", 400)),
+        1 | 3 => {
+            assert!(body["messages"][0]["content"].as_str().unwrap().contains("call-1"));
+            (200, text_with_usage("SUMMARY: ran shell, got output", 400))
+        },
         // after compaction the model asks for the covered tool output back
-        2 => (200, tool_call_with_usage("call-2", "read_history", json!({"tool_call_id": "call-1"}), 500)),
+        2 | 4 => {
+            // Discover the pointer from the request, as a stateless model must.
+            let content = body["messages"].as_array().unwrap().iter()
+                .filter_map(|m| m["content"].as_str()).find(|s| s.contains("Tool output index")).unwrap();
+            let id = content.lines().find_map(|l| l.strip_prefix("- ").and_then(|l| l.split_once(": shell").map(|(id, _)| id))).unwrap();
+            (200, tool_call_with_usage(&format!("read-{index}"), "read_history", json!({"tool_call_id": id}), if index == 2 { 10_000 } else { 500 }))
+        },
         _ => (200, text_with_usage("final answer", 500)),
     });
     let spec = json!({
@@ -1123,7 +1283,7 @@ fn compaction_triggers_on_threshold_and_read_history_recovers_output() {
         ),
         "the turn completes through compaction and readback"
     );
-    assert_eq!(server.calls(), 4, "tool call -> summary -> read_history -> final");
+    assert_eq!(server.calls(), 6, "tool call -> summary -> read_history -> second summary -> read_history -> final");
 
     // call 1 is the summary request: the compactor saw the real tool output
     let summary_request = server.body(1)["messages"][0]["content"].as_str().unwrap_or("").to_string();
@@ -1135,8 +1295,9 @@ fn compaction_triggers_on_threshold_and_read_history_recovers_output() {
     assert!(compacted.contains("SUMMARY: ran shell"), "summary carried into the wire history");
     assert!(!compacted.contains("\"executed\""), "original tool output compacted away: {}", &compacted[..compacted.len().min(400)]);
 
-    // call 3 carries the read_history result: the covered output was recovered
-    let recovered = server.body(3).to_string();
+    // Even after a second compaction, the original output remains discoverable.
+    assert!(server.body(4).to_string().contains("- call-1: shell"));
+    let recovered = server.body(5).to_string();
     assert!(recovered.contains("executed"), "read_history returned the original output");
 
     // shell actually ran once; read_history never reaches the executor

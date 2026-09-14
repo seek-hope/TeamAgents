@@ -308,7 +308,43 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     if app.settings_open {
         render_settings_overlay(frame, app, area);
     }
+    if let Some(picker) = &app.model_picker {
+        render_model_picker(frame, picker, app.lang, area);
+    }
     render_toasts(frame, app, geo.status);
+}
+
+fn render_model_picker(frame: &mut Frame, picker: &crate::model_picker::ModelPicker, lang: &str, area: Rect) {
+    let rows = picker.options(lang);
+    let width = area.width.saturating_sub(2).min(100);
+    let height = area.height.saturating_sub(2).min((rows.len() as u16).saturating_add(5).max(7));
+    let rect = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2, width, height,
+    };
+    frame.render_widget(ratatui::widgets::Clear, rect);
+    let block = ratatui::widgets::Block::bordered()
+        .border_type(ratatui::widgets::BorderType::Rounded)
+        .border_style(Style::default().fg(ACCENT)).style(Style::default().bg(PANEL_BG))
+        .title(picker.title(lang))
+        .title_bottom(tr(lang, "↑↓ 选择 · Enter 确认 · Esc 返回/关闭", &[]));
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+    if inner.height < 3 || inner.width < 2 { return; }
+    frame.render_widget(Paragraph::new(format!("{} {}", tr(lang, "搜索：", &[]), picker.query)), Rect { height: 1, ..inner });
+    let notice = if picker.loading { tr(lang, "正在获取在线模型；已配置模型可直接选择…", &[]) } else { picker.notice.clone() };
+    frame.render_widget(Paragraph::new(notice).style(Style::default().fg(GREY)), Rect { y: inner.y + 1, height: 1, ..inner });
+    let list_area = Rect { y: inner.y + 2, height: inner.height - 2, width: inner.width.saturating_sub(1), ..inner };
+    if rows.is_empty() {
+        frame.render_widget(Paragraph::new(tr(lang, "没有匹配项；检查搜索词或 config.toml 模型配置", &[])), list_area);
+        return;
+    }
+    let start = picker.index.saturating_sub((list_area.height as usize).saturating_sub(1));
+    let lines: Vec<Line> = rows.iter().enumerate().skip(start).take(list_area.height as usize).map(|(i, (_, label))| {
+        Line::styled(format!("{} {label}", if i == picker.index { "›" } else { " " }),
+            if i == picker.index { Style::default().fg(FG).bg(HOVER_BG) } else { Style::default().fg(GREY) })
+    }).collect();
+    frame.render_widget(Paragraph::new(lines), list_area);
 }
 
 fn chip(text: &str, fg: ratatui::style::Color, bg: Option<ratatui::style::Color>) -> Span<'static> {
@@ -1095,7 +1131,7 @@ fn render_slash_menu(frame: &mut Frame, app: &App, area: Rect, composer: Rect) {
         .unwrap_or(0);
     // min must stay ≤ max (a 12–27 col terminal used to panic here)
     let width = ((name_w + desc_w + 6) as u16).clamp(8, area.width.saturating_sub(4).max(8));
-    let height = (matches.len() as u16 + 2).min(8);
+    let height = (matches.len() as u16 + 2).min(composer.y.saturating_sub(area.y + 1));
     let y = composer.y.saturating_sub(height).max(area.y + 1);
     let x = area.x + 2;
     let box_area = Rect { x, y, width, height }.intersection(area);
@@ -1124,9 +1160,11 @@ fn render_slash_menu(frame: &mut Frame, app: &App, area: Rect, composer: Rect) {
         )));
     let inner = block.inner(box_area);
     frame.render_widget(block, box_area);
+    let start = selected.saturating_sub((inner.height as usize).saturating_sub(1));
     let rows: Vec<Line> = matches
         .iter()
         .enumerate()
+        .skip(start)
         .take(inner.height as usize)
         .map(|(i, command)| {
             let style = if i == selected {
