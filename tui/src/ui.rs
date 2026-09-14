@@ -346,6 +346,13 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
         .unwrap_or(false);
     // chips in priority order; anything that does not fit is dropped (never clipped)
     let mut chips: Vec<Span> = vec![];
+    if app.disconnected {
+        chips.push(chip(
+            tr(app.lang, "[界面刷新失败] ", &[]).trim(),
+            BG,
+            Some(ERROR),
+        ));
+    }
     if paused {
         chips.push(chip(&tr(app.lang, "已暂停", &[]), BG, Some(WARNING)));
     }
@@ -626,11 +633,7 @@ fn render_panel(frame: &mut Frame, app: &mut App, area: Rect) {
                 "tasks" => (table_headers("tasks"), app.tasks_rows(), "没有任务"),
                 "approvals" => (table_headers("approvals"), app.approvals_rows(), "没有待批准操作"),
                 "sessions" => (table_headers("sessions"), app.sessions_rows(), "没有会话记录"),
-                _ => (
-                    table_headers("shared"),
-                    app.shared_rows().into_iter().map(|r| (String::new(), r)).collect(),
-                    "没有共享条目",
-                ),
+                _ => (table_headers("shared"), app.shared_rows(), "没有共享条目"),
             };
             let header: Vec<String> = header.iter().map(|h| tr(app.lang, h, &[])).collect();
             let header_refs: Vec<&str> = header.iter().map(|s| s.as_str()).collect();
@@ -825,7 +828,7 @@ pub fn panel_table(app: &App) -> (Vec<String>, Vec<Vec<Cell>>, &'static str) {
         ),
         "shared" => (
             table_headers("shared").iter().map(|h| tr(app.lang, h, &[])).collect(),
-            app.shared_rows(),
+            app.shared_rows().into_iter().map(|(_, r)| r).collect(),
             "没有共享条目",
         ),
         _ => (

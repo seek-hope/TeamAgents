@@ -85,14 +85,9 @@ fn find_tui_binary() -> Option<PathBuf> {
             return Some(sibling);
         }
     }
-    let mut roots: Vec<PathBuf> = vec![];
-    if let Ok(cwd) = std::env::current_dir() {
-        roots.push(cwd);
-    }
-    if let Some(exe) = &exe {
-        roots.extend(exe.ancestors().map(Path::to_path_buf));
-    }
-    for root in roots {
+    // never search the caller's cwd: picking up a binary from an arbitrary
+    // project directory is local code execution (P2-7)
+    for root in tui_search_roots(exe.as_deref()) {
         for candidate in [
             root.join("tui/target/release/teamagents-tui"),
             root.join("tui/target/debug/teamagents-tui"),
@@ -105,6 +100,10 @@ fn find_tui_binary() -> Option<PathBuf> {
         }
     }
     tools::which("teamagents-tui")
+}
+
+fn tui_search_roots(exe: Option<&std::path::Path>) -> Vec<PathBuf> {
+    exe.map(|exe| exe.ancestors().map(Path::to_path_buf).collect()).unwrap_or_default()
 }
 
 fn run_tui(args: &Args) -> i32 {
@@ -155,4 +154,27 @@ fn main() {
     }
     let _ = VERSION;
     std::process::exit(code);
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn tui_search_roots_exclude_cwd() {
+        // P2-7: executing a binary found under the caller's cwd would be local
+        // code execution from an arbitrary repository
+        // the contract: roots come from the *binary's* location, never from the
+        // caller's cwd (an exe installed in-tree has the repo as an ancestor,
+        // which is legitimate — the danger was searching an arbitrary cwd)
+        let cwd = std::env::current_dir().unwrap();
+        let exe_elsewhere = std::path::Path::new("/usr/local/bin/teamagents");
+        let roots = super::tui_search_roots(Some(exe_elsewhere));
+        assert_eq!(roots, vec![
+            std::path::PathBuf::from("/usr/local/bin/teamagents"),
+            std::path::PathBuf::from("/usr/local/bin"),
+            std::path::PathBuf::from("/usr/local"),
+            std::path::PathBuf::from("/usr"),
+            std::path::PathBuf::from("/"),
+        ]);
+        assert!(!roots.contains(&cwd), "cwd must not be a search root for teamagents-tui");
+    }
 }

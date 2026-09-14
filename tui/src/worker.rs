@@ -104,6 +104,9 @@ impl Worker {
     }
 
     pub fn close(mut self) {
+        // ponytail: this call can block exit for the full 120s call timeout while
+        // the engine awaits inflight turns; upgrade path: close on a background
+        // thread and exit immediately
         let _ = self.call("close", json!({}));
         // the worker awaits inflight turns on close; never let that hang quit
         let deadline = std::time::Instant::now() + Duration::from_secs(3);

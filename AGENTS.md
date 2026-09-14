@@ -20,7 +20,7 @@ python3 tui/scripts/pty_smoke.py         # 真终端冒烟
 python3 tui/scripts/pty_click_check.py   # 真终端点击命中检查
 ```
 
-- 当前基线：core 38 / engine 77 / tui 55 项测试全绿。验收清单 `docs/ACCEPTANCE.md`，
+- 当前基线：core 43 / engine 89 / tui 61 项测试全绿。验收清单 `docs/ACCEPTANCE.md`，
   迁移台账与未移植项 `docs/RECONSTRUCT.md`，决策记录 `docs/DECISIONS.md`。
 
 ## 架构速览（改代码前先读这 6 行）
@@ -36,8 +36,8 @@ python3 tui/scripts/pty_click_check.py   # 真终端点击命中检查
 
 ## 代码审查与证据（review/*）
 
-- 现行审查报告：`review/findings-rust-review-2026-09-13.md`（发现+证据）、
-  `review/fix-notes-rust-review-2026-09-13.md`（修复台账+测试名）；更早的 `review/*` 是迁移期历史资料。
+- 现行审查报告：`review/findings-deep-review-2026-09-14.md`（发现+证据）、
+  `review/fix-notes-deep-review-2026-09-14.md`（修复台账+测试名）；更早的 `review/*` 是历史资料。
 - 只读审查不得修改被审文件；结论必须带可复跑的命令或探针（探针放 /tmp 或 `review/tmp/`），
   报"证伪"前先排除探针自身误差。
 
@@ -59,3 +59,5 @@ python3 tui/scripts/pty_click_check.py   # 真终端点击命中检查
 - 给「已知天花板」的简化留 `ponytail:` 注释（写明升级路径）。
 - 文档、提交信息与面向用户的输出用中文；代码标识与注释用英文。
 - 密钥只从环境变量/本机凭据读取，禁止写入仓库、TeamSpec、提示词或事件。
+- Skills 约定：TeamAgents 只复用 `~/.agents/skills`（唯一注册根）；**不使用** `~/.codex/skills`，
+  缺哪个技能就专门安装进 `~/.agents/skills`（ponytail 系列已复制安装；scientific-skills-router 不装，检索已由 `skill` 工具覆盖）。

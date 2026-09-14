@@ -53,7 +53,9 @@ pub fn scope_payload(scope: &str, kind: EventKind, payload: &Json) -> Json {
                 keep(&["status", "task_id", "run_id", "agent_id", "assignee", "requester", "summary", "description"])
             }
         }
-        _ => payload.clone(), // result
+        "result" => payload.clone(),
+        // fail closed: an unrecognized scope gets the minimal status tier
+        _ => keep(STATUS_KEYS),
     }
 }
 
@@ -201,6 +203,25 @@ mod tests {
         let trimmed = scope_payload("status", EventKind::TaskCompleted, &payload);
         assert!(trimmed.get("summary").is_none());
         assert!(trimmed.get("task_id").is_some());
+    }
+
+    #[test]
+    fn unknown_observer_scope_is_rejected_and_fails_closed() {
+        let mut s = spec();
+        s.observers[0].payload_scope = "bogus-typo".into();
+        assert!(s.validate().unwrap_err().contains("payload_scope"));
+        s.observers[0].payload_scope = "result".into();
+        s.observers[0].wake_policy = "sometimes".into();
+        assert!(s.validate().unwrap_err().contains("wake_policy"));
+
+        // even if a bad scope slipped past validation, trimming fails closed
+        let payload = serde_json::json!({"task_id": "t1", "summary": "TOP-SECRET-SUMMARY"});
+        let trimmed = scope_payload("bogus-typo", EventKind::TaskCompleted, &payload);
+        assert!(trimmed.get("summary").is_none());
+        assert!(trimmed.get("task_id").is_some());
+        // the real tiers behave as before
+        assert!(scope_payload("result", EventKind::TaskCompleted, &payload).get("summary").is_some());
+        assert!(scope_payload("status", EventKind::TaskCompleted, &payload).get("summary").is_none());
     }
 
     #[test]

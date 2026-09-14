@@ -9,7 +9,7 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 
-pub const BUILTIN_TOOL_BINDINGS: &[&str] = &["files", "shell", "web"];
+pub const BUILTIN_TOOL_BINDINGS: &[&str] = &["files", "shell", "web", "skills"];
 
 #[derive(Debug, Clone)]
 pub struct EventDraft {
@@ -325,6 +325,9 @@ impl Control {
                 None
             }
             ActionKind::CompleteTask => {
+                if action.run_id.is_none() {
+                    return Some("complete_task requires an active run".into());
+                }
                 let tid = p.get("task_id").and_then(|v| v.as_str()).unwrap_or("");
                 match self.store.get_task(tid).ok().flatten() {
                     None => Some(format!("unknown task {tid:?}")),
@@ -393,7 +396,11 @@ impl Control {
                     let Some(patch) = self.store.get_patch(patch_id).ok().flatten() else {
                         return Some(format!("unknown patch {patch_id:?}"));
                     };
-                    if !matches!(patch.status, PatchStatus::Proposed | PatchStatus::Accepted) {
+                    // a WAITING_BOUNDARY patch may still be rejected; accepting it is
+                    // pointless (the boundary applies it once members go idle)
+                    let decidable = matches!(patch.status, PatchStatus::Proposed | PatchStatus::Accepted)
+                        || (pbool(p, "reject") && patch.status == PatchStatus::WaitingBoundary);
+                    if !decidable {
                         return Some(format!("patch is {}, cannot decide", enum_name(patch.status)));
                     }
                     if !pbool(p, "reject")
@@ -883,6 +890,12 @@ impl Control {
                 .ok_or_else(|| format!("unknown patch {pid:?}"))?;
             if pbool(p, "reject") {
                 self.store.set_patch_status(&patch.patch_id, PatchStatus::Rejected).map_err(|e| e.to_string())?;
+                // a WAITING_BOUNDARY patch parked its affected members in Draining; release them
+                for agent_id in &patch.affected_agents {
+                    if matches!(self.store.agent_status(&self.session_id, agent_id), Ok(Some(AgentStatus::Draining))) {
+                        self.store.set_agent_status(&self.session_id, agent_id, AgentStatus::Idle).map_err(|e| e.to_string())?;
+                    }
+                }
                 return Ok(Reduction {
                     events: vec![EventDraft::new(
                         EventKind::TopologyRejected,
@@ -1308,6 +1321,15 @@ impl Control {
                 events: vec![],
                 receipt: Receipt::success(action, json!({"task_id": task.task_id, "status": enum_name(task.status)})),
             });
+        }
+        // QUEUED runs have no executor to interrupt: drop them to CANCELLED
+        // outright so the engine never begins a run for an already-cancelled task.
+        for run in self.store.runs_for_session(&self.session_id, &[TurnStatus::Queued]).map_err(|e| e.to_string())? {
+            if run.task_id.as_deref() == Some(task.task_id.as_str()) {
+                self.store
+                    .update_run_status_where(&run.run_id, TurnStatus::Queued, TurnStatus::Cancelled)
+                    .map_err(|e| e.to_string())?;
+            }
         }
         let mut active = self.store.active_run_for_agent(&self.session_id, &task.assignee).map_err(|e| e.to_string())?;
         if active.is_none() {
@@ -1836,7 +1858,11 @@ impl Control {
             )
             .unwrap_or_default()
             .iter()
-            .any(|r| r.agent_id == agent_id)
+            // ponytail: in-process runs parked on an approval have no live thread
+            // (the executor exited at TurnPaused); counting them deadlocks boundary
+            // patches behind an undecided approval. External (codex) runs still have
+            // a live waiter while external_turn_id is set, so they stay "live".
+            .any(|r| r.agent_id == agent_id && !(r.status == TurnStatus::WaitingApproval && r.external_turn_id.is_none()))
     }
 
     fn active_runs(&self, agent_id: &str) -> Result<Vec<TurnRun>, String> {

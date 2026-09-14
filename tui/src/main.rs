@@ -227,6 +227,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, worker: &Arc<
     let mut last_flush = Instant::now();
     let mut last_slow = Instant::now() - Duration::from_secs(1);
     let mut last_log_sig: Option<(bool, Option<String>)> = None;
+    let mut poll_failures = 0u32;
     let mut dirty = true;
 
     loop {
@@ -277,25 +278,51 @@ fn run(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, worker: &Arc<
         // state poll 250ms
         if last_state_poll.elapsed() >= Duration::from_millis(250) {
             last_state_poll = Instant::now();
-            let after = app.cursor.min(app.log_cursor);
-            if let Ok(st) = worker.core("state", json!({"after_sequence": after})) {
-                let events = st.get("events").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-                let effects = app.apply_state(&st);
-                for e in effects {
-                    run_effect(e, worker, app, &bg_tx);
+            // log_cursor only leads while the log panel is live (activation does a
+            // full replay); elsewhere it stays 0 and would force a full fetch
+            let after = if matches!(app::PANELS[app.panel], "log") {
+                app.cursor.min(app.log_cursor)
+            } else {
+                app.cursor
+            };
+            match worker.core("state", json!({"after_sequence": after})) {
+                Ok(st) => {
+                    poll_failures = 0;
+                    app.disconnected = false;
+                    let events = st.get("events").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+                    let effects = app.apply_state(&st);
+                    for e in effects {
+                        run_effect(e, worker, app, &bg_tx);
+                    }
+                    if matches!(app::PANELS[app.panel], "log") {
+                        app.append_log(&events);
+                    }
+                    dirty = true;
                 }
-                if matches!(app::PANELS[app.panel], "log") {
-                    app.append_log(&events);
+                Err(err) => {
+                    poll_failures += 1;
+                    if poll_failures == 3 {
+                        // engine unreachable: chip in the status bar + one chat line
+                        app.disconnected = true;
+                        let msg = app.t("[界面刷新失败] ", &[]) + &err;
+                        app.chat.push(("system".into(), msg));
+                    }
+                    dirty = true;
                 }
-                dirty = true;
             }
         }
         // log tab (re)play on activation / filter change
         let log_sig = (app::PANELS[app.panel] == "log", app.log_member.clone());
         if log_sig.0 && last_log_sig.as_ref() != Some(&log_sig) {
-            if let Ok(st) = worker.core("state", json!({"after_sequence": 0})) {
-                let events = st.get("events").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-                app.replay_log(&events);
+            match worker.core("state", json!({"after_sequence": 0})) {
+                Ok(st) => {
+                    let events = st.get("events").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+                    app.replay_log(&events);
+                }
+                Err(err) => {
+                    let msg = app.t("[界面读取事件失败] {v0}", &[("v0", &err)]);
+                    app.chat.push(("system".into(), msg));
+                }
             }
             dirty = true;
         }
@@ -353,6 +380,8 @@ fn run_effect(e: Effect, worker: &Arc<Worker>, app: &mut App, bg: &std::sync::mp
             let _ = std::io::stdout().write_all(b"\x07");
             let _ = std::io::stdout().flush();
         }
+        // ponytail: synchronous submit on the UI thread, worst case frozen for the
+        // 120s worker call timeout; upgrade path: run submit on a background thread
         Effect::Submit { action, ok_msg, err_msg } => match worker.call("submit", json!({"action": action})) {
             Ok(receipt) if receipt.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) => {
                 if let Some(msg) = ok_msg {

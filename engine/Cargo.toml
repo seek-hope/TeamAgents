@@ -10,6 +10,7 @@ serde_json = { version = "1", features = ["preserve_order"] }
 serde_yaml = "0.9"
 rusqlite = { version = "0.32", features = ["bundled"] }
 ureq = { version = "2", features = ["json"] }
+url = "2"
 toml = "0.8"
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"

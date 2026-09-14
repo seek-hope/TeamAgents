@@ -44,4 +44,10 @@ impl CoreClient {
     pub fn state(&self) -> Result<Json, String> {
         self.call_in_session("state", json!({}))
     }
+
+    /// `state` without the events tail (P2-9): for hot paths that never read
+    /// `events`, so the core skips serializing up to 1000 events per call.
+    pub fn state_brief(&self) -> Result<Json, String> {
+        self.call_in_session("state", json!({"include_events": false}))
+    }
 }

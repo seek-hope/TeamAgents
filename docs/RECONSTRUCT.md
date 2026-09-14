@@ -40,7 +40,7 @@
 | TUI | tui/（Textual ~1700 行） | ✅ ratatui/crossterm，**Rust 原生设计**（D-20：固定上下分区/滚动/胶囊/自适应列；D-18 的逐像素对齐已不再追求） | Rust 单元 + TestBackend 帧 + PTY 冒烟（含点击检查） |
 
 **未移植/有意简化**：deepagents 图框架与 `general-purpose` 子代理（被 ChatRunner 工具循环
-取代）；skills 走"内容注入系统提示词"而非 Python 版的虚拟文件系统（8KB/文件、32KB/成员上限）；
+取代）；skills 恢复方案 §12.1 的"发现 + 按需读取"：`skill` 工具检索/读取注册根（`skills_paths`，只读），成员 `skills: [...]` 按名注入系统提示词（8KB/文件、32KB/成员上限，D-23；替代早期的全量注入简化）；
 MCP 的 http/sse 传输（stdio 已实现）；TUI 以 Rust/终端习惯为准，不复刻 Textual 的组件外观
 （D-20；Python 帧对比脚本保留为参考工具）。2026-09-13 全面审查后的其余保留差异（DENIED
 重启记忆、Codex 审批 600s 上限、`kill` 退化路径、成员历史无上限、会话面板 size TTL、

@@ -711,6 +711,7 @@ dependencies = [
  "teamagents-core",
  "toml",
  "ureq",
+ "url",
  "uuid",
 ]
 

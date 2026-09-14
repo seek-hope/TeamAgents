@@ -461,3 +461,95 @@ fn log_panel_up_down_cycle_the_member_filter() {
     app.handle_key(key(KeyCode::Enter));
     assert_eq!(app.log_member, None, "Enter clears the filter");
 }
+
+#[test]
+fn delta_truncation_respects_char_boundaries() {
+    // P1-4: 12000 汉字 = 36000 bytes; the 32000-byte cap used to split a UTF-8
+    // sequence and panic in drain()
+    let mut app = App::new("s1", json!({}), "/tmp/cfg".into(), "zh-CN", true, vec![]);
+    app.on_delta("r1", "leader", &"汉".repeat(12000));
+    assert!(app.delta_buffers["r1"].len() <= 32000);
+    for _ in 0..5 {
+        app.on_delta("r1", "leader", &"汉".repeat(4000));
+    }
+    assert!(app.delta_buffers["r1"].len() <= 32000);
+}
+
+#[test]
+fn approval_arrival_toasts_against_new_snapshot() {
+    // P2-10: the event and its PENDING row arrive in the same snapshot; the old
+    // snapshot does not know the approval yet
+    let mut app = App::new("s1", json!({}), "/tmp/cfg".into(), "en", true, vec![]);
+    app.apply_state(&json!({"spec": {}, "session": {}, "events": [], "runs": [], "pending_approvals": []}));
+    let ev = json!({"sequence": 1, "kind": "approval_requested", "actor_id": "worker",
+        "payload": {"approval_id": "ap1", "agent_id": "worker",
+                    "scope": {"tool": "shell", "args": {"cmd": "rm -rf x"}}}});
+    let st = json!({"spec": {}, "session": {}, "events": [ev], "runs": [],
+        "pending_approvals": [{"approval_id": "ap1", "status": "PENDING"}]});
+    let effects = app.apply_state(&st);
+    assert!(effects.iter().any(|e| matches!(e, Effect::Bell)));
+    assert_eq!(app.toasts.len(), 1);
+}
+
+#[test]
+fn approval_already_decided_stays_quiet() {
+    // same event, but the new snapshot no longer lists it PENDING: no toast/bell
+    let mut app = App::new("s1", json!({}), "/tmp/cfg".into(), "en", true, vec![]);
+    app.apply_state(&json!({"spec": {}, "session": {}, "events": [], "runs": [], "pending_approvals": []}));
+    let ev = json!({"sequence": 1, "kind": "approval_requested", "actor_id": "worker",
+        "payload": {"approval_id": "ap1", "agent_id": "worker",
+                    "scope": {"tool": "shell", "args": {"cmd": "rm -rf x"}}}});
+    let st = json!({"spec": {}, "session": {}, "events": [ev], "runs": [],
+        "pending_approvals": [{"approval_id": "ap1", "status": "APPROVED"}]});
+    let effects = app.apply_state(&st);
+    assert!(!effects.iter().any(|e| matches!(e, Effect::Bell)));
+    assert!(app.toasts.is_empty());
+}
+
+#[test]
+fn click_hits_right_row_after_task_reorder() {
+    // P2-11: rows reordered by a state refresh; the click must resolve the saved
+    // key to its current index, exactly like the renderer does
+    let task = |id: &str, created: f64| json!({
+        "task_id": id, "parent_task_id": null, "goal_id": "g1",
+        "requester": "leader", "assignee": "worker", "description": id,
+        "acceptance": "", "dependencies": [], "status": "PENDING",
+        "result_refs": [], "created_at": created
+    });
+    let mut st = state(vec![]);
+    st["tasks"] = json!([task("task-a", 1000.0), task("task-b", 1001.0)]);
+    let mut app = app_with(st);
+    app.panel = 1; // tasks
+    // newest first: [task-b, task-a]; the user selects row 1 (task-a)
+    assert_eq!(app.panel_row_keys("tasks"), vec!["task-b".to_string(), "task-a".to_string()]);
+    app.select_row(1);
+    let mut st2 = state(vec![]);
+    st2["tasks"] = json!([task("task-a", 1002.0), task("task-b", 1001.0)]);
+    app.apply_state(&st2);
+    assert_eq!(app.panel_row_keys("tasks"), vec!["task-a".to_string(), "task-b".to_string()]);
+    // one visible row; the renderer shows task-a on it
+    app.select_row_visible(0, 1);
+    let selected = app.table_cursors.get("tasks").and_then(|(k, _)| k.clone());
+    assert_eq!(selected.as_deref(), Some("task-a"));
+}
+
+#[test]
+fn shared_panel_scrolls_with_stable_keys() {
+    // P2-13: shared rows carry `space_id:sequence` keys so wheel / ↑↓ work
+    let mut app = app_with(state(vec![]));
+    app.shared = (1..=30)
+        .map(|i| json!({"space_id": "main", "author": "leader", "kind": "note",
+                        "content": format!("entry {i}"), "sequence": i}))
+        .collect();
+    let keys = app.panel_row_keys("shared");
+    assert_eq!(keys.len(), 30);
+    assert_eq!(keys[0], "main:1");
+    assert_eq!(keys[29], "main:30");
+    app.panel = teamagents_tui::app::PANELS.iter().position(|p| *p == "shared").unwrap();
+    app.move_table_selection(1);
+    assert_eq!(app.table_cursors.get("shared").cloned(), Some((Some("main:2".into()), 1)));
+    app.move_table_selection(100);
+    assert_eq!(app.table_cursors.get("shared").cloned(), Some((Some("main:30".into()), 29)));
+    app.move_table_selection(-100);
+    assert_eq!(app.table_cursors.get("shared").cloned(), Some((Some("main:1".into()), 0)));
+}

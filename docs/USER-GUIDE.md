@@ -87,8 +87,17 @@ skills_paths = ["~/.agents/skills", "~/.config/teamagents/skills"]
 instruction_files = ["~/.config/teamagents/AGENTS.md"]
 ```
 
-项目根的 `AGENTS.md` 会自动作为指令文件加载。Skills 按“用户级 → 项目级 → 成员级”加载，
-后者覆盖同名。Skills 不授予任何新权限。
+项目根的 `AGENTS.md` 会自动作为指令文件加载。Skills 不授予任何新权限。
+
+Skills 的加载与分发（Rust 版，对应方案 §12.1 的“发现 + 按需读取”）：
+
+- **发现/按需读取**：成员在 `tool_bindings` 里绑定 `skills` 即获得 `skill` 工具
+  （`action="search"` 按关键词检索名称+简介，`action="read"` 按名取全文）。注册根就是
+  `skills_paths`，只读；项目 `.teamagents/skills` 在工作区内，用 files 工具即可读。
+- **分发**：TeamSpec 或 topology patch（`add_agent`/`update_agent`）里的成员 `skills: [名称]`
+  会把对应 SKILL.md 内容注入该成员系统提示词（8KB/文件、32KB/成员上限；同名按
+  用户级 → 项目级 → 成员级覆盖）。Leader 据此把泛用/专精技能分给特定成员；
+  未点名的技能不再注入（技能库大时全量注入必然超上限）。
 
 ## 2. 权限
 

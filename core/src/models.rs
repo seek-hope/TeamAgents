@@ -230,6 +230,12 @@ impl TeamSpec {
                     return Err(format!("observer subject {:?} is not a member", s));
                 }
             }
+            if !matches!(ob.payload_scope.as_str(), "status" | "public_message" | "result") {
+                return Err(format!("observer {:?} has unknown payload_scope {:?}", ob.agent_id, ob.payload_scope));
+            }
+            if !matches!(ob.wake_policy.as_str(), "none" | "on_event") {
+                return Err(format!("observer {:?} has unknown wake_policy {:?}", ob.agent_id, ob.wake_policy));
+            }
         }
         let mut space_ids = std::collections::HashSet::new();
         for sp in &self.shared_spaces {

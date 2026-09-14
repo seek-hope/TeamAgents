@@ -127,11 +127,16 @@ impl CodexAppServer {
             }
         });
 
-        self.call(
+        // P2-4: on a failed handshake kill the half-started server — the reader
+        // threads hold Arcs, so returning Err without close() leaks the process.
+        if let Err(e) = self.call(
             "initialize",
             json!({"clientInfo": {"name": "teamagents", "title": "TeamAgents", "version": "0.1.0"}}),
             60_000,
-        )?;
+        ) {
+            self.close();
+            return Err(e);
+        }
         Ok(())
     }
 

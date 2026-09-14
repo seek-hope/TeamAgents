@@ -77,12 +77,20 @@ impl McpClient {
                 let _ = tx.send(Err("MCP server exited".into()));
             }
         });
-        client.call("initialize", json!({
+        // P2-5: the reader thread holds an Arc, so Drop never fires on its own;
+        // a failed handshake must kill+wait the server before returning Err.
+        if let Err(e) = client.call("initialize", json!({
             "protocolVersion": "2025-06-18",
             "capabilities": {},
             "clientInfo": {"name": "teamagents", "version": env!("CARGO_PKG_VERSION")},
-        }), 60_000)?;
-        client.notify("notifications/initialized", json!({}))?;
+        }), 60_000) {
+            client.close();
+            return Err(e);
+        }
+        if let Err(e) = client.notify("notifications/initialized", json!({})) {
+            client.close();
+            return Err(e);
+        }
         Ok(client)
     }
 

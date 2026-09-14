@@ -174,6 +174,7 @@ pub const BOUND_TOOL_DOCS: &[(&str, &str)] = &[
     ("shell", "Run a shell command in the isolated Linux sandbox (no network by default; network=true requires user approval)."),
     ("web_search", "Search the web and return title, source URL, snippet, fetch time (and full content when include_content=true)."),
     ("web_fetch", "Fetch a web page and return title, source URL, fetch time and the readable text body (HTML only; capped)."),
+    ("skill", "Discover and load agent skills. action='search' with query keywords lists matching skills (name — summary); action='read' with a skill name loads its full instructions. Read a skill before applying it."),
 ];
 
 fn bound_tool_schemas() -> Json {
@@ -188,6 +189,7 @@ fn bound_tool_schemas() -> Json {
       {"name": "shell", "parameters": {"type": "object", "properties": {"command": {"type": "string"}, "timeout": {"type": "integer"}, "network": {"type": "boolean"}}, "required": ["command"]}},
       {"name": "web_search", "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "max_results": {"type": "integer"}, "include_content": {"type": "boolean"}}, "required": ["query"]}},
       {"name": "web_fetch", "parameters": {"type": "object", "properties": {"url": {"type": "string"}, "max_bytes": {"type": "integer"}}, "required": ["url"]}},
+      {"name": "skill", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["search", "read"]}, "query": {"type": "string"}, "name": {"type": "string"}}, "required": ["action"]}},
     ])
 }
 
@@ -208,6 +210,9 @@ fn bound_tool_names(bindings: &[String], web: (bool, bool)) -> Vec<&'static str>
     }
     if web.1 {
         names.push("web_fetch");
+    }
+    if bindings.iter().any(|b| b == "skills") {
+        names.push("skill");
     }
     names
 }
@@ -1120,6 +1125,17 @@ mod tests {
             .filter_map(|t| t.pointer("/function/name").and_then(|v| v.as_str()))
             .collect();
         assert!(names.contains(&"read_file") && !names.contains(&"shell"));
+        // `skills` binding advertises the discovery/read tool (binding = authorization)
+        let with_skills = tools_payload(&["files".into(), "skills".into()], (false, false), &[]);
+        let names: Vec<&str> = with_skills
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t.pointer("/function/name").and_then(|v| v.as_str()))
+            .collect();
+        assert!(names.contains(&"skill"));
+        let plain = tools_payload(&["files".into()], (false, false), &[]).to_string();
+        assert!(!plain.contains("\"skill\""));
         // the profile's protocol decides the endpoint (D-8 deepseek default)
         let profile = |base: Option<&str>, protocol: &str, provider: &str| ModelProfile {
             provider: provider.into(),

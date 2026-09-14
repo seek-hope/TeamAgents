@@ -208,6 +208,8 @@ pub struct App {
     pub lang_open: bool,
     pub lang_choice: usize, // 0 = en, 1 = zh-CN
     pub should_quit: bool,
+    /// state poll failed repeatedly: status chip until a poll succeeds again
+    pub disconnected: bool,
 }
 
 impl App {
@@ -249,6 +251,7 @@ impl App {
             lang_open: false,
             lang_choice: if lang == "zh-CN" { 1 } else { 0 },
             should_quit: false,
+            disconnected: false,
         }
     }
 
@@ -293,7 +296,7 @@ impl App {
                 continue;
             }
             self.cursor = self.cursor.max(seq);
-            effects.extend(self.apply_event(ev));
+            effects.extend(self.apply_event(ev, st));
         }
         // active runs for the activity line / status cells
         self.activity_runs = st
@@ -321,7 +324,7 @@ impl App {
         effects
     }
 
-    fn apply_event(&mut self, ev: &Json) -> Vec<Effect> {
+    fn apply_event(&mut self, ev: &Json, st: &Json) -> Vec<Effect> {
         let mut effects = vec![];
         let kind = jstr(ev, "kind");
         let payload = ev.get("payload").cloned().unwrap_or(Json::Null);
@@ -368,10 +371,10 @@ impl App {
             "approval_requested" => {
                 let line = self.t("需要批准：{v0}（按 Ctrl+G 处理）", &[("v0", &approval_line(p))]);
                 self.write_chat("system", &line);
-                let still_pending = self
-                    .state
-                    .as_ref()
-                    .and_then(|s| s.get("pending_approvals"))
+                // judge against the snapshot the event arrived with: self.state is
+                // still the previous one here (it is swapped in after the events)
+                let still_pending = st
+                    .get("pending_approvals")
                     .and_then(|v| v.as_array())
                     .map(|a| {
                         a.iter().any(|x| {
@@ -449,7 +452,11 @@ impl App {
         let buf = self.delta_buffers.entry(run_id.to_string()).or_default();
         buf.push_str(text);
         if buf.len() > 32000 {
-            let cut = buf.len() - 32000;
+            // cut is a byte offset; back off to a char boundary or CJK deltas panic
+            let mut cut = buf.len() - 32000;
+            while !buf.is_char_boundary(cut) {
+                cut += 1;
+            }
             buf.drain(..cut);
         }
         self.stream_dirty = true;
@@ -861,8 +868,9 @@ impl App {
         rows
     }
 
-    /// SharedPanel::refresh_from (entries fetched separately).
-    pub fn shared_rows(&self) -> Vec<Vec<Cell>> {
+    /// SharedPanel::refresh_from (entries fetched separately). Row key is
+    /// `space_id:sequence` so the panel can scroll like the other tables.
+    pub fn shared_rows(&self) -> Vec<(String, Vec<Cell>)> {
         let spaces = self.spec().get("shared_spaces").and_then(|v| v.as_array()).cloned().unwrap_or_default();
         let mut rows = vec![];
         for space in &spaces {
@@ -872,13 +880,14 @@ impl App {
             for entry in entries {
                 let content = jstr(entry, "content");
                 let reference = jstr(entry, "ref");
-                rows.push(vec![
+                let sequence = entry.get("sequence").and_then(|v| v.as_i64()).unwrap_or(0);
+                rows.push((format!("{sid}:{sequence}"), vec![
                     cell(sid.clone()),
                     cell(jstr(entry, "author")),
                     cell(jstr(entry, "kind")),
                     cell(if !content.is_empty() { head_chars(&content, 80) } else if !reference.is_empty() { reference } else { "-".into() }),
                     cell(entry.get("sequence").map(|v| v.to_string()).unwrap_or_default()),
-                ]);
+                ]));
             }
         }
         rows
@@ -903,33 +912,23 @@ impl App {
     /// the window offset the renderer used has to be added back.
     pub fn select_row_visible(&mut self, visible_row: usize, view: usize) {
         let panel = PANELS[self.panel];
-        let rows = self.panel_rows(panel);
-        let sel = self.table_cursors.get(panel).map(|(_, i)| *i).unwrap_or(0);
+        let rows = self.panel_row_keys(panel);
+        // same selection resolution as the renderer (ui.rs render_panel): the
+        // saved key wins, the stale index is only a fallback — rows may have
+        // been reordered since the cursor was stored
+        let saved = self.table_cursors.get(panel).cloned().unwrap_or((None, 0));
+        let sel = saved
+            .0
+            .and_then(|k| rows.iter().position(|rk| *rk == k))
+            .unwrap_or_else(|| saved.1.min(rows.len().saturating_sub(1)));
         let start = crate::ui::table_start(rows.len(), sel, view);
         self.select_row(start + visible_row);
-    }
-
-    /// Row count for the active panel (used by the click hit-test).
-    fn panel_rows(&self, panel: &str) -> Vec<String> {
-        match panel {
-            "team" => self.team_rows().into_iter().map(|(k, _)| k).collect(),
-            "tasks" => self.tasks_rows().into_iter().map(|(k, _)| k).collect(),
-            "approvals" => self.approvals_rows().into_iter().map(|(k, _)| k).collect(),
-            "sessions" => self.sessions_rows().into_iter().map(|(k, _)| k).collect(),
-            _ => vec![],
-        }
     }
 
     /// Clicking a table row selects it (the renderer keeps the row key).
     pub fn select_row(&mut self, index: usize) {
         let panel = PANELS[self.panel];
-        let key = match panel {
-            "team" => self.team_rows().get(index).map(|(k, _)| k.clone()),
-            "tasks" => self.tasks_rows().get(index).map(|(k, _)| k.clone()),
-            "approvals" => self.approvals_rows().get(index).map(|(k, _)| k.clone()),
-            "sessions" => self.sessions_rows().get(index).map(|(k, _)| k.clone()),
-            _ => None,
-        };
+        let key = self.panel_row_keys(panel).get(index).cloned();
         if let Some(key) = key {
             self.table_cursors.insert(panel, (Some(key), index));
         }
@@ -1497,6 +1496,7 @@ impl App {
             "tasks" => self.tasks_rows().into_iter().map(|(k, _)| k).collect(),
             "approvals" => self.approvals_rows().into_iter().map(|(k, _)| k).collect(),
             "sessions" => self.sessions_rows().into_iter().map(|(k, _)| k).collect(),
+            "shared" => self.shared_rows().into_iter().map(|(k, _)| k).collect(),
             _ => vec![],
         }
     }

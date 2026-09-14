@@ -498,3 +498,28 @@ tui 54（9 lib + 18 app + 27 render）全绿；PTY 冒烟与点击检查通过�
 4. **验收（实跑）**：core 38 / engine 67 / tui 55 全绿；PTY 冒烟与点击检查通过。
 5. **分支状态**：`main` 已覆盖为 Rust 实现（快进，无历史丢失），`reconstruct` 分支随后删除，
    仓库只保留 `main`。
+
+## D-23 Skills 分发机制：skill 工具 + 按成员注入（2026-09-13）
+
+背景：D-19 的"全量内容注入"简化在技能库规模（~200 个）下必然超 32KB/成员上限，
+代码内已标注升级路径。用户要求 Leader 能查看全部技能、按需读取、并把特定技能
+分发给特定成员（泛用 ponytail/caveman、专精 scientific/browser-use、meta find-skills）。
+
+决定（落回方案 §12.1/§12.2 原义，非新偏离）：
+
+1. 新增内置绑定 `skills`：成员绑定后获得 `skill` 工具（search/read），注册根 =
+   用户配置 `skills_paths`，只读、属于预授权"明确选择的 Skills 只读"。
+2. 成员 `skills: [名称]`（TeamSpec 或 add_agent/update_agent patch）按名注入
+   SKILL.md 全文到该成员系统提示词；未点名不注入。同名覆盖顺序：
+   用户级 → 项目级 → 成员级。
+3. Leader 查看全部技能 = `skill search`（空查询列出全部，10 条封顶提示细化）；
+   分发 = patch 成员 skills 字段，运行器按 config_revision 重建即生效。
+
+来源约定（用户 2026-09-13）：TeamAgents 只复用 `~/.agents/skills`，不用 `~/.codex/skills`；
+缺的技能专门安装进 `~/.agents/skills`。已据此复制安装 ponytail 系列（6 个）；
+scientific-skills-router 不安装——其按词检索 YAML 头的功能已被 `skill search/read`
+对全注册根覆盖，剩余价值（科研检索时机）归成员 instructions。`skills_paths` 收敛为单一根。
+
+证据：`engine::tools::tests::skill_tool_searches_and_reads_registry`、
+`engine::session::tests::member_context_collects_skills_and_instruction_files`、
+chat 工具载荷断言；core 38 / engine 78 / tui 55 全绿。

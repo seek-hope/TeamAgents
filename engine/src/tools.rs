@@ -318,6 +318,116 @@ pub fn validate_web_bindings(
     web_tools(catalog, bindings).map(|_| ())
 }
 
+
+/// Skills registry roots: user-configured `skills_paths` only (project and
+/// member skill dirs live inside the workspace and are readable with `files`).
+/// Read-only by construction (plan §12.2: selected skills are pre-authorized reads).
+fn skill_roots(catalog: &teamagents_core::models::UserConfig) -> Vec<PathBuf> {
+    catalog
+        .skills_paths
+        .iter()
+        .map(|p| crate::config::expand_home(p))
+        .filter(|p| p.is_dir())
+        .collect()
+}
+
+/// (name, canonical SKILL.md path) pairs under one registry root; candidates
+/// whose symlink chain resolves outside the canonical root are rejected (P2-6).
+pub fn skill_candidates(root: &Path) -> Vec<(String, PathBuf)> {
+    let Ok(root) = std::fs::canonicalize(root) else { return vec![] };
+    let mut candidates = vec![root.join("SKILL.md")];
+    if let Ok(entries) = std::fs::read_dir(&root) {
+        candidates.extend(entries.flatten().map(|e| e.path().join("SKILL.md")));
+    }
+    let mut out: Vec<(String, PathBuf)> = vec![];
+    for path in candidates {
+        let Ok(real) = std::fs::canonicalize(&path) else { continue };
+        if !real.starts_with(&root) || !real.is_file() {
+            continue;
+        }
+        let name = real
+            .parent()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if !name.is_empty() && !out.iter().any(|(n, _)| *n == name) {
+            out.push((name, real));
+        }
+    }
+    out
+}
+
+/// (name, SKILL.md path) pairs across all registry roots; first root wins on
+/// a name clash (user order = priority).
+fn skill_index(roots: &[PathBuf]) -> Vec<(String, PathBuf)> {
+    let mut out: Vec<(String, PathBuf)> = vec![];
+    for root in roots {
+        for (name, path) in skill_candidates(root) {
+            if !out.iter().any(|(n, _)| *n == name) {
+                out.push((name, path));
+            }
+        }
+    }
+    out
+}
+
+/// Frontmatter `description:` line, capped; enough for search hits without
+/// parsing full YAML (ponytail: line scan, upgrade to a YAML parse if skills
+/// start needing nested frontmatter).
+fn skill_blurb(path: &Path) -> String {
+    let mut text = String::new();
+    if std::fs::File::open(path).and_then(|f| f.take(4_096).read_to_string(&mut text)).is_err() {
+        return String::new();
+    }
+    let line = text.lines().find(|l| l.starts_with("description:")).unwrap_or("");
+    line.trim_start_matches("description:").trim().trim_matches('"').chars().take(200).collect()
+}
+
+/// `skill` tool: action "search" (keyword match over name+blurb; empty query
+/// lists, capped) or "read" (exact name -> full SKILL.md, capped).
+fn skill_tool(catalog: &teamagents_core::models::UserConfig, args: &Json) -> Result<Json, String> {
+    const READ_CAP: usize = 32_000;
+    let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("");
+    let index = skill_index(&skill_roots(catalog));
+    if index.is_empty() {
+        return Err("no skills configured (user config skills_paths)".into());
+    }
+    match action {
+        "read" => {
+            let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            let Some((_, path)) = index.iter().find(|(n, _)| n == name) else {
+                let known: Vec<&str> = index.iter().map(|(n, _)| n.as_str()).collect();
+                return Err(format!("unknown skill {name:?}; known: {}", known.join(", ")));
+            };
+            let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+            Ok(Json::String(text.chars().take(READ_CAP).collect()))
+        }
+        "search" => {
+            let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
+            let words: Vec<&str> = query.split_whitespace().collect();
+            let mut hits: Vec<(usize, String)> = index
+                .iter()
+                .map(|(name, path)| {
+                    let blurb = skill_blurb(path);
+                    let hay = format!("{} {}", name.to_lowercase(), blurb.to_lowercase());
+                    let score = words.iter().filter(|w| hay.contains(**w)).count();
+                    (score, format!("{name} — {blurb}"))
+                })
+                .filter(|(score, _)| words.is_empty() || *score > 0)
+                .collect();
+            hits.sort_by(|a, b| b.0.cmp(&a.0));
+            let total = hits.len();
+            let mut lines: Vec<String> = hits.into_iter().take(10).map(|(_, line)| line).collect();
+            if total > 10 {
+                lines.push(format!("… {} more; refine the query", total - 10));
+            }
+            Ok(Json::String(if lines.is_empty() { "no matching skills".into() } else { lines.join("
+") }))
+        }
+        other => Err(format!("unknown skill action {other:?} (use search|read)")),
+    }
+}
+
 /// Executor for one member root: file/shell tools rooted there plus the web
 /// tools that member actually bound (tools.py::build_bound_tools).
 pub fn member_executor(
@@ -365,6 +475,12 @@ pub(crate) fn member_executor_with_control(
             let max = args.get("max_bytes").and_then(|v| v.as_u64()).unwrap_or(2_000_000) as usize;
             let allow_private = binding.env.get("allow_private").map(|v| v == "1").unwrap_or(false);
             web_fetch(url, max, allow_private)
+        }
+        "skill" => {
+            if !bindings.iter().any(|b| b == "skills") {
+                return Err("tool skill is not bound to this member".into());
+            }
+            skill_tool(&catalog, args)
         }
         other => {
             let capability = if other == "shell" { "shell" } else { "files" };
@@ -860,13 +976,33 @@ fn parse_search_response(payload: &Json, query: &str, count: i64, include_conten
     json!({"query": query, "provider": "anysearch", "results": results})
 }
 
+/// GET with redirects followed manually so every hop passes the SSRF guard
+/// (ureq's built-in following would only guard the first URL, P1-2).
+fn http_get_guarded(url: &str, guard: &dyn Fn(&str) -> Result<String, String>) -> Result<ureq::Response, String> {
+    let agent = ureq::AgentBuilder::new().redirects(0).build();
+    let mut current = guard(url)?;
+    for _ in 0..10 {
+        let response = agent
+            .get(&current)
+            .timeout(std::time::Duration::from_secs(30))
+            .call()
+            .map_err(|e| format!("web_fetch failed: {e}"))?;
+        if !(300..400).contains(&response.status()) {
+            return Ok(response);
+        }
+        let location = response.header("location").ok_or("web_fetch: redirect without location")?;
+        let next = url::Url::parse(&current)
+            .and_then(|base| base.join(location))
+            .map_err(|e| format!("web_fetch: bad redirect target {location:?}: {e}"))?;
+        current = guard(next.as_str())?;
+    }
+    Err("web_fetch: too many redirects".into())
+}
+
 /// tools.py::_web_fetch_tool — guarded GET, title + readable text body.
 pub fn web_fetch(url: &str, max_bytes: usize, allow_private: bool) -> Result<Json, String> {
-    let url = if allow_private { url.to_string() } else { guard_url(url)? };
-    let response = ureq::get(&url)
-        .timeout(std::time::Duration::from_secs(30))
-        .call()
-        .map_err(|e| format!("web_fetch failed: {e}"))?;
+    let guard = |u: &str| if allow_private { Ok(u.to_string()) } else { guard_url(u) };
+    let response = http_get_guarded(url, &guard)?;
     let content_type = response.header("content-type").unwrap_or("").to_string();
     let final_url = response.get_url().to_string();
     let body = response.into_string().map_err(|e| format!("web_fetch failed: {e}"))?;
@@ -878,7 +1014,7 @@ pub fn web_fetch(url: &str, max_bytes: usize, allow_private: bool) -> Result<Jso
     let (title, text) = strip_html(&body);
     let capped: String = text.chars().take(200_000).collect();
     Ok(json!({
-        "title": if title.is_empty() { url.clone() } else { title },
+        "title": if title.is_empty() { url.to_string() } else { title },
         "url": final_url,
         "fetched_at": iso_now(),
         "content": capped,
@@ -966,6 +1102,101 @@ pub fn iso8601(seconds: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Serve `response` to the first connection, then report our URL.
+    fn serve_once(response: String) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        url
+    }
+
+    #[test]
+    fn web_fetch_guards_every_redirect_hop() {
+        // P1-2: a redirect to a target the guard refuses must stop the fetch
+        let second = serve_once("HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: 6\r\n\r\nsecret".into());
+        let first = serve_once(format!("HTTP/1.1 302 Found\r\nlocation: {second}\r\ncontent-length: 0\r\n\r\n"));
+        let guard = |u: &str| {
+            if u == first { Ok(u.to_string()) } else { Err(format!("private address refused: {u}")) }
+        };
+        let err = http_get_guarded(&first, &guard).unwrap_err();
+        assert!(err.contains("private address"), "{err}");
+    }
+
+    #[test]
+    fn web_fetch_follows_guarded_redirect_chain() {
+        // both hops pass the guard -> the final hop's body and URL are returned
+        let second = serve_once("HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: 5\r\n\r\nhello".into());
+        let first = serve_once(format!("HTTP/1.1 302 Found\r\nlocation: {second}\r\ncontent-length: 0\r\n\r\n"));
+        let result = web_fetch(&first, 1_000_000, true).expect("allow_private serves the local chain");
+        assert_eq!(result["content"], json!("hello"));
+        assert_eq!(result["url"], json!(second));
+    }
+
+    #[test]
+    fn web_fetch_stops_after_ten_redirects() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/loop", listener.local_addr().unwrap());
+        let location = url.clone();
+        std::thread::spawn(move || {
+            while let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                let _ = stream.write_all(
+                    format!("HTTP/1.1 302 Found\r\nlocation: {location}\r\ncontent-length: 0\r\n\r\n").as_bytes(),
+                );
+            }
+        });
+        let err = web_fetch(&url, 1_000_000, true).unwrap_err();
+        assert!(err.contains("too many redirects"), "{err}");
+    }
+
+    #[test]
+    fn skill_tool_searches_and_reads_registry() {
+        let root = std::env::temp_dir().join(format!("ta-skilltool-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("ponytail")).unwrap();
+        std::fs::create_dir_all(root.join("scanpy")).unwrap();
+        std::fs::write(
+            root.join("ponytail/SKILL.md"),
+            "---\nname: ponytail\ndescription: laziest solution that works\n---\nponytail body",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("scanpy/SKILL.md"),
+            "---\nname: scanpy\ndescription: single-cell analysis\n---\nscanpy body",
+        )
+        .unwrap();
+        let mut catalog = teamagents_core::models::UserConfig::default();
+        catalog.skills_paths = vec![root.to_string_lossy().into_owned()];
+
+        // search hits name and description, ranks multi-word matches first
+        let hits = skill_tool(&catalog, &json!({"action": "search", "query": "single-cell"})).unwrap();
+        let hits = hits.as_str().unwrap();
+        assert!(hits.contains("scanpy") && !hits.contains("ponytail"), "{hits}");
+        // empty query lists everything
+        let all = skill_tool(&catalog, &json!({"action": "search", "query": ""})).unwrap();
+        assert!(all.as_str().unwrap().contains("ponytail"));
+        // read returns the full body; unknown names fail with the known list
+        let body = skill_tool(&catalog, &json!({"action": "read", "name": "ponytail"})).unwrap();
+        assert!(body.as_str().unwrap().contains("ponytail body"));
+        let err = skill_tool(&catalog, &json!({"action": "read", "name": "nope"})).unwrap_err();
+        assert!(err.contains("scanpy"), "{err}");
+        // an empty registry and a bad action are explicit errors
+        let empty = teamagents_core::models::UserConfig::default();
+        assert!(skill_tool(&empty, &json!({"action": "search"})).is_err());
+        assert!(skill_tool(&catalog, &json!({"action": "delete"})).is_err());
+        // executor enforces the binding (bound = authorized, like web tools)
+        let executor = member_executor(root.clone(), catalog, vec![], None);
+        assert!(executor("skill", &json!({"action": "search"})).is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn workspace_paths_stay_inside_root() {
@@ -1066,4 +1297,81 @@ mod tests {
         let executor = member_executor(std::env::temp_dir(), catalog, vec!["web".into()], None);
         assert!(executor("web_search", &json!({"query": "q"})).unwrap_err().contains("unsupported"));
     }
+
+
+    // -- P1-2 / P2-6 regression tests (review 2026-09-14) --
+
+    fn tiny_server(reply: String) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            while let Ok((mut conn, _)) = listener.accept() {
+                use std::io::{Read, Write};
+                let mut buf = [0u8; 2048];
+                let _ = conn.read(&mut buf);
+                if conn.write_all(reply.as_bytes()).is_err() {
+                    return;
+                }
+            }
+        });
+        base
+    }
+
+    #[test]
+    fn redirect_chain_is_guarded_at_every_hop() {
+        let hop_b = tiny_server("HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: 2\r\n\r\nhi".into());
+        let hop_a = tiny_server(format!(
+            "HTTP/1.1 302 Found\r\nlocation: {hop_b}/secret\r\ncontent-length: 0\r\n\r\n"
+        ));
+        let hop_blocked = tiny_server(
+            "HTTP/1.1 302 Found\r\nlocation: http://blocked.invalid/\r\ncontent-length: 0\r\n\r\n".into(),
+        );
+
+        // happy path: an allowed redirect is followed to its 200
+        let (a, b) = (hop_a.clone(), hop_b.clone());
+        let allow_local = move |u: &str| {
+            if u.starts_with(&a) || u.starts_with(&b) {
+                Ok(u.to_string())
+            } else {
+                Err(format!("blocked {u}"))
+            }
+        };
+        let response = http_get_guarded(&format!("{hop_a}/x"), &allow_local).unwrap();
+        assert_eq!(response.status(), 200);
+
+        // the guard must also run on the redirect target, not just hop one
+        let blocked_base = hop_blocked.clone();
+        let allow_first_only = move |u: &str| {
+            if u.starts_with(&blocked_base) {
+                Ok(u.to_string())
+            } else {
+                Err(format!("blocked {u}"))
+            }
+        };
+        let err = http_get_guarded(&format!("{hop_blocked}/x"), &allow_first_only).unwrap_err();
+        assert!(err.contains("blocked"), "redirect target escaped the guard: {err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn skill_candidates_reject_symlink_escapes() {
+        let base = std::env::temp_dir().join(format!("ta-skill-test-{}", std::process::id()));
+        let root = base.join("root");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(root.join("real")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(root.join("real/SKILL.md"), "real").unwrap();
+        std::fs::write(outside.join("SKILL.md"), "outside").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("linkdir")).unwrap();
+        // a symlinked SKILL.md inside a real directory
+        std::fs::create_dir_all(root.join("linked")).unwrap();
+        std::os::unix::fs::symlink(outside.join("SKILL.md"), root.join("linked/SKILL.md")).unwrap();
+
+        let names: Vec<String> = skill_candidates(&root).into_iter().map(|(n, _)| n).collect();
+        assert!(names.contains(&"real".to_string()), "real skill missing: {names:?}");
+        assert!(!names.contains(&"linkdir".to_string()), "symlinked dir escaped: {names:?}");
+        assert!(!names.contains(&"linked".to_string()), "symlinked SKILL.md escaped: {names:?}");
+        std::fs::remove_dir_all(&base).ok();
+    }
+
 }

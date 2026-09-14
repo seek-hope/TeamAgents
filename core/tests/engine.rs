@@ -204,6 +204,107 @@ fn cancel_task_without_run_cancels_immediately() {
 }
 
 #[test]
+fn complete_task_requires_an_active_run() {
+    let mut ctl = harness();
+    ctl.submit(&user("a1", "go")).unwrap();
+    let leader_run = ctl.store.runs_for_session("s1", &[TurnStatus::Queued]).unwrap().remove(0);
+    let a = action("ct1", "leader", ActionKind::AssignTask, json!({"assignee": "b", "description": "x"}), Some(leader_run.run_id));
+    let task_id = derived_task_id(&a);
+    ctl.submit(&a).unwrap();
+
+    // completion without a run_id is refused; no orphan completion is recorded
+    let r = ctl
+        .submit(&action("ct2", "b", ActionKind::CompleteTask, json!({"task_id": task_id, "summary": "s"}), None))
+        .unwrap();
+    assert!(!r.ok);
+    assert!(r.error.unwrap().contains("requires an active run"));
+    let task = ctl.store.get_task(&task_id).unwrap().unwrap();
+    assert!(matches!(task.status, TaskStatus::Pending));
+}
+
+#[test]
+fn cancel_task_cancels_queued_run() {
+    let mut ctl = harness();
+    ctl.submit(&user("a1", "go")).unwrap();
+    let leader_run = ctl.store.runs_for_session("s1", &[TurnStatus::Queued]).unwrap().remove(0);
+    let a = action("cq1", "leader", ActionKind::AssignTask, json!({"assignee": "b", "description": "x"}), Some(leader_run.run_id.clone()));
+    let task_id = derived_task_id(&a);
+    ctl.submit(&a).unwrap();
+    let b_run = ctl.store.runs_for_session("s1", &[TurnStatus::Queued]).unwrap().into_iter().find(|r| r.agent_id == "b").unwrap();
+
+    let r = ctl.submit(&action("cq2", "user", ActionKind::CancelTask, json!({"task_id": task_id}), None)).unwrap();
+    assert!(r.ok, "{}", r.error.unwrap_or_default());
+    // the queued run is cancelled outright: the engine must never begin it
+    assert_eq!(ctl.store.get_run(&b_run.run_id).unwrap().unwrap().status, TurnStatus::Cancelled);
+    assert!(matches!(ctl.store.get_task(&task_id).unwrap().unwrap().status, TaskStatus::Cancelled));
+    // the unrelated leader run is untouched
+    assert_eq!(ctl.store.get_run(&leader_run.run_id).unwrap().unwrap().status, TurnStatus::Queued);
+}
+
+#[test]
+fn waiting_boundary_patch_can_be_rejected_and_releases_draining() {
+    let mut ctl = harness();
+    ctl.submit(&user("a1", "go")).unwrap();
+    let leader_run = ctl.store.runs_for_session("s1", &[TurnStatus::Queued]).unwrap().remove(0);
+    let a = action("wb1", "leader", ActionKind::AssignTask, json!({"assignee": "b", "description": "x"}), Some(leader_run.run_id));
+    ctl.submit(&a).unwrap(); // b now has a QUEUED (live) run
+
+    let r = ctl
+        .submit(&action(
+            "wb2",
+            "b",
+            ActionKind::ProposeTeamChange,
+            json!({"operations": [{"op": "update_agent", "agent_id": "b", "changes": {"name": "B2"}}]}),
+            None,
+        ))
+        .unwrap();
+    assert!(r.ok, "{}", r.error.unwrap_or_default());
+    let patch_id = r.result["patch_id"].as_str().unwrap().to_string();
+
+    let r = ctl.submit(&action("wb3", "leader", ActionKind::ApplyTopologyPatch, json!({"patch_id": patch_id}), None)).unwrap();
+    assert!(r.ok, "{}", r.error.unwrap_or_default());
+    assert_eq!(r.result["status"], json!("WAITING_BOUNDARY"));
+    assert_eq!(ctl.store.agent_status("s1", "b").unwrap(), Some(AgentStatus::Draining));
+
+    // the Leader can reject a boundary-parked patch; parked members leave Draining
+    let r = ctl
+        .submit(&action("wb4", "leader", ActionKind::ApplyTopologyPatch, json!({"patch_id": patch_id, "reject": true}), None))
+        .unwrap();
+    assert!(r.ok, "{}", r.error.unwrap_or_default());
+    assert_eq!(r.result["status"], json!("REJECTED"));
+    assert_eq!(ctl.store.get_patch(&patch_id).unwrap().unwrap().status, PatchStatus::Rejected);
+    assert_eq!(ctl.store.agent_status("s1", "b").unwrap(), Some(AgentStatus::Idle));
+}
+
+#[test]
+fn approval_parked_run_does_not_block_boundary() {
+    let mut ctl = harness();
+    ctl.submit(&user("a1", "go")).unwrap();
+    let leader_run = ctl.store.runs_for_session("s1", &[TurnStatus::Queued]).unwrap().remove(0);
+    let a = action("ap1", "leader", ActionKind::AssignTask, json!({"assignee": "b", "description": "x"}), Some(leader_run.run_id));
+    ctl.submit(&a).unwrap();
+    let b_run = ctl.store.runs_for_session("s1", &[TurnStatus::Queued]).unwrap().into_iter().find(|r| r.agent_id == "b").unwrap();
+    // in-process run parked on an approval: its thread exited, external_turn_id is None
+    ctl.store.set_run_status(&b_run.run_id, TurnStatus::WaitingApproval).unwrap();
+
+    let r = ctl
+        .submit(&action(
+            "ap2",
+            "b",
+            ActionKind::ProposeTeamChange,
+            json!({"operations": [{"op": "update_agent", "agent_id": "b", "changes": {"name": "B2"}}]}),
+            None,
+        ))
+        .unwrap();
+    let patch_id = r.result["patch_id"].as_str().unwrap().to_string();
+    let r = ctl.submit(&action("ap3", "leader", ActionKind::ApplyTopologyPatch, json!({"patch_id": patch_id}), None)).unwrap();
+    assert!(r.ok, "{}", r.error.unwrap_or_default());
+    // applies immediately instead of deadlocking behind the parked approval
+    assert_eq!(r.result["status"], json!("APPLIED"));
+    assert_eq!(ctl.store.get_patch(&patch_id).unwrap().unwrap().status, PatchStatus::Applied);
+}
+
+#[test]
 fn signal_done_blocked_by_unfinished_work() {
     let mut ctl = harness();
     ctl.submit(&user("a1", "go")).unwrap();

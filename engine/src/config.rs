@@ -187,10 +187,20 @@ pub fn load_user_config_for(cwd: &Path) -> Result<UserConfig, String> {
             .cloned()
             .unwrap_or_default()
     };
+    // instruction_files/skills_paths land in every member's prompt, so project
+    // sources pass the same trust gate as project tools (P1-3)
     let mut skills = list(&user, "skills_paths");
-    skills.extend(list(&project, "skills_paths"));
     let mut instructions = list(&user, "instruction_files");
-    instructions.extend(list(&project, "instruction_files"));
+    if trusted {
+        skills.extend(list(&project, "skills_paths"));
+        instructions.extend(list(&project, "instruction_files"));
+    } else {
+        for key in ["skills_paths", "instruction_files"] {
+            if !list(&project, key).is_empty() {
+                eprintln!("teamagents: 项目配置定义了 {key:?}，默认不信任项目工具，已忽略");
+            }
+        }
+    }
     merged.insert("skills_paths".into(), toml::Value::Array(skills));
     merged.insert("instruction_files".into(), toml::Value::Array(instructions));
     let _ = empty;

@@ -118,7 +118,7 @@ impl Notify {
     pub fn note_external_status(&self, run_id: &str, status: TurnStatus) {
         let accepting = self.accepting.lock().unwrap();
         if !*accepting { return; }
-        let Ok(state) = self.core.state() else { return };
+        let Ok(state) = self.core.state_brief() else { return };
         let runs: Vec<TurnRun> = serde_json::from_value(state.get("runs").cloned().unwrap_or(Json::Null)).unwrap_or_default();
         let Some(run) = runs.iter().find(|r| r.run_id == run_id) else { return };
         if run.status.is_terminal() {
@@ -161,7 +161,7 @@ impl Notify {
         if text.is_empty() {
             return;
         }
-        let Ok(state) = self.core.state() else { return };
+        let Ok(state) = self.core.state_brief() else { return };
         let runs: Vec<TurnRun> = serde_json::from_value(state.get("runs").cloned().unwrap_or(Json::Null)).unwrap_or_default();
         let Some(run) = runs.iter().find(|r| r.run_id == run_id) else { return };
         let requester = run.task_id.as_ref().and_then(|task_id| {
@@ -248,7 +248,7 @@ impl Runtime {
     }
 
     pub fn add_runner(&self, agent_id: &str, runner: Arc<dyn AgentRunner>) {
-        let revision = self.core.state().ok()
+        let revision = self.core.state_brief().ok()
             .and_then(|s| s["agents"].as_array()?.iter().find(|a| a["id"] == agent_id)?["config_revision"].as_i64())
             .unwrap_or(0);
         self.runners.lock().unwrap().insert(agent_id.to_string(), (revision, runner));
@@ -357,7 +357,7 @@ impl Runtime {
         let approval = reply.get("approval").cloned().unwrap_or(Json::Null);
         let Some(run_id) = approval.get("run_id").and_then(|v| v.as_str()) else { return };
         let run_id = run_id.to_string();
-        let Ok(state) = self.core.state() else { return };
+        let Ok(state) = self.core.state_brief() else { return };
         let runs: Vec<TurnRun> = serde_json::from_value(state.get("runs").cloned().unwrap_or(Json::Null)).unwrap_or_default();
         let Some(run) = runs.iter().find(|r| r.run_id == run_id) else { return };
         if let Some(runner) = self.runner(&run.agent_id) {
@@ -379,7 +379,7 @@ impl Runtime {
         for push in pushes {
             let run_id = push.get("run_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let items = push.get("items").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-            let Ok(state) = self.core.state() else { return };
+            let Ok(state) = self.core.state_brief() else { return };
             let runs: Vec<TurnRun> = serde_json::from_value(state.get("runs").cloned().unwrap_or(Json::Null)).unwrap_or_default();
             let Some(run) = runs.iter().find(|r| r.run_id == run_id) else { continue };
             if let Some(runner) = self.runner(&run.agent_id) {
@@ -393,6 +393,8 @@ impl Runtime {
         }
     }
 
+    /// Full session snapshot including events. Internal hot paths use
+    /// `core.state_brief()` instead (P2-9).
     pub fn state(&self) -> Result<Json, String> {
         self.core.state()
     }
@@ -400,7 +402,7 @@ impl Runtime {
     // -- scheduler -----------------------------------------------------------
 
     fn start_ready_runs(&self) {
-        let Ok(state) = self.core.state() else { return };
+        let Ok(state) = self.core.state_brief() else { return };
         let session = state.get("session").cloned().unwrap_or(Json::Null);
         if session.is_null() {
             return;
@@ -492,7 +494,7 @@ impl Runtime {
     }
 
     fn spec_for_agent(&self, agent_id: &str) -> Option<AgentSpec> {
-        let state = self.core.state().ok()?;
+        let state = self.core.state_brief().ok()?;
         let spec = state.get("spec")?.clone();
         let agents: Vec<AgentSpec> = serde_json::from_value(spec.get("agents")?.clone()).ok()?;
         agents.into_iter().find(|a| a.id == agent_id)
@@ -628,7 +630,7 @@ impl Runtime {
         );
         let mut outcome = self.run_with_timeout(runner.clone(), &fresh, &view, gateway, &wake, timeout);
 
-        let state = self.core.state()?;
+        let state = self.core.state_brief()?;
         let runs: Vec<TurnRun> = serde_json::from_value(state.get("runs").cloned().unwrap_or(Json::Null)).unwrap_or_default();
         let cancel_requested = runs
             .iter()
@@ -750,7 +752,7 @@ impl Runtime {
     }
 
     fn effective_limits(&self) -> RuntimeLimits {
-        let Ok(state) = self.core.state() else { return self.limits.clone() };
+        let Ok(state) = self.core.state_brief() else { return self.limits.clone() };
         let field = |name: &str, fallback: i64| -> i64 {
             state
                 .get("limits")
@@ -794,7 +796,7 @@ impl Runtime {
 
     /// After a restart: re-check in-flight runs, never blind-retry side effects.
     pub fn reconcile(&self) {
-        let Ok(state) = self.core.state() else { return };
+        let Ok(state) = self.core.state_brief() else { return };
         let runs: Vec<TurnRun> = serde_json::from_value(state.get("runs").cloned().unwrap_or(Json::Null)).unwrap_or_default();
         let parked: Vec<TurnRun> = runs
             .iter()
@@ -874,7 +876,7 @@ impl Runtime {
         while Instant::now() < deadline {
             let busy = self
                 .core
-                .state()
+                .state_brief()
                 .ok()
                 .and_then(|state| {
                     serde_json::from_value::<Vec<TurnRun>>(state.get("runs").cloned().unwrap_or(Json::Null)).ok()
@@ -891,7 +893,7 @@ impl Runtime {
 
     /// Status of one agent row (the worker reports this to the UI).
     pub fn agent_status(&self, agent_id: &str) -> Option<AgentStatus> {
-        let state = self.core.state().ok()?;
+        let state = self.core.state_brief().ok()?;
         state
             .get("agents")?
             .as_array()?

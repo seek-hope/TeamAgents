@@ -125,6 +125,9 @@ impl Server {
             "state" => self.with(params, |ctl, p| {
                 let sid = ctl.session_id.clone();
                 let after = p.get("after_sequence").and_then(|v| v.as_i64()).unwrap_or(0);
+                // hot paths (scheduler tick, per-tool-call checks) pass
+                // include_events:false to skip serializing the 1000-event tail
+                let include_events = p.get("include_events").and_then(|v| v.as_bool()).unwrap_or(true);
                 let spec = ctl.store.load_team_spec(&sid, None).map_err(|e| e.to_string())?;
                 let agents: Vec<Json> = spec
                     .agents
@@ -144,8 +147,19 @@ impl Server {
                     "runs": ctl.store.runs_for_session(&sid, &[]).map_err(|e| e.to_string())?,
                     "tasks": ctl.store.tasks_for_session(&sid, &[]).map_err(|e| e.to_string())?,
                     "pending_approvals": ctl.store.pending_approvals(&sid).map_err(|e| e.to_string())?,
-                    "events": ctl.store.events(&sid, after, 1000).map_err(|e| e.to_string())?,
+                    "events": if include_events {
+                        ctl.store.events(&sid, after, 1000).map_err(|e| e.to_string())?
+                    } else {
+                        vec![]
+                    },
                 }))
+            }),
+            // cheap per-member read for the executor factory (a full `state`
+            // call per tool invocation serializes the whole session under the lock)
+            "agent_config_revision" => self.with(params, |ctl, p| {
+                let agent = p.get("agent_id").and_then(|v| v.as_str()).ok_or("agent_id required")?;
+                let sid = ctl.session_id.clone();
+                Ok(json!({"config_revision": ctl.store.agent_config_revision(&sid, agent).map_err(|e| e.to_string())?}))
             }),
             "shared_entries" => self.with(params, |ctl, p| {
                 let space_ids: Vec<String> = p.get("space_ids").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();

@@ -988,3 +988,19 @@ fn ctrl_home_reaches_the_oldest_entry_on_a_narrow_frame() {
     assert!(text.contains("第0条"), "the oldest entry is still out of reach: {text}");
     assert!(text.contains("lines up") || text.contains("已上翻"), "the scroll marker must show the offset");
 }
+
+/// P2-12: repeated poll failures raise a status chip; recovery clears it.
+#[test]
+fn disconnect_chip_shows_and_clears() {
+    let mut app = sample_app();
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).unwrap();
+    app.disconnected = true;
+    terminal.draw(|f| ui::render(f, &mut app)).unwrap();
+    let text = frame_text(terminal.backend().buffer());
+    assert!(text.contains("[UI refresh failed]"), "{text}");
+    app.disconnected = false;
+    terminal.draw(|f| ui::render(f, &mut app)).unwrap();
+    let text = frame_text(terminal.backend().buffer());
+    assert!(!text.contains("[UI refresh failed]"), "{text}");
+}

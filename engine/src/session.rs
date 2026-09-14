@@ -81,42 +81,42 @@ impl OpenedSession {
 /// ponytail: the Python build mounts them as a virtual filesystem the member
 /// reads with file tools; here the bounded contents go straight into the system
 /// prompt (upgrade path: a read_skill tool once skills outgrow the prompt).
-fn member_context(catalog: &UserConfig, cwd: &std::path::Path, session_id: &str, agent_id: &str) -> Vec<(String, String)> {
+fn member_context(catalog: &UserConfig, cwd: &std::path::Path, session_id: &str, agent: &AgentSpec) -> Vec<(String, String)> {
     const PER_FILE: usize = 8_000;
     const TOTAL: usize = 32_000;
     let mut out: Vec<(String, String)> = vec![];
     let mut budget = TOTAL;
 
-    let mut skills: Vec<PathBuf> = catalog.skills_paths.iter().map(|p| expand_home(p)).collect();
-    skills.push(cwd.join(".teamagents").join("skills"));
-    skills.push(session_paths(session_id).base.join("members").join(agent_id).join("skills"));
-    for dir in skills {
-        let mut candidates = vec![dir.join("SKILL.md")];
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            candidates.extend(
-                entries
-                    .flatten()
-                    .map(|entry| entry.path().join("SKILL.md"))
-                    .filter(|path| path.is_file()),
-            );
-        }
-        for path in candidates {
-            if !path.is_file() {
+    // Only the member's selected skills are injected (plan §12.1: discovery +
+    // on-demand read via the `skill` tool; injection is the Leader's
+    // distribution channel, set per member in TeamSpec/topology patches).
+    // Later roots override earlier ones on a name clash: user < project < member.
+    let mut roots: Vec<PathBuf> = catalog.skills_paths.iter().map(|p| expand_home(p)).collect();
+    roots.push(cwd.join(".teamagents").join("skills"));
+    roots.push(session_paths(session_id).base.join("members").join(&agent.id).join("skills"));
+    let mut selected: Vec<(String, PathBuf)> = vec![];
+    // skill_candidates canonicalizes and rejects symlink escapes (P2-6)
+    for dir in roots.into_iter().rev() {
+        for (name, path) in crate::tools::skill_candidates(&dir) {
+            if !agent.skills.iter().any(|s| *s == name) || selected.iter().any(|(n, _)| *n == name) {
                 continue;
             }
-            let Ok(text) = std::fs::read_to_string(&path) else { continue };
-            let text: String = text.chars().take(PER_FILE).collect();
-            if text.chars().count() > budget {
-                break;
-            }
-            budget -= text.chars().count();
-            let name = path
-                .parent()
-                .and_then(|p| p.file_name())
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "skill".into());
-            out.push((format!("skill {name}"), text));
+            selected.push((name, path));
         }
+    }
+    for name in &agent.skills {
+        if !selected.iter().any(|(n, _)| n == name) {
+            eprintln!("member {}: selected skill {name:?} not found in skills_paths", agent.id);
+        }
+    }
+    for (name, path) in selected {
+        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        let text: String = text.chars().take(PER_FILE).collect();
+        if text.chars().count() > budget {
+            break;
+        }
+        budget -= text.chars().count();
+        out.push((format!("skill {name}"), text));
     }
 
     let mut memory: Vec<PathBuf> = catalog.instruction_files.iter().map(|p| expand_home(p)).collect();
@@ -338,7 +338,7 @@ fn make_runner_factory(
         // the resolved set is also what the model gets advertised, so an explicit
         // binding name (anything but the literal "web") still exposes the tools
         let web = crate::tools::web_tools(&catalog, &agent.tool_bindings)?;
-        let context = member_context(&catalog, &cwd, &session_id, &agent.id);
+        let context = member_context(&catalog, &cwd, &session_id, agent);
         Ok(ChatRunner::new(
             &agent_json,
             profile,
@@ -364,14 +364,18 @@ fn member_executor_factory(
     let artifacts = session_paths(&session_id).artifacts;
     Arc::new(move |agent_id: &str, tool: &str, args: &Json, control: &TurnControl| {
         control.check()?;
-        let state = core.state()?;
-        let revision = state["agents"].as_array()
-            .and_then(|agents| agents.iter().find(|a| a["id"] == agent_id))
-            .and_then(|a| a["config_revision"].as_i64()).ok_or("member is no longer configured")?;
+        // cheap per-call probe; the full state pull below only happens when the
+        // executor must be (re)built, not on every tool call (P2-8)
+        let revision = core
+            .call_in_session("agent_config_revision", json!({"agent_id": agent_id}))?
+            .get("config_revision")
+            .and_then(|v| v.as_i64())
+            .ok_or("bad agent_config_revision response")?;
         let cached = cache.lock().unwrap().get(agent_id).cloned();
         if let Some((cached_revision, executor)) = cached {
             if cached_revision == revision { return executor(tool, args, control); }
         }
+        let state = core.call_in_session("state", json!({"include_events": false}))?;
         let agent = state.get("spec").and_then(|spec| spec.get("agents")).cloned()
             .and_then(|agents| serde_json::from_value::<Vec<AgentSpec>>(agents).ok())
             .and_then(|agents| agents.into_iter().find(|a| a.id == agent_id)).ok_or("member is no longer configured")?;
@@ -407,7 +411,13 @@ mod tests {
         std::fs::write(crate::config::user_config_path().parent().unwrap().join("AGENTS.md"), "user memory").unwrap();
 
         let catalog = UserConfig::default();
-        let context = member_context(&catalog, &cwd, "s1", "leader");
+        let picked = AgentSpec {
+            id: "leader".into(), name: "Leader".into(), role: "leader".into(),
+            runtime_kind: RuntimeKind::Deepagents, instructions: String::new(),
+            model_profile: String::new(), tool_bindings: vec![],
+            skills: vec!["review".into()], workspace_policy: teamagents_core::models::WorkspacePolicy::Shared,
+        };
+        let context = member_context(&catalog, &cwd, "s1", &picked);
         let labels: Vec<&str> = context.iter().map(|(l, _)| l.as_str()).collect();
         assert!(labels.contains(&"skill review"), "{labels:?}");
         assert!(labels.contains(&"instructions AGENTS.md"), "{labels:?}");
@@ -415,6 +425,89 @@ mod tests {
         assert!(bodies.iter().any(|b| b.contains("review skill body")));
         assert!(bodies.iter().any(|b| b.contains("project instructions")));
         assert!(bodies.iter().any(|b| b.contains("user memory")));
+        // skills not named in the member's spec are not injected (discovery is
+        // the `skill` tool's job; injection is the Leader's distribution channel)
+        let unpicked = AgentSpec { skills: vec![], ..picked.clone() };
+        let context = member_context(&catalog, &cwd, "s1", &unpicked);
+        assert!(!context.iter().any(|(l, _)| l == "skill review"), "{context:?}");
+        assert!(context.iter().any(|(l, _)| l == "instructions AGENTS.md"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn member_context_rejects_symlinked_skills() {
+        // P2-6: a skill dir/file that symlinks outside the registry root is dropped
+        let _env = crate::env_lock();
+        let root = std::env::temp_dir().join(format!("ta-symlink-skill-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let cwd = root.join("project");
+        let home = root.join("home");
+        let registry = root.join("registry");
+        let outside = root.join("outside");
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(registry.join("legit")).unwrap();
+        std::fs::create_dir_all(outside.join("loot")).unwrap();
+        std::fs::write(registry.join("legit/SKILL.md"), "legit body").unwrap();
+        std::fs::write(outside.join("loot/SKILL.md"), "outside secret").unwrap();
+        std::os::unix::fs::symlink(outside.join("loot"), registry.join("escape")).unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", home.join(".config"));
+        std::env::set_var("XDG_STATE_HOME", home.join(".state"));
+
+        let mut catalog = UserConfig::default();
+        catalog.skills_paths = vec![registry.to_string_lossy().into_owned()];
+        let agent = AgentSpec {
+            id: "m".into(), name: "M".into(), role: "worker".into(),
+            runtime_kind: RuntimeKind::Deepagents, instructions: String::new(),
+            model_profile: String::new(), tool_bindings: vec![],
+            skills: vec!["legit".into(), "escape".into()],
+            workspace_policy: teamagents_core::models::WorkspacePolicy::Shared,
+        };
+        let context = member_context(&catalog, &cwd, "s-sym", &agent);
+        assert!(context.iter().any(|(l, _)| l == "skill legit"), "{context:?}");
+        assert!(!context.iter().any(|(l, _)| l == "skill escape"), "{context:?}");
+        assert!(!context.iter().any(|(_, body)| body.contains("outside secret")), "{context:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn member_executor_factory_probes_config_revision() {
+        // P2-8: the factory resolves members through the lightweight
+        // agent_config_revision endpoint (unknown method/bad reply would fail here)
+        let _env = crate::env_lock();
+        let root = std::env::temp_dir().join(format!("ta-factory-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let cwd = root.join("project");
+        let home = root.join("home");
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", home.join(".config"));
+        std::env::set_var("XDG_STATE_HOME", home.join(".state"));
+
+        let core = CoreClient::open(":memory:", "s-factory").expect("core");
+        core.call("create_session", json!({"session_id": "s-factory", "cwd": cwd})).expect("create");
+        core.call("set_catalog", json!({"session_id": "s-factory", "catalog": {
+            "models": {"m": {"provider": "openai", "protocol": "openai", "model": "test"}},
+            "tools": {}, "skills_paths": [], "instruction_files": [],
+        }})).expect("catalog");
+        core.call("save_spec", json!({"session_id": "s-factory", "spec": {
+            "leader_id": "lead",
+            "agents": [{"id": "lead", "name": "L", "role": "leader", "runtime_kind": "deepagents",
+                        "model_profile": "m"},
+                       {"id": "m", "name": "M", "role": "worker", "runtime_kind": "deepagents",
+                        "model_profile": "m", "tool_bindings": ["files"]}],
+            "shared_spaces": [{"id": "main", "readers": ["m"], "writers": ["m"]}],
+        }})).expect("spec");
+
+        let factory = member_executor_factory(core, UserConfig::default(), "s-factory".into(), cwd.clone());
+        let control = TurnControl::default();
+        factory("m", "write_file", &json!({"path": "note.txt", "content": "hello"}), &control).unwrap();
+        // cached executor serves the second call
+        let read = factory("m", "read_file", &json!({"path": "note.txt"}), &control).unwrap();
+        assert_eq!(read, json!("hello"));
+        // an unknown member is still a clean error, not a panic or stale cache hit
+        let err = factory("ghost", "read_file", &json!({"path": "note.txt"}), &control).unwrap_err();
+        assert!(err.contains("no longer configured"), "{err}");
         let _ = std::fs::remove_dir_all(&root);
     }
 }
