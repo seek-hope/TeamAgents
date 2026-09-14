@@ -19,6 +19,9 @@ pub const LEADER_INSTRUCTIONS: &str = "You are the Leader of a team of agents. U
 whether to work alone or build a team, delegate with assign_task, coordinate
 with send_message, and report completion with signal_done. Keep task descriptions
 specific, include acceptance criteria, and never bypass runtime permissions.
+When creating a member via apply_topology_patch add_agent, you may omit
+model_profile (a per-member profile is auto-created from your current model),
+or set it to a model id (reuses your connection) or an existing profile name.
 ";
 
 pub fn default_leader_spec(profile: &str, tools: &[&str]) -> Json {
@@ -74,6 +77,29 @@ fn overrides_path(session_id: &str) -> PathBuf {
     session_paths(session_id).base.join("model_overrides.json")
 }
 
+/// `sessions/<id>/profiles.json` — per-session model profiles auto-created when
+/// the Leader adds a member without naming an existing profile (D-30).
+/// Within one session each member maps to its own profile; another session gets
+/// another set.
+fn profiles_path(session_id: &str) -> PathBuf {
+    session_paths(session_id).base.join("profiles.json")
+}
+
+fn load_session_profiles(session_id: &str) -> HashMap<String, ModelProfile> {
+    let Ok(text) = std::fs::read_to_string(profiles_path(session_id)) else { return HashMap::new() };
+    serde_json::from_str(&text).unwrap_or_default()
+}
+
+/// Atomic rewrite of `profiles.json` (tmp + rename).
+fn save_session_profiles(session_id: &str, profiles: &HashMap<String, ModelProfile>) -> Result<(), String> {
+    let path = profiles_path(session_id);
+    let tmp = path.with_extension("tmp");
+    let text = serde_json::to_string_pretty(profiles).map_err(|e| e.to_string())?;
+    std::fs::write(&tmp, text)
+        .and_then(|_| std::fs::rename(&tmp, &path))
+        .map_err(|e| format!("persist session profiles: {e}"))
+}
+
 /// Load persisted overrides, dropping entries that no longer validate against
 /// the current spec/catalog (members or profiles may have changed since).
 fn load_model_overrides(session_id: &str, catalog: &UserConfig, agents: &[AgentSpec]) -> HashMap<String, ModelOverride> {
@@ -98,6 +124,8 @@ pub struct OpenedSession {
     pub session_id: String,
     pub cwd: PathBuf,
     pub catalog: UserConfig,
+    /// Session-scoped auto-created profiles (D-30); win over user config names.
+    session_profiles: Arc<Mutex<HashMap<String, ModelProfile>>>,
     usage_probes: UsageProbes,
     model_overrides: ModelOverrides,
     /// Held for the session's lifetime; dropping it (normal close or any error
@@ -107,7 +135,27 @@ pub struct OpenedSession {
 
 impl OpenedSession {
     pub fn catalog(&self) -> Json {
-        serde_json::to_value(&self.catalog).unwrap_or(Json::Null)
+        let mut merged = self.catalog.clone();
+        merged.models.extend(self.session_profiles.lock().unwrap().clone());
+        serde_json::to_value(&merged).unwrap_or(Json::Null)
+    }
+
+    /// Session profiles shadow user-config profiles of the same name (D-30).
+    fn lookup_model(&self, name: &str) -> Option<ModelProfile> {
+        self.session_profiles
+            .lock()
+            .unwrap()
+            .get(name)
+            .cloned()
+            .or_else(|| self.catalog.models.get(name).cloned())
+    }
+
+    /// User config models + session profiles (session wins), sorted by name.
+    fn merged_models(&self) -> std::collections::BTreeMap<String, ModelProfile> {
+        let mut merged: std::collections::BTreeMap<String, ModelProfile> =
+            self.catalog.models.clone().into_iter().collect();
+        merged.extend(self.session_profiles.lock().unwrap().clone());
+        merged
     }
 
     /// Per-agent token usage for /status (worker "usage" method, CLI status).
@@ -127,17 +175,18 @@ impl OpenedSession {
                 let id = agent.get("id").and_then(|v| v.as_str()).unwrap_or("");
                 let ov = self.model_overrides.lock().unwrap().get(id).cloned().unwrap_or_default();
                 let profile_name = ov.profile.as_deref().unwrap_or_else(|| agent.get("model_profile").and_then(|v| v.as_str()).unwrap_or(""));
-                let profile = self.catalog.models.get(profile_name);
+                let profile = self.lookup_model(profile_name);
                 let usage = probes.get(id).map(|probe| probe());
                 // codex reports its own window; the profile wins when set
                 let context_window = profile
+                    .as_ref()
                     .and_then(|p| p.context_window)
                     .or_else(|| usage.as_ref().and_then(|u| u.get("codex_context_window")).and_then(Json::as_u64));
                 json!({
                     "agent_id": id,
                     "name": agent.get("name").and_then(|v| v.as_str()).unwrap_or(id),
                     "model_profile": profile_name,
-                    "model": ov.model.as_deref().or_else(|| profile.map(|p| p.model.as_str())),
+                    "model": ov.model.as_deref().or_else(|| profile.as_ref().map(|p| p.model.as_str())),
                     "context_window": context_window,
                     "usage": usage,
                 })
@@ -212,14 +261,14 @@ impl OpenedSession {
     fn effective_model(&self, agent: &AgentSpec) -> Json {
         let ov = self.model_overrides.lock().unwrap().get(&agent.id).cloned();
         let profile_name = ov.as_ref().and_then(|o| o.profile.as_ref()).unwrap_or(&agent.model_profile);
-        let profile = self.catalog.models.get(profile_name);
+        let profile = self.lookup_model(profile_name);
         let (o_model, o_effort) = ov.as_ref().map(|o| (o.model.clone(), o.effort.clone())).unwrap_or_default();
-        let model = o_model.or_else(|| profile.map(|p| p.model.clone()));
+        let model = o_model.or_else(|| profile.as_ref().map(|p| p.model.clone()));
         let effort = o_effort.or_else(|| {
             if agent.runtime_kind == RuntimeKind::Codex {
                 Some("xhigh".into())
             } else {
-                profile.and_then(profile_effort).map(str::to_string)
+                profile.as_ref().and_then(profile_effort).map(str::to_string)
             }
         });
         json!({
@@ -227,7 +276,7 @@ impl OpenedSession {
             "name": agent.name,
             "runtime_kind": agent.runtime_kind,
             "model_profile": profile_name,
-            "provider": profile.map(|p| p.provider.as_str()),
+            "provider": profile.as_ref().map(|p| p.provider.as_str()),
             "model": model,
             "effort": effort,
             "overridden": ov.is_some(),
@@ -237,8 +286,7 @@ impl OpenedSession {
     /// Feature 5 (/model): switch one member's model / reasoning effort for
     /// this session; both None clears the override (profile default). The
     /// cached runner is invalidated so the change lands on the next turn.
-    /// ponytail: session memory only, never written back to the TeamSpec —
-    /// persist overrides when a user actually asks for cross-session sticky.
+    /// Overrides persist per session (D-29), never written back to the TeamSpec.
     pub fn set_model_override(&self, agent_id: &str, model: Option<String>, effort: Option<String>) -> Result<Json, String> {
         let profile = if model.is_none() && effort.is_none() { None } else {
             self.model_overrides.lock().unwrap().get(agent_id).and_then(|o| o.profile.clone())
@@ -254,11 +302,11 @@ impl OpenedSession {
             .find(|a| a.id == agent_id)
             .ok_or_else(|| format!("unknown member {agent_id}"))?;
         let selected = match &profile {
-            Some(name) => Some(self.catalog.models.get(name).ok_or_else(|| format!("unknown model profile {name}"))?),
-            None => self.catalog.models.get(&agent.model_profile),
+            Some(name) => Some(self.lookup_model(name).ok_or_else(|| format!("unknown model profile {name}"))?),
+            None => self.lookup_model(&agent.model_profile),
         };
         if profile.is_some() && agent.runtime_kind == RuntimeKind::Codex
-            && selected.is_some_and(|p| p.protocol != "openai") {
+            && selected.as_ref().is_some_and(|p| p.protocol != "openai") {
             return Err("Codex 成员需要支持 Responses API 的 OpenAI 兼容供应商".into());
         }
         if let Some(model) = &model {
@@ -268,7 +316,7 @@ impl OpenedSession {
         }
         let effort = effort.map(|s| s.to_ascii_lowercase());
         if let Some(effort) = &effort {
-            let choices = model_efforts(selected.map(|p| p.protocol.as_str()).unwrap_or("openai"));
+            let choices = model_efforts(selected.as_ref().map(|p| p.protocol.as_str()).unwrap_or("openai"));
             if !choices.contains(&effort.as_str()) {
                 return Err(format!("effort must be one of {}", choices.join("/")));
             }
@@ -289,8 +337,9 @@ impl OpenedSession {
     /// `/model` with no args / worker "model": every member's effective values.
     pub fn model_report(&self) -> Json {
         let agents = self.spec_agents().unwrap_or_default();
-        let mut profiles: Vec<_> = self.catalog.models.iter().collect();
-        profiles.sort_by_key(|(name, p)| (&p.provider, &p.model, *name));
+        let merged = self.merged_models();
+        let mut profiles: Vec<_> = merged.iter().collect();
+        profiles.sort_by_key(|(name, p)| (&p.provider, &p.model, name.as_str()));
         json!({
             "session_id": self.session_id,
             "leader_id": self.core.state().ok().and_then(|s| s.get("leader_id").cloned()),
@@ -304,8 +353,8 @@ impl OpenedSession {
 
     /// Read-only network discovery. The worker runs it outside its request loop.
     pub fn discover_models(&self, provider: &str) -> Result<Json, String> {
-        let mut profiles: Vec<_> = self.catalog.models.iter().filter(|(_, p)| p.provider == provider).collect();
-        profiles.sort_by_key(|(name, _)| *name);
+        let merged = self.merged_models();
+        let profiles: Vec<_> = merged.iter().filter(|(_, p)| p.provider == provider).collect();
         if profiles.is_empty() { return Err(format!("unknown provider {provider}")); }
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         let mut seen = std::collections::HashSet::new();
@@ -318,7 +367,7 @@ impl OpenedSession {
                 Ok(ids) => {
                     for model in ids {
                         // Keep explicitly configured models with their own options.
-                        if self.catalog.models.values().any(|p| p.provider == provider && p.model == model
+                        if merged.values().any(|p| p.provider == provider && p.model == model
                             && p.protocol == profile.protocol && p.api_key_env == profile.api_key_env
                             && crate::chat::resolve_base_url(p) == crate::chat::resolve_base_url(profile)) { continue; }
                         models.push(json!({"id": name, "provider": provider, "model": model,
@@ -553,8 +602,15 @@ pub fn open_session(opts: OpenOptions) -> Result<Arc<OpenedSession>, String> {
         }
 
         // keep validation (topology patches, member profiles) in sync with the
-        // user config the engine loaded
-        core.call("set_catalog", json!({"session_id": session_id, "catalog": catalog}))?;
+        // user config the engine loaded, plus this session's auto-created
+        // member profiles (D-30)
+        let session_profiles: Arc<Mutex<HashMap<String, ModelProfile>>> =
+            Arc::new(Mutex::new(load_session_profiles(&session_id)));
+        {
+            let mut merged = catalog.clone();
+            merged.models.extend(session_profiles.lock().unwrap().clone());
+            core.call("set_catalog", json!({"session_id": session_id, "catalog": merged}))?;
+        }
         let state = core.state()?;
         let mode = state
             .get("session")
@@ -582,6 +638,7 @@ pub fn open_session(opts: OpenOptions) -> Result<Arc<OpenedSession>, String> {
             barriers,
             usage_probes.clone(),
             model_overrides.clone(),
+            session_profiles.clone(),
         );
 
         let mut runners: HashMap<String, Arc<dyn AgentRunner>> = HashMap::new();
@@ -597,6 +654,13 @@ pub fn open_session(opts: OpenOptions) -> Result<Arc<OpenedSession>, String> {
             max_parallel_workers: state.get("limits").and_then(|l| l.get("max_parallel_workers")).and_then(|v| v.as_i64()).unwrap_or(8),
         };
         let runtime = Runtime::new(core.clone(), notify, approvals, executor, Some(make_runner), limits);
+        runtime.set_topology_prepare(topology_prepare_hook(
+            core.clone(),
+            session_id.clone(),
+            catalog.clone(),
+            session_profiles.clone(),
+            model_overrides.clone(),
+        ));
         for (id, runner) in runners {
             runtime.add_runner(&id, runner);
         }
@@ -606,12 +670,91 @@ pub fn open_session(opts: OpenOptions) -> Result<Arc<OpenedSession>, String> {
             session_id,
             cwd,
             catalog,
+            session_profiles,
             usage_probes,
             model_overrides,
             lock: Mutex::new(Some(lock)),
         }))
     })();
     result
+}
+
+/// D-30 hook: before an apply_topology_patch submit, every add_agent whose
+/// model_profile is empty or names nothing configured gets a member-named
+/// session profile cloned from the Leader's effective model config (a non-empty
+/// unknown value is treated as a requested model id on the Leader's connection),
+/// and the op is rewritten to point at it. Runs on the caller's thread.
+fn topology_prepare_hook(
+    core: Arc<CoreClient>,
+    session_id: String,
+    catalog: UserConfig,
+    session_profiles: Arc<Mutex<HashMap<String, ModelProfile>>>,
+    model_overrides: ModelOverrides,
+) -> Arc<dyn Fn(&mut Json) -> Result<(), String> + Send + Sync> {
+    Arc::new(move |payload: &mut Json| {
+        let Some(ops) = payload.get_mut("operations").and_then(|v| v.as_array_mut()) else { return Ok(()) };
+        let mut changed = false;
+        for op in ops.iter_mut().filter(|o| o.get("op").and_then(|v| v.as_str()) == Some("add_agent")) {
+            let agent = op.get_mut("agent").and_then(|v| v.as_object_mut()).ok_or("add_agent: missing agent")?;
+            let aid = agent.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            if aid.is_empty() {
+                return Err("add_agent: missing agent.id".into());
+            }
+            let requested = agent.get("model_profile").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            {
+                let known = session_profiles.lock().unwrap();
+                if (!requested.is_empty() && (catalog.models.contains_key(&requested) || known.contains_key(&requested)))
+                    || known.contains_key(&aid)
+                {
+                    // existing profile named explicitly, or a retry of a patch whose
+                    // profile was already created: just point the op at it
+                    if requested.is_empty() && known.contains_key(&aid) {
+                        agent.insert("model_profile".into(), json!(aid));
+                        changed = true;
+                    }
+                    continue;
+                }
+            }
+            let state = core.state().map_err(|e| format!("add_agent: {e}"))?;
+            let leader_id = state.get("leader_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let agents: Vec<AgentSpec> = serde_json::from_value(
+                state.get("spec").and_then(|s| s.get("agents")).cloned().unwrap_or(Json::Null),
+            )
+            .map_err(|e| format!("add_agent: bad spec: {e}"))?;
+            let leader = agents.iter().find(|a| a.id == leader_id).ok_or("add_agent: no leader in spec")?;
+            let ov = model_overrides.lock().unwrap().get(&leader_id).cloned().unwrap_or_default();
+            let base_name = ov.profile.clone().unwrap_or_else(|| leader.model_profile.clone());
+            let mut base = session_profiles
+                .lock()
+                .unwrap()
+                .get(&base_name)
+                .cloned()
+                .or_else(|| catalog.models.get(&base_name).cloned())
+                .ok_or_else(|| format!("add_agent: leader model profile {base_name} not found"))?;
+            if let Some(model) = ov.model {
+                base.model = model;
+            }
+            if let Some(effort) = ov.effort {
+                base.generation_options.insert("reasoning_effort".into(), json!(effort));
+            }
+            if !requested.is_empty() {
+                base.model = requested;
+            }
+            session_profiles.lock().unwrap().insert(aid.clone(), base);
+            agent.insert("model_profile".into(), json!(aid));
+            changed = true;
+        }
+        if changed {
+            save_session_profiles(&session_id, &session_profiles.lock().unwrap())?;
+            let mut merged = catalog.clone();
+            merged.models.extend(session_profiles.lock().unwrap().clone());
+            // ponytail: push-then-submit is not atomic with the patch; control
+            // re-validates on submit, so a lost race fails the patch loudly and
+            // the Leader can retry. Serial leader applies make this theoretical.
+            core.call("set_catalog", json!({"session_id": session_id, "catalog": merged}))?;
+        }
+        Ok(())
+    })
 }
 
 fn make_runner_factory(
@@ -625,6 +768,7 @@ fn make_runner_factory(
     barriers: BarrierRegistry,
     usage_probes: UsageProbes,
     model_overrides: ModelOverrides,
+    session_profiles: Arc<Mutex<HashMap<String, ModelProfile>>>,
 ) -> RunnerFactory {
     Box::new(move |agent: &AgentSpec| {
         if let Some(scripts) = &scripts {
@@ -633,7 +777,14 @@ fn make_runner_factory(
         }
         // feature 5 (/model): a session-level override wins over the profile
         let ov = model_overrides.lock().unwrap().get(&agent.id).cloned().unwrap_or_default();
-        let profile: Option<ModelProfile> = catalog.models.get(ov.profile.as_ref().unwrap_or(&agent.model_profile)).cloned();
+        let profile_name = ov.profile.as_ref().unwrap_or(&agent.model_profile);
+        // D-30: member-named session profiles shadow user-config profiles
+        let profile: Option<ModelProfile> = session_profiles
+            .lock()
+            .unwrap()
+            .get(profile_name)
+            .cloned()
+            .or_else(|| catalog.models.get(profile_name).cloned());
         if agent.runtime_kind == RuntimeKind::Codex {
             let opts = codex_options(agent, profile.as_ref(), &ov, &session_id, &cwd)?;
             let runner = CodexRunner::new(

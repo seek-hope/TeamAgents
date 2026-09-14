@@ -616,3 +616,26 @@ Codex 成员选了非 OpenAI 兼容 profile、档位超出协议白名单的条�
 重开后若该模型不在 config.toml，覆盖条目保留 model 名，连接复用所选 profile。
 证据：model_override::model_overrides_survive_session_reopen（设置→重开生效→恢复默认→重开还原）、
 stale_model_overrides_are_dropped_on_open（未知成员/未知 profile/越规条目全部丢弃）。
+
+## D-30 成员↔profile 一一映射：add_agent 自动建会话级 profile（2026-09-15）
+
+用户确认的理想行为：Leader 创建成员时系统创建对应 profile（默认与 Leader 当前模型相同，
+也可按其要求选模型），之后用户用 /model 调整；同一会话内 profile 与成员一一映射，
+不同会话各自一套。
+
+落法（全部在 engine 产品层，core 协议不变）：
+
+- 会话级 profile 存 `sessions/<id>/profiles.json`（tmp+rename 原子写），随会话持久；
+  打开会话时并入 push 给 core 的 catalog，成员/补丁校验因此天然接受这些名字。
+- 拦截点：`ToolGateway.call` 在 `apply_topology_patch` 提交前运行会话安装的
+  topology_prepare 钩子（Runtime::set_topology_prepare；reject 不触发）。钩子里每个
+  add_agent：model_profile 省略或指向未知名字 → 复制 Leader 当前生效 profile
+  （含 /model 覆盖的模型与档位；未知非空值视为请求的模型 ID，沿用 Leader 连接），
+  以成员 id 为名写入 profiles.json，并把 op 改写为该名字；指向已有 profile 则原样通过。
+- 查找顺序：session_profiles 覆盖同名用户配置（runner 工厂、/model 报表与校验、
+  discover_models 去重都走合并视图）。
+- 边界：remove_agent 不清理对应 profile（无害残留；重做同名成员会被拒，id 不复用）；
+  set_catalog 推送与补丁提交非原子，竞态下补丁校验失败会大声报错，Leader 重试即可
+  （注释已标）。初始 TeamSpec（用户手写 YAML）不自动建 profile，仍须引用已配置名字。
+证据：chat_e2e::review_add_agent_auto_creates_member_profile（省略/模型 ID 两种写法、
+改写落 spec、profiles.json 内容、报表解析、重开后仍生效）。

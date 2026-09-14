@@ -230,6 +230,11 @@ TUI 里同一件事在「会话」面板完成（`Tab` 把焦点移入管理面�
   tool_bindings/skills/workspace_policy）、`channels[]`、`observers[]`、`shared_spaces[]`、`limits`。
 - 校验：Leader 唯一且存在、成员 ID 唯一、引用有效、任务依赖无环、Codex 成员只能由 Leader 委派、
   上限为正数；通过 `teamagents validate` 可离线检查。
+- 运行中 Leader 用 `apply_topology_patch` 的 `add_agent` 创建成员时，`model_profile` 可省略：
+  系统会为该成员自动创建**同名会话级 profile**（复制 Leader 当前生效的模型配置，含 /model 覆盖后的
+  模型与档位）；填一个未配置的名字则视为模型 ID（沿用 Leader 的连接）；填已有 profile 名则直接复用。
+  自动创建的 profile 存 `sessions/<id>/profiles.json`，随会话持久、仅本会话可见，重开后仍生效；
+  之后可用 `/model` 单独调整该成员（D-30）。
 - 工作目录策略：`shared`（同一目录）、`isolated`（成员目录 + 明确输入/制品引用）、
   `git_worktree`（从明确提交建分支与 worktree；原目录脏时自动退回 shared 并说明原因；
   重开会话复用既有 worktree，未合并成果拒绝清理，删除会话同样受保护）。

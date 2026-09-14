@@ -379,6 +379,9 @@ pub struct ToolGateway {
     executor: Option<Executor>,
     pub pending_approval_id: Mutex<Option<String>>,
     pub control: Arc<TurnControl>,
+    /// D-30: run before an apply_topology_patch submit; may rewrite the payload
+    /// (auto-created member profiles) or veto it with Err.
+    topology_prepare: Option<Arc<dyn Fn(&mut Json) -> Result<(), String> + Send + Sync>>,
 }
 
 impl ToolGateway {
@@ -389,12 +392,13 @@ impl ToolGateway {
         approvals: Arc<ApprovalGate>,
         executor: Option<Executor>,
     ) -> Arc<Self> {
-        Self::with_control(core, agent_id, run_id, approvals, executor, Arc::new(TurnControl::default()))
+        Self::with_control(core, agent_id, run_id, approvals, executor, Arc::new(TurnControl::default()), None)
     }
 
     pub(crate) fn with_control(
         core: Arc<CoreClient>, agent_id: &str, run_id: &str,
         approvals: Arc<ApprovalGate>, executor: Option<Executor>, control: Arc<TurnControl>,
+        topology_prepare: Option<Arc<dyn Fn(&mut Json) -> Result<(), String> + Send + Sync>>,
     ) -> Arc<Self> {
         Arc::new(Self {
             core,
@@ -404,6 +408,7 @@ impl ToolGateway {
             executor,
             pending_approval_id: Mutex::new(None),
             control,
+            topology_prepare,
         })
     }
 
@@ -424,13 +429,21 @@ impl ToolGateway {
             Err(e) => return self.receipt_placeholder(&call_id, false, json!({}), Some(e)),
         };
         if let Some(kind) = team_action_kind(tool) {
+            let mut payload = args.clone();
+            if tool == "apply_topology_patch" && payload.get("reject").and_then(|v| v.as_bool()) != Some(true) {
+                if let Some(prepare) = &self.topology_prepare {
+                    if let Err(e) = prepare(&mut payload) {
+                        return self.receipt_placeholder(&call_id, false, json!({}), Some(e));
+                    }
+                }
+            }
             let action = teamagents_core::models::TeamAction {
                 action_id: call_id.clone(),
                 session_id: self.core.session_id.clone(),
                 actor_id: self.agent_id.clone(),
                 run_id: Some(self.run_id.clone()),
                 kind,
-                payload: args.clone(),
+                payload,
             };
             return match self.core.submit(&action) {
                 Ok(receipt) => receipt,

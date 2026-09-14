@@ -220,6 +220,9 @@ pub struct Runtime {
     wake: (Mutex<bool>, Condvar),
     loop_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
     self_ref: Mutex<Weak<Runtime>>,
+    /// D-30: installed by the session; runs before an apply_topology_patch
+    /// submit (auto-creates per-member model profiles).
+    topology_prepare: Mutex<Option<Arc<dyn Fn(&mut Json) -> Result<(), String> + Send + Sync>>>,
 }
 
 impl Runtime {
@@ -246,6 +249,7 @@ impl Runtime {
             wake: (Mutex::new(false), Condvar::new()),
             loop_thread: Mutex::new(None),
             self_ref: Mutex::new(Weak::new()),
+            topology_prepare: Mutex::new(None),
         });
         *runtime.self_ref.lock().unwrap() = Arc::downgrade(&runtime);
         let weak = Arc::downgrade(&runtime);
@@ -255,6 +259,10 @@ impl Runtime {
             }
         }));
         runtime
+    }
+
+    pub fn set_topology_prepare(&self, hook: Arc<dyn Fn(&mut Json) -> Result<(), String> + Send + Sync>) {
+        *self.topology_prepare.lock().unwrap() = Some(hook);
     }
 
     pub fn add_runner(&self, agent_id: &str, runner: Arc<dyn AgentRunner>) {
@@ -654,6 +662,7 @@ impl Runtime {
             self.approvals.clone(),
             Some(self.guarded_executor(&fresh.agent_id, &fresh.run_id, limits.max_model_steps_per_turn, control.clone())),
             control.clone(),
+            self.topology_prepare.lock().unwrap().clone(),
         );
         let mut outcome = self.run_with_timeout(runner.clone(), &fresh, &view, gateway, &wake, timeout);
 

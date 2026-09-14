@@ -16,7 +16,7 @@ agents:
     role: worker
     runtime_kind: codex
     instructions: 执行委派的编码/终端任务，报告进度与结果。
-    model_profile: coding          # 映射为 codex -c model_provider/model
+    model_profile: leader_main     # 映射为 codex -c model_provider/model
     tool_bindings: [files, shell]
     skills: []
     workspace_policy: shared

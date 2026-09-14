@@ -791,6 +791,68 @@ fn review_topology_update_must_rebuild_runner() {
     assert!(!second["tools"].as_array().unwrap().iter().any(|t| t["function"]["name"] == "write_file"));
 }
 
+/// D-30: add_agent without a model profile auto-creates a member-named session
+/// profile cloned from the Leader's effective config; an unknown non-empty
+/// value is treated as a requested model id on the Leader's connection.
+/// The session profile survives a reopen.
+#[test]
+fn review_add_agent_auto_creates_member_profile() {
+    let _env = env_guard("review-autoprofile");
+    let cwd = isolated_project("autoprofile");
+    let api = FakeOpenAi::start(|_, index| {
+        (200, if index == 0 {
+            tool_call_response("topo-1", "apply_topology_patch", json!({
+                "base_revision": 1,
+                "operations": [
+                    {"op":"add_agent","agent":{"id":"w1","name":"W1","role":"worker",
+                        "runtime_kind":"deepagents","tool_bindings":[]}},
+                    {"op":"add_agent","agent":{"id":"w2","name":"W2","role":"worker",
+                        "runtime_kind":"deepagents","model_profile":"gpt-9","tool_bindings":[]}},
+                ]
+            }))
+        } else {
+            text_response("done")
+        })
+    });
+    let opened = open_chat_session(&cwd, &api, &["files"], UserConfig::default());
+    opened.runtime.start();
+    opened.runtime.user_message("build a team", false).unwrap();
+    assert!(opened.runtime.settle(5));
+
+    // both ops were rewritten to member-named session profiles before submit
+    let state = opened.core.state().unwrap();
+    let agents = state["spec"]["agents"].as_array().cloned().unwrap_or_default();
+    let profile_of = |id: &str| agents.iter().find(|a| a["id"] == id).map(|a| a["model_profile"].clone());
+    assert_eq!(profile_of("w1"), Some(json!("w1")), "{state}");
+    assert_eq!(profile_of("w2"), Some(json!("w2")), "{state}");
+
+    // profiles.json: w1 cloned the leader's model; w2 carries the requested model id
+    let dir = std::env::var("XDG_STATE_HOME").unwrap();
+    let text = std::fs::read_to_string(format!("{dir}/teamagents/sessions/review/profiles.json")).unwrap();
+    let profiles: Json = serde_json::from_str(&text).unwrap();
+    assert_eq!(profiles["w1"]["model"], json!("test"), "{profiles}");
+    assert_eq!(profiles["w1"]["base_url"], json!(api.base_url()));
+    assert_eq!(profiles["w2"]["model"], json!("gpt-9"), "{profiles}");
+
+    // the report resolves member-named profiles through the session overlay
+    let report = opened.model_report();
+    let agents = report["agents"].as_array().cloned().unwrap_or_default();
+    let model_of = |id: &str| agents.iter().find(|a| a["agent_id"] == id).map(|a| a["model"].clone());
+    assert_eq!(model_of("w1"), Some(json!("test")), "{report}");
+    assert_eq!(model_of("w2"), Some(json!("gpt-9")), "{report}");
+    assert!(report["profiles"].as_array().unwrap().iter().any(|p| p["id"] == "w1"), "{report}");
+    opened.close();
+
+    // reopen: the session overlay still resolves (D-30 persistence)
+    let reopened = open_chat_session(&cwd, &api, &["files"], UserConfig::default());
+    let report = reopened.model_report();
+    let agents = report["agents"].as_array().cloned().unwrap_or_default();
+    let model_of = |id: &str| agents.iter().find(|a| a["agent_id"] == id).map(|a| a["model"].clone());
+    assert_eq!(model_of("w1"), Some(json!("test")), "{report}");
+    assert_eq!(model_of("w2"), Some(json!("gpt-9")), "{report}");
+    reopened.close();
+}
+
 #[test]
 fn review_bound_mcp_must_be_advertised_to_model() {
     let _env = env_guard("review-mcp");

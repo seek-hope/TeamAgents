@@ -137,7 +137,7 @@ pub const TEAM_TOOL_DOCS: &[(&str, &str)] = &[
     ("list_shared", "List shared spaces you can read and their entry counts."),
     ("request_help", "Ask the Leader for help with your current task."),
     ("propose_team_change", "Propose a team/topology change to the Leader; only the Leader can apply it."),
-    ("apply_topology_patch", "Leader only: apply (or reject) a topology patch from a base revision."),
+    ("apply_topology_patch", "Leader only: apply (or reject) a topology patch from a base revision. add_agent may omit model_profile: a per-member profile is then auto-created from the Leader's current model."),
     ("cancel_task", "Leader only: cancel an unfinished or blocked task; running work stops first."),
     ("cancel_run", "Leader only: request a turn to stop; side effects are not rolled back."),
     ("signal_done", "Leader only: declare the current user goal complete; the runtime verifies no work, approvals or unknown outcomes are outstanding."),

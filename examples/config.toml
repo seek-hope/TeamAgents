@@ -10,20 +10,6 @@ timeout = 120
 max_retries = 2
 generation_options = { reasoning_effort = "max" }    # 默认档位；测试用 high（max 简单回合≈240s）
 
-[models.research]
-provider = "deepseek"
-protocol = "deepseek"
-model = "deepseek-flash"
-api_key_env = "DEEPSEEK_API_KEY"
-generation_options = { reasoning_effort = "max" }    # 默认档位；测试用 high（max 简单回合≈240s）
-
-[models.coding]
-provider = "deepseek"
-protocol = "deepseek"
-model = "deepseek-flash"
-api_key_env = "DEEPSEEK_API_KEY"
-generation_options = { reasoning_effort = "max" }    # 默认档位；测试用 high（max 简单回合≈240s）
-
 # --- 其他服务示例（按需启用；都是“逻辑名 -> 实际接入”的映射） --------------
 # [models.research_kimi]
 # provider = "openai"          # Kimi 走 OpenAI 兼容协议
