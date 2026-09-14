@@ -115,23 +115,42 @@ impl BoundTools {
 
 fn load_service(name: &str, binding: &ToolBinding) -> Result<(Arc<McpClient>, Vec<BoundTool>), String> {
     let transport = binding.mcp_transport.clone().unwrap_or_else(|| "stdio".into());
-    if transport != "stdio" {
-        return Err(format!("MCP transport {transport:?} is not implemented in the Rust build (use stdio)"));
-    }
-    let command = binding.command.clone().ok_or_else(|| format!("binding {name:?} needs a command"))?;
-    let env: Vec<(String, String)> = binding
-        .env
-        .iter()
-        .map(|(k, v)| {
-            let expanded = if let Some(var) = v.strip_prefix("${").and_then(|s| s.strip_suffix('}')) {
-                std::env::var(var).unwrap_or_default()
-            } else {
-                v.clone()
+    let client = match transport.as_str() {
+        "stdio" => {
+            let command = binding.command.clone().ok_or_else(|| format!("binding {name:?} needs a command"))?;
+            let env: Vec<(String, String)> = binding
+                .env
+                .iter()
+                .map(|(k, v)| {
+                    let expanded = if let Some(var) = v.strip_prefix("${").and_then(|s| s.strip_suffix('}')) {
+                        std::env::var(var).unwrap_or_default()
+                    } else {
+                        v.clone()
+                    };
+                    (k.clone(), expanded)
+                })
+                .collect();
+            McpClient::connect_stdio(&command, &binding.args, &env)?
+        }
+        "http" => {
+            let url = binding.url.clone().ok_or_else(|| format!("binding {name:?} needs a url for the http transport"))?;
+            // the token lives only in the named environment variable, never in config
+            let token = match &binding.bearer_token_env_var {
+                Some(var) => Some(
+                    std::env::var(var).map_err(|_| format!("binding {name:?}: bearer token env var {var} is not set"))?,
+                ),
+                None => None,
             };
-            (k.clone(), expanded)
-        })
-        .collect();
-    let client = McpClient::connect_stdio(&command, &binding.args, &env)?;
+            McpClient::connect_http(
+                &url,
+                token,
+                binding.startup_timeout_s.unwrap_or(60),
+                binding.tool_timeout_s.unwrap_or(120),
+            )?
+        }
+        "sse" => return Err(format!("binding {name:?}: the MCP \"sse\" transport was removed from the spec; use \"http\" (streamable HTTP)")),
+        other => return Err(format!("MCP transport {other:?} is not implemented (use \"stdio\" or \"http\")")),
+    };
     let service = binding.mcp_server.clone().unwrap_or_else(|| name.to_string());
     let allowed: HashSet<&str> = binding.tool_names.iter().map(|s| s.as_str()).collect();
     let mut out = vec![];
@@ -170,21 +189,38 @@ mod tests {
     #[test]
     fn unknown_and_unsupported_bindings_are_reported() {
         let mut catalog = UserConfig::default();
-        catalog.tools.insert("echo".into(), binding(json!({"kind": "mcp", "mcp_transport": "http", "url": "https://x"})));
+        catalog.tools.insert("echo".into(), binding(json!({"kind": "mcp", "mcp_transport": "http", "url": "http://127.0.0.1:1/mcp"})));
         let err = BoundTools::load(&catalog, &["ghost".to_string()]).err().expect("unknown binding");
         assert!(err.contains("unknown tool binding"), "{err}");
 
         // an optional service that cannot load only drops the capability
+        // (port 1 refuses connections: the http transport is implemented but down)
         let ok = BoundTools::load(&catalog, &["echo".to_string()]).unwrap();
         assert!(ok.tools.is_empty());
         // …unless it is marked required
         let mut required = UserConfig::default();
         required.tools.insert(
             "echo".into(),
-            binding(json!({"kind": "mcp", "mcp_transport": "http", "url": "https://x", "required": true})),
+            binding(json!({"kind": "mcp", "mcp_transport": "http", "url": "http://127.0.0.1:1/mcp", "required": true})),
         );
         let err = BoundTools::load(&required, &["echo".to_string()]).err().expect("required http transport");
-        assert!(err.contains("not implemented"), "{err}");
+        assert!(err.contains("unavailable"), "{err}");
+
+        // the removed "sse" transport gets a pointer at "http"
+        let mut legacy = UserConfig::default();
+        legacy.tools.insert("old".into(), binding(json!({"kind": "mcp", "mcp_transport": "sse", "url": "http://x", "required": true})));
+        let err = BoundTools::load(&legacy, &["old".to_string()]).err().expect("sse transport");
+        assert!(err.contains("sse") && err.contains("http"), "{err}");
+
+        // a named bearer token env var that is not set fails the binding
+        let mut auth = UserConfig::default();
+        auth.tools.insert(
+            "auth".into(),
+            binding(json!({"kind": "mcp", "mcp_transport": "http", "url": "http://127.0.0.1:1/mcp",
+                "bearer_token_env_var": "TA_MCP_TOKEN_DEFINITELY_UNSET", "required": true})),
+        );
+        let err = BoundTools::load(&auth, &["auth".to_string()]).err().expect("missing bearer env var");
+        assert!(err.contains("TA_MCP_TOKEN_DEFINITELY_UNSET"), "{err}");
 
         // a required service fails the member start; an optional one only drops the tool
         let mut catalog = UserConfig::default();

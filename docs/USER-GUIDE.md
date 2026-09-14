@@ -14,7 +14,7 @@
 | 模型接入 | langchain-* provider | OpenAI 兼容 HTTP + **Anthropic Messages API**（`protocol = "anthropic"`）；默认端点按 `provider`/`protocol` 解析（deepseek → api.deepseek.com/v1，anthropic → api.anthropic.com） |
 | 内置工具 `files`/`shell` | ✅ | ✅ |
 | `web_search`/`web_fetch` 绑定 | ✅ | ✅（`web_search` 目前只支持 `provider="anysearch"`） |
-| MCP 工具服务 | ✅ | ✅ stdio 传输（http/sse ⚠ 未实现）；工具名 `<service>_<tool>`，`tool_names` 过滤，绑定即授权 |
+| MCP 工具服务 | ✅ | ✅ stdio + streamable HTTP 传输；工具名 `<service>_<tool>`，`tool_names` 过滤，绑定即授权 |
 | Skills / AGENTS.md 注入 | ✅ | ✅（内容注入系统提示词，上限 8KB/文件、32KB/成员；Python 版是虚拟文件系统） |
 | `workspace_policy` | shared / isolated / git_worktree | ✅ 三者齐全（worktree 复用、脏仓库回退 shared 并说明、未合并成果拒绝清理；删除会话同样受保护） |
 | 会话锁 | flock | flock（`File::try_lock`；kill -9 自动回收，文件里的 pid 仅作诊断） |
@@ -69,14 +69,24 @@ api_key_env = "ANYSEARCH_API_KEY"
 [tools.fetch]
 kind = "web_fetch"
 
-[tools.notes]                  # MCP 服务（两版支持 stdio；http/sse 仅 Python 版）
+[tools.notes]                  # 本机 MCP 服务（stdio）
 kind = "mcp"
 mcp_server = "notes"
 mcp_transport = "stdio"
 command = "npx"
 args = ["-y", "some-mcp-server"]
 required = false               # 必需服务不可用会明确阻塞；可选服务失败只丢该能力
+
+[tools.wiki]                   # 远程 MCP 服务（streamable HTTP，MCP 2025-06-18）
+kind = "mcp"
+mcp_transport = "http"
+url = "https://mcp.example.com/wiki"
+bearer_token_env_var = "WIKI_MCP_TOKEN"  # 密钥只从该环境变量读取，绝不写进配置
+startup_timeout_s = 60         # initialize/tools/list 超时秒数（可省，默认 60）
+tool_timeout_s = 120           # tools/call 超时秒数（可省，默认 120）
 ```
+
+旧式 `mcp_transport = "sse"` 已从 MCP 规范移除，绑定会直接报错并提示改用 `"http"`。
 
 内置能力名 `files` / `shell` / `web` 不需要配置条目：成员在 TeamSpec 里引用即可。
 
@@ -230,7 +240,12 @@ TUI 里同一件事在「会话」面板完成（`Tab` 把焦点移入管理面�
   下边框显示按键提示（按可用宽度自适应）。支持 `/settings` 命令。
 - **斜杠命令**：输入框里以 `/` 开头即弹出候选菜单（可按前缀过滤，如 `/s`），
   `↑↓` 选择、`Tab` 补全、`Enter` 执行、`Esc` 关闭菜单。内置：
-  `/help`（键位与命令说明写入对话）、`/quit`（退出）、`/settings`（打开设置浮层）。
+  `/help`（键位与命令说明写入对话）、`/quit`（退出）、`/settings`（打开设置浮层）、
+  `/status`（各成员 token 用量与上下文窗口占用）、`/model`（无参列出各成员当前模型/档位，
+  `*` 标出会话覆盖；`/model <成员> <模型> [档位]` 切换，`/model <成员> clear` 恢复 TeamSpec 默认；
+  覆盖只在当前会话生效，不改 TeamSpec）、`/rewind`（列出可回退点，`/rewind <序号>` 回退到该条之前，
+  `/rewind 0` 清空对话；被放弃的分支仍保留在树里，可再次回退；Leader 回合进行中不可回退）、
+  `/fork`（从当前 Leader 对话分叉为新会话，团队任务/事实不复制；回合进行中不可分叉）。
 - **设置（`/settings`）**：居中浮层，只有一项可调——界面语言（语言行下方留一行空白，
   `Enter` 打开语言下拉、`Esc` 逐层关闭）；偏好保存在 `$XDG_STATE_HOME/teamagents/ui.json`。
   活动行 spinner 始终动画。

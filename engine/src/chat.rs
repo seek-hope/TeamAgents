@@ -8,7 +8,7 @@ use serde_json::{json, Value as Json};
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use teamagents_core::control::TurnOutcome;
 use teamagents_core::models::{ModelProfile, TurnRun, TurnStatus};
@@ -284,6 +284,93 @@ struct ChatCheckpoint {
     outcome: Option<TurnOutcome>,
     input_events: HashSet<String>,
     delivery_ids: HashSet<i64>,
+    /// Tree node count when this turn started (delta base) + the leaf it was
+    /// taken against; a rewind moves the leaf and thereby invalidates the
+    /// checkpoint (D-26).
+    #[serde(default)]
+    tree_base: usize,
+    #[serde(default)]
+    tree_leaf: Option<String>,
+}
+
+/// pi-style tree-structured conversation history (D-26): per thread an
+/// append-only node tree plus the live tip in `leaf`. `rewind` moves the leaf
+/// to an ancestor; new turns branch off it, so rewinding never destroys the
+/// abandoned branch (unlike truncation, it is undoable).
+#[derive(Serialize, Deserialize, Default)]
+pub struct ChatTree {
+    nodes: Vec<TreeNode>,
+    leaf: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct TreeNode {
+    id: String,
+    parent: Option<String>,
+    message: Json,
+}
+
+impl ChatTree {
+    /// Linear history for the model API: walk leaf -> root, reversed.
+    fn materialize(&self) -> Vec<Json> {
+        let mut out = vec![];
+        let mut cur = self.leaf.as_deref();
+        while let Some(id) = cur {
+            let Some(node) = self.nodes.iter().find(|n| n.id == id) else { break };
+            out.push(node.message.clone());
+            cur = node.parent.as_deref();
+        }
+        out.reverse();
+        out
+    }
+
+    /// Chain-append messages under the current leaf; returns the new leaf.
+    fn append(&mut self, messages: &[Json]) {
+        for message in messages {
+            let id = format!("n{}", self.nodes.len() + 1);
+            self.nodes.push(TreeNode { id: id.clone(), parent: self.leaf.take(), message: message.clone() });
+            self.leaf = Some(id);
+        }
+    }
+
+    /// Rewind targets: user-input nodes, newest first, as (id, depth, preview).
+    fn rewind_points(&self) -> Vec<Json> {
+        let chain: Vec<&TreeNode> = {
+            let mut out = vec![];
+            let mut cur = self.leaf.as_deref();
+            while let Some(id) = cur {
+                let Some(node) = self.nodes.iter().find(|n| n.id == id) else { break };
+                out.push(node);
+                cur = node.parent.as_deref();
+            }
+            out
+        };
+        chain
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| n.message["role"] == "user")
+            .map(|(depth, n)| {
+                let preview: String = n.message["content"].as_str().unwrap_or("").chars().take(80).collect();
+                json!({"id": n.id, "depth": depth, "preview": preview})
+            })
+            .collect()
+    }
+
+    fn rewind_to(&mut self, node_id: Option<&str>) -> Result<usize, String> {
+        match node_id {
+            None => {
+                self.leaf = None;
+                Ok(0)
+            }
+            Some(id) => {
+                if !self.nodes.iter().any(|n| n.id == id) {
+                    return Err(format!("unknown history node {id:?}"));
+                }
+                self.leaf = Some(id.to_string());
+                Ok(self.materialize().len())
+            }
+        }
+    }
 }
 
 fn write_json_atomic(path: &std::path::Path, value: &Json) -> Result<(), String> {
@@ -305,6 +392,32 @@ fn pending_tool_calls(history: &[Json]) -> Vec<Json> {
         .filter(|c| !c["id"].as_str().map(|id| answered.contains(id)).unwrap_or(false)).collect()
 }
 
+/// Token usage of one model response, both wire protocols normalized
+/// (OpenAI `usage.{prompt,completion,total}_tokens`, Anthropic
+/// `usage.{input,output}_tokens` with the total synthesized).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Usage {
+    pub calls: u64,
+    pub prompt: u64,
+    pub completion: u64,
+    pub total: u64,
+    /// Prompt size of the latest call in this thread — the best proxy for
+    /// current context fill (compares against ModelProfile::context_window).
+    pub last_prompt: u64,
+}
+
+/// None when the provider omitted usage (some proxies do).
+pub fn parse_usage(data: &Json) -> Option<(u64, u64, u64)> {
+    let usage = data.get("usage")?;
+    let num = |key: &str| usage.get(key).and_then(Json::as_u64);
+    let (prompt, completion) = match (num("prompt_tokens"), num("completion_tokens")) {
+        (Some(p), Some(c)) => (p, c),
+        _ => (num("input_tokens")?, num("output_tokens")?),
+    };
+    let total = num("total_tokens").unwrap_or(prompt + completion);
+    Some((prompt, completion, total))
+}
+
 pub struct ChatRunner {
     agent: serde_json::Value,
     profile: ModelProfile,
@@ -323,6 +436,14 @@ pub struct ChatRunner {
     mid_turn: Mutex<HashMap<String, Vec<Json>>>,
     interrupted: Mutex<HashSet<String>>,
     controls: Mutex<HashMap<String, Arc<TurnControl>>>,
+    /// pi-style history trees per thread (D-26), the rewind/fork substrate.
+    trees: Mutex<HashMap<String, ChatTree>>,
+    /// Session-memory token usage per thread.
+    /// ponytail: not persisted; add to the session ledger if users ask for
+    /// cross-restart accounting.
+    usage: Mutex<HashMap<String, Usage>>,
+    /// Prompt size of the latest call across threads (current context fill).
+    last_prompt: AtomicU64,
     closed: AtomicBool,
     /// runners.py::_switch_effort_to_max — at most one effort fallback per runner
     effort_max: AtomicBool,
@@ -358,10 +479,13 @@ impl ChatRunner {
             context,
             history_path,
             messages: Mutex::new(HashMap::new()),
+            trees: Mutex::new(HashMap::new()),
             states: Mutex::new(HashMap::new()),
             mid_turn: Mutex::new(HashMap::new()),
             interrupted: Mutex::new(HashSet::new()),
             controls: Mutex::new(HashMap::new()),
+            usage: Mutex::new(HashMap::new()),
+            last_prompt: AtomicU64::new(0),
             closed: AtomicBool::new(false),
             effort_max: AtomicBool::new(false),
             effort_fallback_used: AtomicBool::new(false),
@@ -395,6 +519,70 @@ impl ChatRunner {
         write_json_atomic(path, &data)
     }
 
+    fn tree_path(&self) -> Option<std::path::PathBuf> {
+        self.history_path.as_ref().map(|p| p.with_file_name("chat_tree.json"))
+    }
+
+    /// Tree file is `{thread: {nodes, leaf}}` per member. A member with only a
+    /// legacy linear chat_history.json migrates lazily: chain it in memory,
+    /// persist as a tree on the next save.
+    fn load_tree(&self, thread: &str) -> ChatTree {
+        if let Some(tree) = self.trees.lock().unwrap().get(thread) {
+            // ChatTree is not Clone-costly at this size; hand back a copy so
+            // callers never hold the lock while mutating.
+            return serde_json::from_value(serde_json::to_value(tree).unwrap_or_default()).unwrap_or_default();
+        }
+        if let Some(path) = self.tree_path() {
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                if let Ok(data) = serde_json::from_str::<Json>(&text) {
+                    if let Some(value) = data.get(thread) {
+                        if let Ok(tree) = serde_json::from_value::<ChatTree>(value.clone()) {
+                            return tree;
+                        }
+                    }
+                }
+            }
+        }
+        let mut tree = ChatTree::default();
+        tree.append(&self.load_history(thread));
+        tree
+    }
+
+    fn save_tree(&self, thread: &str, tree: &ChatTree) -> Result<(), String> {
+        let Some(path) = self.tree_path() else { return Ok(()) };
+        self.trees.lock().unwrap().insert(thread.to_string(), serde_json::from_value(serde_json::to_value(tree).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?);
+        let mut data = match std::fs::read_to_string(&path) {
+            Ok(text) => serde_json::from_str::<Json>(&text).map_err(|e| e.to_string())?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => json!({}),
+            Err(e) => return Err(e.to_string()),
+        };
+        if !data.is_object() { return Err("invalid member history tree".into()); }
+        data[thread] = serde_json::to_value(tree).map_err(|e| e.to_string())?;
+        write_json_atomic(&path, &data)
+    }
+
+    /// Rewind targets for a thread (user inputs, newest first) — the /rewind picker.
+    pub fn rewind_points(&self, thread: &str) -> Vec<Json> {
+        self.load_tree(thread).rewind_points()
+    }
+
+    /// Move the thread's live tip to `node_id` (None = empty conversation).
+    /// The abandoned branch stays in the tree. In-memory copies are dropped so
+    /// the next turn re-materializes from the tree; stale turn checkpoints are
+    /// discarded via their tree_leaf marker.
+    pub fn rewind(&self, thread: &str, node_id: Option<&str>) -> Result<usize, String> {
+        let mut tree = self.load_tree(thread);
+        let depth = tree.rewind_to(node_id)?;
+        self.save_tree(thread, &tree)?;
+        self.messages.lock().unwrap().remove(thread);
+        Ok(depth)
+    }
+
+    /// Directory holding this member's history files (fork copies the tree file).
+    pub fn history_dir(&self) -> Option<std::path::PathBuf> {
+        self.history_path.as_ref().and_then(|p| p.parent().map(|d| d.to_path_buf()))
+    }
+
     fn checkpoint_path(&self, run: &TurnRun) -> Result<std::path::PathBuf, String> {
         if run.run_id.is_empty() || !run.run_id.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
             return Err("invalid checkpoint run id".into());
@@ -418,6 +606,36 @@ impl ChatRunner {
             self.save_history(run.context_ref.as_deref().unwrap_or(&run.run_id), &checkpoint.history)
         };
         write().map_err(|e| ("CheckpointError".into(), e))
+    }
+
+    fn record_usage(&self, thread: &str, data: &Json) {
+        let Some((prompt, completion, total)) = parse_usage(data) else { return };
+        let mut usage = self.usage.lock().unwrap();
+        let entry = usage.entry(thread.to_string()).or_default();
+        entry.calls += 1;
+        entry.prompt += prompt;
+        entry.completion += completion;
+        entry.total += total;
+        entry.last_prompt = prompt;
+        self.last_prompt.store(prompt, Ordering::SeqCst);
+    }
+
+    /// Aggregated per-agent counters over all threads of this runner.
+    pub fn usage_snapshot(&self) -> Json {
+        let mut total = Usage::default();
+        for entry in self.usage.lock().unwrap().values() {
+            total.calls += entry.calls;
+            total.prompt += entry.prompt;
+            total.completion += entry.completion;
+            total.total += entry.total;
+        }
+        json!({
+            "calls": total.calls,
+            "prompt_tokens": total.prompt,
+            "completion_tokens": total.completion,
+            "total_tokens": total.total,
+            "last_prompt_tokens": self.last_prompt.load(Ordering::SeqCst),
+        })
     }
 
     fn bindings(&self) -> Vec<String> {
@@ -518,9 +736,9 @@ impl ChatRunner {
             .unwrap_or(200)
     }
 
-    fn chat(&self, messages: &[Json], tools: &Json, control: &TurnControl) -> Result<Json, String> {
+    fn chat(&self, thread: &str, messages: &[Json], tools: &Json, control: &TurnControl) -> Result<Json, String> {
         if self.profile.protocol == "anthropic" {
-            return self.chat_anthropic(messages, tools, control);
+            return self.chat_anthropic(thread, messages, tools, control);
         }
         let api_key = match &self.profile.api_key_env {
             Some(env) => std::env::var(env).map_err(|_| format!("missing API key env {env}"))?,
@@ -548,6 +766,7 @@ impl ChatRunner {
             match request.send_string(&body.to_string()) {
                 Ok(response) => match response.into_json::<Json>() {
                     Ok(data) => {
+                        self.record_usage(thread, &data);
                         let message = data
                             .get("choices")
                             .and_then(|c| c.get(0))
@@ -585,7 +804,7 @@ impl ChatRunner {
 
     /// Anthropic Messages API (providers.py uses langchain-anthropic natively).
     /// ponytail: text/tool_use/tool_result blocks only — no images or thinking blocks.
-    fn chat_anthropic(&self, messages: &[Json], tools: &Json, control: &TurnControl) -> Result<Json, String> {
+    fn chat_anthropic(&self, thread: &str, messages: &[Json], tools: &Json, control: &TurnControl) -> Result<Json, String> {
         let api_key = match &self.profile.api_key_env {
             Some(env) => std::env::var(env).map_err(|_| format!("missing API key env {env}"))?,
             None => String::new(),
@@ -644,7 +863,10 @@ impl ChatRunner {
             let mut retry_in: Option<std::time::Duration> = None;
             match request.send_string(&body.to_string()) {
                 Ok(response) => match response.into_json::<Json>() {
-                    Ok(data) => return Ok(from_anthropic_message(&data)),
+                    Ok(data) => {
+                        self.record_usage(thread, &data);
+                        return Ok(from_anthropic_message(&data));
+                    }
                     Err(e) => last_error = format!("chat API: bad json: {e}"),
                 },
                 Err(ureq::Error::Status(code, response)) => {
@@ -703,12 +925,13 @@ impl ChatRunner {
                 }
                 checkpoint.model_steps += 1;
                 self.save_checkpoint(run, checkpoint, gateway)?;
-                let message = match self.chat(&checkpoint.history, &tools, &gateway.control) {
+                let thread = run.context_ref.as_deref().unwrap_or(&run.run_id);
+                let message = match self.chat(thread, &checkpoint.history, &tools, &gateway.control) {
                     Ok(message) => message,
                     Err(e) if looks_like_effort_error(&e) && self.configured_effort()
                         && !self.effort_fallback_used.swap(true, Ordering::SeqCst) => {
                         self.effort_max.store(true, Ordering::SeqCst);
-                        self.chat(&checkpoint.history, &tools, &gateway.control).map_err(|e| ("ChatError".into(), e))?
+                        self.chat(thread, &checkpoint.history, &tools, &gateway.control).map_err(|e| ("ChatError".into(), e))?
                     }
                     Err(e) => return Err(("ChatError".into(), e)),
                 };
@@ -795,6 +1018,10 @@ impl ChatRunner {
 
     fn run_segment(&self, run: &TurnRun, view: &Json, gateway: &ToolGateway, wake: &Json) -> Result<TurnOutcome, (String, String)> {
         let loaded = self.load_checkpoint(run).map_err(|e| ("CheckpointError".into(), e))?;
+        // A checkpoint taken before a rewind belongs to an abandoned branch:
+        // discard it and restart the turn from the tree's current leaf (D-26).
+        let thread = run.context_ref.as_deref().unwrap_or(&run.run_id);
+        let loaded = loaded.filter(|cp| cp.tree_leaf == self.load_tree(thread).leaf);
         let fresh = loaded.is_none();
         let mut checkpoint = loaded.unwrap_or_default();
         if checkpoint.pending_external.is_some() {
@@ -805,9 +1032,11 @@ impl ChatRunner {
             return Ok(outcome);
         }
         let resumed = checkpoint.outcome.take().is_some();
-        let thread = run.context_ref.as_deref().unwrap_or(&run.run_id);
         if fresh {
-            checkpoint.history = self.messages.lock().unwrap().get(thread).cloned().unwrap_or_else(|| self.load_history(thread));
+            let tree = self.load_tree(thread);
+            checkpoint.tree_base = tree.materialize().len();
+            checkpoint.tree_leaf = tree.leaf.clone();
+            checkpoint.history = self.messages.lock().unwrap().get(thread).cloned().unwrap_or_else(|| tree.materialize());
             // A different, terminated turn may have left an unanswered tool in
             // the shared thread. It must not become work for this new run ID.
             for call in pending_tool_calls(&checkpoint.history) {
@@ -837,6 +1066,18 @@ impl ChatRunner {
             Err(e) => return Err(e),
         };
         checkpoint.outcome = Some(outcome.clone());
+        // Commit the segment to the history tree first, then stamp the
+        // checkpoint with the post-commit base/leaf: a checkpoint is only
+        // valid against the tree tip it was last synced with (D-26).
+        // ponytail: rewinding mid-turn grafts the in-flight tail onto the
+        // new leaf; rewind is meant for idle sessions.
+        let mut tree = self.load_tree(thread);
+        if checkpoint.history.len() > checkpoint.tree_base {
+            tree.append(&checkpoint.history[checkpoint.tree_base..]);
+            self.save_tree(thread, &tree).map_err(|e| ("CheckpointError".into(), e))?;
+        }
+        checkpoint.tree_base = checkpoint.history.len();
+        checkpoint.tree_leaf = tree.leaf.clone();
         self.save_checkpoint(run, &checkpoint, gateway)?;
         self.messages.lock().unwrap().insert(thread.to_string(), checkpoint.history);
         Ok(outcome)
@@ -886,6 +1127,14 @@ impl AgentRunner for ChatRunner {
 
     fn query_state(&self, run_id: &str) -> Option<TurnStatus> {
         self.states.lock().unwrap().get(run_id).copied()
+    }
+
+    fn rewind_points(&self, thread: &str) -> Vec<Json> {
+        ChatRunner::rewind_points(self, thread)
+    }
+
+    fn rewind(&self, thread: &str, node: Option<&str>) -> Result<usize, String> {
+        ChatRunner::rewind(self, thread, node)
     }
 
     fn applied_delivery_ids(&self, run: &TurnRun) -> Option<Vec<i64>> {
@@ -1029,6 +1278,51 @@ mod tests {
     use super::*;
 
     #[test]
+    fn parse_usage_reads_openai_and_anthropic_bodies() {
+        // OpenAI chat.completions shape
+        let openai = json!({"usage": {"prompt_tokens": 120, "completion_tokens": 30, "total_tokens": 150}});
+        assert_eq!(parse_usage(&openai), Some((120, 30, 150)));
+        // total synthesized when absent
+        let no_total = json!({"usage": {"prompt_tokens": 10, "completion_tokens": 4}});
+        assert_eq!(parse_usage(&no_total), Some((10, 4, 14)));
+        // Anthropic Messages shape
+        let anthropic = json!({"usage": {"input_tokens": 200, "output_tokens": 45}});
+        assert_eq!(parse_usage(&anthropic), Some((200, 45, 245)));
+        // no usage block (some proxies) -> no record
+        assert_eq!(parse_usage(&json!({"choices": []})), None);
+        assert_eq!(parse_usage(&json!({"usage": {"other": 1}})), None);
+    }
+
+    #[test]
+    fn usage_accumulates_per_thread_and_snapshots_totals() {
+        let runner = ChatRunner::new(
+            &json!({"id": "m", "name": "M", "role": "worker"}),
+            ModelProfile {
+                provider: "openai".into(), protocol: "openai".into(), model: "test".into(),
+                base_url: None, api_key_env: None, timeout: 30, max_retries: 0,
+                generation_options: Default::default(), context_window: None,
+            },
+            None,
+            crate::runtime::Notify::new(crate::core_client::CoreClient::open(":memory:", "usage-test").unwrap()),
+            crate::bound::BoundTools { tools: vec![] },
+            vec![],
+            (false, false),
+        );
+        let openai = json!({"usage": {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120}});
+        let anthropic = json!({"usage": {"input_tokens": 50, "output_tokens": 10}});
+        runner.record_usage("t1", &openai);
+        runner.record_usage("t1", &openai);
+        runner.record_usage("t2", &anthropic);
+        runner.record_usage("t2", &json!({})); // missing usage: ignored
+        let snap = runner.usage_snapshot();
+        assert_eq!(snap["calls"], 3);
+        assert_eq!(snap["prompt_tokens"], 250);
+        assert_eq!(snap["completion_tokens"], 50);
+        assert_eq!(snap["total_tokens"], 300);
+        assert_eq!(snap["last_prompt_tokens"], 50, "latest call wins across threads");
+    }
+
+    #[test]
     fn anthropic_conversion_keeps_tool_pairs_and_merges_results() {
         let history = vec![
             json!({"role": "system", "content": "be brief"}),
@@ -1146,6 +1440,7 @@ mod tests {
             timeout: 120,
             max_retries: 1,
             generation_options: Default::default(),
+            context_window: None,
         };
         assert_eq!(resolve_base_url(&profile(None, "deepseek", "deepseek")), "https://api.deepseek.com/v1");
         assert_eq!(resolve_base_url(&profile(Some("https://x/v1/"), "deepseek", "deepseek")), "https://x/v1");
@@ -1172,4 +1467,63 @@ mod tests {
             assert!(!retryable_status(code), "{code} must not be retried");
         }
     }
+
+    #[test]
+    fn chat_tree_materialize_rewind_and_points() {
+        // D-26: append-only tree + movable leaf = rewind without data loss
+        let mut tree = ChatTree::default();
+        tree.append(&[json!({"role":"system","content":"s"})]);
+        tree.append(&[json!({"role":"user","content":"第一问"}), json!({"role":"assistant","content":"a1"})]);
+        tree.append(&[json!({"role":"user","content":"第二问"}), json!({"role":"assistant","content":"a2"})]);
+        assert_eq!(tree.materialize().len(), 5);
+        let points = tree.rewind_points();
+        assert_eq!(points.len(), 2);
+        assert_eq!(points[0]["preview"], "第二问"); // newest first
+        // rewind to the first user message: later exchange stays in the tree
+        let target = points[1]["id"].as_str().unwrap().to_string();
+        assert_eq!(tree.rewind_to(Some(&target)).unwrap(), 2);
+        assert_eq!(tree.materialize().last().unwrap()["content"], "第一问");
+        // branch off the rewound point: old branch nodes remain addressable
+        tree.append(&[json!({"role":"assistant","content":"a1-alt"})]);
+        assert_eq!(tree.nodes.len(), 6);
+        assert_eq!(tree.materialize().last().unwrap()["content"], "a1-alt");
+        assert!(tree.rewind_to(Some("n999")).is_err());
+        assert_eq!(tree.rewind_to(None).unwrap(), 0);
+    }
+
+    #[test]
+    fn runner_tree_persists_and_rewind_invalidates() {
+        let _env = crate::env_lock();
+        let root = std::env::temp_dir().join(format!("ta-tree-{}", std::process::id()));
+        std::env::set_var("XDG_STATE_HOME", root.join("state"));
+        std::fs::create_dir_all(root.join("state")).unwrap();
+        let runner = ChatRunner::new(
+            &json!({"id": "lead", "name": "L", "role": "leader"}),
+            ModelProfile {
+                provider: "openai".into(), protocol: "openai".into(), model: "test".into(),
+                base_url: None, api_key_env: None, timeout: 30, max_retries: 0,
+                generation_options: Default::default(), context_window: None,
+            },
+            None,
+            crate::runtime::Notify::new(crate::core_client::CoreClient::open(":memory:", "tree-test").unwrap()),
+            crate::bound::BoundTools { tools: vec![] },
+            vec![],
+            (false, false),
+        );
+        let mut tree = runner.load_tree("user-dialog");
+        tree.append(&[json!({"role":"user","content":"u1"}), json!({"role":"assistant","content":"a1"})]);
+        runner.save_tree("user-dialog", &tree).unwrap();
+        // fresh load sees the persisted tree
+        let reloaded = runner.load_tree("user-dialog");
+        assert_eq!(reloaded.materialize().len(), 2);
+        assert_eq!(runner.rewind_points("user-dialog").len(), 1);
+        // rewind to empty; messages cache for the thread is dropped
+        runner.messages.lock().unwrap().insert("user-dialog".into(), vec![json!({"role":"user","content":"stale"})]);
+        assert_eq!(runner.rewind("user-dialog", None).unwrap(), 0);
+        assert!(runner.messages.lock().unwrap().get("user-dialog").is_none());
+        assert_eq!(runner.load_tree("user-dialog").materialize().len(), 0);
+        assert!(runner.history_dir().is_some());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
 }

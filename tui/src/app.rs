@@ -29,6 +29,10 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
     SlashCommand { name: "/help", description: "显示快捷键与斜杠命令说明" },
     SlashCommand { name: "/quit", description: "退出 TeamAgents" },
     SlashCommand { name: "/settings", description: "打开设置浮层（界面语言）" },
+    SlashCommand { name: "/status", description: "查看 token 用量与上下文窗口" },
+    SlashCommand { name: "/rewind", description: "回退对话到历史节点（/rewind 列出，/rewind <序号> 回退）" },
+    SlashCommand { name: "/fork", description: "从当前对话分叉新会话（团队事实不复制）" },
+    SlashCommand { name: "/model", description: "查看或切换成员模型与推理档位" },
 ];
 
 #[derive(Clone, Debug)]
@@ -55,6 +59,18 @@ pub enum Effect {
     /// ApprovalsPanel::_decide — toast '批准决定 {v0}：{v1}' from the receipt.
     DecideApproval { approval_id: String, decision: String },
     UserMessage(String),
+    /// /status: main loop calls the worker's "usage" method and feeds the
+    /// result to App::show_usage (rendering stays in app.rs for testability).
+    UsageStatus,
+    /// /rewind: list targets (main loop calls "rewind_points") / move the tip
+    RewindPoints,
+    Rewind { node: Option<String> },
+    /// /fork: branch the session with the conversation tree (D-26)
+    Fork,
+    /// /model with no args: worker "model" → App::show_models.
+    ModelStatus,
+    /// /model <member> <model> [effort]; None/None clears the override.
+    SetModel { agent_id: String, model: Option<String>, effort: Option<String> },
     SwitchSession(String),
     NewSession,
     ArchiveSession(String),
@@ -194,6 +210,8 @@ pub struct App {
     pub log_scroll: usize,
     /// `/settings` overlay (Esc closes; ↑↓ move, Enter toggles)
     pub settings_open: bool,
+    /// node ids of the last shown /rewind list (newest first)
+    rewind_list: Vec<String>,
     /// last mouse position, for hover feedback (row, column)
     pub pointer: Option<(u16, u16)>,
     /// the `/` menu: highlighted entry, and the query it was dismissed for
@@ -240,6 +258,7 @@ impl App {
             chat_scroll: 0,
             log_scroll: 0,
             settings_open: false,
+            rewind_list: vec![],
             pointer: None,
             slash_index: 0,
             slash_dismissed_for: None,
@@ -1246,9 +1265,13 @@ impl App {
                 vec![]
             }
             "/quit" => vec![Effect::Quit],
+            "/status" => vec![Effect::UsageStatus],
+            "/rewind" => vec![Effect::RewindPoints],
+            "/fork" => vec![Effect::Fork],
+            "/model" => vec![Effect::ModelStatus],
             "/help" => {
                 let lines = vec![
-                    self.t("斜杠命令：/help 本说明 · /settings 设置 · /quit 退出", &[]),
+                    self.t("斜杠命令：/help 本说明 · /settings 设置 · /status 用量 · /model 模型 · /rewind 回退 · /fork 分叉 · /quit 退出", &[]),
                     self.t("输入：Enter 发送 · Shift+Enter 换行 · ↑↓ 历史 · PgUp/PgDn 滚动", &[]),
                     self.t("界面：Ctrl+T 切面板 · Ctrl+G 批准 · Ctrl+F 全自动 · Ctrl+P 暂停 · Esc 停止 Leader · Ctrl+Q 退出", &[]),
                 ];
@@ -1257,6 +1280,213 @@ impl App {
             }
             _ => vec![],
         }
+    }
+
+    /// `/rewind <n>` picks from the last shown list; `/rewind <id>` rewinds to
+    /// a node id directly; `/rewind 0` empties the conversation.
+    fn run_rewind_args(&mut self, rest: &str) -> Vec<Effect> {
+        let arg = rest.trim();
+        if arg == "0" {
+            return vec![Effect::Rewind { node: None }];
+        }
+        if let Ok(n) = arg.parse::<usize>() {
+            match self.rewind_list.get(n.saturating_sub(1)) {
+                Some(node) => return vec![Effect::Rewind { node: Some(node.clone()) }],
+                None => {
+                    let msg = self.t("没有这个序号（先用 /rewind 列出可回退点）", &[]);
+                    self.write_chat("system", &msg);
+                    return vec![];
+                }
+            }
+        }
+        vec![Effect::Rewind { node: Some(arg.to_string()) }]
+    }
+
+    pub fn show_rewind_points(&mut self, report: Result<Json, String>) {
+        let report = match report {
+            Ok(report) => report,
+            Err(e) => {
+                let msg = self.t("获取回退点失败：{v0}", &[("v0", &e)]);
+                self.write_chat("system", &msg);
+                return;
+            }
+        };
+        let points = report.get("points").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        self.rewind_list = points.iter().filter_map(|p| p.get("id").and_then(|v| v.as_str()).map(str::to_string)).collect();
+        if points.is_empty() {
+            let msg = self.t("暂无可回退的节点（leader 还没有对话历史）", &[]);
+            self.write_chat("system", &msg);
+            return;
+        }
+        let mut lines = vec![self.t("可回退点（/rewind <序号> 回退到该条之前的状态）：", &[])];
+        for (i, point) in points.iter().enumerate() {
+            let preview = point.get("preview").and_then(|v| v.as_str()).unwrap_or("");
+            let line = self.t("  {v0}. {v1}", &[("v0", &(i + 1).to_string()), ("v1", preview)]);
+            lines.push(line);
+        }
+        self.write_chat("system", &lines.join("\n"));
+    }
+
+    pub fn show_rewind_done(&mut self, result: Result<Json, String>) {
+        match result {
+            Ok(v) => {
+                let depth = v.get("depth").and_then(|v| v.as_u64()).unwrap_or(0);
+                let msg = self.t("已回退对话（当前 {v0} 条消息；被放弃的分支仍保留，可再次 /rewind）", &[("v0", &depth.to_string())]);
+                self.write_chat("system", &msg);
+            }
+            Err(e) => {
+                let msg = self.t("回退失败：{v0}", &[("v0", &e)]);
+                self.write_chat("system", &msg);
+            }
+        }
+    }
+
+    /// Local reset shared by session switch and fork (the worker has already
+    /// opened the target session by the time this runs).
+    fn apply_switched(&mut self, session_id: String, catalog: Json, config_path: String) {
+        self.session_id = session_id;
+        self.catalog = catalog;
+        self.user_config_path = config_path;
+        self.cursor = 0;
+        self.chat.clear();
+        self.delta_buffers.clear();
+        self.stream_text.clear();
+        self.activity_runs.clear();
+        self.latest_activity = (self.t("等待输入", &[]), vec![]);
+        self.composer.clear_composer();
+        self.log_cursor = 0;
+        self.log_lines.clear();
+        self.state = None;
+        self.pending_delete = None;
+        self.rewind_list.clear();
+    }
+
+    pub fn show_fork_done(&mut self, result: Result<Json, String>) {
+        match result {
+            Ok(v) => {
+                let session_id = v.get("session_id").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                let catalog = v.get("catalog").cloned().unwrap_or(Json::Null);
+                let config_path = v.get("user_config_path").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                // the worker already switched; reset local state like a session switch
+                self.apply_switched(session_id.clone(), catalog, config_path);
+                let from = v.get("forked_from").and_then(|x| x.as_str()).unwrap_or("");
+                let msg = self.t("已从 {v0} 分叉到 {v1}（对话已带上，团队状态全新）", &[("v0", from), ("v1", &session_id)]);
+                self.write_chat("system", &msg);
+            }
+            Err(e) => {
+                let msg = self.t("分叉失败：{v0}", &[("v0", &e)]);
+                self.write_chat("system", &msg);
+            }
+        }
+    }
+
+    /// `/model <member> <model> [effort]` or `<member> clear` (Codex /model parity).
+    fn run_model_args(&mut self, rest: &str) -> Vec<Effect> {
+        let tokens: Vec<&str> = rest.split_whitespace().collect();
+        match tokens.as_slice() {
+            [member, "clear"] => vec![Effect::SetModel { agent_id: member.to_string(), model: None, effort: None }],
+            [member, model] => vec![Effect::SetModel { agent_id: member.to_string(), model: Some(model.to_string()), effort: None }],
+            [member, model, effort] => vec![Effect::SetModel {
+                agent_id: member.to_string(),
+                model: Some(model.to_string()),
+                effort: Some(effort.to_string()),
+            }],
+            _ => {
+                let msg = self.t("用法：/model <成员> <模型> [档位] · /model <成员> clear 恢复默认", &[]);
+                self.write_chat("system", &msg);
+                vec![]
+            }
+        }
+    }
+
+    /// `/model` with no args: effective model/effort per member, `*` marks a
+    /// session-level override.
+    pub fn show_models(&mut self, report: Result<Json, String>) {
+        let report = match report {
+            Ok(report) => report,
+            Err(e) => {
+                let msg = self.t("获取模型信息失败：{v0}", &[("v0", &e)]);
+                self.write_chat("system", &msg);
+                return;
+            }
+        };
+        let mut lines = vec![self.t("成员模型（* = 会话内覆盖，重开会话失效）：", &[])];
+        for agent in report.get("agents").and_then(|v| v.as_array()).cloned().unwrap_or_default() {
+            let not_configured = self.t("未配置", &[]);
+            let name = agent.get("name").and_then(|v| v.as_str()).unwrap_or("?").to_string();
+            let model = agent.get("model").and_then(|v| v.as_str()).unwrap_or(not_configured.as_str()).to_string();
+            let effort = agent.get("effort").and_then(|v| v.as_str()).unwrap_or(not_configured.as_str()).to_string();
+            let mark = if agent.get("overridden").and_then(|v| v.as_bool()).unwrap_or(false) { "*" } else { "" };
+            let args: Vec<(&str, String)> = vec![("v0", name), ("v1", model), ("v2", effort), ("v3", mark.into())];
+            let refs: Vec<(&str, &str)> = args.iter().map(|(k, v)| (*k, v.as_str())).collect();
+            lines.push(self.t("{v0} | 模型 {v1} | 档位 {v2}{v3}", &refs));
+        }
+        self.write_chat("system", &lines.join("\n"));
+    }
+
+    /// `/model <member> …` result: the effective values after the change.
+    pub fn show_model_set(&mut self, result: Result<Json, String>) {
+        let v = match result {
+            Ok(v) => v,
+            Err(e) => {
+                let msg = self.t("模型切换失败：{v0}", &[("v0", &e)]);
+                self.write_chat("system", &msg);
+                return;
+            }
+        };
+        let not_configured = self.t("未配置", &[]);
+        let get = |key: &str| {
+            let value = v.get(key).and_then(|x| x.as_str()).unwrap_or("").to_string();
+            if value.is_empty() { not_configured.clone() } else { value }
+        };
+        let overridden = v.get("overridden").and_then(|x| x.as_bool()).unwrap_or(false);
+        let args: Vec<(&str, String)> = vec![("v0", get("agent_id")), ("v1", get("model")), ("v2", get("effort"))];
+        let refs: Vec<(&str, &str)> = args.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        let id = if overridden {
+            "已切换 {v0}：模型 {v1} · 档位 {v2}（下一回合生效）"
+        } else {
+            "已恢复 {v0} 的 profile 默认：模型 {v1} · 档位 {v2}"
+        };
+        let msg = self.t(id, &refs);
+        self.write_chat("system", &msg);
+    }
+
+    /// `/status` result: one line per member — model | context window |
+    /// cumulative tokens (prompt/completion) | remaining context.
+    pub fn show_usage(&mut self, report: Result<Json, String>) {
+        let report = match report {
+            Ok(report) => report,
+            Err(e) => {
+                let msg = self.t("获取用量失败：{v0}", &[("v0", &e)]);
+                self.write_chat("system", &msg);
+                return;
+            }
+        };
+        let mut lines = vec![self.t("Token 用量（本次会话累计，重启归零）：", &[])];
+        for agent in report.get("agents").and_then(|v| v.as_array()).cloned().unwrap_or_default() {
+            let get = |key: &str| agent.get(key).and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let usage = agent.get("usage").cloned().unwrap_or(Json::Null);
+            let num = |key: &str| usage.get(key).and_then(Json::as_u64).unwrap_or(0);
+            let not_configured = self.t("未配置", &[]);
+            let window = agent.get("context_window").and_then(Json::as_u64);
+            let window_s = window.map(|w| w.to_string()).unwrap_or_else(|| not_configured.clone());
+            let remaining = window
+                .map(|w| w.saturating_sub(num("last_prompt_tokens")).to_string())
+                .unwrap_or(not_configured);
+            let name = get("name");
+            let model = agent.get("model").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let model = if model.is_empty() { self.t("未配置", &[]) } else { model };
+            let (total, prompt, completion) = (num("total_tokens"), num("prompt_tokens"), num("completion_tokens"));
+            let args: Vec<(&str, String)> = vec![
+                ("v0", name), ("v1", model), ("v2", window_s),
+                ("v3", total.to_string()), ("v4", prompt.to_string()),
+                ("v5", completion.to_string()), ("v6", remaining),
+            ];
+            let refs: Vec<(&str, &str)> = args.iter().map(|(k, v)| (*k, v.as_str())).collect();
+            lines.push(self.t("{v0} | {v1} | 窗口 {v2} | {v3} ({v4}/{v5}) | 剩余 {v6}", &refs));
+        }
+        self.write_chat("system", &lines.join("
+"));
     }
 
     /// `/settings`: Enter opens the language picker, Esc closes the overlay.
@@ -1330,6 +1560,13 @@ impl App {
                 if let Some(text) = self.composer.submit() {
                     let trimmed = text.trim();
                     if trimmed.starts_with('/') {
+                        // /model carries arguments; the menu only covers bare names
+                        if let Some(rest) = trimmed.strip_prefix("/model ") {
+                            return self.run_model_args(rest);
+                        }
+                        if let Some(rest) = trimmed.strip_prefix("/rewind ") {
+                            return self.run_rewind_args(rest);
+                        }
                         // an unknown or argument-carrying command must never be
                         // sent to the Leader as a normal message
                         return match SLASH_COMMANDS.iter().find(|c| c.name == trimmed) {
@@ -1580,20 +1817,7 @@ impl App {
     pub fn on_op_result(&mut self, result: OpResult) -> Vec<Effect> {
         match result {
             OpResult::Switched { session_id, catalog, config_path } => {
-                self.session_id = session_id.clone();
-                self.catalog = catalog;
-                self.user_config_path = config_path;
-                self.cursor = 0;
-                self.chat.clear();
-                self.delta_buffers.clear();
-                self.stream_text.clear();
-                self.activity_runs.clear();
-                self.latest_activity = ("等待输入".into(), vec![]);
-                self.composer.clear_composer();
-                self.log_cursor = 0;
-                self.log_lines.clear();
-                self.state = None;
-                self.pending_delete = None;
+                self.apply_switched(session_id.clone(), catalog, config_path);
                 let msg = self.t("已切换到会话 {v0}", &[("v0", &session_id)]);
                 self.write_chat("system", &msg);
             }

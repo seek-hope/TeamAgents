@@ -297,6 +297,10 @@ pub struct ModelProfile {
     pub max_retries: i64,
     #[serde(default)]
     pub generation_options: HashMap<String, Json>,
+    /// Model context window in tokens (drives the /status remaining-context
+    /// column; None = unknown, shown as "not configured").
+    #[serde(default)]
+    pub context_window: Option<u64>,
 }
 fn default_protocol() -> String { "openai".into() }
 fn default_timeout() -> i64 { 120 }
@@ -323,6 +327,16 @@ pub struct ToolBinding {
     pub args: Vec<String>,
     #[serde(default)]
     pub url: Option<String>,
+    /// Bearer token for the http transport: names the environment variable the
+    /// secret is read from — the token itself never lands in this file.
+    #[serde(default)]
+    pub bearer_token_env_var: Option<String>,
+    /// initialize/tools/list timeout in seconds (default 60).
+    #[serde(default)]
+    pub startup_timeout_s: Option<u64>,
+    /// tools/call timeout in seconds (default 120).
+    #[serde(default)]
+    pub tool_timeout_s: Option<u64>,
     #[serde(default)]
     pub env: HashMap<String, String>,
     #[serde(default)]

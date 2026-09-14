@@ -553,3 +553,165 @@ fn shared_panel_scrolls_with_stable_keys() {
     app.move_table_selection(-100);
     assert_eq!(app.table_cursors.get("shared").cloned(), Some((Some("main:1".into()), 0)));
 }
+
+#[test]
+fn status_slash_command_renders_usage_report() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut app = app_with(state(vec![]));
+    for c in "/status".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    let fx = app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(matches!(fx.as_slice(), [Effect::UsageStatus]), "{fx:?}");
+
+    let report = json!({"session_id": "s1", "agents": [
+        {"agent_id": "leader", "name": "Leader", "model_profile": "leader_main", "model": "gpt-5",
+         "context_window": 128000,
+         "usage": {"calls": 4, "prompt_tokens": 30000, "completion_tokens": 2000,
+                   "total_tokens": 32000, "last_prompt_tokens": 12000}},
+        {"agent_id": "worker", "name": "W", "model_profile": "worker_main", "model": null,
+         "context_window": null, "usage": null},
+    ]});
+    app.show_usage(Ok(report));
+    let text = app.chat.last().unwrap().1.clone();
+    assert!(text.contains("Token usage"), "{text}");
+    assert!(text.contains("Leader | gpt-5 | window 128000 | 32000 (30000/2000) | remaining 116000"), "{text}");
+    assert!(text.contains("W | Not configured | window Not configured | 0 (0/0) | remaining Not configured"), "{text}");
+
+    // zh-CN rendering
+    let mut zh = App::new("s1", json!({"models": {}}), "/tmp/cfg".into(), "zh-CN", true, vec![]);
+    zh.show_usage(Err("boom".into()));
+    assert!(zh.chat.last().unwrap().1.contains("获取用量失败"), "{}", zh.chat.last().unwrap().1);
+}
+
+#[test]
+fn status_report_visible_in_rendered_frame() {
+    let mut app = app_with(state(vec![]));
+    app.show_usage(Ok(json!({"session_id": "s1", "agents": [
+        {"agent_id": "leader", "name": "Leader", "model_profile": "leader_main", "model": "gpt-5",
+         "context_window": 128000,
+         "usage": {"calls": 1, "prompt_tokens": 10, "completion_tokens": 5,
+                   "total_tokens": 15, "last_prompt_tokens": 10}},
+    ]})));
+    let backend = ratatui::backend::TestBackend::new(120, 30);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| ui::render(f, &mut app)).unwrap();
+    let buf = terminal.backend().buffer();
+    let text: String = (0..buf.area.height)
+        .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains("Leader | gpt-5 | window 128000 | 15 (10/5) | remaining 127990"), "frame missing usage line:\n{text}");
+}
+
+#[test]
+fn model_slash_command_lists_effective_models() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut app = app_with(state(vec![]));
+    for c in "/model".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    let fx = app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(matches!(fx.as_slice(), [Effect::ModelStatus]), "{fx:?}");
+
+    app.show_models(Ok(json!({"session_id": "s1", "agents": [
+        {"agent_id": "leader", "name": "Leader", "model_profile": "leader_main",
+         "model": "gpt-5", "effort": "high", "overridden": true},
+        {"agent_id": "worker", "name": "W", "model_profile": "worker_main",
+         "model": "gpt-default", "effort": null, "overridden": false},
+    ]})));
+    let text = app.chat.last().unwrap().1.clone();
+    assert!(text.contains("Member models"), "{text}");
+    assert!(text.contains("Leader | model gpt-5 | effort high*"), "{text}");
+    assert!(text.contains("W | model gpt-default | effort Not configured"), "{text}");
+
+    // zh-CN rendering
+    let mut zh = App::new("s1", json!({"models": {}}), "/tmp/cfg".into(), "zh-CN", true, vec![]);
+    zh.show_models(Ok(json!({"agents": [
+        {"agent_id": "leader", "name": "Leader", "model": "gpt-5", "effort": "low", "overridden": true},
+    ]})));
+    let text = zh.chat.last().unwrap().1.clone();
+    assert!(text.contains("成员模型"), "{text}");
+    assert!(text.contains("Leader | 模型 gpt-5 | 档位 low*"), "{text}");
+}
+
+#[test]
+fn model_slash_command_with_args_sets_or_clears() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let type_and_enter = |app: &mut App, command: &str| {
+        for c in command.chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+    };
+
+    let mut app = app_with(state(vec![]));
+    let fx = type_and_enter(&mut app, "/model worker gpt-5 high");
+    assert!(
+        matches!(fx.as_slice(), [Effect::SetModel { agent_id, model, effort }]
+            if agent_id == "worker" && model.as_deref() == Some("gpt-5") && effort.as_deref() == Some("high")),
+        "{fx:?}"
+    );
+
+    let mut app = app_with(state(vec![]));
+    let fx = type_and_enter(&mut app, "/model worker clear");
+    assert!(
+        matches!(fx.as_slice(), [Effect::SetModel { agent_id, model: None, effort: None }] if agent_id == "worker"),
+        "{fx:?}"
+    );
+
+    // a bare member name is a usage hint, never a message to the Leader
+    let mut app = app_with(state(vec![]));
+    let fx = type_and_enter(&mut app, "/model worker");
+    assert!(fx.is_empty(), "{fx:?}");
+    assert!(app.chat.last().unwrap().1.contains("Usage: /model"), "{}", app.chat.last().unwrap().1);
+
+    // result rendering: switched / restored / failed
+    app.show_model_set(Ok(json!({"agent_id": "worker", "model": "gpt-5", "effort": "high", "overridden": true})));
+    assert!(app.chat.last().unwrap().1.contains("Switched worker: model gpt-5 · effort high"), "{}", app.chat.last().unwrap().1);
+    app.show_model_set(Ok(json!({"agent_id": "worker", "model": "gpt-default", "effort": "medium", "overridden": false})));
+    assert!(app.chat.last().unwrap().1.contains("Restored worker to the profile default: model gpt-default · effort medium"), "{}", app.chat.last().unwrap().1);
+    app.show_model_set(Err("boom".into()));
+    assert!(app.chat.last().unwrap().1.contains("Model switch failed: boom"), "{}", app.chat.last().unwrap().1);
+}
+
+
+#[test]
+fn rewind_slash_command_lists_and_picks_points() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut app = app_with(state(vec![]));
+    let type_enter = |app: &mut App, text: &str| -> Vec<Effect> {
+        for c in text.chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+    };
+    // bare /rewind asks for the points list
+    assert!(matches!(type_enter(&mut app, "/rewind").as_slice(), [Effect::RewindPoints]));
+    app.show_rewind_points(Ok(json!({"agent_id": "leader", "thread": "ctx:leader:1", "points": [
+        {"id": "n3", "depth": 1, "preview": "第二问"},
+        {"id": "n1", "depth": 3, "preview": "第一问"},
+    ]})));
+    // numeric pick resolves through the shown list; 0 empties the conversation
+    assert!(matches!(type_enter(&mut app, "/rewind 2").as_slice(), [Effect::Rewind { node }] if node.as_deref() == Some("n1")));
+    assert!(matches!(type_enter(&mut app, "/rewind 0").as_slice(), [Effect::Rewind { node: None }]));
+    // out-of-range index stays put with a hint, no effect
+    assert!(type_enter(&mut app, "/rewind 9").is_empty());
+    // a bare node id also works
+    assert!(matches!(type_enter(&mut app, "/rewind n3").as_slice(), [Effect::Rewind { node }] if node.as_deref() == Some("n3")));
+    app.show_rewind_done(Ok(json!({"depth": 3})));
+}
+
+#[test]
+fn fork_slash_command_resets_local_state() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut app = app_with(state(vec![]));
+    for c in "/fork".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    let fx = app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(matches!(fx.as_slice(), [Effect::Fork]), "{fx:?}");
+    app.show_fork_done(Ok(json!({"session_id": "s2", "forked_from": "s1", "catalog": {}, "user_config_path": ""})));
+    assert_eq!(app.session_id, "s2");
+    app.show_fork_done(Err("有回合进行中".into()));
+}

@@ -53,12 +53,28 @@ impl Default for OpenOptions {
     }
 }
 
+/// Per-agent usage snapshot source, registered when the runner is built
+/// (the AgentRunner trait stays usage-agnostic; runtime.rs untouched).
+type UsageProbe = Box<dyn Fn() -> Json + Send + Sync>;
+type UsageProbes = Arc<Mutex<HashMap<String, UsageProbe>>>;
+
+/// Feature 5 (/model): per-member session-level model/effort override. Either
+/// field left None falls back to the member's ModelProfile.
+#[derive(Clone, Debug, Default)]
+pub struct ModelOverride {
+    pub model: Option<String>,
+    pub effort: Option<String>,
+}
+pub type ModelOverrides = Arc<Mutex<HashMap<String, ModelOverride>>>;
+
 pub struct OpenedSession {
     pub runtime: Arc<Runtime>,
     pub core: Arc<CoreClient>,
     pub session_id: String,
     pub cwd: PathBuf,
     pub catalog: UserConfig,
+    usage_probes: UsageProbes,
+    model_overrides: ModelOverrides,
     /// Held for the session's lifetime; dropping it (normal close or any error
     /// path during open) releases the session for other processes.
     lock: Mutex<Option<SessionLock>>,
@@ -67,6 +83,172 @@ pub struct OpenedSession {
 impl OpenedSession {
     pub fn catalog(&self) -> Json {
         serde_json::to_value(&self.catalog).unwrap_or(Json::Null)
+    }
+
+    /// Per-agent token usage for /status (worker "usage" method, CLI status).
+    /// Session-memory counters only — a restarted session starts from zero.
+    pub fn usage_report(&self) -> Json {
+        let agents = self
+            .core
+            .state()
+            .ok()
+            .and_then(|state| state.get("spec").and_then(|s| s.get("agents")).cloned())
+            .and_then(|agents| agents.as_array().cloned())
+            .unwrap_or_default();
+        let probes = self.usage_probes.lock().unwrap();
+        let report: Vec<Json> = agents
+            .iter()
+            .map(|agent| {
+                let id = agent.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                let profile_name = agent.get("model_profile").and_then(|v| v.as_str()).unwrap_or("");
+                let profile = self.catalog.models.get(profile_name);
+                let usage = probes.get(id).map(|probe| probe());
+                // codex reports its own window; the profile wins when set
+                let context_window = profile
+                    .and_then(|p| p.context_window)
+                    .or_else(|| usage.as_ref().and_then(|u| u.get("codex_context_window")).and_then(Json::as_u64));
+                json!({
+                    "agent_id": id,
+                    "name": agent.get("name").and_then(|v| v.as_str()).unwrap_or(id),
+                    "model_profile": profile_name,
+                    "model": profile.map(|p| p.model.as_str()),
+                    "context_window": context_window,
+                    "usage": usage,
+                })
+            })
+            .collect();
+        json!({"session_id": self.session_id, "agents": report})
+    }
+
+    /// (leader_id, current conversation thread) for rewind/fork (D-26).
+    /// The thread is `ctx:{agent}:{context_epoch}` (control.rs::context_ref).
+    fn leader_thread(&self) -> Result<(String, String), String> {
+        let state = self.core.call_in_session("state", json!({"include_events": false}))?;
+        let leader = state
+            .get("leader_id")
+            .and_then(|v| v.as_str())
+            .ok_or("no leader")?
+            .to_string();
+        let epoch = state
+            .get("agents")
+            .and_then(|v| v.as_array())
+            .and_then(|agents| agents.iter().find(|a| a.get("id").and_then(|v| v.as_str()) == Some(leader.as_str())))
+            .and_then(|a| a.get("context_epoch"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        Ok((leader.clone(), format!("ctx:{leader}:{epoch}")))
+    }
+
+    /// Rewind targets on the leader's conversation (user inputs, newest first).
+    pub fn rewind_points(&self) -> Result<Json, String> {
+        let (leader, thread) = self.leader_thread()?;
+        let points = self
+            .runtime
+            .runner(&leader)
+            .map(|r| r.rewind_points(&thread))
+            .unwrap_or_default();
+        Ok(json!({"agent_id": leader, "thread": thread, "points": points}))
+    }
+
+    /// Move the leader conversation's live tip (`node_id`, None = empty).
+    /// Refused while the leader has an active turn: the in-flight tail would
+    /// graft onto the rewound tip (ponytail ceiling, chat.rs run_segment).
+    pub fn rewind(&self, node_id: Option<String>) -> Result<Json, String> {
+        let (leader, thread) = self.leader_thread()?;
+        let state = self.core.call_in_session("state", json!({"include_events": false}))?;
+        let busy = state
+            .get("runs")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .any(|r| {
+                r.get("agent_id").and_then(|v| v.as_str()) == Some(leader.as_str())
+                    && r.get("status").and_then(|v| v.as_str()).map(|s| s == "QUEUED" || s == "RUNNING").unwrap_or(false)
+            });
+        if busy {
+            return Err("leader 回合进行中，等它结束后再 rewind".into());
+        }
+        let runner = self.runtime.runner(&leader).ok_or("leader 还没有运行器（尚未有过回合）")?;
+        let depth = runner.rewind(&thread, node_id.as_deref())?;
+        Ok(json!({"agent_id": leader, "thread": thread, "depth": depth}))
+    }
+
+    fn spec_agents(&self) -> Result<Vec<AgentSpec>, String> {
+        let state = self.core.state()?;
+        let agents = state.get("spec").and_then(|s| s.get("agents")).cloned().unwrap_or(Json::Null);
+        serde_json::from_value(agents).map_err(|e| format!("bad spec agents: {e}"))
+    }
+
+    /// What one member's next turn would run with: override fields win, the
+    /// rest falls back to the profile (codex effort defaults to the runner's
+    /// built-in "xhigh").
+    fn effective_model(&self, agent: &AgentSpec) -> Json {
+        let profile = self.catalog.models.get(&agent.model_profile);
+        let ov = self.model_overrides.lock().unwrap().get(&agent.id).cloned();
+        let (o_model, o_effort) = ov.as_ref().map(|o| (o.model.clone(), o.effort.clone())).unwrap_or_default();
+        let model = o_model.or_else(|| profile.map(|p| p.model.clone()));
+        let effort = o_effort.or_else(|| {
+            if agent.runtime_kind == RuntimeKind::Codex {
+                Some("xhigh".into())
+            } else {
+                profile
+                    .and_then(|p| p.generation_options.get("reasoning_effort"))
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+            }
+        });
+        json!({
+            "agent_id": agent.id,
+            "name": agent.name,
+            "model_profile": agent.model_profile,
+            "model": model,
+            "effort": effort,
+            "overridden": ov.is_some(),
+        })
+    }
+
+    /// Feature 5 (/model): switch one member's model / reasoning effort for
+    /// this session; both None clears the override (profile default). The
+    /// cached runner is dropped so the change lands on the member's next turn.
+    /// ponytail: session memory only, never written back to the TeamSpec —
+    /// persist overrides when a user actually asks for cross-session sticky.
+    pub fn set_model_override(&self, agent_id: &str, model: Option<String>, effort: Option<String>) -> Result<Json, String> {
+        let agents = self.spec_agents()?;
+        let agent = agents
+            .iter()
+            .find(|a| a.id == agent_id)
+            .ok_or_else(|| format!("unknown member {agent_id}"))?;
+        if let Some(model) = &model {
+            if model.trim().is_empty() {
+                return Err("model must be a non-empty string".into());
+            }
+        }
+        if let Some(effort) = &effort {
+            const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+            if !EFFORTS.contains(&effort.to_ascii_lowercase().as_str()) {
+                return Err(format!("effort must be one of {}", EFFORTS.join("/")));
+            }
+        }
+        {
+            let mut overrides = self.model_overrides.lock().unwrap();
+            if model.is_none() && effort.is_none() {
+                overrides.remove(agent_id);
+            } else {
+                overrides.insert(agent_id.to_string(), ModelOverride { model, effort });
+            }
+        }
+        self.runtime.drop_runner(agent_id);
+        Ok(self.effective_model(agent))
+    }
+
+    /// `/model` with no args / worker "model": every member's effective values.
+    pub fn model_report(&self) -> Json {
+        let agents = self.spec_agents().unwrap_or_default();
+        json!({
+            "session_id": self.session_id,
+            "agents": agents.iter().map(|a| self.effective_model(a)).collect::<Vec<_>>(),
+        })
     }
 
     pub fn close(&self) {
@@ -243,6 +425,8 @@ pub fn open_session(opts: OpenOptions) -> Result<Arc<OpenedSession>, String> {
 
         let barriers: BarrierRegistry = Arc::new(Mutex::new(HashMap::new()));
         let notify = Notify::new(core.clone());
+        let usage_probes: UsageProbes = Arc::new(Mutex::new(HashMap::new()));
+        let model_overrides: ModelOverrides = Arc::new(Mutex::new(HashMap::new()));
         let make_runner: RunnerFactory = make_runner_factory(
             core.clone(),
             notify.clone(),
@@ -252,6 +436,8 @@ pub fn open_session(opts: OpenOptions) -> Result<Arc<OpenedSession>, String> {
             cwd.clone(),
             opts.scripts.clone(),
             barriers,
+            usage_probes.clone(),
+            model_overrides.clone(),
         );
 
         let mut runners: HashMap<String, Arc<dyn AgentRunner>> = HashMap::new();
@@ -276,6 +462,8 @@ pub fn open_session(opts: OpenOptions) -> Result<Arc<OpenedSession>, String> {
             session_id,
             cwd,
             catalog,
+            usage_probes,
+            model_overrides,
             lock: Mutex::new(Some(lock)),
         }))
     })();
@@ -291,6 +479,8 @@ fn make_runner_factory(
     cwd: PathBuf,
     scripts: Option<HashMap<String, Vec<Step>>>,
     barriers: BarrierRegistry,
+    usage_probes: UsageProbes,
+    model_overrides: ModelOverrides,
 ) -> RunnerFactory {
     Box::new(move |agent: &AgentSpec| {
         if let Some(scripts) = &scripts {
@@ -298,40 +488,27 @@ fn make_runner_factory(
             return Ok(ScriptedMember::new(&agent.id, steps, barriers.clone()));
         }
         let profile: Option<ModelProfile> = catalog.models.get(&agent.model_profile).cloned();
+        // feature 5 (/model): a session-level override wins over the profile
+        let ov = model_overrides.lock().unwrap().get(&agent.id).cloned().unwrap_or_default();
         if agent.runtime_kind == RuntimeKind::Codex {
-            let mut overrides: Vec<(String, Json)> = vec![];
-            let mut model = None;
-            if let Some(profile) = &profile {
-                model = Some(profile.model.clone());
-                if !profile.provider.is_empty() {
-                    overrides.push(("model_provider".into(), json!(profile.provider)));
-                }
-                for (key, value) in &profile.generation_options {
-                    overrides.push((key.clone(), value.clone()));
-                }
-            }
-            return Ok(CodexRunner::new(
-                CodexOptions {
-                    agent_id: agent.id.clone(),
-                    session_id: session_id.clone(),
-                    workdir: member_root(agent, &cwd, &session_id)?,
-                    sandbox: "workspace-write".into(),
-                    approval_policy: "on-request".into(),
-                    effort: Some("xhigh".into()),
-                    model,
-                    codex_bin: None,
-                    codex_home: None,
-                    env: vec![],
-                    config_overrides: overrides,
-                },
+            let opts = codex_options(agent, profile.as_ref(), &ov, &session_id, &cwd)?;
+            let runner = CodexRunner::new(
+                opts,
                 core.clone(),
                 approvals.clone(),
                 notify.clone(),
-            ));
+            );
+            let probe = runner.clone();
+            usage_probes
+                .lock()
+                .unwrap()
+                .insert(agent.id.clone(), Box::new(move || probe.usage_snapshot()));
+            return Ok(runner);
         }
         let Some(profile) = profile else {
             return Err(format!("unknown model profile {}", agent.model_profile));
         };
+        let profile = apply_model_override(profile, &ov);
         let agent_json = serde_json::to_value(agent).map_err(|e| e.to_string())?;
         let bound = crate::bound::BoundTools::load(&catalog, &agent.tool_bindings)?;
         // a required web service that cannot load fails the member, not the call;
@@ -339,7 +516,7 @@ fn make_runner_factory(
         // binding name (anything but the literal "web") still exposes the tools
         let web = crate::tools::web_tools(&catalog, &agent.tool_bindings)?;
         let context = member_context(&catalog, &cwd, &session_id, agent);
-        Ok(ChatRunner::new(
+        let runner = ChatRunner::new(
             &agent_json,
             profile,
             Some(member_root(agent, &cwd, &session_id)?.to_string_lossy().into_owned()),
@@ -347,7 +524,62 @@ fn make_runner_factory(
             bound,
             context,
             (web.search.is_some(), web.fetch.is_some()),
-        ))
+        );
+        let probe = runner.clone();
+        usage_probes
+            .lock()
+            .unwrap()
+            .insert(agent.id.clone(), Box::new(move || probe.usage_snapshot()));
+        Ok(runner)
+    })
+}
+
+/// Chat-runner profile with the session override applied (feature 5).
+fn apply_model_override(mut profile: ModelProfile, ov: &ModelOverride) -> ModelProfile {
+    if let Some(model) = &ov.model {
+        profile.model = model.clone();
+    }
+    if let Some(effort) = &ov.effort {
+        profile.generation_options.insert("reasoning_effort".into(), json!(effort));
+    }
+    profile
+}
+
+/// CodexOptions for one codex member; the session override wins over the
+/// profile model and over the runner's default "xhigh" effort (feature 5).
+fn codex_options(
+    agent: &AgentSpec,
+    profile: Option<&ModelProfile>,
+    ov: &ModelOverride,
+    session_id: &str,
+    cwd: &std::path::Path,
+) -> Result<CodexOptions, String> {
+    let mut config: Vec<(String, Json)> = vec![];
+    let mut model = None;
+    if let Some(profile) = profile {
+        model = Some(profile.model.clone());
+        if !profile.provider.is_empty() {
+            config.push(("model_provider".into(), json!(profile.provider)));
+        }
+        for (key, value) in &profile.generation_options {
+            config.push((key.clone(), value.clone()));
+        }
+    }
+    if let Some(m) = &ov.model {
+        model = Some(m.clone());
+    }
+    Ok(CodexOptions {
+        agent_id: agent.id.clone(),
+        session_id: session_id.into(),
+        workdir: member_root(agent, cwd, session_id)?,
+        sandbox: "workspace-write".into(),
+        approval_policy: "on-request".into(),
+        effort: ov.effort.clone().or_else(|| Some("xhigh".into())),
+        model,
+        codex_bin: None,
+        codex_home: None,
+        env: vec![],
+        config_overrides: config,
     })
 }
 
@@ -467,6 +699,54 @@ mod tests {
         assert!(context.iter().any(|(l, _)| l == "skill legit"), "{context:?}");
         assert!(!context.iter().any(|(l, _)| l == "skill escape"), "{context:?}");
         assert!(!context.iter().any(|(_, body)| body.contains("outside secret")), "{context:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn session_override_rewrites_chat_profile_and_codex_options() {
+        let _env = crate::env_lock();
+        let root = std::env::temp_dir().join(format!("ta-model-ov-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("home")).unwrap();
+        std::fs::create_dir_all(root.join("project")).unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", root.join("home/.config"));
+        std::env::set_var("XDG_STATE_HOME", root.join("home/.state"));
+
+        let profile = ModelProfile {
+            provider: "openai".into(), protocol: "openai".into(), model: "gpt-default".into(),
+            base_url: None, api_key_env: None, timeout: 120, max_retries: 5,
+            generation_options: HashMap::from([("reasoning_effort".to_string(), json!("medium"))]),
+            context_window: None,
+        };
+        let ov = ModelOverride { model: Some("gpt-5".into()), effort: Some("high".into()) };
+        let rewritten = apply_model_override(profile.clone(), &ov);
+        assert_eq!(rewritten.model, "gpt-5");
+        assert_eq!(rewritten.generation_options["reasoning_effort"], json!("high"));
+        let untouched = apply_model_override(profile.clone(), &ModelOverride::default());
+        assert_eq!(untouched.model, "gpt-default");
+        assert_eq!(untouched.generation_options["reasoning_effort"], json!("medium"));
+
+        // codex member: the override lands in opts.model / opts.effort
+        let agent = AgentSpec {
+            id: "cod".into(), name: "Cod".into(), role: "dev".into(),
+            runtime_kind: RuntimeKind::Codex, instructions: String::new(),
+            model_profile: "m".into(), tool_bindings: vec![], skills: vec![],
+            workspace_policy: teamagents_core::models::WorkspacePolicy::Shared,
+        };
+        let opts = codex_options(&agent, Some(&profile), &ov, "s-ov", &root.join("project")).unwrap();
+        assert_eq!(opts.model.as_deref(), Some("gpt-5"));
+        assert_eq!(opts.effort.as_deref(), Some("high"));
+        assert!(opts.config_overrides.iter().any(|(k, v)| k == "model_provider" && v == &json!("openai")));
+        // profile generation_options still pass through as config overrides
+        assert!(opts.config_overrides.iter().any(|(k, v)| k == "reasoning_effort" && v == &json!("medium")));
+        // model-only override keeps the runner's default effort
+        let opts = codex_options(
+            &agent, Some(&profile),
+            &ModelOverride { model: Some("gpt-5-codex".into()), effort: None },
+            "s-ov", &root.join("project"),
+        ).unwrap();
+        assert_eq!(opts.model.as_deref(), Some("gpt-5-codex"));
+        assert_eq!(opts.effort.as_deref(), Some("xhigh"));
         let _ = std::fs::remove_dir_all(&root);
     }
 

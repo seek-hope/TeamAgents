@@ -323,6 +323,29 @@ fn print_event(event: &Json) {
     }
 }
 
+/// `--plain` REPL `status` command: one line per member (Codex /status parity).
+pub fn print_usage_table(report: &Json) {
+    println!("成员 | 模型 | 上下文窗口 | 累计 tokens (prompt/completion) | 剩余上下文");
+    for agent in report.get("agents").and_then(|v| v.as_array()).cloned().unwrap_or_default() {
+        let name = agent.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+        let model = agent.get("model").and_then(|v| v.as_str()).unwrap_or("未配置");
+        let window = agent.get("context_window").and_then(|v| v.as_u64());
+        let usage = agent.get("usage").cloned().unwrap_or(json!({}));
+        let prompt = usage.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+        let completion = usage.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+        let total = usage.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+        let last = usage.get("last_prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+        let remaining = match window {
+            Some(w) => w.saturating_sub(last).to_string(),
+            None => "未配置".into(),
+        };
+        println!(
+            "{name} | {model} | {} | {total} ({prompt}/{completion}) | {remaining}",
+            window.map(|w| w.to_string()).unwrap_or_else(|| "未配置".into()),
+        );
+    }
+}
+
 pub fn repl(cwd: Option<String>, resume: Option<String>, full_auto: bool, team: Option<String>) -> i32 {
     let initial_spec = match &team {
         Some(path) => match crate::config::load_spec_file(std::path::Path::new(path)) {
@@ -355,6 +378,73 @@ pub fn repl(cwd: Option<String>, resume: Option<String>, full_auto: bool, team: 
     for line in stdin.lock().lines() {
         let Ok(line) = line else { break };
         if line.trim().is_empty() {
+            continue;
+        }
+        if line.trim() == "status" {
+            print_usage_table(&opened.usage_report());
+            continue;
+        }
+        // D-26 rewind/fork (pi-style tree history; leader conversation only)
+        let cmd = line.trim();
+        if cmd == "rewind" || cmd.starts_with("rewind ") {
+            match cmd.strip_prefix("rewind").map(|x| x.trim()) {
+                Some("") => match opened.rewind_points() {
+                    Ok(report) => {
+                        let points = report.get("points").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+                        if points.is_empty() {
+                            println!("  暂无可回退的节点");
+                        }
+                        for point in points {
+                            println!("  {}  {}", point.get("id").and_then(|v| v.as_str()).unwrap_or("?"),
+                                point.get("preview").and_then(|v| v.as_str()).unwrap_or(""));
+                        }
+                    }
+                    Err(e) => println!("  获取回退点失败：{e}"),
+                },
+                Some("0") | None => match opened.rewind(None) {
+                    Ok(v) => println!("  已回退（深度 {}）", v.get("depth").and_then(|v| v.as_u64()).unwrap_or(0)),
+                    Err(e) => println!("  回退失败：{e}"),
+                },
+                Some(id) => match opened.rewind(Some(id.to_string())) {
+                    Ok(v) => println!("  已回退（深度 {}）", v.get("depth").and_then(|v| v.as_u64()).unwrap_or(0)),
+                    Err(e) => println!("  回退失败：{e}"),
+                },
+            }
+            continue;
+        }
+        if cmd == "fork" {
+            println!("  --plain 模式请用 TUI 的 /fork（需要 worker 会话管理）");
+            continue;
+        }
+        // feature 5 (/model): model <member> <model> [effort]；model <member> 清除
+        let trimmed = line.trim();
+        if trimmed == "model" || trimmed.starts_with("model ") {
+            let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+            let result = match tokens.as_slice() {
+                ["model", member] => opened.set_model_override(member, None, None),
+                ["model", member, model] => opened.set_model_override(member, Some(model.to_string()), None),
+                ["model", member, model, effort] => {
+                    opened.set_model_override(member, Some(model.to_string()), Some(effort.to_string()))
+                }
+                _ => {
+                    println!("  用法：model <成员> <模型> [档位]；model <成员> 恢复 profile 默认");
+                    continue;
+                }
+            };
+            match result {
+                Ok(v) => println!(
+                    "  {}：模型 {} · 档位 {}{}",
+                    v.get("agent_id").and_then(|x| x.as_str()).unwrap_or("?"),
+                    v.get("model").and_then(|x| x.as_str()).unwrap_or("未配置"),
+                    v.get("effort").and_then(|x| x.as_str()).unwrap_or("未配置"),
+                    if v.get("overridden").and_then(|x| x.as_bool()).unwrap_or(false) {
+                        "（会话覆盖，下一回合生效）"
+                    } else {
+                        "（profile 默认）"
+                    },
+                ),
+                Err(e) => println!("  [模型切换失败: {e}]"),
+            }
             continue;
         }
         match opened.runtime.user_message(&line, false) {

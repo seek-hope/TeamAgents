@@ -424,6 +424,35 @@ fn run_effect(e: Effect, worker: &Arc<Worker>, app: &mut App, bg: &std::sync::mp
             let msg = app::decide_feedback(app.lang, &decision, ok);
             app.notify(msg, if ok { app::Severity::Info } else { app::Severity::Error }, 10);
         }
+        Effect::UsageStatus => {
+            // synchronous like Effect::Submit (see its ponytail note)
+            let report = worker.call("usage", json!({}));
+            app.show_usage(report);
+        }
+        Effect::RewindPoints => {
+            // synchronous like Effect::Submit (see its ponytail note)
+            let report = worker.call("rewind_points", json!({}));
+            app.show_rewind_points(report);
+        }
+        Effect::Rewind { node } => {
+            let result = worker.call("rewind", json!({"node_id": node}));
+            app.show_rewind_done(result);
+        }
+        Effect::Fork => {
+            // fork closes the current session server-side; refused while busy,
+            // so the close is quick and a sync call is fine
+            let result = worker.call("fork_session", json!({}));
+            app.show_fork_done(result);
+        }
+        Effect::ModelStatus => {
+            // synchronous like Effect::Submit (see its ponytail note)
+            let report = worker.call("model", json!({}));
+            app.show_models(report);
+        }
+        Effect::SetModel { agent_id, model, effort } => {
+            let result = worker.call("set_model", json!({"agent_id": agent_id, "model": model, "effort": effort}));
+            app.show_model_set(result);
+        }
         Effect::UserMessage(text) => match worker.call("user_message", json!({"text": text})) {
             Ok(receipt) if receipt.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) => {
                 app.composer.record_submission(&text);

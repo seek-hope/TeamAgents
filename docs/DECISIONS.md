@@ -523,3 +523,45 @@ scientific-skills-router 不安装——其按词检索 YAML 头的功能已被 
 证据：`engine::tools::tests::skill_tool_searches_and_reads_registry`、
 `engine::session::tests::member_context_collects_skills_and_instruction_files`、
 chat 工具载荷断言；core 38 / engine 78 / tui 55 全绿。
+
+## D-24 Token 用量可见性（/status，2026-09-14）
+
+用户确认补充（对照 Codex CLI /status，审查 A1）。ModelProfile 加可选 `context_window`；
+chat.rs 按 thread 累计 OpenAI/Anthropic 两种 usage 形状；codex 成员解析
+`thread/tokenUsage/updated`（自报窗口兜底）。会话内存态、不落盘（注释已留升级路径）。
+出口：worker `usage` 方法、TUI `/status`、--plain `status`。
+证据：chat/config/codex/worker/app 各层测试；engine 98 / tui 63 当时全绿。
+
+## D-25 MCP 远程 HTTP 传输（2026-09-14）
+
+方案 §12.1 本规划项落地。ToolBinding 加 `url`/`bearer_token_env_var`/`startup_timeout_s`/
+`tool_timeout_s`（全 optional）；mcp.rs 重构为 Transport 枚举，`connect_http` 实现
+streamable HTTP 最小语义（POST、JSON 与 SSE 两种响应、mcp-session-id 回带、Bearer 仅来自
+环境变量）；bound.rs 按 transport 分发，"sse" 明确报错改用 "http"。
+天花板：不支持服务器主动推送（GET SSE 流）与会话终止 DELETE，遇到需要的服务再加。
+证据：engine/tests/mcp_http.rs 三项 + bound.rs 单测。
+
+## D-26 会话 fork/rewind：pi 式树状历史（2026-09-14）
+
+用户指定参考 pi-mono 的树状会话结构。落法（TeamAgents 语境的最小正确版）：
+
+1. 每个成员线程的历史从线性数组改为**追加式节点树 + leaf 指针**（chat.rs::ChatTree，
+   `chat_tree.json` 与旧 chat_history.json 并存；旧文件惰性迁移为链）。模型调用时从 leaf
+   回溯物化线性消息。
+2. `rewind` = 移动 leaf 到祖先节点（/rewind 列出用户输入点，/rewind <n> 回退）；被放弃的
+   分支留在树里，可反复回退，不丢信息。leader 回合进行中拒绝 rewind（graft 天花板有注释）。
+3. `fork` = 新会话 = 同 TeamSpec（含拓扑补丁后的活 spec）+ leader 对话树复制；**团队事实
+   （任务/回合/事件/共享空间）不复制，文件改动不回滚**——rewind/fork 只管对话记忆。
+4. 检查点一致性：checkpoint 记录 tree_base/tree_leaf，树提交先于 checkpoint 落盘；
+   rewind 后旧 checkpoint 因 leaf 失配自动作废。codex 成员不支持 rewind（历史在
+   app-server 侧，trait 默认返回不支持；其原生 /fork 未接线，需要再说）。
+出口：worker `rewind_points`/`rewind`/`fork_session`、TUI `/rewind` `/fork`、--plain `rewind`。
+证据：chat.rs 树单测两项、engine/tests/fork_rewind.rs、tui app_tests 两项。
+
+## D-27 会话内切换模型/档位（/model，2026-09-14）
+
+用户确认补充（对照 Codex CLI /model，审查 A6）。会话级 ModelOverride（model/effort），
+不写回 TeamSpec、不落盘（注释留持久化路径）；runner 工厂构建时应用覆盖，设置后
+drop_runner 使下一回合生效（在跑回合只摘缓存不 close，避免打断落成 BLOCKED）。
+出口：worker `model`/`set_model`、TUI `/model`（无参列表，覆盖值标 *）、--plain `model`。
+证据：session/model_override/worker/app 各层测试。

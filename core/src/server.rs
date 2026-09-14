@@ -134,7 +134,8 @@ impl Server {
                     .iter()
                     .map(|a| -> rusqlite::Result<Json> {
                         Ok(json!({"id": a.id, "status": ctl.store.agent_status(&sid, &a.id)?,
-                                  "config_revision": ctl.store.agent_config_revision(&sid, &a.id)?}))
+                                  "config_revision": ctl.store.agent_config_revision(&sid, &a.id)?,
+                                  "context_epoch": ctl.store.agent_context_epoch(&sid, &a.id)?}))
                     })
                     .collect::<Result<_, _>>().map_err(|e| e.to_string())?;
                 Ok(json!({

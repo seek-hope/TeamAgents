@@ -136,6 +136,68 @@ fn worker_drives_a_scripted_session_end_to_end() {
 }
 
 #[test]
+fn worker_usage_reports_per_agent_counters() {
+    let home = state_home("usage");
+    let mut worker = WorkerClient::spawn(&home);
+    let opened = worker
+        .call("open", json!({"cwd": "/tmp", "scripts": {"leader": [["end"]]}}))
+        .expect("open");
+    let session_id = opened.get("session_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    let report = worker.call("usage", json!({})).expect("usage");
+    assert_eq!(report.get("session_id").and_then(|v| v.as_str()), Some(session_id.as_str()));
+    let agents = report.get("agents").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    assert_eq!(agents.len(), 1, "{report}");
+    let leader = &agents[0];
+    assert_eq!(leader.get("agent_id").and_then(|v| v.as_str()), Some("leader"));
+    assert_eq!(leader.get("model_profile").and_then(|v| v.as_str()), Some("leader_main"));
+    // scripted member: no model runner, hence no usage probe and no window
+    assert_eq!(leader.get("usage").cloned(), Some(Json::Null));
+    assert_eq!(leader.get("context_window").cloned(), Some(Json::Null));
+    worker.close();
+}
+
+#[test]
+fn worker_set_model_switches_and_clears_overrides() {
+    let home = state_home("model");
+    let mut worker = WorkerClient::spawn(&home);
+    worker
+        .call("open", json!({"cwd": "/tmp", "scripts": {"leader": [["end"]]}}))
+        .expect("open");
+
+    let set = worker
+        .call("set_model", json!({"agent_id": "leader", "model": "gpt-5-mini", "effort": "low"}))
+        .expect("set_model");
+    assert_eq!(set.get("agent_id").and_then(|v| v.as_str()), Some("leader"));
+    assert_eq!(set.get("model").and_then(|v| v.as_str()), Some("gpt-5-mini"));
+    assert_eq!(set.get("effort").and_then(|v| v.as_str()), Some("low"));
+    assert_eq!(set.get("overridden").and_then(|v| v.as_bool()), Some(true));
+
+    // the "model" report shows the same effective values
+    let report = worker.call("model", json!({})).expect("model report");
+    let agents = report.get("agents").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let leader = agents
+        .iter()
+        .find(|a| a.get("agent_id").and_then(|v| v.as_str()) == Some("leader"))
+        .expect("leader in report");
+    assert_eq!(leader.get("model").and_then(|v| v.as_str()), Some("gpt-5-mini"));
+    assert_eq!(leader.get("overridden").and_then(|v| v.as_bool()), Some(true));
+
+    // unknown member / unknown effort are clean protocol errors
+    let err = worker.call("set_model", json!({"agent_id": "ghost", "model": "x"})).expect_err("ghost");
+    assert!(err.contains("unknown member"), "{err}");
+    let err = worker
+        .call("set_model", json!({"agent_id": "leader", "model": "x", "effort": "insane"}))
+        .expect_err("bad effort");
+    assert!(err.contains("effort"), "{err}");
+
+    // empty params clear the override back to the profile default
+    let cleared = worker.call("set_model", json!({"agent_id": "leader"})).expect("clear");
+    assert_eq!(cleared.get("overridden").and_then(|v| v.as_bool()), Some(false));
+    worker.close();
+}
+
+#[test]
 fn worker_reports_unknown_methods_and_missing_session() {
     let home = state_home("errors");
     let mut worker = WorkerClient::spawn(&home);

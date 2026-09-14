@@ -100,6 +100,28 @@ mod tests {
     }
 
     #[test]
+    fn parses_model_context_window() {
+        let cfg = parse_user_config(
+            r#"
+[models.big]
+provider = "openai"
+model = "gpt"
+context_window = 128000
+
+[models.plain]
+provider = "openai"
+model = "gpt"
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.models["big"].context_window, Some(128000));
+        assert_eq!(cfg.models["plain"].context_window, None, "missing = tolerant default");
+        // wrong type is rejected by serde, not silently dropped
+        let bad = "[models.a]\nprovider = \"o\"\nmodel = \"m\"\ncontext_window = \"big\"\n";
+        assert!(parse_user_config(bad).is_err());
+    }
+
+    #[test]
     fn parses_models_and_validates_the_permissions_section() {
         let cfg = parse_user_config(
             r#"
@@ -120,6 +142,7 @@ provider = "anysearch"
         )
         .unwrap();
         assert_eq!(cfg.models["leader_main"].model, "deepseek-flash");
+        assert_eq!(cfg.models["leader_main"].context_window, None);
         assert_eq!(cfg.tools["web"].kind, "web_search");
         assert!(parse_user_config("[models.a]\nmodel = 1\n").is_err());
         // a malformed [permissions] section is an error, never a silent default

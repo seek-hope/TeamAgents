@@ -6,7 +6,7 @@
 //! The worker owns the Runtime; the Rust TUI is a pure client of this protocol.
 
 use crate::session::{open_session, OpenOptions, OpenedSession};
-use crate::sessions::{archive_session, delete_session, list_sessions, new_session_id};
+use crate::sessions::{archive_session, delete_session, list_sessions, new_session_id, session_paths};
 use crate::scripted::Step;
 use crate::{config, VERSION};
 use serde_json::{json, Value as Json};
@@ -69,7 +69,8 @@ impl Worker {
 
         let initial_spec = match &team {
             Some(path) => Some(config::load_spec_file(std::path::Path::new(path))?),
-            None => None,
+            // fork passes the source session's live spec directly (D-26)
+            None => params.get("initial_spec").cloned(),
         };
         let scripts: Option<HashMap<String, Vec<Step>>> = params
             .get("scripts")
@@ -181,6 +182,60 @@ impl Worker {
                 }
                 delete_session(&session_id, None)?;
                 Ok(json!({"was_current": was_current}))
+            }
+            "usage" => Ok(self.current()?.usage_report()),
+            // feature 5 (/model): effective model/effort per member
+            "model" => Ok(self.current()?.model_report()),
+            "set_model" => {
+                let opened = self.current()?;
+                let agent_id = params.get("agent_id").and_then(|v| v.as_str()).ok_or("agent_id required")?;
+                let model = params.get("model").and_then(|v| v.as_str()).map(str::to_string);
+                let effort = params.get("effort").and_then(|v| v.as_str()).map(str::to_string);
+                opened.set_model_override(agent_id, model, effort)
+            }
+            // D-26 rewind/fork (pi-style tree history, leader conversation)
+            "rewind_points" => Ok(self.current()?.rewind_points()?),
+            "rewind" => {
+                let node = params.get("node_id").and_then(|v| v.as_str()).map(str::to_string);
+                Ok(self.current()?.rewind(node)?)
+            }
+            "fork_session" => {
+                let opened = self.current()?;
+                let state = opened.core.call_in_session("state", json!({"include_events": false}))?;
+                // fork while a turn is in flight would cancel it on close and
+                // BLOCK its task (see AGENTS.md operations notes)
+                let any_active = state
+                    .get("runs")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .any(|r| r.get("status").and_then(|v| v.as_str()).map(|s| s == "QUEUED" || s == "RUNNING").unwrap_or(false));
+                if any_active {
+                    return Err("有回合进行中，等它结束后再 fork".into());
+                }
+                let leader = state.get("leader_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let spec = state.get("spec").cloned().ok_or("no spec")?;
+                let cwd = self.cwd.lock().unwrap().clone().unwrap_or_else(|| PathBuf::from("."));
+                // fork = same spec + leader's history tree, fresh team state
+                // (tasks/runs/events are facts of the source session and are
+                // NOT copied; file changes are never rolled back — D-26)
+                let new_id = new_session_id(&cwd);
+                let tree_src = session_paths(&opened.session_id).base.join("members").join(&leader).join("chat_tree.json");
+                if tree_src.is_file() {
+                    let dest_dir = session_paths(&new_id).base.join("members").join(&leader);
+                    std::fs::create_dir_all(&dest_dir).map_err(|e| e.to_string())?;
+                    std::fs::copy(&tree_src, dest_dir.join("chat_tree.json")).map_err(|e| e.to_string())?;
+                }
+                let mut out = self.open(&json!({
+                    "cwd": cwd.to_string_lossy(),
+                    "resume": new_id,
+                    "fullAuto": *self.full_auto.lock().unwrap(),
+                    "team": Json::Null,
+                    "initial_spec": spec,
+                }))?;
+                out["forked_from"] = json!(opened.session_id.clone());
+                Ok(out)
             }
             "close" => {
                 self.close_current();

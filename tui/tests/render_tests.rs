@@ -534,6 +534,8 @@ fn slash_command_menu_lists_navigates_and_runs() {
 
     // narrowing by prefix + keyboard navigation
     app.composer.set_text("/s");
+    assert_eq!(app.slash_matches().len(), 2, "/s matches /settings and /status");
+    app.composer.set_text("/se");
     assert_eq!(app.slash_matches().len(), 1);
     assert_eq!(app.slash_matches()[0].name, "/settings");
     app.composer.set_text("/");

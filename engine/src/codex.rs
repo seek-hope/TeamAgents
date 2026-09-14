@@ -279,6 +279,11 @@ pub struct CodexRunner {
     approval_ids: Mutex<HashMap<String, String>>,
     queued_input: Mutex<HashMap<String, Vec<String>>>,
     buffered_notes: Mutex<HashMap<String, Vec<Json>>>,
+    /// Latest `thread/tokenUsage/updated` payload (app-server protocol:
+    /// {total: TokenUsageBreakdown, last: ..., modelContextWindow}).
+    /// ponytail: session memory only; persist if cross-restart accounting is asked for.
+    token_usage: Mutex<Option<Json>>,
+    token_usage_calls: AtomicU64,
     effort_fallback_used: AtomicBool,
 }
 
@@ -301,6 +306,8 @@ impl CodexRunner {
             approval_ids: Mutex::new(HashMap::new()),
             queued_input: Mutex::new(HashMap::new()),
             buffered_notes: Mutex::new(HashMap::new()),
+            token_usage: Mutex::new(None),
+            token_usage_calls: AtomicU64::new(0),
             effort_fallback_used: AtomicBool::new(false),
         });
         *runner.self_ref.lock().unwrap() = Arc::downgrade(&runner);
@@ -309,6 +316,14 @@ impl CodexRunner {
 
     fn me(&self) -> Option<Arc<CodexRunner>> {
         self.self_ref.lock().unwrap().upgrade()
+    }
+
+    /// Same shape as ChatRunner::usage_snapshot; also forwards the window the
+    /// app-server reported (the profile's context_window stays authoritative
+    /// when both exist — see session.rs::usage_report).
+    pub fn usage_snapshot(&self) -> Json {
+        let usage = self.token_usage.lock().unwrap().clone().unwrap_or(json!({}));
+        codex_usage_snapshot(&usage, self.token_usage_calls.load(Ordering::SeqCst))
     }
 
     fn ensure_server(&self) -> Result<Arc<CodexAppServer>, String> {
@@ -421,6 +436,12 @@ impl CodexRunner {
                 if item.get("type").and_then(|v| v.as_str()) == Some("agentMessage") && !text.is_empty() {
                     self.progress.lock().unwrap().entry(run_id.to_string()).or_default().push(text.clone());
                     self.notify.note_external_progress(run_id, &text);
+                }
+            }
+            "thread/tokenUsage/updated" => {
+                if let Some(usage) = params.get("tokenUsage") {
+                    *self.token_usage.lock().unwrap() = Some(usage.clone());
+                    self.token_usage_calls.fetch_add(1, Ordering::SeqCst);
                 }
             }
             "turn/completed" => {
@@ -770,4 +791,46 @@ impl AgentRunner for CodexRunner {
 fn failed(run_id: &str, error: String) -> TurnOutcome {
     let _ = run_id;
     TurnOutcome { status: TurnStatus::Failed, error: Some(error), note: None, reply_text: None }
+}
+
+/// codex app-server `thread/tokenUsage/updated` payload -> the shared
+/// usage shape. `total` is the thread-cumulative breakdown, `last` the latest
+/// turn; last.totalTokens approximates the current context fill.
+fn codex_usage_snapshot(usage: &Json, calls: u64) -> Json {
+    let num = |section: &str, key: &str| usage.get(section).and_then(|s| s.get(key)).and_then(Json::as_u64).unwrap_or(0);
+    json!({
+        "calls": calls,
+        "prompt_tokens": num("total", "inputTokens"),
+        "completion_tokens": num("total", "outputTokens"),
+        "total_tokens": num("total", "totalTokens"),
+        "last_prompt_tokens": num("last", "totalTokens"),
+        "codex_context_window": usage.get("modelContextWindow").and_then(Json::as_u64),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codex_usage_snapshot_maps_the_app_server_breakdown() {
+        let usage = json!({
+            "total": {"inputTokens": 1000, "outputTokens": 200, "reasoningOutputTokens": 50,
+                      "cachedInputTokens": 100, "totalTokens": 1250},
+            "last": {"inputTokens": 300, "outputTokens": 80, "reasoningOutputTokens": 20,
+                     "cachedInputTokens": 0, "totalTokens": 400},
+            "modelContextWindow": 272000,
+        });
+        let snap = codex_usage_snapshot(&usage, 3);
+        assert_eq!(snap["calls"], 3);
+        assert_eq!(snap["prompt_tokens"], 1000);
+        assert_eq!(snap["completion_tokens"], 200);
+        assert_eq!(snap["total_tokens"], 1250);
+        assert_eq!(snap["last_prompt_tokens"], 400);
+        assert_eq!(snap["codex_context_window"], 272000);
+        // no notification yet -> zeros, null window
+        let empty = codex_usage_snapshot(&json!({}), 0);
+        assert_eq!(empty["total_tokens"], 0);
+        assert_eq!(empty["codex_context_window"], Json::Null);
+    }
 }

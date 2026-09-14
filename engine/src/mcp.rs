@@ -1,4 +1,4 @@
-//! Minimal MCP stdio client (tools.py::_load_service, plan §12.1).
+//! Minimal MCP client: stdio + streamable HTTP transports (plan §12.1).
 //!
 //! One short-lived session per service: connect, initialize, tools/list, then
 //! tools/call on demand — same trade-off the Python build documents (no leaked
@@ -21,10 +21,23 @@ type Pending = Mutex<HashMap<u64, Sender<Result<Json, String>>>>;
 const INHERITED_ENV: &[&str] = &["HOME", "LOGNAME", "PATH", "SHELL", "TERM", "USER"];
 
 pub struct McpClient {
-    child: Mutex<Option<Child>>,
-    stdin: Mutex<ChildStdin>,
-    pending: Pending,
+    transport: Transport,
     next_id: AtomicU64,
+    startup_ms: u64,
+    tool_ms: u64,
+}
+
+enum Transport {
+    Stdio {
+        child: Mutex<Option<Child>>,
+        stdin: Mutex<ChildStdin>,
+        pending: Pending,
+    },
+    Http {
+        url: String,
+        token: Option<String>,
+        session: Mutex<Option<String>>,
+    },
 }
 
 impl McpClient {
@@ -53,17 +66,22 @@ impl McpClient {
         let stdout = child.stdout.take().ok_or("no stdout")?;
         let stdin = child.stdin.take().ok_or("no stdin")?;
         let client = Arc::new(Self {
-            child: Mutex::new(Some(child)),
-            stdin: Mutex::new(stdin),
-            pending: Mutex::new(HashMap::new()),
+            transport: Transport::Stdio {
+                child: Mutex::new(Some(child)),
+                stdin: Mutex::new(stdin),
+                pending: Mutex::new(HashMap::new()),
+            },
             next_id: AtomicU64::new(1),
+            startup_ms: 60_000,
+            tool_ms: 120_000,
         });
         let this = client.clone();
         std::thread::spawn(move || {
+            let Transport::Stdio { pending, .. } = &this.transport else { return };
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 let Ok(message) = serde_json::from_str::<Json>(&line) else { continue };
                 let Some(id) = message.get("id").and_then(|v| v.as_u64()) else { continue };
-                let slot = this.pending.lock().unwrap().remove(&id);
+                let slot = pending.lock().unwrap().remove(&id);
                 if let Some(tx) = slot {
                     let result = match message.get("error") {
                         Some(error) if !error.is_null() => Err(format!("{error}")),
@@ -72,8 +90,8 @@ impl McpClient {
                     let _ = tx.send(result);
                 }
             }
-            let pending: Vec<_> = this.pending.lock().unwrap().drain().collect();
-            for (_, tx) in pending {
+            let drained: Vec<_> = pending.lock().unwrap().drain().collect();
+            for (_, tx) in drained {
                 let _ = tx.send(Err("MCP server exited".into()));
             }
         });
@@ -83,7 +101,7 @@ impl McpClient {
             "protocolVersion": "2025-06-18",
             "capabilities": {},
             "clientInfo": {"name": "teamagents", "version": env!("CARGO_PKG_VERSION")},
-        }), 60_000) {
+        }), client.startup_ms) {
             client.close();
             return Err(e);
         }
@@ -94,39 +112,85 @@ impl McpClient {
         Ok(client)
     }
 
+    /// Streamable HTTP transport (MCP 2025-06-18): every client message is a
+    /// POST; the reply is one JSON document or an SSE stream of `data:` frames.
+    /// `token` is read from the environment by the caller, never from config.
+    /// ponytail: no server-initiated messages (the standalone GET SSE stream is
+    /// never opened) and no session-resume DELETE; a server that pushes
+    /// notifications or needs explicit session teardown gets those when one
+    /// shows up in practice.
+    pub fn connect_http(
+        url: &str,
+        token: Option<String>,
+        startup_timeout_s: u64,
+        tool_timeout_s: u64,
+    ) -> Result<Arc<Self>, String> {
+        let client = Arc::new(Self {
+            transport: Transport::Http {
+                url: url.to_string(),
+                token,
+                session: Mutex::new(None),
+            },
+            next_id: AtomicU64::new(1),
+            startup_ms: startup_timeout_s.max(1) * 1000,
+            tool_ms: tool_timeout_s.max(1) * 1000,
+        });
+        client.call("initialize", json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "teamagents", "version": env!("CARGO_PKG_VERSION")},
+        }), client.startup_ms)?;
+        client.notify("notifications/initialized", json!({}))?;
+        Ok(client)
+    }
+
     pub fn call(&self, method: &str, params: Json, timeout_ms: u64) -> Result<Json, String> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
-        let (tx, rx) = channel();
-        self.pending.lock().unwrap().insert(id, tx);
-        self.write(json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))?;
-        match rx.recv_timeout(Duration::from_millis(timeout_ms)) {
-            Ok(result) => result,
-            Err(_) => {
-                self.pending.lock().unwrap().remove(&id);
-                Err(format!("MCP {method} timed out"))
+        let body = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+        match &self.transport {
+            Transport::Stdio { stdin, pending, .. } => {
+                let (tx, rx) = channel();
+                pending.lock().unwrap().insert(id, tx);
+                write_line(stdin, &body)?;
+                match rx.recv_timeout(Duration::from_millis(timeout_ms)) {
+                    Ok(result) => result,
+                    Err(_) => {
+                        pending.lock().unwrap().remove(&id);
+                        Err(format!("MCP {method} timed out"))
+                    }
+                }
+            }
+            Transport::Http { url, token, session } => {
+                let payload = http_roundtrip(url, token.as_deref(), session, &body, timeout_ms)?
+                    .ok_or_else(|| format!("MCP {method} returned no response"))?;
+                match payload.get("error") {
+                    Some(error) if !error.is_null() => Err(format!("{error}")),
+                    _ => Ok(payload.get("result").cloned().unwrap_or(Json::Null)),
+                }
             }
         }
     }
 
     fn notify(&self, method: &str, params: Json) -> Result<(), String> {
-        self.write(json!({"jsonrpc": "2.0", "method": method, "params": params}))
-    }
-
-    fn write(&self, message: Json) -> Result<(), String> {
-        let mut stdin = self.stdin.lock().unwrap();
-        writeln!(stdin, "{message}").map_err(|e| e.to_string())?;
-        stdin.flush().map_err(|e| e.to_string())
+        let body = json!({"jsonrpc": "2.0", "method": method, "params": params});
+        match &self.transport {
+            Transport::Stdio { stdin, .. } => write_line(stdin, &body),
+            Transport::Http { url, token, session } => {
+                http_roundtrip(url, token.as_deref(), session, &body, self.startup_ms)?;
+                Ok(())
+            }
+        }
     }
 
     /// tools/list → (name, description, inputSchema) rows.
     pub fn tools(&self) -> Result<Vec<Json>, String> {
-        let reply = self.call("tools/list", json!({}), 60_000)?;
+        let reply = self.call("tools/list", json!({}), self.startup_ms)?;
         Ok(reply.get("tools").and_then(|v| v.as_array()).cloned().unwrap_or_default())
     }
 
     /// tools/call → the text content of the result (or an error string).
     pub fn call_tool(&self, name: &str, args: &Json) -> Result<Json, String> {
-        let reply = self.call("tools/call", json!({"name": name, "arguments": args}), 120_000)?;
+        let reply = self.call("tools/call", json!({"name": name, "arguments": args}), self.tool_ms)?;
         let text = reply
             .get("content")
             .and_then(|v| v.as_array())
@@ -145,21 +209,68 @@ impl McpClient {
     }
 
     pub fn close(&self) {
-        let child = self.child.lock().unwrap().take();
-        if let Some(mut child) = child {
-            let _ = child.kill();
-            let _ = child.wait();
+        if let Transport::Stdio { child, .. } = &self.transport {
+            let child = child.lock().unwrap().take();
+            if let Some(mut child) = child {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
         }
     }
 }
 
 impl Drop for McpClient {
     fn drop(&mut self) {
-        if let Ok(mut child) = self.child.lock() {
-            if let Some(mut child) = child.take() {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
-        }
+        self.close();
     }
+}
+
+fn write_line(stdin: &Mutex<ChildStdin>, message: &Json) -> Result<(), String> {
+    let mut stdin = stdin.lock().unwrap();
+    writeln!(stdin, "{message}").map_err(|e| e.to_string())?;
+    stdin.flush().map_err(|e| e.to_string())
+}
+
+/// One POST of a JSON-RPC message; the response is a single JSON document or
+/// an SSE stream. Returns None for a 202 (notification accepted, no body).
+/// Remembers the server-issued `mcp-session-id` and sends it from then on.
+fn http_roundtrip(
+    url: &str,
+    token: Option<&str>,
+    session: &Mutex<Option<String>>,
+    body: &Json,
+    timeout_ms: u64,
+) -> Result<Option<Json>, String> {
+    let mut request = ureq::post(url)
+        .timeout(Duration::from_millis(timeout_ms))
+        .set("content-type", "application/json")
+        .set("accept", "application/json, text/event-stream");
+    if let Some(token) = token {
+        request = request.set("authorization", &format!("Bearer {token}"));
+    }
+    if let Some(id) = session.lock().unwrap().clone() {
+        request = request.set("mcp-session-id", &id);
+    }
+    let response = request.send_string(&body.to_string()).map_err(|e| format!("MCP HTTP request failed: {e}"))?;
+    if let Some(id) = response.header("mcp-session-id") {
+        *session.lock().unwrap() = Some(id.to_string());
+    }
+    if response.status() == 202 {
+        return Ok(None);
+    }
+    let content_type = response.header("content-type").unwrap_or("").to_string();
+    if content_type.contains("text/event-stream") {
+        let body = response.into_string().map_err(|e| format!("MCP HTTP bad SSE body: {e}"))?;
+        return sse_json(&body).map(Some).ok_or_else(|| "MCP HTTP SSE stream carried no JSON-RPC message".into());
+    }
+    let payload: Json = response.into_json().map_err(|e| format!("MCP HTTP bad json: {e}"))?;
+    Ok(Some(payload))
+}
+
+/// The JSON-RPC message inside an SSE stream is the last `data:` frame.
+fn sse_json(body: &str) -> Option<Json> {
+    body.lines()
+        .filter_map(|line| line.strip_prefix("data:"))
+        .filter_map(|data| serde_json::from_str::<Json>(data.trim()).ok())
+        .last()
 }

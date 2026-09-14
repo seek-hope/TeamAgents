@@ -38,6 +38,15 @@ pub trait AgentRunner: Send + Sync {
     fn resolve_approval(&self, _approval_id: &str, _decision: &str) -> bool {
         false
     }
+    /// D-26 rewind: chat backends own a tree-structured history; backends that
+    /// keep history server-side (codex) report unsupported — use their native
+    /// fork instead.
+    fn rewind_points(&self, _thread: &str) -> Vec<Json> {
+        vec![]
+    }
+    fn rewind(&self, _thread: &str, _node: Option<&str>) -> Result<usize, String> {
+        Err("this backend does not support rewind".into())
+    }
     fn close(&self) {}
 }
 
@@ -190,6 +199,7 @@ impl Notify {
 }
 
 struct RunSlot {
+    agent_id: String,
     handle: Mutex<Option<std::thread::JoinHandle<()>>>,
     cancel_started: AtomicBool,
     control: Arc<TurnControl>,
@@ -256,6 +266,20 @@ impl Runtime {
 
     pub fn runner(&self, agent_id: &str) -> Option<Arc<dyn AgentRunner>> {
         self.runners.lock().unwrap().get(agent_id).map(|(_, runner)| runner.clone())
+    }
+
+    /// Drop the cached runner so the next turn rebuilds it from the factory
+    /// (session-level model override). Same remove+close pattern as the
+    /// stale-rebuild path in start_ready_runs, except a runner with a turn in
+    /// flight is left open: closing it would interrupt the live turn (the
+    /// override then applies from the member's next turn).
+    pub fn drop_runner(&self, agent_id: &str) {
+        let old = self.runners.lock().unwrap().remove(agent_id);
+        let Some((_, runner)) = old else { return };
+        let busy = self.inflight.lock().unwrap().values().any(|slot| slot.agent_id == agent_id);
+        if !busy {
+            runner.close();
+        }
     }
 
     pub fn me(&self) -> Option<Arc<Runtime>> {
@@ -502,7 +526,7 @@ impl Runtime {
 
     fn spawn_execute(&self, run: TurnRun, _runner: Arc<dyn AgentRunner>) {
         let Some(runtime) = self.me() else { return };
-        let slot = Arc::new(RunSlot { handle: Mutex::new(None), cancel_started: AtomicBool::new(false), control: Arc::new(TurnControl::default()) });
+        let slot = Arc::new(RunSlot { agent_id: run.agent_id.clone(), handle: Mutex::new(None), cancel_started: AtomicBool::new(false), control: Arc::new(TurnControl::default()) });
         {
             let mut inflight = self.inflight.lock().unwrap();
             if self.closed.load(Ordering::SeqCst) { return; }
