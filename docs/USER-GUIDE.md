@@ -152,6 +152,10 @@ Skills 的加载与分发（对应方案 §12.1 的“发现 + 按需读取”�
   （含离线 registry 缓存）；`credentials.toml`/`config.toml` 不挂载，所以注册表令牌不会
   进入沙箱。只有 Rust 已按此处理，其它语言的 HOME 级工具链（nvm/pyenv/…）仍不可见。
 - 文件工具做符号链接与路径穿越防护，越界即拒绝。
+- 写入用"进程内互斥 + 跨进程文件锁 + SHA-256 版本校验"：锁文件放在 `sessions/<id>/locks/`
+  （不写进项目目录），另一个 teamagents 进程正在写同一路径时会等它写完；等待超过 10 秒则以
+  `another teamagents process is writing this file` 拒绝。文件系统不支持建议锁时退化为原来的
+  进程内互斥，不会因为加锁失败拒绝所有写入。
 - 已绑定的 MCP 工具由 ChatRunner 直接调用，不再逐次批准。stdio 服务是白名单环境下启动的
   本机进程，当前没有 bubblewrap 的目录/网络隔离；其权限范围取决于该服务自身配置。
 - “私有上下文隔离”是运行时投递与工具授权合约；本机 MCP 或 Codex 全自动执行可能按当前用户
@@ -175,7 +179,7 @@ Skills 的加载与分发（对应方案 §12.1 的“发现 + 按需读取”�
 ```
 $XDG_STATE_HOME/teamagents/sessions/<会话 id>/     # 默认 ~/.local/state/teamagents/sessions/
 ├── team.db            业务事实：动作回执、事件流、任务、回合、投递、批准、共享条目、拓扑补丁
-├── artifacts/         长输出与制品：shell 输出超 200KB 落 exec-*.log（单个制品上限 64 MiB，超出的尾部丢弃并在输出里标注），工具结果用 /artifacts/xxx 引用
+├── artifacts/         长输出与制品：shell 输出超 200KB 落 exec-*.log（单个制品上限 64 MiB，超出的尾部丢弃并在输出里标注；目录总量超 512 MiB 时按时间删最旧的 exec-*.log，被删的旧引用再读会报文件不存在），工具结果用 /artifacts/xxx 引用
 │                      （成员用 read_file/read_artifact/write_file 等按 /artifacts/ 前缀读写；ls/glob 与隔离 shell 看不到）
 ├── members/<成员>/work/  隔离/worktree 成员的专属工作目录（文件工具的执行根）
 ├── members/<成员>/chat_tree.json     对话树、当前 leaf、回退代次（含保留的旧分支）

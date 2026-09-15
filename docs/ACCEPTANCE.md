@@ -74,7 +74,7 @@ TUI 为 Rust 原生设计（D-20：固定分区、滚动、胶囊状态）。其
 | 动态变更安全边界（§8） | `core/src/control.rs::agent_has_live_run` 不把无 `external_turn_id` 的 WAITING_TASK/WAITING_APPROVAL 算作活动执行，因此 Chat 挂起时可应用 patch；有外部回合 ID 的 Codex 等待仍阻塞。现行修复证据：`core/tests/engine.rs::approval_parked_run_does_not_block_boundary`、`task_wait_parked_run_does_not_block_boundary` |
 | 网关与 MCP 隔离（§12.2） | `BoundTools::load_in` 将 stdio MCP 默认放入成员 workspace bwrap（无网），`mcp_execution = "host"` 才显式使用宿主；绑定仍是授权边界 |
 | 全自动与越界批准（§12.2） | 原生文件工具仍由 `tools.rs::resolve_in_root` 限定路径，Shell 始终走 `shell_run_with_control` / `bwrap_argv`；full_auto 只跳过批准门，没有扩大文件根或取消原生 Shell 沙箱 |
-| 共享目录并发写（§12.3） | `tools.rs::workspace_executor_with_control` 提供进程内路径锁、SHA-256 CAS 与原子替换；跨进程编辑器仍应使用 worktree 或外部锁 |
+| 共享目录并发写（§12.3） | `tools.rs::workspace_executor_with_control` 提供进程内路径锁、SHA-256 CAS 与原子替换；`tools.rs::with_path_lock` 追加跨进程建议锁（锁文件在会话状态目录 `sessions/<id>/locks/`，不落项目目录，`File::try_lock` 争用等待上限 10s，FS 不支持时退化为进程内互斥），回归 `tools::tests::path_lock_serializes_two_writers`。外部编辑器（不走本工具的写）仍建议使用 worktree |
 | Skills 后端范围（§10、§12.1） | `session.rs::make_runner_factory` 在 Codex 分支提前返回；`member_context` 和 `BoundTools` 的 Skills/指令注入仅用于 Chat 成员 |
 | TUI 完整视图与响应（§13） | 当前六个管理页签；`/settings` 仅切语言，`/model` 单独选模型。成员记录通过日志事件筛选，没有完整私有对话树浏览器；控制请求已通过有界异步队列，停滞 worker 有超时和过期响应保护 |
 | 回退节点（D-26） | `chat.rs::ChatTree::rewind_to` 将 leaf 设为目标节点，包含该条输入；TUI 文案已改为“保留该条输入，移开后续对话”。`rewind_points` 只列当前祖先链，旧分支需已知节点 ID 才能访问 |
@@ -83,7 +83,7 @@ TUI 为 Rust 原生设计（D-20：固定分区、滚动、胶囊状态）。其
 | 配置校验与导出（§5.2、§14） | `cli.rs::validate_spec` 已合并 TeamSpec 所在目录的受信任项目配置；任务依赖/委派权限在动作提交时校验。仍没有专用 TeamSpec 导出 CLI，部分通用 payload 未覆盖完整 schema |
 | 结构化执行与评测 | `teamagents exec --json` 输出稳定 JSONL（`session`/`tool`/`event`/`result`）：`tool` 行给出每次工具调用的名称、参数摘要（≤500 字符）与成功/失败，`result` 行给出退出码、`duration_ms`、各成员 `usage` 与验收命令结果（另写入会话目录 `verification.json`）。工具活动经 `Notify::set_tool_sink` 从 ChatRunner 直达（回归 `chat_e2e::tool_activity_reaches_the_automation_sink`）；回合停在待批准时立即以退出码 3 结束（`cli.rs::exec_outcome` + `exec_tests::parked_approval_reports_approval_required_not_timeout`），不再等到超时报 124。固定任务集 `review/eval/tasks/<id>/` + `review/eval/run.sh`；DeepSeek 真实跑 3/3 completed、验收全通过、16–24s、原始 JSONL 见 `review/eval/runs/2026-09-15-deepseek/`。多供应商矩阵、多成员协作任务与被中断恢复仍未验收 |
 | 沙箱内构建工具链 | `$HOME` 不可见时成员仍能真的构建：`tools.rs::toolchain_mounts` 把 `RUSTUP_HOME` 与 `CARGO_HOME` 的 `bin`/`registry`/`git` 只读镜像到沙箱 `/tmp/.teamagents-toolchain/` 并注入环境变量（`credentials.toml`/`config.toml` 不挂载，令牌不进沙箱）；回归 `tools::tests::sandbox_builds_with_the_host_toolchain`（在沙箱里跑 `cargo test --offline`）。只有 Rust 已覆盖，nvm/pyenv 等 HOME 级工具链仍不可见 |
-| Shell 长输出与制品 | 有界预览 200KB 落 `artifacts/exec-*.log`，单个制品上限 64 MiB，超过部分丢弃并在输出中标注（`tools.rs::OutputSink` + `shell_artifact_stops_at_the_size_cap`）；磁盘配额治理仍只有这一层上限 |
+| Shell 长输出与制品 | 有界预览 200KB 落 `artifacts/exec-*.log`，单个制品上限 64 MiB，超过部分丢弃并在输出中标注（`tools.rs::OutputSink` + `shell_artifact_stops_at_the_size_cap`）；整目录预算 512 MiB，新建制品时按 mtime 删最旧的 `exec-*.log`（`prune_artifacts` + `artifacts_are_pruned_to_the_directory_budget`）。历史检查点/对话树仍无配额 |
 
 可复核上述现状（仓库根目录）：
 

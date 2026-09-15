@@ -17,6 +17,39 @@ const MAX_OUTPUT: usize = 200_000;
 /// A runaway command must not fill the disk: the artifact keeps arrival order
 /// up to this many bytes, and `finish` says so when the tail was dropped.
 const MAX_ARTIFACT_BYTES: u64 = 64 * 1024 * 1024;
+/// Long sessions accumulate one artifact per oversized command, so the
+/// directory keeps only its newest files within this budget (oldest dropped
+/// first). Their /artifacts/ references stay valid only while the file is kept;
+/// a missing artifact reports itself when read.
+const ARTIFACT_DIR_BYTES: u64 = 512 * 1024 * 1024;
+
+/// Drop the oldest `exec-*.log` files until the directory fits the budget.
+/// Returns the number of files removed; failures are ignored (pruning is
+/// best-effort housekeeping, never a reason to fail a command).
+fn prune_artifacts(dir: &Path, budget: u64) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+    let mut files: Vec<(std::time::SystemTime, PathBuf, u64)> = entries
+        .flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with("exec-") && entry.file_name().to_string_lossy().ends_with(".log"))
+        .filter_map(|entry| {
+            let meta = entry.metadata().ok()?;
+            if !meta.is_file() { return None; }
+            Some((meta.modified().ok()?, entry.path(), meta.len()))
+        })
+        .collect();
+    let mut total: u64 = files.iter().map(|(_, _, len)| len).sum();
+    if total <= budget { return 0; }
+    files.sort_by_key(|(modified, _, _)| *modified);
+    let mut removed = 0;
+    for (_, path, len) in files {
+        if total <= budget { break; }
+        if std::fs::remove_file(&path).is_ok() {
+            total = total.saturating_sub(len);
+            removed += 1;
+        }
+    }
+    removed
+}
 const PAGE_BYTES: usize = 32_000;
 // ponytail: serialize native mutations in this process; use per-path locks if
 // unrelated writes contend. Shell/external editors still need hash checks.
@@ -123,8 +156,53 @@ fn expected_hash(args: &Json) -> Result<Option<&str>, String> {
     Ok(Some(hash))
 }
 
-fn atomic_write(root: &Path, path: &Path, content: &[u8], expected: Option<&str>, control: &TurnControl) -> Result<(), String> {
+/// Lock file name for one target: a hash of its absolute path, so the lock is
+/// stable across renames and is never written into the user's project.
+fn lock_file(lock_dir: &Path, target: &Path) -> PathBuf {
+    let key = format!("{:x}", Sha256::digest(target.to_string_lossy().as_bytes()));
+    lock_dir.join(format!("{key}.lock"))
+}
+
+/// Cross-process write exclusion. The in-process mutex cannot see a second
+/// teamagents process (or a `--resume` in another terminal) editing the same
+/// workspace, and the file itself cannot carry the lock because it gets replaced
+/// by rename. Locks live beside the session state instead.
+/// ponytail: one lock per file, held for the whole write; no reader locks.
+fn with_path_lock<T>(lock_dir: Option<&Path>, target: &Path, body: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    let Some(lock_dir) = lock_dir else { return body() };
+    std::fs::create_dir_all(lock_dir).map_err(|e| format!("cannot create lock directory: {e}"))?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(lock_file(lock_dir, target))
+        .map_err(|e| format!("cannot open write lock: {e}"))?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match file.try_lock() {
+            Ok(()) => break,
+            // contention: give the other writer time to finish its rename
+            Err(std::fs::TryLockError::WouldBlock) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err("another teamagents process is writing this file; retry".into());
+            }
+            // a filesystem without advisory locks must not fail every write
+            Err(std::fs::TryLockError::Error(_)) => return body(),
+        }
+    }
+    let result = body();
+    let _ = file.unlock();
+    result
+}
+
+fn atomic_write(root: &Path, lock_dir: Option<&Path>, path: &Path, content: &[u8], expected: Option<&str>, control: &TurnControl) -> Result<(), String> {
     if content.len() as u64 > MAX_FILE_BYTES { return Err("content too large".into()); }
+    with_path_lock(lock_dir, path, || atomic_write_locked(root, path, content, expected, control))
+}
+
+fn atomic_write_locked(root: &Path, path: &Path, content: &[u8], expected: Option<&str>, control: &TurnControl) -> Result<(), String> {
     let root = std::fs::canonicalize(root).map_err(|e| e.to_string())?;
     let parent = member_parent(&root, path, true)?;
     let parent_path = PathBuf::from(format!("/proc/self/fd/{}", parent.as_raw_fd()));
@@ -288,6 +366,8 @@ pub fn workspace_executor(
 fn workspace_executor_with_control(
     root: PathBuf, artifacts: Option<PathBuf>,
 ) -> impl Fn(&str, &Json, &TurnControl) -> Result<Json, String> + Send + Sync + 'static {
+    // cross-process write locks live beside the session state, never in the project
+    let lock_dir = artifacts.as_ref().and_then(|dir| dir.parent()).map(|state| state.join("locks"));
     move |tool: &str, args: &Json, control: &TurnControl| -> Result<Json, String> {
         control.check()?;
         let arg = |key: &str| args.get(key).and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -340,7 +420,7 @@ fn workspace_executor_with_control(
                 let path = member_path(&arg("path"))?;
                 let content = args.get("content").and_then(|v| v.as_str()).ok_or("content must be a string")?;
                 let file_root = if arg("path").starts_with(ARTIFACTS_PREFIX) { artifacts.as_ref().unwrap() } else { &root };
-                atomic_write(file_root, &path, content.as_bytes(), expected_hash(args)?, control)?;
+                atomic_write(file_root, lock_dir.as_deref(), &path, content.as_bytes(), expected_hash(args)?, control)?;
                 Ok(json!(format!("wrote {}", path.display())))
             }
             "edit_file" => {
@@ -361,7 +441,7 @@ fn workspace_executor_with_control(
                     return Err("file conflict: expected_sha256 no longer matches; read the file again".into());
                 }
                 let file_root = if arg("path").starts_with(ARTIFACTS_PREFIX) { artifacts.as_ref().unwrap() } else { &root };
-                atomic_write(file_root, &path, text.replacen(&old, new, 1).as_bytes(), Some(&hash), control)?;
+                atomic_write(file_root, lock_dir.as_deref(), &path, text.replacen(&old, new, 1).as_bytes(), Some(&hash), control)?;
                 Ok(json!(edit_diff(&path, &text, at, &old, new)))
             }
             "delete" => {
@@ -894,6 +974,7 @@ impl OutputSink {
             let name = format!("exec-{}.log", uuid::Uuid::new_v4());
             let file = std::fs::OpenOptions::new().write(true).create_new(true).open(dir.join(&name))
                 .map_err(|e| format!("cannot create output artifact: {e}"))?;
+            prune_artifacts(dir, ARTIFACT_DIR_BYTES);
             (Some(file), Some(format!("{ARTIFACTS_PREFIX}{name}")))
         } else { (None, None) };
         Ok(Self { head: Vec::with_capacity(MAX_OUTPUT), total: 0, written: 0, cap: MAX_ARTIFACT_BYTES, artifact, reference, error: None })
@@ -1448,6 +1529,78 @@ mod tests {
         let not_a_dir = dir.join("file");
         std::fs::write(&not_a_dir, "x").unwrap();
         assert!(OutputSink::new(Some(&not_a_dir)).err().unwrap().contains("artifact directory"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn path_lock_serializes_two_writers() {
+        let dir = std::env::temp_dir().join(format!("ta-lock-{}", uuid::Uuid::new_v4()));
+        // like production: the workspace and the lock directory are different trees
+        let locks = dir.join("locks");
+        let workspace = dir.join("work");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let target = workspace.join("shared.txt");
+        let order: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(vec![]));
+
+        let (first_order, first_dir, first_target) = (order.clone(), locks.clone(), target.clone());
+        let first = std::thread::spawn(move || {
+            with_path_lock(Some(&first_dir), &first_target, || {
+                first_order.lock().unwrap().push("first-in".into());
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                first_order.lock().unwrap().push("first-out".into());
+                Ok(())
+            })
+            .unwrap()
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let (second_order, second_dir, second_target) = (order.clone(), locks.clone(), target.clone());
+        let second = std::thread::spawn(move || {
+            with_path_lock(Some(&second_dir), &second_target, || {
+                second_order.lock().unwrap().push("second-in".into());
+                Ok(())
+            })
+            .unwrap()
+        });
+        first.join().unwrap();
+        second.join().unwrap();
+        assert_eq!(
+            order.lock().unwrap().clone(),
+            vec!["first-in", "first-out", "second-in"],
+            "the second writer must wait for the first to finish"
+        );
+
+        // lock files stay out of the project directory
+        let workspace_files: Vec<String> = std::fs::read_dir(&workspace).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        assert!(workspace_files.iter().all(|name| !name.ends_with(".lock")), "no lock artifacts in the project: {workspace_files:?}");
+        let lock_files: Vec<String> = std::fs::read_dir(&locks).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        assert_eq!(lock_files.len(), 1, "one stable lock file per target path: {lock_files:?}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn artifacts_are_pruned_to_the_directory_budget() {
+        let dir = std::env::temp_dir().join(format!("ta-artifact-prune-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for index in 0..5 {
+            let path = dir.join(format!("exec-{index}.log"));
+            std::fs::write(&path, vec![b'x'; 100]).unwrap();
+            // distinct mtimes: index 0 is the oldest
+            let stamp = std::time::SystemTime::now() - std::time::Duration::from_secs(60 - index as u64);
+            let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+            file.set_modified(stamp).unwrap();
+        }
+        assert_eq!(prune_artifacts(&dir, 250), 3, "oldest files go first");
+        let kept: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(kept.len(), 2, "{kept:?}");
+        assert!(kept.iter().all(|name| name == "exec-3.log" || name == "exec-4.log"), "{kept:?}");
+        // under budget: nothing is touched, and unrelated files are never candidates
+        std::fs::write(dir.join("keep.txt"), vec![b'y'; 4096]).unwrap();
+        assert_eq!(prune_artifacts(&dir, 4096), 0);
+        assert!(dir.join("keep.txt").exists(), "only exec-*.log files are pruned");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

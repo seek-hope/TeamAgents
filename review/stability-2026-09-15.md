@@ -150,3 +150,21 @@ Leader 的绑定（D-30 已为 model_profile 开了同类先例）；是否自�
 `core/tests/engine.rs::topology_patch_add_and_stale_reject`（成员间通道被拒）。
 真实复跑：`review/eval/runs/2026-09-15-deepseek-d33/`（team-collab 35s、33 次工具调用、0 失败、验收通过）。
 决策记录：`docs/DECISIONS.md` D-33。
+
+## 第六批：磁盘与并发（用户批准的优先级 ①②）
+
+1. **制品目录无上限**（`engine/src/tools.rs::prune_artifacts`）：单制品封顶 64 MiB 只挡住了单个
+   文件，长会话里每个超大命令都会留一个文件。现在新建制品时按 mtime 删最旧的 `exec-*.log`，
+   直到目录总量回到 512 MiB 以内；只动自己写的 `exec-*.log`，删文件失败不影响命令结果
+   （清理是尽力而为），被删引用的读回会正常报"文件不存在"。
+   回归：`tools::tests::artifacts_are_pruned_to_the_directory_budget`。
+2. **跨进程写同一文件**（`engine/src/tools.rs::with_path_lock`）：原来只有进程内互斥 + SHA-256
+   CAS，另一个 teamagents 进程（或另一个终端的 `--resume`）写同一路径时看不到锁。现在每次
+   写/编辑前先用 `File::try_lock` 抢该路径的建议锁（锁文件命名取自目标绝对路径的 SHA-256，
+   放在 `sessions/<id>/locks/`，**不写进被编辑的项目目录**），争用时最多等 10 秒再报
+   `another teamagents process is writing this file; retry`；文件系统不支持建议锁时退化为
+   原行为，不因加锁失败拒绝写入。
+   回归：`tools::tests::path_lock_serializes_two_writers`（两个写者严格串行、项目目录里没有
+   锁文件残留）。
+
+仍未做：历史检查点/对话树/team.db 的会话级总量配额（当前只有 artifacts 目录有预算）。
