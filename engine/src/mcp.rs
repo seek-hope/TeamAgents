@@ -575,6 +575,12 @@ for line in sys.stdin:
 "#;
         let args = vec!["-u".into(), "-c".into(), script.into(), outside.display().to_string(),
             listener.local_addr().unwrap().port().to_string(), literal.into()];
+        if !crate::tools::bwrap_available() {
+            // 无隔离能力时不允许降级执行：workspace 模式必须直接失败（CI 上没有 bwrap）
+            assert!(McpClient::connect_stdio_in("/usr/bin/python3", &args, &[], &root, "workspace", false, 2, 3).is_err());
+            std::fs::remove_dir_all(dir).unwrap();
+            return;
+        }
         for (mode, network, visible) in [("workspace", false, false), ("workspace", true, false), ("host", false, true)] {
             let client = McpClient::connect_stdio_in("/usr/bin/python3", &args, &[], &root, mode, network, 2, 3).unwrap();
             assert_eq!((client.startup_ms, client.tool_ms), (2000, 3000));

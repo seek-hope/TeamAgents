@@ -949,7 +949,6 @@ impl ChatRunner {
         } else {
             instructions.to_string()
         };
-        let allowed = bound_tool_names(&self.bindings(), self.web_flags());
         let bound_docs = self.bound.docs();
         // Names only: each tool's description already travels in the request's
         // function schemas, and the prompt is rebuilt (and paid for) every turn.
