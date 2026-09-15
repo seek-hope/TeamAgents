@@ -1,0 +1,1 @@
+test ! -e net.txt || grep -qi blocked net.txt

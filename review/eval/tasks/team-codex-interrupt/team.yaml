@@ -1,0 +1,37 @@
+schema_version: 1
+leader_id: leader
+agents:
+  - id: leader
+    name: Leader
+    role: leader
+    runtime_kind: deepagents
+    instructions: 理解用户目标，把编码任务派给 codex-dev，等它完成后自己复跑验收再汇报。
+    model_profile: leader_main
+    tool_bindings: [files, shell]
+    skills: []
+    workspace_policy: shared
+  - id: codex-dev
+    name: Codex Dev
+    role: worker
+    runtime_kind: codex
+    instructions: 执行委派的编码任务，改完自己跑测试，报告真实结果。
+    model_profile: codex_deepseek
+    tool_bindings: [files, shell]
+    skills: []
+    workspace_policy: shared
+channels:
+  - source: leader
+    targets: [codex-dev]
+    mode: message
+  - source: codex-dev
+    targets: [leader]
+    mode: message
+observers: []
+shared_spaces:
+  - id: main
+    readers: [leader, codex-dev]
+    writers: [leader, codex-dev]
+limits:
+  max_parallel_workers: 4
+  max_members: 10
+  max_turns_per_goal: 200

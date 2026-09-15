@@ -408,3 +408,15 @@ Codex 有 `notify`、Claude Code 有 hooks，TeamAgents 之前没有任何外部
   `tui::tests::plan_status_strip_tracks_the_selected_member`（进度/当前项、有才占行、行从对话区扣、全部完成）。
 - 真实运行：`review/eval/tasks/plan-use`（新增）——模型三次 `update_plan`，两项都标 done，任务通过，
   证据 `review/eval/runs/2026-09-15-deepseek-plan/`。
+
+## 第二十一批：Codex 成员 × 批准回路 / 被中断恢复（用户要求的组合评测）
+
+- `team-codex-gate`：让 Codex 成员做**工作目录之外**的写入 → Codex 沙箱（workspace-write）只能
+  申请批准 → app-server 权限请求 → 引擎按 D-31 落 PENDING 批准、回合停在 WAITING_APPROVAL →
+  非交互 exec 以 3 结束（14s，不是等超时）。外部可见后果：目标文件不存在、工作区无伪造成功记录。
+  过程发现并记录：第一版让 Codex 成员跑 `curl` 却真的成功了，因为用户 Codex 配置里
+  `[sandbox_workspace_write] network_access = true`——Codex 成员的联网走它自己的沙箱，不经过
+  团队批准门；任务因此改成"写工作目录之外"。
+- `team-codex-interrupt`：把 `sleep 60` 命令派给 Codex 成员，任务超时 45s → exit 124；
+  `run.txt` 只有 started、两个回合都记为 CANCELLED、`ps` 无残留 `sleep`。
+- 证据：`review/eval/runs/2026-09-15-deepseek-codex-gates/`。仍未覆盖：中断后 `--resume` 重放。
