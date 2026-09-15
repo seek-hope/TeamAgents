@@ -424,7 +424,12 @@ impl Control {
                 let base = p.get("base_revision").and_then(|v| v.as_i64());
                 let current = self.store.current_revision(&self.session_id).unwrap_or(0);
                 if base != Some(current) {
-                    return Some(format!("patch base_revision {base:?} is stale; current is {current}"));
+                    return Some(match base {
+                        // an absent base_revision is a retryable authoring mistake,
+                        // not a stale patch: tell the caller the exact value to send
+                        None => format!("patch needs base_revision {current} (from <team revision=...>); resend with it"),
+                        Some(stale) => format!("patch base_revision {stale} is stale; current is {current}"),
+                    });
                 }
                 None
             }

@@ -282,6 +282,9 @@ pub fn build_agent_view(store: &Store, spec: &TeamSpec, session_id: &str, agent_
             serde_json::json!({
                 "id": a.id, "name": a.name, "role": a.role,
                 "runtime_kind": a.runtime_kind,
+                // what a member can actually execute: the Leader delegates
+                // against this, so an empty list is visible instead of silent
+                "tools": a.tool_bindings,
                 "status": store.agent_status(session_id, &a.id).ok().flatten()
                     .map(|s| serde_json::to_value(s).unwrap_or(Json::Null)).unwrap_or(Json::Null),
             })

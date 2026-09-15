@@ -128,15 +128,15 @@ pub fn render_view(view: &Json, wake: &Json, workdir: Option<&str>) -> String {
 
 pub const TEAM_TOOL_DOCS: &[(&str, &str)] = &[
     ("send_message", "Send a message to a teammate you are allowed to reach. target='*' broadcasts where a broadcast channel exists."),
-    ("assign_task", "Assign a task to a teammate; returns a task_id immediately and never waits for completion. Include acceptance criteria."),
+    ("assign_task", "Assign a task to a teammate; returns a task_id immediately and never waits for completion. Include acceptance criteria. The assignee can only run tools listed in its tool_bindings (see members[].tools), so delegate execution work to a member that has files/shell."),
     ("complete_task", "Report the current task finished with result refs and a short summary; the task becomes SUCCEEDED when your turn ends cleanly."),
     ("wait_for_tasks", "Park this turn until the given tasks finish (or the user sends new input). Releases your execution slot."),
     ("publish_shared", "Append a structured entry (finding/decision/artifact ref) to a shared space you can write to."),
     ("read_shared", "Read shared-space entries after a sequence cursor."),
     ("list_shared", "List shared spaces you can read and their entry counts."),
     ("request_help", "Ask the Leader for help with your current task."),
-    ("propose_team_change", "Propose a team/topology change to the Leader; only the Leader can apply it."),
-    ("apply_topology_patch", "Leader only: apply (or reject) a topology patch from a base revision. add_agent may omit model_profile: a per-member profile is then auto-created from the Leader's current model."),
+    ("propose_team_change", "Ask the Leader to apply a team change; only the Leader can apply it. Same operations as apply_topology_patch; include a rationale."),
+    ("apply_topology_patch", "Leader only: change the team. Pass base_revision (the number in <team revision=N>) plus operations to apply now, or patch_id to apply/reject a change that propose_team_change created earlier (never invent a patch_id). Operations: {\"op\":\"add_agent\",\"agent\":{\"id\",\"name\",\"role\":\"worker\",\"runtime_kind\":\"deepagents\",\"instructions\",\"tool_bindings\":[\"files\",\"shell\"],\"workspace_policy\":\"shared\"},\"channels\":[{\"source\":\"leader\",\"targets\":[\"<member>\"],\"mode\":\"task\"}]}; {\"op\":\"remove_agent\",\"agent_id\"}; {\"op\":\"update_agent\",\"agent_id\",\"changes\":{...}}. A new member gets no execution tools unless tool_bindings lists them (task/message tools always work), and it can only message agents an existing channel covers — add the channel in the same patch when you plan to delegate. add_agent may omit model_profile: a per-member profile is then auto-created from the Leader's current model."),
     ("cancel_task", "Leader only: cancel an unfinished or blocked task; running work stops first."),
     ("cancel_run", "Leader only: request a turn to stop; side effects are not rolled back."),
     ("signal_done", "Leader only: declare the current user goal complete; the runtime verifies no work, approvals or unknown outcomes are outstanding."),

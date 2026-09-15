@@ -19,6 +19,10 @@ pub const LEADER_INSTRUCTIONS: &str = "You are the Leader of a team of agents. U
 whether to work alone or build a team, delegate with assign_task, coordinate
 with send_message, and report completion with signal_done. Keep task descriptions
 specific, include acceptance criteria, and never bypass runtime permissions.
+When you add a member, give it the tool bindings its work needs (for example
+[\"files\", \"shell\"] for coding) and add a channel for it in the same patch —
+a member without bindings can only send messages and tasks, and can only reach
+you over an existing channel.
 When creating a member via apply_topology_patch add_agent, you may omit
 model_profile (a per-member profile is auto-created from your current model),
 or set it to a model id (reuses your connection) or an existing profile name.

@@ -43,7 +43,7 @@ python3 tui/scripts/pty_click_check.py
 | T7 | 五家模型工具调用与续接；同队混用 | 🔶 | 真实 DeepSeek 单 Leader 回合实测（`--plain` 到 `goal_done`）；Anthropic 原生协议已实现（转换单测，缺密钥未实跑）；其余三家走 OpenAI 兼容路径未逐一实跑 |
 | T8 | 恢复：杀进程后重建 | ✅ | `engine/tests/recovery.rs::t8_killed_turn_is_reconciled_and_stays_exactly_once`（kill -9 → 重启 requeue 重跑 → 取消收敛） |
 | T9 | 单 Leader 可执行并继续对话 | ✅ | `scenarios.rs::t9_baseline_leader_alone_executes_and_keeps_talking` |
-| T10 | 自然语言组队；非法结构被拒绝 | 🔶 | 核心校验与 `validate`；`chat_e2e.rs::review_add_agent_auto_creates_member_profile` 覆盖 D-30 自动 profile（假模型），真实自然语言组队未覆盖；未知 profile 在 add_agent 中按 D-30 解释为模型 ID，不保证远端模型存在 |
+| T10 | 自然语言组队；非法结构被拒绝 | 🔶 | 核心校验与 `validate`；`chat_e2e.rs::review_add_agent_auto_creates_member_profile` 覆盖 D-30 自动 profile（假模型）。真实自然语言组队已跑：`team-collab` 首轮暴露"成员无执行工具 + 补丁形状靠猜"导致 900s 超时，修好工具契约与成员 `tools` 可见性后同一提示词 40s 通过（36 次工具调用、0 失败，见 `review/eval/runs/2026-09-15-deepseek/`）。仍待用户确认的默认值：省略 `tool_bindings` 是否继承 Leader 绑定、是否自动建 Leader↔成员通道；未知 profile 在 add_agent 中按 D-30 解释为模型 ID，不保证远端模型存在 |
 | T11 | 动态变更：成员只能提议、Leader 应用、边界生效 | ✅ | `engine/tests/topology.rs::t11_member_proposal_is_leader_decision`（提案→Leader 应用→生效，审计保留提案人） |
 | T12 | 版本冲突不互相覆盖、不半应用 | ✅ | `topology.rs::t12_conflicting_patches_never_partially_apply` |
 | T13 | 移除成员：停止后移除、任务移交、成果保留 | ✅ | `topology.rs::t13_removed_member_hands_tasks_to_leader_and_keeps_results` |

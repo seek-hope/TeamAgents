@@ -108,3 +108,25 @@ review/eval/run.sh --timeout 600          # deepseek-flash，默认单成员团�
 - 多成员协作任务、被中断后的恢复、批准回路：评测集尚未覆盖。
 - `tool` 行在"成员私有上下文"面上是新增暴露：它含工具名与参数摘要（写文件内容会被截到 500
   字符），派发敏感读任务时要意识到这条日志会被 CI 保存。
+
+## 第四批：组队链路是断的（2026-09-15）
+
+新增 `team-collab` 评测任务（两个独立子任务，要求 Leader 自己组队并行完成）后，第一次真实运行
+**900 秒超时失败**（`review/eval/runs/` 的 REPORT 记录了两个版本的对比）：
+
+1. **新成员没有执行工具**：`apply_topology_patch` 的 add_agent 省略 `tool_bindings` 时得到空
+   绑定，成员只能收发消息/任务，改不了文件也跑不了命令，两个任务永远完不成，Leader 一直等
+   （`wait_for_tasks` → 超时）。这是团队能力的主干道断点。
+2. **补丁形状靠猜**：工具说明里没有 operation 形状，Leader 连续 5 次提交失败（`missing agent`、
+   把 `patch_id` 当幂等键 → `unknown patch`、漏 `runtime_kind`），最后才试对。
+3. **缺 `base_revision` 的报错误导**：省略时提示 "base_revision None is stale"，没说当前版本是几。
+4. **成员能力不可见**：`<team>` 上下文只有 id/name/role/status，Leader 看不到成员有没有工具。
+
+本轮只动"契约清晰度与可见性"，不放宽任何权限：工具说明写清 operation 形状、`base_revision`、
+"不写 tool_bindings 就没有执行工具、没有 channel 就发不出消息"；`core/src/views.rs` 在
+`relevant_topology.members[]` 里带上 `tools`；`core/src/control.rs` 对缺失 `base_revision` 的
+补丁直接报出当前版本号（回归断言加在 `core/tests/engine.rs::topology_patch_add_and_stale_reject`）。
+修完同一提示词：36 次工具调用、0 失败、40 秒通过（`review/eval/runs/2026-09-15-deepseek/`）。
+
+仍待确认的默认值（属策略变更，等用户点头再落码）：add_agent 省略 `tool_bindings` 时是否继承
+Leader 的绑定（D-30 已为 model_profile 开了同类先例）；是否自动为"Leader↔新成员"建通道。

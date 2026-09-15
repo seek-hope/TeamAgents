@@ -186,6 +186,16 @@ fn topology_patch_add_and_stale_reject() {
     // rejecting an already-applied patch fails
     let r = ctl.submit(&action("p3", "leader", ActionKind::ApplyTopologyPatch, json!({"patch_id": patch_id}), None)).unwrap();
     assert!(!r.ok);
+
+    // an inline patch without base_revision must name the revision to resend
+    let revision = ctl.store.current_revision("s1").unwrap();
+    let ops = json!({"operations": [{"op": "add_channel", "channel": {"source": "b", "targets": ["cx"], "mode": "message"}}]});
+    let error = ctl.submit(&action("p4", "leader", ActionKind::ApplyTopologyPatch, ops.clone(), None)).unwrap().error.unwrap_or_default();
+    assert!(error.contains(&revision.to_string()), "the leader must be told the current revision: {error}");
+    let mut with_revision = ops;
+    with_revision["base_revision"] = json!(revision);
+    let r = ctl.submit(&action("p5", "leader", ActionKind::ApplyTopologyPatch, with_revision, None)).unwrap();
+    assert!(r.ok, "{}", r.error.unwrap_or_default());
 }
 
 #[test]

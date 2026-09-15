@@ -23,6 +23,7 @@ review/eval/run.sh --out /tmp/evals/x --keep        # 指定输出目录
 | `rust-fix` | 修一个失败测试的 Rust crate（`cargo test` 验收；同时验证沙箱里工具链可用） |
 | `edit-integrity` | 只改指定段落里的同名项，其它段落必须原样（验收脚本逐段断言） |
 | `long-output` | 命令输出超过 200KB 预览上限，必须从完整输出里取值（考制品/分页读取路径） |
+| `team-collab` | 两个独立子任务：要求 Leader 自己组队（add_agent + assign_task）并行完成后汇总，考组队与成员执行链路 |
 
 ## 已知缺口
 
