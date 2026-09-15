@@ -301,6 +301,12 @@ pub struct ModelProfile {
     /// column; None = unknown, shown as "not configured").
     #[serde(default)]
     pub context_window: Option<u64>,
+    /// Codex members only: layer `$CODEX_HOME/<name>.config.toml` by running
+    /// `codex --profile <name> app-server`. The Codex profile then owns the
+    /// provider, model and credentials (e.g. a `deepseek` profile instead of the
+    /// official subscription).
+    #[serde(default)]
+    pub codex_profile: Option<String>,
 }
 fn default_protocol() -> String { "openai".into() }
 fn default_timeout() -> i64 { 120 }

@@ -932,6 +932,41 @@ fn apply_model_override(mut profile: ModelProfile, ov: &ModelOverride) -> ModelP
 
 /// CodexOptions for one codex member; the session override wins over the
 /// profile model and over the runner's default "xhigh" effort (feature 5).
+/// Flatten `$CODEX_HOME/<name>.config.toml` into `-c key=value` overrides.
+/// Nested tables become dotted keys (`model_providers.deepseek.base_url`), which
+/// is exactly how the CLI spells them.
+fn codex_profile_overrides(name: &str) -> Result<Vec<(String, Json)>, String> {
+    let home = std::env::var("CODEX_HOME")
+        .ok()
+        .filter(|home| !home.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| crate::config::expand_home("~/.codex"));
+    let path = home.join(format!("{name}.config.toml"));
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| format!("codex profile {name:?}: cannot read {}: {e}", path.display()))?;
+    let parsed: toml::Value = toml::from_str(&text).map_err(|e| format!("codex profile {name:?}: bad toml: {e}"))?;
+    let value = serde_json::to_value(parsed).map_err(|e| format!("codex profile {name:?}: {e}"))?;
+    let mut out = vec![];
+    flatten_json("", &value, &mut out);
+    if out.is_empty() {
+        return Err(format!("codex profile {name:?} is empty: {}", path.display()));
+    }
+    Ok(out)
+}
+
+fn flatten_json(prefix: &str, value: &Json, out: &mut Vec<(String, Json)>) {
+    match value {
+        Json::Object(map) => {
+            for (key, child) in map {
+                let key = if prefix.is_empty() { key.clone() } else { format!("{prefix}.{key}") };
+                flatten_json(&key, child, out);
+            }
+        }
+        other if !prefix.is_empty() => out.push((prefix.to_string(), other.clone())),
+        _ => {}
+    }
+}
+
 fn codex_options(
     agent: &AgentSpec,
     profile: Option<&ModelProfile>,
@@ -941,6 +976,32 @@ fn codex_options(
 ) -> Result<CodexOptions, String> {
     let mut config: Vec<(String, Json)> = vec![];
     let mut model = None;
+    // A Codex config profile (`$CODEX_HOME/<name>.config.toml`) owns
+    // provider/model/credentials, so it is layered instead of the TeamAgents
+    // profile: `codex_profile = "deepseek"` runs the member on DeepSeek rather
+    // than the official subscription. The installed CLI refuses `--profile` for
+    // `app-server`, so the file is read here and passed as `-c` overrides.
+    if let Some(name) = profile.and_then(|p| p.codex_profile.clone()).filter(|name| !name.is_empty()) {
+        let mut config = codex_profile_overrides(&name)?;
+        // an explicit per-member model/effort override still wins
+        if let Some(model) = &ov.model {
+            config.retain(|(key, _)| key != "model");
+            config.push(("model".into(), json!(model)));
+        }
+        return Ok(CodexOptions {
+            agent_id: agent.id.clone(),
+            session_id: session_id.into(),
+            workdir: member_root(agent, cwd, session_id)?,
+            sandbox: "workspace-write".into(),
+            approval_policy: "on-request".into(),
+            effort: ov.effort.clone(),
+            model: None,
+            codex_bin: None,
+            codex_home: None,
+            env: vec![],
+            config_overrides: config,
+        });
+    }
     if let Some(profile) = profile {
         model = Some(profile.model.clone());
         if !profile.provider.is_empty() {
@@ -1115,6 +1176,7 @@ mod tests {
             base_url: None, api_key_env: None, timeout: 120, max_retries: 5,
             generation_options: HashMap::from([("reasoning_effort".to_string(), json!("medium"))]),
             context_window: None,
+            codex_profile: None,
         };
         let ov = ModelOverride { model: Some("gpt-5".into()), effort: Some("high".into()), ..Default::default() };
         let rewritten = apply_model_override(profile.clone(), &ov);
@@ -1314,6 +1376,29 @@ mod tests {
         assert!(!active.join("artifacts").exists(), "the ghost items are still cleaned");
         assert!(!active.join("session.lock").exists(), "the ghost items are still cleaned");
         assert!(crate::config::sessions_dir().join("archived/s-keep/team.db").exists(), "archive destroyed");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn codex_profile_layers_into_config_overrides() {
+        let _env = crate::env_lock();
+        let root = std::env::temp_dir().join(format!("ta-codex-profile-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("deepseek.config.toml"),
+            "model = \"deepseek-flash\"\nmodel_provider = \"deepseek\"\nmodel_reasoning_effort = \"high\"\n\n[model_providers.deepseek]\nname = \"DeepSeek\"\nbase_url = \"https://api.deepseek.com/v1\"\nenv_key = \"DEEPSEEK_API_KEY\"\nwire_api = \"responses\"\n",
+        )
+        .unwrap();
+        std::env::set_var("CODEX_HOME", &root);
+        let overrides = codex_profile_overrides("deepseek").unwrap();
+        let find = |key: &str| overrides.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
+        assert_eq!(find("model"), Some(json!("deepseek-flash")));
+        assert_eq!(find("model_provider"), Some(json!("deepseek")));
+        assert_eq!(find("model_providers.deepseek.base_url"), Some(json!("https://api.deepseek.com/v1")));
+        assert_eq!(find("model_providers.deepseek.env_key"), Some(json!("DEEPSEEK_API_KEY")), "the provider's own key env travels with the profile");
+        assert!(codex_profile_overrides("nope").unwrap_err().contains("cannot read"));
+        std::env::remove_var("CODEX_HOME");
         let _ = std::fs::remove_dir_all(&root);
     }
 

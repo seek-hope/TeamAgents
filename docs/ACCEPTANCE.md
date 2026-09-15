@@ -43,6 +43,7 @@ python3 tui/scripts/pty_click_check.py
 | T7 | 五家模型工具调用与续接；同队混用 | 🔶 | 真实 DeepSeek 单 Leader 回合实测（`--plain` 到 `goal_done`）；Anthropic 原生协议已实现（转换单测，缺密钥未实跑）；其余三家走 OpenAI 兼容路径未逐一实跑 |
 | T8 | 恢复：杀进程后重建 | ✅ | `engine/tests/recovery.rs::t8_killed_turn_is_reconciled_and_stays_exactly_once`（kill -9 → 重启 requeue 重跑 → 取消收敛） |
 | T9 | 单 Leader 可执行并继续对话 | ✅ | `scenarios.rs::t9_baseline_leader_alone_executes_and_keeps_talking` |
+| 跨后端组队（Codex 成员） | `review/eval/tasks/team-codex/`：Leader（Chat）委派给 `runtime_kind: codex` 的成员，成员经 `codex_profile` 跑在 DeepSeek 后端（`codex app-server -c ...` 展开 `$CODEX_HOME/<name>.config.toml`，不使用官方订阅），真实运行 completed/exit 0/37.9s/验收通过（`review/eval/runs/2026-09-15-deepseek-codex/`）。顺带修：deltas 与 `item/completed` 的文本合并（原先词间空格 + 重复）、app-server 退出错误带 stderr 尾部 |
 | T10 | 自然语言组队；非法结构被拒绝 | 🔶 | 核心校验与 `validate`；`chat_e2e.rs::review_add_agent_auto_creates_member_profile` 覆盖 D-30 自动 profile、`review_add_agent_inherits_leader_tools_and_gets_channels` 覆盖 D-33 默认值（省略 `tool_bindings` 继承 Leader 绑定、显式 `[]` 保持空、自动双向 message 通道、成员间通道被拒）。真实自然语言组队已跑：`team-collab` 首轮暴露"成员无执行工具 + 补丁形状靠猜"导致 900s 超时，修好工具契约与成员 `tools` 可见性后同一提示词 40s 通过（36 次工具调用、0 失败，见 `review/eval/runs/2026-09-15-deepseek/`）。未知 profile 在 add_agent 中按 D-30 解释为模型 ID，不保证远端模型存在 |
 | T11 | 动态变更：成员只能提议、Leader 应用、边界生效 | ✅ | `engine/tests/topology.rs::t11_member_proposal_is_leader_decision`（提案→Leader 应用→生效，审计保留提案人） |
 | T12 | 版本冲突不互相覆盖、不半应用 | ✅ | `topology.rs::t12_conflicting_patches_never_partially_apply` |

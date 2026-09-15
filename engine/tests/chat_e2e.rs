@@ -175,6 +175,7 @@ fn profile(base_url: &str, protocol: &str, options: Json, max_retries: i64) -> M
         max_retries,
         generation_options: serde_json::from_value(options).unwrap_or_default(),
         context_window: None,
+            codex_profile: None,
     }
 }
 

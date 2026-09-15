@@ -36,8 +36,16 @@ for dir in "$here"/tasks/*/; do
   task_timeout=$(cat "$dir/timeout.txt" 2>/dev/null || echo "$timeout_s")
   expect=$(cat "$dir/expect.txt" 2>/dev/null || echo "")
   flags=(); [ "$mode" = "full-auto" ] && flags+=(--full-auto)
+  # optional per-task TeamSpec and user config (e.g. a Codex member profile)
+  config_env=()
+  if [ -f "$dir/config.toml" ]; then
+    mkdir -p "$out/config/teamagents"
+    cp "$dir/config.toml" "$out/config/teamagents/config.toml"
+    config_env=(XDG_CONFIG_HOME="$out/config")
+  fi
+  [ -f "$dir/team.yaml" ] && flags+=(--team "$dir/team.yaml")
   start=$(date +%s)
-  XDG_STATE_HOME="$out/state" TERM=dumb "$bin" exec --json --cwd "$work" ${flags[@]+"${flags[@]}"} \
+  env XDG_STATE_HOME="$out/state" "${config_env[@]}" TERM=dumb "$bin" exec --json --cwd "$work" ${flags[@]+"${flags[@]}"} \
     --timeout "$task_timeout" ${checks[@]+"${checks[@]}"} - < "$dir/prompt.md" \
     > "$out/$id.jsonl" 2> "$out/$id.stderr"
   rc=$?

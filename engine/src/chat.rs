@@ -2035,6 +2035,7 @@ mod tests {
                 provider: "openai".into(), protocol: "openai".into(), model: "test".into(),
                 base_url: None, api_key_env: None, timeout: 30, max_retries: 0,
                 generation_options: Default::default(), context_window: None,
+            codex_profile: None,
             },
             None,
             crate::runtime::Notify::new(crate::core_client::CoreClient::open(":memory:", "usage-test").unwrap()),
@@ -2184,6 +2185,7 @@ mod tests {
             max_retries: 1,
             generation_options: Default::default(),
             context_window: None,
+            codex_profile: None,
         };
         assert_eq!(resolve_base_url(&profile(None, "deepseek", "deepseek")), "https://api.deepseek.com/v1");
         assert_eq!(resolve_base_url(&profile(Some("https://x/v1/"), "deepseek", "deepseek")), "https://x/v1");
@@ -2305,6 +2307,7 @@ mod tests {
                 provider: "openai".into(), protocol: "openai".into(), model: "test".into(),
                 base_url: None, api_key_env: None, timeout: 30, max_retries: 0,
                 generation_options: Default::default(), context_window: None,
+            codex_profile: None,
             },
             None,
             crate::runtime::Notify::new(crate::core_client::CoreClient::open(":memory:", "readhist-test").unwrap()),
@@ -2336,6 +2339,7 @@ mod tests {
                 provider: "openai".into(), protocol: "openai".into(), model: "test".into(),
                 base_url: None, api_key_env: None, timeout: 30, max_retries: 0,
                 generation_options: Default::default(), context_window: None,
+            codex_profile: None,
             },
             None,
             crate::runtime::Notify::new(crate::core_client::CoreClient::open(":memory:", "tree-test").unwrap()),

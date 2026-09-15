@@ -325,3 +325,25 @@ shell 进程（取消/超时语义会被打乱），而是“状态随命令走�
   被推送的 sampling 请求收到错误回复、关闭时 DELETE 带上会话 id）、
   `http_transport_tolerates_servers_without_push_or_delete`（405 不破坏任何功能）；
   原有 HTTP 用例（POST SSE、session id、token、malformed JSON）继续通过。
+
+## 第十六批：Codex 成员的真实跨后端评测（用户指定：不用官方订阅）
+
+补上唯一没有真实运行覆盖的主干路径：Leader（Chat）与 Codex 成员协作。用户要求 Codex 成员走
+`codex --profile deepseek` 而不是官方订阅，实测发现两件事：
+
+1. **当前 CLI 拒绝 `codex --profile X app-server`**（`--profile` 只适用于 runtime 命令与
+   `codex mcp`），所以"profile"落法是：`model_profile.codex_profile = "<name>"` →
+   引擎读 `$CODEX_HOME/<name>.config.toml` 并展开成 `-c key=value`（嵌套表→点号键）传给
+   app-server。profile 文件缺失/为空会明确报错。这样成员跑在 DeepSeek provider 上，完全不碰
+   官方订阅。回归：`session::tests::codex_profile_layers_into_config_overrides`、
+   `codex::tests::app_server_args_reach_the_subcommand`。
+2. **回复与摘要的词间空格/重复**：`item/agentMessage/delta` 是连续片段、`item/completed` 又给
+   同一段完整文本，原先 `pieces.join(" ")` 得到 "I 'll  start  by ..."，摘要里同一段还出现两遍。
+   现在按 run 累积单个文本缓冲（deltas 直接拼接；item 文本只在不是尾部时追加），回复、
+   `complete_task` 摘要与外部进度都取自它；错误信息仍走原 progress 列表。
+   回归：`codex::tests::streamed_deltas_and_the_completed_item_make_one_clean_reply`。
+3. 顺手：`codex app-server exited` 现在带最后 3 行 stderr（坏参数与崩溃不再无法区分——本轮就是
+   靠这个定位到 `--profile` 不可用的）。
+
+真实评测：`review/eval/runs/2026-09-15-deepseek-codex/`（completed、exit 0、37.9s、验收通过；
+Leader 复现失败 → assign_task → codex-dev 修 `mul` → Leader 复跑 `cargo test` → signal_done）。

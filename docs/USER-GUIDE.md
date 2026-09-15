@@ -30,6 +30,11 @@ generation_options = { reasoning_effort = "max" }     # 默认档位；嫌慢改
 context_window = 128000   # 可选；填写后启用上下文自动压缩（见 §3.4），/status 也会显示占用比例
 ```
 
+Codex 成员（`runtime_kind: codex`）走 `codex app-server`：给它所在的 model profile 加一行
+`codex_profile = "deepseek"`，引擎就会把 `$CODEX_HOME/deepseek.config.toml` 里的设置
+（`model_provider`/`model`/provider 的 `base_url`/`env_key` 等）展开成 `codex app-server -c ...`
+覆盖，于是这个成员跑在 DeepSeek 上而不是你的 Codex 官方订阅。profile 文件不存在时该成员会明确报错。
+
 推理档位规则：模型不支持 `xhigh` 时，配置里的 `xhigh` 会自动映射为 `max`
 （DeepSeek 这类已知不支持的在构建模型时就映射；其他供应商在被拒绝后自动改判 `max` 重试一次）。
 

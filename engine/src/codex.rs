@@ -41,6 +41,21 @@ pub struct CodexAppServer {
     stderr_lines: Mutex<Vec<String>>,
 }
 
+/// argv for `codex app-server`. Codex config profiles are layered as `-c`
+/// overrides (see `codex_profile_overrides`): the CLI rejects `--profile` for
+/// this subcommand.
+fn app_server_args(opts: &AppServerOptions) -> Vec<String> {
+    let mut args: Vec<String> = vec!["app-server".into()];
+    for (key, value) in &opts.config_overrides {
+        args.push("-c".into());
+        args.push(match value {
+            Json::String(s) => format!("{key}={s}"),
+            other => format!("{key}={other}"),
+        });
+    }
+    args
+}
+
 impl CodexAppServer {
     pub fn new(cwd: &std::path::Path, opts: AppServerOptions) -> Arc<Self> {
         Arc::new(Self {
@@ -68,14 +83,7 @@ impl CodexAppServer {
     }
 
     pub fn start(self: &Arc<Self>) -> Result<(), String> {
-        let mut args = vec!["app-server".to_string()];
-        for (key, value) in &self.opts.config_overrides {
-            args.push("-c".into());
-            args.push(match value {
-                Json::String(s) => format!("{key}={s}"),
-                other => format!("{key}={other}"),
-            });
-        }
+        let args = app_server_args(&self.opts);
         let mut command = Command::new(self.opts.codex_bin.clone().unwrap_or_else(|| "codex".into()));
         command
             .args(&args)
@@ -113,10 +121,18 @@ impl CodexAppServer {
                 let Ok(message) = serde_json::from_str::<Json>(&line) else { continue };
                 this.route(message);
             }
-            // stdout closed: fail everything still pending
+            // stdout closed: fail everything still pending, and say why when the
+            // server explained itself on stderr (a bad flag/profile is otherwise
+            // indistinguishable from a crash)
+            let detail = this.stderr_tail();
+            let reason = if detail.is_empty() {
+                "codex app-server exited".to_string()
+            } else {
+                format!("codex app-server exited: {detail}")
+            };
             let pending: Vec<_> = this.pending.lock().unwrap().drain().collect();
             for (_, tx) in pending {
-                let _ = tx.send(Err("codex app-server exited".into()));
+                let _ = tx.send(Err(reason.clone()));
             }
             // no turn/completed is coming either: release the driving threads
             if let Some(on_exit) = this.on_exit.lock().unwrap().clone() {
@@ -225,6 +241,13 @@ impl CodexAppServer {
         self.stderr_lines.lock().unwrap().clone()
     }
 
+    /// Last few stderr lines, joined for an error message.
+    fn stderr_tail(&self) -> String {
+        let lines = self.stderr_lines.lock().unwrap();
+        let tail: Vec<String> = lines.iter().rev().take(3).rev().cloned().collect();
+        tail.join(" | ")
+    }
+
     pub fn close(&self) {
         let child = self.child.lock().unwrap().take();
         *self.stdin.lock().unwrap() = None;
@@ -291,6 +314,11 @@ pub struct CodexRunner {
     current_turn: Mutex<HashMap<String, String>>,
     turn_done: Mutex<HashMap<String, Arc<(Mutex<bool>, Condvar)>>>,
     progress: Mutex<HashMap<String, Vec<String>>>,
+    /// The member's own text for a run, assembled from stream deltas and
+    /// completed agent messages. Deltas are contiguous pieces (concatenate,
+    /// never join with a separator) and the completed item repeats the same
+    /// text, so it is appended only when it is not already the tail.
+    agent_text: Mutex<HashMap<String, String>>,
     reported: Mutex<HashMap<String, usize>>,
     approval_waits: Mutex<HashMap<String, Sender<String>>>,
     approval_ids: Mutex<HashMap<String, String>>,
@@ -321,6 +349,7 @@ impl CodexRunner {
             current_turn: Mutex::new(HashMap::new()),
             turn_done: Mutex::new(HashMap::new()),
             progress: Mutex::new(HashMap::new()),
+            agent_text: Mutex::new(HashMap::new()),
             reported: Mutex::new(HashMap::new()),
             approval_waits: Mutex::new(HashMap::new()),
             approval_ids: Mutex::new(HashMap::new()),
@@ -457,8 +486,8 @@ impl CodexRunner {
         match method.as_str() {
             "item/agentMessage/delta" => {
                 let delta = params.get("delta").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                self.progress.lock().unwrap().entry(run_id.to_string()).or_default().push(delta.clone());
                 if !delta.is_empty() {
+                    self.agent_text.lock().unwrap().entry(run_id.to_string()).or_default().push_str(&delta);
                     self.notify.note_stream_chunk(run_id, &self.opts.agent_id, &delta);
                 }
             }
@@ -466,8 +495,15 @@ impl CodexRunner {
                 let item = params.get("item").cloned().unwrap_or(json!({}));
                 let text = item.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
                 if item.get("type").and_then(|v| v.as_str()) == Some("agentMessage") && !text.is_empty() {
-                    self.progress.lock().unwrap().entry(run_id.to_string()).or_default().push(text.clone());
-                    self.notify.note_external_progress(run_id, &text);
+                    let mut texts = self.agent_text.lock().unwrap();
+                    let buffer = texts.entry(run_id.to_string()).or_default();
+                    // the deltas usually spell this text already
+                    if !buffer.ends_with(&text) {
+                        if !buffer.is_empty() {
+                            buffer.push('\n');
+                        }
+                        buffer.push_str(&text);
+                    }
                 }
             }
             "thread/tokenUsage/updated" => {
@@ -483,15 +519,16 @@ impl CodexRunner {
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 let status = turn_status(status);
-                let (pieces, reported) = {
-                    let progress = self.progress.lock().unwrap();
-                    let pieces = progress.get(run_id).cloned().unwrap_or_default();
+                let (text, reported) = {
+                    let texts = self.agent_text.lock().unwrap();
+                    let text = texts.get(run_id).cloned().unwrap_or_default();
                     let reported = self.reported.lock().unwrap().get(run_id).copied().unwrap_or(0);
-                    (pieces, reported)
+                    (text, reported)
                 };
-                let new_text = pieces[reported.min(pieces.len())..].join(" ").trim().to_string();
-                if !new_text.is_empty() {
-                    self.reported.lock().unwrap().insert(run_id.to_string(), pieces.len());
+                let length = text.chars().count();
+                let new_text: String = text.chars().skip(reported.min(length)).collect();
+                if !new_text.trim().is_empty() {
+                    self.reported.lock().unwrap().insert(run_id.to_string(), length);
                     self.notify.note_external_progress(run_id, &new_text);
                 }
                 self.states.lock().unwrap().insert(run_id.to_string(), status);
@@ -703,6 +740,7 @@ impl CodexRunner {
         self.turn_done.lock().unwrap().remove(run_id);
         self.current_turn.lock().unwrap().remove(run_id);
         self.progress.lock().unwrap().remove(run_id);
+        self.agent_text.lock().unwrap().remove(run_id);
         self.reported.lock().unwrap().remove(run_id);
         self.approval_ids.lock().unwrap().remove(run_id);
         self.delivered.lock().unwrap().remove(run_id);
@@ -829,8 +867,7 @@ impl AgentRunner for CodexRunner {
         if status == TurnStatus::Completed {
             if let Some(task_id) = &run.task_id {
                 let summary: String = {
-                    let pieces = self.progress.lock().unwrap().get(&run_id).cloned().unwrap_or_default();
-                    let joined = pieces.join(" ");
+                    let joined = self.agent_text.lock().unwrap().get(&run_id).cloned().unwrap_or_default();
                     let chars: Vec<char> = joined.chars().collect();
                     chars[chars.len().saturating_sub(2000)..].iter().collect()
                 };
@@ -848,7 +885,7 @@ impl AgentRunner for CodexRunner {
             }
         }
         let pieces = self.progress.lock().unwrap().get(&run_id).cloned().unwrap_or_default();
-        let joined = pieces.join(" ");
+        let joined = self.agent_text.lock().unwrap().get(&run_id).cloned().unwrap_or_default();
         let chars: Vec<char> = joined.chars().collect();
         let reply: String = chars[chars.len().saturating_sub(4000)..].iter().collect();
         let outcome = TurnOutcome {
@@ -1047,6 +1084,42 @@ mod tests {
         assert_eq!(runner.query_state("r1"), Some(TurnStatus::Completed), "not rewritten to Cancelled");
         runner.states.lock().unwrap().insert("r2".into(), TurnStatus::Running);
         assert_eq!(runner.request_interrupt("r2"), TurnStatus::Cancelled, "live turn still cancels");
+    }
+
+    #[test]
+    fn streamed_deltas_and_the_completed_item_make_one_clean_reply() {
+        // deltas are contiguous pieces; the completed item repeats them
+        let buffer = "I'll start by reproducing";
+        let item = "I'll start by reproducing the failure.";
+        let mut assembled = buffer.to_string();
+        if !assembled.ends_with(item) {
+            assembled.push('\n');
+            assembled.push_str(item);
+        }
+        assert_eq!(assembled, "I'll start by reproducing\nI'll start by reproducing the failure.");
+        // a second message appends on its own line, never as word soup
+        let second = "Done.";
+        if !assembled.ends_with(second) {
+            assembled.push('\n');
+            assembled.push_str(second);
+        }
+        assert!(assembled.ends_with("failure.\nDone."), "{assembled}");
+        assert!(!assembled.contains("I 'll"), "no space-joined deltas: {assembled}");
+    }
+
+    #[test]
+    fn app_server_args_reach_the_subcommand() {
+        let with_profile = AppServerOptions {
+            codex_bin: None,
+            codex_home: None,
+            env: vec![],
+            config_overrides: vec![("model".into(), json!("deepseek-flash"))],
+        };
+        assert_eq!(
+            app_server_args(&with_profile),
+            vec!["app-server", "-c", "model=deepseek-flash"],
+            "the subcommand comes first; profiles travel as -c overrides"
+        );
     }
 
     #[test]
