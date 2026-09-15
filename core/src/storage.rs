@@ -436,6 +436,16 @@ impl Store {
         }
     }
 
+    pub fn get_action_metadata(&self, action_id: &str) -> rusqlite::Result<Option<(String, String, String, String)>> {
+        self.conn
+            .query_row(
+                "SELECT session_id, actor_id, kind, payload_hash FROM actions WHERE action_id=?1",
+                params![action_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .optional()
+    }
+
     pub fn record_action(
         &self,
         action_id: &str,
@@ -1011,6 +1021,17 @@ impl Store {
             .optional()
     }
 
+    pub fn get_approval_for_session(&self, session_id: &str, approval_id: &str) -> rusqlite::Result<Option<ApprovalRequest>> {
+        self.conn
+            .query_row(
+                "SELECT approval_id, session_id, agent_id, run_id, tool_call_id, operation_hash, requested_scope, policy_revision, status, created_at, decided_at
+                 FROM approvals WHERE session_id=?1 AND approval_id=?2",
+                params![session_id, approval_id],
+                Self::row_to_approval,
+            )
+            .optional()
+    }
+
     pub fn pending_approvals(&self, session_id: &str) -> rusqlite::Result<Vec<ApprovalRequest>> {
         let mut stmt = self.conn.prepare(
             "SELECT approval_id, session_id, agent_id, run_id, tool_call_id, operation_hash, requested_scope, policy_revision, status, created_at, decided_at
@@ -1036,6 +1057,15 @@ impl Store {
             "UPDATE approvals SET status='EXPIRED', decided_at=?1
              WHERE approval_id=?2 AND status IN ('PENDING', 'APPROVED_ONCE')",
             params![now(), approval_id],
+        )?;
+        Ok(n == 1)
+    }
+
+    pub fn expire_approval_for_session(&self, session_id: &str, approval_id: &str) -> rusqlite::Result<bool> {
+        let n = self.conn.execute(
+            "UPDATE approvals SET status='EXPIRED', decided_at=?1
+             WHERE session_id=?2 AND approval_id=?3 AND status IN ('PENDING', 'APPROVED_ONCE')",
+            params![now(), session_id, approval_id],
         )?;
         Ok(n == 1)
     }
@@ -1662,6 +1692,8 @@ mod tests {
         assert!(!store.expire_approval("a_denied").unwrap(), "other states stay untouched");
         assert!(!store.expire_approval("a_session").unwrap());
         assert!(!store.expire_approval("ghost").unwrap());
+        assert!(!store.expire_approval_for_session("s2", "a_pending").unwrap());
+        assert!(store.get_approval_for_session("s2", "a_pending").unwrap().is_none());
         assert_eq!(store.get_approval("a_pending").unwrap().unwrap().status, ApprovalStatus::Expired);
         assert_eq!(store.get_approval("a_denied").unwrap().unwrap().status, ApprovalStatus::Denied);
     }

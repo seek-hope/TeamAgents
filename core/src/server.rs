@@ -215,7 +215,7 @@ impl Server {
             }
             "get_approval" => self.with(params, |ctl, p| {
                 let aid = p.get("approval_id").and_then(|v| v.as_str()).ok_or("approval_id required")?;
-                Ok(json!({"approval": ctl.store.get_approval(aid).map_err(|e| e.to_string())?}))
+                Ok(json!({"approval": ctl.store.get_approval_for_session(&ctl.session_id, aid).map_err(|e| e.to_string())?}))
             }),
             // engine contract: a once-approval is single use and a pending one is
             // void once its turn can no longer use it
@@ -226,7 +226,7 @@ impl Server {
                     // a stdio process with one open session may omit it
                     None => self.sole_control_mut()?,
                 };
-                let ok = ctl.store.expire_approval(aid).map_err(|e| e.to_string())?;
+                let ok = ctl.store.expire_approval_for_session(&ctl.session_id, aid).map_err(|e| e.to_string())?;
                 Ok(json!({"ok": ok}))
             }
             // engine contract: the newest still-usable decision for this run+call,

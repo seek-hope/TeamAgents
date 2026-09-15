@@ -16,7 +16,7 @@ cargo test --offline --manifest-path tui/Cargo.toml
 
 | crate | Cargo 报告通过 | 组成 / 实际执行范围 |
 |---|---:|---|
-| core | 55 | 21 库单测 + 34 集成测试 |
+| core | 57 | 22 库单测 + 35 集成测试 |
 | engine | 189 | 92 库单测 + 97 集成测试；其中 `live_codex` 的 1 项未设开关即提前返回，真实服务需单独运行 |
 | tui | 91 | 14 库单测 + 11 + 37 app + 29 render |
 

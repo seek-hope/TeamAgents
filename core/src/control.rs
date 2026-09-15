@@ -62,7 +62,7 @@ fn plist(p: &Json, key: &str) -> Vec<String> {
 }
 
 fn pbool(p: &Json, key: &str) -> bool {
-    p.get(key).map(|v| v.as_bool().unwrap_or(!v.is_null() && *v != Json::from(0))).unwrap_or(false)
+    truthy(p.get(key))
 }
 
 /// Wire-JSON truthiness for `payload.get(k) or payload.get(j)` style checks.
@@ -99,6 +99,23 @@ pub fn derived_task_id(action: &TeamAction) -> String {
 /// sha256 of the canonical (sorted) payload json.
 pub fn payload_hash(action: &TeamAction) -> String {
     hex_prefix(&Sha256::digest(canonical_json(&action.payload).as_bytes()), 32)
+}
+
+fn prior_receipt(store: &Store, action: &TeamAction) -> Result<Option<Receipt>, String> {
+    let Some(receipt) = store.get_action_receipt(&action.action_id).map_err(|e| e.to_string())? else {
+        return Ok(None);
+    };
+    let expected = payload_hash(action);
+    let stored = store
+        .get_action_metadata(&action.action_id)
+        .map_err(|e| e.to_string())?;
+    let expected_kind = enum_name(action.kind);
+    if stored.as_ref().map(|(session, actor, kind, hash)| (session.as_str(), actor.as_str(), kind.as_str(), hash.as_str()))
+        != Some((action.session_id.as_str(), action.actor_id.as_str(), expected_kind.as_str(), expected.as_str()))
+    {
+        return Err(format!("action_id {:?} was already used with different action data", action.action_id));
+    }
+    Ok(Some(receipt))
 }
 
 /// Canonical payload JSON: sorted keys, `", "` / `": "` separators.
@@ -167,11 +184,7 @@ impl Control {
                 let _ = self.store.rollback();
                 let receipt = Receipt::failure(action, e);
                 let recorded = self.in_tx(|ctl| {
-                    if let Some(prior) = ctl
-                        .store
-                        .get_action_receipt(&action.action_id)
-                        .map_err(|e| e.to_string())?
-                    {
+                    if let Some(prior) = prior_receipt(&ctl.store, action)? {
                         return Ok(Some(prior));
                     }
                     ctl.store
@@ -193,7 +206,7 @@ impl Control {
 
     fn submit_in_tx(&mut self, action: &TeamAction) -> Result<Receipt, String> {
         self.in_tx(|ctl| {
-            if let Some(prior) = ctl.store.get_action_receipt(&action.action_id).map_err(|e| e.to_string())? {
+            if let Some(prior) = prior_receipt(&ctl.store, action)? {
                 return Ok(prior);
             }
             let spec = ctl.store.load_team_spec(&ctl.session_id.clone(), None).map_err(|e| e.to_string())?;
@@ -256,6 +269,9 @@ impl Control {
 
     /// Returns Some(error) on refusal.
     pub fn validate(&mut self, action: &TeamAction, spec: &TeamSpec) -> Option<String> {
+        if action.session_id != self.session_id {
+            return Some("action session_id does not match the target session".into());
+        }
         let kind = action.kind;
         let member_ids: HashSet<&str> = spec.agents.iter().map(|a| a.id.as_str()).collect();
         let actor = action.actor_id.as_str();
@@ -498,7 +514,7 @@ impl Control {
                     return Some("only the local user can decide approvals".into());
                 }
                 let aid = p.get("approval_id").and_then(|v| v.as_str()).unwrap_or("");
-                let Some(req) = self.store.get_approval(aid).ok().flatten() else {
+                let Some(req) = self.store.get_approval_for_session(&self.session_id, aid).ok().flatten() else {
                     return Some(format!("unknown approval {aid:?}"));
                 };
                 if req.status != ApprovalStatus::Pending {
@@ -722,7 +738,7 @@ impl Control {
                     .collect();
                 let mut infos = vec![];
                 for s in spaces {
-                    let entries = self.store.shared_entries(&self.session_id, &[s.id.clone()], 0, 1000).map_err(|e| e.to_string())?;
+                    let entries = self.store.shared_entries(&self.session_id, std::slice::from_ref(&s.id), 0, 1000).map_err(|e| e.to_string())?;
                     infos.push(json!({
                         "space_id": s.id,
                         "entries": entries.len(),
@@ -836,7 +852,7 @@ impl Control {
                 let aid = pstr(p, "approval_id");
                 let req = self
                     .store
-                    .get_approval(&aid)
+                    .get_approval_for_session(&self.session_id, &aid)
                     .map_err(|e| e.to_string())?
                     .ok_or_else(|| format!("unknown approval {aid:?}"))?;
                 let status = match pstr(p, "decision").as_str() {
@@ -912,6 +928,9 @@ impl Control {
             None => 50,
             Some(v) => py_int(v).ok_or_else(|| format!("bad limit {v}"))?,
         };
+        if limit <= 0 {
+            return Err("limit must be positive".into());
+        }
         let entries = self.store.shared_entries(&self.session_id, &spaces, after, limit).map_err(|e| e.to_string())?;
         if advance && !entries.is_empty() {
             for s in &spaces {
@@ -1276,10 +1295,9 @@ impl Control {
         } {
             let old_a = old.agent(&aid);
             let new_a = new.agent(&aid);
-            if old_a.is_none() || new_a.is_none() || old_a != new_a {
-                result.push(aid);
-            } else if self.permissions_changed(old, new, &aid)
-                && operations.iter().any(|op| !matches!(op.get("op").and_then(|v| v.as_str()), Some("add_agent") | Some("add_channel")))
+            if old_a.is_none() || new_a.is_none() || old_a != new_a
+                || (self.permissions_changed(old, new, &aid)
+                    && operations.iter().any(|op| !matches!(op.get("op").and_then(|v| v.as_str()), Some("add_agent") | Some("add_channel"))))
             {
                 result.push(aid);
             }
@@ -2438,4 +2456,17 @@ fn new_id(prefix: &str) -> String {
 
 fn now() -> f64 {
     crate::models::now()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pbool;
+    use serde_json::json;
+
+    #[test]
+    fn pbool_uses_json_truthiness() {
+        assert!(!pbool(&json!({"flag": []}), "flag"));
+        assert!(!pbool(&json!({"flag": {}}), "flag"));
+        assert!(pbool(&json!({"flag": [1]}), "flag"));
+    }
 }

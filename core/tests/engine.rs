@@ -944,9 +944,24 @@ fn read_shared_rejects_malformed_paging_arguments() {
     let r = ctl.submit(&action("x2", "leader", ActionKind::ReadShared, json!({"space_id": "lib", "limit": null}), None)).unwrap();
     assert!(!r.ok);
     assert!(r.error.unwrap().contains("limit"));
+    let r = ctl.submit(&action("x2b", "leader", ActionKind::ReadShared, json!({"space_id": "lib", "limit": -1}), None)).unwrap();
+    assert!(!r.ok);
+    assert!(r.error.unwrap().contains("positive"));
     // well-formed paging still works
     let r = ctl.submit(&action("x3", "leader", ActionKind::ReadShared, json!({"space_id": "lib", "after_sequence": 0, "limit": 10}), None)).unwrap();
     assert!(r.ok, "{}", r.error.unwrap_or_default());
+}
+
+#[test]
+fn action_id_reuse_with_different_payload_is_rejected() {
+    let mut ctl = harness();
+    assert!(ctl.submit(&user("same", "first")).unwrap().ok);
+    let reused = ctl.submit(&user("same", "second")).unwrap_err();
+    assert!(reused.contains("different action data"));
+    let mut spoof = user("same", "first");
+    spoof.actor_id = "leader".into();
+    assert!(ctl.submit(&spoof).unwrap_err().contains("different action data"));
+    assert_eq!(ctl.store.events("s1", 0, 100).unwrap().len(), 1);
 }
 
 #[test]
