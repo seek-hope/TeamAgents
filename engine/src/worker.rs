@@ -15,6 +15,25 @@ use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+
+/// Per-member working plans (`members/<id>/plan.json`), for the UI status strip.
+fn member_plans(session_id: &str) -> Json {
+    let members = crate::sessions::session_paths(session_id).base.join("members");
+    let mut out: Vec<Json> = vec![];
+    if let Ok(entries) = std::fs::read_dir(&members) {
+        for entry in entries.flatten() {
+            let Ok(bytes) = std::fs::read(entry.path().join("plan.json")) else { continue };
+            let Ok(value) = serde_json::from_slice::<Json>(&bytes) else { continue };
+            out.push(json!({
+                "agent_id": entry.file_name().to_string_lossy(),
+                "items": value.get("items").cloned().unwrap_or(json!([])),
+                "updated_ms": value.get("updated_ms").cloned().unwrap_or(Json::Null),
+            }));
+        }
+    }
+    Json::Array(out)
+}
+
 fn out(message: &Json) {
     let stdout = std::io::stdout();
     let mut handle = stdout.lock();
@@ -96,6 +115,10 @@ impl Worker {
         opened.runtime.notify.set_stream_sink(Box::new(move |run_id, agent_id, text| {
             out(&json!({"push": "delta", "session_id": sink_session, "run_id": run_id, "agent_id": agent_id, "text": text}));
         }));
+        let plan_session = opened.session_id.clone();
+        opened.runtime.notify.set_plan_sink(Box::new(move |agent_id, items| {
+            out(&json!({"push": "plan", "session_id": plan_session, "agent_id": agent_id, "items": items}));
+        }));
         let tool_session = opened.session_id.clone();
         opened.runtime.notify.set_tool_sink(Box::new(move |run_id, agent_id, activity| {
             out(&json!({"push": "tool", "session_id": tool_session, "run_id": run_id, "agent_id": agent_id,
@@ -128,7 +151,15 @@ impl Worker {
             "call" => {
                 let opened = self.current()?;
                 let inner = params.get("method").and_then(|v| v.as_str()).ok_or("method required")?;
-                opened.runtime.core.call_in_session(inner, params.get("params").cloned().unwrap_or(json!({})))
+                let mut reply = opened.runtime.core.call_in_session(inner, params.get("params").cloned().unwrap_or(json!({})))?;
+                // member plans live in the member directories; the UI reads them
+                // from the same snapshot it already polls
+                if inner == "state" {
+                    if let Some(object) = reply.as_object_mut() {
+                        object.insert("plans".into(), member_plans(&opened.session_id));
+                    }
+                }
+                Ok(reply)
             }
             "submit" => {
                 let opened = self.current()?;

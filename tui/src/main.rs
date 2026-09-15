@@ -346,6 +346,9 @@ fn run(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, worker: &Arc<
             }
         }
         while let Some(push) = worker.try_push() {
+            if push.kind == "plan" && !requests.switching {
+                app.on_plan(&push.agent_id, &push.items);
+            }
             if push.kind == "tool" && !requests.switching {
                 app.on_tool_result(&push.agent_id, &push.tool, push.ok, &push.arguments, &push.result);
             }
@@ -573,6 +576,41 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn plan_status_strip_tracks_the_selected_member() {
+        let mut app = test_app();
+        assert!(app.plan_status().is_none(), "no plan, no strip");
+        app.state = Some(json!({"spec": {"leader_id": "leader", "agents": [
+            {"id": "leader", "name": "leader", "role": "leader", "runtime_kind": "deepagents", "model_profile": "m"}
+        ]}}));
+
+        // a push from the leader shows progress and the in-progress item
+        app.on_plan("leader", &json!([
+            {"text": "复现失败", "status": "done"},
+            {"text": "修 mul", "status": "in_progress"},
+            {"text": "跑测试", "status": "pending"}
+        ]));
+        let (summary, current) = app.plan_status().expect("leader's plan is shown");
+        assert!(summary.contains("1/3") && summary.contains("leader"), "{summary}");
+        assert_eq!(current, "修 mul");
+
+        // the strip needs a row: geometry reserves it only when a plan exists
+        let area = ratatui::layout::Rect { x: 0, y: 0, width: 80, height: 30 };
+        let with_plan = ui::geometry(&app, area);
+        assert_eq!(with_plan.plan.height, 1, "a plan gets its own status row");
+        let mut bare = test_app();
+        bare.state = app.state.clone();
+        let without = ui::geometry(&bare, area);
+        assert_eq!(without.plan.height, 0);
+        assert_eq!(with_plan.chat.height, without.chat.height - 1, "the row comes out of the chat area");
+
+        // everything done reads as such
+        app.on_plan("leader", &json!([{"text": "复现失败", "status": "done"}]));
+        let (summary, current) = app.plan_status().unwrap();
+        assert!(summary.contains("1/1"), "{summary}");
+        assert!(current.is_empty(), "no in-progress item: {current}");
     }
 
     #[test]

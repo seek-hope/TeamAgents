@@ -88,13 +88,15 @@ pub struct Notify {
     tool: Mutex<Option<Box<dyn Fn(&str, &str, &serde_json::Value) + Send + Sync>>>,
     /// Engine-level events (tool calls, turn ends, team actions) for user hooks.
     events: Mutex<Option<Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>,
+    /// A member's plan changed (the UI shows it as a status component).
+    plan: Mutex<Option<Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>,
     waker: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     accepting: Mutex<bool>,
 }
 
 impl Notify {
     pub fn new(core: Arc<CoreClient>) -> Arc<Self> {
-        Arc::new(Self { core, stream: Mutex::new(None), tool: Mutex::new(None), events: Mutex::new(None), waker: Mutex::new(None), accepting: Mutex::new(true) })
+        Arc::new(Self { core, stream: Mutex::new(None), tool: Mutex::new(None), events: Mutex::new(None), plan: Mutex::new(None), waker: Mutex::new(None), accepting: Mutex::new(true) })
     }
 
     pub fn set_stream_sink(&self, sink: Sink) {
@@ -111,6 +113,18 @@ impl Notify {
     /// may replace `tool`, but hooks must keep firing.
     pub fn set_event_sink(&self, sink: Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>) {
         *self.events.lock().unwrap() = Some(sink);
+    }
+
+    pub fn set_plan_sink(&self, sink: Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>) {
+        *self.plan.lock().unwrap() = Some(sink);
+    }
+
+    pub fn note_plan(&self, agent_id: &str, items: &serde_json::Value) {
+        if let Ok(plan) = self.plan.lock() {
+            if let Some(sink) = plan.as_ref() {
+                sink(agent_id, items);
+            }
+        }
     }
 
     pub fn note_event(&self, event: &str, payload: &serde_json::Value) {

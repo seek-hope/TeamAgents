@@ -35,6 +35,8 @@ static ENGLISH: &[(&str, &str)] = &[
     ("工作目录", "Workspace"),
     ("可见范围", "Access"),
     ("最近活动", "Last tool"),
+    ("计划", "Plan"),
+    ("全部完成", "all done"),
     ("改动审查：{v0}", "Changes: {v0}"),
     ("{v0} 还没有可审查的改动", "{v0} has no reviewable change yet"),
     ("Esc 关闭 · Ctrl+U/Ctrl+D 或 ↑↓ 滚动", "Esc closes · Ctrl+U/Ctrl+D or ↑↓ scroll"),

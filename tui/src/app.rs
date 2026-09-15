@@ -224,6 +224,8 @@ pub struct App {
     pub log_lines: Vec<String>,
     /// Last tool each member ran, for the team panel's activity column.
     tool_activity: std::collections::HashMap<String, ToolActivity>,
+    /// Per-member working plans (the upper status strip shows one).
+    pub plans: std::collections::HashMap<String, Vec<Json>>,
     /// Per-member review material: the diff lines of its recent edits.
     reviews: std::collections::HashMap<String, Vec<String>>,
     /// `v` review overlay (Esc closes; Ctrl+U/D scroll)
@@ -286,6 +288,7 @@ impl App {
             log_member: None,
             log_lines: vec![],
             tool_activity: std::collections::HashMap::new(),
+            plans: std::collections::HashMap::new(),
             reviews: std::collections::HashMap::new(),
             review_open: false,
             review_agent: String::new(),
@@ -376,6 +379,14 @@ impl App {
             })
             .unwrap_or_default();
         self.state = Some(st.clone());
+        // the state snapshot carries every member's plan (worker merges them in)
+        if let Some(plans) = st.get("plans").and_then(Json::as_array) {
+            for plan in plans {
+                let Some(agent) = plan.get("agent_id").and_then(|v| v.as_str()) else { continue };
+                let items = plan.get("items").and_then(Json::as_array).cloned().unwrap_or_default();
+                self.plans.insert(agent.to_string(), items);
+            }
+        }
         // prune expired toasts opportunistically
         let now = Instant::now();
         self.toasts.retain(|t| t.until > now);
@@ -1061,6 +1072,56 @@ impl App {
 
     /// Tool activity from the engine: log lines then show what each member really
     /// ran (name + arguments), not just the core event stream.
+    pub fn on_plan(&mut self, agent_id: &str, items: &Json) {
+        let items = items.as_array().cloned().unwrap_or_default();
+        self.plans.insert(agent_id.to_string(), items);
+    }
+
+    /// Which member's plan the status strip shows: the panel selection, else the
+    /// member with a running turn, else the leader.
+    fn plan_agent(&self) -> Option<String> {
+        if self.focus == Focus::Panel {
+            if let Some((Some(key), _)) = self.table_cursors.get(PANELS[self.panel]).cloned() {
+                if self.plans.contains_key(&key) {
+                    return Some(key);
+                }
+            }
+        }
+        if let Some(run) = self.activity_runs.first() {
+            if self.plans.contains_key(&run.agent_id) {
+                return Some(run.agent_id.clone());
+            }
+        }
+        let leader = self.state.as_ref().and_then(|s| s.get("spec")).and_then(|spec| spec.get("leader_id")).and_then(|v| v.as_str()).map(str::to_string);
+        match leader {
+            Some(leader) if self.plans.contains_key(&leader) => Some(leader),
+            _ => self.plans.keys().next().cloned(),
+        }
+    }
+
+    /// One-line plan status: `计划 2/5  [~] 跑测试`  (empty when nobody has a plan).
+    pub fn plan_status(&self) -> Option<(String, String)> {
+        let agent = self.plan_agent()?;
+        let items = self.plans.get(&agent)?;
+        if items.is_empty() {
+            return None;
+        }
+        let done = items.iter().filter(|item| item["status"] == "done").count();
+        let current = items
+            .iter()
+            .find(|item| item["status"] == "in_progress")
+            .or_else(|| items.iter().find(|item| item["status"] == "pending"))
+            .and_then(|item| item["text"].as_str())
+            .unwrap_or("");
+        let summary = format!(
+            "{} {}/{}",
+            self.t("计划", &[]),
+            done,
+            items.len()
+        );
+        Some((format!("{summary} · {agent}"), current.to_string()))
+    }
+
     /// Review material for `v`: the diff a member's edit reported back.
     /// ponytail: newest edit batch per member, not a full history.
     fn record_review(&mut self, agent_id: &str, tool: &str, result: &str) {

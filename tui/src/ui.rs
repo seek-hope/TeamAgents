@@ -214,6 +214,8 @@ pub struct Geometry {
     /// the box interior (`Block::inner`) — tab strip, table and hit-test share it
     pub side_inner: Rect,
     pub footer: Rect,
+    /// the plan status strip under the panel box (empty when nobody has a plan)
+    pub plan: Rect,
     /// first row of the tab strip (inside the box)
     pub tabs_y: u16,
     /// the panel table's body rows (below the rule, above the hint). A click
@@ -253,9 +255,13 @@ pub fn geometry(app: &App, area: Rect) -> Geometry {
     let stacked = Rect { y: body.y + 1, height: body.height.saturating_sub(1), ..body };
     let side_h = ((stacked.height as usize) * 2 / 5).max(6).min(stacked.height as usize) as u16;
     let side = Rect { height: side_h, ..stacked };
+    // a one-row status component for the selected member's plan: separate from
+    // the panel box, directly under it, and only reserved when there is a plan
+    let plan_h = if app.plan_status().is_some() && stacked.height > side_h + 4 { 1 } else { 0 };
+    let plan = Rect { y: stacked.y + side_h, height: plan_h, ..stacked };
     let chat = Rect {
-        y: stacked.y + side_h,
-        height: stacked.height.saturating_sub(side_h),
+        y: stacked.y + side_h + plan_h,
+        height: stacked.height.saturating_sub(side_h + plan_h),
         ..stacked
     };
     let side_inner = Rect {
@@ -276,7 +282,7 @@ pub fn geometry(app: &App, area: Rect) -> Geometry {
     } else {
         Rect { y: side.y + 5, height: 0, ..side }
     };
-    Geometry { status, chat, side, side_inner, footer, tabs_y: side.y + 1, rows }
+    Geometry { status, chat, side, side_inner, footer, plan, tabs_y: side.y + 1, rows }
 }
 
 /// Where the mouse wheel scrolls: the pane under the pointer, not the focused
@@ -303,6 +309,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let geo = geometry(app, area);
     render_status(frame, app, geo.status);
     render_sidebar(frame, app, &geo);
+    render_plan_strip(frame, app, geo.plan);
     render_chat(frame, app, geo.chat);
     render_footer(frame, app, geo.footer);
     if app.review_open {
@@ -1095,6 +1102,38 @@ fn render_table(
             &mut state,
         );
     }
+}
+
+/// The plan status component: progress, the member it belongs to, and the item
+/// that is in progress right now.
+fn render_plan_strip(frame: &mut Frame, app: &App, area: Rect) {
+    if area.height == 0 || area.width < 20 {
+        return;
+    }
+    let Some((summary, current)) = app.plan_status() else { return };
+    let summary = format!(" {} ", summary);
+    let used = UnicodeWidthStr::width(summary.as_str()) + 2;
+    let room = (area.width as usize).saturating_sub(used);
+    let current = if current.is_empty() {
+        tr(app.lang, "全部完成", &[])
+    } else {
+        current
+    };
+    let mut spans = vec![
+        Span::styled(summary, Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            if current.chars().count() > room.saturating_sub(2) && room > 4 {
+                format!("{}…", current.chars().take(room.saturating_sub(3)).collect::<String>())
+            } else {
+                current
+            },
+            Style::default().fg(GREY),
+        ),
+    ];
+    if spans[1].content.is_empty() {
+        spans.pop();
+    }
+    frame.render_widget(ratatui::widgets::Paragraph::new(Line::from(spans)), area);
 }
 
 fn render_chat(frame: &mut Frame, app: &mut App, area: Rect) {

@@ -392,3 +392,19 @@ Codex 有 `notify`、Claude Code 有 hooks，TeamAgents 之前没有任何外部
   面板键路径 `v` 打开、Esc 关闭）。
 - 边界（`ponytail:` 注释已标）：每个成员只保留最近一次编辑批次，不是完整历史；要看历史仍有
   日志页签与工具结果。
+
+## 第二十批：成员计划（update_plan）+ 上区计划状态组件（用户要求的下一轮）
+
+- `update_plan(items)`：所有 Chat 成员可用（运行时工具，不需要绑定）。计划存
+  `members/<id>/plan.json`（原子写），每轮以 `<plan>` 块回灌到系统提示（`[x]/[~]/[ ]` 标记），
+  更新时发 `plan_updated` 事件（hooks 可见）与 `push:"plan"`（UI 实时）；worker 的 `state` 回复
+  里也带上 `plans`，所以重连后立刻能看到。
+- 定位说明：计划是成员的**工作记忆**（像 Codex 的 update_plan），不是团队任务语义——"谁欠谁什么"
+  仍由 core 的任务图负责，两者不混。
+- TUI：面板框下方新增**独立一行状态组件**（`ui::geometry` 里预留 `plan` 矩形，只在有成员有
+  计划时占用，并从对话区高度里扣）：`计划 1/3 · leader  修 mul`；显示谁的计划取决于面板高亮
+  （否则是当前有回合的成员，再否则 Leader）。
+- 回归：`chat::tests::plan_round_trips_into_the_prompt_block`（读写、`<plan>` 块、模型每轮可见）、
+  `tui::tests::plan_status_strip_tracks_the_selected_member`（进度/当前项、有才占行、行从对话区扣、全部完成）。
+- 真实运行：`review/eval/tasks/plan-use`（新增）——模型三次 `update_plan`，两项都标 done，任务通过，
+  证据 `review/eval/runs/2026-09-15-deepseek-plan/`。

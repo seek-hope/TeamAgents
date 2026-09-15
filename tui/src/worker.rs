@@ -22,6 +22,8 @@ pub struct Push {
     pub arguments: String,
     /// bounded tool result preview (edit diffs land here)
     pub result: String,
+    /// plan pushes: the member's items
+    pub items: Json,
 }
 
 pub struct Worker {
@@ -156,6 +158,7 @@ impl Worker {
                         ok: msg.get("ok").and_then(|v| v.as_bool()).unwrap_or(true),
                         arguments: msg.get("arguments").and_then(|v| v.as_str()).unwrap_or("").into(),
                         result: msg.get("result").and_then(|v| v.as_str()).unwrap_or("").into(),
+                        items: msg.get("items").cloned().unwrap_or(Json::Null),
                     });
                     continue;
                 }

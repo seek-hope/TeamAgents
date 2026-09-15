@@ -175,6 +175,7 @@ pub const BOUND_TOOL_DOCS: &[(&str, &str)] = &[
     ("web_search", "Search the web and return title, source URL, snippet, fetch time (and full content when include_content=true)."),
     ("web_fetch", "Fetch a web page and return title, source URL, fetch time and the readable text body (HTML only; capped)."),
     ("skill", "Discover and load agent skills. action='search' with query keywords lists matching skills (name — summary); action='read' with a skill name loads its full instructions. Read a skill before applying it."),
+    ("update_plan", "Record or update your short working plan: [{text, status: pending|in_progress|done}]. One item in_progress at a time; mark items done as you finish them. The plan is shown in the UI and repeated back to you each turn."),
     ("view_image", "Look at an image in your workspace (png/jpeg/gif/webp, max 5 MiB). Pass the path; the picture is attached to your next request. Use it for screenshots, diagrams and UI review."),
     ("read_history", "Retrieve original private tool output by tool_call_id. offset and limit count Unicode characters (offset starts at 0). Follow next_offset until eof."),
 ];
@@ -193,6 +194,7 @@ fn bound_tool_schemas() -> Json {
       {"name": "web_search", "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "max_results": {"type": "integer"}, "include_content": {"type": "boolean"}}, "required": ["query"]}},
       {"name": "web_fetch", "parameters": {"type": "object", "properties": {"url": {"type": "string"}, "max_bytes": {"type": "integer"}}, "required": ["url"]}},
       {"name": "skill", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["search", "read"]}, "query": {"type": "string"}, "name": {"type": "string"}}, "required": ["action"]}},
+      {"name": "update_plan", "parameters": {"type": "object", "properties": {"items": {"type": "array", "minItems": 1, "items": {"type": "object", "properties": {"text": {"type": "string"}, "status": {"type": "string", "enum": ["pending", "in_progress", "done"]}}, "required": ["text", "status"]}}}, "required": ["items"]}},
       {"name": "view_image", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
       {"name": "read_history", "parameters": {"type": "object", "properties": {"tool_call_id": {"type": "string"}, "offset":{"type":"integer","minimum":0}, "limit":{"type":"integer","minimum":1,"maximum":12000}}, "required": ["tool_call_id"]}},
     ])
@@ -220,8 +222,9 @@ fn bound_tool_names(bindings: &[String], web: (bool, bool)) -> Vec<&'static str>
         names.push("skill");
     }
     // Runtime-provided, not a capability: every chat-runtime member has a
-    // history tree its masked outputs can be read back from.
+    // history tree its masked outputs can be read back from, and a plan.
     names.push("read_history");
+    names.push("update_plan");
     names
 }
 
@@ -762,6 +765,48 @@ impl ChatRunner {
             .join("turns").join(format!("{}.json", run.run_id)))
     }
 
+    /// The member's own working plan: `plan.json` next to its history. It is
+    /// working memory, not team state — the task graph in core stays
+    /// authoritative for who owes what.
+    fn plan_path(&self) -> Option<std::path::PathBuf> {
+        self.history_path.as_ref().map(|path| path.with_file_name("plan.json"))
+    }
+
+    fn load_plan(&self) -> Vec<Json> {
+        let Some(path) = self.plan_path() else { return vec![] };
+        let Ok(bytes) = std::fs::read(&path) else { return vec![] };
+        serde_json::from_slice::<Json>(&bytes)
+            .ok()
+            .and_then(|value| value.get("items").and_then(|v| v.as_array()).cloned())
+            .unwrap_or_default()
+    }
+
+    fn save_plan(&self, items: &[Json]) -> Result<(), String> {
+        let path = self.plan_path().ok_or("member plan path missing")?;
+        write_json_atomic(&path, &json!({"items": items, "updated_ms": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64}))
+    }
+
+    /// The plan as the model should see it each turn (Codex-style plan echo).
+    fn plan_block(&self) -> String {
+        let items = self.load_plan();
+        if items.is_empty() {
+            return String::new();
+        }
+        let lines: Vec<String> = items
+            .iter()
+            .map(|item| {
+                let mark = match item["status"].as_str().unwrap_or("pending") {
+                    "done" => "[x]",
+                    "in_progress" => "[~]",
+                    _ => "[ ]",
+                };
+                format!("{mark} {}", item["text"].as_str().unwrap_or(""))
+            })
+            .collect();
+        format!("\n<plan>\n{}\n</plan>\n", lines.join("\n"))
+    }
+
     fn load_checkpoint(&self, run: &TurnRun) -> Result<Option<ChatCheckpoint>, String> {
         match std::fs::read(self.checkpoint_path(run)?) {
             Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|e| format!("invalid turn checkpoint: {e}")),
@@ -924,7 +969,8 @@ impl ChatRunner {
             blocks
         };
         format!(
-            "{head}\n\nTeam tools available:\n{tools}\n\nRules: use complete_task to finish your assigned task; use signal_done only when the whole user goal is complete (Leader only).\n{context}"
+            "{head}\n\nTeam tools available:\n{tools}\n\nRules: use complete_task to finish your assigned task; use signal_done only when the whole user goal is complete (Leader only).\n{context}{plan}",
+            plan = self.plan_block()
         )
     }
 
@@ -1514,7 +1560,35 @@ impl ChatRunner {
                     self.save_checkpoint(run, checkpoint, gateway)?;
                 }
                 let thread = run.context_ref.as_deref().unwrap_or(&run.run_id);
-                let receipt = if name == "read_history" {
+                let receipt = if name == "update_plan" {
+                    let items: Vec<Json> = args.get("items").and_then(Json::as_array).cloned().unwrap_or_default();
+                    let invalid = items.is_empty()
+                        || items.iter().any(|item| {
+                            item["text"].as_str().map(|t| t.trim().is_empty()).unwrap_or(true)
+                                || !matches!(item["status"].as_str().unwrap_or(""), "pending" | "in_progress" | "done")
+                        });
+                    if invalid {
+                        teamagents_core::models::Receipt {
+                            action_id: call_id.clone(), ok: false, kind: teamagents_core::models::ActionKind::CompleteTask,
+                            result: json!({}), error: Some("items must be [{text, status: pending|in_progress|done}]".into()),
+                        }
+                    } else {
+                        match self.save_plan(&items) {
+                            Ok(()) => {
+                                self.notify.note_plan(&self.agent_id(), &json!(items));
+                                self.notify.note_event("plan_updated", &json!({"agent_id": self.agent_id(), "items": items}));
+                                teamagents_core::models::Receipt {
+                                    action_id: call_id.clone(), ok: true, kind: teamagents_core::models::ActionKind::CompleteTask,
+                                    result: json!({"plan": self.plan_block().trim()}), error: None,
+                                }
+                            }
+                            Err(error) => teamagents_core::models::Receipt {
+                                action_id: call_id.clone(), ok: false, kind: teamagents_core::models::ActionKind::CompleteTask,
+                                result: json!({}), error: Some(error),
+                            },
+                        }
+                    }
+                } else if name == "read_history" {
                     match self.read_history(thread, &checkpoint.history, args["tool_call_id"].as_str().unwrap_or(""))
                         .and_then(|result| history_page(result["output"].as_str().unwrap_or(""), &args)) {
                         Ok(result) => teamagents_core::models::Receipt {
@@ -1992,6 +2066,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn plan_round_trips_into_the_prompt_block() {
+        let dir = std::env::temp_dir().join(format!("ta-plan-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut runner = ChatRunner::new(
+            &json!({"id": "m", "name": "M", "role": "worker"}),
+            ModelProfile {
+                provider: "openai".into(), protocol: "openai".into(), model: "test".into(),
+                base_url: None, api_key_env: None, timeout: 30, max_retries: 0,
+                generation_options: Default::default(), context_window: None, codex_profile: None,
+            },
+            Some("/tmp".into()),
+            Notify::new(crate::core_client::CoreClient::open(":memory:", "plan-test").unwrap()),
+            crate::bound::BoundTools::load(&teamagents_core::models::UserConfig::default(), &[]).unwrap(),
+            vec![],
+            (false, false),
+        );
+        Arc::get_mut(&mut runner).unwrap().history_path = Some(dir.join("chat_history.json"));
+        assert!(runner.plan_block().is_empty(), "no plan, no block");
+        runner
+            .save_plan(&[
+                json!({"text": "fix mul", "status": "done"}),
+                json!({"text": "run tests", "status": "in_progress"}),
+            ])
+            .unwrap();
+        let block = runner.plan_block();
+        assert!(block.contains("[x] fix mul"), "{block}");
+        assert!(block.contains("[~] run tests"), "{block}");
+        assert!(runner.system_prompt().contains("<plan>"), "the model sees its plan each turn");
+        assert_eq!(runner.load_plan().len(), 2, "the plan survives a reload");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn base64_matches_the_rfc_vectors() {
         assert_eq!(base64(Vec::new()), "");
         assert_eq!(base64(b"f".to_vec()), "Zg==");
@@ -2134,8 +2241,16 @@ mod tests {
         // a plain new_input wake adds no wake block
         assert!(!render_view(&view, &json!({"reason": "new_input"}), None).contains("<wake"));
         // tool payload: team tools always, execution tools per binding
-        // +1: read_history is runtime-provided, not a capability binding
-        assert_eq!(tools_payload(&[], (false, false), &[]).as_array().unwrap().len(), TEAM_TOOL_DOCS.len() + 1);
+        // +2: read_history and update_plan are runtime-provided, not bindings
+        assert_eq!(tools_payload(&[], (false, false), &[]).as_array().unwrap().len(), TEAM_TOOL_DOCS.len() + 2);
+        let runtime_payload = tools_payload(&[], (false, false), &[]);
+        let runtime_tools: Vec<&str> = runtime_payload
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t.pointer("/function/name").and_then(|v| v.as_str()))
+            .collect();
+        assert!(runtime_tools.contains(&"update_plan") && runtime_tools.contains(&"read_history"), "{runtime_tools:?}");
         let bound = tools_payload(&["files".into(), "shell".into(), "web".into()], (true, true), &[]);
         let names: Vec<&str> = bound
             .as_array()
