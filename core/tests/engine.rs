@@ -160,6 +160,25 @@ fn shared_publish_and_read_flow() {
 }
 
 #[test]
+fn refused_messages_and_spaces_name_the_valid_options() {
+    let mut ctl = harness();
+    ctl.submit(&user("a1", "go")).unwrap();
+
+    // b may only message leader: the refusal names who is actually reachable
+    let r = ctl.submit(&action("m1", "b", ActionKind::SendMessage, json!({"target": "cx", "text": "hi"}), None)).unwrap();
+    assert!(!r.ok);
+    let error = r.error.unwrap_or_default();
+    assert!(error.contains("no channel covers this direction"), "{error}");
+    assert!(error.contains("reachable now") && error.contains("leader"), "{error}");
+
+    // a wrong space id is corrected with the spaces this member can use
+    let r = ctl.submit(&action("m2", "b", ActionKind::ReadShared, json!({"space_id": "nope"}), None)).unwrap();
+    assert!(!r.ok);
+    let error = r.error.unwrap_or_default();
+    assert!(error.contains("available") && error.contains("lib"), "{error}");
+}
+
+#[test]
 fn topology_patch_add_and_stale_reject() {
     let mut ctl = harness();
     ctl.submit(&user("a1", "go")).unwrap();

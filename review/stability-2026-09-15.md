@@ -130,3 +130,7 @@ review/eval/run.sh --timeout 600          # deepseek-flash，默认单成员团�
 
 仍待确认的默认值（属策略变更，等用户点头再落码）：add_agent 省略 `tool_bindings` 时是否继承
 Leader 的绑定（D-30 已为 model_profile 开了同类先例）；是否自动为"Leader↔新成员"建通道。
+
+顺带把两条"猜错就被拒、但不告诉你对的是什么"的报错改成自愈式（`core/src/control.rs`）：
+`send_message` 被拒时列出当前可达成员；未知 shared space 时列出该成员可用的空间 id（只列它
+自己有权使用的，不泄漏别的空间名）。回归 `core/tests/engine.rs::refused_messages_and_spaces_name_the_valid_options`。

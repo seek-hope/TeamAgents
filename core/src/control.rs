@@ -243,6 +243,17 @@ impl Control {
 
     // -------------------------------------------------------------- validation
 
+    /// Space ids this member can reach: named in errors so a wrong id is
+    /// corrected in one round instead of guessed again. Only spaces the actor
+    /// may actually use, so the hint cannot leak other teams' space names.
+    fn reachable_space_ids<'a>(spec: &'a TeamSpec, actor: &str) -> Vec<&'a str> {
+        spec.shared_spaces
+            .iter()
+            .filter(|s| s.readers.iter().any(|r| r == actor) || s.writers.iter().any(|w| w == actor))
+            .map(|s| s.id.as_str())
+            .collect()
+    }
+
     /// Returns Some(error) on refusal.
     pub fn validate(&mut self, action: &TeamAction, spec: &TeamSpec) -> Option<String> {
         let kind = action.kind;
@@ -297,7 +308,13 @@ impl Control {
                         if spec.can_send(actor, t) {
                             None
                         } else {
-                            Some(format!("{actor:?} is not allowed to message {t:?}"))
+                            // self-healing: name the reachable members instead of
+                            // letting the model guess targets (or invent channels)
+                            let mut reachable: Vec<&str> = member_ids.iter().copied().filter(|m| spec.can_send(actor, m)).collect();
+                            reachable.sort();
+                            Some(format!(
+                                "{actor:?} is not allowed to message {t:?}: no channel covers this direction; reachable now: {reachable:?}"
+                            ))
                         }
                     }
                     other => Some(format!("unknown message target {other:?}")),
@@ -358,7 +375,7 @@ impl Control {
             ActionKind::PublishShared => {
                 let space_id = p.get("space_id").and_then(|v| v.as_str()).unwrap_or("");
                 let Some(space) = spec.space(space_id) else {
-                    return Some(format!("unknown shared space {space_id:?}"));
+                    return Some(format!("unknown shared space {space_id:?}; available: {:?}", Self::reachable_space_ids(spec, actor)));
                 };
                 if !space.writers.iter().any(|w| w == actor) {
                     return Some(format!("{actor:?} has no write access to shared space {space_id:?}"));
@@ -371,7 +388,7 @@ impl Control {
             ActionKind::ReadShared | ActionKind::ListShared => {
                 if let Some(sid) = p.get("space_id").and_then(|v| v.as_str()) {
                     let Some(space) = spec.space(sid) else {
-                        return Some(format!("unknown shared space {sid:?}"));
+                        return Some(format!("unknown shared space {sid:?}; available: {:?}", Self::reachable_space_ids(spec, actor)));
                     };
                     if !space.readers.iter().any(|r| r == actor) && !space.writers.iter().any(|w| w == actor) {
                         return Some(format!("{actor:?} has no read access to shared space {sid:?}"));
