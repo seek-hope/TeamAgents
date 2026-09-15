@@ -242,3 +242,14 @@ faithful 假服务；Anthropic 官方订阅同样待凭据。
   review_completed_checkpoint_restores_reply_without_another_model_call` 这条路径：崩溃窗口里
   "已完成回合"仍可能被 reconcile 重新执行并用检查点里的回复收尾；删掉旧检查点会退化成重新调用
   模型并可能重复投递——代价高于省下的磁盘（文档 §3.3 已写明这条边界）。
+
+## 第十一批：团队面板的"最近活动"列（用户批准的优先级 ③）
+
+日志页签能看工具流水，但团队页签还得手动翻。现在团队面板多一列：每个成员最后一次工具调用
+与距今时间（失败带 `✗`），来源与日志页签同一份 `push:"tool"` 数据。
+
+- `tui/src/app.rs`：`tool_activity: HashMap<agent, {tool, ok, at}>` 在 `on_tool` 时更新，
+  `team_rows()` 追加"最近活动"列（切换会话时清空）。
+- `tui/src/i18n.rs`：表头与英文翻译各加一项。
+- 回归：`tui::tests::team_panel_shows_each_members_last_tool`（未跑过是 `-`、成功/失败格式、
+  行内列数与表头一致）。

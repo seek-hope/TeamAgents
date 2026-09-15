@@ -34,6 +34,7 @@ static ENGLISH: &[(&str, &str)] = &[
     ("状态", "Status"),
     ("工作目录", "Workspace"),
     ("可见范围", "Access"),
+    ("最近活动", "Last tool"),
     ("委派者", "Requester"),
     ("承接者", "Assignee"),
     ("描述", "Description"),
@@ -277,7 +278,7 @@ pub fn status_label_id(status: &str) -> &str {
 /// Table headers, keyed by panel id.
 pub fn table_headers(table: &str) -> &'static [&'static str] {
     match table {
-        "team" => &["成员", "角色", "类型", "模型", "状态", "工作目录", "可见范围"],
+        "team" => &["成员", "角色", "类型", "模型", "状态", "工作目录", "可见范围", "最近活动"],
         "tasks" => &["任务", "委派者", "承接者", "状态", "描述", "依赖", "结果", "创建时间"],
         "shared" => &["空间", "作者", "类型", "内容/引用", "序号"],
         "approvals" => &["成员", "操作", "参数", "范围"],

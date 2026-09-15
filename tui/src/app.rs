@@ -222,6 +222,8 @@ pub struct App {
     pub log_cursor: i64,
     pub log_member: Option<String>,
     pub log_lines: Vec<String>,
+    /// Last tool each member ran, for the team panel's activity column.
+    tool_activity: std::collections::HashMap<String, ToolActivity>,
     /// chat lines scrolled up from the bottom (0 = pinned to the newest entry)
     pub chat_scroll: usize,
     /// log panel lines scrolled up from the bottom
@@ -276,6 +278,7 @@ impl App {
             log_cursor: 0,
             log_member: None,
             log_lines: vec![],
+            tool_activity: std::collections::HashMap::new(),
             chat_scroll: 0,
             log_scroll: 0,
             settings_open: false,
@@ -779,6 +782,18 @@ impl App {
             let status = statuses.get(&id).cloned().unwrap_or_else(|| "IDLE".into());
             let run = self.activity_runs.iter().find(|r| r.agent_id == id);
             let (status_label, style) = activity_status(self.lang, self.animations, self.activity_frame, &status, run);
+            let activity = self
+                .tool_activity
+                .get(&id)
+                .map(|last| {
+                    format!(
+                        "{}{} {}",
+                        if last.ok { "" } else { "✗ " },
+                        last.tool,
+                        elapsed_short(last.at.elapsed())
+                    )
+                })
+                .unwrap_or_else(|| "-".into());
             rows.push((id.clone(), vec![
                 cell(id.clone()),
                 cell(jstr(agent, "role")),
@@ -787,6 +802,7 @@ impl App {
                 (status_label, Some(style)),
                 cell(agent.get("workspace_policy").and_then(|v| v.as_str()).unwrap_or("shared").to_string()),
                 cell(if reach.is_empty() { "-".into() } else { reach.join(" ") }),
+                cell(activity),
             ]));
         }
         rows
@@ -1034,6 +1050,12 @@ impl App {
     /// Tool activity from the engine: log lines then show what each member really
     /// ran (name + arguments), not just the core event stream.
     pub fn on_tool(&mut self, agent_id: &str, tool: &str, ok: bool, arguments: &str) {
+        if !agent_id.is_empty() {
+            self.tool_activity.insert(
+                agent_id.to_string(),
+                ToolActivity { tool: tool.to_string(), ok, at: Instant::now() },
+            );
+        }
         if self.log_member.as_deref().is_some_and(|member| member != agent_id) {
             return;
         }
@@ -1054,6 +1076,7 @@ impl App {
     /// LogPanel::replay_from — full rebuild on tab activation / filter change.
     pub fn replay_log(&mut self, events: &[Json]) {
         self.log_lines.clear();
+        self.tool_activity.clear();
         self.log_cursor = 0;
         self.append_log(events);
     }
@@ -1411,6 +1434,7 @@ impl App {
         self.composer.clear_composer();
         self.log_cursor = 0;
         self.log_lines.clear();
+        self.tool_activity.clear();
         self.state = None;
         self.pending_delete = None;
         self.rewind_list.clear();
@@ -2042,6 +2066,22 @@ pub fn approval_line(payload: &Json) -> String {
 }
 
 /// Log line format: `{seq:>5} {kind:<18} {actor:<10} {payload_json[:160]}`
+/// Last tool a member ran (team panel column).
+pub struct ToolActivity {
+    tool: String,
+    ok: bool,
+    at: Instant,
+}
+
+fn elapsed_short(age: Duration) -> String {
+    let seconds = age.as_secs();
+    if seconds < 60 {
+        format!("{seconds}s")
+    } else {
+        format!("{}m", seconds / 60)
+    }
+}
+
 /// Newest log lines kept in memory (the panel scrolls; older lines are dropped).
 const MAX_LOG_LINES: usize = 2000;
 

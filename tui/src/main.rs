@@ -576,6 +576,31 @@ mod tests {
     }
 
     #[test]
+    fn team_panel_shows_each_members_last_tool() {
+        let mut app = test_app();
+        app.state = Some(json!({"spec": {"agents": [
+            {"id": "alpha", "name": "alpha", "role": "worker", "runtime_kind": "deepagents", "model_profile": "m"},
+            {"id": "beta", "name": "beta", "role": "worker", "runtime_kind": "deepagents", "model_profile": "m"}
+        ]}}));
+        let headers = i18n::table_headers("team");
+        let rows = app.team_rows();
+        assert_eq!(rows[0].1.len(), headers.len(), "every row must fill every column");
+        let activity = |id: &str| {
+            rows.iter().find(|(key, _)| key == id).map(|(_, cells)| cells.last().unwrap().0.clone()).unwrap()
+        };
+        assert_eq!(activity("alpha"), "-", "no tool run yet");
+
+        app.on_tool("alpha", "edit_file", true, "{}");
+        app.on_tool("beta", "shell", false, "{}");
+        let rows = app.team_rows();
+        let activity = |id: &str| {
+            rows.iter().find(|(key, _)| key == id).map(|(_, cells)| cells.last().unwrap().0.clone()).unwrap()
+        };
+        assert!(activity("alpha").starts_with("edit_file"), "{}", activity("alpha"));
+        assert!(activity("beta").starts_with("✗ shell"), "{}", activity("beta"));
+    }
+
+    #[test]
     fn tool_activity_lands_in_the_log_panel() {
         let mut app = test_app();
         app.on_tool("alpha-fixer", "edit_file", true, "{\"path\":\"alpha/alpha.py\"}");
