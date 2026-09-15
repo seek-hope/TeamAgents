@@ -254,11 +254,19 @@ impl CodexAppServer {
         if let Some(mut child) = child {
             #[cfg(unix)]
             {
-                // SIGTERM to the whole group via `kill`, then SIGKILL the child
-                // (no libc dependency in this crate)
-                let pgid = child.id().to_string();
-                let _ = Command::new("kill").args(["-TERM", &format!("-{pgid}")]).status();
+                // The whole group goes together: the shell commands an app-server
+                // spawns are its children, and killing only the direct child
+                // leaves them running. `kill` as the shell's builtin (POSIX
+                // requires it, /bin/sh always has it) instead of an external
+                // binary that minimal images may not ship.
+                let pgid = child.id();
+                let group_kill = |signal: &str| {
+                    let _ = Command::new("/bin/sh").args(["-c", &format!("kill -{signal} -{pgid}")]).status();
+                };
+                group_kill("TERM");
                 std::thread::sleep(Duration::from_millis(100));
+                // a grandchild that ignores TERM still has to go
+                group_kill("KILL");
             }
             let _ = child.kill();
             let _ = child.wait();

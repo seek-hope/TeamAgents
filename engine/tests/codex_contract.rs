@@ -333,7 +333,11 @@ for line in sys.stdin:
 }
 
 fn alive(pid: i32) -> bool {
-    std::path::Path::new(&format!("/proc/{pid}")).exists()
+    // A zombie is not running: in environments whose PID 1 does not reap
+    // orphans (CI containers) a killed child can linger as one.
+    let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else { return false };
+    let state = stat.rsplit_once(')').map(|(_, rest)| rest.trim_start()).unwrap_or("").chars().next();
+    state != Some('Z')
 }
 
 /// D-31: a "session" decision answers the app-server with a single-op
