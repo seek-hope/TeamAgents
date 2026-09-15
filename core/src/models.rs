@@ -380,6 +380,11 @@ pub struct Hooks {
     /// the event JSON arrives on stdin). Empty = no hooks.
     #[serde(default)]
     pub notify: Vec<String>,
+    /// argv of a *policy* command run before a native tool executes: exit 0
+    /// allows, exit 2 denies (stderr is the reason). Any other outcome allows
+    /// and only logs, so a broken hook cannot brick the agent.
+    #[serde(default)]
+    pub pre_tool: Vec<String>,
 }
 
 /// Session housekeeping policy. Nothing is deleted unless a [retention] block

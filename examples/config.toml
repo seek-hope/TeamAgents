@@ -19,7 +19,8 @@
 # 事件：tool_call / run_completed / run_failed / run_cancelled / run_paused / team_action
 # 注意：钩子是"你自己写的程序"，在主机上以你的权限运行（不进沙箱）；超时 10 秒后被杀掉，不阻塞回合。
 # [hooks]
-# notify = ["/home/you/bin/teamagents-notify.sh"]
+# notify = ["/home/you/bin/teamagents-notify.sh"]      # 事件通知（异步、不阻塞）
+# pre_tool = ["/home/you/bin/teamagents-policy.sh"]    # 执行前策略：exit 0 放行 / exit 2 拒绝（stderr 作原因）
 
 [models.leader_main]
 provider = "deepseek"

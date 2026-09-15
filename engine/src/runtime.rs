@@ -282,6 +282,8 @@ pub struct Runtime {
     /// D-30: installed by the session; runs before an apply_topology_patch
     /// submit (auto-creates per-member model profiles).
     topology_prepare: Mutex<Option<Arc<dyn Fn(&mut Json) -> Result<(), String> + Send + Sync>>>,
+    /// `[hooks] pre_tool`: user policy each tool gateway consults before running.
+    hooks: Mutex<Option<Arc<crate::hooks::Hooks>>>,
 }
 
 impl Runtime {
@@ -309,6 +311,7 @@ impl Runtime {
             loop_thread: Mutex::new(None),
             self_ref: Mutex::new(Weak::new()),
             topology_prepare: Mutex::new(None),
+            hooks: Mutex::new(None),
         });
         *runtime.self_ref.lock().unwrap() = Arc::downgrade(&runtime);
         let weak = Arc::downgrade(&runtime);
@@ -318,6 +321,10 @@ impl Runtime {
             }
         }));
         runtime
+    }
+
+    pub fn set_hooks(&self, hooks: Arc<crate::hooks::Hooks>) {
+        *self.hooks.lock().unwrap() = Some(hooks);
     }
 
     pub fn set_topology_prepare(&self, hook: Arc<dyn Fn(&mut Json) -> Result<(), String> + Send + Sync>) {
@@ -734,6 +741,7 @@ impl Runtime {
             Some(self.guarded_executor(&fresh.agent_id, &fresh.run_id, limits.max_model_steps_per_turn, control.clone())),
             control.clone(),
             self.topology_prepare.lock().unwrap().clone(),
+            self.hooks.lock().unwrap().clone(),
         );
         let mut outcome = self.run_with_timeout(runner.clone(), &fresh, &view, gateway, &wake, timeout);
 

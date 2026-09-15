@@ -429,6 +429,8 @@ pub struct ToolGateway {
     /// D-30: run before an apply_topology_patch submit; may rewrite the payload
     /// (auto-created member profiles) or veto it with Err.
     topology_prepare: Option<Arc<dyn Fn(&mut Json) -> Result<(), String> + Send + Sync>>,
+    /// User policy hook (`[hooks] pre_tool`): can veto a native tool call.
+    hooks: Option<Arc<crate::hooks::Hooks>>,
 }
 
 impl ToolGateway {
@@ -439,13 +441,14 @@ impl ToolGateway {
         approvals: Arc<ApprovalGate>,
         executor: Option<Executor>,
     ) -> Arc<Self> {
-        Self::with_control(core, agent_id, run_id, approvals, executor, Arc::new(TurnControl::default()), None)
+        Self::with_control(core, agent_id, run_id, approvals, executor, Arc::new(TurnControl::default()), None, None)
     }
 
     pub(crate) fn with_control(
         core: Arc<CoreClient>, agent_id: &str, run_id: &str,
         approvals: Arc<ApprovalGate>, executor: Option<Executor>, control: Arc<TurnControl>,
         topology_prepare: Option<Arc<dyn Fn(&mut Json) -> Result<(), String> + Send + Sync>>,
+        hooks: Option<Arc<crate::hooks::Hooks>>,
     ) -> Arc<Self> {
         Arc::new(Self {
             core,
@@ -456,6 +459,7 @@ impl ToolGateway {
             pending_approval_id: Mutex::new(None),
             control,
             topology_prepare,
+            hooks,
         })
     }
 
@@ -537,6 +541,18 @@ impl ToolGateway {
                 Some(decision.reason.unwrap_or_else(|| "operation not permitted".into())),
             );
         }
+        // user policy before the sandbox: a pre_tool hook can veto this call
+        if let Some(hooks) = self.hooks.as_ref().filter(|hooks| hooks.has_pre_tool()) {
+            let payload = json!({"agent_id": self.agent_id, "run_id": self.run_id, "tool": tool, "arguments": args});
+            if let Some(reason) = hooks.deny_reason(&payload) {
+                return self.receipt_placeholder(
+                    &call_id,
+                    false,
+                    json!({"denied_by": "pre_tool_hook"}),
+                    Some(format!("denied by pre_tool hook: {reason}")),
+                );
+            }
+        }
         let Some(executor) = &self.executor else {
             return self.receipt_placeholder(&call_id, false, json!({}), Some(format!("no executor for tool {tool}")));
         };
@@ -554,6 +570,41 @@ impl ToolGateway {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `[hooks] pre_tool` is a real policy gate: a denied call must not reach the
+    /// executor at all, and the reason must reach the model.
+    #[test]
+    fn pre_tool_hook_denies_before_the_executor_runs() {
+        let dir = std::env::temp_dir().join(format!("ta-gate-hook-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("deny.sh");
+        std::fs::write(&script, "#!/bin/sh\ncat > /dev/null\necho 'write_file is banned by policy' >&2\nexit 2\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut config = teamagents_core::models::UserConfig::default();
+        config.hooks.pre_tool = vec![script.to_string_lossy().into_owned()];
+        let hooks = crate::hooks::Hooks::from_config(&config, "s-hook").expect("configured hook");
+
+        let core = crate::core_client::CoreClient::open(":memory:", "s-hook").unwrap();
+        core.call("create_session", json!({"session_id": "s-hook", "cwd": dir.to_string_lossy()})).unwrap();
+        let ran = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = ran.clone();
+        let executor: Executor = Arc::new(move |_tool: &str, _args: &Json| {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(json!({"output": "ran"}))
+        });
+        let gateway = ToolGateway::with_control(
+            core.clone(), "leader", "run_1", ApprovalGate::new(core.clone(), PermissionPolicy::default()), Some(executor),
+            Arc::new(TurnControl::default()), None, Some(hooks),
+        );
+        let receipt = gateway.call("write_file", &json!({"path": "a.txt", "content": "x"}), "call_1");
+        assert!(!receipt.ok, "{receipt:?}");
+        let error = receipt.error.clone().unwrap_or_default();
+        assert!(error.contains("denied by pre_tool hook") && error.contains("banned by policy"), "{error}");
+        assert_eq!(ran.load(std::sync::atomic::Ordering::SeqCst), 0, "the executor never saw the call");
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn hash_is_canonical_and_stable() {

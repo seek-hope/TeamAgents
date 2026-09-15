@@ -522,3 +522,21 @@ codex-dev `task_completed` → Leader 复验 + `cancel_run` 结清两个未知 r
 `review/eval/runs/2026-09-15-deepseek-codex-resume/`。
 
 至此**两个后端**（Chat / Codex）的"成员级中断 → 任务自救 → 目标完成"都有真实运行证据。
+
+## 第二十九批：pre_tool 策略钩子（执行前可拦截）
+
+`[hooks] notify` 只能"事后知道"；现在补上 **`pre_tool`**：原生工具执行前用同一份 JSON 询问用户的
+策略脚本，`exit 0` 放行、`exit 2` 拒绝（stderr 第一行作为原因回给模型，回执里带
+`denied_by: pre_tool_hook`）、其它情况（非 0/2、启动失败、超时 10 秒）放行并打日志——写坏的钩子
+不该让团队停工。被拒的调用**不会到达执行器**。
+
+- `core::models::Hooks.pre_tool`（仍只在用户配置生效，项目配置里会被忽略）；
+- `engine/src/hooks.rs::Hooks::deny_reason`：阻塞式判定；stderr 用共享缓冲读，**只 join 至多 1 秒**
+  （否则钩子里再起一个持有管道的孙进程，会把一次调用拖到子进程生命周期那么长——测试第一版就踩了这个）；
+- `gateway.rs`：`ToolGateway` 多一个 `hooks` 字段，`call` 在 executor 之前过闸；
+  `runtime.rs::set_hooks` 由 session 注入（与 notify sink 同一个 Hooks 对象）。
+- 回归：`hooks::tests::pre_tool_policy_decides_by_exit_code`（0/2/7/挂死四态 + notify-only 不算策略）、
+  `gateway::tests::pre_tool_hook_denies_before_the_executor_runs`（执行器一次都没被调用）。
+- 真实运行验证：配置 `pre_tool` 拒绝一切原生工具后，让模型 `write_file` 创建文件 →
+  工具回执 `ok=False`、原因 `denied by pre_tool hook: policy: file writes are not allowed…`，
+  工作目录**保持为空**（写入从未发生）。

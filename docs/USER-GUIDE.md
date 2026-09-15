@@ -204,6 +204,19 @@ notify = ["/home/you/bin/teamagents-notify.sh"]   # argv；事件名追加为最
 
 配置后，引擎在这些事件发生时把事件 JSON 写到钩子的 stdin：
 
+`pre_tool`：**执行前的策略钩子**（原生工具，即文件/Shell/网页这些），同一份 JSON 走 stdin：
+
+| 退出码 | 效果 |
+|---|---|
+| 0 | 放行 |
+| 2 | **拒绝**，stderr 第一行作为原因回给模型（形如 `denied by pre_tool hook: …`） |
+| 其它 / 启动失败 / 超过 10 秒 | 放行并打日志——写坏的钩子不该让团队停工 |
+
+```toml
+[hooks]
+pre_tool = ["/home/you/bin/policy.sh"]   # 每次都阻塞等它退出（上限 10 秒）
+```
+
 | 事件 | 何时 | 载荷要点 |
 |---|---|---|
 | `tool_call` | 原生工具执行完（Chat 成员） | `agent_id`、`tool`、`ok`、`error`、`arguments`（≤500 字符） |

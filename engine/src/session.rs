@@ -699,11 +699,16 @@ pub fn open_session(opts: OpenOptions) -> Result<Arc<OpenedSession>, String> {
             max_model_steps_per_turn: state.get("limits").and_then(|l| l.get("max_model_steps_per_turn")).and_then(|v| v.as_i64()).unwrap_or(200),
             max_parallel_workers: state.get("limits").and_then(|l| l.get("max_parallel_workers")).and_then(|v| v.as_i64()).unwrap_or(8),
         };
-        // hooks first: the sink must be installed before the runtime starts
-        if let Some(hooks) = crate::hooks::Hooks::from_config(&catalog, &session_id) {
+        // hooks first: the notify sink must exist before the runtime starts, and
+        // the gateway needs the same object for its pre_tool policy
+        let hooks = crate::hooks::Hooks::from_config(&catalog, &session_id);
+        if let Some(hooks) = hooks.clone() {
             notify.set_event_sink(Box::new(move |event, payload| hooks.fire(event, payload.clone())));
         }
         let runtime = Runtime::new(core.clone(), notify, approvals, executor, Some(make_runner), limits);
+        if let Some(hooks) = hooks {
+            runtime.set_hooks(hooks);
+        }
         runtime.set_topology_prepare(topology_prepare_hook(
             core.clone(),
             session_id.clone(),
