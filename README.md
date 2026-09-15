@@ -10,6 +10,25 @@
 
 ---
 
+## 下载安装（发行版）
+
+不想自行编译就用 [Releases](https://github.com/seek-hope/TeamAgents/releases) 里的
+Linux x86_64 静态包（musl，不挑发行版 glibc）：
+
+```bash
+ver=0.1.0   # 换成需要的版本号
+curl -LO "https://github.com/seek-hope/TeamAgents/releases/download/v$ver/teamagents-$ver-x86_64-unknown-linux-musl.tar.gz"
+tar -xzf "teamagents-$ver-x86_64-unknown-linux-musl.tar.gz"
+install -Dm755 "teamagents-$ver-x86_64-unknown-linux-musl/"{teamagents,teamagents-tui} ~/.local/bin/
+teamagents doctor    # 自检：依赖/配置/密钥/隔离/codex 协议
+```
+
+两个二进制装在同一目录或同一 `PATH` 里即可（`teamagents` 会先找同目录的
+`teamagents-tui`，其次找 `PATH`）。发布新的 tag（`v*`）会由
+`.github/workflows/release.yml` 自动构建并附上包与校验和。
+
+---
+
 ## 启动
 
 ### 1) 构建
