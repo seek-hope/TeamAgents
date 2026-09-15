@@ -2352,8 +2352,18 @@ impl Control {
         }
 
         if outcome.status == TurnStatus::WaitingApproval {
-            let pending = self.store.pending_approvals(&self.session_id).map_err(|e| e.to_string())?;
-            for a in pending.into_iter().filter(|a| a.run_id == run.run_id) {
+            let pending: Vec<_> = self
+                .store
+                .pending_approvals_for_run(&run.run_id)
+                .map_err(|e| e.to_string())?;
+            if pending.is_empty() {
+                // 决定先到、停下后到：这个回合已经等不到人来决定了（PENDING 行不存在），
+                // 停在 WAITING_APPROVAL 会永远醒不过来 —— 直接回到 RUNNING 让它继续跑，
+                // 工具调用会在网关里读到那条已决定的行（允许或拒绝）。
+                // 场景：用户/自动化在请求刚出现时就拍板（CI 上偶发，见 chat_e2e 审批用例）。
+                self.store.set_run_status(&run.run_id, TurnStatus::Running).map_err(|e| e.to_string())?;
+            }
+            for a in pending {
                 events.push(EventDraft::new(
                     EventKind::ApprovalRequested,
                     json!({"approval_id": a.approval_id, "agent_id": a.agent_id,

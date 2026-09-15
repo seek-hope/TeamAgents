@@ -618,9 +618,14 @@ impl CodexRunner {
         self.notify.note_external_status(run_id, TurnStatus::WaitingApproval);
         let (tx, rx) = channel();
         self.approval_waits.lock().unwrap().insert(request.approval_id.clone(), tx);
-        let decision = match rx.recv_timeout(approval_wait_timeout()) {
-            Ok(decision) => decision,
-            Err(_) => {
+        // 决定可能比 waiter 注册更早到达（用户/自动化在 PENDING 行出现的瞬间就拍板）：
+        // 注册后回读一次行状态，已决定就直接采用 —— 否则这个 waiter 会干等到
+        // approval_wait_timeout 后把决定丢掉、回一个 decline 给 app-server。
+        let decision = match self.decided_before_waiting(&request.approval_id) {
+            Some(decision) => decision,
+            None => match rx.recv_timeout(approval_wait_timeout()) {
+                Ok(decision) => decision,
+                Err(_) => {
                 // ponytail: this waiter thread is not released on server
                 // death, it sits in recv_timeout up to approval_wait_timeout;
                 // upgrade path = server_exited broadcasts a decline through
@@ -630,7 +635,8 @@ impl CodexRunner {
                 // a PENDING row whose decision is silently dropped
                 self.approvals.expire(&request.approval_id);
                 "decline".to_string()
-            }
+                }
+            },
         };
         self.approval_waits.lock().unwrap().remove(&request.approval_id);
         // do not resurrect a run server_exited already failed while this
@@ -696,6 +702,19 @@ impl CodexRunner {
                 true
             }
             None => false,
+        }
+    }
+
+    /// Re-reads the approval row right after the waiter was registered: a
+    /// decision that landed in that window is returned here instead of being
+    /// waited for (and lost until the wait timeout).
+    fn decided_before_waiting(&self, approval_id: &str) -> Option<String> {
+        let reply = self.core.call_in_session("get_approval", json!({"approval_id": approval_id})).ok()?;
+        match reply.get("approval")?.get("status")?.as_str()? {
+            "APPROVED_ONCE" => Some("once".into()),
+            "APPROVED_SESSION" => Some("session".into()),
+            "DENIED" => Some("deny".into()),
+            _ => None,
         }
     }
 
@@ -1276,6 +1295,48 @@ mod tests {
         let reply = runner.on_request("r1", json!({"method": "item/commandExecution/requestApproval", "params": {"itemId": "i1"}}));
         assert_eq!(reply, json!({"decision": "decline"}));
         assert_eq!(runner.query_state("r1"), Some(TurnStatus::Running), "live run resumes Running after the timeout");
+    }
+
+    /// 决定比 waiter 注册更早到达（用户/自动化在 PENDING 行出现的瞬间拍板）时，
+    /// 不能干等到 approval_wait_timeout 再丢掉决定：注册后回读一次行状态即可。
+    #[test]
+    fn an_already_decided_approval_is_read_instead_of_waited_for() {
+        let runner = test_runner("s-early-read");
+        runner
+            .core
+            .call("create_session", json!({"session_id": "s-early-read", "cwd": "/tmp"}))
+            .expect("session");
+        runner
+            .core
+            .call("save_spec", json!({"session_id": "s-early-read", "spec": {
+                "leader_id": "leader",
+                "agents": [
+                    {"id": "leader", "name": "leader", "role": "leader", "runtime_kind": "deepagents", "model_profile": "m"},
+                    {"id": "cx", "name": "cx", "role": "worker", "runtime_kind": "codex", "model_profile": "m"},
+                ],
+            }}))
+            .expect("spec");
+        runner
+            .core
+            .call_in_session(
+                "insert_approval",
+                json!({"approval": {
+                    "approval_id": "appr-early", "session_id": "s-early-read", "agent_id": "cx",
+                    "run_id": "r1", "tool_call_id": "call-1", "operation_hash": "h",
+                    "requested_scope": {}, "policy_revision": 1,
+                }}),
+            )
+            .expect("approval row");
+        let decide: teamagents_core::models::TeamAction = serde_json::from_value(json!({
+            "action_id": "d1", "session_id": "s-early-read", "actor_id": "user",
+            "kind": "approval_decision", "payload": {"approval_id": "appr-early", "decision": "once"},
+        }))
+        .expect("action");
+        let receipt = runner.core.submit(&decide).expect("submit");
+        assert!(receipt.ok, "the decision lands before the waiter registers: {:?}", receipt.error);
+
+        assert_eq!(runner.decided_before_waiting("appr-early"), Some("once".to_string()));
+        assert_eq!(runner.decided_before_waiting("ghost"), None);
     }
 
     /// Round 7 tightening (user-confirmed): a "session" decision answers the

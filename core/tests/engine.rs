@@ -602,6 +602,53 @@ fn completed(reply: Option<&str>) -> TurnOutcome {
     TurnOutcome { status: TurnStatus::Completed, error: None, note: None, reply_text: reply.map(str::to_string) }
 }
 
+/// 竞态（CI 上偶发，见 engine/tests/chat_e2e.rs 的审批用例）：批准请求先落库、
+/// 用户/自动化马上拍板，回合随后才报告"停在等批准"。此时已经没有 PENDING 行，
+/// 若照旧把回合停在 WAITING_APPROVAL，就再也没人来唤醒它（pending 0 + WAITING_APPROVAL 卡死）。
+#[test]
+fn run_parked_after_its_approval_was_decided_is_woken_instead_of_stuck() {
+    let mut ctl = harness();
+    ctl.submit(&user("a1", "go")).unwrap();
+    let run = ctl.store.runs_for_session("s1", &[TurnStatus::Queued]).unwrap().remove(0);
+    ctl.begin_run(&run.run_id).unwrap();
+
+    // 网关先落 PENDING，用户立刻拍板
+    ctl.store
+        .insert_approval(&ApprovalRequest {
+            approval_id: "appr-race".into(),
+            session_id: "s1".into(),
+            agent_id: run.agent_id.clone(),
+            run_id: run.run_id.clone(),
+            tool_call_id: "call-1".into(),
+            operation_hash: "h-race".into(),
+            requested_scope: json!({"tool": "shell"}),
+            policy_revision: 1,
+            status: ApprovalStatus::Pending,
+            created_at: 1.0,
+            decided_at: None,
+        })
+        .unwrap();
+    let decided = ctl
+        .submit(&action("ad1", "user", ActionKind::ApprovalDecision, json!({"approval_id": "appr-race", "decision": "once"}), None))
+        .unwrap();
+    assert!(decided.ok, "{}", decided.error.unwrap_or_default());
+
+    // 决定已经落库，回合才走到"停在等批准"
+    ctl.finalize_run(
+        &run.run_id,
+        &TurnOutcome { status: TurnStatus::WaitingApproval, error: None, note: None, reply_text: None },
+        &[],
+    )
+    .unwrap();
+
+    let after = ctl.store.get_run(&run.run_id).unwrap().unwrap();
+    assert_eq!(
+        after.status,
+        TurnStatus::Running,
+        "已决定的批准不能把回合留在 WAITING_APPROVAL 里等一个不会到来的决定"
+    );
+}
+
 #[test]
 fn finalize_commits_task_and_wakes_waiter() {
     let mut ctl = harness();
