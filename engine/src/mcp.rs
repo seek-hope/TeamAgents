@@ -26,12 +26,15 @@ pub struct McpClient {
     next_id: AtomicU64,
     startup_ms: u64,
     tool_ms: u64,
+    /// The member's workspace, answered to `roots/list` requests. The caller sets
+    /// it after connecting (the transport itself does not know the member root).
+    workspace: Arc<Mutex<Option<std::path::PathBuf>>>,
 }
 
 enum Transport {
     Stdio {
         child: Mutex<Option<Child>>,
-        stdin: Mutex<ChildStdin>,
+        stdin: Arc<Mutex<ChildStdin>>,
         pending: Arc<Pending>,
     },
     Http {
@@ -108,22 +111,36 @@ impl McpClient {
         let stdout = child.stdout.take().ok_or("no stdout")?;
         let stdin = child.stdin.take().ok_or("no stdin")?;
         let pending = Arc::new(Mutex::new(HashMap::new()));
+        let stdin = Arc::new(Mutex::new(stdin));
+        let reader_stdin = stdin.clone();
+        let workspace: Arc<Mutex<Option<std::path::PathBuf>>> = Arc::new(Mutex::new(None));
+        let reader_workspace = workspace.clone();
         let client = Arc::new(Self {
             transport: Transport::Stdio {
                 child: Mutex::new(Some(child)),
-                stdin: Mutex::new(stdin),
+                stdin: stdin.clone(),
                 pending: pending.clone(),
             },
             next_id: AtomicU64::new(1),
             startup_ms: startup_timeout_s.max(1).saturating_mul(1000),
             tool_ms: tool_timeout_s.max(1).saturating_mul(1000),
+            workspace,
         });
         // The reader owns only pending replies, so dropping the final client
-        // can reap the server even when it never closes stdout.
+        // can reap the server even when it never closes stdout. It also answers
+        // server->client requests (roots/list); everything else is declined.
+        let (stdin, workspace) = (reader_stdin, reader_workspace);
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 let Ok(message) = serde_json::from_str::<Json>(&line) else { continue };
                 let Some(id) = message.get("id").and_then(|v| v.as_u64()) else { continue };
+                // a request has a method; a reply to one of ours does not
+                if let Some(method) = message.get("method").and_then(|v| v.as_str()) {
+                    if let Some(reply) = server_request_reply(id, method, workspace.lock().unwrap().as_deref()) {
+                        let _ = write_line(&stdin, &reply);
+                    }
+                    continue;
+                }
                 let slot = pending.lock().unwrap().remove(&id);
                 if let Some(tx) = slot {
                     let result = match message.get("error") {
@@ -141,7 +158,7 @@ impl McpClient {
         // A failed handshake must kill+wait the server before returning Err.
         if let Err(e) = client.call("initialize", json!({
             "protocolVersion": "2025-06-18",
-            "capabilities": {},
+            "capabilities": {"roots": {}},
             "clientInfo": {"name": "teamagents", "version": env!("CARGO_PKG_VERSION")},
         }), client.startup_ms) {
             client.close();
@@ -184,10 +201,11 @@ impl McpClient {
             next_id: AtomicU64::new(1),
             startup_ms: startup_timeout_s.max(1).saturating_mul(1000),
             tool_ms: tool_timeout_s.max(1).saturating_mul(1000),
+            workspace: Arc::new(Mutex::new(None)),
         });
         let initialized = client.call("initialize", json!({
             "protocolVersion": "2025-06-18",
-            "capabilities": {},
+            "capabilities": {"roots": {}},
             "clientInfo": {"name": "teamagents", "version": env!("CARGO_PKG_VERSION")},
         }), client.startup_ms)?;
         let version = initialized["protocolVersion"].as_str().filter(|v| !v.is_empty())
@@ -234,9 +252,14 @@ impl McpClient {
         }
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let reader = response.into_reader();
-        let reply = (url.clone(), token.clone(), session.clone(), protocol.clone(), stop.clone());
+        let reply = (url.clone(), token.clone(), session.clone(), protocol.clone(), stop.clone(), self.workspace.clone());
         let join = std::thread::spawn(move || read_push_stream(reader, reply));
         *stream.lock().unwrap() = Some(PushStream { stop, join: Some(join) });
+    }
+
+    /// The member's workspace, used to answer `roots/list`.
+    pub fn set_workspace(&self, root: &Path) {
+        *self.workspace.lock().unwrap() = Some(root.to_path_buf());
     }
 
     pub fn call(&self, method: &str, params: Json, timeout_ms: u64) -> Result<Json, String> {
@@ -372,8 +395,17 @@ struct PushStream {
 /// Read the GET SSE stream: notifications go to the log, server-initiated
 /// requests are answered with a JSON-RPC "not supported" error so a server never
 /// waits forever on a capability this client does not implement.
-fn read_push_stream(reader: Box<dyn std::io::Read + Send + Sync + 'static>, reply: (String, Option<String>, Arc<Mutex<Option<String>>>, Arc<Mutex<Option<String>>>, Arc<std::sync::atomic::AtomicBool>)) {
-    let (url, token, session, protocol, stop) = reply;
+type PushContext = (
+    String,
+    Option<String>,
+    Arc<Mutex<Option<String>>>,
+    Arc<Mutex<Option<String>>>,
+    Arc<std::sync::atomic::AtomicBool>,
+    Arc<Mutex<Option<std::path::PathBuf>>>,
+);
+
+fn read_push_stream(reader: Box<dyn std::io::Read + Send + Sync + 'static>, reply: PushContext) {
+    let (url, token, session, protocol, stop, workspace) = reply;
     let mut reader = BufReader::new(reader);
     let mut frame = String::new();
     loop {
@@ -407,15 +439,34 @@ fn read_push_stream(reader: Box<dyn std::io::Read + Send + Sync + 'static>, repl
         };
         frame.clear();
         let method = message.get("method").and_then(|v| v.as_str()).unwrap_or("");
-        if message.get("id").is_some() {
-            let body = json!({"jsonrpc": "2.0", "id": message["id"],
-                              "error": {"code": -32601, "message": format!("client does not support {method}")}});
-            if let Err(error) = http_roundtrip(&url, token.as_deref(), &session, protocol.lock().unwrap().clone().as_deref(), &body, 5_000) {
-                eprintln!("MCP push reply failed: {error}");
+        if let Some(id) = message.get("id").and_then(Json::as_u64) {
+            if let Some(body) = server_request_reply(id, method, workspace.lock().unwrap().as_deref()) {
+                if let Err(error) = http_roundtrip(&url, token.as_deref(), &session, protocol.lock().unwrap().clone().as_deref(), &body, 5_000) {
+                    eprintln!("MCP push reply failed: {error}");
+                }
             }
         } else if !method.is_empty() {
             eprintln!("MCP notification: {method}");
         }
+    }
+}
+
+/// Reply to a server-initiated request. `roots` is the one capability this client
+/// exposes; anything else is declined so the server never waits for an answer.
+fn server_request_reply(id: u64, method: &str, workspace: Option<&Path>) -> Option<Json> {
+    match method {
+        "roots/list" => {
+            let roots = match workspace {
+                Some(root) => vec![json!({
+                    "uri": format!("file://{}", root.to_string_lossy()),
+                    "name": root.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_else(|| "workspace".into()),
+                })],
+                None => vec![],
+            };
+            Some(json!({"jsonrpc": "2.0", "id": id, "result": {"roots": roots}}))
+        }
+        other => Some(json!({"jsonrpc": "2.0", "id": id,
+                             "error": {"code": -32601, "message": format!("client does not support {other}")}})),
     }
 }
 
@@ -542,6 +593,21 @@ for line in sys.stdin:
         }
         assert!(McpClient::connect_stdio_in("sh", &[], &[], &root, "automatic", false, 1, 1).is_err());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn roots_list_is_answered_and_other_requests_are_declined() {
+        let reply = server_request_reply(7, "roots/list", Some(Path::new("/tmp/member/work"))).unwrap();
+        assert_eq!(reply["id"], 7);
+        assert_eq!(reply["result"]["roots"][0]["uri"], "file:///tmp/member/work");
+        assert_eq!(reply["result"]["roots"][0]["name"], "work");
+        // no workspace set: an empty root list, not an error
+        let empty = server_request_reply(8, "roots/list", None).unwrap();
+        assert_eq!(empty["result"]["roots"].as_array().unwrap().len(), 0);
+        // anything else is declined so the server never waits
+        let declined = server_request_reply(9, "sampling/createMessage", Some(Path::new("/tmp"))).unwrap();
+        assert_eq!(declined["error"]["code"], -32601);
+        assert!(declined["error"]["message"].as_str().unwrap().contains("sampling/createMessage"));
     }
 
     #[test]

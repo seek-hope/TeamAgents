@@ -569,3 +569,16 @@ function schemas 发了一遍，等于每轮重复。改成只列工具名（描
   相对名）且可执行，以及是否配置了 retention（打印天数）。理由：钩子配错此前只在事件发生时才在
   stderr 露一行，极易漏看。回归：`engine/tests/cli.rs::doctor_probes_isolation_codex_and_config_errors`
   增补 hooks/retention 断言。
+
+## 第三十三批：MCP roots 能力（服务器可问工作目录）
+
+客户端此前对所有"服务器发来的请求"一律回 `-32601`。现在声明并实现 `roots`：`roots/list` 返回该
+成员的**工作目录**（`file://…`，名字取目录名；未设置时返回空列表），其它方法仍然 `-32601` 拒绝
+（"让服务器干等"比拒绝更糟）。stdio 的读线程与 HTTP 的推送流两条路径都会应答。
+
+- `mcp.rs`：`McpClient::set_workspace`（由 `bound.rs` 在建服务时用成员 root 设置）、initialize 的
+  `capabilities.roots`、`server_request_reply` 统一构造应答；stdio 的 stdin 改为 `Arc<Mutex<..>>`
+  以便读线程直接回写。
+- 回归：`mcp::tests::roots_list_is_answered_and_other_requests_are_declined`、
+  `mcp_http.rs::http_push_stream_answers_requests_and_deletes_the_session`（假服务器的推送流里加了
+  一条 `roots/list`，断言客户端应答里带根列表）。

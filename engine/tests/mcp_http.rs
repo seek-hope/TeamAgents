@@ -95,7 +95,7 @@ fn handle(stream: TcpStream, seen: Arc<Mutex<Vec<Seen>>>, mode: Mode) {
     // the GET push stream carries server -> client messages
     if method.is_empty() {
         let push = || {
-            "data: {\"jsonrpc\":\"2.0\",\"id\":99,\"method\":\"sampling/createMessage\",\"params\":{}}\r\n\r\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"}\r\n\r\n".to_string()
+            "data: {\"jsonrpc\":\"2.0\",\"id\":99,\"method\":\"sampling/createMessage\",\"params\":{}}\r\n\r\ndata: {\"jsonrpc\":\"2.0\",\"id\":100,\"method\":\"roots/list\"}\r\n\r\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"}\r\n\r\n".to_string()
         };
         return match mode {
             Mode::NoPush => respond(&mut stream, "405 Method Not Allowed", "", ""),
@@ -211,20 +211,28 @@ fn http_transport_binds_and_calls_tools() {
 fn http_push_stream_answers_requests_and_deletes_the_session() {
     let (url, seen) = spawn_server(Mode::Good);
     let client = McpClient::connect_http(&url, None, 5, 5).expect("connect");
+    client.set_workspace(std::path::Path::new("/tmp/member/work"));
     assert!(client.tools().is_ok());
 
-    // the reader thread needs a moment to answer the pushed request
+    // the reader thread needs a moment to answer the pushed requests
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    let reply_seen = || {
+    let declined = || {
         seen.lock()
             .unwrap()
             .iter()
             .any(|r| r.body.get("id") == Some(&json!(99)) && r.body.get("error").is_some())
     };
-    while !reply_seen() && std::time::Instant::now() < deadline {
+    let roots_seen = || {
+        seen.lock()
+            .unwrap()
+            .iter()
+            .any(|r| r.body.get("id") == Some(&json!(100)) && r.body["result"]["roots"].is_array())
+    };
+    while (!declined() || !roots_seen()) && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert!(reply_seen(), "the pushed sampling request got an error reply: {seen:?}", seen = seen.lock().unwrap().len());
+    assert!(declined(), "the pushed sampling request got an error reply: {seen:?}", seen = seen.lock().unwrap().len());
+    assert!(roots_seen(), "roots/list was answered with a root list: {seen:?}", seen = seen.lock().unwrap().len());
 
     client.close();
     let seen = seen.lock().unwrap();

@@ -92,6 +92,10 @@ startup_timeout_s = 60         # initialize/tools/list 超时秒数（可省，�
 tool_timeout_s = 120           # tools/call 超时秒数（可省，默认 120）
 ```
 
+客户端向服务器声明 `roots` 能力：服务器发来 `roots/list` 时会得到该成员的工作目录
+（`file://…`），其它服务器发起的能力（如 `sampling/createMessage`）按规范回 `-32601` 拒绝——
+让服务器干等比拒绝更糟。stdio 与 HTTP 两种传输都会应答。
+
 HTTP 传输按 MCP streamable 规范实现：POST 的响应可以是单个 JSON 或 SSE；初始化后客户端会额外开一条
 **GET SSE 推送流**（服务器通知写入 stderr；服务器发来的请求如 `sampling/createMessage` 会按规范收到
 JSON-RPC 错误回复，不会让服务器干等），会话结束（成员绑定关闭）时用 **DELETE** 终止服务端会话。

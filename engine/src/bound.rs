@@ -169,6 +169,8 @@ fn load_service(name: &str, binding: &ToolBinding, root: &Path) -> Result<(Arc<M
         "sse" => return Err(format!("binding {name:?}: the MCP \"sse\" transport was removed from the spec; use \"http\" (streamable HTTP)")),
         other => return Err(format!("MCP transport {other:?} is not implemented (use \"stdio\" or \"http\")")),
     };
+    // the workspace is what a server gets when it asks for `roots/list`
+    client.set_workspace(root);
     let service = binding.mcp_server.clone().unwrap_or_else(|| name.to_string());
     let allowed: HashSet<&str> = binding.tool_names.iter().map(|s| s.as_str()).collect();
     let mut out = vec![];
