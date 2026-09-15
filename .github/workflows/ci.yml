@@ -9,6 +9,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # 全量历史：shallow clone 下 HEAD 没有 parent，`git log --check -1`
+          # 会把整棵树当成"本提交新增"，历史文件里的行尾空格全被算到这次提交头上
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       # GitHub runner 装了 bubblewrap 也用不了（内核/AppArmor 限制非特权 user namespace），
       # 所以这里不装：依赖真实隔离的测试会打印 "skipped: bwrap is unavailable" 自行跳过，
