@@ -3,7 +3,7 @@
 仓库是私有的，用已登录（`gh auth login`）的 `gh` 拉包：
 
 ```bash
-ver=0.1.0   # 换成需要的版本号（本页顶部标题里的 v 后部分）
+ver=0.1.1   # 换成需要的版本号（本页顶部标题里的 v 后部分）
 gh release download "v$ver" --repo seek-hope/TeamAgents \
   --pattern "teamagents-$ver-x86_64-unknown-linux-musl.tar.gz" \
   --pattern SHA256SUMS

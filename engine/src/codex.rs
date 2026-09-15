@@ -158,7 +158,7 @@ impl CodexAppServer {
         // threads hold Arcs, so returning Err without close() leaks the process.
         if let Err(e) = self.call(
             "initialize",
-            json!({"clientInfo": {"name": "teamagents", "title": "TeamAgents", "version": "0.1.0"}}),
+            json!({"clientInfo": {"name": "teamagents", "title": "TeamAgents", "version": env!("CARGO_PKG_VERSION")}}),
             60_000,
         ) {
             self.close();

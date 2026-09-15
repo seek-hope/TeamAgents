@@ -16,9 +16,15 @@ cargo test --offline --manifest-path tui/Cargo.toml
 
 | crate | Cargo 报告通过 | 组成 / 实际执行范围 |
 |---|---:|---|
-| core | 50 | 20 库单测 + 30 集成测试 |
-| engine | — | 全套离线集成与库测试；其中 `live_codex` 的 1 项未设开关即提前返回，真实服务需单独运行 |
-| tui | 83 | 14 库单测 + 3 入口单测 + 37 app + 29 render |
+| core | 55 | 21 库单测 + 34 集成测试 |
+| engine | 189 | 92 库单测 + 97 集成测试；其中 `live_codex` 的 1 项未设开关即提前返回，真实服务需单独运行 |
+| tui | 91 | 14 库单测 + 11 + 37 app + 29 render |
+
+**CI（GitHub Actions，2026-09-15 起）**：`Test core` / `Test engine` / `Test tui` / 行尾空格检查全绿。
+runner 上装了 bubblewrap 也用不了（内核/AppArmor 限制非特权 user namespace），因此依赖真实隔离的用例
+（`chat_e2e` 4 条、`codex_contract` 1 条、`mcp` 的 workspace 路径）会打印 `skipped: bwrap is unavailable`
+自行跳过；它们的权威验证在有 bubblewrap 的开发机上。回归测试自身已与开发机解耦
+（不再读 `~/.config/teamagents/config.toml`，也不要求本机装 codex）。
 
 **skip 不计入真实验收**：部分测试在缺依赖/开关时直接 `return`，Cargo 仍显示 passed。
 真实 Codex 检查需显式运行以下命令；T7 的五家真实模型闭环没有可在导出密钥后统一运行的专用套件。

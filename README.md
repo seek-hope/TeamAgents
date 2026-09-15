@@ -53,7 +53,7 @@
 （musl 静态链接，不挑发行版 glibc）。仓库是私有的，用已登录的 `gh` 拉：
 
 ```bash
-ver=0.1.0   # 换成要装的版本
+ver=0.1.1   # 换成要装的版本
 gh release download "v$ver" --repo seek-hope/TeamAgents \
   --pattern "teamagents-$ver-x86_64-unknown-linux-musl.tar.gz" --pattern SHA256SUMS
 sha256sum -c SHA256SUMS

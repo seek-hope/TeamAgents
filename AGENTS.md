@@ -45,6 +45,7 @@ review/eval/run.sh [--only ID] [--timeout SEC]   # 固定任务集的真实模�
 - 现行审查报告：`review/findings-deep-review-2026-09-14.md`（发现+证据）、
   `review/fix-notes-deep-review-2026-09-14.md`（修复台账+测试名）；更早的 `review/*` 是历史资料。
 - 后续更新修复与 `/model` 扩展：`review/fix-notes-rust-updates-2026-09-14.md`。
+- CI 转绿与首个发行版（含批准竞态两处真缺陷）：`review/fix-notes-ci-release-2026-09-15.md`。
 - 只读审查不得修改被审文件；结论必须带可复跑的命令或探针（探针放 /tmp 或 `review/tmp/`），
   报"证伪"前先排除探针自身误差。
 
