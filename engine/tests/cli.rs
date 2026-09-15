@@ -2,10 +2,11 @@
 
 use std::process::Command;
 
-fn teamagents(args: &[&str], state_home: &std::path::Path) -> String {
+fn teamagents(args: &[&str], state_home: &std::path::Path, config_home: &std::path::Path) -> String {
     let output = Command::new(env!("CARGO_BIN_EXE_teamagents"))
         .args(args)
         .env("XDG_STATE_HOME", state_home)
+        .env("XDG_CONFIG_HOME", config_home)
         .output()
         .expect("run cli");
     let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -18,8 +19,17 @@ fn version_validate_and_sessions_smoke() {
     let home = std::env::temp_dir().join(format!("ta-cli-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
     std::fs::create_dir_all(&home).unwrap();
+    // 配置目录也要隔离：否则 `validate` 的结果取决于这台机器上有没有
+    // ~/.config/teamagents/config.toml（CI 上没有，profile 就成了未知）
+    let config = home.join("config");
+    std::fs::create_dir_all(config.join("teamagents")).unwrap();
+    std::fs::write(
+        config.join("teamagents/config.toml"),
+        "[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\n",
+    )
+    .unwrap();
 
-    let version = teamagents(&["version"], &home);
+    let version = teamagents(&["version"], &home, &config);
     assert!(version.contains("teamagents-core"), "{version}");
 
     let spec_path = home.join("spec.json");
@@ -29,15 +39,15 @@ fn version_validate_and_sessions_smoke() {
             "runtime_kind":"deepagents","model_profile":"leader_main"}]}"#,
     )
     .unwrap();
-    let validated = teamagents(&["validate", spec_path.to_string_lossy().as_ref()], &home);
+    let validated = teamagents(&["validate", spec_path.to_string_lossy().as_ref()], &home, &config);
     assert!(validated.contains("ok:"), "{validated}");
 
     let bad_path = home.join("bad.json");
     std::fs::write(&bad_path, r#"{"leader_id":"ghost","agents":[]}"#).unwrap();
-    let rejected = teamagents(&["validate", bad_path.to_string_lossy().as_ref()], &home);
+    let rejected = teamagents(&["validate", bad_path.to_string_lossy().as_ref()], &home, &config);
     assert!(rejected.contains("invalid:"), "{rejected}");
 
-    let sessions = teamagents(&["sessions"], &home);
+    let sessions = teamagents(&["sessions"], &home, &config);
     assert!(sessions.contains("会话"), "{sessions}");
 
     // YAML TeamSpec (the format examples/team.yaml uses) validates too
@@ -47,7 +57,7 @@ fn version_validate_and_sessions_smoke() {
         "leader_id: leader\nagents:\n  - id: leader\n    name: L\n    role: leader\n    runtime_kind: deepagents\n    model_profile: leader_main\n",
     )
     .unwrap();
-    let yaml_ok = teamagents(&["validate", yaml_path.to_string_lossy().as_ref()], &home);
+    let yaml_ok = teamagents(&["validate", yaml_path.to_string_lossy().as_ref()], &home, &config);
     assert!(yaml_ok.contains("ok:"), "{yaml_ok}");
     let _ = std::fs::remove_dir_all(&home);
 }
@@ -75,11 +85,12 @@ fn doctor_probes_isolation_codex_and_config_errors() {
     assert!(clean.contains("user config"), "{clean}");
     assert!(clean.contains("bubblewrap isolation"), "{clean}");
     assert!(clean.contains("codex app-server"), "{clean}");
-    assert!(clean.contains("codex protocol schema"), "{clean}");
     if teamagents_engine::tools::bwrap_available() {
         assert!(clean.contains("[ok  ] bubblewrap isolation"), "the isolation probe really runs: {clean}");
     }
     if teamagents_engine::tools::which("codex").is_some() {
+        // 没装 codex 的机器上 doctor 不打印 schema 行（如实报 "codex CLI not found"）
+        assert!(clean.contains("codex protocol schema"), "{clean}");
         assert!(clean.contains("[ok  ] codex protocol schema"), "the schema is generated from the CLI: {clean}");
     }
 
