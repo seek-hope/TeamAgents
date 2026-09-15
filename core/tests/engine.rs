@@ -189,7 +189,7 @@ fn topology_patch_add_and_stale_reject() {
         "p1",
         "b",
         ActionKind::ProposeTeamChange,
-        json!({"operations": [{"op": "add_channel", "channel": {"source": "b", "targets": ["cx"], "mode": "message"}}]}),
+        json!({"operations": [{"op": "add_channel", "channel": {"source": "leader", "targets": ["cx"], "mode": "message"}}]}),
         None,
     )).unwrap();
     assert!(r.ok, "{}", r.error.unwrap_or_default());
@@ -200,15 +200,27 @@ fn topology_patch_add_and_stale_reject() {
     assert!(r.ok, "{}", r.error.unwrap_or_default());
     assert_eq!(ctl.store.current_revision("s1").unwrap(), rev + 1);
     let spec = ctl.store.load_team_spec("s1", None).unwrap();
-    assert!(spec.can_send("b", "cx"));
+    assert!(spec.can_send("leader", "cx"));
 
     // rejecting an already-applied patch fails
     let r = ctl.submit(&action("p3", "leader", ActionKind::ApplyTopologyPatch, json!({"patch_id": patch_id}), None)).unwrap();
     assert!(!r.ok);
 
+    // a member-to-member channel is refused (D-33): members use shared spaces
+    let r = ctl.submit(&action(
+        "p3b",
+        "leader",
+        ActionKind::ApplyTopologyPatch,
+        json!({"base_revision": ctl.store.current_revision("s1").unwrap(),
+               "operations": [{"op": "add_channel", "channel": {"source": "b", "targets": ["cx"], "mode": "message"}}]}),
+        None,
+    )).unwrap();
+    assert!(!r.ok);
+    assert!(r.error.unwrap_or_default().contains("member-to-member"));
+
     // an inline patch without base_revision must name the revision to resend
     let revision = ctl.store.current_revision("s1").unwrap();
-    let ops = json!({"operations": [{"op": "add_channel", "channel": {"source": "b", "targets": ["cx"], "mode": "message"}}]});
+    let ops = json!({"operations": [{"op": "add_channel", "channel": {"source": "leader", "targets": ["b"], "mode": "message"}}]});
     let error = ctl.submit(&action("p4", "leader", ActionKind::ApplyTopologyPatch, ops.clone(), None)).unwrap().error.unwrap_or_default();
     assert!(error.contains(&revision.to_string()), "the leader must be told the current revision: {error}");
     let mut with_revision = ops;
@@ -784,7 +796,7 @@ fn apply_patch_with_empty_operations_uses_the_stored_operations() {
         "j1",
         "b",
         ActionKind::ProposeTeamChange,
-        json!({"operations": [{"op": "add_channel", "channel": {"source": "b", "targets": ["cx"], "mode": "message"}}]}),
+        json!({"operations": [{"op": "add_channel", "channel": {"source": "leader", "targets": ["cx"], "mode": "message"}}]}),
         None,
     )).unwrap();
     assert!(r.ok, "{}", r.error.unwrap_or_default());
@@ -795,7 +807,7 @@ fn apply_patch_with_empty_operations_uses_the_stored_operations() {
     let r = ctl.submit(&action("j2", "leader", ActionKind::ApplyTopologyPatch, json!({"patch_id": patch_id, "operations": []}), None)).unwrap();
     assert!(r.ok, "{}", r.error.unwrap_or_default());
     assert_eq!(ctl.store.current_revision("s1").unwrap(), rev + 1);
-    assert!(ctl.store.load_team_spec("s1", None).unwrap().can_send("b", "cx"));
+    assert!(ctl.store.load_team_spec("s1", None).unwrap().can_send("leader", "cx"));
 }
 
 #[test]

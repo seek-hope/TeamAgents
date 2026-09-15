@@ -134,3 +134,19 @@ Leader 的绑定（D-30 已为 model_profile 开了同类先例）；是否自�
 顺带把两条"猜错就被拒、但不告诉你对的是什么"的报错改成自愈式（`core/src/control.rs`）：
 `send_message` 被拒时列出当前可达成员；未知 shared space 时列出该成员可用的空间 id（只列它
 自己有权使用的，不泄漏别的空间名）。回归 `core/tests/engine.rs::refused_messages_and_spaces_name_the_valid_options`。
+
+## 第五批：组队默认值（D-33，用户确认后落地）
+
+按用户 2026-09-15 的指示改默认值，并加了成员间通信约束：
+
+1. `add_agent` **省略** `tool_bindings` → 继承 Leader 当前绑定（显式 `[]` 仍表示"只要团队工具"，
+   保留可表达性）；这样"建出来啥也干不了"的静默失败不再可能出现。
+2. `add_agent` 自动补 `leader→成员` 与 `成员→leader` 两条 **message** 通道（`can_send` 只认
+   message；task 通道只影响 `can_delegate`，Leader 委派本来就无需通道），已存在时不重复。
+3. 成员之间**不允许**直接通道：`core/src/control.rs` 在两处（`add_channel`、`add_agent` 内嵌
+   `channels`）拒绝 source 与 target 都不是 Leader 的通道，错误提示引导改用共享空间。
+
+回归：`chat_e2e::review_add_agent_inherits_leader_tools_and_gets_channels`、
+`core/tests/engine.rs::topology_patch_add_and_stale_reject`（成员间通道被拒）。
+真实复跑：`review/eval/runs/2026-09-15-deepseek-d33/`（team-collab 35s、33 次工具调用、0 失败、验收通过）。
+决策记录：`docs/DECISIONS.md` D-33。

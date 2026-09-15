@@ -13,7 +13,7 @@ use serde_json::{json, Value as Json};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use teamagents_core::models::{AgentSpec, ModelProfile, RuntimeKind, TeamAction, UserConfig};
+use teamagents_core::models::{AgentSpec, ChannelMode, ChannelSpec, ModelProfile, RuntimeKind, TeamAction, UserConfig};
 
 pub const LEADER_INSTRUCTIONS: &str = "You are the Leader of a team of agents. Understand the user's goal, decide
 whether to work alone or build a team, delegate with assign_task, coordinate
@@ -711,11 +711,15 @@ pub fn open_session(opts: OpenOptions) -> Result<Arc<OpenedSession>, String> {
     result
 }
 
-/// D-30 hook: before an apply_topology_patch submit, every add_agent whose
-/// model_profile is empty or names nothing configured gets a member-named
-/// session profile cloned from the Leader's effective model config (a non-empty
-/// unknown value is treated as a requested model id on the Leader's connection),
-/// and the op is rewritten to point at it. Runs on the caller's thread.
+/// D-30/D-33 hook: before an apply_topology_patch submit, every add_agent gets
+/// (1) the Leader's tool bindings when it names none — a member without tools
+/// can only message and wait, so it can never do the work it is given;
+/// (2) message channels in both directions with the Leader, so delegation and
+/// reporting actually have a way to travel;
+/// (3) a member-named session profile cloned from the Leader's effective model
+/// config when it names none (D-30; a non-empty unknown value is treated as a
+/// requested model id on the Leader's connection).
+/// Runs on the caller's thread.
 fn topology_prepare_hook(
     core: Arc<CoreClient>,
     session_id: String,
@@ -726,12 +730,64 @@ fn topology_prepare_hook(
     Arc::new(move |payload: &mut Json| {
         let Some(ops) = payload.get_mut("operations").and_then(|v| v.as_array_mut()) else { return Ok(()) };
         let mut changed = false;
+        let mut team: Option<(String, Vec<String>, String, Vec<ChannelSpec>)> = None;
         for op in ops.iter_mut().filter(|o| o.get("op").and_then(|v| v.as_str()) == Some("add_agent")) {
-            let agent = op.get_mut("agent").and_then(|v| v.as_object_mut()).ok_or("add_agent: missing agent")?;
-            let aid = agent.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            if aid.is_empty() {
-                return Err("add_agent: missing agent.id".into());
+            let aid = op
+                .get("agent")
+                .and_then(|a| a.get("id"))
+                .and_then(|v| v.as_str())
+                .ok_or("add_agent: missing agent.id")?
+                .to_string();
+            let (leader_id, leader_tools, leader_profile, channels) = match &team {
+                Some(known) => known.clone(),
+                None => {
+                    let state = core.state().map_err(|e| format!("add_agent: {e}"))?;
+                    let leader_id = state.get("leader_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let agents: Vec<AgentSpec> = serde_json::from_value(
+                        state.get("spec").and_then(|s| s.get("agents")).cloned().unwrap_or(Json::Null),
+                    )
+                    .map_err(|e| format!("add_agent: bad spec: {e}"))?;
+                    let leader = agents.iter().find(|a| a.id == leader_id).ok_or("add_agent: no leader in spec")?;
+                    let channels: Vec<ChannelSpec> = serde_json::from_value(
+                        state.get("spec").and_then(|s| s.get("channels")).cloned().unwrap_or(Json::Null),
+                    )
+                    .unwrap_or_default();
+                    let known = (leader_id, leader.tool_bindings.clone(), leader.model_profile.clone(), channels);
+                    team = Some(known.clone());
+                    known
+                }
+            };
+            // D-33 (1): a member without bindings inherits the Leader's, exactly
+            // like model_profile inheritance: it grants nothing the Leader could
+            // not already grant explicitly.
+            // an omitted list inherits; an explicit list (even []) is respected,
+            // so "messaging-only member" stays expressible
+            let inherit = op.get("agent").and_then(|a| a.get("tool_bindings")).is_none();
+            if inherit {
+                if let Some(agent) = op.get_mut("agent").and_then(|v| v.as_object_mut()) {
+                    agent.insert("tool_bindings".into(), json!(leader_tools));
+                }
+                changed = true;
             }
+            // D-33 (2): a conversation channel both ways with the Leader. Members
+            // talk to each other through shared spaces only, so every directed
+            // pair the runtime needs exists here.
+            let mut added: Vec<Json> = vec![];
+            for (source, target) in [(&leader_id, &aid), (&aid, &leader_id)] {
+                let covered = channels
+                    .iter()
+                    .any(|c| c.source == *source && c.mode == ChannelMode::Message && c.targets.iter().any(|t| t == target));
+                if !covered {
+                    added.push(json!({"source": source, "targets": [target], "mode": "message"}));
+                }
+            }
+            if !added.is_empty() {
+                let slot = op.as_object_mut().expect("op is an object").entry("channels").or_insert_with(|| json!([]));
+                if let Some(list) = slot.as_array_mut() {
+                    list.extend(added);
+                }
+            }
+            let agent = op.get_mut("agent").and_then(|v| v.as_object_mut()).ok_or("add_agent: missing agent")?;
             let requested = agent.get("model_profile").and_then(|v| v.as_str()).unwrap_or("").to_string();
             {
                 let known = session_profiles.lock().unwrap();
@@ -747,15 +803,8 @@ fn topology_prepare_hook(
                     continue;
                 }
             }
-            let state = core.state().map_err(|e| format!("add_agent: {e}"))?;
-            let leader_id = state.get("leader_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let agents: Vec<AgentSpec> = serde_json::from_value(
-                state.get("spec").and_then(|s| s.get("agents")).cloned().unwrap_or(Json::Null),
-            )
-            .map_err(|e| format!("add_agent: bad spec: {e}"))?;
-            let leader = agents.iter().find(|a| a.id == leader_id).ok_or("add_agent: no leader in spec")?;
             let ov = model_overrides.lock().unwrap().get(&leader_id).cloned().unwrap_or_default();
-            let base_name = ov.profile.clone().unwrap_or_else(|| leader.model_profile.clone());
+            let base_name = ov.profile.clone().unwrap_or(leader_profile);
             let mut base = session_profiles
                 .lock()
                 .unwrap()

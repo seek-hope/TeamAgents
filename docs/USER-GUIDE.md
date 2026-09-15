@@ -291,6 +291,10 @@ TUI `/rewind` 列出当前分支的用户输入节点，`/rewind <序号>` 回�
   模型与档位）；填一个未配置的名字则视为模型 ID（沿用 Leader 的连接）；填已有 profile 名则直接复用。
   自动创建的 profile 存 `sessions/<id>/profiles.json`，随会话持久、仅本会话可见，重开后仍生效；
   之后可用 `/model` 单独调整该成员（D-30）。
+- 同一处 `add_agent` 还有两个默认行为（D-33）：省略 `tool_bindings` 时新成员**继承 Leader 的绑定**
+  （显式写 `[]` 表示"只要团队工具"），并自动补上 `leader→成员` 与 `成员→leader` 两条 message 通道，
+  所以 Leader 与成员一开始就能互相说话。成员之间不允许直接建通道：跨成员协作一律走共享空间，
+  这样 Leader 与审计日志都能看到往来。
 - 工作目录策略：`shared`（同一目录）、`isolated`（成员目录 + 明确输入/制品引用）、
   `git_worktree`（从明确提交建分支与 worktree；原目录脏时自动退回 shared 并说明原因；
   重开会话复用既有 worktree，未合并成果拒绝清理，删除会话同样受保护）。

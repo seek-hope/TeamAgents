@@ -1001,6 +1001,20 @@ impl Control {
     fn apply_operations(&mut self, spec: &TeamSpec, operations: &[Json]) -> (Option<TeamSpec>, Option<String>) {
         let mut data = serde_json::to_value(spec).expect("spec serializes");
         let cfg_tools: HashSet<&String> = self.catalog.tools.keys().collect();
+        let leader_id = spec.leader_id.clone();
+        // D-33: members coordinate through shared spaces, never by direct member→member
+        // channels — the Leader (and the audit log) must be able to see that traffic.
+        let member_to_member = |channel: &Json| -> Option<String> {
+            let source = channel.get("source").and_then(|v| v.as_str()).unwrap_or("");
+            if source == leader_id {
+                return None;
+            }
+            channel
+                .get("targets")
+                .and_then(|v| v.as_array())
+                .and_then(|targets| targets.iter().filter_map(|t| t.as_str()).find(|t| *t != leader_id))
+                .map(|target| format!("channel {source:?} -> {target:?} is member-to-member; use a shared space instead"))
+        };
         let cfg_models: HashSet<&String> = self.catalog.models.keys().collect();
         let err = |msg: String| (None, Some(msg));
 
@@ -1033,6 +1047,9 @@ impl Control {
                     }
                     data["agents"].as_array_mut().unwrap().push(agent);
                     for ch in op.get("channels").and_then(|v| v.as_array()).cloned().unwrap_or_default() {
+                        if let Some(e) = member_to_member(&ch) {
+                            return err(e);
+                        }
                         data["channels"].as_array_mut().unwrap().push(ch);
                     }
                     for sp in op.get("shared_spaces").and_then(|v| v.as_array()).cloned().unwrap_or_default() {
@@ -1121,7 +1138,11 @@ impl Control {
                     }
                 }
                 "add_channel" => {
-                    data["channels"].as_array_mut().unwrap().push(op.get("channel").cloned().unwrap_or(json!({})));
+                    let channel = op.get("channel").cloned().unwrap_or(json!({}));
+                    if let Some(e) = member_to_member(&channel) {
+                        return err(e);
+                    }
+                    data["channels"].as_array_mut().unwrap().push(channel);
                 }
                 "remove_channel" => {
                     let src = op.get("source").and_then(|v| v.as_str()).unwrap_or("");

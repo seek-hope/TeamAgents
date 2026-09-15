@@ -850,6 +850,44 @@ fn review_topology_update_must_rebuild_runner() {
 /// value is treated as a requested model id on the Leader's connection.
 /// The session profile survives a reopen.
 #[test]
+fn review_add_agent_inherits_leader_tools_and_gets_channels() {
+    let _env = env_guard("review-addagent-d33");
+    let cwd = isolated_project("d33");
+    let api = FakeOpenAi::start(|_, index| {
+        (200, if index == 0 {
+            tool_call_response("topo-1", "apply_topology_patch", json!({
+                "base_revision": 1,
+                "operations": [
+                    // no tool_bindings: the member must inherit the Leader's
+                    {"op":"add_agent","agent":{"id":"w1","name":"W1","role":"worker","runtime_kind":"deepagents"}},
+                    // explicit [] stays messaging-only
+                    {"op":"add_agent","agent":{"id":"w2","name":"W2","role":"worker","runtime_kind":"deepagents","tool_bindings":[]}},
+                ]
+            }))
+        } else {
+            text_response("done")
+        })
+    });
+    let opened = open_chat_session(&cwd, &api, &["files", "shell"], UserConfig::default());
+    opened.runtime.start();
+    opened.runtime.user_message("build a team", false).unwrap();
+    assert!(opened.runtime.settle(5));
+
+    let state = opened.core.state().unwrap();
+    let agents = state["spec"]["agents"].as_array().cloned().unwrap_or_default();
+    let tools_of = |id: &str| agents.iter().find(|a| a["id"] == id).map(|a| a["tool_bindings"].clone());
+    assert_eq!(tools_of("w1"), Some(json!(["files", "shell"])), "an omitted list inherits the Leader's: {state}");
+    assert_eq!(tools_of("w2"), Some(json!([])), "an explicit empty list is respected: {state}");
+
+    // both directions exist, so delegation reports and instructions can travel
+    let spec: teamagents_core::models::TeamSpec = serde_json::from_value(state["spec"].clone()).unwrap();
+    assert!(spec.can_send("w1", "leader"), "member -> leader: {state}");
+    assert!(spec.can_send("leader", "w1"), "leader -> member: {state}");
+    assert!(!spec.can_send("w1", "w2") && !spec.can_send("w2", "w1"), "members do not message each other: {state}");
+    opened.close();
+}
+
+#[test]
 fn review_add_agent_auto_creates_member_profile() {
     let _env = env_guard("review-autoprofile");
     let cwd = isolated_project("autoprofile");

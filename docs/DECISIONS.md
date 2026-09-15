@@ -698,3 +698,35 @@ stale_model_overrides_are_dropped_on_open（未知成员/未知 profile/越规�
 同 hash 兄弟 waiter 被释放且多余 PENDING 作废、set_mode 后重新询问、deny 仍 decline）；
 契约测试 codex_contract::codex_session_grant_auto_accepts_the_identical_operation
 （fake app-server 两次同命令请求，两次线上应答均为 accept，第二次不产生 PENDING 行）。
+
+## D-33 组队默认值：成员继承 Leader 工具、自动 Leader↔成员通道、成员之间只走共享空间（2026-09-15）
+
+用户明确指示：
+
+1. `add_agent` **省略** `tool_bindings` 时，新成员继承 Leader 的绑定；
+2. `add_agent` 时自动建立 Leader↔新成员通道；
+3. 成员之间的通话**只允许通过共享空间**进行，便于 Leader 查看。
+
+背景：真实评测 `team-collab` 首轮 900 秒超时失败——Leader 建出的成员只有团队工具（收发消息/任务），
+既改不了文件也跑不了命令，被派的任务永远完不成；同时 Leader 与成员之间没有任何通道，连"我卡住了"
+都传不出来。
+
+落法（与 D-30 同一个提交前钩子，core 协议不变）：
+
+- `engine/src/session.rs::topology_prepare_hook` 对每个 add_agent：
+  - 未给 `tool_bindings` → 复制 Leader 当前绑定；**显式 `[]` 仍表示"只要团队工具"**（保持可表达，
+    文档要求写清两者的区别）；
+  - 补两条 message 通道（`leader→成员`、`成员→leader`），已存在同向 message 通道时不重复添加。
+    选择 message 而非 task：`TeamSpec::can_send` 只认 message 通道，task 通道只影响 `can_delegate`
+    （Leader 委派本来就无需通道）。
+- `core/src/control.rs` 的补丁校验在两处拒绝成员间通道（`add_channel` 与 `add_agent` 内嵌
+  `channels`）：source 与 target 都不是 Leader 即拒绝，错误提示引导改用共享空间。
+- 代价与升级路径：成员之间无法直接对话；确有跨后端小组需求时，需显式放宽该校验，并把该流量纳入
+  观察者投影后再放开。
+
+证据：
+
+- `engine/tests/chat_e2e.rs::review_add_agent_inherits_leader_tools_and_gets_channels`
+  （省略→继承 Leader 绑定、显式 `[]`→保持空、双向 message 通道存在、成员之间不可发消息）；
+- `core/tests/engine.rs::topology_patch_add_and_stale_reject`（成员间 `add_channel` 被拒）；
+- 真实评测：`review/eval/runs/2026-09-15-deepseek/`（含 `team-collab` 前后对比）。
