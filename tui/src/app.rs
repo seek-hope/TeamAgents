@@ -230,6 +230,8 @@ pub struct App {
     pub plans: std::collections::HashMap<String, Vec<Json>>,
     /// Per-member review material: the diff lines of its recent edits.
     reviews: std::collections::HashMap<String, Vec<String>>,
+    /// Per-member context usage: (context window, last prompt tokens).
+    usage: std::collections::HashMap<String, (Option<u64>, u64)>,
     /// member id -> run id whose outcome is still unknown
     pub unknown_runs: std::collections::HashMap<String, String>,
     /// `v` review overlay (Esc closes; Ctrl+U/D scroll)
@@ -296,6 +298,7 @@ impl App {
             tool_activity: std::collections::HashMap::new(),
             plans: std::collections::HashMap::new(),
             reviews: std::collections::HashMap::new(),
+            usage: std::collections::HashMap::new(),
             unknown_runs: std::collections::HashMap::new(),
             review_open: false,
             review_agent: String::new(),
@@ -366,6 +369,19 @@ impl App {
             }
             self.cursor = self.cursor.max(seq);
             effects.extend(self.apply_event(ev, st));
+        }
+        // per-member context usage (the worker merges it into the snapshot)
+        self.usage.clear();
+        if let Some(agents) = st.get("usage").and_then(Json::as_array) {
+            for agent in agents {
+                let id = jstr(agent, "agent_id");
+                if id.is_empty() {
+                    continue;
+                }
+                let window = agent.get("context_window").and_then(Json::as_u64);
+                let last = agent.get("usage").and_then(|u| u.get("last_prompt_tokens")).and_then(Json::as_u64).unwrap_or(0);
+                self.usage.insert(id, (window, last));
+            }
         }
         // runs whose outcome nobody has accepted yet: they block goal completion
         self.unknown_runs.clear();
@@ -843,7 +859,7 @@ impl App {
                 cell(id.clone()),
                 cell(jstr(agent, "role")),
                 cell(jstr(agent, "runtime_kind")),
-                cell(self.model_label(agent)),
+                self.model_cell(agent, &id),
                 (status_label, Some(style)),
                 cell(agent.get("workspace_policy").and_then(|v| v.as_str()).unwrap_or("shared").to_string()),
                 cell(if reach.is_empty() { "-".into() } else { reach.join(" ") }),
@@ -851,6 +867,21 @@ impl App {
             ]));
         }
         rows
+    }
+
+    /// Model label plus context usage when the window is known: the team panel is
+    /// where a user notices a member approaching compaction.
+    fn model_cell(&self, agent: &Json, agent_id: &str) -> Cell {
+        let label = self.model_label(agent);
+        let Some((Some(window), last)) = self.usage.get(agent_id).copied() else {
+            return cell(label);
+        };
+        if window == 0 || last == 0 {
+            return cell(label);
+        }
+        let percent = ((last as f64 / window as f64) * 100.0).round().min(100.0) as u64;
+        let style = if percent >= 80 { "warning" } else { "notice" };
+        (format!("{label} {percent}%"), Some(style))
     }
 
     /// TasksPanel::refresh_from — newest first, parent-indented.

@@ -598,6 +598,31 @@ mod tests {
     }
 
     #[test]
+    fn team_panel_shows_context_usage_per_member() {
+        let mut app = test_app();
+        app.state = Some(json!({
+            "spec": {"leader_id": "leader", "agents": [
+                {"id": "leader", "name": "leader", "role": "leader", "runtime_kind": "deepagents", "model_profile": "m"},
+                {"id": "quiet", "name": "quiet", "role": "worker", "runtime_kind": "deepagents", "model_profile": "m"}
+            ]},
+            "usage": [
+                {"agent_id": "leader", "context_window": 100000, "usage": {"last_prompt_tokens": 85000}},
+                {"agent_id": "quiet", "usage": {"last_prompt_tokens": 10}}
+            ]
+        }));
+        let state = app.state.clone().unwrap();
+        app.apply_state(&state);
+        let rows = app.team_rows();
+        let model_cell = |id: &str| rows.iter().find(|(key, _)| key == id).map(|(_, cells)| cells[3].clone()).unwrap();
+
+        let (label, style) = model_cell("leader");
+        assert!(label.ends_with(" 85%"), "usage rides on the model column: {label}");
+        assert_eq!(style, Some("warning"), "high usage is tinted");
+        // no window (or no usage yet) leaves the plain label
+        assert!(!model_cell("quiet").0.contains('%'), "{:?}", model_cell("quiet"));
+    }
+
+    #[test]
     fn plan_overlay_shows_the_whole_list() {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut app = test_app();

@@ -552,3 +552,10 @@ function schemas 发了一遍，等于每轮重复。改成只列工具名（描
   含必须读懂工具契约的 team-collab / team-codex）。可比对照：plan-use 的 prompt token
   77,540 → 67,413（−13%），team-collab 116,651 → 113,917（−2.3%）；差值不大是因为历史本身占大头，
   固定开销这一项降了 85%。
+
+## 第三十一批：团队成员上下文用量可见
+
+压缩是自动的，但用户此前只能在 `/status` 里翻账本。现在 worker 把用量快照并入 `state` 回复，
+团队页签的模型列在有 `context_window` 时追加百分比（`deepseek-flash 43%`，≥80% 用警示色）——
+某个成员快触发压缩这件事变成一眼可见。回归 `tui::tests::team_panel_shows_context_usage_per_member`
+（有窗口才显示、无窗口/无用量保持原样、高占用带警示色）。

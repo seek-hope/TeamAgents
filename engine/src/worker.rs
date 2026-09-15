@@ -157,6 +157,9 @@ impl Worker {
                 if inner == "state" {
                     if let Some(object) = reply.as_object_mut() {
                         object.insert("plans".into(), member_plans(&opened.session_id));
+                        // per-member context usage rides along: the team panel shows
+                        // how close each member is to compaction
+                        object.insert("usage".into(), opened.usage_report().get("agents").cloned().unwrap_or_else(|| json!([])));
                     }
                 }
                 Ok(reply)
