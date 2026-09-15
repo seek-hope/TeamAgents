@@ -3,6 +3,7 @@
 //! the isolated workspace note (findings 1/2/6/8/9).
 
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 use std::time::{Duration, Instant};
 use teamagents_core::models::{AgentSpec, ToolBinding, UserConfig};
@@ -49,6 +50,117 @@ fn file_tools_reject_dangling_links_and_keep_in_root_links_working() {
     assert_eq!(executor("read_file", &json!({"path":"safe"})).unwrap(), json!("edited"));
     assert_eq!(std::fs::read_to_string(root.join("nested/target")).unwrap(), "edited");
     std::fs::remove_dir_all(base).unwrap();
+}
+
+#[test]
+fn paged_reads_preserve_middle_lines_and_multibyte_long_lines() {
+    let dir = scratch("paged-read");
+    let artifacts = dir.join("artifacts");
+    std::fs::create_dir_all(&artifacts).unwrap();
+    let text = format!("first\n{}\nlast\n", "中文🙂".repeat(15_000));
+    std::fs::write(dir.join("large.txt"), &text).unwrap();
+    let executor = tools::workspace_executor(dir.clone(), Some(artifacts.clone()));
+    let first = executor("read_file", &json!({"path":"large.txt", "offset":1, "limit":1, "include_sha256":true})).unwrap();
+    assert_eq!(first["content"], "first\n");
+    assert_eq!(first["next_offset"], 2);
+    assert_eq!(first["sha256"], format!("{:x}", Sha256::digest(text.as_bytes())));
+    let mut recovered = first["content"].as_str().unwrap().to_string();
+    let mut position = first["next_byte_offset"].as_u64();
+    while let Some(offset) = position {
+        let page = executor("read_file", &json!({"path":"large.txt", "byte_offset":offset})).unwrap();
+        assert!(page["content"].as_str().unwrap().len() <= 32_000);
+        recovered.push_str(page["content"].as_str().unwrap());
+        position = page["next_byte_offset"].as_u64();
+    }
+    assert_eq!(recovered, text);
+    assert_eq!(executor("read_file", &json!({"path":"large.txt","offset":3,"limit":1})).unwrap()["content"], "last\n");
+    for args in [json!({"offset":0}), json!({"limit":0}), json!({"byte_offset":-1}), json!({"offset":2,"byte_offset":6})] {
+        let mut args = args;
+        args["path"] = json!("large.txt");
+        assert!(executor("read_file", &args).is_err());
+    }
+    // Long artifacts have no whole-file 10 MiB read ceiling.
+    let mut file = std::fs::File::create(artifacts.join("huge.log")).unwrap();
+    file.set_len(12 * 1024 * 1024).unwrap();
+    use std::io::{Seek, SeekFrom};
+    file.seek(SeekFrom::End(0)).unwrap();
+    file.write_all(b"tail\n").unwrap();
+    let tail = executor("read_artifact", &json!({"path":"huge.log", "byte_offset":12 * 1024 * 1024})).unwrap();
+    assert_eq!(tail["content"], "tail\n");
+    assert!(tail["next_byte_offset"].is_null());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn edits_reject_ambiguous_matches_and_writes_preserve_permissions_and_versions() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let dir = scratch("atomic-writes");
+    let path = dir.join("source.rs");
+    std::fs::write(&path, "aaa\nunique\n").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o751)).unwrap();
+    let executor = tools::workspace_executor(dir.clone(), None);
+    for old in ["", "aa", "missing"] {
+        assert!(executor("edit_file", &json!({"path":"source.rs", "old_string":old,"new_string":"bad"})).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "aaa\nunique\n");
+    }
+    let snapshot = executor("read_file", &json!({"path":"source.rs","include_sha256":true})).unwrap();
+    let original = std::fs::File::open(&path).unwrap();
+    let old_inode = original.metadata().unwrap().ino();
+    let diff = executor("edit_file", &json!({"path":"source.rs", "old_string":"unique","new_string":"changed", "expected_sha256":snapshot["sha256"]})).unwrap();
+    assert!(diff.as_str().unwrap().contains("@@ line 2 @@\n-unique\n+changed"));
+    assert_ne!(std::fs::metadata(&path).unwrap().ino(), old_inode, "replace the inode, never truncate the original");
+    assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o751);
+    let mut old = String::new();
+    original.take(100).read_to_string(&mut old).unwrap();
+    assert_eq!(old, "aaa\nunique\n");
+    assert!(executor("write_file", &json!({"path":"source.rs","content":"stale","expected_sha256":snapshot["sha256"]})).unwrap_err().contains("conflict"));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "aaa\nchanged\n");
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "failed mutations clean their staging file");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn independent_members_cannot_both_commit_the_same_file_version() {
+    let dir = scratch("concurrent-writes");
+    std::fs::write(dir.join("shared.txt"), "original").unwrap();
+    let hash = format!("{:x}", Sha256::digest(b"original"));
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let jobs: Vec<_> = (0..2).map(|index| {
+        let executor = tools::workspace_executor(dir.clone(), None);
+        let barrier = barrier.clone();
+        let hash = hash.clone();
+        std::thread::spawn(move || {
+            barrier.wait();
+            executor("write_file", &json!({"path":"shared.txt", "content":format!("member-{index}"),"expected_sha256":hash}))
+        })
+    }).collect();
+    let results: Vec<_> = jobs.into_iter().map(|job| job.join().unwrap()).collect();
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    assert!(results.iter().find_map(|result| result.as_ref().err()).unwrap().contains("conflict"));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn searches_respect_ignores_and_workspace_boundaries() {
+    if !has_bwrap() || tools::which("rg").is_none() { return; }
+    let dir = scratch("search-ignore");
+    std::fs::create_dir_all(dir.join(".git")).unwrap();
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(dir.join(".gitignore"), "ignored.rs\n").unwrap();
+    std::fs::write(dir.join("src/visible.rs"), "needle\n").unwrap();
+    std::fs::write(dir.join("ignored.rs"), "needle\n").unwrap();
+    std::os::unix::fs::symlink("/etc", dir.join("escape")).unwrap();
+    let executor = tools::workspace_executor(dir.clone(), None);
+    let files = executor("glob", &json!({"pattern":"**/*.rs"})).unwrap();
+    assert!(files.as_str().unwrap().contains("src/visible.rs"), "{files}");
+    assert!(!files.as_str().unwrap().contains("ignored.rs"), "{files}");
+    let hits = executor("grep", &json!({"pattern":"needle"})).unwrap();
+    assert!(hits.as_str().unwrap().contains("src/visible.rs"), "{hits}");
+    assert!(!hits.as_str().unwrap().contains("ignored.rs"), "{hits}");
+    assert!(executor("grep", &json!({"pattern":"root","path":"escape/passwd"})).is_err());
+    assert!(executor("grep", &json!({"pattern":"root","path":"/etc/passwd"})).is_err());
+    assert!(!executor("glob", &json!({"pattern":"escape/**"})).unwrap().as_str().unwrap().contains("passwd"));
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 /// finding 1: a child that fills the 64KiB pipe buffer must not be mistaken
@@ -111,9 +223,12 @@ fn long_shell_output_is_stored_as_a_readable_artifact() {
     let executor =
         tools::member_executor(dir.clone(), UserConfig::default(), vec!["files".into()], Some(artifacts.clone()));
     let via_read_file = executor("read_file", &json!({"path": reference})).expect("read_file /artifacts/...");
-    assert_eq!(via_read_file.as_str().unwrap(), stored);
+    assert_eq!(via_read_file["content"].as_str().unwrap(), stored.lines().take(2000).map(|line| format!("{line}\n")).collect::<String>());
+    assert_eq!(via_read_file["next_offset"], 2001);
     let via_tool = executor("read_artifact", &json!({"path": reference.trim_start_matches("/artifacts/")})).unwrap();
     assert_eq!(via_tool, via_read_file);
+    let middle = executor("read_artifact", &json!({"path":reference,"offset":25000,"limit":2})).unwrap();
+    assert_eq!(middle["content"], "25000\n25001\n");
     // members may also deliver their own artifacts under the same prefix
     executor("write_file", &json!({"path": "/artifacts/member-note.txt", "content": "done"})).unwrap();
     assert_eq!(std::fs::read_to_string(artifacts.join("member-note.txt")).unwrap(), "done");

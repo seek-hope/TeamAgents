@@ -1353,7 +1353,7 @@ impl App {
             self.write_chat("system", &msg);
             return;
         }
-        let mut lines = vec![self.t("可回退点（/rewind <序号> 回退到该条之前的状态）：", &[])];
+        let mut lines = vec![self.t("可回退点（/rewind <序号> 保留该条输入，移开后续对话）：", &[])];
         for (i, point) in points.iter().enumerate() {
             let preview = point.get("preview").and_then(|v| v.as_str()).unwrap_or("");
             let line = self.t("  {v0}. {v1}", &[("v0", &(i + 1).to_string()), ("v1", preview)]);

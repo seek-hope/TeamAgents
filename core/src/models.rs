@@ -321,6 +321,12 @@ pub struct ToolBinding {
     pub mcp_server: Option<String>,
     #[serde(default)]
     pub mcp_transport: Option<String>,
+    /// Local MCP execution boundary: workspace (default) or explicit host.
+    #[serde(default)]
+    pub mcp_execution: Option<String>,
+    /// Network access for workspace-sandboxed MCP processes.
+    #[serde(default)]
+    pub mcp_network: bool,
     #[serde(default)]
     pub command: Option<String>,
     #[serde(default)]

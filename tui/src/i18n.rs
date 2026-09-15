@@ -82,7 +82,7 @@ static ENGLISH: &[(&str, &str)] = &[
     ("从当前对话分叉新会话（团队事实不复制）", "Fork a new session from this conversation (team facts are not copied)"),
     ("没有这个序号（先用 /rewind 列出可回退点）", "No such index (list rewind points with /rewind first)"),
     ("暂无可回退的节点（leader 还没有对话历史）", "Nothing to rewind to yet (the leader has no history)"),
-    ("可回退点（/rewind <序号> 回退到该条之前的状态）：", "Rewind points (/rewind <n> returns to just before that message):"),
+    ("可回退点（/rewind <序号> 保留该条输入，移开后续对话）：", "Rewind points (/rewind <n> keeps that input and branches off later messages):"),
     ("已回退对话（当前 {v0} 条消息；被放弃的分支仍保留，可再次 /rewind）", "Rewound ({v0} messages now; the abandoned branch is kept — /rewind again to go further)"),
     ("回退失败：{v0}", "Rewind failed: {v0}"),
     ("已从 {v0} 分叉到 {v1}（对话已带上，团队状态全新）", "Forked {v0} into {v1} (conversation carried over, team state fresh)"),

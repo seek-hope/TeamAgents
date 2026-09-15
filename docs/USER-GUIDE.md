@@ -1,5 +1,8 @@
 # 用户指南：配置、权限、恢复与故障处理
 
+适用版本：当前 Rust 实现（2026-09-15 核对）。验收覆盖与尚未满足的方案要求见
+[验收对照表](ACCEPTANCE.md)。
+
 ## 1. 配置
 
 ### 1.1 位置
@@ -11,7 +14,7 @@
 | 会话状态（业务库、成员私有检查点、制品、成员工作目录） | `$XDG_STATE_HOME/teamagents/sessions/<session_id>/` |
 | TUI 语言偏好 | `$XDG_STATE_HOME/teamagents/ui.json`（默认 `~/.local/state/teamagents/ui.json`） |
 | TUI 输入历史 | `$XDG_STATE_HOME/teamagents/composer-history.json`（上限 500 条，跨会话与重启保留） |
-| 团队定义导入/导出 | 任意路径的 JSON/YAML，`teamagents validate` 校验 |
+| 团队定义导入 | 任意路径的 JSON/YAML，`teamagents validate` 校验、`--team` 用于新会话；暂无专用导出命令 |
 
 ### 1.2 模型 profile
 
@@ -22,7 +25,7 @@ protocol = "deepseek"          # openai | anthropic | deepseek
 model = "deepseek-flash"       # 首版默认模型
 api_key_env = "DEEPSEEK_API_KEY"          # 只引用环境变量，密钥不进仓库
 timeout = 120
-max_retries = 2
+max_retries = 2               # 示例显式覆盖；省略时默认 5
 generation_options = { reasoning_effort = "max" }     # 默认档位；嫌慢改 high（实测 high≈10s / max≈240s）
 context_window = 128000   # 可选；填写后启用上下文自动压缩（见 §3.3），/status 也会显示占用比例
 ```
@@ -34,6 +37,14 @@ context_window = 128000   # 可选；填写后启用上下文自动压缩（见 
 （`deepseek` → `https://api.deepseek.com/v1`，`anthropic` → `https://api.anthropic.com`，
 其他 → `https://api.openai.com/v1`），Kimi/GLM 等第三方服务要么与这些端点同源，
 要么显式填 `base_url`。
+
+普通 Chat 成员默认请求模型 SSE；文本增量即时显示，工具参数完整接收后才执行。服务端不提供 SSE 时兼容单个 JSON 响应。Anthropic 的 thinking/signature 块会随历史保留。
+
+Codex 成员使用本机 `codex app-server`。当前引导会把所引用 profile 的 `model` 和 `provider`
+映射给 Codex，不能假设总是继承本机默认模型；该 provider 必须是本机 Codex 可用的配置。
+使用 `/model` 选择带 `base_url` 的 OpenAI 兼容 profile 时，会显式配置 Responses API 地址与
+密钥环境变量。仅支持 Chat Completions 的端点不能直接用于 Codex。Codex 默认档位为 `xhigh`
+（不支持时回退 `max`），会话 `/model` 的档位覆盖优先。
 
 ### 1.3 工具绑定（绑定即授权）
 
@@ -66,16 +77,27 @@ tool_timeout_s = 120           # tools/call 超时秒数（可省，默认 120�
 
 旧式 `mcp_transport = "sse"` 已从 MCP 规范移除，绑定会直接报错并提示改用 `"http"`。
 
-内置能力名 `files` / `shell` / `web` 不需要配置条目：成员在 TeamSpec 里引用即可。
+内置能力名 `files` / `shell` / `web` / `skills` 不需要同名配置条目，但 `web` 仍需配置实际的
+`kind = "web_search"` / `"web_fetch"` 服务，`skills` 仍需配置注册目录。
+有显式网页绑定时按成员绑定顺序各选一个搜索/抓取服务；没有显式网页绑定时，`web` 才从配置中
+按名称排序选择。要同时使用上例搜索与抓取，绑定 `[files, shell, web]`，或把搜索配置改名为
+`search` 并绑定 `[files, shell, search, fetch]`。`[web, fetch]` 因存在显式 fetch 绑定，
+只会启用抓取，仓库 `examples/team.yaml` 当前也有这一限制。
+AnySearch 搜索需要密钥，原生 `web_fetch` 直接抓取目标 URL，无需 AnySearch 密钥。
 
 ### 1.4 Skills 与指令文件
 
 ```toml
-skills_paths = ["~/.agents/skills", "~/.config/teamagents/skills"]
-instruction_files = ["~/.config/teamagents/AGENTS.md"]
+# 顶层键：放在第一个 [models.*] / [tools.*] 表之前；目录必须存在
+skills_paths = ["~/.agents/skills"]
+# 可选：额外指令文件；只填写已存在的文件
+# instruction_files = ["/绝对路径/extra-instructions.md"]
 ```
 
-项目根的 `AGENTS.md` 会自动作为指令文件加载。Skills 不授予任何新权限。
+项目根及用户配置目录的 `AGENTS.md` 都会自动加载，无需重复写入 `instruction_files`。
+项目配置中的 `skills_paths` / `instruction_files` 与工具绑定一样，需要用户配置
+`[permissions] trust_project_tools = true`；自动发现的项目 `AGENTS.md` 不受此开关控制。
+Skills 不授予任何新权限。按 D-23，本项目的用户级注册根统一为 `~/.agents/skills`。
 
 Skills 的加载与分发（对应方案 §12.1 的“发现 + 按需读取”）：
 
@@ -83,9 +105,11 @@ Skills 的加载与分发（对应方案 §12.1 的“发现 + 按需读取”�
   （`action="search"` 按关键词检索名称+简介，`action="read"` 按名取全文）。注册根就是
   `skills_paths`，只读；项目 `.teamagents/skills` 在工作区内，用 files 工具即可读。
 - **分发**：TeamSpec 或 topology patch（`add_agent`/`update_agent`）里的成员 `skills: [名称]`
-  会把对应 SKILL.md 内容注入该成员系统提示词（8KB/文件、32KB/成员上限；同名按
-  用户级 → 项目级 → 成员级覆盖）。Leader 据此把泛用/专精技能分给特定成员；
+  会把对应 SKILL.md 内容注入 Chat 成员系统提示词（每文件最多 8,000 字符，Skills 与指令合计
+  每成员 32,000 字符；同名按用户级 → 项目级 → 成员级覆盖）。Leader 据此把泛用/专精技能分给特定成员；
   未点名的技能不再注入（技能库大时全量注入必然超上限）。
+- 默认新会话 Leader 只绑定 `files/shell/web`；需要技能检索时，在 TeamSpec 或 patch 中追加
+  `skills` 绑定。上述注入与 `skill` 工具属于 ChatRunner，未接入 CodexRunner。
 
 ## 2. 权限
 
@@ -95,6 +119,10 @@ Skills 的加载与分发（对应方案 §12.1 的“发现 + 按需读取”�
   初始预授权 = 当前工作目录读写、被绑定的工具（文件/搜索/MCP）、**无网络**的隔离 Shell。
 - **full_auto（仅用户可开启）**：跳过逐次批准，仍保留团队通信 ACL、动作校验、记录与执行上限；
   不绕过操作系统与外部服务的限制。TUI 状态栏始终显示当前模式。
+
+当前原生文件工具仍限制在成员工作目录和 `/artifacts/`，Shell 仍使用 bubblewrap，
+全自动不会扩大其挂载范围；`network=true` 的 Shell 可免批准联网。越界文件路径直接失败，
+尚无通过批准扩展文件根的流程。Codex 后端则按权限模式映射自己的沙箱策略。
 
 切换：TUI `Ctrl+F`，或 `teamagents --full-auto`，或用户配置
 `[permissions] mode = "full_auto"`（非法取值会直接报错，doctor 可见）。项目配置**不能**开启全自动。
@@ -110,6 +138,8 @@ Skills 的加载与分发（对应方案 §12.1 的“发现 + 按需读取”�
 - 等待批准只暂停相关操作，其他成员继续；`WAITING_APPROVAL` 不算回合结束。
 - 恢复时重新核对参数、配置版本与权限，历史批准不会沿用失效范围。
 - Codex 成员的批准等待有 600s 上限，超时把该批准置 EXPIRED（需重新批准）；其他成员不受影响。
+- Codex 的会话内批准也绑定具体操作：相同命令/目录等可复用，不同操作重新请求；线上仅回复
+  单次 `accept`，不使用 Codex 的宽范围 `acceptForSession`（D-31）。
 
 ### 2.3 隔离边界（诚实说明）
 
@@ -117,14 +147,16 @@ Skills 的加载与分发（对应方案 §12.1 的“发现 + 按需读取”�
   网络默认关闭，需要联网的操作要批准。**要求** bwrap：缺失时命令直接失败
   （`IsolationUnavailable`），不会退化成不隔离执行；命令环境是白名单（不含模型密钥）。
 - 文件工具做符号链接与路径穿越防护，越界即拒绝。
-- “私有上下文隔离”是运行时投递与工具授权合约；full_auto 允许程序按当前用户权限访问主机，
-  不能同时承诺对恶意同用户进程的强保密隔离。
+- 已绑定的 MCP 工具由 ChatRunner 直接调用，不再逐次批准。stdio 服务是白名单环境下启动的
+  本机进程，当前没有 bubblewrap 的目录/网络隔离；其权限范围取决于该服务自身配置。
+- “私有上下文隔离”是运行时投递与工具授权合约；本机 MCP 或 Codex 全自动执行可能按当前用户
+  权限访问主机，不能承诺对恶意同用户进程的强保密隔离。
 
 ## 3. 恢复
 
 - 正常退出默认保存并暂停；异常退出后下次启动自动恢复：团队版本、待办任务、消息位置、
-  成员私有线程与批准队列都会重新装载（成员对话历史落盘在
-  `members/<成员>/chat_history.json`，重启后装载）。
+  成员私有线程与批准队列都会重新装载。Chat 对话以 `members/<成员>/chat_tree.json`
+  的追加式节点树和 leaf 指针保存；旧 `chat_history.json` 会惰性迁移，仍保留线性兼容快照。
 - 执行意图（`QUEUED` 回合）先持久化再执行，恢复后继续；ChatRunner 在模型响应、工具调用与
   结果边界保存回合检查点，恢复时沿用原工具调用 ID，通过核心回执去重。Codex 回合先核对外部历史。
 - 执行中的 Chat 回合若缺少有效检查点，或外部工具已开始但没有落盘结果，进入
@@ -138,11 +170,14 @@ Skills 的加载与分发（对应方案 §12.1 的“发现 + 按需读取”�
 ```
 $XDG_STATE_HOME/teamagents/sessions/<会话 id>/     # 默认 ~/.local/state/teamagents/sessions/
 ├── team.db            业务事实：动作回执、事件流、任务、回合、投递、批准、共享条目、拓扑补丁
-├── artifacts/         长输出与制品：shell 输出超 200KB 落 exec-*.log，工具结果用 /artifacts/xxx 引用
+├── artifacts/         长输出与制品：shell 输出超 200KB 落 exec-*.log（单个制品上限 64 MiB，超出的尾部丢弃并在输出里标注），工具结果用 /artifacts/xxx 引用
 │                      （成员用 read_file/read_artifact/write_file 等按 /artifacts/ 前缀读写；ls/glob 与隔离 shell 看不到）
 ├── members/<成员>/work/  隔离/worktree 成员的专属工作目录（文件工具的执行根）
-├── members/<成员>/chat_history.json  成员对话历史（重启后装载）
+├── members/<成员>/chat_tree.json     对话树、当前 leaf、回退代次（含保留的旧分支）
+├── members/<成员>/chat_history.json  当前线性历史快照及旧版迁移入口
 ├── members/<成员>/turns/<回合>.json  回合检查点（原工具调用 ID、执行进度、结果与已注入投递）
+├── profiles.json      自动创建的会话级模型 profile
+├── model_overrides.json  /model 设置的成员覆盖
 └── session.lock       执行所有权（flock；同一会话同时只允许一个运行实例，kill -9 自动回收）
 ```
 
@@ -158,8 +193,13 @@ TUI 里同一件事在「会话」面板完成（`Tab` 把焦点移入管理面�
 运行中的会话（其他进程持有文件锁）不允许切换/归档/删除，会明确告知
 （提示 `session <id> is already running (pid <n>)`）。
 
-- **默认会话 id** 由工作目录派生（`proj_<12位哈希>`），即“一个项目一条会话线”；换目录或 `--resume` 指定其它会话即为隔离的新会话，互不继承（T6/T24）。
-- **删除**：删掉对应会话目录即可；若成员用过 `git_worktree`，先在项目里 `git worktree remove <路径>`（未合并成果要先处理，见 §5 与 `workspace.py`）。
+- **默认会话 id** 由工作目录派生（`proj_<12位哈希>`）；再次打开同一目录会复用默认会话。
+  `--resume` 指向已有 id 时恢复它，指向未使用 id 时新建；不会自动复制其他会话上下文。
+  `--team` 不强制新建或覆盖已有团队；要用另一个 TeamSpec 开新会话，请同时指定未使用的会话 id。
+- **归档**：移动到 `sessions/archived/<id>/`，保留数据库原状态；不是将状态改为 CLOSED。
+  TUI 的已归档行只展示，不支持切换、再次归档或删除，也没有取消归档命令。
+- **删除**：使用会话面板 `d`，后端先检查运行锁及 worktree 的未提交/未合并成果，
+  再清理目录（实现见 `engine/src/sessions.rs` 与 `engine/src/workspace.rs`）。
 - **导出/排查**：`team.db` 是普通 SQLite，可直接查，例如查看最近事件：
   ```bash
   sqlite3 ~/.local/state/teamagents/sessions/<id>/team.db \
@@ -168,21 +208,44 @@ TUI 里同一件事在「会话」面板完成（`Tab` 把焦点移入管理面�
 - **不记录什么**：模型密钥（只引用环境变量）、Codex 自身的会话历史（在 `~/.codex`，我们只存线程引用）、TUI 的界面状态（展开/光标等）。
 - **并发保护**：会话文件锁 + SQLite 单写入口；第二个进程会明确报 “session is already running in another process”。
 
+### 3.2 对话回退与分叉
+
+TUI `/rewind` 列出当前分支的用户输入节点，`/rewind <序号>` 回到所选节点
+（**包含该条输入**）；`/rewind 0` 清空当前对话路径。旧分支仍在树中，可用已知节点 ID
+直接回退，但列表不展示全部分支。回退只改 Leader 的模型记忆，不撤销任务、事件或文件，
+也不会清空已显示的聊天日志；Leader 有 QUEUED/RUNNING 回合时拒绝回退。
+
+`/fork` 复制当前 TeamSpec 与 Leader 对话树到新会话，不复制团队事实、其他成员历史、
+`profiles.json` 或 `/model` 覆盖；任意成员有 QUEUED/RUNNING 回合时拒绝分叉。
+使用自动生成的会话 profile 的团队可能因此无法直接分叉，见验收表的已知差异。
+`--plain` 使用 `rewind <节点 ID>`（无斜杠），不支持 fork；`model <成员>` 恢复默认模型。
+
 ### 3.3 上下文自动压缩（chat 运行时，D-28）
 
 成员的模型上下文接近上限时自动压缩，无需任何命令；只对 chat 运行时生效
 （codex 成员由 Codex 侧自行处理）。三层按成本递增：
 
-1. **写入时限流**：单个工具输出超过 50K 字符时保留头尾、中间省略。
+1. **发送时限流**：工具结果字符串超过 50,000 字节时只截减**发给模型的那一份**（保留头尾各
+   最多 25,000 字符、中间省略，并附 `read_history tool_call_id=…` 提示）。检查点与会话历史树
+   保留完整原文，中间被省略的部分可用 `read_history` 按 tool_call_id 分页取回。
 2. **视图遮蔽**：发给模型的消息里，较旧的工具输出替换为占位符（原文不动，
    仍留在会话历史树里）。
 3. **阈值摘要**：`context_window` 已配置且最近一次 prompt 超过其 90% 时，额外调一次
    模型把对话压成结构化摘要（目标/进展/文件/错误/任务/下一步）。**被压缩的原文不丢失**：
    仍在历史树中，`/rewind` 回退到压缩前节点即可再见全文；成员也可用 `read_history`
-   工具按 tool_call_id 取回某次工具调用的原始输出。压缩连续失败 3 次后本会话自动停试
-   （不影响回合本身，超限的 API 报错会原样暴露）。
+   工具按 tool_call_id 分页取回历史里保存的完整工具结果。压缩连续失败 3 次后
+   当前 runner 自动停试，重建 runner/重开会话会重置（超限的 API 报错会原样暴露）。
 
-## 4. 故障处理
+`/status` 的用量账本写入成员目录 `usage.json`，重建 runner/重开会话仍保留；服务端未返回 usage 时计入未知调用，不猜测 token 或费用。
+
+## 4. 非交互执行与故障处理
+
+脚本和 CI 可使用 `teamagents exec --json PROMPT`。stdout 只输出 schema version 1 的 JSONL
+（session、event、result），诊断写入 stderr；`--check COMMAND` 可重复指定验收命令，命令在
+隔离 Shell 中按顺序执行。退出码为：0 完成，1 失败或未完成，3 需要批准，124 超时。
+非交互方式没有人能回应批准，因此回合停在待批准时立即返回 3（不等超时）：需要批准的工具
+要么改用 `--full-auto`，要么先在 TUI 里批准再用 `--resume` 继续。
+使用 `PROMPT` 为 `-` 时从 stdin 读取；`--resume ID` 可继续同一会话。
 
 | 现象 | 处理 |
 |---|---|
@@ -193,7 +256,7 @@ TUI 里同一件事在「会话」面板完成（`Tab` 把焦点移入管理面�
 | Codex 成员卡在“Reconnecting” | codex 的 provider 凭据不可达：检查 `~/.codex/config.toml` 的默认 provider 与密钥，或给成员配置走环境变量密钥的 profile |
 | 回合因 `LIMIT_REACHED` 停止 | 达到目标回合数或模型请求步数上限（`limits.max_model_steps_per_turn` 真实约束模型请求数）；该回合记为 FAILED 并发 `limit_reached` 事件，调整 `limits` 后可继续 |
 | 成员回合活动超时 | 超过 `limits.turn_active_timeout_s`（默认 1200s）会中断成员回合（不再继续执行）；回合记为 FAILED，按需重派任务 |
-| 任务长期 `BLOCKED` | 依赖失败或成员回合未提交完成申请；Leader 会收到事件，可在 TUI 里取消或重派 |
+| 任务长期 `BLOCKED` | 依赖失败或成员回合未提交完成申请等；Leader 可用 `cancel_task`，用户可在任务面板按 `c`。结清旧任务后按需创建新任务，不能用 `complete_task` 完成 BLOCKED 任务 |
 | 需要查看发生了什么 | TUI 日志面板 / `sessions/<id>/team.db` 的 events 表 / `run_progress` 事件 |
 | 隔离或协议自检 | `teamagents doctor`（依赖、配置、bubblewrap、codex、状态目录） |
 | 提示“找不到 teamagents-tui” | 先 `cd tui && cargo build`；或用 `TEAMAGENTS_TUI=/路径/teamagents-tui` 指定 |
@@ -204,8 +267,11 @@ TUI 里同一件事在「会话」面板完成（`Tab` 把焦点移入管理面�
 
 - 字段：`leader_id`、`agents[]`（id/name/role/runtime_kind/instructions/model_profile/
   tool_bindings/skills/workspace_policy）、`channels[]`、`observers[]`、`shared_spaces[]`、`limits`。
-- 校验：Leader 唯一且存在、成员 ID 唯一、引用有效、任务依赖无环、Codex 成员只能由 Leader 委派、
-  上限为正数；通过 `teamagents validate` 可离线检查。
+- `runtime_kind: deepagents` 是保留的兼容字面量，实际执行后端是 Rust `ChatRunner`，
+  不依赖 Python/Deep Agents。
+- `teamagents validate` 离线检查 TeamSpec 结构、成员/通道/观察/共享引用及正数上限，
+  只读取用户配置目录，不合并项目配置。任务依赖环、Codex 委派者限制在提交任务时检查；
+  校验通过不代表模型端点或工具服务可用。
 - 运行中 Leader 用 `apply_topology_patch` 的 `add_agent` 创建成员时，`model_profile` 可省略：
   系统会为该成员自动创建**同名会话级 profile**（复制 Leader 当前生效的模型配置，含 /model 覆盖后的
   模型与档位）；填一个未配置的名字则视为模型 ID（沿用 Leader 的连接）；填已有 profile 名则直接复用。
@@ -215,6 +281,8 @@ TUI 里同一件事在「会话」面板完成（`Tab` 把焦点移入管理面�
   `git_worktree`（从明确提交建分支与 worktree；原目录脏时自动退回 shared 并说明原因；
   重开会话复用既有 worktree，未合并成果拒绝清理，删除会话同样受保护）。
   三者均已实现（见 `docs/DECISIONS.md` D-19）。
+- 实际默认 limits：工作成员并发 8（Leader 另有额度）、成员总数 20、单目标回合 1000、
+  单回合模型步骤 200、活动超时 1200s、取消确认超时 60s（`core/src/models.rs::Limits`）。
 
 ## TUI（布局与交互）
 
@@ -243,9 +311,9 @@ TUI 里同一件事在「会话」面板完成（`Tab` 把焦点移入管理面�
   获取期间仍可选择配置中的模型，失败时显示原因并保留配置候选；在线发现的模型标“在线”，
   同名模型以括号内的 profile 名区分，供应商页可恢复默认；
   `/model <成员> <模型> [档位]` 仍可手输模型名，`/model <成员> clear` 恢复 TeamSpec 默认；
-  覆盖只在当前会话生效，不改 TeamSpec）、`/rewind`（列出可回退点，`/rewind <序号>` 回退到该条之前，
-  `/rewind 0` 清空对话；被放弃的分支仍保留在树里，可再次回退；Leader 回合进行中不可回退）、
-  `/fork`（从当前 Leader 对话分叉为新会话，团队任务/事实不复制；回合进行中不可分叉）。
+  覆盖只在当前会话生效，不改 TeamSpec）、`/rewind`（列出可回退点，`/rewind <序号>` 回到该节点并保留该条输入，
+  `/rewind 0` 清空当前对话路径；具体节点与分支语义见 §3.2）、
+  `/fork`（从当前 Leader 对话分叉为新会话，复制范围与限制见 §3.2）。
 - **模型切换**：选择配置会一起切换 API 地址、认证环境变量、协议和上下文窗口，从下一回合生效，
   当前回合继续运行并可正常取消。覆盖随会话保存（`sessions/<id>/model_overrides.json`），
   重开同一会话仍然生效；`/model <成员> clear` 或选择器中的恢复默认会移除保存的覆盖。
@@ -275,6 +343,8 @@ TUI 里同一件事在「会话」面板完成（`Tab` 把焦点移入管理面�
 | 日志成员筛选 | 日志面板聚焦时 ↑↓ 循环"全部 → 各成员 → 全部"，Enter 清除筛选；在团队面板高亮成员同样筛选日志 |
 | 按词编辑 | Ctrl+W 或 Alt+Backspace 删词；Ctrl+←/Ctrl+→ 按词移动光标 |
 
-原生成员在模型/工具边界响应停止。已经执行中的工具要先返回，界面显示停止请求；超过确认时限会显示结果不明，不承诺回滚文件或外部操作。
+原生成员在模型/工具边界响应停止；原生 Shell 还会轮询取消并终止隔离进程。正在阻塞的 HTTP/MCP
+请求可能要等返回或超时；超过取消确认时限会显示结果不明，不承诺回滚文件或外部操作。
+TUI 控制请求使用有界异步队列；后端卡住时请求会超时并显示错误，输入、导航和退出仍可用。
 
 任务进入 BLOCKED 会唤醒等待者处理。Leader 可用 `cancel_task` 结清无需继续的任务，再按需求重新委派；用户也可在上区「任务」选中任务按 `c`。重新创建同名成员必须使用新的成员 ID，原身份不能复用。

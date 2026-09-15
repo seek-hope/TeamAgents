@@ -1,0 +1,21 @@
+name: Rust CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test core
+        run: cargo test --manifest-path core/Cargo.toml
+      - name: Test engine
+        run: cargo test --manifest-path engine/Cargo.toml
+      - name: Test TUI
+        run: cargo test --manifest-path tui/Cargo.toml
+      # `git diff --check` 在干净检出上恒为空，检查的是提交本身
+      - name: Check patch whitespace
+        run: git log --check --format= -1

@@ -3,6 +3,19 @@
 基准文档：`TeamAgents-Implementation-Plan.zh-CN.md`。**任何偏离方案的做法，先与用户确认再实现。**
 本文件只记录已确认的决策；未确认的候选方案写在对话里，不写进代码。
 
+## 阅读口径（2026-09-15 核对）
+
+各条记录的日期、旧路径与测试数量是对应实施批次的历史证据，不是当前环境说明。
+D-15/D-16 的 TS 方案已由 D-17 取代，Python 实现已按 D-22 移除；当前只有 core/engine/tui
+三个 Rust crate，`runtime_kind: deepagents` 仅为兼容字面量，后端为 `ChatRunner`。
+历史记录中的 `.py`、Textual、Ink、LangGraph、旧工作目录路径及 `docs/RECONSTRUCT.md` 等
+已删除文档不应用于当前操作。当前模块位置见方案 §15，用法见 [用户指南](USER-GUIDE.md)，
+测试基线和未兑现的要求见 [验收表](ACCEPTANCE.md)。
+
+后续记录优先：MCP HTTP 已由 D-25 实现；Skills 按 D-23 发现/分发；TUI 动效开关按 D-20
+补充六移除；会话模型按 D-29/D-30 落盘；Codex 会话批准按 D-31 限定具体操作。
+下文新增的“当前核对”注记只澄清实现现状，不代表批准新的方案偏离。
+
 ## D-1 短控制图：事务化步骤管线，不套 LangGraph StateGraph ✅（用户已确认 2026-09-11）
 
 - 方案原文：§2.1「LangGraph 负责……短流程团队控制图的执行」，§4 控制图执行
@@ -33,6 +46,10 @@ Deep Agents 的 `permissions` 只覆盖其内置文件工具，不约束 Shell/M
   每个回合通过 `turn/start` 的 `effort` 参数显式传入，不依赖本机默认值。
 - 沙箱/批准：每回合显式传 `sandbox`/`approvalPolicy`/`approvalsReviewer="user"`，
   不沿用本机 `auto_review` 的宽松设置（P0 已实测本机配置会放行 /tmp 写入）。
+
+当前核对：Rust `session.rs::codex_options` 会映射所引用 profile 的 model/provider，
+所以产品入口并非总是“不传 model”；默认 effort 为 xhigh，`/model` 可覆盖（D-27）。
+本条中的本机默认模型记录仅代表当时环境。
 
 ## D-5 网页搜索：AnySearch 走 HTTP 直连工具 ✅（用户已确认 2026-09-11）
 
@@ -86,6 +103,9 @@ Deep Agents 的 `permissions` 只覆盖其内置文件工具，不约束 Shell/M
     → 拒绝并说明；删除当前会话时先释放锁与后端再删除，然后退出 TUI；
   - 归档/删除当前会话后直接退出（符合需求）；其他会话操作后留在原地刷新列表；
   - `teamagents sessions` 复用同一份清单（含“已归档/运行中”标记）。
+
+当前核对：Rust `sessions.rs::archive_session` 仅移动目录，不写 CLOSED；TUI 已归档行只读，
+不提供恢复/再次归档/删除操作。归档、删除的现行步骤见用户指南 §3.1。
 
 ## D-10 放宽执行上限、删除无效配置 ✅（用户确认 2026-09-12）
 
@@ -549,10 +569,13 @@ MCP-Protocol-Version 回带、多行 SSE 按事件拼接并匹配请求 ID、Bea
 1. 每个成员线程的历史从线性数组改为**追加式节点树 + leaf 指针**（chat.rs::ChatTree，
    `chat_tree.json` 与旧 chat_history.json 并存；旧文件惰性迁移为链）。模型调用时从 leaf
    回溯物化线性消息。
-2. `rewind` = 移动 leaf 到祖先节点（/rewind 列出用户输入点，/rewind <n> 回退）；被放弃的
-   分支留在树里，可反复回退，不丢信息。leader 回合进行中拒绝 rewind（graft 天花板有注释）。
+2. `rewind` = 移动 leaf 到指定节点（**包含该节点输入**）；`/rewind` 列出当前祖先链的用户输入点，
+   `/rewind <n>` 按列表选择，已知节点 ID 可直接指定。被放弃的分支留在树里，但列表不遍历全部分支。
+   Leader 有 QUEUED/RUNNING 回合时拒绝 rewind；只改模型记忆，不撤销团队事实、文件或已显示日志。
 3. `fork` = 新会话 = 同 TeamSpec（含拓扑补丁后的活 spec）+ leader 对话树复制；**团队事实
    （任务/回合/事件/共享空间）不复制，文件改动不回滚**——rewind/fork 只管对话记忆。
+   当前 `fork_session` 也不复制 D-29/D-30 的模型覆盖与会话 profile；后者可能使带自动 profile 的
+   TeamSpec 无法在新会话打开。任意成员有 QUEUED/RUNNING 回合时拒绝 fork。
 4. 检查点一致性：首次执行前固定旧线性历史的树迁移；checkpoint 记录 tree_base/tree_leaf
    及待追加节点，按「检查点追加日志 → 原子替换树 → 清除日志」提交。恢复可幂等补齐
    提交两侧的崩溃窗口。仅显式 rewind 的 rewind_epoch 变化使旧 checkpoint 作废；
@@ -588,17 +611,18 @@ Codex 成员仅列 OpenAI 兼容配置，端点须支持 Responses API；重建�
 工业配方、Git Context Controller 的读回思想）。落法（只对 chat 运行时；codex 成员由
 app-server 自行压缩，为已知天花板）：
 
-1. **L0 写入时限流**：单个工具结果 >50k 字符时保头尾截断（chat.rs::cap_tool_output）。
-2. **L1 视图遮蔽**：发给模型的线稿（非 checkpoint/树）里，尾部 16k 字符预算之外的旧
+1. **L0 写入时限流**：工具结果字符串 >50,000 字节时处理，保留头尾各最多 25,000 字符
+   （chat.rs::cap_tool_output）；此步先于历史写入，被截去内容无法通过 read_history 恢复。
+2. **L1 视图遮蔽**：发给模型的线稿（非 checkpoint/树）里，尾部 16k 字节预算之外的旧
    tool 输出替换为占位符（含 tool_call_id 指针）；最后一个 assistant 之后的未答工具结果
    永不遮蔽。
 3. **L2 阈值摘要**：`usage.last_prompt > 0.9 × ModelProfile.context_window` 且回合内无
    待答工具调用时，调一次模型生成六段式交接摘要（目标/进展/文件/错误/任务/下一步），
    作为带 `skip_to` 的摘要节点提交到 ChatTree——materialize 跳过被覆盖区间，但**覆盖
-   内容留在树里**（压缩无损：/rewind 回旧分支仍见全文）；连续失败 3 次熔断本 runner。
+   内容留在树里**（摘要保留已入树内容，但不能恢复 L0 已截去的内容）；连续失败 3 次熔断本 runner。
    关键不变量：压缩前先把未落树的尾部提交进树（覆盖的对象必须已在树中）。
 4. **④ read_history 工具**：chat 运行时成员恒有（非能力绑定）；按 tool_call_id 查活
-   历史→全树分支，取回被遮蔽/覆盖的原始输出。
+   历史→全树分支，取回被遮蔽/覆盖的已保存输出（受 L0 限制）。
    摘要请求和结果均附工具输出 ID 索引，从当前分支完整祖先链生成；连续压缩也保留旧索引，
    不依赖模型在摘要正文中复述 ID。摘要树与检查点写入共用 TurnControl，关闭会话后的迟到结果不能落盘。
 出口：自动生效，无命令；触发信号复用 D-24 的 usage 采集。可调常量（50k/16k/0.9/100k）
@@ -639,6 +663,15 @@ stale_model_overrides_are_dropped_on_open（未知成员/未知 profile/越规�
   （注释已标）。初始 TeamSpec（用户手写 YAML）不自动建 profile，仍须引用已配置名字。
 证据：chat_e2e::review_add_agent_auto_creates_member_profile（省略/模型 ID 两种写法、
 改写落 spec、profiles.json 内容、报表解析、重开后仍生效）。
+
+## D-32 成熟度与稳定性改进授权（2026-09-15）
+
+用户明确要求「按你建议的顺序对 TeamAgents 进行改进，核心目标是足够成熟、稳定」。
+按已讨论的路线推进：文件读写与输出保存、界面响应及权限边界；流式响应、上下文与恢复；
+交付验证和持久用量；结构化非交互 CLI、回归评测与发布检查。
+此授权覆盖上述改进与相应文档更新。保留 Rust 三 crate、core 单事务权威、操作级批准、
+成员隔离和已有会话兼容性；新行为使用已有依赖，提供可重跑的回归证据。
+实施进度与验证记录见 `review/stability-2026-09-15.md`；未执行的真实模型评测不能记为通过。
 
 ## D-31 codex 通道 session 级批准收紧为按 operation_hash 绑定（2026-09-15）
 

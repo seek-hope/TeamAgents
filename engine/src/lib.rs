@@ -14,6 +14,7 @@ pub mod core_client;
 pub mod gateway;
 pub mod runtime;
 pub mod scripted;
+mod stream;
 pub mod session;
 pub mod sessions;
 pub mod mcp;

@@ -5,7 +5,8 @@
 use std::path::{Path, PathBuf};
 
 fn scratch(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("ta-leak-{tag}-{}", std::process::id()));
+    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let dir = std::env::temp_dir().join(format!("ta-leak-{tag}-{}-{nonce}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
@@ -72,7 +73,8 @@ fn mcp_failed_initialize_reaps_the_child() {
         "echo $$ > {}; echo '{{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{{\"code\":-1,\"message\":\"nope\"}}}}'; exec sleep 60",
         pidfile.display()
     );
-    let result = McpClient::connect_stdio("sh", &["-c".into(), script], &[]);
+    // Host PID is needed for /proc reaping assertions; sandbox PIDs differ.
+    let result = McpClient::connect_stdio_in("sh", &["-c".into(), script], &[], &dir, "host", false, 2, 2);
     let err = match result {
         Ok(client) => {
             client.close();

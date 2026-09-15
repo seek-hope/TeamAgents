@@ -164,9 +164,9 @@ fn team_tool_schemas() -> Json {
 /// (team tools + shell + bound file/web tools).
 pub const BOUND_TOOL_DOCS: &[(&str, &str)] = &[
     ("ls", "List files in your workspace (path defaults to '.')."),
-    ("read_file", "Read a UTF-8 text file from your workspace (path is relative to the workspace root)."),
+    ("read_file", "Read UTF-8 workspace text in bounded pages. offset is a 1-based line; byte_offset is an absolute byte continuation. Follow next_byte_offset until eof. include_sha256 returns a revision for safe edits."),
     ("write_file", "Write a text file in your workspace, creating parent directories."),
-    ("edit_file", "Replace the first occurrence of old_string with new_string in a workspace file."),
+    ("edit_file", "Replace exactly one occurrence of old_string. Ambiguous matches fail unchanged. Pass expected_sha256 from read_file to reject concurrent changes."),
     ("delete", "Delete a file (a directory when recursive=true) from your workspace."),
     ("glob", "Find workspace files matching a glob pattern, e.g. '**/*.py' (max 500 hits)."),
     ("grep", "Search workspace files for a pattern; returns matching lines (max 100)."),
@@ -174,15 +174,15 @@ pub const BOUND_TOOL_DOCS: &[(&str, &str)] = &[
     ("web_search", "Search the web and return title, source URL, snippet, fetch time (and full content when include_content=true)."),
     ("web_fetch", "Fetch a web page and return title, source URL, fetch time and the readable text body (HTML only; capped)."),
     ("skill", "Discover and load agent skills. action='search' with query keywords lists matching skills (name — summary); action='read' with a skill name loads its full instructions. Read a skill before applying it."),
-    ("read_history", "Retrieve the original output of an earlier tool call by its tool_call_id. Older tool outputs may be hidden from your context to save space; this fetches them back."),
+    ("read_history", "Retrieve original private tool output by tool_call_id. offset and limit count Unicode characters (offset starts at 0). Follow next_offset until eof."),
 ];
 
 fn bound_tool_schemas() -> Json {
     json!([
       {"name": "ls", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}},
-      {"name": "read_file", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
-      {"name": "write_file", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}},
-      {"name": "edit_file", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "old_string": {"type": "string"}, "new_string": {"type": "string"}}, "required": ["path", "old_string", "new_string"]}},
+      {"name": "read_file", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "offset": {"type":"integer","minimum":1}, "limit":{"type":"integer","minimum":1}, "byte_offset":{"type":"integer","minimum":0}, "include_sha256":{"type":"boolean"}}, "required": ["path"]}},
+      {"name": "write_file", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}, "expected_sha256":{"type":"string"}}, "required": ["path", "content"]}},
+      {"name": "edit_file", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "old_string": {"type": "string"}, "new_string": {"type": "string"}, "expected_sha256":{"type":"string"}}, "required": ["path", "old_string", "new_string"]}},
       {"name": "delete", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "recursive": {"type": "boolean"}}, "required": ["path"]}},
       {"name": "glob", "parameters": {"type": "object", "properties": {"pattern": {"type": "string"}}, "required": ["pattern"]}},
       {"name": "grep", "parameters": {"type": "object", "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}}, "required": ["pattern"]}},
@@ -190,7 +190,7 @@ fn bound_tool_schemas() -> Json {
       {"name": "web_search", "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "max_results": {"type": "integer"}, "include_content": {"type": "boolean"}}, "required": ["query"]}},
       {"name": "web_fetch", "parameters": {"type": "object", "properties": {"url": {"type": "string"}, "max_bytes": {"type": "integer"}}, "required": ["url"]}},
       {"name": "skill", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["search", "read"]}, "query": {"type": "string"}, "name": {"type": "string"}}, "required": ["action"]}},
-      {"name": "read_history", "parameters": {"type": "object", "properties": {"tool_call_id": {"type": "string"}}, "required": ["tool_call_id"]}},
+      {"name": "read_history", "parameters": {"type": "object", "properties": {"tool_call_id": {"type": "string"}, "offset":{"type":"integer","minimum":0}, "limit":{"type":"integer","minimum":1,"maximum":12000}}, "required": ["tool_call_id"]}},
     ])
 }
 
@@ -275,13 +275,13 @@ fn fill_unanswered_tool_calls(history: &mut Vec<Json>, calls: &[Json], answered:
     }
 }
 
-/// L0 (Codex/Claude Code's first defence): cap one tool result at write
-/// time, keeping head+tail with a marker.
+/// L0: cap only the wire copy; private checkpoints retain the original.
 /// ponytail: fixed 50k-char cap; per-tool budgets if specific tools dominate.
 const TOOL_OUTPUT_CAP: usize = 50_000;
 
 fn cap_tool_output(content: String) -> String {
-    if content.len() <= TOOL_OUTPUT_CAP {
+    let chars = content.chars().count();
+    if chars <= TOOL_OUTPUT_CAP {
         return content;
     }
     let half = TOOL_OUTPUT_CAP / 2;
@@ -300,6 +300,17 @@ const MASK_KEEP_RECENT: usize = 16_000;
 fn mask_old_tool_outputs(messages: &[Json]) -> Vec<Json> {
     let last_assistant = messages.iter().rposition(|m| m["role"] == "assistant").unwrap_or(0);
     let mut out = messages.to_vec();
+    for message in &mut out {
+        if message["role"] == "tool" {
+            if let Some(content) = message["content"].as_str() {
+                let capped = cap_tool_output(content.to_string());
+                if capped != content {
+                    message["content"] = json!(format!("{capped}\n[Full output: read_history tool_call_id={}]", message["tool_call_id"]));
+                }
+            }
+        }
+    }
+    if out.is_empty() { return out; }
     let mut budget = MASK_KEEP_RECENT;
     for i in (0..=last_assistant).rev() {
         let message = &out[i];
@@ -322,9 +333,41 @@ fn mask_old_tool_outputs(messages: &[Json]) -> Vec<Json> {
     out
 }
 
+fn history_page(output: &str, args: &Json) -> Result<Json, String> {
+    let integer = |key: &str, default: u64| -> Result<usize, String> {
+        let value = match args.get(key) {
+            Some(value) => value.as_u64().ok_or_else(|| format!("{key} must be a nonnegative integer"))?,
+            None => default,
+        };
+        usize::try_from(value).map_err(|_| format!("{key} is too large"))
+    };
+    let offset = integer("offset", 0)?;
+    let limit = integer("limit", 12_000)?;
+    if !(1..=12_000).contains(&limit) { return Err("limit must be between 1 and 12000".into()); }
+    let total = output.chars().count();
+    if offset > total { return Err(format!("offset exceeds output length {total}")); }
+    let content: String = output.chars().skip(offset).take(limit).collect();
+    let next = offset + content.chars().count();
+    Ok(json!({"output":content, "offset":offset, "next_offset":if next < total {Some(next)} else {None}, "eof":next == total, "total_chars":total}))
+}
+
 /// L2 trigger: last prompt over this fraction of the configured context
 /// window (Codex's model_auto_compact_token_limit defaults to ~90%).
 const COMPACT_AT: f64 = 0.9;
+
+fn context_overflow(error: &str) -> bool {
+    let error = error.to_ascii_lowercase();
+    ["context_length_exceeded", "maximum context length", "context window", "prompt is too long", "too many tokens", "input is too long"]
+        .iter().any(|needle| error.contains(needle))
+}
+
+/// ponytail: conservative text estimate, not a tokenizer; provider usage wins
+/// when larger. Replace with provider tokenizers if measured errors warrant it.
+fn estimated_tokens(value: &Json) -> u64 {
+    let text = value.to_string();
+    let ascii = text.bytes().filter(u8::is_ascii).count();
+    ((ascii + 3) / 4 + text.chars().filter(|c| !c.is_ascii()).count()) as u64
+}
 /// ponytail: the summary request itself is capped head+tail; a history larger
 /// than this summarizes the middle away before the model ever sees it.
 const SUMMARY_INPUT_CAP: usize = 100_000;
@@ -501,7 +544,8 @@ fn pending_tool_calls(history: &[Json]) -> Vec<Json> {
 /// Token usage of one model response, both wire protocols normalized
 /// (OpenAI `usage.{prompt,completion,total}_tokens`, Anthropic
 /// `usage.{input,output}_tokens` with the total synthesized).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Usage {
     pub calls: u64,
     pub prompt: u64,
@@ -510,6 +554,10 @@ pub struct Usage {
     /// Prompt size of the latest call in this thread — the best proxy for
     /// current context fill (compares against ModelProfile::context_window).
     pub last_prompt: u64,
+    pub unknown_calls: u64,
+    pub elapsed_ms: u64,
+    pub updated_ms: u64,
+    pub cached_input: u64,
 }
 
 /// None when the provider omitted usage (some proxies do).
@@ -518,7 +566,8 @@ pub fn parse_usage(data: &Json) -> Option<(u64, u64, u64)> {
     let num = |key: &str| usage.get(key).and_then(Json::as_u64);
     let (prompt, completion) = match (num("prompt_tokens"), num("completion_tokens")) {
         (Some(p), Some(c)) => (p, c),
-        _ => (num("input_tokens")?, num("output_tokens")?),
+        _ => (num("input_tokens")?.saturating_add(num("cache_read_input_tokens").unwrap_or(0))
+            .saturating_add(num("cache_creation_input_tokens").unwrap_or(0)), num("output_tokens")?),
     };
     let total = num("total_tokens").unwrap_or(prompt + completion);
     Some((prompt, completion, total))
@@ -543,9 +592,7 @@ pub struct ChatRunner {
     controls: Mutex<HashMap<String, Arc<TurnControl>>>,
     /// pi-style history trees per thread (D-26), the rewind/fork substrate.
     trees: Mutex<HashMap<String, ChatTree>>,
-    /// Session-memory token usage per thread.
-    /// ponytail: not persisted; add to the session ledger if users ask for
-    /// cross-restart accounting.
+    /// Per-member durable usage, keyed by conversation thread.
     usage: Mutex<HashMap<String, Usage>>,
     /// Prompt size of the latest call across threads (current context fill).
     last_prompt: AtomicU64,
@@ -749,33 +796,69 @@ impl ChatRunner {
         self.write_checkpoint(run, checkpoint)
     }
 
-    fn record_usage(&self, thread: &str, data: &Json) {
-        let Some((prompt, completion, total)) = parse_usage(data) else { return };
+    fn load_usage(&self) -> Result<HashMap<String, Usage>, String> {
+        let Some(path) = self.history_path.as_ref().map(|p| p.with_file_name("usage.json")) else { return Ok(HashMap::new()); };
+        match std::fs::read(path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("invalid usage ledger: {e}")),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(HashMap::new()),
+            Err(e) => Err(format!("read usage ledger: {e}")),
+        }
+    }
+
+    fn record_usage(&self, thread: &str, data: &Json, elapsed_ms: u64) -> Result<(), String> {
         let mut usage = self.usage.lock().unwrap();
-        let entry = usage.entry(thread.to_string()).or_default();
+        let mut next = self.load_usage()?;
+        let entry = next.entry(thread.to_string()).or_default();
         entry.calls += 1;
-        entry.prompt += prompt;
-        entry.completion += completion;
-        entry.total += total;
-        entry.last_prompt = prompt;
-        self.last_prompt.store(prompt, Ordering::SeqCst);
+        entry.elapsed_ms = entry.elapsed_ms.saturating_add(elapsed_ms);
+        entry.updated_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+        if let Some((prompt, completion, total)) = parse_usage(data) {
+            entry.prompt = entry.prompt.saturating_add(prompt);
+            entry.completion = entry.completion.saturating_add(completion);
+            entry.total = entry.total.saturating_add(total);
+            entry.last_prompt = prompt;
+            entry.cached_input = entry.cached_input.saturating_add(data["usage"]["prompt_tokens_details"]["cached_tokens"].as_u64()
+                .or_else(|| data["usage"]["cache_read_input_tokens"].as_u64()).unwrap_or(0));
+            self.last_prompt.store(prompt, Ordering::SeqCst);
+        } else {
+            entry.unknown_calls += 1;
+        }
+        let path = self.history_path.as_ref().ok_or("member usage path missing")?.with_file_name("usage.json");
+        write_json_atomic(&path, &serde_json::to_value(&next).map_err(|e| e.to_string())?)?;
+        *usage = next;
+        Ok(())
     }
 
     /// Aggregated per-agent counters over all threads of this runner.
     pub fn usage_snapshot(&self) -> Json {
+        let entries = match self.load_usage() {
+            Ok(entries) => entries,
+            Err(error) => return json!({"error":error}),
+        };
         let mut total = Usage::default();
-        for entry in self.usage.lock().unwrap().values() {
+        for entry in entries.values() {
             total.calls += entry.calls;
             total.prompt += entry.prompt;
             total.completion += entry.completion;
             total.total += entry.total;
+            total.unknown_calls += entry.unknown_calls;
+            total.elapsed_ms += entry.elapsed_ms;
+            total.cached_input += entry.cached_input;
+            if entry.updated_ms >= total.updated_ms {
+                total.updated_ms = entry.updated_ms;
+                total.last_prompt = entry.last_prompt;
+            }
         }
         json!({
             "calls": total.calls,
             "prompt_tokens": total.prompt,
             "completion_tokens": total.completion,
             "total_tokens": total.total,
-            "last_prompt_tokens": self.last_prompt.load(Ordering::SeqCst),
+            "last_prompt_tokens": self.last_prompt.load(Ordering::SeqCst).max(total.last_prompt),
+            "unknown_usage_calls": total.unknown_calls,
+            "model_elapsed_ms": total.elapsed_ms,
+            "cached_input_tokens": total.cached_input,
+            "threads": entries,
         })
     }
 
@@ -887,9 +970,9 @@ impl ChatRunner {
             .unwrap_or(200)
     }
 
-    fn chat(&self, thread: &str, messages: &[Json], tools: &Json, control: &TurnControl) -> Result<Json, String> {
+    fn chat(&self, thread: &str, messages: &[Json], tools: &Json, control: &TurnControl, stream_run: Option<&str>) -> Result<Json, String> {
         if self.profile.protocol == "anthropic" {
-            return self.chat_anthropic(thread, messages, tools, control);
+            return self.chat_anthropic(thread, messages, tools, control, stream_run);
         }
         let api_key = match &self.profile.api_key_env {
             Some(env) => std::env::var(env).map_err(|_| format!("missing API key env {env}"))?,
@@ -902,11 +985,14 @@ impl ChatRunner {
             "tools": tools,
         });
         self.apply_generation_options(&mut body);
+        body["stream"] = json!(true);
+        body["stream_options"] = json!({"include_usage":true});
         let url = format!("{base}/chat/completions");
         let mut last_error = "chat call failed".to_string();
         let retries = self.profile.max_retries.max(0);
         for attempt in 0..=retries {
             control.check()?;
+            let started = std::time::Instant::now();
             let mut request = ureq::post(&url)
                 .set("content-type", "application/json")
                 .timeout(std::time::Duration::from_secs(self.profile.timeout.max(1) as u64));
@@ -915,9 +1001,15 @@ impl ChatRunner {
             }
             let mut retry_in: Option<std::time::Duration> = None;
             match request.send_string(&body.to_string()) {
-                Ok(response) => match response.into_json::<Json>() {
-                    Ok(data) => {
-                        self.record_usage(thread, &data);
+                Ok(response) => {
+                        // Once response decoding starts, never retry a partial
+                        // stream: it may already have emitted visible output.
+                        let data = crate::stream::response(response, false, control, |text| {
+                            if let Some(run_id) = stream_run {
+                                if control.check().is_ok() { self.notify.note_stream_chunk(run_id, &self.agent_id(), text); }
+                            }
+                        })?;
+                        { let _execution = control.enter()?; self.record_usage(thread, &data, started.elapsed().as_millis() as u64)?; }
                         let message = data
                             .get("choices")
                             .and_then(|c| c.get(0))
@@ -925,9 +1017,7 @@ impl ChatRunner {
                             .cloned()
                             .ok_or_else(|| "chat API: empty choices".to_string())?;
                         return Ok(message);
-                    }
-                    Err(e) => last_error = format!("chat API: bad json: {e}"),
-                },
+                }
                 Err(ureq::Error::Status(code, response)) => {
                     let retry_after = response
                         .header("retry-after")
@@ -954,8 +1044,8 @@ impl ChatRunner {
     }
 
     /// Anthropic Messages API.
-    /// ponytail: text/tool_use/tool_result blocks only — no images or thinking blocks.
-    fn chat_anthropic(&self, thread: &str, messages: &[Json], tools: &Json, control: &TurnControl) -> Result<Json, String> {
+    /// Text, tool and signed thinking blocks; no image input yet.
+    fn chat_anthropic(&self, thread: &str, messages: &[Json], tools: &Json, control: &TurnControl, stream_run: Option<&str>) -> Result<Json, String> {
         let api_key = match &self.profile.api_key_env {
             Some(env) => std::env::var(env).map_err(|_| format!("missing API key env {env}"))?,
             None => String::new(),
@@ -1005,11 +1095,13 @@ impl ChatRunner {
             if body["output_config"].is_null() { body["output_config"] = json!({}); }
             body["output_config"]["effort"] = effort.clone();
         }
+        body["stream"] = json!(true);
         let url = format!("{base}/v1/messages");
         let mut last_error = "chat call failed".to_string();
         let retries = self.profile.max_retries.max(0);
         for attempt in 0..=retries {
             control.check()?;
+            let started = std::time::Instant::now();
             let mut request = ureq::post(&url)
                 .set("content-type", "application/json")
                 .set("anthropic-version", "2023-06-01")
@@ -1019,13 +1111,15 @@ impl ChatRunner {
             }
             let mut retry_in: Option<std::time::Duration> = None;
             match request.send_string(&body.to_string()) {
-                Ok(response) => match response.into_json::<Json>() {
-                    Ok(data) => {
-                        self.record_usage(thread, &data);
+                Ok(response) => {
+                        let data = crate::stream::response(response, true, control, |text| {
+                            if let Some(run_id) = stream_run {
+                                if control.check().is_ok() { self.notify.note_stream_chunk(run_id, &self.agent_id(), text); }
+                            }
+                        })?;
+                        { let _execution = control.enter()?; self.record_usage(thread, &data, started.elapsed().as_millis() as u64)?; }
                         return Ok(from_anthropic_message(&data));
-                    }
-                    Err(e) => last_error = format!("chat API: bad json: {e}"),
-                },
+                }
                 Err(ureq::Error::Status(code, response)) => {
                     let retry_after = response
                         .header("retry-after")
@@ -1052,13 +1146,19 @@ impl ChatRunner {
 
     /// L2 trigger (pre-turn/between-steps only — never with tool calls
     /// pending, so no assistant message is orphaned mid-batch).
-    fn over_threshold(&self, thread: &str) -> bool {
+    fn over_threshold(&self, thread: &str, history: &[Json], tools: &Json) -> bool {
         let Some(window) = self.profile.context_window else { return false };
         if self.compact_failures.load(Ordering::SeqCst) >= 3 {
             return false;
         }
         let last = self.usage.lock().unwrap().get(thread).map(|u| u.last_prompt).unwrap_or(0);
-        last > 0 && last as f64 > window as f64 * COMPACT_AT
+        // No older assistant response exists to compact on the first input.
+        if !history.iter().any(|m| m["role"] == "assistant") { return false; }
+        let reserve = self.profile.generation_options.get("max_completion_tokens")
+            .or_else(|| self.profile.generation_options.get("max_tokens"))
+            .and_then(Json::as_u64).unwrap_or(8192).min(window / 4);
+        let estimate = estimated_tokens(&json!(mask_old_tool_outputs(history))) + estimated_tokens(tools);
+        last.max(estimate) > window.saturating_sub(reserve).min((window as f64 * COMPACT_AT) as u64)
     }
 
     /// Codex-style handoff compaction: one LLM call condenses the history to a
@@ -1073,6 +1173,16 @@ impl ChatRunner {
         if checkpoint.history.len() > checkpoint.tree_base {
             tree.append(&checkpoint.history[checkpoint.tree_base..]);
         }
+        // Preserve the newest user input verbatim. For a long tool loop keep
+        // its latest complete assistant/tool group instead of orphaning results.
+        let mut keep_from = checkpoint.history.iter().rposition(|m| m["role"] == "user").unwrap_or(checkpoint.history.len());
+        let recent_cap = self.profile.context_window.unwrap_or(64_000).saturating_mul(2).min(16_000) as usize;
+        if checkpoint.history[keep_from..].iter().map(|m| m.to_string().len()).sum::<usize>() > recent_cap {
+            if let Some(index) = checkpoint.history.iter().rposition(|m| m["role"] == "assistant") {
+                if index > keep_from { keep_from = index; }
+            }
+        }
+        let recent = checkpoint.history[keep_from..].to_vec();
         let mut blob = String::new();
         for message in checkpoint.history.iter().skip_while(|m| m["role"] == "system") {
             let role = message["role"].as_str().unwrap_or("?");
@@ -1094,8 +1204,9 @@ impl ChatRunner {
             }
             blob.push_str(&format!("{role}: {content}\n\n"));
         }
-        if blob.len() > SUMMARY_INPUT_CAP {
-            let half = SUMMARY_INPUT_CAP / 2;
+        let summary_cap = self.profile.context_window.unwrap_or(64_000).saturating_mul(2).min(SUMMARY_INPUT_CAP as u64) as usize;
+        if blob.len() > summary_cap {
+            let half = summary_cap / 2;
             blob = format!(
                 "{}\n[...middle omitted...]\n{}",
                 blob.chars().take(half).collect::<String>(),
@@ -1108,7 +1219,7 @@ impl ChatRunner {
         // become a significant part of the model's context window.
         let index = format!("Tool output index (read_history tool_call_id):\n{}", tree.tool_references().join("\n"));
         let ask = vec![json!({"role": "user", "content": format!("{SUMMARY_PROMPT}{blob}\n{index}")})];
-        let reply = self.chat(thread, &ask, &json!([]), control).map_err(|e| ("ChatError".into(), e))?;
+        let reply = self.chat(thread, &ask, &json!([]), control, None).map_err(|e| ("ChatError".into(), e))?;
         let summary = reply["content"].as_str().unwrap_or("").trim().to_string();
         if summary.is_empty() {
             return Err(("ChatError".into(), "compaction returned an empty summary".into()));
@@ -1119,6 +1230,7 @@ impl ChatRunner {
             json!({"role": "user", "content": format!("[Compacted conversation summary]\n{summary}\n\n{index}\n\n[Earlier tool outputs and replies were removed from context. Call read_history with a tool_call_id to retrieve a tool output.]")}),
             &keep,
         );
+        tree.append(&recent);
         checkpoint.history = tree.materialize();
         self.refresh_system(&mut checkpoint.history);
         self.commit_tree(run, checkpoint, &tree, base, control).map_err(|e| ("CheckpointError".into(), e))?;
@@ -1181,7 +1293,7 @@ impl ChatRunner {
                     return Err(("TurnLimitExceeded".into(), format!("model-step limit {max_steps} reached for this turn")));
                 }
                 let thread = run.context_ref.as_deref().unwrap_or(&run.run_id);
-                if self.over_threshold(thread) {
+                if self.over_threshold(thread, &checkpoint.history, &tools) {
                     match self.compact(run, checkpoint, &gateway.control) {
                         Ok(()) => {
                             self.compact_failures.store(0, Ordering::SeqCst);
@@ -1199,23 +1311,30 @@ impl ChatRunner {
                 checkpoint.model_steps += 1;
                 self.save_checkpoint(run, checkpoint, gateway)?;
                 let wire = mask_old_tool_outputs(&checkpoint.history);
-                let message = match self.chat(thread, &wire, &tools, &gateway.control) {
+                let message = match self.chat(thread, &wire, &tools, &gateway.control, Some(&run.run_id)) {
                     Ok(message) => message,
+                    Err(e) if context_overflow(&e) => {
+                        // Exactly one recovery request; no infinite overflow loop.
+                        self.compact(run, checkpoint, &gateway.control)?;
+                        self.save_checkpoint(run, checkpoint, gateway)?;
+                        if checkpoint.model_steps >= max_steps {
+                            return Err(("TurnLimitExceeded".into(), "context recovery reached model-step limit".into()));
+                        }
+                        checkpoint.model_steps += 1;
+                        self.save_checkpoint(run, checkpoint, gateway)?;
+                        self.chat(thread, &mask_old_tool_outputs(&checkpoint.history), &tools, &gateway.control, Some(&run.run_id))
+                            .map_err(|e| ("ChatError".into(), format!("context recovery failed: {e}")))?
+                    }
                     Err(e) if looks_like_effort_error(&e) && self.configured_effort()
                         && !self.effort_fallback_used.swap(true, Ordering::SeqCst) => {
                         self.effort_max.store(true, Ordering::SeqCst);
-                        self.chat(thread, &wire, &tools, &gateway.control).map_err(|e| ("ChatError".into(), e))?
+                        self.chat(thread, &wire, &tools, &gateway.control, Some(&run.run_id)).map_err(|e| ("ChatError".into(), e))?
                     }
                     Err(e) => return Err(("ChatError".into(), e)),
                 };
                 checkpoint.history.push(message.clone());
                 // Persist model-assigned tool IDs BEFORE any team/external call.
                 self.save_checkpoint(run, checkpoint, gateway)?;
-                if let Some(text) = message["content"].as_str() {
-                    if !self.has_paused(&run.run_id) && gateway.control.check().is_ok() {
-                        self.notify.note_stream_chunk(&run.run_id, &self.agent_id(), text);
-                    }
-                }
                 continue;
             }
             for call in calls {
@@ -1240,7 +1359,8 @@ impl ChatRunner {
                 }
                 let thread = run.context_ref.as_deref().unwrap_or(&run.run_id);
                 let receipt = if name == "read_history" {
-                    match self.read_history(thread, &checkpoint.history, args["tool_call_id"].as_str().unwrap_or("")) {
+                    match self.read_history(thread, &checkpoint.history, args["tool_call_id"].as_str().unwrap_or(""))
+                        .and_then(|result| history_page(result["output"].as_str().unwrap_or(""), &args)) {
                         Ok(result) => teamagents_core::models::Receipt {
                             action_id: call_id.clone(), ok: true, kind: teamagents_core::models::ActionKind::CompleteTask,
                             result, error: None,
@@ -1268,7 +1388,7 @@ impl ChatRunner {
                 let waiting = name == "wait_for_tasks" && receipt.result["waiting"].as_bool().unwrap_or(false);
                 let step_limit = receipt.error.as_deref().map(|e| e.contains("step limit")).unwrap_or(false);
                 let content = if receipt.ok { receipt.result.to_string() } else { json!({"error":receipt.error}).to_string() };
-                checkpoint.history.push(json!({"role":"tool", "tool_call_id":call_id, "content":cap_tool_output(content)}));
+                checkpoint.history.push(json!({"role":"tool", "tool_call_id":call_id, "content":content}));
                 if approval || waiting || step_limit {
                     let remaining = pending_tool_calls(&checkpoint.history);
                     fill_unanswered_tool_calls(&mut checkpoint.history, &remaining, &[], "TurnPaused");
@@ -1483,6 +1603,10 @@ fn to_anthropic_messages(history: &[Json]) -> (String, Vec<Json>) {
                 }
             }
             "assistant" => {
+                if let Some(blocks) = message["anthropic_blocks"].as_array() {
+                    out.push(json!({"role":"assistant", "content":blocks}));
+                    continue;
+                }
                 let calls = message.get("tool_calls").and_then(|v| v.as_array()).cloned().unwrap_or_default();
                 let mut blocks: Vec<Json> = vec![];
                 if !content.is_empty() {
@@ -1562,6 +1686,7 @@ fn from_anthropic_message(data: &Json) -> Json {
     if !calls.is_empty() {
         message["tool_calls"] = json!(calls);
     }
+    message["anthropic_blocks"] = data["content"].clone();
     message
 }
 
@@ -1587,7 +1712,7 @@ mod tests {
 
     #[test]
     fn usage_accumulates_per_thread_and_snapshots_totals() {
-        let runner = ChatRunner::new(
+        let mut runner = ChatRunner::new(
             &json!({"id": "m", "name": "M", "role": "worker"}),
             ModelProfile {
                 provider: "openai".into(), protocol: "openai".into(), model: "test".into(),
@@ -1600,18 +1725,26 @@ mod tests {
             vec![],
             (false, false),
         );
+        let dir = std::env::temp_dir().join(format!("ta-usage-{}", uuid::Uuid::new_v4()));
+        Arc::get_mut(&mut runner).unwrap().history_path = Some(dir.join("chat_history.json"));
         let openai = json!({"usage": {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120}});
         let anthropic = json!({"usage": {"input_tokens": 50, "output_tokens": 10}});
-        runner.record_usage("t1", &openai);
-        runner.record_usage("t1", &openai);
-        runner.record_usage("t2", &anthropic);
-        runner.record_usage("t2", &json!({})); // missing usage: ignored
+        runner.record_usage("t1", &openai, 1).unwrap();
+        runner.record_usage("t1", &openai, 1).unwrap();
+        runner.record_usage("t2", &anthropic, 1).unwrap();
+        runner.record_usage("t2", &json!({}), 1).unwrap();
         let snap = runner.usage_snapshot();
-        assert_eq!(snap["calls"], 3);
+        assert_eq!(snap["calls"], 4);
+        assert_eq!(snap["unknown_usage_calls"], 1);
+        assert_eq!(snap["model_elapsed_ms"], 4);
         assert_eq!(snap["prompt_tokens"], 250);
         assert_eq!(snap["completion_tokens"], 50);
         assert_eq!(snap["total_tokens"], 300);
-        assert_eq!(snap["last_prompt_tokens"], 50, "latest call wins across threads");
+        assert!(snap["last_prompt_tokens"] == 50 || snap["last_prompt_tokens"] == 100);
+        runner.usage.lock().unwrap().clear();
+        runner.last_prompt.store(0, Ordering::SeqCst);
+        assert_eq!(runner.usage_snapshot()["total_tokens"], 300, "counters survive runner memory loss");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

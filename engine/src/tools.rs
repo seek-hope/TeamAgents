@@ -3,8 +3,9 @@
 //! guard.
 
 use serde_json::{json, Value as Json};
+use sha2::{Digest, Sha256};
 use crate::gateway::TurnControl;
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::os::fd::AsRawFd;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -13,6 +14,13 @@ use std::time::{Duration, Instant};
 
 const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_OUTPUT: usize = 200_000;
+/// A runaway command must not fill the disk: the artifact keeps arrival order
+/// up to this many bytes, and `finish` says so when the tail was dropped.
+const MAX_ARTIFACT_BYTES: u64 = 64 * 1024 * 1024;
+const PAGE_BYTES: usize = 32_000;
+// ponytail: serialize native mutations in this process; use per-path locks if
+// unrelated writes contend. Shell/external editors still need hash checks.
+static FILE_WRITES: Mutex<()> = Mutex::new(());
 /// Virtual prefix members use to read long shell output back (`/artifacts/`
 /// routes to the session artifact directory).
 const ARTIFACTS_PREFIX: &str = "/artifacts/";
@@ -55,21 +63,32 @@ pub fn resolve_in_root(root: &Path, key: &str) -> Result<PathBuf, String> {
 
 /// Pin the parent directory before opening a member file. Linux /proc fd paths
 /// keep a concurrent symlink replacement from redirecting creates or writes.
-fn open_member_file(root: &Path, path: &Path, write: bool) -> Result<std::fs::File, String> {
+fn open_member_file(root: &Path, path: &Path) -> Result<std::fs::File, String> {
     let root = std::fs::canonicalize(root).map_err(|e| e.to_string())?;
-    let check = |file: &std::fs::File| -> Result<(), String> {
-        let real = std::fs::canonicalize(format!("/proc/self/fd/{}", file.as_raw_fd())).map_err(|e| e.to_string())?;
-        if !real.starts_with(&root) { return Err("path escapes workspace".into()); }
-        Ok(())
-    };
+    let parent = member_parent(&root, path, false)?;
+    let leaf = PathBuf::from(format!("/proc/self/fd/{}", parent.as_raw_fd())).join(path.file_name().ok_or("file path required")?);
+    let file = std::fs::File::open(&leaf).map_err(|e| e.to_string())?;
+    check_member_fd(&root, &file)?;
+    if !file.metadata().map_err(|e| e.to_string())?.is_file() { return Err("not a regular file".into()); }
+    Ok(file)
+}
+
+fn check_member_fd(root: &Path, file: &std::fs::File) -> Result<(), String> {
+    let real = std::fs::canonicalize(format!("/proc/self/fd/{}", file.as_raw_fd())).map_err(|e| e.to_string())?;
+    if !real.starts_with(root) { return Err("path escapes workspace".into()); }
+    Ok(())
+}
+
+fn member_parent(root: &Path, path: &Path, create: bool) -> Result<std::fs::File, String> {
+    let root = std::fs::canonicalize(root).map_err(|e| e.to_string())?;
     let relative = path.strip_prefix(&root).map_err(|_| "path escapes workspace")?;
-    let name = relative.file_name().ok_or("file path required")?;
+    relative.file_name().ok_or("file path required")?;
     let mut parent = std::fs::File::open(&root).map_err(|e| e.to_string())?;
-    check(&parent)?;
+    check_member_fd(&root, &parent)?;
     for part in relative.parent().unwrap_or(Path::new("")).components() {
         let Component::Normal(part) = part else { return Err("invalid file path".into()) };
         let next = PathBuf::from(format!("/proc/self/fd/{}", parent.as_raw_fd())).join(part);
-        if write && !next.exists() {
+        if create && !next.exists() {
             // create_dir never follows/replaces an existing dangling symlink.
             match std::fs::create_dir(&next) {
                 Ok(()) => {}
@@ -78,20 +97,148 @@ fn open_member_file(root: &Path, path: &Path, write: bool) -> Result<std::fs::Fi
             }
         }
         parent = std::fs::File::open(next).map_err(|e| e.to_string())?;
-        check(&parent)?;
+        check_member_fd(&root, &parent)?;
     }
-    let leaf = PathBuf::from(format!("/proc/self/fd/{}", parent.as_raw_fd())).join(name);
-    let opened = std::fs::OpenOptions::new().read(!write).write(write).open(&leaf);
-    let file = match opened {
-        Ok(file) => file,
-        Err(e) if write && e.kind() == std::io::ErrorKind::NotFound => {
-            std::fs::OpenOptions::new().write(true).create_new(true).open(&leaf).map_err(|e| e.to_string())?
-        }
+    Ok(parent)
+}
+
+fn file_hash(file: &mut std::fs::File, control: &TurnControl) -> Result<String, String> {
+    file.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
+    let mut hash = Sha256::new();
+    let mut bytes = [0; 8192];
+    loop {
+        control.check()?;
+        let count = file.read(&mut bytes).map_err(|e| e.to_string())?;
+        if count == 0 { break; }
+        hash.update(&bytes[..count]);
+    }
+    file.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
+    Ok(format!("{:x}", hash.finalize()))
+}
+
+fn expected_hash(args: &Json) -> Result<Option<&str>, String> {
+    let Some(value) = args.get("expected_sha256") else { return Ok(None) };
+    let hash = value.as_str().filter(|s| s.len() == 64 && s.bytes().all(|c| c.is_ascii_hexdigit()))
+        .ok_or("expected_sha256 must contain 64 hexadecimal characters")?;
+    Ok(Some(hash))
+}
+
+fn atomic_write(root: &Path, path: &Path, content: &[u8], expected: Option<&str>, control: &TurnControl) -> Result<(), String> {
+    if content.len() as u64 > MAX_FILE_BYTES { return Err("content too large".into()); }
+    let root = std::fs::canonicalize(root).map_err(|e| e.to_string())?;
+    let parent = member_parent(&root, path, true)?;
+    let parent_path = PathBuf::from(format!("/proc/self/fd/{}", parent.as_raw_fd()));
+    let leaf = parent_path.join(path.file_name().ok_or("file path required")?);
+    let permissions = match std::fs::symlink_metadata(&leaf) {
+        Ok(meta) if meta.file_type().is_file() => Some(meta.permissions()),
+        Ok(_) => return Err("not a regular file (or path changed to a symlink)".into()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => return Err(e.to_string()),
     };
-    check(&file)?;
-    if !file.metadata().map_err(|e| e.to_string())?.is_file() { return Err("not a regular file".into()); }
-    Ok(file)
+    let temp = parent_path.join(format!(".teamagents-{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| {
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&temp).map_err(|e| e.to_string())?;
+        // Restrict the staging inode before it contains any old private data.
+        if let Some(permissions) = permissions.as_ref() { file.set_permissions(permissions.clone()).map_err(|e| e.to_string())?; }
+        file.write_all(content).map_err(|e| e.to_string())?;
+        if let Some(permissions) = permissions { file.set_permissions(permissions).map_err(|e| e.to_string())?; }
+        file.sync_all().map_err(|e| e.to_string())?;
+        control.check()?;
+        check_member_fd(&root, &parent)?;
+        // Do not follow a leaf swapped by an external writer while staging.
+        if std::fs::symlink_metadata(&leaf).is_ok_and(|meta| !meta.is_file()) {
+            return Err("file changed while writing".into());
+        }
+        if let Some(expected) = expected {
+            let mut current = open_member_file(&root, path).map_err(|e| format!("file conflict: {e}"))?;
+            if !file_hash(&mut current, control)?.eq_ignore_ascii_case(expected) {
+                return Err("file conflict: expected_sha256 no longer matches; read the file again".into());
+            }
+        }
+        std::fs::rename(&temp, &leaf).map_err(|e| e.to_string())?;
+        parent.sync_all().map_err(|e| format!("file replaced but directory sync failed: {e}"))
+    })();
+    if result.is_err() { let _ = std::fs::remove_file(&temp); }
+    result
+}
+
+fn positive_arg(args: &Json, key: &str, default: u64) -> Result<u64, String> {
+    match args.get(key) {
+        Some(value) => value.as_u64().filter(|n| *n > 0).ok_or_else(|| format!("{key} must be a positive integer")),
+        None => Ok(default),
+    }
+}
+
+/// Byte continuation covers even one enormous line; line reads never allocate
+/// the skipped prefix or the remainder of an unbounded tool-output artifact.
+fn read_page(mut file: std::fs::File, args: &Json, control: &TurnControl) -> Result<Json, String> {
+    let offset = positive_arg(args, "offset", 1)?;
+    let limit = positive_arg(args, "limit", 2000)?.min(2000);
+    let byte_offset = args.get("byte_offset").map(|v| v.as_u64().ok_or("byte_offset must be a nonnegative integer")).transpose()?;
+    if byte_offset.is_some() && offset != 1 { return Err("use offset or byte_offset, not both".into()); }
+    let hash = if args.get("include_sha256").and_then(Json::as_bool).unwrap_or(false) {
+        Some(file_hash(&mut file, control)?)
+    } else { None };
+    if let Some(pos) = byte_offset { file.seek(SeekFrom::Start(pos)).map_err(|e| e.to_string())?; }
+    let mut reader = BufReader::new(file);
+    let mut position = byte_offset.unwrap_or(0);
+    let mut skipped = 1;
+    while byte_offset.is_none() && skipped < offset {
+        control.check()?;
+        let chunk = reader.fill_buf().map_err(|e| e.to_string())?;
+        if chunk.is_empty() { break; }
+        let count = chunk.iter().position(|b| *b == b'\n').map(|i| i + 1).unwrap_or(chunk.len());
+        if chunk[count - 1] == b'\n' { skipped += 1; }
+        reader.consume(count);
+        position += count as u64;
+    }
+    let start = position;
+    let mut bytes = Vec::with_capacity(PAGE_BYTES);
+    let mut lines = 0;
+    while bytes.len() < PAGE_BYTES && lines < limit {
+        control.check()?;
+        let chunk = reader.fill_buf().map_err(|e| e.to_string())?;
+        if chunk.is_empty() { break; }
+        let mut count = 0;
+        for byte in chunk.iter().take(PAGE_BYTES - bytes.len()) {
+            count += 1;
+            if *byte == b'\n' { lines += 1; }
+            if lines == limit { break; }
+        }
+        bytes.extend_from_slice(&chunk[..count]);
+        reader.consume(count);
+    }
+    let valid = match std::str::from_utf8(&bytes) {
+        Ok(_) => bytes.len(),
+        Err(e) if e.error_len().is_none() && bytes.len() == PAGE_BYTES => e.valid_up_to(),
+        Err(_) => return Err("file is not UTF-8 text (or byte_offset splits a character)".into()),
+    };
+    let more = valid < bytes.len() || !reader.fill_buf().map_err(|e| e.to_string())?.is_empty();
+    bytes.truncate(valid);
+    position += bytes.len() as u64;
+    let content = String::from_utf8(bytes).map_err(|e| e.to_string())?;
+    if !more && offset == 1 && byte_offset.is_none() && hash.is_none() && args.get("limit").is_none() && args.get("offset").is_none() {
+        return Ok(json!(content));
+    }
+    let next_offset = if more && byte_offset.is_none() && content.ends_with('\n') { Some(offset + lines) } else { None };
+    Ok(json!({"content": content, "offset": if byte_offset.is_some() { None } else { Some(offset) },
+        "byte_offset": start, "next_offset": next_offset, "next_byte_offset": if more { Some(position) } else { None },
+        "truncated": more, "eof": !more, "sha256": hash}))
+}
+
+fn edit_diff(path: &Path, text: &str, at: usize, old: &str, new: &str) -> String {
+    let line = text[..at].bytes().filter(|b| *b == b'\n').count() + 1;
+    let mut diff = format!("edited {}\n@@ line {line} @@\n", path.display());
+    for (prefix, value) in [("-", old), ("+", new)] {
+        for line in value.lines() {
+            if diff.len() > 8000 { diff.push_str("[diff truncated; read_file for full content]\n"); return diff; }
+            diff.push_str(prefix);
+            diff.extend(line.chars().take(1000));
+            if line.chars().count() > 1000 { diff.push_str(" [line truncated]"); }
+            diff.push('\n');
+        }
+    }
+    diff
 }
 
 fn normalize(path: &Path) -> PathBuf {
@@ -156,10 +303,10 @@ fn workspace_executor_with_control(
                 resolve_in_root(&root, key)
             }
         };
-        let member_file = |key: &str, write: bool| {
+        let member_file = |key: &str| {
             let path = member_path(key)?;
             let file_root = if key.starts_with(ARTIFACTS_PREFIX) { artifacts.as_ref().unwrap() } else { &root };
-            open_member_file(file_root, &path, write)
+            open_member_file(file_root, &path)
         };
         match tool {
             "ls" => {
@@ -180,38 +327,46 @@ fn workspace_executor_with_control(
                 names.sort();
                 Ok(json!(names.join("\n")))
             }
-            "read_file" => Ok(json!(cap_read(member_file(&arg("path"), false)?)?)),
+            "read_file" => read_page(member_file(&arg("path"))?, args, control),
             "read_artifact" => {
                 let key = arg("path");
                 let key = if key.is_empty() { arg("name") } else { key };
                 let path = resolve_artifact(artifacts.as_ref(), &key)?;
-                Ok(json!(cap_read(open_member_file(artifacts.as_ref().unwrap(), &path, false)?)?))
+                read_page(open_member_file(artifacts.as_ref().unwrap(), &path)?, args, control)
             }
             "write_file" => {
+                let _guard = FILE_WRITES.lock().map_err(|_| "file mutation lock poisoned")?;
+                control.check()?;
                 let path = member_path(&arg("path"))?;
-                let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                if content.len() as u64 > MAX_FILE_BYTES {
-                    return Err("content too large".into());
-                }
-                let mut file = member_file(&arg("path"), true)?;
-                file.set_len(0).map_err(|e| e.to_string())?;
-                file.write_all(content.as_bytes()).map_err(|e| e.to_string())?;
+                let content = args.get("content").and_then(|v| v.as_str()).ok_or("content must be a string")?;
+                let file_root = if arg("path").starts_with(ARTIFACTS_PREFIX) { artifacts.as_ref().unwrap() } else { &root };
+                atomic_write(file_root, &path, content.as_bytes(), expected_hash(args)?, control)?;
                 Ok(json!(format!("wrote {}", path.display())))
             }
             "edit_file" => {
+                let _guard = FILE_WRITES.lock().map_err(|_| "file mutation lock poisoned")?;
+                control.check()?;
                 let path = member_path(&arg("path"))?;
-                let text = cap_read(member_file(&arg("path"), false)?)?;
+                let text = cap_read(member_file(&arg("path"))?)?;
                 let old = arg("old_string");
-                let new = arg("new_string");
-                if !text.contains(&old) {
-                    return Err("old_string not found".into());
+                let new = args.get("new_string").and_then(Json::as_str).ok_or("new_string must be a string")?;
+                if old.is_empty() { return Err("old_string must not be empty".into()); }
+                let at = text.find(&old).ok_or("old_string not found")?;
+                // Count overlapping matches too (e.g. 'aa' in 'aaa').
+                if text[at + old.chars().next().unwrap().len_utf8()..].contains(&old) {
+                    return Err("old_string matches multiple locations; include more context".into());
                 }
-                let mut file = member_file(&arg("path"), true)?;
-                file.set_len(0).map_err(|e| e.to_string())?;
-                file.write_all(text.replacen(&old, &new, 1).as_bytes()).map_err(|e| e.to_string())?;
-                Ok(json!(format!("edited {}", path.display())))
+                let hash = format!("{:x}", Sha256::digest(text.as_bytes()));
+                if expected_hash(args)?.is_some_and(|expected| !expected.eq_ignore_ascii_case(&hash)) {
+                    return Err("file conflict: expected_sha256 no longer matches; read the file again".into());
+                }
+                let file_root = if arg("path").starts_with(ARTIFACTS_PREFIX) { artifacts.as_ref().unwrap() } else { &root };
+                atomic_write(file_root, &path, text.replacen(&old, new, 1).as_bytes(), Some(&hash), control)?;
+                Ok(json!(edit_diff(&path, &text, at, &old, new)))
             }
             "delete" => {
+                let _guard = FILE_WRITES.lock().map_err(|_| "file mutation lock poisoned")?;
+                control.check()?;
                 let path = member_path(&arg("path"))?;
                 let recursive = args.get("recursive").and_then(|v| v.as_bool()).unwrap_or(false);
                 let result = if recursive {
@@ -226,15 +381,27 @@ fn workspace_executor_with_control(
             }
             "glob" => {
                 let pattern = if arg("pattern").is_empty() { "*".to_string() } else { arg("pattern") };
+                if bwrap_available() && sandbox_rg_available() {
+                    // A positive `rg --glob` overrides .gitignore. Filter the
+                    // already-ignored file list instead.
+                    let command = format!("set -o pipefail; rg --files -- . | rg --color never -- {}", shell_quote(&glob_regex(&pattern)));
+                    return shell_run_with_control(&command, &root, 30, false, artifacts.as_deref(), control)
+                        .map(Json::String);
+                }
                 let mut hits = vec![];
-                glob_walk(&root, &root, &pattern, &mut hits);
-                hits.truncate(500);
+                glob_walk(&root, &root, &pattern, &mut hits, control)?;
                 Ok(json!(hits.join("\n")))
             }
             "grep" => {
                 let pattern = shell_quote(&arg("pattern"));
-                let path = shell_quote(&arg_or(args, "path", "."));
-                shell_run_with_control(&format!("grep -rn -- {pattern} {path} | head -100"), &root, 30, false, artifacts.as_deref(), control)
+                let path = resolve_in_root(&root, &arg_or(args, "path", "."))?;
+                let path = shell_quote(&path.to_string_lossy());
+                let command = if sandbox_rg_available() {
+                    format!("rg --line-number --no-heading --color never -- {pattern} {path}")
+                } else {
+                    format!("grep -rn -- {pattern} {path}")
+                };
+                shell_run_with_control(&command, &root, 30, false, artifacts.as_deref(), control)
                     .map(Json::String)
             }
             "shell" => {
@@ -499,12 +666,44 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+fn sandbox_rg_available() -> bool {
+    // Match shell_run's sanitized PATH; a host-only ~/.local binary is not
+    // mounted into the shell sandbox.
+    ["/usr/local/bin/rg", "/usr/bin/rg", "/bin/rg"].iter().any(|path| Path::new(path).is_file())
+}
+
+fn glob_regex(pattern: &str) -> String {
+    let mut regex = String::from("^(?:\\./)?");
+    let parts: Vec<&str> = pattern.trim_start_matches("./").split('/').filter(|s| !s.is_empty()).collect();
+    for (index, part) in parts.iter().enumerate() {
+        let last = index + 1 == parts.len();
+        if *part == "**" {
+            regex.push_str(if last { ".*" } else { "(?:[^/]+/)*" });
+            continue;
+        }
+        for ch in part.chars() {
+            match ch {
+                '*' => regex.push_str("[^/]*"),
+                '?' => regex.push_str("[^/]"),
+                '.' | '+' | '(' | ')' | '[' | ']' | '{' | '}' | '^' | '$' | '|' | '\\' => { regex.push('\\'); regex.push(ch); }
+                _ => regex.push(ch),
+            }
+        }
+        if !last { regex.push('/'); }
+    }
+    regex.push('$');
+    regex
+}
+
 /// Tiny glob: `*` (within a segment), `?`, `**` (any depth). Enough for the
 /// patterns members send; a full glob crate is not worth the dependency yet.
-fn glob_walk(root: &Path, dir: &Path, pattern: &str, out: &mut Vec<String>) {
+fn glob_walk(root: &Path, dir: &Path, pattern: &str, out: &mut Vec<String>, control: &TurnControl) -> Result<(), String> {
+    // ponytail: without rg the fallback supports simple globs, not gitignore;
+    // install rg for the same ignore semantics as repository search.
     let segments: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
     let mut stack = vec![(dir.to_path_buf(), 0usize)];
     while let Some((current, index)) = stack.pop() {
+        control.check()?;
         if out.len() >= 500 || index > segments.len() {
             continue;
         }
@@ -521,7 +720,7 @@ fn glob_walk(root: &Path, dir: &Path, pattern: &str, out: &mut Vec<String>) {
             stack.push((current.clone(), index + 1));
             if let Ok(entries) = std::fs::read_dir(&current) {
                 for entry in entries.flatten() {
-                    if entry.path().is_dir() {
+                    if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
                         stack.push((entry.path(), index));
                     }
                 }
@@ -530,6 +729,9 @@ fn glob_walk(root: &Path, dir: &Path, pattern: &str, out: &mut Vec<String>) {
         }
         if let Ok(entries) = std::fs::read_dir(&current) {
             for entry in entries.flatten() {
+                control.check()?;
+                let Ok(kind) = entry.file_type() else { continue };
+                if kind.is_symlink() { continue; }
                 let name = entry.file_name().to_string_lossy().into_owned();
                 if !segment_match(segment, &name) {
                     continue;
@@ -538,13 +740,15 @@ fn glob_walk(root: &Path, dir: &Path, pattern: &str, out: &mut Vec<String>) {
                 if index + 1 == segments.len() {
                     if let Ok(rel) = path.strip_prefix(root) {
                         out.push(rel.to_string_lossy().into_owned());
+                        if out.len() >= 500 { return Ok(()); }
                     }
-                } else if path.is_dir() {
+                } else if kind.is_dir() {
                     stack.push((path, index + 1));
                 }
             }
         }
     }
+    Ok(())
 }
 
 fn segment_match(pattern: &str, name: &str) -> bool {
@@ -618,58 +822,96 @@ pub fn bwrap_argv(workdir: &Path, network: bool, command: &str) -> Vec<String> {
     argv
 }
 
-/// Drain one pipe into a shared buffer. Reading happens on its own thread so a
-/// child that fills the pipe buffer (>64KiB on Linux) never blocks the wait
-/// loop.
-fn drain(mut pipe: impl Read + Send + 'static) -> (Arc<Mutex<Vec<u8>>>, std::thread::JoinHandle<()>) {
-    let sink = Arc::new(Mutex::new(Vec::new()));
-    let target = sink.clone();
-    let handle = std::thread::spawn(move || {
-        let mut chunk = [0u8; 8192];
-        while let Ok(read) = pipe.read(&mut chunk) {
-            if read == 0 {
-                break;
+struct OutputSink {
+    head: Vec<u8>,
+    total: u64,
+    written: u64,
+    cap: u64,
+    artifact: Option<std::fs::File>,
+    reference: Option<String>,
+    error: Option<String>,
+}
+
+impl OutputSink {
+    fn new(dir: Option<&Path>) -> Result<Self, String> {
+        let (artifact, reference) = if let Some(dir) = dir {
+            std::fs::create_dir_all(dir).map_err(|e| format!("cannot create output artifact directory: {e}"))?;
+            let name = format!("exec-{}.log", uuid::Uuid::new_v4());
+            let file = std::fs::OpenOptions::new().write(true).create_new(true).open(dir.join(&name))
+                .map_err(|e| format!("cannot create output artifact: {e}"))?;
+            (Some(file), Some(format!("{ARTIFACTS_PREFIX}{name}")))
+        } else { (None, None) };
+        Ok(Self { head: Vec::with_capacity(MAX_OUTPUT), total: 0, written: 0, cap: MAX_ARTIFACT_BYTES, artifact, reference, error: None })
+    }
+
+    fn append(&mut self, bytes: &[u8]) {
+        self.total = self.total.saturating_add(bytes.len() as u64);
+        let remaining = MAX_OUTPUT.saturating_sub(self.head.len());
+        self.head.extend_from_slice(&bytes[..remaining.min(bytes.len())]);
+        if let Some(file) = self.artifact.as_mut() {
+            let room = self.cap.saturating_sub(self.written).min(bytes.len() as u64) as usize;
+            if room > 0 {
+                if let Err(e) = file.write_all(&bytes[..room]) { self.error.get_or_insert_with(|| format!("output artifact write failed: {e}")); }
+                else { self.written += room as u64; }
             }
-            target.lock().unwrap().extend_from_slice(&chunk[..read]);
         }
-    });
-    (sink, handle)
+    }
+
+    fn finish(&mut self, interrupted: bool) -> Result<String, String> {
+        if let Some(file) = self.artifact.as_mut() {
+            if let Err(e) = file.sync_all() { self.error.get_or_insert_with(|| format!("output artifact sync failed: {e}")); }
+        }
+        let mut text = String::from_utf8_lossy(&self.head).into_owned();
+        if self.total > self.head.len() as u64 || interrupted || self.error.is_some() {
+            let capped = if self.total > self.written { format!(" (artifact truncated at {} MiB)", self.cap / (1024 * 1024)) } else { String::new() };
+            match &self.reference {
+                Some(reference) => text.push_str(&format!("\n[{} bytes captured; full output: {reference}]{capped}", self.total)),
+                None if self.total > self.head.len() as u64 => text.push_str("\n[output truncated; no artifact directory configured]"),
+                None => {}
+            }
+        }
+        match &self.error {
+            Some(error) => Err(format!("{error}\n{text}")),
+            None => Ok(text),
+        }
+    }
+}
+
+/// Both readers spool immediately and retain only a bounded preview. The
+/// artifact preserves arrival order; separate stdout/stderr ordering is not
+/// recoverable after the OS has delivered their independent pipe chunks.
+fn drain(mut pipe: impl Read + Send + 'static, sink: Arc<Mutex<OutputSink>>) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut chunk = [0u8; 8192];
+        loop {
+            match pipe.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(read) => sink.lock().unwrap().append(&chunk[..read]),
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => { sink.lock().unwrap().error = Some(format!("output pipe read failed: {e}")); break; }
+            }
+        }
+    })
 }
 
 /// Wait for reader threads, but never block the caller forever: if a pipe is
 /// still open after the grace period the partial buffer is all we can use.
 /// ponytail: a reader that never sees EOF is leaked (its data is already
 /// collected); kill the process group instead if that ever shows up.
-fn join_bounded(handles: Vec<std::thread::JoinHandle<()>>, grace: Duration) {
+fn join_bounded(handles: Vec<std::thread::JoinHandle<()>>, grace: Duration) -> bool {
     let deadline = Instant::now() + grace;
+    let mut complete = true;
     for handle in handles {
         while !handle.is_finished() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
         }
         if handle.is_finished() {
-            let _ = handle.join();
-        }
+            complete &= handle.join().is_ok();
+        } else { complete = false; }
         // else: leak the reader thread rather than hang the engine; its data is
         // already in the buffer (kill is instantaneous with --die-with-parent)
     }
-}
-
-/// Long output is preserved under the session
-/// artifact directory and referenced by `/artifacts/<name>`.
-fn save_artifact(dir: &Path, output: &str) -> Option<String> {
-    std::fs::create_dir_all(dir).ok()?;
-    let name = format!("exec-{}-{}.log", compact_timestamp(), std::process::id());
-    std::fs::write(dir.join(&name), output).ok()?;
-    Some(format!("{ARTIFACTS_PREFIX}{name}"))
-}
-
-/// "YYYYMMDD-HHMMSS" (UTC), the artifact name shape.
-fn compact_timestamp() -> String {
-    let digits: String = iso8601(teamagents_core::models::now() as i64)
-        .chars()
-        .filter(char::is_ascii_digit)
-        .collect();
-    format!("{}-{}", &digits[..8], &digits[8..14])
+    complete
 }
 
 /// bwrap-only: missing isolation is an error,
@@ -693,6 +935,7 @@ fn shell_run_with_control(
     }
     let workdir = std::fs::canonicalize(workdir).unwrap_or_else(|_| workdir.to_path_buf());
     let argv = bwrap_argv(&workdir, network, command);
+    let sink = Arc::new(Mutex::new(OutputSink::new(artifacts)?));
     let mut child = Command::new(&argv[0])
         .args(&argv[1..])
         .stdin(Stdio::null())
@@ -710,60 +953,48 @@ fn shell_run_with_control(
         .map_err(|e| e.to_string())?;
     let stdout = child.stdout.take().ok_or("no stdout")?;
     let stderr = child.stderr.take().ok_or("no stderr")?;
-    let (stdout_sink, stdout_reader) = drain(stdout);
-    let (stderr_sink, stderr_reader) = drain(stderr);
-    let deadline = Instant::now() + Duration::from_secs(timeout_s);
-    let mut timed_out = false;
+    let stdout_reader = drain(stdout, sink.clone());
+    let stderr_reader = drain(stderr, sink.clone());
+    let started = Instant::now();
+    let mut failure = None;
     let mut status = None;
     loop {
         if control.check().is_err() {
-            // Killing bwrap tears down its private PID namespace and command
-            // tree (--unshare-pid + --die-with-parent).
-            child.kill().map_err(|e| e.to_string())?;
-            child.wait().map_err(|e| e.to_string())?;
-            join_bounded(vec![stdout_reader, stderr_reader], Duration::from_secs(5));
-            return Err("turn interrupted".into());
+            failure = Some("turn interrupted".to_string());
+            break;
+        }
+        if sink.lock().unwrap().error.is_some() {
+            failure = Some("command stopped because output capture failed".into());
+            break;
         }
         match child.try_wait() {
             Ok(Some(exit)) => {
                 status = Some(exit);
                 break;
             }
-            Ok(None) if Instant::now() > deadline => {
-                timed_out = true;
-                let _ = child.kill();
-                let _ = child.wait();
+            Ok(None) if started.elapsed() >= Duration::from_secs(timeout_s) => {
+                failure = Some(format!("command timed out after {timeout_s}s"));
                 break;
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(20)),
             Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(e.to_string());
+                failure = Some(format!("command wait failed: {e}"));
+                break;
             }
         }
     }
-    join_bounded(vec![stdout_reader, stderr_reader], Duration::from_secs(5));
-    let mut text = String::from_utf8_lossy(&stdout_sink.lock().unwrap()).into_owned();
-    text.push_str(&String::from_utf8_lossy(&stderr_sink.lock().unwrap()));
-    if text.len() > MAX_OUTPUT {
-        // never cut inside a UTF-8 sequence
-        let mut cut = MAX_OUTPUT;
-        while cut > 0 && !text.is_char_boundary(cut) {
-            cut -= 1;
+    if failure.is_some() {
+        // Killing bwrap tears down its private PID namespace and command tree.
+        if let Err(e) = child.kill() {
+            if e.kind() != std::io::ErrorKind::InvalidInput { failure = Some(format!("{}; kill failed: {e}", failure.unwrap())); }
         }
-        let full = text;
-        let mut head = full[..cut].to_string();
-        match artifacts.and_then(|dir| save_artifact(dir, &full)) {
-            Some(reference) => {
-                head.push_str(&format!("\n[output truncated at {MAX_OUTPUT} bytes; full output: {reference}]"))
-            }
-            None => head.push_str(&format!("\n[output truncated at {MAX_OUTPUT} bytes]")),
-        }
-        text = head;
+        if let Err(e) = child.wait() { failure = Some(format!("{}; wait failed: {e}", failure.unwrap())); }
     }
-    if timed_out {
-        let note = format!("command timed out after {timeout_s}s");
+    if !join_bounded(vec![stdout_reader, stderr_reader], Duration::from_secs(5)) {
+        sink.lock().unwrap().error.get_or_insert_with(|| "output capture incomplete: reader did not finish".into());
+    }
+    let text = sink.lock().unwrap().finish(failure.is_some())?;
+    if let Some(note) = failure {
         return Err(if text.is_empty() { note } else { format!("{note}\n{text}") });
     }
     let status = status.ok_or("no exit status")?;
@@ -1139,6 +1370,82 @@ pub fn iso8601(seconds: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn output_capture_spools_bounded_previews_and_reports_storage_errors() {
+        let dir = std::env::temp_dir().join(format!("ta-output-{}", uuid::Uuid::new_v4()));
+        let mut first = OutputSink::new(Some(&dir)).unwrap();
+        let second = OutputSink::new(Some(&dir)).unwrap();
+        assert_ne!(first.reference, second.reference);
+        for _ in 0..100 { first.append(&[b'x'; 8192]); }
+        assert_eq!(first.head.len(), MAX_OUTPUT);
+        assert_eq!(first.total, 819200);
+        assert_eq!(first.artifact.as_ref().unwrap().metadata().unwrap().len(), 819200);
+        assert!(first.finish(false).unwrap().contains("full output: /artifacts/exec-"));
+        first.artifact = Some(std::fs::OpenOptions::new().write(true).open("/dev/full").unwrap());
+        first.append(b"cannot save");
+        assert!(first.finish(false).unwrap_err().contains("output artifact write failed"));
+        let not_a_dir = dir.join("file");
+        std::fs::write(&not_a_dir, "x").unwrap();
+        assert!(OutputSink::new(Some(&not_a_dir)).err().unwrap().contains("artifact directory"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn shell_artifact_stops_at_the_size_cap() {
+        let dir = std::env::temp_dir().join(format!("ta-artifact-cap-{}", uuid::Uuid::new_v4()));
+        let mut sink = OutputSink { cap: 3 * 1024 * 1024, ..OutputSink::new(Some(&dir)).unwrap() };
+        for _ in 0..64 { sink.append(&[b'x'; 65536]); }
+        assert_eq!(sink.total, 4 * 1024 * 1024);
+        assert_eq!(sink.written, 3 * 1024 * 1024);
+        assert_eq!(sink.artifact.as_ref().unwrap().metadata().unwrap().len(), 3 * 1024 * 1024);
+        let text = sink.finish(false).unwrap();
+        assert!(text.contains("artifact truncated at 3 MiB"), "{text}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn cancelled_shell_keeps_partial_output_and_its_artifact() {
+        if !bwrap_available() { return; }
+        let dir = std::env::temp_dir().join(format!("ta-cancel-output-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let artifacts = dir.join("artifacts");
+        let control = Arc::new(TurnControl::default());
+        let child_control = control.clone();
+        let child_dir = dir.clone();
+        let child_artifacts = artifacts.clone();
+        let job = std::thread::spawn(move || shell_run_with_control(
+            "printf before-cancel; touch ready; sleep 30; touch should-not-exist", &child_dir, 40, false, Some(&child_artifacts), &child_control));
+        let started = Instant::now();
+        while !dir.join("ready").exists() && !job.is_finished() && started.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(dir.join("ready").exists(), "sandbox did not start the command");
+        control.cancel();
+        let err = job.join().unwrap().unwrap_err();
+        assert!(err.contains("turn interrupted") && err.contains("before-cancel") && err.contains("/artifacts/exec-"), "{err}");
+        let files: Vec<_> = std::fs::read_dir(&artifacts).unwrap().map(|entry| entry.unwrap().path()).collect();
+        assert_eq!(files.len(), 1);
+        assert_eq!(std::fs::read_to_string(&files[0]).unwrap(), "before-cancel");
+        assert!(!dir.join("should-not-exist").exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn fallback_glob_never_follows_directory_links_and_checks_cancellation() {
+        let dir = std::env::temp_dir().join(format!("ta-glob-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("nested")).unwrap();
+        std::fs::write(dir.join("nested/file.txt"), "ok").unwrap();
+        std::os::unix::fs::symlink("/etc", dir.join("escape")).unwrap();
+        let control = TurnControl::default();
+        let mut hits = vec![];
+        glob_walk(&dir, &dir, "**/*", &mut hits, &control).unwrap();
+        assert!(hits.iter().any(|hit| hit == "nested/file.txt"));
+        assert!(!hits.iter().any(|hit| hit.starts_with("escape")));
+        control.cancel();
+        assert!(glob_walk(&dir, &dir, "**/*", &mut hits, &control).unwrap_err().contains("interrupted"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     /// Serve `response` to the first connection, then report our URL.
     fn serve_once(response: String) -> String {

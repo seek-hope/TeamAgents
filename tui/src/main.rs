@@ -3,8 +3,6 @@
 //! authoritative state in the core.
 
 use std::io::Write;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::channel;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -19,7 +17,7 @@ use ratatui::Terminal;
 use serde_json::{json, Value as Json};
 
 use teamagents_tui::app::{self, App, Effect, OpResult};
-use teamagents_tui::worker::Worker;
+use teamagents_tui::worker::{PendingCall, Worker};
 use teamagents_tui::{i18n, ui};
 
 struct Args {
@@ -108,7 +106,7 @@ fn parse_args() -> Args {
 fn main() {
     let args = parse_args();
     if !atty_stdout() {
-        eprintln!("TUI 需要真实终端；哑终端请用 --plain (TS CLI)");
+        eprintln!("TUI 需要真实终端；哑终端请用 teamagents --plain");
         std::process::exit(1);
     }
     let worker = match Worker::spawn(&args.engine_bin) {
@@ -212,359 +210,280 @@ extern "C" {
     fn libc_isatty(fd: i32) -> i32;
 }
 
-enum BgMsg {
-    Op(OpResult),
-    Models { session: String, generation: u64, provider: String, result: Result<Json, String> },
-    SlowTick { shared: Option<Vec<Json>>, sessions: Option<Vec<Json>> },
+enum RequestKind {
+    Effect(Effect, u64),
+    State,
+    Log(Option<String>),
+    Shared,
+    Sessions,
+}
+
+struct UiRequest {
+    session: String,
+    generation: u64,
+    kind: RequestKind,
+    call: PendingCall,
+}
+
+#[derive(Default)]
+struct AsyncUi {
+    pending: Vec<UiRequest>,
+    generation: u64,
+    switching: bool,
+    poll_failures: u32,
+}
+
+impl AsyncUi {
+    fn enqueue(&mut self, kind: RequestKind, worker: &Worker, app: &App, method: &str, params: Json, timeout: Duration) {
+        self.pending.push(UiRequest {
+            session: app.session_id.clone(), generation: self.generation, kind,
+            call: worker.start_call(method, params, timeout),
+        });
+    }
+
+    fn has(&self, check: impl Fn(&RequestKind) -> bool) -> bool {
+        self.pending.iter().any(|r| r.generation == self.generation && check(&r.kind))
+    }
+
+    fn drain(&mut self, worker: &Worker, app: &mut App) -> bool {
+        let mut dirty = false;
+        let mut index = 0;
+        while index < self.pending.len() {
+            let Some(result) = self.pending[index].call.try_result() else { index += 1; continue; };
+            let request = self.pending.remove(index);
+            if request.session != app.session_id || request.generation != self.generation { continue; }
+            dirty = true;
+            match request.kind {
+                RequestKind::Effect(effect, model_generation) => {
+                    let transition = session_operation(&effect);
+                    // A timed-out switch may still finish in the engine. Keep
+                    // controls locked until restart rather than target an unknown session.
+                    let uncertain = transition && result.as_ref().err().is_some_and(|e| e.contains("timed out"));
+                    let switched = transition && result.is_ok();
+                    let effects = apply_effect_result(effect, model_generation, result, app);
+                    if transition {
+                        self.switching = uncertain;
+                        if uncertain {
+                            app.disconnected = true;
+                            app.chat.push(("system".into(), "会话操作超时，当前会话未确认；请退出后重新打开。".into()));
+                        }
+                        if switched {
+                            self.generation += 1;
+                            // Pushes carry run IDs, not session IDs. Discard the
+                            // old session's buffered deltas at the switch boundary.
+                            while worker.try_push().is_some() {}
+                        }
+                    }
+                    for effect in effects { run_effect(effect, worker, app, self); }
+                }
+                RequestKind::State => match result {
+                    Ok(st) => {
+                        self.poll_failures = 0;
+                        app.disconnected = false;
+                        let effects = app.apply_state(&st);
+                        if app::PANELS[app.panel] == "log" {
+                            app.append_log(st.get("events").and_then(Json::as_array).map(Vec::as_slice).unwrap_or(&[]));
+                        }
+                        for effect in effects { run_effect(effect, worker, app, self); }
+                    }
+                    Err(error) => {
+                        self.poll_failures += 1;
+                        if self.poll_failures == 3 {
+                            app.disconnected = true;
+                            let msg = app.t("[界面刷新失败] ", &[]) + &error;
+                            app.chat.push(("system".into(), msg));
+                        }
+                    }
+                },
+                RequestKind::Log(member) if app::PANELS[app.panel] == "log" && member == app.log_member => match result {
+                    Ok(st) => app.replay_log(st.get("events").and_then(Json::as_array).map(Vec::as_slice).unwrap_or(&[])),
+                    Err(error) => {
+                        let msg = app.t("[界面读取事件失败] {v0}", &[("v0", &error)]);
+                        app.chat.push(("system".into(), msg));
+                    }
+                },
+                RequestKind::Shared => {
+                    if let Ok(value) = result {
+                        if let Some(entries) = value.get("entries").and_then(Json::as_array) { app.shared = entries.clone(); }
+                    }
+                }
+                RequestKind::Sessions => {
+                    if let Ok(value) = result {
+                        if let Some(sessions) = value.get("sessions").and_then(Json::as_array) { app.sessions = sessions.clone(); }
+                    }
+                }
+                RequestKind::Log(_) => {}
+            }
+        }
+        dirty
+    }
 }
 
 fn run(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, worker: &Arc<Worker>, app: &mut App) -> i32 {
-    let (bg_tx, bg_rx) = channel::<BgMsg>();
+    let mut requests = AsyncUi::default();
     app.push_startup_warnings();
-
-    // initial full state
-    if let Ok(st) = worker.core("state", json!({"after_sequence": 0})) {
-        for e in app.apply_state(&st) {
-            run_effect(e, worker, app, &bg_tx);
-        }
-    }
-
     let mut last_state_poll = Instant::now() - Duration::from_secs(1);
     let mut last_activity = Instant::now();
     let mut last_flush = Instant::now();
     let mut last_slow = Instant::now() - Duration::from_secs(1);
-    let slow_inflight = Arc::new(AtomicBool::new(false));
-    let mut last_log_sig: Option<(bool, Option<String>)> = None;
-    let mut poll_failures = 0u32;
+    let mut last_log_sig = None;
     let mut dirty = true;
 
     loop {
-        // input events
+        // Apply replies before accepting input, so a completed switch changes
+        // the session before the next action is enqueued.
+        dirty |= requests.drain(worker, app);
         if event::poll(Duration::from_millis(40)).unwrap_or(false) {
             match event::read() {
                 Ok(Event::Key(key)) if key.kind != KeyEventKind::Release => {
-                    let effects = app.handle_key(key);
-                    for e in effects {
-                        run_effect(e, worker, app, &bg_tx);
-                    }
+                    for effect in app.handle_key(key) { run_effect(effect, worker, app, &mut requests); }
                     dirty = true;
                 }
-                Ok(Event::Mouse(m)) => {
-                    handle_mouse(m, terminal, app);
-                    dirty = true;
-                }
+                Ok(Event::Mouse(m)) => { handle_mouse(m, terminal, app); dirty = true; }
                 Ok(Event::Resize(_, _)) => dirty = true,
-                Ok(Event::Paste(text)) => {
-                    app.handle_paste(&text);
-                    dirty = true;
-                }
+                Ok(Event::Paste(text)) => { app.handle_paste(&text); dirty = true; }
                 _ => {}
             }
         }
-        // stream deltas
         while let Some(push) = worker.try_push() {
-            if push.kind == "delta" {
+            if push.kind == "delta" && !requests.switching {
                 app.on_delta(&push.run_id, &push.agent_id, &push.text);
                 dirty = true;
             }
         }
-        // background op results
-        while let Ok(msg) = bg_rx.try_recv() {
-            match msg {
-                BgMsg::Op(op) => {
-                    for e in app.on_op_result(op) {
-                        run_effect(e, worker, app, &bg_tx);
-                    }
-                }
-                BgMsg::SlowTick { shared, sessions } => apply_slow_tick(app, shared, sessions),
-                BgMsg::Models { session, generation, provider, result } => app.show_discovered_models(&session, generation, &provider, result),
+        if !requests.switching {
+            if last_state_poll.elapsed() >= Duration::from_millis(250) && !requests.has(|k| matches!(k, RequestKind::State)) {
+                last_state_poll = Instant::now();
+                let after = if app::PANELS[app.panel] == "log" { app.cursor.min(app.log_cursor) } else { app.cursor };
+                requests.enqueue(RequestKind::State, worker, app, "call", json!({"method":"state", "params":{"after_sequence":after}}), Duration::from_secs(5));
             }
-            dirty = true;
-        }
-        // state poll 250ms
-        if last_state_poll.elapsed() >= Duration::from_millis(250) {
-            last_state_poll = Instant::now();
-            // log_cursor only leads while the log panel is live (activation does a
-            // full replay); elsewhere it stays 0 and would force a full fetch
-            let after = if matches!(app::PANELS[app.panel], "log") {
-                app.cursor.min(app.log_cursor)
-            } else {
-                app.cursor
-            };
-            // short timeout: a wedged engine must not freeze the UI for 120s
-            match worker.core_timeout("state", json!({"after_sequence": after}), Duration::from_secs(5)) {
-                Ok(st) => {
-                    poll_failures = 0;
-                    app.disconnected = false;
-                    let events = st.get("events").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-                    let effects = app.apply_state(&st);
-                    for e in effects {
-                        run_effect(e, worker, app, &bg_tx);
-                    }
-                    if matches!(app::PANELS[app.panel], "log") {
-                        app.append_log(&events);
-                    }
-                    dirty = true;
+            let log_sig = (requests.generation, app::PANELS[app.panel] == "log", app.log_member.clone());
+            if log_sig.1 && last_log_sig.as_ref() != Some(&log_sig) {
+                requests.enqueue(RequestKind::Log(app.log_member.clone()), worker, app, "call", json!({"method":"state", "params":{"after_sequence":0}}), Duration::from_secs(30));
+            }
+            last_log_sig = Some(log_sig);
+            if last_slow.elapsed() >= Duration::from_secs(1) {
+                last_slow = Instant::now();
+                if !requests.has(|k| matches!(k, RequestKind::Shared)) {
+                    let space_ids: Vec<&str> = app.spec().get("shared_spaces").and_then(Json::as_array)
+                        .map(|spaces| spaces.iter().filter_map(|s| s.get("id").and_then(Json::as_str)).collect()).unwrap_or_default();
+                    requests.enqueue(RequestKind::Shared, worker, app, "call", json!({"method":"shared_entries", "params":{"space_ids":space_ids,"limit":1000}}), Duration::from_secs(5));
                 }
-                Err(err) => {
-                    poll_failures += 1;
-                    if poll_failures == 3 {
-                        // engine unreachable: chip in the status bar + one chat line
-                        app.disconnected = true;
-                        let msg = app.t("[界面刷新失败] ", &[]) + &err;
-                        app.chat.push(("system".into(), msg));
-                    }
-                    dirty = true;
+                if !requests.has(|k| matches!(k, RequestKind::Sessions)) {
+                    requests.enqueue(RequestKind::Sessions, worker, app, "list_sessions", json!({}), Duration::from_secs(5));
                 }
             }
         }
-        // log tab (re)play on activation / filter change
-        let log_sig = (app::PANELS[app.panel] == "log", app.log_member.clone());
-        if log_sig.0 && last_log_sig.as_ref() != Some(&log_sig) {
-            // 30s: replaying a big session legitimately outlives the 5s poll
-            // timeout; if it still times out, the latched sig skips retry
-            match worker.core_timeout("state", json!({"after_sequence": 0}), Duration::from_secs(30)) {
-                Ok(st) => {
-                    let events = st.get("events").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-                    app.replay_log(&events);
-                }
-                Err(err) => {
-                    let msg = app.t("[界面读取事件失败] {v0}", &[("v0", &err)]);
-                    app.chat.push(("system".into(), msg));
-                }
-            }
-            dirty = true;
-        }
-        last_log_sig = Some(log_sig);
-        // slow tick: shared entries + session list
-        if last_slow.elapsed() >= Duration::from_secs(1) {
-            last_slow = Instant::now();
-            spawn_slow_tick(worker.clone(), bg_tx.clone(), app, &slow_inflight);
-        }
-        // activity spinner 120ms
-        if last_activity.elapsed() >= Duration::from_millis(120) {
-            last_activity = Instant::now();
-            dirty = true; // activity_lines decides visually; cheap enough
-        }
-        if last_flush.elapsed() >= Duration::from_millis(80) {
-            last_flush = Instant::now();
-            app.flush_deltas();
-        }
-        if app.should_quit {
-            return 0;
-        }
-        if dirty {
-            let _ = terminal.draw(|f| ui::render(f, app));
-            dirty = false;
-        }
+        if last_activity.elapsed() >= Duration::from_millis(120) { last_activity = Instant::now(); dirty = true; }
+        if last_flush.elapsed() >= Duration::from_millis(80) { last_flush = Instant::now(); app.flush_deltas(); }
+        if app.should_quit { return 0; }
+        if dirty { let _ = terminal.draw(|f| ui::render(f, app)); dirty = false; }
     }
 }
 
-fn spawn_slow_tick(worker: Arc<Worker>, tx: std::sync::mpsc::Sender<BgMsg>, app: &App, inflight: &Arc<AtomicBool>) {
-    // in-flight guard: a tick is two 120s-timeout calls, so a wedged engine
-    // would otherwise pile up ~120 threads before the first one returns
-    if inflight.swap(true, Ordering::SeqCst) {
+fn session_operation(effect: &Effect) -> bool {
+    matches!(effect, Effect::SwitchSession(_) | Effect::NewSession | Effect::Fork | Effect::ArchiveSession(_) | Effect::DeleteSession(_))
+}
+
+fn run_effect(effect: Effect, worker: &Worker, app: &mut App, requests: &mut AsyncUi) {
+    match effect {
+        Effect::Quit => { app.should_quit = true; return; }
+        Effect::Bell => { let _ = std::io::stdout().write_all(b"\x07"); let _ = std::io::stdout().flush(); return; }
+        _ => {}
+    }
+    if requests.switching {
+        if let Effect::UserMessage(text) = &effect {
+            if app.composer.text().is_empty() { app.composer.set_text(text); }
+        }
+        app.notify("会话操作进行中，请稍后重试。".into(), app::Severity::Warning, 5);
         return;
     }
-    let flag = inflight.clone();
-    let space_ids: Vec<String> = app
-        .spec()
-        .get("shared_spaces")
-        .and_then(|v| v.as_array())
-        .map(|a| a.iter().filter_map(|s| s.get("id").and_then(|v| v.as_str()).map(str::to_string)).collect())
-        .unwrap_or_default();
-    std::thread::spawn(move || {
-        let shared = worker
-            .core("shared_entries", json!({"space_ids": space_ids, "limit": 1000}))
-            .ok()
-            .and_then(|r| r.get("entries").and_then(|v| v.as_array()).cloned());
-        let sessions = worker
-            .call("list_sessions", json!({}))
-            .ok()
-            .and_then(|r| r.get("sessions").and_then(|v| v.as_array()).cloned());
-        flag.store(false, Ordering::SeqCst);
-        // a fully degraded tick updates nothing (same "keep old data on
-        // failure" rule as the state poll); a partial one updates only the
-        // panel whose fetch succeeded
-        if shared.is_some() || sessions.is_some() {
-            let _ = tx.send(BgMsg::SlowTick { shared, sessions });
-        }
-    });
+    let (method, params) = match &effect {
+        Effect::Submit { action, .. } => ("submit", json!({"action": action})),
+        Effect::CancelTask(task_id) => ("submit", json!({"action": {"action_id":format!("ui-cancel-task-{task_id}"),"actor_id":"user","kind":"cancel_task","payload":{"task_id":task_id}}})),
+        Effect::DecideApproval { approval_id, decision } => ("submit", json!({"action": {"action_id":format!("ui-approval-{approval_id}-{decision}"),"actor_id":"user","kind":"approval_decision","payload":{"approval_id":approval_id,"decision":decision}}})),
+        Effect::UsageStatus => ("usage", json!({})),
+        Effect::RewindPoints => ("rewind_points", json!({})),
+        Effect::Rewind { node } => ("rewind", json!({"node_id":node})),
+        Effect::Fork => ("fork_session", json!({})),
+        Effect::ModelStatus => ("model", json!({})),
+        Effect::DiscoverModels { provider } => ("discover_models", json!({"provider":provider})),
+        Effect::SetModel { agent_id, profile, model, effort } => ("set_model", json!({"agent_id":agent_id,"profile":profile,"model":model,"effort":effort})),
+        Effect::UserMessage(text) => ("user_message", json!({"text":text})),
+        Effect::SwitchSession(target) => ("switch_session", json!({"session_id":target})),
+        Effect::NewSession => ("new_session", json!({})),
+        Effect::ArchiveSession(target) => ("archive_session", json!({"session_id":target})),
+        Effect::DeleteSession(target) => ("delete_session", json!({"session_id":target})),
+        Effect::Quit | Effect::Bell => unreachable!(),
+    };
+    requests.switching = session_operation(&effect);
+    requests.enqueue(RequestKind::Effect(effect, app.model_generation), worker, app, method, params, Duration::from_secs(120));
 }
 
-/// Apply a slow-tick result: a failed/missing fetch is `None` and leaves the
-/// panel's previous data untouched instead of blanking it.
-fn apply_slow_tick(app: &mut App, shared: Option<Vec<Json>>, sessions: Option<Vec<Json>>) {
-    if let Some(shared) = shared {
-        app.shared = shared;
-    }
-    if let Some(sessions) = sessions {
-        app.sessions = sessions;
+fn receipt_error(result: &Result<Json, String>) -> String {
+    match result {
+        Err(error) => error.clone(),
+        Ok(value) => value.get("error").and_then(Json::as_str).unwrap_or("请求被拒绝").into(),
     }
 }
 
-fn run_effect(e: Effect, worker: &Arc<Worker>, app: &mut App, bg: &std::sync::mpsc::Sender<BgMsg>) {
-    match e {
-        Effect::Quit => app.should_quit = true,
-        Effect::Bell => {
-            let _ = std::io::stdout().write_all(b"\x07");
-            let _ = std::io::stdout().flush();
+fn apply_effect_result(effect: Effect, generation: u64, result: Result<Json, String>, app: &mut App) -> Vec<Effect> {
+    let ok = result.as_ref().ok().and_then(|r| r.get("ok")).and_then(Json::as_bool).unwrap_or(false);
+    match effect {
+        Effect::Submit { ok_msg, err_msg, .. } => {
+            let msg = if ok { ok_msg } else { err_msg.map(|m| m.replace("{error}", &receipt_error(&result))) };
+            if let Some(msg) = msg { app.chat.push(("system".into(), msg)); }
         }
-        // ponytail: synchronous submit on the UI thread, worst case frozen for the
-        // 120s worker call timeout; upgrade path: run submit on a background thread
-        Effect::Submit { action, ok_msg, err_msg } => match worker.call("submit", json!({"action": action})) {
-            Ok(receipt) if receipt.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) => {
-                if let Some(msg) = ok_msg {
-                    app.chat.push(("system".into(), msg));
-                }
-            }
-            r => {
-                let err = r.ok().and_then(|x| x.get("error").and_then(|v| v.as_str()).map(str::to_string))
-                    .unwrap_or_else(|| "submit failed".into());
-                if let Some(msg) = err_msg {
-                    app.chat.push(("system".into(), msg.replace("{error}", &err)));
-                }
-            }
-        },
         Effect::CancelTask(task_id) => {
-            let receipt = worker.call(
-                "submit",
-                json!({"action": {
-                    "action_id": format!("ui-cancel-task-{task_id}"),
-                    "actor_id": "user",
-                    "kind": "cancel_task",
-                    "payload": {"task_id": task_id},
-                }}),
-            );
-            let msg = app::cancel_task_feedback(app.lang, &task_id, &receipt.unwrap_or(Json::Null));
+            let msg = app::cancel_task_feedback(app.lang, &task_id, &result.unwrap_or(Json::Null));
             app.notify(msg.clone(), app::Severity::Info, 10);
             app.chat.push(("system".into(), msg));
         }
-        Effect::DecideApproval { approval_id, decision } => {
-            let receipt = worker.call(
-                "submit",
-                json!({"action": {
-                    "action_id": format!("ui-approval-{approval_id}-{decision}"),
-                    "actor_id": "user",
-                    "kind": "approval_decision",
-                    "payload": {"approval_id": approval_id, "decision": decision},
-                }}),
-            );
-            let ok = receipt.map(|r| r.get("ok").and_then(|v| v.as_bool()).unwrap_or(false)).unwrap_or(false);
+        Effect::DecideApproval { decision, .. } => {
             let msg = app::decide_feedback(app.lang, &decision, ok);
             app.notify(msg, if ok { app::Severity::Info } else { app::Severity::Error }, 10);
         }
-        Effect::UsageStatus => {
-            // synchronous like Effect::Submit (see its ponytail note)
-            let report = worker.call("usage", json!({}));
-            app.show_usage(report);
-        }
-        Effect::RewindPoints => {
-            // synchronous like Effect::Submit (see its ponytail note)
-            let report = worker.call("rewind_points", json!({}));
-            app.show_rewind_points(report);
-        }
-        Effect::Rewind { node } => {
-            let result = worker.call("rewind", json!({"node_id": node}));
-            app.show_rewind_done(result);
-        }
-        Effect::Fork => {
-            // fork closes the current session server-side; refused while busy,
-            // so the close is quick and a sync call is fine
-            let result = worker.call("fork_session", json!({}));
-            app.show_fork_done(result);
-        }
-        Effect::ModelStatus => {
-            // synchronous like Effect::Submit (see its ponytail note)
-            let report = worker.call("model", json!({}));
-            app.show_models(report);
-        }
-        Effect::DiscoverModels { provider } => {
-            let worker = worker.clone();
-            let tx = bg.clone();
-            let session = app.session_id.clone();
-            let generation = app.model_generation;
-            std::thread::spawn(move || {
-                let result = worker.call("discover_models", json!({"provider":provider}));
-                let _ = tx.send(BgMsg::Models { session, generation, provider, result });
-            });
-        }
-        Effect::SetModel { agent_id, profile, model, effort } => {
-            let result = worker.call("set_model", json!({"agent_id": agent_id, "profile": profile, "model": model, "effort": effort}));
-            app.show_model_set(result);
-        }
-        Effect::UserMessage(text) => match worker.call("user_message", json!({"text": text})) {
-            Ok(receipt) if receipt.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) => {
+        Effect::UsageStatus => app.show_usage(result),
+        Effect::RewindPoints => app.show_rewind_points(result),
+        Effect::Rewind { .. } => app.show_rewind_done(result),
+        Effect::Fork => app.show_fork_done(result),
+        Effect::ModelStatus => app.show_models(result),
+        Effect::DiscoverModels { provider } => app.show_discovered_models(&app.session_id.clone(), generation, &provider, result),
+        Effect::SetModel { .. } => app.show_model_set(result),
+        Effect::UserMessage(text) => {
+            if ok {
                 app.composer.record_submission(&text);
                 let _ = i18n::write_history(&app.composer.history);
+            } else {
+                // A late rejection must not overwrite a draft typed while waiting.
+                if app.composer.text().is_empty() { app.composer.set_text(&text); }
+                let msg = app::rejected_feedback(app.lang, &receipt_error(&result));
+                app.chat.push(("system".into(), format!("{msg}\n{text}")));
             }
-            r => {
-                let err = r.ok().and_then(|x| x.get("error").and_then(|v| v.as_str()).map(str::to_string))
-                    .unwrap_or_else(|| "rejected".into());
-                app.composer.set_text(&text);
-                let msg = app::rejected_feedback(app.lang, &err);
-                app.chat.push(("system".into(), msg));
-            }
-        },
-        Effect::SwitchSession(target) => {
-            let (worker, tx) = (worker.clone(), bg.clone());
-            let orig = target.clone();
-            std::thread::spawn(move || {
-                let op = match worker.call("switch_session", json!({"session_id": target})) {
-                    Ok(v) => OpResult::Switched {
-                        session_id: v.get("session_id").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-                        catalog: v.get("catalog").cloned().unwrap_or(Json::Null),
-                        config_path: v.get("user_config_path").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-                    },
-                    Err(e) => OpResult::Failed { op: "switch", target: orig, error: e },
-                };
-                let _ = tx.send(BgMsg::Op(op));
-            });
         }
-        Effect::NewSession => {
-            let (worker, tx) = (worker.clone(), bg.clone());
-            std::thread::spawn(move || {
-                let op = match worker.call("new_session", json!({})) {
-                    Ok(v) => OpResult::Switched {
-                        session_id: v.get("session_id").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-                        catalog: v.get("catalog").cloned().unwrap_or(Json::Null),
-                        config_path: v.get("user_config_path").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-                    },
-                    Err(e) => OpResult::Failed { op: "switch", target: String::new(), error: e },
-                };
-                let _ = tx.send(BgMsg::Op(op));
-            });
+        Effect::SwitchSession(_) | Effect::NewSession => {
+            let target = if let Effect::SwitchSession(target) = effect { target } else { String::new() };
+            let op = match result {
+                Ok(v) => OpResult::Switched {
+                    session_id: v.get("session_id").and_then(Json::as_str).unwrap_or("").into(),
+                    catalog: v.get("catalog").cloned().unwrap_or(Json::Null),
+                    config_path: v.get("user_config_path").and_then(Json::as_str).unwrap_or("").into(),
+                },
+                Err(error) => OpResult::Failed { op:"switch", target, error },
+            };
+            return app.on_op_result(op);
         }
-        Effect::ArchiveSession(target) => {
-            let (worker, tx) = (worker.clone(), bg.clone());
-            let orig = target.clone();
-            std::thread::spawn(move || {
-                let op = match worker.call("archive_session", json!({"session_id": target.clone()})) {
-                    Ok(v) => OpResult::Archived {
-                        session_id: target,
-                        target: v.get("target").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-                        was_current: v.get("was_current").and_then(|x| x.as_bool()).unwrap_or(false),
-                    },
-                    Err(e) => OpResult::Failed { op: "archive", target: orig, error: e },
-                };
-                let _ = tx.send(BgMsg::Op(op));
-            });
-        }
-        Effect::DeleteSession(target) => {
-            let (worker, tx) = (worker.clone(), bg.clone());
-            let orig = target.clone();
-            std::thread::spawn(move || {
-                let op = match worker.call("delete_session", json!({"session_id": target.clone()})) {
-                    Ok(v) => OpResult::Deleted {
-                        session_id: target,
-                        was_current: v.get("was_current").and_then(|x| x.as_bool()).unwrap_or(false),
-                    },
-                    Err(e) => OpResult::Failed { op: "delete", target: orig, error: e },
-                };
-                let _ = tx.send(BgMsg::Op(op));
-            });
-        }
+        Effect::ArchiveSession(target) => return app.on_op_result(match result {
+            Ok(v) => OpResult::Archived { session_id:target, target:v.get("target").and_then(Json::as_str).unwrap_or("").into(), was_current:v.get("was_current").and_then(Json::as_bool).unwrap_or(false) },
+            Err(error) => OpResult::Failed { op:"archive", target, error },
+        }),
+        Effect::DeleteSession(target) => return app.on_op_result(match result {
+            Ok(v) => OpResult::Deleted { session_id:target, was_current:v.get("was_current").and_then(Json::as_bool).unwrap_or(false) },
+            Err(error) => OpResult::Failed { op:"delete", target, error },
+        }),
+        Effect::Quit | Effect::Bell => {}
     }
+    vec![]
 }
 
 fn handle_mouse(m: event::MouseEvent, terminal: &Terminal<CrosstermBackend<std::io::Stdout>>, app: &mut App) {
@@ -654,42 +573,61 @@ mod tests {
     }
 
     #[test]
-    fn slow_tick_gate_skips_in_flight_and_releases_after_sending() {
-        // phase 1: a second tick is skipped while the previous one is in flight
-        let worker = Arc::new(Worker::spawn(&mock_engine("gate")).expect("spawn mock"));
-        let (tx, rx) = channel();
-        let inflight = Arc::new(AtomicBool::new(true)); // previous tick still running
-        spawn_slow_tick(worker, tx, &test_app(), &inflight);
-        assert!(inflight.load(Ordering::SeqCst), "the gate stays owned by the in-flight tick");
-        assert!(rx.try_recv().is_err(), "a second tick spawned on top of the in-flight one");
-
-        // phase 2: a finished tick releases the gate
-        let worker = Arc::new(Worker::spawn(&mock_engine("release")).expect("spawn mock"));
-        let (tx, rx) = channel();
-        let inflight = Arc::new(AtomicBool::new(false));
-        spawn_slow_tick(worker, tx, &test_app(), &inflight);
-        match rx.recv_timeout(Duration::from_secs(5)) {
-            Ok(BgMsg::SlowTick { shared, sessions }) => {
-                assert!(shared == Some(vec![]) && sessions == Some(vec![]));
-            }
-            Ok(_) => panic!("expected a SlowTick"),
-            Err(e) => panic!("no SlowTick within 5s: {e}"),
-        }
-        assert!(!inflight.load(Ordering::SeqCst), "the gate was not released");
+    fn stale_background_result_cannot_replace_session_state() {
+        let path = mock_engine("stale");
+        let worker = Worker::spawn(&path).unwrap();
+        let mut app = test_app();
+        let mut requests = AsyncUi::default();
+        requests.enqueue(RequestKind::Shared, &worker, &app, "list_sessions", json!({}), Duration::from_secs(5));
+        worker.call("barrier", json!({})).unwrap();
+        requests.generation += 1;
+        app.shared = vec![json!({"id":"new-session-data"})];
+        assert!(!requests.drain(&worker, &mut app));
+        assert_eq!(app.shared, vec![json!({"id":"new-session-data"})]);
+        assert!(requests.pending.is_empty());
+        worker.kill();
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
-    fn slow_tick_degraded_result_keeps_existing_panels() {
+    fn stalled_control_keeps_input_and_quit_responsive() {
+        let path = std::env::temp_dir().join(format!("teamagents-tui-stalled-{}.sh", std::process::id()));
+        std::fs::write(&path, "#!/bin/bash\nwhile read -r line; do :; done\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let worker = Worker::spawn(path.to_str().unwrap()).unwrap();
         let mut app = test_app();
-        app.shared = vec![json!({"id": "old-shared"})];
-        app.sessions = vec![json!({"id": "old-session"})];
-        // fully degraded tick: both panels keep their previous data
-        apply_slow_tick(&mut app, None, None);
-        assert_eq!(app.shared, vec![json!({"id": "old-shared"})]);
-        assert_eq!(app.sessions, vec![json!({"id": "old-session"})]);
-        // partial tick: only the failed panel keeps its data
-        apply_slow_tick(&mut app, Some(vec![json!({"id": "new-shared"})]), None);
-        assert_eq!(app.shared, vec![json!({"id": "new-shared"})]);
-        assert_eq!(app.sessions, vec![json!({"id": "old-session"})]);
+        let mut requests = AsyncUi::default();
+        let started = Instant::now();
+        run_effect(Effect::UserMessage("first".into()), &worker, &mut app, &mut requests);
+        run_effect(Effect::UsageStatus, &worker, &mut app, &mut requests);
+        app.handle_paste("next draft");
+        run_effect(Effect::Quit, &worker, &mut app, &mut requests);
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_eq!(requests.pending.len(), 2);
+        assert!(app.should_quit);
+        assert_eq!(app.composer.text(), "next draft");
+        assert!(!requests.drain(&worker, &mut app));
+        worker.kill();
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn transition_blocks_further_mutations_and_rejection_keeps_new_draft() {
+        let path = mock_engine("transition");
+        let worker = Worker::spawn(&path).unwrap();
+        let mut app = test_app();
+        let mut requests = AsyncUi::default();
+        run_effect(Effect::SwitchSession("s2".into()), &worker, &mut app, &mut requests);
+        run_effect(Effect::UserMessage("held".into()), &worker, &mut app, &mut requests);
+        run_effect(Effect::NewSession, &worker, &mut app, &mut requests);
+        assert_eq!(requests.pending.len(), 1);
+        assert_eq!(app.composer.text(), "held");
+        app.composer.set_text("new draft");
+        apply_effect_result(Effect::UserMessage("old message".into()), 0, Err("denied".into()), &mut app);
+        assert_eq!(app.composer.text(), "new draft");
+        assert!(app.chat.last().unwrap().1.contains("old message"));
+        worker.kill();
+        let _ = std::fs::remove_file(path);
     }
 }

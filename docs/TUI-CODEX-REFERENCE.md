@@ -16,7 +16,10 @@ Codex 的 TUI 组件不直接复用；本 TUI 在 ratatui 之上实现同一套�
 | [chat_composer_history.rs](https://github.com/openai/codex/blob/c4017a87aacc7558002b7cb510025e967c1d765e/codex-rs/tui/src/bottom_pane/chat_composer_history.rs)：历史导航、相邻去重、草稿恢复 | 输入历史：提交时记录（相邻去重），持久化到 `$XDG_STATE_HOME/teamagents/composer-history.json`（上限 500 条），切换会话与重启后仍可调取；切换会话只清空草稿，历史保留 |
 | [history_cell.rs](https://github.com/openai/codex/blob/c4017a87aacc7558002b7cb510025e967c1d765e/codex-rs/tui/src/history_cell.rs)：角色区分与消息展示 | 对话区：角色前缀、Markdown 回复；独立流式预览，在最终事件到达后归档一次；缩放时重排 |
 
-运行状态与输入区分开渲染；新输入仍直接交给 Leader，成员消息与权限继续由 TeamAgents 控制层处理。预览只保留最近 32,000 字符，最终回复仍从持久事件完整显示。
+运行状态与输入区分开渲染；新输入仍直接交给 Leader，成员消息与权限继续由 TeamAgents 控制层处理。
+预览保留最近不超过 32,000 **字节**，截断时保留 UTF-8 字符边界；最终回复仍从持久事件完整显示。
+这里描述的是 TUI 的增量展示能力：Codex 后端提供增量事件，ChatRunner 通过有界 SSE 解析器提供
+OpenAI/Anthropic 文本增量；工具参数完整接收后才执行。
 
 验证：`tui/tests/render_tests.rs`、`tui/tests/app_tests.rs`；真终端脚本
 `tui/scripts/pty_smoke.py`、`tui/scripts/pty_click_check.py`。

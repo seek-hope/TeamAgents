@@ -1,10 +1,36 @@
 # 验收对照表（T1–T24）
 
-基准：方案 §17。证据一律是可运行的：`cd core|engine|tui && cargo test`、
-`python3 tui/scripts/pty_smoke.py`、`python3 tui/scripts/pty_click_check.py`、
-`cd engine && TEAMAGENTS_LIVE_CODEX=1 cargo test --test live_codex`。
-✅ = 有自动化证据；🔶 = 仅部分覆盖/仅人工实测；⚠ = 该能力尚未实现。
-**skip 不计入通过**：T7 中 Anthropic / GLM / OpenAI 官方三家缺有效密钥，导出密钥即可实跑。
+基准：方案 §17；当前 Rust 实现于 **2026-09-15** 核对。
+✅ = 所列路径有自动化证据，不代表场景中的每项发布条件均已证明；🔶 = 部分覆盖/存在已知缺口；⚠ = 尚未实现。
+历史实测结果按当时日期保留，本次未重新运行真实模型/API 或 PTY 冒烟。
+
+## 当前离线基线
+
+在仓库根目录运行（本次 Rust 1.95.0，bubblewrap 与 python3 可用）：
+
+```bash
+cargo test --offline --manifest-path core/Cargo.toml
+cargo test --offline --manifest-path engine/Cargo.toml
+cargo test --offline --manifest-path tui/Cargo.toml
+```
+
+| crate | Cargo 报告通过 | 组成 / 实际执行范围 |
+|---|---:|---|
+| core | 50 | 20 库单测 + 30 集成测试 |
+| engine | — | 全套离线集成与库测试；其中 `live_codex` 的 1 项未设开关即提前返回，真实服务需单独运行 |
+| tui | 83 | 14 库单测 + 3 入口单测 + 37 app + 29 render |
+
+**skip 不计入真实验收**：部分测试在缺依赖/开关时直接 `return`，Cargo 仍显示 passed。
+真实 Codex 检查需显式运行以下命令；T7 的五家真实模型闭环没有可在导出密钥后统一运行的专用套件。
+
+```bash
+TEAMAGENTS_LIVE_CODEX=1 cargo test --manifest-path engine/Cargo.toml --test live_codex -- --nocapture
+# 真终端检查另行运行，须先构建 engine 与 tui
+python3 tui/scripts/pty_smoke.py
+python3 tui/scripts/pty_click_check.py
+```
+
+## T1–T24 证据
 
 | ID | 场景 | 状态 | 证据 / 说明 |
 |---|---|---|---|
@@ -13,31 +39,67 @@
 | T3 | B/C 讨论；重复投递不重复注入；越界阻止 | ✅ | `scenarios.rs::t3_channel_enforcement_and_exactly_once_delivery` |
 | T4 | 观察者只收到授权事件与载荷 | ✅ | `scenarios.rs::t4_observer_scoped_events_without_extra_rights` |
 | T5 | 共享空间发布/发现/权限/引用 | ✅ | `scenarios.rs::t5_shared_space_permissions_and_discovery` |
-| T6 | 信息隔离；新会话不继承 | 🔶 | 会话按目录隔离、新会话不继承是核心语义（`core`）；无专属用例 |
+| T6 | 信息隔离；新会话不继承 | 🔶 | `engine/tests/scenarios.rs` 的 T3/T4 覆盖通道与观察裁剪；`fork_rewind.rs::fork_carries_spec_and_leader_tree_but_not_team_facts` 覆盖分叉不复制团队事实；尚无覆盖本场景全部条件的专属用例 |
 | T7 | 五家模型工具调用与续接；同队混用 | 🔶 | 真实 DeepSeek 单 Leader 回合实测（`--plain` 到 `goal_done`）；Anthropic 原生协议已实现（转换单测，缺密钥未实跑）；其余三家走 OpenAI 兼容路径未逐一实跑 |
 | T8 | 恢复：杀进程后重建 | ✅ | `engine/tests/recovery.rs::t8_killed_turn_is_reconciled_and_stays_exactly_once`（kill -9 → 重启 requeue 重跑 → 取消收敛） |
 | T9 | 单 Leader 可执行并继续对话 | ✅ | `scenarios.rs::t9_baseline_leader_alone_executes_and_keeps_talking` |
-| T10 | 自然语言组队；非法结构被拒绝 | 🔶 | 核心校验在内核（`core`）与 `teamagents validate`；自然语言组队的实时用例未覆盖 |
+| T10 | 自然语言组队；非法结构被拒绝 | 🔶 | 核心校验与 `validate`；`chat_e2e.rs::review_add_agent_auto_creates_member_profile` 覆盖 D-30 自动 profile（假模型），真实自然语言组队未覆盖；未知 profile 在 add_agent 中按 D-30 解释为模型 ID，不保证远端模型存在 |
 | T11 | 动态变更：成员只能提议、Leader 应用、边界生效 | ✅ | `engine/tests/topology.rs::t11_member_proposal_is_leader_decision`（提案→Leader 应用→生效，审计保留提案人） |
 | T12 | 版本冲突不互相覆盖、不半应用 | ✅ | `topology.rs::t12_conflicting_patches_never_partially_apply` |
 | T13 | 移除成员：停止后移除、任务移交、成果保留 | ✅ | `topology.rs::t13_removed_member_hands_tasks_to_leader_and_keeps_results` |
 | T14 | 执行中补充；仅相关成员按边界调整 | ✅ | `scenarios.rs::t2_...`（supplement 到运行中的 Leader） |
 | T15 | 工具批准：自动/越界暂停/其他成员继续/拒绝 | ✅ | 审批门单测 + Codex 批准 park/decide 用例；ChatRunner 端到端：`engine/tests/chat_e2e.rs::once_approval_is_consumed_and_the_turn_completes`（once 执行后消费）、`expired_once_approval_requires_a_new_request`（EXPIRED 重请求）、`denied_approval_blocks_the_operation`；Codex 超时闭环 `codex_contract.rs::codex_approval_timeout_expires_the_row` |
 | T16 | 全自动只能用户开启；仍守系统权限与 ACL | ✅ | `scenarios.rs::full_auto_toggle_reaches_the_approval_gate`；仅 `actor=user` 可改模式（`core/src/control.rs` 校验） |
-| T17 | Codex 成员：任务/进度/结果/批准/取消/恢复映射 | ✅ | `engine/tests/codex_adapter.rs`（simple/approval/slow）+ 真实 CLI `live_codex.rs`；重启收敛 `codex_contract.rs::reconcile_reads_the_thread_history`、进程组清理 `closing_the_app_server_kills_its_process_group` |
+| T17 | Codex 成员：任务/进度/结果/批准/取消/恢复映射 | 🔶 | `engine/tests/codex_adapter.rs`（simple/approval/slow）；重启收敛 `codex_contract.rs::reconcile_reads_the_thread_history`、进程组清理 `closing_the_app_server_kills_its_process_group`、D-31 `codex_session_grant_auto_accepts_the_identical_operation`；真实 CLI `live_codex.rs` 本次未启用 |
 | T18 | 工作目录 shared/isolated/worktree；脏输入不被忽略 | ✅ | `engine/src/workspace.rs` + 单测（worktree 生命周期/复用/合并/未合并拒绝清理/脏仓库回退 shared）；`tui` 会话删除守卫同源 |
-| T19 | 工具生态：文件/Shell/搜索/抓取/MCP/Skills 真实任务 | ✅ | files/shell/web_search/web_fetch + MCP stdio（`engine/tests/mcp_tools.rs` 真实 MCP 服务器；`mcp_stdio.rs::server_environment_is_whitelisted` 环境白名单、`noisy_stderr_does_not_block_the_handshake`）+ MCP streamable HTTP（`engine/tests/mcp_http.rs`，D-25）+ Skills/AGENTS.md 注入（`session.rs` 单测）+ web 执行层 fail-closed（`tools_sandbox.rs::web_tools_are_fail_closed_and_ordered_by_member_binding`）+ 长输出 artifacts（`long_shell_output_is_stored_as_a_readable_artifact`）；旧式独立 SSE 传输 ⚠ |
-| T20 | TUI：流式期间输入/导航/批准可用；窄屏、多行中文 | ✅ | TUI 单测 + TestBackend 帧冒烟 + 真终端 PTY 冒烟（冒烟 + 点击检查）；回归：`render_tests.rs::narrow_frames_render_without_panicking`、`tab_click_hits_the_tab_under_the_pointer`、`app_tests.rs::paste_fills_the_composer_without_submitting`、`panel_chords_never_fire_destructive_actions`；真实模型 + 真界面用例未覆盖 |
+| T19 | 工具生态：文件/Shell/搜索/抓取/MCP/Skills 真实任务 | 🔶 | files/shell/web_search/web_fetch；MCP stdio（`engine/tests/mcp_tools.rs` 启动本地测试服务器、`mcp_stdio.rs` 检查环境白名单/stderr）与 HTTP（`mcp_http.rs` 本地模拟服务）；Chat Skills/AGENTS.md 注入（`session.rs` 单测）；web fail-closed（`tools_sandbox.rs::web_tools_are_fail_closed_and_ordered_by_member_binding`）、长输出 artifacts（`long_shell_output_is_stored_as_a_readable_artifact`）；不等于所有工具已完成真实远端任务 |
+| T20 | TUI：流式期间输入/导航/批准可用；窄屏、多行中文 | 🔶 | TUI 83 项单测 + TestBackend 帧；后台请求使用有界队列，停滞 worker 回归验证输入/退出仍响应。真实模型 + 真界面仍需 PTY/服务验收 |
 | T21 | 崩溃去重：动作回执丢失仍只产生一次变更 | ✅ | `recovery.rs::t8_...` 断言重放步骤不重复产生副作用（shared 条目仍为 1 条） |
 | T22 | 资源与失败：限流/超时/成员失败/无人就绪/超限 | ✅ | `recovery.rs::t22_goal_turn_budget_is_enforced`（LIMIT_REACHED）+ 取消/暂停场景 + 模型步数上限 `chat_e2e.rs::model_step_limit_reports_limit_reached`（超限 → `limit_reached` + FAILED）+ 活动超时中断 `timeout_interrupts_the_member_before_further_side_effects`、崩溃不误报超时 `a_crashed_member_is_not_reported_as_a_timeout` |
-| T23 | 权限执行：穿越/符号链接/Shell 越界/MCP 未授权 | 🔶 | `tools.rs::bwrap_argv_is_stable_and_runs_isolated`（真实 bwrap 运行）+ 越界路径单测 + `tools_sandbox.rs::guard_url_matches_the_blocked_range_table`（32 条阻断地址判定）+ `shell_survives_output_larger_than_the_pipe_buffer`；穿越/符号链接用例未系统覆盖 |
-| T24 | 会话复用；同名新成员不继承旧身份 | 🔶 | 复用的 `context_epoch` 机制在核心；无专属用例 |
+| T23 | 权限执行：穿越/符号链接/Shell 越界/MCP 未授权 | 🔶 | `tools.rs` bwrap/路径/版本冲突回归，MCP workspace 模式目录与网络默认隔离，显式 host 才可离开沙箱；远端 HTTP 仍由服务授权，不能宣称覆盖服务端权限 |
+| T24 | 会话复用；同名新成员不继承旧身份 | 🔶 | 复用的 `context_epoch` 机制在核心；fork 回归覆盖历史键重映射；仍缺专属同名成员复用场景 |
 
-**尚未实现（⚠）**：成员私有子代理（方案中的 `general-purpose`）、旧式独立 SSE MCP 传输。
+**尚未实现（⚠）**：Chat 成员私有子代理、Codex/Chat 五家真实服务的完整发布验收。
+MCP HTTP 已支持 POST 响应中的 SSE；旧式独立 SSE 传输、GET 主动推送与 DELETE 会话终止未实现。
 TUI 为 Rust 原生设计（D-20：固定分区、滚动、胶囊状态）。其余取舍见
 `docs/DECISIONS.md`（D-17/D-19/D-20/D-21）。
 
+## 当前实现与方案的已知差异
+
+以下是代码现状记录，**不表示新偏离已获批准，也不将原方案的发布条件改为已完成**。
+
+| 范围 | 当前行为与证据 |
+|---|---|
+| 模型流式与协议完整性（§11、T7） | `engine/src/stream.rs` 合并 OpenAI/Anthropic SSE、保留 thinking/signature 与 usage；五家真实服务闭环尚待验收 |
+| 动态变更安全边界（§8） | `core/src/control.rs::agent_has_live_run` 不把无 `external_turn_id` 的 WAITING_TASK/WAITING_APPROVAL 算作活动执行，因此 Chat 挂起时可应用 patch；有外部回合 ID 的 Codex 等待仍阻塞。现行修复证据：`core/tests/engine.rs::approval_parked_run_does_not_block_boundary`、`task_wait_parked_run_does_not_block_boundary` |
+| 网关与 MCP 隔离（§12.2） | `BoundTools::load_in` 将 stdio MCP 默认放入成员 workspace bwrap（无网），`mcp_execution = "host"` 才显式使用宿主；绑定仍是授权边界 |
+| 全自动与越界批准（§12.2） | 原生文件工具仍由 `tools.rs::resolve_in_root` 限定路径，Shell 始终走 `shell_run_with_control` / `bwrap_argv`；full_auto 只跳过批准门，没有扩大文件根或取消原生 Shell 沙箱 |
+| 共享目录并发写（§12.3） | `tools.rs::workspace_executor_with_control` 提供进程内路径锁、SHA-256 CAS 与原子替换；跨进程编辑器仍应使用 worktree 或外部锁 |
+| Skills 后端范围（§10、§12.1） | `session.rs::make_runner_factory` 在 Codex 分支提前返回；`member_context` 和 `BoundTools` 的 Skills/指令注入仅用于 Chat 成员 |
+| TUI 完整视图与响应（§13） | 当前六个管理页签；`/settings` 仅切语言，`/model` 单独选模型。成员记录通过日志事件筛选，没有完整私有对话树浏览器；控制请求已通过有界异步队列，停滞 worker 有超时和过期响应保护 |
+| 回退节点（D-26） | `chat.rs::ChatTree::rewind_to` 将 leaf 设为目标节点，包含该条输入；TUI 文案已改为“保留该条输入，移开后续对话”。`rewind_points` 只列当前祖先链，旧分支需已知节点 ID 才能访问 |
+| 分叉与会话模型（D-26/D-29/D-30） | `fork_session` 复制 Leader 树、TeamSpec、会话 profiles/overrides，并在打开失败时保留源会话；团队任务/运行事实仍重新开始。真实失败注入仍需补充 |
+| 工具输出读回（D-28） | 工具完整结果先写入私有历史，模型上下文仅使用有界 head/tail；`read_history` 支持分页取回完整结果。 |
+| 配置校验与导出（§5.2、§14） | `cli.rs::validate_spec` 已合并 TeamSpec 所在目录的受信任项目配置；任务依赖/委派权限在动作提交时校验。仍没有专用 TeamSpec 导出 CLI，部分通用 payload 未覆盖完整 schema |
+| 结构化执行与评测 | `teamagents exec --json` 输出稳定 JSONL、退出码和验收命令结果；验收命令结果写入会话目录 `verification.json`。回合停在待批准时立即以退出码 3 结束（`cli.rs::exec_outcome` + `exec_tests::parked_approval_reports_approval_required_not_timeout`），不再等到超时报 124。真实模型闭环已按单成员默认团队实跑（见 `review/stability-2026-09-15.md`）；`review/eval/tasks.jsonl` 的固定任务集与多供应商矩阵仍需实际执行 |
+| Shell 长输出与制品 | 有界预览 200KB 落 `artifacts/exec-*.log`，单个制品上限 64 MiB，超过部分丢弃并在输出中标注（`tools.rs::OutputSink` + `shell_artifact_stops_at_the_size_cap`）；磁盘配额治理仍只有这一层上限 |
+
+可复核上述现状（仓库根目录）：
+
+```bash
+rg -n 'into_json|fn chat_anthropic|fn rewind_to|fn read_history|cap_tool_output|self.bound.call' engine/src/chat.rs
+rg -n 'Command::new|env_clear' engine/src/mcp.rs
+rg -n 'fn resolve_in_root|fn bwrap_argv|fn workspace_executor_with_control' engine/src/tools.rs
+rg -n 'fork_session|tree_src|profiles.json|model_overrides.json' engine/src/worker.rs engine/src/session.rs
+rg -n 'agent_has_live_run|external_turn_id' core/src/control.rs
+rg -n 'synchronous submit|fn apply_effect|from_secs\(120\)' tui/src/main.rs tui/src/worker.rs
+```
+
 ## 更新记录
+
+2026-09-15 文档核对：更新当前测试口径、配置/权限/Skills/恢复与 TUI 说明，补齐实现差异；
+只修改文档，未将缺口记作实现修复。示例 TeamSpec 在隔离的临时用户配置下通过 `validate`，
+Markdown 本地链接、TOML 片段及 `git diff --check` 通过。更早的记录是对应日期的快照。
 
 2026-09-14 更新：树历史/检查点恢复、取消与迟到压缩、工具输出索引、MCP HTTP 协议、
 Skills YAML 描述共 7 项缺陷已修复；另完成 `/model` 成员/供应商/模型/思考强度选择器和

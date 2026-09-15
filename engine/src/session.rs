@@ -651,8 +651,10 @@ pub fn open_session(opts: OpenOptions) -> Result<Arc<OpenedSession>, String> {
         let barriers: BarrierRegistry = Arc::new(Mutex::new(HashMap::new()));
         let notify = Notify::new(core.clone());
         let usage_probes: UsageProbes = Arc::new(Mutex::new(HashMap::new()));
+        let mut effective_catalog = catalog.clone();
+        effective_catalog.models.extend(session_profiles.lock().unwrap().clone());
         let model_overrides: ModelOverrides =
-            Arc::new(Mutex::new(load_model_overrides(&session_id, &catalog, &agents)));
+            Arc::new(Mutex::new(load_model_overrides(&session_id, &effective_catalog, &agents)));
         let make_runner: RunnerFactory = make_runner_factory(
             core.clone(),
             notify.clone(),
@@ -831,7 +833,8 @@ fn make_runner_factory(
         };
         let profile = apply_model_override(profile, &ov);
         let agent_json = serde_json::to_value(agent).map_err(|e| e.to_string())?;
-        let bound = crate::bound::BoundTools::load(&catalog, &agent.tool_bindings)?;
+        let root = member_root(agent, &cwd, &session_id)?;
+        let bound = crate::bound::BoundTools::load_in(&catalog, &agent.tool_bindings, &root)?;
         // a required web service that cannot load fails the member, not the call;
         // the resolved set is also what the model gets advertised, so an explicit
         // binding name (anything but the literal "web") still exposes the tools
@@ -840,7 +843,7 @@ fn make_runner_factory(
         let runner = ChatRunner::new(
             &agent_json,
             profile,
-            Some(member_root(agent, &cwd, &session_id)?.to_string_lossy().into_owned()),
+            Some(root.to_string_lossy().into_owned()),
             notify.clone(),
             bound,
             context,

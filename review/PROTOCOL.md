@@ -1,5 +1,9 @@
 # TeamAgents 代码审查协议（v1）
 
+> 历史文件：本协议用于 2026-09-12 的 Python 版审查，以下命令、路径、环境限制与分工只适用于
+> 当时批次。当前 Rust 仓库约定见 [AGENTS.md](../AGENTS.md)，现行验证入口见
+> [验收表](../docs/ACCEPTANCE.md)；本文件不作为新审查的执行指令。
+
 > 本文件由 Leader 制定，所有审查员必须遵守。基准：`TeamAgents-Implementation-Plan.zh-CN.md`。
 
 ## 目标

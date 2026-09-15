@@ -863,7 +863,7 @@ fn review_bound_mcp_must_be_advertised_to_model() {
     });
     let mut catalog = UserConfig::default();
     catalog.tools.insert("echo_service".into(), serde_json::from_value(json!({
-        "kind":"mcp", "mcp_server":"echo", "command":env!("CARGO_BIN_EXE_fake-mcp-server"),
+        "kind":"mcp", "mcp_server":"echo", "mcp_execution":"host", "command":env!("CARGO_BIN_EXE_fake-mcp-server"),
         "tool_names":["echo"], "required":true
     })).unwrap());
     let bound = BoundTools::load(&catalog, &["echo_service".to_string()]).unwrap();

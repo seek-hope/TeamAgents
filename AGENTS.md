@@ -6,20 +6,21 @@
 - **任何与方案不同的实现（更简单或更好的方案）必须先告知用户并得到确认，才可写进代码。**
   已确认的偏离记录在 `docs/DECISIONS.md`；未确认的只讨论，不落码。
 - 本仓库**只有 Rust 实现**（core / engine / tui 三个 crate），是独立项目；不要再引入
-  Node/TypeScript（D-17）或 Python 实现代码；`tui/scripts/*.py` 只是真终端测试工具。
+  Node/TypeScript（D-17）或 Python 实现代码；`tui/scripts/*.py` 及部分 Rust 测试中的
+  Python 假服务只用于测试。
 
 ## 快速命令
 
 ```bash
-cd core   && cargo test --offline    # 权威核心（models/storage/control/views/server）
-cd engine && cargo test --offline    # 引擎（runtime/chat/gateway/codex/tools/CLI/worker）
-cd tui    && cargo test --offline    # ratatui TUI（逻辑 + TestBackend 帧）
+cargo test --offline --manifest-path core/Cargo.toml    # 权威核心
+cargo test --offline --manifest-path engine/Cargo.toml  # 引擎
+cargo test --offline --manifest-path tui/Cargo.toml     # TUI 逻辑 + TestBackend 帧
 engine/target/debug/teamagents {doctor,validate,sessions,version,--plain}   # 入口
 python3 tui/scripts/pty_smoke.py         # 真终端冒烟
 python3 tui/scripts/pty_click_check.py   # 真终端点击命中检查
 ```
 
-- 当前基线：core 50 / engine 140 / tui 80 项测试全绿。验收清单 `docs/ACCEPTANCE.md`，
+- 当前基线与跳过项统一见 `docs/ACCEPTANCE.md`；Cargo 的通过数不等于真实服务验收通过数。
   决策记录 `docs/DECISIONS.md`。
 
 ## 架构速览（改代码前先读这 6 行）
@@ -28,7 +29,8 @@ python3 tui/scripts/pty_click_check.py   # 真终端点击命中检查
   单个 SQLite 事务；错误向上传播，不再 `let _ =` 吞掉）
 - 权威状态：`core/src/storage.rs`（SQLite，WAL，动作去重回执、事件序列、投递批次账本、`expire_approval`）
 - 执行：`engine/src/runtime.rs`（线程化回合循环；`QUEUED` TurnRun = 持久化执行意图；超时会中断成员）
-- 工具/权限唯一入口：`engine/src/gateway.rs::ToolGateway`（批准/全自动；web/MCP 工具执行层 fail-closed）
+- 团队动作与原生执行工具入口：`engine/src/gateway.rs::ToolGateway`（批准/全自动）；
+  已绑定 MCP 由 `ChatRunner` 经 `BoundTools::call` 直接调用，受绑定集合与 TurnControl 约束。
 - 信息权限：`core/src/views.rs`（`audience` 可见 ≠ `push` 注入；观察者按 scope 裁剪载荷）
 - 产品层：`engine/src/{session,worker,cli}.rs`（会话服务、`serve` 协议、CLI）；TUI 的 `ui::geometry`
   是渲染与鼠标命中的唯一几何来源（不要再在别处重算行号/列号）
@@ -43,9 +45,9 @@ python3 tui/scripts/pty_click_check.py   # 真终端点击命中检查
 
 ## 团队运行操作备忘（实测）
 
-- **中断的任务会卡住整个目标**：成员回合被中断/超时后其任务落 `BLOCKED`；`COMPLETE_TASK`
-  只接受 PENDING/RUNNING 且只允许承接者提交 → BLOCKED 任务任何 Agent 都无法结清，唯一路径是
-  用户侧 `CANCEL_TASK`（TUI 任务面板选中按 `c`，BLOCKED 无活动回合直接落 CANCELLED）。
+- **中断后检查任务状态**：未完成任务可能落 `BLOCKED`，阻止目标完成；`complete_task`
+  只接受 PENDING/RUNNING 且只允许承接者提交。Leader 可用 `cancel_task` 结清 BLOCKED 任务；
+  用户也可在 TUI 任务面板选中按 `c`（无相关活动回合时直接落 CANCELLED）。
   **避免中断成员回合**（步数/时限留足，或拆小任务）；重派任务时用新任务。
 - **RT-06**：回合进入终态（含被取消）时其 PENDING 批准自动置 EXPIRED（`core/src/control.rs` 的
   finalize/reconcile 路径），`signal_done` 不会被残留批准卡住；个别残留可在批准面板 `d` 拒绝。

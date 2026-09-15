@@ -740,7 +740,7 @@ impl Control {
             ActionKind::ApplyTopologyPatch => self.apply_patch_action(action, spec),
 
             ActionKind::SignalDone => {
-                let blockers = self.completion_blockers(spec, action.run_id.as_deref());
+                let blockers = self.completion_blockers(spec, action.run_id.as_deref())?;
                 if !blockers.is_empty() {
                     return Ok(Reduction {
                         events: vec![],
@@ -1378,7 +1378,7 @@ impl Control {
         })
     }
 
-    fn completion_blockers(&mut self, spec: &TeamSpec, current_run: Option<&str>) -> Vec<String> {
+    fn completion_blockers(&mut self, spec: &TeamSpec, current_run: Option<&str>) -> Result<Vec<String>, String> {
         let mut blockers = vec![];
         let live = self
             .store
@@ -1386,7 +1386,7 @@ impl Control {
                 &self.session_id,
                 &[TurnStatus::Queued, TurnStatus::Running, TurnStatus::WaitingTask, TurnStatus::WaitingApproval],
             )
-            .unwrap_or_default();
+            .map_err(|e| format!("read active runs: {e}"))?;
         let live: Vec<_> = live.into_iter().filter(|r| Some(r.run_id.as_str()) != current_run).collect();
         if !live.is_empty() {
             blockers.push(format!(
@@ -1394,26 +1394,26 @@ impl Control {
                 live.iter().map(|r| format!("{}:{}", r.agent_id, enum_name(r.status))).collect::<Vec<_>>().join(", ")
             ));
         }
-        let unknown = self.store.runs_for_session(&self.session_id, &[TurnStatus::OutcomeUnknown]).unwrap_or_default();
+        let unknown = self.store.runs_for_session(&self.session_id, &[TurnStatus::OutcomeUnknown]).map_err(|e| format!("read unknown runs: {e}"))?;
         if !unknown.is_empty() {
             blockers.push(format!("outcome-unknown operations: {}", unknown.iter().map(|r| r.run_id.clone()).collect::<Vec<_>>().join(", ")));
         }
         let un = self
             .store
             .tasks_for_session(&self.session_id, &["PENDING", "RUNNING", "BLOCKED"])
-            .unwrap_or_default();
+            .map_err(|e| format!("read unfinished tasks: {e}"))?;
         if !un.is_empty() {
             blockers.push(format!(
                 "unfinished tasks: {}",
                 un.iter().map(|t| format!("{}:{}", t.task_id, enum_name(t.status))).collect::<Vec<_>>().join(", ")
             ));
         }
-        let pend = self.store.pending_approvals(&self.session_id).unwrap_or_default();
+        let pend = self.store.pending_approvals(&self.session_id).map_err(|e| format!("read pending approvals: {e}"))?;
         if !pend.is_empty() {
             blockers.push(format!("pending approvals: {}", pend.iter().map(|a| a.approval_id.clone()).collect::<Vec<_>>().join(", ")));
         }
         let _ = spec;
-        blockers
+        Ok(blockers)
     }
 
     /// Void a run's PENDING approvals and return the audit events (RT-06).

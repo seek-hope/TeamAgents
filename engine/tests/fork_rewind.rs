@@ -110,3 +110,40 @@ fn read_reply(child: &mut std::process::Child, id: u64) -> Json {
         }
     }
 }
+
+#[test]
+fn fork_preserves_model_files_and_legacy_history() {
+    let home = state_home("files");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_teamagents")).arg("serve")
+        .env("XDG_STATE_HOME", &home).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let opened = call(&mut child, &mut stdin, 1, "open", json!({"cwd":"/tmp", "scripts":{"leader":[["end"]]}}));
+    let old = opened["session_id"].as_str().unwrap().to_string();
+    let base = home.join("teamagents/sessions").join(&old);
+    std::fs::write(base.join("profiles.json"), r#"{"leader":{"model":"m1"}}"#).unwrap();
+    std::fs::write(base.join("model_overrides.json"), r#"{"leader":{"model":"m2"}}"#).unwrap();
+    let member = base.join("members/leader"); std::fs::create_dir_all(&member).unwrap();
+    std::fs::write(member.join("chat_history.json"), r#"{"ctx:leader:1":[{"role":"user","content":"legacy"}]}"#).unwrap();
+    let fork = call(&mut child, &mut stdin, 2, "fork_session", json!({}));
+    let new = fork["session_id"].as_str().unwrap();
+    let dest = home.join("teamagents/sessions").join(new);
+    assert_eq!(std::fs::read_to_string(dest.join("profiles.json")).unwrap(), r#"{"leader":{"model":"m1"}}"#);
+    assert_eq!(std::fs::read_to_string(dest.join("model_overrides.json")).unwrap(), r#"{"leader":{"model":"m2"}}"#);
+    assert!(std::fs::read_to_string(dest.join("members/leader/chat_history.json")).unwrap().contains("legacy"));
+    let _ = child.kill(); let _ = child.wait();
+}
+
+#[test]
+fn failed_switch_keeps_current_session_open() {
+    let home = state_home("failed-switch");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_teamagents")).arg("serve")
+        .env("XDG_STATE_HOME", &home).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let opened = call(&mut child, &mut stdin, 1, "open", json!({"cwd":"/tmp", "scripts":{"leader":[["end"]]}}));
+    let old = opened["session_id"].as_str().unwrap().to_string();
+    writeln!(stdin, "{}", json!({"id":2,"method":"switch_session","params":{"session_id":"../escape"}})).unwrap(); stdin.flush().unwrap();
+    let failure = read_reply(&mut child, 2); assert!(failure.get("error").is_some());
+    let state = call(&mut child, &mut stdin, 3, "call", json!({"method":"state","params":{}}));
+    assert_eq!(state["session"]["session_id"].as_str(), Some(old.as_str()));
+    let _ = child.kill(); let _ = child.wait();
+}

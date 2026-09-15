@@ -7,6 +7,7 @@ use teamagents_engine::{cli, tools, worker, VERSION};
 fn usage() -> ! {
     eprintln!("teamagents [--cwd DIR] [--resume ID] [--full-auto] [--team SPEC.json] [--plain]");
     eprintln!("  teamagents doctor | validate SPEC | sessions [-v] | version");
+    eprintln!("  teamagents exec --json [--timeout SEC] [--check COMMAND] PROMPT|- ");
     std::process::exit(2);
 }
 
@@ -19,6 +20,9 @@ pub struct Args {
     pub verbose: bool,
     pub command: Option<String>,
     pub positional: Option<String>,
+    pub timeout: Option<u64>,
+    pub checks: Vec<String>,
+    pub exec_json: bool,
 }
 
 fn parse_args() -> Args {
@@ -32,45 +36,69 @@ fn parse_args() -> Args {
         verbose: false,
         command: None,
         positional: None,
+        timeout: None,
+        checks: Vec::new(),
+        exec_json: false,
     };
     let mut i = 0;
     while i < argv.len() {
         match argv[i].as_str() {
             "--cwd" => {
-                args.cwd = argv.get(i + 1).cloned();
+                if args.cwd.is_some() { usage(); }
+                let v = argv.get(i + 1).cloned().filter(|v| !v.starts_with('-')).unwrap_or_else(|| usage()); args.cwd = Some(v);
                 i += 2;
             }
             "--resume" => {
-                args.resume = argv.get(i + 1).cloned();
+                if args.resume.is_some() { usage(); }
+                let v = argv.get(i + 1).cloned().filter(|v| !v.starts_with('-')).unwrap_or_else(|| usage()); args.resume = Some(v);
                 i += 2;
             }
             "--team" => {
-                args.team = argv.get(i + 1).cloned();
+                if args.team.is_some() { usage(); }
+                let v = argv.get(i + 1).cloned().filter(|v| !v.starts_with('-')).unwrap_or_else(|| usage()); args.team = Some(v);
                 i += 2;
             }
             "--full-auto" => {
+                if args.full_auto { usage(); }
                 args.full_auto = true;
                 i += 1;
             }
             "--plain" => {
+                if args.plain { usage(); }
                 args.plain = true;
                 i += 1;
             }
             "-v" | "--verbose" => {
+                if args.verbose { usage(); }
                 args.verbose = true;
                 i += 1;
             }
-            "serve" | "doctor" | "validate" | "sessions" | "version" => {
+            "serve" | "doctor" | "validate" | "sessions" | "version" | "exec" => {
+                if args.command.is_some() { usage(); }
                 args.command = Some(argv[i].clone());
+                if argv[i] == "exec" { args.exec_json = false; }
                 i += 1;
             }
-            other if !other.starts_with('-') => {
+            "--json" if args.command.as_deref() == Some("exec") => { if args.exec_json { usage(); } args.exec_json = true; i += 1; }
+            "--timeout" if args.command.as_deref() == Some("exec") => {
+                if args.timeout.is_some() { usage(); }
+                let raw = argv.get(i + 1).cloned().filter(|v| !v.starts_with('-')).unwrap_or_else(|| usage());
+                let parsed = raw.parse::<u64>().unwrap_or_else(|_| usage());
+                if parsed == 0 { usage(); }
+                args.timeout = Some(parsed); i += 2;
+            }
+            "--check" if args.command.as_deref() == Some("exec") => {
+                args.checks.push(argv.get(i + 1).cloned().filter(|v| !v.starts_with('-')).unwrap_or_else(|| usage())); i += 2;
+            }
+            other if !other.starts_with('-') || other == "-" => {
+                if args.positional.is_some() { usage(); }
                 args.positional = Some(argv[i].clone());
                 i += 1;
             }
             _ => usage(),
         }
     }
+    if args.command.as_deref() == Some("exec") && !args.exec_json { usage(); }
     args
 }
 
@@ -146,6 +174,7 @@ fn main() {
         },
         Some("sessions") => cli::list_sessions_cmd(args.verbose),
         Some("version") => cli::version(),
+        Some("exec") => cli::exec_json(&cli::ExecOptions { cwd: args.cwd.clone(), resume: args.resume.clone(), full_auto: args.full_auto, team: args.team.clone(), timeout: args.timeout, checks: args.checks.clone(), prompt: args.positional.clone() }),
         _ if args.plain => cli::repl(args.cwd.clone(), args.resume.clone(), args.full_auto, args.team.clone()),
         _ => run_tui(&args),
     };

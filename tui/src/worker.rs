@@ -5,10 +5,10 @@
 use serde_json::{json, Value as Json};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc::{channel, sync_channel, Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone)]
 pub struct Push {
@@ -22,10 +22,45 @@ pub struct Worker {
     // Mutex so `kill(&self)` can reap the child even while other Arc
     // holders keep the Worker alive (exit path when try_unwrap fails)
     child: Mutex<Child>,
-    stdin: Arc<Mutex<ChildStdin>>,
+    requests: SyncSender<(u64, String)>,
     pending: Arc<Mutex<HashMap<u64, Sender<Result<Json, String>>>>>,
     pushes: Mutex<Receiver<Push>>,
     next_id: Mutex<u64>,
+}
+
+/// An enqueued request. Polling and dropping it never wait for the engine.
+pub struct PendingCall {
+    id: u64,
+    method: String,
+    rx: Receiver<Result<Json, String>>,
+    pending: Arc<Mutex<HashMap<u64, Sender<Result<Json, String>>>>>,
+    deadline: Instant,
+}
+
+impl PendingCall {
+    pub fn try_result(&mut self) -> Option<Result<Json, String>> {
+        match self.rx.try_recv() {
+            Ok(result) => Some(result),
+            Err(TryRecvError::Disconnected) => Some(Err("worker exited".into())),
+            Err(TryRecvError::Empty) if Instant::now() >= self.deadline =>
+                Some(Err(format!("worker call {} timed out", self.method))),
+            Err(TryRecvError::Empty) => None,
+        }
+    }
+
+    fn wait(self) -> Result<Json, String> {
+        self.rx.recv_timeout(self.deadline.saturating_duration_since(Instant::now()))
+            .map_err(|error| match error {
+                RecvTimeoutError::Timeout => format!("worker call {} timed out", self.method),
+                RecvTimeoutError::Disconnected => "worker exited".into(),
+            })?
+    }
+}
+
+impl Drop for PendingCall {
+    fn drop(&mut self) {
+        self.pending.lock().unwrap().remove(&self.id);
+    }
 }
 
 /// stderr target for the engine child: append to `engine-stderr.log` in
@@ -56,16 +91,46 @@ impl Worker {
     /// startup failures stay diagnosable; inherited stderr would corrupt
     /// the TUI frame, so an unwritable log falls back to null.
     pub fn spawn(engine_bin: &str) -> std::io::Result<Worker> {
-        let mut child = Command::new(engine_bin)
-            .arg("serve")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(engine_stderr())
-            .spawn()?;
+        let mut child = {
+            let mut last = None;
+            let mut child = None;
+            for _ in 0..8 {
+                match Command::new(engine_bin)
+                    .arg("serve")
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(engine_stderr())
+                    .spawn()
+                {
+                    Ok(value) => { child = Some(value); break; }
+                    Err(error) if error.raw_os_error() == Some(26) => {
+                        last = Some(error);
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            child.ok_or_else(|| last.expect("spawn retry exhausted"))?
+        };
         let stdout = child.stdout.take().expect("piped");
-        let stdin = Arc::new(Mutex::new(child.stdin.take().expect("piped")));
+        let mut stdin = child.stdin.take().expect("piped");
         let pending: Arc<Mutex<HashMap<u64, Sender<Result<Json, String>>>>> =
             Arc::new(Mutex::new(HashMap::new()));
+        // Bounded queue: a stopped reader cannot block input handling or grow
+        // one thread/buffer per UI request. One writer preserves enqueue order.
+        let (requests, request_rx) = sync_channel::<(u64, String)>(64);
+        let writer_pending = pending.clone();
+        std::thread::spawn(move || {
+            for (id, line) in request_rx {
+                if !writer_pending.lock().unwrap().contains_key(&id) { continue; }
+                if let Err(error) = stdin.write_all(line.as_bytes()).and_then(|_| stdin.flush()) {
+                    for (_, tx) in writer_pending.lock().unwrap().drain() {
+                        let _ = tx.send(Err(error.to_string()));
+                    }
+                    break;
+                }
+            }
+        });
         let (push_tx, push_rx) = channel::<Push>();
         let pending2 = pending.clone();
         std::thread::spawn(move || {
@@ -100,42 +165,33 @@ impl Worker {
                 let _ = tx.send(Err("worker exited".into()));
             }
         });
-        Ok(Worker { child: Mutex::new(child), stdin, pending, pushes: Mutex::new(push_rx), next_id: Mutex::new(1) })
+        Ok(Worker { child: Mutex::new(child), requests, pending, pushes: Mutex::new(push_rx), next_id: Mutex::new(1) })
     }
 
     pub fn call(&self, method: &str, params: Json) -> Result<Json, String> {
         self.call_timeout(method, params, Duration::from_secs(120))
     }
 
-    /// `call` with a caller-chosen timeout; short polls must not freeze the
-    /// UI behind a wedged engine.
-    pub fn call_timeout(&self, method: &str, params: Json, timeout: Duration) -> Result<Json, String> {
-        let id = {
-            let mut g = self.next_id.lock().unwrap();
-            let id = *g;
-            *g += 1;
-            id
-        };
+    /// Enqueue without writing to the child pipe on the caller's thread.
+    pub fn start_call(&self, method: &str, params: Json, timeout: Duration) -> PendingCall {
+        let mut next = self.next_id.lock().unwrap();
+        let id = *next;
+        *next += 1;
         let (tx, rx) = channel();
-        self.pending.lock().unwrap().insert(id, tx);
+        self.pending.lock().unwrap().insert(id, tx.clone());
         let line = json!({"id": id, "method": method, "params": params}).to_string() + "\n";
-        let result: Result<Json, String> = (|| {
-            {
-                // ponytail: with a wedged engine the pipe buffer fills after
-                // ~1h of writes and this write_all blocks the UI thread for
-                // good; upgrade path: dedicated writer thread or O_NONBLOCK
-                // with a write deadline
-                let mut stdin = self.stdin.lock().unwrap();
-                stdin.write_all(line.as_bytes()).and_then(|_| stdin.flush()).map_err(|e| e.to_string())?;
-            }
-            rx.recv_timeout(timeout).map_err(|_| format!("worker call {method} timed out"))?
-        })();
-        if result.is_err() {
-            // a failed call never gets a response; drop the slot so a wedged
-            // engine does not leak one pending entry per timed-out poll
+        if let Err(error) = self.requests.try_send((id, line)) {
             self.pending.lock().unwrap().remove(&id);
+            let _ = tx.send(Err(format!("worker request queue unavailable: {error}")));
         }
-        result
+        PendingCall {
+            id, method: method.into(), rx, pending: self.pending.clone(),
+            deadline: Instant::now().checked_add(timeout).unwrap_or_else(Instant::now),
+        }
+    }
+
+    pub fn call_timeout(&self, method: &str, params: Json, timeout: Duration) -> Result<Json, String> {
+        self.start_call(method, params, timeout).wait()
     }
 
     /// Core passthrough with session_id injected by the worker.
@@ -162,12 +218,9 @@ impl Worker {
     }
 
     pub fn close(self) {
-        // ponytail: this call can block exit for the full 120s call timeout while
-        // the engine awaits inflight turns; upgrade path: close on a background
-        // thread and exit immediately
-        let _ = self.call("close", json!({}));
-        // the worker awaits inflight turns on close; never let that hang quit
-        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        // The complete shutdown, including its request, has one bounded budget.
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let _ = self.call_timeout("close", json!({}), Duration::from_secs(3));
         loop {
             {
                 let mut child = self.child.lock().unwrap();
@@ -250,7 +303,7 @@ mod tests {
 
     #[test]
     fn call_timeout_returns_promptly_and_drops_pending() {
-        let worker = Worker::spawn(&silent_engine("kill")).expect("spawn silent mock");
+        let worker = Worker::spawn(&silent_engine("timeout")).expect("spawn silent mock");
         let start = std::time::Instant::now();
         let r = worker.call_timeout("state", json!({}), Duration::from_millis(300));
         let elapsed = start.elapsed();
@@ -260,5 +313,37 @@ mod tests {
             worker.pending.lock().unwrap().is_empty(),
             "timed-out call leaked a pending entry"
         );
+        worker.kill();
+    }
+
+    #[test]
+    fn unread_pipe_does_not_block_enqueue_or_timeout() {
+        let path = std::env::temp_dir().join(format!("teamagents-tui-unread-{}-{}.sh", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::write(&path, "#!/bin/bash\nkill -STOP $$\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let worker = Worker::spawn(path.to_str().unwrap()).unwrap();
+        let started = Instant::now();
+        let request = worker.start_call("large", json!({"text":"x".repeat(1_000_000)}), Duration::from_millis(100));
+        assert!(request.wait().is_err());
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(worker.pending.lock().unwrap().is_empty());
+        worker.kill();
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn enqueued_requests_reach_engine_in_order() {
+        let path = std::env::temp_dir().join(format!("teamagents-tui-ordered-{}.py", std::process::id()));
+        std::fs::write(&path, "#!/usr/bin/env python3\nimport sys,json\nfor n,line in enumerate(sys.stdin):\n r=json.loads(line)\n print(json.dumps({'id':r['id'],'result':{'position':n,'params':r['params']}}),flush=True)\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let worker = Worker::spawn(path.to_str().unwrap()).unwrap();
+        let requests: Vec<_> = (0..20).map(|n| worker.start_call("ordered", json!(n), Duration::from_secs(5))).collect();
+        for (n, request) in requests.into_iter().enumerate() {
+            assert_eq!(request.wait().unwrap(), json!({"position":n,"params":n}));
+        }
+        worker.kill();
+        let _ = std::fs::remove_file(path);
     }
 }

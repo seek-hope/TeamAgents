@@ -19,7 +19,8 @@ for c in core engine tui; do (cd "$c" && cargo build); done
 # 联网受限时加 --offline（依赖已在本机 cargo 缓存中）
 ```
 
-要求：Linux + Rust 1.8x 工具链；`bubblewrap` 提供成员 shell 工具的隔离（缺失时明确报错，
+要求：Linux + Rust 工具链（2026-09-15 用 Rust 1.95.0 验证；仓库尚未声明最低支持版本）；
+`bubblewrap` 提供成员 shell 工具的隔离（缺失时明确报错，
 不会退化成不隔离执行）；`codex` CLI 仅 Codex 执行成员需要。
 
 ### 2) 配置
@@ -28,7 +29,7 @@ for c in core engine tui; do (cd "$c" && cargo build); done
 mkdir -p ~/.config/teamagents
 cp examples/config.toml ~/.config/teamagents/config.toml
 export DEEPSEEK_API_KEY=...      # examples/config.toml 里 profile 引用的密钥
-export ANYSEARCH_API_KEY=...     # 可选：web_search / web_fetch
+export ANYSEARCH_API_KEY=...     # 可选：AnySearch web_search；原生 web_fetch 无需此密钥
 ```
 
 读取用户配置 `$XDG_CONFIG_HOME/teamagents/config.toml`，并合并项目配置
@@ -50,7 +51,7 @@ engine/target/debug/teamagents --plain      # 哑终端或脚本用行模式 REP
 |---|---|
 | `--cwd DIR` | 以 DIR 为工作目录（默认当前目录；默认会话 id 由它派生） |
 | `--resume <会话 id>` | 恢复会话（团队版本、待办、消息位置、成员线程、批准队列） |
-| `--team SPEC` | 以指定 TeamSpec 开新会话（JSON 或 YAML） |
+| `--team SPEC` | 新会话使用指定 TeamSpec（JSON/YAML）；已有会话仍加载保存的团队定义 |
 | `--full-auto` | 用户显式开启全自动（等价于 TUI 里 `Ctrl+F`） |
 | `--plain` | 行模式 REPL（不发 TUI） |
 | `doctor` / `validate SPEC` / `sessions [-v]` / `version` | 自检 / 校验 TeamSpec / 会话清单 / 版本 |
@@ -67,14 +68,17 @@ Ctrl/Alt 组合不会误触发）、
 ### 4) 测试
 
 ```bash
-cd core   && cargo test        # 38（17 unit + 21 integration）：权威核心（models/storage/control/views/server）
-cd engine && cargo test        # 77（21 lib + 56 integration）：运行时 + T1–T5/T9/T11–T13/T22 场景 +
-                               #     取消/暂停 + 审批/全自动 + Codex 适配与合同 + worker 协议 +
-                               #     CLI/doctor + bwrap 沙箱 + workspace + MCP + 崩溃恢复
-cd tui    && cargo test        # 55（9 lib + 19 app + 27 render）：TUI 逻辑 + TestBackend 帧冒烟
+# 以下命令均在仓库根目录执行
+cargo test --offline --manifest-path core/Cargo.toml
+cargo test --offline --manifest-path engine/Cargo.toml
+cargo test --offline --manifest-path tui/Cargo.toml
 python3 tui/scripts/pty_smoke.py                        # 真终端端到端冒烟（先构建）
-cd engine && TEAMAGENTS_LIVE_CODEX=1 cargo test --test live_codex   # 真实 codex CLI 联调（可选）
+python3 tui/scripts/pty_click_check.py                  # 真终端点击命中检查
+TEAMAGENTS_LIVE_CODEX=1 cargo test --manifest-path engine/Cargo.toml --test live_codex -- --nocapture
 ```
+
+当前离线结果与真实服务验收边界统一见 [验收对照表](docs/ACCEPTANCE.md)。普通 Chat 后端解析
+OpenAI/Anthropic SSE 并向 TUI 提供增量预览；五家真实服务的兼容性仍待凭据环境下验收。
 
 ## 示例
 
@@ -83,12 +87,14 @@ cd engine && TEAMAGENTS_LIVE_CODEX=1 cargo test --test live_codex   # 真实 cod
 printf '1+1 等于几？直接回答，然后 signal_done。\n' | \
   engine/target/debug/teamagents --plain --cwd /tmp/demo
 
-# 带 Codex 执行成员的团队（examples/team.yaml 是 YAML，engine 直接读）
+# 带 Codex 执行成员的团队（先按下文配置 Codex 成员的 profile）
 engine/target/debug/teamagents --team examples/team.yaml
 ```
 
-`examples/config.toml` 给出模型 profile 与工具绑定样例；`examples/team.yaml` 是可直接运行的
-TeamSpec 示例。
+`examples/config.toml` 给出模型 profile 与工具绑定样例；`examples/team.yaml` 展示混合团队结构。
+其中 `codex_dev` 当前引用 DeepSeek 的 `leader_main`，不能据此保证 Codex 能运行：请将该成员
+改为引用已配置、且本机 Codex 能使用的模型/provider，端点须支持 Responses API
+（见 [Codex 配置说明](docs/USER-GUIDE.md#12-模型-profile)）。
 
 ## 文档地图
 

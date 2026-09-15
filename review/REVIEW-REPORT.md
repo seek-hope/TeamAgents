@@ -1,5 +1,8 @@
 # TeamAgents 代码实现审查 · 汇总报告（final）
 
+> 历史快照：以下结论针对 2026-09-12 的 Python 实现，保留原始证据；当前 Rust 状态见
+> [验收表](../docs/ACCEPTANCE.md)，后续审查与修复入口见 [AGENTS.md](../AGENTS.md)。
+
 > 审查日期：2026-09-12 ｜ 审查对象：工作树快照（含当日 11:11 的 D-10 变更）｜ 基准：`TeamAgents-Implementation-Plan.zh-CN.md` + `docs/DECISIONS.md`
 > 组织方式：Leader + 5 名域审查员（core / runtime / adapters / surface / verify），按 `review/PROTOCOL.md` 只读审查。
 > 原始报告：`review/findings-core.md`、`findings-runtime.md`、`findings-adapters.md`、`findings-surface.md`、`findings-verify.md`。

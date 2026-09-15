@@ -48,10 +48,11 @@ fn server_environment_is_whitelisted() {
     std::env::set_var("TA_MCP_SENTINEL_KEY", "sk-should-never-leak");
     std::env::set_var("TA_MCP_SENTINEL_OTHER", "also-not");
     // a server that dumps its environment and exits (no MCP handshake needed)
-    let _ = McpClient::connect_stdio(
+    let _ = McpClient::connect_stdio_in(
         "sh",
         &["-c".into(), format!("env > {}", dump.display())],
         &[("TA_MCP_BINDING_VAR".into(), "from-binding".into())],
+        &dir, "workspace", false, 2, 2,
     );
     let dumped = std::fs::read_to_string(&dump).expect("the child wrote its environment");
     assert!(!dumped.contains("TA_MCP_SENTINEL_KEY"), "model/API keys must not leak:\n{dumped}");

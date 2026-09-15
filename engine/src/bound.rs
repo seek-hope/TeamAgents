@@ -7,6 +7,7 @@
 use crate::mcp::McpClient;
 use serde_json::{json, Value as Json};
 use std::collections::HashSet;
+use std::path::Path;
 use std::sync::Arc;
 use teamagents_core::models::{ToolBinding, UserConfig};
 
@@ -24,6 +25,11 @@ pub struct BoundTools {
 
 impl BoundTools {
     pub fn load(catalog: &UserConfig, bindings: &[String]) -> Result<BoundTools, String> {
+        let root = std::env::current_dir().map_err(|e| e.to_string())?;
+        Self::load_in(catalog, bindings, &root)
+    }
+
+    pub fn load_in(catalog: &UserConfig, bindings: &[String], root: &Path) -> Result<BoundTools, String> {
         let mut tools: Vec<BoundTool> = vec![];
         let mut selected: Vec<(String, ToolBinding)> = vec![];
         for name in bindings {
@@ -52,12 +58,17 @@ impl BoundTools {
             match binding.kind.as_str() {
                 // web tools are served by the member's tool executor (web_search/web_fetch)
                 "web_search" | "web_fetch" => {}
-                "mcp" => match load_service(name.as_str(), &binding) {
+                "mcp" => match load_service(name.as_str(), &binding, root) {
                     Ok((client, mut service_tools)) => {
-                        clients.push(client);
+                        if service_tools.is_empty() {
+                            client.close();
+                        } else {
+                            clients.push(client);
+                        }
                         tools.append(&mut service_tools);
                     }
                     Err(e) if binding.required => {
+                        for client in &clients { client.close(); }
                         return Err(format!("required tool service {name:?} is unavailable: {e}"))
                     }
                     Err(e) => {
@@ -67,6 +78,7 @@ impl BoundTools {
                 },
                 other => {
                     if binding.required {
+                        for client in &clients { client.close(); }
                         return Err(format!("tool binding {name:?} has unsupported kind {other:?}"));
                     }
                 }
@@ -113,7 +125,7 @@ impl BoundTools {
     }
 }
 
-fn load_service(name: &str, binding: &ToolBinding) -> Result<(Arc<McpClient>, Vec<BoundTool>), String> {
+fn load_service(name: &str, binding: &ToolBinding, root: &Path) -> Result<(Arc<McpClient>, Vec<BoundTool>), String> {
     let transport = binding.mcp_transport.clone().unwrap_or_else(|| "stdio".into());
     let client = match transport.as_str() {
         "stdio" => {
@@ -132,7 +144,11 @@ fn load_service(name: &str, binding: &ToolBinding) -> Result<(Arc<McpClient>, Ve
                     Ok((k.clone(), expanded))
                 })
                 .collect::<Result<_, String>>()?;
-            McpClient::connect_stdio(&command, &binding.args, &env)?
+            McpClient::connect_stdio_in(
+                &command, &binding.args, &env, root,
+                binding.mcp_execution.as_deref().unwrap_or("workspace"), binding.mcp_network,
+                binding.startup_timeout_s.unwrap_or(60), binding.tool_timeout_s.unwrap_or(120),
+            )?
         }
         "http" => {
             let url = binding.url.clone().ok_or_else(|| format!("binding {name:?} needs a url for the http transport"))?;
@@ -156,7 +172,11 @@ fn load_service(name: &str, binding: &ToolBinding) -> Result<(Arc<McpClient>, Ve
     let service = binding.mcp_server.clone().unwrap_or_else(|| name.to_string());
     let allowed: HashSet<&str> = binding.tool_names.iter().map(|s| s.as_str()).collect();
     let mut out = vec![];
-    for tool in client.tools()? {
+    let listed = match client.tools() {
+        Ok(tools) => tools,
+        Err(error) => { client.close(); return Err(error); }
+    };
+    for tool in listed {
         let remote_name = tool.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
         if remote_name.is_empty() {
             continue;
@@ -186,6 +206,43 @@ mod tests {
 
     fn binding(value: Json) -> ToolBinding {
         serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn filtered_and_failed_services_reap_started_processes() {
+        let root = std::env::temp_dir().join(format!("ta-mcp-cleanup-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let script = r#"
+import json, os, sys
+with open('pid', 'w') as f: f.write(str(os.getpid()))
+for line in sys.stdin:
+    request = json.loads(line)
+    if 'id' not in request: continue
+    response = {'jsonrpc': '2.0', 'id': request['id'], 'result': {'protocolVersion': '2025-06-18'}}
+    if request['method'] == 'tools/list':
+        if sys.argv[1] == 'fail': response = {'jsonrpc': '2.0', 'id': request['id'], 'error': {'code': -1, 'message': 'bad list'}}
+        else: response['result'] = {'tools': [{'name': 'echo'}]}
+    print(json.dumps(response), flush=True)
+"#;
+        for scenario in ["filtered", "fail", "later-failure"] {
+            let mut catalog = UserConfig::default();
+            catalog.tools.insert("first".into(), binding(json!({
+                "kind": "mcp", "mcp_execution": "host", "command": "/usr/bin/python3",
+                "args": ["-u", "-c", script, scenario], "required": true,
+                "tool_names": if scenario == "filtered" { vec!["absent"] } else { vec![] },
+            })));
+            let mut bindings = vec!["first".into()];
+            if scenario == "later-failure" {
+                catalog.tools.insert("broken".into(), binding(json!({"kind": "unsupported", "required": true})));
+                bindings.push("broken".into());
+            }
+            let result = BoundTools::load_in(&catalog, &bindings, &root);
+            if scenario == "filtered" { assert!(result.unwrap().tools.is_empty()); }
+            else { assert!(result.is_err()); }
+            let pid: u32 = std::fs::read_to_string(root.join("pid")).unwrap().parse().unwrap();
+            assert!(!Path::new(&format!("/proc/{pid}")).exists(), "{scenario} left a server process");
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
