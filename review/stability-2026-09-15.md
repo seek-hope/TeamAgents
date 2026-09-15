@@ -309,3 +309,19 @@ shell 进程（取消/超时语义会被打乱），而是“状态随命令走�
 `review/eval/runs/2026-09-15-deepseek-shellstate/`：6 个任务全部符合预期（4 completed + 2 个
 刻意的安全边界，即 approval-gate exit 3、interrupted-recovery exit 124），0 个失败工具调用；
 其中 `rust-fix`/`long-output` 真实用到 shell，证明状态捕获包装没有改变命令语义与退出码。
+
+## 第十五批：MCP GET 推送流与 DELETE 会话终止（用户批准的优先级 3）
+
+规范里最后两块没实现的东西补齐（POST 的 SSE 早已支持）：
+
+- `engine/src/mcp.rs`：初始化并发出 `notifications/initialized` 之后，客户端开一条 **GET SSE 流**
+  （带会话 id / 协议版本 / bearer；`timeout_connect=2s`、`timeout_read=1s`，读超时同时充当停止信号轮询）；
+  服务器通知写一行 stderr，服务器发来的**请求**按规范回 `-32601 client does not support <method>`，
+  避免服务器永久等待一个客户端并不具备的能力。`session`/`protocol` 改为 `Arc<Mutex<..>>` 以便推送线程复用。
+- `close()` 先停推送线程（最多等 3 秒，超时则不 join 以免卡住退出），再带会话 id 发 **DELETE**；
+  405 视为"服务器不支持"静默通过，其它错误只写 stderr。stdio 的关闭语义不变。
+- 服务器回 405（不支持推送/DELETE）时按无推送处理，连接与调用照常。
+- 回归：`mcp_http.rs::http_push_stream_answers_requests_and_deletes_the_session`（GET 带会话 id、
+  被推送的 sampling 请求收到错误回复、关闭时 DELETE 带上会话 id）、
+  `http_transport_tolerates_servers_without_push_or_delete`（405 不破坏任何功能）；
+  原有 HTTP 用例（POST SSE、session id、token、malformed JSON）继续通过。

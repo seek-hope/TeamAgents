@@ -87,6 +87,11 @@ startup_timeout_s = 60         # initialize/tools/list 超时秒数（可省，�
 tool_timeout_s = 120           # tools/call 超时秒数（可省，默认 120）
 ```
 
+HTTP 传输按 MCP streamable 规范实现：POST 的响应可以是单个 JSON 或 SSE；初始化后客户端会额外开一条
+**GET SSE 推送流**（服务器通知写入 stderr；服务器发来的请求如 `sampling/createMessage` 会按规范收到
+JSON-RPC 错误回复，不会让服务器干等），会话结束（成员绑定关闭）时用 **DELETE** 终止服务端会话。
+不支持推送/终止的服务器回 405 时按无推送处理，功能照常。
+
 旧式 `mcp_transport = "sse"` 已从 MCP 规范移除，绑定会直接报错并提示改用 `"http"`。
 
 内置能力名 `files` / `shell` / `web` / `skills` 不需要同名配置条目，`files` 绑定同时包含

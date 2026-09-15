@@ -61,7 +61,7 @@ python3 tui/scripts/pty_click_check.py
 | T24 | 会话复用；同名新成员不继承旧身份 | 🔶 | 复用的 `context_epoch` 机制在核心；fork 回归覆盖历史键重映射；仍缺专属同名成员复用场景 |
 
 **尚未实现（⚠）**：Chat 成员私有子代理、Codex/Chat 五家真实服务的完整发布验收。
-MCP HTTP 已支持 POST 响应中的 SSE；旧式独立 SSE 传输、GET 主动推送与 DELETE 会话终止未实现。
+MCP HTTP（streamable，2025-06-18）：POST 响应中的 SSE、GET 主动推送流与 DELETE 会话终止均已实现——GET 流建立后服务器通知写日志，服务器发来的请求（如 sampling/roots）按规范回 JSON-RPC 错误而不是让服务器干等；关闭时 DELETE 结束会话；不支持推送的服务器回 405 时按无推送处理（`mcp_http.rs::http_push_stream_answers_requests_and_deletes_the_session`、`http_transport_tolerates_servers_without_push_or_delete`）。旧式独立 SSE 传输已从规范移除，绑定直接报错。
 TUI 为 Rust 原生设计（D-20：固定分区、滚动、胶囊状态）。其余取舍见
 `docs/DECISIONS.md`（D-17/D-19/D-20/D-21）。
 

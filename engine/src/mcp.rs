@@ -37,8 +37,11 @@ enum Transport {
     Http {
         url: String,
         token: Option<String>,
-        session: Mutex<Option<String>>,
-        protocol: Mutex<Option<String>>,
+        // shared with the push reader thread, which may need to answer a
+        // server-initiated request over the same session
+        session: Arc<Mutex<Option<String>>>,
+        protocol: Arc<Mutex<Option<String>>>,
+        stream: Mutex<Option<PushStream>>,
     },
 }
 
@@ -174,8 +177,9 @@ impl McpClient {
             transport: Transport::Http {
                 url: url.to_string(),
                 token,
-                session: Mutex::new(None),
-                protocol: Mutex::new(None),
+                session: Arc::new(Mutex::new(None)),
+                protocol: Arc::new(Mutex::new(None)),
+                stream: Mutex::new(None),
             },
             next_id: AtomicU64::new(1),
             startup_ms: startup_timeout_s.max(1).saturating_mul(1000),
@@ -192,7 +196,47 @@ impl McpClient {
             *protocol.lock().unwrap() = Some(version.to_string());
         }
         client.notify("notifications/initialized", json!({}))?;
+        client.open_push_stream();
         Ok(client)
+    }
+
+    /// The server may push messages over a GET SSE stream (notifications,
+    /// progress, or its own requests such as sampling/roots). Servers that do
+    /// not support it answer 405 — then this is simply a no-op.
+    fn open_push_stream(&self) {
+        let Transport::Http { url, token, session, protocol, stream } = &self.transport else { return };
+        let agent = ureq::AgentBuilder::new()
+            .redirects(0)
+            .timeout_connect(Duration::from_secs(2))
+            .timeout_read(Duration::from_secs(1))
+            .build();
+        let mut request = agent.get(url).set("accept", "text/event-stream");
+        if let Some(token) = token {
+            request = request.set("authorization", &format!("Bearer {token}"));
+        }
+        if let Some(id) = session.lock().unwrap().clone() {
+            request = request.set("mcp-session-id", &id);
+        }
+        if let Some(version) = protocol.lock().unwrap().clone() {
+            request = request.set("mcp-protocol-version", &version);
+        }
+        let response = match request.call() {
+            Ok(response) => response,
+            // a server that refuses the stream (405/404) or is unreachable just
+            // means "no push"; the transport still works over POST
+            Err(error) => {
+                eprintln!("MCP push stream unavailable: {error}");
+                return;
+            }
+        };
+        if !response.header("content-type").unwrap_or("").contains("text/event-stream") {
+            return;
+        }
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reader = response.into_reader();
+        let reply = (url.clone(), token.clone(), session.clone(), protocol.clone(), stop.clone());
+        let join = std::thread::spawn(move || read_push_stream(reader, reply));
+        *stream.lock().unwrap() = Some(PushStream { stop, join: Some(join) });
     }
 
     pub fn call(&self, method: &str, params: Json, timeout_ms: u64) -> Result<Json, String> {
@@ -214,7 +258,7 @@ impl McpClient {
                     }
                 }
             }
-            Transport::Http { url, token, session, protocol } => {
+            Transport::Http { url, token, session, protocol, .. } => {
                 let version = protocol.lock().unwrap().clone();
                 let payload = http_roundtrip(url, token.as_deref(), session, version.as_deref(), &body, timeout_ms)?
                     .ok_or_else(|| format!("MCP {method} returned no response"))?;
@@ -230,7 +274,7 @@ impl McpClient {
         let body = json!({"jsonrpc": "2.0", "method": method, "params": params});
         match &self.transport {
             Transport::Stdio { stdin, .. } => write_line(stdin, &body),
-            Transport::Http { url, token, session, protocol } => {
+            Transport::Http { url, token, session, protocol, .. } => {
                 let version = protocol.lock().unwrap().clone();
                 http_roundtrip(url, token.as_deref(), session, version.as_deref(), &body, self.startup_ms)?;
                 Ok(())
@@ -265,11 +309,50 @@ impl McpClient {
     }
 
     pub fn close(&self) {
-        if let Transport::Stdio { child, .. } = &self.transport {
-            let child = child.lock().unwrap().take();
-            if let Some(mut child) = child {
-                let _ = child.kill();
-                let _ = child.wait();
+        match &self.transport {
+            Transport::Stdio { child, .. } => {
+                let child = child.lock().unwrap().take();
+                if let Some(mut child) = child {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+            }
+            Transport::Http { url, token, session, protocol, stream } => {
+                if let Some(handle) = stream.lock().unwrap().take() {
+                    handle.stop.store(true, Ordering::SeqCst);
+                    if let Some(join) = handle.join {
+                        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+                        while !join.is_finished() && std::time::Instant::now() < deadline {
+                            std::thread::sleep(Duration::from_millis(20));
+                        }
+                        if join.is_finished() {
+                            let _ = join.join();
+                        }
+                    }
+                }
+                // DELETE terminates the session on the server (405 = unsupported)
+                if let Some(id) = session.lock().unwrap().clone() {
+                    let agent = ureq::AgentBuilder::new().redirects(0).build();
+                    let mut request = agent
+                        .delete(url)
+                        .timeout(Duration::from_secs(2))
+                        .set("mcp-session-id", &id);
+                    if let Some(token) = token {
+                        request = request.set("authorization", &format!("Bearer {token}"));
+                    }
+                    if let Some(version) = protocol.lock().unwrap().clone() {
+                        request = request.set("mcp-protocol-version", &version);
+                    }
+                    match request.call() {
+                        Ok(_) => {}
+                        Err(ureq::Error::Status(code, _)) => {
+                            if code != 405 {
+                                eprintln!("MCP session delete returned {code}");
+                            }
+                        }
+                        Err(error) => eprintln!("MCP session delete failed: {error}"),
+                    }
+                }
             }
         }
     }
@@ -278,6 +361,61 @@ impl McpClient {
 impl Drop for McpClient {
     fn drop(&mut self) {
         self.close();
+    }
+}
+
+struct PushStream {
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    join: Option<std::thread::JoinHandle<()>>,
+}
+
+/// Read the GET SSE stream: notifications go to the log, server-initiated
+/// requests are answered with a JSON-RPC "not supported" error so a server never
+/// waits forever on a capability this client does not implement.
+fn read_push_stream(reader: Box<dyn std::io::Read + Send + Sync + 'static>, reply: (String, Option<String>, Arc<Mutex<Option<String>>>, Arc<Mutex<Option<String>>>, Arc<std::sync::atomic::AtomicBool>)) {
+    let (url, token, session, protocol, stop) = reply;
+    let mut reader = BufReader::new(reader);
+    let mut frame = String::new();
+    loop {
+        if stop.load(Ordering::SeqCst) {
+            return;
+        }
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) => return,
+            Ok(_) => {}
+            // the per-read timeout is how this thread learns to stop
+            Err(error) if matches!(error.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted) => continue,
+            Err(_) => return,
+        }
+        let line = line.trim_end_matches(['\r', '\n']);
+        if let Some(data) = line.strip_prefix("data:") {
+            if !frame.is_empty() {
+                frame.push('\n');
+            }
+            frame.push_str(data.strip_prefix(' ').unwrap_or(data));
+        }
+        if !line.is_empty() || frame.is_empty() {
+            continue;
+        }
+        let message: Json = match serde_json::from_str(&frame) {
+            Ok(message) => message,
+            Err(_) => {
+                frame.clear();
+                continue;
+            }
+        };
+        frame.clear();
+        let method = message.get("method").and_then(|v| v.as_str()).unwrap_or("");
+        if message.get("id").is_some() {
+            let body = json!({"jsonrpc": "2.0", "id": message["id"],
+                              "error": {"code": -32601, "message": format!("client does not support {method}")}});
+            if let Err(error) = http_roundtrip(&url, token.as_deref(), &session, protocol.lock().unwrap().clone().as_deref(), &body, 5_000) {
+                eprintln!("MCP push reply failed: {error}");
+            }
+        } else if !method.is_empty() {
+            eprintln!("MCP notification: {method}");
+        }
     }
 }
 

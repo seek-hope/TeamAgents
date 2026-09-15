@@ -7,6 +7,7 @@ use serde_json::{json, Value as Json};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use teamagents_core::models::UserConfig;
 use teamagents_engine::bound::BoundTools;
 use teamagents_engine::mcp::McpClient;
@@ -16,14 +17,18 @@ enum Mode {
     Good,
     /// tools/list answers with a body that is not JSON at all.
     BadJson,
+    /// the server refuses the GET push stream and session DELETE with 405
+    NoPush,
 }
 
 #[derive(Default)]
 struct Seen {
+    http_method: String,
     method: String,
     session: Option<String>,
     authorization: Option<String>,
     protocol: Option<String>,
+    body: Json,
 }
 
 const SESSION_ID: &str = "ta-test-session";
@@ -53,6 +58,7 @@ fn handle(stream: TcpStream, seen: Arc<Mutex<Vec<Seen>>>, mode: Mode) {
     if reader.read_line(&mut line).unwrap_or(0) == 0 {
         return; // request line
     }
+    record.http_method = line.split_whitespace().next().unwrap_or("").to_string();
     loop {
         line.clear();
         if reader.read_line(&mut line).unwrap_or(0) == 0 {
@@ -82,9 +88,20 @@ fn handle(stream: TcpStream, seen: Arc<Mutex<Vec<Seen>>>, mode: Mode) {
     let message: Json = serde_json::from_slice(&body).unwrap_or(Json::Null);
     let method = message.get("method").and_then(|v| v.as_str()).unwrap_or("").to_string();
     record.method = method.clone();
+    record.body = message.clone();
     seen.lock().unwrap().push(record);
     let id = message.get("id").cloned().unwrap_or(Json::Null);
     let mut stream = stream;
+    // the GET push stream carries server -> client messages
+    if method.is_empty() {
+        let push = || {
+            "data: {\"jsonrpc\":\"2.0\",\"id\":99,\"method\":\"sampling/createMessage\",\"params\":{}}\r\n\r\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"}\r\n\r\n".to_string()
+        };
+        return match mode {
+            Mode::NoPush => respond(&mut stream, "405 Method Not Allowed", "", ""),
+            _ => respond(&mut stream, "200 OK", "content-type: text/event-stream\r\n", &push()),
+        };
+    }
     match (mode, method.as_str()) {
         (_, "initialize") => respond(
             &mut stream,
@@ -185,6 +202,51 @@ fn http_transport_binds_and_calls_tools() {
         assert_eq!(request.authorization.as_deref(), Some("Bearer test-secret"), "{method} carries the token");
         assert_eq!(request.protocol.as_deref(), Some("2025-03-26"), "{method} carries the negotiated version");
     }
+}
+
+/// Server push: the client opens the GET SSE stream, answers a server-initiated
+/// request it does not implement instead of leaving the server hanging, and
+/// terminates the session with DELETE.
+#[test]
+fn http_push_stream_answers_requests_and_deletes_the_session() {
+    let (url, seen) = spawn_server(Mode::Good);
+    let client = McpClient::connect_http(&url, None, 5, 5).expect("connect");
+    assert!(client.tools().is_ok());
+
+    // the reader thread needs a moment to answer the pushed request
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let reply_seen = || {
+        seen.lock()
+            .unwrap()
+            .iter()
+            .any(|r| r.body.get("id") == Some(&json!(99)) && r.body.get("error").is_some())
+    };
+    while !reply_seen() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(reply_seen(), "the pushed sampling request got an error reply: {seen:?}", seen = seen.lock().unwrap().len());
+
+    client.close();
+    let seen = seen.lock().unwrap();
+    assert!(seen.iter().any(|r| r.http_method == "GET"), "a GET push stream was opened: {seen:?}");
+    assert!(
+        seen.iter().any(|r| r.http_method == "GET" && r.session.as_deref() == Some(SESSION_ID)),
+        "the stream carries the session id"
+    );
+    let delete = seen.iter().find(|r| r.http_method == "DELETE").expect("session terminated with DELETE");
+    assert_eq!(delete.session.as_deref(), Some(SESSION_ID), "{delete:?}");
+}
+
+/// Servers without push support: 405 on GET and DELETE must be a no-op.
+#[test]
+fn http_transport_tolerates_servers_without_push_or_delete() {
+    let (url, seen) = spawn_server(Mode::NoPush);
+    let client = McpClient::connect_http(&url, None, 5, 5).expect("connect still succeeds");
+    assert!(client.tools().is_ok(), "requests keep working over POST");
+    client.close();
+    let seen = seen.lock().unwrap();
+    assert!(seen.iter().any(|r| r.http_method == "GET"), "{seen:?}");
+    assert!(seen.iter().any(|r| r.http_method == "DELETE"), "{seen:?}");
 }
 
 /// An optional http service that is down only drops the capability; a required
