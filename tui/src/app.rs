@@ -56,6 +56,8 @@ pub enum Effect {
     Submit { action: Json, ok_msg: Option<String>, err_msg: Option<String> },
     /// Cancel a task — message depends on the receipt result status.
     CancelTask(String),
+    /// Acknowledge an OUTCOME_UNKNOWN turn (a run interrupted mid-command).
+    AcknowledgeRun(String),
     /// Decide an approval — toast '批准决定 {v0}：{v1}' from the receipt.
     DecideApproval { approval_id: String, decision: String },
     UserMessage(String),
@@ -228,6 +230,8 @@ pub struct App {
     pub plans: std::collections::HashMap<String, Vec<Json>>,
     /// Per-member review material: the diff lines of its recent edits.
     reviews: std::collections::HashMap<String, Vec<String>>,
+    /// member id -> run id whose outcome is still unknown
+    pub unknown_runs: std::collections::HashMap<String, String>,
     /// `v` review overlay (Esc closes; Ctrl+U/D scroll)
     pub review_open: bool,
     pub review_agent: String,
@@ -290,6 +294,7 @@ impl App {
             tool_activity: std::collections::HashMap::new(),
             plans: std::collections::HashMap::new(),
             reviews: std::collections::HashMap::new(),
+            unknown_runs: std::collections::HashMap::new(),
             review_open: false,
             review_agent: String::new(),
             review_lines: vec![],
@@ -358,6 +363,15 @@ impl App {
             }
             self.cursor = self.cursor.max(seq);
             effects.extend(self.apply_event(ev, st));
+        }
+        // runs whose outcome nobody has accepted yet: they block goal completion
+        self.unknown_runs.clear();
+        if let Some(runs) = st.get("runs").and_then(|v| v.as_array()) {
+            for run in runs {
+                if jstr(run, "status") == "OUTCOME_UNKNOWN" {
+                    self.unknown_runs.insert(jstr(run, "agent_id"), jstr(run, "run_id"));
+                }
+            }
         }
         // active runs for the activity line / status cells
         self.activity_runs = st
@@ -804,7 +818,12 @@ impl App {
             }
             let status = statuses.get(&id).cloned().unwrap_or_else(|| "IDLE".into());
             let run = self.activity_runs.iter().find(|r| r.agent_id == id);
-            let (status_label, style) = activity_status(self.lang, self.animations, self.activity_frame, &status, run);
+            let (status_label, style) = match self.unknown_runs.get(&id) {
+                // a turn whose outcome nobody accepted: it blocks signal_done
+                // until it is acknowledged
+                Some(_) => (self.t("结果不明（c 结清）", &[]), "warning"),
+                None => activity_status(self.lang, self.animations, self.activity_frame, &status, run),
+            };
             let activity = self
                 .tool_activity
                 .get(&id)
@@ -1932,6 +1951,15 @@ impl App {
                             ("v4", &refs),
                         ]);
                         self.notify(msg, Severity::Info, 10);
+                    }
+                }
+            }
+            ("team", KeyCode::Char('c')) => {
+                match selected.as_ref().and_then(|agent| self.unknown_runs.get(agent)) {
+                    Some(run_id) => return vec![Effect::AcknowledgeRun(run_id.clone())],
+                    None => {
+                        let msg = self.t("该成员没有结果不明的回合", &[]);
+                        self.notify(msg, Severity::Info, 3);
                     }
                 }
             }

@@ -599,6 +599,9 @@ pub fn exec_json(args: &ExecOptions) -> i32 {
     if !verification.is_empty() { let path = session_paths(&sid).base.join("verification.json"); let _ = std::fs::create_dir_all(session_paths(&sid).base); let _ = std::fs::write(path, serde_json::to_vec_pretty(&verification).unwrap_or_default()); }
     let checks_ok = verification.iter().all(|v| v.get("ok").and_then(Json::as_bool).unwrap_or(false));
     let (status, code) = exec_outcome(&state, timed_out, checks_ok);
+    // runs whose outcome nobody accepted: they block goal completion, so a CI
+    // caller needs their ids to acknowledge them (`cancel_run`)
+    let unknown = unknown_run_ids(&state);
     // Same accounting the TUI shows in /status: evals and CI can record real
     // token totals instead of guessing them.
     let usage = opened.usage_report();
@@ -606,10 +609,24 @@ pub fn exec_json(args: &ExecOptions) -> i32 {
         "schema_version":1,"type":"result","session_id":sid,"status":status,"exit_code":code,
         "duration_ms": started.elapsed().as_millis() as u64,
         "usage": usage.get("agents").cloned().unwrap_or_else(|| json!([])),
+        "outcome_unknown": unknown,
         "verification":verification,
     }));
     opened.close();
     code
+}
+
+fn unknown_run_ids(state: &Json) -> Vec<String> {
+    state
+        .get("runs")
+        .and_then(Json::as_array)
+        .map(|runs| {
+            runs.iter()
+                .filter(|run| run.get("status").and_then(Json::as_str) == Some("OUTCOME_UNKNOWN"))
+                .filter_map(|run| run.get("run_id").and_then(Json::as_str).map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn has_pending_approvals(state: &Json) -> bool {
@@ -651,7 +668,7 @@ fn json_line(value: &Json) -> bool {
 
 #[cfg(test)]
 mod exec_tests {
-    use super::{exec_outcome, parse_check_result, parse_exit_code};
+    use super::{exec_outcome, parse_check_result, parse_exit_code, unknown_run_ids};
     use serde_json::json;
 
     #[test]
@@ -670,6 +687,15 @@ mod exec_tests {
         assert_eq!(exec_outcome(&parked, true, true), ("timeout", 124));
         let unknown = json!({"runs": [{"status": "OUTCOME_UNKNOWN"}], "pending_approvals": []});
         assert_eq!(exec_outcome(&unknown, false, true), ("failed", 1));
+        // the result line lists them so automation can acknowledge them
+        assert_eq!(
+            unknown_run_ids(&json!({"runs": [
+                {"run_id": "run_a", "status": "OUTCOME_UNKNOWN"},
+                {"run_id": "run_b", "status": "COMPLETED"}
+            ]})),
+            vec!["run_a".to_string()]
+        );
+        assert!(unknown_run_ids(&json!({})).is_empty());
         let done = json!({"runs": [{"status": "SUCCEEDED"}], "pending_approvals": [], "session": {"goal_state": "done"}});
         assert_eq!(exec_outcome(&done, false, true), ("completed", 0));
         assert_eq!(exec_outcome(&done, false, false), ("incomplete", 1));

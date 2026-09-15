@@ -407,6 +407,7 @@ fn run_effect(effect: Effect, worker: &Worker, app: &mut App, requests: &mut Asy
     let (method, params) = match &effect {
         Effect::Submit { action, .. } => ("submit", json!({"action": action})),
         Effect::CancelTask(task_id) => ("submit", json!({"action": {"action_id":format!("ui-cancel-task-{task_id}"),"actor_id":"user","kind":"cancel_task","payload":{"task_id":task_id}}})),
+        Effect::AcknowledgeRun(run_id) => ("submit", json!({"action": {"action_id":format!("ui-ack-run-{run_id}"),"actor_id":"user","kind":"cancel_run","payload":{"run_id":run_id}}})),
         Effect::DecideApproval { approval_id, decision } => ("submit", json!({"action": {"action_id":format!("ui-approval-{approval_id}-{decision}"),"actor_id":"user","kind":"approval_decision","payload":{"approval_id":approval_id,"decision":decision}}})),
         Effect::UsageStatus => ("usage", json!({})),
         Effect::RewindPoints => ("rewind_points", json!({})),
@@ -443,6 +444,24 @@ fn apply_effect_result(effect: Effect, generation: u64, result: Result<Json, Str
         Effect::CancelTask(task_id) => {
             let msg = app::cancel_task_feedback(app.lang, &task_id, &result.unwrap_or(Json::Null));
             app.notify(msg.clone(), app::Severity::Info, 10);
+            app.chat.push(("system".into(), msg));
+        }
+        Effect::AcknowledgeRun(run_id) => {
+            let receipt = result.as_ref().ok();
+            let acknowledged = receipt.and_then(|r| r.get("status")).and_then(|v| v.as_str()) == Some("acknowledged");
+            let msg = if ok && acknowledged {
+                app.t("已结清结果不明的回合（{v0}）", &[("v0", &run_id)])
+            } else {
+                let fallback = app.t("未知错误", &[]);
+                let error = receipt
+                    .and_then(|r| r.get("error"))
+                    .and_then(|v| v.as_str())
+                    .or_else(|| result.as_ref().err().map(|e| e.as_str()))
+                    .unwrap_or(fallback.as_str())
+                    .to_string();
+                app.t("结清失败：{v0}", &[("v0", &error)])
+            };
+            app.notify(msg.clone(), if ok && acknowledged { app::Severity::Info } else { app::Severity::Error }, 10);
             app.chat.push(("system".into(), msg));
         }
         Effect::DecideApproval { decision, .. } => {
@@ -576,6 +595,39 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn unknown_outcome_runs_are_visible_and_acknowledgeable() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = test_app();
+        app.state = Some(json!({
+            "spec": {"leader_id": "leader", "agents": [
+                {"id": "leader", "name": "leader", "role": "leader", "runtime_kind": "deepagents", "model_profile": "m"}
+            ]},
+            "runs": [{"run_id": "run_x", "agent_id": "leader", "status": "OUTCOME_UNKNOWN"}]
+        }));
+        let state = app.state.clone().unwrap();
+        app.apply_state(&state); // the poll path fills unknown_runs
+        assert_eq!(app.unknown_runs.get("leader").map(String::as_str), Some("run_x"));
+
+        let row = app.team_rows().into_iter().find(|(id, _)| id == "leader").expect("leader row");
+        let marker = app.t("结果不明（c 结清）", &[]);
+        assert!(row.1[4].0.contains(&marker), "the status cell says so: {:?}", row.1[4].0);
+
+        app.panel = 0; // team
+        app.focus = app::Focus::Panel;
+        app.table_cursors.insert("team".into(), (Some("leader".into()), 0));
+        let effects = app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+        assert_eq!(effects.len(), 1, "{effects:?}");
+        assert!(matches!(&effects[0], Effect::AcknowledgeRun(run) if run == "run_x"), "{effects:?}");
+
+        // a member without one just gets told so
+        app.unknown_runs.clear();
+        let effects = app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+        assert!(effects.is_empty());
+        let empty_hint = app.t("该成员没有结果不明的回合", &[]);
+        assert!(app.toasts.iter().any(|t| t.text.contains(&empty_hint)), "{:?}", app.toasts);
     }
 
     #[test]

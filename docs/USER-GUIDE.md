@@ -388,6 +388,10 @@ TUI `/rewind` 列出当前分支的用户输入节点，`/rewind <序号>` 回�
   面板框下方会出现一行独立的状态组件：`计划 1/3 · leader  修 mul`（进度 + 成员 + 当前进行中的项）。
   计划是成员的"工作记忆"（存 `members/<id>/plan.json`，每轮随系统提示回灌给模型，不占团队任务语义）；
   选中哪个成员（团队/日志页签高亮，否则当前有回合的成员，再否则 Leader）就显示谁的计划。
+- **结果不明的回合（`c` 结清）**：回合在命令中途被中断时，团队页签该成员的"状态"列显示
+  `结果不明（c 结清）`（英文 `unknown (c to ack)`）；选中它按 `c` 即提交 `cancel_run` 结清
+  （回执 `acknowledged`，事件带 `acknowledged_outcome_unknown`）。不结清会一直挡住 `signal_done`。
+  `exec --json` 的结果行也带 `outcome_unknown: [run_id…]`，CI 可据此提示人工确认。
 - **改动审查（`v`）**：在团队页签（或日志页签）选中成员按 `v`，弹层显示该成员**最近一次编辑的
   diff**（`edit_file`/`edit_files`/`write_file` 的结果，绿色 `+`、红色 `-`）；`Esc` 关闭，
   `Ctrl+U/Ctrl+D` 或 `↑/↓` 滚动。还没有改动的成员会提示"还没有可审查的改动"。

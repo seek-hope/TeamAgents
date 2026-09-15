@@ -441,3 +441,15 @@ Codex 有 `notify`、Claude Code 有 hooks，TeamAgents 之前没有任何外部
 `goal_done`，证据 `review/eval/runs/2026-09-15-deepseek-resume/`。回归：
 `core/tests/engine.rs::acknowledging_an_unknown_run_unblocks_completion`、
 `chat::tests::refused_tool_receipts_keep_their_detail`。
+
+## 第二十三批：结果不明回合的界面与自动化出口
+
+上一批修了"OUTCOME_UNKNOWN 挡死 signal_done 且无法结清"；这一批把它补到人能看到、能操作的地方：
+
+- **TUI**：团队页签的状态列在有未知回合时显示 `结果不明（c 结清）`（英文 `unknown (c to ack)`），
+  选中按 `c` 提交 `cancel_run`（actor=user，core 本来也允许用户结清），回执 `acknowledged` 时提示
+  已结清、否则显示错误；没有未知回合时提示"该成员没有结果不明的回合"。
+- **`exec --json`**：结果行新增 `outcome_unknown: [run_id…]`。之所以要它：CI/脚本会看到
+  `status:"failed"`，但原因（未知回合需要人工确认）只在运行状态里，给出 id 才能一键结清。
+- 回归：`tui::tests::unknown_outcome_runs_are_visible_and_acknowledgeable`（状态列标记、
+  面板键 `c` 产出 AcknowledgeRun、无未知回合时的提示）、`cli::exec_tests` 增补 `unknown_run_ids`。
