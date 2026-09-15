@@ -598,6 +598,40 @@ mod tests {
     }
 
     #[test]
+    fn plan_overlay_shows_the_whole_list() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = test_app();
+        app.state = Some(json!({"spec": {"leader_id": "leader", "agents": [
+            {"id": "leader", "name": "leader", "role": "leader", "runtime_kind": "deepagents", "model_profile": "m"}
+        ]}}));
+        app.on_plan("leader", &json!([
+            {"text": "复现失败", "status": "done"},
+            {"text": "修 mul", "status": "in_progress"},
+            {"text": "跑测试", "status": "pending"}
+        ]));
+
+        app.panel = 0; // team
+        app.focus = app::Focus::Panel;
+        app.table_cursors.insert("team".into(), (Some("leader".into()), 0));
+        app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
+        assert!(app.review_open, "p opens the plan");
+        assert!(app.review_title().contains("leader"), "{}", app.review_title());
+        assert_eq!(app.review_lines.len(), 3);
+        assert_eq!(app.review_lines[0], "[x] 复现失败");
+        assert_eq!(app.review_lines[1], "[~] 修 mul");
+        assert_eq!(app.review_lines[2], "[ ] 跑测试");
+
+        // Esc closes, and a member without a plan gets told so
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!app.review_open);
+        app.plans.clear();
+        app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
+        assert!(!app.review_open);
+        let hint = app.t("{v0} 还没有计划", &[("v0", "leader")]);
+        assert!(app.toasts.iter().any(|t| t.text.contains(&hint)), "{:?}", app.toasts);
+    }
+
+    #[test]
     fn unknown_outcome_runs_are_visible_and_acknowledgeable() {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut app = test_app();

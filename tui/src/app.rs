@@ -235,6 +235,8 @@ pub struct App {
     /// `v` review overlay (Esc closes; Ctrl+U/D scroll)
     pub review_open: bool,
     pub review_agent: String,
+    /// Title of whatever the shared overlay is showing (diff review or plan)
+    pub overlay_title: String,
     pub review_lines: Vec<String>,
     pub review_scroll: usize,
     /// chat lines scrolled up from the bottom (0 = pinned to the newest entry)
@@ -297,6 +299,7 @@ impl App {
             unknown_runs: std::collections::HashMap::new(),
             review_open: false,
             review_agent: String::new(),
+            overlay_title: String::new(),
             review_lines: vec![],
             review_scroll: 0,
             chat_scroll: 0,
@@ -1153,15 +1156,43 @@ impl App {
     /// `v` on a member row: show what that member last changed.
     pub fn open_review(&mut self, agent_id: &str) -> bool {
         let Some(lines) = self.reviews.get(agent_id) else { return false };
-        self.review_agent = agent_id.to_string();
-        self.review_lines = lines.clone();
-        self.review_scroll = 0;
-        self.review_open = true;
+        let title = self.t("改动审查：{v0}", &[("v0", agent_id)]);
+        self.show_overlay(agent_id, title, lines.clone());
         true
     }
 
+    /// `p` on a member row: the whole plan, not just the strip's progress line.
+    pub fn open_plan(&mut self, agent_id: &str) -> bool {
+        let Some(items) = self.plans.get(agent_id) else { return false };
+        if items.is_empty() {
+            return false;
+        }
+        let lines: Vec<String> = items
+            .iter()
+            .map(|item| {
+                let mark = match item["status"].as_str().unwrap_or("pending") {
+                    "done" => "[x]",
+                    "in_progress" => "[~]",
+                    _ => "[ ]",
+                };
+                format!("{mark} {}", item["text"].as_str().unwrap_or(""))
+            })
+            .collect();
+        let title = self.t("计划：{v0}", &[("v0", agent_id)]);
+        self.show_overlay(agent_id, title, lines);
+        true
+    }
+
+    fn show_overlay(&mut self, agent_id: &str, title: String, lines: Vec<String>) {
+        self.review_agent = agent_id.to_string();
+        self.overlay_title = title;
+        self.review_lines = lines;
+        self.review_scroll = 0;
+        self.review_open = true;
+    }
+
     pub fn review_title(&self) -> String {
-        self.t("改动审查：{v0}", &[("v0", &self.review_agent)])
+        self.overlay_title.clone()
     }
 
     fn review_key(&mut self, key: crossterm::event::KeyEvent) -> Vec<Effect> {
@@ -1952,6 +1983,16 @@ impl App {
                         ]);
                         self.notify(msg, Severity::Info, 10);
                     }
+                }
+            }
+            ("team", KeyCode::Char('p')) => {
+                match selected {
+                    Some(agent) if self.open_plan(&agent) => {}
+                    Some(agent) => {
+                        let msg = self.t("{v0} 还没有计划", &[("v0", &agent)]);
+                        self.notify(msg, Severity::Info, 3);
+                    }
+                    None => {}
                 }
             }
             ("team", KeyCode::Char('c')) => {

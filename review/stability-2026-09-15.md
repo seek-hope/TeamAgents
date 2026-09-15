@@ -453,3 +453,11 @@ Codex 有 `notify`、Claude Code 有 hooks，TeamAgents 之前没有任何外部
   `status:"failed"`，但原因（未知回合需要人工确认）只在运行状态里，给出 id 才能一键结清。
 - 回归：`tui::tests::unknown_outcome_runs_are_visible_and_acknowledgeable`（状态列标记、
   面板键 `c` 产出 AcknowledgeRun、无未知回合时的提示）、`cli::exec_tests` 增补 `unknown_run_ids`。
+
+## 第二十四批：计划清单弹层（p）
+
+状态条只显示"进度 + 当前进行中"的一项；要看整个清单，现在在团队页签选中成员按 `p` 弹出
+与"改动审查"同一个弹层（三态标记 `[x]/[~]/[ ]`，Esc 关闭、Ctrl+U/Ctrl+D 与 ↑/↓ 滚动）。
+没有计划的成员会提示"还没有计划"。团队页签的按键提示同步更新，并补了英文翻译
+（渲染测试 `ascii_frame_has_no_cjk_leaks` 就是靠这条翻译漏检抓出来的）。
+回归：`tui::tests::plan_overlay_shows_the_whole_list`。

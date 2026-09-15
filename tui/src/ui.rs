@@ -228,7 +228,7 @@ pub struct Geometry {
 /// on render). Its wrapped height is part of the table geometry.
 pub fn panel_hint(panel: &str) -> &'static str {
     match panel {
-        "team" => "高亮成员=筛选日志 · Enter 取消筛选",
+        "team" => "高亮成员=筛选日志 · Enter 取消 · p=计划 · v=改动 · c=结清结果不明",
         "tasks" => "c=取消选中任务（BLOCKED 直接取消；执行中的回合收到取消请求）",
         "approvals" => "待批准操作：a=本次批准  s=会话内批准  d=拒绝",
         "sessions" => "本目录会话：s=切换  n=新建  a=归档  d=删除（再按 d 确认，删当前会话后退出）",
