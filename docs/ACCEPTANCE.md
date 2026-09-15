@@ -81,7 +81,8 @@ TUI 为 Rust 原生设计（D-20：固定分区、滚动、胶囊状态）。其
 | 分叉与会话模型（D-26/D-29/D-30） | `fork_session` 复制 Leader 树、TeamSpec、会话 profiles/overrides，并在打开失败时保留源会话；团队任务/运行事实仍重新开始。真实失败注入仍需补充 |
 | 工具输出读回（D-28） | 工具完整结果先写入私有历史，模型上下文仅使用有界 head/tail；`read_history` 支持分页取回完整结果。 |
 | 配置校验与导出（§5.2、§14） | `cli.rs::validate_spec` 已合并 TeamSpec 所在目录的受信任项目配置；任务依赖/委派权限在动作提交时校验。仍没有专用 TeamSpec 导出 CLI，部分通用 payload 未覆盖完整 schema |
-| 结构化执行与评测 | `teamagents exec --json` 输出稳定 JSONL、退出码和验收命令结果；验收命令结果写入会话目录 `verification.json`。回合停在待批准时立即以退出码 3 结束（`cli.rs::exec_outcome` + `exec_tests::parked_approval_reports_approval_required_not_timeout`），不再等到超时报 124。真实模型闭环已按单成员默认团队实跑（见 `review/stability-2026-09-15.md`）；`review/eval/tasks.jsonl` 的固定任务集与多供应商矩阵仍需实际执行 |
+| 结构化执行与评测 | `teamagents exec --json` 输出稳定 JSONL（session/event/result）、退出码、验收命令结果与 `result.usage`/`duration_ms`；验收命令结果写入会话目录 `verification.json`。回合停在待批准时立即以退出码 3 结束（`cli.rs::exec_outcome` + `exec_tests::parked_approval_reports_approval_required_not_timeout`），不再等到超时报 124。固定任务集 `review/eval/tasks/<id>/` + `review/eval/run.sh`；DeepSeek 真实跑 3/3 completed、验收全通过、17–21s、原始 JSONL 见 `review/eval/runs/2026-09-15-deepseek/`。多供应商矩阵、多成员协作任务与被中断恢复仍未验收 |
+| 沙箱内构建工具链 | `$HOME` 不可见时成员仍能真的构建：`tools.rs::toolchain_mounts` 把 `RUSTUP_HOME` 与 `CARGO_HOME` 的 `bin`/`registry`/`git` 只读镜像到沙箱 `/tmp/.teamagents-toolchain/` 并注入环境变量（`credentials.toml`/`config.toml` 不挂载，令牌不进沙箱）；回归 `tools::tests::sandbox_builds_with_the_host_toolchain`（在沙箱里跑 `cargo test --offline`）。只有 Rust 已覆盖，nvm/pyenv 等 HOME 级工具链仍不可见 |
 | Shell 长输出与制品 | 有界预览 200KB 落 `artifacts/exec-*.log`，单个制品上限 64 MiB，超过部分丢弃并在输出中标注（`tools.rs::OutputSink` + `shell_artifact_stops_at_the_size_cap`）；磁盘配额治理仍只有这一层上限 |
 
 可复核上述现状（仓库根目录）：

@@ -1,3 +1,0 @@
-{"id":"rust-check","prompt":"检查 Rust 项目并修复一个明确的小问题，完成后说明修改文件和测试。","checks":["cargo test --offline --manifest-path core/Cargo.toml"]}
-{"id":"file-integrity","prompt":"读取工作区中的目标文件，进行一次安全的唯一匹配编辑，并报告结果。","checks":["test -d ."]}
-{"id":"recovery","prompt":"执行一个可中断的工作并报告中断后的状态，不能声称未执行的测试通过。","checks":["test -d ."]}

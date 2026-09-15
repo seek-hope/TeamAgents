@@ -806,6 +806,9 @@ pub fn bwrap_argv(workdir: &Path, network: bool, command: &str) -> Vec<String> {
     }
     let workdir = workdir.to_string_lossy().into_owned();
     argv.extend(["--proc".into(), "/proc".into(), "--dev".into(), "/dev".into(), "--tmpfs".into(), "/tmp".into()]);
+    // after --tmpfs /tmp: the sandbox is the only place writable enough to hold
+    // these mount points, and $HOME stays invisible.
+    argv.extend(toolchain_binds());
     argv.extend(["--bind".into(), workdir.clone(), workdir.clone()]);
     argv.extend(["--chdir".into(), workdir]);
     argv.extend([
@@ -820,6 +823,58 @@ pub fn bwrap_argv(workdir: &Path, network: bool, command: &str) -> Vec<String> {
     }
     argv.extend(["--".into(), "/bin/bash".into(), "-lc".into(), command.into()]);
     argv
+}
+
+/// Where the sandbox mirrors the build toolchains, under the private /tmp.
+const TOOLCHAIN_ROOT: &str = "/tmp/.teamagents-toolchain";
+
+/// Build toolchains live under $HOME, which the sandbox hides on purpose, so the
+/// caches are mirrored read-only instead: every rustup shim on PATH needs
+/// `RUSTUP_HOME` to pick a toolchain at all, and cargo needs its registry/git
+/// caches to build offline. Without this a member can edit a project but never
+/// build or test it, which defeats "verify your own work".
+/// ponytail: Rust only; add go/node caches when a member actually needs them.
+fn toolchain_mounts() -> Vec<(&'static str, PathBuf, PathBuf)> {
+    let mut mounts = vec![];
+    for (key, home, guest) in [("RUSTUP_HOME", ".rustup", "rustup"), ("CARGO_HOME", ".cargo", "cargo")] {
+        let host = std::env::var(key).map(PathBuf::from).ok().unwrap_or_else(|| crate::config::expand_home(&format!("~/{home}")));
+        if host.is_dir() {
+            mounts.push((key, host, PathBuf::from(TOOLCHAIN_ROOT).join(guest)));
+        }
+    }
+    mounts
+}
+
+/// `credentials.toml` and `config.toml` can carry registry tokens, so CARGO_HOME
+/// exposes only its cache subdirectories (plus `bin` for rustup shims).
+fn toolchain_binds() -> Vec<String> {
+    let mut argv = vec![];
+    for (key, host, guest) in toolchain_mounts() {
+        for sub in if key == "CARGO_HOME" { &["bin", "registry", "git"][..] } else { &[""][..] } {
+            let source = if sub.is_empty() { host.clone() } else { host.join(sub) };
+            if !source.exists() {
+                continue;
+            }
+            let target = if sub.is_empty() { guest.clone() } else { guest.join(sub) };
+            argv.extend(["--ro-bind".into(), source.to_string_lossy().into_owned(), target.to_string_lossy().into_owned()]);
+        }
+    }
+    argv
+}
+
+fn toolchain_env() -> Vec<(String, String)> {
+    toolchain_mounts().into_iter().map(|(key, _, guest)| (key.to_string(), guest.to_string_lossy().into_owned())).collect()
+}
+
+fn sandbox_path() -> String {
+    let mut path = String::from("/usr/local/bin:/usr/bin:/bin");
+    if let Some((_, host, guest)) = toolchain_mounts().into_iter().find(|(key, _, _)| *key == "CARGO_HOME") {
+        if host.join("bin").is_dir() {
+            path.push(':');
+            path.push_str(&guest.join("bin").to_string_lossy());
+        }
+    }
+    path
 }
 
 struct OutputSink {
@@ -936,19 +991,24 @@ fn shell_run_with_control(
     let workdir = std::fs::canonicalize(workdir).unwrap_or_else(|_| workdir.to_path_buf());
     let argv = bwrap_argv(&workdir, network, command);
     let sink = Arc::new(Mutex::new(OutputSink::new(artifacts)?));
-    let mut child = Command::new(&argv[0])
+    let mut sandbox = Command::new(&argv[0]);
+    // whitelist environment: no model keys, no credentials (plan §12.2)
+    sandbox
         .args(&argv[1..])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        // whitelist environment: no model keys, no credentials (plan §12.2)
         .env_clear()
-        .env("PATH", "/usr/local/bin:/usr/bin:/bin")
+        .env("PATH", sandbox_path())
         .env("HOME", &workdir)
         .env("LANG", std::env::var("LANG").unwrap_or_else(|_| "C.UTF-8".into()))
         .env("TERM", "dumb")
         .env("TMPDIR", "/tmp")
-        .env("PYTHONIOENCODING", "utf-8")
+        .env("PYTHONIOENCODING", "utf-8");
+    for (key, value) in toolchain_env() {
+        sandbox.env(key, value);
+    }
+    let mut child = sandbox
         .spawn()
         .map_err(|e| e.to_string())?;
     let stdout = child.stdout.take().ok_or("no stdout")?;
@@ -1633,6 +1693,20 @@ mod tests {
             let out = shell_run("echo isolated-ok && id -u", &dir, 30, false, None).unwrap();
             assert!(out.contains("isolated-ok"), "{out}");
         }
+    }
+
+    #[test]
+    fn sandbox_builds_with_the_host_toolchain() {
+        if !bwrap_available() || toolchain_mounts().is_empty() || which("cargo").is_none() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("ta-toolchain-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("Cargo.toml"), "[package]\nname = \"probe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n").unwrap();
+        std::fs::write(dir.join("src/lib.rs"), "#[test]\nfn adds() { assert_eq!(1 + 1, 2); }\n").unwrap();
+        let out = shell_run("cargo test --offline 2>&1 | tail -30; echo cargo-rc=${PIPESTATUS[0]}", &dir, 300, false, None).unwrap();
+        assert!(out.contains("cargo-rc=0") && out.contains("1 passed"), "cargo unusable inside the sandbox: {out}");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

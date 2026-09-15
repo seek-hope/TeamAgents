@@ -478,6 +478,7 @@ pub struct ExecOptions {
 }
 
 pub fn exec_json(args: &ExecOptions) -> i32 {
+    let started = Instant::now();
     let prompt = match args.prompt.as_deref() {
         Some("-") => { let mut s = String::new(); if std::io::stdin().read_to_string(&mut s).is_err() { eprintln!("读取 stdin 失败"); return 2; } s },
         Some(s) => s.to_string(),
@@ -532,7 +533,15 @@ pub fn exec_json(args: &ExecOptions) -> i32 {
     if !verification.is_empty() { let path = session_paths(&sid).base.join("verification.json"); let _ = std::fs::create_dir_all(session_paths(&sid).base); let _ = std::fs::write(path, serde_json::to_vec_pretty(&verification).unwrap_or_default()); }
     let checks_ok = verification.iter().all(|v| v.get("ok").and_then(Json::as_bool).unwrap_or(false));
     let (status, code) = exec_outcome(&state, timed_out, checks_ok);
-    let _ = json_line(&json!({"schema_version":1,"type":"result","session_id":sid,"status":status,"exit_code":code,"verification":verification}));
+    // Same accounting the TUI shows in /status: evals and CI can record real
+    // token totals instead of guessing them.
+    let usage = opened.usage_report();
+    let _ = json_line(&json!({
+        "schema_version":1,"type":"result","session_id":sid,"status":status,"exit_code":code,
+        "duration_ms": started.elapsed().as_millis() as u64,
+        "usage": usage.get("agents").cloned().unwrap_or_else(|| json!([])),
+        "verification":verification,
+    }));
     opened.close();
     code
 }

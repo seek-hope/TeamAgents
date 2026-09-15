@@ -146,6 +146,11 @@ Skills 的加载与分发（对应方案 §12.1 的“发现 + 按需读取”�
 - Shell 走 bubblewrap：只挂载系统只读目录 + 授权工作目录，隔离 PID/网络/临时目录；
   网络默认关闭，需要联网的操作要批准。**要求** bwrap：缺失时命令直接失败
   （`IsolationUnavailable`），不会退化成不隔离执行；命令环境是白名单（不含模型密钥）。
+- 构建工具链只读镜像：`$HOME` 在沙箱里不可见，因此 sandbox 会把 `RUSTUP_HOME`（默认
+  `~/.rustup`）与 `CARGO_HOME` 的 `bin`/`registry`/`git` 子目录只读挂到沙箱内
+  `/tmp/.teamagents-toolchain/`，并设置对应环境变量。成员因此可以真的 `cargo build/test`
+  （含离线 registry 缓存）；`credentials.toml`/`config.toml` 不挂载，所以注册表令牌不会
+  进入沙箱。只有 Rust 已按此处理，其它语言的 HOME 级工具链（nvm/pyenv/…）仍不可见。
 - 文件工具做符号链接与路径穿越防护，越界即拒绝。
 - 已绑定的 MCP 工具由 ChatRunner 直接调用，不再逐次批准。stdio 服务是白名单环境下启动的
   本机进程，当前没有 bubblewrap 的目录/网络隔离；其权限范围取决于该服务自身配置。

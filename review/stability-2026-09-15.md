@@ -25,7 +25,7 @@
 
 ## 保留边界
 
-私有 Chat 子代理、五家真实供应商、磁盘配额和独立 SSE 推送仍未纳入本轮；真实模型评测需配置凭据后单独执行。
+私有 Chat 子代理、五家真实供应商、磁盘配额和独立 SSE 推送仍未纳入本轮；真实模型评测见第三批（DeepSeek）。
 
 ## 发布前硬化（第二轮，2026-09-15）
 
@@ -61,7 +61,46 @@ XDG_STATE_HOME=/tmp/ta-live/state2 engine/target/debug/teamagents exec --json \
 
 ## 已知剩余缺口
 
-- 五家真实供应商矩阵、`review/eval/tasks.jsonl` 固定任务集的真实模型指标：需要凭据与时间，尚未执行。
+- 五家真实供应商矩阵、其它供应商的真实模型指标：需要凭据与时间，尚未执行（DeepSeek 已跑，见第三批）。
 - 磁盘配额：现在只有单个制品 64 MiB 上限，没有会话级总量治理。
 - 跨进程并发写同一文件：仍有进程内路径锁 + SHA-256 CAS，跨进程需 worktree 或外部锁。
 - Chat 成员私有子代理、独立 SSE 推送（GET/DELETE）未实现。
+
+## 第三批：沙箱工具链、exec 用量与真实评测（2026-09-15）
+
+1. **沙箱里根本没法构建项目**（`engine/src/tools.rs`）：`$HOME` 在沙箱中不可见，而 rustup
+   shim 需要 `RUSTUP_HOME` 才能选工具链、cargo 需要 registry/git 缓存才能离线构建，所以成员
+   改完代码既不能编译也不能跑测试——"自己验证自己的改动"在这条路径上是假的。现在把
+   `RUSTUP_HOME` 与 `CARGO_HOME` 的 `bin`/`registry`/`git` 只读镜像到沙箱
+   `/tmp/.teamagents-toolchain/`（`/tmp` 是沙箱内 tmpfs，能容纳挂载点，`/home` 仍然不可见），
+   并注入 `RUSTUP_HOME`/`CARGO_HOME` 与 `$CARGO_HOME/bin` 到 PATH。`credentials.toml` 与
+   `config.toml` 不挂载，注册表令牌不会进入沙箱。
+   回归：`tools::tests::sandbox_builds_with_the_host_toolchain`（把缓存目录换成空目录即失败，
+   证明这条断言有牙齿）。
+2. **`exec --json` 看不到用量**：result 行现在带 `duration_ms` 与 `usage`（各成员
+   prompt/completion/total 与未知调用计数），与 TUI `/status` 同一份账本，评测和 CI 不必再猜 token。
+3. **评测集从空壳变成可复跑**：`review/eval/tasks/<id>/{prompt.md,checks.txt,fixture/}` +
+   `review/eval/run.sh`，三个任务各有真实验收（`cargo test`、configparser 逐段断言、大输出取值）。
+   旧的 `tasks.jsonl` 里 `test -d .` 这类恒真检查已删除。
+
+### 本轮真实运行
+
+```bash
+cargo build --offline --manifest-path engine/Cargo.toml
+review/eval/run.sh --timeout 600          # deepseek-flash，默认单成员团队
+```
+
+| 任务 | status | exit | 秒 | tokens(prompt/completion) | 验收 |
+|---|---|---|---|---|---|
+| edit-integrity | completed | 0 | 16.9 | 29911/2459 | 全部通过 |
+| long-output | completed | 0 | 20.3 | 32964/2938 | 全部通过 |
+| rust-fix | completed | 0 | 20.7 | 59769/2500 | 全部通过 |
+
+原始 JSONL 与逐任务复核：`review/eval/runs/2026-09-15-deepseek/`。
+
+## 仍然没有做的
+
+- 供应商矩阵：本机只有 DeepSeek 与 OpenAI 两个密钥，本轮只跑了默认 DeepSeek；其它供应商需要凭据。
+- 多成员协作任务、被中断后的恢复、批准回路：评测集尚未覆盖。
+- 工具调用在 `exec --json` 里不可见（只有 run/event 级事件）；自动化要看清"改了哪些文件、
+  跑了哪些命令"需要把 ChatRunner 的工具活动接到流式通道上。
