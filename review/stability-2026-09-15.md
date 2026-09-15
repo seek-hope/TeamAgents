@@ -512,3 +512,13 @@ Codex 有 `notify`、Claude Code 有 hooks，TeamAgents 之前没有任何外部
   `/tmp/ta-hook-log2.txt` 收到 `team_action`、`tool_call`、`run_completed` 三个事件与 JSON 载荷。
 - 保留：把一份归档会话的 mtime 前移 40 天、配置 `[retention] archived_days = 30`，
   打开会话后该归档目录被清掉。
+
+## 第二十八批：Codex 后端上的成员级中断恢复（真实评测）
+
+把第二十六批的链路在 Codex 成员上复跑（`resume-codex-recovery`）：resume 时 codex-dev 与 leader
+两个回合都落 `OUTCOME_UNKNOWN` → `task_blocked` → Leader `cancel_task` + 重派收尾任务 →
+codex-dev `task_completed` → Leader 复验 + `cancel_run` 结清两个未知 run → `signal_done` → `goal_done`；
+`run.txt` 恰好一行 `started` + 一行 `done`（副作用无重复），58.7s，证据
+`review/eval/runs/2026-09-15-deepseek-codex-resume/`。
+
+至此**两个后端**（Chat / Codex）的"成员级中断 → 任务自救 → 目标完成"都有真实运行证据。

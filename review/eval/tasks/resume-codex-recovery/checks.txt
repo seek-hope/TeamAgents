@@ -1,0 +1,2 @@
+test "$(grep -c '^started$' run.txt)" = "1"
+test "$(grep -c '^done$' run.txt)" -ge "1"
