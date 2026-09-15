@@ -2,6 +2,8 @@
 
 `tasks/<id>/` 每个任务三件套：`prompt.md`（真实提示词）、`checks.txt`（每行一条验收命令，
 在隔离 Shell 里按顺序执行）、可选 `fixture/`（先拷进工作目录的初始文件）。
+可选覆盖项：`mode.txt`（`full-auto` 默认 / `approval` 不带 `--full-auto`）、`timeout.txt`
+（该任务的秒数）、`expect.txt`（期望退出码——考的是 CLI 契约而不是产出文件时用它）。
 
 ```bash
 cargo build --offline --manifest-path engine/Cargo.toml   # 或被评测的版本
@@ -24,6 +26,8 @@ review/eval/run.sh --out /tmp/evals/x --keep        # 指定输出目录
 | `edit-integrity` | 只改指定段落里的同名项，其它段落必须原样（验收脚本逐段断言） |
 | `long-output` | 命令输出超过 200KB 预览上限，必须从完整输出里取值（考制品/分页读取路径） |
 | `team-collab` | 两个独立子任务：要求 Leader 自己组队（add_agent + assign_task）并行完成后汇总，考组队与成员执行链路 |
+| `approval-gate` | 需要批准的操作在非交互模式下必须停在待批准（exit 3）、不执行、也不伪造成功 |
+| `interrupted-recovery` | 任务被超时中断：副作用停在中途、进程被杀、不得声称完成（exit 124） |
 
 ## 已知缺口
 

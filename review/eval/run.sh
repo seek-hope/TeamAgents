@@ -30,14 +30,23 @@ for dir in "$here"/tasks/*/; do
   [ -d "$dir/fixture" ] && cp -R "$dir/fixture/." "$work/"
   checks=()
   while IFS= read -r line; do [ -n "$line" ] && checks+=(--check "$line"); done < "$dir/checks.txt"
+  # per-task overrides: mode.txt (approval|full-auto), timeout.txt (seconds),
+  # expect.txt (expected exit code — the task is about the CLI contract, not a file)
+  mode=$(cat "$dir/mode.txt" 2>/dev/null || echo full-auto)
+  task_timeout=$(cat "$dir/timeout.txt" 2>/dev/null || echo "$timeout_s")
+  expect=$(cat "$dir/expect.txt" 2>/dev/null || echo "")
+  flags=(); [ "$mode" = "full-auto" ] && flags+=(--full-auto)
   start=$(date +%s)
-  XDG_STATE_HOME="$out/state" TERM=dumb "$bin" exec --json --cwd "$work" --full-auto \
-    --timeout "$timeout_s" ${checks[@]+"${checks[@]}"} - < "$dir/prompt.md" \
+  XDG_STATE_HOME="$out/state" TERM=dumb "$bin" exec --json --cwd "$work" ${flags[@]+"${flags[@]}"} \
+    --timeout "$task_timeout" ${checks[@]+"${checks[@]}"} - < "$dir/prompt.md" \
     > "$out/$id.jsonl" 2> "$out/$id.stderr"
   rc=$?
   seconds=$(( $(date +%s) - start ))
-  printf '%-16s rc=%-3s %4ss  %s\n' "$id" "$rc" "$seconds" "$out/$id.jsonl"
-  [ "$keep" = 1 ] || true
+  verdict=""
+  if [ -n "$expect" ]; then
+    if [ "$rc" = "$expect" ]; then verdict=" [rc=$expect ok]"; else verdict=" [期望 rc=$expect 实际 rc=$rc]"; fi
+  fi
+  printf '%-16s rc=%-3s %4ss %s%s\n' "$id" "$rc" "$seconds" "$out/$id.jsonl" "$verdict"
 done
 
 # 汇总表：只读上面的 JSONL，不重新跑任何东西
