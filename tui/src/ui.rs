@@ -4,7 +4,7 @@
 //! surfaces, scrollbars only where content overflows.
 
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
@@ -305,6 +305,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     render_sidebar(frame, app, &geo);
     render_chat(frame, app, geo.chat);
     render_footer(frame, app, geo.footer);
+    if app.review_open {
+        render_review_overlay(frame, app, area);
+    }
     if app.settings_open {
         render_settings_overlay(frame, app, area);
     }
@@ -719,6 +722,64 @@ fn render_panel(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 /// `/settings` overlay: a centred box over the chat, Esc closes it.
+/// `v`: the selected member's latest edit diff, colored like a patch.
+fn render_review_overlay(frame: &mut Frame, app: &App, area: Rect) {
+    let width = ((area.width as usize * 8 / 10).clamp(40, 120))
+        .min(area.width.saturating_sub(2).max(1) as usize) as u16;
+    let height = ((area.height as usize * 3 / 4).clamp(6, 40)).min(area.height.saturating_sub(2).max(1) as usize) as u16;
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    let box_area = Rect { x, y, width, height };
+    frame.render_widget(
+        ratatui::widgets::Clear,
+        Rect { x: box_area.x.saturating_sub(1), y: box_area.y, width: 1, height: box_area.height },
+    );
+    frame.render_widget(ratatui::widgets::Clear, box_area);
+    let block = ratatui::widgets::Block::default()
+        .borders(ratatui::widgets::Borders::ALL)
+        .border_type(ratatui::widgets::BorderType::Rounded)
+        .border_style(Style::default().fg(ACCENT))
+        .style(Style::default().bg(PANEL_BG))
+        .title(Line::from(Span::styled(
+            format!(" {} ", app.review_title()),
+            Style::default().fg(FG).add_modifier(Modifier::BOLD),
+        )))
+        .title_alignment(ratatui::layout::Alignment::Left);
+    let inner = block.inner(box_area);
+    let text_area = Rect { width: inner.width.saturating_sub(1), ..inner };
+    frame.render_widget(block, box_area);
+    if inner.height < 3 || inner.width < 4 {
+        return;
+    }
+    let footer = tr(app.lang, "Esc 关闭 · Ctrl+U/Ctrl+D 或 ↑↓ 滚动", &[]);
+    let body_height = inner.height.saturating_sub(1) as usize;
+    let first = app.review_scroll.min(app.review_lines.len().saturating_sub(1));
+    let lines: Vec<Line> = app
+        .review_lines
+        .iter()
+        .skip(first)
+        .take(body_height)
+        .map(|line| {
+            let style = if line.starts_with('+') {
+                Style::default().fg(Color::Green)
+            } else if line.starts_with('-') {
+                Style::default().fg(Color::Red)
+            } else if line.starts_with("edited ") {
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(FG)
+            };
+            Line::from(Span::styled(format!(" {line}"), style))
+        })
+        .collect();
+    frame.render_widget(ratatui::widgets::Paragraph::new(lines), text_area);
+    let hint = Rect { y: text_area.y + text_area.height.saturating_sub(1), height: 1, ..text_area };
+    frame.render_widget(
+        ratatui::widgets::Paragraph::new(Line::from(Span::styled(format!(" {footer}"), Style::default().fg(GREY)))),
+        hint,
+    );
+}
+
 fn render_settings_overlay(frame: &mut Frame, app: &App, area: Rect) {
     let info = app.settings_lines();
     // stay inside the frame: ratatui's Clear writes every cell of its rect, and

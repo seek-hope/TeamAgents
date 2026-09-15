@@ -378,3 +378,17 @@ Codex 有 `notify`、Claude Code 有 hooks，TeamAgents 之前没有任何外部
   真实核对：拿一份 completed 会话库把时间戳前移 3 天后 `--history-days 2`，dry-run 报
   "4 条投递、15 个事件"，实跑后 VACUUM 完成、库缩到 0.3 MB。
 - 有意保留：事件流同时是 TUI 日志与审计原料，所以默认不清理、天数由用户给。
+
+## 第十九批：TUI 改动审查弹层（用户批准的优先级 3）
+
+工具的 diff 之前只出现在工具结果文本里，界面上没有专门视图。现在：
+
+- 工具活动载荷增加有界的 `result`（≤2000 字符）：`chat.rs` 在 `tool_call` 事件里带上，
+  `worker.rs` 的 push 与 `exec --json` 的 `tool` 行一并透出（自动化侧也能看到改动内容）。
+- TUI：`App::record_review` 记录 `edit_file`/`edit_files`/`write_file` 的结果；团队页签（或日志页签）
+  选中成员按 `v` 打开弹层 `render_review_overlay`（`+` 绿 / `-` 红 / `edited …` 高亮标题行），
+  `Esc` 关闭、`Ctrl+U/Ctrl+D`、`↑/↓` 滚动；没有记录时提示"还没有可审查的改动"。
+- 回归：`tui::tests::review_overlay_shows_the_last_edit_diff`（无改动时打不开、记录 diff、
+  面板键路径 `v` 打开、Esc 关闭）。
+- 边界（`ponytail:` 注释已标）：每个成员只保留最近一次编辑批次，不是完整历史；要看历史仍有
+  日志页签与工具结果。

@@ -224,6 +224,13 @@ pub struct App {
     pub log_lines: Vec<String>,
     /// Last tool each member ran, for the team panel's activity column.
     tool_activity: std::collections::HashMap<String, ToolActivity>,
+    /// Per-member review material: the diff lines of its recent edits.
+    reviews: std::collections::HashMap<String, Vec<String>>,
+    /// `v` review overlay (Esc closes; Ctrl+U/D scroll)
+    pub review_open: bool,
+    pub review_agent: String,
+    pub review_lines: Vec<String>,
+    pub review_scroll: usize,
     /// chat lines scrolled up from the bottom (0 = pinned to the newest entry)
     pub chat_scroll: usize,
     /// log panel lines scrolled up from the bottom
@@ -279,6 +286,11 @@ impl App {
             log_member: None,
             log_lines: vec![],
             tool_activity: std::collections::HashMap::new(),
+            reviews: std::collections::HashMap::new(),
+            review_open: false,
+            review_agent: String::new(),
+            review_lines: vec![],
+            review_scroll: 0,
             chat_scroll: 0,
             log_scroll: 0,
             settings_open: false,
@@ -1049,7 +1061,50 @@ impl App {
 
     /// Tool activity from the engine: log lines then show what each member really
     /// ran (name + arguments), not just the core event stream.
+    /// Review material for `v`: the diff a member's edit reported back.
+    /// ponytail: newest edit batch per member, not a full history.
+    fn record_review(&mut self, agent_id: &str, tool: &str, result: &str) {
+        if !matches!(tool, "edit_file" | "edit_files" | "write_file") || result.trim().is_empty() {
+            return;
+        }
+        self.reviews.insert(agent_id.to_string(), result.lines().map(str::to_string).collect());
+    }
+
+    /// `v` on a member row: show what that member last changed.
+    pub fn open_review(&mut self, agent_id: &str) -> bool {
+        let Some(lines) = self.reviews.get(agent_id) else { return false };
+        self.review_agent = agent_id.to_string();
+        self.review_lines = lines.clone();
+        self.review_scroll = 0;
+        self.review_open = true;
+        true
+    }
+
+    pub fn review_title(&self) -> String {
+        self.t("改动审查：{v0}", &[("v0", &self.review_agent)])
+    }
+
+    fn review_key(&mut self, key: crossterm::event::KeyEvent) -> Vec<Effect> {
+        use crossterm::event::{KeyCode, KeyModifiers as Mod};
+        let ctrl = key.modifiers.contains(Mod::CONTROL);
+        let max = self.review_lines.len().saturating_sub(1);
+        match (key.code, ctrl) {
+            (KeyCode::Esc, _) | (KeyCode::Char('q'), false) => self.review_open = false,
+            (KeyCode::Char('u'), true) | (KeyCode::Up, _) => self.review_scroll = self.review_scroll.saturating_sub(5).max(0).min(max),
+            (KeyCode::Char('d'), true) | (KeyCode::Down, _) => self.review_scroll = (self.review_scroll + 5).min(max),
+            _ => {}
+        }
+        vec![]
+    }
+
     pub fn on_tool(&mut self, agent_id: &str, tool: &str, ok: bool, arguments: &str) {
+        self.on_tool_result(agent_id, tool, ok, arguments, "");
+    }
+
+    pub fn on_tool_result(&mut self, agent_id: &str, tool: &str, ok: bool, arguments: &str, result: &str) {
+        if ok {
+            self.record_review(agent_id, tool, result);
+        }
         if !agent_id.is_empty() {
             self.tool_activity.insert(
                 agent_id.to_string(),
@@ -1077,6 +1132,7 @@ impl App {
     pub fn replay_log(&mut self, events: &[Json]) {
         self.log_lines.clear();
         self.tool_activity.clear();
+        self.reviews.clear();
         self.log_cursor = 0;
         self.append_log(events);
     }
@@ -1178,6 +1234,9 @@ impl App {
         // overlays swallow keys while open; the picker is the innermost layer
         if self.lang_open {
             return self.settings_dropdown_key(key);
+        }
+        if self.review_open {
+            return self.review_key(key);
         }
         if self.settings_open {
             return self.settings_overlay_key(key);
@@ -1435,6 +1494,7 @@ impl App {
         self.log_cursor = 0;
         self.log_lines.clear();
         self.tool_activity.clear();
+        self.reviews.clear();
         self.state = None;
         self.pending_delete = None;
         self.rewind_list.clear();
@@ -1782,6 +1842,16 @@ impl App {
             ("team", KeyCode::Enter) => {
                 if selected.is_some() && self.log_member == selected {
                     self.log_member = None; // Enter on the highlighted member clears the filter
+                }
+            }
+            ("team", KeyCode::Char('v')) | ("log", KeyCode::Char('v')) => {
+                match selected {
+                    Some(agent) if self.open_review(&agent) => {}
+                    Some(agent) => {
+                        let translated = self.t("{v0} 还没有可审查的改动", &[("v0", &agent)]);
+                        self.notify(translated, Severity::Info, 3);
+                    }
+                    None => {}
                 }
             }
             ("tasks", KeyCode::Enter) => {

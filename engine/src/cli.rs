@@ -557,7 +557,7 @@ pub fn exec_json(args: &ExecOptions) -> i32 {
         let _ = json_line(&json!({
             "schema_version":1,"type":"tool","session_id":sink_session,"run_id":run_id,"agent_id":agent_id,
             "tool":activity["tool"],"call_id":activity["call_id"],"ok":activity["ok"],
-            "error":activity["error"],"arguments":activity["arguments"],
+            "error":activity["error"],"arguments":activity["arguments"],"result":activity["result"],
         }));
     }));
     opened.runtime.start();

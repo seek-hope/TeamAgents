@@ -20,6 +20,8 @@ pub struct Push {
     pub tool: String,
     pub ok: bool,
     pub arguments: String,
+    /// bounded tool result preview (edit diffs land here)
+    pub result: String,
 }
 
 pub struct Worker {
@@ -153,6 +155,7 @@ impl Worker {
                         tool: msg.get("tool").and_then(|v| v.as_str()).unwrap_or("").into(),
                         ok: msg.get("ok").and_then(|v| v.as_bool()).unwrap_or(true),
                         arguments: msg.get("arguments").and_then(|v| v.as_str()).unwrap_or("").into(),
+                        result: msg.get("result").and_then(|v| v.as_str()).unwrap_or("").into(),
                     });
                     continue;
                 }

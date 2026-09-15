@@ -99,7 +99,8 @@ impl Worker {
         let tool_session = opened.session_id.clone();
         opened.runtime.notify.set_tool_sink(Box::new(move |run_id, agent_id, activity| {
             out(&json!({"push": "tool", "session_id": tool_session, "run_id": run_id, "agent_id": agent_id,
-                        "tool": activity["tool"], "ok": activity["ok"], "arguments": activity["arguments"]}));
+                        "tool": activity["tool"], "ok": activity["ok"], "arguments": activity["arguments"],
+                        "result": activity["result"]}));
         }));
         opened.runtime.start();
         // Stage the replacement completely before touching the current one.

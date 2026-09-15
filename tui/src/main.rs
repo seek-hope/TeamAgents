@@ -347,7 +347,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, worker: &Arc<
         }
         while let Some(push) = worker.try_push() {
             if push.kind == "tool" && !requests.switching {
-                app.on_tool(&push.agent_id, &push.tool, push.ok, &push.arguments);
+                app.on_tool_result(&push.agent_id, &push.tool, push.ok, &push.arguments, &push.result);
             }
             if push.kind == "delta" && !requests.switching {
                 app.on_delta(&push.run_id, &push.agent_id, &push.text);
@@ -573,6 +573,41 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn review_overlay_shows_the_last_edit_diff() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = test_app();
+        app.state = Some(json!({"spec": {"agents": [
+            {"id": "alpha", "name": "alpha", "role": "worker", "runtime_kind": "deepagents", "model_profile": "m"}
+        ]}}));
+        assert!(!app.open_review("alpha"), "nothing to review yet");
+
+        app.on_tool_result(
+            "alpha",
+            "edit_file",
+            true,
+            "{\"path\":\"a.txt\"}",
+            "edited a.txt\n@@ line 1 @@\n-old\n+new",
+        );
+        assert!(app.open_review("alpha"), "the member's diff opens");
+        assert!(app.review_open);
+        assert!(app.review_title().contains("alpha"));
+        assert_eq!(app.review_lines[0], "edited a.txt");
+        assert_eq!(app.review_lines[2], "-old");
+
+        // Esc closes; a member with no recorded edit still reports nothing
+        assert!(app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).is_empty());
+        assert!(!app.review_open);
+        assert!(!app.open_review("ghost"));
+
+        // the panel key path: `v` on the selected team row opens the same view
+        app.panel = 0; // team
+        app.focus = app::Focus::Panel;
+        app.table_cursors.insert("team".into(), (Some("alpha".into()), 0));
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert!(app.review_open, "v on the member row opens the review");
     }
 
     #[test]

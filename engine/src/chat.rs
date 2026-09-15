@@ -1554,6 +1554,9 @@ impl ChatRunner {
                     "ok": receipt.ok,
                     "error": receipt.error,
                     "arguments": bounded_arguments(&args),
+                    // edit diffs and short results ride along so a UI can show
+                    // what changed without re-reading the file
+                    "result": bounded_result(&content),
                 });
                 self.notify.note_tool_activity(&run.run_id, &self.agent_id(), &activity);
                 self.notify.note_event("tool_call", &activity);
@@ -1846,6 +1849,16 @@ fn base64(bytes: Vec<u8>) -> String {
         out.push(if chunk.len() > 2 { TABLE[n as usize & 63] as char } else { '=' });
     }
     out
+}
+
+/// Tool result preview for activity consumers (TUI diff view, exec logs).
+const TOOL_ACTIVITY_RESULT: usize = 2_000;
+
+fn bounded_result(content: &str) -> String {
+    if content.chars().count() <= TOOL_ACTIVITY_RESULT {
+        return content.to_string();
+    }
+    format!("{}… [{} chars]", content.chars().take(TOOL_ACTIVITY_RESULT).collect::<String>(), content.chars().count())
 }
 
 /// Chat-completions history → Responses `instructions` + `input` items.
