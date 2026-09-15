@@ -420,3 +420,24 @@ Codex 有 `notify`、Claude Code 有 hooks，TeamAgents 之前没有任何外部
 - `team-codex-interrupt`：把 `sleep 60` 命令派给 Codex 成员，任务超时 45s → exit 124；
   `run.txt` 只有 started、两个回合都记为 CANCELLED、`ps` 无残留 `sleep`。
 - 证据：`review/eval/runs/2026-09-15-deepseek-codex-gates/`。仍未覆盖：中断后 `--resume` 重放。
+
+## 第二十二批：中断后 resume 的两阶段评测（连出两个真缺陷）
+
+评测 runner 新增 `resume.md` 支持（阶段 1 故意超时 → 阶段 2 `exec --resume` 继续），任务
+`resume-continue`：阶段 1 修 alpha + 追加一次 `alpha done` + `sleep 90` 被超时打断；阶段 2 修 beta
+并要求确认 `alpha done` 只有一行。**第一次跑发现两个缺陷**：
+
+1. **OUTCOME_UNKNOWN 回合无法结清**（`core/src/control.rs`）：`signal_done` 的完成检查把
+   "outcome-unknown operations" 当阻塞，但没有任何动作能清掉它 —— 一旦某回合在命令中途被中断，
+   该会话再也无法完成目标。现在 `cancel_run` 接受 OUTCOME_UNKNOWN：置 CANCELLED、事件带
+   `acknowledged_outcome_unknown: true`（人工确认），已是终态的回合仍拒绝；阻塞信息直接写出
+   "用 cancel_run 结清哪个 run"。
+2. **失败回执丢掉详情**（`engine/src/chat.rs::tool_result_content`）：阻塞项在回执的 `result` 里，
+   而工具结果只回传 `error`，模型只能猜 run id（实测连猜 5 个全错、白烧 20 万 token）。
+   现在失败且 `result` 非空时以 `detail` 一并回传。
+3. 评测 runner：`resume.md` + `expect-resume.txt`，汇总表只统计阶段 2。
+
+修复后同一任务：阶段 2 completed / exit 0，`progress.txt` 恰好一行 `alpha done`（**无重复副作用**），
+`goal_done`，证据 `review/eval/runs/2026-09-15-deepseek-resume/`。回归：
+`core/tests/engine.rs::acknowledging_an_unknown_run_unblocks_completion`、
+`chat::tests::refused_tool_receipts_keep_their_detail`。

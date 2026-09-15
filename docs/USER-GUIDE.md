@@ -339,6 +339,7 @@ TUI `/rewind` 列出当前分支的用户输入节点，`/rewind <序号>` 回�
 | Codex 成员卡在“Reconnecting” | codex 的 provider 凭据不可达：检查 `~/.codex/config.toml` 的默认 provider 与密钥，或给成员配置走环境变量密钥的 profile |
 | 回合因 `LIMIT_REACHED` 停止 | 达到目标回合数或模型请求步数上限（`limits.max_model_steps_per_turn` 真实约束模型请求数）；该回合记为 FAILED 并发 `limit_reached` 事件，调整 `limits` 后可继续 |
 | 成员回合活动超时 | 超过 `limits.turn_active_timeout_s`（默认 1200s）会中断成员回合（不再继续执行）；回合记为 FAILED，按需重派任务 |
+| 回合中断后"结果不明"（`OUTCOME_UNKNOWN`） | 回合在命令中途被中断，副作用无法确证，会一直挡住 `signal_done`。Leader 用 `cancel_run <run_id>` **明确结清**它（回执 `status=acknowledged`，事件里记 `acknowledged_outcome_unknown`）——这是人工确认"副作用我已接受、不再重试"；`signal_done` 的拒绝回执会直接把该 run id 与提示带出来 |
 | 任务长期 `BLOCKED` | 依赖失败或成员回合未提交完成申请等；Leader 可用 `cancel_task`，用户可在任务面板按 `c`。结清旧任务后按需创建新任务，不能用 `complete_task` 完成 BLOCKED 任务 |
 | 需要查看发生了什么 | TUI 日志面板 / `sessions/<id>/team.db` 的 events 表 / `run_progress` 事件 |
 | 隔离或协议自检 | `teamagents doctor`（依赖、配置、bubblewrap、codex、状态目录） |

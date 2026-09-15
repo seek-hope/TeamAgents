@@ -474,8 +474,14 @@ impl Control {
                     return Some("only the Leader or the user can cancel runs".into());
                 }
                 let rid = p.get("run_id").and_then(|v| v.as_str()).unwrap_or("");
-                if self.store.get_run(rid).ok().flatten().is_none() {
+                let Some(run) = self.store.get_run(rid).ok().flatten() else {
                     return Some(format!("unknown run {rid:?}"));
+                };
+                // An OUTCOME_UNKNOWN run is a turn that was interrupted mid-command:
+                // nothing is running any more, and a human decides whether its side
+                // effects are acceptable. Cancelling it is that decision.
+                if matches!(run.status, TurnStatus::Completed | TurnStatus::Failed | TurnStatus::Cancelled) {
+                    return Some(format!("run {rid:?} already ended as {}", enum_name(run.status)));
                 }
                 None
             }
@@ -795,6 +801,19 @@ impl Control {
                     .get_run(&run_id)
                     .map_err(|e| e.to_string())?
                     .ok_or_else(|| format!("unknown run {run_id:?}"))?;
+                if run.status == TurnStatus::OutcomeUnknown {
+                    // the acknowledgement itself is the point: no executor exists to
+                    // stop, and leaving it unknown would block signal_done forever
+                    self.store.set_run_status(&run.run_id, TurnStatus::Cancelled).map_err(|e| e.to_string())?;
+                    return Ok(Reduction {
+                        events: vec![EventDraft::new(
+                            EventKind::RunCancelled,
+                            json!({"run_id": run.run_id, "agent_id": run.agent_id, "status": "CANCELLED",
+                                   "acknowledged_outcome_unknown": true}),
+                        )],
+                        receipt: ok(json!({"run_id": run.run_id, "status": "acknowledged", "was": "OUTCOME_UNKNOWN"})),
+                    });
+                }
                 self.store.set_run_cancel_requested(&run.run_id).map_err(|e| e.to_string())?;
                 Ok(Reduction {
                     events: vec![EventDraft::new(
@@ -1439,7 +1458,10 @@ impl Control {
         }
         let unknown = self.store.runs_for_session(&self.session_id, &[TurnStatus::OutcomeUnknown]).map_err(|e| format!("read unknown runs: {e}"))?;
         if !unknown.is_empty() {
-            blockers.push(format!("outcome-unknown operations: {}", unknown.iter().map(|r| r.run_id.clone()).collect::<Vec<_>>().join(", ")));
+            blockers.push(format!(
+                "outcome-unknown operations: {} (acknowledge each with cancel_run once you accept its side effects)",
+                unknown.iter().map(|r| format!("{}:{}", r.agent_id, r.run_id)).collect::<Vec<_>>().join(", ")
+            ));
         }
         let un = self
             .store

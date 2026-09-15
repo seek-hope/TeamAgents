@@ -159,6 +159,42 @@ fn shared_publish_and_read_flow() {
     assert_eq!(r.result["entries"].as_array().unwrap().len(), 0);
 }
 
+/// A run interrupted mid-command stays OUTCOME_UNKNOWN until someone decides;
+/// cancelling it is that decision and must clear the completion blocker.
+#[test]
+fn acknowledging_an_unknown_run_unblocks_completion() {
+    let mut ctl = harness();
+    ctl.submit(&user("a1", "go")).unwrap();
+    let run_id = ctl.store.runs_for_session("s1", &[TurnStatus::Queued]).unwrap()[0].run_id.clone();
+    ctl.store.set_run_status(&run_id, TurnStatus::OutcomeUnknown).unwrap();
+
+    // the resumed turn keeps its run id, so the leader signals done against the
+    // very run whose outcome is unknown
+    let signal = |id: &str| action(id, "leader", ActionKind::SignalDone, json!({"summary": "done"}), Some(run_id.clone()));
+
+    // the unknown run blocks completion, and the receipt says how to clear it
+    let r = ctl.submit(&signal("sd1")).unwrap();
+    assert!(!r.ok);
+    let blockers = r.result["blockers"].as_array().cloned().unwrap_or_default();
+    let text = blockers.iter().filter_map(|b| b.as_str()).collect::<Vec<_>>().join(" | ");
+    assert!(text.contains("outcome-unknown") && text.contains(&run_id), "{text}");
+    assert!(text.contains("cancel_run"), "the blocker says how to clear it: {text}");
+
+    let r = ctl.submit(&action("ack1", "leader", ActionKind::CancelRun, json!({"run_id": run_id}), None)).unwrap();
+    assert!(r.ok, "{}", r.error.unwrap_or_default());
+    assert_eq!(r.result["status"], "acknowledged");
+    assert_eq!(ctl.store.get_run(&run_id).unwrap().unwrap().status, TurnStatus::Cancelled);
+    let r = ctl.submit(&signal("sd2")).unwrap();
+    let text = r.result["blockers"].as_array().cloned().unwrap_or_default().iter().filter_map(|b| b.as_str()).collect::<Vec<_>>().join(" | ");
+    assert!(!text.contains("outcome-unknown"), "acknowledgement cleared the blocker: {text}");
+
+    // an already-terminal run cannot be cancelled again
+    let r = ctl.submit(&action("ack2", "leader", ActionKind::CancelRun, json!({"run_id": run_id}), None)).unwrap();
+    assert!(!r.ok);
+    let error = r.error.clone().unwrap_or_default();
+    assert!(error.contains("already ended"), "{error}");
+}
+
 #[test]
 fn refused_messages_and_spaces_name_the_valid_options() {
     let mut ctl = harness();

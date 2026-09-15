@@ -45,6 +45,32 @@ for dir in "$here"/tasks/*/; do
   fi
   [ -f "$dir/team.yaml" ] && flags+=(--team "$dir/team.yaml")
   start=$(date +%s)
+  if [ -f "$dir/resume.md" ]; then
+    # two phases: interrupt on purpose, then continue the same session
+    env XDG_STATE_HOME="$out/state" "${config_env[@]}" TERM=dumb "$bin" exec --json --cwd "$work" ${flags[@]+"${flags[@]}"} \
+      --timeout "$task_timeout" - < "$dir/prompt.md" \
+      > "$out/$id.phase1.jsonl" 2> "$out/$id.phase1.stderr"
+    rc=$?
+    session=$(python3 - "$out/$id.phase1.jsonl" <<'PY2'
+import json, sys
+for line in open(sys.argv[1]):
+    record = json.loads(line)
+    if record.get("type") == "session":
+        print(record["session_id"]) ; break
+PY2
+)
+    verdict=""
+    if [ -n "$expect" ] && [ "$rc" != "$expect" ]; then verdict=" [阶段1 期望 rc=$expect 实际 rc=$rc]"; fi
+    resume_expect=$(cat "$dir/expect-resume.txt" 2>/dev/null || echo 0)
+    env XDG_STATE_HOME="$out/state" "${config_env[@]}" TERM=dumb "$bin" exec --json --cwd "$work" --resume "$session" ${flags[@]+"${flags[@]}"} \
+      --timeout "$timeout_s" ${checks[@]+"${checks[@]}"} - < "$dir/resume.md" \
+      > "$out/$id.jsonl" 2> "$out/$id.stderr"
+    rc2=$?
+    [ "$rc2" = "$resume_expect" ] || verdict="$verdict [阶段2 期望 rc=$resume_expect 实际 rc=$rc2]"
+    seconds=$(( $(date +%s) - start ))
+    printf '%-16s 阶段1 rc=%-3s 阶段2 rc=%-3s %4ss %s%s\n' "$id" "$rc" "$rc2" "$seconds" "$out/$id.jsonl" "$verdict"
+    continue
+  fi
   env XDG_STATE_HOME="$out/state" "${config_env[@]}" TERM=dumb "$bin" exec --json --cwd "$work" ${flags[@]+"${flags[@]}"} \
     --timeout "$task_timeout" ${checks[@]+"${checks[@]}"} - < "$dir/prompt.md" \
     > "$out/$id.jsonl" 2> "$out/$id.stderr"
@@ -65,7 +91,7 @@ out = pathlib.Path(sys.argv[1])
 print()
 print("| 任务 | status | exit | 秒 | tokens(prompt/completion) | 验收 |")
 print("|---|---|---|---|---|---|")
-for path in sorted(out.glob("*.jsonl")):
+for path in sorted(p for p in out.glob("*.jsonl") if ".phase1." not in p.name):
     lines = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
     result = lines[-1] if lines else {}
     usage = result.get("usage") or [{}]

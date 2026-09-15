@@ -138,7 +138,7 @@ pub const TEAM_TOOL_DOCS: &[(&str, &str)] = &[
     ("propose_team_change", "Ask the Leader to apply a team change; only the Leader can apply it. Same operations as apply_topology_patch; include a rationale."),
     ("apply_topology_patch", "Leader only: change the team. Pass base_revision (the number in <team revision=N>) plus operations to apply now, or patch_id to apply/reject a change that propose_team_change created earlier (never invent a patch_id). Operations: {\"op\":\"add_agent\",\"agent\":{\"id\",\"name\",\"role\":\"worker\",\"runtime_kind\":\"deepagents\",\"instructions\",\"tool_bindings\":[\"files\",\"shell\"],\"workspace_policy\":\"shared\"},\"channels\":[{\"source\":\"leader\",\"targets\":[\"<member>\"],\"mode\":\"task\"}]}; {\"op\":\"remove_agent\",\"agent_id\"}; {\"op\":\"update_agent\",\"agent_id\",\"changes\":{...}}. tool_bindings is omitted only for a messaging-only member: omit it and the new member inherits your bindings (pass [] for a member that should only message and wait), and every add_agent also gets message channels both ways with you. add_agent may omit model_profile: a per-member profile is then auto-created from the Leader's current model."),
     ("cancel_task", "Leader only: cancel an unfinished or blocked task; running work stops first."),
-    ("cancel_run", "Leader only: request a turn to stop; side effects are not rolled back."),
+    ("cancel_run", "Leader only: request a turn to stop; side effects are not rolled back. Calling it on a run whose outcome is unknown (a turn interrupted mid-command) acknowledges that outcome and unblocks signal_done."),
     ("signal_done", "Leader only: declare the current user goal complete; the runtime verifies no work, approvals or unknown outcomes are outstanding."),
 ];
 
@@ -1617,7 +1617,7 @@ impl ChatRunner {
                 let approval = receipt.error.as_deref() == Some("approval_required");
                 let waiting = name == "wait_for_tasks" && receipt.result["waiting"].as_bool().unwrap_or(false);
                 let step_limit = receipt.error.as_deref().map(|e| e.contains("step limit")).unwrap_or(false);
-                let content = if receipt.ok { receipt.result.to_string() } else { json!({"error":receipt.error}).to_string() };
+                let content = tool_result_content(receipt.ok, &receipt.result, receipt.error.as_deref());
                 // Automation surfaces see what the member actually did; the
                 // arguments are bounded so a big write_file payload cannot flood them.
                 let activity = json!({
@@ -1925,6 +1925,22 @@ fn base64(bytes: Vec<u8>) -> String {
     out
 }
 
+/// What the model sees for one tool result. A failed receipt often carries the
+/// detail needed to fix it (goal-completion blockers name the runs to
+/// acknowledge, patch validation says which revision to resend): dropping it
+/// leaves the model guessing, which is what happened before this existed.
+fn tool_result_content(ok: bool, result: &Json, error: Option<&str>) -> String {
+    if ok {
+        return result.to_string();
+    }
+    let empty = result.is_null() || result.as_object().is_some_and(|object| object.is_empty());
+    if empty {
+        json!({"error": error}).to_string()
+    } else {
+        json!({"error": error, "detail": result}).to_string()
+    }
+}
+
 /// Tool result preview for activity consumers (TUI diff view, exec logs).
 const TOOL_ACTIVITY_RESULT: usize = 2_000;
 
@@ -2064,6 +2080,20 @@ fn from_anthropic_message(data: &Json) -> Json {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn refused_tool_receipts_keep_their_detail() {
+        // blockers / validation hints live in `result`, not `error`
+        let failed = tool_result_content(false, &json!({"blockers": ["outcome-unknown operations: leader:run_1"]}), Some("goal not yet complete"));
+        assert!(failed.contains("run_1"), "{failed}");
+        assert!(failed.contains("goal not yet complete"), "{failed}");
+        // nothing extra to say: keep the error shape the tests and prompts rely on
+        let plain = tool_result_content(false, &json!({}), Some("boom"));
+        assert_eq!(plain, json!({"error": "boom"}).to_string());
+        assert_eq!(tool_result_content(false, &Json::Null, None), json!({"error": Json::Null}).to_string());
+        // a successful result is passed through untouched
+        assert_eq!(tool_result_content(true, &json!({"output": "ok"}), None), json!({"output": "ok"}).to_string());
+    }
 
     #[test]
     fn plan_round_trips_into_the_prompt_block() {
