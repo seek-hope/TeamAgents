@@ -517,8 +517,10 @@ fn once_approval_is_consumed_and_the_turn_completes() {
 
     runtime.user_message("run the shell", false).unwrap();
     assert!(
-        wait_for(|| !pending_approvals(&core).is_empty(), 10_000),
-        "the shell call parks for approval"
+        // CI 的慢机器上给足预算：这里只影响失败时报错的延迟，不影响判定
+        wait_for(|| !pending_approvals(&core).is_empty(), 20_000),
+        "the shell call parks for approval (events {:?})",
+        event_kinds(&core)
     );
     let first = pending_approvals(&core)[0]["approval_id"].as_str().unwrap().to_string();
 
@@ -531,9 +533,12 @@ fn once_approval_is_consumed_and_the_turn_completes() {
                     && !rows.iter().any(|r| r.status.is_active())
                     && pending_approvals(&core).is_empty()
             },
-            15_000
+            30_000
         ),
-        "the turn completes after the once approval"
+        "the turn completes after the once approval (runs {:?}, pending {}, events {:?})",
+        runs(&core).iter().map(|r| serde_json::to_value(&r.status).unwrap_or(Json::Null)).collect::<Vec<_>>(),
+        pending_approvals(&core).len(),
+        event_kinds(&core)
     );
 
     let called = tool_calls.lock().unwrap().clone();
