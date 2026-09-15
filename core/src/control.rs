@@ -356,7 +356,15 @@ impl Control {
                         Some("only the current assignee can complete a task".into())
                     }
                     Some(task) if !matches!(task.status, TaskStatus::Pending | TaskStatus::Running) => {
-                        Some(format!("task is {}, cannot complete", enum_name(task.status)))
+                        // self-healing: a BLOCKED task (usually an interrupted turn) has
+                        // exactly one way out, and the assignee is not the one who takes it
+                        Some(match task.status {
+                            TaskStatus::Blocked => format!(
+                                "task is BLOCKED (its turn was interrupted): ask the Leader to cancel_task {:?} and assign the work again",
+                                task.task_id
+                            ),
+                            other => format!("task is {}, cannot complete", enum_name(other)),
+                        })
                     }
                     _ => None,
                 }

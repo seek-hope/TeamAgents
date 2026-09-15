@@ -57,7 +57,7 @@ python3 tui/scripts/pty_click_check.py
 | T19 | 工具生态：文件/Shell/搜索/抓取/MCP/Skills 真实任务 | 🔶 | files/shell/web_search/web_fetch；MCP stdio（`engine/tests/mcp_tools.rs` 启动本地测试服务器、`mcp_stdio.rs` 检查环境白名单/stderr）与 HTTP（`mcp_http.rs` 本地模拟服务）；Chat Skills/AGENTS.md 注入（`session.rs` 单测）；web fail-closed（`tools_sandbox.rs::web_tools_are_fail_closed_and_ordered_by_member_binding`）、长输出 artifacts（`long_shell_output_is_stored_as_a_readable_artifact`）；不等于所有工具已完成真实远端任务 |
 | T20 | TUI：流式期间输入/导航/批准可用；窄屏、多行中文 | 🔶 | TUI 83 项单测 + TestBackend 帧；后台请求使用有界队列，停滞 worker 回归验证输入/退出仍响应。真实模型 + 真界面仍需 PTY/服务验收 |
 | T21 | 崩溃去重：动作回执丢失仍只产生一次变更 | ✅ | `recovery.rs::t8_...` 断言重放步骤不重复产生副作用（shared 条目仍为 1 条） |
-| T22 | 资源与失败：限流/超时/成员失败/无人就绪/超限 | ✅ | `recovery.rs::t22_goal_turn_budget_is_enforced`（LIMIT_REACHED）+ 取消/暂停场景 + 模型步数上限 `chat_e2e.rs::model_step_limit_reports_limit_reached`（超限 → `limit_reached` + FAILED）+ 活动超时中断 `timeout_interrupts_the_member_before_further_side_effects`、崩溃不误报超时 `a_crashed_member_is_not_reported_as_a_timeout` |
+| T22 | 资源与失败：限流/超时/成员失败/无人就绪/超限 | ✅ | `recovery.rs::t22_goal_turn_budget_is_enforced`（LIMIT_REACHED）+ 取消/暂停场景 + 模型步数上限 `chat_e2e.rs::model_step_limit_reports_limit_reached`（超限 → `limit_reached` + FAILED）+ 活动超时中断 `timeout_interrupts_the_member_before_further_side_effects`、崩溃不误报超时 `a_crashed_member_is_not_reported_as_a_timeout` |BLOCKED 任务（成员回合被中断所致）由 Leader `cancel_task` 结清后重派，承接者的 `complete_task` 会被拒绝并提示该路径（回归 `core/tests/engine.rs::blocked_tasks_are_recoverable_by_the_leader`）；
 | T23 | 权限执行：穿越/符号链接/Shell 越界/MCP 未授权 | 🔶 | `tools.rs` bwrap/路径/版本冲突回归，MCP workspace 模式目录与网络默认隔离，显式 host 才可离开沙箱；远端 HTTP 仍由服务授权，不能宣称覆盖服务端权限 |
 | T24 | 会话复用；同名新成员不继承旧身份 | 🔶 | 复用的 `context_epoch` 机制在核心；fork 回归覆盖历史键重映射；仍缺专属同名成员复用场景 |
 

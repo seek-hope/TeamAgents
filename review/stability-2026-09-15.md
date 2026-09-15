@@ -461,3 +461,15 @@ Codex 有 `notify`、Claude Code 有 hooks，TeamAgents 之前没有任何外部
 没有计划的成员会提示"还没有计划"。团队页签的按键提示同步更新，并补了英文翻译
 （渲染测试 `ascii_frame_has_no_cjk_leaks` 就是靠这条翻译漏检抓出来的）。
 回归：`tui::tests::plan_overlay_shows_the_whole_list`。
+
+## 第二十五批：BLOCKED 任务的自救路径写进回执与文档
+
+起因：仓库备忘里曾写"BLOCKED 任务任何 Agent 都无法结清、唯一路径是用户侧 CANCEL_TASK"。
+用 `core/tests/engine.rs::blocked_tasks_are_recoverable_by_the_leader` 把事实钉下来：承接者确实
+不能再 `complete_task`，但 **Leader 可以 `cancel_task` 结清**，然后重新派一次（新任务 id）。
+
+- `core/src/control.rs`：承接者对 BLOCKED 任务的 `complete_task` 拒绝信息现在直接写明
+  "ask the Leader to cancel_task <id> and assign the work again"（自愈式报错，和第二十二批同一套路）。
+- `engine/src/chat.rs`：`cancel_task` 的工具说明补上"BLOCKED 任务只能这样清掉，清掉后重新派新任务"。
+- 文档：USER-GUIDE 故障处理新增一行（Leader 结清 + 重派，用户也可面板按 `c`）；ACCEPTANCE 对应
+  补一句。仓库 AGENTS.md 里的备忘本身已是正确版本（Leader 可用 cancel_task），无需改。

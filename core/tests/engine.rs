@@ -161,6 +161,46 @@ fn shared_publish_and_read_flow() {
 
 /// A run interrupted mid-command stays OUTCOME_UNKNOWN until someone decides;
 /// cancelling it is that decision and must clear the completion blocker.
+/// A BLOCKED task (usually an interrupted turn) must be closable by the Leader,
+/// otherwise nobody can get the goal back on track without the user.
+#[test]
+fn blocked_tasks_are_recoverable_by_the_leader() {
+    let mut ctl = harness();
+    ctl.submit(&user("a1", "go")).unwrap();
+    // leader assigns a task to b, then b's turn is interrupted: core blocks it
+    let leader_run = ctl.store.runs_for_session("s1", &[TurnStatus::Queued, TurnStatus::Running]).unwrap()
+        .iter().find(|r| r.agent_id == "leader").map(|r| r.run_id.clone());
+    let r = ctl.submit(&action("t1", "leader", ActionKind::AssignTask, json!({"assignee": "b", "description": "fix it"}), leader_run.clone())).unwrap();
+    assert!(r.ok, "{}", r.error.unwrap_or_default());
+    let task_id = r.result["task_id"].as_str().unwrap().to_string();
+    ctl.store.compare_and_set_task(&task_id, "PENDING", TaskStatus::Blocked, None).unwrap();
+
+    // the assignee cannot finish it any more
+    let assignee_run = ctl
+        .store
+        .runs_for_session("s1", &[TurnStatus::Queued, TurnStatus::Running])
+        .unwrap()
+        .iter()
+        .find(|r| r.agent_id == "b")
+        .map(|r| r.run_id.clone());
+    let error = ctl
+        .submit(&action("c1", "b", ActionKind::CompleteTask, json!({"task_id": task_id}), assignee_run))
+        .unwrap()
+        .error
+        .unwrap_or_default();
+    assert!(error.contains("BLOCKED") || error.contains("cannot complete"), "{error}");
+
+    // the Leader closes it and re-issues the work as a new task
+    let closed = ctl.submit(&action("x1", "leader", ActionKind::CancelTask, json!({"task_id": task_id}), leader_run.clone())).unwrap();
+    assert!(closed.ok, "{}", closed.error.unwrap_or_default());
+    assert_eq!(ctl.store.get_task(&task_id).unwrap().unwrap().status, TaskStatus::Cancelled);
+    let reassigned = ctl
+        .submit(&action("t2", "leader", ActionKind::AssignTask, json!({"assignee": "b", "description": "fix it (retry)"}), leader_run.clone()))
+        .unwrap();
+    assert!(reassigned.ok, "{}", reassigned.error.unwrap_or_default());
+    assert_ne!(reassigned.result["task_id"], json!(task_id), "a retry is a new task, not a reopened one");
+}
+
 #[test]
 fn acknowledging_an_unknown_run_unblocks_completion() {
     let mut ctl = harness();
