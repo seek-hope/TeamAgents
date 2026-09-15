@@ -180,10 +180,10 @@ fn profile(base_url: &str, protocol: &str, options: Json, max_retries: i64) -> M
 }
 
 fn chat_runner(core: &Arc<CoreClient>, agent: &Json, profile: ModelProfile, workdir: &str) -> Arc<ChatRunner> {
-    chat_runner_with(core, agent, profile, workdir, Notify::new(core.clone()))
+    chat_runner_with(agent, profile, workdir, Notify::new(core.clone()))
 }
 
-fn chat_runner_with(core: &Arc<CoreClient>, agent: &Json, profile: ModelProfile, workdir: &str, notify: Arc<Notify>) -> Arc<ChatRunner> {
+fn chat_runner_with(agent: &Json, profile: ModelProfile, workdir: &str, notify: Arc<Notify>) -> Arc<ChatRunner> {
     let bindings: Vec<String> = agent
         .get("tool_bindings")
         .and_then(|v| v.as_array())
@@ -472,7 +472,7 @@ fn tool_activity_reaches_the_automation_sink() {
     let core = core_with_spec("s-tool-sink", spec);
     let agent = agent_json("leader", "leader", &["files"]);
     let notify = Notify::new(core.clone());
-    let runner = chat_runner_with(&core, &agent, profile(&server.base_url(), "openai", json!({}), 0), "/tmp", notify.clone());
+    let runner = chat_runner_with(&agent, profile(&server.base_url(), "openai", json!({}), 0), "/tmp", notify.clone());
     let (executor, _tool_calls) = recording_executor();
     let runtime = start_runtime_with(&core, runner, "leader", approval_policy_for_shell(), RuntimeLimits::default(), executor, notify.clone());
 
@@ -1279,6 +1279,10 @@ fn review_crash_after_committed_chat_action_must_not_replay_it() {
 #[test]
 fn review_close_must_stop_running_shell_before_unlocking() {
     let _env = env_guard("review-shell-close");
+    if !teamagents_engine::tools::bwrap_available() {
+        eprintln!("skipped: bwrap is unavailable, cannot exercise real shell isolation");
+        return;
+    }
     let cwd = isolated_project("shell-close");
     let api = FakeOpenAi::start(|_, _| (200, tool_call_response("shell-close", "shell", json!({
         "command":"touch started; sleep 2; printf late > after-close.txt", "timeout":10
@@ -1297,6 +1301,10 @@ fn review_close_must_stop_running_shell_before_unlocking() {
 #[test]
 fn review_turn_timeout_must_stop_running_shell() {
     let _env = env_guard("review-shell-timeout");
+    if !teamagents_engine::tools::bwrap_available() {
+        eprintln!("skipped: bwrap is unavailable, cannot exercise real shell isolation");
+        return;
+    }
     let cwd = isolated_project("shell-timeout");
     let control = teamagents_engine::tools::shell_run("printf works", &cwd, 5, false, None).unwrap();
     assert_eq!(control, "works", "real sandbox must be working for the probe");
@@ -1323,6 +1331,10 @@ fn review_turn_timeout_must_stop_running_shell() {
 #[test]
 fn review_unknown_external_effect_is_not_replayed_after_crash() {
     let _env = env_guard("review-unknown-external");
+    if !teamagents_engine::tools::bwrap_available() {
+        eprintln!("skipped: bwrap is unavailable, cannot exercise real shell isolation");
+        return;
+    }
     let base = isolated_project("unknown-external");
     let api = FakeOpenAi::start(|_, _| (200, tool_call_response("external-1", "shell", json!({
         "command":"printf x >> count.txt; sleep 30; touch late.txt", "timeout":40
@@ -1487,6 +1499,10 @@ fn review_completed_turns_survive_tree_migration_and_restart() {
 #[test]
 fn review_model_override_preserves_cancellation_and_applies_next_turn() {
     let _env = env_guard("review-model-cancel");
+    if !teamagents_engine::tools::bwrap_available() {
+        eprintln!("skipped: bwrap is unavailable, cannot exercise real shell isolation");
+        return;
+    }
     let cwd = isolated_project("model-cancel");
     let api = FakeOpenAi::start(|_, index| (200, if index == 0 {
         tool_call_response("shell-1", "shell", json!({"command":"touch started; sleep 2; echo BAD > late", "timeout":10}))

@@ -10,6 +10,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # 成员 shell 隔离依赖 bubblewrap：装了这些测试才真跑隔离路径，
+      # 装不上时测试会自己跳过（不会静默降级执行）
+      - name: Install bubblewrap
+        run: |
+          sudo apt-get update && sudo apt-get install -y bubblewrap
+          if bwrap --unshare-all --ro-bind / / true 2>/dev/null; then
+            echo "bwrap usable: isolation tests will run for real"
+          else
+            echo "::warning::bwrap unusable on this runner: isolation tests will skip"
+          fi
       - name: Test core
         run: cargo test --manifest-path core/Cargo.toml
       - name: Test engine
