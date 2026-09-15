@@ -167,6 +167,7 @@ pub const BOUND_TOOL_DOCS: &[(&str, &str)] = &[
     ("read_file", "Read UTF-8 workspace text in bounded pages. offset is a 1-based line; byte_offset is an absolute byte continuation. Follow next_byte_offset until eof. include_sha256 returns a revision for safe edits."),
     ("write_file", "Write a text file in your workspace, creating parent directories."),
     ("edit_file", "Replace exactly one occurrence of old_string. Ambiguous matches fail unchanged. Pass expected_sha256 from read_file to reject concurrent changes."),
+    ("edit_files", "Apply several unique-match edits (different files) as one batch: [{\"path\",\"old_string\",\"new_string\",\"expected_sha256\"?}]. Nothing is written unless every edit matches exactly one place, so a refactor never lands half-applied. Returns the diffs."),
     ("delete", "Delete a file (a directory when recursive=true) from your workspace."),
     ("glob", "Find workspace files matching a glob pattern, e.g. '**/*.py' (max 500 hits)."),
     ("grep", "Search workspace files for a pattern; returns matching lines (max 100)."),
@@ -184,6 +185,7 @@ fn bound_tool_schemas() -> Json {
       {"name": "read_file", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "offset": {"type":"integer","minimum":1}, "limit":{"type":"integer","minimum":1}, "byte_offset":{"type":"integer","minimum":0}, "include_sha256":{"type":"boolean"}}, "required": ["path"]}},
       {"name": "write_file", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}, "expected_sha256":{"type":"string"}}, "required": ["path", "content"]}},
       {"name": "edit_file", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "old_string": {"type": "string"}, "new_string": {"type": "string"}, "expected_sha256":{"type":"string"}}, "required": ["path", "old_string", "new_string"]}},
+      {"name": "edit_files", "parameters": {"type": "object", "properties": {"edits": {"type": "array", "items": {"type": "object", "properties": {"path": {"type": "string"}, "old_string": {"type": "string"}, "new_string": {"type": "string"}, "expected_sha256": {"type": "string"}}, "required": ["path", "old_string", "new_string"]}}}, "required": ["edits"]}},
       {"name": "delete", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "recursive": {"type": "boolean"}}, "required": ["path"]}},
       {"name": "glob", "parameters": {"type": "object", "properties": {"pattern": {"type": "string"}}, "required": ["pattern"]}},
       {"name": "grep", "parameters": {"type": "object", "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}}, "required": ["pattern"]}},
@@ -203,7 +205,7 @@ fn bound_tool_schemas() -> Json {
 fn bound_tool_names(bindings: &[String], web: (bool, bool)) -> Vec<&'static str> {
     let mut names: Vec<&'static str> = vec![];
     if bindings.iter().any(|b| b == "files") {
-        names.extend(["ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "view_image"]);
+        names.extend(["ls", "read_file", "write_file", "edit_file", "edit_files", "delete", "glob", "grep", "view_image"]);
     }
     if bindings.iter().any(|b| b == "shell") {
         names.push("shell");

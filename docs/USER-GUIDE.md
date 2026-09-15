@@ -90,7 +90,8 @@ tool_timeout_s = 120           # tools/call 超时秒数（可省，默认 120�
 旧式 `mcp_transport = "sse"` 已从 MCP 规范移除，绑定会直接报错并提示改用 `"http"`。
 
 内置能力名 `files` / `shell` / `web` / `skills` 不需要同名配置条目，`files` 绑定同时包含
-`view_image`（看图：png/jpeg/gif/webp，单张 ≤5 MiB）；模型是否真能"看见"取决于模型本身，
+`view_image` 与 `edit_files`（一次提交多个文件的唯一匹配编辑：**全部校验通过才落盘**，
+所以重构不会出现改一半；同一文件一次只允许一条编辑，返回各自 diff）（看图：png/jpeg/gif/webp，单张 ≤5 MiB）；模型是否真能"看见"取决于模型本身，
 接口侧按协议自动转换：chat completions 把图片作为 user 消息的 `image_url`、Anthropic 放进
 `tool_result` 的 image 块、Responses 放进 `function_call_output` 的 `input_image`。
 但 `web` 仍需配置实际的

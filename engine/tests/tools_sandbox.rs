@@ -28,6 +28,46 @@ fn has_bwrap() -> bool {
     false
 }
 
+/// Multi-file edits land together or not at all.
+#[test]
+fn batch_edits_are_all_or_nothing() {
+    let base = scratch("edit-files");
+    let workspace = base.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::write(workspace.join("a.txt"), "alpha = 1\n").unwrap();
+    std::fs::write(workspace.join("b.txt"), "beta = 1\n").unwrap();
+    let executor = tools::workspace_executor(workspace.clone(), None);
+    let edit = |path: &str, from: &str, to: &str| json!({"path": path, "old_string": from, "new_string": to});
+
+    // one edit cannot match -> neither file changes
+    let error = executor("edit_files", &json!({"edits": [
+        edit("a.txt", "alpha = 1", "alpha = 2"),
+        edit("b.txt", "beta = 99", "beta = 2"),
+    ]})).unwrap_err();
+    assert!(error.contains("b.txt"), "{error}");
+    assert_eq!(std::fs::read_to_string(workspace.join("a.txt")).unwrap(), "alpha = 1\n", "nothing was half-applied");
+    assert_eq!(std::fs::read_to_string(workspace.join("b.txt")).unwrap(), "beta = 1\n");
+
+    // the same batch with a matching second edit applies both and reports diffs
+    let report = executor("edit_files", &json!({"edits": [
+        edit("a.txt", "alpha = 1", "alpha = 2"),
+        edit("b.txt", "beta = 1", "beta = 2"),
+    ]})).unwrap();
+    let report = report.as_str().unwrap_or_default().to_string();
+    assert!(report.contains("a.txt") && report.contains("b.txt"), "{report}");
+    assert_eq!(std::fs::read_to_string(workspace.join("a.txt")).unwrap(), "alpha = 2\n");
+    assert_eq!(std::fs::read_to_string(workspace.join("b.txt")).unwrap(), "beta = 2\n");
+
+    // two edits to one file in the same call are refused (they would race each other)
+    let error = executor("edit_files", &json!({"edits": [
+        edit("a.txt", "alpha = 2", "alpha = 3"),
+        edit("a.txt", "alpha = 3", "alpha = 4"),
+    ]})).unwrap_err();
+    assert!(error.contains("one edit per file"), "{error}");
+    assert_eq!(std::fs::read_to_string(workspace.join("a.txt")).unwrap(), "alpha = 2\n");
+    let _ = std::fs::remove_dir_all(&base);
+}
+
 /// A terminal keeps `cd` and `export`; so must the sandbox, without writing any
 /// of that state into the user's project.
 #[test]

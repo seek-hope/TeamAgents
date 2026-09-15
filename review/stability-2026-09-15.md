@@ -291,3 +291,15 @@ shell 进程（取消/超时语义会被打乱），而是“状态随命令走�
 - 回归：`tools_sandbox.rs::persistent_shell_keeps_cd_and_exports_between_commands`
   （cd/export 跨命令生效、无状态调用不受影响、**项目目录里没有任何状态文件**）、
   `an_interrupted_command_does_not_advance_the_shell_state`（中途取消后仍停在最后完成的目录）。
+
+## 第十四批：多文件原子编辑（用户批准的优先级 2）
+
+`edit_file` 一次只能改一个文件，重构（改名/改签名跨文件）要么来回多次、要么中途失败留下半成品。
+新增 `edit_files`：
+
+- 两阶段：先对每条 `{path, old_string, new_string, expected_sha256?}` 做唯一匹配与版本校验
+  （不写盘），全部通过后再按**排序后的路径**逐个原子写入（排序是为了两个成员之间不死锁），
+  任一条失败则一个字节都不落盘；同一文件一次只允许一条编辑（否则后一条会基于旧内容验证）。
+- 返回各文件的 diff；`gateway` 的原生工具白名单加 `edit_files`；工具说明写清"全部校验通过才落盘"。
+- 回归：`tools_sandbox.rs::batch_edits_are_all_or_nothing`（一条不匹配 → 两个文件都没变；
+  全部匹配 → 两个文件都改并返回 diff；同文件两条 → 拒绝且文件不变）。

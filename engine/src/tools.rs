@@ -505,6 +505,55 @@ fn workspace_executor_with_control(
                 atomic_write(file_root, lock_dir.as_deref(), &path, text.replacen(&old, new, 1).as_bytes(), Some(&hash), control)?;
                 Ok(json!(edit_diff(&path, &text, at, &old, new)))
             }
+            "edit_files" => {
+                let _guard = FILE_WRITES.lock().map_err(|_| "file mutation lock poisoned")?;
+                control.check()?;
+                let edits = args.get("edits").and_then(Json::as_array).cloned().unwrap_or_default();
+                if edits.is_empty() {
+                    return Err("edits must be a non-empty array".into());
+                }
+                // phase 1: validate every edit against the current file content.
+                // Nothing is written until the whole batch is known-good, which is
+                // the point of a multi-file edit: no half-applied refactor.
+                let mut planned: Vec<(PathBuf, PathBuf, String, String, String)> = vec![];
+                for edit in &edits {
+                    let key = edit.get("path").and_then(Json::as_str).unwrap_or("");
+                    if key.is_empty() {
+                        return Err("each edit needs a path".into());
+                    }
+                    let path = member_path(key)?;
+                    if planned.iter().any(|(_, existing, ..)| existing == &path) {
+                        return Err(format!("{key}: at most one edit per file per call"));
+                    }
+                    let text = cap_read(member_file(key)?)?;
+                    let old = edit.get("old_string").and_then(Json::as_str).unwrap_or("");
+                    let new = edit.get("new_string").and_then(Json::as_str).ok_or("each edit needs new_string")?;
+                    if old.is_empty() {
+                        return Err("old_string must not be empty".into());
+                    }
+                    let at = text.find(old).ok_or_else(|| format!("{key}: old_string not found"))?;
+                    // Count overlapping matches too (e.g. 'aa' in 'aaa').
+                    if text[at + old.chars().next().expect("non-empty").len_utf8()..].contains(old) {
+                        return Err(format!("{key}: old_string matches multiple locations; include more context"));
+                    }
+                    let hash = format!("{:x}", Sha256::digest(text.as_bytes()));
+                    if expected_hash(edit)?.is_some_and(|expected| !expected.eq_ignore_ascii_case(&hash)) {
+                        return Err(format!("{key}: file conflict: expected_sha256 no longer matches; read the file again"));
+                    }
+                    let file_root = if key.starts_with(ARTIFACTS_PREFIX) { artifacts.as_ref().unwrap().clone() } else { root.clone() };
+                    let diff = edit_diff(&path, &text, at, old, new);
+                    planned.push((file_root, path, text.replacen(old, new, 1), diff, hash));
+                }
+                // phase 2: apply under per-path cross-process locks, taken in a
+                // stable order so two members cannot deadlock each other.
+                planned.sort_by(|a, b| a.1.cmp(&b.1));
+                let mut diffs: Vec<String> = vec![];
+                for (file_root, path, content, diff, hash) in planned {
+                    atomic_write(&file_root, lock_dir.as_deref(), &path, content.as_bytes(), Some(&hash), control)?;
+                    diffs.push(diff);
+                }
+                Ok(json!(diffs.join("\n")))
+            }
             "delete" => {
                 let _guard = FILE_WRITES.lock().map_err(|_| "file mutation lock poisoned")?;
                 control.check()?;
