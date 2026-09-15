@@ -303,3 +303,9 @@ shell 进程（取消/超时语义会被打乱），而是“状态随命令走�
 - 返回各文件的 diff；`gateway` 的原生工具白名单加 `edit_files`；工具说明写清"全部校验通过才落盘"。
 - 回归：`tools_sandbox.rs::batch_edits_are_all_or_nothing`（一条不匹配 → 两个文件都没变；
   全部匹配 → 两个文件都改并返回 diff；同文件两条 → 拒绝且文件不变）。
+
+### 全量复跑（持久 Shell 之后）
+
+`review/eval/runs/2026-09-15-deepseek-shellstate/`：6 个任务全部符合预期（4 completed + 2 个
+刻意的安全边界，即 approval-gate exit 3、interrupted-recovery exit 124），0 个失败工具调用；
+其中 `rust-fix`/`long-output` 真实用到 shell，证明状态捕获包装没有改变命令语义与退出码。
