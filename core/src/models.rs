@@ -368,6 +368,18 @@ pub struct UserConfig {
     pub instruction_files: Vec<String>,
     #[serde(default)]
     pub retention: Retention,
+    #[serde(default)]
+    pub hooks: Hooks,
+}
+
+/// Engine event hooks: a user-authored command, never a model-chosen one.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Hooks {
+    /// argv of the command to run (event name is appended as the last argument,
+    /// the event JSON arrives on stdin). Empty = no hooks.
+    #[serde(default)]
+    pub notify: Vec<String>,
 }
 
 /// Session housekeeping policy. Nothing is deleted unless a [retention] block

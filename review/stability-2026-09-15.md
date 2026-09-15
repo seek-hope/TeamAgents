@@ -347,3 +347,18 @@ shell 进程（取消/超时语义会被打乱），而是“状态随命令走�
 
 真实评测：`review/eval/runs/2026-09-15-deepseek-codex/`（completed、exit 0、37.9s、验收通过；
 Leader 复现失败 → assign_task → codex-dev 修 `mul` → Leader 复跑 `cargo test` → signal_done）。
+
+## 第十七批：事件钩子（用户批准的优先级 2）
+
+Codex 有 `notify`、Claude Code 有 hooks，TeamAgents 之前没有任何外部集成点。
+
+- `engine/src/hooks.rs`：`[hooks] notify = [argv]`，事件发生时把 `{event, session_id, payload}` 写到
+  钩子 stdin，事件名作为最后一个参数；每次事件一个分离线程，10 秒未结束杀掉，失败只写 stderr，
+  **不阻塞回合**。钩子是用户自己写的程序，在主机上以用户权限运行（不进沙箱）。
+- 事件来源：`Notify` 新增独立的事件 sink（`set_event_sink`），与 UI 的 tool/stream sink 互不干扰
+  ——TUI/exec 可以替换 tool sink，钩子照常触发。`ChatRunner` 在每个工具结果处发 `tool_call`；
+  `Runtime::finalize` 发 `run_completed`/`run_failed`/`run_cancelled`/`run_paused`；
+  `Runtime::submit` 对团队动作发 `team_action`（含 assign_task/complete_task/signal_done 的受理结果）。
+- 配置：`core::models::UserConfig.hooks.notify`（`[hooks]` 段，默认空=不启用）。
+- 回归：`hooks::tests::hooks_receive_the_event_name_and_json_on_stdin`（argv/stdin 内容、未配置时不启用）、
+  `chat_e2e::configured_hooks_see_tool_calls_and_turn_end`（真实会话里钩子收到 tool_call 与 run_completed）。

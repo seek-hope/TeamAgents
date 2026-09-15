@@ -12,6 +12,7 @@ pub mod codex;
 pub mod config;
 pub mod core_client;
 pub mod gateway;
+pub mod hooks;
 pub mod runtime;
 pub mod scripted;
 mod stream;

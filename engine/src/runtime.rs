@@ -86,13 +86,15 @@ pub struct Notify {
     core: Arc<CoreClient>,
     stream: Mutex<Option<Sink>>,
     tool: Mutex<Option<Box<dyn Fn(&str, &str, &serde_json::Value) + Send + Sync>>>,
+    /// Engine-level events (tool calls, turn ends, team actions) for user hooks.
+    events: Mutex<Option<Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>,
     waker: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     accepting: Mutex<bool>,
 }
 
 impl Notify {
     pub fn new(core: Arc<CoreClient>) -> Arc<Self> {
-        Arc::new(Self { core, stream: Mutex::new(None), tool: Mutex::new(None), waker: Mutex::new(None), accepting: Mutex::new(true) })
+        Arc::new(Self { core, stream: Mutex::new(None), tool: Mutex::new(None), events: Mutex::new(None), waker: Mutex::new(None), accepting: Mutex::new(true) })
     }
 
     pub fn set_stream_sink(&self, sink: Sink) {
@@ -103,6 +105,24 @@ impl Notify {
     /// surfaces such as `exec --json`. The UI reads streamed text instead.
     pub fn set_tool_sink(&self, sink: Box<dyn Fn(&str, &str, &serde_json::Value) + Send + Sync>) {
         *self.tool.lock().unwrap() = Some(sink);
+    }
+
+    /// Independent of the UI sinks: whoever consumes tool activity (TUI, exec)
+    /// may replace `tool`, but hooks must keep firing.
+    pub fn set_event_sink(&self, sink: Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>) {
+        *self.events.lock().unwrap() = Some(sink);
+    }
+
+    pub fn note_event(&self, event: &str, payload: &serde_json::Value) {
+        let accepting = self.accepting.lock().unwrap();
+        if !*accepting {
+            return;
+        }
+        if let Ok(events) = self.events.lock() {
+            if let Some(sink) = events.as_ref() {
+                sink(event, payload);
+            }
+        }
     }
 
     /// The core client behind this notifier. Runners read per-turn config
@@ -390,6 +410,18 @@ impl Runtime {
             let approval_id = payload.get("approval_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let decision = payload.get("decision").and_then(|v| v.as_str()).unwrap_or("").to_string();
             self.deliver_approval_decision(&approval_id, &decision);
+        }
+        // team actions (assign_task / complete_task / signal_done / patches …)
+        // are visible to hooks as one stream with their receipts
+        if action.actor_id != "user" || action.kind == teamagents_core::models::ActionKind::UserMessage {
+            self.notify.note_event("team_action", &json!({
+                "kind": action.kind,
+                "actor_id": action.actor_id,
+                "action_id": action.action_id,
+                "ok": receipt.ok,
+                "error": receipt.error,
+                "payload": action.payload,
+            }));
         }
         self.drain_mid_turn();
         self.signal();
@@ -847,6 +879,19 @@ impl Runtime {
             "note": outcome.note,
             "reply_text": outcome.reply_text,
             "ack_ids": ack,
+        }));
+        let event = match outcome.status {
+            TurnStatus::Completed => "run_completed",
+            TurnStatus::Failed | TurnStatus::OutcomeUnknown => "run_failed",
+            TurnStatus::Cancelled => "run_cancelled",
+            _ => "run_paused",
+        };
+        self.notify.note_event(event, &json!({
+            "run_id": run.run_id,
+            "agent_id": run.agent_id,
+            "status": outcome.status,
+            "error": outcome.error,
+            "reply_text": outcome.reply_text,
         }));
         self.drain_mid_turn();
         self.signal();

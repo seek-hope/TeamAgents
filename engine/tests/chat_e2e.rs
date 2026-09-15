@@ -378,6 +378,47 @@ fn responses_protocol_round_trips_a_tool_call() {
 
 /// `view_image` must reach the model as an actual image part: the tool result
 /// stays a small reference and the bytes are read back when the request is built.
+/// User-configured hooks see engine events: a tool call and the turn end.
+#[test]
+fn configured_hooks_see_tool_calls_and_turn_end() {
+    let _env = env_guard("chat-hooks");
+    let cwd = isolated_project("hooks");
+    let log = cwd.join("hook.log");
+    let script = cwd.join("hook.sh");
+    std::fs::write(&script, format!("#!/bin/sh\nprintf '%s\\n' \"$1\" >> {}\ncat >> {}\n", log.display(), log.display())).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let api = FakeOpenAi::start(|_, index| {
+        (200, if index == 0 {
+            tool_call_response("call-1", "write_file", json!({"path": "a.txt", "content": "x"}))
+        } else {
+            text_response("done")
+        })
+    });
+    let mut catalog = UserConfig::default();
+    catalog.hooks.notify = vec![script.to_string_lossy().into_owned()];
+    let opened = open_chat_session(&cwd, &api, &["files"], catalog);
+    opened.runtime.start();
+    opened.runtime.user_message("write the file", false).unwrap();
+    assert!(opened.runtime.settle(10), "the turn finished");
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let mut text = String::new();
+    while std::time::Instant::now() < deadline {
+        text = std::fs::read_to_string(&log).unwrap_or_default();
+        if text.contains("tool_call") && text.contains("run_completed") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(text.contains("tool_call"), "the hook saw the tool call: {text}");
+    assert!(text.contains("\"tool\":\"write_file\""), "with its payload: {text}");
+    assert!(text.contains("run_completed"), "and the turn end: {text}");
+    opened.close();
+}
+
+/// User-configured hooks see engine events: a tool call and the turn end.
 #[test]
 fn view_image_attaches_the_picture_to_the_next_request() {
     let _env = env_guard("chat-view-image");

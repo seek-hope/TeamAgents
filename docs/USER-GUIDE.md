@@ -192,6 +192,24 @@ Skills 的加载与分发（对应方案 §12.1 的“发现 + 按需读取”�
 - “私有上下文隔离”是运行时投递与工具授权合约；本机 MCP 或 Codex 全自动执行可能按当前用户
   权限访问主机，不能承诺对恶意同用户进程的强保密隔离。
 
+### 2.4 事件钩子（可选）
+
+```toml
+[hooks]
+notify = ["/home/you/bin/teamagents-notify.sh"]   # argv；事件名追加为最后一个参数
+```
+
+配置后，引擎在这些事件发生时把事件 JSON 写到钩子的 stdin：
+
+| 事件 | 何时 | 载荷要点 |
+|---|---|---|
+| `tool_call` | 原生工具执行完（Chat 成员） | `agent_id`、`tool`、`ok`、`error`、`arguments`（≤500 字符） |
+| `run_completed` / `run_failed` / `run_cancelled` / `run_paused` | 回合进入终态（或停在批准/等任务） | `run_id`、`agent_id`、`status`、`error`、`reply_text` |
+| `team_action` | 任何团队动作被受理 | `kind`（assign_task/complete_task/signal_done/…）、`actor_id`、`ok`、`payload` |
+
+行为边界：钩子是**你自己写的程序**，在主机上以你的权限运行（不进成员沙箱），所以不要在里面回显密钥；
+每次事件单独起进程，10 秒未结束会被杀掉，失败只写 stderr，绝不影响回合。
+
 ## 3. 恢复
 
 - 正常退出默认保存并暂停；异常退出后下次启动自动恢复：团队版本、待办任务、消息位置、

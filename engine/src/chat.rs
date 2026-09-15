@@ -1546,13 +1546,17 @@ impl ChatRunner {
                 let content = if receipt.ok { receipt.result.to_string() } else { json!({"error":receipt.error}).to_string() };
                 // Automation surfaces see what the member actually did; the
                 // arguments are bounded so a big write_file payload cannot flood them.
-                self.notify.note_tool_activity(&run.run_id, &self.agent_id(), &json!({
+                let activity = json!({
+                    "run_id": run.run_id,
+                    "agent_id": self.agent_id(),
                     "tool": name,
                     "call_id": call_id,
                     "ok": receipt.ok,
                     "error": receipt.error,
                     "arguments": bounded_arguments(&args),
-                }));
+                });
+                self.notify.note_tool_activity(&run.run_id, &self.agent_id(), &activity);
+                self.notify.note_event("tool_call", &activity);
                 checkpoint.history.push(json!({"role":"tool", "tool_call_id":call_id, "content":content}));
                 if approval || waiting || step_limit {
                     let remaining = pending_tool_calls(&checkpoint.history);
