@@ -550,6 +550,14 @@ pub fn open_session(opts: OpenOptions) -> Result<Arc<OpenedSession>, String> {
         Some(catalog) => catalog,
         None => load_user_config_for(&cwd)?,
     };
+    // retention (user config [retention] archived_days): sweeps archived sessions
+    // through the guarded delete path on every open.
+    // ponytail: once per open, no background scheduler — a long-lived serve
+    // process prunes when it opens sessions, which is often enough.
+    let retention_days = catalog.retention.archived_days;
+    if retention_days > 0 {
+        let _ = crate::sessions::prune_archived(retention_days, None, false);
+    }
     let config_full_auto = crate::config::permission_mode_from_config()? == "full_auto";
     let full_auto = opts.full_auto || config_full_auto;
     let session_id = opts.session_id.clone().unwrap_or_else(|| new_session_id(&cwd));

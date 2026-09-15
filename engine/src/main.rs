@@ -6,7 +6,7 @@ use teamagents_engine::{cli, tools, worker, VERSION};
 
 fn usage() -> ! {
     eprintln!("teamagents [--cwd DIR] [--resume ID] [--full-auto] [--team SPEC.json] [--plain]");
-    eprintln!("  teamagents doctor | validate SPEC | sessions [-v] | version");
+    eprintln!("  teamagents doctor | validate SPEC | sessions [-v] [prune --days N [--dry-run]] | version");
     eprintln!("  teamagents exec --json [--timeout SEC] [--check COMMAND] PROMPT|- ");
     std::process::exit(2);
 }
@@ -23,6 +23,7 @@ pub struct Args {
     pub timeout: Option<u64>,
     pub checks: Vec<String>,
     pub exec_json: bool,
+    pub dry_run: bool,
 }
 
 fn parse_args() -> Args {
@@ -39,6 +40,7 @@ fn parse_args() -> Args {
         timeout: None,
         checks: Vec::new(),
         exec_json: false,
+        dry_run: false,
     };
     let mut i = 0;
     while i < argv.len() {
@@ -89,6 +91,17 @@ fn parse_args() -> Args {
             }
             "--check" if args.command.as_deref() == Some("exec") => {
                 args.checks.push(argv.get(i + 1).cloned().filter(|v| !v.starts_with('-')).unwrap_or_else(|| usage())); i += 2;
+            }
+            "--days" if args.command.as_deref() == Some("sessions") => {
+                if args.timeout.is_some() { usage(); }
+                let raw = argv.get(i + 1).cloned().filter(|v| !v.starts_with('-')).unwrap_or_else(|| usage());
+                args.timeout = Some(raw.parse::<u64>().unwrap_or_else(|_| usage()));
+                i += 2;
+            }
+            "--dry-run" if args.command.as_deref() == Some("sessions") => {
+                if args.dry_run { usage(); }
+                args.dry_run = true;
+                i += 1;
             }
             other if !other.starts_with('-') || other == "-" => {
                 if args.positional.is_some() { usage(); }
@@ -172,7 +185,10 @@ fn main() {
             Some(path) => cli::validate_spec(path),
             None => usage(),
         },
-        Some("sessions") => cli::list_sessions_cmd(args.verbose),
+        Some("sessions") => match args.positional.as_deref() {
+            Some("prune") => cli::prune_sessions_cmd(args.timeout.unwrap_or(30), args.dry_run),
+            _ => cli::list_sessions_cmd(args.verbose),
+        },
         Some("version") => cli::version(),
         Some("exec") => cli::exec_json(&cli::ExecOptions { cwd: args.cwd.clone(), resume: args.resume.clone(), full_auto: args.full_auto, team: args.team.clone(), timeout: args.timeout, checks: args.checks.clone(), prompt: args.positional.clone() }),
         _ if args.plain => cli::repl(args.cwd.clone(), args.resume.clone(), args.full_auto, args.team.clone()),

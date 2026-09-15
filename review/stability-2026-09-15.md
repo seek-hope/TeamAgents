@@ -225,3 +225,20 @@ Leader 的绑定（D-30 已为 model_profile 开了同类先例）；是否自�
 
 未做：真实 Responses 订阅（OpenAI 官方/中转）的端到端验收——本机没有可用订阅，只有本地
 faithful 假服务；Anthropic 官方订阅同样待凭据。
+
+## 第十批：会话保留策略（用户批准的优先级 ①）
+
+磁盘占用现在有两层：制品目录自动预算（第六批）与会话级保留。
+
+- `engine/src/sessions.rs::prune_archived(days, base, dry_run)`：清理"最后更新超过 N 天"的
+  **归档会话**，复用 `delete_session` 的既有保护（运行中的会话、带未合并 worktree 成果的会话
+  跳过并报告原因），逐会话收集错误而不是中断整轮。
+- 入口：`teamagents sessions prune --days 30 [--dry-run]`；用户配置 `[retention] archived_days = 30`
+  则每次打开会话顺手清理（默认不写=不删）。配置字段加在 `core::models::UserConfig.retention`。
+- 回归：`sessions::tests::retention_removes_only_old_archived_sessions`（只删超期归档、
+  dry-run 不删、活跃会话目录不在遍历范围）；CLI 手工核对：dry-run 报告"将删除 proj_old（45 天前）"，
+  实际执行后只剩未超期的 proj_fresh。
+- 有意不做：回合检查点 / 对话树 / `team.db` 不自动删。核对过 `chat_e2e::
+  review_completed_checkpoint_restores_reply_without_another_model_call` 这条路径：崩溃窗口里
+  "已完成回合"仍可能被 reconcile 重新执行并用检查点里的回复收尾；删掉旧检查点会退化成重新调用
+  模型并可能重复投递——代价高于省下的磁盘（文档 §3.3 已写明这条边界）。

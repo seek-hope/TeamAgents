@@ -225,6 +225,40 @@ pub fn validate_spec(path: &str) -> i32 {
     }
 }
 
+/// `teamagents sessions prune --days N [--dry-run]`: archive retention. The
+/// sweep never touches a running session or one with unmerged worktree work.
+pub fn prune_sessions_cmd(days: u64, dry_run: bool) -> i32 {
+    let report = crate::sessions::prune_archived(days, None, dry_run);
+    let session_id = |entry: &Json| entry.get("session_id").and_then(|v| v.as_str()).unwrap_or("?").to_string();
+    let removed = report.get("removed").and_then(Json::as_array).cloned().unwrap_or_default();
+    let skipped = report.get("skipped").and_then(Json::as_array).cloned().unwrap_or_default();
+    println!(
+        "归档会话保留策略：{} 天（{}）",
+        days,
+        if dry_run { "试运行，不删除" } else { "删除超期归档会话" }
+    );
+    for entry in &removed {
+        println!(
+            "  {} {}（最后一次更新 {} 天前，{:.1} MB）",
+            if dry_run { "将删除" } else { "已删除" },
+            session_id(entry),
+            entry.get("age_days").and_then(Json::as_u64).unwrap_or(0),
+            entry.get("size_mb").and_then(Json::as_f64).unwrap_or(0.0)
+        );
+    }
+    for entry in &skipped {
+        println!("  跳过 {}：{}", session_id(entry), entry.get("error").and_then(Json::as_str).unwrap_or(""));
+    }
+    println!(
+        "保留 {} 个未超期会话，{} {} 个，释放 {:.1} MB",
+        report.get("kept").and_then(Json::as_u64).unwrap_or(0),
+        if dry_run { "预计删除" } else { "删除" },
+        removed.len(),
+        report.get("bytes_freed").and_then(Json::as_u64).unwrap_or(0) as f64 / (1024.0 * 1024.0)
+    );
+    if skipped.is_empty() { 0 } else { 1 }
+}
+
 pub fn list_sessions_cmd(verbose: bool) -> i32 {
     let rows = crate::sessions::list_sessions(None, true, None);
     if rows.is_empty() {

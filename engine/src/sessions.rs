@@ -3,6 +3,7 @@
 use crate::config::sessions_dir;
 use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value as Json};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -303,6 +304,60 @@ pub fn archive_session(session_id: &str, base: Option<&Path>) -> Result<String, 
 
 /// Refuses while it runs elsewhere, and refuses to delete member worktrees
 /// that still hold uncommitted or unmerged work.
+/// Retention sweep: archived sessions untouched for `days` are removed through
+/// the same guarded path the UI uses (never a running session, never a worktree
+/// with unmerged work). Errors are collected per session instead of aborting the
+/// sweep, and `dry_run` reports without deleting.
+pub fn prune_archived(days: u64, base: Option<&Path>, dry_run: bool) -> Json {
+    let archived = base.map(Path::to_path_buf).unwrap_or_else(sessions_dir).join("archived");
+    let mut removed: Vec<Json> = vec![];
+    let mut kept = 0usize;
+    let mut skipped: Vec<Json> = vec![];
+    let mut bytes_freed: u64 = 0;
+    let now = std::time::SystemTime::now();
+    if let Ok(entries) = std::fs::read_dir(&archived) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.join("team.db").exists() {
+                continue;
+            }
+            let id = entry.file_name().to_string_lossy().into_owned();
+            let age_days = entry
+                .metadata()
+                .and_then(|meta| meta.modified())
+                .ok()
+                .and_then(|modified| now.duration_since(modified).ok())
+                .map(|age| age.as_secs() / 86_400)
+                .unwrap_or(0);
+            if age_days < days {
+                kept += 1;
+                continue;
+            }
+            let size = dir_size_mb(&path);
+            if dry_run {
+                removed.push(json!({"session_id": id, "age_days": age_days, "size_mb": size}));
+                continue;
+            }
+            match delete_session(&id, Some(&archived)) {
+                Ok(()) => {
+                    bytes_freed = bytes_freed.saturating_add((size * 1024.0 * 1024.0) as u64);
+                    removed.push(json!({"session_id": id, "age_days": age_days, "size_mb": size}));
+                }
+                Err(error) => skipped.push(json!({"session_id": id, "error": error})),
+            }
+        }
+    }
+    json!({
+        "archived_dir": archived.to_string_lossy(),
+        "days": days,
+        "dry_run": dry_run,
+        "removed": removed,
+        "kept": kept,
+        "skipped": skipped,
+        "bytes_freed": bytes_freed,
+    })
+}
+
 pub fn delete_session(session_id: &str, base: Option<&Path>) -> Result<(), String> {
     validate_session_id(session_id)?;
     let root = base.map(Path::to_path_buf).unwrap_or_else(sessions_dir);
@@ -347,6 +402,57 @@ pub fn delete_session(session_id: &str, base: Option<&Path>) -> Result<(), Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retention_removes_only_old_archived_sessions() {
+        let _env = crate::env_lock();
+        let root = std::env::temp_dir().join(format!("ta-retention-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let archived = root.join("archived");
+        let make = |id: &str| {
+            let path = archived.join(id);
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(path.join("team.db"), b"x").unwrap();
+            path
+        };
+        let old = make("proj_old");
+        let fresh = make("proj_fresh");
+        // age the directory entry itself: pruning reads mtime, not db contents
+        let stale = filetime_days_ago(&old, 40);
+        assert!(stale, "could not age the archived session");
+
+        let dry = prune_archived(30, Some(&root), true);
+        assert_eq!(dry["removed"].as_array().unwrap().len(), 1);
+        assert!(old.exists() && fresh.exists(), "dry run deletes nothing");
+
+        let report = prune_archived(30, Some(&root), false);
+        assert_eq!(report["removed"][0]["session_id"], "proj_old", "{report}");
+        assert_eq!(report["kept"], 1, "{report}");
+        assert!(!old.exists(), "the stale archive is gone");
+        assert!(fresh.exists(), "a recent archive stays");
+
+        // a live session directory (not archived) is never a candidate
+        let live = root.join("proj_live");
+        std::fs::create_dir_all(&live).unwrap();
+        std::fs::write(live.join("team.db"), b"x").unwrap();
+        assert_eq!(filetime_days_ago(&live, 90), true);
+        let report = prune_archived(30, Some(&root), false);
+        assert!(live.exists(), "pruning only walks the archive");
+        assert_eq!(report["removed"].as_array().unwrap().len(), 0, "{report}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Backdate a directory's mtime with `touch -d`, so the test does not need a
+    /// file-metadata dependency.
+    fn filetime_days_ago(path: &Path, days: u64) -> bool {
+        std::process::Command::new("touch")
+            .arg("-d")
+            .arg(format!("{days} days ago"))
+            .arg(path)
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
 
     #[test]
     fn lock_is_held_by_the_live_holder_not_by_file_content() {

@@ -27,7 +27,7 @@ api_key_env = "DEEPSEEK_API_KEY"          # 只引用环境变量，密钥不进
 timeout = 120
 max_retries = 2               # 示例显式覆盖；省略时默认 5
 generation_options = { reasoning_effort = "max" }     # 默认档位；嫌慢改 high（实测 high≈10s / max≈240s）
-context_window = 128000   # 可选；填写后启用上下文自动压缩（见 §3.3），/status 也会显示占用比例
+context_window = 128000   # 可选；填写后启用上下文自动压缩（见 §3.4），/status 也会显示占用比例
 ```
 
 推理档位规则：模型不支持 `xhigh` 时，配置里的 `xhigh` 会自动映射为 `max`
@@ -241,7 +241,19 @@ TUI `/rewind` 列出当前分支的用户输入节点，`/rewind <序号>` 回�
 使用自动生成的会话 profile 的团队可能因此无法直接分叉，见验收表的已知差异。
 `--plain` 使用 `rewind <节点 ID>`（无斜杠），不支持 fork；`model <成员>` 恢复默认模型。
 
-### 3.3 上下文自动压缩（chat 运行时，D-28）
+### 3.3 磁盘占用与保留策略
+
+- **制品**：Shell 长输出落 `artifacts/exec-*.log`，单个最多 64 MiB，整个目录超过 512 MiB 时
+  新建制品会先按时间删最旧的 `exec-*.log`（自动，不需要配置）。
+- **归档会话**：`teamagents sessions prune --days 30 [--dry-run]` 删除"最后更新超过 30 天"的
+  归档会话；想让它自动发生就在用户配置里写 `[retention] archived_days = 30`（打开会话时清理，
+  默认不写=不删）。两种方式都走同一套保护：运行中的会话、带未合并 worktree 成果的会话会跳过
+  并报告原因。
+- **不会自动删的**：回合检查点、对话树、`team.db`。它们分别是崩溃恢复、`/rewind` 与审计的
+  依据；删掉旧检查点会让崩溃窗口内的"已完成回合"重新调用模型、可能重复投递，
+  这个代价比省下的磁盘更贵。
+
+### 3.4 上下文自动压缩（chat 运行时，D-28）
 
 成员的模型上下文接近上限时自动压缩，无需任何命令；只对 chat 运行时生效
 （codex 成员由 Codex 侧自行处理）。三层按成本递增：

@@ -360,6 +360,19 @@ pub struct UserConfig {
     pub skills_paths: Vec<String>,
     #[serde(default)]
     pub instruction_files: Vec<String>,
+    #[serde(default)]
+    pub retention: Retention,
+}
+
+/// Session housekeeping policy. Nothing is deleted unless a [retention] block
+/// asks for it: archiving is the user's own "done with this" marker.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Retention {
+    /// Delete archived sessions untouched for this many days when a session is
+    /// opened (also available as `teamagents sessions prune`). 0 disables it.
+    #[serde(default)]
+    pub archived_days: u64,
 }
 
 // -- runtime objects ---------------------------------------------------------
