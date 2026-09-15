@@ -2,6 +2,11 @@
 
 `tasks/<id>/` 每个任务三件套：`prompt.md`（真实提示词）、`checks.txt`（每行一条验收命令，
 在隔离 Shell 里按顺序执行）、可选 `fixture/`（先拷进工作目录的初始文件）。
+两阶段任务（`resume.md`，用于"中断后继续"）：阶段 1 用 `prompt.md` 与 `timeout.txt`（`expect.txt`
+是它的期望退出码，通常 124），随后自动 `--resume` 同一个会话跑 `resume.md`（`expect-resume.txt`
+是阶段 2 的期望码，默认 0），汇总表只统计阶段 2。注意阶段 1 的超时要宽于"第一步做完"的时间，
+否则被中断的是还没开始的工作，任务会变得不稳定。
+
 可选覆盖项：`mode.txt`（`full-auto` 默认 / `approval` 不带 `--full-auto`）、`timeout.txt`
 （该任务的秒数）、`expect.txt`（期望退出码——考的是 CLI 契约而不是产出文件时用它）。
 
