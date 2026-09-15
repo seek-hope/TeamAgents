@@ -1,4 +1,4 @@
-//! Information permissions, ported from src/teamagents/views.py:
+//! Information permissions:
 //! `audience` — who may see an event; `push` — who receives it as a delivery.
 
 use crate::models::*;
@@ -232,7 +232,7 @@ mod tests {
     }
 }
 
-// -- AgentView (views.py::build_agent_view) --------------------------------------
+// -- AgentView -------------------------------------------------------------------
 
 use crate::storage::Store;
 

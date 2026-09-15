@@ -1,4 +1,4 @@
-//! CLI entry points (cli.py): doctor / validate / sessions / version / --plain REPL.
+//! CLI entry points: doctor / validate / sessions / version / --plain REPL.
 
 use crate::config::{load_user_config, missing_key_envs, sessions_dir, user_config_path};
 use crate::core_client::CoreClient;
@@ -46,7 +46,7 @@ pub fn doctor() -> i32 {
         Err(e) => check(&mut results, "user config", false, e),
     }
     let bwrap = bwrap_available();
-    // not just "is it installed": run a probe (cli.py does the same) so a broken
+    // not just "is it installed": run a probe so a broken
     // userns/kernel setup is caught here instead of at the first shell call
     let bwrap_probe = bwrap
         && shell_run("test -e /etc/hostname && test ! -e /home", &std::env::temp_dir(), 20, false, None)
@@ -136,7 +136,7 @@ fn schema_methods(path: &Path) -> Result<std::collections::HashSet<String>, Stri
 }
 
 /// D-3: generate the schema from the installed CLI and confirm the required
-/// method sets exist (cli.py::_codex_schema_check parity).
+/// method sets exist.
 fn codex_schema_check(codex: &str) -> (bool, String) {
     const NEEDED: &[&str] = &["initialize", "thread/start", "thread/resume", "turn/start", "turn/interrupt"];
     const NEEDED_REQUESTS: &[&str] =

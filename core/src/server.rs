@@ -145,7 +145,7 @@ impl Server {
                     "limits": spec.limits,
                     "revision": ctl.store.current_revision(&sid).map_err(|e| e.to_string())?,
                     "agents": agents,
-                    "runs": ctl.store.runs_for_session(&sid, &[]).map_err(|e| e.to_string())?,
+                    "runs": ctl.store.runs_for_state(&sid, 50).map_err(|e| e.to_string())?,
                     "tasks": ctl.store.tasks_for_session(&sid, &[]).map_err(|e| e.to_string())?,
                     "pending_approvals": ctl.store.pending_approvals(&sid).map_err(|e| e.to_string())?,
                     "events": if include_events {
@@ -195,7 +195,7 @@ impl Server {
                 Ok(json!({"pushes": pushes}))
             }),
             "validate_spec" => {
-                // catalog-aware validation (cli.py::validate_spec) without a session
+                // catalog-aware validation without a session
                 let spec: Result<TeamSpec, _> = serde_json::from_value(params.get("spec").cloned().unwrap_or(Json::Null));
                 match spec {
                     Err(e) => Err(format!("bad spec: {e}")),
@@ -218,7 +218,7 @@ impl Server {
                 Ok(json!({"approval": ctl.store.get_approval(aid).map_err(|e| e.to_string())?}))
             }),
             // engine contract: a once-approval is single use and a pending one is
-            // void once its turn can no longer use it (storage.py::expire_approval)
+            // void once its turn can no longer use it
             "expire_approval" => {
                 let aid = params.get("approval_id").and_then(|v| v.as_str()).ok_or("approval_id required")?;
                 let ctl = match params.get("session_id").and_then(|v| v.as_str()) {

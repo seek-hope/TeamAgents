@@ -1,5 +1,4 @@
-//! tui-worker protocol parity: the Rust engine serves the same JSON-lines API
-//! (ts/test/tui-worker.test.ts port).
+//! tui-worker protocol: the engine serves the JSON-lines API the TUI expects.
 
 use serde_json::{json, Value as Json};
 use std::collections::HashMap;

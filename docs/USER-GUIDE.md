@@ -1,27 +1,5 @@
 # 用户指南：配置、权限、恢复与故障处理
 
-## 0. 版本适用性（先读）
-
-仓库现在只有 Rust 实现（入口 `engine/target/debug/teamagents`）；Python 版已归档到 git 历史。
-下表左列是**旧 Python 版**、右列是当前 Rust 实现；标 ⚠ 的是旧版专有、当前尚未移植的少数项
-（其余能力均已实现）。
-
-| 能力 | 旧 Python 版（已归档） | Rust（当前实现） |
-|---|---|---|
-| 用户配置 TOML | ✅ | ✅（`models`/`tools`/`skills_paths`/`instruction_files`；其余段落忽略） |
-| 项目配置 `.teamagents/config.toml` | ✅ | ✅（同名用户定义优先；项目工具需 `[permissions] trust_project_tools = true`） |
-| `[permissions]` 配置项 | ✅ | ✅（`mode` 与 `trust_project_tools`；`--full-auto` 仍可覆盖） |
-| 模型接入 | langchain-* provider | OpenAI 兼容 HTTP + **Anthropic Messages API**（`protocol = "anthropic"`）；默认端点按 `provider`/`protocol` 解析（deepseek → api.deepseek.com/v1，anthropic → api.anthropic.com） |
-| 内置工具 `files`/`shell` | ✅ | ✅ |
-| `web_search`/`web_fetch` 绑定 | ✅ | ✅（`web_search` 目前只支持 `provider="anysearch"`） |
-| MCP 工具服务 | ✅ | ✅ stdio + streamable HTTP 传输；工具名 `<service>_<tool>`，`tool_names` 过滤，绑定即授权 |
-| Skills / AGENTS.md 注入 | ✅ | ✅（内容注入系统提示词，上限 8KB/文件、32KB/成员；Python 版是虚拟文件系统） |
-| `workspace_policy` | shared / isolated / git_worktree | ✅ 三者齐全（worktree 复用、脏仓库回退 shared 并说明、未合并成果拒绝清理；删除会话同样受保护） |
-| 会话锁 | flock | flock（`File::try_lock`；kill -9 自动回收，文件里的 pid 仅作诊断） |
-| TeamSpec 导入 | JSON / YAML | JSON / YAML（`--team` 与 `validate` 均可） |
-| TUI | Textual | ratatui（Rust 原生设计：固定上下分区、六页签、`/settings` 浮层；键位见文末） |
-| deepagents 子代理 / 图框架 | ✅ | ⚠ 未移植（`ChatRunner` 工具循环取代；`general-purpose` 子代理没有等价物） |
-
 ## 1. 配置
 
 ### 1.1 位置
@@ -29,7 +7,7 @@
 | 内容 | 位置 |
 |---|---|
 | 用户配置（模型 profile、工具绑定、Skills 目录、指令文件） | `$XDG_CONFIG_HOME/teamagents/config.toml`（默认 `~/.config/teamagents/config.toml`） |
-| 项目配置（两版；同名条目用户定义优先，不能开启全自动或扩大预授权） | `<项目>/.teamagents/config.toml` |
+| 项目配置（同名条目用户定义优先，不能开启全自动或扩大预授权） | `<项目>/.teamagents/config.toml` |
 | 会话状态（业务库、成员私有检查点、制品、成员工作目录） | `$XDG_STATE_HOME/teamagents/sessions/<session_id>/` |
 | TUI 语言偏好 | `$XDG_STATE_HOME/teamagents/ui.json`（默认 `~/.local/state/teamagents/ui.json`） |
 | TUI 输入历史 | `$XDG_STATE_HOME/teamagents/composer-history.json`（上限 500 条，跨会话与重启保留） |
@@ -52,11 +30,10 @@ context_window = 128000   # 可选；填写后启用上下文自动压缩（见 
 推理档位规则：模型不支持 `xhigh` 时，配置里的 `xhigh` 会自动映射为 `max`
 （DeepSeek 这类已知不支持的在构建模型时就映射；其他供应商在被拒绝后自动改判 `max` 重试一次）。
 
-接入（Python 版）：OpenAI 用 `langchain-openai`，Anthropic 用 `langchain-anthropic`，
-DeepSeek 用 `langchain-deepseek`；Kimi/GLM 走 OpenAI 兼容路径（填 `base_url` 与模型名即可）。
-Rust 版只走 OpenAI 兼容 HTTP：省略 `base_url` 时按 `provider`/`protocol` 取默认端点
-（`deepseek` → `https://api.deepseek.com/v1`，其他 → `https://api.openai.com/v1`），
-因此第三方服务要么与这两者同源，要么显式填 `base_url`。
+模型接入走 HTTP 协议直连：省略 `base_url` 时按 `provider`/`protocol` 取默认端点
+（`deepseek` → `https://api.deepseek.com/v1`，`anthropic` → `https://api.anthropic.com`，
+其他 → `https://api.openai.com/v1`），Kimi/GLM 等第三方服务要么与这些端点同源，
+要么显式填 `base_url`。
 
 ### 1.3 工具绑定（绑定即授权）
 
@@ -91,7 +68,7 @@ tool_timeout_s = 120           # tools/call 超时秒数（可省，默认 120�
 
 内置能力名 `files` / `shell` / `web` 不需要配置条目：成员在 TeamSpec 里引用即可。
 
-### 1.4 Skills 与指令文件（两版；Rust 版为提示词注入）
+### 1.4 Skills 与指令文件
 
 ```toml
 skills_paths = ["~/.agents/skills", "~/.config/teamagents/skills"]
@@ -100,7 +77,7 @@ instruction_files = ["~/.config/teamagents/AGENTS.md"]
 
 项目根的 `AGENTS.md` 会自动作为指令文件加载。Skills 不授予任何新权限。
 
-Skills 的加载与分发（Rust 版，对应方案 §12.1 的“发现 + 按需读取”）：
+Skills 的加载与分发（对应方案 §12.1 的“发现 + 按需读取”）：
 
 - **发现/按需读取**：成员在 `tool_bindings` 里绑定 `skills` 即获得 `skill` 工具
   （`action="search"` 按关键词检索名称+简介，`action="read"` 按名取全文）。注册根就是
@@ -120,8 +97,8 @@ Skills 的加载与分发（Rust 版，对应方案 §12.1 的“发现 + 按需
   不绕过操作系统与外部服务的限制。TUI 状态栏始终显示当前模式。
 
 切换：TUI `Ctrl+F`，或 `teamagents --full-auto`，或用户配置
-`[permissions] mode = "full_auto"`（两版均支持；非法取值会直接报错，doctor 可见）。项目配置**不能**开启全自动。
-Rust 版以会话行为准：审批门每次调用前读取会话的权限模式，所以切换立即生效、无需重开。
+`[permissions] mode = "full_auto"`（非法取值会直接报错，doctor 可见）。项目配置**不能**开启全自动。
+权限模式以会话行为准：审批门每次调用前读取会话的权限模式，切换立即生效、无需重开。
 
 ### 2.2 批准语义
 
@@ -132,12 +109,12 @@ Rust 版以会话行为准：审批门每次调用前读取会话的权限模式
   而不是放行。
 - 等待批准只暂停相关操作，其他成员继续；`WAITING_APPROVAL` 不算回合结束。
 - 恢复时重新核对参数、配置版本与权限，历史批准不会沿用失效范围。
-- Rust 版 Codex 成员的批准等待有 600s 上限，超时把该批准置 EXPIRED（需重新批准）；其他成员不受影响。
+- Codex 成员的批准等待有 600s 上限，超时把该批准置 EXPIRED（需重新批准）；其他成员不受影响。
 
 ### 2.3 隔离边界（诚实说明）
 
 - Shell 走 bubblewrap：只挂载系统只读目录 + 授权工作目录，隔离 PID/网络/临时目录；
-  网络默认关闭，需要联网的操作要批准。Rust 版**要求** bwrap：缺失时命令直接失败
+  网络默认关闭，需要联网的操作要批准。**要求** bwrap：缺失时命令直接失败
   （`IsolationUnavailable`），不会退化成不隔离执行；命令环境是白名单（不含模型密钥）。
 - 文件工具做符号链接与路径穿越防护，越界即拒绝。
 - “私有上下文隔离”是运行时投递与工具授权合约；full_auto 允许程序按当前用户权限访问主机，
@@ -146,12 +123,12 @@ Rust 版以会话行为准：审批门每次调用前读取会话的权限模式
 ## 3. 恢复
 
 - 正常退出默认保存并暂停；异常退出后下次启动自动恢复：团队版本、待办任务、消息位置、
-  成员私有线程与批准队列都会重新装载（Rust 版 ChatRunner 的成员对话历史落盘在
+  成员私有线程与批准队列都会重新装载（成员对话历史落盘在
   `members/<成员>/chat_history.json`，重启后装载）。
 - 执行意图（`QUEUED` 回合）先持久化再执行，恢复后继续；ChatRunner 在模型响应、工具调用与
   结果边界保存回合检查点，恢复时沿用原工具调用 ID，通过核心回执去重。Codex 回合先核对外部历史。
-- 旧版遗留的执行中 Chat 回合若缺少有效检查点，或外部工具已开始但没有落盘结果，进入
-  `OUTCOME_UNKNOWN`，需核对已产生的结果再决定后续任务；已完成的旧版对话历史继续兼容。
+- 执行中的 Chat 回合若缺少有效检查点，或外部工具已开始但没有落盘结果，进入
+  `OUTCOME_UNKNOWN`，需核对已产生的结果再决定后续任务。
 - **四类崩溃窗口**都有处理：提交后尚未启动、模型已完成但结果未归档、团队动作已提交但回执未落、
   外部工具已执行但结果未知。最后一种进入 `OUTCOME_UNKNOWN`，**不会**被当作成功或自动重试。
 - 取消是“等待停止确认”，不是回滚：已产生的文件、请求与制品保留；等待中的批准失效后需重新批准。
@@ -161,12 +138,11 @@ Rust 版以会话行为准：审批门每次调用前读取会话的权限模式
 ```
 $XDG_STATE_HOME/teamagents/sessions/<会话 id>/     # 默认 ~/.local/state/teamagents/sessions/
 ├── team.db            业务事实：动作回执、事件流、任务、回合、投递、批准、共享条目、拓扑补丁
-├── checkpoints.sqlite ⚠ Python 版：成员私有线程（LangGraph 检查点）
 ├── artifacts/         长输出与制品：shell 输出超 200KB 落 exec-*.log，工具结果用 /artifacts/xxx 引用
 │                      （成员用 read_file/read_artifact/write_file 等按 /artifacts/ 前缀读写；ls/glob 与隔离 shell 看不到）
-├── members/<成员>/work/  隔离/worktree 成员的专属工作目录（两版同路径，文件工具的执行根）
-├── members/<成员>/chat_history.json  Rust 版：成员对话历史（重启后装载）
-├── members/<成员>/turns/<回合>.json  Rust 版：回合检查点（原工具调用 ID、执行进度、结果与已注入投递）
+├── members/<成员>/work/  隔离/worktree 成员的专属工作目录（文件工具的执行根）
+├── members/<成员>/chat_history.json  成员对话历史（重启后装载）
+├── members/<成员>/turns/<回合>.json  回合检查点（原工具调用 ID、执行进度、结果与已注入投递）
 └── session.lock       执行所有权（flock；同一会话同时只允许一个运行实例，kill -9 自动回收）
 ```
 
@@ -180,7 +156,7 @@ TUI 里同一件事在「会话」面板完成（`Tab` 把焦点移入管理面�
 面板动作只认无修饰的字母键：`Ctrl+A/S/D/C` 不会误触发归档/删除/批准/取消（`Ctrl+D`/`Ctrl+U` 是滚动）。
 **归档/删除的是当前会话时会直接退出 TUI**；其他会话操作后留在原地并刷新列表。
 运行中的会话（其他进程持有文件锁）不允许切换/归档/删除，会明确告知
-（Rust 版提示 `session <id> is already running (pid <n>)`）。
+（提示 `session <id> is already running (pid <n>)`）。
 
 - **默认会话 id** 由工作目录派生（`proj_<12位哈希>`），即“一个项目一条会话线”；换目录或 `--resume` 指定其它会话即为隔离的新会话，互不继承（T6/T24）。
 - **删除**：删掉对应会话目录即可；若成员用过 `git_worktree`，先在项目里 `git worktree remove <路径>`（未合并成果要先处理，见 §5 与 `workspace.py`）。
@@ -220,9 +196,9 @@ TUI 里同一件事在「会话」面板完成（`Tab` 把焦点移入管理面�
 | 任务长期 `BLOCKED` | 依赖失败或成员回合未提交完成申请；Leader 会收到事件，可在 TUI 里取消或重派 |
 | 需要查看发生了什么 | TUI 日志面板 / `sessions/<id>/team.db` 的 events 表 / `run_progress` 事件 |
 | 隔离或协议自检 | `teamagents doctor`（依赖、配置、bubblewrap、codex、状态目录） |
-| Rust 版提示“找不到 teamagents-tui” | 先 `cd tui && cargo build`；或用 `TEAMAGENTS_TUI=/路径/teamagents-tui` 指定 |
-| Rust 版成员命令报 `IsolationUnavailable` | 未安装 bubblewrap；装上再试（不要用降低隔离的方式绕过） |
-| Rust 版 `--team` 报 `bad spec` | TeamSpec 需为 JSON 或 YAML；`examples/team.yaml` 可直接使用 |
+| 提示“找不到 teamagents-tui” | 先 `cd tui && cargo build`；或用 `TEAMAGENTS_TUI=/路径/teamagents-tui` 指定 |
+| 成员命令报 `IsolationUnavailable` | 未安装 bubblewrap；装上再试（不要用降低隔离的方式绕过） |
+| `--team` 报 `bad spec` | TeamSpec 需为 JSON 或 YAML；`examples/team.yaml` 可直接使用 |
 
 ## 5. 团队定义（TeamSpec）要点
 
@@ -238,12 +214,11 @@ TUI 里同一件事在「会话」面板完成（`Tab` 把焦点移入管理面�
 - 工作目录策略：`shared`（同一目录）、`isolated`（成员目录 + 明确输入/制品引用）、
   `git_worktree`（从明确提交建分支与 worktree；原目录脏时自动退回 shared 并说明原因；
   重开会话复用既有 worktree，未合并成果拒绝清理，删除会话同样受保护）。
-  三者在两版均已实现（Rust 见 `docs/DECISIONS.md` D-19）。
+  三者均已实现（见 `docs/DECISIONS.md` D-19）。
 
-## TUI（Rust 版布局与交互）
+## TUI（布局与交互）
 
-> Python（main）版是 Textual 界面；Rust 版按 D-20 重新设计（固定分区、滚动、胶囊状态、
-> `/settings` 浮层），以终端习惯为准。
+> 按 D-20 设计：固定分区、滚动、胶囊状态、`/settings` 浮层，以终端习惯为准。
 
 - **固定上下分区**：第 1 行是状态行（`TeamAgents「应用名」+ 会话 id + ⚠ 待批准 + ▸ 未完成`），
   上方是管理面板框（占约 2/5 高度、整宽），下方是聊天区（活动行、对话、流式预览、输入框），

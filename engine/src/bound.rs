@@ -1,4 +1,4 @@
-//! Member tool bindings (tools.py::build_bound_tools): 'files'/'shell' are
+//! Member tool bindings: 'files'/'shell' are
 //! native, 'web' unlocks the configured web tools, anything else is an MCP
 //! service from the user config. Binding a service to a member *is* the
 //! authorization for its tools (plan §12.1), so bound tools skip the approval
@@ -118,18 +118,20 @@ fn load_service(name: &str, binding: &ToolBinding) -> Result<(Arc<McpClient>, Ve
     let client = match transport.as_str() {
         "stdio" => {
             let command = binding.command.clone().ok_or_else(|| format!("binding {name:?} needs a command"))?;
+            // same contract as bearer_token_env_var below: a named variable
+            // that is not set is a hard error, never a silent empty secret
             let env: Vec<(String, String)> = binding
                 .env
                 .iter()
                 .map(|(k, v)| {
                     let expanded = if let Some(var) = v.strip_prefix("${").and_then(|s| s.strip_suffix('}')) {
-                        std::env::var(var).unwrap_or_default()
+                        std::env::var(var).map_err(|_| format!("binding {name:?}: env var {var} is not set"))?
                     } else {
                         v.clone()
                     };
-                    (k.clone(), expanded)
+                    Ok((k.clone(), expanded))
                 })
-                .collect();
+                .collect::<Result<_, String>>()?;
             McpClient::connect_stdio(&command, &binding.args, &env)?
         }
         "http" => {
@@ -160,7 +162,7 @@ fn load_service(name: &str, binding: &ToolBinding) -> Result<(Arc<McpClient>, Ve
             continue;
         }
         let prefixed = format!("{service}_{remote_name}");
-        // langchain-mcp's tool_name_prefix: the model sees `<service>_<tool>`
+        // service-name prefix: the model sees `<service>_<tool>`
         if !allowed.is_empty() && !allowed.contains(prefixed.as_str()) && !allowed.contains(remote_name.as_str()) {
             continue;
         }
@@ -235,6 +237,17 @@ mod tests {
         );
         let ok = BoundTools::load(&catalog, &["optional".to_string()]).unwrap();
         assert!(ok.tools.is_empty());
+
+        // a stdio ${VAR} reference to an unset variable fails the binding,
+        // just like the http transport's bearer_token_env_var
+        let mut stdio_env = UserConfig::default();
+        stdio_env.tools.insert(
+            "tok".into(),
+            binding(json!({"kind": "mcp", "command": "/nonexistent/mcp", "required": true,
+                "env": {"TOKEN": "${TA_MCP_STDIO_DEFINITELY_UNSET}"}})),
+        );
+        let err = BoundTools::load(&stdio_env, &["tok".to_string()]).err().expect("missing stdio env var");
+        assert!(err.contains("TA_MCP_STDIO_DEFINITELY_UNSET"), "{err}");
 
         // builtins and 'files'/'shell'-kind entries add no bound tools
         let catalog = UserConfig::default();

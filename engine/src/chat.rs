@@ -1,6 +1,5 @@
 //! Chat member backend: a plain tool-calling loop over an OpenAI-compatible
-//! endpoint (runners.py::DeepAgentsRunner, with the graph framework replaced
-//! by this loop — team semantics stay in the core).
+//! endpoint (team semantics stay in the core).
 
 use crate::gateway::{ToolGateway, TurnControl, TEAM_TOOLS};
 use crate::runtime::{AgentRunner, Notify};
@@ -13,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use teamagents_core::control::TurnOutcome;
 use teamagents_core::models::{ModelProfile, TurnRun, TurnStatus};
 
-/// providers.py::build_chat_model — the protocol picks the default endpoint
+/// The protocol picks the default endpoint
 /// (deepseek profiles talk to api.deepseek.com, not to OpenAI).
 pub fn resolve_base_url(profile: &ModelProfile) -> String {
     if let Some(base) = &profile.base_url {
@@ -31,7 +30,7 @@ pub fn resolve_base_url(profile: &ModelProfile) -> String {
     }
 }
 
-/// providers.py::normalize_effort — a model that lacks `xhigh` maps to `max`
+/// A model that lacks `xhigh` maps to `max`
 /// instead of erroring out (user decision: deepseek has no xhigh level).
 pub fn normalize_effort(protocol: &str, effort: &str) -> String {
     if effort.eq_ignore_ascii_case("xhigh") && protocol == "deepseek" {
@@ -41,7 +40,7 @@ pub fn normalize_effort(protocol: &str, effort: &str) -> String {
     }
 }
 
-/// runners.py::_looks_like_effort_error — a provider rejecting the requested
+/// A provider rejecting the requested
 /// reasoning effort; the caller retries once with `max`.
 pub fn looks_like_effort_error(text: &str) -> bool {
     let text = text.to_lowercase();
@@ -50,12 +49,12 @@ pub fn looks_like_effort_error(text: &str) -> bool {
         .any(|token| text.contains(token))
 }
 
-/// Python SDK retry semantics: transient statuses and transport errors only.
+/// Retry semantics: transient statuses and transport errors only.
 fn retryable_status(code: u16) -> bool {
     matches!(code, 408 | 409 | 429) || (500..600).contains(&code)
 }
 
-/// runners.py::render_view — compact text view for the next model call.
+/// Compact text view for the next model call.
 pub fn render_view(view: &Json, wake: &Json, workdir: Option<&str>) -> String {
     let mut parts: Vec<String> = vec![];
     let wake_reason = wake.get("reason").and_then(|v| v.as_str()).unwrap_or("new_input");
@@ -162,7 +161,7 @@ fn team_tool_schemas() -> Json {
 }
 
 /// Execution tools a member sees when its TeamSpec binds the capability
-/// (runners.py::_ensure_graph: team tools + shell + bound file/web tools).
+/// (team tools + shell + bound file/web tools).
 pub const BOUND_TOOL_DOCS: &[(&str, &str)] = &[
     ("ls", "List files in your workspace (path defaults to '.')."),
     ("read_file", "Read a UTF-8 text file from your workspace (path is relative to the workspace root)."),
@@ -534,7 +533,7 @@ pub struct ChatRunner {
     /// Resolved web capability (explicit binding names or the `web` umbrella).
     has_web_search: bool,
     has_web_fetch: bool,
-    /// (label, content) pairs from skills/instruction files (session.py::_skills_and_memory)
+    /// (label, content) pairs from skills/instruction files
     context: Vec<(String, String)>,
     /// Member conversation history survives a restart (USER-GUIDE §5).
     history_path: Option<std::path::PathBuf>,
@@ -551,7 +550,7 @@ pub struct ChatRunner {
     /// Prompt size of the latest call across threads (current context fill).
     last_prompt: AtomicU64,
     closed: AtomicBool,
-    /// runners.py::_switch_effort_to_max — at most one effort fallback per runner
+    /// At most one effort fallback per runner
     effort_max: AtomicBool,
     effort_fallback_used: AtomicBool,
     /// Claude Code's circuit breaker: stop auto-compacting for this runner
@@ -873,12 +872,11 @@ impl ChatRunner {
             .unwrap_or(false)
     }
 
-    /// The session TeamSpec limit for model requests per turn (runners.py reads
-    /// it when the graph is built; here once per turn).
+    /// The session TeamSpec limit for model requests per turn (read once per turn).
     fn max_model_steps(&self) -> i64 {
         self.notify
             .core()
-            .state()
+            .state_brief()
             .ok()
             .and_then(|state| {
                 state
@@ -955,7 +953,7 @@ impl ChatRunner {
         Err(last_error)
     }
 
-    /// Anthropic Messages API (providers.py uses langchain-anthropic natively).
+    /// Anthropic Messages API.
     /// ponytail: text/tool_use/tool_result blocks only — no images or thinking blocks.
     fn chat_anthropic(&self, thread: &str, messages: &[Json], tools: &Json, control: &TurnControl) -> Result<Json, String> {
         let api_key = match &self.profile.api_key_env {
@@ -1409,7 +1407,7 @@ impl AgentRunner for ChatRunner {
         let control = self.controls.lock().unwrap().get(run_id).cloned();
         if let Some(control) = control {
             control.cancel();
-            let timeout = self.notify.core().state().ok()
+            let timeout = self.notify.core().state_brief().ok()
                 .and_then(|s| s["limits"]["cancel_confirm_timeout_s"].as_u64()).unwrap_or(60);
             if !control.wait_idle(std::time::Duration::from_secs(timeout)) {
                 return TurnStatus::OutcomeUnknown;
@@ -1744,17 +1742,17 @@ mod tests {
     }
 
     #[test]
-    fn effort_normalization_and_retry_classification_match_python() {
-        // providers.py::normalize_effort — deepseek has no xhigh level
+    fn effort_normalization_and_retry_classification() {
+        // normalize_effort — deepseek has no xhigh level
         assert_eq!(normalize_effort("deepseek", "xhigh"), "max");
         assert_eq!(normalize_effort("deepseek", "XHIGH"), "max");
         assert_eq!(normalize_effort("openai", "xhigh"), "xhigh");
         assert_eq!(normalize_effort("deepseek", "low"), "low");
-        // runners.py::_looks_like_effort_error
+        // looks_like_effort_error
         assert!(looks_like_effort_error("chat API 400: unsupported value: xhigh"));
         assert!(looks_like_effort_error("Reasoning effort 'xhigh' is not supported"));
         assert!(!looks_like_effort_error("chat API 400: bad request"));
-        // Python SDK retry semantics: transient statuses only
+        // retry semantics: transient statuses only
         for code in [408, 409, 429, 500, 503] {
             assert!(retryable_status(code), "{code} is transient");
         }

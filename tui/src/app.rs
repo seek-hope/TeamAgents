@@ -1,4 +1,4 @@
-//! Application state and key handling, ported from tui/app.py + panels.py.
+//! Application state and key handling.
 //! Pure logic: side effects leave as `Effect`s executed by the main loop, so
 //! every key path is unit-testable without a terminal or worker process.
 
@@ -52,11 +52,11 @@ pub enum Severity {
 #[derive(Clone, Debug)]
 pub enum Effect {
     /// Submit an action; ok_msg/err_msg are written to chat from the receipt
-    /// (Python writes them only after submit returns). {error} fills the error.
+    /// once submit returns. {error} fills the error.
     Submit { action: Json, ok_msg: Option<String>, err_msg: Option<String> },
-    /// TasksPanel::cancel — message depends on the receipt result status.
+    /// Cancel a task — message depends on the receipt result status.
     CancelTask(String),
-    /// ApprovalsPanel::_decide — toast '批准决定 {v0}：{v1}' from the receipt.
+    /// Decide an approval — toast '批准决定 {v0}：{v1}' from the receipt.
     DecideApproval { approval_id: String, decision: String },
     UserMessage(String),
     /// /status: main loop calls the worker's "usage" method and feeds the
@@ -100,6 +100,23 @@ pub enum OpResult {
 /// (text, style name from activity_status) — None = plain foreground.
 pub type Cell = (String, Option<&'static str>);
 
+/// Real session id behind a sessions row key: duplicate ids get a cursor-only
+/// `#archived`/`#active` suffix (sessions_rows) that is never a session id.
+fn session_row_id(key: &str) -> &str {
+    key.strip_suffix("#archived").or_else(|| key.strip_suffix("#active")).unwrap_or(key)
+}
+
+impl App {
+    /// Is the resolved sessions row archived? Rows are index-aligned with
+    /// self.sessions (sessions_rows pushes one row per entry, in order).
+    fn session_row_archived(&self, sel: Option<usize>) -> bool {
+        sel.and_then(|i| self.sessions.get(i))
+            .and_then(|s| s.get("archived"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    }
+}
+
 pub fn cell(text: String) -> Cell {
     (text, None)
 }
@@ -108,7 +125,7 @@ fn jstr(v: &Json, key: &str) -> String {
     v.get(key).and_then(|x| x.as_str()).unwrap_or("").to_string()
 }
 
-/// shorten like Python's text[-8:]
+/// last 8 chars (text[-8:] style)
 pub fn tail8(s: &str) -> String {
     let chars: Vec<char> = s.chars().collect();
     chars.iter().skip(chars.len().saturating_sub(8)).collect()
@@ -132,7 +149,7 @@ pub fn fmt_ts(ts: f64, with_seconds: bool) -> String {
     local.format(&format).unwrap_or_else(|_| "-".into())
 }
 
-/// app.py::activity_status — returns (label, color-name).
+/// Returns (label, color-name).
 pub fn activity_status(lang: &str, animations: bool, frame: usize, status: &str, run: Option<&RunInfo>) -> (String, &'static str) {
     let mut status = status.to_string();
     if let Some(r) = run {
@@ -312,7 +329,7 @@ impl App {
             .to_string()
     }
 
-    /// New committed state snapshot + event drain (app.py::_drain_events).
+    /// New committed state snapshot + event drain.
     pub fn apply_state(&mut self, st: &Json) -> Vec<Effect> {
         let mut effects = vec![];
         let events = st.get("events").and_then(|v| v.as_array()).cloned().unwrap_or_default();
@@ -469,7 +486,7 @@ impl App {
         effects
     }
 
-    /// Stream deltas from the worker (app.py::_on_model_delta + _flush_deltas).
+    /// Stream deltas from the worker.
     pub fn on_delta(&mut self, run_id: &str, agent_id: &str, text: &str) {
         self.latest_activity = ("{agent} 正在回复".into(), vec![("agent".to_string(), agent_id.to_string())]);
         if agent_id != self.leader_id() {
@@ -524,7 +541,7 @@ impl App {
 
     // ------------------------------------------------------------ activity
 
-    /// app.py::_animate_activity — returns (line1, color, line2).
+    /// Returns (line1, color, line2).
     pub fn activity_lines(&mut self) -> (String, &'static str, String) {
         let working: Vec<&RunInfo> = self.activity_runs.iter().filter(|r| r.status == "RUNNING").collect();
         let waiting_approval = self.activity_runs.iter().any(|r| r.status == "WAITING_APPROVAL");
@@ -719,7 +736,7 @@ impl App {
         let leader = jstr(spec, "leader_id");
         let can = |src: &str, tgt: &str, task: bool| {
             if task && src == leader {
-                return true; // models.py::can_delegate — the leader delegates to anyone
+                return true; // the leader delegates to anyone
             }
             channels.iter().any(|c| {
                 jstr(c, "source") == src && {
@@ -921,7 +938,7 @@ impl App {
 
     /// LogPanel title line.
     pub fn log_title(&self) -> String {
-        // panels.py::LogPanel.refresh_from — the title is always 事件流{filter}
+        // the title is always 事件流{filter}
         let suffix = match &self.log_member {
             Some(m) => self.t("（成员 {v0} · Enter 取消）", &[("v0", m)]),
             None => String::new(),
@@ -1083,7 +1100,7 @@ impl App {
 
     // ------------------------------------------------------------ keys
 
-    /// Global priority bindings (app.py::BINDINGS) fire before widget keys.
+    /// Global priority bindings fire before widget keys.
     /// Bracketed paste goes straight into the composer.
     /// Any deliberate input snaps the chat back to the newest entry.
     pub fn pin_to_bottom(&mut self) {
@@ -1377,6 +1394,8 @@ impl App {
         self.state = None;
         self.pending_delete = None;
         self.rewind_list.clear();
+        self.table_cursors.clear();
+        self.log_member = None;
         self.model_picker = None;
         self.model_labels.clear();
     }
@@ -1698,11 +1717,23 @@ impl App {
             _ => {}
         }
         let rows: Vec<String> = self.panel_row_keys(panel);
-        let (_, idx) = self.table_cursors.get(panel).cloned().unwrap_or((None, 0));
-        let selected = rows.get(idx).cloned();
+        let saved = self.table_cursors.get(panel).cloned().unwrap_or((None, 0));
+        // same selection resolution as the mouse path (select_row_visible): the
+        // saved key wins, the stale index is only a fallback — the 250ms poll
+        // may have reordered or removed rows since the cursor was stored
+        let sel = saved
+            .0
+            .and_then(|k| rows.iter().position(|rk| *rk == k))
+            .or_else(|| (saved.1 < rows.len()).then_some(saved.1));
+        // sessions row keys may carry a cursor-only dedup suffix
+        // (`sid#archived`, sessions_rows); actions always use the real id
+        let selected = sel.map(|i| {
+            let key = &rows[i];
+            if panel == "sessions" { session_row_id(key).to_string() } else { key.clone() }
+        });
         match (panel, key.code) {
             ("log", KeyCode::Enter) => {
-                self.log_member = None; // Enter clears the member filter (panels.py)
+                self.log_member = None; // Enter clears the member filter
             }
             ("team", KeyCode::Enter) => {
                 if selected.is_some() && self.log_member == selected {
@@ -1746,7 +1777,12 @@ impl App {
             }
             ("sessions", KeyCode::Enter) | ("sessions", KeyCode::Char('s')) => {
                 if let Some(target) = selected {
-                    if target != self.session_id {
+                    if self.session_row_archived(sel) {
+                        // the engine would silently open a fresh empty session
+                        // for the unknown archived id — block at the source
+                        let msg = self.t("会话已归档，不能切换", &[]);
+                        self.notify(msg, Severity::Warning, 5);
+                    } else if target != self.session_id {
                         return vec![Effect::SwitchSession(target)];
                     }
                 }
@@ -1754,12 +1790,23 @@ impl App {
             ("sessions", KeyCode::Char('n')) => return vec![Effect::NewSession],
             ("sessions", KeyCode::Char('a')) => {
                 if let Some(target) = selected {
-                    return vec![Effect::ArchiveSession(target)];
+                    if self.session_row_archived(sel) {
+                        let msg = self.t("会话已归档，不能归档/删除", &[]);
+                        self.notify(msg, Severity::Warning, 5);
+                    } else {
+                        return vec![Effect::ArchiveSession(target)];
+                    }
                 }
             }
             ("sessions", KeyCode::Char('d')) => {
                 if let Some(target) = selected {
-                    if self.pending_delete.as_deref() != Some(target.as_str()) {
+                    // re-checked on the confirm press too: a row archived
+                    // between the two d presses must not delete its active twin
+                    if self.session_row_archived(sel) {
+                        self.pending_delete = None;
+                        let msg = self.t("会话已归档，不能归档/删除", &[]);
+                        self.notify(msg, Severity::Warning, 5);
+                    } else if self.pending_delete.as_deref() != Some(target.as_str()) {
                         self.pending_delete = Some(target.clone());
                         let msg = self.t("再按一次 d 确认删除会话 {v0}", &[("v0", &target)]);
                         self.write_chat("system", &msg);
@@ -1785,8 +1832,8 @@ impl App {
         }
     }
 
-    /// Log panel filter: ↑↓ walks "all → each member → all" (panels.py: the log
-    /// stream is filtered by the highlighted member; Enter clears the filter).
+    /// Log panel filter: ↑↓ walks "all → each member → all"; the log
+    /// stream is filtered by the highlighted member; Enter clears the filter.
     fn cycle_log_member(&mut self, delta: isize) {
         let mut ring: Vec<Option<String>> = vec![None];
         ring.extend(self.panel_row_keys("team").into_iter().map(Some));
@@ -1899,8 +1946,8 @@ fn compact_json(v: &Json) -> String {
     serde_json::to_string(v).unwrap_or_default()
 }
 
-/// Python `str(value)` for JSON data — the approvals panel shows `str(args)[:60]`
-/// (`{'command': 'curl x', 'network': True}`), not JSON.
+/// `str(value)`-style repr for JSON data (single quotes, True/False/None) —
+/// the approvals panel shows `str(args)[:60]`, not JSON.
 pub fn py_repr(value: &Json) -> String {
     match value {
         Json::Null => "None".into(),
@@ -1921,8 +1968,8 @@ pub fn py_repr(value: &Json) -> String {
     }
 }
 
-/// Python `json.dumps(value)` defaults: `", "` / `": "` separators and non-ASCII
-/// escaped — the log panel stores and shows exactly that text.
+/// JSON text with `", "` / `": "` separators and non-ASCII escaped — the log
+/// panel stores and shows exactly that text.
 pub fn py_json_dumps(value: &Json) -> String {
     fn escape(text: &str) -> String {
         let mut out = String::new();
@@ -1965,7 +2012,7 @@ pub fn py_json_dumps(value: &Json) -> String {
     }
 }
 
-/// app.py::_approval_line
+/// One approval row's display line.
 pub fn approval_line(payload: &Json) -> String {
     let scope = payload.get("scope").cloned().unwrap_or(Json::Null);
     let tool = ["tool", "kind"].iter().find_map(|k| scope.get(k).and_then(|v| v.as_str())).unwrap_or("?");
@@ -1974,7 +2021,7 @@ pub fn approval_line(payload: &Json) -> String {
     format!("{} {tool} {}", jstr(payload, "agent_id"), head_chars(&args, 60))
 }
 
-/// panels.py::LogPanel — `{seq:>5} {kind:<18} {actor:<10} {payload_json[:160]}`
+/// Log line format: `{seq:>5} {kind:<18} {actor:<10} {payload_json[:160]}`
 fn format_log_line(ev: &Json, payload: &str) -> String {
     let seq = ev.get("sequence").and_then(|v| v.as_i64()).unwrap_or(0);
     let kind = jstr(ev, "kind");

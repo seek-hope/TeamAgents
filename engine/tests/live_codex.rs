@@ -1,4 +1,4 @@
-//! Live Codex app-server check (tests/test_p5_live_codex.py parity).
+//! Live Codex app-server check.
 //! Real `codex` CLI + real model; run explicitly:
 //!   TEAMAGENTS_LIVE_CODEX=1 cargo test --offline --test live_codex -- --nocapture
 //! Skips itself (no failure) when the flag is absent.

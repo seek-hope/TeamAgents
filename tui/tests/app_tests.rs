@@ -68,7 +68,7 @@ fn app_with(state: Json) -> App {
 }
 
 #[test]
-fn events_render_to_chat_like_python() {
+fn events_render_to_chat_lines() {
     let evs = vec![
         json!({"sequence": 1, "kind": "user_message", "actor_id": "user", "payload": {"text": "hi"}}),
         json!({"sequence": 2, "kind": "leader_reply", "actor_id": "leader", "payload": {"text": "hello", "run_id": "r1"}}),
@@ -798,4 +798,128 @@ fn fork_slash_command_resets_local_state() {
     app.show_fork_done(Ok(json!({"session_id": "s2", "forked_from": "s1", "catalog": {}, "user_config_path": ""})));
     assert_eq!(app.session_id, "s2");
     app.show_fork_done(Err("有回合进行中".into()));
+}
+
+/// Panel keyboard actions resolve the row by the saved key (like the mouse
+/// path), not by the stale index — the 250ms poll may reorder or remove rows,
+/// and the approvals panel must never decide the wrong tool call.
+#[test]
+fn panel_key_acts_on_the_key_resolved_row_after_reorder() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut app = app_with(state(vec![]));
+    app.panel = 3; // approvals
+    app.focus = Focus::Panel;
+    // cursor saved on ap2, then the poll reorders the rows: ap2 first
+    let mut st = state(vec![]);
+    st["pending_approvals"] = json!([
+        {"approval_id": "ap2", "session_id": "s1", "agent_id": "worker", "run_id": "r3",
+         "tool_call_id": "c2", "operation_hash": "h", "requested_scope": {"tool": "files", "args": {}},
+         "policy_revision": 1, "status": "PENDING", "created_at": 2.0, "decided_at": null},
+        st["pending_approvals"][0].clone(),
+    ]);
+    app.apply_state(&st);
+    app.table_cursors.insert("approvals", (Some("ap2".into()), 1)); // stale idx now points at ap1
+    let fx = app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+    assert!(matches!(&fx[0], Effect::DecideApproval { approval_id, .. } if approval_id == "ap2"));
+    // fallback: unknown saved key still acts on the (clamped) index row
+    app.table_cursors.insert("approvals", (Some("ap-gone".into()), 1));
+    let fx = app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+    assert!(matches!(&fx[0], Effect::DecideApproval { approval_id, decision } if approval_id == "ap1" && decision == "deny"));
+}
+
+/// Archived session rows must not switch: the engine would silently open a
+/// fresh empty session for the unknown id, so Enter/s is blocked with a hint.
+#[test]
+fn sessions_enter_on_archived_row_does_not_switch() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut app = app_with(state(vec![]));
+    app.sessions = vec![json!({"sessionId": "s9", "status": "CLOSED", "goalState": "done",
+        "events": 1, "sizeMb": 0.1, "updatedAt": 0.0, "archived": true, "locked": false})];
+    app.panel = 4; // sessions
+    app.focus = Focus::Panel;
+    app.table_cursors.insert("sessions", (Some("s9".into()), 0));
+    for code in [KeyCode::Enter, KeyCode::Char('s')] {
+        let fx = app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+        assert!(fx.is_empty(), "archived row produced {fx:?}");
+    }
+    assert!(app.toasts.iter().any(|t| t.text.contains("archived")));
+}
+
+/// Duplicate session ids get a cursor-only dedup key (`sid#archived`); actions
+/// must still send the real session id, and the archived duplicate must not
+/// switch.
+#[test]
+fn sessions_dedup_key_actions_use_the_real_session_id() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let entry = |archived: bool| json!({"sessionId": "s2", "status": "CLOSED", "goalState": "done",
+        "events": 1, "sizeMb": 0.1, "updatedAt": 0.0, "archived": archived, "locked": false});
+    let mut app = app_with(state(vec![]));
+    app.sessions = vec![entry(false), entry(true)];
+    app.panel = 4; // sessions
+    app.focus = Focus::Panel;
+    assert_eq!(app.panel_row_keys("sessions"), vec!["s2".to_string(), "s2#archived".to_string()]);
+    // a/d on the archived duplicate are blocked — the effect would carry the
+    // real id and hit the active twin
+    app.table_cursors.insert("sessions", (Some("s2#archived".into()), 1));
+    let fx = app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+    assert!(fx.is_empty());
+    assert_eq!(app.pending_delete, None);
+    let fx = app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+    assert!(fx.is_empty());
+    // the active row still archives/deletes with the real id
+    app.table_cursors.insert("sessions", (Some("s2".into()), 0));
+    let fx = app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+    assert!(matches!(&fx[0], Effect::ArchiveSession(s) if s == "s2"));
+    let fx = app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+    assert!(fx.is_empty());
+    assert_eq!(app.pending_delete.as_deref(), Some("s2"));
+    let fx = app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+    assert!(matches!(&fx[0], Effect::DeleteSession(s) if s == "s2"));
+}
+
+/// Archived rows must not be archived/deleted: with a duplicate id the real
+/// id would hit the active twin. Also covers the confirm-path TOCTOU: a row
+/// archived between the two d presses must not delete.
+#[test]
+fn sessions_archived_row_blocks_archive_and_delete() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let entry = |archived: bool| json!({"sessionId": "s9", "status": "CLOSED", "goalState": "done",
+        "events": 1, "sizeMb": 0.1, "updatedAt": 0.0, "archived": archived, "locked": false});
+    let mut app = app_with(state(vec![]));
+    app.sessions = vec![entry(true)];
+    app.panel = 4; // sessions
+    app.focus = Focus::Panel;
+    app.table_cursors.insert("sessions", (Some("s9".into()), 0));
+    // 'a' on the archived row: no effect, a hint is shown
+    let fx = app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+    assert!(fx.is_empty(), "archived row archive produced {fx:?}");
+    assert!(app.toasts.iter().any(|t| t.text.contains("cannot archive/delete")));
+    // 'd' + confirm on the archived row: no delete effect
+    for _ in 0..2 {
+        let fx = app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        assert!(fx.is_empty(), "archived row delete produced {fx:?}");
+    }
+    assert_eq!(app.pending_delete, None);
+    // TOCTOU: 'd' while active, archived before the confirm press
+    app.sessions = vec![entry(false)];
+    app.table_cursors.insert("sessions", (Some("s9".into()), 0));
+    let fx = app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+    assert!(fx.is_empty());
+    assert_eq!(app.pending_delete.as_deref(), Some("s9"));
+    app.sessions = vec![entry(true)];
+    let fx = app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+    assert!(fx.is_empty(), "TOCTOU confirm produced {fx:?}");
+    assert_eq!(app.pending_delete, None);
+}
+
+#[test]
+fn session_switch_clears_table_cursors_and_log_member() {
+    let mut app = App::new("s1", json!({}), "cfg".into(), "en", false, vec![]);
+    app.table_cursors.insert("tasks", (Some("task-x".into()), 3));
+    app.log_member = Some("worker".into());
+    app.show_fork_done(Ok(json!({
+        "session_id": "s2", "catalog": {}, "user_config_path": "cfg2", "forked_from": "s1"
+    })));
+    assert!(app.table_cursors.is_empty(), "stale panel cursor survived the switch");
+    assert_eq!(app.log_member, None, "stale log member filter survived the switch");
 }

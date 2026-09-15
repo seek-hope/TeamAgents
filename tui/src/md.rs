@@ -61,7 +61,7 @@ fn inline(text: &str) -> Vec<Span<'static>> {
     spans
 }
 
-/// Rich `Markdown` baseline (tui/panels.py renders Leader replies with it):
+/// Rich `Markdown` baseline for Leader replies:
 /// H1 centred+underlined, other headings bold, lists as " • item" / " 1 item"
 /// with 3-space nesting steps, block quotes "▌ text", rules a full `-` row.
 pub fn render(text: &str, width: usize) -> Vec<Line<'static>> {

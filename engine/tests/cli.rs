@@ -1,4 +1,4 @@
-//! CLI smoke: version / validate / sessions (ts/test/cancel-cli.test.ts port).
+//! CLI smoke: version / validate / sessions.
 
 use std::process::Command;
 

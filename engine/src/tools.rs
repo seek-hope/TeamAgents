@@ -1,4 +1,4 @@
-//! Sandboxed tool executors (execution.py / tools.py): file tools confined to
+//! Sandboxed tool executors: file tools confined to
 //! the member workspace, shell via bwrap when present, web fetch with an SSRF
 //! guard.
 
@@ -13,8 +13,8 @@ use std::time::{Duration, Instant};
 
 const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_OUTPUT: usize = 200_000;
-/// Virtual prefix members use to read long shell output back (execution.py
-/// routes `/artifacts/` to the session artifact directory).
+/// Virtual prefix members use to read long shell output back (`/artifacts/`
+/// routes to the session artifact directory).
 const ARTIFACTS_PREFIX: &str = "/artifacts/";
 
 /// Resolve `key` inside root; reject traversal and symlinks escaping root.
@@ -128,7 +128,7 @@ fn resolve_artifact(artifacts: Option<&PathBuf>, key: &str) -> Result<PathBuf, S
 }
 
 /// File/tool executor for one member's workspace. `artifacts` is the session
-/// artifact directory: long shell output lands there (execution.py::_save_artifact)
+/// artifact directory: long shell output lands there
 /// and members read it back through read_file/read_artifact.
 pub fn workspace_executor(
     root: PathBuf,
@@ -147,8 +147,8 @@ fn workspace_executor_with_control(
         let arg_or = |args: &Json, key: &str, default: &str| -> String {
             args.get(key).and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or(default).to_string()
         };
-        // `/artifacts/...` is a virtual path for this member, not a host path
-        // (execution.py routes that prefix to the session artifact directory)
+        // `/artifacts/...` is a virtual path for this member, not a host path;
+        // that prefix routes to the session artifact directory
         let member_path = |key: &str| -> Result<PathBuf, String> {
             if key.starts_with(ARTIFACTS_PREFIX) {
                 resolve_artifact(artifacts.as_ref(), key)
@@ -248,8 +248,8 @@ fn workspace_executor_with_control(
     }
 }
 
-/// One member's bound web providers. Binding a service *is* the authorization
-/// (tools.py::build_bound_tools): a member that did not bind a web service has
+/// One member's bound web providers. Binding a service *is* the authorization:
+/// a member that did not bind a web service has
 /// no web tool, and the executor says so instead of failing open.
 #[derive(Default, Clone)]
 pub(crate) struct WebTools {
@@ -291,7 +291,7 @@ pub(crate) fn web_tools(
     let mut tools = WebTools::default();
     for (name, binding) in candidates {
         // a required service that cannot load fails the member at load time
-        // (tools.py::build_bound_tools raises ToolServiceUnavailable)
+        // (ToolServiceUnavailable)
         if binding.required && binding.kind == "web_search" {
             let provider = binding.provider.clone().unwrap_or_else(|| "anysearch".into());
             if provider != "anysearch" {
@@ -432,7 +432,7 @@ fn skill_tool(catalog: &teamagents_core::models::UserConfig, args: &Json) -> Res
 }
 
 /// Executor for one member root: file/shell tools rooted there plus the web
-/// tools that member actually bound (tools.py::build_bound_tools).
+/// tools that member actually bound.
 pub fn member_executor(
     root: PathBuf,
     catalog: teamagents_core::models::UserConfig,
@@ -585,7 +585,7 @@ pub fn which(name: &str) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
-/// execution.py::bwrap_argv — read-only system mounts, sanitized env, private
+/// Read-only system mounts, sanitized env, private
 /// /tmp, no network unless the call was approved for it.
 pub fn bwrap_argv(workdir: &Path, network: bool, command: &str) -> Vec<String> {
     let mut argv: Vec<String> = vec!["bwrap".into()];
@@ -620,7 +620,7 @@ pub fn bwrap_argv(workdir: &Path, network: bool, command: &str) -> Vec<String> {
 
 /// Drain one pipe into a shared buffer. Reading happens on its own thread so a
 /// child that fills the pipe buffer (>64KiB on Linux) never blocks the wait
-/// loop (execution.py uses communicate() for the same reason).
+/// loop.
 fn drain(mut pipe: impl Read + Send + 'static) -> (Arc<Mutex<Vec<u8>>>, std::thread::JoinHandle<()>) {
     let sink = Arc::new(Mutex::new(Vec::new()));
     let target = sink.clone();
@@ -654,7 +654,7 @@ fn join_bounded(handles: Vec<std::thread::JoinHandle<()>>, grace: Duration) {
     }
 }
 
-/// execution.py::_save_artifact — long output is preserved under the session
+/// Long output is preserved under the session
 /// artifact directory and referenced by `/artifacts/<name>`.
 fn save_artifact(dir: &Path, output: &str) -> Option<String> {
     std::fs::create_dir_all(dir).ok()?;
@@ -663,7 +663,7 @@ fn save_artifact(dir: &Path, output: &str) -> Option<String> {
     Some(format!("{ARTIFACTS_PREFIX}{name}"))
 }
 
-/// "YYYYMMDD-HHMMSS" (UTC), the Python artifact name shape.
+/// "YYYYMMDD-HHMMSS" (UTC), the artifact name shape.
 fn compact_timestamp() -> String {
     let digits: String = iso8601(teamagents_core::models::now() as i64)
         .chars()
@@ -672,7 +672,7 @@ fn compact_timestamp() -> String {
     format!("{}-{}", &digits[..8], &digits[8..14])
 }
 
-/// execution.py::run_isolated — bwrap-only: missing isolation is an error,
+/// bwrap-only: missing isolation is an error,
 /// never a silent fallback to unsandboxed execution (plan §12.2).
 pub fn shell_run(
     command: &str,
@@ -770,8 +770,7 @@ fn shell_run_with_control(
     Ok(if status.success() { text } else { format!("{text}\n(exit {})", status.code().unwrap_or(-1)) })
 }
 
-/// Host part of `rest` ("host[:port]/path..."), brackets and userinfo included
-/// (urlparse(url).hostname parity).
+/// Host part of `rest` ("host[:port]/path..."), brackets and userinfo included.
 fn url_host(rest: &str) -> &str {
     let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
     let authority = authority.rsplit_once('@').map(|(_, host)| host).unwrap_or(authority);
@@ -781,9 +780,8 @@ fn url_host(rest: &str) -> &str {
     }
 }
 
-/// tools.py::guard_url — block private/loopback/reserved/multicast targets.
-/// The blocks mirror Python's `ipaddress` (which the Python guard trusts), so
-/// the two builds refuse the same addresses.
+/// Block private/loopback/reserved/multicast targets: the not-globally-
+/// reachable blocks of the IANA special-purpose address registries.
 pub fn guard_url(url: &str) -> Result<String, String> {
     let rest = url
         .strip_prefix("http://")
@@ -820,9 +818,8 @@ pub fn guard_url(url: &str) -> Result<String, String> {
     Ok(url.to_string())
 }
 
-// `ipaddress`'s not-globally-reachable blocks (iana special registries), which
-// tools.py::guard_url rejects through is_private/is_loopback/is_link_local/
-// is_reserved/is_multicast. Keep in sync with the Python module.
+// Not-globally-reachable blocks from the IANA special-purpose registries,
+// rejected as private/loopback/link-local/reserved/multicast.
 const IPV4_BLOCKED: &[(u128, u8)] = &[
     (0x0000_0000, 8),   // 0.0.0.0/8
     (0x0a00_0000, 8),   // 10.0.0.0/8
@@ -928,7 +925,7 @@ pub fn is_private_addr(addr: std::net::IpAddr) -> bool {
     }
 }
 
-/// AnySearch provider (tools.py::_web_search_tool): POST {query, max_results}.
+/// AnySearch provider: POST {query, max_results}.
 pub fn web_search(
     query: &str,
     max_results: i64,
@@ -979,10 +976,47 @@ fn parse_search_response(payload: &Json, query: &str, count: i64, include_conten
     json!({"query": query, "provider": "anysearch", "results": results})
 }
 
+type UrlGuard = std::sync::Arc<dyn Fn(&str) -> Result<String, String> + Send + Sync>;
+
 /// GET with redirects followed manually so every hop passes the SSRF guard
-/// (ureq's built-in following would only guard the first URL, P1-2).
-fn http_get_guarded(url: &str, guard: &dyn Fn(&str) -> Result<String, String>) -> Result<ureq::Response, String> {
-    let agent = ureq::AgentBuilder::new().redirects(0).build();
+/// (ureq's built-in following would only guard the first URL, P1-2). The
+/// custom resolver vets DNS answers through the same guard and hands only the
+/// passing addresses to the connector: a rebind between guard and connect
+/// cannot reroute the request, and each redirect hop re-resolves through it.
+fn http_get_guarded(url: &str, guard: &UrlGuard) -> Result<ureq::Response, String> {
+    let resolver = {
+        let guard = guard.clone();
+        move |netloc: &str| -> std::io::Result<Vec<std::net::SocketAddr>> {
+            use std::net::ToSocketAddrs;
+            let host = match netloc.strip_prefix('[') {
+                Some(rest) => rest.split(']').next().unwrap_or(""),
+                None => netloc.rsplit_once(':').map(|(h, _)| h).unwrap_or(netloc),
+            };
+            let addrs: Vec<std::net::SocketAddr> = netloc.to_socket_addrs()?.collect();
+            // a literal was already vetted by the guard when it approved the URL
+            if host.parse::<std::net::IpAddr>().is_ok() {
+                return Ok(addrs);
+            }
+            let vetted: Vec<std::net::SocketAddr> = addrs
+                .into_iter()
+                .filter(|addr| {
+                    let check = match addr.ip() {
+                        std::net::IpAddr::V4(ip) => format!("http://{ip}"),
+                        std::net::IpAddr::V6(ip) => format!("http://[{ip}]"),
+                    };
+                    guard(&check).is_ok()
+                })
+                .collect();
+            if vetted.is_empty() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!("refusing private address for {host}"),
+                ));
+            }
+            Ok(vetted)
+        }
+    };
+    let agent = ureq::AgentBuilder::new().redirects(0).resolver(resolver).build();
     let mut current = guard(url)?;
     for _ in 0..10 {
         let response = agent
@@ -1002,9 +1036,9 @@ fn http_get_guarded(url: &str, guard: &dyn Fn(&str) -> Result<String, String>) -
     Err("web_fetch: too many redirects".into())
 }
 
-/// tools.py::_web_fetch_tool — guarded GET, title + readable text body.
+/// Guarded GET, title + readable text body.
 pub fn web_fetch(url: &str, max_bytes: usize, allow_private: bool) -> Result<Json, String> {
-    let guard = |u: &str| if allow_private { Ok(u.to_string()) } else { guard_url(u) };
+    let guard: UrlGuard = std::sync::Arc::new(move |u: &str| if allow_private { Ok(u.to_string()) } else { guard_url(u) });
     let response = http_get_guarded(url, &guard)?;
     let content_type = response.header("content-type").unwrap_or("").to_string();
     let final_url = response.get_url().to_string();
@@ -1125,11 +1159,34 @@ mod tests {
         // P1-2: a redirect to a target the guard refuses must stop the fetch
         let second = serve_once("HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: 6\r\n\r\nsecret".into());
         let first = serve_once(format!("HTTP/1.1 302 Found\r\nlocation: {second}\r\ncontent-length: 0\r\n\r\n"));
-        let guard = |u: &str| {
-            if u == first { Ok(u.to_string()) } else { Err(format!("private address refused: {u}")) }
-        };
+        let allowed = first.clone();
+        let guard: UrlGuard = std::sync::Arc::new(move |u: &str| {
+            if u == allowed { Ok(u.to_string()) } else { Err(format!("private address refused: {u}")) }
+        });
         let err = http_get_guarded(&first, &guard).unwrap_err();
         assert!(err.contains("private address"), "{err}");
+    }
+
+    #[test]
+    fn resolver_refuses_dns_answers_the_guard_rejects() {
+        // DNS-rebinding TOCTOU: the name-based guard accepts "localhost", but
+        // its loopback answer must not reach the connector once re-resolved
+        let guard: UrlGuard = std::sync::Arc::new(|u: &str| {
+            if u.contains("localhost") { Ok(u.to_string()) } else { Err(format!("private address refused: {u}")) }
+        });
+        let err = http_get_guarded("http://localhost:1/", &guard).unwrap_err();
+        assert!(err.contains("refusing private address"), "{err}");
+    }
+
+    #[test]
+    fn resolver_connects_to_the_vetted_answer() {
+        // a name (not a literal) is resolved, vetted, and the vetted address
+        // is the one dialed
+        let server = serve_once("HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: 2\r\n\r\nhi".into());
+        let url = server.replace("127.0.0.1", "localhost");
+        let guard: UrlGuard = std::sync::Arc::new(|u: &str| Ok(u.to_string()));
+        let response = http_get_guarded(&url, &guard).unwrap();
+        assert_eq!(response.status(), 200);
     }
 
     #[test]
@@ -1231,7 +1288,7 @@ mod tests {
         assert!(guard_url("http://localhost/x").is_err());
         assert!(guard_url("ftp://example.com/x").is_err());
         assert_eq!(guard_url("https://93.184.216.34/x").unwrap(), "https://93.184.216.34/x");
-        // ipaddress parity: reserved/multicast/documentation/benchmarking blocks
+        // reserved/multicast/documentation/benchmarking blocks
         for blocked in [
             "http://224.0.0.1/",
             "http://198.18.0.1/",
@@ -1256,7 +1313,7 @@ mod tests {
     }
 
     #[test]
-    fn bwrap_argv_matches_python_and_runs_isolated() {
+    fn bwrap_argv_is_stable_and_runs_isolated() {
         let dir = std::env::temp_dir();
         let argv = bwrap_argv(&dir, false, "echo hi");
         assert!(argv.iter().any(|a| a == "--unshare-net"), "network off by default");
@@ -1272,7 +1329,7 @@ mod tests {
     }
 
     #[test]
-    fn web_shapes_match_python_and_bindings_are_required() {
+    fn web_shapes_are_stable_and_bindings_are_required() {
         let payload = json!({"code": 0, "data": {"results": [
             {"title": "T", "url": "https://x", "snippet": "S", "content": "BODY"},
         ]}});
@@ -1337,25 +1394,25 @@ mod tests {
 
         // happy path: an allowed redirect is followed to its 200
         let (a, b) = (hop_a.clone(), hop_b.clone());
-        let allow_local = move |u: &str| {
+        let allow_local: UrlGuard = std::sync::Arc::new(move |u: &str| {
             if u.starts_with(&a) || u.starts_with(&b) {
                 Ok(u.to_string())
             } else {
                 Err(format!("blocked {u}"))
             }
-        };
+        });
         let response = http_get_guarded(&format!("{hop_a}/x"), &allow_local).unwrap();
         assert_eq!(response.status(), 200);
 
         // the guard must also run on the redirect target, not just hop one
         let blocked_base = hop_blocked.clone();
-        let allow_first_only = move |u: &str| {
+        let allow_first_only: UrlGuard = std::sync::Arc::new(move |u: &str| {
             if u.starts_with(&blocked_base) {
                 Ok(u.to_string())
             } else {
                 Err(format!("blocked {u}"))
             }
-        };
+        });
         let err = http_get_guarded(&format!("{hop_blocked}/x"), &allow_first_only).unwrap_err();
         assert!(err.contains("blocked"), "redirect target escaped the guard: {err}");
     }

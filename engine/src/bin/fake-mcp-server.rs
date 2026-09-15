@@ -1,4 +1,4 @@
-//! Minimal stdio MCP server for tests (the former tests/mcp_echo_server.py):
+//! Minimal stdio MCP server for tests:
 //! one `echo` tool over newline-delimited JSON-RPC on stdin/stdout.
 //! `--noisy-stderr <bytes>` writes that many bytes to stderr before serving,
 //! which is how the stdio client's stderr handling is exercised.

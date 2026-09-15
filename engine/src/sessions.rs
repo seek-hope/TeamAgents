@@ -1,4 +1,4 @@
-//! Session inventory / lock / archive / delete (sessions.py, session paths).
+//! Session inventory / lock / archive / delete.
 
 use crate::config::sessions_dir;
 use rusqlite::{Connection, OpenFlags};
@@ -15,6 +15,16 @@ pub struct SessionPaths {
     pub artifacts: PathBuf,
     pub locks: PathBuf,
     pub lock: PathBuf,
+}
+
+/// Same alphabet as agent ids (core models.rs::TeamSpec::validate). A session
+/// id becomes a directory name; anything outside the whitelist never reaches
+/// join(), so ".." cannot walk out of the sessions root.
+pub(crate) fn validate_session_id(session_id: &str) -> Result<(), String> {
+    if session_id.is_empty() || !session_id.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+        return Err(format!("invalid session id {session_id:?}: use letters, digits, '-', '_'"));
+    }
+    Ok(())
 }
 
 pub fn session_paths(session_id: &str) -> SessionPaths {
@@ -34,7 +44,7 @@ pub fn default_session_id(cwd: &Path) -> String {
     format!("proj_{}", &hex[..12])
 }
 
-/// An flock held for as long as the session runs (session.py::acquire_session_lock).
+/// An flock held for as long as the session runs.
 /// The kernel releases it when the process dies — kill -9 included — so a
 /// crashed run never leaves the session "already running".
 pub struct SessionLock {
@@ -49,6 +59,7 @@ impl Drop for SessionLock {
 
 /// Err means another process holds the session lock.
 pub fn acquire_session_lock(session_id: &str) -> Result<SessionLock, String> {
+    validate_session_id(session_id)?;
     let paths = session_paths(session_id);
     std::fs::create_dir_all(&paths.base).map_err(|e| e.to_string())?;
     let file = std::fs::OpenOptions::new()
@@ -266,9 +277,19 @@ pub fn new_session_id(cwd: &Path) -> String {
 }
 
 pub fn archive_session(session_id: &str, base: Option<&Path>) -> Result<String, String> {
+    validate_session_id(session_id)?;
     let root = base.map(Path::to_path_buf).unwrap_or_else(sessions_dir);
     if is_session_locked(session_id, Some(&root)) {
         return Err(format!("session {session_id} is running"));
+    }
+    let source = root.join(session_id);
+    // checked before touching any old archive: a failed rename must never
+    // leave the previously archived copy destroyed
+    // team.db specifically, not the bare dir: a ghost left by a failed open
+    // (artifacts/ + session.lock only) is not a session and must not be
+    // archived over the real copy (same filter as list_sessions)
+    if !source.join("team.db").exists() {
+        return Err(format!("session {session_id} does not exist"));
     }
     let target_dir = root.join("archived");
     std::fs::create_dir_all(&target_dir).map_err(|e| e.to_string())?;
@@ -281,8 +302,9 @@ pub fn archive_session(session_id: &str, base: Option<&Path>) -> Result<String, 
 }
 
 /// Refuses while it runs elsewhere, and refuses to delete member worktrees
-/// that still hold uncommitted or unmerged work (sessions.py::delete_session).
+/// that still hold uncommitted or unmerged work.
 pub fn delete_session(session_id: &str, base: Option<&Path>) -> Result<(), String> {
+    validate_session_id(session_id)?;
     let root = base.map(Path::to_path_buf).unwrap_or_else(sessions_dir);
     if is_session_locked(session_id, Some(&root)) {
         return Err(format!("session {session_id} is running"));
@@ -319,11 +341,7 @@ pub fn delete_session(session_id: &str, base: Option<&Path>) -> Result<(), Strin
             }
         }
     }
-    match std::fs::remove_dir_all(&path) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e.to_string()),
-    }
+    std::fs::remove_dir_all(&path).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -348,6 +366,52 @@ mod tests {
         drop(lock);
         assert!(!is_session_locked(session, None), "dropping the handle releases it");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_ids_outside_the_whitelist_are_refused_before_touching_disk() {
+        let _env = crate::env_lock();
+        let root = std::env::temp_dir().join(format!("ta-sid-test-{}", std::process::id()));
+        let state = std::env::temp_dir().join(format!("ta-sid-state-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&state);
+        std::env::set_var("XDG_STATE_HOME", &state);
+        for bad in ["../../../x", "..", "a/b", ""] {
+            assert!(delete_session(bad, Some(&root)).is_err(), "delete {bad:?}");
+            assert!(archive_session(bad, Some(&root)).is_err(), "archive {bad:?}");
+            assert!(acquire_session_lock(bad).is_err(), "lock {bad:?}");
+            let opened = crate::session::open_session(crate::session::OpenOptions {
+                session_id: Some((*bad).into()),
+                ..Default::default()
+            });
+            assert!(opened.is_err(), "open {bad:?}");
+        }
+        assert!(!state.exists(), "open_session created nothing outside the sessions root");
+        assert!(validate_session_id("proj_ok-1").is_ok());
+        let _ = std::fs::remove_dir_all(&state);
+    }
+
+    #[test]
+    fn archiving_an_id_that_only_exists_in_the_archive_keeps_the_archive() {
+        let root = std::env::temp_dir().join(format!("ta-arch-only-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let marker = root.join("archived/s-only/marker");
+        std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        std::fs::write(&marker, "data").unwrap();
+        assert!(archive_session("s-only", Some(&root)).is_err(), "no live session to archive");
+        assert!(marker.exists(), "the archived copy survived the failed rename");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn deleting_a_missing_session_is_an_error_not_a_success() {
+        let root = std::env::temp_dir().join(format!("ta-del-missing-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        assert!(delete_session("ghost", Some(&root)).is_err(), "nothing to delete");
+        std::fs::create_dir_all(root.join("present")).unwrap();
+        assert!(delete_session("present", Some(&root)).is_ok());
+        assert!(!root.join("present").exists());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

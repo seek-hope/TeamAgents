@@ -1,4 +1,4 @@
-//! Deterministic scripted member (agents.py::FakeMember) used by the scenario
+//! Deterministic scripted member used by the scenario
 //! tests and by the worker's `scripts` option.
 //!
 //! Steps: ["call", tool, args] | ["barrier", name] | ["sleep", seconds]

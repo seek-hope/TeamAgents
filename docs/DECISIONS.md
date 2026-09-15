@@ -639,3 +639,29 @@ stale_model_overrides_are_dropped_on_open（未知成员/未知 profile/越规�
   （注释已标）。初始 TeamSpec（用户手写 YAML）不自动建 profile，仍须引用已配置名字。
 证据：chat_e2e::review_add_agent_auto_creates_member_profile（省略/模型 ID 两种写法、
 改写落 spec、profiles.json 内容、报表解析、重开后仍生效）。
+
+## D-31 codex 通道 session 级批准收紧为按 operation_hash 绑定（2026-09-15）
+
+用户确认的收紧：core 的 session 级批准按 `operation_hash` 绑定单一操作（基准 §12.2），
+而 codex app-server 侧的 `acceptForSession` 缓存覆盖后续更多同类操作，两侧语义不一致。
+统一向 core 看齐：
+
+- 决策为 session 时 runner 对 app-server 只回单次 `accept`（永不再发 `acceptForSession`），
+  app-server 因此每次调用都来问；后续同 hash 操作由 engine 闭环的
+  `session_grants`（core `session_approval_cache` 行 + 内存 revision 守卫双重条件）
+  自动放行，不同操作重新产生 PENDING 行请用户决定。
+- 批准 waiter 通道改传 core 原生决策词汇（once/session/deny），在应答点映射为线上词汇，
+  使 session 决策能在应答前登记 per-hash grant（带与 ToolGateway 相同的 revision 复核）。
+- operation_hash 的输入按 kind 投影判别字段（commandExecution→command/cwd、
+  permissions→permissions/cwd；fileChange 与未知 kind 用整个 payload，fail-closed——
+  fileChange 的线上参数没有判别字段（grantRoot 为 UNSTABLE 且通常缺失），
+  宁可每次询问也不把整类文件改动并入一个 grant），
+  因线上 params 携带每次调用唯一的 threadId/turnId/itemId/startedAtMs，整体 hash 永不相等。
+- 回合已终态的在途批准即使命中 grant 也回 decline（拆除期不得执行）；同 hash 并发 waiter
+  由 grant 一并释放（回 once、作废多余 PENDING 行）；set_mode 的 bump+clear 在 grants 锁内
+  完成，消除"新 revision + 旧 grant"的观察窗口。
+证据：codex::tests::session_decision_is_single_op_on_the_wire_and_cached_per_operation
+（session 决策线上为 accept、同 hash 新 id 自动放行不挂 PENDING、终态 run decline、
+同 hash 兄弟 waiter 被释放且多余 PENDING 作废、set_mode 后重新询问、deny 仍 decline）；
+契约测试 codex_contract::codex_session_grant_auto_accepts_the_identical_operation
+（fake app-server 两次同命令请求，两次线上应答均为 accept，第二次不产生 PENDING 行）。

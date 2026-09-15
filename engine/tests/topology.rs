@@ -1,5 +1,4 @@
-//! T11–T13: topology changes go through the Leader and apply at a boundary
-//! (tests/test_p4_topology.py parity).
+//! T11–T13: topology changes go through the Leader and apply at a boundary.
 
 mod support;
 

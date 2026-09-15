@@ -5,9 +5,8 @@
 - `TeamAgents-Implementation-Plan.zh-CN.md` 是产品与实现的基准（P0–P7、T1–T24、DP-1..12）。
 - **任何与方案不同的实现（更简单或更好的方案）必须先告知用户并得到确认，才可写进代码。**
   已确认的偏离记录在 `docs/DECISIONS.md`；未确认的只讨论，不落码。
-- 本仓库现在**只有 Rust 实现**：Python 原版已在迁移完成后移除（历史保留在 git；`review/`
-  与 `docs/RECONSTRUCT.md` 里出现的 `src/teamagents/...`、`tests/test_*.py` 均为历史引用）。
-- 不要再引入 Node/TypeScript（D-17）或 Python 实现代码；`tui/scripts/*.py` 只是真终端测试工具。
+- 本仓库**只有 Rust 实现**（core / engine / tui 三个 crate），是独立项目；不要再引入
+  Node/TypeScript（D-17）或 Python 实现代码；`tui/scripts/*.py` 只是真终端测试工具。
 
 ## 快速命令
 
@@ -20,8 +19,8 @@ python3 tui/scripts/pty_smoke.py         # 真终端冒烟
 python3 tui/scripts/pty_click_check.py   # 真终端点击命中检查
 ```
 
-- 当前基线：core 43 / engine 119 / tui 70 项测试全绿。验收清单 `docs/ACCEPTANCE.md`，
-  迁移台账与未移植项 `docs/RECONSTRUCT.md`，决策记录 `docs/DECISIONS.md`。
+- 当前基线：core 50 / engine 140 / tui 80 项测试全绿。验收清单 `docs/ACCEPTANCE.md`，
+  决策记录 `docs/DECISIONS.md`。
 
 ## 架构速览（改代码前先读这 6 行）
 

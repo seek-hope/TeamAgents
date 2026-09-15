@@ -1,19 +1,16 @@
 # TeamAgents
 
 运行在 Linux 终端上的**团队式 Agent 产品**：你只和 Leader 说话，Leader 按需组队、委派、
-协调多个成员（内置 Deep Agents 成员 + 本机 Codex 执行成员）完成目标。
+协调多个成员（内置成员 + 本机 Codex 执行成员）完成目标。
 团队结构、通信权限、观察权限都是**运行时校验的数据**，不是提示词约定。
 
 **全 Rust 实现**：`core/`（权威核心）、`engine/`（运行时/成员/CLI）、`tui/`（ratatui 界面）。
-Python 原版在迁移完成后已从仓库移除，只保留在 git 历史里（最后一个含 Python 实现的提交是
-`ba1caed`：`git show ba1caed:src/teamagents/control.py` 之类的路径仍可查阅）。
-基准文档：`TeamAgents-Implementation-Plan.zh-CN.md`；迁移台账 `docs/RECONSTRUCT.md`；
-设计决策 `docs/DECISIONS.md`；追加审查修复见
-[`review/fix-notes-rust-followup-2026-09-13.md`](review/fix-notes-rust-followup-2026-09-13.md)。
+基准文档：`TeamAgents-Implementation-Plan.zh-CN.md`；设计决策 `docs/DECISIONS.md`；
+审查与修复记录见 `review/`。
 
 ---
 
-## 启动（Rust 版）
+## 启动
 
 ### 1) 构建
 
@@ -36,9 +33,8 @@ export ANYSEARCH_API_KEY=...     # 可选：web_search / web_fetch
 
 读取用户配置 `$XDG_CONFIG_HOME/teamagents/config.toml`，并合并项目配置
 `<cwd>/.teamagents/config.toml`（同名条目用户定义优先；项目工具绑定需
-`[permissions] trust_project_tools = true`）。MCP（stdio）与 Skills/指令文件均已支持：
-Skills 走提示词注入（不是虚拟文件系统），MCP 仅 stdio（无 http/sse）。
-与旧 Python 版的全部差异见 `docs/USER-GUIDE.md` §0 与 `docs/DECISIONS.md` D-21。
+`[permissions] trust_project_tools = true`）。MCP（stdio 与 streamable HTTP）与
+Skills/指令文件均已支持：Skills 内容注入系统提示词。细节见 `docs/USER-GUIDE.md`。
 
 ### 3) 自检并进入界面
 
@@ -96,21 +92,10 @@ TeamSpec 示例。
 
 ## 文档地图
 
-| 文档 | 内容 | 适用版本 |
-|---|---|---|
-| `docs/RECONSTRUCT.md` | Rust 重构架构、移植台账、未移植项、快速命令 | Rust（本分支） |
-| `docs/DECISIONS.md` | 全部已确认决策（D-1..D-22），含迁移取舍、审查修复批次与保留差异 | Rust |
-| `docs/USER-GUIDE.md` | 配置、权限、恢复、故障处理、TeamSpec；§0 列出与旧 Python 版的差异 | Rust |
-| `docs/ACCEPTANCE.md` | T1–T24 验收对照；证据以 Rust 测试为主（Python 侧为历史证据） | Rust |
-| `docs/STATUS.md` | P0–P7 阶段状态（迁移期 Python 基准的历史快照） | 历史 |
-| `TeamAgents-Implementation-Plan.zh-CN.md` | 产品与实现基准 | 两版 |
-
----
-
-## 迁移历史
-
-Python 实现（`src/teamagents/`、`tests/`、`pyproject.toml`）完成对照使命后已删除：Rust 三 crate
-通过全部验收场景，`review/findings-rust-review-2026-09-13.md` 与 `review/fix-notes-rust-review-2026-09-13.md`
-记录了迁移完成时的全面审查与修复。需要旧实现时用 git 查阅（例如 `git show ba1caed:src/teamagents/control.py`）。
-仍与旧版存在的行为差异集中在 `docs/DECISIONS.md` D-21（MCP http/sse 与 `general-purpose`
-子代理未移植等）。
+| 文档 | 内容 |
+|---|---|
+| `docs/DECISIONS.md` | 全部已确认决策（D-1..），含架构取舍与审查修复批次 |
+| `docs/USER-GUIDE.md` | 配置、权限、恢复、故障处理、TeamSpec；TUI 布局与键位 |
+| `docs/ACCEPTANCE.md` | T1–T24 验收对照；证据即 Rust 测试套件 |
+| `docs/TUI-CODEX-REFERENCE.md` | TUI 交互约定与上游 Codex 参考 |
+| `TeamAgents-Implementation-Plan.zh-CN.md` | 产品与实现基准 |

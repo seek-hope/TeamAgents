@@ -1,4 +1,4 @@
-//! Authoritative state: SQLite (WAL), ported from src/teamagents/storage.py.
+//! Authoritative state: SQLite (WAL).
 //! Thin synchronous wrapper; the caller (Control) serializes writes.
 
 use crate::models::*;
@@ -203,7 +203,7 @@ fn stored_enum<T: serde::de::DeserializeOwned>(v: String, what: &str) -> rusqlit
 }
 
 /// `Limits` fields that still exist; anything else in a stored spec is a key
-/// removed from the model since (D-10) and is dropped on load, like Python.
+/// removed from the model since (D-10) and is dropped on load.
 const LIMITS_KEYS: &[&str] = &[
     "max_parallel_workers",
     "max_members",
@@ -219,7 +219,7 @@ fn enum_str<T: serde::Serialize>(v: &T) -> String {
 
 pub struct Store {
     pub conn: Connection,
-    /// Re-entrant transaction depth (storage.py::_Tx: BEGIN IMMEDIATE at depth 0).
+    /// Re-entrant transaction depth (BEGIN IMMEDIATE at depth 0).
     tx_depth: std::cell::Cell<usize>,
 }
 
@@ -228,7 +228,7 @@ impl Store {
         let conn = Connection::open(path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "busy_timeout", 5000_i64)?;
-        // storage.py sets no `synchronous` pragma; keep SQLite's FULL default.
+        // no `synchronous` pragma: keep SQLite's FULL default
         conn.execute_batch(SCHEMA)?;
         let store = Self { conn, tx_depth: std::cell::Cell::new(0) };
         store.check_schema_version()?;
@@ -254,16 +254,22 @@ impl Store {
                     "INSERT INTO meta(key, value) VALUES('db_schema_version', ?1)",
                     params![DB_SCHEMA_VERSION.to_string()],
                 )?;
+                Ok(())
             }
-            Some(v) if v.parse::<i64>().ok() == Some(DB_SCHEMA_VERSION) => {}
-            Some(v) => panic!(
-                "database schema version {v} != supported {DB_SCHEMA_VERSION}; back up and migrate before opening"
-            ),
+            Some(v) if v.parse::<i64>().ok() == Some(DB_SCHEMA_VERSION) => Ok(()),
+            // a version mismatch is data, not an invariant (same principle as
+            // stored_enum): core is linked in-process, a panic kills the host
+            Some(v) => Err(rusqlite::Error::FromSqlConversionFailure(
+                usize::MAX,
+                rusqlite::types::Type::Text,
+                Box::<dyn std::error::Error + Send + Sync>::from(format!(
+                    "database schema version {v} != supported {DB_SCHEMA_VERSION}; back up and migrate before opening"
+                )),
+            )),
         }
-        Ok(())
     }
 
-    // -- transactions (storage.py::_Tx) ----------------------------------------
+    // -- transactions ----------------------------------------------------------
 
     pub fn begin(&self) -> rusqlite::Result<()> {
         if self.tx_depth.get() == 0 {
@@ -379,7 +385,7 @@ impl Store {
             .unwrap_or(0))
     }
 
-    /// storage.py::load_team_spec — stored specs are read for their own errors
+    /// Stored specs are read for their own errors
     /// (no panic), and limits keys removed since the row was written are dropped
     /// so old sessions keep loading (TeamSpec *files* stay strict).
     pub fn load_team_spec(&self, session_id: &str, revision: Option<i64>) -> Result<TeamSpec, String> {
@@ -397,7 +403,7 @@ impl Store {
             .optional()
             .map_err(|e| e.to_string())?;
         let Some(b) = blob else {
-            // storage.py raises KeyError("no team spec revision ...") — readable refusal, not a crash
+            // a missing revision is a readable refusal, not a crash
             return Err(format!("no team spec revision {revision} for session {session_id:?}"));
         };
         let mut data: Json = serde_json::from_str(&b).map_err(|e| format!("stored spec is invalid: {e}"))?;
@@ -488,7 +494,7 @@ impl Store {
         Ok(self.conn.last_insert_rowid())
     }
 
-    /// storage.py::next_batch_no — hand out the member's next batch number and
+    /// Hand out the member's next batch number and
     /// advance the ledger in the same transaction (caller holds the tx).
     pub fn next_batch_no(&self, session_id: &str, agent_id: &str) -> rusqlite::Result<i64> {
         let batch: i64 = self
@@ -509,7 +515,7 @@ impl Store {
         Ok(batch)
     }
 
-    /// storage.py::applied_batch — the member's consume cursor.
+    /// The member's consume cursor.
     pub fn applied_batch(&self, session_id: &str, agent_id: &str) -> rusqlite::Result<i64> {
         Ok(self
             .conn
@@ -522,7 +528,7 @@ impl Store {
             .unwrap_or(0))
     }
 
-    /// storage.py::ack_deliveries_exact's cursor half: advance the member's
+    /// The cursor half of the ack: advance the member's
     /// applied-batch ledger to at least `batch_no`.
     fn advance_applied_batch(&self, session_id: &str, agent_id: &str, batch_no: i64) -> rusqlite::Result<()> {
         self.conn.execute(
@@ -552,9 +558,9 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    /// storage.py::ack_deliveries_exact — mark exactly these ids applied (never a
+    /// Mark exactly these ids applied (never a
     /// batch range) and advance the member's applied-batch cursor.
-    /// `_batch_no` is kept for existing callers; matching is by id like Python.
+    /// `_batch_no` is kept for existing callers; matching is by id.
     pub fn ack_deliveries_exact(&self, session_id: &str, agent_id: &str, _batch_no: i64, delivery_ids: &[i64]) -> rusqlite::Result<i64> {
         if delivery_ids.is_empty() {
             return Ok(0);
@@ -595,6 +601,10 @@ impl Store {
         Ok(())
     }
 
+    // ponytail: lookups by primary key assume one DB serves one session
+    // (engine opens a per-session team.db today). If a single DB ever hosts
+    // multiple sessions, get_task/get_run/decide_approval/reassign_tasks need
+    // a session_id filter.
     pub fn get_task(&self, task_id: &str) -> rusqlite::Result<Option<Task>> {
         self.conn
             .query_row(&format!("SELECT {TASK_COLS} FROM tasks WHERE task_id=?1"), params![task_id], row_to_task)
@@ -614,7 +624,7 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    /// storage.py::compare_and_set_task — optimistic status transition.
+    /// Optimistic status transition.
     pub fn compare_and_set_task(&self, task_id: &str, expected: &str, new: TaskStatus, result_refs: Option<&[String]>) -> rusqlite::Result<bool> {
         let refs = result_refs.map(|r| serde_json::to_string(r).unwrap());
         let n = match refs {
@@ -800,7 +810,7 @@ fn event_row(row: &Row) -> rusqlite::Result<Json> {
 }
 
 // ---------------------------------------------------------------------------
-// Extended ops (control-layer needs), ported from storage.py
+// Extended ops (control-layer needs)
 // ---------------------------------------------------------------------------
 
 impl Store {
@@ -834,7 +844,7 @@ impl Store {
         Ok(ids)
     }
 
-    /// storage.py::drop_pending_deliveries — undelivered messages keep the reason.
+    /// Undelivered messages keep the reason.
     pub fn drop_pending_deliveries(&self, session_id: &str, agent_id: &str, reason: &str) -> rusqlite::Result<usize> {
         let n = self.conn.execute(
             "UPDATE deliveries SET status='dropped', payload_override=?1
@@ -877,6 +887,32 @@ impl Store {
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params![session_id], row_to_run)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Runs for the `state` wire view: every non-terminal run (scheduler and
+    /// cancel paths need all of them) plus the newest `terminal_limit` finished
+    /// runs (display + TUI delta flushing). The 250ms status poll used to
+    /// serialize the whole run history, growing without bound over a session.
+    /// ponytail: fixed terminal cap; page or raise it if a UI ever needs deep history.
+    pub fn runs_for_state(&self, session_id: &str, terminal_limit: i64) -> rusqlite::Result<Vec<TurnRun>> {
+        let mut runs = self.runs_for_session(
+            session_id,
+            &[TurnStatus::Queued, TurnStatus::Running, TurnStatus::WaitingTask, TurnStatus::WaitingApproval],
+        )?;
+        let terminal = [TurnStatus::Completed, TurnStatus::Failed, TurnStatus::Cancelled, TurnStatus::OutcomeUnknown]
+            .iter()
+            .map(|s| format!("'{}'", enum_str(s)))
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {RUN_COLS} FROM turn_runs WHERE session_id=?1 AND status IN ({terminal}) ORDER BY created_at DESC LIMIT ?2"
+        ))?;
+        let mut tail: Vec<TurnRun> = stmt
+            .query_map(params![session_id, terminal_limit], row_to_run)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        tail.reverse();
+        runs.extend(tail);
+        Ok(runs)
     }
 
     pub fn count_goal_runs(&self, session_id: &str, goal_id: &str) -> rusqlite::Result<i64> {
@@ -992,7 +1028,7 @@ impl Store {
         Ok(pending)
     }
 
-    /// storage.py::expire_approval — a once-approval is single use; a pending
+    /// A once-approval is single use; a pending
     /// approval is void once its turn can no longer use it. Other states stay
     /// untouched and report false.
     pub fn expire_approval(&self, approval_id: &str) -> rusqlite::Result<bool> {
@@ -1217,7 +1253,7 @@ impl Store {
         if n == 0 {
             return Ok(());
         }
-        // the consume cursor advances with the ack (storage.py::ack_deliveries_exact)
+        // the consume cursor advances with the ack
         let row: Option<(String, String, i64)> = self
             .conn
             .query_row(
@@ -1232,7 +1268,7 @@ impl Store {
         Ok(())
     }
 
-    /// pending_deliveries joined with event data (storage.py::pending_deliveries).
+    /// pending_deliveries joined with event data.
     pub fn pending_deliveries_joined(&self, session_id: &str, agent_id: &str) -> rusqlite::Result<Vec<Json>> {
         let mut stmt = self.conn.prepare(
             "SELECT d.delivery_id, d.event_id, d.batch_no, d.payload_override, d.created_at,
@@ -1351,6 +1387,23 @@ mod tests {
     use super::*;
     use crate::models::{ApprovalStatus, EventKind};
 
+    #[test]
+    fn future_schema_version_is_an_error_not_a_panic() {
+        let path = std::env::temp_dir().join(format!("teamagents-schema-version-{}.db", std::process::id()));
+        {
+            let store = Store::open(&path).unwrap();
+            store
+                .conn
+                .execute("UPDATE meta SET value='9999' WHERE key='db_schema_version'", [])
+                .unwrap();
+        }
+        let err = Store::open(&path).err().expect("future schema version must be an error");
+        assert!(err.to_string().contains("schema version 9999"), "{err}");
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_file_name(format!("{}-wal", path.file_name().unwrap().to_str().unwrap())));
+        let _ = std::fs::remove_file(path.with_file_name(format!("{}-shm", path.file_name().unwrap().to_str().unwrap())));
+    }
+
     fn store_with_spec() -> Store {
         let store = Store::open_memory().unwrap();
         store.create_session("s1", "/tmp", "approved_scope").unwrap();
@@ -1363,6 +1416,34 @@ mod tests {
         store.save_team_spec("s1", &spec).unwrap();
         store.ensure_agent("s1", "lead").unwrap();
         store
+    }
+
+    #[test]
+    fn runs_for_state_keeps_every_active_run_and_caps_terminal_history() {
+        let store = store_with_spec();
+        let mk = |id: &str, status: TurnStatus, ts: f64| {
+            let mut run: TurnRun = serde_json::from_value(json!({
+                "run_id": id, "session_id": "s1", "agent_id": "lead",
+                "config_revision": 0, "topology_revision": 0,
+            }))
+            .unwrap();
+            run.status = status;
+            run.created_at = ts;
+            run
+        };
+        for i in 0..60 {
+            store.insert_run(&mk(&format!("old-{i}"), TurnStatus::Completed, i as f64)).unwrap();
+        }
+        store.insert_run(&mk("queued", TurnStatus::Queued, 1000.0)).unwrap();
+        store.insert_run(&mk("waiting", TurnStatus::WaitingApproval, 1001.0)).unwrap();
+        let runs = store.runs_for_state("s1", 50).unwrap();
+        let ids: Vec<&str> = runs.iter().map(|r| r.run_id.as_str()).collect();
+        // active runs are never capped out (the scheduler needs all of them)
+        assert!(ids.contains(&"queued") && ids.contains(&"waiting"));
+        assert_eq!(runs.iter().filter(|r| r.status.is_terminal()).count(), 50);
+        // newest terminal runs survive, oldest drop out of the window
+        assert!(ids.contains(&"old-59"));
+        assert!(!ids.contains(&"old-9"));
     }
 
     fn event(store: &Store, event_id: &str) -> String {

@@ -1,5 +1,4 @@
-//! T1–T5/T9 scenario ports (tests/test_t1_delegation.py … test_t5_shared.py),
-//! driven through the real core + runtime + scripted members.
+//! T1–T5/T9 scenarios, driven through the real core + runtime + scripted members.
 
 mod support;
 

@@ -1,8 +1,9 @@
-//! teamagents-tui: ratatui front-end for TeamAgents (visual parity with the
-//! Textual TUI on main). The UI is a pure client: execution lives in the
-//! headless engine (`teamagents serve`), authoritative state in the core.
+//! teamagents-tui: ratatui front-end for TeamAgents. The UI is a pure
+//! client: execution lives in the headless engine (`teamagents serve`),
+//! authoritative state in the core.
 
 use std::io::Write;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::channel;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -177,7 +178,12 @@ fn main() {
     // teardown
     restore_terminal();
     drop(terminal);
-    Arc::try_unwrap(worker).map(|w| w.close()).ok();
+    match Arc::try_unwrap(worker) {
+        Ok(w) => w.close(),
+        // a slow tick still holds an Arc: kill the engine outright so it
+        // cannot orphan holding the session flock
+        Err(w) => w.kill(),
+    }
     std::process::exit(code);
 }
 
@@ -209,7 +215,7 @@ extern "C" {
 enum BgMsg {
     Op(OpResult),
     Models { session: String, generation: u64, provider: String, result: Result<Json, String> },
-    SlowTick { shared: Vec<Json>, sessions: Vec<Json> },
+    SlowTick { shared: Option<Vec<Json>>, sessions: Option<Vec<Json>> },
 }
 
 fn run(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, worker: &Arc<Worker>, app: &mut App) -> i32 {
@@ -227,6 +233,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, worker: &Arc<
     let mut last_activity = Instant::now();
     let mut last_flush = Instant::now();
     let mut last_slow = Instant::now() - Duration::from_secs(1);
+    let slow_inflight = Arc::new(AtomicBool::new(false));
     let mut last_log_sig: Option<(bool, Option<String>)> = None;
     let mut poll_failures = 0u32;
     let mut dirty = true;
@@ -269,10 +276,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, worker: &Arc<
                         run_effect(e, worker, app, &bg_tx);
                     }
                 }
-                BgMsg::SlowTick { shared, sessions } => {
-                    app.shared = shared;
-                    app.sessions = sessions;
-                }
+                BgMsg::SlowTick { shared, sessions } => apply_slow_tick(app, shared, sessions),
                 BgMsg::Models { session, generation, provider, result } => app.show_discovered_models(&session, generation, &provider, result),
             }
             dirty = true;
@@ -287,7 +291,8 @@ fn run(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, worker: &Arc<
             } else {
                 app.cursor
             };
-            match worker.core("state", json!({"after_sequence": after})) {
+            // short timeout: a wedged engine must not freeze the UI for 120s
+            match worker.core_timeout("state", json!({"after_sequence": after}), Duration::from_secs(5)) {
                 Ok(st) => {
                     poll_failures = 0;
                     app.disconnected = false;
@@ -316,7 +321,9 @@ fn run(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, worker: &Arc<
         // log tab (re)play on activation / filter change
         let log_sig = (app::PANELS[app.panel] == "log", app.log_member.clone());
         if log_sig.0 && last_log_sig.as_ref() != Some(&log_sig) {
-            match worker.core("state", json!({"after_sequence": 0})) {
+            // 30s: replaying a big session legitimately outlives the 5s poll
+            // timeout; if it still times out, the latched sig skips retry
+            match worker.core_timeout("state", json!({"after_sequence": 0}), Duration::from_secs(30)) {
                 Ok(st) => {
                     let events = st.get("events").and_then(|v| v.as_array()).cloned().unwrap_or_default();
                     app.replay_log(&events);
@@ -332,7 +339,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, worker: &Arc<
         // slow tick: shared entries + session list
         if last_slow.elapsed() >= Duration::from_secs(1) {
             last_slow = Instant::now();
-            spawn_slow_tick(worker.clone(), bg_tx.clone(), app);
+            spawn_slow_tick(worker.clone(), bg_tx.clone(), app, &slow_inflight);
         }
         // activity spinner 120ms
         if last_activity.elapsed() >= Duration::from_millis(120) {
@@ -353,7 +360,13 @@ fn run(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, worker: &Arc<
     }
 }
 
-fn spawn_slow_tick(worker: Arc<Worker>, tx: std::sync::mpsc::Sender<BgMsg>, app: &App) {
+fn spawn_slow_tick(worker: Arc<Worker>, tx: std::sync::mpsc::Sender<BgMsg>, app: &App, inflight: &Arc<AtomicBool>) {
+    // in-flight guard: a tick is two 120s-timeout calls, so a wedged engine
+    // would otherwise pile up ~120 threads before the first one returns
+    if inflight.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let flag = inflight.clone();
     let space_ids: Vec<String> = app
         .spec()
         .get("shared_spaces")
@@ -364,15 +377,30 @@ fn spawn_slow_tick(worker: Arc<Worker>, tx: std::sync::mpsc::Sender<BgMsg>, app:
         let shared = worker
             .core("shared_entries", json!({"space_ids": space_ids, "limit": 1000}))
             .ok()
-            .and_then(|r| r.get("entries").and_then(|v| v.as_array()).cloned())
-            .unwrap_or_default();
+            .and_then(|r| r.get("entries").and_then(|v| v.as_array()).cloned());
         let sessions = worker
             .call("list_sessions", json!({}))
             .ok()
-            .and_then(|r| r.get("sessions").and_then(|v| v.as_array()).cloned())
-            .unwrap_or_default();
-        let _ = tx.send(BgMsg::SlowTick { shared, sessions });
+            .and_then(|r| r.get("sessions").and_then(|v| v.as_array()).cloned());
+        flag.store(false, Ordering::SeqCst);
+        // a fully degraded tick updates nothing (same "keep old data on
+        // failure" rule as the state poll); a partial one updates only the
+        // panel whose fetch succeeded
+        if shared.is_some() || sessions.is_some() {
+            let _ = tx.send(BgMsg::SlowTick { shared, sessions });
+        }
     });
+}
+
+/// Apply a slow-tick result: a failed/missing fetch is `None` and leaves the
+/// panel's previous data untouched instead of blanking it.
+fn apply_slow_tick(app: &mut App, shared: Option<Vec<Json>>, sessions: Option<Vec<Json>>) {
+    if let Some(shared) = shared {
+        app.shared = shared;
+    }
+    if let Some(sessions) = sessions {
+        app.sessions = sessions;
+    }
 }
 
 fn run_effect(e: Effect, worker: &Arc<Worker>, app: &mut App, bg: &std::sync::mpsc::Sender<BgMsg>) {
@@ -598,5 +626,70 @@ fn handle_mouse(m: event::MouseEvent, terminal: &Terminal<CrosstermBackend<std::
     }
     if in_rect(geo.chat, m.row, m.column) {
         app.focus = app::Focus::Composer;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_app() -> App {
+        App::new("s1", json!({}), "cfg".into(), "en", false, vec![])
+    }
+
+    /// Deterministic stand-in for `teamagents serve`: echoes every request id
+    /// back with an empty result, so worker calls succeed with no process-death
+    /// races (a dying child's pipe has a deferred-fput window where a write can
+    /// still succeed into a pipe nobody ever reads again — that timing artifact
+    /// made a `cat`-based version of this test flaky).
+    fn mock_engine(tag: &str) -> String {
+        // pid+tag: cargo tests share one process, so the pid alone is not unique
+        let path = std::env::temp_dir().join(format!("teamagents-tui-mock-engine-{}-{tag}.sh", std::process::id()));
+        std::fs::write(&path, "#!/bin/bash\nwhile read -r l; do \
+            id=$(printf '%s' \"$l\" | grep -o '\"id\":[0-9]*' | head -1 | cut -d: -f2); \
+            printf '{\"id\":%s,\"result\":{\"entries\":[],\"sessions\":[]}}\\n' \"$id\"; done\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn slow_tick_gate_skips_in_flight_and_releases_after_sending() {
+        // phase 1: a second tick is skipped while the previous one is in flight
+        let worker = Arc::new(Worker::spawn(&mock_engine("gate")).expect("spawn mock"));
+        let (tx, rx) = channel();
+        let inflight = Arc::new(AtomicBool::new(true)); // previous tick still running
+        spawn_slow_tick(worker, tx, &test_app(), &inflight);
+        assert!(inflight.load(Ordering::SeqCst), "the gate stays owned by the in-flight tick");
+        assert!(rx.try_recv().is_err(), "a second tick spawned on top of the in-flight one");
+
+        // phase 2: a finished tick releases the gate
+        let worker = Arc::new(Worker::spawn(&mock_engine("release")).expect("spawn mock"));
+        let (tx, rx) = channel();
+        let inflight = Arc::new(AtomicBool::new(false));
+        spawn_slow_tick(worker, tx, &test_app(), &inflight);
+        match rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(BgMsg::SlowTick { shared, sessions }) => {
+                assert!(shared == Some(vec![]) && sessions == Some(vec![]));
+            }
+            Ok(_) => panic!("expected a SlowTick"),
+            Err(e) => panic!("no SlowTick within 5s: {e}"),
+        }
+        assert!(!inflight.load(Ordering::SeqCst), "the gate was not released");
+    }
+
+    #[test]
+    fn slow_tick_degraded_result_keeps_existing_panels() {
+        let mut app = test_app();
+        app.shared = vec![json!({"id": "old-shared"})];
+        app.sessions = vec![json!({"id": "old-session"})];
+        // fully degraded tick: both panels keep their previous data
+        apply_slow_tick(&mut app, None, None);
+        assert_eq!(app.shared, vec![json!({"id": "old-shared"})]);
+        assert_eq!(app.sessions, vec![json!({"id": "old-session"})]);
+        // partial tick: only the failed panel keeps its data
+        apply_slow_tick(&mut app, Some(vec![json!({"id": "new-shared"})]), None);
+        assert_eq!(app.shared, vec![json!({"id": "new-shared"})]);
+        assert_eq!(app.sessions, vec![json!({"id": "old-session"})]);
     }
 }

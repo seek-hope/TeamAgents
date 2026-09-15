@@ -1,4 +1,4 @@
-//! Session execution loop (runtime.py, asyncio → threads).
+//! Session execution loop (thread-per-turn).
 //! Every authoritative state change goes through the core; this module only
 //! decides *when* a member turn runs, and reports its outcome.
 
@@ -36,6 +36,12 @@ pub trait AgentRunner: Send + Sync {
     }
     /// Optional: resolve a parked approval in a backend that asked for it.
     fn resolve_approval(&self, _approval_id: &str, _decision: &str) -> bool {
+        false
+    }
+    /// Backends holding in-process approval waiters (codex). A `false`
+    /// resolve_approval only warrants a warning when a waiter could exist;
+    /// requeue-driven backends (chat/scripted) take the false as normal.
+    fn has_approval_waiter(&self) -> bool {
         false
     }
     /// D-26 rewind: chat backends own a tree-structured history; backends that
@@ -123,7 +129,7 @@ impl Notify {
         }
     }
 
-    /// codex.py::_on_status — live status changes from an external backend.
+    /// Live status changes from an external backend.
     pub fn note_external_status(&self, run_id: &str, status: TurnStatus) {
         let accepting = self.accepting.lock().unwrap();
         if !*accepting { return; }
@@ -163,7 +169,7 @@ impl Notify {
         self.wake();
     }
 
-    /// codex.py::_on_progress — a human-readable progress line from a backend.
+    /// A human-readable progress line from a backend.
     pub fn note_external_progress(&self, run_id: &str, text: &str) {
         let accepting = self.accepting.lock().unwrap();
         if !*accepting { return; }
@@ -399,7 +405,7 @@ impl Runtime {
             // false = the backend has no waiter for it (the wait timed out and
             // the approval was already voided, or the run moved on). At least
             // leave a trace instead of dropping the user's decision silently.
-            if !runner.resolve_approval(approval_id, decision) {
+            if !runner.resolve_approval(approval_id, decision) && runner.has_approval_waiter() {
                 eprintln!(
                     "approval {approval_id} decided as {decision} but member {} has no waiter for it",
                     run.agent_id
@@ -692,9 +698,8 @@ impl Runtime {
     }
 
     /// Run the member on its own thread so the active-time limit can fire.
-    /// On timeout the member is interrupted (Python's `asyncio.wait_for`
-    /// cancels the coroutine): without it the thread keeps calling the model
-    /// and writing team state after the run is already FAILED.
+    /// On timeout the member is interrupted: without it the thread keeps
+    /// calling the model and writing team state after the run is already FAILED.
     fn run_with_timeout(
         &self,
         runner: Arc<dyn AgentRunner>,

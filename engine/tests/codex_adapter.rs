@@ -1,4 +1,4 @@
-//! CodexRunner against a fake app-server (tests/test_p5_codex_adapter.py port).
+//! CodexRunner against a fake app-server.
 
 mod support;
 
@@ -24,6 +24,11 @@ fn setup(session: &str, mode: &str) -> (Arc<CoreClient>, Arc<CodexRunner>) {
     );
     let approvals = ApprovalGate::new(core.clone(), PermissionPolicy::default());
     let notify = Notify::new(core.clone());
+    // the marker name embeds this test binary's pid and pids get reused: drop
+    // a leftover from an earlier run, else this run's first spawned server
+    // reads it and goes straight to "simple" instead of dying (round 5, F1)
+    let die_marker = std::env::temp_dir().join(format!("ta-fake-die-{session}-{}", std::process::id()));
+    let _ = std::fs::remove_file(&die_marker);
     let runner = CodexRunner::new(
         CodexOptions {
             agent_id: "cx".into(),
@@ -35,7 +40,10 @@ fn setup(session: &str, mode: &str) -> (Arc<CoreClient>, Arc<CodexRunner>) {
             model: None,
             codex_bin: Some(env!("CARGO_BIN_EXE_fake-codex").to_string()),
             codex_home: None,
-            env: vec![("FAKE_CODEX_MODE".into(), mode.into())],
+            env: vec![
+                ("FAKE_CODEX_MODE".into(), mode.into()),
+                ("FAKE_CODEX_DIE_MARKER".into(), die_marker.to_string_lossy().into_owned()),
+            ],
             config_overrides: vec![],
         },
         core.clone(),
@@ -118,6 +126,45 @@ fn codex_approval_flow_parks_decides_and_resumes() {
         outcome.reply_text.unwrap_or_default().contains("approval=accept"),
         "the decision reached the app-server"
     );
+    runner.close();
+}
+
+/// The app-server dying mid-turn must release the driver with a Failed
+/// outcome: no turn/completed is coming to wake it (review 2026-09-15).
+#[test]
+fn codex_app_server_death_mid_turn_fails_the_driver() {
+    let (core, runner) = setup("cx-die", "die");
+    let run = turn_run("cx-die", "run_die");
+    let gw = gateway(&core, "run_die");
+    let (tx, rx) = std::sync::mpsc::channel();
+    {
+        let runner = runner.clone();
+        std::thread::spawn(move || {
+            let outcome = runner.start_or_resume(&run, &view(), &gw, &json!({"reason": "new_input"}));
+            let _ = tx.send(outcome);
+        });
+    }
+    let outcome = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("driver released within 10s of the app-server's death");
+    assert_eq!(outcome.status, TurnStatus::Failed);
+    assert_eq!(runner.query_state("run_die"), Some(TurnStatus::Failed));
+    runner.close();
+}
+
+/// A dead app-server must not wedge the member for the rest of the session:
+/// the next turn drops the corpse, spawns a fresh process and completes
+/// (review round 4, F2). die-once crashes only the first spawned process.
+#[test]
+fn codex_reconnects_after_app_server_death() {
+    let (core, runner) = setup("cx-re", "die-once");
+    let run1 = turn_run("cx-re", "run_re1");
+    let outcome1 = runner.start_or_resume(&run1, &view(), &gateway(&core, "run_re1"), &json!({"reason": "new_input"}));
+    assert_eq!(outcome1.status, TurnStatus::Failed);
+    let run2 = turn_run("cx-re", "run_re2");
+    let outcome2 = runner.start_or_resume(&run2, &view(), &gateway(&core, "run_re2"), &json!({"reason": "new_input"}));
+    assert_eq!(outcome2.status, TurnStatus::Completed);
+    assert!(outcome2.reply_text.unwrap_or_default().contains("fake work done"));
     runner.close();
 }
 

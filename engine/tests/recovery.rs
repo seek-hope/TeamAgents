@@ -1,5 +1,5 @@
 //! T8/T21: crash windows — a killed session is reconciled on restart and
-//! replayed actions stay exactly-once (tests/test_p2_recovery.py parity).
+//! replayed actions stay exactly-once.
 
 use serde_json::{json, Value as Json};
 use std::io::{BufRead, BufReader, Write};

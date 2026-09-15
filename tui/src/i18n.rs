@@ -1,4 +1,4 @@
-//! TUI-only text and local preferences, ported from tui/i18n.py.
+//! TUI-only text and local preferences.
 //! Chinese UI text is the message id; English is the default rendering.
 
 use std::collections::HashMap;
@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 
 pub const HISTORY_LIMIT: usize = 500;
 
-/// (message id, english) — mirrored from i18n.py::ENGLISH, keep in sync.
+/// (message id, english) pairs.
 static ENGLISH: &[(&str, &str)] = &[
     ("团队", "Team"),
     ("任务", "Tasks"),
@@ -119,6 +119,8 @@ static ENGLISH: &[(&str, &str)] = &[
     ("已切换到会话 {v0}", "Switched to session {v0}"),
     ("✗ 归档失败：{v0}", "✗ Archive failed: {v0}"),
     ("已归档会话 {v0} → {v1}", "Archived session {v0} → {v1}"),
+    ("会话已归档，不能切换", "Session is archived; cannot switch"),
+    ("会话已归档，不能归档/删除", "Session is archived; cannot archive/delete"),
     ("✗ 删除失败：{v0}", "✗ Delete failed: {v0}"),
     ("✗ 删除被阻止：{v0}", "✗ Delete blocked: {v0}"),
     ("已删除会话 {v0}", "Deleted session {v0}"),
@@ -237,8 +239,7 @@ fn en_map() -> &'static HashMap<&'static str, &'static str> {
 }
 
 /// tr(): zh-CN keeps the message id, anything else renders English.
-/// Args fill {name} placeholders; {name!r} wraps the value in single quotes
-/// (Python repr of a str).
+/// Args fill {name} placeholders; {name!r} wraps the value in single quotes.
 pub fn tr(lang: &str, msg: &str, args: &[(&str, &str)]) -> String {
     let template = if lang == "zh-CN" {
         msg.to_string()
@@ -253,7 +254,7 @@ pub fn tr(lang: &str, msg: &str, args: &[(&str, &str)]) -> String {
     out
 }
 
-/// activity_status labels: turn/task status -> message id (app.py).
+/// activity_status labels: turn/task status -> message id.
 pub fn status_label_id(status: &str) -> &str {
     match status {
         "RUNNING" | "BUSY" => "正在处理",
@@ -273,7 +274,7 @@ pub fn status_label_id(status: &str) -> &str {
     }
 }
 
-/// TABLE_HEADERS from i18n.py, keyed like the Textual widget ids.
+/// Table headers, keyed by panel id.
 pub fn table_headers(table: &str) -> &'static [&'static str] {
     match table {
         "team" => &["成员", "角色", "类型", "模型", "状态", "工作目录", "可见范围"],
@@ -285,7 +286,7 @@ pub fn table_headers(table: &str) -> &'static [&'static str] {
     }
 }
 
-fn state_dir() -> PathBuf {
+pub(crate) fn state_dir() -> PathBuf {
     let base = std::env::var("XDG_STATE_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/state"));

@@ -1,6 +1,5 @@
-//! The single serialized entry point for team transactions per session.
-//! Faithful port of src/teamagents/control.py: submit → validate → reduce →
-//! persist → schedule, one SQLite transaction per action.
+//! The single serialized entry point for team transactions per session:
+//! submit → validate → reduce → persist → schedule, one SQLite transaction per action.
 
 use crate::models::*;
 use crate::storage::Store;
@@ -66,7 +65,7 @@ fn pbool(p: &Json, key: &str) -> bool {
     p.get(key).map(|v| v.as_bool().unwrap_or(!v.is_null() && *v != Json::from(0))).unwrap_or(false)
 }
 
-/// Python truthiness for `payload.get(k) or payload.get(j)` style checks.
+/// Wire-JSON truthiness for `payload.get(k) or payload.get(j)` style checks.
 fn truthy(v: Option<&Json>) -> bool {
     match v {
         None | Some(Json::Null) => false,
@@ -78,8 +77,8 @@ fn truthy(v: Option<&Json>) -> bool {
     }
 }
 
-/// Python `int(x)` over wire JSON: numbers truncate, bools are 0/1, integer
-/// strings parse; anything else is None (callers turn that into an error).
+/// Strict integer coercion over wire JSON: numbers truncate, bools are 0/1,
+/// integer strings parse; anything else is None (callers turn that into an error).
 fn py_int(v: &Json) -> Option<i64> {
     match v {
         Json::Bool(b) => Some(*b as i64),
@@ -89,7 +88,7 @@ fn py_int(v: &Json) -> Option<i64> {
     }
 }
 
-/// control.py::Control._derived_task_id — deterministic per action id.
+/// Deterministic per action id.
 pub fn derived_task_id(action: &TeamAction) -> String {
     if let Some(explicit) = action.payload.get("task_id").and_then(|v| v.as_str()) {
         return explicit.to_string();
@@ -97,12 +96,12 @@ pub fn derived_task_id(action: &TeamAction) -> String {
     format!("task_{}", hex_prefix(&Sha256::digest(action.action_id.as_bytes()), 12))
 }
 
-/// control.py::Control._payload_hash — sha256 of canonical (sorted) payload json.
+/// sha256 of the canonical (sorted) payload json.
 pub fn payload_hash(action: &TeamAction) -> String {
     hex_prefix(&Sha256::digest(canonical_json(&action.payload).as_bytes()), 32)
 }
 
-/// json.dumps(payload, sort_keys=True) with Python's default separators.
+/// Canonical payload JSON: sorted keys, `", "` / `": "` separators.
 fn canonical_json(v: &Json) -> String {
     match v {
         Json::Object(m) => {
@@ -131,21 +130,26 @@ impl Control {
         Self { store, session_id: session_id.into(), catalog: UserConfig::default(), mid_turn_pushes: vec![] }
     }
 
-    /// storage.py::_Tx — one re-entrant transaction: BEGIN IMMEDIATE at depth 0,
+    /// One re-entrant transaction: BEGIN IMMEDIATE at depth 0,
     /// COMMIT on success, ROLLBACK on error. Store failures are returned, never
-    /// swallowed (Python lets OperationalError out of every caller here).
+    /// swallowed.
     fn in_tx<T>(&mut self, f: impl FnOnce(&mut Self) -> Result<T, String>) -> Result<T, String> {
+        // pushes queued by earlier committed txs may still be undrained (drain is a
+        // separate RPC); a rollback here must only drop what this tx added
+        let mark = self.mid_turn_pushes.len();
         self.store.begin().map_err(|e| e.to_string())?;
         match f(self) {
             Ok(v) => match self.store.commit() {
                 Ok(()) => Ok(v),
                 Err(e) => {
                     let _ = self.store.rollback();
+                    self.mid_turn_pushes.truncate(mark);
                     Err(e.to_string())
                 }
             },
             Err(e) => {
                 let _ = self.store.rollback();
+                self.mid_turn_pushes.truncate(mark);
                 Err(e)
             }
         }
@@ -153,7 +157,7 @@ impl Control {
 
     // ------------------------------------------------------------------ submit
 
-    /// control.py::Control.submit — a failed attempt rolls back every write it
+    /// A failed attempt rolls back every write it
     /// made; the failure receipt then commits in a clean transaction.
     /// Err means even that receipt could not be recorded (store still busy).
     pub fn submit(&mut self, action: &TeamAction) -> Result<Receipt, String> {
@@ -212,7 +216,7 @@ impl Control {
         })
     }
 
-    /// control.py::Control.schedule — re-run scheduling against committed state.
+    /// Re-run scheduling against committed state.
     pub fn schedule(&mut self) -> Result<(), String> {
         self.in_tx(|ctl| {
             let spec = ctl.store.load_team_spec(&ctl.session_id.clone(), None).map_err(|e| e.to_string())?;
@@ -220,7 +224,7 @@ impl Control {
         })
     }
 
-    /// control.py::Control.emit — persist runtime-originated events and schedule.
+    /// Persist runtime-originated events and schedule.
     pub fn emit(&mut self, drafts: Vec<EventDraft>, actor_id: &str) -> Result<(), String> {
         self.in_tx(|ctl| {
             let spec = ctl.store.load_team_spec(&ctl.session_id.clone(), None).map_err(|e| e.to_string())?;
@@ -239,7 +243,7 @@ impl Control {
 
     // -------------------------------------------------------------- validation
 
-    /// control.py::Control._validate — returns Some(error) on refusal.
+    /// Returns Some(error) on refusal.
     pub fn validate(&mut self, action: &TeamAction, spec: &TeamSpec) -> Option<String> {
         let kind = action.kind;
         let member_ids: HashSet<&str> = spec.agents.iter().map(|a| a.id.as_str()).collect();
@@ -637,7 +641,7 @@ impl Control {
                         receipt: ok(json!({"waiting": true, "task_ids": pending})),
                     });
                 }
-                // control.py: `{tid: self._task_result(tid) for tid in task_ids}`
+                // results keyed by task id
                 let results: serde_json::Map<String, Json> =
                     task_ids.iter().map(|t| (t.clone(), self.task_result(t))).collect();
                 Ok(Reduction {
@@ -851,8 +855,8 @@ impl Control {
                 .map(|s| self.store.shared_cursor(&self.session_id, actor, s).unwrap_or(0))
                 .min()
                 .unwrap_or(0),
-            // control.py does int(after_sequence) and lets ValueError become a
-            // failed receipt — a malformed cursor must never read from 0 silently.
+            // a malformed cursor becomes a failed receipt — it must never
+            // read from 0 silently.
             Some(v) => py_int(v).ok_or_else(|| format!("bad after_sequence {v}"))?,
         };
         let limit: i64 = match p.get("limit") {
@@ -919,8 +923,8 @@ impl Control {
             }
         };
         let operations = if patch_id.is_some() {
-            // control.py: `p.get("operations") or patch.operations` — an explicit
-            // empty list is falsy and falls back to the stored patch's operations.
+            // `p.get("operations") or patch.operations` — an explicit
+            // empty list falls back to the stored patch's operations.
             match p.get("operations").and_then(|v| v.as_array()) {
                 Some(ops) if !ops.is_empty() => ops.clone(),
                 _ => patch.operations.clone(),
@@ -971,7 +975,7 @@ impl Control {
         })
     }
 
-    /// control.py::Control._apply_operations — returns (None, error) on failure.
+    /// Returns (None, error) on failure.
     fn apply_operations(&mut self, spec: &TeamSpec, operations: &[Json]) -> (Option<TeamSpec>, Option<String>) {
         let mut data = serde_json::to_value(spec).expect("spec serializes");
         let cfg_tools: HashSet<&String> = self.catalog.tools.keys().collect();
@@ -1333,10 +1337,14 @@ impl Control {
         }
         let mut active = self.store.active_run_for_agent(&self.session_id, &task.assignee).map_err(|e| e.to_string())?;
         if active.is_none() {
-            // a turn parked on an approval has no executor: requesting its cancel
-            // lets schedule converge it (approval expires, run -> CANCELLED)
+            // a parked turn (approval or task wait) has no executor to interrupt:
+            // requesting its cancel lets schedule converge it (run -> CANCELLED)
             if let Some(parked) = self.waiting_run(&task.assignee)? {
-                if parked.status == TurnStatus::WaitingApproval
+                // task_id.is_none(): taskless parked runs (e.g. a chat turn parked by
+                // wait_for_tasks) are cancelled alongside, like the WAITING_APPROVAL
+                // case; the member starts a fresh run when its awaited
+                // tasks finish.
+                if matches!(parked.status, TurnStatus::WaitingApproval | TurnStatus::WaitingTask)
                     && (parked.task_id.as_deref() == Some(task.task_id.as_str()) || parked.task_id.is_none())
                 {
                     active = Some(parked);
@@ -1480,7 +1488,7 @@ impl Control {
 
     // ---------------------------------------------------------------- schedule
 
-    /// control.py::Control._schedule — create/wake runs for pending deliveries
+    /// Create/wake runs for pending deliveries
     /// and ready tasks.
     fn schedule_inner(&mut self, spec: &TeamSpec) -> Result<(), String> {
         let session = self.session_id.clone();
@@ -1501,8 +1509,11 @@ impl Control {
             }
             let parked = self.waiting_run(&agent.id)?;
             if let Some(parked) = &parked {
-                if parked.status == TurnStatus::WaitingApproval && parked.cancel_requested && parked.external_turn_id.is_none() {
-                    // a turn parked on an approval has no executor to finalize it
+                if matches!(parked.status, TurnStatus::WaitingApproval | TurnStatus::WaitingTask)
+                    && parked.cancel_requested
+                    && parked.external_turn_id.is_none()
+                {
+                    // a parked in-process turn has no executor to finalize it
                     self.converge_cancelled_waiting_run(parked, &spec)?;
                 }
             }
@@ -1562,10 +1573,17 @@ impl Control {
                         fresh
                             .iter()
                             .map(|d| {
+                                // same trim as views::build_agent_view: the delivery's scoped
+                                // override wins, raw event payload is only the fallback
+                                let payload = d["payload_override"]
+                                    .as_str()
+                                    .and_then(|o| serde_json::from_str(o).ok())
+                                    .or_else(|| serde_json::from_str(d["payload_json"].as_str().unwrap_or("null")).ok())
+                                    .unwrap_or(Json::Null);
                                 json!({"kind": d["event_kind"], "from": d["event_actor"],
                                        "event_id": d["event_id"], "delivery_id": d["delivery_id"],
                                        "task_id": d["event_task_id"],
-                                       "payload": serde_json::from_str::<Json>(d["payload_json"].as_str().unwrap_or("null")).unwrap_or(Json::Null)})
+                                       "payload": payload})
                             })
                             .collect(),
                     ));
@@ -1634,11 +1652,11 @@ impl Control {
         Ok(())
     }
 
-    /// Finalize a run cancelled while parked on an approval (RT-06).
+    /// Finalize a run cancelled while parked on an approval (RT-06) or a task wait.
     fn converge_cancelled_waiting_run(&mut self, run: &TurnRun, spec: &TeamSpec) -> Result<(), String> {
         if !self
             .store
-            .update_run_status_where(&run.run_id, TurnStatus::WaitingApproval, TurnStatus::Cancelled)
+            .update_run_status_where(&run.run_id, run.status, TurnStatus::Cancelled)
             .map_err(|e| e.to_string())?
         {
             return Ok(());
@@ -1667,7 +1685,7 @@ impl Control {
         events.push(EventDraft::new(
             EventKind::RunCancelled,
             json!({"run_id": run.run_id, "agent_id": run.agent_id, "status": "CANCELLED",
-                   "error": "cancelled while waiting for approval"}),
+                   "error": "cancelled while waiting"}),
         ));
         let action = TeamAction {
             action_id: format!("cancel-parked:{}", run.run_id),
@@ -1858,11 +1876,16 @@ impl Control {
             )
             .unwrap_or_default()
             .iter()
-            // ponytail: in-process runs parked on an approval have no live thread
-            // (the executor exited at TurnPaused); counting them deadlocks boundary
-            // patches behind an undecided approval. External (codex) runs still have
-            // a live waiter while external_turn_id is set, so they stay "live".
-            .any(|r| r.agent_id == agent_id && !(r.status == TurnStatus::WaitingApproval && r.external_turn_id.is_none()))
+            // ponytail: in-process runs parked on an approval or task wait have no
+            // live thread (the executor exited at TurnPaused); counting them
+            // deadlocks boundary patches behind an undecided approval or an
+            // unfinished awaited task. External (codex) runs still have a live
+            // waiter while external_turn_id is set, so they stay "live".
+            .any(|r| {
+                r.agent_id == agent_id
+                    && !(matches!(r.status, TurnStatus::WaitingApproval | TurnStatus::WaitingTask)
+                        && r.external_turn_id.is_none())
+            })
     }
 
     fn active_runs(&self, agent_id: &str) -> Result<Vec<TurnRun>, String> {
@@ -1958,7 +1981,7 @@ impl Control {
     }
 }
 
-/// Outcome of a finished turn segment (runtime.py::TurnOutcome).
+/// Outcome of a finished turn segment.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TurnOutcome {
     pub status: TurnStatus,
@@ -1968,7 +1991,7 @@ pub struct TurnOutcome {
 }
 
 impl Control {
-    /// runtime.py::_execute_inner start semantics: mark RUNNING, start the
+    /// Turn start semantics: mark RUNNING, start the
     /// attached task, emit lifecycle events. Returns the fresh run row.
     pub fn begin_run(&mut self, run_id: &str) -> Result<TurnRun, String> {
         self.in_tx(|ctl| ctl.begin_run_inner(run_id))
@@ -2005,7 +2028,7 @@ impl Control {
                 }
             }
         }
-        // runtime.py::_execute_inner — every turn announces its start; the wake
+        // Every turn announces its start; the wake
         // reason tells the member why this segment is running.
         let spec = self.store.load_team_spec(&self.session_id, None).map_err(|e| e.to_string())?;
         let wake = self.wake_info(&run)["reason"].clone();
@@ -2024,7 +2047,7 @@ impl Control {
         Ok(run)
     }
 
-    /// runtime.py::_request_stop timeout path: mark OUTCOME_UNKNOWN and expire
+    /// Stop-request timeout path: mark OUTCOME_UNKNOWN and expire
     /// the run's pending approvals with audit events.
     pub fn stop_timeout(&mut self, run_id: &str) -> Result<(), String> {
         self.in_tx(|ctl| {
@@ -2046,12 +2069,12 @@ impl Control {
         })
     }
 
-    /// Drain mid-turn pushes recorded by schedule (runtime.py::_drain_mid_turn).
+    /// Drain mid-turn pushes recorded by schedule.
     pub fn drain_mid_turn_pushes(&mut self) -> Vec<(String, Vec<Json>)> {
         std::mem::take(&mut self.mid_turn_pushes)
     }
 
-    /// runtime.py::WakeInfo — why this turn is waking.
+    /// Why this turn is waking.
     pub fn wake_info(&self, run: &TurnRun) -> Json {
         let decisions = self.store.decided_approvals_for_run(&run.run_id).unwrap_or_default();
         if !decisions.is_empty() {
@@ -2066,7 +2089,7 @@ impl Control {
             return json!({"reason": "user_input", "payload": {"kinds": kinds}});
         }
         if !run.waiting_on.is_empty() {
-            // runtime.py::_wake_info — results are keyed by task id
+            // results are keyed by task id
             let results: serde_json::Map<String, Json> = run.waiting_on.iter().map(|tid| (tid.clone(), {
                 match self.store.get_task(tid).ok().flatten() {
                     Some(t) => json!({"task_id": t.task_id, "status": enum_name(t.status), "result_refs": t.result_refs}),
@@ -2089,7 +2112,7 @@ impl Control {
         }
     }
 
-    /// runtime.py::_finalize — apply the turn result: completion requests,
+    /// Apply the turn result: completion requests,
     /// task semantics, run status, member state, delivery ack, one transaction.
     /// `ack_ids` = the deliveries actually handed to the runner (RT-05 ledger).
     pub fn finalize_run(&mut self, run_id: &str, outcome: &TurnOutcome, ack_ids: &[i64]) -> Result<(), String> {
@@ -2150,7 +2173,7 @@ impl Control {
                 }
             }
         }
-        // Python: outcome COMPLETED and run.task_id and (req is None or req
+        // Outcome COMPLETED with an attached task and (req is None or req
         // completes a *different* task) — its own task was left unfinished.
         let req_other = match &req {
             None => true, // no completion request at all
@@ -2308,7 +2331,7 @@ impl Control {
     }
 }
 
-/// Enum wire string (matches Python StrEnum `.value`).
+/// Enum wire string (the stable `.value` form).
 pub fn enum_name<T: serde::Serialize>(v: T) -> String {
     serde_json::to_value(v).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default()
 }

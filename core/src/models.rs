@@ -1,5 +1,5 @@
-//! Core data types, ported from src/teamagents/models.py (DP-1: spec as data).
-//! Serde defaults and enum strings match the Python wire format exactly.
+//! Core data types (DP-1: spec as data).
+//! Serde defaults and enum strings are the stable wire format.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -176,7 +176,7 @@ pub struct TeamSpec {
 fn default_schema_version() -> i64 { SCHEMA_VERSION }
 
 impl TeamSpec {
-    /// Reference validation, ported from models.py::TeamSpec._validate_refs (plan §5.2).
+    /// Reference validation (plan §5.2).
     pub fn validate(&self) -> Result<(), String> {
         let ids: Vec<&str> = self.agents.iter().map(|a| a.id.as_str()).collect();
         let mut seen = std::collections::HashSet::new();
@@ -253,7 +253,7 @@ impl TeamSpec {
 
     pub fn agent(&self, id: &str) -> Option<&AgentSpec> { self.agents.iter().find(|a| a.id == id) }
 
-    /// models.py::TeamSpec.can_send — channel with mode message/broadcast.
+    /// Channel with mode message/broadcast.
     pub fn can_send(&self, source: &str, target: &str) -> bool {
         self.channels.iter().any(|c| {
             c.source == source
@@ -265,7 +265,7 @@ impl TeamSpec {
         })
     }
 
-    /// models.py::TeamSpec.can_delegate — task channel, or the leader.
+    /// Task channel, or the leader.
     pub fn can_delegate(&self, source: &str, target: &str) -> bool {
         if source == self.leader_id {
             return true;
@@ -589,7 +589,7 @@ mod tests {
     }
 
     #[test]
-    fn enum_strings_match_python() {
+    fn enum_wire_strings_are_stable() {
         assert_eq!(serde_json::to_string(&TaskStatus::Pending).unwrap(), "\"PENDING\"");
         assert_eq!(serde_json::to_string(&TurnStatus::WaitingApproval).unwrap(), "\"WAITING_APPROVAL\"");
         assert_eq!(serde_json::to_string(&ActionKind::MemberCompletionRequest).unwrap(), "\"member_completion_request\"");

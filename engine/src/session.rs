@@ -1,4 +1,4 @@
-//! Session bootstrap (session.py::open_session): paths + lock + core session,
+//! Session bootstrap: paths + lock + core session,
 //! member runners, runtime loop.
 
 use crate::chat::ChatRunner;
@@ -449,12 +449,12 @@ fn fetch_model_ids(profile: &ModelProfile, deadline: std::time::Instant) -> Resu
     Err("模型目录超过 20 页".into())
 }
 
-/// session.py::_skills_and_memory — the member's skills directories and
-/// instruction (memory) files, with their contents read for prompt injection.
+/// The member's skills directories and instruction (memory) files, with
+/// their contents read for prompt injection.
 ///
-/// ponytail: the Python build mounts them as a virtual filesystem the member
-/// reads with file tools; here the bounded contents go straight into the system
-/// prompt (upgrade path: a read_skill tool once skills outgrow the prompt).
+/// ponytail: bounded contents go straight into the system prompt instead of
+/// a virtual filesystem the member reads with file tools (upgrade path:
+/// a read_skill tool once skills outgrow the prompt).
 fn member_context(catalog: &UserConfig, cwd: &std::path::Path, session_id: &str, agent: &AgentSpec) -> Vec<(String, String)> {
     const PER_FILE: usize = 8_000;
     const TOTAL: usize = 32_000;
@@ -515,8 +515,7 @@ fn member_context(catalog: &UserConfig, cwd: &std::path::Path, session_id: &str,
     out
 }
 
-/// `sessions/<id>/members/<agent>/` — the member's private directory
-/// (session.py::_member_workspace, same layout as the Python build).
+/// `sessions/<id>/members/<agent>/` — the member's private directory.
 fn member_dir(session_id: &str, agent_id: &str) -> PathBuf {
     let dir = session_paths(session_id).base.join("members").join(agent_id);
     let _ = std::fs::create_dir_all(&dir);
@@ -524,7 +523,7 @@ fn member_dir(session_id: &str, agent_id: &str) -> PathBuf {
 }
 
 /// Workspace policy decides one member's working directory — and therefore
-/// what its file tools and its backend can reach (plan §8/P5, workspace.py).
+/// what its file tools and its backend can reach (plan §8/P5).
 fn member_root(agent: &AgentSpec, cwd: &std::path::Path, session_id: &str) -> Result<PathBuf, String> {
     let workspace = crate::workspace::prepare(agent, cwd, &member_dir(session_id, &agent.id))?;
     if let Some(note) = &workspace.note {
@@ -534,6 +533,11 @@ fn member_root(agent: &AgentSpec, cwd: &std::path::Path, session_id: &str) -> Re
 }
 
 pub fn open_session(opts: OpenOptions) -> Result<Arc<OpenedSession>, String> {
+    // whitelist check first: a bad id must not create directories outside
+    // the sessions root before the lock's own validation can refuse it
+    if let Some(id) = &opts.session_id {
+        crate::sessions::validate_session_id(id)?;
+    }
     let cwd = match &opts.cwd {
         Some(cwd) => std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.clone()),
         None => std::env::current_dir().map_err(|e| e.to_string())?,
@@ -549,6 +553,28 @@ pub fn open_session(opts: OpenOptions) -> Result<Arc<OpenedSession>, String> {
     std::fs::create_dir_all(&paths.artifacts).map_err(|e| e.to_string())?;
     // dropped on every early return below, so a failed open never keeps the lock
     let lock = acquire_session_lock(&session_id)?;
+    // resuming an archived id must fail loudly, not create an empty session
+    // over it: the next archive of that fresh session would remove_dir_all the
+    // original archived data. Checked under the lock: a concurrent archive
+    // cannot move the directory between this check and the open below.
+    let archived = crate::config::sessions_dir().join("archived").join(&session_id);
+    if !paths.db.exists() && archived.exists() {
+        // remove the ghost this open just created, but only the items it
+        // created: with no team.db the active dir normally holds just our
+        // artifacts/ + session.lock, and leaving them would let a later
+        // archive_session overwrite the real archive with the ghost. If the
+        // dir still holds anything else (e.g. member worktrees after team.db
+        // was deleted by hand) rmdir fails and the content is left untouched
+        // instead of being wiped by remove_dir_all (round 5, F3).
+        drop(lock);
+        let _ = std::fs::remove_dir_all(&paths.artifacts);
+        let _ = std::fs::remove_file(&paths.lock);
+        let _ = std::fs::remove_dir(&paths.base);
+        return Err(format!(
+            "session {session_id} is archived at {}; move it back to the sessions root to resume",
+            archived.display()
+        ));
+    }
     let db = paths.db.to_string_lossy().into_owned();
     let core = CoreClient::open(&db, &session_id)?;
 
@@ -1119,6 +1145,110 @@ mod tests {
         server.join().unwrap();
         std::env::remove_var("TA_DISCOVERY_TEST_KEY");
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn resume_of_an_archived_session_is_refused_and_the_archive_survives() {
+        let _env = crate::env_lock();
+        let root = std::env::temp_dir().join(format!("ta-arch-resume-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let cwd = root.join("project");
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", root.join("home/.config"));
+        std::env::set_var("XDG_STATE_HOME", root.join("home/.state"));
+
+        let opened = open_session(OpenOptions {
+            cwd: Some(cwd.clone()), session_id: Some("s-arch".into()),
+            catalog: Some(UserConfig::default()), initial_spec: Some(default_leader_spec("a", &[])),
+            scripts: Some(HashMap::new()), ..Default::default()
+        }).unwrap();
+        opened.close();
+        crate::sessions::archive_session("s-arch", None).expect("archive");
+
+        let err = open_session(OpenOptions {
+            cwd: Some(cwd.clone()), session_id: Some("s-arch".into()),
+            catalog: Some(UserConfig::default()), ..Default::default()
+        }).err().expect("archived resume must fail");
+        assert!(err.contains("archived"), "{err}");
+        assert!(err.contains("move it back to the sessions root"), "{err}");
+        assert!(crate::config::sessions_dir().join("archived/s-arch/team.db").exists(), "archive destroyed");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Probe chain from review round 4 (F1): archive -> refused resume must
+    /// not leave a ghost dir; a second archive must neither succeed on the
+    /// ghost nor destroy the real archive (sessions/<id>/team.db survives).
+    #[test]
+    fn refused_archived_resume_leaves_no_ghost_and_rearchive_keeps_the_archive() {
+        let _env = crate::env_lock();
+        let root = std::env::temp_dir().join(format!("ta-arch-ghost-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let cwd = root.join("project");
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", root.join("home/.config"));
+        std::env::set_var("XDG_STATE_HOME", root.join("home/.state"));
+
+        let opened = open_session(OpenOptions {
+            cwd: Some(cwd.clone()), session_id: Some("s-ghost".into()),
+            catalog: Some(UserConfig::default()), initial_spec: Some(default_leader_spec("a", &[])),
+            scripts: Some(HashMap::new()), ..Default::default()
+        }).unwrap();
+        opened.close();
+        crate::sessions::archive_session("s-ghost", None).expect("archive");
+
+        let err = open_session(OpenOptions {
+            cwd: Some(cwd.clone()), session_id: Some("s-ghost".into()),
+            catalog: Some(UserConfig::default()), ..Default::default()
+        }).err().expect("archived resume must fail");
+        assert!(err.contains("archived"), "{err}");
+        let active = crate::config::sessions_dir().join("s-ghost");
+        assert!(!active.exists(), "refused resume left a ghost dir at {active:?}");
+
+        // even with a ghost forced back (the pre-fix state), archiving must
+        // refuse a source without team.db and keep the real archive
+        std::fs::create_dir_all(active.join("artifacts")).unwrap();
+        let err = crate::sessions::archive_session("s-ghost", None).err().expect("ghost must not archive");
+        assert!(err.contains("does not exist"), "{err}");
+        assert!(crate::config::sessions_dir().join("archived/s-ghost/team.db").exists(), "archive destroyed");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Round 5 (F3): the refused-resume cleanup deletes only its own ghost
+    /// items; a base dir that still holds member worktrees (team.db removed
+    /// by hand) is left in place instead of being wiped by remove_dir_all.
+    #[test]
+    fn refused_archived_resume_preserves_leftover_member_worktrees() {
+        let _env = crate::env_lock();
+        let root = std::env::temp_dir().join(format!("ta-arch-keep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let cwd = root.join("project");
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", root.join("home/.config"));
+        std::env::set_var("XDG_STATE_HOME", root.join("home/.state"));
+
+        let opened = open_session(OpenOptions {
+            cwd: Some(cwd.clone()), session_id: Some("s-keep".into()),
+            catalog: Some(UserConfig::default()), initial_spec: Some(default_leader_spec("a", &[])),
+            scripts: Some(HashMap::new()), ..Default::default()
+        }).unwrap();
+        opened.close();
+        crate::sessions::archive_session("s-keep", None).expect("archive");
+
+        // team.db deleted by hand, a member worktree left behind
+        let active = crate::config::sessions_dir().join("s-keep");
+        std::fs::create_dir_all(active.join("members/m1")).unwrap();
+        std::fs::write(active.join("members/m1/work.txt"), b"wip").unwrap();
+
+        let err = open_session(OpenOptions {
+            cwd: Some(cwd.clone()), session_id: Some("s-keep".into()),
+            catalog: Some(UserConfig::default()), ..Default::default()
+        }).err().expect("archived resume must fail");
+        assert!(err.contains("archived"), "{err}");
+        assert_eq!(std::fs::read(active.join("members/m1/work.txt")).unwrap(), b"wip", "member worktree preserved");
+        assert!(!active.join("artifacts").exists(), "the ghost items are still cleaned");
+        assert!(!active.join("session.lock").exists(), "the ghost items are still cleaned");
+        assert!(crate::config::sessions_dir().join("archived/s-keep/team.db").exists(), "archive destroyed");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

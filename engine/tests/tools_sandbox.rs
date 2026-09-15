@@ -126,10 +126,10 @@ fn long_shell_output_is_stored_as_a_readable_artifact() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// finding 6: the guard refuses what Python's ipaddress refuses (and keeps
+/// The guard refuses the not-globally-reachable address table (and keeps
 /// public targets usable).
 #[test]
-fn guard_url_matches_the_python_guard_table() {
+fn guard_url_matches_the_blocked_range_table() {
     for blocked in [
         "http://127.0.0.1/x",
         "http://10.0.0.5/x",

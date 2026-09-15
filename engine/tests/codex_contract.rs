@@ -164,7 +164,7 @@ fn python_available() -> bool {
 }
 
 /// F-5: reconcile uses `thread/read` (the app-server has no `thread/status`
-/// method) and maps the last turn per codex.py.
+/// method) and maps the last turn.
 #[test]
 fn reconcile_reads_the_thread_history() {
     if !python_available() {
@@ -334,4 +334,80 @@ for line in sys.stdin:
 
 fn alive(pid: i32) -> bool {
     std::path::Path::new(&format!("/proc/{pid}")).exists()
+}
+
+/// D-31: a "session" decision answers the app-server with a single-op
+/// `accept` — never acceptForSession, whose cache is not bound to one
+/// operation_hash — and the core-bound grant auto-accepts the next identical
+/// operation (fresh itemId/startedAtMs and all) without a second PENDING row.
+#[test]
+fn codex_session_grant_auto_accepts_the_identical_operation() {
+    let _env = env_guard("codex-session-grant");
+    let dir = std::env::temp_dir().join(format!("ta-codex-grant-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let log = dir.join("approvals.log");
+    let log_str = log.to_string_lossy().into_owned();
+    let core = core_with_spec(
+        "cx-grant",
+        json!({"leader_id": "leader", "agents": [member("leader", "leader"), codex_agent()]}),
+    );
+    let runner = runner_with(
+        &core,
+        "cx-grant",
+        env!("CARGO_BIN_EXE_fake-codex"),
+        vec![("FAKE_CODEX_MODE", "approval-grant"), ("FAKE_APPROVAL_LOG", &log_str)],
+    );
+    let run = run_for("cx-grant", "cx-grant-run", None);
+    let gw = gateway(&core, "cx-grant-run");
+    let (tx, rx) = std::sync::mpsc::channel();
+    {
+        let runner = runner.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(runner.start_or_resume(&run, &view(), &gw, &json!({"reason": "new_input"})));
+        });
+    }
+    let requested = wait_for(
+        || {
+            core.state()
+                .ok()
+                .and_then(|state| state.get("pending_approvals").and_then(|v| v.as_array()).cloned())
+                .map(|pending| !pending.is_empty())
+                .unwrap_or(false)
+        },
+        10_000,
+    );
+    assert!(requested, "the first approval request is recorded");
+    let approval_id = core
+        .state()
+        .unwrap()
+        .pointer("/pending_approvals/0/approval_id")
+        .and_then(|v| v.as_str())
+        .unwrap()
+        .to_string();
+    // decide "session" through the core, as the TUI's DecideApproval effect does
+    let action: teamagents_core::models::TeamAction = serde_json::from_value(json!({
+        "action_id": "grant-decide-1", "session_id": "cx-grant", "actor_id": "user",
+        "kind": "approval_decision",
+        "payload": {"approval_id": approval_id, "decision": "session"},
+    }))
+    .unwrap();
+    let receipt = core.submit(&action).expect("decide");
+    assert!(receipt.ok, "decision rejected: {receipt:?}");
+    assert!(runner.resolve_approval(&approval_id, "session"));
+
+    let outcome = rx
+        .recv_timeout(std::time::Duration::from_secs(20))
+        .expect("the grant answers the second request; the turn completes");
+    assert_eq!(outcome.status, TurnStatus::Completed);
+    let decisions = std::fs::read_to_string(&log).unwrap_or_default();
+    assert_eq!(decisions.lines().collect::<Vec<_>>(), ["accept", "accept"], "both replies are single-op accepts");
+    let pending = core
+        .state()
+        .ok()
+        .and_then(|state| state.get("pending_approvals").and_then(|v| v.as_array()).map(|a| a.len()))
+        .unwrap_or(0);
+    assert_eq!(pending, 0, "the second request never parked a row");
+    runner.close();
+    let _ = std::fs::remove_dir_all(&dir);
 }

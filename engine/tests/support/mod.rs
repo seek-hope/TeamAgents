@@ -1,5 +1,5 @@
 #![allow(dead_code)] // each integration test binary compiles this module and uses a subset
-//! Shared harness for the ported scenario tests (tests/conftest.py parity).
+//! Shared harness for the scenario tests.
 
 use serde_json::{json, Value as Json};
 use std::sync::Arc;
@@ -36,7 +36,7 @@ pub fn task_channel(source: &str, targets: &[&str]) -> Json {
 pub fn core_with_spec(session: &str, spec: Json) -> Arc<CoreClient> {
     let core = CoreClient::open(":memory:", session).expect("core");
     core.call("create_session", json!({"session_id": session, "cwd": "/tmp"})).expect("create");
-    // the test catalog mirrors the Python harness (profile "test"/"m")
+    // the test catalog uses profile "test"/"m"
     core.call("set_catalog", json!({"session_id": session, "catalog": test_catalog()}))
         .expect("catalog");
     core.call("save_spec", json!({"session_id": session, "spec": spec})).expect("spec");

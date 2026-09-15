@@ -1,4 +1,4 @@
-//! Control-level scenario tests, mirrored from tests/test_t*.py / test_p1_guards.py.
+//! Control-level scenario tests.
 //! Runtime (turn execution) is TS-side; these cover validate/reduce/schedule.
 
 use serde_json::json;
@@ -28,7 +28,7 @@ fn harness() -> Control {
     store.create_session("s1", "/tmp", "approved_scope").unwrap();
     store.save_team_spec("s1", &spec()).unwrap();
     let ctl = Control::new(store, "s1");
-    // session bootstrap ensures runtime rows exist (Python does this at session start)
+    // session bootstrap ensures runtime rows exist
     for a in spec().agents {
         ctl.store.ensure_agent("s1", &a.id).unwrap();
     }
@@ -203,6 +203,129 @@ fn cancel_task_without_run_cancels_immediately() {
     assert!(matches!(task.status, TaskStatus::Cancelled));
 }
 
+fn running_task(task_id: &str, assignee: &str) -> Task {
+    let mut t: Task = serde_json::from_value(json!({
+        "task_id": task_id, "requester": "leader", "assignee": assignee, "description": "d"
+    }))
+    .unwrap();
+    t.status = TaskStatus::Running;
+    t
+}
+
+fn parked_run(run_id: &str, agent: &str, task_id: &str, status: TurnStatus, waiting_on: Vec<String>) -> TurnRun {
+    TurnRun {
+        run_id: run_id.into(),
+        session_id: "s1".into(),
+        task_id: Some(task_id.into()),
+        goal_id: None,
+        agent_id: agent.into(),
+        config_revision: 0,
+        topology_revision: 0,
+        status,
+        input_delivery_ids: vec![],
+        context_ref: None,
+        external_turn_id: None,
+        cancel_requested: false,
+        waiting_on,
+        created_at: 1000.0,
+        updated_at: 1000.0,
+    }
+}
+
+#[test]
+fn cancel_task_converges_run_parked_on_task_wait() {
+    let mut ctl = harness();
+    // b's turn is parked in WAITING_TASK on w-task; its own a-task is RUNNING
+    ctl.store.insert_task("s1", &running_task("w-task", "leader")).unwrap();
+    ctl.store.insert_task("s1", &running_task("a-task", "b")).unwrap();
+    ctl.store
+        .insert_run(&parked_run("run-b", "b", "a-task", TurnStatus::WaitingTask, vec!["w-task".into()]))
+        .unwrap();
+    ctl.store.insert_run(&parked_run("run-l", "leader", "w-task", TurnStatus::Running, vec![])).unwrap();
+
+    let r = ctl.submit(&action("cw1", "user", ActionKind::CancelTask, json!({"task_id": "a-task"}), None)).unwrap();
+    assert!(r.ok, "{}", r.error.unwrap_or_default());
+    // the parked run converges to CANCELLED instead of waiting for its wake
+    assert_eq!(ctl.store.get_run("run-b").unwrap().unwrap().status, TurnStatus::Cancelled);
+    assert!(matches!(ctl.store.get_task("a-task").unwrap().unwrap().status, TaskStatus::Cancelled));
+
+    // w-task completing must not resurrect the cancelled run or task
+    ctl.store.record_completion_request("run-l", "w-task", &[], "w done").unwrap();
+    ctl.finalize_run("run-l", &completed(None), &[]).unwrap();
+    ctl.schedule().unwrap();
+    assert_eq!(ctl.store.get_run("run-b").unwrap().unwrap().status, TurnStatus::Cancelled, "cancelled run must not revive");
+    assert!(matches!(ctl.store.get_task("a-task").unwrap().unwrap().status, TaskStatus::Cancelled));
+}
+
+#[test]
+fn rolled_back_transaction_drops_mid_turn_pushes() {
+    let mut ctl = harness();
+    ctl.submit(&user("a1", "go")).unwrap();
+    let leader_run = ctl.store.runs_for_session("s1", &[TurnStatus::Queued]).unwrap().remove(0);
+    let a = action("mp1", "leader", ActionKind::AssignTask, json!({"assignee": "b", "description": "first"}), Some(leader_run.run_id.clone()));
+    ctl.submit(&a).unwrap();
+    // b's turn is in flight: a fresh assignment becomes a mid-turn push
+    let b_run = ctl.store.runs_for_session("s1", &[TurnStatus::Queued]).unwrap().into_iter().find(|r| r.agent_id == "b").unwrap();
+    ctl.begin_run(&b_run.run_id).unwrap();
+    ctl.drain_mid_turn_pushes();
+
+    // fail the tx after schedule pushed: record_action is the last write before commit
+    ctl.store
+        .conn
+        .execute_batch(
+            "CREATE TRIGGER boom_push BEFORE INSERT ON actions WHEN NEW.action_id='mp2'
+             BEGIN SELECT RAISE(ABORT, 'boom_push'); END;",
+        )
+        .unwrap();
+    let a = action("mp2", "leader", ActionKind::AssignTask, json!({"assignee": "b", "description": "second"}), Some(leader_run.run_id.clone()));
+    let err = ctl.submit(&a).unwrap_err();
+    assert!(err.contains("boom_push"), "{err}");
+    assert!(ctl.drain_mid_turn_pushes().is_empty(), "a rolled-back push must never drain");
+
+    // the next clean submit rebuilds the push from persisted state
+    ctl.store.conn.execute_batch("DROP TRIGGER boom_push").unwrap();
+    let a = action("mp3", "leader", ActionKind::AssignTask, json!({"assignee": "b", "description": "second"}), Some(leader_run.run_id));
+    let r = ctl.submit(&a).unwrap();
+    assert!(r.ok, "{}", r.error.unwrap_or_default());
+    let pushes = ctl.drain_mid_turn_pushes();
+    assert_eq!(pushes.len(), 1);
+    assert_eq!(pushes[0].0, b_run.run_id);
+}
+
+#[test]
+fn failed_transaction_keeps_prior_committed_pushes() {
+    let mut ctl = harness();
+    ctl.submit(&user("a1", "go")).unwrap();
+    let leader_run = ctl.store.runs_for_session("s1", &[TurnStatus::Queued]).unwrap().remove(0);
+    let a = action("kp1", "leader", ActionKind::AssignTask, json!({"assignee": "b", "description": "first"}), Some(leader_run.run_id.clone()));
+    ctl.submit(&a).unwrap();
+    let b_run = ctl.store.runs_for_session("s1", &[TurnStatus::Queued]).unwrap().into_iter().find(|r| r.agent_id == "b").unwrap();
+    ctl.begin_run(&b_run.run_id).unwrap();
+
+    // tx#1 commits with a mid-turn push; drain is a separate RPC, so it stays queued
+    let a = action("kp2", "leader", ActionKind::AssignTask, json!({"assignee": "b", "description": "second"}), Some(leader_run.run_id.clone()));
+    ctl.submit(&a).unwrap();
+
+    // tx#2 pushes, then fails at the final write before commit
+    ctl.store
+        .conn
+        .execute_batch(
+            "CREATE TRIGGER boom_push BEFORE INSERT ON actions WHEN NEW.action_id='kp3'
+             BEGIN SELECT RAISE(ABORT, 'boom_push'); END;",
+        )
+        .unwrap();
+    let a = action("kp3", "leader", ActionKind::AssignTask, json!({"assignee": "b", "description": "third"}), Some(leader_run.run_id));
+    let err = ctl.submit(&a).unwrap_err();
+    assert!(err.contains("boom_push"), "{err}");
+
+    // tx#1's push survives; tx#2's own push is dropped with its rollback
+    let pushes = ctl.drain_mid_turn_pushes();
+    assert_eq!(pushes.len(), 1, "{pushes:?}");
+    assert_eq!(pushes[0].0, b_run.run_id);
+    let body = serde_json::to_string(&pushes[0].1).unwrap();
+    assert!(body.contains("second") && !body.contains("third"), "{body}");
+}
+
 #[test]
 fn complete_task_requires_an_active_run() {
     let mut ctl = harness();
@@ -305,6 +428,39 @@ fn approval_parked_run_does_not_block_boundary() {
 }
 
 #[test]
+fn task_wait_parked_run_does_not_block_boundary() {
+    let mut ctl = harness();
+    ctl.submit(&user("a1", "go")).unwrap();
+    let leader_run = ctl.store.runs_for_session("s1", &[TurnStatus::Queued]).unwrap().remove(0);
+    let a = action("tw1", "leader", ActionKind::AssignTask, json!({"assignee": "b", "description": "x"}), Some(leader_run.run_id.clone()));
+    ctl.submit(&a).unwrap();
+    // a long-running task for b to wait on (empty waiting_on would be woken by schedule)
+    let a = action("tw0", "leader", ActionKind::AssignTask, json!({"assignee": "leader", "description": "slow"}), Some(leader_run.run_id));
+    ctl.submit(&a).unwrap();
+    let b_run = ctl.store.runs_for_session("s1", &[TurnStatus::Queued]).unwrap().into_iter().find(|r| r.agent_id == "b").unwrap();
+    let w_task = ctl.store.tasks_for_session("s1", &["PENDING"]).unwrap().into_iter().find(|t| t.assignee == "leader").unwrap();
+    // in-process run parked on a task wait: its thread exited, external_turn_id is None
+    ctl.store.set_run_status(&b_run.run_id, TurnStatus::WaitingTask).unwrap();
+    ctl.store.deliver_wait_registration(&b_run.run_id, &[w_task.task_id]).unwrap();
+
+    let r = ctl
+        .submit(&action(
+            "tw2",
+            "b",
+            ActionKind::ProposeTeamChange,
+            json!({"operations": [{"op": "update_agent", "agent_id": "b", "changes": {"name": "B2"}}]}),
+            None,
+        ))
+        .unwrap();
+    let patch_id = r.result["patch_id"].as_str().unwrap().to_string();
+    let r = ctl.submit(&action("tw3", "leader", ActionKind::ApplyTopologyPatch, json!({"patch_id": patch_id}), None)).unwrap();
+    assert!(r.ok, "{}", r.error.unwrap_or_default());
+    // applies immediately instead of parking behind the awaited task
+    assert_eq!(r.result["status"], json!("APPLIED"));
+    assert_eq!(ctl.store.get_patch(&patch_id).unwrap().unwrap().status, PatchStatus::Applied);
+}
+
+#[test]
 fn signal_done_blocked_by_unfinished_work() {
     let mut ctl = harness();
     ctl.submit(&user("a1", "go")).unwrap();
@@ -320,7 +476,7 @@ fn signal_done_blocked_by_unfinished_work() {
     assert!(blockers.iter().any(|b| b.as_str().unwrap().contains("unfinished tasks")));
 }
 
-// -- finalize_run (runtime.py::_finalize port) ----------------------------------
+// -- finalize_run ---------------------------------------------------------------
 
 use teamagents_core::control::TurnOutcome;
 
@@ -470,7 +626,7 @@ fn reduce_failure_rolls_back_and_the_refusal_replays() {
 fn reduce_write_failure_rolls_back_the_shared_entry() {
     let mut ctl = harness();
     ctl.submit(&user("a1", "go")).unwrap();
-    // test_p0_4_reduce_rollback.py: the write lands inside reduce, then the step fails
+    // the write lands inside reduce, then the step fails
     ctl.store
         .conn
         .execute_batch(
@@ -535,7 +691,7 @@ fn begin_run_starts_the_task_before_announcing_the_run() {
         .collect();
     let started = kinds.iter().position(|k| k == "task_started").expect("task_started");
     let run_started = kinds.iter().position(|k| k == "run_started").expect("run_started");
-    assert!(started < run_started, "task_started precedes run_started (runtime.py order)");
+    assert!(started < run_started, "task_started precedes run_started");
 }
 
 #[test]
@@ -552,7 +708,7 @@ fn wait_for_tasks_reports_results_keyed_by_task_id() {
     assert!(r.ok, "{}", r.error.unwrap_or_default());
     assert_eq!(r.result["waiting"], json!(false));
     let results = &r.result["results"];
-    assert!(results.is_object(), "control.py keys results by task id, got {results}");
+    assert!(results.is_object(), "results are keyed by task id, got {results}");
     assert_eq!(results[&task_id]["task_id"], json!(task_id));
     assert_eq!(results[&task_id]["status"], json!("CANCELLED"));
 }
@@ -575,7 +731,7 @@ fn wake_info_reports_task_results_keyed_by_task_id() {
     let wake = ctl.wake_info(&run);
     assert_eq!(wake["reason"], json!("task_results"));
     let results = &wake["payload"]["results"];
-    assert!(results.is_object(), "runtime.py keys snapshots by task id, got {results}");
+    assert!(results.is_object(), "snapshots are keyed by task id, got {results}");
     assert_eq!(results[&task_id]["status"], json!("PENDING"));
 }
 
@@ -586,7 +742,7 @@ fn publish_shared_needs_nonempty_content_or_ref() {
     let r = ctl.submit(&action("q1", "b", ActionKind::PublishShared, json!({"space_id": "lib", "content": ""}), None)).unwrap();
     assert!(!r.ok);
     assert!(r.error.unwrap().contains("needs content or a ref"));
-    // a ref alone is enough (control.py: `content or ref`)
+    // a ref alone is enough (`content or ref`)
     let r = ctl.submit(&action("q2", "b", ActionKind::PublishShared, json!({"space_id": "lib", "ref": "artifacts/x.md"}), None)).unwrap();
     assert!(r.ok, "{}", r.error.unwrap_or_default());
 }
@@ -606,7 +762,7 @@ fn apply_patch_with_empty_operations_uses_the_stored_operations() {
     let patch_id = r.result["patch_id"].as_str().unwrap().to_string();
     let rev = ctl.store.current_revision("s1").unwrap();
 
-    // control.py: `p.get("operations") or patch.operations` — empty list falls back
+    // `p.get("operations") or patch.operations` — empty list falls back
     let r = ctl.submit(&action("j2", "leader", ActionKind::ApplyTopologyPatch, json!({"patch_id": patch_id, "operations": []}), None)).unwrap();
     assert!(r.ok, "{}", r.error.unwrap_or_default());
     assert_eq!(ctl.store.current_revision("s1").unwrap(), rev + 1);
@@ -618,7 +774,7 @@ fn read_shared_rejects_malformed_paging_arguments() {
     let mut ctl = harness();
     ctl.submit(&user("a1", "go")).unwrap();
     let r = ctl.submit(&action("x1", "leader", ActionKind::ReadShared, json!({"space_id": "lib", "after_sequence": "abc"}), None)).unwrap();
-    assert!(!r.ok, "int('abc') is ValueError in Python, not a silent 0");
+    assert!(!r.ok, "int('abc') is an error, not a silent 0");
     assert!(r.error.unwrap().contains("after_sequence"));
     let r = ctl.submit(&action("x2", "leader", ActionKind::ReadShared, json!({"space_id": "lib", "limit": null}), None)).unwrap();
     assert!(!r.ok);
@@ -629,8 +785,8 @@ fn read_shared_rejects_malformed_paging_arguments() {
 }
 
 #[test]
-fn payload_hash_matches_python_json_dumps() {
-    // both digests come from control.py::_payload_hash (json.dumps defaults: ", " / ": ")
+fn payload_hash_matches_golden_wire_vectors() {
+    // golden digests of the canonical payload JSON (sorted keys, ", " / ": " separators)
     assert_eq!(payload_hash(&plain_action("h1", json!({"text": "hi"}))), "1af583c098473ec00cf39fee4e4216af");
     assert_eq!(
         payload_hash(&plain_action("h2", json!({"b": [1, 2], "a": {"x": null}, "n": 1.5}))),
@@ -658,4 +814,67 @@ fn delivery_batch_ledger_round_trips_through_finalize() {
     ctl.finalize_run(&run.run_id, &completed(Some("hi")), &[delivery_id]).unwrap();
     assert_eq!(ctl.store.applied_batch("s1", "leader").unwrap(), 1, "ack advances last_applied_batch");
     assert_eq!(ctl.store.pending_deliveries("s1", "leader").unwrap().len(), 0);
+}
+
+#[test]
+fn mid_turn_push_uses_scoped_observer_payload() {
+    let spec: TeamSpec = serde_json::from_value(json!({
+        "leader_id": "leader",
+        "agents": [
+            {"id": "leader", "name": "L", "role": "leader", "runtime_kind": "deepagents", "model_profile": "m"},
+            {"id": "b", "name": "B", "role": "worker", "runtime_kind": "deepagents", "model_profile": "m"},
+            {"id": "obs", "name": "O", "role": "observer", "runtime_kind": "deepagents", "model_profile": "m"}
+        ],
+        "channels": [{"source": "leader", "targets": ["b"], "mode": "task"}],
+        "observers": [{"agent_id": "obs", "subjects": ["b"], "payload_scope": "status", "wake_policy": "on_event"}]
+    }))
+    .unwrap();
+    let store = Store::open_memory().unwrap();
+    store.create_session("s1", "/tmp", "approved_scope").unwrap();
+    store.save_team_spec("s1", &spec).unwrap();
+    let mut ctl = Control::new(store, "s1");
+    for a in &spec.agents {
+        ctl.store.ensure_agent("s1", &a.id).unwrap();
+    }
+    // obs is mid-turn (RUNNING run), so new deliveries become mid-turn pushes
+    let ts = now();
+    ctl.store
+        .insert_run(&TurnRun {
+            run_id: "run-obs".into(),
+            session_id: "s1".into(),
+            task_id: None,
+            goal_id: None,
+            agent_id: "obs".into(),
+            config_revision: ctl.store.agent_config_revision("s1", "obs").unwrap(),
+            topology_revision: ctl.store.current_revision("s1").unwrap(),
+            status: TurnStatus::Running,
+            input_delivery_ids: vec![],
+            context_ref: None,
+            external_turn_id: None,
+            cancel_requested: false,
+            waiting_on: vec![],
+            created_at: ts,
+            updated_at: ts,
+        })
+        .unwrap();
+
+    let a = action(
+        "a1",
+        "leader",
+        ActionKind::AssignTask,
+        json!({"assignee": "b", "description": "TOP-SECRET-DESCRIPTION"}),
+        None,
+    );
+    let r = ctl.submit(&a).unwrap();
+    assert!(r.ok, "{}", r.error.unwrap_or_default());
+
+    let pushes = ctl.drain_mid_turn_pushes();
+    assert_eq!(pushes.len(), 1);
+    assert_eq!(pushes[0].0, "run-obs");
+    assert!(!pushes[0].1.is_empty());
+    for item in &pushes[0].1 {
+        let rendered = item["payload"].to_string();
+        assert!(!rendered.contains("TOP-SECRET-DESCRIPTION"), "mid-turn push leaked the unscoped payload: {rendered}");
+        assert!(item["payload"].get("task_id").is_some(), "scoped payload keeps status keys: {rendered}");
+    }
 }

@@ -1,5 +1,4 @@
-//! Tool permissions and the single tool-call path for members
-//! (permissions.py + agents.py::ToolGateway).
+//! Tool permissions and the single tool-call path for members.
 
 use crate::core_client::CoreClient;
 use serde_json::{json, Value as Json};
@@ -45,9 +44,9 @@ fn team_action_kind(tool: &str) -> Option<ActionKind> {
     })
 }
 
-/// Byte-compatible with Python `json.dumps(..., sort_keys=True, ensure_ascii=False)`:
-/// `", "` / `": "` separators and raw UTF-8 (permissions.py::operation_hash).
-/// The hash must match across versions because approvals share one DB (D-15).
+/// Canonical JSON for hashing: sorted keys, `", "` / `": "` separators and raw
+/// UTF-8 (unescaped non-ASCII). The hash must stay stable across releases
+/// because approvals share one DB (D-15).
 fn canonical_json(v: &Json) -> String {
     match v {
         Json::Object(map) => {
@@ -64,8 +63,7 @@ fn canonical_json(v: &Json) -> String {
     }
 }
 
-/// permissions.py::operation_hash — approval is bound to the operation and its
-/// parameters (plan §12.2).
+/// Approval is bound to the operation and its parameters (plan §12.2).
 pub fn operation_hash(tool: &str, args: &Json) -> String {
     let canonical = canonical_json(&json!({"tool": tool, "args": args}));
     let hex = format!("{:x}", Sha256::digest(canonical.as_bytes()));
@@ -154,10 +152,15 @@ pub struct ApprovalGate {
     policy: Mutex<PermissionPolicy>,
     core: Arc<CoreClient>,
     /// (run_id, operation_hash) → the approval row this gate parked the call
-    /// on. Python's graph replay re-uses the original tool_call_id; the plain
-    /// loop gets a fresh one, so the row is remembered instead of re-matched
-    /// by call id.
+    /// on. A resumed call gets a fresh tool_call_id, so the row is remembered
+    /// instead of re-matched by call id.
     parked: Mutex<std::collections::HashMap<(String, String), String>>,
+    /// op_hashes with a session approval the gate itself observed at the
+    /// current policy revision. The core's session_approval_cache rows carry
+    /// no revision, so they authorize a call only while a same-revision grant
+    /// is on record here; set_mode clears the record (review 2026-09-15: a
+    /// stale row must not bypass the policy-revision guard).
+    session_grants: Mutex<HashSet<String>>,
 }
 
 impl ApprovalGate {
@@ -168,6 +171,7 @@ impl ApprovalGate {
             policy: Mutex::new(policy),
             core,
             parked: Mutex::new(std::collections::HashMap::new()),
+            session_grants: Mutex::new(HashSet::new()),
         });
         if mode_full_auto {
             // nothing extra: the policy already allows everything
@@ -183,9 +187,15 @@ impl ApprovalGate {
         if let Ok(mut policy) = self.policy.lock() {
             policy.mode = mode.to_string();
         }
+        // bump and clear under the grants lock: no reader can observe a new
+        // revision with a stale grant (nesting order grants→revision, as in
+        // note_session_grant); a new revision re-asks for everything the
+        // session cache used to allow
+        let mut grants = self.session_grants.lock().unwrap();
         if let Ok(mut revision) = self.policy_revision.lock() {
             *revision += 1;
         }
+        grants.clear();
     }
 
     /// The session row is authoritative: a user toggling full-auto in the TUI
@@ -201,6 +211,29 @@ impl ApprovalGate {
 
     pub fn revision(&self) -> i64 {
         self.policy_revision.lock().map(|r| *r).unwrap_or(1)
+    }
+
+    /// A session grant authorizes this operation only while both the
+    /// persisted cache row and the in-memory revision-scoped grant agree:
+    /// set_mode clears the set, so a stale row alone cannot authorize (§12.2).
+    pub fn session_grant_active(&self, op_hash: &str) -> bool {
+        let cached = self
+            .core
+            .call_in_session("approval_find_session", json!({"operation_hash": op_hash}));
+        matches!(cached, Ok(reply) if !reply.get("scope").map(|v| v.is_null()).unwrap_or(true))
+            && self.session_grants.lock().unwrap().contains(op_hash)
+    }
+
+    /// Register a session grant decided outside this gate's own check path
+    /// (the codex runner's approval waiter). Void when the policy revision
+    /// moved since the request was parked — the same guard ToolGateway::check
+    /// applies after inserting.
+    pub fn note_session_grant(&self, op_hash: &str, request_revision: i64) {
+        let mut grants = self.session_grants.lock().unwrap();
+        grants.insert(op_hash.to_string());
+        if request_revision != self.revision() {
+            grants.remove(op_hash);
+        }
     }
 
     /// Returns (decision, approval). A PENDING approval means: pause.
@@ -225,7 +258,9 @@ impl ApprovalGate {
         let cached = self
             .core
             .call_in_session("approval_find_session", json!({"operation_hash": op_hash}))?;
-        if !cached.get("scope").map(|v| v.is_null()).unwrap_or(true) {
+        if !cached.get("scope").map(|v| v.is_null()).unwrap_or(true)
+            && self.session_grants.lock().unwrap().contains(&op_hash)
+        {
             return Ok((Decision::allow(), None));
         }
         if let Some(existing) = self.decided_for_run(run_id, tool_call_id, &op_hash) {
@@ -239,10 +274,22 @@ impl ApprovalGate {
                     return Ok((denied, Some(existing)));
                 }
                 // only an unconsumed once/session approval with the same policy
-                // revision authorizes the call; EXPIRED asks again (permissions.py)
+                // revision authorizes the call; EXPIRED asks again
                 ApprovalStatus::ApprovedOnce | ApprovalStatus::ApprovedSession
                     if existing.policy_revision == self.revision() =>
                 {
+                    if existing.status == ApprovalStatus::ApprovedSession {
+                        let mut grants = self.session_grants.lock().unwrap();
+                        grants.insert(op_hash.clone());
+                        // recheck after inserting: set_mode may have bumped the
+                        // revision and cleared the set between the guard above
+                        // and this insert — this grant would then be stale for
+                        // the new revision. If set_mode lands after this check,
+                        // its clear() removes the grant, so either order is safe.
+                        if existing.policy_revision != self.revision() {
+                            grants.remove(&op_hash);
+                        }
+                    }
                     return Ok((Decision::allow(), Some(existing)))
                 }
                 _ => {}
@@ -315,7 +362,7 @@ impl ApprovalGate {
             .and_then(|v| approval_from(v.get("approval")))
     }
 
-    /// permissions.py::consume_once — a once-approval is single use, consumed
+    /// A once-approval is single use, consumed
     /// after the operation ran (success or failure).
     pub fn consume_once(&self, approval_id: &str) {
         if let Err(e) = self.core.call_in_session("expire_approval", json!({"approval_id": approval_id})) {
@@ -477,7 +524,7 @@ impl ToolGateway {
                     );
                 }
                 // consumed after the operation runs, even when it fails
-                // (runners.py: handler then consume_once)
+                // handler, then consume_once
                 ApprovalStatus::ApprovedOnce => consume_once = Some(approval.approval_id.clone()),
                 _ => {}
             }
@@ -518,10 +565,9 @@ mod tests {
     }
 
     #[test]
-    fn operation_hash_matches_python_json_dumps() {
-        // Vectors from .venv/bin/python:
-        //   hashlib.sha256(json.dumps({"tool": t, "args": a}, sort_keys=True,
-        //                              ensure_ascii=False).encode()).hexdigest()[:32]
+    fn operation_hash_matches_golden_wire_vectors() {
+        // Golden wire vectors: sha256 of the canonical JSON (sorted keys,
+        // ", " / ": " separators, raw UTF-8), hex, first 32 chars.
         assert_eq!(
             operation_hash("shell", &json!({"command": "ls", "network": false})),
             "3b029cd4d67fd563bc49494e01f94404"
@@ -536,8 +582,52 @@ mod tests {
         );
     }
 
+    /// Review 2026-09-15: a session-scoped approval must stop authorizing once
+    /// the policy revision moves (probe /tmp/ta-probe-gate).
     #[test]
-    fn policy_defaults_match_python() {
+    fn session_approval_does_not_survive_a_policy_revision_change() {
+        let session = "gate-rev-guard";
+        let core = CoreClient::open(":memory:", session).expect("core");
+        core.call("create_session", json!({"session_id": session, "cwd": "/tmp"})).expect("create");
+        core.call("set_catalog", json!({"session_id": session, "catalog": json!({
+            "models": {"m": {"provider": "openai", "protocol": "openai", "model": "test"}},
+            "tools": {}, "skills_paths": [], "instruction_files": [],
+        })})).expect("catalog");
+        core.call("save_spec", json!({"session_id": session, "spec": json!({
+            "leader_id": "a",
+            "agents": [{"id": "a", "name": "A", "role": "leader", "runtime_kind": "deepagents", "model_profile": "m"}],
+        })})).expect("spec");
+        let gate = ApprovalGate::new(core.clone(), PermissionPolicy::default());
+        let args = json!({"command": "curl example.com", "network": true});
+        let (d1, a1) = gate.check("a", "r1", "shell", &args, "tc-1").expect("check1");
+        assert!(!d1.allow);
+        let approval_id = a1.expect("pending").approval_id;
+        let receipt = core
+            .submit(&teamagents_core::models::TeamAction {
+                action_id: teamagents_core::models::new_id("user"),
+                session_id: session.into(),
+                actor_id: "user".into(),
+                run_id: None,
+                kind: ActionKind::ApprovalDecision,
+                payload: json!({"approval_id": approval_id, "decision": "session"}),
+            })
+            .expect("submit");
+        assert!(receipt.ok);
+        // the approved run resumes: allowed, and the grant goes on record
+        let (d2, _) = gate.check("a", "r1", "shell", &args, "tc-1b").expect("check2");
+        assert!(d2.allow, "the approved run resumes at the same revision");
+        // another run is authorized by the session cache at the same revision
+        let (d3, _) = gate.check("a", "r2", "shell", &args, "tc-2").expect("check3");
+        assert!(d3.allow, "session cache authorizes at the same revision");
+        gate.set_mode("full_auto");
+        gate.set_mode("approved_scope");
+        let (d5, a5) = gate.check("a", "r3", "shell", &args, "tc-3").expect("check5");
+        assert!(!d5.allow, "the stale session approval must not authorize after the revision moved");
+        assert_eq!(a5.map(|a| a.status), Some(ApprovalStatus::Pending), "the op asks again");
+    }
+
+    #[test]
+    fn policy_defaults_are_approved_scope() {
         let policy = PermissionPolicy::default();
         assert!(policy.evaluate("shell", &json!({"command": "ls"})).allow);
         assert!(!policy.evaluate("shell", &json!({"command": "curl x", "network": true})).allow);

@@ -1,4 +1,4 @@
-//! Workspace policies: shared / isolated / git worktree (plan §12.3, workspace.py).
+//! Workspace policies: shared / isolated / git worktree (plan §12.3).
 //!
 //! A worktree isolates working files; it is not a security sandbox. Uncommitted
 //! task inputs in the original directory are never ignored silently: the policy
@@ -65,7 +65,7 @@ pub fn prepare(agent: &AgentSpec, project_cwd: &Path, member_dir: &Path) -> Resu
             let path = member_dir.join("work");
             std::fs::create_dir_all(&path).map_err(|e| e.to_string())?;
             // touch, not truncate: reopening a session must keep member notes
-            // (workspace.py: `INPUTS.md.touch(exist_ok=True)`)
+            // (`INPUTS.md` is created if missing)
             let _ = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)

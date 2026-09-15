@@ -1,5 +1,5 @@
-//! A tiny `codex app-server` stand-in for tests (fake_codex_app_server.py port).
-//! Modes (env FAKE_CODEX_MODE): simple | approval | slow
+//! A tiny `codex app-server` stand-in for tests.
+//! Modes (env FAKE_CODEX_MODE): simple | approval | slow | die | die-once
 
 use serde_json::{json, Value as Json};
 use std::collections::HashMap;
@@ -14,6 +14,20 @@ fn send(message: Json) {
 
 fn main() {
     let mode = std::env::var("FAKE_CODEX_MODE").unwrap_or_else(|_| "simple".into());
+    // die-once: the first spawned process crashes like "die"; a marker file
+    // (env FAKE_CODEX_DIE_MARKER) makes later respawns behave like "simple",
+    // so reconnect tests get a working server on the second process
+    let mode = if mode == "die-once" {
+        let marker = std::env::var("FAKE_CODEX_DIE_MARKER").unwrap_or_default();
+        if marker.is_empty() || std::path::Path::new(&marker).exists() {
+            "simple".to_string()
+        } else {
+            let _ = std::fs::write(&marker, b"1");
+            "die".to_string()
+        }
+    } else {
+        mode
+    };
     // turn id -> (thread id, status)
     let mut turns: HashMap<String, (String, String)> = HashMap::new();
     let mut thread_count = 0usize;
@@ -31,15 +45,34 @@ fn main() {
         let params = message.get("params").cloned().unwrap_or(json!({}));
 
         // a response to our server->client approval request
-        if method.is_none() && id.as_u64() == Some(9001) {
+        if method.is_none() && (id.as_u64() == Some(9001) || id.as_u64() == Some(9002)) {
             let decision = message
                 .get("result")
                 .and_then(|r| r.get("decision"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("decline")
                 .to_string();
+            if let Ok(log) = std::env::var("FAKE_APPROVAL_LOG") {
+                if !log.is_empty() {
+                    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(log) {
+                        let _ = writeln!(f, "{decision}");
+                    }
+                }
+            }
             if let Some(turn_id) = turns.iter().find(|(_, (_, status))| status == "awaitingApproval").map(|(k, _)| k.clone()) {
                 let (thread_id, _) = turns[&turn_id].clone();
+                // approval-grant: the first accept is answered by asking for the
+                // identical operation again under fresh per-call ids; the turn
+                // completes only when that second request is answered
+                if mode == "approval-grant" && id.as_u64() == Some(9001) {
+                    send(json!({
+                        "id": 9002,
+                        "method": "item/commandExecution/requestApproval",
+                        "params": {"threadId": thread_id, "turnId": turn_id, "itemId": "exec-2",
+                                   "startedAtMs": 2, "command": "echo probe", "reason": "fake approval"},
+                    }));
+                    continue;
+                }
                 let item = json!({"type": "agentMessage", "text": format!("approval={decision}")});
                 send(json!({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": item}}));
                 turns.insert(turn_id.clone(), (thread_id.clone(), "completed".into()));
@@ -62,7 +95,7 @@ fn main() {
                 send(json!({"id": id, "result": {"turn": {"id": turn_id, "status": "inProgress"}}}));
                 turns.insert(turn_id.clone(), (thread_id.clone(), "inProgress".into()));
                 match mode.as_str() {
-                    "approval" => {
+                    "approval" | "approval-grant" => {
                         send(json!({
                             "id": 9001,
                             "method": "item/commandExecution/requestApproval",
@@ -71,6 +104,8 @@ fn main() {
                         }));
                         turns.insert(turn_id.clone(), (thread_id, "awaitingApproval".into()));
                     }
+                    // crash mid-turn: the reply is out, no turn/completed follows
+                    "die" => std::process::exit(1),
                     "slow" => {}
                     _ => {
                         let item = json!({"type": "agentMessage", "text": "fake work done"});

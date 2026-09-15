@@ -82,9 +82,8 @@ fn frame_text(buf: &ratatui::buffer::Buffer) -> String {
     out
 }
 
-/// Parity tool: with TEAMAGENTS_DUMP_FRAME=<path> and TEAMAGENTS_DUMP_SIZE=WxH
-/// this writes the rendered frame as plain text so it can be diffed against the
-/// Python (Textual) TUI. See review/tmp/dump_py_frame.py.
+/// Frame dump tool: with TEAMAGENTS_DUMP_FRAME=<path> and TEAMAGENTS_DUMP_SIZE=WxH
+/// this writes the rendered frame as plain text for external diffing.
 fn dump_frame(app: &mut App, name: &str) {
     let Ok(path) = std::env::var("TEAMAGENTS_DUMP_FRAME") else { return };
     if let Ok(panel) = std::env::var("TEAMAGENTS_DUMP_PANEL") {
@@ -113,15 +112,14 @@ fn dump_frame(app: &mut App, name: &str) {
     std::fs::write(target, frame_text(terminal.backend().buffer())).unwrap();
 }
 
-/// The same scenario the Python dump script renders: one JSON file feeds both
-/// sides (review/tmp/parity_scenario.json) so the frames stay comparable.
+/// Shared frame fixture: review/tmp/parity_scenario.json.
 fn scenario() -> Json {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../review/tmp/parity_scenario.json");
-    serde_json::from_str(&std::fs::read_to_string(path).expect("parity scenario")).expect("json")
+    serde_json::from_str(&std::fs::read_to_string(path).expect("frame scenario")).expect("json")
 }
 
-fn parity_app() -> App {
+fn fixture_app() -> App {
     let scenario = scenario();
     let mut app = App::new(
         "s1",
@@ -156,8 +154,8 @@ fn parity_app() -> App {
 }
 
 #[test]
-fn frame_dump_for_parity() {
-    let mut app = parity_app();
+fn frame_dump_writes_text() {
+    let mut app = fixture_app();
     dump_frame(&mut app, "");
 }
 
@@ -220,8 +218,8 @@ fn zh_frame_uses_message_ids() {
 fn frame_shows_the_rust_shell_regions() {
     // The Rust-native shell (D-20): status chips, a sidebar box with tabs and
     // counts, an accented selection, an activity chip line, a rounded composer
-    // and a dim footer. Textual parity is no longer a goal.
-    let mut app = parity_app();
+    // and a dim footer.
+    let mut app = fixture_app();
     app.focus = teamagents_tui::app::Focus::Panel;
     let backend = TestBackend::new(120, 34);
     let mut terminal = Terminal::new(backend).unwrap();
@@ -255,7 +253,7 @@ fn frame_shows_the_rust_shell_regions() {
 
 #[test]
 fn narrow_terminals_stack_the_sidebar_above_the_chat() {
-    let mut app = parity_app();
+    let mut app = fixture_app();
     let backend = TestBackend::new(96, 30);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| ui::render(f, &mut app)).unwrap();
@@ -270,7 +268,7 @@ fn narrow_terminals_stack_the_sidebar_above_the_chat() {
 
 #[test]
 fn chat_scroll_and_new_message_marker() {
-    let mut app = parity_app();
+    let mut app = fixture_app();
     for i in 0..40 {
         app.chat.push(("Leader".into(), format!("line {i}")));
     }
@@ -319,8 +317,9 @@ fn empty_panels_state_their_case() {
 }
 
 #[test]
-fn python_repr_and_json_dumps_match_the_panels() {
-    // approvals.py uses str(args) (Python repr); panels.py logs json.dumps() text
+fn repr_and_dumps_formats_are_stable() {
+    // the approvals panel shows str(args)-style repr; the log panel stores
+    // ", " / ": " separated, \u-escaped JSON text
     let args = json!({"command": "curl https://example.com", "network": true});
     assert_eq!(
         teamagents_tui::app::py_repr(&args),
@@ -349,7 +348,7 @@ fn streaming_preview_renders_markdown_bounded() {
 
 #[test]
 fn debug_row_indent() {
-    let mut app = parity_app();
+    let mut app = fixture_app();
     let backend = TestBackend::new(110, 32);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| ui::render(f, &mut app)).unwrap();
@@ -362,7 +361,7 @@ fn debug_row_indent() {
 #[test]
 fn panes_use_the_fixed_top_bottom_split() {
     use teamagents_tui::app::Focus;
-    let mut app = parity_app();
+    let mut app = fixture_app();
     app.focus = Focus::Panel;
     // wide and narrow terminals produce the same pane order: box on top, chat below
     for width in [80u16, 120, 200] {
@@ -391,7 +390,7 @@ fn panes_use_the_fixed_top_bottom_split() {
 #[test]
 fn settings_lives_behind_the_slash_command() {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    let mut app = parity_app();
+    let mut app = fixture_app();
     // no settings tab any more
     assert!(!teamagents_tui::app::PANELS.contains(&"settings"));
 
@@ -526,7 +525,7 @@ fn ascii_frame_has_no_cjk_leaks() {
 #[test]
 fn slash_command_menu_lists_navigates_and_runs() {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    let mut app = parity_app();
+    let mut app = fixture_app();
     app.composer.set_text("/");
     let matches = app.slash_matches();
     assert_eq!(matches.len(), teamagents_tui::app::SLASH_COMMANDS.len(), "typing / lists every command");
@@ -560,13 +559,13 @@ fn slash_command_menu_lists_navigates_and_runs() {
     assert_eq!(app.composer.text(), "");
 
     // /quit is a real command too
-    let mut app = parity_app();
+    let mut app = fixture_app();
     app.composer.set_text("/quit");
     let effects = app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(effects.iter().any(|e| matches!(e, teamagents_tui::app::Effect::Quit)));
 
     // the menu renders above the composer
-    let mut app = parity_app();
+    let mut app = fixture_app();
     app.composer.set_text("/");
     let backend = TestBackend::new(120, 36);
     let mut terminal = Terminal::new(backend).unwrap();
@@ -595,7 +594,7 @@ fn slash_command_menu_lists_navigates_and_runs() {
 fn model_picker_keeps_selected_model_visible_and_renders_both_languages() {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     for lang in ["en", "zh-CN"] {
-        let mut app = parity_app();
+        let mut app = fixture_app();
         app.lang = lang;
         let profiles: Vec<_> = (0..25).map(|i| json!({"id":format!("p{i:02}"), "provider":"vendor",
             "model":format!("model-{i:02}"), "protocol":"openai", "efforts":["low","medium","high"]})).collect();
@@ -621,7 +620,7 @@ fn model_picker_keeps_selected_model_visible_and_renders_both_languages() {
 
 #[test]
 fn tab_click_hits_the_tab_under_the_pointer() {
-    let mut app = parity_app();
+    let mut app = fixture_app();
     let backend = TestBackend::new(120, 30);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| ui::render(f, &mut app)).unwrap();
@@ -650,7 +649,7 @@ fn tab_click_hits_the_tab_under_the_pointer() {
 #[test]
 fn hover_highlights_the_tab_under_the_pointer() {
     use ratatui::style::Color;
-    let mut app = parity_app();
+    let mut app = fixture_app();
     let backend = TestBackend::new(120, 30);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| ui::render(f, &mut app)).unwrap();
@@ -697,7 +696,7 @@ fn settings_overlay_keeps_its_borders_next_to_wide_text() {
     // Regression: ratatui's buffer diff never emits a cell that follows a wide
     // grapheme, so a CJK chat line ending under the frame silently erased the
     // border. The overlay keeps a one-column gutter for exactly that reason.
-    let mut app = parity_app(); // the fixture's chat lines are Chinese
+    let mut app = fixture_app(); // the fixture's chat lines are Chinese
     app.settings_open = true;
     let backend = TestBackend::new(120, 34);
     let mut terminal = Terminal::new(backend).unwrap();

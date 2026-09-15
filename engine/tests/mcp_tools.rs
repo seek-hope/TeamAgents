@@ -1,5 +1,5 @@
 //! MCP tool bindings against the real stdio server (the `fake-mcp-server`
-//! binary, formerly tests/mcp_echo_server.py).
+//! binary).
 
 mod support;
 
@@ -31,7 +31,7 @@ fn mcp_binding_loads_and_calls_a_real_stdio_server() {
     let command = echo_server();
     let tools = BoundTools::load(&catalog(&command), &["echo_service".to_string()]).unwrap();
     assert_eq!(tools.tools.len(), 1);
-    // same-named tools get the service prefix (langchain-mcp tool_name_prefix)
+    // same-named tools get the service prefix
     assert_eq!(tools.tools[0].name, "echo_echo");
     assert!(tools.names().contains("echo_echo"));
     let output = tools.call("echo_echo", &json!({"text": "ping", "times": 2})).expect("bound tool").unwrap();

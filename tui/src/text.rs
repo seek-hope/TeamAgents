@@ -1,4 +1,4 @@
-//! Composer buffer, ported from panels.py::PromptInput.
+//! Composer buffer.
 //! Enter sends, Shift+Enter/Ctrl+J inserts a newline, ↑↓ recall history at the
 //! first/last row. Lines are Vec<char> so multibyte editing stays simple.
 
@@ -211,8 +211,7 @@ impl Composer {
         self.set_text(&text);
     }
 
-    /// Wrapped visual height at a text width → widget height (3..=8),
-    /// panels.py::on_text_area_changed.
+    /// Wrapped visual height at a text width → widget height (3..=8).
     pub fn widget_height(&self, width: usize) -> usize {
         let wrapped = self
             .lines

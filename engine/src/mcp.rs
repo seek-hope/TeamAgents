@@ -1,8 +1,8 @@
 //! Minimal MCP client: stdio + streamable HTTP transports (plan §12.1).
 //!
 //! One short-lived session per service: connect, initialize, tools/list, then
-//! tools/call on demand — same trade-off the Python build documents (no leaked
-//! processes; switch to a long-lived session per service if latency matters).
+//! tools/call on demand (no leaked processes; switch to a long-lived session
+//! per service if latency matters).
 
 use serde_json::{json, Value as Json};
 use std::collections::HashMap;
@@ -55,8 +55,8 @@ impl McpClient {
         cmd.args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            // the server's stderr is the engine's stderr (the Python SDK forwards
-            // it to errlog): piping it without draining deadlocks a chatty server
+            // the server's stderr is the engine's stderr: piping it without
+            // draining deadlocks a chatty server
             // ponytail: server logs land on the engine's stderr; drain into a
             // bounded buffer if the TUI needs that stream clean.
             .stderr(Stdio::inherit());

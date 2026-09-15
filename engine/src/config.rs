@@ -1,4 +1,4 @@
-//! User config and XDG paths (config.py, minus project-local config merging).
+//! User config and XDG paths.
 
 use std::collections::HashMap;
 use serde_json::Value as Json;
@@ -37,7 +37,7 @@ pub fn sessions_dir() -> PathBuf {
     state_dir().join("sessions")
 }
 
-/// TeamSpec import: JSON or YAML (config.py::load_team_spec parity).
+/// TeamSpec import: JSON or YAML.
 pub fn parse_spec(text: &str) -> Result<Json, String> {
     if let Ok(spec) = serde_json::from_str::<Json>(text) {
         return Ok(spec);
@@ -59,12 +59,12 @@ pub fn load_user_config(path: &Path) -> Result<UserConfig, String> {
 }
 
 /// Only the documented sections are read; unknown sections (e.g. `[permissions]`)
-/// are ignored rather than rejected, matching config.py's tolerant loader.
+/// are ignored rather than rejected (tolerant loader).
 pub fn parse_user_config(text: &str) -> Result<UserConfig, String> {
     let value: toml::Value = text.parse().map_err(|e| format!("bad TOML: {e}"))?;
     let table = value.as_table().ok_or("config root must be a table")?;
     // the permissions section is not a catalog field, but a wrong type there is
-    // an error, never a silent default (config.py::_trust_project_tools)
+    // an error, never a silent default
     project_permissions(&value)?;
     let mut filtered = toml::map::Map::new();
     for key in ["models", "tools", "skills_paths", "instruction_files"] {
@@ -155,7 +155,7 @@ provider = "anysearch"
     }
 }
 
-// -- project config + permissions (config.py::load_user_config / permission_mode_from_config) --
+// -- project config + permissions --------------------------------------------------
 
 pub fn project_config_path(cwd: &Path) -> PathBuf {
     cwd.join(".teamagents").join("config.toml")
