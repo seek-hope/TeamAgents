@@ -333,6 +333,61 @@ fn normalize(path: &Path) -> PathBuf {
     out
 }
 
+/// Images a model can actually look at. Base64 turns a 5 MiB file into ~6.7 MiB
+/// of request body, so this is the ceiling for one picture.
+const MAX_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
+
+/// Media type by magic bytes; a wrong label is worse than a refusal because the
+/// provider renders whatever it is told.
+fn image_media_type(bytes: &[u8]) -> Option<&'static str> {
+    match bytes {
+        [0x89, b'P', b'N', b'G', ..] => Some("image/png"),
+        [0xFF, 0xD8, 0xFF, ..] => Some("image/jpeg"),
+        [b'G', b'I', b'F', b'8', ..] => Some("image/gif"),
+        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => Some("image/webp"),
+        _ => None,
+    }
+}
+
+/// `view_image` result: the reference the request builder turns into a real
+/// image part. The bytes stay on disk until a request is built, so history and
+/// checkpoints never carry base64 blobs.
+fn read_image(file: std::fs::File, label: &str) -> Result<Json, String> {
+    let meta = file.metadata().map_err(|e| e.to_string())?;
+    if meta.len() > MAX_IMAGE_BYTES {
+        return Err(format!("image too large ({} bytes > {MAX_IMAGE_BYTES})", meta.len()));
+    }
+    let mut bytes = vec![];
+    file.take(MAX_IMAGE_BYTES + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+    let media_type = image_media_type(&bytes).ok_or("unsupported image format (png/jpeg/gif/webp only)")?;
+    Ok(json!({"image": label, "media_type": media_type, "bytes": bytes.len()}))
+}
+
+/// Load an image reference recorded by `view_image` at request-build time.
+/// The reference is re-validated against the same roots the tool used, and the
+/// bytes must still match the recorded media type.
+pub fn load_image_reference(root: &Path, artifacts: Option<&Path>, reference: &str, media_type: &str) -> Result<Vec<u8>, String> {
+    let file = if let Some(name) = reference.strip_prefix(ARTIFACTS_PREFIX) {
+        let dir = artifacts.ok_or("artifact directory unavailable")?;
+        let path = resolve_in_root(dir, name)?;
+        open_member_file(dir, &path)?
+    } else {
+        let path = resolve_in_root(root, reference)?;
+        open_member_file(root, &path)?
+    };
+    let meta = file.metadata().map_err(|e| e.to_string())?;
+    if meta.len() > MAX_IMAGE_BYTES {
+        return Err(format!("image too large ({} bytes > {MAX_IMAGE_BYTES})", meta.len()));
+    }
+    let mut bytes = vec![];
+    file.take(MAX_IMAGE_BYTES + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+    match image_media_type(&bytes) {
+        Some(actual) if actual == media_type => Ok(bytes),
+        Some(actual) => Err(format!("image is {actual}, recorded as {media_type}")),
+        None => Err("unsupported image format".into()),
+    }
+}
+
 fn cap_read(file: std::fs::File) -> Result<String, String> {
     let meta = file.metadata().map_err(|e| e.to_string())?;
     if meta.len() > MAX_FILE_BYTES {
@@ -408,6 +463,12 @@ fn workspace_executor_with_control(
                 Ok(json!(names.join("\n")))
             }
             "read_file" => read_page(member_file(&arg("path"))?, args, control),
+            "view_image" => {
+                control.check()?;
+                let key = arg("path");
+                let file = member_file(&key)?;
+                read_image(file, &key)
+            }
             "read_artifact" => {
                 let key = arg("path");
                 let key = if key.is_empty() { arg("name") } else { key };
@@ -1574,6 +1635,33 @@ mod tests {
         assert!(workspace_files.iter().all(|name| !name.ends_with(".lock")), "no lock artifacts in the project: {workspace_files:?}");
         let lock_files: Vec<String> = std::fs::read_dir(&locks).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
         assert_eq!(lock_files.len(), 1, "one stable lock file per target path: {lock_files:?}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn images_are_classified_by_magic_bytes_and_bounded() {
+        assert_eq!(image_media_type(&[0x89, b'P', b'N', b'G', 0x0d]), Some("image/png"));
+        assert_eq!(image_media_type(&[0xFF, 0xD8, 0xFF, 0xE0]), Some("image/jpeg"));
+        assert_eq!(image_media_type(b"GIF89a"), Some("image/gif"));
+        assert_eq!(image_media_type(b"RIFF\x00\x00\x00\x00WEBPVP8 "), Some("image/webp"));
+        assert_eq!(image_media_type(b"not an image"), None, "text is not silently treated as an image");
+
+        let dir = std::env::temp_dir().join(format!("ta-image-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = dir.join("ok.png");
+        std::fs::write(&png, [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]).unwrap();
+        let reference = read_image(std::fs::File::open(&png).unwrap(), "ok.png").unwrap();
+        assert_eq!(reference["media_type"], "image/png");
+        assert_eq!(reference["bytes"], 11);
+        // the loader used at request time re-validates the same roots
+        let bytes = load_image_reference(&dir, None, "ok.png", "image/png").unwrap();
+        assert_eq!(bytes.len(), 11);
+        assert!(load_image_reference(&dir, None, "ok.png", "image/jpeg").is_err(), "recorded type must match");
+        assert!(load_image_reference(&dir, None, "../outside.png", "image/png").is_err(), "no traversal");
+
+        let text = dir.join("notes.txt");
+        std::fs::write(&text, "hello").unwrap();
+        assert!(read_image(std::fs::File::open(&text).unwrap(), "notes.txt").is_err());
         std::fs::remove_dir_all(dir).unwrap();
     }
 

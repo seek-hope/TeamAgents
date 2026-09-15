@@ -174,6 +174,7 @@ pub const BOUND_TOOL_DOCS: &[(&str, &str)] = &[
     ("web_search", "Search the web and return title, source URL, snippet, fetch time (and full content when include_content=true)."),
     ("web_fetch", "Fetch a web page and return title, source URL, fetch time and the readable text body (HTML only; capped)."),
     ("skill", "Discover and load agent skills. action='search' with query keywords lists matching skills (name — summary); action='read' with a skill name loads its full instructions. Read a skill before applying it."),
+    ("view_image", "Look at an image in your workspace (png/jpeg/gif/webp, max 5 MiB). Pass the path; the picture is attached to your next request. Use it for screenshots, diagrams and UI review."),
     ("read_history", "Retrieve original private tool output by tool_call_id. offset and limit count Unicode characters (offset starts at 0). Follow next_offset until eof."),
 ];
 
@@ -190,6 +191,7 @@ fn bound_tool_schemas() -> Json {
       {"name": "web_search", "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "max_results": {"type": "integer"}, "include_content": {"type": "boolean"}}, "required": ["query"]}},
       {"name": "web_fetch", "parameters": {"type": "object", "properties": {"url": {"type": "string"}, "max_bytes": {"type": "integer"}}, "required": ["url"]}},
       {"name": "skill", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["search", "read"]}, "query": {"type": "string"}, "name": {"type": "string"}}, "required": ["action"]}},
+      {"name": "view_image", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
       {"name": "read_history", "parameters": {"type": "object", "properties": {"tool_call_id": {"type": "string"}, "offset":{"type":"integer","minimum":0}, "limit":{"type":"integer","minimum":1,"maximum":12000}}, "required": ["tool_call_id"]}},
     ])
 }
@@ -201,7 +203,7 @@ fn bound_tool_schemas() -> Json {
 fn bound_tool_names(bindings: &[String], web: (bool, bool)) -> Vec<&'static str> {
     let mut names: Vec<&'static str> = vec![];
     if bindings.iter().any(|b| b == "files") {
-        names.extend(["ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep"]);
+        names.extend(["ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "view_image"]);
     }
     if bindings.iter().any(|b| b == "shell") {
         names.push("shell");
@@ -982,6 +984,49 @@ impl ChatRunner {
             .unwrap_or(200)
     }
 
+    /// Bytes behind a `view_image` reference, or None when the file is gone.
+    fn load_image(&self, reference: &str) -> Option<(String, Vec<u8>)> {
+        let parsed: Json = serde_json::from_str(reference.trim()).ok()?;
+        // the gateway wraps every tool result as {"output": <result>}
+        let payload = parsed.get("output").unwrap_or(&parsed);
+        let path = payload.get("image")?.as_str()?.to_string();
+        let media_type = payload.get("media_type")?.as_str()?.to_string();
+        let root = std::path::PathBuf::from(self.workdir.as_ref()?);
+        let artifacts = self.history_path.as_ref().and_then(|p| p.parent()).and_then(|p| p.parent()).and_then(|p| p.parent())
+            .map(|session| session.join("artifacts"));
+        crate::tools::load_image_reference(&root, artifacts.as_deref(), &path, &media_type)
+            .ok()
+            .map(|bytes| (media_type, bytes))
+    }
+
+    /// Chat-completions wire messages: images are only accepted in user
+    /// messages, so the pictures referenced by tool results are attached as one
+    /// trailing user message.
+    /// ponytail: every attached image stays in context for the rest of the
+    /// conversation; drop older ones here if image tokens ever dominate.
+    fn wire_chat_messages(&self, messages: &[Json]) -> Vec<Json> {
+        let mut out: Vec<Json> = vec![];
+        let mut parts: Vec<Json> = vec![];
+        for message in messages {
+            if message["role"] == "tool" {
+                if let Some(content) = message["content"].as_str() {
+                    if let Some((media_type, bytes)) = self.load_image(content) {
+                        parts.push(json!({"type": "image_url", "image_url": {
+                            "url": format!("data:{media_type};base64,{}", base64(bytes))
+                        }}));
+                    }
+                }
+            }
+            out.push(message.clone());
+        }
+        if !parts.is_empty() {
+            let mut content = vec![json!({"type": "text", "text": "Attached image(s) requested with view_image."})];
+            content.append(&mut parts);
+            out.push(json!({"role": "user", "content": content}));
+        }
+        out
+    }
+
     fn chat(&self, thread: &str, messages: &[Json], tools: &Json, control: &TurnControl, stream_run: Option<&str>) -> Result<Json, String> {
         if self.profile.protocol == "anthropic" {
             return self.chat_anthropic(thread, messages, tools, control, stream_run);
@@ -989,6 +1034,7 @@ impl ChatRunner {
         if self.profile.protocol == "responses" {
             return self.chat_responses(thread, messages, tools, control, stream_run);
         }
+        let messages = self.wire_chat_messages(messages);
         let api_key = match &self.profile.api_key_env {
             Some(env) => std::env::var(env).map_err(|_| format!("missing API key env {env}"))?,
             None => String::new(),
@@ -1068,7 +1114,7 @@ impl ChatRunner {
             None => String::new(),
         };
         let base = resolve_base_url(&self.profile);
-        let (instructions, input) = to_responses_input(messages);
+        let (instructions, input) = to_responses_input(messages, &|reference| self.load_image(reference));
         let tool_specs: Vec<Json> = tools
             .as_array()
             .cloned()
@@ -1166,7 +1212,7 @@ impl ChatRunner {
             .trim_end_matches('/')
             .trim_end_matches("/v1")
             .to_string();
-        let (system, converted) = to_anthropic_messages(messages);
+        let (system, converted) = to_anthropic_messages(messages, &|reference| self.load_image(reference));
         let tool_specs: Vec<Json> = tools
             .as_array()
             .cloned()
@@ -1700,7 +1746,7 @@ impl AgentRunner for ChatRunner {
 }
 
 /// OpenAI-style history → (system prompt, Anthropic messages).
-fn to_anthropic_messages(history: &[Json]) -> (String, Vec<Json>) {
+fn to_anthropic_messages(history: &[Json], image: ImageLoader) -> (String, Vec<Json>) {
     let mut system = String::new();
     let mut out: Vec<Json> = vec![];
     for message in history {
@@ -1749,11 +1795,21 @@ fn to_anthropic_messages(history: &[Json]) -> (String, Vec<Json>) {
                 }
             }
             "tool" => {
-                let block = json!({
-                    "type": "tool_result",
-                    "tool_use_id": message.get("tool_call_id").cloned().unwrap_or(Json::Null),
-                    "content": content,
-                });
+                let block = match image(content) {
+                    Some((media_type, bytes)) => json!({
+                        "type": "tool_result",
+                        "tool_use_id": message.get("tool_call_id").cloned().unwrap_or(Json::Null),
+                        "content": [{
+                            "type": "image",
+                            "source": {"type": "base64", "media_type": media_type, "data": base64(bytes)},
+                        }],
+                    }),
+                    None => json!({
+                        "type": "tool_result",
+                        "tool_use_id": message.get("tool_call_id").cloned().unwrap_or(Json::Null),
+                        "content": content,
+                    }),
+                };
                 match out.last_mut() {
                     Some(last) if last.get("role").and_then(|v| v.as_str()) == Some("user")
                         && last.get("content").and_then(|c| c.as_array())
@@ -1771,8 +1827,25 @@ fn to_anthropic_messages(history: &[Json]) -> (String, Vec<Json>) {
     (system, out)
 }
 
+/// Standard base64 (RFC 4648) for data URLs. Small enough to keep dependency-free.
+fn base64(bytes: Vec<u8>) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
+        out.push(TABLE[(n >> 18) as usize & 63] as char);
+        out.push(TABLE[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 { TABLE[(n >> 6) as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 2 { TABLE[n as usize & 63] as char } else { '=' });
+    }
+    out
+}
+
 /// Chat-completions history → Responses `instructions` + `input` items.
-fn to_responses_input(history: &[Json]) -> (String, Vec<Json>) {
+type ImageLoader<'a> = &'a dyn Fn(&str) -> Option<(String, Vec<u8>)>;
+
+fn to_responses_input(history: &[Json], image: ImageLoader) -> (String, Vec<Json>) {
     let mut instructions = String::new();
     let mut out: Vec<Json> = vec![];
     for message in history {
@@ -1802,10 +1875,18 @@ fn to_responses_input(history: &[Json]) -> (String, Vec<Json>) {
                 }
             }
             "tool" => {
+                // a view_image result travels as image content, not as text
+                let output = match image(content) {
+                    Some((media_type, bytes)) => json!([{
+                        "type": "input_image",
+                        "image_url": format!("data:{media_type};base64,{}", base64(bytes)),
+                    }]),
+                    None => json!(content),
+                };
                 out.push(json!({
                     "type": "function_call_output",
                     "call_id": message.get("tool_call_id").cloned().unwrap_or(Json::Null),
-                    "output": content,
+                    "output": output,
                 }));
             }
             _ => {}
@@ -1892,6 +1973,43 @@ mod tests {
     use super::*;
 
     #[test]
+    fn base64_matches_the_rfc_vectors() {
+        assert_eq!(base64(Vec::new()), "");
+        assert_eq!(base64(b"f".to_vec()), "Zg==");
+        assert_eq!(base64(b"fo".to_vec()), "Zm8=");
+        assert_eq!(base64(b"foo".to_vec()), "Zm9v");
+        assert_eq!(base64(b"foob".to_vec()), "Zm9vYg==");
+        assert_eq!(base64(b"fooba".to_vec()), "Zm9vYmE=");
+        assert_eq!(base64(b"foobar".to_vec()), "Zm9vYmFy");
+    }
+
+    #[test]
+    fn image_references_become_protocol_image_parts() {
+        let png: Vec<u8> = vec![0x89, b'P', b'N', b'G', 1, 2, 3];
+        let loader = |content: &str| -> Option<(String, Vec<u8>)> {
+            content.contains("\"image\"").then(|| ("image/png".to_string(), png.clone()))
+        };
+        let tool_content = json!({"image": "shot.png", "media_type": "image/png", "bytes": 7}).to_string();
+
+        let (_instructions, input) = to_responses_input(&[json!({"role":"tool","tool_call_id":"c1","content":tool_content.clone()})], &loader);
+        assert_eq!(input[0]["type"], "function_call_output");
+        assert_eq!(input[0]["output"][0]["type"], "input_image", "{input:?}");
+        assert!(input[0]["output"][0]["image_url"].as_str().unwrap().starts_with("data:image/png;base64,"), "{input:?}");
+
+        let (_system, converted) = to_anthropic_messages(&[json!({"role":"tool","tool_call_id":"c1","content":tool_content.clone()})], &loader);
+        assert_eq!(converted[0]["content"][0]["type"], "tool_result");
+        assert_eq!(converted[0]["content"][0]["content"][0]["type"], "image", "{converted:?}");
+        assert_eq!(converted[0]["content"][0]["content"][0]["source"]["media_type"], "image/png");
+
+        // a plain text result keeps the plain shape in both formats
+        let plain = json!({"role":"tool","tool_call_id":"c1","content":"executed"});
+        let (_i, input) = to_responses_input(&[plain.clone()], &loader);
+        assert_eq!(input[0]["output"], "executed");
+        let (_s, converted) = to_anthropic_messages(&[plain], &loader);
+        assert_eq!(converted[0]["content"][0]["content"], "executed");
+    }
+
+    #[test]
     fn parse_usage_reads_openai_and_anthropic_bodies() {
         // OpenAI chat.completions shape
         let openai = json!({"usage": {"prompt_tokens": 120, "completion_tokens": 30, "total_tokens": 150}});
@@ -1956,7 +2074,7 @@ mod tests {
             json!({"role": "tool", "tool_call_id": "c1", "content": "{\"ok\":true}"}),
             json!({"role": "tool", "tool_call_id": "c2", "content": "{\"ok\":true}"}),
         ];
-        let (system, messages) = to_anthropic_messages(&history);
+        let (system, messages) = to_anthropic_messages(&history, &|_| None);
         assert_eq!(system, "be brief");
         assert_eq!(messages.len(), 3);
         assert_eq!(messages[1]["role"], "assistant");

@@ -253,3 +253,22 @@ faithful 假服务；Anthropic 官方订阅同样待凭据。
 - `tui/src/i18n.rs`：表头与英文翻译各加一项。
 - 回归：`tui::tests::team_panel_shows_each_members_last_tool`（未跑过是 `-`、成功/失败格式、
   行内列数与表头一致）。
+
+## 第十二批：多模态看图和读图（用户批准的优先级 ②）
+
+Codex/Claude Code 能看图，而 TeamAgents 的 `read_file` 只读 UTF-8 文本——UI 截图、流程图这类
+任务直接受限。本轮补 `view_image`：
+
+- `engine/src/tools.rs`：`view_image`（`files` 绑定）读 png/jpeg/gif/webp，按**魔数**判类型
+  （标签错比拒绝更糟），单张 ≤5 MiB；结果只返回 `{image, media_type, bytes}` 引用，
+  **base64 不落历史/检查点**，读时再加载并复核类型与路径（`load_image_reference` 复用同一套 root 校验）。
+- `engine/src/chat.rs`：请求构建时把引用转成各协议的图片内容——chat completions 追加一条
+  `image_url` 的 user 消息、Anthropic 放进 `tool_result` 的 image 块、Responses 放进
+  `function_call_output` 的 `input_image`；`gateway.rs` 的 bound_tool 白名单加 `view_image`。
+  另补零依赖的 base64（RFC 4648）。
+- 回归：`tools::tests::images_are_classified_by_magic_bytes_and_bounded`（魔数/超限/非图片/穿越拒绝）、
+  `chat::tests::base64_matches_the_rfc_vectors`、`chat::tests::image_references_become_protocol_image_parts`
+  （两种协议的图片块形状 + 普通文本结果不受影响）、`chat_e2e::view_image_attaches_the_picture_to_the_next_request`
+  （真实工作区文件 + 真实 executor，断言第二轮请求带 `data:image/png;base64,`）。
+- 已知边界：图片会一直留在上下文里（每次请求都会重发），模型侧是否具备视觉能力取决于所选模型；
+  真实视觉模型的端到端效果待有对应订阅后验收。

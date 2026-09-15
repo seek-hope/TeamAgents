@@ -137,7 +137,7 @@ impl PermissionPolicy {
 fn bound_tool(tool: &str) -> bool {
     matches!(
         tool,
-        "ls" | "read_file" | "write_file" | "edit_file" | "delete" | "glob" | "grep" | "read_artifact" | "skill"
+        "ls" | "read_file" | "write_file" | "edit_file" | "delete" | "glob" | "grep" | "read_artifact" | "view_image" | "skill"
     )
 }
 

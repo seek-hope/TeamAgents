@@ -89,7 +89,11 @@ tool_timeout_s = 120           # tools/call 超时秒数（可省，默认 120�
 
 旧式 `mcp_transport = "sse"` 已从 MCP 规范移除，绑定会直接报错并提示改用 `"http"`。
 
-内置能力名 `files` / `shell` / `web` / `skills` 不需要同名配置条目，但 `web` 仍需配置实际的
+内置能力名 `files` / `shell` / `web` / `skills` 不需要同名配置条目，`files` 绑定同时包含
+`view_image`（看图：png/jpeg/gif/webp，单张 ≤5 MiB）；模型是否真能"看见"取决于模型本身，
+接口侧按协议自动转换：chat completions 把图片作为 user 消息的 `image_url`、Anthropic 放进
+`tool_result` 的 image 块、Responses 放进 `function_call_output` 的 `input_image`。
+但 `web` 仍需配置实际的
 `kind = "web_search"` / `"web_fetch"` 服务，`skills` 仍需配置注册目录。
 有显式网页绑定时按成员绑定顺序各选一个搜索/抓取服务；没有显式网页绑定时，`web` 才从配置中
 按名称排序选择。要同时使用上例搜索与抓取，绑定 `[files, shell, web]`，或把搜索配置改名为

@@ -375,6 +375,47 @@ fn responses_protocol_round_trips_a_tool_call() {
     runtime.close();
 }
 
+/// `view_image` must reach the model as an actual image part: the tool result
+/// stays a small reference and the bytes are read back when the request is built.
+#[test]
+fn view_image_attaches_the_picture_to_the_next_request() {
+    let _env = env_guard("chat-view-image");
+    let dir = std::env::temp_dir().join(format!("ta-view-image-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    std::fs::create_dir_all(&dir).unwrap();
+    // magic bytes are what the loader validates; the payload itself is opaque
+    std::fs::write(dir.join("shot.png"), [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]).unwrap();
+
+    let server = FakeOpenAi::start(|_body, index| match index {
+        0 => (200, tool_call_response("call-1", "view_image", json!({"path": "shot.png"}))),
+        _ => (200, text_response("looked at it")),
+    });
+    let spec = json!({"leader_id": "leader", "agents": [agent_json("leader", "leader", &["files"])]});
+    let core = core_with_spec("s-view-image", spec);
+    let agent = agent_json("leader", "leader", &["files"]);
+    let runner = chat_runner(&core, &agent, profile(&server.base_url(), "openai", json!({}), 0), &dir.to_string_lossy());
+    // the real workspace executor, so the tool actually reads the file
+    let workspace = teamagents_engine::tools::workspace_executor(dir.clone(), None);
+    let executor: ToolExecutor = Arc::new(move |_agent: &str, tool: &str, args: &Json, _control: &teamagents_engine::gateway::TurnControl| workspace(tool, args));
+    let runtime = start_runtime(&core, runner, "leader", PermissionPolicy::default(), RuntimeLimits::default(), executor);
+
+    runtime.user_message("look at the screenshot", false).unwrap();
+    assert!(wait_for(|| server.calls() >= 2, 15_000), "the model gets a follow-up turn");
+    let second = server.body(1);
+    let image = second["messages"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .flat_map(|message| message["content"].as_array().cloned().unwrap_or_default())
+        .find(|part| part["type"] == "image_url")
+        .unwrap_or(Json::Null);
+    let url = image["image_url"]["url"].as_str().unwrap_or("").to_string();
+    assert!(url.starts_with("data:image/png;base64,"), "image must travel as a data URL: {second}");
+    assert!(url.len() > 30, "the bytes are really attached: {url}");
+    runtime.close();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn tool_activity_reaches_the_automation_sink() {
     let _env = env_guard("chat-tool-sink");
