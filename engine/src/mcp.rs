@@ -65,7 +65,7 @@ impl McpClient {
                 if !crate::tools::bwrap_available() {
                     return Err("IsolationUnavailable: MCP workspace execution requires bwrap".into());
                 }
-                let mut argv = crate::tools::bwrap_argv(&root, network, "");
+                let mut argv = crate::tools::bwrap_argv(&root, network, "", None);
                 // Reuse the shell sandbox, replacing only its Bash invocation.
                 argv.truncate(argv.len() - 3);
                 let mut cmd = Command::new(&argv[0]);

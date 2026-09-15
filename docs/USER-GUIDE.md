@@ -162,6 +162,10 @@ Skills 的加载与分发（对应方案 §12.1 的“发现 + 按需读取”�
 - Shell 走 bubblewrap：只挂载系统只读目录 + 授权工作目录，隔离 PID/网络/临时目录；
   网络默认关闭，需要联网的操作要批准。**要求** bwrap：缺失时命令直接失败
   （`IsolationUnavailable`），不会退化成不隔离执行；命令环境是白名单（不含模型密钥）。
+- Shell 续用状态：同一个成员的 `cd` 与 `export` 会跨命令保留（像一个终端那样），状态存在
+  `sessions/<id>/members/<成员>/shell/`（**不写进项目目录**），随会话保留、重开后仍生效；
+  命令输出以 `[cwd: …]` 开头，模型据此知道下一条命令会从哪里开始。被中断/超时的命令不会更新
+  状态，也不会留下半截文件（写入用临时文件 + rename）。
 - 构建工具链只读镜像：`$HOME` 在沙箱里不可见，因此 sandbox 会把 `RUSTUP_HOME`（默认
   `~/.rustup`）与 `CARGO_HOME` 的 `bin`/`registry`/`git` 子目录只读挂到沙箱内
   `/tmp/.teamagents-toolchain/`，并设置对应环境变量。成员因此可以真的 `cargo build/test`

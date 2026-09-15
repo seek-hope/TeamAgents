@@ -1012,6 +1012,8 @@ fn member_executor_factory(
             catalog.clone(),
             agent.tool_bindings.clone(),
             Some(artifacts.clone()),
+            // per-member shell continuity (`cd`, exports) survives the sandbox
+            Some(session_paths(&session_id).base.join("members").join(&agent.id).join("shell")),
         ));
         cache.lock().unwrap().insert(agent_id.to_string(), (revision, executor.clone()));
         executor(tool, args, control)

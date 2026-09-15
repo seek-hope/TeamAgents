@@ -28,6 +28,65 @@ fn has_bwrap() -> bool {
     false
 }
 
+/// A terminal keeps `cd` and `export`; so must the sandbox, without writing any
+/// of that state into the user's project.
+#[test]
+fn persistent_shell_keeps_cd_and_exports_between_commands() {
+    if !has_bwrap() {
+        return;
+    }
+    let base = scratch("shell-state");
+    let workspace = base.join("workspace");
+    let state = base.join("state");
+    std::fs::create_dir_all(workspace.join("sub")).unwrap();
+    let control = teamagents_engine::gateway::TurnControl::default();
+
+    let first = tools::shell_run_stateful("cd sub && export TA_MARK=42 && pwd", &workspace, 30, false, None, Some(&state), &control).unwrap();
+    assert!(first.contains("sub"), "first command reports the new cwd: {first}");
+    let second = tools::shell_run_stateful("pwd && echo \"mark=$TA_MARK\"", &workspace, 30, false, None, Some(&state), &control).unwrap();
+    assert!(second.starts_with("[cwd: "), "the model is told where it is: {second}");
+    assert!(second.contains("sub"), "cd persisted: {second}");
+    assert!(second.contains("mark=42"), "export persisted: {second}");
+
+    // a state-free run stays at the workdir (no cross-talk with plain calls)
+    let plain = tools::shell_run("pwd", &workspace, 30, false, None).unwrap();
+    assert!(!plain.contains("sub"), "no state, no persisted cwd: {plain}");
+
+    // and none of that state leaked into the project
+    let entries: Vec<String> = std::fs::read_dir(&workspace).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+    assert_eq!(entries, vec!["sub".to_string()], "workspace holds only what the command created: {entries:?}");
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn an_interrupted_command_does_not_advance_the_shell_state() {
+    if !has_bwrap() {
+        return;
+    }
+    let base = scratch("shell-interrupt");
+    let workspace = base.join("workspace");
+    let state = base.join("state");
+    std::fs::create_dir_all(workspace.join("sub")).unwrap();
+    let control = teamagents_engine::gateway::TurnControl::default();
+    tools::shell_run_stateful("cd sub", &workspace, 30, false, None, Some(&state), &control).unwrap();
+
+    // cancel mid-command: the state file must keep the last finished directory
+    let cancelling = std::sync::Arc::new(teamagents_engine::gateway::TurnControl::default());
+    let handle = cancelling.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(300));
+        handle.cancel();
+    });
+    let interrupted = tools::shell_run_stateful("cd /tmp && sleep 5 && echo changed", &workspace, 30, false, None, Some(&state), &cancelling);
+    assert!(interrupted.is_err(), "a cancelled command is reported as interrupted");
+
+    let after = tools::shell_run_stateful("pwd", &workspace, 30, false, None, Some(&state), &control).unwrap();
+    let expected = workspace.join("sub").to_string_lossy().into_owned();
+    assert!(after.starts_with(&format!("[cwd: {expected}]")), "state stays at the last completed command: {after}");
+    assert!(!after.contains("[cwd: /tmp]"), "the cancelled cd never took effect: {after}");
+    let _ = std::fs::remove_dir_all(&base);
+}
+
 #[test]
 fn file_tools_reject_dangling_links_and_keep_in_root_links_working() {
     use std::os::unix::fs::symlink;

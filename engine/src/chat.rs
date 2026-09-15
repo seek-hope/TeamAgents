@@ -170,7 +170,7 @@ pub const BOUND_TOOL_DOCS: &[(&str, &str)] = &[
     ("delete", "Delete a file (a directory when recursive=true) from your workspace."),
     ("glob", "Find workspace files matching a glob pattern, e.g. '**/*.py' (max 500 hits)."),
     ("grep", "Search workspace files for a pattern; returns matching lines (max 100)."),
-    ("shell", "Run a shell command in the isolated Linux sandbox (no network by default; network=true requires user approval)."),
+    ("shell", "Run a shell command in the isolated Linux sandbox (no network by default; network=true requires user approval). Your working directory and exported variables persist between calls; the output starts with [cwd: ...] so you know where the next command will start."),
     ("web_search", "Search the web and return title, source URL, snippet, fetch time (and full content when include_content=true)."),
     ("web_fetch", "Fetch a web page and return title, source URL, fetch time and the readable text body (HTML only; capped)."),
     ("skill", "Discover and load agent skills. action='search' with query keywords lists matching skills (name — summary); action='read' with a skill name loads its full instructions. Read a skill before applying it."),

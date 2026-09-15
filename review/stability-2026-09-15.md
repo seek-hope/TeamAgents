@@ -272,3 +272,22 @@ Codex/Claude Code 能看图，而 TeamAgents 的 `read_file` 只读 UTF-8 文本
   （真实工作区文件 + 真实 executor，断言第二轮请求带 `data:image/png;base64,`）。
 - 已知边界：图片会一直留在上下文里（每次请求都会重发），模型侧是否具备视觉能力取决于所选模型；
   真实视觉模型的端到端效果待有对应订阅后验收。
+
+## 第十三批：持久 Shell 续用状态（用户批准的优先级 1）
+
+沙箱是每条命令一个新进程，`cd`/`export` 用不上，日常手感与 Claude Code 差一截。做法不是常驻
+shell 进程（取消/超时语义会被打乱），而是“状态随命令走”：
+
+- `engine/src/tools.rs`：沙箱新增一个 rw 绑定（成员自己的 `members/<id>/shell/` → 沙箱内
+  `/tmp/.teamagents-shell`，挂载点在私有 tmpfs 下，`/home` 依旧不可见）；命令被包一层
+  前置 `. state.sh`（恢复 cwd 与导出变量）与后置捕获（`printf 'cd %q' "$PWD"` + `export -p`
+  写入临时文件后 rename，再写一个 cwd 单文件）。输出前缀 `[cwd: …]` 告诉模型下一条命令的家。
+- 取消/超时语义不变：杀掉 bwrap 即可，因为捕获没跑，状态就停在最后一条完成的命令上；
+  半截写入也被 rename 挡住。
+- 接线：`session.rs::member_executor_factory` 给每个成员传自己的 shell 目录
+  （`member_executor_with_control`/`workspace_executor_with_control` 多一个可选参数，
+  旧签名保留给测试与 MCP 复用，MCP 传 None）。
+- 工具说明补一句：cwd 与导出变量会保留、输出以 `[cwd: …]` 开头。
+- 回归：`tools_sandbox.rs::persistent_shell_keeps_cd_and_exports_between_commands`
+  （cd/export 跨命令生效、无状态调用不受影响、**项目目录里没有任何状态文件**）、
+  `an_interrupted_command_does_not_advance_the_shell_state`（中途取消后仍停在最后完成的目录）。

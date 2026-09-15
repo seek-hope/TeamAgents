@@ -414,12 +414,12 @@ pub fn workspace_executor(
     root: PathBuf,
     artifacts: Option<PathBuf>,
 ) -> impl Fn(&str, &Json) -> Result<Json, String> + Send + Sync + 'static {
-    let executor = workspace_executor_with_control(root, artifacts);
+    let executor = workspace_executor_with_control(root, artifacts, None);
     move |tool, args| executor(tool, args, &TurnControl::default())
 }
 
 fn workspace_executor_with_control(
-    root: PathBuf, artifacts: Option<PathBuf>,
+    root: PathBuf, artifacts: Option<PathBuf>, shell_state: Option<PathBuf>,
 ) -> impl Fn(&str, &Json, &TurnControl) -> Result<Json, String> + Send + Sync + 'static {
     // cross-process write locks live beside the session state, never in the project
     let lock_dir = artifacts.as_ref().and_then(|dir| dir.parent()).map(|state| state.join("locks"));
@@ -549,7 +549,8 @@ fn workspace_executor_with_control(
                 let command = arg("command");
                 let timeout = args.get("timeout").and_then(|v| v.as_u64()).unwrap_or(120);
                 let network = args.get("network").and_then(|v| v.as_bool()).unwrap_or(false);
-                shell_run_with_control(&command, &root, timeout, network, artifacts.as_deref(), control).map(Json::String)
+                shell_run_stateful(&command, &root, timeout, network, artifacts.as_deref(), shell_state.as_deref(), control)
+                    .map(Json::String)
             }
             other => Err(format!("unknown tool {other}")),
         }
@@ -747,14 +748,14 @@ pub fn member_executor(
     bindings: Vec<String>,
     artifacts: Option<PathBuf>,
 ) -> impl Fn(&str, &Json) -> Result<Json, String> + Send + Sync + 'static {
-    let executor = member_executor_with_control(root, catalog, bindings, artifacts);
+    let executor = member_executor_with_control(root, catalog, bindings, artifacts, None);
     move |tool, args| executor(tool, args, &TurnControl::default())
 }
 
 pub(crate) fn member_executor_with_control(
-    root: PathBuf, catalog: teamagents_core::models::UserConfig, bindings: Vec<String>, artifacts: Option<PathBuf>,
+    root: PathBuf, catalog: teamagents_core::models::UserConfig, bindings: Vec<String>, artifacts: Option<PathBuf>, shell_state: Option<PathBuf>,
 ) -> impl Fn(&str, &Json, &TurnControl) -> Result<Json, String> + Send + Sync + 'static {
-    let workspace = workspace_executor_with_control(root, artifacts);
+    let workspace = workspace_executor_with_control(root, artifacts, shell_state);
     let web: OnceLock<Result<WebTools, String>> = OnceLock::new();
     move |tool: &str, args: &Json, control: &TurnControl| match tool {
         "web_search" => {
@@ -930,9 +931,35 @@ pub fn which(name: &str) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
+/// Where a member's shell state lives inside the sandbox (bound rw).
+const SHELL_STATE_SANDBOX: &str = "/tmp/.teamagents-shell";
+
+/// A real terminal keeps `cd` and `export` between commands; a fresh sandbox per
+/// call does not. The state travels through a small file the shell writes itself
+/// (and reads next time), which also survives a session resume. It is written to
+/// a temp name and renamed, so a killed command cannot leave a half-written state.
+fn shell_state_preamble(sandbox_dir: &str) -> String {
+    format!(
+        "__ta_state={sandbox_dir}/state.sh\nif [ -r \"$__ta_state\" ]; then . \"$__ta_state\"; fi\n"
+    )
+}
+
+fn shell_state_capture(sandbox_dir: &str) -> String {
+    format!(
+        "\n__ta_rc=$?\n{{ printf 'cd %q\\n' \"$PWD\"; export -p; }} > \"$__ta_state.tmp\" 2>/dev/null && mv \"$__ta_state.tmp\" \"$__ta_state\"\nprintf '%s\\n' \"$PWD\" > \"{sandbox_dir}/cwd\" 2>/dev/null\nexit $__ta_rc\n"
+    )
+}
+
+/// Read back the working directory a persistent shell ended in.
+fn shell_state_cwd(state: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(state.join("cwd")).ok()?;
+    let cwd = text.trim().to_string();
+    (!cwd.is_empty()).then_some(cwd)
+}
+
 /// Read-only system mounts, sanitized env, private
 /// /tmp, no network unless the call was approved for it.
-pub fn bwrap_argv(workdir: &Path, network: bool, command: &str) -> Vec<String> {
+pub fn bwrap_argv(workdir: &Path, network: bool, command: &str, shell_state: Option<&Path>) -> Vec<String> {
     let mut argv: Vec<String> = vec!["bwrap".into()];
     for path in ["/usr", "/etc", "/opt"] {
         if Path::new(path).exists() {
@@ -950,6 +977,11 @@ pub fn bwrap_argv(workdir: &Path, network: bool, command: &str) -> Vec<String> {
     // after --tmpfs /tmp: the sandbox is the only place writable enough to hold
     // these mount points, and $HOME stays invisible.
     argv.extend(toolchain_binds());
+    // persistent shell state: one rw directory per member, mounted inside the
+    // private /tmp so a command can carry `cd` and exports to the next one
+    if let Some(state) = shell_state {
+        argv.extend(["--bind".into(), state.to_string_lossy().into_owned(), SHELL_STATE_SANDBOX.into()]);
+    }
     argv.extend(["--bind".into(), workdir.clone(), workdir.clone()]);
     argv.extend(["--chdir".into(), workdir]);
     argv.extend([
@@ -1126,12 +1158,26 @@ pub fn shell_run(
 fn shell_run_with_control(
     command: &str, workdir: &Path, timeout_s: u64, network: bool, artifacts: Option<&Path>, control: &TurnControl,
 ) -> Result<String, String> {
+    shell_run_stateful(command, workdir, timeout_s, network, artifacts, None, control)
+}
+
+/// `shell_state` is the member's persistent shell directory on the host side.
+pub fn shell_run_stateful(
+    command: &str, workdir: &Path, timeout_s: u64, network: bool, artifacts: Option<&Path>, shell_state: Option<&Path>, control: &TurnControl,
+) -> Result<String, String> {
     control.check()?;
     if !bwrap_available() {
         return Err("IsolationUnavailable: bwrap is not available: refusing to run commands without isolation".into());
     }
+    if let Some(state) = shell_state {
+        std::fs::create_dir_all(state).map_err(|e| format!("cannot create shell state directory: {e}"))?;
+    }
+    let wrapped = match shell_state {
+        Some(_) => format!("{}{}\n{}", shell_state_preamble(SHELL_STATE_SANDBOX), command, shell_state_capture(SHELL_STATE_SANDBOX)),
+        None => command.to_string(),
+    };
     let workdir = std::fs::canonicalize(workdir).unwrap_or_else(|_| workdir.to_path_buf());
-    let argv = bwrap_argv(&workdir, network, command);
+    let argv = bwrap_argv(&workdir, network, &wrapped, shell_state);
     let sink = Arc::new(Mutex::new(OutputSink::new(artifacts)?));
     let mut sandbox = Command::new(&argv[0]);
     // whitelist environment: no model keys, no credentials (plan §12.2)
@@ -1200,6 +1246,11 @@ fn shell_run_with_control(
         return Err(if text.is_empty() { note } else { format!("{note}\n{text}") });
     }
     let status = status.ok_or("no exit status")?;
+    let text = match shell_state.and_then(shell_state_cwd) {
+        // the next command starts here, so the model must know where "here" is
+        Some(cwd) => format!("[cwd: {cwd}]\n{text}"),
+        None => text,
+    };
     Ok(if status.success() { text } else { format!("{text}\n(exit {})", status.code().unwrap_or(-1)) })
 }
 
@@ -1923,13 +1974,13 @@ mod tests {
     #[test]
     fn bwrap_argv_is_stable_and_runs_isolated() {
         let dir = std::env::temp_dir();
-        let argv = bwrap_argv(&dir, false, "echo hi");
+        let argv = bwrap_argv(&dir, false, "echo hi", None);
         assert!(argv.iter().any(|a| a == "--unshare-net"), "network off by default");
         assert!(argv.windows(3).any(|w| w == ["--ro-bind", "/usr", "/usr"]));
         assert!(argv.windows(3).any(|w| w == ["--symlink", "usr/bin", "/bin"]));
         assert!(argv.windows(2).any(|w| w[0] == "--chdir" && w[1] == dir.to_string_lossy()));
         assert_eq!(&argv[argv.len() - 4..], ["--", "/bin/bash", "-lc", "echo hi"]);
-        assert!(!bwrap_argv(&dir, true, "x").iter().any(|a| a == "--unshare-net"));
+        assert!(!bwrap_argv(&dir, true, "x", None).iter().any(|a| a == "--unshare-net"));
         if bwrap_available() {
             let out = shell_run("echo isolated-ok && id -u", &dir, 30, false, None).unwrap();
             assert!(out.contains("isolated-ok"), "{out}");
