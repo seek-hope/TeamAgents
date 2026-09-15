@@ -16,9 +16,14 @@ cargo test --offline --manifest-path core/Cargo.toml    # 权威核心
 cargo test --offline --manifest-path engine/Cargo.toml  # 引擎
 cargo test --offline --manifest-path tui/Cargo.toml     # TUI 逻辑 + TestBackend 帧
 engine/target/debug/teamagents {doctor,validate,sessions,version,--plain}   # 入口
+engine/target/debug/teamagents sessions prune --days 30 [--history-days 30] [--dry-run]
 python3 tui/scripts/pty_smoke.py         # 真终端冒烟
 python3 tui/scripts/pty_click_check.py   # 真终端点击命中检查
+review/eval/run.sh [--only ID] [--timeout SEC]   # 固定任务集的真实模型评测（需凭据）
 ```
+
+- 基线（2026-09-15）：core 54 / engine 187 / tui 91 全绿；真实评测证据与逐批记录见
+  `review/stability-2026-09-15.md`，跑过的原始 JSONL 在 `review/eval/runs/`。
 
 - 当前基线与跳过项统一见 `docs/ACCEPTANCE.md`；Cargo 的通过数不等于真实服务验收通过数。
   决策记录 `docs/DECISIONS.md`。

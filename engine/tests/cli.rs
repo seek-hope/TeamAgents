@@ -83,6 +83,17 @@ fn doctor_probes_isolation_codex_and_config_errors() {
         assert!(clean.contains("[ok  ] codex protocol schema"), "the schema is generated from the CLI: {clean}");
     }
 
+    // hooks fail silently at event time, so doctor checks the programs
+    std::fs::write(
+        config.join("config.toml"),
+        "[models.m]\nprovider=\"openai\"\nmodel=\"x\"\n\n[hooks]\nnotify = [\"/nonexistent/notify.sh\"]\npre_tool = [\"/bin/sh\", \"-c\", \"exit 0\"]\n\n[retention]\narchived_days = 30\n",
+    )
+    .unwrap();
+    let with_hooks = run(&home.join("state"));
+    assert!(with_hooks.contains("[FAIL] hooks.notify"), "{with_hooks}");
+    assert!(with_hooks.contains("[ok  ] hooks.pre_tool"), "{with_hooks}");
+    assert!(with_hooks.contains("[ok  ] retention"), "the policy is reported: {with_hooks}");
+
     // a wrong type in [permissions] is an error, not a silent default
     std::fs::write(config.join("config.toml"), "[permissions]\ntrust_project_tools = \"yes\"\n").unwrap();
     let broken = run(&home.join("state"));

@@ -11,6 +11,11 @@ use std::io::{BufRead, Read, Write};
 use std::time::{Duration, Instant};
 use std::path::{Path, PathBuf};
 
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    path.metadata().map(|meta| meta.permissions().mode() & 0o111 != 0).unwrap_or(false)
+}
+
 fn check(results: &mut Vec<(String, bool, String)>, name: &str, ok: bool, detail: String) {
     results.push((name.to_string(), ok, detail));
 }
@@ -78,6 +83,31 @@ pub fn doctor() -> i32 {
             check(&mut results, "codex protocol schema", schema_ok, detail);
         }
         None => check(&mut results, "codex app-server", false, "codex CLI not found".into()),
+    }
+    // hooks are easy to break silently: a wrong path only shows up as a stderr
+    // line at event time, so doctor checks the programs exist and are executable
+    match load_user_config(&user_config_path()) {
+        Ok(catalog) => {
+            for (label, argv) in [("hooks.notify", &catalog.hooks.notify), ("hooks.pre_tool", &catalog.hooks.pre_tool)] {
+                let Some(program) = argv.first().filter(|p| !p.trim().is_empty()) else { continue };
+                let path = Path::new(program);
+                let runnable = if path.components().count() > 1 {
+                    path.is_file() && is_executable(path)
+                } else {
+                    which(program).is_some()
+                };
+                check(&mut results, label, runnable, format!("{argv:?}"));
+            }
+            if catalog.retention.archived_days > 0 || catalog.retention.history_days > 0 {
+                check(
+                    &mut results,
+                    "retention",
+                    true,
+                    format!("archived_days={} history_days={}", catalog.retention.archived_days, catalog.retention.history_days),
+                );
+            }
+        }
+        Err(e) => check(&mut results, "hooks", false, e),
     }
     let dir = sessions_dir();
     let probe = dir.join(".doctor-probe");

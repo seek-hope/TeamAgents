@@ -559,3 +559,13 @@ function schemas 发了一遍，等于每轮重复。改成只列工具名（描
 团队页签的模型列在有 `context_window` 时追加百分比（`deepseek-flash 43%`，≥80% 用警示色）——
 某个成员快触发压缩这件事变成一眼可见。回归 `tui::tests::team_panel_shows_context_usage_per_member`
 （有窗口才显示、无窗口/无用量保持原样、高占用带警示色）。
+
+## 第三十二批：文档基线与 doctor 钩子自检
+
+- `AGENTS.md` 的"快速命令"补上 `sessions prune --history-days`、`review/eval/run.sh`，并把基线数字
+  从 core 50 / engine 140 / tui 80 更新为 **54 / 187 / 91**（这份文件是每个 agent 的入口，过时数字
+  会误导后续判断）。
+- `teamagents doctor` 新增两项检查：`[hooks]` 里配置的 notify/pre_tool 程序是否存在（含 PATH 里的
+  相对名）且可执行，以及是否配置了 retention（打印天数）。理由：钩子配错此前只在事件发生时才在
+  stderr 露一行，极易漏看。回归：`engine/tests/cli.rs::doctor_probes_isolation_codex_and_config_errors`
+  增补 hooks/retention 断言。
