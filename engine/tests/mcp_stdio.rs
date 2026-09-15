@@ -14,15 +14,19 @@ fn scratch(tag: &str) -> std::path::PathBuf {
 
 /// finding 3: the server's stderr is not a pipe nobody drains. 70_000 bytes is
 /// past the 64KiB pipe capacity for a stdio server that never got to its reply.
+/// Host mode: this is about stderr draining, not about the bwrap workspace
+/// (that path is covered by `mcp::tests::stdio_workspace_isolates_*`, which
+/// needs a machine with bubblewrap).
 #[test]
 fn noisy_stderr_does_not_block_the_handshake() {
     let server = env!("CARGO_BIN_EXE_fake-mcp-server");
     let noisy = vec!["--noisy-stderr".to_string(), "70000".to_string()];
+    let root = scratch("noisy");
 
     let (tx, rx) = std::sync::mpsc::channel();
     let started = Instant::now();
     std::thread::spawn(move || {
-        let result = McpClient::connect_stdio(server, &noisy, &[])
+        let result = McpClient::connect_stdio_in(server, &noisy, &[], &root, "host", false, 60, 120)
             .and_then(|client| {
                 let tools = client.tools()?;
                 client.close();
@@ -41,6 +45,8 @@ fn noisy_stderr_does_not_block_the_handshake() {
 }
 
 /// finding 4: only the SDK's safe variables (plus binding.env) reach the child.
+/// Host mode for the same reason as above: the whitelist is applied before the
+/// execution mode is chosen, so this stays meaningful without bubblewrap.
 #[test]
 fn server_environment_is_whitelisted() {
     let dir = scratch("env");
@@ -52,7 +58,7 @@ fn server_environment_is_whitelisted() {
         "sh",
         &["-c".into(), format!("env > {}", dump.display())],
         &[("TA_MCP_BINDING_VAR".into(), "from-binding".into())],
-        &dir, "workspace", false, 2, 2,
+        &dir, "host", false, 2, 2,
     );
     let dumped = std::fs::read_to_string(&dump).expect("the child wrote its environment");
     assert!(!dumped.contains("TA_MCP_SENTINEL_KEY"), "model/API keys must not leak:\n{dumped}");

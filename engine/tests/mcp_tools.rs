@@ -19,6 +19,10 @@ fn catalog(command: &str) -> UserConfig {
         "echo_service".into(),
         serde_json::from_value::<ToolBinding>(json!({
             "kind": "mcp", "mcp_server": "echo", "mcp_transport": "stdio",
+            // host mode on purpose: these cases cover binding/loading/calling a
+            // real stdio server, not the bwrap workspace (that needs a machine
+            // with bubblewrap, see mcp::tests::stdio_workspace_isolates_*)
+            "mcp_execution": "host",
             "command": command, "tool_names": ["echo"],
         }))
         .unwrap(),

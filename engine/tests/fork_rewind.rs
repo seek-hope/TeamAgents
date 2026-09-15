@@ -11,6 +11,20 @@ fn state_home(tag: &str) -> std::path::PathBuf {
     dir
 }
 
+/// The worker's default leader spec names `leader_main`: give it a config of our
+/// own instead of depending on the developer's ~/.config/teamagents/config.toml.
+fn config_home(tag: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("ta-forkcfg-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("teamagents")).unwrap();
+    std::fs::write(
+        dir.join("teamagents/config.toml"),
+        "[models.leader_main]\nprovider = \"openai\"\nprotocol = \"openai\"\nmodel = \"test\"\n",
+    )
+    .unwrap();
+    dir
+}
+
 fn call(child: &mut std::process::Child, stdin: &mut impl Write, id: u64, method: &str, params: Json) -> Json {
     writeln!(stdin, "{}", json!({"id": id, "method": method, "params": params})).unwrap();
     stdin.flush().unwrap();
@@ -43,9 +57,11 @@ fn call(child: &mut std::process::Child, stdin: &mut impl Write, id: u64, method
 #[test]
 fn fork_carries_spec_and_leader_tree_but_not_team_facts() {
     let home = state_home("fork");
+    let cfg = config_home("fork");
     let mut child = Command::new(env!("CARGO_BIN_EXE_teamagents"))
         .arg("serve")
         .env("XDG_STATE_HOME", &home)
+        .env("XDG_CONFIG_HOME", &cfg)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -114,8 +130,10 @@ fn read_reply(child: &mut std::process::Child, id: u64) -> Json {
 #[test]
 fn fork_preserves_model_files_and_legacy_history() {
     let home = state_home("files");
+    let cfg = config_home("files");
     let mut child = Command::new(env!("CARGO_BIN_EXE_teamagents")).arg("serve")
-        .env("XDG_STATE_HOME", &home).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().unwrap();
+        .env("XDG_STATE_HOME", &home)
+        .env("XDG_CONFIG_HOME", &cfg).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().unwrap();
     let mut stdin = child.stdin.take().unwrap();
     let opened = call(&mut child, &mut stdin, 1, "open", json!({"cwd":"/tmp", "scripts":{"leader":[["end"]]}}));
     let old = opened["session_id"].as_str().unwrap().to_string();
@@ -136,8 +154,10 @@ fn fork_preserves_model_files_and_legacy_history() {
 #[test]
 fn failed_switch_keeps_current_session_open() {
     let home = state_home("failed-switch");
+    let cfg = config_home("failed-switch");
     let mut child = Command::new(env!("CARGO_BIN_EXE_teamagents")).arg("serve")
-        .env("XDG_STATE_HOME", &home).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().unwrap();
+        .env("XDG_STATE_HOME", &home)
+        .env("XDG_CONFIG_HOME", &cfg).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().unwrap();
     let mut stdin = child.stdin.take().unwrap();
     let opened = call(&mut child, &mut stdin, 1, "open", json!({"cwd":"/tmp", "scripts":{"leader":[["end"]]}}));
     let old = opened["session_id"].as_str().unwrap().to_string();
