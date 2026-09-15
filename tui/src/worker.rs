@@ -16,6 +16,10 @@ pub struct Push {
     pub run_id: String,
     pub agent_id: String,
     pub text: String,
+    /// tool pushes: which tool ran, whether it succeeded, and its arguments
+    pub tool: String,
+    pub ok: bool,
+    pub arguments: String,
 }
 
 pub struct Worker {
@@ -146,6 +150,9 @@ impl Worker {
                         run_id: msg.get("run_id").and_then(|v| v.as_str()).unwrap_or("").into(),
                         agent_id: msg.get("agent_id").and_then(|v| v.as_str()).unwrap_or("").into(),
                         text: msg.get("text").and_then(|v| v.as_str()).unwrap_or("").into(),
+                        tool: msg.get("tool").and_then(|v| v.as_str()).unwrap_or("").into(),
+                        ok: msg.get("ok").and_then(|v| v.as_bool()).unwrap_or(true),
+                        arguments: msg.get("arguments").and_then(|v| v.as_str()).unwrap_or("").into(),
                     });
                     continue;
                 }

@@ -76,7 +76,7 @@ TUI 为 Rust 原生设计（D-20：固定分区、滚动、胶囊状态）。其
 | 全自动与越界批准（§12.2） | 原生文件工具仍由 `tools.rs::resolve_in_root` 限定路径，Shell 始终走 `shell_run_with_control` / `bwrap_argv`；full_auto 只跳过批准门，没有扩大文件根或取消原生 Shell 沙箱 |
 | 共享目录并发写（§12.3） | `tools.rs::workspace_executor_with_control` 提供进程内路径锁、SHA-256 CAS 与原子替换；`tools.rs::with_path_lock` 追加跨进程建议锁（锁文件在会话状态目录 `sessions/<id>/locks/`，不落项目目录，`File::try_lock` 争用等待上限 10s，FS 不支持时退化为进程内互斥），回归 `tools::tests::path_lock_serializes_two_writers`。外部编辑器（不走本工具的写）仍建议使用 worktree |
 | Skills 后端范围（§10、§12.1） | `session.rs::make_runner_factory` 在 Codex 分支提前返回；`member_context` 和 `BoundTools` 的 Skills/指令注入仅用于 Chat 成员 |
-| TUI 完整视图与响应（§13） | 当前六个管理页签；`/settings` 仅切语言，`/model` 单独选模型。成员记录通过日志事件筛选，没有完整私有对话树浏览器；控制请求已通过有界异步队列，停滞 worker 有超时和过期响应保护 |
+| TUI 完整视图与响应（§13） | 日志页签实时显示成员工具活动（`push:"tool"` → `App::on_tool`，失败标 `✗`，尊重成员过滤，环形缓冲 2000 行，回归 `tui::tests::tool_activity_lands_in_the_log_panel`）；六个管理页签；`/settings` 仅切语言，`/model` 单独选模型。成员记录通过日志事件筛选，没有完整私有对话树浏览器；控制请求已通过有界异步队列，停滞 worker 有超时和过期响应保护 |
 | 回退节点（D-26） | `chat.rs::ChatTree::rewind_to` 将 leaf 设为目标节点，包含该条输入；TUI 文案已改为“保留该条输入，移开后续对话”。`rewind_points` 只列当前祖先链，旧分支需已知节点 ID 才能访问 |
 | 分叉与会话模型（D-26/D-29/D-30） | `fork_session` 复制 Leader 树、TeamSpec、会话 profiles/overrides，并在打开失败时保留源会话；团队任务/运行事实仍重新开始。真实失败注入仍需补充 |
 | 工具输出读回（D-28） | 工具完整结果先写入私有历史，模型上下文仅使用有界 head/tail；`read_history` 支持分页取回完整结果。 |

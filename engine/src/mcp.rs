@@ -419,12 +419,23 @@ for line in sys.stdin:
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut length = 0usize;
             loop {
                 let mut line = String::new();
                 reader.read_line(&mut line).unwrap();
                 if line == "\r\n" || line.is_empty() { break; }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse().unwrap_or(0);
+                }
             }
+            // a real server consumes the request body; leaving it unread makes the
+            // socket close with RST and the client sees ECONNRESET instead of the
+            // 302. That race made this test flaky.
+            let mut body = vec![0u8; length];
+            use std::io::Read as _;
+            reader.read_exact(&mut body).unwrap();
             write!(stream, "HTTP/1.1 302 Found\r\nLocation: {target}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+            stream.flush().unwrap();
         });
         let error = McpClient::connect_http(&endpoint, Some("private-token".into()), 1, 1).err().unwrap();
         server.join().unwrap();

@@ -1020,14 +1020,34 @@ impl App {
                 if jstr(ev, "actor_id") != member && !payload.contains(&member) {
                     continue;
                 }
-                self.log_lines.push(format_log_line(ev, &payload));
+                self.push_log_line(format_log_line(ev, &payload));
             }
         } else {
             for ev in events {
                 self.log_cursor = self.log_cursor.max(ev.get("sequence").and_then(|v| v.as_i64()).unwrap_or(0));
                 let payload = py_json_dumps(ev.get("payload").unwrap_or(&Json::Null));
-                self.log_lines.push(format_log_line(ev, &payload));
+                self.push_log_line(format_log_line(ev, &payload));
             }
+        }
+    }
+
+    /// Tool activity from the engine: log lines then show what each member really
+    /// ran (name + arguments), not just the core event stream.
+    pub fn on_tool(&mut self, agent_id: &str, tool: &str, ok: bool, arguments: &str) {
+        if self.log_member.as_deref().is_some_and(|member| member != agent_id) {
+            return;
+        }
+        let mark = if ok { "·" } else { "✗" };
+        let preview: String = arguments.trim().chars().take(120).collect();
+        self.push_log_line(format!("      {mark} {tool:<16} {agent_id:<12} {preview}"));
+    }
+
+    /// The log panel is a ring: a long session must not grow the UI without bound.
+    fn push_log_line(&mut self, line: String) {
+        self.log_lines.push(line);
+        if self.log_lines.len() > MAX_LOG_LINES {
+            let drop = self.log_lines.len() - MAX_LOG_LINES;
+            self.log_lines.drain(..drop);
         }
     }
 
@@ -2022,6 +2042,9 @@ pub fn approval_line(payload: &Json) -> String {
 }
 
 /// Log line format: `{seq:>5} {kind:<18} {actor:<10} {payload_json[:160]}`
+/// Newest log lines kept in memory (the panel scrolls; older lines are dropped).
+const MAX_LOG_LINES: usize = 2000;
+
 fn format_log_line(ev: &Json, payload: &str) -> String {
     let seq = ev.get("sequence").and_then(|v| v.as_i64()).unwrap_or(0);
     let kind = jstr(ev, "kind");

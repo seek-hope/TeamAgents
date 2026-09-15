@@ -96,6 +96,11 @@ impl Worker {
         opened.runtime.notify.set_stream_sink(Box::new(move |run_id, agent_id, text| {
             out(&json!({"push": "delta", "session_id": sink_session, "run_id": run_id, "agent_id": agent_id, "text": text}));
         }));
+        let tool_session = opened.session_id.clone();
+        opened.runtime.notify.set_tool_sink(Box::new(move |run_id, agent_id, activity| {
+            out(&json!({"push": "tool", "session_id": tool_session, "run_id": run_id, "agent_id": agent_id,
+                        "tool": activity["tool"], "ok": activity["ok"], "arguments": activity["arguments"]}));
+        }));
         opened.runtime.start();
         // Stage the replacement completely before touching the current one.
         // A bad resume/config must leave the active session usable.

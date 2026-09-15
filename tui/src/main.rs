@@ -346,6 +346,9 @@ fn run(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, worker: &Arc<
             }
         }
         while let Some(push) = worker.try_push() {
+            if push.kind == "tool" && !requests.switching {
+                app.on_tool(&push.agent_id, &push.tool, push.ok, &push.arguments);
+            }
             if push.kind == "delta" && !requests.switching {
                 app.on_delta(&push.run_id, &push.agent_id, &push.text);
                 dirty = true;
@@ -570,6 +573,32 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn tool_activity_lands_in_the_log_panel() {
+        let mut app = test_app();
+        app.on_tool("alpha-fixer", "edit_file", true, "{\"path\":\"alpha/alpha.py\"}");
+        app.on_tool("beta-fixer", "shell", false, "{\"command\":\"cd beta && python3 check.py\"}");
+        assert_eq!(app.log_lines.len(), 2);
+        assert!(app.log_lines[0].contains("edit_file") && app.log_lines[0].contains("alpha-fixer"), "{:?}", app.log_lines[0]);
+        assert!(app.log_lines[0].contains("alpha/alpha.py"), "arguments show up: {:?}", app.log_lines[0]);
+        assert!(app.log_lines[1].starts_with("      ✗"), "a failed call is marked: {:?}", app.log_lines[1]);
+
+        // a member filter hides other members' tool lines too
+        app.log_member = Some("alpha-fixer".into());
+        app.on_tool("beta-fixer", "ls", true, "{}");
+        assert_eq!(app.log_lines.len(), 2, "filtered member stays out of the log");
+    }
+
+    #[test]
+    fn log_panel_keeps_only_the_newest_lines() {
+        let mut app = test_app();
+        for index in 0..2500 {
+            app.on_tool("leader", "ls", true, &format!("{{\"path\":\"{index}\"}}"));
+        }
+        assert_eq!(app.log_lines.len(), 2000, "the panel is a ring, not a leak");
+        assert!(app.log_lines[0].contains("\"path\":\"500\""), "oldest lines are the ones dropped: {:?}", app.log_lines[0]);
     }
 
     #[test]

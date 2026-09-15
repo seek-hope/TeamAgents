@@ -168,3 +168,21 @@ Leader 的绑定（D-30 已为 model_profile 开了同类先例）；是否自�
    锁文件残留）。
 
 仍未做：历史检查点/对话树/team.db 的会话级总量配额（当前只有 artifacts 目录有预算）。
+
+## 第七批：TUI 里能看见成员在做什么（用户批准的优先级 ③）
+
+`exec --json` 的 `tool` 行只解决了自动化侧；界面侧原来只能看到 Leader 的流式文本，成员的
+工具调用完全不可见。本轮把同一份活动接到界面上：
+
+- `engine/src/worker.rs` 给 serve 协议新增 `push:"tool"`（agent_id/tool/ok/arguments）；
+  TUI 的 `Push` 结构相应扩展，`main.rs` 分发到 `App::on_tool`。
+- `tui/src/app.rs::on_tool` 把活动写成日志行（`·` 成功 / `✗` 失败，参数截断 120 字符），
+  并尊重成员过滤；日志面板改为环形缓冲（`MAX_LOG_LINES = 2000`），长会话不再无限增长。
+- 回归：`tui/tests::tool_activity_lands_in_the_log_panel`（含失败标记、参数可见、过滤生效）、
+  `log_panel_keeps_only_the_newest_lines`。
+
+真实端到端核对（真模型 + 真 serve 通道）：起 `teamagents serve`、发 `new_session` +
+`user_message("用 shell 工具运行 ls -a 并简单报告")`，stdout 里拿到
+`push:"tool" leader shell ok=true {"command":"ls -a"}` 与 `signal_done`，说明 TUI 走的就是这条数据。
+
+仍未做：批准回路与被中断恢复的评测任务（优先级 ④）。
