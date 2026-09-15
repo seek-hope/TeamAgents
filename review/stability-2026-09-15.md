@@ -491,3 +491,24 @@ Codex 有 `notify`、Claude Code 有 hooks，TeamAgents 之前没有任何外部
 
 至此四条恢复路径都有真实运行证据：回合内重启（第七批）、批准回路与被中断恢复（第八批）、
 中断后 `--resume`（第二十二批）、成员级中断 + 任务自救（本批）。
+
+## 第二十七批：两个"配了也不生效"的配置缺陷（真实运行才发现）
+
+起因是想给钩子补一条真实运行证据（此前只有假模型测试）。用最小运行一验，钩子根本没触发。
+顺着查出来**两个真缺陷**：
+
+1. `engine/src/config.rs::parse_user_config` 只挑 `models/tools/skills_paths/instruction_files`
+   四个顶层键，`[retention]` 与 `[hooks]` 被静默丢掉 → 这两项在配置文件里配了也不生效
+   （第十批的 retention、第十七批的 hooks 都受此影响；CLI 的 `sessions prune` 因为不走配置所以当时看着是好的）。
+2. 更隐蔽的一处：`load_user_config_for`（`open_session` 真正用的加载器）自己重建 catalog，
+   **压根没搬运这两个键**。现在按用户配置优先搬运，并且**项目配置里的这两段被有意忽略**
+   （钩子会执行命令、保留策略会删数据，克隆下来的仓库不该有这种权力）。
+3. 防回归：`config::tests::every_user_config_field_is_accepted` 用 `UserConfig::default()` 的
+   序列化键集合对 `CATALOG_KEYS` 做双向断言——以后再往 UserConfig 加字段却忘了加进筛选列表，
+   测试立刻失败（这正是本次缺陷的成因）。另有 `user_hooks_and_retention_survive_loading_and_project_ones_are_ignored`。
+
+真实运行验证（两条都复跑过）：
+- 钩子：`XDG_CONFIG_HOME=<含 [hooks] 的配置> teamagents exec --json --cwd ... "只回答：你好"` →
+  `/tmp/ta-hook-log2.txt` 收到 `team_action`、`tool_call`、`run_completed` 三个事件与 JSON 载荷。
+- 保留：把一份归档会话的 mtime 前移 40 天、配置 `[retention] archived_days = 30`，
+  打开会话后该归档目录被清掉。

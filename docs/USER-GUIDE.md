@@ -199,6 +199,9 @@ Skills 的加载与分发（对应方案 §12.1 的“发现 + 按需读取”�
 notify = ["/home/you/bin/teamagents-notify.sh"]   # argv；事件名追加为最后一个参数
 ```
 
+`[hooks]` 与 `[retention]` **只在用户配置里生效**：项目目录的 `.teamagents/config.toml` 里写这两段会被
+忽略并打印一行提示——钩子会执行命令、保留策略会删数据，克隆下来的仓库不该有这种权力。
+
 配置后，引擎在这些事件发生时把事件 JSON 写到钩子的 stdin：
 
 | 事件 | 何时 | 载荷要点 |

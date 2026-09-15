@@ -60,6 +60,12 @@ pub fn load_user_config(path: &Path) -> Result<UserConfig, String> {
 
 /// Only the documented sections are read; unknown sections (e.g. `[permissions]`)
 /// are ignored rather than rejected (tolerant loader).
+/// Top-level keys of the user catalog (`UserConfig`). A hand-maintained list,
+/// so `every_user_config_field_is_accepted` fails the moment a field is added and
+/// forgotten here — a silent drop would make the feature inert, which is exactly
+/// what happened to `[retention]` and `[hooks]` before that test existed.
+const CATALOG_KEYS: &[&str] = &["models", "tools", "skills_paths", "instruction_files", "retention", "hooks"];
+
 pub fn parse_user_config(text: &str) -> Result<UserConfig, String> {
     let value: toml::Value = text.parse().map_err(|e| format!("bad TOML: {e}"))?;
     let table = value.as_table().ok_or("config root must be a table")?;
@@ -67,8 +73,8 @@ pub fn parse_user_config(text: &str) -> Result<UserConfig, String> {
     // an error, never a silent default
     project_permissions(&value)?;
     let mut filtered = toml::map::Map::new();
-    for key in ["models", "tools", "skills_paths", "instruction_files"] {
-        if let Some(v) = table.get(key) {
+    for key in CATALOG_KEYS {
+        if let Some(v) = table.get(*key) {
             filtered.insert(key.to_string(), v.clone());
         }
     }
@@ -97,6 +103,65 @@ mod tests {
         let json_spec = parse_spec(r#"{"leader_id": "leader", "agents": []}"#).unwrap();
         assert_eq!(json_spec["agents"].as_array().unwrap().len(), 0);
         assert!(parse_spec("leader_id: [unclosed").is_err());
+    }
+
+    #[test]
+    fn user_hooks_and_retention_survive_loading_and_project_ones_are_ignored() {
+        let _env = crate::env_lock();
+        let root = std::env::temp_dir().join(format!("ta-config-hooks-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let cwd = root.join("project");
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", root.join("config"));
+        std::fs::create_dir_all(root.join("config/teamagents")).unwrap();
+        std::fs::write(
+            root.join("config/teamagents/config.toml"),
+            "[models.m]\nprovider = \"openai\"\nmodel = \"x\"\n\n[hooks]\nnotify = [\"/bin/sh\", \"hook\"]\n\n[retention]\narchived_days = 30\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(cwd.join(".teamagents")).unwrap();
+        std::fs::write(
+            cwd.join(".teamagents/config.toml"),
+            "[hooks]\nnotify = [\"/bin/echo\", \"evil\"]\n\n[retention]\narchived_days = 1\n",
+        )
+        .unwrap();
+
+        let catalog = load_user_config_for(&cwd).unwrap();
+        assert_eq!(catalog.hooks.notify, vec!["/bin/sh".to_string(), "hook".to_string()], "the user's hook is loaded");
+        assert_eq!(catalog.retention.archived_days, 30, "and so is the user's retention policy");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn every_user_config_field_is_accepted() {
+        let value = serde_json::to_value(UserConfig::default()).unwrap();
+        let keys: Vec<String> = value.as_object().unwrap().keys().cloned().collect();
+        for key in &keys {
+            assert!(CATALOG_KEYS.contains(&key.as_str()), "UserConfig field {key:?} is not in CATALOG_KEYS: {CATALOG_KEYS:?}");
+        }
+        assert_eq!(keys.len(), CATALOG_KEYS.len(), "CATALOG_KEYS and UserConfig drifted: {keys:?} vs {CATALOG_KEYS:?}");
+    }
+
+    #[test]
+    fn parses_retention_and_hooks() {
+        let cfg = parse_user_config(
+            r#"
+[models.m]
+provider = "openai"
+model = "x"
+
+[retention]
+archived_days = 30
+history_days = 7
+
+[hooks]
+notify = ["/bin/sh", "-c", "echo hi", "hook"]
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.retention.archived_days, 30);
+        assert_eq!(cfg.retention.history_days, 7);
+        assert_eq!(cfg.hooks.notify.first().map(String::as_str), Some("/bin/sh"), "hooks configure a command");
     }
 
     #[test]
@@ -226,6 +291,16 @@ pub fn load_user_config_for(cwd: &Path) -> Result<UserConfig, String> {
     }
     merged.insert("skills_paths".into(), toml::Value::Array(skills));
     merged.insert("instruction_files".into(), toml::Value::Array(instructions));
+    // hooks run commands and retention deletes data: both are the user's own
+    // policy, never a cloned project's (a repo must not be able to install one)
+    for key in ["retention", "hooks"] {
+        if let Some(value) = user.get(key) {
+            merged.insert(key.into(), value.clone());
+        }
+        if project.get(key).is_some() {
+            eprintln!("teamagents: 项目配置里的 {key:?} 已忽略（只能在用户配置中设置）");
+        }
+    }
     let _ = empty;
     let catalog: UserConfig = toml::Value::Table(merged)
         .try_into()
