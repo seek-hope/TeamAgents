@@ -951,14 +951,15 @@ impl ChatRunner {
         };
         let allowed = bound_tool_names(&self.bindings(), self.web_flags());
         let bound_docs = self.bound.docs();
+        // Names only: each tool's description already travels in the request's
+        // function schemas, and the prompt is rebuilt (and paid for) every turn.
         let tools = TEAM_TOOL_DOCS
             .iter()
-            .map(|(n, d)| (*n, *d))
-            .chain(BOUND_TOOL_DOCS.iter().filter(|(n, _)| allowed.contains(n)).map(|(n, d)| (*n, *d)))
-            .chain(bound_docs.iter().map(|(n, d)| (n.as_str(), d.as_str())))
-            .map(|(n, d)| format!("- {n}: {d}"))
+            .map(|(name, _)| *name)
+            .chain(bound_tool_names(&self.bindings(), self.web_flags()))
+            .chain(bound_docs.iter().map(|(name, _)| name.as_str()))
             .collect::<Vec<_>>()
-            .join("\n");
+            .join(", ");
         let context = if self.context.is_empty() {
             String::new()
         } else {
@@ -969,7 +970,7 @@ impl ChatRunner {
             blocks
         };
         format!(
-            "{head}\n\nTeam tools available:\n{tools}\n\nRules: use complete_task to finish your assigned task; use signal_done only when the whole user goal is complete (Leader only).\n{context}{plan}",
+            "{head}\n\nAvailable tools: {tools}\nRules: use complete_task to finish your assigned task; use signal_done only when the whole user goal is complete (Leader only). See each tool's description in the tool list for its arguments.\n{context}{plan}",
             plan = self.plan_block()
         )
     }
@@ -2080,6 +2081,33 @@ fn from_anthropic_message(data: &Json) -> Json {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prompt_overhead_stays_lean() {
+        // fixed per-turn cost: the system prompt is rebuilt every call, so its
+        // size is paid on every request. This pins it so it cannot creep.
+        let runner = ChatRunner::new(
+            &json!({"id": "leader", "name": "Leader", "role": "leader",
+                    "instructions": "You are the Leader of a team of agents."}),
+            ModelProfile {
+                provider: "deepseek".into(), protocol: "deepseek".into(), model: "test".into(),
+                base_url: None, api_key_env: None, timeout: 30, max_retries: 0,
+                generation_options: Default::default(), context_window: None, codex_profile: None,
+            },
+            Some("/tmp".into()),
+            Notify::new(crate::core_client::CoreClient::open(":memory:", "prompt-size").unwrap()),
+            crate::bound::BoundTools::load(&teamagents_core::models::UserConfig::default(), &["files".into(), "shell".into()]).unwrap(),
+            vec![],
+            (false, false),
+        );
+        let prompt = runner.system_prompt();
+        let tools = tools_payload(&["files".into(), "shell".into()], (false, false), &[]);
+        let prompt_chars = prompt.chars().count();
+        let schema_chars = tools.to_string().chars().count();
+        println!("system prompt: {prompt_chars} chars | tool schemas: {schema_chars} chars");
+        assert!(prompt_chars < 6_000, "system prompt grew to {prompt_chars} chars");
+        assert!(schema_chars < 12_000, "tool schemas grew to {schema_chars} chars");
+    }
 
     #[test]
     fn refused_tool_receipts_keep_their_detail() {

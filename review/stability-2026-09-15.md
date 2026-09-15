@@ -540,3 +540,15 @@ codex-dev `task_completed` → Leader 复验 + `cancel_run` 结清两个未知 r
 - 真实运行验证：配置 `pre_tool` 拒绝一切原生工具后，让模型 `write_file` 创建文件 →
   工具回执 `ok=False`、原因 `denied by pre_tool hook: policy: file writes are not allowed…`，
   工作目录**保持为空**（写入从未发生）。
+
+## 第三十批：精简要每轮都付的固定提示开销
+
+系统提示里的"Team tools available"清单原本是**每个工具一行描述**——而同样的描述已经随请求的
+function schemas 发了一遍，等于每轮重复。改成只列工具名（描述仍随 schemas 走）后，实测
+系统提示 3227 → 471 字符（`chat::tests::prompt_overhead_stays_lean` 把上限钉在 6000 字符，
+防止它再长回来）。
+
+- 全套 13 个任务复跑无回归（`review/eval/runs/2026-09-15-deepseek-lean/`，验收全过，
+  含必须读懂工具契约的 team-collab / team-codex）。可比对照：plan-use 的 prompt token
+  77,540 → 67,413（−13%），team-collab 116,651 → 113,917（−2.3%）；差值不大是因为历史本身占大头，
+  固定开销这一项降了 85%。
