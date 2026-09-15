@@ -362,3 +362,19 @@ Codex 有 `notify`、Claude Code 有 hooks，TeamAgents 之前没有任何外部
 - 配置：`core::models::UserConfig.hooks.notify`（`[hooks]` 段，默认空=不启用）。
 - 回归：`hooks::tests::hooks_receive_the_event_name_and_json_on_stdin`（argv/stdin 内容、未配置时不启用）、
   `chat_e2e::configured_hooks_see_tool_calls_and_turn_end`（真实会话里钩子收到 tool_call 与 run_completed）。
+
+## 第十八批：会话数据库保留（用户批准的优先级 4）
+
+`team.db` 的投递账本与事件流随会话长期增长（一条长会话几十万行不稀奇）。新增
+`Store::prune_history(session_id, days, dry_run)`：
+
+- 只删 **已受理（applied）** 且超过 N 天的投递；**未受理的投递与其依赖的事件一定保留**，
+  所以崩溃重放语义不变。事件用「没有未受理投递引用它」作为删除条件，逐条判定。
+- 有删除就 VACUUM（`execute_batch`，不在事务里）；dry-run 只统计。
+- 入口：`teamagents sessions prune --days N --history-days M [--dry-run]`（对全部会话逐个处理，
+  运行中的会话跳过并报原因）、以及 `[retention] history_days = M`（打开会话时清理该会话，此时持有会话锁）。
+- 回归：`storage::tests::history_pruning_keeps_pending_deliveries_and_their_events`
+  （dry-run 不删；已受理投递+旧事件被删；未受理投递的旧事件保留；近期行保留）。
+  真实核对：拿一份 completed 会话库把时间戳前移 3 天后 `--history-days 2`，dry-run 报
+  "4 条投递、15 个事件"，实跑后 VACUUM 完成、库缩到 0.3 MB。
+- 有意保留：事件流同时是 TUI 日志与审计原料，所以默认不清理、天数由用户给。

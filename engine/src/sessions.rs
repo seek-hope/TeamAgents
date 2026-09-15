@@ -304,6 +304,34 @@ pub fn archive_session(session_id: &str, base: Option<&Path>) -> Result<String, 
 
 /// Refuses while it runs elsewhere, and refuses to delete member worktrees
 /// that still hold uncommitted or unmerged work.
+/// One session's database housekeeping: applied deliveries and events older
+/// than `days` go, pending deliveries (and the events they still need) stay.
+pub fn prune_session_history(session_id: &str, days: u64, dry_run: bool) -> Result<serde_json::Value, String> {
+    validate_session_id(session_id)?;
+    let root = sessions_dir();
+    for base in [root.clone(), root.join("archived")] {
+        let path = base.join(session_id);
+        if !path.join("team.db").exists() {
+            continue;
+        }
+        if !dry_run && is_session_locked(session_id, Some(&base)) {
+            return Err(format!("session {session_id} is running"));
+        }
+        let store = teamagents_core::storage::Store::open(&path.join("team.db")).map_err(|e| e.to_string())?;
+        let (deliveries, events, vacuumed) = store.prune_history(session_id, days, dry_run).map_err(|e| e.to_string())?;
+        return Ok(json!({
+            "session_id": session_id,
+            "days": days,
+            "dry_run": dry_run,
+            "deliveries": deliveries,
+            "events": events,
+            "vacuumed": vacuumed,
+            "size_mb": dir_size_mb(&path),
+        }));
+    }
+    Err(format!("unknown session {session_id}"))
+}
+
 /// Retention sweep: archived sessions untouched for `days` are removed through
 /// the same guarded path the UI uses (never a running session, never a worktree
 /// with unmerged work). Errors are collected per session instead of aborting the

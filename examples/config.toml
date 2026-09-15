@@ -12,7 +12,8 @@
 # （走与 UI 删除相同的保护：运行中的会话、有未合并 worktree 成果的会话都会跳过）。
 # 不配这段就是什么都不删。手动清理：teamagents sessions prune --days 30 [--dry-run]
 # [retention]
-# archived_days = 30
+# archived_days = 30     # 归档会话超过 N 天在打开会话时删除
+# history_days = 30      # 会话库里的已受理投递与旧事件超过 N 天清理（未受理的投递一定保留）
 
 # 事件钩子（可选）：发生这些事件时执行你的命令，事件 JSON 从 stdin 进来、事件名是最后一个参数
 # 事件：tool_call / run_completed / run_failed / run_cancelled / run_paused / team_action

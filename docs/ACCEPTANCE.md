@@ -89,7 +89,7 @@ TUI 为 Rust 原生设计（D-20：固定分区、滚动、胶囊状态）。其
 | 沙箱内构建工具链 | `$HOME` 不可见时成员仍能真的构建：`tools.rs::toolchain_mounts` 把 `RUSTUP_HOME` 与 `CARGO_HOME` 的 `bin`/`registry`/`git` 只读镜像到沙箱 `/tmp/.teamagents-toolchain/` 并注入环境变量（`credentials.toml`/`config.toml` 不挂载，令牌不进沙箱）；回归 `tools::tests::sandbox_builds_with_the_host_toolchain`（在沙箱里跑 `cargo test --offline`）。只有 Rust 已覆盖，nvm/pyenv 等 HOME 级工具链仍不可见 |
 | Shell 续用状态 | 成员的 `cd`/`export` 跨命令保留（状态在会话目录 `members/<id>/shell/`，不进项目目录，随会话持久；命令输出带 `[cwd: …]`），被中断的命令不更新状态（临时文件 + rename）。回归 `tools_sandbox.rs::persistent_shell_keeps_cd_and_exports_between_commands`、`an_interrupted_command_does_not_advance_the_shell_state` |
 | Shell 长输出与制品 | 有界预览 200KB 落 `artifacts/exec-*.log`，单个制品上限 64 MiB，超过部分丢弃并在输出中标注（`tools.rs::OutputSink` + `shell_artifact_stops_at_the_size_cap`）；整目录预算 512 MiB，新建制品时按 mtime 删最旧的 `exec-*.log`（`prune_artifacts` + `artifacts_are_pruned_to_the_directory_budget`）。历史检查点/对话树仍无配额 |
-| 会话保留策略 | 归档会话超过 `[retention] archived_days` 天时在打开会话时清理，或手动 `teamagents sessions prune --days N [--dry-run]`；走 `sessions.rs::delete_session` 的既有保护（运行中/未合并 worktree 跳过并报告），回归 `sessions::tests::retention_removes_only_old_archived_sessions`。回合检查点、对话树、`team.db` 有意不自动删（崩溃恢复/rewind/审计依据） |
+| 会话保留策略 | 归档会话超过 `[retention] archived_days` 天时在打开会话时清理，或手动 `teamagents sessions prune --days N [--dry-run]`；走 `sessions.rs::delete_session` 的既有保护（运行中/未合并 worktree 跳过并报告），回归 `sessions::tests::retention_removes_only_old_archived_sessions`。回合检查点、对话树、`team.db` 有意不自动删（崩溃恢复/rewind/审计依据） |，另 `sessions prune --history-days M` / `[retention] history_days` 清理会话库里已受理的投递与旧事件（未受理投递与其事件一定保留，清完 VACUUM），回归 `storage::tests::history_pruning_keeps_pending_deliveries_and_their_events`
 
 可复核上述现状（仓库根目录）：
 

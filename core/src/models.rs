@@ -391,6 +391,11 @@ pub struct Retention {
     /// opened (also available as `teamagents sessions prune`). 0 disables it.
     #[serde(default)]
     pub archived_days: u64,
+    /// Drop applied deliveries and events older than this many days from the
+    /// session database on open (`teamagents sessions prune --history-days`).
+    /// 0 keeps the full history: events are the audit trail.
+    #[serde(default)]
+    pub history_days: u64,
 }
 
 // -- runtime objects ---------------------------------------------------------

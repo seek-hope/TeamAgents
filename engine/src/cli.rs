@@ -227,7 +227,7 @@ pub fn validate_spec(path: &str) -> i32 {
 
 /// `teamagents sessions prune --days N [--dry-run]`: archive retention. The
 /// sweep never touches a running session or one with unmerged worktree work.
-pub fn prune_sessions_cmd(days: u64, dry_run: bool) -> i32 {
+pub fn prune_sessions_cmd(days: u64, history_days: Option<u64>, dry_run: bool) -> i32 {
     let report = crate::sessions::prune_archived(days, None, dry_run);
     let session_id = |entry: &Json| entry.get("session_id").and_then(|v| v.as_str()).unwrap_or("?").to_string();
     let removed = report.get("removed").and_then(Json::as_array).cloned().unwrap_or_default();
@@ -256,7 +256,30 @@ pub fn prune_sessions_cmd(days: u64, dry_run: bool) -> i32 {
         removed.len(),
         report.get("bytes_freed").and_then(Json::as_u64).unwrap_or(0) as f64 / (1024.0 * 1024.0)
     );
-    if skipped.is_empty() { 0 } else { 1 }
+    let mut failed = !skipped.is_empty();
+    // optional: shrink each session database as well
+    if let Some(history) = history_days.filter(|days| *days > 0) {
+        println!("会话历史保留策略：{history} 天（{}）", if dry_run { "试运行" } else { "已受理投递与旧事件" });
+        for session in crate::sessions::list_sessions(None, true, None) {
+            let id = session.session_id.clone();
+            match crate::sessions::prune_session_history(&id, history, dry_run) {
+                Ok(report) => println!(
+                    "  {} {} {} 条投递、{} 个事件，当前 {:.1} MB{}",
+                    if dry_run { "将清理" } else { "已清理" },
+                    id,
+                    report.get("deliveries").and_then(Json::as_u64).unwrap_or(0),
+                    report.get("events").and_then(Json::as_u64).unwrap_or(0),
+                    report.get("size_mb").and_then(Json::as_f64).unwrap_or(0.0),
+                    if dry_run { "" } else if report.get("vacuumed").and_then(Json::as_bool).unwrap_or(false) { "（已 VACUUM）" } else { "" }
+                ),
+                Err(error) => {
+                    println!("  跳过 {id}：{error}");
+                    failed = true;
+                }
+            }
+        }
+    }
+    if failed { 1 } else { 0 }
 }
 
 pub fn list_sessions_cmd(verbose: bool) -> i32 {

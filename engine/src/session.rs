@@ -565,6 +565,12 @@ pub fn open_session(opts: OpenOptions) -> Result<Arc<OpenedSession>, String> {
     std::fs::create_dir_all(&paths.artifacts).map_err(|e| e.to_string())?;
     // dropped on every early return below, so a failed open never keeps the lock
     let lock = acquire_session_lock(&session_id)?;
+    // history retention runs after the lock: this session is ours, and the lock is
+    // what stops another process from pruning the same database underneath us
+    let history_days = catalog.retention.history_days;
+    if history_days > 0 {
+        let _ = crate::sessions::prune_session_history(&session_id, history_days, false);
+    }
     // resuming an archived id must fail loudly, not create an empty session
     // over it: the next archive of that fresh session would remove_dir_all the
     // original archived data. Checked under the lock: a concurrent archive

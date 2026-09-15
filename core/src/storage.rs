@@ -1245,6 +1245,39 @@ impl Store {
     }
 
     /// RT-05: ack exactly one delivery (runtime ledger passes the offered ids).
+    /// Retention for one session's high-volume bookkeeping: applied deliveries
+    /// and events older than `days`. A delivery that is still pending (and every
+    /// event it needs) is kept, so replay after a crash stays possible; the
+    /// caller decides how much audit history to drop.
+    /// Returns (deliveries, events, vacuumed).
+    pub fn prune_history(&self, session_id: &str, days: u64, dry_run: bool) -> rusqlite::Result<(i64, i64, bool)> {
+        let cutoff = now() - (days as f64) * 86_400.0;
+        let count = |sql: &str| -> rusqlite::Result<i64> {
+            self.conn.query_row(sql, params![session_id, cutoff], |row| row.get(0))
+        };
+        let deliveries = count("SELECT COUNT(*) FROM deliveries WHERE session_id=?1 AND status='applied' AND created_at < ?2")?;
+        // an event is only droppable once no live delivery still points at it
+        let events = count(
+            "SELECT COUNT(*) FROM events WHERE session_id=?1 AND created_at < ?2
+             AND event_id NOT IN (SELECT event_id FROM deliveries WHERE session_id=?1 AND status != 'applied')",
+        )?;
+        if dry_run || (deliveries == 0 && events == 0) {
+            return Ok((deliveries, events, false));
+        }
+        self.conn.execute(
+            "DELETE FROM deliveries WHERE session_id=?1 AND status='applied' AND created_at < ?2",
+            params![session_id, cutoff],
+        )?;
+        self.conn.execute(
+            "DELETE FROM events WHERE session_id=?1 AND created_at < ?2
+             AND event_id NOT IN (SELECT event_id FROM deliveries WHERE session_id=?1 AND status != 'applied')",
+            params![session_id, cutoff],
+        )?;
+        // VACUUM cannot run inside a transaction
+        let vacuumed = self.conn.execute_batch("VACUUM").is_ok();
+        Ok((deliveries, events, vacuumed))
+    }
+
     pub fn ack_delivery_by_id(&self, delivery_id: i64) -> rusqlite::Result<()> {
         let n = self.conn.execute(
             "UPDATE deliveries SET status='applied', applied_at=?1 WHERE delivery_id=?2 AND status='pending'",
@@ -1402,6 +1435,51 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(path.with_file_name(format!("{}-wal", path.file_name().unwrap().to_str().unwrap())));
         let _ = std::fs::remove_file(path.with_file_name(format!("{}-shm", path.file_name().unwrap().to_str().unwrap())));
+    }
+
+    #[test]
+    fn history_pruning_keeps_pending_deliveries_and_their_events() {
+        let store = store_with_spec();
+        let old = now() - 40.0 * 86_400.0;
+        let make_event = |id: &str, age: f64| TeamEvent {
+            event_id: id.into(),
+            sequence: 0,
+            session_id: "s1".into(),
+            actor_id: "lead".into(),
+            task_id: None,
+            kind: EventKind::UserMessage,
+            payload: json!({"text": id}),
+            audience: vec!["lead".into()],
+            topology_revision: 1,
+            causation_id: None,
+            created_at: now() - age,
+        };
+        store.append_event(&make_event("evt-old-applied", 40.0)).unwrap();
+        store.append_event(&make_event("evt-old-pending", 41.0)).unwrap();
+        store.append_event(&make_event("evt-recent", 1.0)).unwrap();
+        let applied = store.create_delivery("s1", "lead", "evt-old-applied", 1, None).unwrap();
+        store.create_delivery("s1", "lead", "evt-old-pending", 1, None).unwrap();
+        // append_event stamps now(): age the rows the way a long-lived session would
+        store.conn.execute("UPDATE events SET created_at=?1 WHERE event_id IN ('evt-old-applied','evt-old-pending')", rusqlite::params![old]).unwrap();
+        store.conn.execute("UPDATE deliveries SET created_at=?1 WHERE delivery_id=?2", rusqlite::params![old, applied]).unwrap();
+        store.conn.execute("UPDATE deliveries SET status='applied' WHERE delivery_id=?1", rusqlite::params![applied]).unwrap();
+
+        // a dry run reports without deleting
+        assert_eq!(store.prune_history("s1", 30, true).unwrap(), (1, 1, false));
+        assert_eq!(store.conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get::<_, i64>(0)).unwrap(), 3);
+
+        let (deliveries, events, _) = store.prune_history("s1", 30, false).unwrap();
+        assert_eq!((deliveries, events), (1, 1), "one applied delivery and its event go");
+        let remaining: Vec<String> = store
+            .conn
+            .prepare("SELECT event_id FROM events ORDER BY sequence")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(remaining, vec!["evt-old-pending", "evt-recent"], "a pending delivery keeps its event");
+        assert_eq!(store.pending_deliveries("s1", "lead").unwrap().len(), 1);
     }
 
     fn store_with_spec() -> Store {
