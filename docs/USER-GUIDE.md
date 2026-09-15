@@ -21,7 +21,7 @@
 ```toml
 [models.leader_main]
 provider = "deepseek"          # 逻辑名，也用于 codex 成员的 provider 映射
-protocol = "deepseek"          # openai | anthropic | deepseek
+protocol = "deepseek"          # responses | anthropic | openai | deepseek
 model = "deepseek-flash"       # 首版默认模型
 api_key_env = "DEEPSEEK_API_KEY"          # 只引用环境变量，密钥不进仓库
 timeout = 120
@@ -33,12 +33,24 @@ context_window = 128000   # 可选；填写后启用上下文自动压缩（见 
 推理档位规则：模型不支持 `xhigh` 时，配置里的 `xhigh` 会自动映射为 `max`
 （DeepSeek 这类已知不支持的在构建模型时就映射；其他供应商在被拒绝后自动改判 `max` 重试一次）。
 
-模型接入走 HTTP 协议直连：省略 `base_url` 时按 `provider`/`protocol` 取默认端点
-（`deepseek` → `https://api.deepseek.com/v1`，`anthropic` → `https://api.anthropic.com`，
-其他 → `https://api.openai.com/v1`），Kimi/GLM 等第三方服务要么与这些端点同源，
-要么显式填 `base_url`。
+模型接入走 HTTP 协议直连，三种主流线上格式都已支持，`protocol` 选一种即可：
 
-普通 Chat 成员默认请求模型 SSE；文本增量即时显示，工具参数完整接收后才执行。服务端不提供 SSE 时兼容单个 JSON 响应。Anthropic 的 thinking/signature 块会随历史保留。
+| `protocol` | 端点 | 典型用途 |
+|---|---|---|
+| `openai` | `POST {base_url}/chat/completions` | OpenAI 兼容服务：DeepSeek、GLM、Kimi、各类中转 |
+| `deepseek` | 同上 | 同 chat/completions，另把 `xhigh` 档位映射为 `max` |
+| `anthropic` | `POST {base_url}/v1/messages` | Anthropic 官方订阅与兼容网关（thinking/signature 随历史保留） |
+| `responses` | `POST {base_url}/responses` | OpenAI 官方 Responses API 与 Codex 风格网关（工具按 `function_call`/`function_call_output` 往返） |
+
+省略 `base_url` 时按 `provider`/`protocol` 取默认端点（`deepseek` → `https://api.deepseek.com/v1`，
+`anthropic` → `https://api.anthropic.com`，其他 → `https://api.openai.com/v1`）。第三方服务要么与
+这些端点同源，要么显式填 `base_url`；官方订阅只要把订阅支持的模型名写进 `model`、按上表选
+`protocol`，即可直接用。
+
+普通 Chat 成员默认请求模型 SSE；文本增量即时显示，工具参数完整接收后才执行。服务端不提供 SSE 时
+兼容单个 JSON 响应。Anthropic 的 thinking/signature 块随历史保留；Responses 的推理增量只用于
+内部，不进入候选回复。四种协议都有回归：`chat_e2e::responses_protocol_round_trips_a_tool_call`
+（Responses 工具往返 + `instructions`/工具扁平化）、`stream::tests`（三种 SSE 解码）。
 
 Codex 成员使用本机 `codex app-server`。当前引导会把所引用 profile 的 `model` 和 `provider`
 映射给 Codex，不能假设总是继承本机默认模型；该 provider 必须是本机 Codex 可用的配置。

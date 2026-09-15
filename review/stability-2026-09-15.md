@@ -200,3 +200,28 @@ Leader 的绑定（D-30 已为 model_profile 开了同类先例）；是否自�
 
 证据：`review/eval/runs/2026-09-15-deepseek-gates/`（原始 JSONL + 说明）。
 这一批没有改产品代码，只补可复跑的验证与记录；优先级列表 ①–④ 至此全部有真实运行证据。
+
+## 第九批：补齐第三种线上格式 OpenAI Responses（2026-09-15）
+
+用户指出主流的模型 API 格式只有三种（responses / anthropic / chat-completion），三种都兼容后剩下
+的就是各家订阅。核对结果：chat completions（`openai`/`deepseek`）与 Anthropic Messages 已有，
+**Responses 完全没有实现**，于是补齐：
+
+- `engine/src/stream.rs`：`Mode { Chat, Anthropic, Responses }`，新增 Responses 的 SSE 解码
+  （`response.output_text.delta` 才 emit、推理增量不外发、`response.output_item.done` 收
+  function_call、`response.completed` 收 usage 与最终 output、`response.failed` 直接报错、
+  未完成的流一律视为错误不执行）；单 JSON 响应同样支持。
+- `engine/src/chat.rs::chat_responses`：`POST {base_url}/responses`，`stream:true`、`store:false`；
+  双向翻译 `to_responses_input`（system→`instructions`、assistant 文本→`output_text`、
+  `tool_calls`→`function_call`、tool 结果→`function_call_output`）与 `from_responses_output`
+  （`output` 里的 message/function_call → 引擎内部的 assistant/tool_calls）；
+  `max_tokens`→`max_output_tokens`、`reasoning_effort`→`reasoning.effort`。
+- 回归：`stream::tests::responses_stream_yields_text_calls_and_usage`（文本/私有推理/工具/usage、
+  截断流报错、失败事件报错）、`chat_e2e::responses_protocol_round_trips_a_tool_call`
+  （假 Responses 服务：工具调用→执行→结果按 `function_call_output` 回传→第二轮文本收尾，
+  并断言 `instructions`、工具扁平化、`stream/store`）。
+- 文档：USER-GUIDE 新增四种协议对照表（含端点与典型用途）、`examples/config.toml` 顶部说明、
+  ACCEPTANCE 协议行、`core/src/models.rs` 的 protocol 注释。
+
+未做：真实 Responses 订阅（OpenAI 官方/中转）的端到端验收——本机没有可用订阅，只有本地
+faithful 假服务；Anthropic 官方订阅同样待凭据。

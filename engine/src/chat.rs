@@ -986,6 +986,9 @@ impl ChatRunner {
         if self.profile.protocol == "anthropic" {
             return self.chat_anthropic(thread, messages, tools, control, stream_run);
         }
+        if self.profile.protocol == "responses" {
+            return self.chat_responses(thread, messages, tools, control, stream_run);
+        }
         let api_key = match &self.profile.api_key_env {
             Some(env) => std::env::var(env).map_err(|_| format!("missing API key env {env}"))?,
             None => String::new(),
@@ -1016,7 +1019,7 @@ impl ChatRunner {
                 Ok(response) => {
                         // Once response decoding starts, never retry a partial
                         // stream: it may already have emitted visible output.
-                        let data = crate::stream::response(response, false, control, |text| {
+                        let data = crate::stream::response(response, crate::stream::Mode::Chat, control, |text| {
                             if let Some(run_id) = stream_run {
                                 if control.check().is_ok() { self.notify.note_stream_chunk(run_id, &self.agent_id(), text); }
                             }
@@ -1046,6 +1049,99 @@ impl ChatRunner {
                 Err(e) => last_error = format!("chat API: {e}"),
             }
             // never sleep after the final attempt
+            if attempt < retries {
+                let backoff = retry_in
+                    .unwrap_or_else(|| std::time::Duration::from_millis((500u64 << attempt.min(5)).min(8000)));
+                std::thread::sleep(backoff.min(std::time::Duration::from_secs(30)));
+            }
+        }
+        Err(last_error)
+    }
+
+    /// OpenAI Responses API (`POST {base}/responses`): the wire format of the
+    /// official OpenAI models and of Codex-style gateways. The engine keeps the
+    /// chat-completions message shape internally, so this is a translation layer
+    /// in both directions (`to_responses_input` / `from_responses_output`).
+    fn chat_responses(&self, thread: &str, messages: &[Json], tools: &Json, control: &TurnControl, stream_run: Option<&str>) -> Result<Json, String> {
+        let api_key = match &self.profile.api_key_env {
+            Some(env) => std::env::var(env).map_err(|_| format!("missing API key env {env}"))?,
+            None => String::new(),
+        };
+        let base = resolve_base_url(&self.profile);
+        let (instructions, input) = to_responses_input(messages);
+        let tool_specs: Vec<Json> = tools
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|tool| {
+                let f = tool.get("function")?;
+                Some(json!({
+                    "type": "function",
+                    "name": f.get("name")?,
+                    "description": f.get("description").cloned().unwrap_or(Json::Null),
+                    "parameters": f.get("parameters").cloned().unwrap_or(json!({"type": "object"})),
+                }))
+            })
+            .collect();
+        let mut body = json!({"model": self.profile.model, "input": input, "stream": true, "store": false});
+        if !instructions.is_empty() {
+            body["instructions"] = json!(instructions);
+        }
+        if !tool_specs.is_empty() {
+            body["tools"] = json!(tool_specs);
+        }
+        self.apply_generation_options(&mut body);
+        // Responses names the same knobs differently
+        let map = body.as_object_mut().expect("body is an object");
+        for (from, to) in [("max_tokens", "max_output_tokens"), ("max_completion_tokens", "max_output_tokens")] {
+            if let Some(value) = map.remove(from) {
+                map.insert(to.into(), value);
+            }
+        }
+        if let Some(effort) = map.remove("reasoning_effort") {
+            map.insert("reasoning".into(), json!({"effort": effort}));
+        }
+        let url = format!("{base}/responses");
+        let mut last_error = "chat call failed".to_string();
+        let retries = self.profile.max_retries.max(0);
+        for attempt in 0..=retries {
+            control.check()?;
+            let started = std::time::Instant::now();
+            let mut request = ureq::post(&url)
+                .set("content-type", "application/json")
+                .timeout(std::time::Duration::from_secs(self.profile.timeout.max(1) as u64));
+            if !api_key.is_empty() {
+                request = request.set("authorization", &format!("Bearer {api_key}"));
+            }
+            let mut retry_in: Option<std::time::Duration> = None;
+            match request.send_string(&body.to_string()) {
+                Ok(response) => {
+                    let data = crate::stream::response(response, crate::stream::Mode::Responses, control, |text| {
+                        if let Some(run_id) = stream_run {
+                            if control.check().is_ok() {
+                                self.notify.note_stream_chunk(run_id, &self.agent_id(), text);
+                            }
+                        }
+                    })?;
+                    { let _execution = control.enter()?; self.record_usage(thread, &data, started.elapsed().as_millis() as u64)?; }
+                    return Ok(from_responses_output(&data));
+                }
+                Err(ureq::Error::Status(code, response)) => {
+                    let retry_after = response
+                        .header("retry-after")
+                        .and_then(|v| v.trim().parse::<u64>().ok())
+                        .map(std::time::Duration::from_secs);
+                    let text = response.into_string().unwrap_or_default();
+                    let text: String = text.chars().take(500).collect();
+                    last_error = format!("chat API {code}: {text}");
+                    if !retryable_status(code) {
+                        return Err(last_error);
+                    }
+                    retry_in = retry_after;
+                }
+                Err(e) => last_error = format!("chat API: {e}"),
+            }
             if attempt < retries {
                 let backoff = retry_in
                     .unwrap_or_else(|| std::time::Duration::from_millis((500u64 << attempt.min(5)).min(8000)));
@@ -1124,7 +1220,7 @@ impl ChatRunner {
             let mut retry_in: Option<std::time::Duration> = None;
             match request.send_string(&body.to_string()) {
                 Ok(response) => {
-                        let data = crate::stream::response(response, true, control, |text| {
+                        let data = crate::stream::response(response, crate::stream::Mode::Anthropic, control, |text| {
                             if let Some(run_id) = stream_run {
                                 if control.check().is_ok() { self.notify.note_stream_chunk(run_id, &self.agent_id(), text); }
                             }
@@ -1673,6 +1769,86 @@ fn to_anthropic_messages(history: &[Json]) -> (String, Vec<Json>) {
         }
     }
     (system, out)
+}
+
+/// Chat-completions history → Responses `instructions` + `input` items.
+fn to_responses_input(history: &[Json]) -> (String, Vec<Json>) {
+    let mut instructions = String::new();
+    let mut out: Vec<Json> = vec![];
+    for message in history {
+        let role = message.get("role").and_then(|v| v.as_str()).unwrap_or("");
+        let content = message.get("content").and_then(|v| v.as_str()).unwrap_or("");
+        match role {
+            "system" => {
+                if !instructions.is_empty() {
+                    instructions.push_str("\n\n");
+                }
+                instructions.push_str(content);
+            }
+            "user" if message.get("tool_call_id").is_none() => {
+                out.push(json!({"role": "user", "content": [{"type": "input_text", "text": content}]}));
+            }
+            "assistant" => {
+                if !content.is_empty() {
+                    out.push(json!({"role": "assistant", "content": [{"type": "output_text", "text": content}]}));
+                }
+                for call in message.get("tool_calls").and_then(|v| v.as_array()).cloned().unwrap_or_default() {
+                    out.push(json!({
+                        "type": "function_call",
+                        "call_id": call.get("id").cloned().unwrap_or(Json::Null),
+                        "name": call.get("function").and_then(|f| f.get("name")).cloned().unwrap_or(Json::Null),
+                        "arguments": call.get("function").and_then(|f| f.get("arguments")).cloned().unwrap_or(json!("{}")),
+                    }));
+                }
+            }
+            "tool" => {
+                out.push(json!({
+                    "type": "function_call_output",
+                    "call_id": message.get("tool_call_id").cloned().unwrap_or(Json::Null),
+                    "output": content,
+                }));
+            }
+            _ => {}
+        }
+    }
+    (instructions, out)
+}
+
+/// Responses `output` items → the OpenAI-style assistant message the loop expects.
+fn from_responses_output(data: &Json) -> Json {
+    let mut text = String::new();
+    let mut calls: Vec<Json> = vec![];
+    for item in data.get("output").and_then(|v| v.as_array()).cloned().unwrap_or_default() {
+        match item.get("type").and_then(|v| v.as_str()).unwrap_or("") {
+            "message" => {
+                for part in item.get("content").and_then(|v| v.as_array()).cloned().unwrap_or_default() {
+                    if let Some(part) = part.get("text").and_then(|v| v.as_str()) {
+                        if !text.is_empty() {
+                            text.push('\n');
+                        }
+                        text.push_str(part);
+                    }
+                }
+            }
+            "function_call" => calls.push(json!({
+                "id": item.get("call_id").cloned().unwrap_or(Json::Null),
+                "type": "function",
+                "function": {
+                    "name": item.get("name").cloned().unwrap_or(Json::Null),
+                    "arguments": item.get("arguments").cloned().unwrap_or(json!("{}")),
+                },
+            })),
+            _ => {}
+        }
+    }
+    let mut message = json!({
+        "role": "assistant",
+        "content": if text.is_empty() { Json::Null } else { Json::String(text) },
+    });
+    if !calls.is_empty() {
+        message["tool_calls"] = json!(calls);
+    }
+    message
 }
 
 /// Anthropic response → the OpenAI-style assistant message the loop expects.

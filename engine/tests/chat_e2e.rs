@@ -66,6 +66,34 @@ impl FakeOpenAi {
         FakeOpenAi { port, bodies, calls }
     }
 
+    /// Same server, but every reply is an SSE body — the shape a real
+    /// `stream: true` endpoint (chat completions, Messages, Responses) returns.
+    fn start_sse(handler: impl Fn(&Json, usize) -> String + Send + Sync + 'static) -> FakeOpenAi {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake openai");
+        let port = listener.local_addr().unwrap().port();
+        let bodies: Arc<Mutex<Vec<Json>>> = Arc::new(Mutex::new(vec![]));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (recorded, counter) = (bodies.clone(), calls.clone());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let raw = read_request(&mut stream);
+                let request: Json = serde_json::from_str(&raw).unwrap_or(Json::Null);
+                let index = counter.fetch_add(1, Ordering::SeqCst);
+                recorded.lock().unwrap().push(request.clone());
+                let payload = handler(&request, index);
+                let head = format!(
+                    "HTTP/1.1 200 X\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                    payload.len()
+                );
+                let _ = stream.write_all(head.as_bytes());
+                let _ = stream.write_all(payload.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        FakeOpenAi { port, bodies, calls }
+    }
+
     fn base_url(&self) -> String {
         format!("http://127.0.0.1:{}", self.port)
     }
@@ -286,6 +314,67 @@ fn text_with_usage(text: &str, prompt: u64) -> Json {
 /// F-3: a once approval must be found again when the model re-sends the call
 /// with a fresh tool_call_id, the operation must run, and the row must be
 /// consumed (EXPIRED) — then the turn finishes.
+/// The Responses wire format (`/responses`) must round-trip tool calls: the
+/// engine keeps chat-completions history internally, so this checks both the
+/// translation out (`function_call_output`) and back (`tool_calls`).
+#[test]
+fn responses_protocol_round_trips_a_tool_call() {
+    let _env = env_guard("chat-responses");
+    let sse = |frames: Vec<Json>| -> String {
+        frames.iter().map(|frame| format!("event: x\ndata: {frame}\n\n")).collect()
+    };
+    let server = FakeOpenAi::start_sse(move |_body, index| {
+        if index == 0 {
+            sse(vec![
+                json!({"type":"response.output_item.done","item":{"type":"function_call","call_id":"call-1","name":"shell","arguments":"{\"command\":\"echo hi\"}"}}),
+                json!({"type":"response.completed","response":{"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15},
+                    "output":[{"type":"function_call","call_id":"call-1","name":"shell","arguments":"{\"command\":\"echo hi\"}"}]}}),
+            ])
+        } else {
+            sse(vec![json!({"type":"response.completed","response":{"usage":{"input_tokens":12,"output_tokens":3,"total_tokens":15},
+                "output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"all done"}]}]}})])
+        }
+    });
+    let mut agent = agent_json("leader", "leader", &["shell"]);
+    agent["instructions"] = json!("You are the Leader of a team of agents.");
+    let spec = json!({"leader_id": "leader", "agents": [agent.clone()]});
+    let core = core_with_spec("s-responses", spec);
+    let mut model = profile(&server.base_url(), "responses", json!({}), 0);
+    model.max_retries = 0;
+    let runner = chat_runner(&core, &agent, model, "/tmp");
+    let (executor, tool_calls) = recording_executor();
+    // shell is pre-authorized here: this test is about the wire format, not approvals
+    let runtime = start_runtime(&core, runner, "leader", PermissionPolicy::default(), RuntimeLimits::default(), executor);
+
+    runtime.user_message("run echo", false).unwrap();
+    assert!(wait_for(|| tool_calls.lock().unwrap().len() == 1, 15_000), "the tool call reached the executor");
+    assert!(wait_for(|| !runs(&core).iter().any(|r| r.status.is_active()), 15_000), "the turn finished");
+
+    assert_eq!(tool_calls.lock().unwrap()[0].1, shell_args());
+    // the follow-up request carried the tool result back in Responses shape
+    let second = server.body(1);
+    let input = second["input"].as_array().cloned().unwrap_or_default();
+    assert!(
+        input.iter().any(|item| item["type"] == "function_call_output"
+            && item["call_id"] == "call-1"
+            && item["output"].as_str().unwrap_or("").contains("executed")),
+        "tool output must travel as function_call_output: {second}"
+    );
+    assert!(second["instructions"].as_str().unwrap_or("").contains("Leader"), "system prompt maps to instructions: {second}");
+    let shell_tool = second["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "shell")
+        .cloned()
+        .unwrap_or(Json::Null);
+    assert_eq!(shell_tool["type"], "function", "tools are flattened for Responses: {shell_tool}");
+    assert!(shell_tool.get("function").is_none(), "no nested function object: {shell_tool}");
+    assert_eq!(shell_tool["parameters"]["properties"]["command"]["type"], "string");
+    assert!(second["stream"].as_bool().unwrap_or(false), "streaming stays on: {second}");
+    runtime.close();
+}
+
 #[test]
 fn tool_activity_reaches_the_automation_sink() {
     let _env = env_guard("chat-tool-sink");

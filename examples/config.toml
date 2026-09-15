@@ -1,6 +1,13 @@
 # TeamAgents 用户配置示例 -> ~/.config/teamagents/config.toml
 # 密钥只引用环境变量，不写进本文件。
 
+# 协议（protocol）决定线上格式，三种主流格式都已支持：
+#   protocol = "responses"   → POST {base_url}/responses（OpenAI 官方模型、Codex 风格网关）
+#   protocol = "anthropic"   → POST {base_url}/v1/messages（Anthropic 官方订阅/兼容网关）
+#   protocol = "openai"      → POST {base_url}/chat/completions（OpenAI 兼容：DeepSeek/GLM/Kimi/…）
+#   protocol = "deepseek"    → 同 chat/completions，另外把 xhigh 档位映射成 max
+# 具体用哪个模型由 base_url + model 决定；官方订阅的模型名写进 model 即可。
+
 [models.leader_main]
 provider = "deepseek"
 protocol = "deepseek"

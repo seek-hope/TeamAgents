@@ -70,7 +70,7 @@ TUI 为 Rust 原生设计（D-20：固定分区、滚动、胶囊状态）。其
 
 | 范围 | 当前行为与证据 |
 |---|---|
-| 模型流式与协议完整性（§11、T7） | `engine/src/stream.rs` 合并 OpenAI/Anthropic SSE、保留 thinking/signature 与 usage；五家真实服务闭环尚待验收 |
+| 模型流式与协议完整性（§11、T7） | `engine/src/stream.rs` 支持三种线上格式（chat completions / Anthropic Messages / OpenAI Responses）的 SSE 与单 JSON 响应，保留 thinking/signature 与 usage；`chat.rs` 为 Responses 做双向翻译（`instructions`、工具扁平化、`function_call`↔`tool_calls`），回归 `chat_e2e::responses_protocol_round_trips_a_tool_call` 与 `stream::tests::responses_stream_yields_text_calls_and_usage`。真实订阅闭环仍待各自凭据 |
 | 动态变更安全边界（§8） | `core/src/control.rs::agent_has_live_run` 不把无 `external_turn_id` 的 WAITING_TASK/WAITING_APPROVAL 算作活动执行，因此 Chat 挂起时可应用 patch；有外部回合 ID 的 Codex 等待仍阻塞。现行修复证据：`core/tests/engine.rs::approval_parked_run_does_not_block_boundary`、`task_wait_parked_run_does_not_block_boundary` |
 | 网关与 MCP 隔离（§12.2） | `BoundTools::load_in` 将 stdio MCP 默认放入成员 workspace bwrap（无网），`mcp_execution = "host"` 才显式使用宿主；绑定仍是授权边界 |
 | 全自动与越界批准（§12.2） | 原生文件工具仍由 `tools.rs::resolve_in_root` 限定路径，Shell 始终走 `shell_run_with_control` / `bwrap_argv`；full_auto 只跳过批准门，没有扩大文件根或取消原生 Shell 沙箱 |
