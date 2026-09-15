@@ -218,7 +218,8 @@ fn acknowledging_an_unknown_run_unblocks_completion() {
     let blockers = r.result["blockers"].as_array().cloned().unwrap_or_default();
     let text = blockers.iter().filter_map(|b| b.as_str()).collect::<Vec<_>>().join(" | ");
     assert!(text.contains("outcome-unknown") && text.contains(&run_id), "{text}");
-    assert!(text.contains("cancel_run"), "the blocker says how to clear it: {text}");
+    assert!(text.contains("cancel_run <run_id>"), "the blocker says how to clear it: {text}");
+    assert!(!text.contains(&format!("{run_id} of b:")), "the run id is never glued to another field: {text}");
 
     let r = ctl.submit(&action("ack1", "leader", ActionKind::CancelRun, json!({"run_id": run_id}), None)).unwrap();
     assert!(r.ok, "{}", r.error.unwrap_or_default());

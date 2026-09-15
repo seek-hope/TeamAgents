@@ -1466,9 +1466,11 @@ impl Control {
         }
         let unknown = self.store.runs_for_session(&self.session_id, &[TurnStatus::OutcomeUnknown]).map_err(|e| format!("read unknown runs: {e}"))?;
         if !unknown.is_empty() {
+            // the run id must stand alone: gluing `agent:run` together made models
+            // copy the whole token into cancel_run (observed in a real run)
             blockers.push(format!(
-                "outcome-unknown operations: {} (acknowledge each with cancel_run once you accept its side effects)",
-                unknown.iter().map(|r| format!("{}:{}", r.agent_id, r.run_id)).collect::<Vec<_>>().join(", ")
+                "outcome-unknown operations: {} (acknowledge each with cancel_run <run_id> once you accept its side effects)",
+                unknown.iter().map(|r| format!("{} of {}", r.run_id, r.agent_id)).collect::<Vec<_>>().join(", ")
             ));
         }
         let un = self

@@ -473,3 +473,21 @@ Codex 有 `notify`、Claude Code 有 hooks，TeamAgents 之前没有任何外部
 - `engine/src/chat.rs`：`cancel_task` 的工具说明补上"BLOCKED 任务只能这样清掉，清掉后重新派新任务"。
 - 文档：USER-GUIDE 故障处理新增一行（Leader 结清 + 重派，用户也可面板按 `c`）；ACCEPTANCE 对应
   补一句。仓库 AGENTS.md 里的备忘本身已是正确版本（Leader 可用 cancel_task），无需改。
+
+## 第二十六批：成员级中断 → 任务 BLOCKED → Leader 自救（真实评测）
+
+新增两阶段任务 `resume-task-recovery`（leader + dev 两个 Chat 成员的 TeamSpec）：阶段 1 把
+`sleep 90` 的命令派给 dev 并被会话超时打断；阶段 2 resume 后**全模型驱动**地完成恢复：
+
+`task_blocked(external turn outcome could not be confirmed)` → Leader `cancel_task` →
+重派一个不需要等待的补救任务 → dev `echo done >> run.txt` + `complete_task` → Leader 自己 `cat` 复核 →
+`signal_done` 先被拒（还有未知 run）→ `cancel_run` 结清两个 → `signal_done` 通过 → `goal_done`。
+验收：`run.txt` 恰好一行 `started` + 一行 `done`（被中断命令的副作用**没有重复**）。
+用时 64.6s，证据 `review/eval/runs/2026-09-15-deepseek-task-recovery/`。
+
+顺带修复：阻塞信息里 run id 原先是 `成员:run_id` 的写法，模型照抄整串去 `cancel_run`（实测被拒两次），
+现在改成 `run_id of 成员`（`core/tests/engine.rs::acknowledging_an_unknown_run_unblocks_completion`
+补了断言）。
+
+至此四条恢复路径都有真实运行证据：回合内重启（第七批）、批准回路与被中断恢复（第八批）、
+中断后 `--resume`（第二十二批）、成员级中断 + 任务自救（本批）。
