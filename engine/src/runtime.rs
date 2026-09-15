@@ -85,17 +85,24 @@ type Sink = Box<dyn Fn(&str, &str, &str) + Send + Sync>;
 pub struct Notify {
     core: Arc<CoreClient>,
     stream: Mutex<Option<Sink>>,
+    tool: Mutex<Option<Box<dyn Fn(&str, &str, &serde_json::Value) + Send + Sync>>>,
     waker: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     accepting: Mutex<bool>,
 }
 
 impl Notify {
     pub fn new(core: Arc<CoreClient>) -> Arc<Self> {
-        Arc::new(Self { core, stream: Mutex::new(None), waker: Mutex::new(None), accepting: Mutex::new(true) })
+        Arc::new(Self { core, stream: Mutex::new(None), tool: Mutex::new(None), waker: Mutex::new(None), accepting: Mutex::new(true) })
     }
 
     pub fn set_stream_sink(&self, sink: Sink) {
         *self.stream.lock().unwrap() = Some(sink);
+    }
+
+    /// Tool activity (which tool, which arguments, ok or failed) for automation
+    /// surfaces such as `exec --json`. The UI reads streamed text instead.
+    pub fn set_tool_sink(&self, sink: Box<dyn Fn(&str, &str, &serde_json::Value) + Send + Sync>) {
+        *self.tool.lock().unwrap() = Some(sink);
     }
 
     /// The core client behind this notifier. Runners read per-turn config
@@ -125,6 +132,18 @@ impl Notify {
         if let Ok(stream) = self.stream.lock() {
             if let Some(sink) = stream.as_ref() {
                 sink(run_id, agent_id, text);
+            }
+        }
+    }
+
+    pub fn note_tool_activity(&self, run_id: &str, agent_id: &str, activity: &serde_json::Value) {
+        let accepting = self.accepting.lock().unwrap();
+        if !*accepting {
+            return;
+        }
+        if let Ok(tool) = self.tool.lock() {
+            if let Some(sink) = tool.as_ref() {
+                sink(run_id, agent_id, activity);
             }
         }
     }

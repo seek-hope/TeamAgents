@@ -151,6 +151,10 @@ fn profile(base_url: &str, protocol: &str, options: Json, max_retries: i64) -> M
 }
 
 fn chat_runner(core: &Arc<CoreClient>, agent: &Json, profile: ModelProfile, workdir: &str) -> Arc<ChatRunner> {
+    chat_runner_with(core, agent, profile, workdir, Notify::new(core.clone()))
+}
+
+fn chat_runner_with(core: &Arc<CoreClient>, agent: &Json, profile: ModelProfile, workdir: &str, notify: Arc<Notify>) -> Arc<ChatRunner> {
     let bindings: Vec<String> = agent
         .get("tool_bindings")
         .and_then(|v| v.as_array())
@@ -161,7 +165,7 @@ fn chat_runner(core: &Arc<CoreClient>, agent: &Json, profile: ModelProfile, work
         agent,
         profile,
         Some(workdir.to_string()),
-        Notify::new(core.clone()),
+        notify,
         bound,
         vec![],
         (false, false),
@@ -176,7 +180,18 @@ fn start_runtime(
     limits: RuntimeLimits,
     executor: ToolExecutor,
 ) -> Arc<Runtime> {
-    let notify = Notify::new(core.clone());
+    start_runtime_with(core, runner, agent_id, policy, limits, executor, Notify::new(core.clone()))
+}
+
+fn start_runtime_with(
+    core: &Arc<CoreClient>,
+    runner: Arc<ChatRunner>,
+    agent_id: &str,
+    policy: PermissionPolicy,
+    limits: RuntimeLimits,
+    executor: ToolExecutor,
+    notify: Arc<Notify>,
+) -> Arc<Runtime> {
     let approvals = ApprovalGate::new(core.clone(), policy);
     let runtime = Runtime::new(core.clone(), notify, approvals, executor, None, limits);
     runtime.add_runner(agent_id, runner);
@@ -271,6 +286,45 @@ fn text_with_usage(text: &str, prompt: u64) -> Json {
 /// F-3: a once approval must be found again when the model re-sends the call
 /// with a fresh tool_call_id, the operation must run, and the row must be
 /// consumed (EXPIRED) — then the turn finishes.
+#[test]
+fn tool_activity_reaches_the_automation_sink() {
+    let _env = env_guard("chat-tool-sink");
+    let server = FakeOpenAi::start(|_body, index| match index {
+        0 => (200, tool_call_response("call-1", "write_file", json!({"path": "note.txt", "content": "hello"}))),
+        _ => (200, text_response("done")),
+    });
+    let spec = json!({
+        "leader_id": "leader",
+        "agents": [agent_json("leader", "leader", &["files"])],
+    });
+    let core = core_with_spec("s-tool-sink", spec);
+    let agent = agent_json("leader", "leader", &["files"]);
+    let notify = Notify::new(core.clone());
+    let runner = chat_runner_with(&core, &agent, profile(&server.base_url(), "openai", json!({}), 0), "/tmp", notify.clone());
+    let (executor, _tool_calls) = recording_executor();
+    let runtime = start_runtime_with(&core, runner, "leader", approval_policy_for_shell(), RuntimeLimits::default(), executor, notify.clone());
+
+    let seen: Arc<Mutex<Vec<Json>>> = Arc::new(Mutex::new(vec![]));
+    let sink = seen.clone();
+    notify.set_tool_sink(Box::new(move |run_id, agent_id, activity| {
+        sink.lock().unwrap().push(json!({"run_id": run_id, "agent_id": agent_id, "activity": activity.clone()}));
+    }));
+
+    runtime.user_message("write the file", false).unwrap();
+    assert!(wait_for(|| !seen.lock().unwrap().is_empty(), 15_000), "tool activity must be reported while the turn runs");
+    let first = seen.lock().unwrap()[0].clone();
+    assert_eq!(first["agent_id"], "leader");
+    assert!(first["run_id"].as_str().is_some_and(|id| !id.is_empty()));
+    assert_eq!(first["activity"]["tool"], "write_file");
+    assert_eq!(first["activity"]["call_id"], "call-1");
+    assert_eq!(first["activity"]["ok"], true);
+    assert!(
+        first["activity"]["arguments"].as_str().unwrap().contains("note.txt"),
+        "the sink sees which file was touched: {first}"
+    );
+    runtime.close();
+}
+
 #[test]
 fn once_approval_is_consumed_and_the_turn_completes() {
     let _env = env_guard("chat-once");

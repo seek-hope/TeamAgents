@@ -246,11 +246,20 @@ TUI `/rewind` 列出当前分支的用户输入节点，`/rewind <序号>` 回�
 ## 4. 非交互执行与故障处理
 
 脚本和 CI 可使用 `teamagents exec --json PROMPT`。stdout 只输出 schema version 1 的 JSONL
-（session、event、result），诊断写入 stderr；`--check COMMAND` 可重复指定验收命令，命令在
+（`session`、`tool`、`event`、`result`），诊断写入 stderr；`--check COMMAND` 可重复指定验收命令，命令在
 隔离 Shell 中按顺序执行。退出码为：0 完成，1 失败或未完成，3 需要批准，124 超时。
 非交互方式没有人能回应批准，因此回合停在待批准时立即返回 3（不等超时）：需要批准的工具
 要么改用 `--full-auto`，要么先在 TUI 里批准再用 `--resume` 继续。
 使用 `PROMPT` 为 `-` 时从 stdin 读取；`--resume ID` 可继续同一会话。
+
+每行内容：
+
+| type | 字段 | 说明 |
+|---|---|---|
+| `session` | `session_id` | 会话已打开，后续行都属于它 |
+| `tool` | `run_id`、`agent_id`、`tool`、`call_id`、`ok`、`error`、`arguments` | 每次工具调用的实时记录；`arguments` 是最长 500 字符的摘要（写大文件时会截断），据此可审计"改了哪个文件、跑了哪条命令" |
+| `event` | `event`（核心事件：`run_started`、`goal_done`、`leader_reply`、`approval_requested` …） | 团队事务事件流水 |
+| `result` | `status`、`exit_code`、`duration_ms`、`usage`、`verification` | 最后一行；`usage` 是各成员的真实 token 账本，`verification` 是 `--check` 命令的输出与退出码 |
 
 | 现象 | 处理 |
 |---|---|

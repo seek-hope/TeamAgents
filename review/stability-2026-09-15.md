@@ -82,6 +82,10 @@ XDG_STATE_HOME=/tmp/ta-live/state2 engine/target/debug/teamagents exec --json \
 3. **评测集从空壳变成可复跑**：`review/eval/tasks/<id>/{prompt.md,checks.txt,fixture/}` +
    `review/eval/run.sh`，三个任务各有真实验收（`cargo test`、configparser 逐段断言、大输出取值）。
    旧的 `tasks.jsonl` 里 `test -d .` 这类恒真检查已删除。
+4. **`exec --json` 看不到"做了什么"**：只有 run 级事件时，自动化无法审计成员改了哪个文件、跑了
+   哪条命令。现在 ChatRunner 在工具结果落地处把 `{tool, call_id, ok, error, arguments(≤500 字符)}`
+   推给 `Notify::set_tool_sink`，`exec` 以 `type:"tool"` 行实时输出；TUI 仍走原来的文本流，
+   互不影响。回归 `chat_e2e::tool_activity_reaches_the_automation_sink`。
 
 ### 本轮真实运行
 
@@ -92,15 +96,15 @@ review/eval/run.sh --timeout 600          # deepseek-flash，默认单成员团�
 
 | 任务 | status | exit | 秒 | tokens(prompt/completion) | 验收 |
 |---|---|---|---|---|---|
-| edit-integrity | completed | 0 | 16.9 | 29911/2459 | 全部通过 |
-| long-output | completed | 0 | 20.3 | 32964/2938 | 全部通过 |
-| rust-fix | completed | 0 | 20.7 | 59769/2500 | 全部通过 |
+| edit-integrity | completed | 0 | 24.0 | 38530/3866 | 全部通过 |
+| long-output | completed | 0 | 16.1 | 29753/2385 | 全部通过 |
+| rust-fix | completed | 0 | 21.4 | 41421/3342 | 全部通过 |
 
-原始 JSONL 与逐任务复核：`review/eval/runs/2026-09-15-deepseek/`。
+原始 JSONL（含 `tool` 行）与逐任务复核：`review/eval/runs/2026-09-15-deepseek/`。
 
 ## 仍然没有做的
 
 - 供应商矩阵：本机只有 DeepSeek 与 OpenAI 两个密钥，本轮只跑了默认 DeepSeek；其它供应商需要凭据。
 - 多成员协作任务、被中断后的恢复、批准回路：评测集尚未覆盖。
-- 工具调用在 `exec --json` 里不可见（只有 run/event 级事件）；自动化要看清"改了哪些文件、
-  跑了哪些命令"需要把 ChatRunner 的工具活动接到流式通道上。
+- `tool` 行在"成员私有上下文"面上是新增暴露：它含工具名与参数摘要（写文件内容会被截到 500
+  字符），派发敏感读任务时要意识到这条日志会被 CI 保存。

@@ -279,6 +279,18 @@ fn fill_unanswered_tool_calls(history: &mut Vec<Json>, calls: &[Json], answered:
 /// ponytail: fixed 50k-char cap; per-tool budgets if specific tools dominate.
 const TOOL_OUTPUT_CAP: usize = 50_000;
 
+/// Tool arguments for the activity sink: enough to see which file or command a
+/// member used, bounded so a large `write_file` payload cannot flood the log.
+const TOOL_ACTIVITY_ARGS: usize = 500;
+
+fn bounded_arguments(args: &Json) -> String {
+    let text = args.to_string();
+    if text.chars().count() <= TOOL_ACTIVITY_ARGS {
+        return text;
+    }
+    format!("{}… [{} chars]", text.chars().take(TOOL_ACTIVITY_ARGS).collect::<String>(), text.chars().count())
+}
+
 fn cap_tool_output(content: String) -> String {
     let chars = content.chars().count();
     if chars <= TOOL_OUTPUT_CAP {
@@ -1388,6 +1400,15 @@ impl ChatRunner {
                 let waiting = name == "wait_for_tasks" && receipt.result["waiting"].as_bool().unwrap_or(false);
                 let step_limit = receipt.error.as_deref().map(|e| e.contains("step limit")).unwrap_or(false);
                 let content = if receipt.ok { receipt.result.to_string() } else { json!({"error":receipt.error}).to_string() };
+                // Automation surfaces see what the member actually did; the
+                // arguments are bounded so a big write_file payload cannot flood them.
+                self.notify.note_tool_activity(&run.run_id, &self.agent_id(), &json!({
+                    "tool": name,
+                    "call_id": call_id,
+                    "ok": receipt.ok,
+                    "error": receipt.error,
+                    "arguments": bounded_arguments(&args),
+                }));
                 checkpoint.history.push(json!({"role":"tool", "tool_call_id":call_id, "content":content}));
                 if approval || waiting || step_limit {
                     let remaining = pending_tool_calls(&checkpoint.history);

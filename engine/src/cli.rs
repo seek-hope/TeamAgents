@@ -494,6 +494,15 @@ pub fn exec_json(args: &ExecOptions) -> i32 {
     };
     let sid = opened.session_id.clone();
     if !json_line(&json!({"schema_version":1,"type":"session","session_id":sid})) { opened.close(); return 1; }
+    // Tool activity as it happens: which file, which command, ok or failed.
+    let sink_session = sid.clone();
+    opened.runtime.notify.set_tool_sink(Box::new(move |run_id, agent_id, activity| {
+        let _ = json_line(&json!({
+            "schema_version":1,"type":"tool","session_id":sink_session,"run_id":run_id,"agent_id":agent_id,
+            "tool":activity["tool"],"call_id":activity["call_id"],"ok":activity["ok"],
+            "error":activity["error"],"arguments":activity["arguments"],
+        }));
+    }));
     opened.runtime.start();
     if let Err(e) = opened.runtime.user_message(&prompt, false) { eprintln!("提交消息失败：{e}"); opened.close(); return 1; }
     let timeout = args.timeout.unwrap_or(1200);
