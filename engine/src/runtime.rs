@@ -520,7 +520,10 @@ impl Runtime {
         if session.is_null() {
             return;
         }
+        let runs: Vec<TurnRun> = serde_json::from_value(state.get("runs").cloned().unwrap_or(Json::Null)).unwrap_or_default();
         if session.get("status").and_then(|v| v.as_str()) == Some("PAUSED") {
+            // Pausing stops dispatch, but must not suppress requests to stop work.
+            self.watch_cancellations(&runs);
             return;
         }
         let leader_id = state.get("leader_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -529,7 +532,6 @@ impl Runtime {
             .and_then(|l| l.get("max_parallel_workers"))
             .and_then(|v| v.as_i64())
             .unwrap_or(self.limits.max_parallel_workers);
-        let runs: Vec<TurnRun> = serde_json::from_value(state.get("runs").cloned().unwrap_or(Json::Null)).unwrap_or_default();
         let removed: HashSet<String> = state
             .get("agents")
             .and_then(|v| v.as_array())

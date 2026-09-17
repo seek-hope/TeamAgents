@@ -579,6 +579,7 @@ impl Control {
                         self.store.set_session_status(&self.session_id, SessionStatus::Active).map_err(|e| e.to_string())?;
                     }
                 }
+                self.store.clear_goal_completion_requests(&self.session_id).map_err(|e| e.to_string())?;
                 let goal_id = self.ensure_goal(spec)?;
                 let text = pstr(p, "text");
                 Ok(Reduction {
@@ -2092,6 +2093,9 @@ impl Control {
 
     fn begin_run_inner(&mut self, run_id: &str) -> Result<TurnRun, String> {
         let mut run = self.store.get_run(run_id).map_err(|e| e.to_string())?.ok_or("unknown run")?;
+        if !run.status.is_active() {
+            return Err(format!("run {run_id:?} cannot start from {}", enum_name(run.status)));
+        }
         if run.status == TurnStatus::Queued {
             self.store.set_run_status(run.run_id.as_str(), TurnStatus::Running).map_err(|e| e.to_string())?;
             run.status = TurnStatus::Running;
@@ -2214,6 +2218,11 @@ impl Control {
 
     fn finalize_run_inner(&mut self, run_id: &str, outcome: &TurnOutcome, ack_ids: &[i64]) -> Result<(), String> {
         let run = self.store.get_run(run_id).map_err(|e| e.to_string())?.ok_or("unknown run")?;
+        // A late callback cannot undo a settled cancellation or replay completion.
+        // OUTCOME_UNKNOWN remains reconcilable when the backend confirms a result.
+        if matches!(run.status, TurnStatus::Completed | TurnStatus::Failed | TurnStatus::Cancelled) {
+            return Ok(());
+        }
         let req = self.store.completion_request(&run.run_id).map_err(|e| e.to_string())?;
         let terminal = matches!(
             outcome.status,
@@ -2254,15 +2263,31 @@ impl Control {
                         }
                     }
                 } else {
-                    self.store
-                        .set_goal_state(&self.session_id, run.goal_id.as_deref().unwrap_or(""), "done")
-                        .map_err(|e| e.to_string())?;
-                    events.push(EventDraft {
-                        kind: EventKind::GoalDone,
-                        payload: json!({"goal_id": run.goal_id, "agent_id": run.agent_id, "summary": req["summary"]}),
-                        push: Some(vec![]),
-                        ..EventDraft::new(EventKind::GoalDone, json!({}))
-                    });
+                    let spec = self.store.load_team_spec(&self.session_id, None).map_err(|e| e.to_string())?;
+                    let blockers = if run.goal_id.is_some() && run.goal_id == self.current_goal_id()? {
+                        // The backend has now confirmed this result, so this run
+                        // must not block its own reconciliation as OUTCOME_UNKNOWN.
+                        // The whole finalization is still one SQLite transaction.
+                        self.store.set_run_status(&run.run_id, TurnStatus::Completed).map_err(|e| e.to_string())?;
+                        self.completion_blockers(&spec, Some(&run.run_id))?
+                    } else {
+                        vec!["the active goal changed after this turn started".into()]
+                    };
+                    if blockers.is_empty() {
+                        self.store
+                            .set_goal_state(&self.session_id, run.goal_id.as_deref().unwrap(), "done")
+                            .map_err(|e| e.to_string())?;
+                        events.push(EventDraft {
+                            kind: EventKind::GoalDone,
+                            payload: json!({"goal_id": run.goal_id, "agent_id": run.agent_id, "summary": req["summary"]}),
+                            push: Some(vec![]),
+                            ..EventDraft::new(EventKind::GoalDone, json!({}))
+                        });
+                    } else {
+                        events.push(EventDraft::new(EventKind::RunProgress,
+                            json!({"run_id": run.run_id, "agent_id": run.agent_id,
+                                   "text": "目标完成申请已失效，请处理新工作后重新确认完成。", "completion_blockers": blockers})));
+                    }
                 }
             }
         }

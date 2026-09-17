@@ -376,6 +376,237 @@ fn responses_protocol_round_trips_a_tool_call() {
     runtime.close();
 }
 
+#[test]
+fn incomplete_model_responses_never_execute_tools() {
+    let _env = env_guard("incomplete-responses");
+    for protocol in ["openai", "anthropic", "responses"] {
+        for streaming in [false, true] {
+            let call = json!({"type":"function_call", "call_id":"partial", "name":"shell", "arguments":shell_args().to_string()});
+            let data = match protocol {
+                "responses" => json!({"status":"incomplete", "incomplete_details":{"reason":"max_output_tokens"}, "output":[call]}),
+                "anthropic" => json!({"stop_reason":"max_tokens", "content":[{"type":"tool_use", "id":"partial", "name":"shell", "input":shell_args()}]}),
+                _ => {
+                    let mut data = tool_call_response("partial", "shell", shell_args());
+                    data["choices"][0]["finish_reason"] = json!("length");
+                    data
+                }
+            };
+            let server = if streaming {
+                FakeOpenAi::start_sse(move |_, _| {
+                    let frames = match protocol {
+                        "responses" => vec![json!({"type":"response.incomplete", "response":data})],
+                        "anthropic" => vec![
+                            json!({"type":"content_block_start", "index":0, "content_block":data["content"][0]}),
+                            json!({"type":"message_delta", "delta":{"stop_reason":"max_tokens"}}),
+                            json!({"type":"message_stop"}),
+                        ],
+                        _ => vec![json!({"choices":[{"index":0,"finish_reason":"length", "delta":{"tool_calls":[{
+                            "index":0,"id":"partial","type":"function","function":{"name":"shell","arguments":shell_args().to_string()}
+                        }]}}]})],
+                    };
+                    let mut wire: String = frames.iter().map(|frame| format!("data: {frame}\n\n")).collect();
+                    if protocol == "openai" { wire.push_str("data: [DONE]\n\n"); }
+                    wire
+                })
+            } else {
+                FakeOpenAi::start(move |_, _| (200, data.clone()))
+            };
+            let agent = agent_json("leader", "leader", &["shell"]);
+            let core = core_with_spec(&format!("incomplete-{protocol}-{streaming}"), json!({"leader_id":"leader","agents":[agent.clone()]}));
+            let runner = chat_runner(&core, &agent, profile(&server.base_url(), protocol, json!({}), 2), "/tmp");
+            let (executor, calls) = recording_executor();
+            let runtime = start_runtime(&core, runner, "leader", PermissionPolicy::default(), RuntimeLimits::default(), executor);
+            runtime.user_message("run echo", false).unwrap();
+            assert!(wait_for(|| runs(&core).iter().any(|r| !r.status.is_active()), 5_000));
+            runtime.close();
+            assert!(calls.lock().unwrap().is_empty(), "{protocol} streaming={streaming} executed an incomplete response");
+            assert_eq!(runs(&core)[0].status, TurnStatus::Failed);
+            assert_eq!(server.calls(), 1, "an incomplete response must not be silently replayed");
+        }
+    }
+}
+
+/// Transport recovery: a truncated stream that never showed text is retried
+/// within max_retries; the complete response on the retry executes exactly
+/// once and the turn completes.
+#[test]
+fn truncated_tool_stream_retries_and_executes_once() {
+    let _env = env_guard("stream-retry");
+    let sse = |frames: Vec<Json>| -> String {
+        frames.iter().map(|frame| format!("data: {frame}\n\n")).collect()
+    };
+    for protocol in ["openai", "anthropic", "responses"] {
+        let args = shell_args().to_string();
+        // Attempt 0 dies mid-stream before any visible output (tool-only so far).
+        let truncated = match protocol {
+            "anthropic" => sse(vec![
+                json!({"type":"message_start","message":{"usage":{"input_tokens":3,"output_tokens":0}}}),
+                json!({"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"c1","name":"shell","input":{}}}),
+            ]),
+            "responses" => sse(vec![json!({"type":"response.created","response":{"id":"r1"}})]),
+            _ => sse(vec![json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"shell","arguments":"{\"comma"}}]}}]})]),
+        };
+        let complete = match protocol {
+            "anthropic" => sse(vec![
+                json!({"type":"message_start","message":{"usage":{"input_tokens":5,"output_tokens":0}}}),
+                json!({"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"c1","name":"shell","input":{}}}),
+                json!({"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":args}}),
+                json!({"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":7}}),
+                json!({"type":"message_stop"}),
+            ]),
+            "responses" => sse(vec![
+                json!({"type":"response.output_item.done","item":{"type":"function_call","call_id":"c1","name":"shell","arguments":args}}),
+                json!({"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":5,"output_tokens":7,"total_tokens":12},
+                    "output":[{"type":"function_call","call_id":"c1","name":"shell","arguments":args}]}}),
+            ]),
+            _ => {
+                let mut wire = sse(vec![
+                    json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"shell","arguments":args}}]}}]}),
+                    json!({"choices":[{"finish_reason":"tool_calls","delta":{}}]}),
+                ]);
+                wire.push_str("data: [DONE]\n\n");
+                wire
+            }
+        };
+        let done = match protocol {
+            "anthropic" => sse(vec![
+                json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}),
+                json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"done"}}),
+                json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}),
+                json!({"type":"message_stop"}),
+            ]),
+            "responses" => sse(vec![json!({"type":"response.completed","response":{"status":"completed",
+                "usage":{"input_tokens":6,"output_tokens":2,"total_tokens":8},
+                "output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}})]),
+            _ => {
+                let mut wire = sse(vec![
+                    json!({"choices":[{"delta":{"content":"done"}}]}),
+                    json!({"choices":[{"finish_reason":"stop","delta":{}}]}),
+                ]);
+                wire.push_str("data: [DONE]\n\n");
+                wire
+            }
+        };
+        let server = FakeOpenAi::start_sse(move |_, index| match index {
+            0 => truncated.clone(),
+            1 => complete.clone(),
+            _ => done.clone(),
+        });
+        let agent = agent_json("leader", "leader", &["shell"]);
+        let core = core_with_spec(&format!("stream-retry-{protocol}"), json!({"leader_id":"leader","agents":[agent.clone()]}));
+        let runner = chat_runner(&core, &agent, profile(&server.base_url(), protocol, json!({}), 2), "/tmp");
+        let (executor, calls) = recording_executor();
+        // shell is pre-authorized here: this test is about transport recovery, not approvals
+        let runtime = start_runtime(&core, runner, "leader", PermissionPolicy::default(), RuntimeLimits::default(), executor);
+        runtime.user_message("run echo", false).unwrap();
+        assert!(wait_for(|| runs(&core).iter().any(|r| !r.status.is_active()), 15_000), "{protocol}: the turn finished");
+        runtime.close();
+        let executed = calls.lock().unwrap();
+        assert_eq!(executed.len(), 1, "{protocol}: the tool executed exactly once");
+        assert_eq!(executed[0].1, shell_args(), "{protocol}: full arguments reached the executor");
+        drop(executed);
+        assert_eq!(server.calls(), 3, "{protocol}: truncated attempt + retry + final answer");
+        assert_eq!(runs(&core)[0].status, TurnStatus::Completed, "{protocol}: the retried turn completed");
+    }
+}
+
+/// The retry is bounded by max_retries and never replays a stream that
+/// already showed text to the user.
+#[test]
+fn stream_retry_respects_budget_and_visible_output() {
+    let _env = env_guard("stream-retry-budget");
+    let partial_tool = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"shell\",\"arguments\":\"{\\\"comma\"}}]}}]}\n\n".to_string();
+
+    // No configured retries: the first truncated attempt ends the turn.
+    let always_partial = partial_tool.clone();
+    let server = FakeOpenAi::start_sse(move |_, _| always_partial.clone());
+    let agent = agent_json("leader", "leader", &["shell"]);
+    let core = core_with_spec("stream-budget-0", json!({"leader_id":"leader","agents":[agent.clone()]}));
+    let runner = chat_runner(&core, &agent, profile(&server.base_url(), "openai", json!({}), 0), "/tmp");
+    let (executor, calls) = recording_executor();
+    let runtime = start_runtime(&core, runner, "leader", PermissionPolicy::default(), RuntimeLimits::default(), executor);
+    runtime.user_message("run echo", false).unwrap();
+    assert!(wait_for(|| runs(&core).iter().any(|r| !r.status.is_active()), 15_000));
+    runtime.close();
+    assert!(calls.lock().unwrap().is_empty(), "partial tool arguments never execute");
+    assert_eq!(server.calls(), 1, "max_retries=0 allows no second attempt");
+    assert_eq!(runs(&core)[0].status, TurnStatus::Failed);
+
+    // One retry: two attempts, then the budget is exhausted.
+    let partial = partial_tool.clone();
+    let server = FakeOpenAi::start_sse(move |_, _| partial.clone());
+    let core = core_with_spec("stream-budget-1", json!({"leader_id":"leader","agents":[agent.clone()]}));
+    let runner = chat_runner(&core, &agent, profile(&server.base_url(), "openai", json!({}), 1), "/tmp");
+    let (executor, calls) = recording_executor();
+    let runtime = start_runtime(&core, runner, "leader", PermissionPolicy::default(), RuntimeLimits::default(), executor);
+    runtime.user_message("run echo", false).unwrap();
+    assert!(wait_for(|| runs(&core).iter().any(|r| !r.status.is_active()), 15_000));
+    runtime.close();
+    assert!(calls.lock().unwrap().is_empty());
+    assert_eq!(server.calls(), 2, "one retry within budget, then failed");
+    assert_eq!(runs(&core)[0].status, TurnStatus::Failed);
+
+    // Visible text before the truncation: the stream is not replayed.
+    let server = FakeOpenAi::start_sse(move |_, _| {
+        "data: {\"choices\":[{\"delta\":{\"content\":\"half an answer\"}}]}\n\n".to_string()
+    });
+    let core = core_with_spec("stream-emitted", json!({"leader_id":"leader","agents":[agent]}));
+    let runner = chat_runner(&core, &agent, profile(&server.base_url(), "openai", json!({}), 2), "/tmp");
+    let (executor, calls) = recording_executor();
+    let runtime = start_runtime(&core, runner, "leader", PermissionPolicy::default(), RuntimeLimits::default(), executor);
+    runtime.user_message("run echo", false).unwrap();
+    assert!(wait_for(|| runs(&core).iter().any(|r| !r.status.is_active()), 15_000));
+    runtime.close();
+    assert!(calls.lock().unwrap().is_empty());
+    assert_eq!(server.calls(), 1, "a stream that already showed text is never retried");
+    assert_eq!(runs(&core)[0].status, TurnStatus::Failed);
+}
+
+#[test]
+fn responses_reasoning_survives_tool_continuation() {
+    let _env = env_guard("responses-reasoning");
+    for streaming in [false, true] {
+        let reasoning = json!({"type":"reasoning","id":"rs_test","summary":[],"encrypted_content":"opaque-test-data"});
+        let expected = reasoning.clone();
+        let response = move |index| {
+            if index == 0 {
+                json!({"status":"completed","output":[reasoning,
+                    {"type":"function_call","id":"fc_test","status":"completed","call_id":"call-r","name":"shell","arguments":shell_args().to_string()}]})
+            } else {
+                json!({"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]})
+            }
+        };
+        let server = if streaming {
+            FakeOpenAi::start_sse(move |_, index| {
+                let mut data = response(index);
+                let mut wire = String::new();
+                for item in data["output"].as_array().unwrap() {
+                    wire.push_str(&format!("data: {}\n\n", json!({"type":"response.output_item.done","item":item})));
+                }
+                data["output"] = json!([]);
+                wire.push_str(&format!("data: {}\n\n", json!({"type":"response.completed","response":data})));
+                wire
+            })
+        } else {
+            FakeOpenAi::start(move |_, index| (200, response(index)))
+        };
+        let agent = agent_json("leader", "leader", &["shell"]);
+        let core = core_with_spec(&format!("responses-reasoning-{streaming}"), json!({"leader_id":"leader","agents":[agent.clone()]}));
+        let runner = chat_runner(&core, &agent, profile(&server.base_url(), "responses", json!({}), 0), "/tmp");
+        let (executor, calls) = recording_executor();
+        let runtime = start_runtime(&core, runner, "leader", PermissionPolicy::default(), RuntimeLimits::default(), executor);
+        runtime.user_message("run echo", false).unwrap();
+        assert!(wait_for(|| runs(&core).iter().any(|r| r.status == TurnStatus::Completed), 5_000));
+        runtime.close();
+        assert_eq!(calls.lock().unwrap().len(), 1);
+        let input = server.body(1)["input"].as_array().unwrap().clone();
+        let position = input.iter().position(|item| *item == expected).expect("the reasoning item must survive unchanged");
+        assert_eq!(input[position + 1]["id"], "fc_test");
+        assert_eq!(input[position + 2]["type"], "function_call_output");
+        assert_eq!(input.iter().filter(|item| item["type"] == "function_call").count(), 1);
+    }
+}
+
 /// `view_image` must reach the model as an actual image part: the tool result
 /// stays a small reference and the bytes are read back when the request is built.
 /// User-configured hooks see engine events: a tool call and the turn end.
@@ -1650,4 +1881,165 @@ fn compaction_triggers_on_threshold_and_read_history_recovers_output() {
     // shell actually ran once; read_history never reaches the executor
     let called = tool_calls.lock().unwrap().clone();
     assert_eq!(called.iter().map(|(t, _)| t.as_str()).collect::<Vec<_>>(), vec!["shell"]);
+}
+
+#[test]
+fn long_context_compaction_preserves_request_and_reads_large_output_after_restart() {
+    let _env = env_guard("long-context-request");
+    const REQUEST: &str = "请修复解析器；必须保留 CRLF、空字段和用户已有改动。";
+    let server = FakeOpenAi::start(|_, index| match index {
+        0 => (200, tool_call_with_usage("large-output", "shell", shell_args(), 10_000)),
+        1 | 3 => (200, text_with_usage("Summary deliberately omits the user's exact constraints.", 100)),
+        2 => (200, tool_call_with_usage("read-first", "read_history", json!({"tool_call_id":"large-output", "offset":29_900, "limit":500}), 10_000)),
+        4 => (200, text_with_usage("first turn complete", 100)),
+        5 => (200, tool_call_with_usage("read-restarted", "read_history", json!({"tool_call_id":"large-output", "offset":29_900, "limit":500}), 100)),
+        _ => (200, text_with_usage("recovered the original output", 100)),
+    });
+    let agent = agent_json("leader", "leader", &["shell"]);
+    let core = core_with_spec("long-context-request", json!({"leader_id":"leader", "agents":[agent.clone()]}));
+    let mut prof = profile(&server.base_url(), "openai", json!({}), 0);
+    prof.context_window = Some(10_000);
+    let executions = Arc::new(AtomicUsize::new(0));
+    let counter = executions.clone();
+    let executor: ToolExecutor = Arc::new(move |_, _, _, _| {
+        counter.fetch_add(1, Ordering::SeqCst);
+        Ok(json!({"output":format!("{}ORIGINAL-MIDDLE-MARKER{}", "H".repeat(30_000), "T".repeat(30_000))}))
+    });
+    let first = start_runtime(&core, chat_runner(&core, &agent, prof.clone(), "/tmp"), "leader", PermissionPolicy::default(), RuntimeLimits::default(), executor.clone());
+    first.user_message(REQUEST, false).unwrap();
+    assert!(wait_for(|| runs(&core).iter().any(|r| r.status == TurnStatus::Completed), 5_000));
+    first.close();
+    assert_eq!(server.calls(), 5);
+    for index in [2, 4] {
+        let body = server.body(index).to_string();
+        assert!(body.contains(REQUEST), "compaction {index} lost the latest user request");
+        assert!(!body.contains(&"H".repeat(10_000)), "a covered large output must not immediately overflow the compacted request");
+        assert_eq!(body.matches("- large-output: shell").count(), 1, "retained tool groups must not duplicate the output index");
+    }
+    assert!(server.body(3).to_string().contains("ORIGINAL-MIDDLE-MARKER"));
+    let second = start_runtime(&core, chat_runner(&core, &agent, prof, "/tmp"), "leader", PermissionPolicy::default(), RuntimeLimits::default(), executor);
+    second.user_message("继续核对刚才的完整输出", false).unwrap();
+    assert!(wait_for(|| runs(&core).iter().filter(|r| r.status == TurnStatus::Completed).count() == 2, 5_000));
+    second.close();
+    assert_eq!(server.calls(), 7);
+    assert!(server.body(6).to_string().contains("ORIGINAL-MIDDLE-MARKER"));
+    assert_eq!(executions.load(Ordering::SeqCst), 1, "restart must read the checkpoint instead of replaying shell");
+}
+
+#[test]
+fn long_context_keeps_small_recent_groups_when_the_latest_reasoning_is_oversized() {
+    let _env = env_guard("long-context-recent-groups");
+    let server = FakeOpenAi::start(|_, index| match index {
+        0 => (200, tool_call_with_usage("source-read", "shell", shell_args(), 100)),
+        1 => {
+            let mut reply = tool_call_with_usage("large-reasoning", "list_shared", json!({}), 10_000);
+            reply["choices"][0]["message"]["reasoning_content"] = json!("R".repeat(20_000));
+            (200, reply)
+        }
+        2 => (200, text_with_usage("Inspected the files; implement the fix next.", 100)),
+        _ => (200, text_with_usage("done", 100)),
+    });
+    let agent = agent_json("leader", "leader", &["shell"]);
+    let core = core_with_spec("long-context-recent-groups", json!({"leader_id":"leader", "agents":[agent.clone()]}));
+    let mut prof = profile(&server.base_url(), "openai", json!({}), 0);
+    prof.context_window = Some(10_000);
+    let executions = Arc::new(AtomicUsize::new(0));
+    let counter = executions.clone();
+    let executor: ToolExecutor = Arc::new(move |_, _, _, _| {
+        counter.fetch_add(1, Ordering::SeqCst);
+        Ok(json!({"output":"SOURCE-NEEDED-FOR-THE-NEXT-EDIT"}))
+    });
+    let runtime = start_runtime(&core, chat_runner(&core, &agent, prof, "/tmp"), "leader", PermissionPolicy::default(), RuntimeLimits::default(), executor);
+    runtime.user_message("修复代码并保留用户文件", false).unwrap();
+    assert!(wait_for(|| runs(&core).iter().any(|r| r.status == TurnStatus::Completed), 5_000));
+    runtime.close();
+    assert_eq!(server.calls(), 4);
+    let next = server.body(3).to_string();
+    assert!(next.contains("修复代码并保留用户文件"));
+    assert!(next.contains("SOURCE-NEEDED-FOR-THE-NEXT-EDIT"), "a large last group must not discard earlier small source reads");
+    assert!(!next.contains(&"R".repeat(10_000)));
+    assert_eq!(executions.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn long_context_summary_calls_consume_the_persisted_model_step_budget() {
+    let _env = env_guard("long-context-budget");
+    let server = FakeOpenAi::start(|body, _| {
+        if body["messages"][0]["content"].as_str().unwrap_or("").contains("compacting an agent conversation") {
+            (200, text_with_usage("Summary of the completed tool call.", 100))
+        } else {
+            (200, tool_call_with_usage("budget-call", "list_shared", json!({}), 10_000))
+        }
+    });
+    let agent = agent_json("leader", "leader", &[]);
+    let core = core_with_spec("long-context-budget", json!({"leader_id":"leader", "agents":[agent.clone()], "limits":{"max_model_steps_per_turn":2}}));
+    let mut prof = profile(&server.base_url(), "openai", json!({}), 0);
+    prof.context_window = Some(10_000);
+    let runner = chat_runner(&core, &agent, prof.clone(), "/tmp");
+    let history_dir = runner.history_dir().unwrap();
+    let (executor, _) = recording_executor();
+    let runtime = start_runtime(&core, runner, "leader", PermissionPolicy::default(), RuntimeLimits::default(), executor);
+    runtime.user_message("keep inspecting", false).unwrap();
+    assert!(wait_for(|| runs(&core).iter().any(|r| r.status == TurnStatus::Failed), 5_000));
+    runtime.close();
+    assert_eq!(server.calls(), 2, "the summary request must count toward the two-call limit");
+    assert!(event_kinds(&core).contains(&"limit_reached".into()));
+    let run = runs(&core).remove(0);
+    let checkpoint: Json = serde_json::from_slice(&std::fs::read(history_dir.join("turns").join(format!("{}.json", run.run_id))).unwrap()).unwrap();
+    assert_eq!(checkpoint["model_steps"], 2);
+    let restored = chat_runner(&core, &agent, prof, "/tmp");
+    let gateway = ToolGateway::new(core.clone(), "leader", &run.run_id, ApprovalGate::new(core.clone(), PermissionPolicy::default()), None);
+    let outcome = restored.start_or_resume(&run, &json!({}), &gateway, &Json::Null);
+    assert_eq!(outcome.status, TurnStatus::Failed);
+    assert_eq!(server.calls(), 2, "a restart must preserve the exhausted budget");
+}
+
+#[test]
+fn long_context_overflow_cannot_start_recovery_after_budget_exhaustion() {
+    let _env = env_guard("long-context-overflow-budget");
+    let server = FakeOpenAi::start(|_, index| {
+        if index == 0 {
+            (400, json!({"error":{"code":"context_length_exceeded"}}))
+        } else {
+            (200, text_response("summary after the limit"))
+        }
+    });
+    let agent = agent_json("leader", "leader", &[]);
+    let core = core_with_spec("long-context-overflow-budget", json!({"leader_id":"leader", "agents":[agent.clone()], "limits":{"max_model_steps_per_turn":1}}));
+    let runner = chat_runner(&core, &agent, profile(&server.base_url(), "openai", json!({}), 0), "/tmp");
+    let (executor, _) = recording_executor();
+    let runtime = start_runtime(&core, runner, "leader", PermissionPolicy::default(), RuntimeLimits::default(), executor);
+    runtime.user_message("start work", false).unwrap();
+    assert!(wait_for(|| runs(&core).iter().any(|r| r.status == TurnStatus::Failed), 5_000));
+    runtime.close();
+    assert_eq!(server.calls(), 1, "overflow recovery must not make an unbudgeted summary call");
+    assert!(event_kinds(&core).contains(&"limit_reached".into()));
+}
+
+#[test]
+fn long_context_provider_overflow_recovers_without_repeating_the_large_tool_output() {
+    let _env = env_guard("long-context-overflow-recovery");
+    let server = FakeOpenAi::start(|body, index| {
+        if index == 0 {
+            (200, tool_call_response("overflow-output", "shell", shell_args()))
+        } else if body["messages"][0]["content"].as_str().unwrap_or("").contains("compacting an agent conversation") {
+            (200, text_response("The tool ran successfully. Continue the requested code review."))
+        } else if body.to_string().contains(&"H".repeat(10_000)) {
+            (400, json!({"error":{"code":"context_length_exceeded"}}))
+        } else {
+            (200, text_response("recovered successfully"))
+        }
+    });
+    let agent = agent_json("leader", "leader", &["shell"]);
+    let core = core_with_spec("long-context-overflow-recovery", json!({"leader_id":"leader", "agents":[agent.clone()], "limits":{"max_model_steps_per_turn":4}}));
+    let runner = chat_runner(&core, &agent, profile(&server.base_url(), "openai", json!({}), 0), "/tmp");
+    let executor: ToolExecutor = Arc::new(|_, _, _, _| Ok(json!({"output":"H".repeat(60_000)})));
+    let runtime = start_runtime(&core, runner, "leader", PermissionPolicy::default(), RuntimeLimits::default(), executor);
+    runtime.user_message("Review the parser without changing the public API.", false).unwrap();
+    assert!(wait_for(|| runs(&core).iter().any(|r| r.status.is_terminal()), 5_000));
+    runtime.close();
+    assert_eq!(runs(&core)[0].status, TurnStatus::Completed);
+    assert_eq!(server.calls(), 4, "tool request, overflow, summary and one successful recovery");
+    assert!(server.body(3).to_string().contains("without changing the public API"));
+    assert!(server.body(3).to_string().contains("- overflow-output: shell"));
 }

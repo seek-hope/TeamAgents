@@ -5,9 +5,8 @@
 - `TeamAgents-Implementation-Plan.zh-CN.md` 是产品与实现的基准（P0–P7、T1–T24、DP-1..12）。
 - **任何与方案不同的实现（更简单或更好的方案）必须先告知用户并得到确认，才可写进代码。**
   已确认的偏离记录在 `docs/DECISIONS.md`；未确认的只讨论，不落码。
-- 本仓库**只有 Rust 实现**（core / engine / tui 三个 crate），是独立项目；不要再引入
-  Node/TypeScript（D-17）或 Python 实现代码；`tui/scripts/*.py` 及部分 Rust 测试中的
-  Python 假服务只用于测试。
+- 本仓库是独立的 Rust 项目，实现代码统一使用 Rust（core / engine / tui 三个 crate）；
+  `tui/scripts/*.py` 及部分 Rust 测试中的 Python 假服务只用于测试。
 
 ## 快速命令
 
@@ -27,18 +26,20 @@ review/eval/run.sh [--only ID] [--timeout SEC]   # 固定任务集的真实模�
 
 - 当前基线与跳过项统一见 `docs/ACCEPTANCE.md`；Cargo 的通过数不等于真实服务验收通过数。
   决策记录 `docs/DECISIONS.md`。
+- 模型评测一律使用该模型的原生上下文长度，并记录数值及来源；不得自行缩小窗口进行真实模型测试。
+  DeepSeek Flash 按用户确认的 1M 配置。不合理的非原生窗口测试应作废并删除，不得改名为压力实验保留。
 
 ## 架构速览（改代码前先读这 6 行）
 
 - 唯一团队事务入口：`core/src/control.rs::Control::submit`（ingest→validate→reduce→schedule→persist，
-  单个 SQLite 事务；错误向上传播，不再 `let _ =` 吞掉）
+  单个 SQLite 事务；错误向上传播）
 - 权威状态：`core/src/storage.rs`（SQLite，WAL，动作去重回执、事件序列、投递批次账本、`expire_approval`）
 - 执行：`engine/src/runtime.rs`（线程化回合循环；`QUEUED` TurnRun = 持久化执行意图；超时会中断成员）
 - 团队动作与原生执行工具入口：`engine/src/gateway.rs::ToolGateway`（批准/全自动）；
   已绑定 MCP 由 `ChatRunner` 经 `BoundTools::call` 直接调用，受绑定集合与 TurnControl 约束。
 - 信息权限：`core/src/views.rs`（`audience` 可见 ≠ `push` 注入；观察者按 scope 裁剪载荷）
 - 产品层：`engine/src/{session,worker,cli}.rs`（会话服务、`serve` 协议、CLI）；TUI 的 `ui::geometry`
-  是渲染与鼠标命中的唯一几何来源（不要再在别处重算行号/列号）
+  是渲染与鼠标命中的唯一几何来源
 
 ## 代码审查与证据（review/*）
 
@@ -59,13 +60,17 @@ review/eval/run.sh [--only ID] [--timeout SEC]   # 固定任务集的真实模�
   finalize/reconcile 路径），`signal_done` 不会被残留批准卡住；个别残留可在批准面板 `d` 拒绝。
 - 派发"读很多、写报告"的重任务时写明**尽早落盘**要求：模型步数上限
   `limits.max_model_steps_per_turn` 会在半途结束回合（产生 `limit_reached` 事件）。
+- **读超时不再直接判回合失败**：响应头之后的传输故障（读超时/流截断）在未送出任何
+  可见文本时按 `max_retries` 在回合内重试；已送出文本或协议错误仍立即失败。
+  看到 `ChatError: model stream: ...` 说明重试已耗尽或响应已有可见输出。
 
 ## 代码风格
 
-- Lazy-first：标准库 > 已有依赖 > 新依赖；不引入未要求的抽象、不写"以后可能用"的脚手架。
+- Lazy-first：标准库 > 已有依赖 > 新依赖；抽象与脚手架以当前需求为限。
 - 每个非平凡逻辑留一个可运行的检查（acceptance 测试或 `__main__` 自检）；删除代码优于新增代码。
 - 给「已知天花板」的简化留 `ponytail:` 注释（写明升级路径）。
 - 文档、提交信息与面向用户的输出用中文；代码标识与注释用英文。
 - 密钥只从环境变量/本机凭据读取，禁止写入仓库、TeamSpec、提示词或事件。
-- Skills 约定：TeamAgents 只复用 `~/.agents/skills`（唯一注册根）；**不使用** `~/.codex/skills`，
-  缺哪个技能就专门安装进 `~/.agents/skills`（ponytail 系列已复制安装；scientific-skills-router 不装，检索已由 `skill` 工具覆盖）。
+- Skills 约定：唯一用户级注册根为 `~/.agents/skills`，配套范围为
+  `K-Dense-AI/scientific-agent-skills` 科学技能集合、`browser-use`、`find-skills`。
+  配套技能安装到该目录，通过 `skill search/read` 按需检索和读取。来源与范围见 `docs/DECISIONS.md` D-34。

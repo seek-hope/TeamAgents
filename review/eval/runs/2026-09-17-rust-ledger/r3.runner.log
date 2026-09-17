@@ -1,0 +1,8 @@
+rust-ledger      rc=0    600s /tmp/teamagents-ledger-native-20260917-r3/rust-ledger.jsonl [rc=0 ok]
+rust-ledger      隐藏评分通过：/tmp/teamagents-ledger-native-20260917-r3/rust-ledger.grade.json
+
+| 任务 | status | exit | 秒 | tokens(prompt/completion) | 验收 |
+|---|---|---|---|---|---|
+| rust-ledger | completed | 0 | 600.1 | 3189591/147182 | 全部通过 |
+
+原始 JSONL 与 stderr：/tmp/teamagents-ledger-native-20260917-r3

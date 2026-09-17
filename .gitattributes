@@ -1,0 +1,3 @@
+# 评测证据文件保留模型产出的原始字节（patch 上下文空行、评分日志），
+# 行尾空白属证据内容，不参与行尾空格检查。
+review/eval/runs/** whitespace=-trailing-space

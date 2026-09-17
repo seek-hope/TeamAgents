@@ -650,6 +650,36 @@ fn run_parked_after_its_approval_was_decided_is_woken_instead_of_stuck() {
 }
 
 #[test]
+fn late_completion_does_not_resurrect_a_cancelled_task_or_run() {
+    let mut ctl = harness();
+    ctl.store.insert_task("s1", &running_task("child", "leader")).unwrap();
+    ctl.store.insert_task("s1", &running_task("work", "b")).unwrap();
+    ctl.store.insert_run(&parked_run("worker", "b", "work", TurnStatus::WaitingTask, vec!["child".into()])).unwrap();
+    ctl.store.record_completion_request("worker", "work", &["result.txt".into()], "ready").unwrap();
+
+    assert!(ctl.submit(&action("cancel", "user", ActionKind::CancelTask, json!({"task_id": "work"}), None)).unwrap().ok);
+    assert_eq!(ctl.store.get_run("worker").unwrap().unwrap().status, TurnStatus::Cancelled);
+    let before = ctl.store.events("s1", 0, 100).unwrap();
+    ctl.finalize_run("worker", &completed(Some("late result")), &[]).unwrap();
+
+    assert_eq!(ctl.store.get_run("worker").unwrap().unwrap().status, TurnStatus::Cancelled);
+    assert_eq!(ctl.store.get_task("work").unwrap().unwrap().status, TaskStatus::Cancelled);
+    assert_eq!(ctl.store.events("s1", 0, 100).unwrap(), before, "a stale callback must not emit a second terminal event");
+}
+
+#[test]
+fn cancelled_queued_run_cannot_begin() {
+    let mut ctl = harness();
+    ctl.store.insert_task("s1", &running_task("work", "b")).unwrap();
+    ctl.store.insert_run(&parked_run("worker", "b", "work", TurnStatus::Queued, vec![])).unwrap();
+    assert!(ctl.submit(&action("cancel", "user", ActionKind::CancelTask, json!({"task_id": "work"}), None)).unwrap().ok);
+    let before = ctl.store.events("s1", 0, 100).unwrap();
+    assert!(ctl.begin_run("worker").is_err(), "a stale scheduler snapshot must not start a cancelled run");
+    assert_eq!(ctl.store.events("s1", 0, 100).unwrap(), before);
+    assert_eq!(ctl.store.get_run("worker").unwrap().unwrap().status, TurnStatus::Cancelled);
+}
+
+#[test]
 fn finalize_commits_task_and_wakes_waiter() {
     let mut ctl = harness();
     ctl.submit(&user("a1", "go")).unwrap();
@@ -714,6 +744,77 @@ fn finalize_goal_done_after_signal_done() {
     let r = ctl.submit(&user("a2", "second question")).unwrap();
     let goal2 = r.result["goal_id"].as_str().unwrap().to_string();
     assert_ne!(goal2, session["goal_id"].as_str().unwrap());
+}
+
+#[test]
+fn finalize_rechecks_work_added_after_signal_done() {
+    let mut ctl = harness();
+    ctl.submit(&user("start", "finish the work")).unwrap();
+    let run = ctl.store.runs_for_session("s1", &[TurnStatus::Queued]).unwrap().remove(0);
+    ctl.begin_run(&run.run_id).unwrap();
+    assert!(ctl.submit(&action("done", "leader", ActionKind::SignalDone, json!({"summary": "ready"}), Some(run.run_id.clone()))).unwrap().ok);
+    let assigned = ctl.submit(&action("extra", "leader", ActionKind::AssignTask,
+        json!({"assignee": "b", "description": "one more check"}), Some(run.run_id.clone()))).unwrap();
+    assert!(assigned.ok);
+    ctl.finalize_run(&run.run_id, &completed(Some("ready")), &run.input_delivery_ids).unwrap();
+    assert_eq!(ctl.store.get_run(&run.run_id).unwrap().unwrap().status, TurnStatus::Completed);
+    assert_eq!(ctl.store.get_session("s1").unwrap().unwrap()["goal_state"], "active");
+    assert!(ctl.store.events("s1", 0, 100).unwrap().iter().all(|e| e["kind"] != "goal_done"));
+    assert_eq!(ctl.store.get_task(assigned.result["task_id"].as_str().unwrap()).unwrap().unwrap().status, TaskStatus::Pending);
+}
+
+#[test]
+fn new_user_input_invalidates_an_earlier_goal_completion_request() {
+    for (delivered, renewed) in [(false, false), (true, false), (true, true)] {
+        let mut ctl = harness();
+        ctl.submit(&user("start", "first request")).unwrap();
+        let run = ctl.store.runs_for_session("s1", &[TurnStatus::Queued]).unwrap().remove(0);
+        ctl.begin_run(&run.run_id).unwrap();
+        assert!(ctl.submit(&action("done", "leader", ActionKind::SignalDone, json!({"summary": "ready"}), Some(run.run_id.clone()))).unwrap().ok);
+        assert!(ctl.submit(&user("supplement", "also check the new requirement")).unwrap().ok);
+        if renewed {
+            assert!(ctl.submit(&action("done-again", "leader", ActionKind::SignalDone,
+                json!({"summary": "new requirement handled"}), Some(run.run_id.clone()))).unwrap().ok);
+        }
+        let ack_ids = if delivered { ctl.store.get_run(&run.run_id).unwrap().unwrap().input_delivery_ids } else { run.input_delivery_ids.clone() };
+        ctl.finalize_run(&run.run_id, &completed(Some("old answer")), &ack_ids).unwrap();
+        assert_eq!(ctl.store.get_session("s1").unwrap().unwrap()["goal_state"], if renewed { "done" } else { "active" }, "delivered={delivered}, renewed={renewed}");
+        assert_eq!(ctl.store.events("s1", 0, 100).unwrap().iter().any(|e| e["kind"] == "goal_done"), renewed);
+        if !delivered {
+            assert_eq!(ctl.store.runs_for_session("s1", &[TurnStatus::Queued]).unwrap().len(), 1, "new input still wakes the leader");
+        }
+    }
+}
+
+#[test]
+fn stale_goal_completion_cannot_overwrite_a_new_goal() {
+    let mut ctl = harness();
+    ctl.submit(&user("start", "first request")).unwrap();
+    let run = ctl.store.runs_for_session("s1", &[TurnStatus::Queued]).unwrap().remove(0);
+    ctl.begin_run(&run.run_id).unwrap();
+    ctl.store.set_goal_state("s1", run.goal_id.as_deref().unwrap(), "done").unwrap();
+    let next = ctl.submit(&user("next", "new goal")).unwrap();
+    let next_goal = next.result["goal_id"].as_str().unwrap();
+    assert_ne!(Some(next_goal), run.goal_id.as_deref());
+    // Model a stale persisted request being reconciled after a newer goal starts.
+    ctl.store.record_completion_request(&run.run_id, "", &[], "old goal").unwrap();
+    ctl.finalize_run(&run.run_id, &completed(Some("old answer")), &run.input_delivery_ids).unwrap();
+    let session = ctl.store.get_session("s1").unwrap().unwrap();
+    assert_eq!(session["goal_id"], next_goal);
+    assert_eq!(session["goal_state"], "active");
+    assert!(ctl.store.events("s1", 0, 100).unwrap().iter().all(|e| e["kind"] != "goal_done"));
+}
+
+#[test]
+fn confirmed_recovery_can_commit_a_pending_goal_completion() {
+    let mut ctl = harness();
+    ctl.submit(&user("start", "finish the work")).unwrap();
+    let run = ctl.store.runs_for_session("s1", &[TurnStatus::Queued]).unwrap().remove(0);
+    ctl.begin_run(&run.run_id).unwrap();
+    assert!(ctl.submit(&action("done", "leader", ActionKind::SignalDone, json!({"summary": "ready"}), Some(run.run_id.clone()))).unwrap().ok);
+    ctl.store.set_run_status(&run.run_id, TurnStatus::OutcomeUnknown).unwrap();
+    ctl.finalize_run(&run.run_id, &completed(Some("confirmed answer")), &run.input_delivery_ids).unwrap();
+    assert_eq!(ctl.store.get_session("s1").unwrap().unwrap()["goal_state"], "done");
 }
 
 // -- hardening: store errors, ledger, lifecycle events ---------------------------

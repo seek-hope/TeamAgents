@@ -762,6 +762,17 @@ impl Store {
         )?;
         Ok(())
     }
+
+    /// New user input requires a fresh goal-completion declaration. Task
+    /// completions remain valid, including those waiting for reconciliation.
+    pub fn clear_goal_completion_requests(&self, session_id: &str) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "DELETE FROM completion_requests WHERE task_id='' AND run_id IN
+             (SELECT run_id FROM turn_runs WHERE session_id=?1)",
+            params![session_id],
+        )?;
+        Ok(())
+    }
 }
 
 const TASK_COLS: &str = "task_id, parent_task_id, goal_id, requester, assignee, description, acceptance, dependencies, status, result_refs, created_at, updated_at";

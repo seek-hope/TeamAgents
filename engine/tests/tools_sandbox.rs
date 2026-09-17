@@ -68,6 +68,87 @@ fn batch_edits_are_all_or_nothing() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
+#[test]
+fn batch_edits_reject_oversized_results_before_changing_any_file() {
+    let root = scratch("edit-files-oversized");
+    std::fs::write(root.join("a.txt"), "alpha").unwrap();
+    std::fs::write(root.join("b.txt"), "beta").unwrap();
+    let executor = tools::workspace_executor(root.clone(), None);
+    let error = executor("edit_files", &json!({"edits": [
+        {"path": "a.txt", "old_string": "alpha", "new_string": "changed"},
+        {"path": "b.txt", "old_string": "beta", "new_string": "x".repeat(10 * 1024 * 1024 + 1)},
+    ]})).unwrap_err();
+    assert!(error.contains("too large"), "{error}");
+    assert_eq!(std::fs::read_to_string(root.join("a.txt")).unwrap(), "alpha");
+    assert_eq!(std::fs::read_to_string(root.join("b.txt")).unwrap(), "beta");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn batch_edits_recheck_all_versions_after_waiting_for_locks() {
+    let base = scratch("edit-files-conflict");
+    let root = base.join("workspace");
+    let locks = base.join("locks");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&locks).unwrap();
+    std::fs::write(root.join("a.txt"), "alpha").unwrap();
+    std::fs::write(root.join("b.txt"), "beta").unwrap();
+    let lock = |name: &str| {
+        let hash = format!("{:x}", Sha256::digest(root.join(name).to_string_lossy().as_bytes()));
+        std::fs::OpenOptions::new().create(true).read(true).write(true).open(locks.join(format!("{hash}.lock"))).unwrap()
+    };
+    let first_lock = lock("a.txt");
+    let second_lock = lock("b.txt");
+    second_lock.lock().unwrap();
+    let executor = tools::workspace_executor(root.clone(), Some(base.join("artifacts")));
+    let handle = std::thread::spawn(move || executor("edit_files", &json!({"edits": [
+        {"path": "a.txt", "old_string": "alpha", "new_string": "changed-a"},
+        {"path": "b.txt", "old_string": "beta", "new_string": "changed-b"},
+    ]})));
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let held = loop {
+        match first_lock.try_lock() {
+            Err(std::fs::TryLockError::WouldBlock) => break true,
+            Ok(()) => first_lock.unlock().unwrap(),
+            Err(error) => panic!("unexpected lock error: {error}"),
+        }
+        if Instant::now() >= deadline { break false; }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    // Simulate an external editor while the batch waits for the second lock.
+    std::fs::write(root.join("b.txt"), "external").unwrap();
+    second_lock.unlock().unwrap();
+    let error = handle.join().unwrap().unwrap_err();
+    assert!(held, "the first lock must stay held while the batch acquires the second");
+    assert!(error.contains("conflict"), "{error}");
+    assert_eq!(std::fs::read_to_string(root.join("a.txt")).unwrap(), "alpha");
+    assert_eq!(std::fs::read_to_string(root.join("b.txt")).unwrap(), "external");
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 2, "staged files must be cleaned up");
+    std::fs::remove_dir_all(base).unwrap();
+}
+
+#[test]
+fn file_tools_reject_fifo_without_waiting_for_a_writer() {
+    let root = scratch("fifo-read");
+    let fifo = root.join("input.pipe");
+    assert!(std::process::Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+    let executor = tools::workspace_executor(root.clone(), None);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let handle = std::thread::spawn(move || {
+        tx.send(executor("read_file", &json!({"path": "input.pipe"}))).unwrap();
+    });
+    let result = rx.recv_timeout(Duration::from_secs(2));
+    if result.is_err() {
+        // Release the blocked reader before failing the regression.
+        let _writer = std::fs::OpenOptions::new().write(true).open(&fifo).unwrap();
+        handle.join().unwrap();
+    } else {
+        handle.join().unwrap();
+    }
+    std::fs::remove_dir_all(root).unwrap();
+    assert!(result.expect("file open must not block on a FIFO").unwrap_err().contains("not a regular file"));
+}
+
 /// A terminal keeps `cd` and `export`; so must the sandbox, without writing any
 /// of that state into the user's project.
 #[test]

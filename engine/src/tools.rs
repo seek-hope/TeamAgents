@@ -7,6 +7,7 @@ use sha2::{Digest, Sha256};
 use crate::gateway::TurnControl;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::os::fd::AsRawFd;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -51,6 +52,9 @@ fn prune_artifacts(dir: &Path, budget: u64) -> usize {
     removed
 }
 const PAGE_BYTES: usize = 32_000;
+// Linux flags: this executor already relies on /proc/self/fd and bubblewrap.
+const O_NONBLOCK: i32 = 0x800;
+const O_DIRECTORY: i32 = 0x10000;
 // ponytail: serialize native mutations in this process; use per-path locks if
 // unrelated writes contend. Shell/external editors still need hash checks.
 static FILE_WRITES: Mutex<()> = Mutex::new(());
@@ -100,7 +104,8 @@ fn open_member_file(root: &Path, path: &Path) -> Result<std::fs::File, String> {
     let root = std::fs::canonicalize(root).map_err(|e| e.to_string())?;
     let parent = member_parent(&root, path, false)?;
     let leaf = PathBuf::from(format!("/proc/self/fd/{}", parent.as_raw_fd())).join(path.file_name().ok_or("file path required")?);
-    let file = std::fs::File::open(&leaf).map_err(|e| e.to_string())?;
+    // A FIFO can block in open itself, before metadata or cancellation checks.
+    let file = std::fs::OpenOptions::new().read(true).custom_flags(O_NONBLOCK).open(&leaf).map_err(|e| e.to_string())?;
     check_member_fd(&root, &file)?;
     if !file.metadata().map_err(|e| e.to_string())?.is_file() { return Err("not a regular file".into()); }
     Ok(file)
@@ -116,7 +121,8 @@ fn member_parent(root: &Path, path: &Path, create: bool) -> Result<std::fs::File
     let root = std::fs::canonicalize(root).map_err(|e| e.to_string())?;
     let relative = path.strip_prefix(&root).map_err(|_| "path escapes workspace")?;
     relative.file_name().ok_or("file path required")?;
-    let mut parent = std::fs::File::open(&root).map_err(|e| e.to_string())?;
+    let open_dir = |path: &Path| std::fs::OpenOptions::new().read(true).custom_flags(O_DIRECTORY).open(path).map_err(|e| e.to_string());
+    let mut parent = open_dir(&root)?;
     check_member_fd(&root, &parent)?;
     for part in relative.parent().unwrap_or(Path::new("")).components() {
         let Component::Normal(part) = part else { return Err("invalid file path".into()) };
@@ -129,7 +135,7 @@ fn member_parent(root: &Path, path: &Path, create: bool) -> Result<std::fs::File
                 Err(e) => return Err(e.to_string()),
             }
         }
-        parent = std::fs::File::open(next).map_err(|e| e.to_string())?;
+        parent = open_dir(&next)?;
         check_member_fd(&root, &parent)?;
     }
     Ok(parent)
@@ -169,7 +175,12 @@ fn lock_file(lock_dir: &Path, target: &Path) -> PathBuf {
 /// by rename. Locks live beside the session state instead.
 /// ponytail: one lock per file, held for the whole write; no reader locks.
 fn with_path_lock<T>(lock_dir: Option<&Path>, target: &Path, body: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
-    let Some(lock_dir) = lock_dir else { return body() };
+    let _lock = acquire_path_lock(lock_dir, target)?;
+    body()
+}
+
+fn acquire_path_lock(lock_dir: Option<&Path>, target: &Path) -> Result<Option<std::fs::File>, String> {
+    let Some(lock_dir) = lock_dir else { return Ok(None) };
     std::fs::create_dir_all(lock_dir).map_err(|e| format!("cannot create lock directory: {e}"))?;
     let file = std::fs::OpenOptions::new()
         .create(true)
@@ -189,12 +200,11 @@ fn with_path_lock<T>(lock_dir: Option<&Path>, target: &Path, body: impl FnOnce()
                 return Err("another teamagents process is writing this file; retry".into());
             }
             // a filesystem without advisory locks must not fail every write
-            Err(std::fs::TryLockError::Error(_)) => return body(),
+            Err(std::fs::TryLockError::Error(_)) => return Ok(None),
         }
     }
-    let result = body();
-    let _ = file.unlock();
-    result
+    // Dropping the file releases the lock, including on validation errors.
+    Ok(Some(file))
 }
 
 fn atomic_write(root: &Path, lock_dir: Option<&Path>, path: &Path, content: &[u8], expected: Option<&str>, control: &TurnControl) -> Result<(), String> {
@@ -203,41 +213,108 @@ fn atomic_write(root: &Path, lock_dir: Option<&Path>, path: &Path, content: &[u8
 }
 
 fn atomic_write_locked(root: &Path, path: &Path, content: &[u8], expected: Option<&str>, control: &TurnControl) -> Result<(), String> {
-    let root = std::fs::canonicalize(root).map_err(|e| e.to_string())?;
-    let parent = member_parent(&root, path, true)?;
-    let parent_path = PathBuf::from(format!("/proc/self/fd/{}", parent.as_raw_fd()));
-    let leaf = parent_path.join(path.file_name().ok_or("file path required")?);
-    let permissions = match std::fs::symlink_metadata(&leaf) {
-        Ok(meta) if meta.file_type().is_file() => Some(meta.permissions()),
-        Ok(_) => return Err("not a regular file (or path changed to a symlink)".into()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(e) => return Err(e.to_string()),
-    };
-    let temp = parent_path.join(format!(".teamagents-{}.tmp", uuid::Uuid::new_v4()));
-    let result = (|| {
-        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&temp).map_err(|e| e.to_string())?;
+    let mut staged = StagedWrite::new(root, path, content)?;
+    staged.check(expected, control)?;
+    staged.commit()
+}
+
+/// Stage both new content and rollback copies before a batch changes any path.
+/// ponytail: multiple renames are not a crash transaction; add a durable journal
+/// if crash recovery of an interrupted refactor becomes a product requirement.
+struct StagedWrite {
+    root: PathBuf,
+    path: PathBuf,
+    parent: std::fs::File,
+    leaf: PathBuf,
+    temp: PathBuf,
+    committed: bool,
+    preserve: bool,
+}
+
+impl StagedWrite {
+    fn new(root: &Path, path: &Path, content: &[u8]) -> Result<Self, String> {
+        if content.len() as u64 > MAX_FILE_BYTES { return Err("content too large".into()); }
+        let root = std::fs::canonicalize(root).map_err(|e| e.to_string())?;
+        let parent = member_parent(&root, path, true)?;
+        let parent_path = PathBuf::from(format!("/proc/self/fd/{}", parent.as_raw_fd()));
+        let leaf = parent_path.join(path.file_name().ok_or("file path required")?);
+        let permissions = match std::fs::symlink_metadata(&leaf) {
+            Ok(meta) if meta.file_type().is_file() => Some(meta.permissions()),
+            Ok(_) => return Err("not a regular file (or path changed to a symlink)".into()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e.to_string()),
+        };
+        let temp = parent_path.join(format!(".teamagents-{}.tmp", uuid::Uuid::new_v4()));
+        let staged = Self { root, path: path.to_path_buf(), parent, leaf, temp, committed: false, preserve: false };
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&staged.temp).map_err(|e| e.to_string())?;
         // Restrict the staging inode before it contains any old private data.
         if let Some(permissions) = permissions.as_ref() { file.set_permissions(permissions.clone()).map_err(|e| e.to_string())?; }
         file.write_all(content).map_err(|e| e.to_string())?;
         if let Some(permissions) = permissions { file.set_permissions(permissions).map_err(|e| e.to_string())?; }
         file.sync_all().map_err(|e| e.to_string())?;
+        Ok(staged)
+    }
+
+    fn check(&self, expected: Option<&str>, control: &TurnControl) -> Result<(), String> {
         control.check()?;
-        check_member_fd(&root, &parent)?;
+        check_member_fd(&self.root, &self.parent)?;
         // Do not follow a leaf swapped by an external writer while staging.
-        if std::fs::symlink_metadata(&leaf).is_ok_and(|meta| !meta.is_file()) {
+        if std::fs::symlink_metadata(&self.leaf).is_ok_and(|meta| !meta.is_file()) {
             return Err("file changed while writing".into());
         }
         if let Some(expected) = expected {
-            let mut current = open_member_file(&root, path).map_err(|e| format!("file conflict: {e}"))?;
+            let mut current = open_member_file(&self.root, &self.path).map_err(|e| format!("file conflict: {e}"))?;
             if !file_hash(&mut current, control)?.eq_ignore_ascii_case(expected) {
                 return Err("file conflict: expected_sha256 no longer matches; read the file again".into());
             }
         }
-        std::fs::rename(&temp, &leaf).map_err(|e| e.to_string())?;
-        parent.sync_all().map_err(|e| format!("file replaced but directory sync failed: {e}"))
-    })();
-    if result.is_err() { let _ = std::fs::remove_file(&temp); }
-    result
+        Ok(())
+    }
+
+    fn commit(&mut self) -> Result<(), String> {
+        std::fs::rename(&self.temp, &self.leaf).map_err(|e| e.to_string())?;
+        self.committed = true;
+        self.parent.sync_all().map_err(|e| format!("file replaced but directory sync failed: {e}"))
+    }
+}
+
+impl Drop for StagedWrite {
+    fn drop(&mut self) {
+        if !self.preserve { let _ = std::fs::remove_file(&self.temp); }
+    }
+}
+
+fn commit_batch(staged: &mut [(StagedWrite, StagedWrite, String)], expected: &[&str], control: &TurnControl) -> Result<(), String> {
+    // Revalidate the entire batch after staging, before the first rename.
+    for ((write, _, _), hash) in staged.iter().zip(expected) {
+        write.check(Some(hash), control)?;
+    }
+    for index in 0..staged.len() {
+        let result = staged[index].0.check(Some(expected[index]), control)
+            .and_then(|()| staged[index].0.commit());
+        if let Err(error) = result {
+            let mut failures = vec![];
+            // Cancellation must not prevent undoing already committed edits.
+            let rollback_control = TurnControl::default();
+            for (write, rollback, new_hash) in staged[..=index].iter_mut().rev() {
+                if !write.committed { continue; }
+                // Never erase a concurrent shell/external editor's change.
+                let restored = write.check(Some(new_hash), &rollback_control).and_then(|()| rollback.commit());
+                if let Err(restore_error) = restored {
+                    if rollback.committed {
+                        failures.push(format!("{}: original restored but directory sync failed: {restore_error}", write.path.display()));
+                    } else {
+                        rollback.preserve = true;
+                        let recovery = rollback.path.parent().unwrap().join(rollback.temp.file_name().unwrap());
+                        failures.push(format!("{}: {restore_error}; original preserved at {}", write.path.display(), recovery.display()));
+                    }
+                }
+            }
+            return Err(if failures.is_empty() { format!("{error}; no batch edits remain applied") }
+                else { format!("{error}; rollback incomplete: {}", failures.join("; ")) });
+        }
+    }
+    Ok(())
 }
 
 fn positive_arg(args: &Json, key: &str, default: u64) -> Result<u64, String> {
@@ -515,7 +592,7 @@ fn workspace_executor_with_control(
                 // phase 1: validate every edit against the current file content.
                 // Nothing is written until the whole batch is known-good, which is
                 // the point of a multi-file edit: no half-applied refactor.
-                let mut planned: Vec<(PathBuf, PathBuf, String, String, String)> = vec![];
+                let mut planned: Vec<(PathBuf, PathBuf, String, String, String, String)> = vec![];
                 for edit in &edits {
                     let key = edit.get("path").and_then(Json::as_str).unwrap_or("");
                     if key.is_empty() {
@@ -542,17 +619,27 @@ fn workspace_executor_with_control(
                     }
                     let file_root = if key.starts_with(ARTIFACTS_PREFIX) { artifacts.as_ref().unwrap().clone() } else { root.clone() };
                     let diff = edit_diff(&path, &text, at, old, new);
-                    planned.push((file_root, path, text.replacen(old, new, 1), diff, hash));
+                    let content = text.replacen(old, new, 1);
+                    if content.len() as u64 > MAX_FILE_BYTES { return Err(format!("{key}: content too large")); }
+                    planned.push((file_root, path, content, diff, hash, text));
                 }
-                // phase 2: apply under per-path cross-process locks, taken in a
-                // stable order so two members cannot deadlock each other.
+                // Hold every path lock until the batch commits or rolls back.
                 planned.sort_by(|a, b| a.1.cmp(&b.1));
-                let mut diffs: Vec<String> = vec![];
-                for (file_root, path, content, diff, hash) in planned {
-                    atomic_write(&file_root, lock_dir.as_deref(), &path, content.as_bytes(), Some(&hash), control)?;
-                    diffs.push(diff);
+                let mut locks = vec![];
+                for (_, path, ..) in &planned {
+                    control.check()?;
+                    locks.push(acquire_path_lock(lock_dir.as_deref(), path)?);
                 }
-                Ok(json!(diffs.join("\n")))
+                let mut staged = vec![];
+                for (file_root, path, content, _, hash, original) in &planned {
+                    control.check()?;
+                    let write = StagedWrite::new(file_root, path, content.as_bytes())?;
+                    write.check(Some(hash), control)?;
+                    let rollback = StagedWrite::new(file_root, path, original.as_bytes())?;
+                    staged.push((write, rollback, format!("{:x}", Sha256::digest(content.as_bytes()))));
+                }
+                commit_batch(&mut staged, &planned.iter().map(|edit| edit.4.as_str()).collect::<Vec<_>>(), control)?;
+                Ok(json!(planned.iter().map(|edit| edit.3.as_str()).collect::<Vec<_>>().join("\n")))
             }
             "delete" => {
                 let _guard = FILE_WRITES.lock().map_err(|_| "file mutation lock poisoned")?;
@@ -1672,6 +1759,37 @@ pub fn iso8601(seconds: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn batch_commit_rolls_back_when_a_later_rename_fails() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("ta-batch-rollback-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut staged = vec![];
+        let mut expected = vec![];
+        for (name, original, replacement) in [("a.sh", "alpha", "changed-a"), ("b.txt", "beta", "changed-b")] {
+            let path = root.join(name);
+            std::fs::write(&path, original).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o751)).unwrap();
+            staged.push((
+                StagedWrite::new(&root, &path, replacement.as_bytes()).unwrap(),
+                StagedWrite::new(&root, &path, original.as_bytes()).unwrap(),
+                format!("{:x}", Sha256::digest(replacement.as_bytes())),
+            ));
+            expected.push(format!("{:x}", Sha256::digest(original.as_bytes())));
+        }
+        // A temp-file removal models a late filesystem error after preparation.
+        std::fs::remove_file(&staged[1].0.temp).unwrap();
+        let error = commit_batch(&mut staged, &expected.iter().map(String::as_str).collect::<Vec<_>>(), &TurnControl::default()).unwrap_err();
+        assert!(error.contains("no batch edits remain applied"), "{error}");
+        assert!(staged[0].0.committed, "the first rename happened before the injected failure");
+        drop(staged);
+        assert_eq!(std::fs::read_to_string(root.join("a.sh")).unwrap(), "alpha");
+        assert_eq!(std::fs::read_to_string(root.join("b.txt")).unwrap(), "beta");
+        assert_eq!(std::fs::metadata(root.join("a.sh")).unwrap().permissions().mode() & 0o777, 0o751);
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 2, "staging copies must be removed");
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn output_capture_spools_bounded_previews_and_reports_storage_errors() {

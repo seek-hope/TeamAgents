@@ -54,6 +54,20 @@ fn retryable_status(code: u16) -> bool {
     matches!(code, 408 | 409 | 429) || (500..600).contains(&code)
 }
 
+/// Interruptible backoff: a cancelled turn must not sit out a full
+/// Retry-After (up to 30 s) before the interruption takes effect.
+fn interruptible_backoff(control: &TurnControl, wait: std::time::Duration) -> Result<(), String> {
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        control.check()?;
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Ok(());
+        }
+        std::thread::sleep(remaining.min(std::time::Duration::from_millis(50)));
+    }
+}
+
 /// Compact text view for the next model call.
 pub fn render_view(view: &Json, wake: &Json, workdir: Option<&str>) -> String {
     let mut parts: Vec<String> = vec![];
@@ -484,13 +498,18 @@ impl ChatTree {
     /// Include earlier compactions' calls, but never an abandoned branch.
     fn tool_references(&self) -> Vec<String> {
         let mut references = vec![];
+        let mut seen = HashSet::new();
         let mut cur = self.leaf.as_deref();
         // Parents precede their children in the append-only node array.
         for node in self.nodes.iter().rev() {
             if cur != Some(node.id.as_str()) { continue; }
             for call in node.message["tool_calls"].as_array().into_iter().flatten() {
                 if let Some(id) = call["id"].as_str() {
-                    references.push(format!("- {id}: {}", call["function"]["name"].as_str().unwrap_or("?")));
+                    // Compaction re-appends retained groups; they still refer
+                    // to the same execution and must not grow the index again.
+                    if seen.insert(id) {
+                        references.push(format!("- {id}: {}", call["function"]["name"].as_str().unwrap_or("?")));
+                    }
                 }
             }
             cur = node.parent.as_deref();
@@ -820,6 +839,17 @@ impl ChatRunner {
         self.write_checkpoint(run, checkpoint).map_err(|e| ("CheckpointError".into(), e))
     }
 
+    /// Persist the budget before every logical model call, including summary
+    /// and recovery calls, so a crash cannot give the turn extra steps.
+    fn reserve_model_step(&self, run: &TurnRun, checkpoint: &mut ChatCheckpoint, max_steps: i64, control: &TurnControl) -> Result<(), (String, String)> {
+        if checkpoint.model_steps >= max_steps {
+            return Err(("TurnLimitExceeded".into(), format!("model-step limit {max_steps} reached for this turn")));
+        }
+        let _execution = control.enter().map_err(|e| ("TurnInterrupted".into(), e))?;
+        checkpoint.model_steps += 1;
+        self.write_checkpoint(run, checkpoint).map_err(|e| ("CheckpointError".into(), e))
+    }
+
     /// Caller holds the turn's execution guard across all private-file writes.
     fn write_checkpoint(&self, run: &TurnRun, checkpoint: &ChatCheckpoint) -> Result<(), String> {
         write_json_atomic(&self.checkpoint_path(run)?, &serde_json::to_value(checkpoint).map_err(|e| e.to_string())?)?;
@@ -1065,7 +1095,12 @@ impl ChatRunner {
                     }
                 }
             }
-            out.push(message.clone());
+            let mut message = message.clone();
+            if let Some(fields) = message.as_object_mut() {
+                fields.remove("responses_output");
+                fields.remove("anthropic_blocks");
+            }
+            out.push(message);
         }
         if !parts.is_empty() {
             let mut content = vec![json!({"type": "text", "text": "Attached image(s) requested with view_image."})];
@@ -1111,21 +1146,27 @@ impl ChatRunner {
             let mut retry_in: Option<std::time::Duration> = None;
             match request.send_string(&body.to_string()) {
                 Ok(response) => {
-                        // Once response decoding starts, never retry a partial
-                        // stream: it may already have emitted visible output.
-                        let data = crate::stream::response(response, crate::stream::Mode::Chat, control, |text| {
-                            if let Some(run_id) = stream_run {
-                                if control.check().is_ok() { self.notify.note_stream_chunk(run_id, &self.agent_id(), text); }
-                            }
-                        })?;
-                        { let _execution = control.enter()?; self.record_usage(thread, &data, started.elapsed().as_millis() as u64)?; }
-                        let message = data
-                            .get("choices")
-                            .and_then(|c| c.get(0))
-                            .and_then(|c| c.get("message"))
-                            .cloned()
-                            .ok_or_else(|| "chat API: empty choices".to_string())?;
-                        return Ok(message);
+                    // A transport failure before any visible output is
+                    // retryable: no tool from the response executed and no
+                    // text was shown. Anything else ends the turn.
+                    match crate::stream::response(response, crate::stream::Mode::Chat, control, |text| {
+                        if let Some(run_id) = stream_run {
+                            if control.check().is_ok() { self.notify.note_stream_chunk(run_id, &self.agent_id(), text); }
+                        }
+                    }) {
+                        Ok(data) => {
+                            { let _execution = control.enter()?; self.record_usage(thread, &data, started.elapsed().as_millis() as u64)?; }
+                            let message = data
+                                .get("choices")
+                                .and_then(|c| c.get(0))
+                                .and_then(|c| c.get("message"))
+                                .cloned()
+                                .ok_or_else(|| "chat API: empty choices".to_string())?;
+                            return Ok(message);
+                        }
+                        Err(crate::stream::StreamError::Transport(message, false)) => last_error = message,
+                        Err(e) => return Err(e.message().to_string()),
+                    }
                 }
                 Err(ureq::Error::Status(code, response)) => {
                     let retry_after = response
@@ -1146,7 +1187,7 @@ impl ChatRunner {
             if attempt < retries {
                 let backoff = retry_in
                     .unwrap_or_else(|| std::time::Duration::from_millis((500u64 << attempt.min(5)).min(8000)));
-                std::thread::sleep(backoff.min(std::time::Duration::from_secs(30)));
+                interruptible_backoff(control, backoff.min(std::time::Duration::from_secs(30)))?;
             }
         }
         Err(last_error)
@@ -1211,15 +1252,20 @@ impl ChatRunner {
             let mut retry_in: Option<std::time::Duration> = None;
             match request.send_string(&body.to_string()) {
                 Ok(response) => {
-                    let data = crate::stream::response(response, crate::stream::Mode::Responses, control, |text| {
+                    match crate::stream::response(response, crate::stream::Mode::Responses, control, |text| {
                         if let Some(run_id) = stream_run {
                             if control.check().is_ok() {
                                 self.notify.note_stream_chunk(run_id, &self.agent_id(), text);
                             }
                         }
-                    })?;
-                    { let _execution = control.enter()?; self.record_usage(thread, &data, started.elapsed().as_millis() as u64)?; }
-                    return Ok(from_responses_output(&data));
+                    }) {
+                        Ok(data) => {
+                            { let _execution = control.enter()?; self.record_usage(thread, &data, started.elapsed().as_millis() as u64)?; }
+                            return Ok(from_responses_output(&data));
+                        }
+                        Err(crate::stream::StreamError::Transport(message, false)) => last_error = message,
+                        Err(e) => return Err(e.message().to_string()),
+                    }
                 }
                 Err(ureq::Error::Status(code, response)) => {
                     let retry_after = response
@@ -1239,7 +1285,7 @@ impl ChatRunner {
             if attempt < retries {
                 let backoff = retry_in
                     .unwrap_or_else(|| std::time::Duration::from_millis((500u64 << attempt.min(5)).min(8000)));
-                std::thread::sleep(backoff.min(std::time::Duration::from_secs(30)));
+                interruptible_backoff(control, backoff.min(std::time::Duration::from_secs(30)))?;
             }
         }
         Err(last_error)
@@ -1314,13 +1360,18 @@ impl ChatRunner {
             let mut retry_in: Option<std::time::Duration> = None;
             match request.send_string(&body.to_string()) {
                 Ok(response) => {
-                        let data = crate::stream::response(response, crate::stream::Mode::Anthropic, control, |text| {
-                            if let Some(run_id) = stream_run {
-                                if control.check().is_ok() { self.notify.note_stream_chunk(run_id, &self.agent_id(), text); }
-                            }
-                        })?;
-                        { let _execution = control.enter()?; self.record_usage(thread, &data, started.elapsed().as_millis() as u64)?; }
-                        return Ok(from_anthropic_message(&data));
+                    match crate::stream::response(response, crate::stream::Mode::Anthropic, control, |text| {
+                        if let Some(run_id) = stream_run {
+                            if control.check().is_ok() { self.notify.note_stream_chunk(run_id, &self.agent_id(), text); }
+                        }
+                    }) {
+                        Ok(data) => {
+                            { let _execution = control.enter()?; self.record_usage(thread, &data, started.elapsed().as_millis() as u64)?; }
+                            return Ok(from_anthropic_message(&data));
+                        }
+                        Err(crate::stream::StreamError::Transport(message, false)) => last_error = message,
+                        Err(e) => return Err(e.message().to_string()),
+                    }
                 }
                 Err(ureq::Error::Status(code, response)) => {
                     let retry_after = response
@@ -1340,7 +1391,7 @@ impl ChatRunner {
             if attempt < retries {
                 let backoff = retry_in
                     .unwrap_or_else(|| std::time::Duration::from_millis((500u64 << attempt.min(5)).min(8000)));
-                std::thread::sleep(backoff.min(std::time::Duration::from_secs(30)));
+                interruptible_backoff(control, backoff.min(std::time::Duration::from_secs(30)))?;
             }
         }
         Err(last_error)
@@ -1367,7 +1418,7 @@ impl ChatRunner {
     /// structured summary node with `skip_to` set, so the covered messages
     /// stay in the tree (lossless — /rewind and read_history can still reach
     /// them) while materialize() jumps over them.
-    fn compact(&self, run: &TurnRun, checkpoint: &mut ChatCheckpoint, control: &TurnControl) -> Result<(), (String, String)> {
+    fn compact(&self, run: &TurnRun, checkpoint: &mut ChatCheckpoint, max_steps: i64, control: &TurnControl) -> Result<(), (String, String)> {
         let thread = run.context_ref.as_deref().unwrap_or(&run.run_id);
         let mut tree = self.load_tree(thread).map_err(|e| ("CheckpointError".into(), e))?;
         let base = tree.nodes.len();
@@ -1375,16 +1426,32 @@ impl ChatRunner {
         if checkpoint.history.len() > checkpoint.tree_base {
             tree.append(&checkpoint.history[checkpoint.tree_base..]);
         }
-        // Preserve the newest user input verbatim. For a long tool loop keep
-        // its latest complete assistant/tool group instead of orphaning results.
-        let mut keep_from = checkpoint.history.iter().rposition(|m| m["role"] == "user").unwrap_or(checkpoint.history.len());
+        // Preserve the newest user input independently of tool output size.
+        // Oversized groups are covered by the summary and read_history. Keep
+        // other recent complete groups within budget, so a long reasoning
+        // message does not also evict the source just read for the next edit.
+        let keep_from = checkpoint.history.iter().rposition(|m| m["role"] == "user").unwrap_or(checkpoint.history.len());
         let recent_cap = self.profile.context_window.unwrap_or(64_000).saturating_mul(2).min(16_000) as usize;
+        let mut recent = checkpoint.history[keep_from..].to_vec();
         if checkpoint.history[keep_from..].iter().map(|m| m.to_string().len()).sum::<usize>() > recent_cap {
-            if let Some(index) = checkpoint.history.iter().rposition(|m| m["role"] == "assistant") {
-                if index > keep_from { keep_from = index; }
+            recent.truncate(1);
+            let mut retained_bytes = recent.iter().map(|m| m.to_string().len()).sum::<usize>();
+            let mut end = checkpoint.history.len();
+            let mut groups = Vec::new();
+            for (index, message) in checkpoint.history.iter().enumerate().rev() {
+                if index <= keep_from { break; }
+                if message["role"] == "assistant" {
+                    let group = &checkpoint.history[index..end];
+                    end = index;
+                    let bytes = group.iter().map(|m| m.to_string().len()).sum::<usize>();
+                    if retained_bytes.saturating_add(bytes) <= recent_cap {
+                        retained_bytes += bytes;
+                        groups.push(group);
+                    }
+                }
             }
+            for group in groups.into_iter().rev() { recent.extend_from_slice(group); }
         }
-        let recent = checkpoint.history[keep_from..].to_vec();
         let mut blob = String::new();
         for message in checkpoint.history.iter().skip_while(|m| m["role"] == "system") {
             let role = message["role"].as_str().unwrap_or("?");
@@ -1421,6 +1488,7 @@ impl ChatRunner {
         // become a significant part of the model's context window.
         let index = format!("Tool output index (read_history tool_call_id):\n{}", tree.tool_references().join("\n"));
         let ask = vec![json!({"role": "user", "content": format!("{SUMMARY_PROMPT}{blob}\n{index}")})];
+        self.reserve_model_step(run, checkpoint, max_steps, control)?;
         let reply = self.chat(thread, &ask, &json!([]), control, None).map_err(|e| ("ChatError".into(), e))?;
         let summary = reply["content"].as_str().unwrap_or("").trim().to_string();
         if summary.is_empty() {
@@ -1496,12 +1564,12 @@ impl ChatRunner {
                 }
                 let thread = run.context_ref.as_deref().unwrap_or(&run.run_id);
                 if self.over_threshold(thread, &checkpoint.history, &tools) {
-                    match self.compact(run, checkpoint, &gateway.control) {
+                    match self.compact(run, checkpoint, max_steps, &gateway.control) {
                         Ok(()) => {
                             self.compact_failures.store(0, Ordering::SeqCst);
                             self.save_checkpoint(run, checkpoint, gateway)?;
                         }
-                        Err((kind, message)) if kind == "CheckpointError" => return Err((kind, message)),
+                        Err((kind, message)) if matches!(kind.as_str(), "CheckpointError" | "TurnInterrupted" | "TurnLimitExceeded") => return Err((kind, message)),
                         // A failed model summary must not kill the turn: continue
                         // uncompacted and let any provider error surface; the
                         // breaker stops hammering after 3 failures.
@@ -1510,26 +1578,22 @@ impl ChatRunner {
                         }
                     }
                 }
-                checkpoint.model_steps += 1;
-                self.save_checkpoint(run, checkpoint, gateway)?;
+                self.reserve_model_step(run, checkpoint, max_steps, &gateway.control)?;
                 let wire = mask_old_tool_outputs(&checkpoint.history);
                 let message = match self.chat(thread, &wire, &tools, &gateway.control, Some(&run.run_id)) {
                     Ok(message) => message,
                     Err(e) if context_overflow(&e) => {
                         // Exactly one recovery request; no infinite overflow loop.
-                        self.compact(run, checkpoint, &gateway.control)?;
+                        self.compact(run, checkpoint, max_steps, &gateway.control)?;
                         self.save_checkpoint(run, checkpoint, gateway)?;
-                        if checkpoint.model_steps >= max_steps {
-                            return Err(("TurnLimitExceeded".into(), "context recovery reached model-step limit".into()));
-                        }
-                        checkpoint.model_steps += 1;
-                        self.save_checkpoint(run, checkpoint, gateway)?;
+                        self.reserve_model_step(run, checkpoint, max_steps, &gateway.control)?;
                         self.chat(thread, &mask_old_tool_outputs(&checkpoint.history), &tools, &gateway.control, Some(&run.run_id))
                             .map_err(|e| ("ChatError".into(), format!("context recovery failed: {e}")))?
                     }
                     Err(e) if looks_like_effort_error(&e) && self.configured_effort()
                         && !self.effort_fallback_used.swap(true, Ordering::SeqCst) => {
                         self.effort_max.store(true, Ordering::SeqCst);
+                        self.reserve_model_step(run, checkpoint, max_steps, &gateway.control)?;
                         self.chat(thread, &wire, &tools, &gateway.control, Some(&run.run_id)).map_err(|e| ("ChatError".into(), e))?
                     }
                     Err(e) => return Err(("ChatError".into(), e)),
@@ -1971,6 +2035,12 @@ fn to_responses_input(history: &[Json], image: ImageLoader) -> (String, Vec<Json
                 out.push(json!({"role": "user", "content": [{"type": "input_text", "text": content}]}));
             }
             "assistant" => {
+                if let Some(items) = message.get("responses_output").and_then(Json::as_array) {
+                    // Stateless Responses continuation requires the original
+                    // ordering and opaque reasoning, including tool item IDs.
+                    out.extend(items.iter().cloned());
+                    continue;
+                }
                 if !content.is_empty() {
                     out.push(json!({"role": "assistant", "content": [{"type": "output_text", "text": content}]}));
                 }
@@ -2037,6 +2107,9 @@ fn from_responses_output(data: &Json) -> Json {
     });
     if !calls.is_empty() {
         message["tool_calls"] = json!(calls);
+    }
+    if let Some(output) = data.get("output").filter(|output| output.is_array()) {
+        message["responses_output"] = output.clone();
     }
     message
 }
@@ -2106,6 +2179,25 @@ mod tests {
         println!("system prompt: {prompt_chars} chars | tool schemas: {schema_chars} chars");
         assert!(prompt_chars < 6_000, "system prompt grew to {prompt_chars} chars");
         assert!(schema_chars < 12_000, "tool schemas grew to {schema_chars} chars");
+    }
+
+    #[test]
+    fn switching_protocols_does_not_send_internal_history_fields() {
+        let runner = ChatRunner::new(
+            &json!({"id":"leader","model_profile":"test"}),
+            serde_json::from_value(json!({"provider":"openai","protocol":"openai","model":"test"})).unwrap(),
+            None,
+            Notify::new(crate::core_client::CoreClient::open(":memory:", "protocol-switch").unwrap()),
+            crate::bound::BoundTools::load(&teamagents_core::models::UserConfig::default(), &[]).unwrap(),
+            vec![], (false, false),
+        );
+        let message = json!({"role":"assistant","content":"done",
+            "responses_output":[{"type":"reasoning","encrypted_content":"opaque"}],
+            "anthropic_blocks":[{"type":"thinking","signature":"signed"}]});
+        let wire = runner.wire_chat_messages(&[message.clone()]);
+        assert_eq!(wire, vec![json!({"role":"assistant","content":"done"})]);
+        let (_, anthropic) = to_anthropic_messages(&[message], &|_| None);
+        assert!(!serde_json::to_string(&anthropic).unwrap().contains("opaque"));
     }
 
     #[test]
@@ -2403,6 +2495,21 @@ mod tests {
     }
 
     #[test]
+    fn backoff_waits_in_full_but_stops_on_cancel() {
+        let control = TurnControl::default();
+        let started = std::time::Instant::now();
+        interruptible_backoff(&control, std::time::Duration::from_millis(120)).unwrap();
+        assert!(started.elapsed() >= std::time::Duration::from_millis(120), "returned early");
+
+        // A 30 s Retry-After must not keep a cancelled turn waiting.
+        let control = TurnControl::default();
+        control.cancel();
+        let started = std::time::Instant::now();
+        assert!(interruptible_backoff(&control, std::time::Duration::from_secs(30)).is_err());
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "cancellation waited out the backoff");
+    }
+
+    #[test]
     fn chat_tree_materialize_rewind_and_points() {
         // D-26: append-only tree + movable leaf = rewind without data loss
         let mut tree = ChatTree::default();
@@ -2482,6 +2589,21 @@ mod tests {
         bare.append(&[json!({"role":"user","content":"u"})]);
         bare.append_summary(json!({"role":"user","content":"SUM"}), "");
         assert_eq!(bare.materialize().len(), 1);
+    }
+
+    #[test]
+    fn repeated_compaction_indexes_each_retained_tool_call_once() {
+        let mut tree = ChatTree::default();
+        let group = [
+            json!({"role":"assistant", "tool_calls":[{"id":"kept-call", "function":{"name":"shell", "arguments":"{}"}}]}),
+            json!({"role":"tool", "tool_call_id":"kept-call", "content":"output"}),
+        ];
+        tree.append(&group);
+        for _ in 0..10 {
+            tree.append_summary(json!({"role":"user", "content":"summary"}), "");
+            tree.append(&group);
+        }
+        assert_eq!(tree.tool_references(), vec!["- kept-call: shell"]);
     }
 
     #[test]

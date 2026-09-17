@@ -93,19 +93,19 @@ tool_timeout_s = 120           # tools/call 超时秒数（可省，默认 120�
 ```
 
 客户端向服务器声明 `roots` 能力：服务器发来 `roots/list` 时会得到该成员的工作目录
-（`file://…`），其它服务器发起的能力（如 `sampling/createMessage`）按规范回 `-32601` 拒绝——
-让服务器干等比拒绝更糟。stdio 与 HTTP 两种传输都会应答。
+（`file://…`），其它服务器发起的能力（如 `sampling/createMessage`）按规范回 `-32601` 拒绝。
+stdio 与 HTTP 两种传输都会应答。
 
 HTTP 传输按 MCP streamable 规范实现：POST 的响应可以是单个 JSON 或 SSE；初始化后客户端会额外开一条
 **GET SSE 推送流**（服务器通知写入 stderr；服务器发来的请求如 `sampling/createMessage` 会按规范收到
-JSON-RPC 错误回复，不会让服务器干等），会话结束（成员绑定关闭）时用 **DELETE** 终止服务端会话。
+JSON-RPC 错误回复），会话结束（成员绑定关闭）时用 **DELETE** 终止服务端会话。
 不支持推送/终止的服务器回 405 时按无推送处理，功能照常。
 
 旧式 `mcp_transport = "sse"` 已从 MCP 规范移除，绑定会直接报错并提示改用 `"http"`。
 
 内置能力名 `files` / `shell` / `web` / `skills` 不需要同名配置条目，`files` 绑定同时包含
 `view_image` 与 `edit_files`（一次提交多个文件的唯一匹配编辑：**全部校验通过才落盘**，
-所以重构不会出现改一半；同一文件一次只允许一条编辑，返回各自 diff）（看图：png/jpeg/gif/webp，单张 ≤5 MiB）；模型是否真能"看见"取决于模型本身，
+同一文件一次只允许一条编辑，返回各自 diff）（看图：png/jpeg/gif/webp，单张 ≤5 MiB）；模型是否真能"看见"取决于模型本身，
 接口侧按协议自动转换：chat completions 把图片作为 user 消息的 `image_url`、Anthropic 放进
 `tool_result` 的 image 块、Responses 放进 `function_call_output` 的 `input_image`。
 但 `web` 仍需配置实际的
@@ -125,10 +125,17 @@ skills_paths = ["~/.agents/skills"]
 # instruction_files = ["/绝对路径/extra-instructions.md"]
 ```
 
-项目根及用户配置目录的 `AGENTS.md` 都会自动加载，无需重复写入 `instruction_files`。
+项目根及用户配置目录的 `AGENTS.md` 都会自动加载。
 项目配置中的 `skills_paths` / `instruction_files` 与工具绑定一样，需要用户配置
 `[permissions] trust_project_tools = true`；自动发现的项目 `AGENTS.md` 不受此开关控制。
 Skills 不授予任何新权限。按 D-23，本项目的用户级注册根统一为 `~/.agents/skills`。
+
+按 D-34，当前配套技能为：
+
+- `K-Dense-AI/scientific-agent-skills` 科学技能集合：安装为多个独立技能目录，成员按具体名称
+  （如 `scientific-writing`、`scanpy`）选用。
+- `browser-use`：浏览器操作。
+- `find-skills`：查找技能。
 
 Skills 的加载与分发（对应方案 §12.1 的“发现 + 按需读取”）：
 
@@ -137,8 +144,7 @@ Skills 的加载与分发（对应方案 §12.1 的“发现 + 按需读取”�
   `skills_paths`，只读；项目 `.teamagents/skills` 在工作区内，用 files 工具即可读。
 - **分发**：TeamSpec 或 topology patch（`add_agent`/`update_agent`）里的成员 `skills: [名称]`
   会把对应 SKILL.md 内容注入 Chat 成员系统提示词（每文件最多 8,000 字符，Skills 与指令合计
-  每成员 32,000 字符；同名按用户级 → 项目级 → 成员级覆盖）。Leader 据此把泛用/专精技能分给特定成员；
-  未点名的技能不再注入（技能库大时全量注入必然超上限）。
+  每成员 32,000 字符；同名按用户级 → 项目级 → 成员级覆盖）。Leader 据此将选定技能分给特定成员。
 - 默认新会话 Leader 只绑定 `files/shell/web`；需要技能检索时，在 TeamSpec 或 patch 中追加
   `skills` 绑定。上述注入与 `skill` 工具属于 ChatRunner，未接入 CodexRunner。
 
@@ -164,8 +170,7 @@ Skills 的加载与分发（对应方案 §12.1 的“发现 + 按需读取”�
 - 批准绑定**具体操作与参数**；参数变化需要重新批准。
 - 提供三种决定：本次批准（once）、会话内批准（session）、拒绝。
 - **once 批准在执行后即消费**（置 EXPIRED），同一操作再次执行需重新批准；session 批准（以及尚未
-  消费的 once 批准）只在策略修订（revision）不变时放行；EXPIRED 的记录按“需重新请求”处理，
-  而不是放行。
+  消费的 once 批准）只在策略修订（revision）不变时放行；EXPIRED 的记录按“需重新请求”处理。
 - 等待批准只暂停相关操作，其他成员继续；`WAITING_APPROVAL` 不算回合结束。
 - 恢复时重新核对参数、配置版本与权限，历史批准不会沿用失效范围。
 - Codex 成员的批准等待有 600s 上限，超时把该批准置 EXPIRED（需重新批准）；其他成员不受影响。
@@ -178,7 +183,7 @@ Skills 的加载与分发（对应方案 §12.1 的“发现 + 按需读取”�
   网络默认关闭，需要联网的操作要批准。**要求** bwrap：缺失时命令直接失败
   （`IsolationUnavailable`），不会退化成不隔离执行；命令环境是白名单（不含模型密钥）。
 - Shell 续用状态：同一个成员的 `cd` 与 `export` 会跨命令保留（像一个终端那样），状态存在
-  `sessions/<id>/members/<成员>/shell/`（**不写进项目目录**），随会话保留、重开后仍生效；
+  `sessions/<id>/members/<成员>/shell/`，随会话保留、重开后仍生效；
   命令输出以 `[cwd: …]` 开头，模型据此知道下一条命令会从哪里开始。被中断/超时的命令不会更新
   状态，也不会留下半截文件（写入用临时文件 + rename）。
 - 构建工具链只读镜像：`$HOME` 在沙箱里不可见，因此 sandbox 会把 `RUSTUP_HOME`（默认
@@ -187,10 +192,10 @@ Skills 的加载与分发（对应方案 §12.1 的“发现 + 按需读取”�
   （含离线 registry 缓存）；`credentials.toml`/`config.toml` 不挂载，所以注册表令牌不会
   进入沙箱。只有 Rust 已按此处理，其它语言的 HOME 级工具链（nvm/pyenv/…）仍不可见。
 - 文件工具做符号链接与路径穿越防护，越界即拒绝。
-- 写入用"进程内互斥 + 跨进程文件锁 + SHA-256 版本校验"：锁文件放在 `sessions/<id>/locks/`
-  （不写进项目目录），另一个 teamagents 进程正在写同一路径时会等它写完；等待超过 10 秒则以
+- 写入用"进程内互斥 + 跨进程文件锁 + SHA-256 版本校验"：锁文件放在 `sessions/<id>/locks/`，
+  另一个 teamagents 进程正在写同一路径时会等它写完；等待超过 10 秒则以
   `another teamagents process is writing this file` 拒绝。文件系统不支持建议锁时退化为原来的
-  进程内互斥，不会因为加锁失败拒绝所有写入。
+  进程内互斥。
 - 已绑定的 MCP 工具由 ChatRunner 直接调用，不再逐次批准。stdio 服务是白名单环境下启动的
   本机进程，当前没有 bubblewrap 的目录/网络隔离；其权限范围取决于该服务自身配置。
 - “私有上下文隔离”是运行时投递与工具授权合约；本机 MCP 或 Codex 全自动执行可能按当前用户
@@ -274,7 +279,7 @@ TUI 里同一件事在「会话」面板完成（`Tab` 把焦点移入管理面�
 - **默认会话 id** 由工作目录派生（`proj_<12位哈希>`）；再次打开同一目录会复用默认会话。
   `--resume` 指向已有 id 时恢复它，指向未使用 id 时新建；不会自动复制其他会话上下文。
   `--team` 不强制新建或覆盖已有团队；要用另一个 TeamSpec 开新会话，请同时指定未使用的会话 id。
-- **归档**：移动到 `sessions/archived/<id>/`，保留数据库原状态；不是将状态改为 CLOSED。
+- **归档**：移动到 `sessions/archived/<id>/`，保留数据库原状态。
   TUI 的已归档行只展示，不支持切换、再次归档或删除，也没有取消归档命令。
 - **删除**：使用会话面板 `d`，后端先检查运行锁及 worktree 的未提交/未合并成果，
   再清理目录（实现见 `engine/src/sessions.rs` 与 `engine/src/workspace.rs`）。
@@ -310,7 +315,7 @@ TUI `/rewind` 列出当前分支的用户输入节点，`/rewind <序号>` 回�
   投递记录与对应事件（**未受理的投递和它需要的事件一定保留**，崩溃重放不受影响），清完自动 VACUUM；
   想自动发生就写 `[retention] history_days = 30`（打开会话时清理该会话，需要对上一次会话才有意义）。
   年龄按天算，默认不写=不清理——事件流也是 TUI 日志页签与审计的原料。
-- **不会自动删的**：回合检查点、对话树。它们分别是崩溃恢复、`/rewind` 与审计的
+- **自动清理时保留**：回合检查点、对话树。它们分别是崩溃恢复、`/rewind` 与审计的
   依据；删掉旧检查点会让崩溃窗口内的"已完成回合"重新调用模型、可能重复投递，
   这个代价比省下的磁盘更贵。
 

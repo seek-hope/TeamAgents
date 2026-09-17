@@ -1,8 +1,8 @@
 # 验收对照表（T1–T24）
 
-基准：方案 §17；当前 Rust 实现于 **2026-09-15** 核对。
+基准：方案 §17；当前 Rust 实现于 **2026-09-17** 核对。
 ✅ = 所列路径有自动化证据，不代表场景中的每项发布条件均已证明；🔶 = 部分覆盖/存在已知缺口；⚠ = 尚未实现。
-历史实测结果按当时日期保留，本次未重新运行真实模型/API 或 PTY 冒烟。
+历史实测结果按当时日期保留；2026-09-17 补跑 DeepSeek 5 类真实任务与两项 PTY 检查，详见下方本轮记录。
 
 ## 当前离线基线
 
@@ -16,15 +16,16 @@ cargo test --offline --manifest-path tui/Cargo.toml
 
 | crate | Cargo 报告通过 | 组成 / 实际执行范围 |
 |---|---:|---|
-| core | 57 | 22 库单测 + 35 集成测试 |
-| engine | 189 | 92 库单测 + 97 集成测试；其中 `live_codex` 的 1 项未设开关即提前返回，真实服务需单独运行 |
+| core | 63 | 22 库单测 + 41 集成测试 |
+| engine | 212 | 98 库单测 + 114 集成测试；另有 1 项隐藏评分环境入口显式 ignored；`live_codex` 的 1 项未设开关即提前返回，真实服务需单独运行 |
 | tui | 91 | 14 库单测 + 11 + 37 app + 29 render |
 
 **CI（GitHub Actions，2026-09-15 起）**：`Test core` / `Test engine` / `Test tui` / 行尾空格检查全绿。
 runner 上装了 bubblewrap 也用不了（内核/AppArmor 限制非特权 user namespace），因此依赖真实隔离的用例
-（`chat_e2e` 4 条、`codex_contract` 1 条、`mcp` 的 workspace 路径）会打印 `skipped: bwrap is unavailable`
+（`chat_e2e` 4 条、`codex_contract` 1 条、`mcp` 的 workspace 路径及隐藏评分器的真实执行部分）会打印 `skipped: bwrap is unavailable`
 自行跳过；它们的权威验证在有 bubblewrap 的开发机上。回归测试自身已与开发机解耦
 （不再读 `~/.config/teamagents/config.toml`，也不要求本机装 codex）。
+隐藏评分入口在隔离不可用时始终判失败；仅回归测试在验证该失败行为后跳过候选执行部分。
 
 **skip 不计入真实验收**：部分测试在缺依赖/开关时直接 `return`，Cargo 仍显示 passed。
 真实 Codex 检查需显式运行以下命令；T7 的五家真实模型闭环没有可在导出密钥后统一运行的专用套件。
@@ -82,7 +83,7 @@ TUI 为 Rust 原生设计（D-20：固定分区、滚动、胶囊状态）。其
 | 动态变更安全边界（§8） | `core/src/control.rs::agent_has_live_run` 不把无 `external_turn_id` 的 WAITING_TASK/WAITING_APPROVAL 算作活动执行，因此 Chat 挂起时可应用 patch；有外部回合 ID 的 Codex 等待仍阻塞。现行修复证据：`core/tests/engine.rs::approval_parked_run_does_not_block_boundary`、`task_wait_parked_run_does_not_block_boundary` |
 | 网关与 MCP 隔离（§12.2） | `BoundTools::load_in` 将 stdio MCP 默认放入成员 workspace bwrap（无网），`mcp_execution = "host"` 才显式使用宿主；绑定仍是授权边界 |
 | 全自动与越界批准（§12.2） | 原生文件工具仍由 `tools.rs::resolve_in_root` 限定路径，Shell 始终走 `shell_run_with_control` / `bwrap_argv`；full_auto 只跳过批准门，没有扩大文件根或取消原生 Shell 沙箱 |
-| 多文件原子编辑 | `edit_files`（`files` 绑定）：先对每个文件做唯一匹配 + `expected_sha256` 校验，全部通过才在排序后的路径锁下逐个原子写入；任一失败则一个字节都不落盘，同一文件一次只允许一条编辑。回归 `tools_sandbox.rs::batch_edits_are_all_or_nothing` |
+| 多文件批量编辑 | `edit_files`（`files` 绑定）：先对全部文件做唯一匹配、大小与 `expected_sha256` 校验，按排序持有全批路径锁，暂存新旧内容后再次核对版本，逐文件原子替换；准备失败不提交，运行错误撤销已提交编辑。同一文件一次只允许一条编辑。回归 `batch_edits_are_all_or_nothing`、`batch_edits_reject_oversized_results_before_changing_any_file`、`batch_edits_recheck_all_versions_after_waiting_for_locks`、`batch_commit_rolls_back_when_a_later_rename_fails`。不承诺跨文件崩溃事务或对外部读者同时可见；外部写入/磁盘故障使回滚失败时明确报告并保留恢复副本 |
 | 共享目录并发写（§12.3） | `tools.rs::workspace_executor_with_control` 提供进程内路径锁、SHA-256 CAS 与原子替换；`tools.rs::with_path_lock` 追加跨进程建议锁（锁文件在会话状态目录 `sessions/<id>/locks/`，不落项目目录，`File::try_lock` 争用等待上限 10s，FS 不支持时退化为进程内互斥），回归 `tools::tests::path_lock_serializes_two_writers`。外部编辑器（不走本工具的写）仍建议使用 worktree |
 | Skills 后端范围（§10、§12.1） | `session.rs::make_runner_factory` 在 Codex 分支提前返回；`member_context` 和 `BoundTools` 的 Skills/指令注入仅用于 Chat 成员 |
 | TUI 完整视图与响应（§13） | 日志页签实时显示成员工具活动（`push:"tool"` → `App::on_tool`，失败标 `✗`，尊重成员过滤，环形缓冲 2000 行，回归 `tui::tests::tool_activity_lands_in_the_log_panel`）；六个管理页签；`/settings` 仅切语言，`/model` 单独选模型。成员记录通过日志事件筛选，没有完整私有对话树浏览器；控制请求已通过有界异步队列，停滞 worker 有超时和过期响应保护 | 改动审查弹层（团队/日志页签选中成员按 `v`，显示其最近一次编辑的 diff，回归 `tui::tests::review_overlay_shows_the_last_edit_diff`）； 结果不明的回合在团队页签标出并可按 `c` 结清（`cancel_run` 的 acknowledgement，回归 `tui::tests::unknown_outcome_runs_are_visible_and_acknowledgeable`，`exec` 结果行带 `outcome_unknown` 列表、回归 `cli::exec_tests`）； 计划状态条（面板框下方独立一行：`计划 done/total · 成员 · 进行中的项`，数据来自 `update_plan` 的 push 与 `state.plans`，回归 `tui::tests::plan_status_strip_tracks_the_selected_member`）； 团队页签的模型列在手上有窗口信息时显示该成员上下文占比（≥80% 警示色，数据由 worker 并入 state 快照，回归 `tui::tests::team_panel_shows_context_usage_per_member`）；
@@ -111,6 +112,14 @@ rg -n 'synchronous submit|fn apply_effect|from_secs\(120\)' tui/src/main.rs tui/
 ```
 
 ## 更新记录
+
+2026-09-17 复杂编码与长任务第二批：新增 6 项上下文/预算回归和 4 项独立评分回归，engine **208 passed / 1 ignored**；本批未改 core/TUI，实现基线仍为 core 63 / tui 91。评测 runner 的 25 项契约检查通过。真实模型评测严格使用原生上下文（D-36），DeepSeek Flash 的所有成员配置均为 1M：`rust-ledger` 三次产出全部通过隐藏 11/11、公开测试及文件保护检查；两次完整完成，一次总时限超时，完整成功率记 **2/3**。本组没有触发压缩，相关算法由本地回归验证。实现、限制与证据见 [第二批记录](../review/complex-coding-2026-09-17.md) 和 [原生上下文评测](../review/eval/runs/2026-09-17-rust-ledger/REPORT.md)。
+
+2026-09-17 编码能力审查：新增 15 项 Rust 回归，core 63 / engine 198 / tui 91 通过；`live_codex` 的 1 项仍未启用，不能计入真实 Codex 验收。真实 bubblewrap 可用，文件/Shell 隔离用例实际执行。PTY 输入/粘贴/退出与鼠标命中两项检查通过；评测入口的 14 项无模型契约检查通过。
+
+修复批量编辑半提交、特殊文件读取阻塞、暂停期间取消、迟到回执覆盖终态、目标完成提交竞态、三类模型协议不完整响应误执行、Responses 推理续接丢失及评测失败退出 0。整合回归曾有一次 `process_leaks` 的临时脚本出现 `Text file busy`；独立重跑与随后完整 engine 重跑通过，此波动保留在审查报告中。
+
+DeepSeek 真实验证：Rust 修复、精确编辑、多成员协作、批准边界、中断后续接 5 类均符合各自预期；协作在目标完成修复后重跑仍通过，恢复验证为阶段一 124、阶段二 0 且验收全部通过。未运行四个竞品或五供应商矩阵，不能据此宣称同等/更高水平。总审查与后续路线见 [编码能力审查](../review/coding-agent-review-2026-09-17.md)，原始服务证据见 [本轮评测](../review/eval/runs/2026-09-17-coding-review/REPORT.md)。
 
 2026-09-15 文档核对：更新当前测试口径、配置/权限/Skills/恢复与 TUI 说明，补齐实现差异；
 只修改文档，未将缺口记作实现修复。示例 TeamSpec 在隔离的临时用户配置下通过 `validate`，

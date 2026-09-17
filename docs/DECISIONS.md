@@ -521,24 +521,24 @@ tui 54（9 lib + 18 app + 27 render）全绿；PTY 冒烟与点击检查通过�
 
 ## D-23 Skills 分发机制：skill 工具 + 按成员注入（2026-09-13）
 
+当前配套范围见 D-34。
+
 背景：D-19 的"全量内容注入"简化在技能库规模（~200 个）下必然超 32KB/成员上限，
 代码内已标注升级路径。用户要求 Leader 能查看全部技能、按需读取、并把特定技能
-分发给特定成员（泛用 ponytail/caveman、专精 scientific/browser-use、meta find-skills）。
+分发给特定成员。
 
 决定（落回方案 §12.1/§12.2 原义，非新偏离）：
 
 1. 新增内置绑定 `skills`：成员绑定后获得 `skill` 工具（search/read），注册根 =
    用户配置 `skills_paths`，只读、属于预授权"明确选择的 Skills 只读"。
 2. 成员 `skills: [名称]`（TeamSpec 或 add_agent/update_agent patch）按名注入
-   SKILL.md 全文到该成员系统提示词；未点名不注入。同名覆盖顺序：
+   SKILL.md 全文到该成员系统提示词。同名覆盖顺序：
    用户级 → 项目级 → 成员级。
 3. Leader 查看全部技能 = `skill search`（空查询列出全部，10 条封顶提示细化）；
    分发 = patch 成员 skills 字段，运行器按 config_revision 重建即生效。
 
-来源约定（用户 2026-09-13）：TeamAgents 只复用 `~/.agents/skills`，不用 `~/.codex/skills`；
-缺的技能专门安装进 `~/.agents/skills`。已据此复制安装 ponytail 系列（6 个）；
-scientific-skills-router 不安装——其按词检索 YAML 头的功能已被 `skill search/read`
-对全注册根覆盖，剩余价值（科研检索时机）归成员 instructions。`skills_paths` 收敛为单一根。
+来源约定（用户 2026-09-13）：TeamAgents 的唯一用户级注册根为 `~/.agents/skills`，
+技能统一安装到该目录。`skill search/read` 覆盖注册根的检索与读取，科研检索时机由成员 instructions 指定。
 
 证据：`engine::tools::tests::skill_tool_searches_and_reads_registry`、
 `engine::session::tests::member_context_collects_skills_and_instruction_files`、
@@ -730,3 +730,34 @@ stale_model_overrides_are_dropped_on_open（未知成员/未知 profile/越规�
   （省略→继承 Leader 绑定、显式 `[]`→保持空、双向 message 通道存在、成员之间不可发消息）；
 - `core/tests/engine.rs::topology_patch_add_and_stale_reject`（成员间 `add_channel` 被拒）；
 - 真实评测：`review/eval/runs/2026-09-15-deepseek/`（含 `team-collab` 前后对比）。
+
+## D-34 Skills 配套范围（2026-09-17）
+
+用户确认配套范围为 `K-Dense-AI/scientific-agent-skills` 科学技能集合、`browser-use`、`find-skills`。
+
+沿用 D-23 的唯一用户级注册根 `~/.agents/skills`，科学技能按集合内具体名称发现与分发。
+
+核验（2026-09-17）：本机注册目录有 165 个 SKILL.md：科学集合 163 个、`browser-use` 1 个、
+`find-skills` 1 个。科学集合与 `find-skills` 的来源由 `~/.agents/.skill-lock.json` 确认；
+`browser-use` 在目录中独立安装。用户配置为 `skills_paths = ["~/.agents/skills"]`。
+
+## D-35 优先复杂编码任务与长任务稳定性（2026-09-17）
+
+用户在本轮后续方向中选择「复杂编码任务与长任务稳定性」。在 D-32 的成熟度改进范围内，
+优先处理长上下文约束保留、模型请求预算、中断恢复，以及多文件仓库任务的独立验收。
+成功标准以可复跑的行为检查、原有测试与用户文件保护、真实任务完成率为准，不能以工具数量
+或模拟服务通过数代替真实效果。
+
+评测扩展采用 Agent 执行结束后的独立评分，隐藏检查不复制到其执行工作区；待评分代码仍在
+原有 Linux 沙箱内构建和运行。保持 Rust 三 crate、既有权限边界与会话兼容性。
+本选择不自动授权跨平台、新的后台终端协议、插件市场或跨会话记忆等产品范围变化。
+
+## D-36 模型评测使用原生上下文长度（2026-09-17）
+
+用户明确要求：「使用任何模型测试时请使用其原生上下文长度」。所有后续模型评测按该模型
+原生长度配置，记录数值及来源，不得自行缩小真实模型的上下文窗口。长度未知时先核实，
+不能用通用 16K/64K 值替代。DeepSeek Flash 的 1M 长度由本轮用户确认，评测配置为 1,000,000。
+
+不合理的非原生窗口模型测试应作废并删除，不能改名为压力实验或历史证据保留。
+上下文压缩算法的本地假服务回归属于确定性逻辑检查，不代表任何真实模型的上下文能力
+或模型评测结果；其独立复现的代码缺陷与回归检查正常保留。

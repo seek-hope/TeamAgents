@@ -434,6 +434,28 @@ fn p2_cancel_run_stops_a_slow_member_turn() {
 }
 
 #[test]
+fn paused_session_still_cancels_an_active_member() {
+    let core = core_with_spec("paused-cancel", json!({"leader_id": "leader", "agents": [member("leader", "leader")]}));
+    let leader = scripted("leader", &json!([["sleep", 30], ["end"]]), barriers());
+    let h = harness_with(core.clone(), vec![("leader", leader.clone())]);
+    h.runtime.start();
+    h.runtime.user_message("long work", false).unwrap();
+    assert!(wait_for(|| leader.last_view.lock().unwrap().is_some(), 2000));
+    let run = runs(&core.state().unwrap()).into_iter().find(|r| r.agent_id == "leader").unwrap();
+    assert!(submit(&core, "pause", "user", "pause_session", json!({})).ok);
+    assert!(submit(&core, "cancel", "user", "cancel_run", json!({"run_id": run.run_id})).ok);
+
+    let stopped = wait_for(|| leader.is_cancelled(&run.run_id), 2000);
+    let settled = stopped && h.runtime.settle(2);
+    h.runtime.close();
+    assert!(stopped, "pausing dispatch must not disable cancellation of an executing member");
+    assert!(settled);
+    let state = core.state().unwrap();
+    assert_eq!(state["session"]["status"], "PAUSED");
+    assert_eq!(runs(&state).into_iter().find(|r| r.run_id == run.run_id).unwrap().status, TurnStatus::Cancelled);
+}
+
+#[test]
 fn p2_pause_then_resume_by_user_input() {
     isolated_state_home("pause");
     let core = core_with_spec("p2b", json!({"leader_id": "leader", "agents": [member("leader", "leader")]}));
