@@ -33,7 +33,7 @@
 - `doctor` 明确报告缺配置、配置不可读、空密钥；Codex 为可选能力，相关问题标 WARN，不阻止内置成员使用。
 - 发行包包含安装器、指南及示例；发布检查涵盖三 crate 版本一致性、实际发行包安装与 init。
 - GitHub 仓库 `seek-hope/TeamAgents` 已按用户要求设为 public（API 回读：visibility=public、private=false）。
-  安装脚本和文档随 main 更新提供；新版 init/doctor 随下一次二进制发行提供。
+  安装脚本和文档随 main 更新提供；新版 init/doctor 已随 v0.1.2 二进制发行提供。
 - 兼容已发布 v0.1.1：该版本没有 init，安装器在配置缺失时复制包内模板；已有配置与会话保持原样。
 
 验证命令与结果见 `review/install-2026-09-18.md`。
