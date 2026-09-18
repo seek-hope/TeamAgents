@@ -188,7 +188,9 @@ CREATE TABLE IF NOT EXISTS session_approval_cache(
 );
 "#;
 
-fn j<T: serde::Serialize>(v: &T) -> String { serde_json::to_string(v).expect("json encode") }
+fn j<T: serde::Serialize>(v: &T) -> String {
+    serde_json::to_string(v).expect("json encode")
+}
 
 /// A stored enum string is data, not an invariant: a value this build does not
 /// know is a readable error for the caller instead of a process abort.
@@ -244,10 +246,8 @@ impl Store {
     }
 
     fn check_schema_version(&self) -> rusqlite::Result<()> {
-        let row: Option<String> = self
-            .conn
-            .query_row("SELECT value FROM meta WHERE key='db_schema_version'", [], |r| r.get(0))
-            .optional()?;
+        let row: Option<String> =
+            self.conn.query_row("SELECT value FROM meta WHERE key='db_schema_version'", [], |r| r.get(0)).optional()?;
         match row {
             None => {
                 self.conn.execute(
@@ -418,11 +418,7 @@ impl Store {
     pub fn get_action_receipt(&self, action_id: &str) -> rusqlite::Result<Option<Receipt>> {
         let blob: Option<String> = self
             .conn
-            .query_row(
-                "SELECT receipt_json FROM actions WHERE action_id=?1",
-                params![action_id],
-                |r| r.get(0),
-            )
+            .query_row("SELECT receipt_json FROM actions WHERE action_id=?1", params![action_id], |r| r.get(0))
             .optional()?;
         match blob {
             None => Ok(None),
@@ -571,7 +567,13 @@ impl Store {
     /// Mark exactly these ids applied (never a
     /// batch range) and advance the member's applied-batch cursor.
     /// `_batch_no` is kept for existing callers; matching is by id.
-    pub fn ack_deliveries_exact(&self, session_id: &str, agent_id: &str, _batch_no: i64, delivery_ids: &[i64]) -> rusqlite::Result<i64> {
+    pub fn ack_deliveries_exact(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        _batch_no: i64,
+        delivery_ids: &[i64],
+    ) -> rusqlite::Result<i64> {
         if delivery_ids.is_empty() {
             return Ok(0);
         }
@@ -627,7 +629,9 @@ impl Store {
         } else {
             // ponytail: statuses come from our own enums, not user input
             let placeholders = statuses.iter().map(|s| format!("'{s}'")).collect::<Vec<_>>().join(",");
-            format!("SELECT {TASK_COLS} FROM tasks WHERE session_id=?1 AND status IN ({placeholders}) ORDER BY created_at")
+            format!(
+                "SELECT {TASK_COLS} FROM tasks WHERE session_id=?1 AND status IN ({placeholders}) ORDER BY created_at"
+            )
         };
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params![session_id], row_to_task)?;
@@ -635,7 +639,13 @@ impl Store {
     }
 
     /// Optimistic status transition.
-    pub fn compare_and_set_task(&self, task_id: &str, expected: &str, new: TaskStatus, result_refs: Option<&[String]>) -> rusqlite::Result<bool> {
+    pub fn compare_and_set_task(
+        &self,
+        task_id: &str,
+        expected: &str,
+        new: TaskStatus,
+        result_refs: Option<&[String]>,
+    ) -> rusqlite::Result<bool> {
         let refs = result_refs.map(|r| serde_json::to_string(r).unwrap());
         let n = match refs {
             Some(r) => self.conn.execute(
@@ -680,7 +690,12 @@ impl Store {
         Ok(())
     }
 
-    pub fn update_run_status_where(&self, run_id: &str, expected: TurnStatus, new: TurnStatus) -> rusqlite::Result<bool> {
+    pub fn update_run_status_where(
+        &self,
+        run_id: &str,
+        expected: TurnStatus,
+        new: TurnStatus,
+    ) -> rusqlite::Result<bool> {
         let n = self.conn.execute(
             "UPDATE turn_runs SET status=?1, updated_at=?2 WHERE run_id=?3 AND status=?4",
             params![enum_str(&new), now(), run_id, enum_str(&expected)],
@@ -724,7 +739,7 @@ impl Store {
                 params![session_id, agent_id],
                 |r| r.get(0),
             )
-                .optional()?;
+            .optional()?;
         match s {
             None => Ok(None),
             Some(v) => Ok(Some(stored_enum(v, "agent status")?)),
@@ -754,7 +769,13 @@ impl Store {
         Ok(n == 1)
     }
 
-    pub fn record_completion_request(&self, run_id: &str, task_id: &str, result_refs: &[String], summary: &str) -> rusqlite::Result<()> {
+    pub fn record_completion_request(
+        &self,
+        run_id: &str,
+        task_id: &str,
+        result_refs: &[String],
+        summary: &str,
+    ) -> rusqlite::Result<()> {
         self.conn.execute(
             "INSERT OR REPLACE INTO completion_requests(run_id, task_id, result_refs, summary, created_at)
              VALUES(?1, ?2, ?3, ?4, ?5)",
@@ -841,21 +862,22 @@ impl Store {
     }
 
     pub fn set_task_cancel_requested(&self, task_id: &str) -> rusqlite::Result<()> {
-        self.conn.execute(
-            "UPDATE tasks SET cancel_requested=1, updated_at=?1 WHERE task_id=?2",
-            params![now(), task_id],
-        )?;
+        self.conn
+            .execute("UPDATE tasks SET cancel_requested=1, updated_at=?1 WHERE task_id=?2", params![now(), task_id])?;
         Ok(())
     }
 
-    pub fn reassign_tasks(&self, assignee: &str, new_assignee: &str, statuses: &[TaskStatus]) -> rusqlite::Result<Vec<String>> {
+    pub fn reassign_tasks(
+        &self,
+        assignee: &str,
+        new_assignee: &str,
+        statuses: &[TaskStatus],
+    ) -> rusqlite::Result<Vec<String>> {
         let marks = statuses.iter().map(|s| format!("'{}'", enum_str(s))).collect::<Vec<_>>().join(",");
-        let mut stmt = self.conn.prepare(&format!(
-            "SELECT task_id FROM tasks WHERE assignee=?1 AND status IN ({marks})"
-        ))?;
-        let ids: Vec<String> = stmt
-            .query_map(params![assignee], |r| r.get(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut stmt =
+            self.conn.prepare(&format!("SELECT task_id FROM tasks WHERE assignee=?1 AND status IN ({marks})"))?;
+        let ids: Vec<String> =
+            stmt.query_map(params![assignee], |r| r.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
         for id in &ids {
             self.conn.execute(
                 "UPDATE tasks SET assignee=?1, updated_at=?2 WHERE task_id=?3",
@@ -928,9 +950,8 @@ impl Store {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT {RUN_COLS} FROM turn_runs WHERE session_id=?1 AND status IN ({terminal}) ORDER BY created_at DESC LIMIT ?2"
         ))?;
-        let mut tail: Vec<TurnRun> = stmt
-            .query_map(params![session_id, terminal_limit], row_to_run)?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut tail: Vec<TurnRun> =
+            stmt.query_map(params![session_id, terminal_limit], row_to_run)?.collect::<rusqlite::Result<Vec<_>>>()?;
         tail.reverse();
         runs.extend(tail);
         Ok(runs)
@@ -1032,7 +1053,11 @@ impl Store {
             .optional()
     }
 
-    pub fn get_approval_for_session(&self, session_id: &str, approval_id: &str) -> rusqlite::Result<Option<ApprovalRequest>> {
+    pub fn get_approval_for_session(
+        &self,
+        session_id: &str,
+        approval_id: &str,
+    ) -> rusqlite::Result<Option<ApprovalRequest>> {
         self.conn
             .query_row(
                 "SELECT approval_id, session_id, agent_id, run_id, tool_call_id, operation_hash, requested_scope, policy_revision, status, created_at, decided_at
@@ -1125,7 +1150,12 @@ impl Store {
     }
 
     /// The decision (if any) already recorded for this exact call.
-    pub fn approval_for_call(&self, run_id: &str, tool_call_id: &str, operation_hash: &str) -> rusqlite::Result<Option<ApprovalRequest>> {
+    pub fn approval_for_call(
+        &self,
+        run_id: &str,
+        tool_call_id: &str,
+        operation_hash: &str,
+    ) -> rusqlite::Result<Option<ApprovalRequest>> {
         let row: Option<String> = self
             .conn
             .query_row(
@@ -1167,7 +1197,13 @@ impl Store {
         })
     }
 
-    pub fn shared_entries(&self, session_id: &str, space_ids: &[String], after_sequence: i64, limit: i64) -> rusqlite::Result<Vec<SharedEntry>> {
+    pub fn shared_entries(
+        &self,
+        session_id: &str,
+        space_ids: &[String],
+        after_sequence: i64,
+        limit: i64,
+    ) -> rusqlite::Result<Vec<SharedEntry>> {
         if space_ids.is_empty() {
             return Ok(vec![]);
         }
@@ -1200,7 +1236,13 @@ impl Store {
             .unwrap_or(0))
     }
 
-    pub fn advance_shared_cursor(&self, session_id: &str, agent_id: &str, space_id: &str, sequence: i64) -> rusqlite::Result<()> {
+    pub fn advance_shared_cursor(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        space_id: &str,
+        sequence: i64,
+    ) -> rusqlite::Result<()> {
         self.conn.execute(
             "INSERT INTO shared_cursors(session_id, agent_id, space_id, sequence) VALUES(?1, ?2, ?3, ?4)
              ON CONFLICT(session_id, agent_id, space_id) DO UPDATE SET sequence=MAX(sequence, excluded.sequence)",
@@ -1296,7 +1338,8 @@ impl Store {
         let count = |sql: &str| -> rusqlite::Result<i64> {
             self.conn.query_row(sql, params![session_id, cutoff], |row| row.get(0))
         };
-        let deliveries = count("SELECT COUNT(*) FROM deliveries WHERE session_id=?1 AND status='applied' AND created_at < ?2")?;
+        let deliveries =
+            count("SELECT COUNT(*) FROM deliveries WHERE session_id=?1 AND status='applied' AND created_at < ?2")?;
         // an event is only droppable once no live delivery still points at it
         let events = count(
             "SELECT COUNT(*) FROM events WHERE session_id=?1 AND created_at < ?2
@@ -1448,16 +1491,15 @@ mod tests {
         let path = std::env::temp_dir().join(format!("teamagents-schema-version-{}.db", std::process::id()));
         {
             let store = Store::open(&path).unwrap();
-            store
-                .conn
-                .execute("UPDATE meta SET value='9999' WHERE key='db_schema_version'", [])
-                .unwrap();
+            store.conn.execute("UPDATE meta SET value='9999' WHERE key='db_schema_version'", []).unwrap();
         }
         let err = Store::open(&path).err().expect("future schema version must be an error");
         assert!(err.to_string().contains("schema version 9999"), "{err}");
         let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(path.with_file_name(format!("{}-wal", path.file_name().unwrap().to_str().unwrap())));
-        let _ = std::fs::remove_file(path.with_file_name(format!("{}-shm", path.file_name().unwrap().to_str().unwrap())));
+        let _ =
+            std::fs::remove_file(path.with_file_name(format!("{}-wal", path.file_name().unwrap().to_str().unwrap())));
+        let _ =
+            std::fs::remove_file(path.with_file_name(format!("{}-shm", path.file_name().unwrap().to_str().unwrap())));
     }
 
     #[test]
@@ -1483,9 +1525,21 @@ mod tests {
         let applied = store.create_delivery("s1", "lead", "evt-old-applied", 1, None).unwrap();
         store.create_delivery("s1", "lead", "evt-old-pending", 1, None).unwrap();
         // append_event stamps now(): age the rows the way a long-lived session would
-        store.conn.execute("UPDATE events SET created_at=?1 WHERE event_id IN ('evt-old-applied','evt-old-pending')", rusqlite::params![old]).unwrap();
-        store.conn.execute("UPDATE deliveries SET created_at=?1 WHERE delivery_id=?2", rusqlite::params![old, applied]).unwrap();
-        store.conn.execute("UPDATE deliveries SET status='applied' WHERE delivery_id=?1", rusqlite::params![applied]).unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE events SET created_at=?1 WHERE event_id IN ('evt-old-applied','evt-old-pending')",
+                rusqlite::params![old],
+            )
+            .unwrap();
+        store
+            .conn
+            .execute("UPDATE deliveries SET created_at=?1 WHERE delivery_id=?2", rusqlite::params![old, applied])
+            .unwrap();
+        store
+            .conn
+            .execute("UPDATE deliveries SET status='applied' WHERE delivery_id=?1", rusqlite::params![applied])
+            .unwrap();
 
         // a dry run reports without deleting
         assert_eq!(store.prune_history("s1", 30, true).unwrap(), (1, 1, false));
@@ -1645,7 +1699,9 @@ mod tests {
         assert_eq!(store.next_batch_no("s1", "lead").unwrap(), 2);
         let next: i64 = store
             .conn
-            .query_row("SELECT next_batch_no FROM agent_runtime WHERE session_id='s1' AND agent_id='lead'", [], |r| r.get(0))
+            .query_row("SELECT next_batch_no FROM agent_runtime WHERE session_id='s1' AND agent_id='lead'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(next, 3);
     }
@@ -1665,10 +1721,8 @@ mod tests {
         // per-id ack (the runtime path) advances it too
         store.ack_delivery_by_id(d2).unwrap();
         assert_eq!(store.applied_batch("s1", "lead").unwrap(), 2);
-        let applied: i64 = store
-            .conn
-            .query_row("SELECT COUNT(*) FROM deliveries WHERE status='applied'", [], |r| r.get(0))
-            .unwrap();
+        let applied: i64 =
+            store.conn.query_row("SELECT COUNT(*) FROM deliveries WHERE status='applied'", [], |r| r.get(0)).unwrap();
         assert_eq!(applied, 2);
     }
 
@@ -1714,11 +1768,9 @@ mod tests {
         assert_eq!(store.drop_pending_deliveries("s1", "lead", "member removed").unwrap(), 1);
         let (status, override_json): (String, String) = store
             .conn
-            .query_row(
-                "SELECT status, payload_override FROM deliveries WHERE delivery_id=?1",
-                params![d1],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
+            .query_row("SELECT status, payload_override FROM deliveries WHERE delivery_id=?1", params![d1], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
             .unwrap();
         assert_eq!(status, "dropped");
         assert_eq!(serde_json::from_str::<Json>(&override_json).unwrap()["dropped_reason"], json!("member removed"));

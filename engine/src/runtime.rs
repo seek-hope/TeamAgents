@@ -27,7 +27,9 @@ pub trait AgentRunner: Send + Sync {
     fn request_interrupt(&self, run_id: &str) -> TurnStatus;
     fn query_state(&self, run_id: &str) -> Option<TurnStatus>;
     /// Durable input IDs, when a backend checkpoints its own delivery boundary.
-    fn applied_delivery_ids(&self, _run: &TurnRun) -> Option<Vec<i64>> { None }
+    fn applied_delivery_ids(&self, _run: &TurnRun) -> Option<Vec<i64>> {
+        None
+    }
     fn deliver_mid_turn(&self, run_id: &str, items: Vec<Json>);
     /// Optional restart convergence (RT-04): a backend that survives our
     /// restart reports the live status of a parked turn.
@@ -96,7 +98,15 @@ pub struct Notify {
 
 impl Notify {
     pub fn new(core: Arc<CoreClient>) -> Arc<Self> {
-        Arc::new(Self { core, stream: Mutex::new(None), tool: Mutex::new(None), events: Mutex::new(None), plan: Mutex::new(None), waker: Mutex::new(None), accepting: Mutex::new(true) })
+        Arc::new(Self {
+            core,
+            stream: Mutex::new(None),
+            tool: Mutex::new(None),
+            events: Mutex::new(None),
+            plan: Mutex::new(None),
+            waker: Mutex::new(None),
+            accepting: Mutex::new(true),
+        })
     }
 
     pub fn set_stream_sink(&self, sink: Sink) {
@@ -159,7 +169,9 @@ impl Notify {
 
     pub fn note_stream_chunk(&self, run_id: &str, agent_id: &str, text: &str) {
         let accepting = self.accepting.lock().unwrap();
-        if !*accepting { return; }
+        if !*accepting {
+            return;
+        }
         if text.is_empty() {
             return;
         }
@@ -185,38 +197,46 @@ impl Notify {
     /// Live status changes from an external backend.
     pub fn note_external_status(&self, run_id: &str, status: TurnStatus) {
         let accepting = self.accepting.lock().unwrap();
-        if !*accepting { return; }
+        if !*accepting {
+            return;
+        }
         let Ok(state) = self.core.state_brief() else { return };
-        let runs: Vec<TurnRun> = serde_json::from_value(state.get("runs").cloned().unwrap_or(Json::Null)).unwrap_or_default();
+        let runs: Vec<TurnRun> =
+            serde_json::from_value(state.get("runs").cloned().unwrap_or(Json::Null)).unwrap_or_default();
         let Some(run) = runs.iter().find(|r| r.run_id == run_id) else { return };
         if run.status.is_terminal() {
             return;
         }
         let agent_id = run.agent_id.clone();
-        core_best_effort(&self.core, "run status update", "set_run_status", json!({"run_id": run_id, "status": status}));
+        core_best_effort(
+            &self.core,
+            "run status update",
+            "set_run_status",
+            json!({"run_id": run_id, "status": status}),
+        );
         if status == TurnStatus::WaitingApproval {
-            let pending: Vec<Json> = state
-                .get("pending_approvals")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default();
-            if let Some(approval) = pending
-                .iter()
-                .filter(|a| a.get("run_id").and_then(|v| v.as_str()) == Some(run_id))
-                .next_back()
+            let pending: Vec<Json> =
+                state.get("pending_approvals").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+            if let Some(approval) =
+                pending.iter().filter(|a| a.get("run_id").and_then(|v| v.as_str()) == Some(run_id)).next_back()
             {
-                core_best_effort(&self.core, "approval_requested event", "emit", json!({
-                    "actor_id": agent_id,
-                    "events": [{
-                        "kind": "approval_requested",
-                        "payload": {
-                            "approval_id": approval.get("approval_id").cloned().unwrap_or(Json::Null),
-                            "agent_id": agent_id,
-                            "run_id": run_id,
-                            "scope": approval.get("requested_scope").cloned().unwrap_or(Json::Null),
-                        }
-                    }],
-                }));
+                core_best_effort(
+                    &self.core,
+                    "approval_requested event",
+                    "emit",
+                    json!({
+                        "actor_id": agent_id,
+                        "events": [{
+                            "kind": "approval_requested",
+                            "payload": {
+                                "approval_id": approval.get("approval_id").cloned().unwrap_or(Json::Null),
+                                "agent_id": agent_id,
+                                "run_id": run_id,
+                                "scope": approval.get("requested_scope").cloned().unwrap_or(Json::Null),
+                            }
+                        }],
+                    }),
+                );
             }
         }
         self.wake();
@@ -225,34 +245,44 @@ impl Notify {
     /// A human-readable progress line from a backend.
     pub fn note_external_progress(&self, run_id: &str, text: &str) {
         let accepting = self.accepting.lock().unwrap();
-        if !*accepting { return; }
+        if !*accepting {
+            return;
+        }
         if text.is_empty() {
             return;
         }
         let Ok(state) = self.core.state_brief() else { return };
-        let runs: Vec<TurnRun> = serde_json::from_value(state.get("runs").cloned().unwrap_or(Json::Null)).unwrap_or_default();
+        let runs: Vec<TurnRun> =
+            serde_json::from_value(state.get("runs").cloned().unwrap_or(Json::Null)).unwrap_or_default();
         let Some(run) = runs.iter().find(|r| r.run_id == run_id) else { return };
         let requester = run.task_id.as_ref().and_then(|task_id| {
             state
                 .get("tasks")
                 .and_then(|v| v.as_array())
-                .and_then(|tasks| tasks.iter().find(|t| t.get("task_id").and_then(|v| v.as_str()) == Some(task_id.as_str())))
+                .and_then(|tasks| {
+                    tasks.iter().find(|t| t.get("task_id").and_then(|v| v.as_str()) == Some(task_id.as_str()))
+                })
                 .and_then(|task| task.get("requester"))
                 .cloned()
         });
-        core_best_effort(&self.core, "run_progress event", "emit", json!({
-            "actor_id": run.agent_id,
-            "events": [{
-                "kind": "run_progress",
-                "payload": {
-                    "run_id": run_id,
-                    "agent_id": run.agent_id,
-                    "text": text.chars().take(2000).collect::<String>(),
-                    "requester": requester,
-                    "task_id": run.task_id,
-                }
-            }],
-        }));
+        core_best_effort(
+            &self.core,
+            "run_progress event",
+            "emit",
+            json!({
+                "actor_id": run.agent_id,
+                "events": [{
+                    "kind": "run_progress",
+                    "payload": {
+                        "run_id": run_id,
+                        "agent_id": run.agent_id,
+                        "text": text.chars().take(2000).collect::<String>(),
+                        "requester": requester,
+                        "task_id": run.task_id,
+                    }
+                }],
+            }),
+        );
         self.wake();
     }
 }
@@ -332,7 +362,10 @@ impl Runtime {
     }
 
     pub fn add_runner(&self, agent_id: &str, runner: Arc<dyn AgentRunner>) {
-        let revision = self.core.state_brief().ok()
+        let revision = self
+            .core
+            .state_brief()
+            .ok()
             .and_then(|s| s["agents"].as_array()?.iter().find(|a| a["id"] == agent_id)?["config_revision"].as_i64())
             .unwrap_or(0);
         self.runners.lock().unwrap().insert(agent_id.to_string(), (revision, runner));
@@ -351,12 +384,16 @@ impl Runtime {
             let inflight = self.inflight.lock().unwrap();
             let mut runners = self.runners.lock().unwrap();
             if inflight.values().any(|slot| slot.agent_id == agent_id) {
-                if let Some((revision, _)) = runners.get_mut(agent_id) { *revision = -1; }
+                if let Some((revision, _)) = runners.get_mut(agent_id) {
+                    *revision = -1;
+                }
                 return;
             }
             runners.remove(agent_id)
         };
-        if let Some((_, runner)) = old { runner.close(); }
+        if let Some((_, runner)) = old {
+            runner.close();
+        }
     }
 
     pub fn me(&self) -> Option<Arc<Runtime>> {
@@ -397,7 +434,9 @@ impl Runtime {
             let inflight = self.inflight.lock().unwrap();
             self.closed.store(true, Ordering::SeqCst);
             let slots: Vec<_> = inflight.values().cloned().collect();
-            for slot in &slots { slot.control.cancel(); }
+            for slot in &slots {
+                slot.control.cancel();
+            }
             slots
         };
         self.signal();
@@ -405,13 +444,16 @@ impl Runtime {
             let _ = handle.join();
         }
         *self.notify.accepting.lock().unwrap() = false;
-        let runners: Vec<Arc<dyn AgentRunner>> = self.runners.lock().unwrap().values().map(|(_, r)| r.clone()).collect();
+        let runners: Vec<Arc<dyn AgentRunner>> =
+            self.runners.lock().unwrap().values().map(|(_, r)| r.clone()).collect();
         for runner in runners {
             runner.close();
         }
         for slot in slots {
             while !slot.control.wait_idle(Duration::from_millis(50)) {}
-            if let Some(handle) = slot.handle.lock().unwrap().take() { let _ = handle.join(); }
+            if let Some(handle) = slot.handle.lock().unwrap().take() {
+                let _ = handle.join();
+            }
         }
     }
 
@@ -435,14 +477,17 @@ impl Runtime {
         // team actions (assign_task / complete_task / signal_done / patches …)
         // are visible to hooks as one stream with their receipts
         if action.actor_id != "user" || action.kind == teamagents_core::models::ActionKind::UserMessage {
-            self.notify.note_event("team_action", &json!({
-                "kind": action.kind,
-                "actor_id": action.actor_id,
-                "action_id": action.action_id,
-                "ok": receipt.ok,
-                "error": receipt.error,
-                "payload": action.payload,
-            }));
+            self.notify.note_event(
+                "team_action",
+                &json!({
+                    "kind": action.kind,
+                    "actor_id": action.actor_id,
+                    "action_id": action.action_id,
+                    "ok": receipt.ok,
+                    "error": receipt.error,
+                    "payload": action.payload,
+                }),
+            );
         }
         self.drain_mid_turn();
         self.signal();
@@ -471,7 +516,8 @@ impl Runtime {
         let Some(run_id) = approval.get("run_id").and_then(|v| v.as_str()) else { return };
         let run_id = run_id.to_string();
         let Ok(state) = self.core.state_brief() else { return };
-        let runs: Vec<TurnRun> = serde_json::from_value(state.get("runs").cloned().unwrap_or(Json::Null)).unwrap_or_default();
+        let runs: Vec<TurnRun> =
+            serde_json::from_value(state.get("runs").cloned().unwrap_or(Json::Null)).unwrap_or_default();
         let Some(run) = runs.iter().find(|r| r.run_id == run_id) else { return };
         if let Some(runner) = self.runner(&run.agent_id) {
             // false = the backend has no waiter for it (the wait timed out and
@@ -493,7 +539,8 @@ impl Runtime {
             let run_id = push.get("run_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let items = push.get("items").and_then(|v| v.as_array()).cloned().unwrap_or_default();
             let Ok(state) = self.core.state_brief() else { return };
-            let runs: Vec<TurnRun> = serde_json::from_value(state.get("runs").cloned().unwrap_or(Json::Null)).unwrap_or_default();
+            let runs: Vec<TurnRun> =
+                serde_json::from_value(state.get("runs").cloned().unwrap_or(Json::Null)).unwrap_or_default();
             let Some(run) = runs.iter().find(|r| r.run_id == run_id) else { continue };
             if let Some(runner) = self.runner(&run.agent_id) {
                 runner.deliver_mid_turn(&run_id, items);
@@ -520,7 +567,8 @@ impl Runtime {
         if session.is_null() {
             return;
         }
-        let runs: Vec<TurnRun> = serde_json::from_value(state.get("runs").cloned().unwrap_or(Json::Null)).unwrap_or_default();
+        let runs: Vec<TurnRun> =
+            serde_json::from_value(state.get("runs").cloned().unwrap_or(Json::Null)).unwrap_or_default();
         if session.get("status").and_then(|v| v.as_str()) == Some("PAUSED") {
             // Pausing stops dispatch, but must not suppress requests to stop work.
             self.watch_cancellations(&runs);
@@ -558,11 +606,18 @@ impl Runtime {
                 continue;
             }
             if self.factory.is_some() {
-                let stale = self.runners.lock().unwrap().get(&run.agent_id)
-                    .map(|(revision, _)| *revision != run.config_revision).unwrap_or(false);
+                let stale = self
+                    .runners
+                    .lock()
+                    .unwrap()
+                    .get(&run.agent_id)
+                    .map(|(revision, _)| *revision != run.config_revision)
+                    .unwrap_or(false);
                 if stale {
                     let old = self.runners.lock().unwrap().remove(&run.agent_id);
-                    if let Some((_, runner)) = old { runner.close(); }
+                    if let Some((_, runner)) = old {
+                        runner.close();
+                    }
                 }
             }
             let runner = match self.runner(&run.agent_id) {
@@ -617,10 +672,17 @@ impl Runtime {
 
     fn spawn_execute(&self, run: TurnRun, _runner: Arc<dyn AgentRunner>) {
         let Some(runtime) = self.me() else { return };
-        let slot = Arc::new(RunSlot { agent_id: run.agent_id.clone(), handle: Mutex::new(None), cancel_started: AtomicBool::new(false), control: Arc::new(TurnControl::default()) });
+        let slot = Arc::new(RunSlot {
+            agent_id: run.agent_id.clone(),
+            handle: Mutex::new(None),
+            cancel_started: AtomicBool::new(false),
+            control: Arc::new(TurnControl::default()),
+        });
         {
             let mut inflight = self.inflight.lock().unwrap();
-            if self.closed.load(Ordering::SeqCst) { return; }
+            if self.closed.load(Ordering::SeqCst) {
+                return;
+            }
             inflight.insert(run.run_id.clone(), slot.clone());
         }
         let run_id = run.run_id.clone();
@@ -665,7 +727,9 @@ impl Runtime {
         });
         // confirmation timeout: mark OUTCOME_UNKNOWN + expire approvals (RT-06)
         if let Err(RecvTimeoutError::Timeout) = rx.recv_timeout(timeout) {
-            if self.closed.load(Ordering::SeqCst) { return; }
+            if self.closed.load(Ordering::SeqCst) {
+                return;
+            }
             core_best_effort(&self.core, "stop timeout bookkeeping", "stop_timeout", json!({"run_id": run.run_id}));
         }
         self.signal();
@@ -704,7 +768,9 @@ impl Runtime {
     }
 
     fn execute_inner(&self, run: &TurnRun, control: &Arc<TurnControl>) -> Result<(), String> {
-        if self.closed.load(Ordering::SeqCst) { return Ok(()); }
+        if self.closed.load(Ordering::SeqCst) {
+            return Ok(());
+        }
         let Some(runner) = self.runner(&run.agent_id) else {
             self.finalize(
                 run,
@@ -722,10 +788,8 @@ impl Runtime {
             .map_err(|e| format!("bad run: {e}"))?;
         let wake = begin.get("wake").cloned().unwrap_or(Json::Null);
         let view = self.core.call_in_session("agent_view", json!({"agent_id": fresh.agent_id}))?;
-        let delivery_ids: Vec<i64> = view
-            .get("delivery_ids")
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .unwrap_or_default();
+        let delivery_ids: Vec<i64> =
+            view.get("delivery_ids").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
         if !delivery_ids.is_empty() {
             let mut offered = self.offered.lock().unwrap();
             let slot = offered.entry(fresh.run_id.clone()).or_default();
@@ -740,7 +804,12 @@ impl Runtime {
             &fresh.agent_id,
             &fresh.run_id,
             self.approvals.clone(),
-            Some(self.guarded_executor(&fresh.agent_id, &fresh.run_id, limits.max_model_steps_per_turn, control.clone())),
+            Some(self.guarded_executor(
+                &fresh.agent_id,
+                &fresh.run_id,
+                limits.max_model_steps_per_turn,
+                control.clone(),
+            )),
             control.clone(),
             self.topology_prepare.lock().unwrap().clone(),
             self.hooks.lock().unwrap().clone(),
@@ -748,17 +817,12 @@ impl Runtime {
         let mut outcome = self.run_with_timeout(runner.clone(), &fresh, &view, gateway, &wake, timeout);
 
         let state = self.core.state_brief()?;
-        let runs: Vec<TurnRun> = serde_json::from_value(state.get("runs").cloned().unwrap_or(Json::Null)).unwrap_or_default();
-        let cancel_requested = runs
-            .iter()
-            .find(|r| r.run_id == fresh.run_id)
-            .map(|r| r.cancel_requested)
-            .unwrap_or(false);
+        let runs: Vec<TurnRun> =
+            serde_json::from_value(state.get("runs").cloned().unwrap_or(Json::Null)).unwrap_or_default();
+        let cancel_requested =
+            runs.iter().find(|r| r.run_id == fresh.run_id).map(|r| r.cancel_requested).unwrap_or(false);
         if cancel_requested
-            && matches!(
-                outcome.status,
-                TurnStatus::Completed | TurnStatus::WaitingTask | TurnStatus::WaitingApproval
-            )
+            && matches!(outcome.status, TurnStatus::Completed | TurnStatus::WaitingTask | TurnStatus::WaitingApproval)
         {
             let confirmed = self.interrupt_confirm(&fresh.run_id, runner);
             outcome = TurnOutcome {
@@ -805,7 +869,8 @@ impl Runtime {
                     std::thread::spawn(move || {
                         runner_for_interrupt.request_interrupt(&run_id);
                     });
-                    let stopped = control.wait_idle(Duration::from_secs(self.effective_limits().cancel_confirm_timeout_s.max(1) as u64));
+                    let stopped = control
+                        .wait_idle(Duration::from_secs(self.effective_limits().cancel_confirm_timeout_s.max(1) as u64));
                     return TurnOutcome {
                         status: if stopped { TurnStatus::Failed } else { TurnStatus::OutcomeUnknown },
                         error: Some(format!("turn active-time limit {}s reached", timeout.as_secs())),
@@ -817,12 +882,14 @@ impl Runtime {
                 // the member thread panicked before sending: never report that as a
                 // timeout (a 1200s claim for an immediate crash sends debugging the
                 // wrong way)
-                Err(RecvTimeoutError::Disconnected) => return TurnOutcome {
-                    status: TurnStatus::Failed,
-                    error: Some("member runner crashed before reporting an outcome".into()),
-                    note: None,
-                    reply_text: None,
-                },
+                Err(RecvTimeoutError::Disconnected) => {
+                    return TurnOutcome {
+                        status: TurnStatus::Failed,
+                        error: Some("member runner crashed before reporting an outcome".into()),
+                        note: None,
+                        reply_text: None,
+                    }
+                }
             }
         }
     }
@@ -870,11 +937,7 @@ impl Runtime {
     fn effective_limits(&self) -> RuntimeLimits {
         let Ok(state) = self.core.state_brief() else { return self.limits.clone() };
         let field = |name: &str, fallback: i64| -> i64 {
-            state
-                .get("limits")
-                .and_then(|l| l.get(name))
-                .and_then(|v| v.as_i64())
-                .unwrap_or(fallback)
+            state.get("limits").and_then(|l| l.get(name)).and_then(|v| v.as_i64()).unwrap_or(fallback)
         };
         RuntimeLimits {
             turn_active_timeout_s: field("turn_active_timeout_s", self.limits.turn_active_timeout_s),
@@ -885,38 +948,43 @@ impl Runtime {
     }
 
     fn finalize(&self, run: &TurnRun, outcome: TurnOutcome) {
-        if self.closed.load(Ordering::SeqCst) { return; }
-        let mut ack: Vec<i64> = self
-            .offered
-            .lock()
-            .unwrap()
-            .remove(&run.run_id)
-            .map(|ids| ids.into_iter().collect())
-            .unwrap_or_default();
+        if self.closed.load(Ordering::SeqCst) {
+            return;
+        }
+        let mut ack: Vec<i64> =
+            self.offered.lock().unwrap().remove(&run.run_id).map(|ids| ids.into_iter().collect()).unwrap_or_default();
         if let Some(applied) = self.runner(&run.agent_id).and_then(|r| r.applied_delivery_ids(run)) {
             ack.retain(|id| applied.contains(id));
         }
-        core_best_effort(&self.core, "run finalization", "finalize_run", json!({
-            "run_id": run.run_id,
-            "status": outcome.status,
-            "error": outcome.error,
-            "note": outcome.note,
-            "reply_text": outcome.reply_text,
-            "ack_ids": ack,
-        }));
+        core_best_effort(
+            &self.core,
+            "run finalization",
+            "finalize_run",
+            json!({
+                "run_id": run.run_id,
+                "status": outcome.status,
+                "error": outcome.error,
+                "note": outcome.note,
+                "reply_text": outcome.reply_text,
+                "ack_ids": ack,
+            }),
+        );
         let event = match outcome.status {
             TurnStatus::Completed => "run_completed",
             TurnStatus::Failed | TurnStatus::OutcomeUnknown => "run_failed",
             TurnStatus::Cancelled => "run_cancelled",
             _ => "run_paused",
         };
-        self.notify.note_event(event, &json!({
-            "run_id": run.run_id,
-            "agent_id": run.agent_id,
-            "status": outcome.status,
-            "error": outcome.error,
-            "reply_text": outcome.reply_text,
-        }));
+        self.notify.note_event(
+            event,
+            &json!({
+                "run_id": run.run_id,
+                "agent_id": run.agent_id,
+                "status": outcome.status,
+                "error": outcome.error,
+                "reply_text": outcome.reply_text,
+            }),
+        );
         self.drain_mid_turn();
         self.signal();
     }
@@ -926,7 +994,8 @@ impl Runtime {
     /// After a restart: re-check in-flight runs, never blind-retry side effects.
     pub fn reconcile(&self) {
         let Ok(state) = self.core.state_brief() else { return };
-        let runs: Vec<TurnRun> = serde_json::from_value(state.get("runs").cloned().unwrap_or(Json::Null)).unwrap_or_default();
+        let runs: Vec<TurnRun> =
+            serde_json::from_value(state.get("runs").cloned().unwrap_or(Json::Null)).unwrap_or_default();
         let parked: Vec<TurnRun> = runs
             .iter()
             .filter(|r| matches!(r.status, TurnStatus::Running | TurnStatus::WaitingTask | TurnStatus::WaitingApproval))
@@ -969,11 +1038,7 @@ impl Runtime {
                 continue;
             }
             if run.external_turn_id.is_some() {
-                self.converge(
-                    &run,
-                    TurnStatus::OutcomeUnknown,
-                    Some("external turn outcome could not be confirmed"),
-                );
+                self.converge(&run, TurnStatus::OutcomeUnknown, Some("external turn outcome could not be confirmed"));
             } else {
                 // in-process runner only: safe to re-run the segment
                 core_best_effort(&self.core, "run requeue", "requeue_run", json!({"run_id": run.run_id}));
@@ -991,10 +1056,7 @@ impl Runtime {
             .entry(run.run_id.clone())
             .or_default()
             .extend(run.input_delivery_ids.iter().copied());
-        self.finalize(
-            run,
-            TurnOutcome { status, error: error.map(str::to_string), note: None, reply_text: None },
-        );
+        self.finalize(run, TurnOutcome { status, error: error.map(str::to_string), note: None, reply_text: None });
     }
 
     // -- helpers -------------------------------------------------------------

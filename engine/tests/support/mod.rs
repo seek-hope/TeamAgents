@@ -37,8 +37,7 @@ pub fn core_with_spec(session: &str, spec: Json) -> Arc<CoreClient> {
     let core = CoreClient::open(":memory:", session).expect("core");
     core.call("create_session", json!({"session_id": session, "cwd": "/tmp"})).expect("create");
     // the test catalog uses profile "test"/"m"
-    core.call("set_catalog", json!({"session_id": session, "catalog": test_catalog()}))
-        .expect("catalog");
+    core.call("set_catalog", json!({"session_id": session, "catalog": test_catalog()})).expect("catalog");
     core.call("save_spec", json!({"session_id": session, "spec": spec})).expect("spec");
     core
 }
@@ -75,9 +74,10 @@ pub fn scripted(id: &str, steps: &Json, barriers: BarrierRegistry) -> Arc<Script
 pub fn harness_with(core: Arc<CoreClient>, members: Vec<(&str, Arc<dyn AgentRunner>)>) -> Harness {
     let notify = Notify::new(core.clone());
     let approvals = ApprovalGate::new(core.clone(), PermissionPolicy::default());
-    let executor: ToolExecutor = Arc::new(|_agent: &str, tool: &str, _args: &Json, _control: &teamagents_engine::gateway::TurnControl| {
-        Err(format!("no tool executor configured for {tool}"))
-    });
+    let executor: ToolExecutor =
+        Arc::new(|_agent: &str, tool: &str, _args: &Json, _control: &teamagents_engine::gateway::TurnControl| {
+            Err(format!("no tool executor configured for {tool}"))
+        });
     let runtime = Runtime::new(core.clone(), notify, approvals, executor, None, RuntimeLimits::default());
     for (id, member) in members {
         runtime.add_runner(id, member);
@@ -96,7 +96,13 @@ pub fn wait_for<F: Fn() -> bool>(probe: F, timeout_ms: u64) -> bool {
     probe()
 }
 
-pub fn submit(core: &Arc<CoreClient>, action_id: &str, actor: &str, kind: &str, payload: Json) -> teamagents_core::models::Receipt {
+pub fn submit(
+    core: &Arc<CoreClient>,
+    action_id: &str,
+    actor: &str,
+    kind: &str,
+    payload: Json,
+) -> teamagents_core::models::Receipt {
     let action: teamagents_core::models::TeamAction = serde_json::from_value(json!({
         "action_id": action_id,
         "session_id": core.session_id,

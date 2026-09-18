@@ -151,11 +151,15 @@ impl McpClient {
             }
         });
         // A failed handshake must kill+wait the server before returning Err.
-        if let Err(e) = client.call("initialize", json!({
-            "protocolVersion": "2025-06-18",
-            "capabilities": {"roots": {}},
-            "clientInfo": {"name": "teamagents", "version": env!("CARGO_PKG_VERSION")},
-        }), client.startup_ms) {
+        if let Err(e) = client.call(
+            "initialize",
+            json!({
+                "protocolVersion": "2025-06-18",
+                "capabilities": {"roots": {}},
+                "clientInfo": {"name": "teamagents", "version": env!("CARGO_PKG_VERSION")},
+            }),
+            client.startup_ms,
+        ) {
             client.close();
             return Err(format!("MCP {mode} initialization failed: {e}"));
         }
@@ -180,8 +184,11 @@ impl McpClient {
         tool_timeout_s: u64,
     ) -> Result<Arc<Self>, String> {
         let endpoint = url::Url::parse(url).map_err(|_| "invalid MCP HTTP endpoint".to_string())?;
-        if !matches!(endpoint.scheme(), "http" | "https") || endpoint.host_str().is_none()
-            || !endpoint.username().is_empty() || endpoint.password().is_some() || endpoint.fragment().is_some()
+        if !matches!(endpoint.scheme(), "http" | "https")
+            || endpoint.host_str().is_none()
+            || !endpoint.username().is_empty()
+            || endpoint.password().is_some()
+            || endpoint.fragment().is_some()
         {
             return Err("MCP HTTP endpoint must be http(s), without credentials or a fragment".into());
         }
@@ -198,12 +205,18 @@ impl McpClient {
             tool_ms: tool_timeout_s.max(1).saturating_mul(1000),
             workspace: Arc::new(Mutex::new(None)),
         });
-        let initialized = client.call("initialize", json!({
-            "protocolVersion": "2025-06-18",
-            "capabilities": {"roots": {}},
-            "clientInfo": {"name": "teamagents", "version": env!("CARGO_PKG_VERSION")},
-        }), client.startup_ms)?;
-        let version = initialized["protocolVersion"].as_str().filter(|v| !v.is_empty())
+        let initialized = client.call(
+            "initialize",
+            json!({
+                "protocolVersion": "2025-06-18",
+                "capabilities": {"roots": {}},
+                "clientInfo": {"name": "teamagents", "version": env!("CARGO_PKG_VERSION")},
+            }),
+            client.startup_ms,
+        )?;
+        let version = initialized["protocolVersion"]
+            .as_str()
+            .filter(|v| !v.is_empty())
             .ok_or("MCP initialize response has no protocolVersion")?;
         if let Transport::Http { protocol, .. } = &client.transport {
             *protocol.lock().unwrap() = Some(version.to_string());
@@ -247,7 +260,8 @@ impl McpClient {
         }
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let reader = response.into_reader();
-        let reply = (url.clone(), token.clone(), session.clone(), protocol.clone(), stop.clone(), self.workspace.clone());
+        let reply =
+            (url.clone(), token.clone(), session.clone(), protocol.clone(), stop.clone(), self.workspace.clone());
         let join = std::thread::spawn(move || read_push_stream(reader, reply));
         *stream.lock().unwrap() = Some(PushStream { stop, join: Some(join) });
     }
@@ -313,11 +327,7 @@ impl McpClient {
             .get("content")
             .and_then(|v| v.as_array())
             .map(|items| {
-                items
-                    .iter()
-                    .filter_map(|item| item.get("text").and_then(|v| v.as_str()))
-                    .collect::<Vec<_>>()
-                    .join("\n")
+                items.iter().filter_map(|item| item.get("text").and_then(|v| v.as_str())).collect::<Vec<_>>().join("\n")
             })
             .unwrap_or_default();
         if reply.get("isError").and_then(|v| v.as_bool()).unwrap_or(false) {
@@ -351,10 +361,7 @@ impl McpClient {
                 // DELETE terminates the session on the server (405 = unsupported)
                 if let Some(id) = session.lock().unwrap().clone() {
                     let agent = ureq::AgentBuilder::new().redirects(0).build();
-                    let mut request = agent
-                        .delete(url)
-                        .timeout(Duration::from_secs(2))
-                        .set("mcp-session-id", &id);
+                    let mut request = agent.delete(url).timeout(Duration::from_secs(2)).set("mcp-session-id", &id);
                     if let Some(token) = token {
                         request = request.set("authorization", &format!("Bearer {token}"));
                     }
@@ -412,7 +419,14 @@ fn read_push_stream(reader: Box<dyn std::io::Read + Send + Sync + 'static>, repl
             Ok(0) => return,
             Ok(_) => {}
             // the per-read timeout is how this thread learns to stop
-            Err(error) if matches!(error.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted) => continue,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                ) =>
+            {
+                continue
+            }
             Err(_) => return,
         }
         let line = line.trim_end_matches(['\r', '\n']);
@@ -436,7 +450,14 @@ fn read_push_stream(reader: Box<dyn std::io::Read + Send + Sync + 'static>, repl
         let method = message.get("method").and_then(|v| v.as_str()).unwrap_or("");
         if let Some(id) = message.get("id").and_then(Json::as_u64) {
             if let Some(body) = server_request_reply(id, method, workspace.lock().unwrap().as_deref()) {
-                if let Err(error) = http_roundtrip(&url, token.as_deref(), &session, protocol.lock().unwrap().clone().as_deref(), &body, 5_000) {
+                if let Err(error) = http_roundtrip(
+                    &url,
+                    token.as_deref(),
+                    &session,
+                    protocol.lock().unwrap().clone().as_deref(),
+                    &body,
+                    5_000,
+                ) {
                     eprintln!("MCP push reply failed: {error}");
                 }
             }
@@ -485,7 +506,8 @@ fn http_roundtrip(
     // A binding authorizes this endpoint only; never forward tokens or session
     // headers to a redirect target, including another endpoint on the same host.
     let agent = ureq::AgentBuilder::new().redirects(0).build();
-    let mut request = agent.post(url)
+    let mut request = agent
+        .post(url)
         .timeout(Duration::from_millis(timeout_ms))
         .set("content-type", "application/json")
         .set("accept", "application/json, text/event-stream");
@@ -511,7 +533,9 @@ fn http_roundtrip(
     let content_type = response.header("content-type").unwrap_or("").to_string();
     if content_type.contains("text/event-stream") {
         let stream = response.into_string().map_err(|e| format!("MCP HTTP bad SSE body: {e}"))?;
-        return sse_json(&stream, &body["id"]).map(Some).ok_or_else(|| "MCP HTTP SSE stream carried no matching JSON-RPC response".into());
+        return sse_json(&stream, &body["id"])
+            .map(Some)
+            .ok_or_else(|| "MCP HTTP SSE stream carried no matching JSON-RPC response".into());
     }
     let payload: Json = response.into_json().map_err(|e| format!("MCP HTTP bad json: {e}"))?;
     if body.get("id").is_some() && payload.get("id") != body.get("id") {
@@ -524,11 +548,19 @@ fn http_roundtrip(
 fn sse_json(body: &str, id: &Json) -> Option<Json> {
     let normalized = body.trim_start_matches('\u{feff}').replace("\r\n", "\n").replace('\r', "\n");
     for event in normalized.split_inclusive("\n\n") {
-        if !event.ends_with("\n\n") { continue; }
-        let data = event.lines().filter_map(|line| {
-            if line == "data" { return Some(""); }
-            line.strip_prefix("data:").map(|s| s.strip_prefix(' ').unwrap_or(s))
-        }).collect::<Vec<_>>().join("\n");
+        if !event.ends_with("\n\n") {
+            continue;
+        }
+        let data = event
+            .lines()
+            .filter_map(|line| {
+                if line == "data" {
+                    return Some("");
+                }
+                line.strip_prefix("data:").map(|s| s.strip_prefix(' ').unwrap_or(s))
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
         if let Ok(message) = serde_json::from_str::<Json>(&data) {
             if message.get("id") == Some(id) && (message.get("result").is_some() || message.get("error").is_some()) {
                 return Some(message);
@@ -568,23 +600,35 @@ for line in sys.stdin:
         result = {'cwd': os.getcwd(), 'home': os.environ['HOME'], 'outside': os.path.exists(sys.argv[1]), 'network': network, 'literal': sys.argv[3]}
     print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
 "#;
-        let args = vec!["-u".into(), "-c".into(), script.into(), outside.display().to_string(),
-            listener.local_addr().unwrap().port().to_string(), literal.into()];
+        let args = vec![
+            "-u".into(),
+            "-c".into(),
+            script.into(),
+            outside.display().to_string(),
+            listener.local_addr().unwrap().port().to_string(),
+            literal.into(),
+        ];
         if !crate::tools::bwrap_available() {
             // 无隔离能力时不允许降级执行：workspace 模式必须直接失败（CI 上没有 bwrap）
-            assert!(McpClient::connect_stdio_in("/usr/bin/python3", &args, &[], &root, "workspace", false, 2, 3).is_err());
+            assert!(
+                McpClient::connect_stdio_in("/usr/bin/python3", &args, &[], &root, "workspace", false, 2, 3).is_err()
+            );
             std::fs::remove_dir_all(dir).unwrap();
             return;
         }
-        for (mode, network, visible) in [("workspace", false, false), ("workspace", true, false), ("host", false, true)] {
-            let client = McpClient::connect_stdio_in("/usr/bin/python3", &args, &[], &root, mode, network, 2, 3).unwrap();
+        for (mode, network, visible) in [("workspace", false, false), ("workspace", true, false), ("host", false, true)]
+        {
+            let client =
+                McpClient::connect_stdio_in("/usr/bin/python3", &args, &[], &root, mode, network, 2, 3).unwrap();
             assert_eq!((client.startup_ms, client.tool_ms), (2000, 3000));
             let response = client.call("probe", json!({}), 3000).unwrap();
             assert_eq!(response["cwd"], root.display().to_string());
             assert_eq!(response["outside"], visible);
             assert_eq!(response["network"], network || mode == "host");
             assert_eq!(response["literal"], literal);
-            if mode == "workspace" { assert_eq!(response["home"], root.display().to_string()); }
+            if mode == "workspace" {
+                assert_eq!(response["home"], root.display().to_string());
+            }
             assert!(root.join("created").is_file());
             assert!(!root.join("injected").exists());
             let Transport::Stdio { child, .. } = &client.transport else { unreachable!() };
@@ -628,7 +672,9 @@ for line in sys.stdin:
             loop {
                 let mut line = String::new();
                 reader.read_line(&mut line).unwrap();
-                if line == "\r\n" || line.is_empty() { break; }
+                if line == "\r\n" || line.is_empty() {
+                    break;
+                }
                 if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
                     length = value.trim().parse().unwrap_or(0);
                 }
@@ -639,7 +685,11 @@ for line in sys.stdin:
             let mut body = vec![0u8; length];
             use std::io::Read as _;
             reader.read_exact(&mut body).unwrap();
-            write!(stream, "HTTP/1.1 302 Found\r\nLocation: {target}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+            write!(
+                stream,
+                "HTTP/1.1 302 Found\r\nLocation: {target}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
             stream.flush().unwrap();
         });
         let error = McpClient::connect_http(&endpoint, Some("private-token".into()), 1, 1).err().unwrap();

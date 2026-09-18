@@ -21,13 +21,20 @@ pub fn observer_matches(ob: &ObserverSpec, kind: EventKind, _actor_id: &str, sub
         return false;
     }
     ob.event_types.is_empty()
-        || ob.event_types.iter().any(|t| {
-            serde_json::to_value(kind).ok().and_then(|k| k.as_str().map(str::to_string)) == Some(t.clone())
-        })
+        || ob
+            .event_types
+            .iter()
+            .any(|t| serde_json::to_value(kind).ok().and_then(|k| k.as_str().map(str::to_string)) == Some(t.clone()))
 }
 
 /// The payload scope this recipient sees as an observer (None = direct participant).
-pub fn observer_scope_for(spec: &TeamSpec, recipient: &str, kind: EventKind, actor_id: &str, payload: &Json) -> Option<String> {
+pub fn observer_scope_for(
+    spec: &TeamSpec,
+    recipient: &str,
+    kind: EventKind,
+    actor_id: &str,
+    payload: &Json,
+) -> Option<String> {
     let subjects = observer_subjects(kind, actor_id, payload);
     if subjects.contains(recipient) || recipient == actor_id {
         return None;
@@ -42,7 +49,9 @@ pub fn observer_scope_for(spec: &TeamSpec, recipient: &str, kind: EventKind, act
 pub fn scope_payload(scope: &str, kind: EventKind, payload: &Json) -> Json {
     let Some(map) = payload.as_object() else { return payload.clone() };
     let keep = |keys: &[&str]| -> Json {
-        Json::Object(map.iter().filter(|(k, _)| keys.contains(&k.as_str())).map(|(k, v)| (k.clone(), v.clone())).collect())
+        Json::Object(
+            map.iter().filter(|(k, _)| keys.contains(&k.as_str())).map(|(k, v)| (k.clone(), v.clone())).collect(),
+        )
     };
     match scope {
         "status" => keep(STATUS_KEYS),
@@ -63,7 +72,13 @@ fn all_members(spec: &TeamSpec) -> HashSet<String> {
     spec.agents.iter().map(|a| a.id.clone()).collect()
 }
 
-pub fn event_audience(spec: &TeamSpec, kind: EventKind, actor_id: &str, payload: &Json, targets: Option<&[String]>) -> Vec<String> {
+pub fn event_audience(
+    spec: &TeamSpec,
+    kind: EventKind,
+    actor_id: &str,
+    payload: &Json,
+    targets: Option<&[String]>,
+) -> Vec<String> {
     let members = all_members(spec);
     let mut audience: HashSet<String> = HashSet::new();
     let get = |k: &str| payload.get(k).and_then(|v| v.as_str()).map(str::to_string);
@@ -77,8 +92,13 @@ pub fn event_audience(spec: &TeamSpec, kind: EventKind, actor_id: &str, payload:
             }
             audience.insert(spec.leader_id.clone());
         }
-        EventKind::TaskCreated | EventKind::TaskStarted | EventKind::TaskCompleted
-        | EventKind::TaskFailed | EventKind::TaskCancelled | EventKind::TaskBlocked | EventKind::TaskReady => {
+        EventKind::TaskCreated
+        | EventKind::TaskStarted
+        | EventKind::TaskCompleted
+        | EventKind::TaskFailed
+        | EventKind::TaskCancelled
+        | EventKind::TaskBlocked
+        | EventKind::TaskReady => {
             audience.insert(actor_id.to_string());
             audience.insert(spec.leader_id.clone());
             for k in ["assignee", "requester"] {
@@ -126,7 +146,13 @@ pub fn event_audience(spec: &TeamSpec, kind: EventKind, actor_id: &str, payload:
     out
 }
 
-pub fn event_push(spec: &TeamSpec, kind: EventKind, actor_id: &str, payload: &Json, targets: Option<&[String]>) -> Vec<String> {
+pub fn event_push(
+    spec: &TeamSpec,
+    kind: EventKind,
+    actor_id: &str,
+    payload: &Json,
+    targets: Option<&[String]>,
+) -> Vec<String> {
     let members = all_members(spec);
     let mut push: HashSet<String> = HashSet::new();
     let get = |k: &str| payload.get(k).and_then(|v| v.as_str()).map(str::to_string);
@@ -139,8 +165,13 @@ pub fn event_push(spec: &TeamSpec, kind: EventKind, actor_id: &str, payload: &Js
                 push.extend(ts.iter().cloned());
             }
         }
-        EventKind::TaskCreated | EventKind::TaskStarted | EventKind::TaskCompleted
-        | EventKind::TaskFailed | EventKind::TaskCancelled | EventKind::TaskBlocked | EventKind::TaskReady => {
+        EventKind::TaskCreated
+        | EventKind::TaskStarted
+        | EventKind::TaskCompleted
+        | EventKind::TaskFailed
+        | EventKind::TaskCancelled
+        | EventKind::TaskBlocked
+        | EventKind::TaskReady => {
             if kind == EventKind::TaskReady {
                 if let Some(a) = get("assignee") {
                     push.insert(a);
@@ -197,7 +228,7 @@ mod tests {
         assert_eq!(push, vec!["lead", "obs"]); // on_event observer also wakes
         let aud = event_audience(&s, EventKind::TaskCompleted, "b", &payload, None);
         assert_eq!(aud, vec!["b", "lead", "obs"]); // observer subscribed to b
-        // observer payload is scoped to status keys
+                                                   // observer payload is scoped to status keys
         let scope = observer_scope_for(&s, "obs", EventKind::TaskCompleted, "b", &payload);
         assert_eq!(scope.as_deref(), Some("status"));
         let trimmed = scope_payload("status", EventKind::TaskCompleted, &payload);
@@ -290,9 +321,11 @@ pub fn build_agent_view(store: &Store, spec: &TeamSpec, session_id: &str, agent_
             })
         })
         .collect();
-    let mut can_send_to: Vec<String> = spec.agents.iter().filter(|a| spec.can_send(agent_id, &a.id)).map(|a| a.id.clone()).collect();
+    let mut can_send_to: Vec<String> =
+        spec.agents.iter().filter(|a| spec.can_send(agent_id, &a.id)).map(|a| a.id.clone()).collect();
     can_send_to.sort();
-    let mut can_delegate_to: Vec<String> = spec.agents.iter().filter(|a| spec.can_delegate(agent_id, &a.id)).map(|a| a.id.clone()).collect();
+    let mut can_delegate_to: Vec<String> =
+        spec.agents.iter().filter(|a| spec.can_delegate(agent_id, &a.id)).map(|a| a.id.clone()).collect();
     can_delegate_to.sort();
     serde_json::json!({
         "agent_id": agent_id,

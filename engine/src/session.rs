@@ -106,14 +106,20 @@ fn save_session_profiles(session_id: &str, profiles: &HashMap<String, ModelProfi
 
 /// Load persisted overrides, dropping entries that no longer validate against
 /// the current spec/catalog (members or profiles may have changed since).
-fn load_model_overrides(session_id: &str, catalog: &UserConfig, agents: &[AgentSpec]) -> HashMap<String, ModelOverride> {
+fn load_model_overrides(
+    session_id: &str,
+    catalog: &UserConfig,
+    agents: &[AgentSpec],
+) -> HashMap<String, ModelOverride> {
     let Ok(text) = std::fs::read_to_string(overrides_path(session_id)) else { return HashMap::new() };
     let parsed: HashMap<String, ModelOverride> = serde_json::from_str(&text).unwrap_or_default();
     parsed
         .into_iter()
         .filter(|(id, ov)| {
             let Some(agent) = agents.iter().find(|a| &a.id == id) else { return false };
-            let Some(profile) = catalog.models.get(ov.profile.as_ref().unwrap_or(&agent.model_profile)) else { return false };
+            let Some(profile) = catalog.models.get(ov.profile.as_ref().unwrap_or(&agent.model_profile)) else {
+                return false;
+            };
             if ov.profile.is_some() && agent.runtime_kind == RuntimeKind::Codex && profile.protocol != "openai" {
                 return false;
             }
@@ -146,12 +152,7 @@ impl OpenedSession {
 
     /// Session profiles shadow user-config profiles of the same name (D-30).
     fn lookup_model(&self, name: &str) -> Option<ModelProfile> {
-        self.session_profiles
-            .lock()
-            .unwrap()
-            .get(name)
-            .cloned()
-            .or_else(|| self.catalog.models.get(name).cloned())
+        self.session_profiles.lock().unwrap().get(name).cloned().or_else(|| self.catalog.models.get(name).cloned())
     }
 
     /// User config models + session profiles (session wins), sorted by name.
@@ -178,7 +179,10 @@ impl OpenedSession {
             .map(|agent| {
                 let id = agent.get("id").and_then(|v| v.as_str()).unwrap_or("");
                 let ov = self.model_overrides.lock().unwrap().get(id).cloned().unwrap_or_default();
-                let profile_name = ov.profile.as_deref().unwrap_or_else(|| agent.get("model_profile").and_then(|v| v.as_str()).unwrap_or(""));
+                let profile_name = ov
+                    .profile
+                    .as_deref()
+                    .unwrap_or_else(|| agent.get("model_profile").and_then(|v| v.as_str()).unwrap_or(""));
                 let profile = self.lookup_model(profile_name);
                 let usage = probes.get(id).map(|probe| probe());
                 // codex reports its own window; the profile wins when set
@@ -203,11 +207,7 @@ impl OpenedSession {
     /// The thread is `ctx:{agent}:{context_epoch}` (control.rs::context_ref).
     fn leader_thread(&self) -> Result<(String, String), String> {
         let state = self.core.call_in_session("state", json!({"include_events": false}))?;
-        let leader = state
-            .get("leader_id")
-            .and_then(|v| v.as_str())
-            .ok_or("no leader")?
-            .to_string();
+        let leader = state.get("leader_id").and_then(|v| v.as_str()).ok_or("no leader")?.to_string();
         let epoch = state
             .get("agents")
             .and_then(|v| v.as_array())
@@ -221,11 +221,7 @@ impl OpenedSession {
     /// Rewind targets on the leader's conversation (user inputs, newest first).
     pub fn rewind_points(&self) -> Result<Json, String> {
         let (leader, thread) = self.leader_thread()?;
-        let points = self
-            .runtime
-            .runner(&leader)
-            .map(|r| r.rewind_points(&thread))
-            .unwrap_or_default();
+        let points = self.runtime.runner(&leader).map(|r| r.rewind_points(&thread)).unwrap_or_default();
         Ok(json!({"agent_id": leader, "thread": thread, "points": points}))
     }
 
@@ -235,16 +231,10 @@ impl OpenedSession {
     pub fn rewind(&self, node_id: Option<String>) -> Result<Json, String> {
         let (leader, thread) = self.leader_thread()?;
         let state = self.core.call_in_session("state", json!({"include_events": false}))?;
-        let busy = state
-            .get("runs")
-            .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default()
-            .into_iter()
-            .any(|r| {
-                r.get("agent_id").and_then(|v| v.as_str()) == Some(leader.as_str())
-                    && r.get("status").and_then(|v| v.as_str()).map(|s| s == "QUEUED" || s == "RUNNING").unwrap_or(false)
-            });
+        let busy = state.get("runs").and_then(|v| v.as_array()).cloned().unwrap_or_default().into_iter().any(|r| {
+            r.get("agent_id").and_then(|v| v.as_str()) == Some(leader.as_str())
+                && r.get("status").and_then(|v| v.as_str()).map(|s| s == "QUEUED" || s == "RUNNING").unwrap_or(false)
+        });
         if busy {
             return Err("leader 回合进行中，等它结束后再 rewind".into());
         }
@@ -291,26 +281,38 @@ impl OpenedSession {
     /// this session; both None clears the override (profile default). The
     /// cached runner is invalidated so the change lands on the next turn.
     /// Overrides persist per session (D-29), never written back to the TeamSpec.
-    pub fn set_model_override(&self, agent_id: &str, model: Option<String>, effort: Option<String>) -> Result<Json, String> {
-        let profile = if model.is_none() && effort.is_none() { None } else {
+    pub fn set_model_override(
+        &self,
+        agent_id: &str,
+        model: Option<String>,
+        effort: Option<String>,
+    ) -> Result<Json, String> {
+        let profile = if model.is_none() && effort.is_none() {
+            None
+        } else {
             self.model_overrides.lock().unwrap().get(agent_id).and_then(|o| o.profile.clone())
         };
         self.set_model_selection(agent_id, profile, model, effort)
     }
 
     /// A selected profile owns the provider endpoint, auth reference and protocol.
-    pub fn set_model_selection(&self, agent_id: &str, profile: Option<String>, model: Option<String>, effort: Option<String>) -> Result<Json, String> {
+    pub fn set_model_selection(
+        &self,
+        agent_id: &str,
+        profile: Option<String>,
+        model: Option<String>,
+        effort: Option<String>,
+    ) -> Result<Json, String> {
         let agents = self.spec_agents()?;
-        let agent = agents
-            .iter()
-            .find(|a| a.id == agent_id)
-            .ok_or_else(|| format!("unknown member {agent_id}"))?;
+        let agent = agents.iter().find(|a| a.id == agent_id).ok_or_else(|| format!("unknown member {agent_id}"))?;
         let selected = match &profile {
             Some(name) => Some(self.lookup_model(name).ok_or_else(|| format!("unknown model profile {name}"))?),
             None => self.lookup_model(&agent.model_profile),
         };
-        if profile.is_some() && agent.runtime_kind == RuntimeKind::Codex
-            && selected.as_ref().is_some_and(|p| p.protocol != "openai") {
+        if profile.is_some()
+            && agent.runtime_kind == RuntimeKind::Codex
+            && selected.as_ref().is_some_and(|p| p.protocol != "openai")
+        {
             return Err("Codex 成员需要支持 Responses API 的 OpenAI 兼容供应商".into());
         }
         if let Some(model) = &model {
@@ -359,21 +361,31 @@ impl OpenedSession {
     pub fn discover_models(&self, provider: &str) -> Result<Json, String> {
         let merged = self.merged_models();
         let profiles: Vec<_> = merged.iter().filter(|(_, p)| p.provider == provider).collect();
-        if profiles.is_empty() { return Err(format!("unknown provider {provider}")); }
+        if profiles.is_empty() {
+            return Err(format!("unknown provider {provider}"));
+        }
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         let mut seen = std::collections::HashSet::new();
         let mut models = vec![];
         let mut errors = vec![];
         for (name, profile) in profiles {
             let base = crate::chat::resolve_base_url(profile);
-            if !seen.insert((base, profile.protocol.clone(), profile.api_key_env.clone())) { continue; }
+            if !seen.insert((base, profile.protocol.clone(), profile.api_key_env.clone())) {
+                continue;
+            }
             match fetch_model_ids(profile, deadline) {
                 Ok(ids) => {
                     for model in ids {
                         // Keep explicitly configured models with their own options.
-                        if merged.values().any(|p| p.provider == provider && p.model == model
-                            && p.protocol == profile.protocol && p.api_key_env == profile.api_key_env
-                            && crate::chat::resolve_base_url(p) == crate::chat::resolve_base_url(profile)) { continue; }
+                        if merged.values().any(|p| {
+                            p.provider == provider
+                                && p.model == model
+                                && p.protocol == profile.protocol
+                                && p.api_key_env == profile.api_key_env
+                                && crate::chat::resolve_base_url(p) == crate::chat::resolve_base_url(profile)
+                        }) {
+                            continue;
+                        }
                         models.push(json!({"id": name, "provider": provider, "model": model,
                             "protocol": profile.protocol, "efforts": model_efforts(&profile.protocol), "discovered": true}));
                     }
@@ -402,7 +414,10 @@ impl OpenedSession {
 }
 
 fn profile_effort(profile: &ModelProfile) -> Option<&str> {
-    profile.generation_options.get("reasoning_effort").and_then(Json::as_str)
+    profile
+        .generation_options
+        .get("reasoning_effort")
+        .and_then(Json::as_str)
         .or_else(|| profile.generation_options.get("output_config")?.get("effort")?.as_str())
 }
 
@@ -418,7 +433,11 @@ fn fetch_model_ids(profile: &ModelProfile, deadline: std::time::Instant) -> Resu
     let anthropic = profile.protocol == "anthropic";
     let base = crate::chat::resolve_base_url(profile);
     let url = if anthropic { format!("{}/v1/models", base.trim_end_matches("/v1")) } else { format!("{base}/models") };
-    let key = profile.api_key_env.as_ref().map(|name| std::env::var(name).map_err(|_| format!("缺少环境变量 {name}"))).transpose()?;
+    let key = profile
+        .api_key_env
+        .as_ref()
+        .map(|name| std::env::var(name).map_err(|_| format!("缺少环境变量 {name}")))
+        .transpose()?;
     let client = ureq::AgentBuilder::new().redirects(0).build();
     let mut ids = std::collections::BTreeSet::new();
     let mut cursor = String::new();
@@ -429,10 +448,16 @@ fn fetch_model_ids(profile: &ModelProfile, deadline: std::time::Instant) -> Resu
         let mut request = client.get(&url).timeout(remaining.min(std::time::Duration::from_secs(8)));
         if anthropic {
             request = request.set("anthropic-version", "2023-06-01").query("limit", "1000");
-            if !cursor.is_empty() { request = request.query("after_id", &cursor); }
+            if !cursor.is_empty() {
+                request = request.query("after_id", &cursor);
+            }
         }
         if let Some(key) = &key {
-            request = if anthropic { request.set("x-api-key", key) } else { request.set("authorization", &format!("Bearer {key}")) };
+            request = if anthropic {
+                request.set("x-api-key", key)
+            } else {
+                request.set("authorization", &format!("Bearer {key}"))
+            };
         }
         let response = request.call().map_err(|error| match error {
             ureq::Error::Status(code, _) => format!("HTTP {code}"),
@@ -442,11 +467,15 @@ fn fetch_model_ids(profile: &ModelProfile, deadline: std::time::Instant) -> Resu
             .map_err(|_| "模型目录不是有效 JSON，或响应超过 2 MB")?;
         let rows = data["data"].as_array().ok_or("模型目录缺少 data 数组")?;
         for row in rows {
-            let id = row["id"].as_str().filter(|s| !s.trim().is_empty() && s.len() <= 512 && !s.chars().any(char::is_control))
+            let id = row["id"]
+                .as_str()
+                .filter(|s| !s.trim().is_empty() && s.len() <= 512 && !s.chars().any(char::is_control))
                 .ok_or("模型目录包含无效模型 ID")?;
             ids.insert(id.to_string());
         }
-        if !anthropic || data["has_more"] != true { return Ok(ids.into_iter().collect()); }
+        if !anthropic || data["has_more"] != true {
+            return Ok(ids.into_iter().collect());
+        }
         let next = data["last_id"].as_str().filter(|s| !s.is_empty() && *s != cursor).ok_or("模型目录分页游标无效")?;
         cursor = next.into();
     }
@@ -459,7 +488,12 @@ fn fetch_model_ids(profile: &ModelProfile, deadline: std::time::Instant) -> Resu
 /// ponytail: bounded contents go straight into the system prompt instead of
 /// a virtual filesystem the member reads with file tools (upgrade path:
 /// a read_skill tool once skills outgrow the prompt).
-fn member_context(catalog: &UserConfig, cwd: &std::path::Path, session_id: &str, agent: &AgentSpec) -> Vec<(String, String)> {
+fn member_context(
+    catalog: &UserConfig,
+    cwd: &std::path::Path,
+    session_id: &str,
+    agent: &AgentSpec,
+) -> Vec<(String, String)> {
     const PER_FILE: usize = 8_000;
     const TOTAL: usize = 32_000;
     let mut out: Vec<(String, String)> = vec![];
@@ -498,7 +532,9 @@ fn member_context(catalog: &UserConfig, cwd: &std::path::Path, session_id: &str,
     }
 
     let mut memory: Vec<PathBuf> = catalog.instruction_files.iter().map(|p| expand_home(p)).collect();
-    for candidate in [cwd.join("AGENTS.md"), user_config_path().parent().map(|p| p.join("AGENTS.md")).unwrap_or_default()] {
+    for candidate in
+        [cwd.join("AGENTS.md"), user_config_path().parent().map(|p| p.join("AGENTS.md")).unwrap_or_default()]
+    {
         if candidate.is_file() {
             memory.push(candidate);
         }
@@ -510,10 +546,7 @@ fn member_context(catalog: &UserConfig, cwd: &std::path::Path, session_id: &str,
             break;
         }
         budget -= text.chars().count();
-        let label = path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "instructions".into());
+        let label = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "instructions".into());
         out.push((format!("instructions {label}"), text));
     }
     out
@@ -598,17 +631,17 @@ pub fn open_session(opts: OpenOptions) -> Result<Arc<OpenedSession>, String> {
 
     let result = (|| -> Result<Arc<OpenedSession>, String> {
         let probe = core.call("state", json!({"session_id": session_id})).ok();
-        let exists = probe
-            .as_ref()
-            .and_then(|state| state.get("session"))
-            .map(|session| !session.is_null())
-            .unwrap_or(false);
+        let exists =
+            probe.as_ref().and_then(|state| state.get("session")).map(|session| !session.is_null()).unwrap_or(false);
         if !exists {
-            match core.call("create_session", json!({
-                "session_id": session_id,
-                "cwd": cwd.to_string_lossy(),
-                "permissions_mode": if full_auto { "full_auto" } else { "approved_scope" },
-            })) {
+            match core.call(
+                "create_session",
+                json!({
+                    "session_id": session_id,
+                    "cwd": cwd.to_string_lossy(),
+                    "permissions_mode": if full_auto { "full_auto" } else { "approved_scope" },
+                }),
+            ) {
                 Ok(_) => {
                     let spec = opts
                         .initial_spec
@@ -629,7 +662,9 @@ pub fn open_session(opts: OpenOptions) -> Result<Arc<OpenedSession>, String> {
             }
         } else if full_auto {
             if let Ok(state) = core.state() {
-                if state.get("session").and_then(|s| s.get("permissions_mode")).and_then(|v| v.as_str()) != Some("full_auto") {
+                if state.get("session").and_then(|s| s.get("permissions_mode")).and_then(|v| v.as_str())
+                    != Some("full_auto")
+                {
                     let receipt = core.submit(&TeamAction {
                         action_id: teamagents_core::models::new_id("mode"),
                         session_id: session_id.clone(),
@@ -663,8 +698,9 @@ pub fn open_session(opts: OpenOptions) -> Result<Arc<OpenedSession>, String> {
             .unwrap_or("approved_scope");
         let policy = PermissionPolicy { mode: mode.to_string(), ..Default::default() };
         let approvals = ApprovalGate::new(core.clone(), policy);
-        let agents: Vec<AgentSpec> = serde_json::from_value(state.get("spec").and_then(|s| s.get("agents")).cloned().unwrap_or(Json::Null))
-            .map_err(|e| format!("bad team spec: {e}"))?;
+        let agents: Vec<AgentSpec> =
+            serde_json::from_value(state.get("spec").and_then(|s| s.get("agents")).cloned().unwrap_or(Json::Null))
+                .map_err(|e| format!("bad team spec: {e}"))?;
 
         let barriers: BarrierRegistry = Arc::new(Mutex::new(HashMap::new()));
         let notify = Notify::new(core.clone());
@@ -694,10 +730,26 @@ pub fn open_session(opts: OpenOptions) -> Result<Arc<OpenedSession>, String> {
         }
         let executor = member_executor_factory(core.clone(), catalog.clone(), session_id.clone(), cwd.clone());
         let limits = RuntimeLimits {
-            turn_active_timeout_s: state.get("limits").and_then(|l| l.get("turn_active_timeout_s")).and_then(|v| v.as_i64()).unwrap_or(1200),
-            cancel_confirm_timeout_s: state.get("limits").and_then(|l| l.get("cancel_confirm_timeout_s")).and_then(|v| v.as_i64()).unwrap_or(60),
-            max_model_steps_per_turn: state.get("limits").and_then(|l| l.get("max_model_steps_per_turn")).and_then(|v| v.as_i64()).unwrap_or(200),
-            max_parallel_workers: state.get("limits").and_then(|l| l.get("max_parallel_workers")).and_then(|v| v.as_i64()).unwrap_or(8),
+            turn_active_timeout_s: state
+                .get("limits")
+                .and_then(|l| l.get("turn_active_timeout_s"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(1200),
+            cancel_confirm_timeout_s: state
+                .get("limits")
+                .and_then(|l| l.get("cancel_confirm_timeout_s"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(60),
+            max_model_steps_per_turn: state
+                .get("limits")
+                .and_then(|l| l.get("max_model_steps_per_turn"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(200),
+            max_parallel_workers: state
+                .get("limits")
+                .and_then(|l| l.get("max_parallel_workers"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(8),
         };
         // hooks first: the notify sink must exist before the runtime starts, and
         // the gateway needs the same object for its pre_tool policy
@@ -797,9 +849,9 @@ fn topology_prepare_hook(
             // pair the runtime needs exists here.
             let mut added: Vec<Json> = vec![];
             for (source, target) in [(&leader_id, &aid), (&aid, &leader_id)] {
-                let covered = channels
-                    .iter()
-                    .any(|c| c.source == *source && c.mode == ChannelMode::Message && c.targets.iter().any(|t| t == target));
+                let covered = channels.iter().any(|c| {
+                    c.source == *source && c.mode == ChannelMode::Message && c.targets.iter().any(|t| t == target)
+                });
                 if !covered {
                     added.push(json!({"source": source, "targets": [target], "mode": "message"}));
                 }
@@ -814,7 +866,8 @@ fn topology_prepare_hook(
             let requested = agent.get("model_profile").and_then(|v| v.as_str()).unwrap_or("").to_string();
             {
                 let known = session_profiles.lock().unwrap();
-                if (!requested.is_empty() && (catalog.models.contains_key(&requested) || known.contains_key(&requested)))
+                if (!requested.is_empty()
+                    && (catalog.models.contains_key(&requested) || known.contains_key(&requested)))
                     || known.contains_key(&aid)
                 {
                     // existing profile named explicitly, or a retry of a patch whose
@@ -891,17 +944,9 @@ fn make_runner_factory(
             .or_else(|| catalog.models.get(profile_name).cloned());
         if agent.runtime_kind == RuntimeKind::Codex {
             let opts = codex_options(agent, profile.as_ref(), &ov, &session_id, &cwd)?;
-            let runner = CodexRunner::new(
-                opts,
-                core.clone(),
-                approvals.clone(),
-                notify.clone(),
-            );
+            let runner = CodexRunner::new(opts, core.clone(), approvals.clone(), notify.clone());
             let probe = runner.clone();
-            usage_probes
-                .lock()
-                .unwrap()
-                .insert(agent.id.clone(), Box::new(move || probe.usage_snapshot()));
+            usage_probes.lock().unwrap().insert(agent.id.clone(), Box::new(move || probe.usage_snapshot()));
             return Ok(runner);
         }
         let Some(profile) = profile else {
@@ -926,10 +971,7 @@ fn make_runner_factory(
             (web.search.is_some(), web.fetch.is_some()),
         );
         let probe = runner.clone();
-        usage_probes
-            .lock()
-            .unwrap()
-            .insert(agent.id.clone(), Box::new(move || probe.usage_snapshot()));
+        usage_probes.lock().unwrap().insert(agent.id.clone(), Box::new(move || probe.usage_snapshot()));
         Ok(runner)
     })
 }
@@ -1027,7 +1069,11 @@ fn codex_options(
             // A private provider id avoids inheriting built-in OpenAI auth flags.
             config.retain(|(key, _)| key != "model_provider");
             config.push(("model_provider".into(), json!("teamagents_session")));
-            for (key, value) in [("name", json!(profile.provider)), ("base_url", json!(profile.base_url)), ("wire_api", json!("responses"))] {
+            for (key, value) in [
+                ("name", json!(profile.provider)),
+                ("base_url", json!(profile.base_url)),
+                ("wire_api", json!("responses")),
+            ] {
                 config.push((format!("model_providers.teamagents_session.{key}"), value));
             }
             if let Some(env) = &profile.api_key_env {
@@ -1079,12 +1125,18 @@ fn member_executor_factory(
             .ok_or("bad agent_config_revision response")?;
         let cached = cache.lock().unwrap().get(agent_id).cloned();
         if let Some((cached_revision, executor)) = cached {
-            if cached_revision == revision { return executor(tool, args, control); }
+            if cached_revision == revision {
+                return executor(tool, args, control);
+            }
         }
         let state = core.call_in_session("state", json!({"include_events": false}))?;
-        let agent = state.get("spec").and_then(|spec| spec.get("agents")).cloned()
+        let agent = state
+            .get("spec")
+            .and_then(|spec| spec.get("agents"))
+            .cloned()
             .and_then(|agents| serde_json::from_value::<Vec<AgentSpec>>(agents).ok())
-            .and_then(|agents| agents.into_iter().find(|a| a.id == agent_id)).ok_or("member is no longer configured")?;
+            .and_then(|agents| agents.into_iter().find(|a| a.id == agent_id))
+            .ok_or("member is no longer configured")?;
         let executor: MemberExecutor = Arc::new(crate::tools::member_executor_with_control(
             member_root(&agent, &cwd, &session_id)?,
             catalog.clone(),
@@ -1120,10 +1172,15 @@ mod tests {
 
         let catalog = UserConfig::default();
         let picked = AgentSpec {
-            id: "leader".into(), name: "Leader".into(), role: "leader".into(),
-            runtime_kind: RuntimeKind::Deepagents, instructions: String::new(),
-            model_profile: String::new(), tool_bindings: vec![],
-            skills: vec!["review".into()], workspace_policy: teamagents_core::models::WorkspacePolicy::Shared,
+            id: "leader".into(),
+            name: "Leader".into(),
+            role: "leader".into(),
+            runtime_kind: RuntimeKind::Deepagents,
+            instructions: String::new(),
+            model_profile: String::new(),
+            tool_bindings: vec![],
+            skills: vec!["review".into()],
+            workspace_policy: teamagents_core::models::WorkspacePolicy::Shared,
         };
         let context = member_context(&catalog, &cwd, "s1", &picked);
         let labels: Vec<&str> = context.iter().map(|(l, _)| l.as_str()).collect();
@@ -1165,9 +1222,13 @@ mod tests {
         let mut catalog = UserConfig::default();
         catalog.skills_paths = vec![registry.to_string_lossy().into_owned()];
         let agent = AgentSpec {
-            id: "m".into(), name: "M".into(), role: "worker".into(),
-            runtime_kind: RuntimeKind::Deepagents, instructions: String::new(),
-            model_profile: String::new(), tool_bindings: vec![],
+            id: "m".into(),
+            name: "M".into(),
+            role: "worker".into(),
+            runtime_kind: RuntimeKind::Deepagents,
+            instructions: String::new(),
+            model_profile: String::new(),
+            tool_bindings: vec![],
             skills: vec!["legit".into(), "escape".into()],
             workspace_policy: teamagents_core::models::WorkspacePolicy::Shared,
         };
@@ -1189,8 +1250,13 @@ mod tests {
         std::env::set_var("XDG_STATE_HOME", root.join("home/.state"));
 
         let profile = ModelProfile {
-            provider: "openai".into(), protocol: "openai".into(), model: "gpt-default".into(),
-            base_url: None, api_key_env: None, timeout: 120, max_retries: 5,
+            provider: "openai".into(),
+            protocol: "openai".into(),
+            model: "gpt-default".into(),
+            base_url: None,
+            api_key_env: None,
+            timeout: 120,
+            max_retries: 5,
             generation_options: HashMap::from([("reasoning_effort".to_string(), json!("medium"))]),
             context_window: None,
             codex_profile: None,
@@ -1205,9 +1271,14 @@ mod tests {
 
         // codex member: the override lands in opts.model / opts.effort
         let agent = AgentSpec {
-            id: "cod".into(), name: "Cod".into(), role: "dev".into(),
-            runtime_kind: RuntimeKind::Codex, instructions: "Review parser edge cases.".into(),
-            model_profile: "m".into(), tool_bindings: vec![], skills: vec![],
+            id: "cod".into(),
+            name: "Cod".into(),
+            role: "dev".into(),
+            runtime_kind: RuntimeKind::Codex,
+            instructions: "Review parser edge cases.".into(),
+            model_profile: "m".into(),
+            tool_bindings: vec![],
+            skills: vec![],
             workspace_policy: teamagents_core::models::WorkspacePolicy::Shared,
         };
         let opts = codex_options(&agent, Some(&profile), &ov, "s-ov", &root.join("project")).unwrap();
@@ -1219,17 +1290,35 @@ mod tests {
         assert!(opts.config_overrides.iter().any(|(k, v)| k == "reasoning_effort" && v == &json!("medium")));
         // model-only override keeps the runner's default effort
         let opts = codex_options(
-            &agent, Some(&profile),
+            &agent,
+            Some(&profile),
             &ModelOverride { model: Some("gpt-5-codex".into()), ..Default::default() },
-            "s-ov", &root.join("project"),
-        ).unwrap();
+            "s-ov",
+            &root.join("project"),
+        )
+        .unwrap();
         assert_eq!(opts.model.as_deref(), Some("gpt-5-codex"));
         assert_eq!(opts.effort.as_deref(), Some("xhigh"));
-        let custom = ModelProfile { base_url: Some("http://127.0.0.1:1234/v1".into()), api_key_env: Some("TEST_MODEL_KEY".into()), ..profile };
-        let opts = codex_options(&agent, Some(&custom), &ModelOverride { profile: Some("custom".into()), ..Default::default() }, "s-ov", &root.join("project")).unwrap();
+        let custom = ModelProfile {
+            base_url: Some("http://127.0.0.1:1234/v1".into()),
+            api_key_env: Some("TEST_MODEL_KEY".into()),
+            ..profile
+        };
+        let opts = codex_options(
+            &agent,
+            Some(&custom),
+            &ModelOverride { profile: Some("custom".into()), ..Default::default() },
+            "s-ov",
+            &root.join("project"),
+        )
+        .unwrap();
         assert!(opts.config_overrides.contains(&("model_provider".into(), json!("teamagents_session"))));
-        assert!(opts.config_overrides.contains(&("model_providers.teamagents_session.base_url".into(), json!("http://127.0.0.1:1234/v1"))));
-        assert!(opts.config_overrides.contains(&("model_providers.teamagents_session.env_key".into(), json!("TEST_MODEL_KEY"))));
+        assert!(opts
+            .config_overrides
+            .contains(&("model_providers.teamagents_session.base_url".into(), json!("http://127.0.0.1:1234/v1"))));
+        assert!(opts
+            .config_overrides
+            .contains(&("model_providers.teamagents_session.env_key".into(), json!("TEST_MODEL_KEY"))));
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1246,12 +1335,20 @@ mod tests {
                 let (mut stream, _) = listener.accept().unwrap();
                 let mut request = vec![];
                 while !request.ends_with(b"\r\n\r\n") {
-                    let mut byte = [0]; stream.read_exact(&mut byte).unwrap(); request.push(byte[0]);
+                    let mut byte = [0];
+                    stream.read_exact(&mut byte).unwrap();
+                    request.push(byte[0]);
                 }
                 let request = String::from_utf8(request).unwrap().to_lowercase();
                 assert!(request.starts_with("get /v1/models"));
-                if step == 0 { assert!(request.contains("authorization: bearer fake-discovery-key")); }
-                else { assert!(request.contains("x-api-key: fake-discovery-key") && request.contains("anthropic-version: 2023-06-01")); }
+                if step == 0 {
+                    assert!(request.contains("authorization: bearer fake-discovery-key"));
+                } else {
+                    assert!(
+                        request.contains("x-api-key: fake-discovery-key")
+                            && request.contains("anthropic-version: 2023-06-01")
+                    );
+                }
                 let data = match step {
                     0 => json!({"data":[{"id":"configured"},{"id":"remote"},{"id":"remote"}]}),
                     1 => json!({"data":[{"id":"claude-a"}],"has_more":true,"last_id":"claude-a"}),
@@ -1260,7 +1357,8 @@ mod tests {
                         json!({"data":[{"id":"claude-b"}],"has_more":false})
                     }
                     _ => json!({"error":"fake-discovery-key must not be echoed in UI errors"}),
-                }.to_string();
+                }
+                .to_string();
                 let status = if step == 3 { "403 Forbidden" } else { "200 OK" };
                 write!(stream, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{data}", data.len()).unwrap();
             }
@@ -1273,10 +1371,21 @@ mod tests {
         let profile = json!({"provider":"local","protocol":"openai","model":"configured","base_url":format!("{base}/v1"),"api_key_env":"TA_DISCOVERY_TEST_KEY"});
         let catalog: UserConfig = serde_json::from_value(json!({"models":{"a":profile,"duplicate":profile,
             "claude":{"provider":"anthropic","protocol":"anthropic","model":"configured-claude","base_url":base,"api_key_env":"TA_DISCOVERY_TEST_KEY"}}})).unwrap();
-        let opened = open_session(OpenOptions { cwd: Some(root.clone()), session_id: Some("discovery".into()), catalog: Some(catalog),
-            initial_spec: Some(default_leader_spec("a", &[])), scripts: Some(HashMap::new()), ..Default::default() }).unwrap();
+        let opened = open_session(OpenOptions {
+            cwd: Some(root.clone()),
+            session_id: Some("discovery".into()),
+            catalog: Some(catalog),
+            initial_spec: Some(default_leader_spec("a", &[])),
+            scripts: Some(HashMap::new()),
+            ..Default::default()
+        })
+        .unwrap();
         let openai = opened.discover_models("local").unwrap();
-        assert_eq!(openai["models"].as_array().unwrap().len(), 1, "deduplicate endpoint, configured IDs and response IDs");
+        assert_eq!(
+            openai["models"].as_array().unwrap().len(),
+            1,
+            "deduplicate endpoint, configured IDs and response IDs"
+        );
         assert_eq!(openai["models"][0]["id"], "a");
         assert_eq!(openai["models"][0]["model"], "remote");
         let anthropic = opened.discover_models("anthropic").unwrap();
@@ -1285,7 +1394,11 @@ mod tests {
         assert!(failed["models"].as_array().unwrap().is_empty());
         assert!(failed["errors"].to_string().contains("HTTP 403"));
         assert!(!failed.to_string().contains("fake-discovery-key"));
-        assert!(opened.model_report()["profiles"].as_array().unwrap().iter().any(|p| p["model"] == "configured-claude"));
+        assert!(opened.model_report()["profiles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["model"] == "configured-claude"));
         assert!(opened.discover_models("missing").is_err());
         opened.close();
         server.join().unwrap();
@@ -1304,17 +1417,25 @@ mod tests {
         std::env::set_var("XDG_STATE_HOME", root.join("home/.state"));
 
         let opened = open_session(OpenOptions {
-            cwd: Some(cwd.clone()), session_id: Some("s-arch".into()),
-            catalog: Some(UserConfig::default()), initial_spec: Some(default_leader_spec("a", &[])),
-            scripts: Some(HashMap::new()), ..Default::default()
-        }).unwrap();
+            cwd: Some(cwd.clone()),
+            session_id: Some("s-arch".into()),
+            catalog: Some(UserConfig::default()),
+            initial_spec: Some(default_leader_spec("a", &[])),
+            scripts: Some(HashMap::new()),
+            ..Default::default()
+        })
+        .unwrap();
         opened.close();
         crate::sessions::archive_session("s-arch", None).expect("archive");
 
         let err = open_session(OpenOptions {
-            cwd: Some(cwd.clone()), session_id: Some("s-arch".into()),
-            catalog: Some(UserConfig::default()), ..Default::default()
-        }).err().expect("archived resume must fail");
+            cwd: Some(cwd.clone()),
+            session_id: Some("s-arch".into()),
+            catalog: Some(UserConfig::default()),
+            ..Default::default()
+        })
+        .err()
+        .expect("archived resume must fail");
         assert!(err.contains("archived"), "{err}");
         assert!(err.contains("move it back to the sessions root"), "{err}");
         assert!(crate::config::sessions_dir().join("archived/s-arch/team.db").exists(), "archive destroyed");
@@ -1335,17 +1456,25 @@ mod tests {
         std::env::set_var("XDG_STATE_HOME", root.join("home/.state"));
 
         let opened = open_session(OpenOptions {
-            cwd: Some(cwd.clone()), session_id: Some("s-ghost".into()),
-            catalog: Some(UserConfig::default()), initial_spec: Some(default_leader_spec("a", &[])),
-            scripts: Some(HashMap::new()), ..Default::default()
-        }).unwrap();
+            cwd: Some(cwd.clone()),
+            session_id: Some("s-ghost".into()),
+            catalog: Some(UserConfig::default()),
+            initial_spec: Some(default_leader_spec("a", &[])),
+            scripts: Some(HashMap::new()),
+            ..Default::default()
+        })
+        .unwrap();
         opened.close();
         crate::sessions::archive_session("s-ghost", None).expect("archive");
 
         let err = open_session(OpenOptions {
-            cwd: Some(cwd.clone()), session_id: Some("s-ghost".into()),
-            catalog: Some(UserConfig::default()), ..Default::default()
-        }).err().expect("archived resume must fail");
+            cwd: Some(cwd.clone()),
+            session_id: Some("s-ghost".into()),
+            catalog: Some(UserConfig::default()),
+            ..Default::default()
+        })
+        .err()
+        .expect("archived resume must fail");
         assert!(err.contains("archived"), "{err}");
         let active = crate::config::sessions_dir().join("s-ghost");
         assert!(!active.exists(), "refused resume left a ghost dir at {active:?}");
@@ -1373,10 +1502,14 @@ mod tests {
         std::env::set_var("XDG_STATE_HOME", root.join("home/.state"));
 
         let opened = open_session(OpenOptions {
-            cwd: Some(cwd.clone()), session_id: Some("s-keep".into()),
-            catalog: Some(UserConfig::default()), initial_spec: Some(default_leader_spec("a", &[])),
-            scripts: Some(HashMap::new()), ..Default::default()
-        }).unwrap();
+            cwd: Some(cwd.clone()),
+            session_id: Some("s-keep".into()),
+            catalog: Some(UserConfig::default()),
+            initial_spec: Some(default_leader_spec("a", &[])),
+            scripts: Some(HashMap::new()),
+            ..Default::default()
+        })
+        .unwrap();
         opened.close();
         crate::sessions::archive_session("s-keep", None).expect("archive");
 
@@ -1386,9 +1519,13 @@ mod tests {
         std::fs::write(active.join("members/m1/work.txt"), b"wip").unwrap();
 
         let err = open_session(OpenOptions {
-            cwd: Some(cwd.clone()), session_id: Some("s-keep".into()),
-            catalog: Some(UserConfig::default()), ..Default::default()
-        }).err().expect("archived resume must fail");
+            cwd: Some(cwd.clone()),
+            session_id: Some("s-keep".into()),
+            catalog: Some(UserConfig::default()),
+            ..Default::default()
+        })
+        .err()
+        .expect("archived resume must fail");
         assert!(err.contains("archived"), "{err}");
         assert_eq!(std::fs::read(active.join("members/m1/work.txt")).unwrap(), b"wip", "member worktree preserved");
         assert!(!active.join("artifacts").exists(), "the ghost items are still cleaned");
@@ -1414,7 +1551,11 @@ mod tests {
         assert_eq!(find("model"), Some(json!("deepseek-flash")));
         assert_eq!(find("model_provider"), Some(json!("deepseek")));
         assert_eq!(find("model_providers.deepseek.base_url"), Some(json!("https://api.deepseek.com/v1")));
-        assert_eq!(find("model_providers.deepseek.env_key"), Some(json!("DEEPSEEK_API_KEY")), "the provider's own key env travels with the profile");
+        assert_eq!(
+            find("model_providers.deepseek.env_key"),
+            Some(json!("DEEPSEEK_API_KEY")),
+            "the provider's own key env travels with the profile"
+        );
         assert!(codex_profile_overrides("nope").unwrap_err().contains("cannot read"));
         std::env::remove_var("CODEX_HOME");
         let _ = std::fs::remove_dir_all(&root);
@@ -1436,18 +1577,26 @@ mod tests {
 
         let core = CoreClient::open(":memory:", "s-factory").expect("core");
         core.call("create_session", json!({"session_id": "s-factory", "cwd": cwd})).expect("create");
-        core.call("set_catalog", json!({"session_id": "s-factory", "catalog": {
-            "models": {"m": {"provider": "openai", "protocol": "openai", "model": "test"}},
-            "tools": {}, "skills_paths": [], "instruction_files": [],
-        }})).expect("catalog");
-        core.call("save_spec", json!({"session_id": "s-factory", "spec": {
-            "leader_id": "lead",
-            "agents": [{"id": "lead", "name": "L", "role": "leader", "runtime_kind": "deepagents",
-                        "model_profile": "m"},
-                       {"id": "m", "name": "M", "role": "worker", "runtime_kind": "deepagents",
-                        "model_profile": "m", "tool_bindings": ["files"]}],
-            "shared_spaces": [{"id": "main", "readers": ["m"], "writers": ["m"]}],
-        }})).expect("spec");
+        core.call(
+            "set_catalog",
+            json!({"session_id": "s-factory", "catalog": {
+                "models": {"m": {"provider": "openai", "protocol": "openai", "model": "test"}},
+                "tools": {}, "skills_paths": [], "instruction_files": [],
+            }}),
+        )
+        .expect("catalog");
+        core.call(
+            "save_spec",
+            json!({"session_id": "s-factory", "spec": {
+                "leader_id": "lead",
+                "agents": [{"id": "lead", "name": "L", "role": "leader", "runtime_kind": "deepagents",
+                            "model_profile": "m"},
+                           {"id": "m", "name": "M", "role": "worker", "runtime_kind": "deepagents",
+                            "model_profile": "m", "tool_bindings": ["files"]}],
+                "shared_spaces": [{"id": "main", "readers": ["m"], "writers": ["m"]}],
+            }}),
+        )
+        .expect("spec");
 
         let factory = member_executor_factory(core, UserConfig::default(), "s-factory".into(), cwd.clone());
         let control = TurnControl::default();

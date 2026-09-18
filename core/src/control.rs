@@ -106,11 +106,11 @@ fn prior_receipt(store: &Store, action: &TeamAction) -> Result<Option<Receipt>, 
         return Ok(None);
     };
     let expected = payload_hash(action);
-    let stored = store
-        .get_action_metadata(&action.action_id)
-        .map_err(|e| e.to_string())?;
+    let stored = store.get_action_metadata(&action.action_id).map_err(|e| e.to_string())?;
     let expected_kind = enum_name(action.kind);
-    if stored.as_ref().map(|(session, actor, kind, hash)| (session.as_str(), actor.as_str(), kind.as_str(), hash.as_str()))
+    if stored
+        .as_ref()
+        .map(|(session, actor, kind, hash)| (session.as_str(), actor.as_str(), kind.as_str(), hash.as_str()))
         != Some((action.session_id.as_str(), action.actor_id.as_str(), expected_kind.as_str(), expected.as_str()))
     {
         return Err(format!("action_id {:?} was already used with different action data", action.action_id));
@@ -189,8 +189,13 @@ impl Control {
                     }
                     ctl.store
                         .record_action(
-                            &action.action_id, &ctl.session_id, &action.actor_id,
-                            action.run_id.as_deref(), action.kind, &payload_hash(action), &receipt,
+                            &action.action_id,
+                            &ctl.session_id,
+                            &action.actor_id,
+                            action.run_id.as_deref(),
+                            action.kind,
+                            &payload_hash(action),
+                            &receipt,
                         )
                         .map_err(|e| e.to_string())?;
                     Ok(None)
@@ -212,19 +217,33 @@ impl Control {
             let spec = ctl.store.load_team_spec(&ctl.session_id.clone(), None).map_err(|e| e.to_string())?;
             if let Some(error) = ctl.validate(action, &spec) {
                 let receipt = Receipt::failure(action, error);
-                ctl.store.record_action(
-                    &action.action_id, &ctl.session_id, &action.actor_id,
-                    action.run_id.as_deref(), action.kind, &payload_hash(action), &receipt,
-                ).map_err(|e| e.to_string())?;
+                ctl.store
+                    .record_action(
+                        &action.action_id,
+                        &ctl.session_id,
+                        &action.actor_id,
+                        action.run_id.as_deref(),
+                        action.kind,
+                        &payload_hash(action),
+                        &receipt,
+                    )
+                    .map_err(|e| e.to_string())?;
                 return Ok(receipt);
             }
             let reduction = ctl.reduce(action, &spec)?;
             ctl.persist_events(action, &spec, &reduction.events)?;
             ctl.schedule_inner(&spec)?;
-            ctl.store.record_action(
-                &action.action_id, &ctl.session_id, &action.actor_id,
-                action.run_id.as_deref(), action.kind, &payload_hash(action), &reduction.receipt,
-            ).map_err(|e| e.to_string())?;
+            ctl.store
+                .record_action(
+                    &action.action_id,
+                    &ctl.session_id,
+                    &action.actor_id,
+                    action.run_id.as_deref(),
+                    action.kind,
+                    &payload_hash(action),
+                    &reduction.receipt,
+                )
+                .map_err(|e| e.to_string())?;
             Ok(reduction.receipt)
         })
     }
@@ -305,9 +324,7 @@ impl Control {
             let run_id = action.run_id.as_deref().unwrap();
             match self.store.get_run(run_id).ok().flatten() {
                 None => return Some(format!("unknown run {run_id:?}")),
-                Some(run) if run.agent_id != actor => {
-                    return Some("run does not belong to the acting member".into())
-                }
+                Some(run) if run.agent_id != actor => return Some("run does not belong to the acting member".into()),
                 _ => {}
             }
         }
@@ -316,7 +333,8 @@ impl Control {
             ActionKind::SendMessage => {
                 let target = p.get("target").and_then(|v| v.as_str());
                 if target == Some("*") {
-                    let has_broadcast = spec.channels.iter().any(|ch| ch.source == actor && ch.mode == ChannelMode::Broadcast);
+                    let has_broadcast =
+                        spec.channels.iter().any(|ch| ch.source == actor && ch.mode == ChannelMode::Broadcast);
                     return if has_broadcast { None } else { Some(format!("{actor:?} has no broadcast channel")) };
                 }
                 match target {
@@ -326,7 +344,8 @@ impl Control {
                         } else {
                             // self-healing: name the reachable members instead of
                             // letting the model guess targets (or invent channels)
-                            let mut reachable: Vec<&str> = member_ids.iter().copied().filter(|m| spec.can_send(actor, m)).collect();
+                            let mut reachable: Vec<&str> =
+                                member_ids.iter().copied().filter(|m| spec.can_send(actor, m)).collect();
                             reachable.sort();
                             Some(format!(
                                 "{actor:?} is not allowed to message {t:?}: no channel covers this direction; reachable now: {reachable:?}"
@@ -399,7 +418,10 @@ impl Control {
             ActionKind::PublishShared => {
                 let space_id = p.get("space_id").and_then(|v| v.as_str()).unwrap_or("");
                 let Some(space) = spec.space(space_id) else {
-                    return Some(format!("unknown shared space {space_id:?}; available: {:?}", Self::reachable_space_ids(spec, actor)));
+                    return Some(format!(
+                        "unknown shared space {space_id:?}; available: {:?}",
+                        Self::reachable_space_ids(spec, actor)
+                    ));
                 };
                 if !space.writers.iter().any(|w| w == actor) {
                     return Some(format!("{actor:?} has no write access to shared space {space_id:?}"));
@@ -412,7 +434,10 @@ impl Control {
             ActionKind::ReadShared | ActionKind::ListShared => {
                 if let Some(sid) = p.get("space_id").and_then(|v| v.as_str()) {
                     let Some(space) = spec.space(sid) else {
-                        return Some(format!("unknown shared space {sid:?}; available: {:?}", Self::reachable_space_ids(spec, actor)));
+                        return Some(format!(
+                            "unknown shared space {sid:?}; available: {:?}",
+                            Self::reachable_space_ids(spec, actor)
+                        ));
                     };
                     if !space.readers.iter().any(|r| r == actor) && !space.writers.iter().any(|w| w == actor) {
                         return Some(format!("{actor:?} has no read access to shared space {sid:?}"));
@@ -468,7 +493,9 @@ impl Control {
                     return Some(match base {
                         // an absent base_revision is a retryable authoring mistake,
                         // not a stale patch: tell the caller the exact value to send
-                        None => format!("patch needs base_revision {current} (from <team revision=...>); resend with it"),
+                        None => {
+                            format!("patch needs base_revision {current} (from <team revision=...>); resend with it")
+                        }
                         Some(stale) => format!("patch base_revision {stale} is stale; current is {current}"),
                     });
                 }
@@ -576,7 +603,9 @@ impl Control {
                 // user input resumes a paused session (plan §9.3)
                 if let Some(session) = self.store.get_session(&self.session_id).map_err(|e| e.to_string())? {
                     if session.get("status").and_then(|v| v.as_str()) == Some("PAUSED") {
-                        self.store.set_session_status(&self.session_id, SessionStatus::Active).map_err(|e| e.to_string())?;
+                        self.store
+                            .set_session_status(&self.session_id, SessionStatus::Active)
+                            .map_err(|e| e.to_string())?;
                     }
                 }
                 self.store.clear_goal_completion_requests(&self.session_id).map_err(|e| e.to_string())?;
@@ -602,10 +631,8 @@ impl Control {
                 } else {
                     target.map(|t| vec![t.to_string()]).unwrap_or_default()
                 };
-                let targets: Vec<String> = targets
-                    .into_iter()
-                    .filter(|t| t != &actor && spec.can_send(&actor, t))
-                    .collect();
+                let targets: Vec<String> =
+                    targets.into_iter().filter(|t| t != &actor && spec.can_send(&actor, t)).collect();
                 let text = pstr(p, "text");
                 Ok(Reduction {
                     events: targets
@@ -697,10 +724,7 @@ impl Control {
                 // results keyed by task id
                 let results: serde_json::Map<String, Json> =
                     task_ids.iter().map(|t| (t.clone(), self.task_result(t))).collect();
-                Ok(Reduction {
-                    events: vec![],
-                    receipt: ok(json!({"waiting": false, "results": results})),
-                })
+                Ok(Reduction { events: vec![], receipt: ok(json!({"waiting": false, "results": results})) })
             }
 
             ActionKind::PublishShared => {
@@ -739,7 +763,10 @@ impl Control {
                     .collect();
                 let mut infos = vec![];
                 for s in spaces {
-                    let entries = self.store.shared_entries(&self.session_id, std::slice::from_ref(&s.id), 0, 1000).map_err(|e| e.to_string())?;
+                    let entries = self
+                        .store
+                        .shared_entries(&self.session_id, std::slice::from_ref(&s.id), 0, 1000)
+                        .map_err(|e| e.to_string())?;
                     infos.push(json!({
                         "space_id": s.id,
                         "entries": entries.len(),
@@ -863,7 +890,9 @@ impl Control {
                 };
                 self.store.decide_approval(&req.approval_id, status).map_err(|e| e.to_string())?;
                 if status == ApprovalStatus::ApprovedSession {
-                    self.store.cache_session_approval(&self.session_id, &req.operation_hash, &req.requested_scope).map_err(|e| e.to_string())?;
+                    self.store
+                        .cache_session_approval(&self.session_id, &req.operation_hash, &req.requested_scope)
+                        .map_err(|e| e.to_string())?;
                 }
                 self.wake_approval_run(&req.run_id)?;
                 Ok(Reduction {
@@ -878,7 +907,8 @@ impl Control {
 
             ActionKind::SetPermissionMode => {
                 let mode = pstr(p, "mode");
-                let pm: PermissionMode = serde_json::from_value(Json::String(mode.clone())).map_err(|e| e.to_string())?;
+                let pm: PermissionMode =
+                    serde_json::from_value(Json::String(mode.clone())).map_err(|e| e.to_string())?;
                 self.store.set_permission_mode(&self.session_id, pm).map_err(|e| e.to_string())?;
                 Ok(Reduction {
                     events: vec![EventDraft::new(EventKind::SessionStatus, json!({"permission_mode": mode}))],
@@ -966,7 +996,9 @@ impl Control {
                 // a WAITING_BOUNDARY patch parked its affected members in Draining; release them
                 for agent_id in &patch.affected_agents {
                     if matches!(self.store.agent_status(&self.session_id, agent_id), Ok(Some(AgentStatus::Draining))) {
-                        self.store.set_agent_status(&self.session_id, agent_id, AgentStatus::Idle).map_err(|e| e.to_string())?;
+                        self.store
+                            .set_agent_status(&self.session_id, agent_id, AgentStatus::Idle)
+                            .map_err(|e| e.to_string())?;
                     }
                 }
                 return Ok(Reduction {
@@ -1015,7 +1047,9 @@ impl Control {
             self.store.insert_patch(&patch, &self.session_id).map_err(|e| e.to_string())?;
             for a in &affected {
                 if self.agent_has_live_run(a) {
-                    self.store.set_agent_status(&self.session_id, a, AgentStatus::Draining).map_err(|e| e.to_string())?;
+                    self.store
+                        .set_agent_status(&self.session_id, a, AgentStatus::Draining)
+                        .map_err(|e| e.to_string())?;
                 }
             }
             return Ok(Reduction {
@@ -1024,9 +1058,12 @@ impl Control {
                     json!({"patch_id": patch.patch_id, "status": "WAITING_BOUNDARY",
                            "affected_agents": affected}),
                 )],
-                receipt: Receipt::success(action, json!({"patch_id": patch.patch_id,
+                receipt: Receipt::success(
+                    action,
+                    json!({"patch_id": patch.patch_id,
                                                          "status": "WAITING_BOUNDARY",
-                                                         "affected_agents": affected})),
+                                                         "affected_agents": affected}),
+                ),
             });
         }
         let revision = self.store.save_team_spec(&self.session_id, &new_spec).map_err(|e| e.to_string())?;
@@ -1039,8 +1076,11 @@ impl Control {
                 json!({"patch_id": patch.patch_id, "revision": revision,
                        "decided_by": action.actor_id, "operations": operations}),
             )],
-            receipt: Receipt::success(action, json!({"patch_id": patch.patch_id, "revision": revision,
-                                                     "status": "APPLIED", "affected_agents": affected})),
+            receipt: Receipt::success(
+                action,
+                json!({"patch_id": patch.patch_id, "revision": revision,
+                                                     "status": "APPLIED", "affected_agents": affected}),
+            ),
         })
     }
 
@@ -1060,7 +1100,9 @@ impl Control {
                 .get("targets")
                 .and_then(|v| v.as_array())
                 .and_then(|targets| targets.iter().filter_map(|t| t.as_str()).find(|t| *t != leader_id))
-                .map(|target| format!("channel {source:?} -> {target:?} is member-to-member; use a shared space instead"))
+                .map(|target| {
+                    format!("channel {source:?} -> {target:?} is member-to-member; use a shared space instead")
+                })
         };
         let cfg_models: HashSet<&String> = self.catalog.models.keys().collect();
         let err = |msg: String| (None, Some(msg));
@@ -1101,11 +1143,8 @@ impl Control {
                     }
                     for sp in op.get("shared_spaces").and_then(|v| v.as_array()).cloned().unwrap_or_default() {
                         let sid = sp.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        let existing = data["shared_spaces"]
-                            .as_array_mut()
-                            .unwrap()
-                            .iter_mut()
-                            .find(|s| s["id"] == sid);
+                        let existing =
+                            data["shared_spaces"].as_array_mut().unwrap().iter_mut().find(|s| s["id"] == sid);
                         if let Some(existing) = existing {
                             for key in ["readers", "writers"] {
                                 for who in sp.get(key).and_then(|v| v.as_array()).cloned().unwrap_or_default() {
@@ -1138,12 +1177,15 @@ impl Control {
                         ch["targets"] = json!(ts.into_iter().filter(|t| t != aid).collect::<Vec<_>>());
                     }
                     let channels = data["channels"].as_array().cloned().unwrap_or_default();
-                    data["channels"] = json!(channels
-                        .into_iter()
-                        .filter(|c| c["source"] != aid && !c["targets"].as_array().map(|t| t.is_empty()).unwrap_or(true))
-                        .collect::<Vec<_>>());
+                    data["channels"] =
+                        json!(channels
+                            .into_iter()
+                            .filter(|c| c["source"] != aid
+                                && !c["targets"].as_array().map(|t| t.is_empty()).unwrap_or(true))
+                            .collect::<Vec<_>>());
                     let observers = data["observers"].as_array().cloned().unwrap_or_default();
-                    data["observers"] = json!(observers.into_iter().filter(|o| o["agent_id"] != aid).collect::<Vec<_>>());
+                    data["observers"] =
+                        json!(observers.into_iter().filter(|o| o["agent_id"] != aid).collect::<Vec<_>>());
                     for ob in data["observers"].as_array_mut().unwrap().iter_mut() {
                         let subs = ob["subjects"].as_array().cloned().unwrap_or_default();
                         ob["subjects"] = json!(subs.into_iter().filter(|s| s != aid).collect::<Vec<_>>());
@@ -1204,7 +1246,8 @@ impl Control {
                         let channels = data["channels"].as_array().cloned().unwrap_or_default();
                         data["channels"] = json!(channels
                             .into_iter()
-                            .filter(|c| !(c["source"] == src && c["targets"].as_array().map(|t| t.is_empty()).unwrap_or(true)))
+                            .filter(|c| !(c["source"] == src
+                                && c["targets"].as_array().map(|t| t.is_empty()).unwrap_or(true)))
                             .collect::<Vec<_>>());
                     }
                 }
@@ -1212,7 +1255,8 @@ impl Control {
                     let ob = op.get("observer").cloned().unwrap_or(json!({}));
                     let oid = ob.get("agent_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
                     let observers = data["observers"].as_array().cloned().unwrap_or_default();
-                    data["observers"] = json!(observers.into_iter().filter(|o| o["agent_id"] != oid).collect::<Vec<_>>());
+                    data["observers"] =
+                        json!(observers.into_iter().filter(|o| o["agent_id"] != oid).collect::<Vec<_>>());
                     if !pbool(&Json::Object(op.clone()), "remove") {
                         data["observers"].as_array_mut().unwrap().push(ob);
                     }
@@ -1296,9 +1340,13 @@ impl Control {
         } {
             let old_a = old.agent(&aid);
             let new_a = new.agent(&aid);
-            if old_a.is_none() || new_a.is_none() || old_a != new_a
+            if old_a.is_none()
+                || new_a.is_none()
+                || old_a != new_a
                 || (self.permissions_changed(old, new, &aid)
-                    && operations.iter().any(|op| !matches!(op.get("op").and_then(|v| v.as_str()), Some("add_agent") | Some("add_channel"))))
+                    && operations.iter().any(|op| {
+                        !matches!(op.get("op").and_then(|v| v.as_str()), Some("add_agent") | Some("add_channel"))
+                    }))
             {
                 result.push(aid);
             }
@@ -1309,12 +1357,14 @@ impl Control {
     fn permissions_changed(&self, old: &TeamSpec, new: &TeamSpec, agent_id: &str) -> bool {
         let perms = |spec: &TeamSpec| {
             let sends: Vec<String> = {
-                let mut v: Vec<String> = spec.agents.iter().filter(|a| spec.can_send(agent_id, &a.id)).map(|a| a.id.clone()).collect();
+                let mut v: Vec<String> =
+                    spec.agents.iter().filter(|a| spec.can_send(agent_id, &a.id)).map(|a| a.id.clone()).collect();
                 v.sort();
                 v
             };
             let delegates: Vec<String> = {
-                let mut v: Vec<String> = spec.agents.iter().filter(|a| spec.can_delegate(agent_id, &a.id)).map(|a| a.id.clone()).collect();
+                let mut v: Vec<String> =
+                    spec.agents.iter().filter(|a| spec.can_delegate(agent_id, &a.id)).map(|a| a.id.clone()).collect();
                 v.sort();
                 v
             };
@@ -1322,7 +1372,9 @@ impl Control {
                 let mut v: Vec<(String, bool, bool)> = spec
                     .shared_spaces
                     .iter()
-                    .map(|s| (s.id.clone(), s.readers.iter().any(|r| r == agent_id), s.writers.iter().any(|w| w == agent_id)))
+                    .map(|s| {
+                        (s.id.clone(), s.readers.iter().any(|r| r == agent_id), s.writers.iter().any(|w| w == agent_id))
+                    })
                     .collect();
                 v.sort();
                 v
@@ -1362,7 +1414,9 @@ impl Control {
         }
         for a in &old.agents {
             if new.agent(&a.id).is_none() {
-                self.store.set_agent_status(&self.session_id, &a.id, AgentStatus::Removed).map_err(|e| e.to_string())?;
+                self.store
+                    .set_agent_status(&self.session_id, &a.id, AgentStatus::Removed)
+                    .map_err(|e| e.to_string())?;
                 self.hand_over_removed_member(&a.id, new)?;
             }
         }
@@ -1404,11 +1458,8 @@ impl Control {
     }
 
     fn cancel_task(&mut self, action: &TeamAction, _spec: &TeamSpec) -> Result<Reduction, String> {
-        let task = self
-            .store
-            .get_task(&pstr(&action.payload, "task_id"))
-            .map_err(|e| e.to_string())?
-            .ok_or("unknown task")?;
+        let task =
+            self.store.get_task(&pstr(&action.payload, "task_id")).map_err(|e| e.to_string())?.ok_or("unknown task")?;
         if matches!(task.status, TaskStatus::Succeeded | TaskStatus::Failed | TaskStatus::Cancelled) {
             return Ok(Reduction {
                 events: vec![],
@@ -1424,7 +1475,8 @@ impl Control {
                     .map_err(|e| e.to_string())?;
             }
         }
-        let mut active = self.store.active_run_for_agent(&self.session_id, &task.assignee).map_err(|e| e.to_string())?;
+        let mut active =
+            self.store.active_run_for_agent(&self.session_id, &task.assignee).map_err(|e| e.to_string())?;
         if active.is_none() {
             // a parked turn (approval or task wait) has no executor to interrupt:
             // requesting its cancel lets schedule converge it (run -> CANCELLED)
@@ -1454,17 +1506,18 @@ impl Control {
                 self.store.set_task_cancel_requested(&task.task_id).map_err(|e| e.to_string())?;
                 status = "CANCEL_REQUESTED";
             } else {
-                self.store.compare_and_set_task(&task.task_id, &enum_name(task.status), TaskStatus::Cancelled, None).map_err(|e| e.to_string())?;
+                self.store
+                    .compare_and_set_task(&task.task_id, &enum_name(task.status), TaskStatus::Cancelled, None)
+                    .map_err(|e| e.to_string())?;
                 status = "CANCELLED";
             }
         } else {
-            self.store.compare_and_set_task(&task.task_id, &enum_name(task.status), TaskStatus::Cancelled, None).map_err(|e| e.to_string())?;
+            self.store
+                .compare_and_set_task(&task.task_id, &enum_name(task.status), TaskStatus::Cancelled, None)
+                .map_err(|e| e.to_string())?;
             status = "CANCELLED";
         }
-        Ok(Reduction {
-            events,
-            receipt: Receipt::success(action, json!({"task_id": task.task_id, "status": status})),
-        })
+        Ok(Reduction { events, receipt: Receipt::success(action, json!({"task_id": task.task_id, "status": status})) })
     }
 
     fn completion_blockers(&mut self, spec: &TeamSpec, current_run: Option<&str>) -> Result<Vec<String>, String> {
@@ -1483,7 +1536,10 @@ impl Control {
                 live.iter().map(|r| format!("{}:{}", r.agent_id, enum_name(r.status))).collect::<Vec<_>>().join(", ")
             ));
         }
-        let unknown = self.store.runs_for_session(&self.session_id, &[TurnStatus::OutcomeUnknown]).map_err(|e| format!("read unknown runs: {e}"))?;
+        let unknown = self
+            .store
+            .runs_for_session(&self.session_id, &[TurnStatus::OutcomeUnknown])
+            .map_err(|e| format!("read unknown runs: {e}"))?;
         if !unknown.is_empty() {
             // the run id must stand alone: gluing `agent:run` together made models
             // copy the whole token into cancel_run (observed in a real run)
@@ -1502,9 +1558,13 @@ impl Control {
                 un.iter().map(|t| format!("{}:{}", t.task_id, enum_name(t.status))).collect::<Vec<_>>().join(", ")
             ));
         }
-        let pend = self.store.pending_approvals(&self.session_id).map_err(|e| format!("read pending approvals: {e}"))?;
+        let pend =
+            self.store.pending_approvals(&self.session_id).map_err(|e| format!("read pending approvals: {e}"))?;
         if !pend.is_empty() {
-            blockers.push(format!("pending approvals: {}", pend.iter().map(|a| a.approval_id.clone()).collect::<Vec<_>>().join(", ")));
+            blockers.push(format!(
+                "pending approvals: {}",
+                pend.iter().map(|a| a.approval_id.clone()).collect::<Vec<_>>().join(", ")
+            ));
         }
         let _ = spec;
         Ok(blockers)
@@ -1571,7 +1631,8 @@ impl Control {
                     }
                 };
                 let scope = views::observer_scope_for(spec, &recipient, draft.kind, &actor, &draft.payload);
-                let override_json = scope.map(|s| serde_json::to_string(&views::scope_payload(&s, draft.kind, &draft.payload)).unwrap());
+                let override_json = scope
+                    .map(|s| serde_json::to_string(&views::scope_payload(&s, draft.kind, &draft.payload)).unwrap());
                 self.store
                     .create_delivery(&self.session_id, &recipient, &event.event_id, batch, override_json.as_deref())
                     .map_err(|e| e.to_string())?;
@@ -1633,7 +1694,10 @@ impl Control {
                         task_id: Some(task.task_id.clone()),
                         goal_id: self.current_goal_id()?,
                         agent_id: agent.id.clone(),
-                        config_revision: self.store.agent_config_revision(&session, &agent.id).map_err(|e| e.to_string())?,
+                        config_revision: self
+                            .store
+                            .agent_config_revision(&session, &agent.id)
+                            .map_err(|e| e.to_string())?,
                         topology_revision: self.store.current_revision(&session).map_err(|e| e.to_string())?,
                         status: TurnStatus::Queued,
                         input_delivery_ids: vec![],
@@ -1836,10 +1900,9 @@ impl Control {
         let mut pending = self.store.tasks_for_session(&self.session_id, &["PENDING"]).map_err(|e| e.to_string())?;
         pending.sort_by(|a, b| a.created_at.partial_cmp(&b.created_at).unwrap_or(std::cmp::Ordering::Equal));
         for task in pending {
-            let ready = task
-                .dependencies
-                .iter()
-                .all(|d| matches!(self.store.get_task(d).ok().flatten().map(|t| t.status), Some(TaskStatus::Succeeded)));
+            let ready = task.dependencies.iter().all(|d| {
+                matches!(self.store.get_task(d).ok().flatten().map(|t| t.status), Some(TaskStatus::Succeeded))
+            });
             if !ready {
                 continue;
             }
@@ -1870,21 +1933,26 @@ impl Control {
     }
 
     fn apply_boundary_patches(&mut self, _spec: &TeamSpec) -> Result<(), String> {
-        for patch in self.store.patches_in_status(&self.session_id, PatchStatus::WaitingBoundary).map_err(|e| e.to_string())? {
+        for patch in
+            self.store.patches_in_status(&self.session_id, PatchStatus::WaitingBoundary).map_err(|e| e.to_string())?
+        {
             if patch.affected_agents.iter().any(|a| self.agent_has_live_run(a)) {
                 continue;
             }
             let current = self.store.load_team_spec(&self.session_id, None).map_err(|e| e.to_string())?;
-            let (new_spec, error) = if patch.base_revision != self.store.current_revision(&self.session_id).map_err(|e| e.to_string())? {
-                (None, Some("patch base_revision is stale; Leader must decide again".to_string()))
-            } else {
-                self.apply_operations(&current, &patch.operations)
-            };
+            let (new_spec, error) =
+                if patch.base_revision != self.store.current_revision(&self.session_id).map_err(|e| e.to_string())? {
+                    (None, Some("patch base_revision is stale; Leader must decide again".to_string()))
+                } else {
+                    self.apply_operations(&current, &patch.operations)
+                };
             let Some(new_spec) = new_spec else {
                 self.store.set_patch_status(&patch.patch_id, PatchStatus::Failed).map_err(|e| e.to_string())?;
                 for agent_id in &patch.affected_agents {
                     if matches!(self.store.agent_status(&self.session_id, agent_id), Ok(Some(AgentStatus::Draining))) {
-                        self.store.set_agent_status(&self.session_id, agent_id, AgentStatus::Idle).map_err(|e| e.to_string())?;
+                        self.store
+                            .set_agent_status(&self.session_id, agent_id, AgentStatus::Idle)
+                            .map_err(|e| e.to_string())?;
                     }
                 }
                 let action = TeamAction {
@@ -2008,10 +2076,9 @@ impl Control {
             if task.assignee != agent_id {
                 continue;
             }
-            let ready = task
-                .dependencies
-                .iter()
-                .all(|d| matches!(self.store.get_task(d).ok().flatten().map(|t| t.status), Some(TaskStatus::Succeeded)));
+            let ready = task.dependencies.iter().all(|d| {
+                matches!(self.store.get_task(d).ok().flatten().map(|t| t.status), Some(TaskStatus::Succeeded))
+            });
             if ready {
                 return Ok(Some(task));
             }
@@ -2244,10 +2311,18 @@ impl Control {
                     if let Ok(Some(task)) = self.store.get_task(req_task) {
                         if self
                             .store
-                            .compare_and_set_task(&task.task_id, &enum_name(task.status), TaskStatus::Succeeded, Some(&refs))
+                            .compare_and_set_task(
+                                &task.task_id,
+                                &enum_name(task.status),
+                                TaskStatus::Succeeded,
+                                Some(&refs),
+                            )
                             .map_err(|e| e.to_string())?
                         {
-                            let mut waiters = self.store.waiters_for_task(&self.session_id, &task.task_id).map_err(|e| e.to_string())?;
+                            let mut waiters = self
+                                .store
+                                .waiters_for_task(&self.session_id, &task.task_id)
+                                .map_err(|e| e.to_string())?;
                             waiters.push(task.requester.clone());
                             waiters.sort();
                             waiters.dedup();
@@ -2383,9 +2458,13 @@ impl Control {
         // are one write: a crash can never leave "run ended + input un-acked" (F-C3)
         self.store.set_run_status(&run.run_id, outcome.status).map_err(|e| e.to_string())?;
         if matches!(outcome.status, TurnStatus::WaitingTask | TurnStatus::WaitingApproval) {
-            self.store.set_agent_status(&self.session_id, &run.agent_id, AgentStatus::Waiting).map_err(|e| e.to_string())?;
+            self.store
+                .set_agent_status(&self.session_id, &run.agent_id, AgentStatus::Waiting)
+                .map_err(|e| e.to_string())?;
         } else {
-            self.store.set_agent_status(&self.session_id, &run.agent_id, AgentStatus::Idle).map_err(|e| e.to_string())?;
+            self.store
+                .set_agent_status(&self.session_id, &run.agent_id, AgentStatus::Idle)
+                .map_err(|e| e.to_string())?;
         }
         if terminal && !ack_ids.is_empty() {
             // ack exactly the deliveries handed to the runner (RT-05)
@@ -2395,10 +2474,7 @@ impl Control {
         }
 
         if outcome.status == TurnStatus::WaitingApproval {
-            let pending: Vec<_> = self
-                .store
-                .pending_approvals_for_run(&run.run_id)
-                .map_err(|e| e.to_string())?;
+            let pending: Vec<_> = self.store.pending_approvals_for_run(&run.run_id).map_err(|e| e.to_string())?;
             if pending.is_empty() {
                 // 决定先到、停下后到：这个回合已经等不到人来决定了（PENDING 行不存在），
                 // 停在 WAITING_APPROVAL 会永远醒不过来 —— 直接回到 RUNNING 让它继续跑，

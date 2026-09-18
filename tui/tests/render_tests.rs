@@ -69,7 +69,8 @@ fn frame_text(buf: &ratatui::buffer::Buffer) -> String {
     for y in 0..area.height {
         let mut skip_next = false;
         for x in 0..area.width {
-            if skip_next { // continuation cell of a wide char (holds a space)
+            if skip_next {
+                // continuation cell of a wide char (holds a space)
                 skip_next = false;
                 continue;
             }
@@ -104,7 +105,8 @@ fn dump_frame(app: &mut App, name: &str) {
         app.lang = if lang == "zh-CN" { "zh-CN" } else { "en" };
     }
     let size = std::env::var("TEAMAGENTS_DUMP_SIZE").unwrap_or_else(|_| "110x32".into());
-    let (w, h) = size.split_once('x').map(|(w, h)| (w.parse().unwrap_or(110), h.parse().unwrap_or(32))).unwrap_or((110, 32));
+    let (w, h) =
+        size.split_once('x').map(|(w, h)| (w.parse().unwrap_or(110), h.parse().unwrap_or(32))).unwrap_or((110, 32));
     let backend = TestBackend::new(w, h);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| ui::render(f, app)).unwrap();
@@ -114,8 +116,7 @@ fn dump_frame(app: &mut App, name: &str) {
 
 /// Shared frame fixture: review/tmp/parity_scenario.json.
 fn scenario() -> Json {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../review/tmp/parity_scenario.json");
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../review/tmp/parity_scenario.json");
     serde_json::from_str(&std::fs::read_to_string(path).expect("frame scenario")).expect("json")
 }
 
@@ -146,10 +147,7 @@ fn fixture_app() -> App {
     // main.rs replays the log when the log tab is active; the dump does the same
     app.replay_log(scenario["events"].as_array().cloned().unwrap_or_default().as_slice());
     app.shared = scenario["shared_entries"].as_array().cloned().unwrap_or_default();
-    app.sessions = scenario["sessions"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
+    app.sessions = scenario["sessions"].as_array().cloned().unwrap_or_default();
     app
 }
 
@@ -234,20 +232,13 @@ fn frame_shows_the_rust_shell_regions() {
     assert!(text.contains("▌"), "selection bar missing");
     assert!(text.contains("○ Ready") || text.contains("Ready"), "activity chips missing");
     // bottom-right is the permission mode in plain dim text (no chip, no pane label)
-    let last = lines_of(&text)
-        .into_iter()
-        .rev()
-        .find(|l| !l.trim().is_empty())
-        .unwrap_or_default();
+    let last = lines_of(&text).into_iter().rev().find(|l| !l.trim().is_empty()).unwrap_or_default();
     assert!(last.trim_end().ends_with("Pre-authorized"), "mode label missing: {last:?}");
     assert!(!text.contains("pane:"), "the pane label is gone");
     assert!(!text.contains("面板："), "the pane label is gone");
     assert!(text.contains("^q") && text.contains("Quit"), "footer keys missing");
     // the sessions tab carries no count
-    let tabs = lines_of(&text)
-        .into_iter()
-        .find(|l| l.contains("▍Team"))
-        .unwrap_or_default();
+    let tabs = lines_of(&text).into_iter().find(|l| l.contains("▍Team")).unwrap_or_default();
     assert!(tabs.contains("Sessions") && !tabs.contains("Sessions 1"), "sessions badge: {tabs:?}");
 }
 
@@ -321,10 +312,7 @@ fn repr_and_dumps_formats_are_stable() {
     // the approvals panel shows str(args)-style repr; the log panel stores
     // ", " / ": " separated, \u-escaped JSON text
     let args = json!({"command": "curl https://example.com", "network": true});
-    assert_eq!(
-        teamagents_tui::app::py_repr(&args),
-        "{'command': 'curl https://example.com', 'network': True}"
-    );
+    assert_eq!(teamagents_tui::app::py_repr(&args), "{'command': 'curl https://example.com', 'network': True}");
     assert_eq!(
         teamagents_tui::app::py_json_dumps(&json!({"text": "审查", "ok": true})),
         "{\"text\": \"\\u5ba1\\u67e5\", \"ok\": true}"
@@ -436,10 +424,12 @@ fn long_tables_scroll_with_the_selection() {
         vec![],
     );
     let sessions: Vec<Json> = (0..30)
-        .map(|i| json!({"sessionId": format!("proj_{i:04}"), "path": "/tmp", "cwd": "/tmp",
+        .map(|i| {
+            json!({"sessionId": format!("proj_{i:04}"), "path": "/tmp", "cwd": "/tmp",
                         "status": "ACTIVE", "goalState": "idle", "permissionsMode": "approved_scope",
                         "updatedAt": 0.0, "events": i, "tasks": 0, "sizeMb": 0.1,
-                        "archived": false, "locked": false}))
+                        "archived": false, "locked": false})
+        })
         .collect();
     app.apply_state(&json!({
         "session": {"session_id": "s1", "status": "ACTIVE", "cwd": "/tmp",
@@ -490,7 +480,7 @@ fn ascii_frame_has_no_cjk_leaks() {
     }));
     // CJK ideographs + kana + CJK punctuation + fullwidth forms: anything a
     // forgotten translation could leak
-   let backend = TestBackend::new(140, 36);
+    let backend = TestBackend::new(140, 36);
     let mut terminal = Terminal::new(backend).unwrap();
     let cases: Vec<(usize, bool, bool)> = (0..teamagents_tui::app::PANELS.len())
         .map(|p| (p, false, false))
@@ -514,11 +504,7 @@ fn ascii_frame_has_no_cjk_leaks() {
         } else {
             format!("{} (slash={slash})", teamagents_tui::app::PANELS[panel])
         };
-        assert!(
-            cjk.is_empty(),
-            "{name} leaks untranslated text: {:?}",
-            cjk.iter().collect::<String>()
-        );
+        assert!(cjk.is_empty(), "{name} leaks untranslated text: {:?}", cjk.iter().collect::<String>());
     }
 }
 
@@ -585,7 +571,9 @@ fn slash_command_menu_lists_navigates_and_runs() {
         let text = frame_text(buffer);
         assert!(text.contains("/model"), "selection must scroll into view: {text}");
         let row = text.lines().position(|l| l.contains("/model")).unwrap();
-        let selected = (0..120).any(|x| buffer[(x, row as u16)].symbol() == "/" && buffer[(x, row as u16)].bg == teamagents_tui::theme::HOVER_BG);
+        let selected = (0..120).any(|x| {
+            buffer[(x, row as u16)].symbol() == "/" && buffer[(x, row as u16)].bg == teamagents_tui::theme::HOVER_BG
+        });
         assert!(selected && row < height as usize);
     }
 }
@@ -596,13 +584,21 @@ fn model_picker_keeps_selected_model_visible_and_renders_both_languages() {
     for lang in ["en", "zh-CN"] {
         let mut app = fixture_app();
         app.lang = lang;
-        let profiles: Vec<_> = (0..25).map(|i| json!({"id":format!("p{i:02}"), "provider":"vendor",
-            "model":format!("model-{i:02}"), "protocol":"openai", "efforts":["low","medium","high"]})).collect();
+        let profiles: Vec<_> = (0..25)
+            .map(|i| {
+                json!({"id":format!("p{i:02}"), "provider":"vendor",
+            "model":format!("model-{i:02}"), "protocol":"openai", "efforts":["low","medium","high"]})
+            })
+            .collect();
         app.show_models(Ok(json!({"agents":[{"agent_id":"leader", "name":"Leader"}], "profiles":profiles})));
-        for _ in 0..2 { app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)); }
-        for _ in 0..40 { app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)); }
+        for _ in 0..2 {
+            app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        }
+        for _ in 0..40 {
+            app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        }
         assert_eq!(app.model_picker.as_ref().unwrap().index, 24);
-        for (width, height) in [(120,36),(60,20),(12,6),(1,1)] {
+        for (width, height) in [(120, 36), (60, 20), (12, 6), (1, 1)] {
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
             terminal.draw(|f| ui::render(f, &mut app)).unwrap();
             if width >= 60 {
@@ -625,10 +621,7 @@ fn tab_click_hits_the_tab_under_the_pointer() {
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| ui::render(f, &mut app)).unwrap();
     let text = frame_text(terminal.backend().buffer());
-    let tabs_line = text
-        .split('\n')
-        .find(|l| l.contains("▍Team"))
-        .expect("tab strip");
+    let tabs_line = text.split('\n').find(|l| l.contains("▍Team")).expect("tab strip");
     // every tab label maps back to its own index, including tabs after a badge
     // NOTE: str::find returns a byte offset; the hit-test works in display columns
     let column_of = |needle: &str| -> u16 {
@@ -708,10 +701,7 @@ fn settings_overlay_keeps_its_borders_next_to_wide_text() {
     let left = lines[top].chars().position(|c| c == '╭').expect("left corner") as u16;
     let right = lines[top].chars().position(|c| c == '╮').expect("right corner") as u16;
     // the last box row is the one whose left column still holds a corner/edge
-    let bottom = lines
-        .iter()
-        .rposition(|l| l.contains('╰'))
-        .expect("bottom border");
+    let bottom = lines.iter().rposition(|l| l.contains('╰')).expect("bottom border");
     let bottom = (top + 1..=bottom)
         .filter(|row| {
             let sym = buffer[(left, *row as u16)].symbol();
@@ -796,8 +786,24 @@ fn draw_ok(app: &mut App, w: u16, h: u16) -> Result<(), String> {
 #[test]
 fn narrow_frames_render_without_panicking() {
     let sizes = [
-        (0u16, 0u16), (1, 1), (3, 40), (4, 3), (12, 6), (20, 6), (20, 20), (26, 20), (28, 20),
-        (30, 20), (40, 8), (40, 20), (40, 24), (47, 20), (48, 20), (60, 24), (70, 24), (120, 5),
+        (0u16, 0u16),
+        (1, 1),
+        (3, 40),
+        (4, 3),
+        (12, 6),
+        (20, 6),
+        (20, 20),
+        (26, 20),
+        (28, 20),
+        (30, 20),
+        (40, 8),
+        (40, 20),
+        (40, 24),
+        (47, 20),
+        (48, 20),
+        (60, 24),
+        (70, 24),
+        (120, 5),
     ];
     let mut report: Vec<String> = vec![];
     for (w, h) in sizes {
@@ -872,7 +878,11 @@ fn settings_dropdown_aligns_with_the_language_value_cell() {
         let value_col = display_col(lines[top + 1], value);
         for (i, option) in ["English", "中文"].iter().enumerate() {
             let row = lines[top + 2 + i];
-            assert_eq!(display_col(row, option), value_col, "{lang}: dropdown row {i} is not aligned with the value cell");
+            assert_eq!(
+                display_col(row, option),
+                value_col,
+                "{lang}: dropdown row {i} is not aligned with the value cell"
+            );
             assert!(!row.contains("Session:"), "{lang}: the dropdown overlaps an info line: {row:?}");
         }
         // the first info line sits below the dropdown, untouched

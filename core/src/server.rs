@@ -25,12 +25,9 @@ impl Server {
 
     pub fn control_for(&mut self, sid: &str) -> Result<&mut Control, String> {
         if !self.controls.contains_key(sid) {
-            let store = if self.db == ":memory:" {
-                Store::open_memory()
-            } else {
-                Store::open(std::path::Path::new(&self.db))
-            }
-            .map_err(|e| format!("open {}: {e}", self.db))?;
+            let store =
+                if self.db == ":memory:" { Store::open_memory() } else { Store::open(std::path::Path::new(&self.db)) }
+                    .map_err(|e| format!("open {}: {e}", self.db))?;
             self.controls.insert(sid.to_string(), Control::new(store, sid));
         }
         Ok(self.controls.get_mut(sid).expect("just inserted"))
@@ -288,7 +285,11 @@ impl Server {
     }
 
     /// Run f against the session's Control; f returns Err(String) on failure.
-    fn with(&mut self, params: &Json, f: impl FnOnce(&mut Control, &Json) -> Result<Json, String>) -> Result<Json, String> {
+    fn with(
+        &mut self,
+        params: &Json,
+        f: impl FnOnce(&mut Control, &Json) -> Result<Json, String>,
+    ) -> Result<Json, String> {
         let sid = params.get("session_id").and_then(|v| v.as_str()).map(str::to_string).ok_or("session_id required")?;
         let ctl = self.control_for(&sid)?;
         f(ctl, params)
@@ -345,7 +346,10 @@ mod tests {
 
     fn insert(server: &mut Server, id: &str, status: &str, hash: &str, created_at: f64) {
         server
-            .dispatch("insert_approval", &json!({"session_id": "s1", "approval": approval_json(id, status, hash, created_at)}))
+            .dispatch(
+                "insert_approval",
+                &json!({"session_id": "s1", "approval": approval_json(id, status, hash, created_at)}),
+            )
             .unwrap();
     }
 
@@ -363,11 +367,12 @@ mod tests {
 
         let mut server = server_with_session();
         assert!(server.dispatch("emit", &json!({"session_id": "s1", "events": "nope"})).is_err());
-        let err = server
-            .dispatch("emit", &json!({"session_id": "s1", "events": [{"kind": "no_such_kind"}]}))
-            .unwrap_err();
+        let err =
+            server.dispatch("emit", &json!({"session_id": "s1", "events": [{"kind": "no_such_kind"}]})).unwrap_err();
         assert!(err.contains("bad event kind"), "{err}");
-        assert!(server.dispatch("finalize_run", &json!({"session_id": "s1", "run_id": "r", "status": "NOPE"})).is_err());
+        assert!(server
+            .dispatch("finalize_run", &json!({"session_id": "s1", "run_id": "r", "status": "NOPE"}))
+            .is_err());
         assert!(server.dispatch("save_spec", &json!({"session_id": "s1", "spec": {"bogus": 1}})).is_err());
     }
 
@@ -375,7 +380,10 @@ mod tests {
     fn emit_persists_events_and_reports_ok() {
         let mut server = server_with_session();
         let r = server
-            .dispatch("emit", &json!({"session_id": "s1", "events": [{"kind": "session_status", "payload": {"status": "PAUSED"}}]}))
+            .dispatch(
+                "emit",
+                &json!({"session_id": "s1", "events": [{"kind": "session_status", "payload": {"status": "PAUSED"}}]}),
+            )
             .unwrap();
         assert_eq!(r["ok"], json!(true));
         let events = server.controls.get("s1").unwrap().store.events("s1", 0, 10).unwrap();
@@ -396,8 +404,14 @@ mod tests {
         let r = server.dispatch("expire_approval", &json!({"approval_id": "a2"})).unwrap();
         assert_eq!(r["ok"], json!(true));
         // wrong state and unknown ids report false, they do not fail the request
-        assert_eq!(server.dispatch("expire_approval", &json!({"session_id": "s1", "approval_id": "a3"})).unwrap()["ok"], json!(false));
-        assert_eq!(server.dispatch("expire_approval", &json!({"session_id": "s1", "approval_id": "ghost"})).unwrap()["ok"], json!(false));
+        assert_eq!(
+            server.dispatch("expire_approval", &json!({"session_id": "s1", "approval_id": "a3"})).unwrap()["ok"],
+            json!(false)
+        );
+        assert_eq!(
+            server.dispatch("expire_approval", &json!({"session_id": "s1", "approval_id": "ghost"})).unwrap()["ok"],
+            json!(false)
+        );
         // and both idempotently became EXPIRED
         for id in ["a1", "a2"] {
             let r = server.dispatch("get_approval", &json!({"session_id": "s1", "approval_id": id})).unwrap();

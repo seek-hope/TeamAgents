@@ -48,10 +48,7 @@ impl WorkerClient {
         writeln!(self.stdin, "{request}").expect("write");
         self.stdin.flush().expect("flush");
         loop {
-            let message = self
-                .responses
-                .recv_timeout(std::time::Duration::from_secs(30))
-                .expect("worker response");
+            let message = self.responses.recv_timeout(std::time::Duration::from_secs(30)).expect("worker response");
             if message.get("id").and_then(|v| v.as_u64()) != Some(id) {
                 continue;
             }
@@ -102,17 +99,12 @@ fn worker_drives_a_scripted_session_end_to_end() {
     let receipt = worker.call("user_message", json!({"text": "build it"})).expect("user_message");
     assert_eq!(receipt.get("ok").and_then(|v| v.as_bool()), Some(true));
     std::thread::sleep(std::time::Duration::from_millis(1500));
-    let state = worker
-        .call("call", json!({"method": "state", "params": {"after_sequence": 0}}))
-        .expect("state");
+    let state = worker.call("call", json!({"method": "state", "params": {"after_sequence": 0}})).expect("state");
     let kinds: Vec<String> = state
         .get("events")
         .and_then(|v| v.as_array())
         .map(|events| {
-            events
-                .iter()
-                .filter_map(|e| e.get("kind").and_then(|v| v.as_str()).map(str::to_string))
-                .collect()
+            events.iter().filter_map(|e| e.get("kind").and_then(|v| v.as_str()).map(str::to_string)).collect()
         })
         .unwrap_or_default();
     assert!(kinds.contains(&"user_message".to_string()), "{kinds:?}");
@@ -123,7 +115,9 @@ fn worker_drives_a_scripted_session_end_to_end() {
     let listed: Vec<String> = sessions
         .get("sessions")
         .and_then(|v| v.as_array())
-        .map(|rows| rows.iter().filter_map(|r| r.get("sessionId").and_then(|v| v.as_str()).map(str::to_string)).collect())
+        .map(|rows| {
+            rows.iter().filter_map(|r| r.get("sessionId").and_then(|v| v.as_str()).map(str::to_string)).collect()
+        })
         .unwrap_or_default();
     assert!(listed.contains(&session_id), "{listed:?}");
 
@@ -142,9 +136,7 @@ fn worker_drives_a_scripted_session_end_to_end() {
 fn worker_usage_reports_per_agent_counters() {
     let home = state_home("usage");
     let mut worker = WorkerClient::spawn(&home);
-    let opened = worker
-        .call("open", json!({"cwd": "/tmp", "scripts": {"leader": [["end"]]}}))
-        .expect("open");
+    let opened = worker.call("open", json!({"cwd": "/tmp", "scripts": {"leader": [["end"]]}})).expect("open");
     let session_id = opened.get("session_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
 
     let report = worker.call("usage", json!({})).expect("usage");
@@ -164,9 +156,7 @@ fn worker_usage_reports_per_agent_counters() {
 fn worker_set_model_switches_and_clears_overrides() {
     let home = state_home("model");
     let mut worker = WorkerClient::spawn(&home);
-    worker
-        .call("open", json!({"cwd": "/tmp", "scripts": {"leader": [["end"]]}}))
-        .expect("open");
+    worker.call("open", json!({"cwd": "/tmp", "scripts": {"leader": [["end"]]}})).expect("open");
 
     let set = worker
         .call("set_model", json!({"agent_id": "leader", "model": "gpt-5-mini", "effort": "low"}))
@@ -179,10 +169,8 @@ fn worker_set_model_switches_and_clears_overrides() {
     // the "model" report shows the same effective values
     let report = worker.call("model", json!({})).expect("model report");
     let agents = report.get("agents").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-    let leader = agents
-        .iter()
-        .find(|a| a.get("agent_id").and_then(|v| v.as_str()) == Some("leader"))
-        .expect("leader in report");
+    let leader =
+        agents.iter().find(|a| a.get("agent_id").and_then(|v| v.as_str()) == Some("leader")).expect("leader in report");
     assert_eq!(leader.get("model").and_then(|v| v.as_str()), Some("gpt-5-mini"));
     assert_eq!(leader.get("overridden").and_then(|v| v.as_bool()), Some(true));
 
@@ -193,7 +181,10 @@ fn worker_set_model_switches_and_clears_overrides() {
     assert_eq!(selected["model"], "other");
     assert_eq!(selected["provider"], "openai");
     assert_eq!(selected["effort"], "high");
-    assert!(worker.call("set_model", json!({"agent_id":"leader", "profile":"missing"})).unwrap_err().contains("unknown model profile"));
+    assert!(worker
+        .call("set_model", json!({"agent_id":"leader", "profile":"missing"}))
+        .unwrap_err()
+        .contains("unknown model profile"));
 
     // unknown member / unknown effort are clean protocol errors
     let err = worker.call("set_model", json!({"agent_id": "ghost", "model": "x"})).expect_err("ghost");
@@ -212,22 +203,34 @@ fn worker_set_model_switches_and_clears_overrides() {
 #[test]
 fn model_discovery_does_not_block_worker_requests() {
     use std::io::Read;
-    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
     let home = state_home("discovery");
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
-    std::fs::write(home.join("config/teamagents/config.toml"), format!(
-        "[models.leader_main]\nprovider='local'\nmodel='configured'\nbase_url='{base}/v1'\n")).unwrap();
+    std::fs::write(
+        home.join("config/teamagents/config.toml"),
+        format!("[models.leader_main]\nprovider='local'\nmodel='configured'\nbase_url='{base}/v1'\n"),
+    )
+    .unwrap();
     let released = Arc::new(AtomicBool::new(false));
     let release = released.clone();
     let (tx, rx) = channel();
     let server = std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap();
         let mut header = vec![];
-        while !header.ends_with(b"\r\n\r\n") { let mut b = [0]; stream.read_exact(&mut b).unwrap(); header.push(b[0]); }
+        while !header.ends_with(b"\r\n\r\n") {
+            let mut b = [0];
+            stream.read_exact(&mut b).unwrap();
+            header.push(b[0]);
+        }
         tx.send(()).unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while !release.load(Ordering::SeqCst) && std::time::Instant::now() < deadline { std::thread::sleep(std::time::Duration::from_millis(10)); }
+        while !release.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         let body = json!({"data":[{"id":"online"}]}).to_string();
         let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
     });
@@ -243,7 +246,9 @@ fn model_discovery_does_not_block_worker_requests() {
     let reply = worker.responses.recv_timeout(std::time::Duration::from_secs(3)).unwrap();
     assert_eq!(reply["id"], 999);
     assert_eq!(reply["result"]["models"][0]["model"], "online");
-    let selected = worker.call("set_model", json!({"agent_id":"leader","profile":"leader_main","model":"online","effort":"high"})).unwrap();
+    let selected = worker
+        .call("set_model", json!({"agent_id":"leader","profile":"leader_main","model":"online","effort":"high"}))
+        .unwrap();
     assert_eq!(selected["model"], "online");
     assert_eq!(selected["provider"], "local");
     worker.close();
@@ -256,9 +261,7 @@ fn worker_reports_unknown_methods_and_missing_session() {
     let mut worker = WorkerClient::spawn(&home);
     let unknown = worker.call("nope", json!({})).expect_err("unknown method");
     assert!(unknown.contains("unknown method"), "{unknown}");
-    let missing = worker
-        .call("call", json!({"method": "state"}))
-        .expect_err("no open session");
+    let missing = worker.call("call", json!({"method": "state"})).expect_err("no open session");
     assert!(missing.contains("no open session"), "{missing}");
     worker.close();
     let _ = HashMap::<String, String>::new();

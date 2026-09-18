@@ -94,8 +94,6 @@ fn run_statuses(state: &Json) -> Vec<String> {
         .collect()
 }
 
-
-
 #[test]
 fn t8_killed_turn_is_reconciled_and_stays_exactly_once() {
     let root = std::env::temp_dir().join(format!("ta-recovery-{}", std::process::id()));
@@ -114,9 +112,7 @@ fn t8_killed_turn_is_reconciled_and_stays_exactly_once() {
     ]});
 
     let mut worker = Worker::spawn(&state_home, &config_home);
-    let opened = worker
-        .call("open", json!({"cwd": "/tmp", "scripts": scripts}))
-        .expect("open");
+    let opened = worker.call("open", json!({"cwd": "/tmp", "scripts": scripts})).expect("open");
     let session_id = opened["session_id"].as_str().unwrap().to_string();
     worker.call("user_message", json!({"text": "publish then hang"})).expect("user_message");
 
@@ -170,8 +166,11 @@ fn t8_killed_turn_is_reconciled_and_stays_exactly_once() {
         .unwrap()
         .to_string();
     worker
-        .call("submit", json!({"action": {"action_id": "cancel-1", "kind": "cancel_run",
-                                          "payload": {"run_id": run_id}}}))
+        .call(
+            "submit",
+            json!({"action": {"action_id": "cancel-1", "kind": "cancel_run",
+                                          "payload": {"run_id": run_id}}}),
+        )
         .expect("cancel");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
     loop {
@@ -215,17 +214,20 @@ fn t22_goal_turn_budget_is_enforced() {
     .unwrap();
     let scripts = json!({"leader": [["end"]]});
     let mut worker = Worker::spawn(&state_home, &config_home);
-    worker
-        .call("open", json!({"cwd": "/tmp", "team": spec_path.to_string_lossy(), "scripts": scripts}))
-        .expect("open");
+    worker.call("open", json!({"cwd": "/tmp", "team": spec_path.to_string_lossy(), "scripts": scripts})).expect("open");
 
     for turn in 0..3 {
         let _ = worker.call("user_message", json!({"text": format!("turn {turn}")}));
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
     let state = worker.state();
-    let kinds: Vec<String> = state["events"].as_array().cloned().unwrap_or_default().iter()
-        .filter_map(|e| e.get("kind").and_then(|v| v.as_str()).map(str::to_string)).collect();
+    let kinds: Vec<String> = state["events"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|e| e.get("kind").and_then(|v| v.as_str()).map(str::to_string))
+        .collect();
     assert!(kinds.contains(&"limit_reached".to_string()), "budget must report LIMIT_REACHED: {kinds:?}");
     let runs = state["runs"].as_array().cloned().unwrap_or_default().len();
     assert!(runs <= 2, "the budget stops extra turns (runs={runs})");

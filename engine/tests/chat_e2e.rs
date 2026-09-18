@@ -175,7 +175,7 @@ fn profile(base_url: &str, protocol: &str, options: Json, max_retries: i64) -> M
         max_retries,
         generation_options: serde_json::from_value(options).unwrap_or_default(),
         context_window: None,
-            codex_profile: None,
+        codex_profile: None,
     }
 }
 
@@ -190,15 +190,7 @@ fn chat_runner_with(agent: &Json, profile: ModelProfile, workdir: &str, notify: 
         .map(|items| items.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
         .unwrap_or_default();
     let bound = BoundTools::load(&UserConfig::default(), &bindings).expect("bound tools");
-    ChatRunner::new(
-        agent,
-        profile,
-        Some(workdir.to_string()),
-        notify,
-        bound,
-        vec![],
-        (false, false),
-    )
+    ChatRunner::new(agent, profile, Some(workdir.to_string()), notify, bound, vec![], (false, false))
 }
 
 fn start_runtime(
@@ -231,10 +223,11 @@ fn start_runtime_with(
 fn recording_executor() -> (ToolExecutor, Arc<Mutex<Vec<(String, Json)>>>) {
     let calls: Arc<Mutex<Vec<(String, Json)>>> = Arc::new(Mutex::new(vec![]));
     let sink = calls.clone();
-    let executor: ToolExecutor = Arc::new(move |_agent: &str, tool: &str, args: &Json, _control: &teamagents_engine::gateway::TurnControl| {
-        sink.lock().unwrap().push((tool.to_string(), args.clone()));
-        Ok(json!({"output": "executed"}))
-    });
+    let executor: ToolExecutor =
+        Arc::new(move |_agent: &str, tool: &str, args: &Json, _control: &teamagents_engine::gateway::TurnControl| {
+            sink.lock().unwrap().push((tool.to_string(), args.clone()));
+            Ok(json!({"output": "executed"}))
+        });
     (executor, calls)
 }
 
@@ -273,7 +266,9 @@ fn event_kinds(core: &Arc<CoreClient>) -> Vec<String> {
 fn approval_status(core: &Arc<CoreClient>, approval_id: &str) -> String {
     core.call_in_session("get_approval", json!({"approval_id": approval_id}))
         .ok()
-        .and_then(|reply| reply.get("approval").and_then(|a| a.get("status")).and_then(|v| v.as_str()).map(str::to_string))
+        .and_then(|reply| {
+            reply.get("approval").and_then(|a| a.get("status")).and_then(|v| v.as_str()).map(str::to_string)
+        })
         .unwrap_or_default()
 }
 
@@ -285,7 +280,13 @@ fn shell_args() -> Json {
 struct PanicRunner;
 
 impl AgentRunner for PanicRunner {
-    fn start_or_resume(&self, _run: &TurnRun, _view: &Json, _gateway: &ToolGateway, _wake: &Json) -> teamagents_core::control::TurnOutcome {
+    fn start_or_resume(
+        &self,
+        _run: &TurnRun,
+        _view: &Json,
+        _gateway: &ToolGateway,
+        _wake: &Json,
+    ) -> teamagents_core::control::TurnOutcome {
         panic!("boom");
     }
     fn request_interrupt(&self, _run_id: &str) -> TurnStatus {
@@ -296,7 +297,6 @@ impl AgentRunner for PanicRunner {
     }
     fn deliver_mid_turn(&self, _run_id: &str, _items: Vec<Json>) {}
 }
-
 
 fn tool_call_with_usage(call_id: &str, tool: &str, args: Json, prompt: u64) -> Json {
     let mut response = tool_call_response(call_id, tool, args);
@@ -318,17 +318,27 @@ fn text_with_usage(text: &str, prompt: u64) -> Json {
 fn worker_environment_reaches_model_before_leader_task_on_all_protocols() {
     let _env = env_guard("worker-system-prompt");
     for protocol in ["openai", "anthropic", "responses"] {
-        let server = FakeOpenAi::start(move |_, _| (200, match protocol {
-            "anthropic" => json!({"id":"msg-1", "type":"message", "role":"assistant", "stop_reason":"end_turn",
+        let server = FakeOpenAi::start(move |_, _| {
+            (
+                200,
+                match protocol {
+                    "anthropic" => json!({"id":"msg-1", "type":"message", "role":"assistant", "stop_reason":"end_turn",
                 "content":[{"type":"text", "text":"worker reply"}]}),
-            "responses" => json!({"id":"resp-1", "status":"completed", "output":[{"type":"message", "role":"assistant",
-                "content":[{"type":"output_text", "text":"worker reply"}]}]}),
-            _ => text_response("worker reply"),
-        }));
+                    "responses" => {
+                        json!({"id":"resp-1", "status":"completed", "output":[{"type":"message", "role":"assistant",
+                "content":[{"type":"output_text", "text":"worker reply"}]}]})
+                    }
+                    _ => text_response("worker reply"),
+                },
+            )
+        });
         let session = format!("worker-prompt-{protocol}");
         let mut agent = agent_json("worker", "worker", &[]);
-        let core = core_with_spec(&session, json!({"leader_id":"leader",
-            "agents":[agent_json("leader", "leader", &[]), agent.clone()]}));
+        let core = core_with_spec(
+            &session,
+            json!({"leader_id":"leader",
+            "agents":[agent_json("leader", "leader", &[]), agent.clone()]}),
+        );
         let view = json!({"agent_id":"worker", "assignment":[{
             "task_id":"task-1", "description":"Review the parser", "acceptance":"Cite test evidence", "requester":"leader"}],
             "inbox_delta":[], "permitted_shared_delta":[], "relevant_topology":{"revision":1}});
@@ -341,9 +351,15 @@ fn worker_environment_reaches_model_before_leader_task_on_all_protocols() {
                 "status":"QUEUED", "config_revision":1, "topology_revision":1, "input_delivery_ids":[],
                 "context_ref":"ctx:worker", "external_turn_id":null, "cancel_requested":false,
                 "waiting_on":[], "created_at":0, "updated_at":0,
-            })).unwrap();
-            let gateway = ToolGateway::new(core.clone(), "worker", &run_id,
-                ApprovalGate::new(core.clone(), PermissionPolicy::default()), None);
+            }))
+            .unwrap();
+            let gateway = ToolGateway::new(
+                core.clone(),
+                "worker",
+                &run_id,
+                ApprovalGate::new(core.clone(), PermissionPolicy::default()),
+                None,
+            );
             let outcome = runner.start_or_resume(&run, &view, &gateway, &json!({"reason":"new_input"}));
             assert_eq!(outcome.status, TurnStatus::Completed, "{protocol}: {outcome:?}");
             let body = server.body(index);
@@ -352,7 +368,10 @@ fn worker_environment_reaches_model_before_leader_task_on_all_protocols() {
                 "responses" => (body["instructions"].as_str().unwrap(), body["input"].to_string()),
                 _ => {
                     assert_eq!(body["messages"][0]["role"], "system");
-                    assert_eq!(body["messages"].as_array().unwrap().iter().filter(|m| m["role"] == "system").count(), 1);
+                    assert_eq!(
+                        body["messages"].as_array().unwrap().iter().filter(|m| m["role"] == "system").count(),
+                        1
+                    );
                     (body["messages"][0]["content"].as_str().unwrap(), body["messages"][1].to_string())
                 }
             };
@@ -378,9 +397,8 @@ fn worker_environment_reaches_model_before_leader_task_on_all_protocols() {
 #[test]
 fn responses_protocol_round_trips_a_tool_call() {
     let _env = env_guard("chat-responses");
-    let sse = |frames: Vec<Json>| -> String {
-        frames.iter().map(|frame| format!("event: x\ndata: {frame}\n\n")).collect()
-    };
+    let sse =
+        |frames: Vec<Json>| -> String { frames.iter().map(|frame| format!("event: x\ndata: {frame}\n\n")).collect() };
     let server = FakeOpenAi::start_sse(move |_body, index| {
         if index == 0 {
             sse(vec![
@@ -389,8 +407,10 @@ fn responses_protocol_round_trips_a_tool_call() {
                     "output":[{"type":"function_call","call_id":"call-1","name":"shell","arguments":"{\"command\":\"echo hi\"}"}]}}),
             ])
         } else {
-            sse(vec![json!({"type":"response.completed","response":{"usage":{"input_tokens":12,"output_tokens":3,"total_tokens":15},
-                "output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"all done"}]}]}})])
+            sse(vec![
+                json!({"type":"response.completed","response":{"usage":{"input_tokens":12,"output_tokens":3,"total_tokens":15},
+                "output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"all done"}]}]}}),
+            ])
         }
     });
     let mut agent = agent_json("leader", "leader", &["shell"]);
@@ -402,7 +422,8 @@ fn responses_protocol_round_trips_a_tool_call() {
     let runner = chat_runner(&core, &agent, model, "/tmp");
     let (executor, tool_calls) = recording_executor();
     // shell is pre-authorized here: this test is about the wire format, not approvals
-    let runtime = start_runtime(&core, runner, "leader", PermissionPolicy::default(), RuntimeLimits::default(), executor);
+    let runtime =
+        start_runtime(&core, runner, "leader", PermissionPolicy::default(), RuntimeLimits::default(), executor);
 
     runtime.user_message("run echo", false).unwrap();
     assert!(wait_for(|| tool_calls.lock().unwrap().len() == 1, 15_000), "the tool call reached the executor");
@@ -418,14 +439,12 @@ fn responses_protocol_round_trips_a_tool_call() {
             && item["output"].as_str().unwrap_or("").contains("executed")),
         "tool output must travel as function_call_output: {second}"
     );
-    assert!(second["instructions"].as_str().unwrap_or("").contains("Leader"), "system prompt maps to instructions: {second}");
-    let shell_tool = second["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|tool| tool["name"] == "shell")
-        .cloned()
-        .unwrap_or(Json::Null);
+    assert!(
+        second["instructions"].as_str().unwrap_or("").contains("Leader"),
+        "system prompt maps to instructions: {second}"
+    );
+    let shell_tool =
+        second["tools"].as_array().unwrap().iter().find(|tool| tool["name"] == "shell").cloned().unwrap_or(Json::Null);
     assert_eq!(shell_tool["type"], "function", "tools are flattened for Responses: {shell_tool}");
     assert!(shell_tool.get("function").is_none(), "no nested function object: {shell_tool}");
     assert_eq!(shell_tool["parameters"]["properties"]["command"]["type"], "string");
@@ -440,8 +459,12 @@ fn incomplete_model_responses_never_execute_tools() {
         for streaming in [false, true] {
             let call = json!({"type":"function_call", "call_id":"partial", "name":"shell", "arguments":shell_args().to_string()});
             let data = match protocol {
-                "responses" => json!({"status":"incomplete", "incomplete_details":{"reason":"max_output_tokens"}, "output":[call]}),
-                "anthropic" => json!({"stop_reason":"max_tokens", "content":[{"type":"tool_use", "id":"partial", "name":"shell", "input":shell_args()}]}),
+                "responses" => {
+                    json!({"status":"incomplete", "incomplete_details":{"reason":"max_output_tokens"}, "output":[call]})
+                }
+                "anthropic" => {
+                    json!({"stop_reason":"max_tokens", "content":[{"type":"tool_use", "id":"partial", "name":"shell", "input":shell_args()}]})
+                }
                 _ => {
                     let mut data = tool_call_response("partial", "shell", shell_args());
                     data["choices"][0]["finish_reason"] = json!("length");
@@ -462,21 +485,30 @@ fn incomplete_model_responses_never_execute_tools() {
                         }]}}]})],
                     };
                     let mut wire: String = frames.iter().map(|frame| format!("data: {frame}\n\n")).collect();
-                    if protocol == "openai" { wire.push_str("data: [DONE]\n\n"); }
+                    if protocol == "openai" {
+                        wire.push_str("data: [DONE]\n\n");
+                    }
                     wire
                 })
             } else {
                 FakeOpenAi::start(move |_, _| (200, data.clone()))
             };
             let agent = agent_json("leader", "leader", &["shell"]);
-            let core = core_with_spec(&format!("incomplete-{protocol}-{streaming}"), json!({"leader_id":"leader","agents":[agent.clone()]}));
+            let core = core_with_spec(
+                &format!("incomplete-{protocol}-{streaming}"),
+                json!({"leader_id":"leader","agents":[agent.clone()]}),
+            );
             let runner = chat_runner(&core, &agent, profile(&server.base_url(), protocol, json!({}), 2), "/tmp");
             let (executor, calls) = recording_executor();
-            let runtime = start_runtime(&core, runner, "leader", PermissionPolicy::default(), RuntimeLimits::default(), executor);
+            let runtime =
+                start_runtime(&core, runner, "leader", PermissionPolicy::default(), RuntimeLimits::default(), executor);
             runtime.user_message("run echo", false).unwrap();
             assert!(wait_for(|| runs(&core).iter().any(|r| !r.status.is_active()), 5_000));
             runtime.close();
-            assert!(calls.lock().unwrap().is_empty(), "{protocol} streaming={streaming} executed an incomplete response");
+            assert!(
+                calls.lock().unwrap().is_empty(),
+                "{protocol} streaming={streaming} executed an incomplete response"
+            );
             assert_eq!(runs(&core)[0].status, TurnStatus::Failed);
             assert_eq!(server.calls(), 1, "an incomplete response must not be silently replayed");
         }
@@ -489,9 +521,7 @@ fn incomplete_model_responses_never_execute_tools() {
 #[test]
 fn truncated_tool_stream_retries_and_executes_once() {
     let _env = env_guard("stream-retry");
-    let sse = |frames: Vec<Json>| -> String {
-        frames.iter().map(|frame| format!("data: {frame}\n\n")).collect()
-    };
+    let sse = |frames: Vec<Json>| -> String { frames.iter().map(|frame| format!("data: {frame}\n\n")).collect() };
     for protocol in ["openai", "anthropic", "responses"] {
         let args = shell_args().to_string();
         // Attempt 0 dies mid-stream before any visible output (tool-only so far).
@@ -501,7 +531,9 @@ fn truncated_tool_stream_retries_and_executes_once() {
                 json!({"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"c1","name":"shell","input":{}}}),
             ]),
             "responses" => sse(vec![json!({"type":"response.created","response":{"id":"r1"}})]),
-            _ => sse(vec![json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"shell","arguments":"{\"comma"}}]}}]})]),
+            _ => sse(vec![
+                json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"shell","arguments":"{\"comma"}}]}}]}),
+            ]),
         };
         let complete = match protocol {
             "anthropic" => sse(vec![
@@ -550,13 +582,18 @@ fn truncated_tool_stream_retries_and_executes_once() {
             _ => done.clone(),
         });
         let agent = agent_json("leader", "leader", &["shell"]);
-        let core = core_with_spec(&format!("stream-retry-{protocol}"), json!({"leader_id":"leader","agents":[agent.clone()]}));
+        let core =
+            core_with_spec(&format!("stream-retry-{protocol}"), json!({"leader_id":"leader","agents":[agent.clone()]}));
         let runner = chat_runner(&core, &agent, profile(&server.base_url(), protocol, json!({}), 2), "/tmp");
         let (executor, calls) = recording_executor();
         // shell is pre-authorized here: this test is about transport recovery, not approvals
-        let runtime = start_runtime(&core, runner, "leader", PermissionPolicy::default(), RuntimeLimits::default(), executor);
+        let runtime =
+            start_runtime(&core, runner, "leader", PermissionPolicy::default(), RuntimeLimits::default(), executor);
         runtime.user_message("run echo", false).unwrap();
-        assert!(wait_for(|| runs(&core).iter().any(|r| !r.status.is_active()), 15_000), "{protocol}: the turn finished");
+        assert!(
+            wait_for(|| runs(&core).iter().any(|r| !r.status.is_active()), 15_000),
+            "{protocol}: the turn finished"
+        );
         runtime.close();
         let executed = calls.lock().unwrap();
         assert_eq!(executed.len(), 1, "{protocol}: the tool executed exactly once");
@@ -581,7 +618,8 @@ fn stream_retry_respects_budget_and_visible_output() {
     let core = core_with_spec("stream-budget-0", json!({"leader_id":"leader","agents":[agent.clone()]}));
     let runner = chat_runner(&core, &agent, profile(&server.base_url(), "openai", json!({}), 0), "/tmp");
     let (executor, calls) = recording_executor();
-    let runtime = start_runtime(&core, runner, "leader", PermissionPolicy::default(), RuntimeLimits::default(), executor);
+    let runtime =
+        start_runtime(&core, runner, "leader", PermissionPolicy::default(), RuntimeLimits::default(), executor);
     runtime.user_message("run echo", false).unwrap();
     assert!(wait_for(|| runs(&core).iter().any(|r| !r.status.is_active()), 15_000));
     runtime.close();
@@ -595,7 +633,8 @@ fn stream_retry_respects_budget_and_visible_output() {
     let core = core_with_spec("stream-budget-1", json!({"leader_id":"leader","agents":[agent.clone()]}));
     let runner = chat_runner(&core, &agent, profile(&server.base_url(), "openai", json!({}), 1), "/tmp");
     let (executor, calls) = recording_executor();
-    let runtime = start_runtime(&core, runner, "leader", PermissionPolicy::default(), RuntimeLimits::default(), executor);
+    let runtime =
+        start_runtime(&core, runner, "leader", PermissionPolicy::default(), RuntimeLimits::default(), executor);
     runtime.user_message("run echo", false).unwrap();
     assert!(wait_for(|| runs(&core).iter().any(|r| !r.status.is_active()), 15_000));
     runtime.close();
@@ -610,7 +649,8 @@ fn stream_retry_respects_budget_and_visible_output() {
     let core = core_with_spec("stream-emitted", json!({"leader_id":"leader","agents":[agent]}));
     let runner = chat_runner(&core, &agent, profile(&server.base_url(), "openai", json!({}), 2), "/tmp");
     let (executor, calls) = recording_executor();
-    let runtime = start_runtime(&core, runner, "leader", PermissionPolicy::default(), RuntimeLimits::default(), executor);
+    let runtime =
+        start_runtime(&core, runner, "leader", PermissionPolicy::default(), RuntimeLimits::default(), executor);
     runtime.user_message("run echo", false).unwrap();
     assert!(wait_for(|| runs(&core).iter().any(|r| !r.status.is_active()), 15_000));
     runtime.close();
@@ -648,16 +688,21 @@ fn responses_reasoning_survives_tool_continuation() {
             FakeOpenAi::start(move |_, index| (200, response(index)))
         };
         let agent = agent_json("leader", "leader", &["shell"]);
-        let core = core_with_spec(&format!("responses-reasoning-{streaming}"), json!({"leader_id":"leader","agents":[agent.clone()]}));
+        let core = core_with_spec(
+            &format!("responses-reasoning-{streaming}"),
+            json!({"leader_id":"leader","agents":[agent.clone()]}),
+        );
         let runner = chat_runner(&core, &agent, profile(&server.base_url(), "responses", json!({}), 0), "/tmp");
         let (executor, calls) = recording_executor();
-        let runtime = start_runtime(&core, runner, "leader", PermissionPolicy::default(), RuntimeLimits::default(), executor);
+        let runtime =
+            start_runtime(&core, runner, "leader", PermissionPolicy::default(), RuntimeLimits::default(), executor);
         runtime.user_message("run echo", false).unwrap();
         assert!(wait_for(|| runs(&core).iter().any(|r| r.status == TurnStatus::Completed), 5_000));
         runtime.close();
         assert_eq!(calls.lock().unwrap().len(), 1);
         let input = server.body(1)["input"].as_array().unwrap().clone();
-        let position = input.iter().position(|item| *item == expected).expect("the reasoning item must survive unchanged");
+        let position =
+            input.iter().position(|item| *item == expected).expect("the reasoning item must survive unchanged");
         assert_eq!(input[position + 1]["id"], "fc_test");
         assert_eq!(input[position + 2]["type"], "function_call_output");
         assert_eq!(input.iter().filter(|item| item["type"] == "function_call").count(), 1);
@@ -673,16 +718,23 @@ fn configured_hooks_see_tool_calls_and_turn_end() {
     let cwd = isolated_project("hooks");
     let log = cwd.join("hook.log");
     let script = cwd.join("hook.sh");
-    std::fs::write(&script, format!("#!/bin/sh\nprintf '%s\\n' \"$1\" >> {}\ncat >> {}\n", log.display(), log.display())).unwrap();
+    std::fs::write(
+        &script,
+        format!("#!/bin/sh\nprintf '%s\\n' \"$1\" >> {}\ncat >> {}\n", log.display(), log.display()),
+    )
+    .unwrap();
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     let api = FakeOpenAi::start(|_, index| {
-        (200, if index == 0 {
-            tool_call_response("call-1", "write_file", json!({"path": "a.txt", "content": "x"}))
-        } else {
-            text_response("done")
-        })
+        (
+            200,
+            if index == 0 {
+                tool_call_response("call-1", "write_file", json!({"path": "a.txt", "content": "x"}))
+            } else {
+                text_response("done")
+            },
+        )
     });
     let mut catalog = UserConfig::default();
     catalog.hooks.notify = vec![script.to_string_lossy().into_owned()];
@@ -710,7 +762,11 @@ fn configured_hooks_see_tool_calls_and_turn_end() {
 #[test]
 fn view_image_attaches_the_picture_to_the_next_request() {
     let _env = env_guard("chat-view-image");
-    let dir = std::env::temp_dir().join(format!("ta-view-image-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    let dir = std::env::temp_dir().join(format!(
+        "ta-view-image-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     // magic bytes are what the loader validates; the payload itself is opaque
     std::fs::write(dir.join("shot.png"), [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]).unwrap();
@@ -722,11 +778,16 @@ fn view_image_attaches_the_picture_to_the_next_request() {
     let spec = json!({"leader_id": "leader", "agents": [agent_json("leader", "leader", &["files"])]});
     let core = core_with_spec("s-view-image", spec);
     let agent = agent_json("leader", "leader", &["files"]);
-    let runner = chat_runner(&core, &agent, profile(&server.base_url(), "openai", json!({}), 0), &dir.to_string_lossy());
+    let runner =
+        chat_runner(&core, &agent, profile(&server.base_url(), "openai", json!({}), 0), &dir.to_string_lossy());
     // the real workspace executor, so the tool actually reads the file
     let workspace = teamagents_engine::tools::workspace_executor(dir.clone(), None);
-    let executor: ToolExecutor = Arc::new(move |_agent: &str, tool: &str, args: &Json, _control: &teamagents_engine::gateway::TurnControl| workspace(tool, args));
-    let runtime = start_runtime(&core, runner, "leader", PermissionPolicy::default(), RuntimeLimits::default(), executor);
+    let executor: ToolExecutor =
+        Arc::new(move |_agent: &str, tool: &str, args: &Json, _control: &teamagents_engine::gateway::TurnControl| {
+            workspace(tool, args)
+        });
+    let runtime =
+        start_runtime(&core, runner, "leader", PermissionPolicy::default(), RuntimeLimits::default(), executor);
 
     runtime.user_message("look at the screenshot", false).unwrap();
     assert!(wait_for(|| server.calls() >= 2, 15_000), "the model gets a follow-up turn");
@@ -762,7 +823,15 @@ fn tool_activity_reaches_the_automation_sink() {
     let notify = Notify::new(core.clone());
     let runner = chat_runner_with(&agent, profile(&server.base_url(), "openai", json!({}), 0), "/tmp", notify.clone());
     let (executor, _tool_calls) = recording_executor();
-    let runtime = start_runtime_with(&core, runner, "leader", approval_policy_for_shell(), RuntimeLimits::default(), executor, notify.clone());
+    let runtime = start_runtime_with(
+        &core,
+        runner,
+        "leader",
+        approval_policy_for_shell(),
+        RuntimeLimits::default(),
+        executor,
+        notify.clone(),
+    );
 
     let seen: Arc<Mutex<Vec<Json>>> = Arc::new(Mutex::new(vec![]));
     let sink = seen.clone();
@@ -771,7 +840,10 @@ fn tool_activity_reaches_the_automation_sink() {
     }));
 
     runtime.user_message("write the file", false).unwrap();
-    assert!(wait_for(|| !seen.lock().unwrap().is_empty(), 15_000), "tool activity must be reported while the turn runs");
+    assert!(
+        wait_for(|| !seen.lock().unwrap().is_empty(), 15_000),
+        "tool activity must be reported while the turn runs"
+    );
     let first = seen.lock().unwrap()[0].clone();
     assert_eq!(first["agent_id"], "leader");
     assert!(first["run_id"].as_str().is_some_and(|id| !id.is_empty()));
@@ -801,7 +873,8 @@ fn once_approval_is_consumed_and_the_turn_completes() {
     let agent = agent_json("leader", "leader", &["shell"]);
     let runner = chat_runner(&core, &agent, profile(&server.base_url(), "openai", json!({}), 0), "/tmp");
     let (executor, tool_calls) = recording_executor();
-    let runtime = start_runtime(&core, runner, "leader", approval_policy_for_shell(), RuntimeLimits::default(), executor);
+    let runtime =
+        start_runtime(&core, runner, "leader", approval_policy_for_shell(), RuntimeLimits::default(), executor);
 
     runtime.user_message("run the shell", false).unwrap();
     assert!(
@@ -857,7 +930,8 @@ fn expired_once_approval_requires_a_new_request() {
     let agent = agent_json("leader", "leader", &["shell"]);
     let runner = chat_runner(&core, &agent, profile(&server.base_url(), "openai", json!({}), 0), "/tmp");
     let (executor, tool_calls) = recording_executor();
-    let runtime = start_runtime(&core, runner, "leader", approval_policy_for_shell(), RuntimeLimits::default(), executor);
+    let runtime =
+        start_runtime(&core, runner, "leader", approval_policy_for_shell(), RuntimeLimits::default(), executor);
 
     runtime.user_message("run the shell", false).unwrap();
     assert!(wait_for(|| !pending_approvals(&core).is_empty(), 10_000));
@@ -914,7 +988,8 @@ fn denied_approval_blocks_the_operation() {
     let agent = agent_json("leader", "leader", &["shell"]);
     let runner = chat_runner(&core, &agent, profile(&server.base_url(), "openai", json!({}), 0), "/tmp");
     let (executor, tool_calls) = recording_executor();
-    let runtime = start_runtime(&core, runner, "leader", approval_policy_for_shell(), RuntimeLimits::default(), executor);
+    let runtime =
+        start_runtime(&core, runner, "leader", approval_policy_for_shell(), RuntimeLimits::default(), executor);
 
     runtime.user_message("run the shell", false).unwrap();
     assert!(wait_for(|| !pending_approvals(&core).is_empty(), 10_000));
@@ -953,7 +1028,8 @@ fn model_step_limit_reports_limit_reached() {
     let agent = agent_json("leader", "leader", &[]);
     let runner = chat_runner(&core, &agent, profile(&server.base_url(), "openai", json!({}), 0), "/tmp");
     let (executor, _calls) = recording_executor();
-    let runtime = start_runtime(&core, runner, "leader", PermissionPolicy::default(), RuntimeLimits::default(), executor);
+    let runtime =
+        start_runtime(&core, runner, "leader", PermissionPolicy::default(), RuntimeLimits::default(), executor);
 
     runtime.user_message("spin forever", false).unwrap();
     assert!(
@@ -969,12 +1045,7 @@ fn model_step_limit_reports_limit_reached() {
     let error = state
         .get("events")
         .and_then(|v| v.as_array())
-        .and_then(|events| {
-            events
-                .iter()
-                .rev()
-                .find(|e| e.get("kind").and_then(|v| v.as_str()) == Some("run_failed"))
-        })
+        .and_then(|events| events.iter().rev().find(|e| e.get("kind").and_then(|v| v.as_str()) == Some("run_failed")))
         .and_then(|e| e.pointer("/payload/error").and_then(|v| v.as_str()).map(str::to_string))
         .unwrap_or_default();
     assert!(error.contains("model-step limit 3"), "unexpected error {error:?}");
@@ -990,8 +1061,14 @@ fn timeout_interrupts_the_member_before_further_side_effects() {
     // observation window (the model-step budget alone would take minutes)
     let server = FakeOpenAi::start(|_body, index| {
         std::thread::sleep(std::time::Duration::from_millis(30));
-        (200, tool_call_response(&format!("call-{index}"), "publish_shared",
-                                 json!({"space_id": "main", "content": format!("tick-{index}")})))
+        (
+            200,
+            tool_call_response(
+                &format!("call-{index}"),
+                "publish_shared",
+                json!({"space_id": "main", "content": format!("tick-{index}")}),
+            ),
+        )
     });
     let core = core_with_spec(
         "s-timeout",
@@ -1005,7 +1082,8 @@ fn timeout_interrupts_the_member_before_further_side_effects() {
     let agent = agent_json("leader", "leader", &[]);
     let runner = chat_runner(&core, &agent, profile(&server.base_url(), "openai", json!({}), 0), "/tmp");
     let (executor, _calls) = recording_executor();
-    let runtime = start_runtime(&core, runner, "leader", PermissionPolicy::default(), RuntimeLimits::default(), executor);
+    let runtime =
+        start_runtime(&core, runner, "leader", PermissionPolicy::default(), RuntimeLimits::default(), executor);
 
     runtime.user_message("publish forever", false).unwrap();
     assert!(
@@ -1041,23 +1119,27 @@ fn timeout_interrupts_the_member_before_further_side_effects() {
 #[test]
 fn a_crashed_member_is_not_reported_as_a_timeout() {
     let _env = env_guard("chat-panic");
-    let core = core_with_spec(
-        "s-panic",
-        json!({"leader_id": "leader", "agents": [agent_json("leader", "leader", &[])]}),
-    );
+    let core =
+        core_with_spec("s-panic", json!({"leader_id": "leader", "agents": [agent_json("leader", "leader", &[])]}));
     let notify = Notify::new(core.clone());
     let approvals = ApprovalGate::new(core.clone(), PermissionPolicy::default());
-    let executor: ToolExecutor = Arc::new(|_agent: &str, tool: &str, _args: &Json, _control: &teamagents_engine::gateway::TurnControl| Err(format!("no executor for {tool}")));
+    let executor: ToolExecutor =
+        Arc::new(|_agent: &str, tool: &str, _args: &Json, _control: &teamagents_engine::gateway::TurnControl| {
+            Err(format!("no executor for {tool}"))
+        });
     let runtime = Runtime::new(core.clone(), notify, approvals, executor, None, RuntimeLimits::default());
     runtime.add_runner("leader", Arc::new(PanicRunner));
     runtime.start();
 
     runtime.user_message("trigger the crash", false).unwrap();
     assert!(
-        wait_for(|| {
-            let rows = runs(&core);
-            !rows.is_empty() && !rows.iter().any(|r| r.status.is_active())
-        }, 10_000),
+        wait_for(
+            || {
+                let rows = runs(&core);
+                !rows.is_empty() && !rows.iter().any(|r| r.status.is_active())
+            },
+            10_000
+        ),
         "the crashed turn is finalised"
     );
     let error = core
@@ -1065,19 +1147,11 @@ fn a_crashed_member_is_not_reported_as_a_timeout() {
         .unwrap()
         .get("events")
         .and_then(|v| v.as_array())
-        .and_then(|events| {
-            events
-                .iter()
-                .rev()
-                .find(|e| e.get("kind").and_then(|v| v.as_str()) == Some("run_failed"))
-        })
+        .and_then(|events| events.iter().rev().find(|e| e.get("kind").and_then(|v| v.as_str()) == Some("run_failed")))
         .and_then(|e| e.pointer("/payload/error").and_then(|v| v.as_str()).map(str::to_string))
         .unwrap_or_default();
     assert!(error.contains("member runner crashed"), "unexpected error {error:?}");
-    assert!(
-        !error.contains("active-time limit"),
-        "a crash must not be reported as a timeout: {error:?}"
-    );
+    assert!(!error.contains("active-time limit"), "a crash must not be reported as a timeout: {error:?}");
     runtime.close();
 }
 
@@ -1086,10 +1160,8 @@ fn a_crashed_member_is_not_reported_as_a_timeout() {
 fn conversation_history_survives_a_restart() {
     let _env = env_guard("chat-history");
     let server = FakeOpenAi::start(|_body, _index| (200, text_response("first-reply")));
-    let core = core_with_spec(
-        "s-history",
-        json!({"leader_id": "leader", "agents": [agent_json("leader", "leader", &[])]}),
-    );
+    let core =
+        core_with_spec("s-history", json!({"leader_id": "leader", "agents": [agent_json("leader", "leader", &[])]}));
     let agent = agent_json("leader", "leader", &[]);
     let run = |run_id: &str| -> TurnRun {
         serde_json::from_value(json!({
@@ -1132,10 +1204,8 @@ fn conversation_history_survives_a_restart() {
 fn retry_policy_only_retries_transient_errors() {
     let _env = env_guard("chat-retry");
     let unauthorized = FakeOpenAi::start(|_body, _index| (401, json!({"error": {"message": "bad key"}})));
-    let core = core_with_spec(
-        "s-retry-401",
-        json!({"leader_id": "leader", "agents": [agent_json("leader", "leader", &[])]}),
-    );
+    let core =
+        core_with_spec("s-retry-401", json!({"leader_id": "leader", "agents": [agent_json("leader", "leader", &[])]}));
     let agent = agent_json("leader", "leader", &[]);
     let run: TurnRun = serde_json::from_value(json!({
         "run_id": "run-401", "session_id": "s-retry-401", "task_id": null, "goal_id": null,
@@ -1160,10 +1230,8 @@ fn retry_policy_only_retries_transient_errors() {
     assert_eq!(unauthorized.calls(), 1, "a 401 is not retried");
 
     let broken = FakeOpenAi::start(|_body, _index| (500, json!({"error": {"message": "boom"}})));
-    let core = core_with_spec(
-        "s-retry-500",
-        json!({"leader_id": "leader", "agents": [agent_json("leader", "leader", &[])]}),
-    );
+    let core =
+        core_with_spec("s-retry-500", json!({"leader_id": "leader", "agents": [agent_json("leader", "leader", &[])]}));
     let gateway = ToolGateway::new(
         core.clone(),
         "leader",
@@ -1197,10 +1265,8 @@ fn effort_normalization_and_fallback() {
         sink.lock().unwrap().push(body.get("reasoning_effort").cloned().unwrap_or(Json::Null));
         (200, text_response("ok"))
     });
-    let core = core_with_spec(
-        "s-effort-ds",
-        json!({"leader_id": "leader", "agents": [agent_json("leader", "leader", &[])]}),
-    );
+    let core =
+        core_with_spec("s-effort-ds", json!({"leader_id": "leader", "agents": [agent_json("leader", "leader", &[])]}));
     let agent = agent_json("leader", "leader", &[]);
     let view = json!({"agent_id": "leader", "assignment": [], "inbox_delta": [], "permitted_shared_delta": [],
                       "relevant_topology": {"revision": 1}, "delivery_ids": [], "batch_no": 0});
@@ -1226,7 +1292,8 @@ fn effort_normalization_and_fallback() {
         profile(&deepseek.base_url(), "deepseek", json!({"reasoning_effort": "xhigh"}), 0),
         "/tmp",
     );
-    let outcome = runner.start_or_resume(&run("run-effort-ds", "s-effort-ds"), &view, &gateway, &json!({"reason": "new_input"}));
+    let outcome =
+        runner.start_or_resume(&run("run-effort-ds", "s-effort-ds"), &view, &gateway, &json!({"reason": "new_input"}));
     assert_eq!(outcome.status, TurnStatus::Completed);
     assert_eq!(seen.lock().unwrap()[0], json!("max"), "deepseek never sees xhigh");
 
@@ -1238,10 +1305,8 @@ fn effort_normalization_and_fallback() {
             (200, text_response("ok"))
         }
     });
-    let core = core_with_spec(
-        "s-effort-oa",
-        json!({"leader_id": "leader", "agents": [agent_json("leader", "leader", &[])]}),
-    );
+    let core =
+        core_with_spec("s-effort-oa", json!({"leader_id": "leader", "agents": [agent_json("leader", "leader", &[])]}));
     let gateway = ToolGateway::new(
         core.clone(),
         "leader",
@@ -1255,7 +1320,8 @@ fn effort_normalization_and_fallback() {
         profile(&rejected.base_url(), "openai", json!({"reasoning_effort": "xhigh"}), 0),
         "/tmp",
     );
-    let outcome = runner.start_or_resume(&run("run-effort-oa", "s-effort-oa"), &view, &gateway, &json!({"reason": "new_input"}));
+    let outcome =
+        runner.start_or_resume(&run("run-effort-oa", "s-effort-oa"), &view, &gateway, &json!({"reason": "new_input"}));
     assert_eq!(outcome.status, TurnStatus::Completed);
     assert_eq!(rejected.calls(), 2, "one rejection plus one fallback retry");
     assert_eq!(rejected.body(0)["reasoning_effort"], json!("xhigh"));
@@ -1263,8 +1329,8 @@ fn effort_normalization_and_fallback() {
 }
 
 // Follow-up review regressions: real member, process and sandbox boundaries.
-use teamagents_engine::session::{open_session, OpenOptions};
 use std::time::Duration;
+use teamagents_engine::session::{open_session, OpenOptions};
 
 fn isolated_project(tag: &str) -> std::path::PathBuf {
     let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
@@ -1274,14 +1340,25 @@ fn isolated_project(tag: &str) -> std::path::PathBuf {
     dir
 }
 
-fn open_chat_session(cwd: &std::path::Path, api: &FakeOpenAi, bindings: &[&str], mut catalog: UserConfig) -> Arc<teamagents_engine::session::OpenedSession> {
+fn open_chat_session(
+    cwd: &std::path::Path,
+    api: &FakeOpenAi,
+    bindings: &[&str],
+    mut catalog: UserConfig,
+) -> Arc<teamagents_engine::session::OpenedSession> {
     catalog.models.insert("m".into(), profile(&api.base_url(), "openai", json!({}), 0));
-    catalog.models.insert("other".into(), ModelProfile { model: "new-model".into(), ..profile(&api.base_url(), "openai", json!({}), 0) });
+    catalog.models.insert(
+        "other".into(),
+        ModelProfile { model: "new-model".into(), ..profile(&api.base_url(), "openai", json!({}), 0) },
+    );
     open_session(OpenOptions {
-        cwd: Some(cwd.to_path_buf()), session_id: Some("review".into()),
+        cwd: Some(cwd.to_path_buf()),
+        session_id: Some("review".into()),
         initial_spec: Some(json!({"leader_id":"leader", "agents":[agent_json("leader", "leader", bindings)]})),
-        catalog: Some(catalog), ..Default::default()
-    }).unwrap()
+        catalog: Some(catalog),
+        ..Default::default()
+    })
+    .unwrap()
 }
 
 #[test]
@@ -1294,10 +1371,16 @@ fn review_topology_update_must_rebuild_runner() {
     opened.runtime.user_message("first", false).unwrap();
     assert!(opened.runtime.settle(5));
     assert_eq!(api.body(0)["model"], "test");
-    let receipt = submit(&opened.core, "update-model", "leader", "apply_topology_patch", json!({
-        "base_revision":1, "operations":[{"op":"update_agent", "agent_id":"leader",
-        "changes":{"model_profile":"other", "instructions":"NEW INSTRUCTIONS", "tool_bindings":[]}}]
-    }));
+    let receipt = submit(
+        &opened.core,
+        "update-model",
+        "leader",
+        "apply_topology_patch",
+        json!({
+            "base_revision":1, "operations":[{"op":"update_agent", "agent_id":"leader",
+            "changes":{"model_profile":"other", "instructions":"NEW INSTRUCTIONS", "tool_bindings":[]}}]
+        }),
+    );
     assert!(receipt.ok, "{receipt:?}");
     assert_eq!(receipt.result["status"], "APPLIED");
     opened.runtime.user_message("second", false).unwrap();
@@ -1319,19 +1402,26 @@ fn review_add_agent_inherits_leader_tools_and_gets_channels() {
     let _env = env_guard("review-addagent-d33");
     let cwd = isolated_project("d33");
     let api = FakeOpenAi::start(|_, index| {
-        (200, if index == 0 {
-            tool_call_response("topo-1", "apply_topology_patch", json!({
-                "base_revision": 1,
-                "operations": [
-                    // no tool_bindings: the member must inherit the Leader's
-                    {"op":"add_agent","agent":{"id":"w1","name":"W1","role":"worker","runtime_kind":"deepagents"}},
-                    // explicit [] stays messaging-only
-                    {"op":"add_agent","agent":{"id":"w2","name":"W2","role":"worker","runtime_kind":"deepagents","tool_bindings":[]}},
-                ]
-            }))
-        } else {
-            text_response("done")
-        })
+        (
+            200,
+            if index == 0 {
+                tool_call_response(
+                    "topo-1",
+                    "apply_topology_patch",
+                    json!({
+                        "base_revision": 1,
+                        "operations": [
+                            // no tool_bindings: the member must inherit the Leader's
+                            {"op":"add_agent","agent":{"id":"w1","name":"W1","role":"worker","runtime_kind":"deepagents"}},
+                            // explicit [] stays messaging-only
+                            {"op":"add_agent","agent":{"id":"w2","name":"W2","role":"worker","runtime_kind":"deepagents","tool_bindings":[]}},
+                        ]
+                    }),
+                )
+            } else {
+                text_response("done")
+            },
+        )
     });
     let opened = open_chat_session(&cwd, &api, &["files", "shell"], UserConfig::default());
     opened.runtime.start();
@@ -1357,19 +1447,26 @@ fn review_add_agent_auto_creates_member_profile() {
     let _env = env_guard("review-autoprofile");
     let cwd = isolated_project("autoprofile");
     let api = FakeOpenAi::start(|_, index| {
-        (200, if index == 0 {
-            tool_call_response("topo-1", "apply_topology_patch", json!({
-                "base_revision": 1,
-                "operations": [
-                    {"op":"add_agent","agent":{"id":"w1","name":"W1","role":"worker",
-                        "runtime_kind":"deepagents","tool_bindings":[]}},
-                    {"op":"add_agent","agent":{"id":"w2","name":"W2","role":"worker",
-                        "runtime_kind":"deepagents","model_profile":"gpt-9","tool_bindings":[]}},
-                ]
-            }))
-        } else {
-            text_response("done")
-        })
+        (
+            200,
+            if index == 0 {
+                tool_call_response(
+                    "topo-1",
+                    "apply_topology_patch",
+                    json!({
+                        "base_revision": 1,
+                        "operations": [
+                            {"op":"add_agent","agent":{"id":"w1","name":"W1","role":"worker",
+                                "runtime_kind":"deepagents","tool_bindings":[]}},
+                            {"op":"add_agent","agent":{"id":"w2","name":"W2","role":"worker",
+                                "runtime_kind":"deepagents","model_profile":"gpt-9","tool_bindings":[]}},
+                        ]
+                    }),
+                )
+            } else {
+                text_response("done")
+            },
+        )
     });
     let opened = open_chat_session(&cwd, &api, &["files"], UserConfig::default());
     opened.runtime.start();
@@ -1415,14 +1512,24 @@ fn review_bound_mcp_must_be_advertised_to_model() {
     let _env = env_guard("review-mcp");
     let cwd = isolated_project("mcp");
     let api = FakeOpenAi::start(|_, index| {
-        (200, if index == 0 { tool_call_response("mcp-1", "echo_echo", json!({"text":"ping"})) }
-        else { text_response("done") })
+        (
+            200,
+            if index == 0 {
+                tool_call_response("mcp-1", "echo_echo", json!({"text":"ping"}))
+            } else {
+                text_response("done")
+            },
+        )
     });
     let mut catalog = UserConfig::default();
-    catalog.tools.insert("echo_service".into(), serde_json::from_value(json!({
-        "kind":"mcp", "mcp_server":"echo", "mcp_execution":"host", "command":env!("CARGO_BIN_EXE_fake-mcp-server"),
-        "tool_names":["echo"], "required":true
-    })).unwrap());
+    catalog.tools.insert(
+        "echo_service".into(),
+        serde_json::from_value(json!({
+            "kind":"mcp", "mcp_server":"echo", "mcp_execution":"host", "command":env!("CARGO_BIN_EXE_fake-mcp-server"),
+            "tool_names":["echo"], "required":true
+        }))
+        .unwrap(),
+    );
     let bound = BoundTools::load(&catalog, &["echo_service".to_string()]).unwrap();
     assert!(bound.names().contains("echo_echo"));
     assert_eq!(bound.call("echo_echo", &json!({"text":"ping"})).unwrap().unwrap(), json!("ping"));
@@ -1433,9 +1540,13 @@ fn review_bound_mcp_must_be_advertised_to_model() {
     assert!(opened.runtime.settle(5));
     let body = api.body(0);
     opened.close();
-    assert!(api.body(1)["messages"].as_array().unwrap().iter()
+    assert!(api.body(1)["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
         .any(|m| m["role"] == "tool" && m["content"].as_str().unwrap_or("").contains("ping")));
-    let names: Vec<&str> = body["tools"].as_array().unwrap().iter().filter_map(|t| t["function"]["name"].as_str()).collect();
+    let names: Vec<&str> =
+        body["tools"].as_array().unwrap().iter().filter_map(|t| t["function"]["name"].as_str()).collect();
     eprintln!("actual model tools={names:?}");
     assert!(names.contains(&"echo_echo"), "loaded and callable MCP tool vanished from the model request");
 }
@@ -1448,7 +1559,9 @@ fn review_closed_session_must_not_execute_late_tool_call() {
         if index == 0 {
             std::thread::sleep(Duration::from_millis(400));
             (200, tool_call_response("late", "write_file", json!({"path":"after-close.txt", "content":"late write"})))
-        } else { (200, text_response("done")) }
+        } else {
+            (200, text_response("done"))
+        }
     });
     let opened = open_chat_session(&cwd, &api, &["files"], UserConfig::default());
     opened.runtime.start();
@@ -1458,7 +1571,11 @@ fn review_closed_session_must_not_execute_late_tool_call() {
     let lock = teamagents_engine::sessions::acquire_session_lock("review").expect("close released the lock");
     let events_after_close = opened.core.state().unwrap()["events"].clone();
     let wrote = wait_for(|| cwd.join("after-close.txt").exists(), 2000);
-    assert_eq!(opened.core.state().unwrap()["events"], events_after_close, "old runtime finalized after releasing ownership");
+    assert_eq!(
+        opened.core.state().unwrap()["events"],
+        events_after_close,
+        "old runtime finalized after releasing ownership"
+    );
     drop(lock);
     eprintln!("session lock was released; post-close write={wrote}");
     assert!(!wrote, "old runner still executed a model tool call after close returned");
@@ -1480,15 +1597,23 @@ impl ProbeWorker {
         use std::io::BufRead;
         use std::process::{Command, Stdio};
         let mut child = Command::new(env!("CARGO_BIN_EXE_teamagents"))
-            .arg("serve").env("XDG_CONFIG_HOME", base.join("config")).env("XDG_STATE_HOME", base.join("state"))
-            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
+            .arg("serve")
+            .env("XDG_CONFIG_HOME", base.join("config"))
+            .env("XDG_STATE_HOME", base.join("state"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
         let input = child.stdin.take().unwrap();
         let stdout = child.stdout.take().unwrap();
         let (tx, replies) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
                 let message: Json = serde_json::from_str(&line).unwrap();
-                if message.get("id").is_some() { let _ = tx.send(message); }
+                if message.get("id").is_some() {
+                    let _ = tx.send(message);
+                }
             }
         });
         Self { child, input, replies, next_id: 0 }
@@ -1499,23 +1624,42 @@ impl ProbeWorker {
         self.input.flush().unwrap();
         let r = self.replies.recv_timeout(Duration::from_secs(3)).map_err(|e| format!("{method}: {e}"))?;
         assert_eq!(r["id"], self.next_id);
-        if let Some(err) = r.get("error") { Err(err.to_string()) } else { Ok(r["result"].clone()) }
+        if let Some(err) = r.get("error") {
+            Err(err.to_string())
+        } else {
+            Ok(r["result"].clone())
+        }
     }
     fn entries(&mut self) -> Json {
-        self.call("call", json!({"method":"shared_entries", "params":{"space_ids":["main"]}})).unwrap()["entries"].clone()
+        self.call("call", json!({"method":"shared_entries", "params":{"space_ids":["main"]}})).unwrap()["entries"]
+            .clone()
     }
-    fn kill(&mut self) { let _ = self.child.kill(); let _ = self.child.wait(); }
+    fn kill(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }
-impl Drop for ProbeWorker { fn drop(&mut self) { self.kill(); } }
+impl Drop for ProbeWorker {
+    fn drop(&mut self) {
+        self.kill();
+    }
+}
 
 fn worker_files(base: &std::path::Path, api: Option<&FakeOpenAi>) -> std::path::PathBuf {
     std::fs::create_dir_all(base.join("config/teamagents")).unwrap();
     let mut config = "[models.m]\nprovider='openai'\nprotocol='openai'\nmodel='test'\nmax_retries=0\n".to_string();
-    if let Some(api) = api { config.push_str(&format!("base_url='{}'\n", api.base_url())); }
+    if let Some(api) = api {
+        config.push_str(&format!("base_url='{}'\n", api.base_url()));
+    }
     std::fs::write(base.join("config/teamagents/config.toml"), config).unwrap();
     let team = base.join("team.json");
-    std::fs::write(&team, json!({"leader_id":"leader", "agents":[agent_json("leader", "leader", &["files"])],
-        "shared_spaces":[{"id":"main", "readers":["leader"], "writers":["leader"]}]}).to_string()).unwrap();
+    std::fs::write(
+        &team,
+        json!({"leader_id":"leader", "agents":[agent_json("leader", "leader", &["files"])],
+        "shared_spaces":[{"id":"main", "readers":["leader"], "writers":["leader"]}]})
+        .to_string(),
+    )
+    .unwrap();
     team
 }
 
@@ -1523,49 +1667,76 @@ fn worker_files(base: &std::path::Path, api: Option<&FakeOpenAi>) -> std::path::
 fn review_crash_after_committed_chat_action_must_not_replay_it() {
     let _env = env_guard("review-recovery");
     for lost_receipt in [false, true] {
-    let base = isolated_project("recovery");
-    let api = FakeOpenAi::start(|body, index| {
-        // The model must see the committed result after restart. An API that
-        // deliberately requests the same operation again is a different task.
-        if index == 1 { std::thread::sleep(Duration::from_millis(500)); }
-        let has_result = body["messages"].as_array().unwrap().iter().any(|m|
-            m["role"] == "tool" && m["content"].as_str().unwrap_or("").contains("sequence"));
-        (200, if has_result { text_response("done") } else {
-            tool_call_response(&format!("publish-{index}"), "publish_shared", json!({"space_id":"main", "content":"once-only"}))
-        })
-    });
-    let team = worker_files(&base, Some(&api));
-    let mut worker = ProbeWorker::spawn(&base);
-    let opened = worker.call("open", json!({"cwd":base,"team":team})).unwrap();
-    worker.call("user_message", json!({"text":"publish once"})).unwrap();
-    assert!(wait_for(|| api.calls() >= 2, 5000));
-    assert_eq!(worker.entries().as_array().unwrap().len(), 1);
-    let state = worker.call("call", json!({"method":"state", "params":{}})).unwrap();
-    let run_id = state["runs"][0]["run_id"].as_str().unwrap();
-    worker.kill();
-    if lost_receipt {
-        // Inject exactly the commit -> receipt-checkpoint crash window, using
-        // the real model ID and already committed SQLite action receipt.
-        let path = base.join("state/teamagents/sessions").join(opened["session_id"].as_str().unwrap())
-            .join("members/leader/turns").join(format!("{run_id}.json"));
-        let mut checkpoint: Json = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(checkpoint["history"].as_array_mut().unwrap().pop().unwrap()["role"], "tool");
-        checkpoint["model_steps"] = json!(1);
-        std::fs::write(&path, checkpoint.to_string()).unwrap();
-        // The actual pre-result boundary has no result in either file.
-        let history_path = path.parent().unwrap().parent().unwrap().join("chat_history.json");
-        let mut history: Json = serde_json::from_slice(&std::fs::read(&history_path).unwrap()).unwrap();
-        history[state["runs"][0]["context_ref"].as_str().unwrap()] = checkpoint["history"].clone();
-        std::fs::write(history_path, history.to_string()).unwrap();
-    }
-    let mut worker = ProbeWorker::spawn(&base);
-    worker.call("open", json!({"cwd":base,"team":team,"resume":opened["session_id"]})).unwrap();
-    assert!(wait_for(|| api.calls() >= 3, 5000));
-    assert!(api.body(2)["messages"].as_array().unwrap().iter()
-        .any(|m| m["role"] == "tool" && m["tool_call_id"] == "publish-0"), "recovery lost the original tool result");
-    let entries = worker.entries();
-    eprintln!("entries after kill/restart: {entries}");
-    assert_eq!(entries.as_array().unwrap().len(), 1, "a committed model action was replayed with a new tool_call_id");
+        let base = isolated_project("recovery");
+        let api = FakeOpenAi::start(|body, index| {
+            // The model must see the committed result after restart. An API that
+            // deliberately requests the same operation again is a different task.
+            if index == 1 {
+                std::thread::sleep(Duration::from_millis(500));
+            }
+            let has_result = body["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|m| m["role"] == "tool" && m["content"].as_str().unwrap_or("").contains("sequence"));
+            (
+                200,
+                if has_result {
+                    text_response("done")
+                } else {
+                    tool_call_response(
+                        &format!("publish-{index}"),
+                        "publish_shared",
+                        json!({"space_id":"main", "content":"once-only"}),
+                    )
+                },
+            )
+        });
+        let team = worker_files(&base, Some(&api));
+        let mut worker = ProbeWorker::spawn(&base);
+        let opened = worker.call("open", json!({"cwd":base,"team":team})).unwrap();
+        worker.call("user_message", json!({"text":"publish once"})).unwrap();
+        assert!(wait_for(|| api.calls() >= 2, 5000));
+        assert_eq!(worker.entries().as_array().unwrap().len(), 1);
+        let state = worker.call("call", json!({"method":"state", "params":{}})).unwrap();
+        let run_id = state["runs"][0]["run_id"].as_str().unwrap();
+        worker.kill();
+        if lost_receipt {
+            // Inject exactly the commit -> receipt-checkpoint crash window, using
+            // the real model ID and already committed SQLite action receipt.
+            let path = base
+                .join("state/teamagents/sessions")
+                .join(opened["session_id"].as_str().unwrap())
+                .join("members/leader/turns")
+                .join(format!("{run_id}.json"));
+            let mut checkpoint: Json = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(checkpoint["history"].as_array_mut().unwrap().pop().unwrap()["role"], "tool");
+            checkpoint["model_steps"] = json!(1);
+            std::fs::write(&path, checkpoint.to_string()).unwrap();
+            // The actual pre-result boundary has no result in either file.
+            let history_path = path.parent().unwrap().parent().unwrap().join("chat_history.json");
+            let mut history: Json = serde_json::from_slice(&std::fs::read(&history_path).unwrap()).unwrap();
+            history[state["runs"][0]["context_ref"].as_str().unwrap()] = checkpoint["history"].clone();
+            std::fs::write(history_path, history.to_string()).unwrap();
+        }
+        let mut worker = ProbeWorker::spawn(&base);
+        worker.call("open", json!({"cwd":base,"team":team,"resume":opened["session_id"]})).unwrap();
+        assert!(wait_for(|| api.calls() >= 3, 5000));
+        assert!(
+            api.body(2)["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|m| m["role"] == "tool" && m["tool_call_id"] == "publish-0"),
+            "recovery lost the original tool result"
+        );
+        let entries = worker.entries();
+        eprintln!("entries after kill/restart: {entries}");
+        assert_eq!(
+            entries.as_array().unwrap().len(),
+            1,
+            "a committed model action was replayed with a new tool_call_id"
+        );
     }
 }
 
@@ -1577,9 +1748,18 @@ fn review_close_must_stop_running_shell_before_unlocking() {
         return;
     }
     let cwd = isolated_project("shell-close");
-    let api = FakeOpenAi::start(|_, _| (200, tool_call_response("shell-close", "shell", json!({
-        "command":"touch started; sleep 2; printf late > after-close.txt", "timeout":10
-    }))));
+    let api = FakeOpenAi::start(|_, _| {
+        (
+            200,
+            tool_call_response(
+                "shell-close",
+                "shell",
+                json!({
+                    "command":"touch started; sleep 2; printf late > after-close.txt", "timeout":10
+                }),
+            ),
+        )
+    });
     let opened = open_chat_session(&cwd, &api, &["shell"], UserConfig::default());
     opened.runtime.start();
     opened.runtime.user_message("run command", false).unwrap();
@@ -1602,9 +1782,20 @@ fn review_turn_timeout_must_stop_running_shell() {
     let control = teamagents_engine::tools::shell_run("printf works", &cwd, 5, false, None).unwrap();
     assert_eq!(control, "works", "real sandbox must be working for the probe");
     let api = FakeOpenAi::start(|_, index| {
-        if index == 0 { (200, tool_call_response("shell-1", "shell", json!({
-            "command":"touch started; sleep 2; printf late > after-timeout.txt", "timeout":10
-        }))) } else { (200, text_response("done")) }
+        if index == 0 {
+            (
+                200,
+                tool_call_response(
+                    "shell-1",
+                    "shell",
+                    json!({
+                        "command":"touch started; sleep 2; printf late > after-timeout.txt", "timeout":10
+                    }),
+                ),
+            )
+        } else {
+            (200, text_response("done"))
+        }
     });
     let opened = open_chat_session(&cwd, &api, &["shell"], UserConfig::default());
     let mut spec = opened.core.state().unwrap()["spec"].clone();
@@ -1629,9 +1820,18 @@ fn review_unknown_external_effect_is_not_replayed_after_crash() {
         return;
     }
     let base = isolated_project("unknown-external");
-    let api = FakeOpenAi::start(|_, _| (200, tool_call_response("external-1", "shell", json!({
-        "command":"printf x >> count.txt; sleep 30; touch late.txt", "timeout":40
-    }))));
+    let api = FakeOpenAi::start(|_, _| {
+        (
+            200,
+            tool_call_response(
+                "external-1",
+                "shell",
+                json!({
+                    "command":"printf x >> count.txt; sleep 30; touch late.txt", "timeout":40
+                }),
+            ),
+        )
+    });
     let team = worker_files(&base, Some(&api));
     let mut spec: Json = serde_json::from_slice(&std::fs::read(&team).unwrap()).unwrap();
     spec["agents"][0]["tool_bindings"] = json!(["shell"]);
@@ -1656,20 +1856,33 @@ fn review_executor_refreshes_workspace_and_revoked_bindings() {
     let _env = env_guard("review-executor-revision");
     let cwd = isolated_project("executor-revision");
     let api = FakeOpenAi::start(|_, index| {
-        (200, match index {
-            0 | 2 => tool_call_response(&format!("write-{index}"), "write_file", json!({"path":"result.txt", "content":index.to_string()})),
-            4 => tool_call_response("revoked", "write_file", json!({"path":"revoked.txt", "content":"bad"})),
-            _ => text_response("done"),
-        })
+        (
+            200,
+            match index {
+                0 | 2 => tool_call_response(
+                    &format!("write-{index}"),
+                    "write_file",
+                    json!({"path":"result.txt", "content":index.to_string()}),
+                ),
+                4 => tool_call_response("revoked", "write_file", json!({"path":"revoked.txt", "content":"bad"})),
+                _ => text_response("done"),
+            },
+        )
     });
     let opened = open_chat_session(&cwd, &api, &["files"], UserConfig::default());
     opened.runtime.start();
     opened.runtime.user_message("first", false).unwrap();
     assert!(opened.runtime.settle(5));
     let patch = |id: &str, revision: i64, changes: Json| {
-        let receipt = submit(&opened.core, id, "leader", "apply_topology_patch", json!({
-            "base_revision":revision,"operations":[{"op":"update_agent","agent_id":"leader","changes":changes}]
-        }));
+        let receipt = submit(
+            &opened.core,
+            id,
+            "leader",
+            "apply_topology_patch",
+            json!({
+                "base_revision":revision,"operations":[{"op":"update_agent","agent_id":"leader","changes":changes}]
+            }),
+        );
         assert!(receipt.ok, "{receipt:?}");
         assert_eq!(receipt.result["status"], "APPLIED");
     };
@@ -1684,9 +1897,9 @@ fn review_executor_refreshes_workspace_and_revoked_bindings() {
     assert!(opened.runtime.settle(5));
     opened.close();
     assert!(!isolated.join("revoked.txt").exists());
-    assert!(api.body(5)["messages"].as_array().unwrap().iter().any(|m|
-        m["role"] == "tool" && m["tool_call_id"] == "revoked" && m["content"].as_str().unwrap_or("").contains("not bound")
-    ));
+    assert!(api.body(5)["messages"].as_array().unwrap().iter().any(|m| m["role"] == "tool"
+        && m["tool_call_id"] == "revoked"
+        && m["content"].as_str().unwrap_or("").contains("not bound")));
 }
 
 #[test]
@@ -1698,16 +1911,27 @@ fn review_completed_checkpoint_restores_reply_without_another_model_call() {
     let run: TurnRun = serde_json::from_value(json!({
         "run_id":"finished", "session_id":"final-checkpoint", "agent_id":"leader",
         "config_revision":1, "topology_revision":1, "context_ref":"ctx:leader:1"
-    })).unwrap();
+    }))
+    .unwrap();
     let view = json!({"inbox_delta":[], "delivery_ids":[]});
-    let gateway = ToolGateway::new(core.clone(), "leader", "finished",
-        ApprovalGate::new(core.clone(), PermissionPolicy::default()), None);
+    let gateway = ToolGateway::new(
+        core.clone(),
+        "leader",
+        "finished",
+        ApprovalGate::new(core.clone(), PermissionPolicy::default()),
+        None,
+    );
     let first = chat_runner(&core, &agent, profile(&api.base_url(), "openai", json!({}), 0), "/tmp");
     assert_eq!(first.start_or_resume(&run, &view, &gateway, &Json::Null).status, TurnStatus::Completed);
     first.close();
     let restored = chat_runner(&core, &agent, profile(&api.base_url(), "openai", json!({}), 0), "/tmp");
-    let restored_gateway = ToolGateway::new(core.clone(), "leader", "finished",
-        ApprovalGate::new(core, PermissionPolicy::default()), None);
+    let restored_gateway = ToolGateway::new(
+        core.clone(),
+        "leader",
+        "finished",
+        ApprovalGate::new(core, PermissionPolicy::default()),
+        None,
+    );
     assert_eq!(restored.reconcile(&run), Some(TurnStatus::Queued));
     let outcome = restored.start_or_resume(&run, &view, &restored_gateway, &Json::Null);
     assert_eq!(outcome.status, TurnStatus::Completed);
@@ -1725,11 +1949,19 @@ fn review_tree_commit_recovers_on_both_sides_of_rename() {
     let run: TurnRun = serde_json::from_value(json!({
         "run_id":"journal", "session_id":"tree-journal", "agent_id":"leader",
         "config_revision":1, "topology_revision":1, "context_ref":"ctx:leader:1"
-    })).unwrap();
+    }))
+    .unwrap();
     let view = json!({"inbox_delta":[], "delivery_ids":[]});
     let build = || chat_runner(&core, &agent, profile(&api.base_url(), "openai", json!({}), 0), "/tmp");
-    let gateway = || ToolGateway::new(core.clone(), "leader", "journal",
-        ApprovalGate::new(core.clone(), PermissionPolicy::default()), None);
+    let gateway = || {
+        ToolGateway::new(
+            core.clone(),
+            "leader",
+            "journal",
+            ApprovalGate::new(core.clone(), PermissionPolicy::default()),
+            None,
+        )
+    };
     let first = build();
     assert_eq!(first.start_or_resume(&run, &view, &gateway(), &Json::Null).status, TurnStatus::Completed);
     first.close();
@@ -1741,8 +1973,15 @@ fn review_tree_commit_recovers_on_both_sides_of_rename() {
     checkpoint["tree_pending"] = tree["ctx:leader:1"]["nodes"].clone();
     for renamed in [false, true] {
         std::fs::write(&cp_path, checkpoint.to_string()).unwrap();
-        std::fs::write(&tree_path, if renamed { tree.to_string() }
-            else { json!({"ctx:leader:1":{"nodes":[], "leaf":null, "rewind_epoch":0}}).to_string() }).unwrap();
+        std::fs::write(
+            &tree_path,
+            if renamed {
+                tree.to_string()
+            } else {
+                json!({"ctx:leader:1":{"nodes":[], "leaf":null, "rewind_epoch":0}}).to_string()
+            },
+        )
+        .unwrap();
         let restored = build();
         let outcome = restored.start_or_resume(&run, &view, &gateway(), &Json::Null);
         assert_eq!(outcome.status, TurnStatus::Completed, "renamed={renamed}: {outcome:?}");
@@ -1768,9 +2007,14 @@ fn review_completed_turns_survive_tree_migration_and_restart() {
     let opened = open_chat_session(&cwd, &api, &[], UserConfig::default());
     let dir = teamagents_engine::sessions::session_paths("review").base.join("members/leader");
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("chat_history.json"), json!({"ctx:leader:1":[
-        {"role":"user","content":"legacy input"}, {"role":"assistant","content":"legacy reply"}
-    ]}).to_string()).unwrap();
+    std::fs::write(
+        dir.join("chat_history.json"),
+        json!({"ctx:leader:1":[
+            {"role":"user","content":"legacy input"}, {"role":"assistant","content":"legacy reply"}
+        ]})
+        .to_string(),
+    )
+    .unwrap();
     opened.runtime.start();
     for text in ["first", "second"] {
         opened.runtime.user_message(text, false).unwrap();
@@ -1778,8 +2022,13 @@ fn review_completed_turns_survive_tree_migration_and_restart() {
     }
     opened.close();
     let tree: Json = serde_json::from_slice(&std::fs::read(dir.join("chat_tree.json")).unwrap()).unwrap();
-    let replies: Vec<_> = tree["ctx:leader:1"]["nodes"].as_array().unwrap().iter()
-        .filter(|n| n["message"]["role"] == "assistant").map(|n| n["message"]["content"].as_str().unwrap()).collect();
+    let replies: Vec<_> = tree["ctx:leader:1"]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|n| n["message"]["role"] == "assistant")
+        .map(|n| n["message"]["content"].as_str().unwrap())
+        .collect();
     assert_eq!(replies, vec!["legacy reply", "UNIQUE_REPLY_0", "UNIQUE_REPLY_1"]);
     let resumed = open_chat_session(&cwd, &api, &[], UserConfig::default());
     resumed.runtime.start();
@@ -1797,15 +2046,31 @@ fn review_model_override_preserves_cancellation_and_applies_next_turn() {
         return;
     }
     let cwd = isolated_project("model-cancel");
-    let api = FakeOpenAi::start(|_, index| (200, if index == 0 {
-        tool_call_response("shell-1", "shell", json!({"command":"touch started; sleep 2; echo BAD > late", "timeout":10}))
-    } else { text_response("done") }));
+    let api = FakeOpenAi::start(|_, index| {
+        (
+            200,
+            if index == 0 {
+                tool_call_response(
+                    "shell-1",
+                    "shell",
+                    json!({"command":"touch started; sleep 2; echo BAD > late", "timeout":10}),
+                )
+            } else {
+                text_response("done")
+            },
+        )
+    });
     let replacement = FakeOpenAi::start(|_, _| (200, json!({"content":[{"type":"text","text":"replacement done"}]})));
     let mut catalog = UserConfig::default();
-    catalog.models.insert("replacement".into(), ModelProfile {
-        provider: "anthropic".into(), model: "replacement-model".into(), context_window: Some(200000),
-        ..profile(&replacement.base_url(), "anthropic", json!({"max_tokens":4321}), 0)
-    });
+    catalog.models.insert(
+        "replacement".into(),
+        ModelProfile {
+            provider: "anthropic".into(),
+            model: "replacement-model".into(),
+            context_window: Some(200000),
+            ..profile(&replacement.base_url(), "anthropic", json!({"max_tokens":4321}), 0)
+        },
+    );
     let opened = open_chat_session(&cwd, &api, &["shell"], catalog);
     opened.runtime.start();
     opened.runtime.user_message("run shell", false).unwrap();
@@ -1814,7 +2079,10 @@ fn review_model_override_preserves_cancellation_and_applies_next_turn() {
     opened.set_model_selection("leader", Some("replacement".into()), None, Some("HIGH".into())).unwrap();
     let receipt = submit(&opened.core, "cancel", "user", "cancel_run", json!({"run_id":run.run_id}));
     assert!(receipt.ok);
-    assert!(wait_for(|| runs(&opened.core).iter().any(|r| r.run_id == run.run_id && r.status == TurnStatus::Cancelled), 5000));
+    assert!(wait_for(
+        || runs(&opened.core).iter().any(|r| r.run_id == run.run_id && r.status == TurnStatus::Cancelled),
+        5000
+    ));
     assert!(!wait_for(|| cwd.join("late").exists(), 2300), "cancelled shell continued writing");
     opened.runtime.user_message("next turn", false).unwrap();
     assert!(opened.runtime.settle(5));
@@ -1845,10 +2113,13 @@ fn review_late_compaction_cannot_write_after_session_close() {
     prof.context_window = Some(1000);
     catalog.models.insert("m".into(), prof);
     let opened = open_session(OpenOptions {
-        cwd: Some(cwd), session_id: Some("late-compact".into()), catalog: Some(catalog),
+        cwd: Some(cwd),
+        session_id: Some("late-compact".into()),
+        catalog: Some(catalog),
         initial_spec: Some(json!({"leader_id":"leader", "agents":[agent_json("leader", "leader", &[])]})),
         ..Default::default()
-    }).unwrap();
+    })
+    .unwrap();
     opened.runtime.start();
     opened.runtime.user_message("first", false).unwrap();
     assert!(opened.runtime.settle(5));
@@ -1878,15 +2149,31 @@ fn compaction_triggers_on_threshold_and_read_history_recovers_output() {
         1 | 3 => {
             assert!(body["messages"][0]["content"].as_str().unwrap().contains("call-1"));
             (200, text_with_usage("SUMMARY: ran shell, got output", 400))
-        },
+        }
         // after compaction the model asks for the covered tool output back
         2 | 4 => {
             // Discover the pointer from the request, as a stateless model must.
-            let content = body["messages"].as_array().unwrap().iter()
-                .filter_map(|m| m["content"].as_str()).find(|s| s.contains("Tool output index")).unwrap();
-            let id = content.lines().find_map(|l| l.strip_prefix("- ").and_then(|l| l.split_once(": shell").map(|(id, _)| id))).unwrap();
-            (200, tool_call_with_usage(&format!("read-{index}"), "read_history", json!({"tool_call_id": id}), if index == 2 { 10_000 } else { 500 }))
-        },
+            let content = body["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|m| m["content"].as_str())
+                .find(|s| s.contains("Tool output index"))
+                .unwrap();
+            let id = content
+                .lines()
+                .find_map(|l| l.strip_prefix("- ").and_then(|l| l.split_once(": shell").map(|(id, _)| id)))
+                .unwrap();
+            (
+                200,
+                tool_call_with_usage(
+                    &format!("read-{index}"),
+                    "read_history",
+                    json!({"tool_call_id": id}),
+                    if index == 2 { 10_000 } else { 500 },
+                ),
+            )
+        }
         _ => (200, text_with_usage("final answer", 500)),
     });
     let spec = json!({
@@ -1911,8 +2198,7 @@ fn compaction_triggers_on_threshold_and_read_history_recovers_output() {
         wait_for(
             || {
                 let rows = runs(&core);
-                rows.iter().any(|r| r.status == TurnStatus::Completed)
-                    && !rows.iter().any(|r| r.status.is_active())
+                rows.iter().any(|r| r.status == TurnStatus::Completed) && !rows.iter().any(|r| r.status.is_active())
             },
             15_000
         ),
@@ -1922,13 +2208,21 @@ fn compaction_triggers_on_threshold_and_read_history_recovers_output() {
 
     // call 1 is the summary request: the compactor saw the real tool output
     let summary_request = server.body(1)["messages"][0]["content"].as_str().unwrap_or("").to_string();
-    assert!(summary_request.contains("compacting an agent conversation"), "summary prompt, got: {}", &summary_request[..summary_request.len().min(120)]);
+    assert!(
+        summary_request.contains("compacting an agent conversation"),
+        "summary prompt, got: {}",
+        &summary_request[..summary_request.len().min(120)]
+    );
     assert!(summary_request.contains("executed"), "compactor input includes the tool output");
 
     // call 2 runs on the compacted history: summary present, output gone
     let compacted = server.body(2).to_string();
     assert!(compacted.contains("SUMMARY: ran shell"), "summary carried into the wire history");
-    assert!(!compacted.contains("\"executed\""), "original tool output compacted away: {}", &compacted[..compacted.len().min(400)]);
+    assert!(
+        !compacted.contains("\"executed\""),
+        "original tool output compacted away: {}",
+        &compacted[..compacted.len().min(400)]
+    );
 
     // Even after a second compaction, the original output remains discoverable.
     assert!(server.body(4).to_string().contains("- call-1: shell"));
@@ -1947,9 +2241,25 @@ fn long_context_compaction_preserves_request_and_reads_large_output_after_restar
     let server = FakeOpenAi::start(|_, index| match index {
         0 => (200, tool_call_with_usage("large-output", "shell", shell_args(), 10_000)),
         1 | 3 => (200, text_with_usage("Summary deliberately omits the user's exact constraints.", 100)),
-        2 => (200, tool_call_with_usage("read-first", "read_history", json!({"tool_call_id":"large-output", "offset":29_900, "limit":500}), 10_000)),
+        2 => (
+            200,
+            tool_call_with_usage(
+                "read-first",
+                "read_history",
+                json!({"tool_call_id":"large-output", "offset":29_900, "limit":500}),
+                10_000,
+            ),
+        ),
         4 => (200, text_with_usage("first turn complete", 100)),
-        5 => (200, tool_call_with_usage("read-restarted", "read_history", json!({"tool_call_id":"large-output", "offset":29_900, "limit":500}), 100)),
+        5 => (
+            200,
+            tool_call_with_usage(
+                "read-restarted",
+                "read_history",
+                json!({"tool_call_id":"large-output", "offset":29_900, "limit":500}),
+                100,
+            ),
+        ),
         _ => (200, text_with_usage("recovered the original output", 100)),
     });
     let agent = agent_json("leader", "leader", &["shell"]);
@@ -1962,7 +2272,14 @@ fn long_context_compaction_preserves_request_and_reads_large_output_after_restar
         counter.fetch_add(1, Ordering::SeqCst);
         Ok(json!({"output":format!("{}ORIGINAL-MIDDLE-MARKER{}", "H".repeat(30_000), "T".repeat(30_000))}))
     });
-    let first = start_runtime(&core, chat_runner(&core, &agent, prof.clone(), "/tmp"), "leader", PermissionPolicy::default(), RuntimeLimits::default(), executor.clone());
+    let first = start_runtime(
+        &core,
+        chat_runner(&core, &agent, prof.clone(), "/tmp"),
+        "leader",
+        PermissionPolicy::default(),
+        RuntimeLimits::default(),
+        executor.clone(),
+    );
     first.user_message(REQUEST, false).unwrap();
     assert!(wait_for(|| runs(&core).iter().any(|r| r.status == TurnStatus::Completed), 5_000));
     first.close();
@@ -1970,11 +2287,25 @@ fn long_context_compaction_preserves_request_and_reads_large_output_after_restar
     for index in [2, 4] {
         let body = server.body(index).to_string();
         assert!(body.contains(REQUEST), "compaction {index} lost the latest user request");
-        assert!(!body.contains(&"H".repeat(10_000)), "a covered large output must not immediately overflow the compacted request");
-        assert_eq!(body.matches("- large-output: shell").count(), 1, "retained tool groups must not duplicate the output index");
+        assert!(
+            !body.contains(&"H".repeat(10_000)),
+            "a covered large output must not immediately overflow the compacted request"
+        );
+        assert_eq!(
+            body.matches("- large-output: shell").count(),
+            1,
+            "retained tool groups must not duplicate the output index"
+        );
     }
     assert!(server.body(3).to_string().contains("ORIGINAL-MIDDLE-MARKER"));
-    let second = start_runtime(&core, chat_runner(&core, &agent, prof, "/tmp"), "leader", PermissionPolicy::default(), RuntimeLimits::default(), executor);
+    let second = start_runtime(
+        &core,
+        chat_runner(&core, &agent, prof, "/tmp"),
+        "leader",
+        PermissionPolicy::default(),
+        RuntimeLimits::default(),
+        executor,
+    );
     second.user_message("继续核对刚才的完整输出", false).unwrap();
     assert!(wait_for(|| runs(&core).iter().filter(|r| r.status == TurnStatus::Completed).count() == 2, 5_000));
     second.close();
@@ -2006,14 +2337,24 @@ fn long_context_keeps_small_recent_groups_when_the_latest_reasoning_is_oversized
         counter.fetch_add(1, Ordering::SeqCst);
         Ok(json!({"output":"SOURCE-NEEDED-FOR-THE-NEXT-EDIT"}))
     });
-    let runtime = start_runtime(&core, chat_runner(&core, &agent, prof, "/tmp"), "leader", PermissionPolicy::default(), RuntimeLimits::default(), executor);
+    let runtime = start_runtime(
+        &core,
+        chat_runner(&core, &agent, prof, "/tmp"),
+        "leader",
+        PermissionPolicy::default(),
+        RuntimeLimits::default(),
+        executor,
+    );
     runtime.user_message("修复代码并保留用户文件", false).unwrap();
     assert!(wait_for(|| runs(&core).iter().any(|r| r.status == TurnStatus::Completed), 5_000));
     runtime.close();
     assert_eq!(server.calls(), 4);
     let next = server.body(3).to_string();
     assert!(next.contains("修复代码并保留用户文件"));
-    assert!(next.contains("SOURCE-NEEDED-FOR-THE-NEXT-EDIT"), "a large last group must not discard earlier small source reads");
+    assert!(
+        next.contains("SOURCE-NEEDED-FOR-THE-NEXT-EDIT"),
+        "a large last group must not discard earlier small source reads"
+    );
     assert!(!next.contains(&"R".repeat(10_000)));
     assert_eq!(executions.load(Ordering::SeqCst), 1);
 }
@@ -2029,23 +2370,35 @@ fn long_context_summary_calls_consume_the_persisted_model_step_budget() {
         }
     });
     let agent = agent_json("leader", "leader", &[]);
-    let core = core_with_spec("long-context-budget", json!({"leader_id":"leader", "agents":[agent.clone()], "limits":{"max_model_steps_per_turn":2}}));
+    let core = core_with_spec(
+        "long-context-budget",
+        json!({"leader_id":"leader", "agents":[agent.clone()], "limits":{"max_model_steps_per_turn":2}}),
+    );
     let mut prof = profile(&server.base_url(), "openai", json!({}), 0);
     prof.context_window = Some(10_000);
     let runner = chat_runner(&core, &agent, prof.clone(), "/tmp");
     let history_dir = runner.history_dir().unwrap();
     let (executor, _) = recording_executor();
-    let runtime = start_runtime(&core, runner, "leader", PermissionPolicy::default(), RuntimeLimits::default(), executor);
+    let runtime =
+        start_runtime(&core, runner, "leader", PermissionPolicy::default(), RuntimeLimits::default(), executor);
     runtime.user_message("keep inspecting", false).unwrap();
     assert!(wait_for(|| runs(&core).iter().any(|r| r.status == TurnStatus::Failed), 5_000));
     runtime.close();
     assert_eq!(server.calls(), 2, "the summary request must count toward the two-call limit");
     assert!(event_kinds(&core).contains(&"limit_reached".into()));
     let run = runs(&core).remove(0);
-    let checkpoint: Json = serde_json::from_slice(&std::fs::read(history_dir.join("turns").join(format!("{}.json", run.run_id))).unwrap()).unwrap();
+    let checkpoint: Json =
+        serde_json::from_slice(&std::fs::read(history_dir.join("turns").join(format!("{}.json", run.run_id))).unwrap())
+            .unwrap();
     assert_eq!(checkpoint["model_steps"], 2);
     let restored = chat_runner(&core, &agent, prof, "/tmp");
-    let gateway = ToolGateway::new(core.clone(), "leader", &run.run_id, ApprovalGate::new(core.clone(), PermissionPolicy::default()), None);
+    let gateway = ToolGateway::new(
+        core.clone(),
+        "leader",
+        &run.run_id,
+        ApprovalGate::new(core.clone(), PermissionPolicy::default()),
+        None,
+    );
     let outcome = restored.start_or_resume(&run, &json!({}), &gateway, &Json::Null);
     assert_eq!(outcome.status, TurnStatus::Failed);
     assert_eq!(server.calls(), 2, "a restart must preserve the exhausted budget");
@@ -2062,10 +2415,14 @@ fn long_context_overflow_cannot_start_recovery_after_budget_exhaustion() {
         }
     });
     let agent = agent_json("leader", "leader", &[]);
-    let core = core_with_spec("long-context-overflow-budget", json!({"leader_id":"leader", "agents":[agent.clone()], "limits":{"max_model_steps_per_turn":1}}));
+    let core = core_with_spec(
+        "long-context-overflow-budget",
+        json!({"leader_id":"leader", "agents":[agent.clone()], "limits":{"max_model_steps_per_turn":1}}),
+    );
     let runner = chat_runner(&core, &agent, profile(&server.base_url(), "openai", json!({}), 0), "/tmp");
     let (executor, _) = recording_executor();
-    let runtime = start_runtime(&core, runner, "leader", PermissionPolicy::default(), RuntimeLimits::default(), executor);
+    let runtime =
+        start_runtime(&core, runner, "leader", PermissionPolicy::default(), RuntimeLimits::default(), executor);
     runtime.user_message("start work", false).unwrap();
     assert!(wait_for(|| runs(&core).iter().any(|r| r.status == TurnStatus::Failed), 5_000));
     runtime.close();
@@ -2088,10 +2445,14 @@ fn long_context_provider_overflow_recovers_without_repeating_the_large_tool_outp
         }
     });
     let agent = agent_json("leader", "leader", &["shell"]);
-    let core = core_with_spec("long-context-overflow-recovery", json!({"leader_id":"leader", "agents":[agent.clone()], "limits":{"max_model_steps_per_turn":4}}));
+    let core = core_with_spec(
+        "long-context-overflow-recovery",
+        json!({"leader_id":"leader", "agents":[agent.clone()], "limits":{"max_model_steps_per_turn":4}}),
+    );
     let runner = chat_runner(&core, &agent, profile(&server.base_url(), "openai", json!({}), 0), "/tmp");
     let executor: ToolExecutor = Arc::new(|_, _, _, _| Ok(json!({"output":"H".repeat(60_000)})));
-    let runtime = start_runtime(&core, runner, "leader", PermissionPolicy::default(), RuntimeLimits::default(), executor);
+    let runtime =
+        start_runtime(&core, runner, "leader", PermissionPolicy::default(), RuntimeLimits::default(), executor);
     runtime.user_message("Review the parser without changing the public API.", false).unwrap();
     assert!(wait_for(|| runs(&core).iter().any(|r| r.status.is_terminal()), 5_000));
     runtime.close();

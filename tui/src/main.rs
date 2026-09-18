@@ -8,8 +8,7 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyEventKind, MouseEventKind};
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, supports_keyboard_enhancement, EnterAlternateScreen,
-    LeaveAlternateScreen,
+    disable_raw_mode, enable_raw_mode, supports_keyboard_enhancement, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use crossterm::{execute, ExecutableCommand};
 use ratatui::backend::CrosstermBackend;
@@ -73,28 +72,41 @@ fn find_engine_binary(explicit: Option<String>) -> String {
 }
 
 fn parse_args() -> Args {
-    let mut a = Args {
-        cwd: None,
-        resume: None,
-        full_auto: false,
-        team: None,
-        engine_bin: String::new(),
-    };
+    let mut a = Args { cwd: None, resume: None, full_auto: false, team: None, engine_bin: String::new() };
     let takes_value = |a: &mut Args, i: usize, argv: &[String]| -> usize {
         // value flags consume the next argument
         let _ = a;
-        if i + 1 < argv.len() { 2 } else { 1 }
+        if i + 1 < argv.len() {
+            2
+        } else {
+            1
+        }
     };
     let mut engine_flag: Option<String> = None;
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
     while i < argv.len() {
         let step = match argv[i].as_str() {
-            "--cwd" => { a.cwd = argv.get(i + 1).cloned(); takes_value(&mut a, i, &argv) }
-            "--resume" => { a.resume = argv.get(i + 1).cloned(); takes_value(&mut a, i, &argv) }
-            "--full-auto" => { a.full_auto = true; 1 }
-            "--team" => { a.team = argv.get(i + 1).cloned(); takes_value(&mut a, i, &argv) }
-            "--engine" => { engine_flag = argv.get(i + 1).cloned(); takes_value(&mut a, i, &argv) }
+            "--cwd" => {
+                a.cwd = argv.get(i + 1).cloned();
+                takes_value(&mut a, i, &argv)
+            }
+            "--resume" => {
+                a.resume = argv.get(i + 1).cloned();
+                takes_value(&mut a, i, &argv)
+            }
+            "--full-auto" => {
+                a.full_auto = true;
+                1
+            }
+            "--team" => {
+                a.team = argv.get(i + 1).cloned();
+                takes_value(&mut a, i, &argv)
+            }
+            "--engine" => {
+                engine_flag = argv.get(i + 1).cloned();
+                takes_value(&mut a, i, &argv)
+            }
             _ => usage(),
         };
         i += step;
@@ -162,12 +174,7 @@ fn main() {
                 | crossterm::event::KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES,
         ));
     }
-    execute!(
-        stdout,
-        crossterm::event::EnableMouseCapture,
-        crossterm::event::EnableBracketedPaste
-    )
-    .ok();
+    execute!(stdout, crossterm::event::EnableMouseCapture, crossterm::event::EnableBracketedPaste).ok();
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).expect("terminal");
 
@@ -234,9 +241,19 @@ struct AsyncUi {
 }
 
 impl AsyncUi {
-    fn enqueue(&mut self, kind: RequestKind, worker: &Worker, app: &App, method: &str, params: Json, timeout: Duration) {
+    fn enqueue(
+        &mut self,
+        kind: RequestKind,
+        worker: &Worker,
+        app: &App,
+        method: &str,
+        params: Json,
+        timeout: Duration,
+    ) {
         self.pending.push(UiRequest {
-            session: app.session_id.clone(), generation: self.generation, kind,
+            session: app.session_id.clone(),
+            generation: self.generation,
+            kind,
             call: worker.start_call(method, params, timeout),
         });
     }
@@ -249,9 +266,14 @@ impl AsyncUi {
         let mut dirty = false;
         let mut index = 0;
         while index < self.pending.len() {
-            let Some(result) = self.pending[index].call.try_result() else { index += 1; continue; };
+            let Some(result) = self.pending[index].call.try_result() else {
+                index += 1;
+                continue;
+            };
             let request = self.pending.remove(index);
-            if request.session != app.session_id || request.generation != self.generation { continue; }
+            if request.session != app.session_id || request.generation != self.generation {
+                continue;
+            }
             dirty = true;
             match request.kind {
                 RequestKind::Effect(effect, model_generation) => {
@@ -274,7 +296,9 @@ impl AsyncUi {
                             while worker.try_push().is_some() {}
                         }
                     }
-                    for effect in effects { run_effect(effect, worker, app, self); }
+                    for effect in effects {
+                        run_effect(effect, worker, app, self);
+                    }
                 }
                 RequestKind::State => match result {
                     Ok(st) => {
@@ -284,7 +308,9 @@ impl AsyncUi {
                         if app::PANELS[app.panel] == "log" {
                             app.append_log(st.get("events").and_then(Json::as_array).map(Vec::as_slice).unwrap_or(&[]));
                         }
-                        for effect in effects { run_effect(effect, worker, app, self); }
+                        for effect in effects {
+                            run_effect(effect, worker, app, self);
+                        }
                     }
                     Err(error) => {
                         self.poll_failures += 1;
@@ -295,8 +321,11 @@ impl AsyncUi {
                         }
                     }
                 },
-                RequestKind::Log(member) if app::PANELS[app.panel] == "log" && member == app.log_member => match result {
-                    Ok(st) => app.replay_log(st.get("events").and_then(Json::as_array).map(Vec::as_slice).unwrap_or(&[])),
+                RequestKind::Log(member) if app::PANELS[app.panel] == "log" && member == app.log_member => match result
+                {
+                    Ok(st) => {
+                        app.replay_log(st.get("events").and_then(Json::as_array).map(Vec::as_slice).unwrap_or(&[]))
+                    }
                     Err(error) => {
                         let msg = app.t("[界面读取事件失败] {v0}", &[("v0", &error)]);
                         app.chat.push(("system".into(), msg));
@@ -304,12 +333,16 @@ impl AsyncUi {
                 },
                 RequestKind::Shared => {
                     if let Ok(value) = result {
-                        if let Some(entries) = value.get("entries").and_then(Json::as_array) { app.shared = entries.clone(); }
+                        if let Some(entries) = value.get("entries").and_then(Json::as_array) {
+                            app.shared = entries.clone();
+                        }
                     }
                 }
                 RequestKind::Sessions => {
                     if let Ok(value) = result {
-                        if let Some(sessions) = value.get("sessions").and_then(Json::as_array) { app.sessions = sessions.clone(); }
+                        if let Some(sessions) = value.get("sessions").and_then(Json::as_array) {
+                            app.sessions = sessions.clone();
+                        }
                     }
                 }
                 RequestKind::Log(_) => {}
@@ -336,12 +369,20 @@ fn run(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, worker: &Arc<
         if event::poll(Duration::from_millis(40)).unwrap_or(false) {
             match event::read() {
                 Ok(Event::Key(key)) if key.kind != KeyEventKind::Release => {
-                    for effect in app.handle_key(key) { run_effect(effect, worker, app, &mut requests); }
+                    for effect in app.handle_key(key) {
+                        run_effect(effect, worker, app, &mut requests);
+                    }
                     dirty = true;
                 }
-                Ok(Event::Mouse(m)) => { handle_mouse(m, terminal, app); dirty = true; }
+                Ok(Event::Mouse(m)) => {
+                    handle_mouse(m, terminal, app);
+                    dirty = true;
+                }
                 Ok(Event::Resize(_, _)) => dirty = true,
-                Ok(Event::Paste(text)) => { app.handle_paste(&text); dirty = true; }
+                Ok(Event::Paste(text)) => {
+                    app.handle_paste(&text);
+                    dirty = true;
+                }
                 _ => {}
             }
         }
@@ -358,64 +399,136 @@ fn run(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, worker: &Arc<
             }
         }
         if !requests.switching {
-            if last_state_poll.elapsed() >= Duration::from_millis(250) && !requests.has(|k| matches!(k, RequestKind::State)) {
+            if last_state_poll.elapsed() >= Duration::from_millis(250)
+                && !requests.has(|k| matches!(k, RequestKind::State))
+            {
                 last_state_poll = Instant::now();
                 let after = if app::PANELS[app.panel] == "log" { app.cursor.min(app.log_cursor) } else { app.cursor };
-                requests.enqueue(RequestKind::State, worker, app, "call", json!({"method":"state", "params":{"after_sequence":after}}), Duration::from_secs(5));
+                requests.enqueue(
+                    RequestKind::State,
+                    worker,
+                    app,
+                    "call",
+                    json!({"method":"state", "params":{"after_sequence":after}}),
+                    Duration::from_secs(5),
+                );
             }
             let log_sig = (requests.generation, app::PANELS[app.panel] == "log", app.log_member.clone());
             if log_sig.1 && last_log_sig.as_ref() != Some(&log_sig) {
-                requests.enqueue(RequestKind::Log(app.log_member.clone()), worker, app, "call", json!({"method":"state", "params":{"after_sequence":0}}), Duration::from_secs(30));
+                requests.enqueue(
+                    RequestKind::Log(app.log_member.clone()),
+                    worker,
+                    app,
+                    "call",
+                    json!({"method":"state", "params":{"after_sequence":0}}),
+                    Duration::from_secs(30),
+                );
             }
             last_log_sig = Some(log_sig);
             if last_slow.elapsed() >= Duration::from_secs(1) {
                 last_slow = Instant::now();
                 if !requests.has(|k| matches!(k, RequestKind::Shared)) {
-                    let space_ids: Vec<&str> = app.spec().get("shared_spaces").and_then(Json::as_array)
-                        .map(|spaces| spaces.iter().filter_map(|s| s.get("id").and_then(Json::as_str)).collect()).unwrap_or_default();
-                    requests.enqueue(RequestKind::Shared, worker, app, "call", json!({"method":"shared_entries", "params":{"space_ids":space_ids,"limit":1000}}), Duration::from_secs(5));
+                    let space_ids: Vec<&str> = app
+                        .spec()
+                        .get("shared_spaces")
+                        .and_then(Json::as_array)
+                        .map(|spaces| spaces.iter().filter_map(|s| s.get("id").and_then(Json::as_str)).collect())
+                        .unwrap_or_default();
+                    requests.enqueue(
+                        RequestKind::Shared,
+                        worker,
+                        app,
+                        "call",
+                        json!({"method":"shared_entries", "params":{"space_ids":space_ids,"limit":1000}}),
+                        Duration::from_secs(5),
+                    );
                 }
                 if !requests.has(|k| matches!(k, RequestKind::Sessions)) {
-                    requests.enqueue(RequestKind::Sessions, worker, app, "list_sessions", json!({}), Duration::from_secs(5));
+                    requests.enqueue(
+                        RequestKind::Sessions,
+                        worker,
+                        app,
+                        "list_sessions",
+                        json!({}),
+                        Duration::from_secs(5),
+                    );
                 }
             }
         }
-        if last_activity.elapsed() >= Duration::from_millis(120) { last_activity = Instant::now(); dirty = true; }
-        if last_flush.elapsed() >= Duration::from_millis(80) { last_flush = Instant::now(); app.flush_deltas(); }
-        if app.should_quit { return 0; }
-        if dirty { let _ = terminal.draw(|f| ui::render(f, app)); dirty = false; }
+        if last_activity.elapsed() >= Duration::from_millis(120) {
+            last_activity = Instant::now();
+            dirty = true;
+        }
+        if last_flush.elapsed() >= Duration::from_millis(80) {
+            last_flush = Instant::now();
+            app.flush_deltas();
+        }
+        if app.should_quit {
+            return 0;
+        }
+        if dirty {
+            let _ = terminal.draw(|f| ui::render(f, app));
+            dirty = false;
+        }
     }
 }
 
 fn session_operation(effect: &Effect) -> bool {
-    matches!(effect, Effect::SwitchSession(_) | Effect::NewSession | Effect::Fork | Effect::ArchiveSession(_) | Effect::DeleteSession(_))
+    matches!(
+        effect,
+        Effect::SwitchSession(_)
+            | Effect::NewSession
+            | Effect::Fork
+            | Effect::ArchiveSession(_)
+            | Effect::DeleteSession(_)
+    )
 }
 
 fn run_effect(effect: Effect, worker: &Worker, app: &mut App, requests: &mut AsyncUi) {
     match effect {
-        Effect::Quit => { app.should_quit = true; return; }
-        Effect::Bell => { let _ = std::io::stdout().write_all(b"\x07"); let _ = std::io::stdout().flush(); return; }
+        Effect::Quit => {
+            app.should_quit = true;
+            return;
+        }
+        Effect::Bell => {
+            let _ = std::io::stdout().write_all(b"\x07");
+            let _ = std::io::stdout().flush();
+            return;
+        }
         _ => {}
     }
     if requests.switching {
         if let Effect::UserMessage(text) = &effect {
-            if app.composer.text().is_empty() { app.composer.set_text(text); }
+            if app.composer.text().is_empty() {
+                app.composer.set_text(text);
+            }
         }
         app.notify("会话操作进行中，请稍后重试。".into(), app::Severity::Warning, 5);
         return;
     }
     let (method, params) = match &effect {
         Effect::Submit { action, .. } => ("submit", json!({"action": action})),
-        Effect::CancelTask(task_id) => ("submit", json!({"action": {"action_id":format!("ui-cancel-task-{task_id}"),"actor_id":"user","kind":"cancel_task","payload":{"task_id":task_id}}})),
-        Effect::AcknowledgeRun(run_id) => ("submit", json!({"action": {"action_id":format!("ui-ack-run-{run_id}"),"actor_id":"user","kind":"cancel_run","payload":{"run_id":run_id}}})),
-        Effect::DecideApproval { approval_id, decision } => ("submit", json!({"action": {"action_id":format!("ui-approval-{approval_id}-{decision}"),"actor_id":"user","kind":"approval_decision","payload":{"approval_id":approval_id,"decision":decision}}})),
+        Effect::CancelTask(task_id) => (
+            "submit",
+            json!({"action": {"action_id":format!("ui-cancel-task-{task_id}"),"actor_id":"user","kind":"cancel_task","payload":{"task_id":task_id}}}),
+        ),
+        Effect::AcknowledgeRun(run_id) => (
+            "submit",
+            json!({"action": {"action_id":format!("ui-ack-run-{run_id}"),"actor_id":"user","kind":"cancel_run","payload":{"run_id":run_id}}}),
+        ),
+        Effect::DecideApproval { approval_id, decision } => (
+            "submit",
+            json!({"action": {"action_id":format!("ui-approval-{approval_id}-{decision}"),"actor_id":"user","kind":"approval_decision","payload":{"approval_id":approval_id,"decision":decision}}}),
+        ),
         Effect::UsageStatus => ("usage", json!({})),
         Effect::RewindPoints => ("rewind_points", json!({})),
         Effect::Rewind { node } => ("rewind", json!({"node_id":node})),
         Effect::Fork => ("fork_session", json!({})),
         Effect::ModelStatus => ("model", json!({})),
         Effect::DiscoverModels { provider } => ("discover_models", json!({"provider":provider})),
-        Effect::SetModel { agent_id, profile, model, effort } => ("set_model", json!({"agent_id":agent_id,"profile":profile,"model":model,"effort":effort})),
+        Effect::SetModel { agent_id, profile, model, effort } => {
+            ("set_model", json!({"agent_id":agent_id,"profile":profile,"model":model,"effort":effort}))
+        }
         Effect::UserMessage(text) => ("user_message", json!({"text":text})),
         Effect::SwitchSession(target) => ("switch_session", json!({"session_id":target})),
         Effect::NewSession => ("new_session", json!({})),
@@ -424,7 +537,14 @@ fn run_effect(effect: Effect, worker: &Worker, app: &mut App, requests: &mut Asy
         Effect::Quit | Effect::Bell => unreachable!(),
     };
     requests.switching = session_operation(&effect);
-    requests.enqueue(RequestKind::Effect(effect, app.model_generation), worker, app, method, params, Duration::from_secs(120));
+    requests.enqueue(
+        RequestKind::Effect(effect, app.model_generation),
+        worker,
+        app,
+        method,
+        params,
+        Duration::from_secs(120),
+    );
 }
 
 fn receipt_error(result: &Result<Json, String>) -> String {
@@ -439,7 +559,9 @@ fn apply_effect_result(effect: Effect, generation: u64, result: Result<Json, Str
     match effect {
         Effect::Submit { ok_msg, err_msg, .. } => {
             let msg = if ok { ok_msg } else { err_msg.map(|m| m.replace("{error}", &receipt_error(&result))) };
-            if let Some(msg) = msg { app.chat.push(("system".into(), msg)); }
+            if let Some(msg) = msg {
+                app.chat.push(("system".into(), msg));
+            }
         }
         Effect::CancelTask(task_id) => {
             let msg = app::cancel_task_feedback(app.lang, &task_id, &result.unwrap_or(Json::Null));
@@ -473,7 +595,9 @@ fn apply_effect_result(effect: Effect, generation: u64, result: Result<Json, Str
         Effect::Rewind { .. } => app.show_rewind_done(result),
         Effect::Fork => app.show_fork_done(result),
         Effect::ModelStatus => app.show_models(result),
-        Effect::DiscoverModels { provider } => app.show_discovered_models(&app.session_id.clone(), generation, &provider, result),
+        Effect::DiscoverModels { provider } => {
+            app.show_discovered_models(&app.session_id.clone(), generation, &provider, result)
+        }
         Effect::SetModel { .. } => app.show_model_set(result),
         Effect::UserMessage(text) => {
             if ok {
@@ -481,7 +605,9 @@ fn apply_effect_result(effect: Effect, generation: u64, result: Result<Json, Str
                 let _ = i18n::write_history(&app.composer.history);
             } else {
                 // A late rejection must not overwrite a draft typed while waiting.
-                if app.composer.text().is_empty() { app.composer.set_text(&text); }
+                if app.composer.text().is_empty() {
+                    app.composer.set_text(&text);
+                }
                 let msg = app::rejected_feedback(app.lang, &receipt_error(&result));
                 app.chat.push(("system".into(), format!("{msg}\n{text}")));
             }
@@ -494,18 +620,29 @@ fn apply_effect_result(effect: Effect, generation: u64, result: Result<Json, Str
                     catalog: v.get("catalog").cloned().unwrap_or(Json::Null),
                     config_path: v.get("user_config_path").and_then(Json::as_str).unwrap_or("").into(),
                 },
-                Err(error) => OpResult::Failed { op:"switch", target, error },
+                Err(error) => OpResult::Failed { op: "switch", target, error },
             };
             return app.on_op_result(op);
         }
-        Effect::ArchiveSession(target) => return app.on_op_result(match result {
-            Ok(v) => OpResult::Archived { session_id:target, target:v.get("target").and_then(Json::as_str).unwrap_or("").into(), was_current:v.get("was_current").and_then(Json::as_bool).unwrap_or(false) },
-            Err(error) => OpResult::Failed { op:"archive", target, error },
-        }),
-        Effect::DeleteSession(target) => return app.on_op_result(match result {
-            Ok(v) => OpResult::Deleted { session_id:target, was_current:v.get("was_current").and_then(Json::as_bool).unwrap_or(false) },
-            Err(error) => OpResult::Failed { op:"delete", target, error },
-        }),
+        Effect::ArchiveSession(target) => {
+            return app.on_op_result(match result {
+                Ok(v) => OpResult::Archived {
+                    session_id: target,
+                    target: v.get("target").and_then(Json::as_str).unwrap_or("").into(),
+                    was_current: v.get("was_current").and_then(Json::as_bool).unwrap_or(false),
+                },
+                Err(error) => OpResult::Failed { op: "archive", target, error },
+            })
+        }
+        Effect::DeleteSession(target) => {
+            return app.on_op_result(match result {
+                Ok(v) => OpResult::Deleted {
+                    session_id: target,
+                    was_current: v.get("was_current").and_then(Json::as_bool).unwrap_or(false),
+                },
+                Err(error) => OpResult::Failed { op: "delete", target, error },
+            })
+        }
         Effect::Quit | Effect::Bell => {}
     }
     vec![]
@@ -589,9 +726,13 @@ mod tests {
     fn mock_engine(tag: &str) -> String {
         // pid+tag: cargo tests share one process, so the pid alone is not unique
         let path = std::env::temp_dir().join(format!("teamagents-tui-mock-engine-{}-{tag}.sh", std::process::id()));
-        std::fs::write(&path, "#!/bin/bash\nwhile read -r l; do \
+        std::fs::write(
+            &path,
+            "#!/bin/bash\nwhile read -r l; do \
             id=$(printf '%s' \"$l\" | grep -o '\"id\":[0-9]*' | head -1 | cut -d: -f2); \
-            printf '{\"id\":%s,\"result\":{\"entries\":[],\"sessions\":[]}}\\n' \"$id\"; done\n").unwrap();
+            printf '{\"id\":%s,\"result\":{\"entries\":[],\"sessions\":[]}}\\n' \"$id\"; done\n",
+        )
+        .unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path.to_string_lossy().into_owned()
@@ -629,11 +770,14 @@ mod tests {
         app.state = Some(json!({"spec": {"leader_id": "leader", "agents": [
             {"id": "leader", "name": "leader", "role": "leader", "runtime_kind": "deepagents", "model_profile": "m"}
         ]}}));
-        app.on_plan("leader", &json!([
-            {"text": "复现失败", "status": "done"},
-            {"text": "修 mul", "status": "in_progress"},
-            {"text": "跑测试", "status": "pending"}
-        ]));
+        app.on_plan(
+            "leader",
+            &json!([
+                {"text": "复现失败", "status": "done"},
+                {"text": "修 mul", "status": "in_progress"},
+                {"text": "跑测试", "status": "pending"}
+            ]),
+        );
 
         app.panel = 0; // team
         app.focus = app::Focus::Panel;
@@ -698,11 +842,14 @@ mod tests {
         ]}}));
 
         // a push from the leader shows progress and the in-progress item
-        app.on_plan("leader", &json!([
-            {"text": "复现失败", "status": "done"},
-            {"text": "修 mul", "status": "in_progress"},
-            {"text": "跑测试", "status": "pending"}
-        ]));
+        app.on_plan(
+            "leader",
+            &json!([
+                {"text": "复现失败", "status": "done"},
+                {"text": "修 mul", "status": "in_progress"},
+                {"text": "跑测试", "status": "pending"}
+            ]),
+        );
         let (summary, current) = app.plan_status().expect("leader's plan is shown");
         assert!(summary.contains("1/3") && summary.contains("leader"), "{summary}");
         assert_eq!(current, "修 mul");
@@ -790,7 +937,11 @@ mod tests {
         app.on_tool("alpha-fixer", "edit_file", true, "{\"path\":\"alpha/alpha.py\"}");
         app.on_tool("beta-fixer", "shell", false, "{\"command\":\"cd beta && python3 check.py\"}");
         assert_eq!(app.log_lines.len(), 2);
-        assert!(app.log_lines[0].contains("edit_file") && app.log_lines[0].contains("alpha-fixer"), "{:?}", app.log_lines[0]);
+        assert!(
+            app.log_lines[0].contains("edit_file") && app.log_lines[0].contains("alpha-fixer"),
+            "{:?}",
+            app.log_lines[0]
+        );
         assert!(app.log_lines[0].contains("alpha/alpha.py"), "arguments show up: {:?}", app.log_lines[0]);
         assert!(app.log_lines[1].starts_with("      ✗"), "a failed call is marked: {:?}", app.log_lines[1]);
 
@@ -807,7 +958,11 @@ mod tests {
             app.on_tool("leader", "ls", true, &format!("{{\"path\":\"{index}\"}}"));
         }
         assert_eq!(app.log_lines.len(), 2000, "the panel is a ring, not a leak");
-        assert!(app.log_lines[0].contains("\"path\":\"500\""), "oldest lines are the ones dropped: {:?}", app.log_lines[0]);
+        assert!(
+            app.log_lines[0].contains("\"path\":\"500\""),
+            "oldest lines are the ones dropped: {:?}",
+            app.log_lines[0]
+        );
     }
 
     #[test]

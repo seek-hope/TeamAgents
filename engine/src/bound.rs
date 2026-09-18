@@ -68,8 +68,10 @@ impl BoundTools {
                         tools.append(&mut service_tools);
                     }
                     Err(e) if binding.required => {
-                        for client in &clients { client.close(); }
-                        return Err(format!("required tool service {name:?} is unavailable: {e}"))
+                        for client in &clients {
+                            client.close();
+                        }
+                        return Err(format!("required tool service {name:?} is unavailable: {e}"));
                     }
                     Err(e) => {
                         // optional service failure only removes that capability
@@ -78,7 +80,9 @@ impl BoundTools {
                 },
                 other => {
                     if binding.required {
-                        for client in &clients { client.close(); }
+                        for client in &clients {
+                            client.close();
+                        }
                         return Err(format!("tool binding {name:?} has unsupported kind {other:?}"));
                     }
                 }
@@ -145,17 +149,24 @@ fn load_service(name: &str, binding: &ToolBinding, root: &Path) -> Result<(Arc<M
                 })
                 .collect::<Result<_, String>>()?;
             McpClient::connect_stdio_in(
-                &command, &binding.args, &env, root,
-                binding.mcp_execution.as_deref().unwrap_or("workspace"), binding.mcp_network,
-                binding.startup_timeout_s.unwrap_or(60), binding.tool_timeout_s.unwrap_or(120),
+                &command,
+                &binding.args,
+                &env,
+                root,
+                binding.mcp_execution.as_deref().unwrap_or("workspace"),
+                binding.mcp_network,
+                binding.startup_timeout_s.unwrap_or(60),
+                binding.tool_timeout_s.unwrap_or(120),
             )?
         }
         "http" => {
-            let url = binding.url.clone().ok_or_else(|| format!("binding {name:?} needs a url for the http transport"))?;
+            let url =
+                binding.url.clone().ok_or_else(|| format!("binding {name:?} needs a url for the http transport"))?;
             // the token lives only in the named environment variable, never in config
             let token = match &binding.bearer_token_env_var {
                 Some(var) => Some(
-                    std::env::var(var).map_err(|_| format!("binding {name:?}: bearer token env var {var} is not set"))?,
+                    std::env::var(var)
+                        .map_err(|_| format!("binding {name:?}: bearer token env var {var} is not set"))?,
                 ),
                 None => None,
             };
@@ -166,7 +177,11 @@ fn load_service(name: &str, binding: &ToolBinding, root: &Path) -> Result<(Arc<M
                 binding.tool_timeout_s.unwrap_or(120),
             )?
         }
-        "sse" => return Err(format!("binding {name:?}: the MCP \"sse\" transport was removed from the spec; use \"http\" (streamable HTTP)")),
+        "sse" => {
+            return Err(format!(
+                "binding {name:?}: the MCP \"sse\" transport was removed from the spec; use \"http\" (streamable HTTP)"
+            ))
+        }
         other => return Err(format!("MCP transport {other:?} is not implemented (use \"stdio\" or \"http\")")),
     };
     // the workspace is what a server gets when it asks for `roots/list`
@@ -176,7 +191,10 @@ fn load_service(name: &str, binding: &ToolBinding, root: &Path) -> Result<(Arc<M
     let mut out = vec![];
     let listed = match client.tools() {
         Ok(tools) => tools,
-        Err(error) => { client.close(); return Err(error); }
+        Err(error) => {
+            client.close();
+            return Err(error);
+        }
     };
     for tool in listed {
         let remote_name = tool.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -190,11 +208,7 @@ fn load_service(name: &str, binding: &ToolBinding, root: &Path) -> Result<(Arc<M
         }
         out.push(BoundTool {
             name: prefixed,
-            description: tool
-                .get("description")
-                .and_then(|v| v.as_str())
-                .unwrap_or(&remote_name)
-                .to_string(),
+            description: tool.get("description").and_then(|v| v.as_str()).unwrap_or(&remote_name).to_string(),
             parameters: tool.get("inputSchema").cloned().unwrap_or(json!({"type": "object"})),
             remote: Some((client.clone(), remote_name)),
         });
@@ -228,19 +242,25 @@ for line in sys.stdin:
 "#;
         for scenario in ["filtered", "fail", "later-failure"] {
             let mut catalog = UserConfig::default();
-            catalog.tools.insert("first".into(), binding(json!({
-                "kind": "mcp", "mcp_execution": "host", "command": "/usr/bin/python3",
-                "args": ["-u", "-c", script, scenario], "required": true,
-                "tool_names": if scenario == "filtered" { vec!["absent"] } else { vec![] },
-            })));
+            catalog.tools.insert(
+                "first".into(),
+                binding(json!({
+                    "kind": "mcp", "mcp_execution": "host", "command": "/usr/bin/python3",
+                    "args": ["-u", "-c", script, scenario], "required": true,
+                    "tool_names": if scenario == "filtered" { vec!["absent"] } else { vec![] },
+                })),
+            );
             let mut bindings = vec!["first".into()];
             if scenario == "later-failure" {
                 catalog.tools.insert("broken".into(), binding(json!({"kind": "unsupported", "required": true})));
                 bindings.push("broken".into());
             }
             let result = BoundTools::load_in(&catalog, &bindings, &root);
-            if scenario == "filtered" { assert!(result.unwrap().tools.is_empty()); }
-            else { assert!(result.is_err()); }
+            if scenario == "filtered" {
+                assert!(result.unwrap().tools.is_empty());
+            } else {
+                assert!(result.is_err());
+            }
             let pid: u32 = std::fs::read_to_string(root.join("pid")).unwrap().parse().unwrap();
             assert!(!Path::new(&format!("/proc/{pid}")).exists(), "{scenario} left a server process");
         }
@@ -250,7 +270,10 @@ for line in sys.stdin:
     #[test]
     fn unknown_and_unsupported_bindings_are_reported() {
         let mut catalog = UserConfig::default();
-        catalog.tools.insert("echo".into(), binding(json!({"kind": "mcp", "mcp_transport": "http", "url": "http://127.0.0.1:1/mcp"})));
+        catalog.tools.insert(
+            "echo".into(),
+            binding(json!({"kind": "mcp", "mcp_transport": "http", "url": "http://127.0.0.1:1/mcp"})),
+        );
         let err = BoundTools::load(&catalog, &["ghost".to_string()]).err().expect("unknown binding");
         assert!(err.contains("unknown tool binding"), "{err}");
 
@@ -269,7 +292,10 @@ for line in sys.stdin:
 
         // the removed "sse" transport gets a pointer at "http"
         let mut legacy = UserConfig::default();
-        legacy.tools.insert("old".into(), binding(json!({"kind": "mcp", "mcp_transport": "sse", "url": "http://x", "required": true})));
+        legacy.tools.insert(
+            "old".into(),
+            binding(json!({"kind": "mcp", "mcp_transport": "sse", "url": "http://x", "required": true})),
+        );
         let err = BoundTools::load(&legacy, &["old".to_string()]).err().expect("sse transport");
         assert!(err.contains("sse") && err.contains("http"), "{err}");
 
@@ -285,15 +311,11 @@ for line in sys.stdin:
 
         // a required service fails the member start; an optional one only drops the tool
         let mut catalog = UserConfig::default();
-        catalog.tools.insert(
-            "broken".into(),
-            binding(json!({"kind": "mcp", "command": "/nonexistent/mcp", "required": true})),
-        );
+        catalog
+            .tools
+            .insert("broken".into(), binding(json!({"kind": "mcp", "command": "/nonexistent/mcp", "required": true})));
         assert!(BoundTools::load(&catalog, &["broken".to_string()]).is_err());
-        catalog.tools.insert(
-            "optional".into(),
-            binding(json!({"kind": "mcp", "command": "/nonexistent/mcp"})),
-        );
+        catalog.tools.insert("optional".into(), binding(json!({"kind": "mcp", "command": "/nonexistent/mcp"})));
         let ok = BoundTools::load(&catalog, &["optional".to_string()]).unwrap();
         assert!(ok.tools.is_empty());
 

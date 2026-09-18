@@ -3,10 +3,10 @@
 
 use crate::gateway::{ToolGateway, TurnControl, TEAM_TOOLS};
 use crate::runtime::{AgentRunner, Notify};
-use serde_json::{json, Value as Json};
 use serde::{Deserialize, Serialize};
-use std::io::Write;
+use serde_json::{json, Value as Json};
 use std::collections::{HashMap, HashSet};
+use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use teamagents_core::control::TurnOutcome;
@@ -69,9 +69,7 @@ pub fn normalize_effort(protocol: &str, effort: &str) -> String {
 /// reasoning effort; the caller retries once with `max`.
 pub fn looks_like_effort_error(text: &str) -> bool {
     let text = text.to_lowercase();
-    ["reasoning_effort", "reasoning effort", "effort", "unsupported value"]
-        .iter()
-        .any(|token| text.contains(token))
+    ["reasoning_effort", "reasoning effort", "effort", "unsupported value"].iter().any(|token| text.contains(token))
 }
 
 /// Retry semantics: transient statuses and transport errors only.
@@ -130,13 +128,8 @@ pub fn render_view(view: &Json, wake: &Json, workdir: Option<&str>) -> String {
         let entries: Vec<Json> = shared
             .iter()
             .map(|e| {
-                let content: String = e
-                    .get("content")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .chars()
-                    .take(500)
-                    .collect();
+                let content: String =
+                    e.get("content").and_then(|v| v.as_str()).unwrap_or("").chars().take(500).collect();
                 json!({
                     "space": e.get("space_id"),
                     "author": e.get("author"),
@@ -246,7 +239,17 @@ fn bound_tool_schemas() -> Json {
 fn bound_tool_names(bindings: &[String], web: (bool, bool)) -> Vec<&'static str> {
     let mut names: Vec<&'static str> = vec![];
     if bindings.iter().any(|b| b == "files") {
-        names.extend(["ls", "read_file", "write_file", "edit_file", "edit_files", "delete", "glob", "grep", "view_image"]);
+        names.extend([
+            "ls",
+            "read_file",
+            "write_file",
+            "edit_file",
+            "edit_files",
+            "delete",
+            "glob",
+            "grep",
+            "view_image",
+        ]);
     }
     if bindings.iter().any(|b| b == "shell") {
         names.push("shell");
@@ -301,7 +304,6 @@ fn tools_payload(bindings: &[String], web: (bool, bool), bound: &[Json]) -> Json
     )
 }
 
-
 /// An assistant message that carries `tool_calls` must be followed by one tool
 /// message per call id, otherwise the provider rejects the whole conversation.
 /// Pausing/interrupting mid-batch would leave the tail unanswered, so the
@@ -345,7 +347,10 @@ fn cap_tool_output(content: String) -> String {
     let half = TOOL_OUTPUT_CAP / 2;
     let head: String = content.chars().take(half).collect();
     let tail: String = content.chars().skip(content.chars().count().saturating_sub(half)).collect();
-    format!("{head}\n[...{} chars truncated...]\n{tail}", content.chars().count().saturating_sub(head.chars().count() + tail.chars().count()))
+    format!(
+        "{head}\n[...{} chars truncated...]\n{tail}",
+        content.chars().count().saturating_sub(head.chars().count() + tail.chars().count())
+    )
 }
 
 /// L1: view-only masking of old tool outputs (Complexity Trap, arXiv
@@ -363,12 +368,17 @@ fn mask_old_tool_outputs(messages: &[Json]) -> Vec<Json> {
             if let Some(content) = message["content"].as_str() {
                 let capped = cap_tool_output(content.to_string());
                 if capped != content {
-                    message["content"] = json!(format!("{capped}\n[Full output: read_history tool_call_id={}]", message["tool_call_id"]));
+                    message["content"] = json!(format!(
+                        "{capped}\n[Full output: read_history tool_call_id={}]",
+                        message["tool_call_id"]
+                    ));
                 }
             }
         }
     }
-    if out.is_empty() { return out; }
+    if out.is_empty() {
+        return out;
+    }
     let mut budget = MASK_KEEP_RECENT;
     for i in (0..=last_assistant).rev() {
         let message = &out[i];
@@ -401,12 +411,18 @@ fn history_page(output: &str, args: &Json) -> Result<Json, String> {
     };
     let offset = integer("offset", 0)?;
     let limit = integer("limit", 12_000)?;
-    if !(1..=12_000).contains(&limit) { return Err("limit must be between 1 and 12000".into()); }
+    if !(1..=12_000).contains(&limit) {
+        return Err("limit must be between 1 and 12000".into());
+    }
     let total = output.chars().count();
-    if offset > total { return Err(format!("offset exceeds output length {total}")); }
+    if offset > total {
+        return Err(format!("offset exceeds output length {total}"));
+    }
     let content: String = output.chars().skip(offset).take(limit).collect();
     let next = offset + content.chars().count();
-    Ok(json!({"output":content, "offset":offset, "next_offset":if next < total {Some(next)} else {None}, "eof":next == total, "total_chars":total}))
+    Ok(
+        json!({"output":content, "offset":offset, "next_offset":if next < total {Some(next)} else {None}, "eof":next == total, "total_chars":total}),
+    )
 }
 
 /// L2 trigger: last prompt over this fraction of the configured context
@@ -415,8 +431,16 @@ const COMPACT_AT: f64 = 0.9;
 
 fn context_overflow(error: &str) -> bool {
     let error = error.to_ascii_lowercase();
-    ["context_length_exceeded", "maximum context length", "context window", "prompt is too long", "too many tokens", "input is too long"]
-        .iter().any(|needle| error.contains(needle))
+    [
+        "context_length_exceeded",
+        "maximum context length",
+        "context window",
+        "prompt is too long",
+        "too many tokens",
+        "input is too long",
+    ]
+    .iter()
+    .any(|needle| error.contains(needle))
 }
 
 /// ponytail: conservative text estimate, not a tokenizer; provider usage wins
@@ -507,7 +531,12 @@ impl ChatTree {
     fn append(&mut self, messages: &[Json]) {
         for message in messages {
             let id = format!("n{}", self.nodes.len() + 1);
-            self.nodes.push(TreeNode { id: id.clone(), parent: self.leaf.take(), skip_to: None, message: message.clone() });
+            self.nodes.push(TreeNode {
+                id: id.clone(),
+                parent: self.leaf.take(),
+                skip_to: None,
+                message: message.clone(),
+            });
             self.leaf = Some(id);
         }
     }
@@ -516,7 +545,12 @@ impl ChatTree {
     /// ("" = the whole current chain).
     fn append_summary(&mut self, message: Json, skip_to: &str) {
         let id = format!("n{}", self.nodes.len() + 1);
-        self.nodes.push(TreeNode { id: id.clone(), parent: self.leaf.take(), skip_to: Some(skip_to.to_string()), message });
+        self.nodes.push(TreeNode {
+            id: id.clone(),
+            parent: self.leaf.take(),
+            skip_to: Some(skip_to.to_string()),
+            message,
+        });
         self.leaf = Some(id);
     }
 
@@ -527,7 +561,9 @@ impl ChatTree {
         let mut cur = self.leaf.as_deref();
         // Parents precede their children in the append-only node array.
         for node in self.nodes.iter().rev() {
-            if cur != Some(node.id.as_str()) { continue; }
+            if cur != Some(node.id.as_str()) {
+                continue;
+            }
             for call in node.message["tool_calls"].as_array().into_iter().flatten() {
                 if let Some(id) = call["id"].as_str() {
                     // Compaction re-appends retained groups; they still refer
@@ -598,10 +634,15 @@ fn write_json_atomic(path: &std::path::Path, value: &Json) -> Result<(), String>
 
 fn pending_tool_calls(history: &[Json]) -> Vec<Json> {
     let Some(index) = history.iter().rposition(|m| m["role"] == "assistant") else { return vec![] };
-    let answered: HashSet<&str> = history[index + 1..].iter()
-        .filter_map(|m| m.get("tool_call_id").and_then(Json::as_str)).collect();
-    history[index]["tool_calls"].as_array().cloned().unwrap_or_default().into_iter()
-        .filter(|c| !c["id"].as_str().map(|id| answered.contains(id)).unwrap_or(false)).collect()
+    let answered: HashSet<&str> =
+        history[index + 1..].iter().filter_map(|m| m.get("tool_call_id").and_then(Json::as_str)).collect();
+    history[index]["tool_calls"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|c| !c["id"].as_str().map(|id| answered.contains(id)).unwrap_or(false))
+        .collect()
 }
 
 /// Token usage of one model response, both wire protocols normalized
@@ -629,8 +670,12 @@ pub fn parse_usage(data: &Json) -> Option<(u64, u64, u64)> {
     let num = |key: &str| usage.get(key).and_then(Json::as_u64);
     let (prompt, completion) = match (num("prompt_tokens"), num("completion_tokens")) {
         (Some(p), Some(c)) => (p, c),
-        _ => (num("input_tokens")?.saturating_add(num("cache_read_input_tokens").unwrap_or(0))
-            .saturating_add(num("cache_creation_input_tokens").unwrap_or(0)), num("output_tokens")?),
+        _ => (
+            num("input_tokens")?
+                .saturating_add(num("cache_read_input_tokens").unwrap_or(0))
+                .saturating_add(num("cache_creation_input_tokens").unwrap_or(0)),
+            num("output_tokens")?,
+        ),
     };
     let total = num("total_tokens").unwrap_or(prompt + completion);
     Some((prompt, completion, total))
@@ -717,10 +762,7 @@ impl ChatRunner {
         let Some(path) = &self.history_path else { return vec![] };
         let Ok(text) = std::fs::read_to_string(path) else { return vec![] };
         let Ok(data) = serde_json::from_str::<Json>(&text) else { return vec![] };
-        data.get(thread)
-            .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default()
+        data.get(thread).and_then(|v| v.as_array()).cloned().unwrap_or_default()
     }
 
     /// Atomic write (tmp + rename) so a crash never truncates the history.
@@ -733,7 +775,9 @@ impl ChatRunner {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => json!({}),
             Err(e) => return Err(e.to_string()),
         };
-        if !data.is_object() { return Err("invalid member history".into()); }
+        if !data.is_object() {
+            return Err("invalid member history".into());
+        }
         data[thread] = Json::Array(history.to_vec());
         write_json_atomic(path, &data)
     }
@@ -753,7 +797,9 @@ impl ChatRunner {
             match std::fs::read_to_string(&path) {
                 Ok(text) => {
                     let data: Json = serde_json::from_str(&text).map_err(|e| format!("invalid history tree: {e}"))?;
-                    if !data.is_object() { return Err("invalid member history tree".into()); }
+                    if !data.is_object() {
+                        return Err("invalid member history tree".into());
+                    }
                     if let Some(value) = data.get(thread) {
                         return serde_json::from_value(value.clone()).map_err(|e| format!("invalid history tree: {e}"));
                     }
@@ -774,7 +820,9 @@ impl ChatRunner {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => json!({}),
             Err(e) => return Err(e.to_string()),
         };
-        if !data.is_object() { return Err("invalid member history tree".into()); }
+        if !data.is_object() {
+            return Err("invalid member history tree".into());
+        }
         data[thread] = serde_json::to_value(tree).map_err(|e| e.to_string())?;
         write_json_atomic(&path, &data)?;
         self.trees.lock().unwrap().insert(thread.to_string(), tree.clone());
@@ -805,8 +853,13 @@ impl ChatRunner {
         if run.run_id.is_empty() || !run.run_id.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
             return Err("invalid checkpoint run id".into());
         }
-        Ok(self.history_path.as_ref().and_then(|p| p.parent()).ok_or("member history path missing")?
-            .join("turns").join(format!("{}.json", run.run_id)))
+        Ok(self
+            .history_path
+            .as_ref()
+            .and_then(|p| p.parent())
+            .ok_or("member history path missing")?
+            .join("turns")
+            .join(format!("{}.json", run.run_id)))
     }
 
     /// The member's own working plan: `plan.json` next to its history. It is
@@ -827,8 +880,11 @@ impl ChatRunner {
 
     fn save_plan(&self, items: &[Json]) -> Result<(), String> {
         let path = self.plan_path().ok_or("member plan path missing")?;
-        write_json_atomic(&path, &json!({"items": items, "updated_ms": std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64}))
+        write_json_atomic(
+            &path,
+            &json!({"items": items, "updated_ms": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64}),
+        )
     }
 
     /// The plan as the model should see it each turn (Codex-style plan echo).
@@ -859,14 +915,25 @@ impl ChatRunner {
         }
     }
 
-    fn save_checkpoint(&self, run: &TurnRun, checkpoint: &ChatCheckpoint, gateway: &ToolGateway) -> Result<(), (String, String)> {
+    fn save_checkpoint(
+        &self,
+        run: &TurnRun,
+        checkpoint: &ChatCheckpoint,
+        gateway: &ToolGateway,
+    ) -> Result<(), (String, String)> {
         let _execution = gateway.control.enter().map_err(|e| ("TurnInterrupted".into(), e))?;
         self.write_checkpoint(run, checkpoint).map_err(|e| ("CheckpointError".into(), e))
     }
 
     /// Persist the budget before every logical model call, including summary
     /// and recovery calls, so a crash cannot give the turn extra steps.
-    fn reserve_model_step(&self, run: &TurnRun, checkpoint: &mut ChatCheckpoint, max_steps: i64, control: &TurnControl) -> Result<(), (String, String)> {
+    fn reserve_model_step(
+        &self,
+        run: &TurnRun,
+        checkpoint: &mut ChatCheckpoint,
+        max_steps: i64,
+        control: &TurnControl,
+    ) -> Result<(), (String, String)> {
         if checkpoint.model_steps >= max_steps {
             return Err(("TurnLimitExceeded".into(), format!("model-step limit {max_steps} reached for this turn")));
         }
@@ -881,7 +948,14 @@ impl ChatRunner {
         self.save_history(run.context_ref.as_deref().unwrap_or(&run.run_id), &checkpoint.history)
     }
 
-    fn commit_tree(&self, run: &TurnRun, checkpoint: &mut ChatCheckpoint, tree: &ChatTree, base: usize, control: &TurnControl) -> Result<(), String> {
+    fn commit_tree(
+        &self,
+        run: &TurnRun,
+        checkpoint: &mut ChatCheckpoint,
+        tree: &ChatTree,
+        base: usize,
+        control: &TurnControl,
+    ) -> Result<(), String> {
         let _execution = control.enter()?;
         checkpoint.tree_pending = tree.nodes[base..].to_vec();
         checkpoint.tree_base = checkpoint.history.len();
@@ -895,13 +969,20 @@ impl ChatRunner {
 
     /// Recover either side of the journal -> atomic tree rename boundary.
     /// Caller holds the execution guard; mismatched content fails closed.
-    fn restore_tree_commit(&self, run: &TurnRun, checkpoint: &mut ChatCheckpoint, tree: &mut ChatTree) -> Result<(), String> {
+    fn restore_tree_commit(
+        &self,
+        run: &TurnRun,
+        checkpoint: &mut ChatCheckpoint,
+        tree: &mut ChatTree,
+    ) -> Result<(), String> {
         let Some(first) = checkpoint.tree_pending.first() else { return Ok(()) };
         if checkpoint.tree_pending.last().map(|n| &n.id) != checkpoint.tree_leaf.as_ref() {
             return Err("invalid pending tree leaf".into());
         }
         if tree.leaf != checkpoint.tree_leaf || !tree.nodes.ends_with(&checkpoint.tree_pending) {
-            if tree.leaf != first.parent || checkpoint.tree_pending.iter().any(|n| tree.nodes.iter().any(|old| old.id == n.id)) {
+            if tree.leaf != first.parent
+                || checkpoint.tree_pending.iter().any(|n| tree.nodes.iter().any(|old| old.id == n.id))
+            {
                 return Err("pending history commit conflicts with the tree".into());
             }
             tree.nodes.extend(checkpoint.tree_pending.iter().cloned());
@@ -913,7 +994,9 @@ impl ChatRunner {
     }
 
     fn load_usage(&self) -> Result<HashMap<String, Usage>, String> {
-        let Some(path) = self.history_path.as_ref().map(|p| p.with_file_name("usage.json")) else { return Ok(HashMap::new()); };
+        let Some(path) = self.history_path.as_ref().map(|p| p.with_file_name("usage.json")) else {
+            return Ok(HashMap::new());
+        };
         match std::fs::read(path) {
             Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("invalid usage ledger: {e}")),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(HashMap::new()),
@@ -927,14 +1010,19 @@ impl ChatRunner {
         let entry = next.entry(thread.to_string()).or_default();
         entry.calls += 1;
         entry.elapsed_ms = entry.elapsed_ms.saturating_add(elapsed_ms);
-        entry.updated_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+        entry.updated_ms =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
         if let Some((prompt, completion, total)) = parse_usage(data) {
             entry.prompt = entry.prompt.saturating_add(prompt);
             entry.completion = entry.completion.saturating_add(completion);
             entry.total = entry.total.saturating_add(total);
             entry.last_prompt = prompt;
-            entry.cached_input = entry.cached_input.saturating_add(data["usage"]["prompt_tokens_details"]["cached_tokens"].as_u64()
-                .or_else(|| data["usage"]["cache_read_input_tokens"].as_u64()).unwrap_or(0));
+            entry.cached_input = entry.cached_input.saturating_add(
+                data["usage"]["prompt_tokens_details"]["cached_tokens"]
+                    .as_u64()
+                    .or_else(|| data["usage"]["cache_read_input_tokens"].as_u64())
+                    .unwrap_or(0),
+            );
             self.last_prompt.store(prompt, Ordering::SeqCst);
         } else {
             entry.unknown_calls += 1;
@@ -1026,7 +1114,10 @@ impl ChatRunner {
         } else {
             let mut blocks = String::new();
             for (label, content) in &self.context {
-                blocks.push_str(&format!("\n<{label}>\n{content}\n</{}>\n", label.split(' ').next().unwrap_or("context")));
+                blocks.push_str(&format!(
+                    "\n<{label}>\n{content}\n</{}>\n",
+                    label.split(' ').next().unwrap_or("context")
+                ));
             }
             blocks
         };
@@ -1071,11 +1162,7 @@ impl ChatRunner {
     }
 
     fn configured_effort(&self) -> bool {
-        self.profile
-            .generation_options
-            .get("reasoning_effort")
-            .map(|v| v.is_string())
-            .unwrap_or(false)
+        self.profile.generation_options.get("reasoning_effort").map(|v| v.is_string()).unwrap_or(false)
     }
 
     /// The session TeamSpec limit for model requests per turn (read once per turn).
@@ -1085,10 +1172,7 @@ impl ChatRunner {
             .state_brief()
             .ok()
             .and_then(|state| {
-                state
-                    .get("limits")
-                    .and_then(|limits| limits.get("max_model_steps_per_turn"))
-                    .and_then(|v| v.as_i64())
+                state.get("limits").and_then(|limits| limits.get("max_model_steps_per_turn")).and_then(|v| v.as_i64())
             })
             .unwrap_or(200)
     }
@@ -1101,7 +1185,12 @@ impl ChatRunner {
         let path = payload.get("image")?.as_str()?.to_string();
         let media_type = payload.get("media_type")?.as_str()?.to_string();
         let root = std::path::PathBuf::from(self.workdir.as_ref()?);
-        let artifacts = self.history_path.as_ref().and_then(|p| p.parent()).and_then(|p| p.parent()).and_then(|p| p.parent())
+        let artifacts = self
+            .history_path
+            .as_ref()
+            .and_then(|p| p.parent())
+            .and_then(|p| p.parent())
+            .and_then(|p| p.parent())
             .map(|session| session.join("artifacts"));
         crate::tools::load_image_reference(&root, artifacts.as_deref(), &path, &media_type)
             .ok()
@@ -1141,7 +1230,14 @@ impl ChatRunner {
         out
     }
 
-    fn chat(&self, thread: &str, messages: &[Json], tools: &Json, control: &TurnControl, stream_run: Option<&str>) -> Result<Json, String> {
+    fn chat(
+        &self,
+        thread: &str,
+        messages: &[Json],
+        tools: &Json,
+        control: &TurnControl,
+        stream_run: Option<&str>,
+    ) -> Result<Json, String> {
         if self.profile.protocol == "anthropic" {
             return self.chat_anthropic(thread, messages, tools, control, stream_run);
         }
@@ -1182,11 +1278,16 @@ impl ChatRunner {
                     // text was shown. Anything else ends the turn.
                     match crate::stream::response(response, crate::stream::Mode::Chat, control, |text| {
                         if let Some(run_id) = stream_run {
-                            if control.check().is_ok() { self.notify.note_stream_chunk(run_id, &self.agent_id(), text); }
+                            if control.check().is_ok() {
+                                self.notify.note_stream_chunk(run_id, &self.agent_id(), text);
+                            }
                         }
                     }) {
                         Ok(data) => {
-                            { let _execution = control.enter()?; self.record_usage(thread, &data, started.elapsed().as_millis() as u64)?; }
+                            {
+                                let _execution = control.enter()?;
+                                self.record_usage(thread, &data, started.elapsed().as_millis() as u64)?;
+                            }
                             let message = data
                                 .get("choices")
                                 .and_then(|c| c.get(0))
@@ -1216,8 +1317,8 @@ impl ChatRunner {
             }
             // never sleep after the final attempt
             if attempt < retries {
-                let backoff = retry_in
-                    .unwrap_or_else(|| std::time::Duration::from_millis((500u64 << attempt.min(5)).min(8000)));
+                let backoff =
+                    retry_in.unwrap_or_else(|| std::time::Duration::from_millis((500u64 << attempt.min(5)).min(8000)));
                 interruptible_backoff(control, backoff.min(std::time::Duration::from_secs(30)))?;
             }
         }
@@ -1228,7 +1329,14 @@ impl ChatRunner {
     /// official OpenAI models and of Codex-style gateways. The engine keeps the
     /// chat-completions message shape internally, so this is a translation layer
     /// in both directions (`to_responses_input` / `from_responses_output`).
-    fn chat_responses(&self, thread: &str, messages: &[Json], tools: &Json, control: &TurnControl, stream_run: Option<&str>) -> Result<Json, String> {
+    fn chat_responses(
+        &self,
+        thread: &str,
+        messages: &[Json],
+        tools: &Json,
+        control: &TurnControl,
+        stream_run: Option<&str>,
+    ) -> Result<Json, String> {
         let api_key = match &self.profile.api_key_env {
             Some(env) => std::env::var(env).map_err(|_| format!("missing API key env {env}"))?,
             None => String::new(),
@@ -1291,7 +1399,10 @@ impl ChatRunner {
                         }
                     }) {
                         Ok(data) => {
-                            { let _execution = control.enter()?; self.record_usage(thread, &data, started.elapsed().as_millis() as u64)?; }
+                            {
+                                let _execution = control.enter()?;
+                                self.record_usage(thread, &data, started.elapsed().as_millis() as u64)?;
+                            }
                             return Ok(from_responses_output(&data));
                         }
                         Err(crate::stream::StreamError::Transport(message, false)) => last_error = message,
@@ -1314,8 +1425,8 @@ impl ChatRunner {
                 Err(e) => last_error = format!("chat API: {e}"),
             }
             if attempt < retries {
-                let backoff = retry_in
-                    .unwrap_or_else(|| std::time::Duration::from_millis((500u64 << attempt.min(5)).min(8000)));
+                let backoff =
+                    retry_in.unwrap_or_else(|| std::time::Duration::from_millis((500u64 << attempt.min(5)).min(8000)));
                 interruptible_backoff(control, backoff.min(std::time::Duration::from_secs(30)))?;
             }
         }
@@ -1324,7 +1435,14 @@ impl ChatRunner {
 
     /// Anthropic Messages API.
     /// Text, tool and signed thinking blocks; no image input yet.
-    fn chat_anthropic(&self, thread: &str, messages: &[Json], tools: &Json, control: &TurnControl, stream_run: Option<&str>) -> Result<Json, String> {
+    fn chat_anthropic(
+        &self,
+        thread: &str,
+        messages: &[Json],
+        tools: &Json,
+        control: &TurnControl,
+        stream_run: Option<&str>,
+    ) -> Result<Json, String> {
         let api_key = match &self.profile.api_key_env {
             Some(env) => std::env::var(env).map_err(|_| format!("missing API key env {env}"))?,
             None => String::new(),
@@ -1371,7 +1489,9 @@ impl ChatRunner {
         let mut options = json!({});
         self.apply_generation_options(&mut options);
         if let Some(effort) = options.get("reasoning_effort") {
-            if body["output_config"].is_null() { body["output_config"] = json!({}); }
+            if body["output_config"].is_null() {
+                body["output_config"] = json!({});
+            }
             body["output_config"]["effort"] = effort.clone();
         }
         body["stream"] = json!(true);
@@ -1393,11 +1513,16 @@ impl ChatRunner {
                 Ok(response) => {
                     match crate::stream::response(response, crate::stream::Mode::Anthropic, control, |text| {
                         if let Some(run_id) = stream_run {
-                            if control.check().is_ok() { self.notify.note_stream_chunk(run_id, &self.agent_id(), text); }
+                            if control.check().is_ok() {
+                                self.notify.note_stream_chunk(run_id, &self.agent_id(), text);
+                            }
                         }
                     }) {
                         Ok(data) => {
-                            { let _execution = control.enter()?; self.record_usage(thread, &data, started.elapsed().as_millis() as u64)?; }
+                            {
+                                let _execution = control.enter()?;
+                                self.record_usage(thread, &data, started.elapsed().as_millis() as u64)?;
+                            }
                             return Ok(from_anthropic_message(&data));
                         }
                         Err(crate::stream::StreamError::Transport(message, false)) => last_error = message,
@@ -1420,8 +1545,8 @@ impl ChatRunner {
                 Err(e) => last_error = format!("chat API: {e}"),
             }
             if attempt < retries {
-                let backoff = retry_in
-                    .unwrap_or_else(|| std::time::Duration::from_millis((500u64 << attempt.min(5)).min(8000)));
+                let backoff =
+                    retry_in.unwrap_or_else(|| std::time::Duration::from_millis((500u64 << attempt.min(5)).min(8000)));
                 interruptible_backoff(control, backoff.min(std::time::Duration::from_secs(30)))?;
             }
         }
@@ -1437,10 +1562,17 @@ impl ChatRunner {
         }
         let last = self.usage.lock().unwrap().get(thread).map(|u| u.last_prompt).unwrap_or(0);
         // No older assistant response exists to compact on the first input.
-        if !history.iter().any(|m| m["role"] == "assistant") { return false; }
-        let reserve = self.profile.generation_options.get("max_completion_tokens")
+        if !history.iter().any(|m| m["role"] == "assistant") {
+            return false;
+        }
+        let reserve = self
+            .profile
+            .generation_options
+            .get("max_completion_tokens")
             .or_else(|| self.profile.generation_options.get("max_tokens"))
-            .and_then(Json::as_u64).unwrap_or(8192).min(window / 4);
+            .and_then(Json::as_u64)
+            .unwrap_or(8192)
+            .min(window / 4);
         let estimate = estimated_tokens(&json!(mask_old_tool_outputs(history))) + estimated_tokens(tools);
         last.max(estimate) > window.saturating_sub(reserve).min((window as f64 * COMPACT_AT) as u64)
     }
@@ -1449,7 +1581,13 @@ impl ChatRunner {
     /// structured summary node with `skip_to` set, so the covered messages
     /// stay in the tree (lossless — /rewind and read_history can still reach
     /// them) while materialize() jumps over them.
-    fn compact(&self, run: &TurnRun, checkpoint: &mut ChatCheckpoint, max_steps: i64, control: &TurnControl) -> Result<(), (String, String)> {
+    fn compact(
+        &self,
+        run: &TurnRun,
+        checkpoint: &mut ChatCheckpoint,
+        max_steps: i64,
+        control: &TurnControl,
+    ) -> Result<(), (String, String)> {
         let thread = run.context_ref.as_deref().unwrap_or(&run.run_id);
         let mut tree = self.load_tree(thread).map_err(|e| ("CheckpointError".into(), e))?;
         let base = tree.nodes.len();
@@ -1461,7 +1599,8 @@ impl ChatRunner {
         // Oversized groups are covered by the summary and read_history. Keep
         // other recent complete groups within budget, so a long reasoning
         // message does not also evict the source just read for the next edit.
-        let keep_from = checkpoint.history.iter().rposition(|m| m["role"] == "user").unwrap_or(checkpoint.history.len());
+        let keep_from =
+            checkpoint.history.iter().rposition(|m| m["role"] == "user").unwrap_or(checkpoint.history.len());
         let recent_cap = self.profile.context_window.unwrap_or(64_000).saturating_mul(2).min(16_000) as usize;
         let mut recent = checkpoint.history[keep_from..].to_vec();
         if checkpoint.history[keep_from..].iter().map(|m| m.to_string().len()).sum::<usize>() > recent_cap {
@@ -1470,7 +1609,9 @@ impl ChatRunner {
             let mut end = checkpoint.history.len();
             let mut groups = Vec::new();
             for (index, message) in checkpoint.history.iter().enumerate().rev() {
-                if index <= keep_from { break; }
+                if index <= keep_from {
+                    break;
+                }
                 if message["role"] == "assistant" {
                     let group = &checkpoint.history[index..end];
                     end = index;
@@ -1481,7 +1622,9 @@ impl ChatRunner {
                     }
                 }
             }
-            for group in groups.into_iter().rev() { recent.extend_from_slice(group); }
+            for group in groups.into_iter().rev() {
+                recent.extend_from_slice(group);
+            }
         }
         let mut blob = String::new();
         for message in checkpoint.history.iter().skip_while(|m| m["role"] == "system") {
@@ -1494,7 +1637,8 @@ impl ChatRunner {
                 for call in calls {
                     if let Some(id) = call["id"].as_str() {
                         let name = call["function"]["name"].as_str().unwrap_or("?");
-                        let args: String = call["function"]["arguments"].as_str().unwrap_or("").chars().take(200).collect();
+                        let args: String =
+                            call["function"]["arguments"].as_str().unwrap_or("").chars().take(200).collect();
                         content.push_str(&format!("\n[tool_call_id={id}: {name} {args}]"));
                     }
                 }
@@ -1504,7 +1648,8 @@ impl ChatRunner {
             }
             blob.push_str(&format!("{role}: {content}\n\n"));
         }
-        let summary_cap = self.profile.context_window.unwrap_or(64_000).saturating_mul(2).min(SUMMARY_INPUT_CAP as u64) as usize;
+        let summary_cap =
+            self.profile.context_window.unwrap_or(64_000).saturating_mul(2).min(SUMMARY_INPUT_CAP as u64) as usize;
         if blob.len() > summary_cap {
             let half = summary_cap / 2;
             blob = format!(
@@ -1526,7 +1671,8 @@ impl ChatRunner {
             return Err(("ChatError".into(), "compaction returned an empty summary".into()));
         }
         // Keep the system root verbatim; everything else is covered.
-        let keep = tree.nodes.first().filter(|n| n.message["role"] == "system").map(|n| n.id.clone()).unwrap_or_default();
+        let keep =
+            tree.nodes.first().filter(|n| n.message["role"] == "system").map(|n| n.id.clone()).unwrap_or_default();
         tree.append_summary(
             json!({"role": "user", "content": format!("[Compacted conversation summary]\n{summary}\n\n{index}\n\n[Earlier tool outputs and replies were removed from context. Call read_history with a tool_call_id to retrieve a tool output.]")}),
             &keep,
@@ -1564,8 +1710,12 @@ impl ChatRunner {
     }
 
     fn run_loop(
-        &self, run: &TurnRun, checkpoint: &mut ChatCheckpoint, gateway: &ToolGateway,
-        view: &Json, wake: &Json,
+        &self,
+        run: &TurnRun,
+        checkpoint: &mut ChatCheckpoint,
+        gateway: &ToolGateway,
+        view: &Json,
+        wake: &Json,
     ) -> Result<String, (String, String)> {
         let tools = tools_payload(&self.bindings(), self.web_flags(), &self.bound.schemas());
         let max_steps = self.max_model_steps();
@@ -1591,7 +1741,10 @@ impl ChatRunner {
                     self.append_input(checkpoint, json!({"inbox_delta": mid}), &Json::Null, false);
                 }
                 if checkpoint.model_steps >= max_steps {
-                    return Err(("TurnLimitExceeded".into(), format!("model-step limit {max_steps} reached for this turn")));
+                    return Err((
+                        "TurnLimitExceeded".into(),
+                        format!("model-step limit {max_steps} reached for this turn"),
+                    ));
                 }
                 let thread = run.context_ref.as_deref().unwrap_or(&run.run_id);
                 if self.over_threshold(thread, &checkpoint.history, &tools) {
@@ -1600,7 +1753,11 @@ impl ChatRunner {
                             self.compact_failures.store(0, Ordering::SeqCst);
                             self.save_checkpoint(run, checkpoint, gateway)?;
                         }
-                        Err((kind, message)) if matches!(kind.as_str(), "CheckpointError" | "TurnInterrupted" | "TurnLimitExceeded") => return Err((kind, message)),
+                        Err((kind, message))
+                            if matches!(kind.as_str(), "CheckpointError" | "TurnInterrupted" | "TurnLimitExceeded") =>
+                        {
+                            return Err((kind, message))
+                        }
                         // A failed model summary must not kill the turn: continue
                         // uncompacted and let any provider error surface; the
                         // breaker stops hammering after 3 failures.
@@ -1618,14 +1775,24 @@ impl ChatRunner {
                         self.compact(run, checkpoint, max_steps, &gateway.control)?;
                         self.save_checkpoint(run, checkpoint, gateway)?;
                         self.reserve_model_step(run, checkpoint, max_steps, &gateway.control)?;
-                        self.chat(thread, &mask_old_tool_outputs(&checkpoint.history), &tools, &gateway.control, Some(&run.run_id))
-                            .map_err(|e| ("ChatError".into(), format!("context recovery failed: {e}")))?
+                        self.chat(
+                            thread,
+                            &mask_old_tool_outputs(&checkpoint.history),
+                            &tools,
+                            &gateway.control,
+                            Some(&run.run_id),
+                        )
+                        .map_err(|e| ("ChatError".into(), format!("context recovery failed: {e}")))?
                     }
-                    Err(e) if looks_like_effort_error(&e) && self.configured_effort()
-                        && !self.effort_fallback_used.swap(true, Ordering::SeqCst) => {
+                    Err(e)
+                        if looks_like_effort_error(&e)
+                            && self.configured_effort()
+                            && !self.effort_fallback_used.swap(true, Ordering::SeqCst) =>
+                    {
                         self.effort_max.store(true, Ordering::SeqCst);
                         self.reserve_model_step(run, checkpoint, max_steps, &gateway.control)?;
-                        self.chat(thread, &wire, &tools, &gateway.control, Some(&run.run_id)).map_err(|e| ("ChatError".into(), e))?
+                        self.chat(thread, &wire, &tools, &gateway.control, Some(&run.run_id))
+                            .map_err(|e| ("ChatError".into(), e))?
                     }
                     Err(e) => return Err(("ChatError".into(), e)),
                 };
@@ -1638,14 +1805,19 @@ impl ChatRunner {
                 if self.has_paused(&run.run_id) || gateway.control.check().is_err() {
                     return Err(("TurnInterrupted".into(), "interrupted".into()));
                 }
-                let call_id = call["id"].as_str().filter(|id| !id.is_empty())
-                    .ok_or_else(|| ("ChatError".to_string(), "tool call id missing".to_string()))?.to_string();
+                let call_id = call["id"]
+                    .as_str()
+                    .filter(|id| !id.is_empty())
+                    .ok_or_else(|| ("ChatError".to_string(), "tool call id missing".to_string()))?
+                    .to_string();
                 let name = call["function"]["name"].as_str().unwrap_or("");
                 let arguments = call["function"]["arguments"].as_str().unwrap_or("{}");
                 let args: Json = match serde_json::from_str(arguments) {
                     Ok(args) => args,
                     Err(_) => {
-                        checkpoint.history.push(json!({"role":"tool", "tool_call_id":call_id, "content":"invalid JSON arguments"}));
+                        checkpoint
+                            .history
+                            .push(json!({"role":"tool", "tool_call_id":call_id, "content":"invalid JSON arguments"}));
                         self.save_checkpoint(run, checkpoint, gateway)?;
                         continue;
                     }
@@ -1664,50 +1836,76 @@ impl ChatRunner {
                         });
                     if invalid {
                         teamagents_core::models::Receipt {
-                            action_id: call_id.clone(), ok: false, kind: teamagents_core::models::ActionKind::CompleteTask,
-                            result: json!({}), error: Some("items must be [{text, status: pending|in_progress|done}]".into()),
+                            action_id: call_id.clone(),
+                            ok: false,
+                            kind: teamagents_core::models::ActionKind::CompleteTask,
+                            result: json!({}),
+                            error: Some("items must be [{text, status: pending|in_progress|done}]".into()),
                         }
                     } else {
                         match self.save_plan(&items) {
                             Ok(()) => {
                                 self.notify.note_plan(&self.agent_id(), &json!(items));
-                                self.notify.note_event("plan_updated", &json!({"agent_id": self.agent_id(), "items": items}));
+                                self.notify
+                                    .note_event("plan_updated", &json!({"agent_id": self.agent_id(), "items": items}));
                                 teamagents_core::models::Receipt {
-                                    action_id: call_id.clone(), ok: true, kind: teamagents_core::models::ActionKind::CompleteTask,
-                                    result: json!({"plan": self.plan_block().trim()}), error: None,
+                                    action_id: call_id.clone(),
+                                    ok: true,
+                                    kind: teamagents_core::models::ActionKind::CompleteTask,
+                                    result: json!({"plan": self.plan_block().trim()}),
+                                    error: None,
                                 }
                             }
                             Err(error) => teamagents_core::models::Receipt {
-                                action_id: call_id.clone(), ok: false, kind: teamagents_core::models::ActionKind::CompleteTask,
-                                result: json!({}), error: Some(error),
+                                action_id: call_id.clone(),
+                                ok: false,
+                                kind: teamagents_core::models::ActionKind::CompleteTask,
+                                result: json!({}),
+                                error: Some(error),
                             },
                         }
                     }
                 } else if name == "read_history" {
-                    match self.read_history(thread, &checkpoint.history, args["tool_call_id"].as_str().unwrap_or(""))
-                        .and_then(|result| history_page(result["output"].as_str().unwrap_or(""), &args)) {
+                    match self
+                        .read_history(thread, &checkpoint.history, args["tool_call_id"].as_str().unwrap_or(""))
+                        .and_then(|result| history_page(result["output"].as_str().unwrap_or(""), &args))
+                    {
                         Ok(result) => teamagents_core::models::Receipt {
-                            action_id: call_id.clone(), ok: true, kind: teamagents_core::models::ActionKind::CompleteTask,
-                            result, error: None,
+                            action_id: call_id.clone(),
+                            ok: true,
+                            kind: teamagents_core::models::ActionKind::CompleteTask,
+                            result,
+                            error: None,
                         },
                         Err(e) => teamagents_core::models::Receipt {
-                            action_id: call_id.clone(), ok: false, kind: teamagents_core::models::ActionKind::CompleteTask,
-                            result: json!({}), error: Some(e),
+                            action_id: call_id.clone(),
+                            ok: false,
+                            kind: teamagents_core::models::ActionKind::CompleteTask,
+                            result: json!({}),
+                            error: Some(e),
                         },
                     }
                 } else if self.bound.names().contains(name) {
                     let _execution = gateway.control.enter().map_err(|e| ("TurnInterrupted".into(), e))?;
                     match self.bound.call(name, &args).expect("bound tool has a client") {
                         Ok(output) => teamagents_core::models::Receipt {
-                            action_id: call_id.clone(), ok: true, kind: teamagents_core::models::ActionKind::CompleteTask,
-                            result: json!({"output":output}), error: None,
+                            action_id: call_id.clone(),
+                            ok: true,
+                            kind: teamagents_core::models::ActionKind::CompleteTask,
+                            result: json!({"output":output}),
+                            error: None,
                         },
                         Err(e) => teamagents_core::models::Receipt {
-                            action_id: call_id.clone(), ok: false, kind: teamagents_core::models::ActionKind::CompleteTask,
-                            result: json!({}), error: Some(e),
+                            action_id: call_id.clone(),
+                            ok: false,
+                            kind: teamagents_core::models::ActionKind::CompleteTask,
+                            result: json!({}),
+                            error: Some(e),
                         },
                     }
-                } else { gateway.call(name, &args, &call_id) };
+                } else {
+                    gateway.call(name, &args, &call_id)
+                };
                 checkpoint.pending_external = None;
                 let approval = receipt.error.as_deref() == Some("approval_required");
                 let waiting = name == "wait_for_tasks" && receipt.result["waiting"].as_bool().unwrap_or(false);
@@ -1735,34 +1933,56 @@ impl ChatRunner {
                     fill_unanswered_tool_calls(&mut checkpoint.history, &remaining, &[], "TurnPaused");
                     if !step_limit {
                         let status = if approval { TurnStatus::WaitingApproval } else { TurnStatus::WaitingTask };
-                        let note = if approval { receipt.result["approval_id"].as_str().unwrap_or("").to_string() } else { "waiting".into() };
-                        checkpoint.outcome = Some(TurnOutcome { status, error: None, note: Some(note.clone()), reply_text: None });
+                        let note = if approval {
+                            receipt.result["approval_id"].as_str().unwrap_or("").to_string()
+                        } else {
+                            "waiting".into()
+                        };
+                        checkpoint.outcome =
+                            Some(TurnOutcome { status, error: None, note: Some(note.clone()), reply_text: None });
                         self.save_checkpoint(run, checkpoint, gateway)?;
                         return Err(("TurnPaused".into(), note));
                     }
                 }
                 self.save_checkpoint(run, checkpoint, gateway)?;
-                if step_limit { return Err(("TurnLimitExceeded".into(), receipt.error.unwrap_or_default())); }
+                if step_limit {
+                    return Err(("TurnLimitExceeded".into(), receipt.error.unwrap_or_default()));
+                }
             }
         }
     }
 
     fn append_input(&self, checkpoint: &mut ChatCheckpoint, mut view: Json, wake: &Json, force: bool) {
         let items = view["inbox_delta"].as_array().cloned().unwrap_or_default();
-        let fresh: Vec<Json> = items.into_iter().filter(|item| {
-            if let Some(id) = item["event_id"].as_str() {
-                if !checkpoint.input_events.insert(id.to_string()) { return false; }
-            }
-            if let Some(id) = item["delivery_id"].as_i64() { checkpoint.delivery_ids.insert(id); }
-            true
-        }).collect();
+        let fresh: Vec<Json> = items
+            .into_iter()
+            .filter(|item| {
+                if let Some(id) = item["event_id"].as_str() {
+                    if !checkpoint.input_events.insert(id.to_string()) {
+                        return false;
+                    }
+                }
+                if let Some(id) = item["delivery_id"].as_i64() {
+                    checkpoint.delivery_ids.insert(id);
+                }
+                true
+            })
+            .collect();
         if force || !fresh.is_empty() {
             view["inbox_delta"] = json!(fresh);
-            checkpoint.history.push(json!({"role":"user", "content":render_view(&view, wake, self.workdir.as_deref())}));
+            checkpoint
+                .history
+                .push(json!({"role":"user", "content":render_view(&view, wake, self.workdir.as_deref())}));
         }
     }
 
-    fn run_segment(&self, run: &TurnRun, view: &Json, gateway: &ToolGateway, wake: &Json) -> Result<TurnOutcome, (String, String)> {
+    fn run_segment(
+        &self,
+        run: &TurnRun,
+        view: &Json,
+        gateway: &ToolGateway,
+        wake: &Json,
+    ) -> Result<TurnOutcome, (String, String)> {
         let loaded = self.load_checkpoint(run).map_err(|e| ("CheckpointError".into(), e))?;
         let thread = run.context_ref.as_deref().unwrap_or(&run.run_id);
         let mut tree = self.load_tree(thread).map_err(|e| ("CheckpointError".into(), e))?;
@@ -1774,7 +1994,10 @@ impl ChatRunner {
             if let Some(checkpoint) = &mut loaded {
                 self.restore_tree_commit(run, checkpoint, &mut tree).map_err(|e| ("CheckpointError".into(), e))?;
                 if checkpoint.tree_leaf != tree.leaf {
-                    return Err(("CheckpointError".into(), "history tree differs from checkpoint without an explicit rewind".into()));
+                    return Err((
+                        "CheckpointError".into(),
+                        "history tree differs from checkpoint without an explicit rewind".into(),
+                    ));
                 }
             }
             // Freeze a legacy/empty tree BEFORE chat_history receives this turn.
@@ -1785,7 +2008,10 @@ impl ChatRunner {
         let fresh = loaded.is_none();
         let mut checkpoint = loaded.unwrap_or_default();
         if checkpoint.pending_external.is_some() {
-            return Err(("OutcomeUnknown".into(), "external tool result missing; inspect its side effects before retrying".into()));
+            return Err((
+                "OutcomeUnknown".into(),
+                "external tool result missing; inspect its side effects before retrying".into(),
+            ));
         }
         if let Some(outcome) = checkpoint.outcome.clone().filter(|o| o.status.is_terminal()) {
             self.save_checkpoint(run, &checkpoint, gateway)?;
@@ -1817,10 +2043,15 @@ impl ChatRunner {
         }
         let result = self.run_loop(run, &mut checkpoint, gateway, view, wake);
         let outcome = match result {
-            Ok(reply) => TurnOutcome { status: TurnStatus::Completed, error: None, note: None, reply_text: Some(reply) },
+            Ok(reply) => {
+                TurnOutcome { status: TurnStatus::Completed, error: None, note: None, reply_text: Some(reply) }
+            }
             Err((name, _)) if name == "TurnPaused" => checkpoint.outcome.clone().expect("pause checkpoint"),
             Err((name, message)) if name == "TurnLimitExceeded" => TurnOutcome {
-                status: TurnStatus::Failed, error: Some(message), note: Some("turn_limit".into()), reply_text: None,
+                status: TurnStatus::Failed,
+                error: Some(message),
+                note: Some("turn_limit".into()),
+                reply_text: None,
             },
             Err(e) => return Err(e),
         };
@@ -1832,7 +2063,8 @@ impl ChatRunner {
         if checkpoint.history.len() > checkpoint.tree_base {
             tree.append(&checkpoint.history[checkpoint.tree_base..]);
         }
-        self.commit_tree(run, &mut checkpoint, &tree, base, &gateway.control).map_err(|e| ("CheckpointError".into(), e))?;
+        self.commit_tree(run, &mut checkpoint, &tree, base, &gateway.control)
+            .map_err(|e| ("CheckpointError".into(), e))?;
         Ok(outcome)
     }
 }
@@ -1841,7 +2073,9 @@ impl AgentRunner for ChatRunner {
     fn start_or_resume(&self, run: &TurnRun, view: &Json, gateway: &ToolGateway, wake: &Json) -> TurnOutcome {
         {
             let mut controls = self.controls.lock().unwrap();
-            if self.closed.load(Ordering::SeqCst) { gateway.control.cancel(); }
+            if self.closed.load(Ordering::SeqCst) {
+                gateway.control.cancel();
+            }
             controls.insert(run.run_id.clone(), gateway.control.clone());
         }
         self.states.lock().unwrap().insert(run.run_id.clone(), TurnStatus::Running);
@@ -1854,12 +2088,16 @@ impl AgentRunner for ChatRunner {
                     "OutcomeUnknown" | "CheckpointError" => TurnStatus::OutcomeUnknown,
                     _ => TurnStatus::Failed,
                 },
-                error: Some(format!("{name}: {message}")), note: None, reply_text: None,
+                error: Some(format!("{name}: {message}")),
+                note: None,
+                reply_text: None,
             },
         };
         self.states.lock().unwrap().insert(run.run_id.clone(), outcome.status);
         self.controls.lock().unwrap().remove(&run.run_id);
-        if !self.closed.load(Ordering::SeqCst) { self.notify.wake(); }
+        if !self.closed.load(Ordering::SeqCst) {
+            self.notify.wake();
+        }
         outcome
     }
 
@@ -1868,8 +2106,13 @@ impl AgentRunner for ChatRunner {
         let control = self.controls.lock().unwrap().get(run_id).cloned();
         if let Some(control) = control {
             control.cancel();
-            let timeout = self.notify.core().state_brief().ok()
-                .and_then(|s| s["limits"]["cancel_confirm_timeout_s"].as_u64()).unwrap_or(60);
+            let timeout = self
+                .notify
+                .core()
+                .state_brief()
+                .ok()
+                .and_then(|s| s["limits"]["cancel_confirm_timeout_s"].as_u64())
+                .unwrap_or(60);
             if !control.wait_idle(std::time::Duration::from_secs(timeout)) {
                 return TurnStatus::OutcomeUnknown;
             }
@@ -1891,8 +2134,7 @@ impl AgentRunner for ChatRunner {
     }
 
     fn applied_delivery_ids(&self, run: &TurnRun) -> Option<Vec<i64>> {
-        Some(self.load_checkpoint(run).ok().flatten()
-            .map(|c| c.delivery_ids.into_iter().collect()).unwrap_or_default())
+        Some(self.load_checkpoint(run).ok().flatten().map(|c| c.delivery_ids.into_iter().collect()).unwrap_or_default())
     }
 
     fn reconcile(&self, run: &TurnRun) -> Option<TurnStatus> {
@@ -1900,7 +2142,9 @@ impl AgentRunner for ChatRunner {
             Ok(Some(checkpoint)) if checkpoint.pending_external.is_none() => {
                 if matches!(run.status, TurnStatus::WaitingTask | TurnStatus::WaitingApproval) {
                     run.status
-                } else { TurnStatus::Queued }
+                } else {
+                    TurnStatus::Queued
+                }
             }
             // Old/corrupt/missing checkpoints cannot prove a safe replay.
             _ => TurnStatus::OutcomeUnknown,
@@ -1914,7 +2158,9 @@ impl AgentRunner for ChatRunner {
     fn close(&self) {
         self.closed.store(true, Ordering::SeqCst);
         let controls: Vec<_> = self.controls.lock().unwrap().values().cloned().collect();
-        for control in &controls { control.cancel(); }
+        for control in &controls {
+            control.cancel();
+        }
         self.bound.close();
         // Also drain a tool whose timeout already removed its runtime wrapper.
         for control in controls {
@@ -1955,11 +2201,8 @@ fn to_anthropic_messages(history: &[Json], image: ImageLoader) -> (String, Vec<J
                 }
                 for call in calls {
                     let name = call.get("function").and_then(|f| f.get("name")).and_then(|v| v.as_str()).unwrap_or("");
-                    let arguments = call
-                        .get("function")
-                        .and_then(|f| f.get("arguments"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("{}");
+                    let arguments =
+                        call.get("function").and_then(|f| f.get("arguments")).and_then(|v| v.as_str()).unwrap_or("{}");
                     let input: Json = serde_json::from_str(arguments).unwrap_or(json!({}));
                     blocks.push(json!({
                         "type": "tool_use",
@@ -1989,10 +2232,15 @@ fn to_anthropic_messages(history: &[Json], image: ImageLoader) -> (String, Vec<J
                     }),
                 };
                 match out.last_mut() {
-                    Some(last) if last.get("role").and_then(|v| v.as_str()) == Some("user")
-                        && last.get("content").and_then(|c| c.as_array())
-                            .map(|blocks| blocks.iter().all(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_result")))
-                            .unwrap_or(false) =>
+                    Some(last)
+                        if last.get("role").and_then(|v| v.as_str()) == Some("user")
+                            && last
+                                .get("content")
+                                .and_then(|c| c.as_array())
+                                .map(|blocks| {
+                                    blocks.iter().all(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_result"))
+                                })
+                                .unwrap_or(false) =>
                     {
                         last["content"].as_array_mut().unwrap().push(block);
                     }
@@ -2193,7 +2441,8 @@ mod tests {
             None,
             Notify::new(crate::core_client::CoreClient::open(":memory:", "worker-prompt").unwrap()),
             crate::bound::BoundTools::load(&teamagents_core::models::UserConfig::default(), &[]).unwrap(),
-            vec![], (false, false),
+            vec![],
+            (false, false),
         );
         let task = json!({"role":"user", "content":"<your_tasks>Review the patch</your_tasks>"});
         let mut history = vec![task.clone()];
@@ -2232,13 +2481,24 @@ mod tests {
             &json!({"id": "leader", "name": "Leader", "role": "leader",
                     "instructions": "You are the Leader of a team of agents."}),
             ModelProfile {
-                provider: "deepseek".into(), protocol: "deepseek".into(), model: "test".into(),
-                base_url: None, api_key_env: None, timeout: 30, max_retries: 0,
-                generation_options: Default::default(), context_window: None, codex_profile: None,
+                provider: "deepseek".into(),
+                protocol: "deepseek".into(),
+                model: "test".into(),
+                base_url: None,
+                api_key_env: None,
+                timeout: 30,
+                max_retries: 0,
+                generation_options: Default::default(),
+                context_window: None,
+                codex_profile: None,
             },
             Some("/tmp".into()),
             Notify::new(crate::core_client::CoreClient::open(":memory:", "prompt-size").unwrap()),
-            crate::bound::BoundTools::load(&teamagents_core::models::UserConfig::default(), &["files".into(), "shell".into()]).unwrap(),
+            crate::bound::BoundTools::load(
+                &teamagents_core::models::UserConfig::default(),
+                &["files".into(), "shell".into()],
+            )
+            .unwrap(),
             vec![],
             (false, false),
         );
@@ -2259,7 +2519,8 @@ mod tests {
             None,
             Notify::new(crate::core_client::CoreClient::open(":memory:", "protocol-switch").unwrap()),
             crate::bound::BoundTools::load(&teamagents_core::models::UserConfig::default(), &[]).unwrap(),
-            vec![], (false, false),
+            vec![],
+            (false, false),
         );
         let message = json!({"role":"assistant","content":"done",
             "responses_output":[{"type":"reasoning","encrypted_content":"opaque"}],
@@ -2273,7 +2534,11 @@ mod tests {
     #[test]
     fn refused_tool_receipts_keep_their_detail() {
         // blockers / validation hints live in `result`, not `error`
-        let failed = tool_result_content(false, &json!({"blockers": ["outcome-unknown operations: leader:run_1"]}), Some("goal not yet complete"));
+        let failed = tool_result_content(
+            false,
+            &json!({"blockers": ["outcome-unknown operations: leader:run_1"]}),
+            Some("goal not yet complete"),
+        );
         assert!(failed.contains("run_1"), "{failed}");
         assert!(failed.contains("goal not yet complete"), "{failed}");
         // nothing extra to say: keep the error shape the tests and prompts rely on
@@ -2291,9 +2556,16 @@ mod tests {
         let mut runner = ChatRunner::new(
             &json!({"id": "m", "name": "M", "role": "worker"}),
             ModelProfile {
-                provider: "openai".into(), protocol: "openai".into(), model: "test".into(),
-                base_url: None, api_key_env: None, timeout: 30, max_retries: 0,
-                generation_options: Default::default(), context_window: None, codex_profile: None,
+                provider: "openai".into(),
+                protocol: "openai".into(),
+                model: "test".into(),
+                base_url: None,
+                api_key_env: None,
+                timeout: 30,
+                max_retries: 0,
+                generation_options: Default::default(),
+                context_window: None,
+                codex_profile: None,
             },
             Some("/tmp".into()),
             Notify::new(crate::core_client::CoreClient::open(":memory:", "plan-test").unwrap()),
@@ -2336,12 +2608,19 @@ mod tests {
         };
         let tool_content = json!({"image": "shot.png", "media_type": "image/png", "bytes": 7}).to_string();
 
-        let (_instructions, input) = to_responses_input(&[json!({"role":"tool","tool_call_id":"c1","content":tool_content.clone()})], &loader);
+        let (_instructions, input) =
+            to_responses_input(&[json!({"role":"tool","tool_call_id":"c1","content":tool_content.clone()})], &loader);
         assert_eq!(input[0]["type"], "function_call_output");
         assert_eq!(input[0]["output"][0]["type"], "input_image", "{input:?}");
-        assert!(input[0]["output"][0]["image_url"].as_str().unwrap().starts_with("data:image/png;base64,"), "{input:?}");
+        assert!(
+            input[0]["output"][0]["image_url"].as_str().unwrap().starts_with("data:image/png;base64,"),
+            "{input:?}"
+        );
 
-        let (_system, converted) = to_anthropic_messages(&[json!({"role":"tool","tool_call_id":"c1","content":tool_content.clone()})], &loader);
+        let (_system, converted) = to_anthropic_messages(
+            &[json!({"role":"tool","tool_call_id":"c1","content":tool_content.clone()})],
+            &loader,
+        );
         assert_eq!(converted[0]["content"][0]["type"], "tool_result");
         assert_eq!(converted[0]["content"][0]["content"][0]["type"], "image", "{converted:?}");
         assert_eq!(converted[0]["content"][0]["content"][0]["source"]["media_type"], "image/png");
@@ -2375,10 +2654,16 @@ mod tests {
         let mut runner = ChatRunner::new(
             &json!({"id": "m", "name": "M", "role": "worker"}),
             ModelProfile {
-                provider: "openai".into(), protocol: "openai".into(), model: "test".into(),
-                base_url: None, api_key_env: None, timeout: 30, max_retries: 0,
-                generation_options: Default::default(), context_window: None,
-            codex_profile: None,
+                provider: "openai".into(),
+                protocol: "openai".into(),
+                model: "test".into(),
+                base_url: None,
+                api_key_env: None,
+                timeout: 30,
+                max_retries: 0,
+                generation_options: Default::default(),
+                context_window: None,
+                codex_profile: None,
             },
             None,
             crate::runtime::Notify::new(crate::core_client::CoreClient::open(":memory:", "usage-test").unwrap()),
@@ -2451,7 +2736,8 @@ mod tests {
             "relevant_topology": {"revision": 3, "members": ["leader"], "can_send_to": ["leader"], "can_delegate_to": [], "shared_spaces": []},
             "delivery_ids": [1], "batch_no": 1,
         });
-        let rendered = render_view(&view, &json!({"reason": "user_input", "payload": {"kinds": ["user_message"]}}), Some("/w"));
+        let rendered =
+            render_view(&view, &json!({"reason": "user_input", "payload": {"kinds": ["user_message"]}}), Some("/w"));
         assert!(rendered.contains("<wake reason=\"user_input\">"));
         assert!(rendered.contains("<your_tasks>["));
         assert!(rendered.contains("<inbox from=\"leader\" kind=\"message\">{\"text\":\"hi\"}</inbox>"));
@@ -2590,7 +2876,7 @@ mod tests {
         let points = tree.rewind_points();
         assert_eq!(points.len(), 2);
         assert_eq!(points[0]["preview"], "第二问"); // newest first
-        // rewind to the first user message: later exchange stays in the tree
+                                                    // rewind to the first user message: later exchange stays in the tree
         let target = points[1]["id"].as_str().unwrap().to_string();
         assert_eq!(tree.rewind_to(Some(&target)).unwrap(), 2);
         assert_eq!(tree.materialize().last().unwrap()["content"], "第一问");
@@ -2626,7 +2912,10 @@ mod tests {
             json!({"role":"tool","tool_call_id":"new","content":"fresh"}),
         ];
         let masked = mask_old_tool_outputs(&history);
-        assert!(masked[3]["content"].as_str().unwrap().contains("tool_call_id=\"old\""), "old output masked with its id");
+        assert!(
+            masked[3]["content"].as_str().unwrap().contains("tool_call_id=\"old\""),
+            "old output masked with its id"
+        );
         assert_eq!(masked[5]["content"], "fresh", "latest answers never masked");
         // a small old output within budget stays verbatim
         let small = vec![
@@ -2685,10 +2974,16 @@ mod tests {
         let runner = ChatRunner::new(
             &json!({"id": "lead", "name": "L", "role": "leader"}),
             ModelProfile {
-                provider: "openai".into(), protocol: "openai".into(), model: "test".into(),
-                base_url: None, api_key_env: None, timeout: 30, max_retries: 0,
-                generation_options: Default::default(), context_window: None,
-            codex_profile: None,
+                provider: "openai".into(),
+                protocol: "openai".into(),
+                model: "test".into(),
+                base_url: None,
+                api_key_env: None,
+                timeout: 30,
+                max_retries: 0,
+                generation_options: Default::default(),
+                context_window: None,
+                codex_profile: None,
             },
             None,
             crate::runtime::Notify::new(crate::core_client::CoreClient::open(":memory:", "readhist-test").unwrap()),
@@ -2717,10 +3012,16 @@ mod tests {
         let runner = ChatRunner::new(
             &json!({"id": "lead", "name": "L", "role": "leader"}),
             ModelProfile {
-                provider: "openai".into(), protocol: "openai".into(), model: "test".into(),
-                base_url: None, api_key_env: None, timeout: 30, max_retries: 0,
-                generation_options: Default::default(), context_window: None,
-            codex_profile: None,
+                provider: "openai".into(),
+                protocol: "openai".into(),
+                model: "test".into(),
+                base_url: None,
+                api_key_env: None,
+                timeout: 30,
+                max_retries: 0,
+                generation_options: Default::default(),
+                context_window: None,
+                codex_profile: None,
             },
             None,
             crate::runtime::Notify::new(crate::core_client::CoreClient::open(":memory:", "tree-test").unwrap()),
@@ -2742,5 +3043,4 @@ mod tests {
         assert!(runner.history_dir().is_some());
         std::fs::remove_dir_all(&root).ok();
     }
-
 }

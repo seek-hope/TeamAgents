@@ -30,7 +30,9 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
     SlashCommand { name: "/quit", description: "退出 TeamAgents" },
     SlashCommand { name: "/settings", description: "打开设置浮层（界面语言）" },
     SlashCommand { name: "/status", description: "查看 token 用量与上下文窗口" },
-    SlashCommand { name: "/rewind", description: "回退对话到历史节点（/rewind 列出，/rewind <序号> 回退）" },
+    SlashCommand {
+        name: "/rewind", description: "回退对话到历史节点（/rewind 列出，/rewind <序号> 回退）"
+    },
     SlashCommand { name: "/fork", description: "从当前对话分叉新会话（团队事实不复制）" },
     SlashCommand { name: "/model", description: "查看或切换成员模型与推理档位" },
 ];
@@ -53,27 +55,43 @@ pub enum Severity {
 pub enum Effect {
     /// Submit an action; ok_msg/err_msg are written to chat from the receipt
     /// once submit returns. {error} fills the error.
-    Submit { action: Json, ok_msg: Option<String>, err_msg: Option<String> },
+    Submit {
+        action: Json,
+        ok_msg: Option<String>,
+        err_msg: Option<String>,
+    },
     /// Cancel a task — message depends on the receipt result status.
     CancelTask(String),
     /// Acknowledge an OUTCOME_UNKNOWN turn (a run interrupted mid-command).
     AcknowledgeRun(String),
     /// Decide an approval — toast '批准决定 {v0}：{v1}' from the receipt.
-    DecideApproval { approval_id: String, decision: String },
+    DecideApproval {
+        approval_id: String,
+        decision: String,
+    },
     UserMessage(String),
     /// /status: main loop calls the worker's "usage" method and feeds the
     /// result to App::show_usage (rendering stays in app.rs for testability).
     UsageStatus,
     /// /rewind: list targets (main loop calls "rewind_points") / move the tip
     RewindPoints,
-    Rewind { node: Option<String> },
+    Rewind {
+        node: Option<String>,
+    },
     /// /fork: branch the session with the conversation tree (D-26)
     Fork,
     /// /model with no args: worker "model" → App::show_models.
     ModelStatus,
-    DiscoverModels { provider: String },
+    DiscoverModels {
+        provider: String,
+    },
     /// /model <member> <model> [effort]; None/None clears the override.
-    SetModel { agent_id: String, profile: Option<String>, model: Option<String>, effort: Option<String> },
+    SetModel {
+        agent_id: String,
+        profile: Option<String>,
+        model: Option<String>,
+        effort: Option<String>,
+    },
     SwitchSession(String),
     NewSession,
     ArchiveSession(String),
@@ -143,16 +161,20 @@ pub fn fmt_ts(ts: f64, with_seconds: bool) -> String {
     let Ok(utc) = time::OffsetDateTime::from_unix_timestamp(ts as i64) else {
         return "-".into();
     };
-    let local = time::UtcOffset::current_local_offset()
-        .map(|off| utc.to_offset(off))
-        .unwrap_or(utc);
+    let local = time::UtcOffset::current_local_offset().map(|off| utc.to_offset(off)).unwrap_or(utc);
     let fmt = if with_seconds { "[month]-[day] [hour]:[minute]:[second]" } else { "[month]-[day] [hour]:[minute]" };
     let format = time::format_description::parse_borrowed::<2>(fmt).expect("static fmt");
     local.format(&format).unwrap_or_else(|_| "-".into())
 }
 
 /// Returns (label, color-name).
-pub fn activity_status(lang: &str, animations: bool, frame: usize, status: &str, run: Option<&RunInfo>) -> (String, &'static str) {
+pub fn activity_status(
+    lang: &str,
+    animations: bool,
+    frame: usize,
+    status: &str,
+    run: Option<&RunInfo>,
+) -> (String, &'static str) {
     let mut status = status.to_string();
     if let Some(r) = run {
         if matches!(status.as_str(), "BUSY" | "WAITING" | "RUNNING" | "PENDING" | "IDLE") {
@@ -161,7 +183,11 @@ pub fn activity_status(lang: &str, animations: bool, frame: usize, status: &str,
     }
     let busy = matches!(status.as_str(), "BUSY" | "RUNNING");
     let mut icon = if busy {
-        if animations { SPINNER[frame % 10].to_string() } else { "●".into() }
+        if animations {
+            SPINNER[frame % 10].to_string()
+        } else {
+            "●".into()
+        }
     } else {
         "○".into()
     };
@@ -194,10 +220,7 @@ pub fn activity_status(lang: &str, animations: bool, frame: usize, status: &str,
 }
 
 fn now_ts() -> f64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs_f64())
-        .unwrap_or(0.0)
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
 }
 
 pub struct App {
@@ -271,7 +294,14 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(session_id: &str, catalog: Json, user_config_path: String, lang: &'static str, animations: bool, history: Vec<String>) -> App {
+    pub fn new(
+        session_id: &str,
+        catalog: Json,
+        user_config_path: String,
+        lang: &'static str,
+        animations: bool,
+        history: Vec<String>,
+    ) -> App {
         App {
             lang,
             animations,
@@ -350,12 +380,7 @@ impl App {
     }
 
     pub fn leader_id(&self) -> String {
-        self.state
-            .as_ref()
-            .and_then(|s| s.get("leader_id"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("leader")
-            .to_string()
+        self.state.as_ref().and_then(|s| s.get("leader_id")).and_then(|v| v.as_str()).unwrap_or("leader").to_string()
     }
 
     /// New committed state snapshot + event drain.
@@ -379,7 +404,8 @@ impl App {
                     continue;
                 }
                 let window = agent.get("context_window").and_then(Json::as_u64);
-                let last = agent.get("usage").and_then(|u| u.get("last_prompt_tokens")).and_then(Json::as_u64).unwrap_or(0);
+                let last =
+                    agent.get("usage").and_then(|u| u.get("last_prompt_tokens")).and_then(Json::as_u64).unwrap_or(0);
                 self.usage.insert(id, (window, last));
             }
         }
@@ -457,17 +483,21 @@ impl App {
                 self.write_chat(&format!("{}→{}", actor, jstr(p, "target")), &jstr(p, "text"));
             }
             "task_created" => {
-                self.write_chat("system", &self.t("任务 {v0} → {v1}：{v2}", &[
-                    ("v0", &tail8(&jstr(p, "task_id"))),
-                    ("v1", &jstr(p, "assignee")),
-                    ("v2", &jstr(p, "description")),
-                ]));
+                self.write_chat(
+                    "system",
+                    &self.t(
+                        "任务 {v0} → {v1}：{v2}",
+                        &[
+                            ("v0", &tail8(&jstr(p, "task_id"))),
+                            ("v1", &jstr(p, "assignee")),
+                            ("v2", &jstr(p, "description")),
+                        ],
+                    ),
+                );
             }
             "task_completed" | "task_failed" | "task_blocked" | "task_cancelled" => {
-                let detail = ["summary", "reason", "error"]
-                    .iter()
-                    .find_map(|k| p.get(k).and_then(|v| v.as_str()))
-                    .unwrap_or("");
+                let detail =
+                    ["summary", "reason", "error"].iter().find_map(|k| p.get(k).and_then(|v| v.as_str())).unwrap_or("");
                 self.write_chat("system", &format!("[{kind}] {} {detail}", tail8(&jstr(p, "task_id"))));
             }
             "approval_requested" => {
@@ -479,10 +509,8 @@ impl App {
                     .get("pending_approvals")
                     .and_then(|v| v.as_array())
                     .map(|a| {
-                        a.iter().any(|x| {
-                            jstr(x, "approval_id") == jstr(p, "approval_id")
-                                && jstr(x, "status") == "PENDING"
-                        })
+                        a.iter()
+                            .any(|x| jstr(x, "approval_id") == jstr(p, "approval_id") && jstr(x, "status") == "PENDING")
                     })
                     .unwrap_or(true);
                 if still_pending {
@@ -491,39 +519,41 @@ impl App {
                 }
             }
             "approval_decided" => {
-                self.write_chat("system", &self.t("批准 {v0} → {v1}", &[
-                    ("v0", &jstr(p, "approval_id")),
-                    ("v1", &jstr(p, "status")),
-                ]));
+                self.write_chat(
+                    "system",
+                    &self.t("批准 {v0} → {v1}", &[("v0", &jstr(p, "approval_id")), ("v1", &jstr(p, "status"))]),
+                );
             }
             "run_failed" => {
-                self.write_chat("system", &self.t("✗ 成员 {v0} 的回合失败：{v1}", &[
-                    ("v0", &jstr(p, "agent_id")),
-                    ("v1", &jstr(p, "error")),
-                ]));
+                self.write_chat(
+                    "system",
+                    &self.t("✗ 成员 {v0} 的回合失败：{v1}", &[("v0", &jstr(p, "agent_id")), ("v1", &jstr(p, "error"))]),
+                );
             }
             "run_cancelled" => {
-                self.write_chat("system", &self.t("回合已停止：{v0} ({v1})", &[
-                    ("v0", &jstr(p, "agent_id")),
-                    ("v1", &jstr(p, "status")),
-                ]));
+                self.write_chat(
+                    "system",
+                    &self.t("回合已停止：{v0} ({v1})", &[("v0", &jstr(p, "agent_id")), ("v1", &jstr(p, "status"))]),
+                );
             }
             "run_waiting" => {
                 let waiting = p.get("waiting_on").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
                 if waiting > 0 {
                     let n = waiting.to_string();
-                    self.write_chat("system", &self.t("{v0} 正在等待 {v1} 个任务完成", &[
-                        ("v0", &jstr(p, "agent_id")),
-                        ("v1", &n),
-                    ]));
+                    self.write_chat(
+                        "system",
+                        &self.t("{v0} 正在等待 {v1} 个任务完成", &[("v0", &jstr(p, "agent_id")), ("v1", &n)]),
+                    );
                 }
             }
             "member_status" => {
-                self.write_chat("system", &self.t("成员状态：{v0} {v1} {v2}", &[
-                    ("v0", &jstr(p, "agent_id")),
-                    ("v1", &jstr(p, "status")),
-                    ("v2", &jstr(p, "error")),
-                ]));
+                self.write_chat(
+                    "system",
+                    &self.t(
+                        "成员状态：{v0} {v1} {v2}",
+                        &[("v0", &jstr(p, "agent_id")), ("v1", &jstr(p, "status")), ("v2", &jstr(p, "error"))],
+                    ),
+                );
             }
             "session_status" => {
                 self.write_chat("system", &self.t("会话状态：{v0}", &[("v0", &compact_json(p))]));
@@ -574,7 +604,9 @@ impl App {
                     .and_then(|s| s.get("runs"))
                     .and_then(|v| v.as_array())
                     .and_then(|runs| runs.iter().find(|r| jstr(r, "run_id") == **rid))
-                    .map(|r| matches!(jstr(r, "status").as_str(), "COMPLETED" | "FAILED" | "CANCELLED" | "OUTCOME_UNKNOWN"))
+                    .map(|r| {
+                        matches!(jstr(r, "status").as_str(), "COMPLETED" | "FAILED" | "CANCELLED" | "OUTCOME_UNKNOWN")
+                    })
                     .unwrap_or(false)
             })
             .cloned()
@@ -586,12 +618,7 @@ impl App {
         if self.stream_dirty {
             // throttle redraws of the preview to 5/s; clear immediately
             if self.delta_buffers.is_empty() || self.last_stream_render.elapsed() >= Duration::from_millis(200) {
-                self.stream_text = self
-                    .delta_buffers
-                    .values()
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join("\n\n");
+                self.stream_text = self.delta_buffers.values().cloned().collect::<Vec<_>>().join("\n\n");
                 self.last_stream_render = Instant::now();
                 self.stream_dirty = false;
             }
@@ -603,24 +630,21 @@ impl App {
     /// Activity line: one chip per visible run (or a single idle chip) plus the
     /// latest-activity text. Chips carry (text, colour-name).
     pub fn activity_chips(&mut self) -> (Vec<(String, &'static str)>, String) {
-        if self.animations
-            && self.activity_runs.iter().any(|r| r.status == "RUNNING")
-        {
+        if self.animations && self.activity_runs.iter().any(|r| r.status == "RUNNING") {
             self.activity_frame = (self.activity_frame + 1) % 10;
         } else {
             self.activity_frame = 0;
         }
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs_f64())
-            .unwrap_or(0.0);
+        let now =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
         let elapsed = |created: f64| -> String {
             let total = (now - created).max(0.0) as i64;
             format!("{:02}:{:02}", total / 60, total % 60)
         };
         let mut chips: Vec<(String, &'static str)> = vec![];
         for run in self.activity_runs.iter() {
-            let (icon, style) = activity_status(self.lang, self.animations, self.activity_frame, &run.status, Some(run));
+            let (icon, style) =
+                activity_status(self.lang, self.animations, self.activity_frame, &run.status, Some(run));
             let icon_char = icon.chars().next().unwrap_or('○');
             chips.push((format!("{icon_char} {} {}", run.agent_id, elapsed(run.created_at)), style));
         }
@@ -686,9 +710,7 @@ impl App {
             .and_then(|s| s.get("tasks"))
             .and_then(|v| v.as_array())
             .map(|t| {
-                t.iter()
-                    .filter(|x| matches!(jstr(x, "status").as_str(), "PENDING" | "RUNNING" | "BLOCKED"))
-                    .count()
+                t.iter().filter(|x| matches!(jstr(x, "status").as_str(), "PENDING" | "RUNNING" | "BLOCKED")).count()
             })
             .unwrap_or(0);
         if open_tasks > 0 {
@@ -757,8 +779,11 @@ impl App {
             channels.iter().any(|c| {
                 jstr(c, "source") == src && {
                     let mode = jstr(c, "mode");
-                    let targeted = c.get("targets").and_then(|v| v.as_array())
-                        .map(|t| t.iter().any(|x| x.as_str() == Some(tgt))).unwrap_or(false);
+                    let targeted = c
+                        .get("targets")
+                        .and_then(|v| v.as_array())
+                        .map(|t| t.iter().any(|x| x.as_str() == Some(tgt)))
+                        .unwrap_or(false);
                     if task {
                         mode == "task" && targeted
                     } else {
@@ -777,8 +802,10 @@ impl App {
             let observed_by: Vec<&str> = observers
                 .iter()
                 .filter(|o| {
-                    o.get("subjects").and_then(|v| v.as_array())
-                        .map(|s| s.iter().any(|x| x.as_str() == Some(id.as_str()))).unwrap_or(false)
+                    o.get("subjects")
+                        .and_then(|v| v.as_array())
+                        .map(|s| s.iter().any(|x| x.as_str() == Some(id.as_str())))
+                        .unwrap_or(false)
                 })
                 .map(|o| o.get("agent_id").and_then(|v| v.as_str()).unwrap_or(""))
                 .collect();
@@ -804,24 +831,22 @@ impl App {
                 .tool_activity
                 .get(&id)
                 .map(|last| {
-                    format!(
-                        "{}{} {}",
-                        if last.ok { "" } else { "✗ " },
-                        last.tool,
-                        elapsed_short(last.at.elapsed())
-                    )
+                    format!("{}{} {}", if last.ok { "" } else { "✗ " }, last.tool, elapsed_short(last.at.elapsed()))
                 })
                 .unwrap_or_else(|| "-".into());
-            rows.push((id.clone(), vec![
-                cell(id.clone()),
-                cell(jstr(agent, "role")),
-                cell(jstr(agent, "runtime_kind")),
-                self.model_cell(agent, &id),
-                (status_label, Some(style)),
-                cell(agent.get("workspace_policy").and_then(|v| v.as_str()).unwrap_or("shared").to_string()),
-                cell(if reach.is_empty() { "-".into() } else { reach.join(" ") }),
-                cell(activity),
-            ]));
+            rows.push((
+                id.clone(),
+                vec![
+                    cell(id.clone()),
+                    cell(jstr(agent, "role")),
+                    cell(jstr(agent, "runtime_kind")),
+                    self.model_cell(agent, &id),
+                    (status_label, Some(style)),
+                    cell(agent.get("workspace_policy").and_then(|v| v.as_str()).unwrap_or("shared").to_string()),
+                    cell(if reach.is_empty() { "-".into() } else { reach.join(" ") }),
+                    cell(activity),
+                ],
+            ));
         }
         rows
     }
@@ -843,7 +868,8 @@ impl App {
 
     /// TasksPanel::refresh_from — newest first, parent-indented.
     pub fn tasks_rows(&self) -> Vec<(String, Vec<Cell>)> {
-        let tasks = self.state.as_ref().and_then(|s| s.get("tasks")).and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        let tasks =
+            self.state.as_ref().and_then(|s| s.get("tasks")).and_then(|v| v.as_array()).cloned().unwrap_or_default();
         let mut sorted = tasks.clone();
         sorted.sort_by(|a, b| {
             let ka = (a.get("created_at").and_then(|v| v.as_f64()).unwrap_or(0.0), jstr(a, "task_id"));
@@ -876,23 +902,31 @@ impl App {
                 // _animate_activity live-updates the status cell from the active run
                 let run = self.activity_runs.iter().find(|r| r.task_id.as_deref() == Some(jstr(t, "task_id").as_str()));
                 let status = run.map(|r| r.status.clone()).unwrap_or_else(|| jstr(t, "status"));
-                let (status_label, style) = activity_status(self.lang, self.animations, self.activity_frame, &status, run);
-                let deps = t.get("dependencies").and_then(|v| v.as_array()).map(|d| {
-                    d.iter().filter_map(|x| x.as_str()).map(tail8).collect::<Vec<_>>().join(",")
-                }).unwrap_or_default();
-                let results = t.get("result_refs").and_then(|v| v.as_array()).map(|r| {
-                    r.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(",")
-                }).unwrap_or_default();
-                (jstr(t, "task_id"), vec![
-                    cell(format!("{indent}{}", tail8(&jstr(t, "task_id")))),
-                    cell(jstr(t, "requester")),
-                    cell(jstr(t, "assignee")),
-                    (status_label, Some(style)),
-                    cell(head_chars(&jstr(t, "description"), 60)),
-                    cell(if deps.is_empty() { "-".into() } else { deps }),
-                    cell(if results.is_empty() { "-".into() } else { head_chars(&results, 60) }),
-                    cell(fmt_ts(t.get("created_at").and_then(|v| v.as_f64()).unwrap_or(0.0), true)),
-                ])
+                let (status_label, style) =
+                    activity_status(self.lang, self.animations, self.activity_frame, &status, run);
+                let deps = t
+                    .get("dependencies")
+                    .and_then(|v| v.as_array())
+                    .map(|d| d.iter().filter_map(|x| x.as_str()).map(tail8).collect::<Vec<_>>().join(","))
+                    .unwrap_or_default();
+                let results = t
+                    .get("result_refs")
+                    .and_then(|v| v.as_array())
+                    .map(|r| r.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(","))
+                    .unwrap_or_default();
+                (
+                    jstr(t, "task_id"),
+                    vec![
+                        cell(format!("{indent}{}", tail8(&jstr(t, "task_id")))),
+                        cell(jstr(t, "requester")),
+                        cell(jstr(t, "assignee")),
+                        (status_label, Some(style)),
+                        cell(head_chars(&jstr(t, "description"), 60)),
+                        cell(if deps.is_empty() { "-".into() } else { deps }),
+                        cell(if results.is_empty() { "-".into() } else { head_chars(&results, 60) }),
+                        cell(fmt_ts(t.get("created_at").and_then(|v| v.as_f64()).unwrap_or(0.0), true)),
+                    ],
+                )
             })
             .collect()
     }
@@ -911,12 +945,15 @@ impl App {
                 let tool = ["tool", "kind"].iter().find_map(|k| scope.get(k).and_then(|v| v.as_str())).unwrap_or("?");
                 let args = scope.get("args").or_else(|| scope.get("request")).cloned().unwrap_or(Json::Null);
                 let args = py_repr(&args);
-                (jstr(a, "approval_id"), vec![
-                    cell(jstr(a, "agent_id")),
-                    cell(tool.to_string()),
-                    cell(head_chars(&args, 60)),
-                    cell(head_chars(&jstr(&scope, "reason"), 40)),
-                ])
+                (
+                    jstr(a, "approval_id"),
+                    vec![
+                        cell(jstr(a, "agent_id")),
+                        cell(tool.to_string()),
+                        cell(head_chars(&args, 60)),
+                        cell(head_chars(&jstr(&scope, "reason"), 40)),
+                    ],
+                )
             })
             .collect()
     }
@@ -944,18 +981,24 @@ impl App {
             let size = info.get("sizeMb").and_then(|v| v.as_f64()).unwrap_or(0.0);
             let mut key = sid.clone();
             if used.contains(&key) {
-                key = format!("{sid}#{}", if info.get("archived").and_then(|v| v.as_bool()).unwrap_or(false) { "archived" } else { "active" });
+                key = format!(
+                    "{sid}#{}",
+                    if info.get("archived").and_then(|v| v.as_bool()).unwrap_or(false) { "archived" } else { "active" }
+                );
             }
             used.insert(key.clone());
-            rows.push((key, vec![
-                cell(sid),
-                cell(jstr(info, "status")),
-                cell(jstr(info, "goalState")),
-                cell(info.get("events").map(|v| v.to_string()).unwrap_or_else(|| "0".into())),
-                cell(format!("{size:.1}MB")),
-                cell(if updated > 0.0 { fmt_ts(updated, false) } else { "-".into() }),
-                cell(if marks.is_empty() { "-".into() } else { marks.join(" ") }),
-            ]));
+            rows.push((
+                key,
+                vec![
+                    cell(sid),
+                    cell(jstr(info, "status")),
+                    cell(jstr(info, "goalState")),
+                    cell(info.get("events").map(|v| v.to_string()).unwrap_or_else(|| "0".into())),
+                    cell(format!("{size:.1}MB")),
+                    cell(if updated > 0.0 { fmt_ts(updated, false) } else { "-".into() }),
+                    cell(if marks.is_empty() { "-".into() } else { marks.join(" ") }),
+                ],
+            ));
         }
         rows
     }
@@ -973,13 +1016,22 @@ impl App {
                 let content = jstr(entry, "content");
                 let reference = jstr(entry, "ref");
                 let sequence = entry.get("sequence").and_then(|v| v.as_i64()).unwrap_or(0);
-                rows.push((format!("{sid}:{sequence}"), vec![
-                    cell(sid.clone()),
-                    cell(jstr(entry, "author")),
-                    cell(jstr(entry, "kind")),
-                    cell(if !content.is_empty() { head_chars(&content, 80) } else if !reference.is_empty() { reference } else { "-".into() }),
-                    cell(entry.get("sequence").map(|v| v.to_string()).unwrap_or_default()),
-                ]));
+                rows.push((
+                    format!("{sid}:{sequence}"),
+                    vec![
+                        cell(sid.clone()),
+                        cell(jstr(entry, "author")),
+                        cell(jstr(entry, "kind")),
+                        cell(if !content.is_empty() {
+                            head_chars(&content, 80)
+                        } else if !reference.is_empty() {
+                            reference
+                        } else {
+                            "-".into()
+                        }),
+                        cell(entry.get("sequence").map(|v| v.to_string()).unwrap_or_default()),
+                    ],
+                ));
             }
         }
         rows
@@ -1092,7 +1144,13 @@ impl App {
                 return Some(run.agent_id.clone());
             }
         }
-        let leader = self.state.as_ref().and_then(|s| s.get("spec")).and_then(|spec| spec.get("leader_id")).and_then(|v| v.as_str()).map(str::to_string);
+        let leader = self
+            .state
+            .as_ref()
+            .and_then(|s| s.get("spec"))
+            .and_then(|spec| spec.get("leader_id"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
         match leader {
             Some(leader) if self.plans.contains_key(&leader) => Some(leader),
             _ => self.plans.keys().next().cloned(),
@@ -1113,12 +1171,7 @@ impl App {
             .or_else(|| items.iter().find(|item| item["status"] == "pending"))
             .and_then(|item| item["text"].as_str())
             .unwrap_or("");
-        let summary = format!(
-            "{} {}/{}",
-            self.t("计划", &[]),
-            done,
-            items.len()
-        );
+        let summary = format!("{} {}/{}", self.t("计划", &[]), done, items.len());
         Some((format!("{summary} · {agent}"), current.to_string()))
     }
 
@@ -1179,7 +1232,9 @@ impl App {
         let max = self.review_lines.len().saturating_sub(1);
         match (key.code, ctrl) {
             (KeyCode::Esc, _) | (KeyCode::Char('q'), false) => self.review_open = false,
-            (KeyCode::Char('u'), true) | (KeyCode::Up, _) => self.review_scroll = self.review_scroll.saturating_sub(5).max(0).min(max),
+            (KeyCode::Char('u'), true) | (KeyCode::Up, _) => {
+                self.review_scroll = self.review_scroll.saturating_sub(5).max(0).min(max)
+            }
             (KeyCode::Char('d'), true) | (KeyCode::Down, _) => self.review_scroll = (self.review_scroll + 5).min(max),
             _ => {}
         }
@@ -1195,10 +1250,8 @@ impl App {
             self.record_review(agent_id, tool, result);
         }
         if !agent_id.is_empty() {
-            self.tool_activity.insert(
-                agent_id.to_string(),
-                ToolActivity { tool: tool.to_string(), ok, at: Instant::now() },
-            );
+            self.tool_activity
+                .insert(agent_id.to_string(), ToolActivity { tool: tool.to_string(), ok, at: Instant::now() });
         }
         if self.log_member.as_deref().is_some_and(|member| member != agent_id) {
             return;
@@ -1234,22 +1287,26 @@ impl App {
         let limits = self.state.as_ref().and_then(|s| s.get("limits")).cloned().unwrap_or(Json::Null);
         let num = |v: &Json, k: &str| v.get(k).and_then(|x| x.as_i64()).unwrap_or(0).to_string();
         let members = spec.get("agents").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
-        let revision = self.state.as_ref().and_then(|s| s.get("revision")).map(|v| v.to_string()).unwrap_or_else(|| "0".into());
+        let revision =
+            self.state.as_ref().and_then(|s| s.get("revision")).map(|v| v.to_string()).unwrap_or_else(|| "0".into());
         let mut lines = vec![
             self.t("会话：{v0}", &[("v0", &self.session_id)]),
-            self.t("状态：{v0}    权限模式：{v1}", &[
-                ("v0", &jstr(session, "status")),
-                ("v1", &jstr(session, "permissions_mode")),
-            ]),
+            self.t(
+                "状态：{v0}    权限模式：{v1}",
+                &[("v0", &jstr(session, "status")), ("v1", &jstr(session, "permissions_mode"))],
+            ),
             self.t("工作目录：{v0}", &[("v0", &jstr(session, "cwd"))]),
             self.t("团队：{v0} 名成员，拓扑修订 {v1}", &[("v0", &members.to_string()), ("v1", &revision)]),
-            self.t("上限：并发 {v0}、成员 {v1}、单目标回合 {v2}、单回合步骤 {v3}、回合超时 {v4}s", &[
-                ("v0", &num(&limits, "max_parallel_workers")),
-                ("v1", &num(&limits, "max_members")),
-                ("v2", &num(&limits, "max_turns_per_goal")),
-                ("v3", &num(&limits, "max_model_steps_per_turn")),
-                ("v4", &num(&limits, "turn_active_timeout_s")),
-            ]),
+            self.t(
+                "上限：并发 {v0}、成员 {v1}、单目标回合 {v2}、单回合步骤 {v3}、回合超时 {v4}s",
+                &[
+                    ("v0", &num(&limits, "max_parallel_workers")),
+                    ("v1", &num(&limits, "max_members")),
+                    ("v2", &num(&limits, "max_turns_per_goal")),
+                    ("v3", &num(&limits, "max_model_steps_per_turn")),
+                    ("v4", &num(&limits, "turn_active_timeout_s")),
+                ],
+            ),
             self.t("用户配置：{v0}", &[("v0", &self.user_config_path)]),
         ];
         let models = self.catalog.get("models").and_then(|v| v.as_object());
@@ -1261,7 +1318,9 @@ impl App {
                     .join(", ")
             })
             .unwrap_or_default();
-        lines.push(self.t("模型 profiles：", &[]) + &(if model_list.is_empty() { self.t("无", &[]) } else { model_list }));
+        lines.push(
+            self.t("模型 profiles：", &[]) + &(if model_list.is_empty() { self.t("无", &[]) } else { model_list }),
+        );
         let tools = self.catalog.get("tools").and_then(|v| v.as_object());
         let tool_list = tools
             .map(|t| {
@@ -1271,9 +1330,14 @@ impl App {
                     .join(", ")
             })
             .unwrap_or_default();
-        lines.push(self.t("工具绑定：", &[]) + &(if tool_list.is_empty() { self.t("无（files/shell/web 为内置）", &[]) } else { tool_list }));
+        lines.push(
+            self.t("工具绑定：", &[])
+                + &(if tool_list.is_empty() { self.t("无（files/shell/web 为内置）", &[]) } else { tool_list }),
+        );
         let join_arr = |key: &str| {
-            self.catalog.get(key).and_then(|v| v.as_array())
+            self.catalog
+                .get(key)
+                .and_then(|v| v.as_array())
                 .map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", "))
                 .unwrap_or_default()
         };
@@ -1282,7 +1346,11 @@ impl App {
         let instr = join_arr("instruction_files");
         lines.push(self.t("指令文件：", &[]) + &(if instr.is_empty() { self.t("未配置", &[]) } else { instr }));
         lines.push(String::new());
-        lines.push(self.t("恢复：teamagents --resume ", &[]) + &self.session_id + &self.t("    新建：换 --cwd 或删掉会话目录", &[]));
+        lines.push(
+            self.t("恢复：teamagents --resume ", &[])
+                + &self.session_id
+                + &self.t("    新建：换 --cwd 或删掉会话目录", &[]),
+        );
         lines
     }
 
@@ -1316,8 +1384,12 @@ impl App {
         let ctrl = key.modifiers.contains(Mod::CONTROL);
         if let Some(mut picker) = self.model_picker.take() {
             let effects = picker.handle_key(key, self.lang);
-            if effects.iter().any(|e| matches!(e, Effect::DiscoverModels { .. })) { self.model_generation += 1; }
-            if !picker.closed { self.model_picker = Some(picker); }
+            if effects.iter().any(|e| matches!(e, Effect::DiscoverModels { .. })) {
+                self.model_generation += 1;
+            }
+            if !picker.closed {
+                self.model_picker = Some(picker);
+            }
             return effects;
         }
         // overlays swallow keys while open; the picker is the innermost layer
@@ -1456,10 +1528,7 @@ impl App {
     /// Commands matching the current query (all of them when it is just "/").
     pub fn slash_matches(&self) -> Vec<&'static SlashCommand> {
         let Some(query) = self.slash_query() else { return vec![] };
-        SLASH_COMMANDS
-            .iter()
-            .filter(|c| c.name.starts_with(query.as_str()))
-            .collect()
+        SLASH_COMMANDS.iter().filter(|c| c.name.starts_with(query.as_str())).collect()
     }
 
     /// The menu is open while a query is typed and Esc has not dismissed it.
@@ -1538,7 +1607,8 @@ impl App {
             }
         };
         let points = report.get("points").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-        self.rewind_list = points.iter().filter_map(|p| p.get("id").and_then(|v| v.as_str()).map(str::to_string)).collect();
+        self.rewind_list =
+            points.iter().filter_map(|p| p.get("id").and_then(|v| v.as_str()).map(str::to_string)).collect();
         if points.is_empty() {
             let msg = self.t("暂无可回退的节点（leader 还没有对话历史）", &[]);
             self.write_chat("system", &msg);
@@ -1557,7 +1627,10 @@ impl App {
         match result {
             Ok(v) => {
                 let depth = v.get("depth").and_then(|v| v.as_u64()).unwrap_or(0);
-                let msg = self.t("已回退对话（当前 {v0} 条消息；被放弃的分支仍保留，可再次 /rewind）", &[("v0", &depth.to_string())]);
+                let msg = self.t(
+                    "已回退对话（当前 {v0} 条消息；被放弃的分支仍保留，可再次 /rewind）",
+                    &[("v0", &depth.to_string())],
+                );
                 self.write_chat("system", &msg);
             }
             Err(e) => {
@@ -1602,7 +1675,8 @@ impl App {
                 // the worker already switched; reset local state like a session switch
                 self.apply_switched(session_id.clone(), catalog, config_path);
                 let from = v.get("forked_from").and_then(|x| x.as_str()).unwrap_or("");
-                let msg = self.t("已从 {v0} 分叉到 {v1}（对话已带上，团队状态全新）", &[("v0", from), ("v1", &session_id)]);
+                let msg =
+                    self.t("已从 {v0} 分叉到 {v1}（对话已带上，团队状态全新）", &[("v0", from), ("v1", &session_id)]);
                 self.write_chat("system", &msg);
             }
             Err(e) => {
@@ -1616,8 +1690,15 @@ impl App {
     fn run_model_args(&mut self, rest: &str) -> Vec<Effect> {
         let tokens: Vec<&str> = rest.split_whitespace().collect();
         match tokens.as_slice() {
-            [member, "clear"] => vec![Effect::SetModel { agent_id: member.to_string(), profile: None, model: None, effort: None }],
-            [member, model] => vec![Effect::SetModel { agent_id: member.to_string(), profile: None, model: Some(model.to_string()), effort: None }],
+            [member, "clear"] => {
+                vec![Effect::SetModel { agent_id: member.to_string(), profile: None, model: None, effort: None }]
+            }
+            [member, model] => vec![Effect::SetModel {
+                agent_id: member.to_string(),
+                profile: None,
+                model: Some(model.to_string()),
+                effort: None,
+            }],
             [member, model, effort] => vec![Effect::SetModel {
                 agent_id: member.to_string(),
                 profile: None,
@@ -1644,7 +1725,9 @@ impl App {
             }
         };
         self.model_labels.clear();
-        for agent in report["agents"].as_array().into_iter().flatten() { self.record_model_label(agent); }
+        for agent in report["agents"].as_array().into_iter().flatten() {
+            self.record_model_label(agent);
+        }
         self.model_generation += 1;
         self.model_picker = Some(crate::model_picker::ModelPicker::new(&report));
         let mut lines = vec![self.t("成员模型（* = 会话内覆盖，重开会话失效）：", &[])];
@@ -1661,9 +1744,19 @@ impl App {
         self.write_chat("system", &lines.join("\n"));
     }
 
-    pub fn show_discovered_models(&mut self, session: &str, generation: u64, provider: &str, result: Result<Json, String>) {
-        if session != self.session_id || generation != self.model_generation { return; }
-        if let Some(picker) = &mut self.model_picker { picker.merge_discovered(provider, result, self.lang); }
+    pub fn show_discovered_models(
+        &mut self,
+        session: &str,
+        generation: u64,
+        provider: &str,
+        result: Result<Json, String>,
+    ) {
+        if session != self.session_id || generation != self.model_generation {
+            return;
+        }
+        if let Some(picker) = &mut self.model_picker {
+            picker.merge_discovered(provider, result, self.lang);
+        }
     }
 
     /// `/model <member> …` result: the effective values after the change.
@@ -1680,7 +1773,11 @@ impl App {
         let not_configured = self.t("未配置", &[]);
         let get = |key: &str| {
             let value = v.get(key).and_then(|x| x.as_str()).unwrap_or("").to_string();
-            if value.is_empty() { not_configured.clone() } else { value }
+            if value.is_empty() {
+                not_configured.clone()
+            } else {
+                value
+            }
         };
         let overridden = v.get("overridden").and_then(|x| x.as_bool()).unwrap_or(false);
         let args: Vec<(&str, String)> = vec![("v0", get("agent_id")), ("v1", get("model")), ("v2", get("effort"))];
@@ -1700,7 +1797,10 @@ impl App {
     fn record_model_label(&mut self, agent: &Json) {
         let id = jstr(agent, "agent_id");
         if agent["overridden"] == true {
-            self.model_labels.insert(id, format!("{} / {} · {} *", jstr(agent, "provider"), jstr(agent, "model"), jstr(agent, "effort")));
+            self.model_labels.insert(
+                id,
+                format!("{} / {} · {} *", jstr(agent, "provider"), jstr(agent, "model"), jstr(agent, "effort")),
+            );
         } else {
             self.model_labels.remove(&id);
         }
@@ -1729,23 +1829,31 @@ impl App {
             let not_configured = self.t("未配置", &[]);
             let window = agent.get("context_window").and_then(Json::as_u64);
             let window_s = window.map(|w| w.to_string()).unwrap_or_else(|| not_configured.clone());
-            let remaining = window
-                .map(|w| w.saturating_sub(num("last_prompt_tokens")).to_string())
-                .unwrap_or(not_configured);
+            let remaining =
+                window.map(|w| w.saturating_sub(num("last_prompt_tokens")).to_string()).unwrap_or(not_configured);
             let name = get("name");
             let model = agent.get("model").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let model = if model.is_empty() { self.t("未配置", &[]) } else { model };
             let (total, prompt, completion) = (num("total_tokens"), num("prompt_tokens"), num("completion_tokens"));
             let args: Vec<(&str, String)> = vec![
-                ("v0", name), ("v1", model), ("v2", window_s),
-                ("v3", total.to_string()), ("v4", prompt.to_string()),
-                ("v5", completion.to_string()), ("v6", remaining),
+                ("v0", name),
+                ("v1", model),
+                ("v2", window_s),
+                ("v3", total.to_string()),
+                ("v4", prompt.to_string()),
+                ("v5", completion.to_string()),
+                ("v6", remaining),
             ];
             let refs: Vec<(&str, &str)> = args.iter().map(|(k, v)| (*k, v.as_str())).collect();
             lines.push(self.t("{v0} | {v1} | 窗口 {v2} | {v3} ({v4}/{v5}) | 剩余 {v6}", &refs));
         }
-        self.write_chat("system", &lines.join("
-"));
+        self.write_chat(
+            "system",
+            &lines.join(
+                "
+",
+            ),
+        );
     }
 
     /// `/settings`: Enter opens the language picker, Esc closes the overlay.
@@ -1880,9 +1988,7 @@ impl App {
         use crossterm::event::{KeyCode, KeyModifiers as Mod};
         // panel actions are plain keys: Ctrl+A/E are line motions and Ctrl+D/U
         // scroll (docs), so a chord must never archive/deny/cancel a row
-        if key.modifiers.intersects(Mod::CONTROL | Mod::ALT)
-            && !matches!(key.code, KeyCode::Tab | KeyCode::BackTab)
-        {
+        if key.modifiers.intersects(Mod::CONTROL | Mod::ALT) && !matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
             return vec![];
         }
         let panel = PANELS[self.panel];
@@ -1922,7 +2028,11 @@ impl App {
         // (`sid#archived`, sessions_rows); actions always use the real id
         let selected = sel.map(|i| {
             let key = &rows[i];
-            if panel == "sessions" { session_row_id(key).to_string() } else { key.clone() }
+            if panel == "sessions" {
+                session_row_id(key).to_string()
+            } else {
+                key.clone()
+            }
         });
         match (panel, key.code) {
             ("log", KeyCode::Enter) => {
@@ -1933,55 +2043,56 @@ impl App {
                     self.log_member = None; // Enter on the highlighted member clears the filter
                 }
             }
-            ("team", KeyCode::Char('v')) | ("log", KeyCode::Char('v')) => {
-                match selected {
-                    Some(agent) if self.open_review(&agent) => {}
-                    Some(agent) => {
-                        let translated = self.t("{v0} 还没有可审查的改动", &[("v0", &agent)]);
-                        self.notify(translated, Severity::Info, 3);
-                    }
-                    None => {}
+            ("team", KeyCode::Char('v')) | ("log", KeyCode::Char('v')) => match selected {
+                Some(agent) if self.open_review(&agent) => {}
+                Some(agent) => {
+                    let translated = self.t("{v0} 还没有可审查的改动", &[("v0", &agent)]);
+                    self.notify(translated, Severity::Info, 3);
                 }
-            }
+                None => {}
+            },
             ("tasks", KeyCode::Enter) => {
                 if let Some(task_id) = selected {
                     if let Some(t) = self.find_task(&task_id) {
-                        let deps = t.get("dependencies").and_then(|v| v.as_array())
+                        let deps = t
+                            .get("dependencies")
+                            .and_then(|v| v.as_array())
                             .map(|d| d.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(","))
                             .unwrap_or_default();
-                        let refs = t.get("result_refs").and_then(|v| v.as_array())
+                        let refs = t
+                            .get("result_refs")
+                            .and_then(|v| v.as_array())
                             .map(|d| d.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(","))
                             .unwrap_or_default();
-                        let msg = self.t("任务 {v0} | {v1} | {v2} | 依赖 {v3} | 成果 {v4}", &[
-                            ("v0", &task_id),
-                            ("v1", &jstr(&t, "status")),
-                            ("v2", &jstr(&t, "description")),
-                            ("v3", &deps),
-                            ("v4", &refs),
-                        ]);
+                        let msg = self.t(
+                            "任务 {v0} | {v1} | {v2} | 依赖 {v3} | 成果 {v4}",
+                            &[
+                                ("v0", &task_id),
+                                ("v1", &jstr(&t, "status")),
+                                ("v2", &jstr(&t, "description")),
+                                ("v3", &deps),
+                                ("v4", &refs),
+                            ],
+                        );
                         self.notify(msg, Severity::Info, 10);
                     }
                 }
             }
-            ("team", KeyCode::Char('p')) => {
-                match selected {
-                    Some(agent) if self.open_plan(&agent) => {}
-                    Some(agent) => {
-                        let msg = self.t("{v0} 还没有计划", &[("v0", &agent)]);
-                        self.notify(msg, Severity::Info, 3);
-                    }
-                    None => {}
+            ("team", KeyCode::Char('p')) => match selected {
+                Some(agent) if self.open_plan(&agent) => {}
+                Some(agent) => {
+                    let msg = self.t("{v0} 还没有计划", &[("v0", &agent)]);
+                    self.notify(msg, Severity::Info, 3);
                 }
-            }
-            ("team", KeyCode::Char('c')) => {
-                match selected.as_ref().and_then(|agent| self.unknown_runs.get(agent)) {
-                    Some(run_id) => return vec![Effect::AcknowledgeRun(run_id.clone())],
-                    None => {
-                        let msg = self.t("该成员没有结果不明的回合", &[]);
-                        self.notify(msg, Severity::Info, 3);
-                    }
+                None => {}
+            },
+            ("team", KeyCode::Char('c')) => match selected.as_ref().and_then(|agent| self.unknown_runs.get(agent)) {
+                Some(run_id) => return vec![Effect::AcknowledgeRun(run_id.clone())],
+                None => {
+                    let msg = self.t("该成员没有结果不明的回合", &[]);
+                    self.notify(msg, Severity::Info, 3);
                 }
-            }
+            },
             ("tasks", KeyCode::Char('c')) => {
                 if let Some(task_id) = selected {
                     return vec![Effect::CancelTask(task_id)];
@@ -2068,13 +2179,7 @@ impl App {
     }
 
     fn find_task(&self, task_id: &str) -> Option<Json> {
-        self.state
-            .as_ref()?
-            .get("tasks")?
-            .as_array()?
-            .iter()
-            .find(|t| jstr(t, "task_id") == task_id)
-            .cloned()
+        self.state.as_ref()?.get("tasks")?.as_array()?.iter().find(|t| jstr(t, "task_id") == task_id).cloned()
     }
 
     // ------------------------------------------------------------ actions
@@ -2173,20 +2278,19 @@ fn compact_json(v: &Json) -> String {
 pub fn py_repr(value: &Json) -> String {
     match value {
         Json::Null => "None".into(),
-        Json::Bool(b) => if *b { "True".into() } else { "False".into() },
+        Json::Bool(b) => {
+            if *b {
+                "True".into()
+            } else {
+                "False".into()
+            }
+        }
         Json::Number(n) => n.to_string(),
         Json::String(s) => format!("'{s}'"),
-        Json::Array(items) => format!(
-            "[{}]",
-            items.iter().map(py_repr).collect::<Vec<_>>().join(", ")
-        ),
-        Json::Object(map) => format!(
-            "{{{}}}",
-            map.iter()
-                .map(|(k, v)| format!("'{k}': {}", py_repr(v)))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
+        Json::Array(items) => format!("[{}]", items.iter().map(py_repr).collect::<Vec<_>>().join(", ")),
+        Json::Object(map) => {
+            format!("{{{}}}", map.iter().map(|(k, v)| format!("'{k}': {}", py_repr(v))).collect::<Vec<_>>().join(", "))
+        }
     }
 }
 
@@ -2217,19 +2321,19 @@ pub fn py_json_dumps(value: &Json) -> String {
     }
     match value {
         Json::Null => "null".into(),
-        Json::Bool(b) => if *b { "true".into() } else { "false".into() },
+        Json::Bool(b) => {
+            if *b {
+                "true".into()
+            } else {
+                "false".into()
+            }
+        }
         Json::Number(n) => n.to_string(),
         Json::String(s) => format!("\"{}\"", escape(s)),
-        Json::Array(items) => format!(
-            "[{}]",
-            items.iter().map(py_json_dumps).collect::<Vec<_>>().join(", ")
-        ),
+        Json::Array(items) => format!("[{}]", items.iter().map(py_json_dumps).collect::<Vec<_>>().join(", ")),
         Json::Object(map) => format!(
             "{{{}}}",
-            map.iter()
-                .map(|(k, v)| format!("\"{}\": {}", escape(k), py_json_dumps(v)))
-                .collect::<Vec<_>>()
-                .join(", ")
+            map.iter().map(|(k, v)| format!("\"{}\": {}", escape(k), py_json_dumps(v))).collect::<Vec<_>>().join(", ")
         ),
     }
 }
@@ -2267,11 +2371,8 @@ fn format_log_line(ev: &Json, payload: &str) -> String {
     let seq = ev.get("sequence").and_then(|v| v.as_i64()).unwrap_or(0);
     let kind = jstr(ev, "kind");
     let actor = jstr(ev, "actor_id");
-    let payload = if payload.chars().count() > 160 {
-        format!("{}…", head_chars(payload, 160))
-    } else {
-        payload.to_string()
-    };
+    let payload =
+        if payload.chars().count() > 160 { format!("{}…", head_chars(payload, 160)) } else { payload.to_string() };
     format!("{seq:>5} {kind:<18} {actor:<10} {payload}")
 }
 
@@ -2289,12 +2390,7 @@ pub fn cancel_task_feedback(lang: &str, task_id: &str, receipt: &Json) -> String
         let err = receipt.get("error").and_then(|v| v.as_str()).unwrap_or("").to_string();
         return tr(lang, "取消任务失败：{v0}", &[("v0", &err)]);
     }
-    let status = receipt
-        .get("result")
-        .and_then(|r| r.get("status"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
+    let status = receipt.get("result").and_then(|r| r.get("status")).and_then(|v| v.as_str()).unwrap_or("").to_string();
     match status.as_str() {
         "CANCELLED" => tr(lang, "任务 {v0} 已取消", &[("v0", &short)]),
         "CANCEL_REQUESTED" => tr(lang, "任务 {v0} 已请求取消（活动回合结束后生效）", &[("v0", &short)]),

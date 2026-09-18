@@ -50,18 +50,18 @@ impl PendingCall {
         match self.rx.try_recv() {
             Ok(result) => Some(result),
             Err(TryRecvError::Disconnected) => Some(Err("worker exited".into())),
-            Err(TryRecvError::Empty) if Instant::now() >= self.deadline =>
-                Some(Err(format!("worker call {} timed out", self.method))),
+            Err(TryRecvError::Empty) if Instant::now() >= self.deadline => {
+                Some(Err(format!("worker call {} timed out", self.method)))
+            }
             Err(TryRecvError::Empty) => None,
         }
     }
 
     fn wait(self) -> Result<Json, String> {
-        self.rx.recv_timeout(self.deadline.saturating_duration_since(Instant::now()))
-            .map_err(|error| match error {
-                RecvTimeoutError::Timeout => format!("worker call {} timed out", self.method),
-                RecvTimeoutError::Disconnected => "worker exited".into(),
-            })?
+        self.rx.recv_timeout(self.deadline.saturating_duration_since(Instant::now())).map_err(|error| match error {
+            RecvTimeoutError::Timeout => format!("worker call {} timed out", self.method),
+            RecvTimeoutError::Disconnected => "worker exited".into(),
+        })?
     }
 }
 
@@ -110,7 +110,10 @@ impl Worker {
                     .stderr(engine_stderr())
                     .spawn()
                 {
-                    Ok(value) => { child = Some(value); break; }
+                    Ok(value) => {
+                        child = Some(value);
+                        break;
+                    }
                     Err(error) if error.raw_os_error() == Some(26) => {
                         last = Some(error);
                         std::thread::sleep(Duration::from_millis(5));
@@ -122,15 +125,16 @@ impl Worker {
         };
         let stdout = child.stdout.take().expect("piped");
         let mut stdin = child.stdin.take().expect("piped");
-        let pending: Arc<Mutex<HashMap<u64, Sender<Result<Json, String>>>>> =
-            Arc::new(Mutex::new(HashMap::new()));
+        let pending: Arc<Mutex<HashMap<u64, Sender<Result<Json, String>>>>> = Arc::new(Mutex::new(HashMap::new()));
         // Bounded queue: a stopped reader cannot block input handling or grow
         // one thread/buffer per UI request. One writer preserves enqueue order.
         let (requests, request_rx) = sync_channel::<(u64, String)>(64);
         let writer_pending = pending.clone();
         std::thread::spawn(move || {
             for (id, line) in request_rx {
-                if !writer_pending.lock().unwrap().contains_key(&id) { continue; }
+                if !writer_pending.lock().unwrap().contains_key(&id) {
+                    continue;
+                }
                 if let Err(error) = stdin.write_all(line.as_bytes()).and_then(|_| stdin.flush()) {
                     for (_, tx) in writer_pending.lock().unwrap().drain() {
                         let _ = tx.send(Err(error.to_string()));
@@ -198,7 +202,10 @@ impl Worker {
             let _ = tx.send(Err(format!("worker request queue unavailable: {error}")));
         }
         PendingCall {
-            id, method: method.into(), rx, pending: self.pending.clone(),
+            id,
+            method: method.into(),
+            rx,
+            pending: self.pending.clone(),
             deadline: Instant::now().checked_add(timeout).unwrap_or_else(Instant::now),
         }
     }
@@ -317,16 +324,17 @@ mod tests {
         let elapsed = start.elapsed();
         assert!(r.is_err(), "a silent engine must fail the call");
         assert!(elapsed < Duration::from_secs(5), "took {elapsed:?}, expected ~300ms");
-        assert!(
-            worker.pending.lock().unwrap().is_empty(),
-            "timed-out call leaked a pending entry"
-        );
+        assert!(worker.pending.lock().unwrap().is_empty(), "timed-out call leaked a pending entry");
         worker.kill();
     }
 
     #[test]
     fn unread_pipe_does_not_block_enqueue_or_timeout() {
-        let path = std::env::temp_dir().join(format!("teamagents-tui-unread-{}-{}.sh", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let path = std::env::temp_dir().join(format!(
+            "teamagents-tui-unread-{}-{}.sh",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
         std::fs::write(&path, "#!/bin/bash\nkill -STOP $$\n").unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -347,7 +355,8 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         let worker = Worker::spawn(path.to_str().unwrap()).unwrap();
-        let requests: Vec<_> = (0..20).map(|n| worker.start_call("ordered", json!(n), Duration::from_secs(5))).collect();
+        let requests: Vec<_> =
+            (0..20).map(|n| worker.start_call("ordered", json!(n), Duration::from_secs(5))).collect();
         for (n, request) in requests.into_iter().enumerate() {
             assert_eq!(request.wait().unwrap(), json!({"position":n,"params":n}));
         }

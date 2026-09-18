@@ -61,8 +61,14 @@ fn state(events: Vec<Json>) -> Json {
 }
 
 fn app_with(state: Json) -> App {
-    let mut app = App::new("s1", json!({"models": {}, "tools": {}, "skills_paths": [], "instruction_files": []}),
-                           "/home/u/.config/teamagents/config.toml".into(), "en", true, vec![]);
+    let mut app = App::new(
+        "s1",
+        json!({"models": {}, "tools": {}, "skills_paths": [], "instruction_files": []}),
+        "/home/u/.config/teamagents/config.toml".into(),
+        "en",
+        true,
+        vec![],
+    );
     app.apply_state(&state);
     app
 }
@@ -115,7 +121,7 @@ fn team_rows_reach_column_matches_spec_rules() {
     let worker = &rows.iter().find(|(k, _)| k == "worker").unwrap().1;
     // leader: message→worker (broadcast), task→leader(self)+worker, no observers
     assert_eq!(leader[6].0, "Messages → leader,worker Tasks → leader,worker"); // broadcast includes self
-    // worker: message→leader, no task channel; observed by boss
+                                                                               // worker: message→leader, no task channel; observed by boss
     assert_eq!(worker[6].0, "Messages → leader Observers: boss");
     assert_eq!(worker[5].0, "isolated");
 }
@@ -187,14 +193,22 @@ fn key_paths_produce_expected_effects() {
 
 #[test]
 fn cancel_task_feedback_covers_all_receipts() {
-    assert_eq!(cancel_task_feedback("en", "task-xxxxxxxxyyyy", &json!({"ok": false, "error": "nope"})),
-               "Cannot cancel task: nope");
-    assert_eq!(cancel_task_feedback("en", "task-xxxxxxxxyyyy", &json!({"ok": true, "result": {"status": "CANCELLED"}})),
-               "Task xxxxyyyy cancelled");
-    assert_eq!(cancel_task_feedback("en", "task-xxxxxxxxyyyy", &json!({"ok": true, "result": {"status": "CANCEL_REQUESTED"}})),
-               "Task xxxxyyyy: cancellation requested (waiting for the active turn to stop)");
-    assert_eq!(cancel_task_feedback("en", "task-xxxxxxxxyyyy", &json!({"ok": true, "result": {"status": "SUCCEEDED"}})),
-               "Task xxxxyyyy is already terminal (SUCCEEDED); no cancellation needed");
+    assert_eq!(
+        cancel_task_feedback("en", "task-xxxxxxxxyyyy", &json!({"ok": false, "error": "nope"})),
+        "Cannot cancel task: nope"
+    );
+    assert_eq!(
+        cancel_task_feedback("en", "task-xxxxxxxxyyyy", &json!({"ok": true, "result": {"status": "CANCELLED"}})),
+        "Task xxxxyyyy cancelled"
+    );
+    assert_eq!(
+        cancel_task_feedback("en", "task-xxxxxxxxyyyy", &json!({"ok": true, "result": {"status": "CANCEL_REQUESTED"}})),
+        "Task xxxxyyyy: cancellation requested (waiting for the active turn to stop)"
+    );
+    assert_eq!(
+        cancel_task_feedback("en", "task-xxxxxxxxyyyy", &json!({"ok": true, "result": {"status": "SUCCEEDED"}})),
+        "Task xxxxyyyy is already terminal (SUCCEEDED); no cancellation needed"
+    );
 }
 
 #[test]
@@ -510,17 +524,19 @@ fn approval_already_decided_stays_quiet() {
 fn click_hits_right_row_after_task_reorder() {
     // P2-11: rows reordered by a state refresh; the click must resolve the saved
     // key to its current index, exactly like the renderer does
-    let task = |id: &str, created: f64| json!({
-        "task_id": id, "parent_task_id": null, "goal_id": "g1",
-        "requester": "leader", "assignee": "worker", "description": id,
-        "acceptance": "", "dependencies": [], "status": "PENDING",
-        "result_refs": [], "created_at": created
-    });
+    let task = |id: &str, created: f64| {
+        json!({
+            "task_id": id, "parent_task_id": null, "goal_id": "g1",
+            "requester": "leader", "assignee": "worker", "description": id,
+            "acceptance": "", "dependencies": [], "status": "PENDING",
+            "result_refs": [], "created_at": created
+        })
+    };
     let mut st = state(vec![]);
     st["tasks"] = json!([task("task-a", 1000.0), task("task-b", 1001.0)]);
     let mut app = app_with(st);
     app.panel = 1; // tasks
-    // newest first: [task-b, task-a]; the user selects row 1 (task-a)
+                   // newest first: [task-b, task-a]; the user selects row 1 (task-a)
     assert_eq!(app.panel_row_keys("tasks"), vec!["task-b".to_string(), "task-a".to_string()]);
     app.select_row(1);
     let mut st2 = state(vec![]);
@@ -538,8 +554,10 @@ fn shared_panel_scrolls_with_stable_keys() {
     // P2-13: shared rows carry `space_id:sequence` keys so wheel / ↑↓ work
     let mut app = app_with(state(vec![]));
     app.shared = (1..=30)
-        .map(|i| json!({"space_id": "main", "author": "leader", "kind": "note",
-                        "content": format!("entry {i}"), "sequence": i}))
+        .map(|i| {
+            json!({"space_id": "main", "author": "leader", "kind": "note",
+                        "content": format!("entry {i}"), "sequence": i})
+        })
         .collect();
     let keys = app.panel_row_keys("shared");
     assert_eq!(keys.len(), 30);
@@ -601,7 +619,10 @@ fn status_report_visible_in_rendered_frame() {
         .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect::<String>())
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(text.contains("Leader | gpt-5 | window 128000 | 15 (10/5) | remaining 127990"), "frame missing usage line:\n{text}");
+    assert!(
+        text.contains("Leader | gpt-5 | window 128000 | 15 (10/5) | remaining 127990"),
+        "frame missing usage line:\n{text}"
+    );
 }
 
 #[test]
@@ -669,9 +690,23 @@ fn model_slash_command_with_args_sets_or_clears() {
 
     // result rendering: switched / restored / failed
     app.show_model_set(Ok(json!({"agent_id": "worker", "model": "gpt-5", "effort": "high", "overridden": true})));
-    assert!(app.chat.last().unwrap().1.contains("Switched worker: model gpt-5 · effort high"), "{}", app.chat.last().unwrap().1);
-    app.show_model_set(Ok(json!({"agent_id": "worker", "model": "gpt-default", "effort": "medium", "overridden": false})));
-    assert!(app.chat.last().unwrap().1.contains("Restored worker to the profile default: model gpt-default · effort medium"), "{}", app.chat.last().unwrap().1);
+    assert!(
+        app.chat.last().unwrap().1.contains("Switched worker: model gpt-5 · effort high"),
+        "{}",
+        app.chat.last().unwrap().1
+    );
+    app.show_model_set(Ok(
+        json!({"agent_id": "worker", "model": "gpt-default", "effort": "medium", "overridden": false}),
+    ));
+    assert!(
+        app.chat
+            .last()
+            .unwrap()
+            .1
+            .contains("Restored worker to the profile default: model gpt-default · effort medium"),
+        "{}",
+        app.chat.last().unwrap().1
+    );
     app.show_model_set(Err("boom".into()));
     assert!(app.chat.last().unwrap().1.contains("Model switch failed: boom"), "{}", app.chat.last().unwrap().1);
 }
@@ -687,17 +722,23 @@ fn model_picker_selects_members_profiles_effort_and_restores_defaults() {
         {"id":"old", "provider":"old", "model":"old-model", "protocol":"openai", "efforts":["low","high"]},
         {"id":"new", "provider":"vendor", "model":"chosen-model", "protocol":"openai", "efforts":["low","high","max"]}
     ]});
-    for (member_index, member) in [(0,"leader"), (1,"worker")] {
+    for (member_index, member) in [(0, "leader"), (1, "worker")] {
         let mut app = app_with(state(vec![]));
         app.show_models(Ok(report.clone()));
-        for _ in 0..member_index { key(&mut app, KeyCode::Down); }
+        for _ in 0..member_index {
+            key(&mut app, KeyCode::Down);
+        }
         assert!(key(&mut app, KeyCode::Enter).is_empty());
-        for c in "vendor".chars() { key(&mut app, KeyCode::Char(c)); }
+        for c in "vendor".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
         key(&mut app, KeyCode::Enter); // provider
         key(&mut app, KeyCode::Enter); // model
         app.handle_paste("high");
         assert!(app.composer.text().is_empty(), "picker paste must not enter the composer");
-        for _ in 0..10 { key(&mut app, KeyCode::Down); }
+        for _ in 0..10 {
+            key(&mut app, KeyCode::Down);
+        }
         assert_eq!(app.model_picker.as_ref().unwrap().index, 0, "filtered selection stays in bounds");
         let effects = key(&mut app, KeyCode::Enter);
         assert!(matches!(effects.as_slice(), [Effect::SetModel { agent_id, profile, model: None, effort }]
@@ -713,9 +754,13 @@ fn model_picker_selects_members_profiles_effort_and_restores_defaults() {
     assert!(app.model_picker.is_none());
     app.show_models(Ok(report));
     key(&mut app, KeyCode::Enter);
-    for _ in 0..10 { key(&mut app, KeyCode::Down); }
+    for _ in 0..10 {
+        key(&mut app, KeyCode::Down);
+    }
     let effects = key(&mut app, KeyCode::Enter);
-    assert!(matches!(effects.as_slice(), [Effect::SetModel { agent_id, profile: None, model: None, effort: None }] if agent_id == "leader"));
+    assert!(
+        matches!(effects.as_slice(), [Effect::SetModel { agent_id, profile: None, model: None, effort: None }] if agent_id == "leader")
+    );
 }
 
 #[test]
@@ -731,7 +776,9 @@ fn dynamic_models_merge_without_moving_selection_or_reviving_closed_pickers() {
     let mut app = app_with(state(vec![]));
     app.show_models(Ok(report.clone()));
     key(&mut app, KeyCode::Enter);
-    assert!(matches!(key(&mut app, KeyCode::Enter).as_slice(), [Effect::DiscoverModels {provider}] if provider == "local"));
+    assert!(
+        matches!(key(&mut app, KeyCode::Enter).as_slice(), [Effect::DiscoverModels {provider}] if provider == "local")
+    );
     let generation = app.model_generation;
     app.show_discovered_models("old-session", generation, "local", Ok(remote.clone()));
     assert_eq!(app.model_picker.as_ref().unwrap().options("en").len(), 1);
@@ -759,7 +806,6 @@ fn dynamic_models_merge_without_moving_selection_or_reviving_closed_pickers() {
     assert!(picker.notice.contains("configured models remain available") && picker.notice.contains("HTTP 403"));
 }
 
-
 #[test]
 fn rewind_slash_command_lists_and_picks_points() {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -777,12 +823,16 @@ fn rewind_slash_command_lists_and_picks_points() {
         {"id": "n1", "depth": 3, "preview": "第一问"},
     ]})));
     // numeric pick resolves through the shown list; 0 empties the conversation
-    assert!(matches!(type_enter(&mut app, "/rewind 2").as_slice(), [Effect::Rewind { node }] if node.as_deref() == Some("n1")));
+    assert!(
+        matches!(type_enter(&mut app, "/rewind 2").as_slice(), [Effect::Rewind { node }] if node.as_deref() == Some("n1"))
+    );
     assert!(matches!(type_enter(&mut app, "/rewind 0").as_slice(), [Effect::Rewind { node: None }]));
     // out-of-range index stays put with a hint, no effect
     assert!(type_enter(&mut app, "/rewind 9").is_empty());
     // a bare node id also works
-    assert!(matches!(type_enter(&mut app, "/rewind n3").as_slice(), [Effect::Rewind { node }] if node.as_deref() == Some("n3")));
+    assert!(
+        matches!(type_enter(&mut app, "/rewind n3").as_slice(), [Effect::Rewind { node }] if node.as_deref() == Some("n3"))
+    );
     app.show_rewind_done(Ok(json!({"depth": 3})));
 }
 
@@ -824,7 +874,9 @@ fn panel_key_acts_on_the_key_resolved_row_after_reorder() {
     // fallback: unknown saved key still acts on the (clamped) index row
     app.table_cursors.insert("approvals", (Some("ap-gone".into()), 1));
     let fx = app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
-    assert!(matches!(&fx[0], Effect::DecideApproval { approval_id, decision } if approval_id == "ap1" && decision == "deny"));
+    assert!(
+        matches!(&fx[0], Effect::DecideApproval { approval_id, decision } if approval_id == "ap1" && decision == "deny")
+    );
 }
 
 /// Archived session rows must not switch: the engine would silently open a
@@ -851,8 +903,10 @@ fn sessions_enter_on_archived_row_does_not_switch() {
 #[test]
 fn sessions_dedup_key_actions_use_the_real_session_id() {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    let entry = |archived: bool| json!({"sessionId": "s2", "status": "CLOSED", "goalState": "done",
-        "events": 1, "sizeMb": 0.1, "updatedAt": 0.0, "archived": archived, "locked": false});
+    let entry = |archived: bool| {
+        json!({"sessionId": "s2", "status": "CLOSED", "goalState": "done",
+        "events": 1, "sizeMb": 0.1, "updatedAt": 0.0, "archived": archived, "locked": false})
+    };
     let mut app = app_with(state(vec![]));
     app.sessions = vec![entry(false), entry(true)];
     app.panel = 4; // sessions
@@ -883,8 +937,10 @@ fn sessions_dedup_key_actions_use_the_real_session_id() {
 #[test]
 fn sessions_archived_row_blocks_archive_and_delete() {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    let entry = |archived: bool| json!({"sessionId": "s9", "status": "CLOSED", "goalState": "done",
-        "events": 1, "sizeMb": 0.1, "updatedAt": 0.0, "archived": archived, "locked": false});
+    let entry = |archived: bool| {
+        json!({"sessionId": "s9", "status": "CLOSED", "goalState": "done",
+        "events": 1, "sizeMb": 0.1, "updatedAt": 0.0, "archived": archived, "locked": false})
+    };
     let mut app = app_with(state(vec![]));
     app.sessions = vec![entry(true)];
     app.panel = 4; // sessions

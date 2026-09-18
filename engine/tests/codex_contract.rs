@@ -55,8 +55,11 @@ fn runner_with(core: &Arc<CoreClient>, session: &str, bin: &str, extra_env: Vec<
         CodexOptions {
             agent_id: "cx".into(),
             session_id: session.into(),
-            instructions: extra_env.iter().find(|(k, _)| *k == "FAKE_INSTRUCTIONS")
-                .map(|(_, v)| v.to_string()).unwrap_or_default(),
+            instructions: extra_env
+                .iter()
+                .find(|(k, _)| *k == "FAKE_INSTRUCTIONS")
+                .map(|(_, v)| v.to_string())
+                .unwrap_or_default(),
             workdir: std::env::temp_dir(),
             sandbox: "workspace-write".into(),
             approval_policy: "on-request".into(),
@@ -64,8 +67,11 @@ fn runner_with(core: &Arc<CoreClient>, session: &str, bin: &str, extra_env: Vec<
             model: extra_env.iter().find(|(k, _)| *k == "FAKE_MODEL").map(|(_, v)| v.to_string()),
             codex_bin: Some(bin.into()),
             codex_home: None,
-            config_overrides: extra_env.iter().find(|(k, _)| *k == "FAKE_PROVIDER")
-                .map(|(_, v)| vec![("model_provider".into(), json!(v))]).unwrap_or_default(),
+            config_overrides: extra_env
+                .iter()
+                .find(|(k, _)| *k == "FAKE_PROVIDER")
+                .map(|(_, v)| vec![("model_provider".into(), json!(v))])
+                .unwrap_or_default(),
             env: extra_env.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
         },
         core.clone(),
@@ -138,21 +144,35 @@ fn model_switch_resumes_codex_thread_with_selected_provider_and_model() {
     let bin = fake_history_server(&dir);
     let log = dir.join("requests.jsonl");
     let log_str = log.to_string_lossy();
-    let core = core_with_spec("cx-model", json!({"leader_id":"leader", "agents":[member("leader","leader"),codex_agent()]}));
+    let core =
+        core_with_spec("cx-model", json!({"leader_id":"leader", "agents":[member("leader","leader"),codex_agent()]}));
     for model in ["old-model", "new-model"] {
-        let runner = runner_with(&core, "cx-model", &bin, vec![
-            ("FAKE_MODEL", model), ("FAKE_PROVIDER", model), ("FAKE_REQUEST_LOG", &log_str)
-        ]);
-        let outcome = runner.start_or_resume(&run_for("cx-model", model, None), &view(), &gateway(&core, model), &json!({"reason":"new_input"}));
+        let runner = runner_with(
+            &core,
+            "cx-model",
+            &bin,
+            vec![("FAKE_MODEL", model), ("FAKE_PROVIDER", model), ("FAKE_REQUEST_LOG", &log_str)],
+        );
+        let outcome = runner.start_or_resume(
+            &run_for("cx-model", model, None),
+            &view(),
+            &gateway(&core, model),
+            &json!({"reason":"new_input"}),
+        );
         assert_eq!(outcome.status, TurnStatus::Completed);
         runner.close();
     }
-    let requests: Vec<Json> = std::fs::read_to_string(&log).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let requests: Vec<Json> =
+        std::fs::read_to_string(&log).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
     let resume = requests.iter().find(|r| r["method"] == "thread/resume").expect("must load the persisted thread");
     assert_eq!(resume["params"]["threadId"], "thr-1");
     assert_eq!(resume["params"]["model"], "new-model");
     assert_eq!(resume["params"]["modelProvider"], "new-model");
-    let models: Vec<_> = requests.iter().filter(|r| r["method"] == "turn/start").map(|r| r["params"]["model"].as_str().unwrap()).collect();
+    let models: Vec<_> = requests
+        .iter()
+        .filter(|r| r["method"] == "turn/start")
+        .map(|r| r["params"]["model"].as_str().unwrap())
+        .collect();
     assert_eq!(models, ["old-model", "new-model"]);
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -165,20 +185,30 @@ fn worker_environment_is_developer_instructions_on_codex_start_and_resume() {
     let bin = fake_history_server(&dir);
     let log = dir.join("requests.jsonl");
     let log_str = log.to_string_lossy();
-    let core = core_with_spec("cx-prompt", json!({"leader_id":"leader", "agents":[member("leader","leader"),codex_agent()]}));
+    let core =
+        core_with_spec("cx-prompt", json!({"leader_id":"leader", "agents":[member("leader","leader"),codex_agent()]}));
     let mut task_view = view();
-    task_view["assignment"] = json!([{"task_id":"t1", "description":"Check the parser", "acceptance":"Show test evidence"}]);
+    task_view["assignment"] =
+        json!([{"task_id":"t1", "description":"Check the parser", "acceptance":"Show test evidence"}]);
     for (index, instructions) in ["", "Inspect boundary conditions."].into_iter().enumerate() {
-        let runner = runner_with(&core, "cx-prompt", &bin, vec![
-            ("FAKE_INSTRUCTIONS", instructions), ("FAKE_REQUEST_LOG", &log_str),
-        ]);
+        let runner = runner_with(
+            &core,
+            "cx-prompt",
+            &bin,
+            vec![("FAKE_INSTRUCTIONS", instructions), ("FAKE_REQUEST_LOG", &log_str)],
+        );
         let id = format!("run-prompt-{index}");
-        let outcome = runner.start_or_resume(&run_for("cx-prompt", &id, None), &task_view,
-            &gateway(&core, &id), &json!({"reason":"new_input"}));
+        let outcome = runner.start_or_resume(
+            &run_for("cx-prompt", &id, None),
+            &task_view,
+            &gateway(&core, &id),
+            &json!({"reason":"new_input"}),
+        );
         assert_eq!(outcome.status, TurnStatus::Completed);
         runner.close();
     }
-    let requests: Vec<Json> = std::fs::read_to_string(&log).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let requests: Vec<Json> =
+        std::fs::read_to_string(&log).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
     for method in ["thread/start", "thread/resume"] {
         let index = requests.iter().position(|r| r["method"] == method).unwrap();
         let params = &requests[index]["params"];
@@ -188,7 +218,10 @@ fn worker_environment_is_developer_instructions_on_codex_start_and_resume() {
         assert!(params.get("baseInstructions").is_none(), "preserve the native Codex system prompt");
         assert!(!environment.contains("Check the parser"));
         if method == "thread/resume" {
-            assert!(environment.find("</teamagents_worker>").unwrap() < environment.find("Inspect boundary conditions.").unwrap());
+            assert!(
+                environment.find("</teamagents_worker>").unwrap()
+                    < environment.find("Inspect boundary conditions.").unwrap()
+            );
         }
         let turn = requests[index + 1..].iter().find(|r| r["method"] == "turn/start").unwrap();
         assert!(turn["params"]["input"][0]["text"].as_str().unwrap().contains("Check the parser"));
@@ -198,11 +231,7 @@ fn worker_environment_is_developer_instructions_on_codex_start_and_resume() {
 }
 
 fn python_available() -> bool {
-    std::process::Command::new("python3")
-        .arg("--version")
-        .output()
-        .map(|out| out.status.success())
-        .unwrap_or(false)
+    std::process::Command::new("python3").arg("--version").output().map(|out| out.status.success()).unwrap_or(false)
 }
 
 /// F-5: reconcile uses `thread/read` (the app-server has no `thread/status`
@@ -242,10 +271,7 @@ fn reconcile_reads_the_thread_history() {
     }
     let methods = std::fs::read_to_string(&log).unwrap_or_default();
     assert!(methods.contains("thread/read"), "reconcile must read the thread: {methods}");
-    assert!(
-        !methods.contains("thread/status"),
-        "thread/status does not exist in the app-server schema: {methods}"
-    );
+    assert!(!methods.contains("thread/status"), "thread/status does not exist in the app-server schema: {methods}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -259,12 +285,8 @@ fn codex_approval_timeout_expires_the_row() {
         "cx-timeout",
         json!({"leader_id": "leader", "agents": [member("leader", "leader"), codex_agent()]}),
     );
-    let runner = runner_with(
-        &core,
-        "cx-timeout",
-        env!("CARGO_BIN_EXE_fake-codex"),
-        vec![("FAKE_CODEX_MODE", "approval")],
-    );
+    let runner =
+        runner_with(&core, "cx-timeout", env!("CARGO_BIN_EXE_fake-codex"), vec![("FAKE_CODEX_MODE", "approval")]);
     let run = run_for("cx-timeout", "cx-timeout-run", None);
     let gw = gateway(&core, "cx-timeout-run");
     let (tx, rx) = std::sync::mpsc::channel();
@@ -424,13 +446,8 @@ fn codex_session_grant_auto_accepts_the_identical_operation() {
         10_000,
     );
     assert!(requested, "the first approval request is recorded");
-    let approval_id = core
-        .state()
-        .unwrap()
-        .pointer("/pending_approvals/0/approval_id")
-        .and_then(|v| v.as_str())
-        .unwrap()
-        .to_string();
+    let approval_id =
+        core.state().unwrap().pointer("/pending_approvals/0/approval_id").and_then(|v| v.as_str()).unwrap().to_string();
     // decide "session" through the core, as the TUI's DecideApproval effect does
     let action: teamagents_core::models::TeamAction = serde_json::from_value(json!({
         "action_id": "grant-decide-1", "session_id": "cx-grant", "actor_id": "user",

@@ -203,11 +203,8 @@ impl Composer {
         }
         let next = (self.hist_idx as i64 + direction).clamp(0, self.history.len() as i64) as usize;
         self.hist_idx = next;
-        let text = if self.hist_idx == self.history.len() {
-            self.draft.clone()
-        } else {
-            self.history[self.hist_idx].clone()
-        };
+        let text =
+            if self.hist_idx == self.history.len() { self.draft.clone() } else { self.history[self.hist_idx].clone() };
         self.set_text(&text);
     }
 

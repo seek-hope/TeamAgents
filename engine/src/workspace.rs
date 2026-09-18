@@ -19,11 +19,7 @@ pub struct Workspace {
 }
 
 fn git(cwd: &Path, args: &[&str]) -> (i32, String, String) {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(cwd)
-        .args(args)
-        .output();
+    let output = Command::new("git").arg("-C").arg(cwd).args(args).output();
     match output {
         Ok(out) => (
             out.status.code().unwrap_or(-1),
@@ -66,23 +62,21 @@ pub fn prepare(agent: &AgentSpec, project_cwd: &Path, member_dir: &Path) -> Resu
             std::fs::create_dir_all(&path).map_err(|e| e.to_string())?;
             // touch, not truncate: reopening a session must keep member notes
             // (`INPUTS.md` is created if missing)
-            let _ = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path.join("INPUTS.md"));
+            let _ = std::fs::OpenOptions::new().create(true).append(true).open(path.join("INPUTS.md"));
             Ok(Workspace {
                 path,
                 policy: WorkspacePolicy::Isolated,
-                note: Some(
-                    "isolated directory: copy inputs explicitly, deliver results through artifact refs".into(),
-                ),
+                note: Some("isolated directory: copy inputs explicitly, deliver results through artifact refs".into()),
                 branch: None,
                 base_commit: None,
             })
         }
         WorkspacePolicy::GitWorktree => {
             if !is_git_repo(project_cwd) {
-                return Ok(fallback(project_cwd, "git_worktree requested but the directory is not a git repository; using shared mode"));
+                return Ok(fallback(
+                    project_cwd,
+                    "git_worktree requested but the directory is not a git repository; using shared mode",
+                ));
             }
             if is_dirty(project_cwd) {
                 return Ok(fallback(project_cwd, "git_worktree requested but the project has uncommitted changes; using shared mode so those inputs are not ignored"));
@@ -113,16 +107,14 @@ pub fn prepare(agent: &AgentSpec, project_cwd: &Path, member_dir: &Path) -> Resu
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
-            let branch_exists = git(project_cwd, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).0 == 0;
+            let branch_exists =
+                git(project_cwd, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).0 == 0;
             let path_str = path.to_string_lossy().into_owned();
             let (code, _, err) = if branch_exists {
                 // branch left behind by a crashed or removed worktree: re-attach it
                 git(project_cwd, &["worktree", "add", &path_str, &branch])
             } else {
-                git(
-                    project_cwd,
-                    &["worktree", "add", "-b", &branch, &path_str, base.as_deref().unwrap_or("HEAD")],
-                )
+                git(project_cwd, &["worktree", "add", "-b", &branch, &path_str, base.as_deref().unwrap_or("HEAD")])
             };
             if code != 0 {
                 return Err(format!("git worktree add failed: {}", err.trim()));
@@ -167,7 +159,11 @@ pub fn cleanup(workspace: &Workspace, project_cwd: &Path, force: bool) -> (bool,
                 if let Some(branch) = &workspace.branch {
                     let unmerged = git(project_cwd, &["branch", "--no-merged", "HEAD", "--list", branch]).1;
                     if unmerged.contains(branch.as_str()) {
-                        return (false, "worktree results are unmerged (committed but not merged); merge them before cleanup".into());
+                        return (
+                            false,
+                            "worktree results are unmerged (committed but not merged); merge them before cleanup"
+                                .into(),
+                        );
                     }
                 }
             }
@@ -218,11 +214,8 @@ pub fn merge_branch(project_cwd: &Path, branch: &str, message: Option<&str>) -> 
 pub fn member_worktrees(session_dir: &Path) -> Vec<PathBuf> {
     let members = session_dir.join("members");
     let Ok(entries) = std::fs::read_dir(&members) else { return vec![] };
-    let mut found: Vec<PathBuf> = entries
-        .flatten()
-        .map(|entry| entry.path().join("work"))
-        .filter(|work| work.join(".git").is_file())
-        .collect();
+    let mut found: Vec<PathBuf> =
+        entries.flatten().map(|entry| entry.path().join("work")).filter(|work| work.join(".git").is_file()).collect();
     found.sort();
     found
 }

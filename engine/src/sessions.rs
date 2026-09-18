@@ -81,9 +81,7 @@ pub fn acquire_session_lock(session_id: &str) -> Result<SessionLock, String> {
                 format!("session {session_id} is already running (pid {holder})")
             });
         }
-        Err(std::fs::TryLockError::Error(e)) => {
-            return Err(format!("cannot lock session {session_id}: {e}"))
-        }
+        Err(std::fs::TryLockError::Error(e)) => return Err(format!("cannot lock session {session_id}: {e}")),
     }
     // diagnostic only: the pid is not what makes the lock exclusive
     use std::io::Write;
@@ -229,7 +227,11 @@ pub fn list_sessions(cwd: Option<&Path>, include_archived: bool, base: Option<&P
                 cwd: meta.cwd.clone(),
                 status: if meta.status.is_empty() { "?".into() } else { meta.status.clone() },
                 goal_state: if meta.goal_state.is_empty() { "?".into() } else { meta.goal_state.clone() },
-                permissions_mode: if meta.permissions_mode.is_empty() { "?".into() } else { meta.permissions_mode.clone() },
+                permissions_mode: if meta.permissions_mode.is_empty() {
+                    "?".into()
+                } else {
+                    meta.permissions_mode.clone()
+                },
                 updated_at: meta.updated_at,
                 events: meta.events,
                 tasks: meta.tasks,
@@ -250,8 +252,7 @@ pub fn list_sessions(cwd: Option<&Path>, include_archived: bool, base: Option<&P
         }
     }
     infos.sort_by(|a, b| {
-        (a.archived as i64, -(a.updated_at * 1000.0) as i64)
-            .cmp(&(b.archived as i64, -(b.updated_at * 1000.0) as i64))
+        (a.archived as i64, -(a.updated_at * 1000.0) as i64).cmp(&(b.archived as i64, -(b.updated_at * 1000.0) as i64))
     });
     infos
 }
@@ -318,7 +319,8 @@ pub fn prune_session_history(session_id: &str, days: u64, dry_run: bool) -> Resu
             return Err(format!("session {session_id} is running"));
         }
         let store = teamagents_core::storage::Store::open(&path.join("team.db")).map_err(|e| e.to_string())?;
-        let (deliveries, events, vacuumed) = store.prune_history(session_id, days, dry_run).map_err(|e| e.to_string())?;
+        let (deliveries, events, vacuumed) =
+            store.prune_history(session_id, days, dry_run).map_err(|e| e.to_string())?;
         return Ok(json!({
             "session_id": session_id,
             "days": days,
@@ -417,10 +419,7 @@ pub fn delete_session(session_id: &str, base: Option<&Path>) -> Result<(), Strin
             };
             let (ok, reason) = crate::workspace::cleanup(&workspace, Path::new(&project_cwd), false);
             if !ok {
-                return Err(format!(
-                    "member worktree {} keeps unmerged or uncommitted work: {reason}",
-                    work.display()
-                ));
+                return Err(format!("member worktree {} keeps unmerged or uncommitted work: {reason}", work.display()));
             }
         }
     }

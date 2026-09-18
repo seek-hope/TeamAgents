@@ -2,9 +2,9 @@
 //! the member workspace, shell via bwrap when present, web fetch with an SSRF
 //! guard.
 
+use crate::gateway::TurnControl;
 use serde_json::{json, Value as Json};
 use sha2::{Digest, Sha256};
-use crate::gateway::TurnControl;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
@@ -31,19 +31,28 @@ fn prune_artifacts(dir: &Path, budget: u64) -> usize {
     let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
     let mut files: Vec<(std::time::SystemTime, PathBuf, u64)> = entries
         .flatten()
-        .filter(|entry| entry.file_name().to_string_lossy().starts_with("exec-") && entry.file_name().to_string_lossy().ends_with(".log"))
+        .filter(|entry| {
+            entry.file_name().to_string_lossy().starts_with("exec-")
+                && entry.file_name().to_string_lossy().ends_with(".log")
+        })
         .filter_map(|entry| {
             let meta = entry.metadata().ok()?;
-            if !meta.is_file() { return None; }
+            if !meta.is_file() {
+                return None;
+            }
             Some((meta.modified().ok()?, entry.path(), meta.len()))
         })
         .collect();
     let mut total: u64 = files.iter().map(|(_, _, len)| len).sum();
-    if total <= budget { return 0; }
+    if total <= budget {
+        return 0;
+    }
     files.sort_by_key(|(modified, _, _)| *modified);
     let mut removed = 0;
     for (_, path, len) in files {
-        if total <= budget { break; }
+        if total <= budget {
+            break;
+        }
         if std::fs::remove_file(&path).is_ok() {
             total = total.saturating_sub(len);
             removed += 1;
@@ -103,17 +112,23 @@ pub fn resolve_in_root(root: &Path, key: &str) -> Result<PathBuf, String> {
 fn open_member_file(root: &Path, path: &Path) -> Result<std::fs::File, String> {
     let root = std::fs::canonicalize(root).map_err(|e| e.to_string())?;
     let parent = member_parent(&root, path, false)?;
-    let leaf = PathBuf::from(format!("/proc/self/fd/{}", parent.as_raw_fd())).join(path.file_name().ok_or("file path required")?);
+    let leaf = PathBuf::from(format!("/proc/self/fd/{}", parent.as_raw_fd()))
+        .join(path.file_name().ok_or("file path required")?);
     // A FIFO can block in open itself, before metadata or cancellation checks.
-    let file = std::fs::OpenOptions::new().read(true).custom_flags(O_NONBLOCK).open(&leaf).map_err(|e| e.to_string())?;
+    let file =
+        std::fs::OpenOptions::new().read(true).custom_flags(O_NONBLOCK).open(&leaf).map_err(|e| e.to_string())?;
     check_member_fd(&root, &file)?;
-    if !file.metadata().map_err(|e| e.to_string())?.is_file() { return Err("not a regular file".into()); }
+    if !file.metadata().map_err(|e| e.to_string())?.is_file() {
+        return Err("not a regular file".into());
+    }
     Ok(file)
 }
 
 fn check_member_fd(root: &Path, file: &std::fs::File) -> Result<(), String> {
     let real = std::fs::canonicalize(format!("/proc/self/fd/{}", file.as_raw_fd())).map_err(|e| e.to_string())?;
-    if !real.starts_with(root) { return Err("path escapes workspace".into()); }
+    if !real.starts_with(root) {
+        return Err("path escapes workspace".into());
+    }
     Ok(())
 }
 
@@ -121,7 +136,9 @@ fn member_parent(root: &Path, path: &Path, create: bool) -> Result<std::fs::File
     let root = std::fs::canonicalize(root).map_err(|e| e.to_string())?;
     let relative = path.strip_prefix(&root).map_err(|_| "path escapes workspace")?;
     relative.file_name().ok_or("file path required")?;
-    let open_dir = |path: &Path| std::fs::OpenOptions::new().read(true).custom_flags(O_DIRECTORY).open(path).map_err(|e| e.to_string());
+    let open_dir = |path: &Path| {
+        std::fs::OpenOptions::new().read(true).custom_flags(O_DIRECTORY).open(path).map_err(|e| e.to_string())
+    };
     let mut parent = open_dir(&root)?;
     check_member_fd(&root, &parent)?;
     for part in relative.parent().unwrap_or(Path::new("")).components() {
@@ -148,7 +165,9 @@ fn file_hash(file: &mut std::fs::File, control: &TurnControl) -> Result<String, 
     loop {
         control.check()?;
         let count = file.read(&mut bytes).map_err(|e| e.to_string())?;
-        if count == 0 { break; }
+        if count == 0 {
+            break;
+        }
         hash.update(&bytes[..count]);
     }
     file.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
@@ -157,7 +176,9 @@ fn file_hash(file: &mut std::fs::File, control: &TurnControl) -> Result<String, 
 
 fn expected_hash(args: &Json) -> Result<Option<&str>, String> {
     let Some(value) = args.get("expected_sha256") else { return Ok(None) };
-    let hash = value.as_str().filter(|s| s.len() == 64 && s.bytes().all(|c| c.is_ascii_hexdigit()))
+    let hash = value
+        .as_str()
+        .filter(|s| s.len() == 64 && s.bytes().all(|c| c.is_ascii_hexdigit()))
         .ok_or("expected_sha256 must contain 64 hexadecimal characters")?;
     Ok(Some(hash))
 }
@@ -174,7 +195,11 @@ fn lock_file(lock_dir: &Path, target: &Path) -> PathBuf {
 /// workspace, and the file itself cannot carry the lock because it gets replaced
 /// by rename. Locks live beside the session state instead.
 /// ponytail: one lock per file, held for the whole write; no reader locks.
-fn with_path_lock<T>(lock_dir: Option<&Path>, target: &Path, body: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+fn with_path_lock<T>(
+    lock_dir: Option<&Path>,
+    target: &Path,
+    body: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
     let _lock = acquire_path_lock(lock_dir, target)?;
     body()
 }
@@ -207,12 +232,27 @@ fn acquire_path_lock(lock_dir: Option<&Path>, target: &Path) -> Result<Option<st
     Ok(Some(file))
 }
 
-fn atomic_write(root: &Path, lock_dir: Option<&Path>, path: &Path, content: &[u8], expected: Option<&str>, control: &TurnControl) -> Result<(), String> {
-    if content.len() as u64 > MAX_FILE_BYTES { return Err("content too large".into()); }
+fn atomic_write(
+    root: &Path,
+    lock_dir: Option<&Path>,
+    path: &Path,
+    content: &[u8],
+    expected: Option<&str>,
+    control: &TurnControl,
+) -> Result<(), String> {
+    if content.len() as u64 > MAX_FILE_BYTES {
+        return Err("content too large".into());
+    }
     with_path_lock(lock_dir, path, || atomic_write_locked(root, path, content, expected, control))
 }
 
-fn atomic_write_locked(root: &Path, path: &Path, content: &[u8], expected: Option<&str>, control: &TurnControl) -> Result<(), String> {
+fn atomic_write_locked(
+    root: &Path,
+    path: &Path,
+    content: &[u8],
+    expected: Option<&str>,
+    control: &TurnControl,
+) -> Result<(), String> {
     let mut staged = StagedWrite::new(root, path, content)?;
     staged.check(expected, control)?;
     staged.commit()
@@ -233,7 +273,9 @@ struct StagedWrite {
 
 impl StagedWrite {
     fn new(root: &Path, path: &Path, content: &[u8]) -> Result<Self, String> {
-        if content.len() as u64 > MAX_FILE_BYTES { return Err("content too large".into()); }
+        if content.len() as u64 > MAX_FILE_BYTES {
+            return Err("content too large".into());
+        }
         let root = std::fs::canonicalize(root).map_err(|e| e.to_string())?;
         let parent = member_parent(&root, path, true)?;
         let parent_path = PathBuf::from(format!("/proc/self/fd/{}", parent.as_raw_fd()));
@@ -246,11 +288,16 @@ impl StagedWrite {
         };
         let temp = parent_path.join(format!(".teamagents-{}.tmp", uuid::Uuid::new_v4()));
         let staged = Self { root, path: path.to_path_buf(), parent, leaf, temp, committed: false, preserve: false };
-        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&staged.temp).map_err(|e| e.to_string())?;
+        let mut file =
+            std::fs::OpenOptions::new().write(true).create_new(true).open(&staged.temp).map_err(|e| e.to_string())?;
         // Restrict the staging inode before it contains any old private data.
-        if let Some(permissions) = permissions.as_ref() { file.set_permissions(permissions.clone()).map_err(|e| e.to_string())?; }
+        if let Some(permissions) = permissions.as_ref() {
+            file.set_permissions(permissions.clone()).map_err(|e| e.to_string())?;
+        }
         file.write_all(content).map_err(|e| e.to_string())?;
-        if let Some(permissions) = permissions { file.set_permissions(permissions).map_err(|e| e.to_string())?; }
+        if let Some(permissions) = permissions {
+            file.set_permissions(permissions).map_err(|e| e.to_string())?;
+        }
         file.sync_all().map_err(|e| e.to_string())?;
         Ok(staged)
     }
@@ -280,38 +327,55 @@ impl StagedWrite {
 
 impl Drop for StagedWrite {
     fn drop(&mut self) {
-        if !self.preserve { let _ = std::fs::remove_file(&self.temp); }
+        if !self.preserve {
+            let _ = std::fs::remove_file(&self.temp);
+        }
     }
 }
 
-fn commit_batch(staged: &mut [(StagedWrite, StagedWrite, String)], expected: &[&str], control: &TurnControl) -> Result<(), String> {
+fn commit_batch(
+    staged: &mut [(StagedWrite, StagedWrite, String)],
+    expected: &[&str],
+    control: &TurnControl,
+) -> Result<(), String> {
     // Revalidate the entire batch after staging, before the first rename.
     for ((write, _, _), hash) in staged.iter().zip(expected) {
         write.check(Some(hash), control)?;
     }
     for index in 0..staged.len() {
-        let result = staged[index].0.check(Some(expected[index]), control)
-            .and_then(|()| staged[index].0.commit());
+        let result = staged[index].0.check(Some(expected[index]), control).and_then(|()| staged[index].0.commit());
         if let Err(error) = result {
             let mut failures = vec![];
             // Cancellation must not prevent undoing already committed edits.
             let rollback_control = TurnControl::default();
             for (write, rollback, new_hash) in staged[..=index].iter_mut().rev() {
-                if !write.committed { continue; }
+                if !write.committed {
+                    continue;
+                }
                 // Never erase a concurrent shell/external editor's change.
                 let restored = write.check(Some(new_hash), &rollback_control).and_then(|()| rollback.commit());
                 if let Err(restore_error) = restored {
                     if rollback.committed {
-                        failures.push(format!("{}: original restored but directory sync failed: {restore_error}", write.path.display()));
+                        failures.push(format!(
+                            "{}: original restored but directory sync failed: {restore_error}",
+                            write.path.display()
+                        ));
                     } else {
                         rollback.preserve = true;
                         let recovery = rollback.path.parent().unwrap().join(rollback.temp.file_name().unwrap());
-                        failures.push(format!("{}: {restore_error}; original preserved at {}", write.path.display(), recovery.display()));
+                        failures.push(format!(
+                            "{}: {restore_error}; original preserved at {}",
+                            write.path.display(),
+                            recovery.display()
+                        ));
                     }
                 }
             }
-            return Err(if failures.is_empty() { format!("{error}; no batch edits remain applied") }
-                else { format!("{error}; rollback incomplete: {}", failures.join("; ")) });
+            return Err(if failures.is_empty() {
+                format!("{error}; no batch edits remain applied")
+            } else {
+                format!("{error}; rollback incomplete: {}", failures.join("; "))
+            });
         }
     }
     Ok(())
@@ -329,21 +393,32 @@ fn positive_arg(args: &Json, key: &str, default: u64) -> Result<u64, String> {
 fn read_page(mut file: std::fs::File, args: &Json, control: &TurnControl) -> Result<Json, String> {
     let offset = positive_arg(args, "offset", 1)?;
     let limit = positive_arg(args, "limit", 2000)?.min(2000);
-    let byte_offset = args.get("byte_offset").map(|v| v.as_u64().ok_or("byte_offset must be a nonnegative integer")).transpose()?;
-    if byte_offset.is_some() && offset != 1 { return Err("use offset or byte_offset, not both".into()); }
+    let byte_offset =
+        args.get("byte_offset").map(|v| v.as_u64().ok_or("byte_offset must be a nonnegative integer")).transpose()?;
+    if byte_offset.is_some() && offset != 1 {
+        return Err("use offset or byte_offset, not both".into());
+    }
     let hash = if args.get("include_sha256").and_then(Json::as_bool).unwrap_or(false) {
         Some(file_hash(&mut file, control)?)
-    } else { None };
-    if let Some(pos) = byte_offset { file.seek(SeekFrom::Start(pos)).map_err(|e| e.to_string())?; }
+    } else {
+        None
+    };
+    if let Some(pos) = byte_offset {
+        file.seek(SeekFrom::Start(pos)).map_err(|e| e.to_string())?;
+    }
     let mut reader = BufReader::new(file);
     let mut position = byte_offset.unwrap_or(0);
     let mut skipped = 1;
     while byte_offset.is_none() && skipped < offset {
         control.check()?;
         let chunk = reader.fill_buf().map_err(|e| e.to_string())?;
-        if chunk.is_empty() { break; }
+        if chunk.is_empty() {
+            break;
+        }
         let count = chunk.iter().position(|b| *b == b'\n').map(|i| i + 1).unwrap_or(chunk.len());
-        if chunk[count - 1] == b'\n' { skipped += 1; }
+        if chunk[count - 1] == b'\n' {
+            skipped += 1;
+        }
         reader.consume(count);
         position += count as u64;
     }
@@ -353,12 +428,18 @@ fn read_page(mut file: std::fs::File, args: &Json, control: &TurnControl) -> Res
     while bytes.len() < PAGE_BYTES && lines < limit {
         control.check()?;
         let chunk = reader.fill_buf().map_err(|e| e.to_string())?;
-        if chunk.is_empty() { break; }
+        if chunk.is_empty() {
+            break;
+        }
         let mut count = 0;
         for byte in chunk.iter().take(PAGE_BYTES - bytes.len()) {
             count += 1;
-            if *byte == b'\n' { lines += 1; }
-            if lines == limit { break; }
+            if *byte == b'\n' {
+                lines += 1;
+            }
+            if lines == limit {
+                break;
+            }
         }
         bytes.extend_from_slice(&chunk[..count]);
         reader.consume(count);
@@ -372,10 +453,17 @@ fn read_page(mut file: std::fs::File, args: &Json, control: &TurnControl) -> Res
     bytes.truncate(valid);
     position += bytes.len() as u64;
     let content = String::from_utf8(bytes).map_err(|e| e.to_string())?;
-    if !more && offset == 1 && byte_offset.is_none() && hash.is_none() && args.get("limit").is_none() && args.get("offset").is_none() {
+    if !more
+        && offset == 1
+        && byte_offset.is_none()
+        && hash.is_none()
+        && args.get("limit").is_none()
+        && args.get("offset").is_none()
+    {
         return Ok(json!(content));
     }
-    let next_offset = if more && byte_offset.is_none() && content.ends_with('\n') { Some(offset + lines) } else { None };
+    let next_offset =
+        if more && byte_offset.is_none() && content.ends_with('\n') { Some(offset + lines) } else { None };
     Ok(json!({"content": content, "offset": if byte_offset.is_some() { None } else { Some(offset) },
         "byte_offset": start, "next_offset": next_offset, "next_byte_offset": if more { Some(position) } else { None },
         "truncated": more, "eof": !more, "sha256": hash}))
@@ -386,10 +474,15 @@ fn edit_diff(path: &Path, text: &str, at: usize, old: &str, new: &str) -> String
     let mut diff = format!("edited {}\n@@ line {line} @@\n", path.display());
     for (prefix, value) in [("-", old), ("+", new)] {
         for line in value.lines() {
-            if diff.len() > 8000 { diff.push_str("[diff truncated; read_file for full content]\n"); return diff; }
+            if diff.len() > 8000 {
+                diff.push_str("[diff truncated; read_file for full content]\n");
+                return diff;
+            }
             diff.push_str(prefix);
             diff.extend(line.chars().take(1000));
-            if line.chars().count() > 1000 { diff.push_str(" [line truncated]"); }
+            if line.chars().count() > 1000 {
+                diff.push_str(" [line truncated]");
+            }
             diff.push('\n');
         }
     }
@@ -443,7 +536,12 @@ fn read_image(file: std::fs::File, label: &str) -> Result<Json, String> {
 /// Load an image reference recorded by `view_image` at request-build time.
 /// The reference is re-validated against the same roots the tool used, and the
 /// bytes must still match the recorded media type.
-pub fn load_image_reference(root: &Path, artifacts: Option<&Path>, reference: &str, media_type: &str) -> Result<Vec<u8>, String> {
+pub fn load_image_reference(
+    root: &Path,
+    artifacts: Option<&Path>,
+    reference: &str,
+    media_type: &str,
+) -> Result<Vec<u8>, String> {
     let file = if let Some(name) = reference.strip_prefix(ARTIFACTS_PREFIX) {
         let dir = artifacts.ok_or("artifact directory unavailable")?;
         let path = resolve_in_root(dir, name)?;
@@ -472,7 +570,9 @@ fn cap_read(file: std::fs::File) -> Result<String, String> {
     }
     let mut text = String::new();
     file.take(MAX_FILE_BYTES + 1).read_to_string(&mut text).map_err(|e| e.to_string())?;
-    if text.len() as u64 > MAX_FILE_BYTES { return Err("file too large".into()); }
+    if text.len() as u64 > MAX_FILE_BYTES {
+        return Err("file too large".into());
+    }
     Ok(text)
 }
 
@@ -496,7 +596,9 @@ pub fn workspace_executor(
 }
 
 fn workspace_executor_with_control(
-    root: PathBuf, artifacts: Option<PathBuf>, shell_state: Option<PathBuf>,
+    root: PathBuf,
+    artifacts: Option<PathBuf>,
+    shell_state: Option<PathBuf>,
 ) -> impl Fn(&str, &Json, &TurnControl) -> Result<Json, String> + Send + Sync + 'static {
     // cross-process write locks live beside the session state, never in the project
     let lock_dir = artifacts.as_ref().and_then(|dir| dir.parent()).map(|state| state.join("locks"));
@@ -557,7 +659,8 @@ fn workspace_executor_with_control(
                 control.check()?;
                 let path = member_path(&arg("path"))?;
                 let content = args.get("content").and_then(|v| v.as_str()).ok_or("content must be a string")?;
-                let file_root = if arg("path").starts_with(ARTIFACTS_PREFIX) { artifacts.as_ref().unwrap() } else { &root };
+                let file_root =
+                    if arg("path").starts_with(ARTIFACTS_PREFIX) { artifacts.as_ref().unwrap() } else { &root };
                 atomic_write(file_root, lock_dir.as_deref(), &path, content.as_bytes(), expected_hash(args)?, control)?;
                 Ok(json!(format!("wrote {}", path.display())))
             }
@@ -568,7 +671,9 @@ fn workspace_executor_with_control(
                 let text = cap_read(member_file(&arg("path"))?)?;
                 let old = arg("old_string");
                 let new = args.get("new_string").and_then(Json::as_str).ok_or("new_string must be a string")?;
-                if old.is_empty() { return Err("old_string must not be empty".into()); }
+                if old.is_empty() {
+                    return Err("old_string must not be empty".into());
+                }
                 let at = text.find(&old).ok_or("old_string not found")?;
                 // Count overlapping matches too (e.g. 'aa' in 'aaa').
                 if text[at + old.chars().next().unwrap().len_utf8()..].contains(&old) {
@@ -578,8 +683,16 @@ fn workspace_executor_with_control(
                 if expected_hash(args)?.is_some_and(|expected| !expected.eq_ignore_ascii_case(&hash)) {
                     return Err("file conflict: expected_sha256 no longer matches; read the file again".into());
                 }
-                let file_root = if arg("path").starts_with(ARTIFACTS_PREFIX) { artifacts.as_ref().unwrap() } else { &root };
-                atomic_write(file_root, lock_dir.as_deref(), &path, text.replacen(&old, new, 1).as_bytes(), Some(&hash), control)?;
+                let file_root =
+                    if arg("path").starts_with(ARTIFACTS_PREFIX) { artifacts.as_ref().unwrap() } else { &root };
+                atomic_write(
+                    file_root,
+                    lock_dir.as_deref(),
+                    &path,
+                    text.replacen(&old, new, 1).as_bytes(),
+                    Some(&hash),
+                    control,
+                )?;
                 Ok(json!(edit_diff(&path, &text, at, &old, new)))
             }
             "edit_files" => {
@@ -615,12 +728,20 @@ fn workspace_executor_with_control(
                     }
                     let hash = format!("{:x}", Sha256::digest(text.as_bytes()));
                     if expected_hash(edit)?.is_some_and(|expected| !expected.eq_ignore_ascii_case(&hash)) {
-                        return Err(format!("{key}: file conflict: expected_sha256 no longer matches; read the file again"));
+                        return Err(format!(
+                            "{key}: file conflict: expected_sha256 no longer matches; read the file again"
+                        ));
                     }
-                    let file_root = if key.starts_with(ARTIFACTS_PREFIX) { artifacts.as_ref().unwrap().clone() } else { root.clone() };
+                    let file_root = if key.starts_with(ARTIFACTS_PREFIX) {
+                        artifacts.as_ref().unwrap().clone()
+                    } else {
+                        root.clone()
+                    };
                     let diff = edit_diff(&path, &text, at, old, new);
                     let content = text.replacen(old, new, 1);
-                    if content.len() as u64 > MAX_FILE_BYTES { return Err(format!("{key}: content too large")); }
+                    if content.len() as u64 > MAX_FILE_BYTES {
+                        return Err(format!("{key}: content too large"));
+                    }
                     planned.push((file_root, path, content, diff, hash, text));
                 }
                 // Hold every path lock until the batch commits or rolls back.
@@ -661,7 +782,10 @@ fn workspace_executor_with_control(
                 if bwrap_available() && sandbox_rg_available() {
                     // A positive `rg --glob` overrides .gitignore. Filter the
                     // already-ignored file list instead.
-                    let command = format!("set -o pipefail; rg --files -- . | rg --color never -- {}", shell_quote(&glob_regex(&pattern)));
+                    let command = format!(
+                        "set -o pipefail; rg --files -- . | rg --color never -- {}",
+                        shell_quote(&glob_regex(&pattern))
+                    );
                     return shell_run_with_control(&command, &root, 30, false, artifacts.as_deref(), control)
                         .map(Json::String);
                 }
@@ -678,15 +802,22 @@ fn workspace_executor_with_control(
                 } else {
                     format!("grep -rn -- {pattern} {path}")
                 };
-                shell_run_with_control(&command, &root, 30, false, artifacts.as_deref(), control)
-                    .map(Json::String)
+                shell_run_with_control(&command, &root, 30, false, artifacts.as_deref(), control).map(Json::String)
             }
             "shell" => {
                 let command = arg("command");
                 let timeout = args.get("timeout").and_then(|v| v.as_u64()).unwrap_or(120);
                 let network = args.get("network").and_then(|v| v.as_bool()).unwrap_or(false);
-                shell_run_stateful(&command, &root, timeout, network, artifacts.as_deref(), shell_state.as_deref(), control)
-                    .map(Json::String)
+                shell_run_stateful(
+                    &command,
+                    &root,
+                    timeout,
+                    network,
+                    artifacts.as_deref(),
+                    shell_state.as_deref(),
+                    control,
+                )
+                .map(Json::String)
             }
             other => Err(format!("unknown tool {other}")),
         }
@@ -756,24 +887,15 @@ pub(crate) fn web_tools(
 
 /// Load-time check for the web half of a member's bindings (session.rs calls
 /// this while building the member's runner).
-pub fn validate_web_bindings(
-    catalog: &teamagents_core::models::UserConfig,
-    bindings: &[String],
-) -> Result<(), String> {
+pub fn validate_web_bindings(catalog: &teamagents_core::models::UserConfig, bindings: &[String]) -> Result<(), String> {
     web_tools(catalog, bindings).map(|_| ())
 }
-
 
 /// Skills registry roots: user-configured `skills_paths` only (project and
 /// member skill dirs live inside the workspace and are readable with `files`).
 /// Read-only by construction (plan §12.2: selected skills are pre-authorized reads).
 fn skill_roots(catalog: &teamagents_core::models::UserConfig) -> Vec<PathBuf> {
-    catalog
-        .skills_paths
-        .iter()
-        .map(|p| crate::config::expand_home(p))
-        .filter(|p| p.is_dir())
-        .collect()
+    catalog.skills_paths.iter().map(|p| crate::config::expand_home(p)).filter(|p| p.is_dir()).collect()
 }
 
 /// (name, canonical SKILL.md path) pairs under one registry root; candidates
@@ -790,11 +912,8 @@ pub fn skill_candidates(root: &Path) -> Vec<(String, PathBuf)> {
         if !real.starts_with(&root) || !real.is_file() {
             continue;
         }
-        let name = real
-            .parent()
-            .and_then(|p| p.file_name())
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
+        let name =
+            real.parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         if !name.is_empty() && !out.iter().any(|(n, _)| *n == name) {
             out.push((name, real));
         }
@@ -824,9 +943,12 @@ fn skill_blurb(path: &Path) -> String {
     }
     let text = String::from_utf8_lossy(&bytes);
     let mut lines = text.trim_start_matches('\u{feff}').lines();
-    if lines.next().map(str::trim) != Some("---") { return String::new(); }
+    if lines.next().map(str::trim) != Some("---") {
+        return String::new();
+    }
     let frontmatter = lines.take_while(|line| !matches!(line.trim(), "---" | "...")).collect::<Vec<_>>().join("\n");
-    serde_yaml::from_str::<Json>(&frontmatter).ok()
+    serde_yaml::from_str::<Json>(&frontmatter)
+        .ok()
         .and_then(|value| value["description"].as_str().map(|s| s.chars().take(200).collect()))
         .unwrap_or_default()
 }
@@ -869,8 +991,14 @@ fn skill_tool(catalog: &teamagents_core::models::UserConfig, args: &Json) -> Res
             if total > 10 {
                 lines.push(format!("… {} more; refine the query", total - 10));
             }
-            Ok(Json::String(if lines.is_empty() { "no matching skills".into() } else { lines.join("
-") }))
+            Ok(Json::String(if lines.is_empty() {
+                "no matching skills".into()
+            } else {
+                lines.join(
+                    "
+",
+                )
+            }))
         }
         other => Err(format!("unknown skill action {other:?} (use search|read)")),
     }
@@ -889,7 +1017,11 @@ pub fn member_executor(
 }
 
 pub(crate) fn member_executor_with_control(
-    root: PathBuf, catalog: teamagents_core::models::UserConfig, bindings: Vec<String>, artifacts: Option<PathBuf>, shell_state: Option<PathBuf>,
+    root: PathBuf,
+    catalog: teamagents_core::models::UserConfig,
+    bindings: Vec<String>,
+    artifacts: Option<PathBuf>,
+    shell_state: Option<PathBuf>,
 ) -> impl Fn(&str, &Json, &TurnControl) -> Result<Json, String> + Send + Sync + 'static {
     let workspace = workspace_executor_with_control(root, artifacts, shell_state);
     let web: OnceLock<Result<WebTools, String>> = OnceLock::new();
@@ -963,11 +1095,16 @@ fn glob_regex(pattern: &str) -> String {
             match ch {
                 '*' => regex.push_str("[^/]*"),
                 '?' => regex.push_str("[^/]"),
-                '.' | '+' | '(' | ')' | '[' | ']' | '{' | '}' | '^' | '$' | '|' | '\\' => { regex.push('\\'); regex.push(ch); }
+                '.' | '+' | '(' | ')' | '[' | ']' | '{' | '}' | '^' | '$' | '|' | '\\' => {
+                    regex.push('\\');
+                    regex.push(ch);
+                }
                 _ => regex.push(ch),
             }
         }
-        if !last { regex.push('/'); }
+        if !last {
+            regex.push('/');
+        }
     }
     regex.push('$');
     regex
@@ -975,7 +1112,13 @@ fn glob_regex(pattern: &str) -> String {
 
 /// Tiny glob: `*` (within a segment), `?`, `**` (any depth). Enough for the
 /// patterns members send; a full glob crate is not worth the dependency yet.
-fn glob_walk(root: &Path, dir: &Path, pattern: &str, out: &mut Vec<String>, control: &TurnControl) -> Result<(), String> {
+fn glob_walk(
+    root: &Path,
+    dir: &Path,
+    pattern: &str,
+    out: &mut Vec<String>,
+    control: &TurnControl,
+) -> Result<(), String> {
     // ponytail: without rg the fallback supports simple globs, not gitignore;
     // install rg for the same ignore semantics as repository search.
     let segments: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
@@ -1009,7 +1152,9 @@ fn glob_walk(root: &Path, dir: &Path, pattern: &str, out: &mut Vec<String>, cont
             for entry in entries.flatten() {
                 control.check()?;
                 let Ok(kind) = entry.file_type() else { continue };
-                if kind.is_symlink() { continue; }
+                if kind.is_symlink() {
+                    continue;
+                }
                 let name = entry.file_name().to_string_lossy().into_owned();
                 if !segment_match(segment, &name) {
                     continue;
@@ -1018,7 +1163,9 @@ fn glob_walk(root: &Path, dir: &Path, pattern: &str, out: &mut Vec<String>, cont
                 if index + 1 == segments.len() {
                     if let Ok(rel) = path.strip_prefix(root) {
                         out.push(rel.to_string_lossy().into_owned());
-                        if out.len() >= 500 { return Ok(()); }
+                        if out.len() >= 500 {
+                            return Ok(());
+                        }
                     }
                 } else if kind.is_dir() {
                     stack.push((path, index + 1));
@@ -1062,9 +1209,7 @@ pub fn bwrap_available() -> bool {
 
 pub fn which(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|dir| dir.join(name))
-        .find(|candidate| candidate.is_file())
+    std::env::split_paths(&path).map(|dir| dir.join(name)).find(|candidate| candidate.is_file())
 }
 
 /// Where a member's shell state lives inside the sandbox (bound rw).
@@ -1075,9 +1220,7 @@ const SHELL_STATE_SANDBOX: &str = "/tmp/.teamagents-shell";
 /// (and reads next time), which also survives a session resume. It is written to
 /// a temp name and renamed, so a killed command cannot leave a half-written state.
 fn shell_state_preamble(sandbox_dir: &str) -> String {
-    format!(
-        "__ta_state={sandbox_dir}/state.sh\nif [ -r \"$__ta_state\" ]; then . \"$__ta_state\"; fi\n"
-    )
+    format!("__ta_state={sandbox_dir}/state.sh\nif [ -r \"$__ta_state\" ]; then . \"$__ta_state\"; fi\n")
 }
 
 fn shell_state_capture(sandbox_dir: &str) -> String {
@@ -1146,7 +1289,10 @@ const TOOLCHAIN_ROOT: &str = "/tmp/.teamagents-toolchain";
 fn toolchain_mounts() -> Vec<(&'static str, PathBuf, PathBuf)> {
     let mut mounts = vec![];
     for (key, home, guest) in [("RUSTUP_HOME", ".rustup", "rustup"), ("CARGO_HOME", ".cargo", "cargo")] {
-        let host = std::env::var(key).map(PathBuf::from).ok().unwrap_or_else(|| crate::config::expand_home(&format!("~/{home}")));
+        let host = std::env::var(key)
+            .map(PathBuf::from)
+            .ok()
+            .unwrap_or_else(|| crate::config::expand_home(&format!("~/{home}")));
         if host.is_dir() {
             mounts.push((key, host, PathBuf::from(TOOLCHAIN_ROOT).join(guest)));
         }
@@ -1165,14 +1311,21 @@ fn toolchain_binds() -> Vec<String> {
                 continue;
             }
             let target = if sub.is_empty() { guest.clone() } else { guest.join(sub) };
-            argv.extend(["--ro-bind".into(), source.to_string_lossy().into_owned(), target.to_string_lossy().into_owned()]);
+            argv.extend([
+                "--ro-bind".into(),
+                source.to_string_lossy().into_owned(),
+                target.to_string_lossy().into_owned(),
+            ]);
         }
     }
     argv
 }
 
 fn toolchain_env() -> Vec<(String, String)> {
-    toolchain_mounts().into_iter().map(|(key, _, guest)| (key.to_string(), guest.to_string_lossy().into_owned())).collect()
+    toolchain_mounts()
+        .into_iter()
+        .map(|(key, _, guest)| (key.to_string(), guest.to_string_lossy().into_owned()))
+        .collect()
 }
 
 fn sandbox_path() -> String {
@@ -1201,12 +1354,25 @@ impl OutputSink {
         let (artifact, reference) = if let Some(dir) = dir {
             std::fs::create_dir_all(dir).map_err(|e| format!("cannot create output artifact directory: {e}"))?;
             let name = format!("exec-{}.log", uuid::Uuid::new_v4());
-            let file = std::fs::OpenOptions::new().write(true).create_new(true).open(dir.join(&name))
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(dir.join(&name))
                 .map_err(|e| format!("cannot create output artifact: {e}"))?;
             prune_artifacts(dir, ARTIFACT_DIR_BYTES);
             (Some(file), Some(format!("{ARTIFACTS_PREFIX}{name}")))
-        } else { (None, None) };
-        Ok(Self { head: Vec::with_capacity(MAX_OUTPUT), total: 0, written: 0, cap: MAX_ARTIFACT_BYTES, artifact, reference, error: None })
+        } else {
+            (None, None)
+        };
+        Ok(Self {
+            head: Vec::with_capacity(MAX_OUTPUT),
+            total: 0,
+            written: 0,
+            cap: MAX_ARTIFACT_BYTES,
+            artifact,
+            reference,
+            error: None,
+        })
     }
 
     fn append(&mut self, bytes: &[u8]) {
@@ -1216,22 +1382,35 @@ impl OutputSink {
         if let Some(file) = self.artifact.as_mut() {
             let room = self.cap.saturating_sub(self.written).min(bytes.len() as u64) as usize;
             if room > 0 {
-                if let Err(e) = file.write_all(&bytes[..room]) { self.error.get_or_insert_with(|| format!("output artifact write failed: {e}")); }
-                else { self.written += room as u64; }
+                if let Err(e) = file.write_all(&bytes[..room]) {
+                    self.error.get_or_insert_with(|| format!("output artifact write failed: {e}"));
+                } else {
+                    self.written += room as u64;
+                }
             }
         }
     }
 
     fn finish(&mut self, interrupted: bool) -> Result<String, String> {
         if let Some(file) = self.artifact.as_mut() {
-            if let Err(e) = file.sync_all() { self.error.get_or_insert_with(|| format!("output artifact sync failed: {e}")); }
+            if let Err(e) = file.sync_all() {
+                self.error.get_or_insert_with(|| format!("output artifact sync failed: {e}"));
+            }
         }
         let mut text = String::from_utf8_lossy(&self.head).into_owned();
         if self.total > self.head.len() as u64 || interrupted || self.error.is_some() {
-            let capped = if self.total > self.written { format!(" (artifact truncated at {} MiB)", self.cap / (1024 * 1024)) } else { String::new() };
+            let capped = if self.total > self.written {
+                format!(" (artifact truncated at {} MiB)", self.cap / (1024 * 1024))
+            } else {
+                String::new()
+            };
             match &self.reference {
-                Some(reference) => text.push_str(&format!("\n[{} bytes captured; full output: {reference}]{capped}", self.total)),
-                None if self.total > self.head.len() as u64 => text.push_str("\n[output truncated; no artifact directory configured]"),
+                Some(reference) => {
+                    text.push_str(&format!("\n[{} bytes captured; full output: {reference}]{capped}", self.total))
+                }
+                None if self.total > self.head.len() as u64 => {
+                    text.push_str("\n[output truncated; no artifact directory configured]")
+                }
                 None => {}
             }
         }
@@ -1253,7 +1432,10 @@ fn drain(mut pipe: impl Read + Send + 'static, sink: Arc<Mutex<OutputSink>>) -> 
                 Ok(0) => break,
                 Ok(read) => sink.lock().unwrap().append(&chunk[..read]),
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(e) => { sink.lock().unwrap().error = Some(format!("output pipe read failed: {e}")); break; }
+                Err(e) => {
+                    sink.lock().unwrap().error = Some(format!("output pipe read failed: {e}"));
+                    break;
+                }
             }
         }
     })
@@ -1272,7 +1454,9 @@ fn join_bounded(handles: Vec<std::thread::JoinHandle<()>>, grace: Duration) -> b
         }
         if handle.is_finished() {
             complete &= handle.join().is_ok();
-        } else { complete = false; }
+        } else {
+            complete = false;
+        }
         // else: leak the reader thread rather than hang the engine; its data is
         // already in the buffer (kill is instantaneous with --die-with-parent)
     }
@@ -1292,14 +1476,25 @@ pub fn shell_run(
 }
 
 fn shell_run_with_control(
-    command: &str, workdir: &Path, timeout_s: u64, network: bool, artifacts: Option<&Path>, control: &TurnControl,
+    command: &str,
+    workdir: &Path,
+    timeout_s: u64,
+    network: bool,
+    artifacts: Option<&Path>,
+    control: &TurnControl,
 ) -> Result<String, String> {
     shell_run_stateful(command, workdir, timeout_s, network, artifacts, None, control)
 }
 
 /// `shell_state` is the member's persistent shell directory on the host side.
 pub fn shell_run_stateful(
-    command: &str, workdir: &Path, timeout_s: u64, network: bool, artifacts: Option<&Path>, shell_state: Option<&Path>, control: &TurnControl,
+    command: &str,
+    workdir: &Path,
+    timeout_s: u64,
+    network: bool,
+    artifacts: Option<&Path>,
+    shell_state: Option<&Path>,
+    control: &TurnControl,
 ) -> Result<String, String> {
     control.check()?;
     if !bwrap_available() {
@@ -1309,7 +1504,12 @@ pub fn shell_run_stateful(
         std::fs::create_dir_all(state).map_err(|e| format!("cannot create shell state directory: {e}"))?;
     }
     let wrapped = match shell_state {
-        Some(_) => format!("{}{}\n{}", shell_state_preamble(SHELL_STATE_SANDBOX), command, shell_state_capture(SHELL_STATE_SANDBOX)),
+        Some(_) => format!(
+            "{}{}\n{}",
+            shell_state_preamble(SHELL_STATE_SANDBOX),
+            command,
+            shell_state_capture(SHELL_STATE_SANDBOX)
+        ),
         None => command.to_string(),
     };
     let workdir = std::fs::canonicalize(workdir).unwrap_or_else(|_| workdir.to_path_buf());
@@ -1332,9 +1532,7 @@ pub fn shell_run_stateful(
     for (key, value) in toolchain_env() {
         sandbox.env(key, value);
     }
-    let mut child = sandbox
-        .spawn()
-        .map_err(|e| e.to_string())?;
+    let mut child = sandbox.spawn().map_err(|e| e.to_string())?;
     let stdout = child.stdout.take().ok_or("no stdout")?;
     let stderr = child.stderr.take().ok_or("no stderr")?;
     let stdout_reader = drain(stdout, sink.clone());
@@ -1370,9 +1568,13 @@ pub fn shell_run_stateful(
     if failure.is_some() {
         // Killing bwrap tears down its private PID namespace and command tree.
         if let Err(e) = child.kill() {
-            if e.kind() != std::io::ErrorKind::InvalidInput { failure = Some(format!("{}; kill failed: {e}", failure.unwrap())); }
+            if e.kind() != std::io::ErrorKind::InvalidInput {
+                failure = Some(format!("{}; kill failed: {e}", failure.unwrap()));
+            }
         }
-        if let Err(e) = child.wait() { failure = Some(format!("{}; wait failed: {e}", failure.unwrap())); }
+        if let Err(e) = child.wait() {
+            failure = Some(format!("{}; wait failed: {e}", failure.unwrap()));
+        }
     }
     if !join_bounded(vec![stdout_reader, stderr_reader], Duration::from_secs(5)) {
         sink.lock().unwrap().error.get_or_insert_with(|| "output capture incomplete: reader did not finish".into());
@@ -1441,21 +1643,21 @@ pub fn guard_url(url: &str) -> Result<String, String> {
 // Not-globally-reachable blocks from the IANA special-purpose registries,
 // rejected as private/loopback/link-local/reserved/multicast.
 const IPV4_BLOCKED: &[(u128, u8)] = &[
-    (0x0000_0000, 8),   // 0.0.0.0/8
-    (0x0a00_0000, 8),   // 10.0.0.0/8
-    (0x7f00_0000, 8),   // 127.0.0.0/8
-    (0xa9fe_0000, 16),  // 169.254.0.0/16
-    (0xac10_0000, 12),  // 172.16.0.0/12
-    (0xc000_0000, 24),  // 192.0.0.0/24
-    (0xc000_00aa, 31),  // 192.0.0.170/31
-    (0xc000_0200, 24),  // 192.0.2.0/24
-    (0xc0a8_0000, 16),  // 192.168.0.0/16
-    (0xc612_0000, 15),  // 198.18.0.0/15
-    (0xc633_6400, 24),  // 198.51.100.0/24
-    (0xcb00_7100, 24),  // 203.0.113.0/24
-    (0xe000_0000, 4),   // 224.0.0.0/4 multicast
-    (0xf000_0000, 4),   // 240.0.0.0/4 reserved
-    (0xffff_ffff, 32),  // 255.255.255.255
+    (0x0000_0000, 8),  // 0.0.0.0/8
+    (0x0a00_0000, 8),  // 10.0.0.0/8
+    (0x7f00_0000, 8),  // 127.0.0.0/8
+    (0xa9fe_0000, 16), // 169.254.0.0/16
+    (0xac10_0000, 12), // 172.16.0.0/12
+    (0xc000_0000, 24), // 192.0.0.0/24
+    (0xc000_00aa, 31), // 192.0.0.170/31
+    (0xc000_0200, 24), // 192.0.2.0/24
+    (0xc0a8_0000, 16), // 192.168.0.0/16
+    (0xc612_0000, 15), // 198.18.0.0/15
+    (0xc633_6400, 24), // 198.51.100.0/24
+    (0xcb00_7100, 24), // 203.0.113.0/24
+    (0xe000_0000, 4),  // 224.0.0.0/4 multicast
+    (0xf000_0000, 4),  // 240.0.0.0/4 reserved
+    (0xffff_ffff, 32), // 255.255.255.255
 ];
 /// Addresses inside a blocked block that are globally reachable (IANA exceptions).
 const IPV4_ALLOWED: &[(u128, u8)] = &[(0xc000_0009, 32), (0xc000_000a, 32)];
@@ -1482,33 +1684,33 @@ fn is_private_v4(addr: std::net::Ipv4Addr) -> bool {
 /// Private, loopback, link-local, unique-local, reserved and multicast space
 /// (ipaddress.IPv6Address: _private_networks + _reserved_networks + multicast).
 const IPV6_BLOCKED: &[([u16; 8], u8)] = &[
-    ([0, 0, 0, 0, 0, 0, 0, 1], 128),             // ::1
-    ([0, 0, 0, 0, 0, 0, 0, 0], 128),             // ::
-    ([0, 0, 0, 0, 0, 0xffff, 0, 0], 96),         // ::ffff:0:0/96 (v4-mapped)
-    ([0x64, 0xff9b, 1, 0, 0, 0, 0, 0], 48),      // 64:ff9b:1::/48
-    ([0x100, 0, 0, 0, 0, 0, 0, 0], 64),          // 100::/64
-    ([0x2001, 0, 0, 0, 0, 0, 0, 0], 23),         // 2001::/23
-    ([0x2001, 0xdb8, 0, 0, 0, 0, 0, 0], 32),     // 2001:db8::/32
-    ([0x2002, 0, 0, 0, 0, 0, 0, 0], 16),         // 2002::/16
-    ([0x3fff, 0, 0, 0, 0, 0, 0, 0], 20),         // 3fff::/20
-    ([0xfc00, 0, 0, 0, 0, 0, 0, 0], 7),          // fc00::/7 unique local
-    ([0xfe80, 0, 0, 0, 0, 0, 0, 0], 10),         // fe80::/10 link local
-    ([0, 0, 0, 0, 0, 0, 0, 0], 8),               // ::/8
-    ([0x100, 0, 0, 0, 0, 0, 0, 0], 8),           // 100::/8
-    ([0x200, 0, 0, 0, 0, 0, 0, 0], 7),           // 200::/7
-    ([0x400, 0, 0, 0, 0, 0, 0, 0], 6),           // 400::/6
-    ([0x800, 0, 0, 0, 0, 0, 0, 0], 5),           // 800::/5
-    ([0x1000, 0, 0, 0, 0, 0, 0, 0], 4),          // 1000::/4
-    ([0x4000, 0, 0, 0, 0, 0, 0, 0], 3),          // 4000::/3
-    ([0x6000, 0, 0, 0, 0, 0, 0, 0], 3),          // 6000::/3
-    ([0x8000, 0, 0, 0, 0, 0, 0, 0], 3),          // 8000::/3
-    ([0xa000, 0, 0, 0, 0, 0, 0, 0], 3),          // a000::/3
-    ([0xc000, 0, 0, 0, 0, 0, 0, 0], 3),          // c000::/3
-    ([0xe000, 0, 0, 0, 0, 0, 0, 0], 4),          // e000::/4
-    ([0xf000, 0, 0, 0, 0, 0, 0, 0], 5),          // f000::/5
-    ([0xf800, 0, 0, 0, 0, 0, 0, 0], 6),          // f800::/6
-    ([0xfe00, 0, 0, 0, 0, 0, 0, 0], 9),          // fe00::/9
-    ([0xff00, 0, 0, 0, 0, 0, 0, 0], 8),          // ff00::/8 multicast
+    ([0, 0, 0, 0, 0, 0, 0, 1], 128),         // ::1
+    ([0, 0, 0, 0, 0, 0, 0, 0], 128),         // ::
+    ([0, 0, 0, 0, 0, 0xffff, 0, 0], 96),     // ::ffff:0:0/96 (v4-mapped)
+    ([0x64, 0xff9b, 1, 0, 0, 0, 0, 0], 48),  // 64:ff9b:1::/48
+    ([0x100, 0, 0, 0, 0, 0, 0, 0], 64),      // 100::/64
+    ([0x2001, 0, 0, 0, 0, 0, 0, 0], 23),     // 2001::/23
+    ([0x2001, 0xdb8, 0, 0, 0, 0, 0, 0], 32), // 2001:db8::/32
+    ([0x2002, 0, 0, 0, 0, 0, 0, 0], 16),     // 2002::/16
+    ([0x3fff, 0, 0, 0, 0, 0, 0, 0], 20),     // 3fff::/20
+    ([0xfc00, 0, 0, 0, 0, 0, 0, 0], 7),      // fc00::/7 unique local
+    ([0xfe80, 0, 0, 0, 0, 0, 0, 0], 10),     // fe80::/10 link local
+    ([0, 0, 0, 0, 0, 0, 0, 0], 8),           // ::/8
+    ([0x100, 0, 0, 0, 0, 0, 0, 0], 8),       // 100::/8
+    ([0x200, 0, 0, 0, 0, 0, 0, 0], 7),       // 200::/7
+    ([0x400, 0, 0, 0, 0, 0, 0, 0], 6),       // 400::/6
+    ([0x800, 0, 0, 0, 0, 0, 0, 0], 5),       // 800::/5
+    ([0x1000, 0, 0, 0, 0, 0, 0, 0], 4),      // 1000::/4
+    ([0x4000, 0, 0, 0, 0, 0, 0, 0], 3),      // 4000::/3
+    ([0x6000, 0, 0, 0, 0, 0, 0, 0], 3),      // 6000::/3
+    ([0x8000, 0, 0, 0, 0, 0, 0, 0], 3),      // 8000::/3
+    ([0xa000, 0, 0, 0, 0, 0, 0, 0], 3),      // a000::/3
+    ([0xc000, 0, 0, 0, 0, 0, 0, 0], 3),      // c000::/3
+    ([0xe000, 0, 0, 0, 0, 0, 0, 0], 4),      // e000::/4
+    ([0xf000, 0, 0, 0, 0, 0, 0, 0], 5),      // f000::/5
+    ([0xf800, 0, 0, 0, 0, 0, 0, 0], 6),      // f800::/6
+    ([0xfe00, 0, 0, 0, 0, 0, 0, 0], 9),      // fe00::/9
+    ([0xff00, 0, 0, 0, 0, 0, 0, 0], 8),      // ff00::/8 multicast
 ];
 /// Globally reachable exceptions inside the blocked v6 blocks.
 const IPV6_ALLOWED: &[([u16; 8], u8)] = &[
@@ -1556,9 +1758,8 @@ pub fn web_search(
     let url = url.unwrap_or("https://api.anysearch.com/v1/search");
     let key = api_key_env.and_then(|env| std::env::var(env).ok());
     let count = max_results.clamp(1, 20);
-    let mut request = ureq::post(url)
-        .timeout(std::time::Duration::from_secs(30))
-        .set("content-type", "application/json");
+    let mut request =
+        ureq::post(url).timeout(std::time::Duration::from_secs(30)).set("content-type", "application/json");
     if let Some(key) = key {
         request = request.set("authorization", &format!("Bearer {key}"));
     }
@@ -1658,7 +1859,8 @@ fn http_get_guarded(url: &str, guard: &UrlGuard) -> Result<ureq::Response, Strin
 
 /// Guarded GET, title + readable text body.
 pub fn web_fetch(url: &str, max_bytes: usize, allow_private: bool) -> Result<Json, String> {
-    let guard: UrlGuard = std::sync::Arc::new(move |u: &str| if allow_private { Ok(u.to_string()) } else { guard_url(u) });
+    let guard: UrlGuard =
+        std::sync::Arc::new(move |u: &str| if allow_private { Ok(u.to_string()) } else { guard_url(u) });
     let response = http_get_guarded(url, &guard)?;
     let content_type = response.header("content-type").unwrap_or("").to_string();
     let final_url = response.get_url().to_string();
@@ -1738,11 +1940,8 @@ fn iso_now() -> String {
 /// "YYYY-MM-DDTHH:MM:SSZ" (UTC), no date library needed.
 pub fn iso8601(seconds: i64) -> String {
     let days = seconds.div_euclid(86_400);
-    let (hour, minute, second) = (
-        (seconds.rem_euclid(86_400)) / 3600,
-        (seconds.rem_euclid(3600)) / 60,
-        seconds.rem_euclid(60),
-    );
+    let (hour, minute, second) =
+        ((seconds.rem_euclid(86_400)) / 3600, (seconds.rem_euclid(3600)) / 60, seconds.rem_euclid(60));
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z.rem_euclid(146_097);
@@ -1780,7 +1979,12 @@ mod tests {
         }
         // A temp-file removal models a late filesystem error after preparation.
         std::fs::remove_file(&staged[1].0.temp).unwrap();
-        let error = commit_batch(&mut staged, &expected.iter().map(String::as_str).collect::<Vec<_>>(), &TurnControl::default()).unwrap_err();
+        let error = commit_batch(
+            &mut staged,
+            &expected.iter().map(String::as_str).collect::<Vec<_>>(),
+            &TurnControl::default(),
+        )
+        .unwrap_err();
         assert!(error.contains("no batch edits remain applied"), "{error}");
         assert!(staged[0].0.committed, "the first rename happened before the injected failure");
         drop(staged);
@@ -1797,7 +2001,9 @@ mod tests {
         let mut first = OutputSink::new(Some(&dir)).unwrap();
         let second = OutputSink::new(Some(&dir)).unwrap();
         assert_ne!(first.reference, second.reference);
-        for _ in 0..100 { first.append(&[b'x'; 8192]); }
+        for _ in 0..100 {
+            first.append(&[b'x'; 8192]);
+        }
         assert_eq!(first.head.len(), MAX_OUTPUT);
         assert_eq!(first.total, 819200);
         assert_eq!(first.artifact.as_ref().unwrap().metadata().unwrap().len(), 819200);
@@ -1849,9 +2055,20 @@ mod tests {
         );
 
         // lock files stay out of the project directory
-        let workspace_files: Vec<String> = std::fs::read_dir(&workspace).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
-        assert!(workspace_files.iter().all(|name| !name.ends_with(".lock")), "no lock artifacts in the project: {workspace_files:?}");
-        let lock_files: Vec<String> = std::fs::read_dir(&locks).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        let workspace_files: Vec<String> = std::fs::read_dir(&workspace)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            workspace_files.iter().all(|name| !name.ends_with(".lock")),
+            "no lock artifacts in the project: {workspace_files:?}"
+        );
+        let lock_files: Vec<String> = std::fs::read_dir(&locks)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
         assert_eq!(lock_files.len(), 1, "one stable lock file per target path: {lock_files:?}");
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -1896,11 +2113,8 @@ mod tests {
             file.set_modified(stamp).unwrap();
         }
         assert_eq!(prune_artifacts(&dir, 250), 3, "oldest files go first");
-        let kept: Vec<String> = std::fs::read_dir(&dir)
-            .unwrap()
-            .flatten()
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .collect();
+        let kept: Vec<String> =
+            std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
         assert_eq!(kept.len(), 2, "{kept:?}");
         assert!(kept.iter().all(|name| name == "exec-3.log" || name == "exec-4.log"), "{kept:?}");
         // under budget: nothing is touched, and unrelated files are never candidates
@@ -1914,7 +2128,9 @@ mod tests {
     fn shell_artifact_stops_at_the_size_cap() {
         let dir = std::env::temp_dir().join(format!("ta-artifact-cap-{}", uuid::Uuid::new_v4()));
         let mut sink = OutputSink { cap: 3 * 1024 * 1024, ..OutputSink::new(Some(&dir)).unwrap() };
-        for _ in 0..64 { sink.append(&[b'x'; 65536]); }
+        for _ in 0..64 {
+            sink.append(&[b'x'; 65536]);
+        }
         assert_eq!(sink.total, 4 * 1024 * 1024);
         assert_eq!(sink.written, 3 * 1024 * 1024);
         assert_eq!(sink.artifact.as_ref().unwrap().metadata().unwrap().len(), 3 * 1024 * 1024);
@@ -1925,7 +2141,9 @@ mod tests {
 
     #[test]
     fn cancelled_shell_keeps_partial_output_and_its_artifact() {
-        if !bwrap_available() { return; }
+        if !bwrap_available() {
+            return;
+        }
         let dir = std::env::temp_dir().join(format!("ta-cancel-output-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let artifacts = dir.join("artifacts");
@@ -1933,8 +2151,16 @@ mod tests {
         let child_control = control.clone();
         let child_dir = dir.clone();
         let child_artifacts = artifacts.clone();
-        let job = std::thread::spawn(move || shell_run_with_control(
-            "printf before-cancel; touch ready; sleep 30; touch should-not-exist", &child_dir, 40, false, Some(&child_artifacts), &child_control));
+        let job = std::thread::spawn(move || {
+            shell_run_with_control(
+                "printf before-cancel; touch ready; sleep 30; touch should-not-exist",
+                &child_dir,
+                40,
+                false,
+                Some(&child_artifacts),
+                &child_control,
+            )
+        });
         let started = Instant::now();
         while !dir.join("ready").exists() && !job.is_finished() && started.elapsed() < Duration::from_secs(10) {
             std::thread::sleep(Duration::from_millis(10));
@@ -1942,7 +2168,10 @@ mod tests {
         assert!(dir.join("ready").exists(), "sandbox did not start the command");
         control.cancel();
         let err = job.join().unwrap().unwrap_err();
-        assert!(err.contains("turn interrupted") && err.contains("before-cancel") && err.contains("/artifacts/exec-"), "{err}");
+        assert!(
+            err.contains("turn interrupted") && err.contains("before-cancel") && err.contains("/artifacts/exec-"),
+            "{err}"
+        );
         let files: Vec<_> = std::fs::read_dir(&artifacts).unwrap().map(|entry| entry.unwrap().path()).collect();
         assert_eq!(files.len(), 1);
         assert_eq!(std::fs::read_to_string(&files[0]).unwrap(), "before-cancel");
@@ -1983,11 +2212,16 @@ mod tests {
     #[test]
     fn web_fetch_guards_every_redirect_hop() {
         // P1-2: a redirect to a target the guard refuses must stop the fetch
-        let second = serve_once("HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: 6\r\n\r\nsecret".into());
+        let second =
+            serve_once("HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: 6\r\n\r\nsecret".into());
         let first = serve_once(format!("HTTP/1.1 302 Found\r\nlocation: {second}\r\ncontent-length: 0\r\n\r\n"));
         let allowed = first.clone();
         let guard: UrlGuard = std::sync::Arc::new(move |u: &str| {
-            if u == allowed { Ok(u.to_string()) } else { Err(format!("private address refused: {u}")) }
+            if u == allowed {
+                Ok(u.to_string())
+            } else {
+                Err(format!("private address refused: {u}"))
+            }
         });
         let err = http_get_guarded(&first, &guard).unwrap_err();
         assert!(err.contains("private address"), "{err}");
@@ -1998,7 +2232,11 @@ mod tests {
         // DNS-rebinding TOCTOU: the name-based guard accepts "localhost", but
         // its loopback answer must not reach the connector once re-resolved
         let guard: UrlGuard = std::sync::Arc::new(|u: &str| {
-            if u.contains("localhost") { Ok(u.to_string()) } else { Err(format!("private address refused: {u}")) }
+            if u.contains("localhost") {
+                Ok(u.to_string())
+            } else {
+                Err(format!("private address refused: {u}"))
+            }
         });
         let err = http_get_guarded("http://localhost:1/", &guard).unwrap_err();
         assert!(err.contains("refusing private address"), "{err}");
@@ -2067,7 +2305,11 @@ mod tests {
         let hits = hits.as_str().unwrap();
         assert!(hits.contains("scanpy") && !hits.contains("ponytail"), "{hits}");
         for description in [">\n  single-cell\n  analysis", "|\n  single-cell\n  analysis", "'single-cell analysis'"] {
-            std::fs::write(root.join("scanpy/SKILL.md"), format!("---\nname: scanpy\ndescription: {description}\n---\nscanpy body")).unwrap();
+            std::fs::write(
+                root.join("scanpy/SKILL.md"),
+                format!("---\nname: scanpy\ndescription: {description}\n---\nscanpy body"),
+            )
+            .unwrap();
             let hits = skill_tool(&catalog, &json!({"action":"search", "query":"single-cell"})).unwrap();
             assert!(hits.as_str().unwrap().contains("scanpy"), "{description}: {hits}");
         }
@@ -2161,9 +2403,15 @@ mod tests {
         }
         let dir = std::env::temp_dir().join(format!("ta-toolchain-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(dir.join("src")).unwrap();
-        std::fs::write(dir.join("Cargo.toml"), "[package]\nname = \"probe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n").unwrap();
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[package]\nname = \"probe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
         std::fs::write(dir.join("src/lib.rs"), "#[test]\nfn adds() { assert_eq!(1 + 1, 2); }\n").unwrap();
-        let out = shell_run("cargo test --offline 2>&1 | tail -30; echo cargo-rc=${PIPESTATUS[0]}", &dir, 300, false, None).unwrap();
+        let out =
+            shell_run("cargo test --offline 2>&1 | tail -30; echo cargo-rc=${PIPESTATUS[0]}", &dir, 300, false, None)
+                .unwrap();
         assert!(out.contains("cargo-rc=0") && out.contains("1 passed"), "cargo unusable inside the sandbox: {out}");
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -2203,7 +2451,6 @@ mod tests {
         assert!(executor("web_search", &json!({"query": "q"})).unwrap_err().contains("unsupported"));
     }
 
-
     // -- P1-2 / P2-6 regression tests (review 2026-09-14) --
 
     fn tiny_server(reply: String) -> String {
@@ -2225,12 +2472,9 @@ mod tests {
     #[test]
     fn redirect_chain_is_guarded_at_every_hop() {
         let hop_b = tiny_server("HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: 2\r\n\r\nhi".into());
-        let hop_a = tiny_server(format!(
-            "HTTP/1.1 302 Found\r\nlocation: {hop_b}/secret\r\ncontent-length: 0\r\n\r\n"
-        ));
-        let hop_blocked = tiny_server(
-            "HTTP/1.1 302 Found\r\nlocation: http://blocked.invalid/\r\ncontent-length: 0\r\n\r\n".into(),
-        );
+        let hop_a = tiny_server(format!("HTTP/1.1 302 Found\r\nlocation: {hop_b}/secret\r\ncontent-length: 0\r\n\r\n"));
+        let hop_blocked =
+            tiny_server("HTTP/1.1 302 Found\r\nlocation: http://blocked.invalid/\r\ncontent-length: 0\r\n\r\n".into());
 
         // happy path: an allowed redirect is followed to its 200
         let (a, b) = (hop_a.clone(), hop_b.clone());
@@ -2278,5 +2522,4 @@ mod tests {
         assert!(!names.contains(&"linked".to_string()), "symlinked SKILL.md escaped: {names:?}");
         std::fs::remove_dir_all(&base).ok();
     }
-
 }

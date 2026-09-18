@@ -1,7 +1,7 @@
 //! User config and XDG paths.
 
-use std::collections::HashMap;
 use serde_json::Value as Json;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use teamagents_core::models::UserConfig;
 
@@ -25,15 +25,14 @@ pub fn initialize_config(path: &Path) -> Result<bool, String> {
         }
         Err(e) => return Err(format!("无法创建配置 {}: {e}", path.display())),
     };
-    file.write_all(INITIAL_CONFIG.as_bytes()).and_then(|()| file.sync_all())
+    file.write_all(INITIAL_CONFIG.as_bytes())
+        .and_then(|()| file.sync_all())
         .map_err(|e| format!("写入配置 {} 失败，请检查此文件是否完整：{e}", path.display()))?;
     Ok(true)
 }
 
 fn env_path(key: &str) -> Option<PathBuf> {
-    std::env::var_os(key)
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
+    std::env::var_os(key).filter(|v| !v.is_empty()).map(PathBuf::from)
 }
 
 pub fn home_dir() -> PathBuf {
@@ -110,9 +109,11 @@ pub fn missing_key_envs(catalog: &UserConfig) -> HashMap<String, bool> {
     catalog
         .models
         .iter()
-        .filter_map(|(name, p)| p.api_key_env.as_ref().map(|env| {
-            (name.clone(), std::env::var(env).is_ok_and(|value| !value.trim().is_empty()))
-        }))
+        .filter_map(|(name, p)| {
+            p.api_key_env
+                .as_ref()
+                .map(|env| (name.clone(), std::env::var(env).is_ok_and(|value| !value.trim().is_empty())))
+        })
         .collect()
 }
 
@@ -163,7 +164,10 @@ mod tests {
         let value = serde_json::to_value(UserConfig::default()).unwrap();
         let keys: Vec<String> = value.as_object().unwrap().keys().cloned().collect();
         for key in &keys {
-            assert!(CATALOG_KEYS.contains(&key.as_str()), "UserConfig field {key:?} is not in CATALOG_KEYS: {CATALOG_KEYS:?}");
+            assert!(
+                CATALOG_KEYS.contains(&key.as_str()),
+                "UserConfig field {key:?} is not in CATALOG_KEYS: {CATALOG_KEYS:?}"
+            );
         }
         assert_eq!(keys.len(), CATALOG_KEYS.len(), "CATALOG_KEYS and UserConfig drifted: {keys:?} vs {CATALOG_KEYS:?}");
     }
@@ -296,10 +300,7 @@ pub fn load_user_config_for(cwd: &Path) -> Result<UserConfig, String> {
     merged.insert("models".into(), merge(table(&user, "models"), table(&project, "models"), true));
     merged.insert("tools".into(), merge(table(&user, "tools"), table(&project, "tools"), trusted));
     let list = |v: &toml::Value, key: &str| -> Vec<toml::Value> {
-        v.get(key)
-            .and_then(|t| t.as_array())
-            .cloned()
-            .unwrap_or_default()
+        v.get(key).and_then(|t| t.as_array()).cloned().unwrap_or_default()
     };
     // instruction_files/skills_paths land in every member's prompt, so project
     // sources pass the same trust gate as project tools (P1-3)
@@ -328,9 +329,7 @@ pub fn load_user_config_for(cwd: &Path) -> Result<UserConfig, String> {
         }
     }
     let _ = empty;
-    let catalog: UserConfig = toml::Value::Table(merged)
-        .try_into()
-        .map_err(|e| format!("bad config: {e}"))?;
+    let catalog: UserConfig = toml::Value::Table(merged).try_into().map_err(|e| format!("bad config: {e}"))?;
     validate_configured_paths(&catalog)?;
     Ok(catalog)
 }
@@ -339,14 +338,12 @@ fn project_permissions(user: &toml::Value) -> Result<(bool, String), String> {
     let Some(permissions) = user.get("permissions") else {
         return Ok((false, "approved_scope".into()));
     };
-    let table = permissions
-        .as_table()
-        .ok_or_else(|| "[permissions] must be a table in user config".to_string())?;
+    let table = permissions.as_table().ok_or_else(|| "[permissions] must be a table in user config".to_string())?;
     let trusted = match table.get("trust_project_tools") {
         None => false,
-        Some(value) => value.as_bool().ok_or_else(|| {
-            format!("permissions.trust_project_tools must be true/false, got {value}")
-        })?,
+        Some(value) => {
+            value.as_bool().ok_or_else(|| format!("permissions.trust_project_tools must be true/false, got {value}"))?
+        }
     };
     let mode = match table.get("mode") {
         None => "approved_scope".to_string(),
@@ -444,10 +441,7 @@ model = "project-loses"
         let mut user_text = std::fs::read_to_string(user_config_path()).unwrap();
         user_text = user_text.replace("trust_project_tools = true", "trust_project_tools = false");
         std::fs::write(user_config_path(), user_text).unwrap();
-        write(
-            &project_config_path(&project),
-            "[tools.sneaky]\nkind = \"mcp\"\ncommand = \"rm\"\n",
-        );
+        write(&project_config_path(&project), "[tools.sneaky]\nkind = \"mcp\"\ncommand = \"rm\"\n");
         let catalog = load_user_config_for(&project).unwrap();
         assert!(!catalog.tools.contains_key("sneaky"), "untrusted project tools are ignored");
         let _ = std::fs::remove_dir_all(&root);

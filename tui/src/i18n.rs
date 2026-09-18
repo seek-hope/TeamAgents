@@ -255,11 +255,8 @@ fn en_map() -> &'static HashMap<&'static str, &'static str> {
 /// tr(): zh-CN keeps the message id, anything else renders English.
 /// Args fill {name} placeholders; {name!r} wraps the value in single quotes.
 pub fn tr(lang: &str, msg: &str, args: &[(&str, &str)]) -> String {
-    let template = if lang == "zh-CN" {
-        msg.to_string()
-    } else {
-        en_map().get(msg).copied().unwrap_or(msg).to_string()
-    };
+    let template =
+        if lang == "zh-CN" { msg.to_string() } else { en_map().get(msg).copied().unwrap_or(msg).to_string() };
     let mut out = template;
     for (k, v) in args {
         out = out.replace(&format!("{{{k}!r}}"), &format!("'{v}'"));
@@ -337,16 +334,14 @@ fn atomic_write_json(path: PathBuf, payload: &serde_json::Value) -> std::io::Res
 }
 
 pub fn write_preferences(language: &str, animations: bool) -> std::io::Result<()> {
-    atomic_write_json(state_dir().join("ui.json"),
-        &serde_json::json!({"language": language, "animations": animations}))
+    atomic_write_json(state_dir().join("ui.json"), &serde_json::json!({"language": language, "animations": animations}))
 }
 
 pub fn read_history() -> Vec<String> {
     let data = std::fs::read_to_string(state_dir().join("composer-history.json")).unwrap_or_default();
     let v: serde_json::Value = serde_json::from_str(&data).unwrap_or(serde_json::Value::Null);
-    let mut items: Vec<String> = v.as_array().map(|a| {
-        a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()
-    }).unwrap_or_default();
+    let mut items: Vec<String> =
+        v.as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default();
     if items.len() > HISTORY_LIMIT {
         items.drain(..items.len() - HISTORY_LIMIT);
     }
@@ -355,8 +350,7 @@ pub fn read_history() -> Vec<String> {
 
 pub fn write_history(entries: &[String]) -> std::io::Result<()> {
     let start = entries.len().saturating_sub(HISTORY_LIMIT);
-    atomic_write_json(state_dir().join("composer-history.json"),
-        &serde_json::json!(entries[start..]))
+    atomic_write_json(state_dir().join("composer-history.json"), &serde_json::json!(entries[start..]))
 }
 
 #[cfg(test)]
@@ -373,16 +367,24 @@ mod tests {
 
     #[test]
     fn tr_repr_quotes() {
-        let s = tr("en", "⚠ 模型 profile {v0!r} 需要环境变量 {v1}，当前未设置：请 export 后重开会话。",
-                   &[("v0", "leader_main"), ("v1", "OPENAI_API_KEY")]);
+        let s = tr(
+            "en",
+            "⚠ 模型 profile {v0!r} 需要环境变量 {v1}，当前未设置：请 export 后重开会话。",
+            &[("v0", "leader_main"), ("v1", "OPENAI_API_KEY")],
+        );
         assert!(s.contains("'leader_main'"), "{s}");
         assert!(s.contains("OPENAI_API_KEY"), "{s}");
     }
 
     #[test]
     fn status_labels_cover_all() {
-        for (s, en) in [("RUNNING", "Working"), ("IDLE", "Idle"), ("SUCCEEDED", "Completed"),
-                        ("BLOCKED", "Blocked"), ("OUTCOME_UNKNOWN", "Outcome unknown")] {
+        for (s, en) in [
+            ("RUNNING", "Working"),
+            ("IDLE", "Idle"),
+            ("SUCCEEDED", "Completed"),
+            ("BLOCKED", "Blocked"),
+            ("OUTCOME_UNKNOWN", "Outcome unknown"),
+        ] {
             assert_eq!(tr("en", status_label_id(s), &[]), en);
         }
     }

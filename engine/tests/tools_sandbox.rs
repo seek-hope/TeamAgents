@@ -40,29 +40,41 @@ fn batch_edits_are_all_or_nothing() {
     let edit = |path: &str, from: &str, to: &str| json!({"path": path, "old_string": from, "new_string": to});
 
     // one edit cannot match -> neither file changes
-    let error = executor("edit_files", &json!({"edits": [
-        edit("a.txt", "alpha = 1", "alpha = 2"),
-        edit("b.txt", "beta = 99", "beta = 2"),
-    ]})).unwrap_err();
+    let error = executor(
+        "edit_files",
+        &json!({"edits": [
+            edit("a.txt", "alpha = 1", "alpha = 2"),
+            edit("b.txt", "beta = 99", "beta = 2"),
+        ]}),
+    )
+    .unwrap_err();
     assert!(error.contains("b.txt"), "{error}");
     assert_eq!(std::fs::read_to_string(workspace.join("a.txt")).unwrap(), "alpha = 1\n", "nothing was half-applied");
     assert_eq!(std::fs::read_to_string(workspace.join("b.txt")).unwrap(), "beta = 1\n");
 
     // the same batch with a matching second edit applies both and reports diffs
-    let report = executor("edit_files", &json!({"edits": [
-        edit("a.txt", "alpha = 1", "alpha = 2"),
-        edit("b.txt", "beta = 1", "beta = 2"),
-    ]})).unwrap();
+    let report = executor(
+        "edit_files",
+        &json!({"edits": [
+            edit("a.txt", "alpha = 1", "alpha = 2"),
+            edit("b.txt", "beta = 1", "beta = 2"),
+        ]}),
+    )
+    .unwrap();
     let report = report.as_str().unwrap_or_default().to_string();
     assert!(report.contains("a.txt") && report.contains("b.txt"), "{report}");
     assert_eq!(std::fs::read_to_string(workspace.join("a.txt")).unwrap(), "alpha = 2\n");
     assert_eq!(std::fs::read_to_string(workspace.join("b.txt")).unwrap(), "beta = 2\n");
 
     // two edits to one file in the same call are refused (they would race each other)
-    let error = executor("edit_files", &json!({"edits": [
-        edit("a.txt", "alpha = 2", "alpha = 3"),
-        edit("a.txt", "alpha = 3", "alpha = 4"),
-    ]})).unwrap_err();
+    let error = executor(
+        "edit_files",
+        &json!({"edits": [
+            edit("a.txt", "alpha = 2", "alpha = 3"),
+            edit("a.txt", "alpha = 3", "alpha = 4"),
+        ]}),
+    )
+    .unwrap_err();
     assert!(error.contains("one edit per file"), "{error}");
     assert_eq!(std::fs::read_to_string(workspace.join("a.txt")).unwrap(), "alpha = 2\n");
     let _ = std::fs::remove_dir_all(&base);
@@ -74,10 +86,14 @@ fn batch_edits_reject_oversized_results_before_changing_any_file() {
     std::fs::write(root.join("a.txt"), "alpha").unwrap();
     std::fs::write(root.join("b.txt"), "beta").unwrap();
     let executor = tools::workspace_executor(root.clone(), None);
-    let error = executor("edit_files", &json!({"edits": [
-        {"path": "a.txt", "old_string": "alpha", "new_string": "changed"},
-        {"path": "b.txt", "old_string": "beta", "new_string": "x".repeat(10 * 1024 * 1024 + 1)},
-    ]})).unwrap_err();
+    let error = executor(
+        "edit_files",
+        &json!({"edits": [
+            {"path": "a.txt", "old_string": "alpha", "new_string": "changed"},
+            {"path": "b.txt", "old_string": "beta", "new_string": "x".repeat(10 * 1024 * 1024 + 1)},
+        ]}),
+    )
+    .unwrap_err();
     assert!(error.contains("too large"), "{error}");
     assert_eq!(std::fs::read_to_string(root.join("a.txt")).unwrap(), "alpha");
     assert_eq!(std::fs::read_to_string(root.join("b.txt")).unwrap(), "beta");
@@ -95,16 +111,26 @@ fn batch_edits_recheck_all_versions_after_waiting_for_locks() {
     std::fs::write(root.join("b.txt"), "beta").unwrap();
     let lock = |name: &str| {
         let hash = format!("{:x}", Sha256::digest(root.join(name).to_string_lossy().as_bytes()));
-        std::fs::OpenOptions::new().create(true).read(true).write(true).open(locks.join(format!("{hash}.lock"))).unwrap()
+        std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(locks.join(format!("{hash}.lock")))
+            .unwrap()
     };
     let first_lock = lock("a.txt");
     let second_lock = lock("b.txt");
     second_lock.lock().unwrap();
     let executor = tools::workspace_executor(root.clone(), Some(base.join("artifacts")));
-    let handle = std::thread::spawn(move || executor("edit_files", &json!({"edits": [
-        {"path": "a.txt", "old_string": "alpha", "new_string": "changed-a"},
-        {"path": "b.txt", "old_string": "beta", "new_string": "changed-b"},
-    ]})));
+    let handle = std::thread::spawn(move || {
+        executor(
+            "edit_files",
+            &json!({"edits": [
+                {"path": "a.txt", "old_string": "alpha", "new_string": "changed-a"},
+                {"path": "b.txt", "old_string": "beta", "new_string": "changed-b"},
+            ]}),
+        )
+    });
     let deadline = Instant::now() + Duration::from_secs(3);
     let held = loop {
         match first_lock.try_lock() {
@@ -112,7 +138,9 @@ fn batch_edits_recheck_all_versions_after_waiting_for_locks() {
             Ok(()) => first_lock.unlock().unwrap(),
             Err(error) => panic!("unexpected lock error: {error}"),
         }
-        if Instant::now() >= deadline { break false; }
+        if Instant::now() >= deadline {
+            break false;
+        }
         std::thread::sleep(Duration::from_millis(5));
     };
     // Simulate an external editor while the batch waits for the second lock.
@@ -162,9 +190,20 @@ fn persistent_shell_keeps_cd_and_exports_between_commands() {
     std::fs::create_dir_all(workspace.join("sub")).unwrap();
     let control = teamagents_engine::gateway::TurnControl::default();
 
-    let first = tools::shell_run_stateful("cd sub && export TA_MARK=42 && pwd", &workspace, 30, false, None, Some(&state), &control).unwrap();
+    let first = tools::shell_run_stateful(
+        "cd sub && export TA_MARK=42 && pwd",
+        &workspace,
+        30,
+        false,
+        None,
+        Some(&state),
+        &control,
+    )
+    .unwrap();
     assert!(first.contains("sub"), "first command reports the new cwd: {first}");
-    let second = tools::shell_run_stateful("pwd && echo \"mark=$TA_MARK\"", &workspace, 30, false, None, Some(&state), &control).unwrap();
+    let second =
+        tools::shell_run_stateful("pwd && echo \"mark=$TA_MARK\"", &workspace, 30, false, None, Some(&state), &control)
+            .unwrap();
     assert!(second.starts_with("[cwd: "), "the model is told where it is: {second}");
     assert!(second.contains("sub"), "cd persisted: {second}");
     assert!(second.contains("mark=42"), "export persisted: {second}");
@@ -174,7 +213,11 @@ fn persistent_shell_keeps_cd_and_exports_between_commands() {
     assert!(!plain.contains("sub"), "no state, no persisted cwd: {plain}");
 
     // and none of that state leaked into the project
-    let entries: Vec<String> = std::fs::read_dir(&workspace).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+    let entries: Vec<String> = std::fs::read_dir(&workspace)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
     assert_eq!(entries, vec!["sub".to_string()], "workspace holds only what the command created: {entries:?}");
     let _ = std::fs::remove_dir_all(&base);
 }
@@ -198,7 +241,15 @@ fn an_interrupted_command_does_not_advance_the_shell_state() {
         std::thread::sleep(Duration::from_millis(300));
         handle.cancel();
     });
-    let interrupted = tools::shell_run_stateful("cd /tmp && sleep 5 && echo changed", &workspace, 30, false, None, Some(&state), &cancelling);
+    let interrupted = tools::shell_run_stateful(
+        "cd /tmp && sleep 5 && echo changed",
+        &workspace,
+        30,
+        false,
+        None,
+        Some(&state),
+        &cancelling,
+    );
     assert!(interrupted.is_err(), "a cancelled command is reported as interrupted");
 
     let after = tools::shell_run_stateful("pwd", &workspace, 30, false, None, Some(&state), &control).unwrap();
@@ -240,7 +291,8 @@ fn paged_reads_preserve_middle_lines_and_multibyte_long_lines() {
     let text = format!("first\n{}\nlast\n", "中文🙂".repeat(15_000));
     std::fs::write(dir.join("large.txt"), &text).unwrap();
     let executor = tools::workspace_executor(dir.clone(), Some(artifacts.clone()));
-    let first = executor("read_file", &json!({"path":"large.txt", "offset":1, "limit":1, "include_sha256":true})).unwrap();
+    let first =
+        executor("read_file", &json!({"path":"large.txt", "offset":1, "limit":1, "include_sha256":true})).unwrap();
     assert_eq!(first["content"], "first\n");
     assert_eq!(first["next_offset"], 2);
     assert_eq!(first["sha256"], format!("{:x}", Sha256::digest(text.as_bytes())));
@@ -254,7 +306,9 @@ fn paged_reads_preserve_middle_lines_and_multibyte_long_lines() {
     }
     assert_eq!(recovered, text);
     assert_eq!(executor("read_file", &json!({"path":"large.txt","offset":3,"limit":1})).unwrap()["content"], "last\n");
-    for args in [json!({"offset":0}), json!({"limit":0}), json!({"byte_offset":-1}), json!({"offset":2,"byte_offset":6})] {
+    for args in
+        [json!({"offset":0}), json!({"limit":0}), json!({"byte_offset":-1}), json!({"offset":2,"byte_offset":6})]
+    {
         let mut args = args;
         args["path"] = json!("large.txt");
         assert!(executor("read_file", &args).is_err());
@@ -293,7 +347,12 @@ fn edits_reject_ambiguous_matches_and_writes_preserve_permissions_and_versions()
     let mut old = String::new();
     original.take(100).read_to_string(&mut old).unwrap();
     assert_eq!(old, "aaa\nunique\n");
-    assert!(executor("write_file", &json!({"path":"source.rs","content":"stale","expected_sha256":snapshot["sha256"]})).unwrap_err().contains("conflict"));
+    assert!(executor(
+        "write_file",
+        &json!({"path":"source.rs","content":"stale","expected_sha256":snapshot["sha256"]})
+    )
+    .unwrap_err()
+    .contains("conflict"));
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "aaa\nchanged\n");
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "failed mutations clean their staging file");
     std::fs::remove_dir_all(dir).unwrap();
@@ -305,15 +364,20 @@ fn independent_members_cannot_both_commit_the_same_file_version() {
     std::fs::write(dir.join("shared.txt"), "original").unwrap();
     let hash = format!("{:x}", Sha256::digest(b"original"));
     let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
-    let jobs: Vec<_> = (0..2).map(|index| {
-        let executor = tools::workspace_executor(dir.clone(), None);
-        let barrier = barrier.clone();
-        let hash = hash.clone();
-        std::thread::spawn(move || {
-            barrier.wait();
-            executor("write_file", &json!({"path":"shared.txt", "content":format!("member-{index}"),"expected_sha256":hash}))
+    let jobs: Vec<_> = (0..2)
+        .map(|index| {
+            let executor = tools::workspace_executor(dir.clone(), None);
+            let barrier = barrier.clone();
+            let hash = hash.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                executor(
+                    "write_file",
+                    &json!({"path":"shared.txt", "content":format!("member-{index}"),"expected_sha256":hash}),
+                )
+            })
         })
-    }).collect();
+        .collect();
     let results: Vec<_> = jobs.into_iter().map(|job| job.join().unwrap()).collect();
     assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
     assert!(results.iter().find_map(|result| result.as_ref().err()).unwrap().contains("conflict"));
@@ -322,7 +386,9 @@ fn independent_members_cannot_both_commit_the_same_file_version() {
 
 #[test]
 fn searches_respect_ignores_and_workspace_boundaries() {
-    if !has_bwrap() || tools::which("rg").is_none() { return; }
+    if !has_bwrap() || tools::which("rg").is_none() {
+        return;
+    }
     let dir = scratch("search-ignore");
     std::fs::create_dir_all(dir.join(".git")).unwrap();
     std::fs::create_dir_all(dir.join("src")).unwrap();
@@ -395,7 +461,8 @@ fn long_shell_output_is_stored_as_a_readable_artifact() {
         .unwrap_or_else(|| panic!("no artifact reference in {}", &output[..200.min(output.len())]))
         .to_string();
     assert!(reference.starts_with("/artifacts/exec-"), "{reference}");
-    let stored = std::fs::read_to_string(artifacts.join(reference.trim_start_matches("/artifacts/"))).expect("artifact file");
+    let stored =
+        std::fs::read_to_string(artifacts.join(reference.trim_start_matches("/artifacts/"))).expect("artifact file");
     assert_eq!(stored.lines().count(), 40000, "the artifact holds the full output");
     assert!(stored.ends_with("40000\n"));
 
@@ -403,7 +470,10 @@ fn long_shell_output_is_stored_as_a_readable_artifact() {
     let executor =
         tools::member_executor(dir.clone(), UserConfig::default(), vec!["files".into()], Some(artifacts.clone()));
     let via_read_file = executor("read_file", &json!({"path": reference})).expect("read_file /artifacts/...");
-    assert_eq!(via_read_file["content"].as_str().unwrap(), stored.lines().take(2000).map(|line| format!("{line}\n")).collect::<String>());
+    assert_eq!(
+        via_read_file["content"].as_str().unwrap(),
+        stored.lines().take(2000).map(|line| format!("{line}\n")).collect::<String>()
+    );
     assert_eq!(via_read_file["next_offset"], 2001);
     let via_tool = executor("read_artifact", &json!({"path": reference.trim_start_matches("/artifacts/")})).unwrap();
     assert_eq!(via_tool, via_read_file);
@@ -466,11 +536,12 @@ fn web_tools_are_fail_closed_and_ordered_by_member_binding() {
     let dir = scratch("web-bindings");
     let mut catalog = UserConfig::default();
     catalog.tools.insert("search_unknown".into(), binding(json!({"kind": "web_search", "provider": "nope"})));
-    catalog.tools.insert(
-        "search_anysearch".into(),
-        binding(json!({"kind": "web_search", "url": "http://127.0.0.1:1/search"})),
-    );
-    catalog.tools.insert("fetch_private_ok".into(), binding(json!({"kind": "web_fetch", "env": {"allow_private": "1"}})));
+    catalog
+        .tools
+        .insert("search_anysearch".into(), binding(json!({"kind": "web_search", "url": "http://127.0.0.1:1/search"})));
+    catalog
+        .tools
+        .insert("fetch_private_ok".into(), binding(json!({"kind": "web_fetch", "env": {"allow_private": "1"}})));
     catalog.tools.insert("fetch_guarded".into(), binding(json!({"kind": "web_fetch"})));
 
     // nothing bound → explicit refusal, not a catalog-wide lookup
@@ -508,21 +579,24 @@ fn web_tools_are_fail_closed_and_ordered_by_member_binding() {
         }
     });
     let url = format!("http://127.0.0.1:{port}/");
-    let allowed = tools::member_executor(dir.clone(), catalog.clone(), vec!["fetch_private_ok".into()], None)
-        ("web_fetch", &json!({"url": url}))
+    let allowed = tools::member_executor(dir.clone(), catalog.clone(), vec!["fetch_private_ok".into()], None)(
+        "web_fetch",
+        &json!({"url": url}),
+    )
     .expect("the allow_private binding is used");
     assert_eq!(allowed["title"], "Bound", "the allow_private binding is used");
-    let guarded = tools::member_executor(dir.clone(), catalog.clone(), vec!["fetch_guarded".into()], None)
-        ("web_fetch", &json!({"url": url}))
+    let guarded = tools::member_executor(dir.clone(), catalog.clone(), vec!["fetch_guarded".into()], None)(
+        "web_fetch",
+        &json!({"url": url}),
+    )
     .expect_err("the guarded binding refuses loopback");
     assert!(guarded.contains("private address"), "{guarded}");
     let _ = page.join();
 
     // a required web service that cannot work fails at load time
-    catalog.tools.insert(
-        "search_required".into(),
-        binding(json!({"kind": "web_search", "provider": "nope", "required": true})),
-    );
+    catalog
+        .tools
+        .insert("search_required".into(), binding(json!({"kind": "web_search", "provider": "nope", "required": true})));
     let err = tools::validate_web_bindings(&catalog, &["search_required".into()]).unwrap_err();
     assert!(err.contains("required tool service"), "{err}");
     assert!(tools::validate_web_bindings(&catalog, &["search_unknown".into()]).is_ok());

@@ -83,10 +83,7 @@ pub fn render(text: &str, width: usize) -> Vec<Line<'static>> {
                 out.push(Line::raw(""));
                 fence_started = true;
             }
-            out.push(Line::from(Span::styled(
-                format!(" {line}"),
-                Style::default().fg(FG).bg(PANEL_BG),
-            )));
+            out.push(Line::from(Span::styled(format!(" {line}"), Style::default().fg(FG).bg(PANEL_BG))));
             continue;
         }
         let trimmed = line.trim();
@@ -100,9 +97,9 @@ pub fn render(text: &str, width: usize) -> Vec<Line<'static>> {
         }
         if let Some(rest) = trimmed.strip_prefix('>') {
             let mut spans = vec![Span::styled("▌ ", Style::default().fg(ACCENT))];
-            spans.extend(inline(rest.trim()).into_iter().map(|s| {
-                Span::styled(s.content.into_owned(), s.style.fg(NOTICE))
-            }));
+            spans.extend(
+                inline(rest.trim()).into_iter().map(|s| Span::styled(s.content.into_owned(), s.style.fg(NOTICE))),
+            );
             out.push(Line::from(spans));
             continue;
         }
@@ -209,10 +206,7 @@ mod tests {
         assert_eq!(texts, vec!["a", "", "────────", "b"]);
         // Rich baseline: " • item" / " 1 item", nested lists step by 3 spaces
         let lists = render("- one\n  - nested\n1. first", 40);
-        let texts: Vec<String> = lists
-            .iter()
-            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
-            .collect();
+        let texts: Vec<String> = lists.iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect()).collect();
         assert_eq!(texts, vec![" • one", "    • nested", " 1 first"]);
     }
 }

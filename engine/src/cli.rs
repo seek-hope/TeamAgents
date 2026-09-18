@@ -8,8 +8,8 @@ use crate::tools::{bwrap_available, shell_run, which};
 use crate::VERSION;
 use serde_json::{json, Value as Json};
 use std::io::{BufRead, Read, Write};
-use std::time::{Duration, Instant};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 pub fn init() -> i32 {
     let path = user_config_path();
@@ -26,7 +26,10 @@ pub fn init() -> i32 {
             println!("下一步：teamagents doctor；然后在项目目录运行 teamagents。");
             0
         }
-        Err(error) => { eprintln!("初始化失败：{error}"); 1 }
+        Err(error) => {
+            eprintln!("初始化失败：{error}");
+            1
+        }
     }
 }
 
@@ -58,12 +61,19 @@ pub fn doctor() -> i32 {
         Ok(catalog) => {
             let models: Vec<&String> = catalog.models.keys().collect();
             let tools: Vec<&String> = catalog.tools.keys().collect();
-            check(&mut results, "user config", !catalog.models.is_empty(),
+            check(
+                &mut results,
+                "user config",
+                !catalog.models.is_empty(),
                 if catalog.models.is_empty() {
-                    format!("{}：尚未配置模型；首次使用请运行 teamagents init，已有文件请补齐 [models.leader_main]", config_path.display())
+                    format!(
+                        "{}：尚未配置模型；首次使用请运行 teamagents init，已有文件请补齐 [models.leader_main]",
+                        config_path.display()
+                    )
                 } else {
                     format!("{} models={models:?} tools={tools:?}", config_path.display())
-                });
+                },
+            );
             let mut keys: Vec<_> = missing_key_envs(catalog).into_iter().collect();
             keys.sort_by(|a, b| a.0.cmp(&b.0));
             for (name, present) in keys {
@@ -77,7 +87,11 @@ pub fn doctor() -> i32 {
                         "{}/{} {}",
                         profile.provider,
                         profile.model,
-                        if present { String::new() } else { format!("（环境变量 {env} 未设置或为空，请设置后重试）") }
+                        if present {
+                            String::new()
+                        } else {
+                            format!("（环境变量 {env} 未设置或为空，请设置后重试）")
+                        }
                     ),
                 );
             }
@@ -108,19 +122,26 @@ pub fn doctor() -> i32 {
         Some(codex) => {
             let codex = codex.to_string_lossy().into_owned();
             let help = std::process::Command::new(&codex).args(["app-server", "--help"]).output();
-            let app_server = help.map(|out| String::from_utf8_lossy(&out.stdout).contains("app-server")).unwrap_or(false);
+            let app_server =
+                help.map(|out| String::from_utf8_lossy(&out.stdout).contains("app-server")).unwrap_or(false);
             // `codex --version` already prefixes itself ("codex-cli x.y.z")
             optional_check(&mut results, "codex app-server", app_server, codex_version(&codex));
             let (schema_ok, detail) = codex_schema_check(&codex);
             optional_check(&mut results, "codex protocol schema", schema_ok, detail);
         }
-        None => optional_check(&mut results, "codex app-server", false, "未安装 Codex CLI；仅 Codex 执行成员需要，内置成员可正常使用".into()),
+        None => optional_check(
+            &mut results,
+            "codex app-server",
+            false,
+            "未安装 Codex CLI；仅 Codex 执行成员需要，内置成员可正常使用".into(),
+        ),
     }
     // hooks are easy to break silently: a wrong path only shows up as a stderr
     // line at event time, so doctor checks the programs exist and are executable
     match &catalog {
         Ok(catalog) => {
-            for (label, argv) in [("hooks.notify", &catalog.hooks.notify), ("hooks.pre_tool", &catalog.hooks.pre_tool)] {
+            for (label, argv) in [("hooks.notify", &catalog.hooks.notify), ("hooks.pre_tool", &catalog.hooks.pre_tool)]
+            {
                 let Some(program) = argv.first().filter(|p| !p.trim().is_empty()) else { continue };
                 let path = Path::new(program);
                 let runnable = if path.components().count() > 1 {
@@ -135,11 +156,14 @@ pub fn doctor() -> i32 {
                     &mut results,
                     "retention",
                     true,
-                    format!("archived_days={} history_days={}", catalog.retention.archived_days, catalog.retention.history_days),
+                    format!(
+                        "archived_days={} history_days={}",
+                        catalog.retention.archived_days, catalog.retention.history_days
+                    ),
                 );
             }
         }
-        Err(_) => {},
+        Err(_) => {}
     }
     let dir = sessions_dir();
     let probe = dir.join(".doctor-probe");
@@ -208,10 +232,8 @@ fn codex_schema_check(codex: &str) -> (bool, String) {
         &["item/commandExecution/requestApproval", "item/fileChange/requestApproval", "item/tool/requestUserInput"];
     let dir = std::env::temp_dir().join(format!("ta-codex-schema-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let run = std::process::Command::new(codex)
-        .args(["app-server", "generate-json-schema", "--out"])
-        .arg(&dir)
-        .output();
+    let run =
+        std::process::Command::new(codex).args(["app-server", "generate-json-schema", "--out"]).arg(&dir).output();
     let result = match run {
         Ok(out) if out.status.success() => (|| -> Result<String, String> {
             let client = schema_methods(&dir.join("ClientRequest.json"))?;
@@ -295,11 +317,7 @@ pub fn prune_sessions_cmd(days: u64, history_days: Option<u64>, dry_run: bool) -
     let session_id = |entry: &Json| entry.get("session_id").and_then(|v| v.as_str()).unwrap_or("?").to_string();
     let removed = report.get("removed").and_then(Json::as_array).cloned().unwrap_or_default();
     let skipped = report.get("skipped").and_then(Json::as_array).cloned().unwrap_or_default();
-    println!(
-        "归档会话保留策略：{} 天（{}）",
-        days,
-        if dry_run { "试运行，不删除" } else { "删除超期归档会话" }
-    );
+    println!("归档会话保留策略：{} 天（{}）", days, if dry_run { "试运行，不删除" } else { "删除超期归档会话" });
     for entry in &removed {
         println!(
             "  {} {}（最后一次更新 {} 天前，{:.1} MB）",
@@ -333,7 +351,13 @@ pub fn prune_sessions_cmd(days: u64, history_days: Option<u64>, dry_run: bool) -
                     report.get("deliveries").and_then(Json::as_u64).unwrap_or(0),
                     report.get("events").and_then(Json::as_u64).unwrap_or(0),
                     report.get("size_mb").and_then(Json::as_f64).unwrap_or(0.0),
-                    if dry_run { "" } else if report.get("vacuumed").and_then(Json::as_bool).unwrap_or(false) { "（已 VACUUM）" } else { "" }
+                    if dry_run {
+                        ""
+                    } else if report.get("vacuumed").and_then(Json::as_bool).unwrap_or(false) {
+                        "（已 VACUUM）"
+                    } else {
+                        ""
+                    }
                 ),
                 Err(error) => {
                     println!("  跳过 {id}：{error}");
@@ -342,7 +366,11 @@ pub fn prune_sessions_cmd(days: u64, history_days: Option<u64>, dry_run: bool) -
             }
         }
     }
-    if failed { 1 } else { 0 }
+    if failed {
+        1
+    } else {
+        0
+    }
 }
 
 pub fn list_sessions_cmd(verbose: bool) -> i32 {
@@ -353,11 +381,7 @@ pub fn list_sessions_cmd(verbose: bool) -> i32 {
     }
     println!("会话记录目录：{}", sessions_dir().display());
     for row in rows {
-        let updated = if row.updated_at > 0.0 {
-            format_timestamp(row.updated_at)
-        } else {
-            "?".into()
-        };
+        let updated = if row.updated_at > 0.0 { format_timestamp(row.updated_at) } else { "?".into() };
         let mut flags: Vec<String> = vec![];
         if row.archived {
             flags.push("已归档".into());
@@ -518,8 +542,11 @@ pub fn repl(cwd: Option<String>, resume: Option<String>, full_auto: bool, team: 
                             println!("  暂无可回退的节点");
                         }
                         for point in points {
-                            println!("  {}  {}", point.get("id").and_then(|v| v.as_str()).unwrap_or("?"),
-                                point.get("preview").and_then(|v| v.as_str()).unwrap_or(""));
+                            println!(
+                                "  {}  {}",
+                                point.get("id").and_then(|v| v.as_str()).unwrap_or("?"),
+                                point.get("preview").and_then(|v| v.as_str()).unwrap_or("")
+                            );
                         }
                     }
                     Err(e) => println!("  获取回退点失败：{e}"),
@@ -571,10 +598,9 @@ pub fn repl(cwd: Option<String>, resume: Option<String>, full_auto: bool, team: 
             continue;
         }
         match opened.runtime.user_message(&line, false) {
-            Ok(receipt) => println!(
-                "  [input received: {}]",
-                receipt.result.get("goal_id").and_then(|v| v.as_str()).unwrap_or("")
-            ),
+            Ok(receipt) => {
+                println!("  [input received: {}]", receipt.result.get("goal_id").and_then(|v| v.as_str()).unwrap_or(""))
+            }
             Err(e) => println!("  [rejected: {e}]"),
         }
         opened.runtime.settle(600);
@@ -593,27 +619,61 @@ pub fn repl(cwd: Option<String>, resume: Option<String>, full_auto: bool, team: 
 /// Structured, non-interactive execution. Every stdout line is JSON and all
 /// diagnostics stay on stderr so callers can safely stream and parse it.
 pub struct ExecOptions {
-    pub cwd: Option<String>, pub resume: Option<String>, pub full_auto: bool,
-    pub team: Option<String>, pub timeout: Option<u64>, pub checks: Vec<String>, pub prompt: Option<String>,
+    pub cwd: Option<String>,
+    pub resume: Option<String>,
+    pub full_auto: bool,
+    pub team: Option<String>,
+    pub timeout: Option<u64>,
+    pub checks: Vec<String>,
+    pub prompt: Option<String>,
 }
 
 pub fn exec_json(args: &ExecOptions) -> i32 {
     let started = Instant::now();
     let prompt = match args.prompt.as_deref() {
-        Some("-") => { let mut s = String::new(); if std::io::stdin().read_to_string(&mut s).is_err() { eprintln!("读取 stdin 失败"); return 2; } s },
+        Some("-") => {
+            let mut s = String::new();
+            if std::io::stdin().read_to_string(&mut s).is_err() {
+                eprintln!("读取 stdin 失败");
+                return 2;
+            }
+            s
+        }
         Some(s) => s.to_string(),
-        None => { eprintln!("exec 需要 PROMPT（使用 - 从 stdin 读取）"); return 2; }
+        None => {
+            eprintln!("exec 需要 PROMPT（使用 - 从 stdin 读取）");
+            return 2;
+        }
     };
     let initial_spec = match &args.team {
-        Some(path) => match crate::config::load_spec_file(Path::new(path)) { Ok(s) => Some(s), Err(e) => { eprintln!("{e}"); return 2; } },
+        Some(path) => match crate::config::load_spec_file(Path::new(path)) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                eprintln!("{e}");
+                return 2;
+            }
+        },
         None => None,
     };
-    let opened = match open_session(OpenOptions { cwd: args.cwd.clone().map(PathBuf::from), session_id: args.resume.clone(), full_auto: args.full_auto, initial_spec, catalog: None, scripts: None }) {
+    let opened = match open_session(OpenOptions {
+        cwd: args.cwd.clone().map(PathBuf::from),
+        session_id: args.resume.clone(),
+        full_auto: args.full_auto,
+        initial_spec,
+        catalog: None,
+        scripts: None,
+    }) {
         Ok(v) => v,
-        Err(e) => { eprintln!("打开会话失败：{e}"); return 1; }
+        Err(e) => {
+            eprintln!("打开会话失败：{e}");
+            return 1;
+        }
     };
     let sid = opened.session_id.clone();
-    if !json_line(&json!({"schema_version":1,"type":"session","session_id":sid})) { opened.close(); return 1; }
+    if !json_line(&json!({"schema_version":1,"type":"session","session_id":sid})) {
+        opened.close();
+        return 1;
+    }
     // Tool activity as it happens: which file, which command, ok or failed.
     let sink_session = sid.clone();
     opened.runtime.notify.set_tool_sink(Box::new(move |run_id, agent_id, activity| {
@@ -624,42 +684,102 @@ pub fn exec_json(args: &ExecOptions) -> i32 {
         }));
     }));
     opened.runtime.start();
-    if let Err(e) = opened.runtime.user_message(&prompt, false) { eprintln!("提交消息失败：{e}"); opened.close(); return 1; }
+    if let Err(e) = opened.runtime.user_message(&prompt, false) {
+        eprintln!("提交消息失败：{e}");
+        opened.close();
+        return 1;
+    }
     let timeout = args.timeout.unwrap_or(1200);
-    let deadline = Instant::now().checked_add(Duration::from_secs(timeout)).unwrap_or_else(|| Instant::now() + Duration::from_secs(1200));
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(timeout))
+        .unwrap_or_else(|| Instant::now() + Duration::from_secs(1200));
     let mut cursor = 0i64;
     let mut timed_out = false;
     loop {
-        let state = match opened.core.call_in_session("state", json!({"after_sequence": cursor})) { Ok(v) => v, Err(e) => { eprintln!("读取状态失败：{e}"); break; } };
+        let state = match opened.core.call_in_session("state", json!({"after_sequence": cursor})) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("读取状态失败：{e}");
+                break;
+            }
+        };
         for event in state.get("events").and_then(Json::as_array).cloned().unwrap_or_default() {
             cursor = event.get("sequence").and_then(Json::as_i64).unwrap_or(cursor);
-            if !json_line(&json!({"schema_version":1,"type":"event","session_id":sid,"event":event})) { opened.close(); return 1; }
+            if !json_line(&json!({"schema_version":1,"type":"event","session_id":sid,"event":event})) {
+                opened.close();
+                return 1;
+            }
         }
         let runs = state.get("runs").and_then(Json::as_array).cloned().unwrap_or_default();
-        let active: Vec<_> = runs.iter().filter(|r| matches!(r.get("status").and_then(Json::as_str), Some("QUEUED"|"RUNNING"|"WAITING_TASK"|"WAITING_APPROVAL"))).collect();
-        if active.is_empty() { break; }
+        let active: Vec<_> = runs
+            .iter()
+            .filter(|r| {
+                matches!(
+                    r.get("status").and_then(Json::as_str),
+                    Some("QUEUED" | "RUNNING" | "WAITING_TASK" | "WAITING_APPROVAL")
+                )
+            })
+            .collect();
+        if active.is_empty() {
+            break;
+        }
         // A parked approval can only be answered from outside, so waiting for it
         // would just burn the timeout and report "timeout" instead of exit 3.
-        if has_pending_approvals(&state) { break; }
-        if Instant::now() >= deadline { timed_out = true; for run in active { if let Some(id) = run.get("run_id").and_then(Json::as_str) { let _ = opened.runtime.submit(teamagents_core::models::TeamAction { action_id: teamagents_core::models::new_id("cancel"), session_id: sid.clone(), actor_id: "user".into(), run_id: None, kind: teamagents_core::models::ActionKind::CancelRun, payload: json!({"run_id":id}) }); } } break; }
+        if has_pending_approvals(&state) {
+            break;
+        }
+        if Instant::now() >= deadline {
+            timed_out = true;
+            for run in active {
+                if let Some(id) = run.get("run_id").and_then(Json::as_str) {
+                    let _ = opened.runtime.submit(teamagents_core::models::TeamAction {
+                        action_id: teamagents_core::models::new_id("cancel"),
+                        session_id: sid.clone(),
+                        actor_id: "user".into(),
+                        run_id: None,
+                        kind: teamagents_core::models::ActionKind::CancelRun,
+                        payload: json!({"run_id":id}),
+                    });
+                }
+            }
+            break;
+        }
         std::thread::sleep(Duration::from_millis(50));
     }
     let state = opened.core.call_in_session("state", json!({"after_sequence": cursor})).unwrap_or_else(|_| json!({}));
     for event in state.get("events").and_then(Json::as_array).cloned().unwrap_or_default() {
         cursor = event.get("sequence").and_then(Json::as_i64).unwrap_or(cursor);
-        if !json_line(&json!({"schema_version":1,"type":"event","session_id":sid,"event":event})) { opened.close(); return 1; }
+        if !json_line(&json!({"schema_version":1,"type":"event","session_id":sid,"event":event})) {
+            opened.close();
+            return 1;
+        }
     }
     let mut verification = Vec::new();
     for command in &args.checks {
         let marker = format!("__TEAMAGENTS_CHECK_RC_{}__", uuid::Uuid::new_v4());
         let wrapped = format!("{{ {command}; rc=$?; printf '\\n{marker}%s\\n' \"$rc\"; exit $rc; }}");
-        let result = crate::tools::shell_run(&wrapped, &opened.cwd, timeout.min(120), false, Some(&session_paths(&sid).artifacts));
-        let (output, code) = match result { Ok(text) => parse_check_result(&text, &marker), Err(e) => (e, 1) };
+        let result = crate::tools::shell_run(
+            &wrapped,
+            &opened.cwd,
+            timeout.min(120),
+            false,
+            Some(&session_paths(&sid).artifacts),
+        );
+        let (output, code) = match result {
+            Ok(text) => parse_check_result(&text, &marker),
+            Err(e) => (e, 1),
+        };
         let ok = code == 0;
         verification.push(json!({"command":command,"output":output,"exit_code":code,"ok":ok}));
-        if !ok { break; }
+        if !ok {
+            break;
+        }
     }
-    if !verification.is_empty() { let path = session_paths(&sid).base.join("verification.json"); let _ = std::fs::create_dir_all(session_paths(&sid).base); let _ = std::fs::write(path, serde_json::to_vec_pretty(&verification).unwrap_or_default()); }
+    if !verification.is_empty() {
+        let path = session_paths(&sid).base.join("verification.json");
+        let _ = std::fs::create_dir_all(session_paths(&sid).base);
+        let _ = std::fs::write(path, serde_json::to_vec_pretty(&verification).unwrap_or_default());
+    }
     let checks_ok = verification.iter().all(|v| v.get("ok").and_then(Json::as_bool).unwrap_or(false));
     let (status, code) = exec_outcome(&state, timed_out, checks_ok);
     // runs whose outcome nobody accepted: they block goal completion, so a CI
@@ -705,11 +825,17 @@ fn exec_outcome(state: &Json, timed_out: bool, checks_ok: bool) -> (&'static str
         })
     };
     let goal_done = state.get("session").and_then(|s| s.get("goal_state")).and_then(Json::as_str) == Some("done");
-    if timed_out { ("timeout", 124) }
-    else if has_pending_approvals(state) { ("approval_required", 3) }
-    else if run_in(&["FAILED", "OUTCOME_UNKNOWN"]) { ("failed", 1) }
-    else if goal_done && checks_ok { ("completed", 0) }
-    else { ("incomplete", 1) }
+    if timed_out {
+        ("timeout", 124)
+    } else if has_pending_approvals(state) {
+        ("approval_required", 3)
+    } else if run_in(&["FAILED", "OUTCOME_UNKNOWN"]) {
+        ("failed", 1)
+    } else if goal_done && checks_ok {
+        ("completed", 0)
+    } else {
+        ("incomplete", 1)
+    }
 }
 
 #[cfg(test)]
@@ -726,7 +852,9 @@ fn parse_check_result(text: &str, marker: &str) -> (String, i32) {
 
 fn json_line(value: &Json) -> bool {
     let mut out = std::io::stdout().lock();
-    out.write_all(serde_json::to_string(value).unwrap_or_else(|_| "{}".into()).as_bytes()).and_then(|_| out.write_all(b"\n")).is_ok()
+    out.write_all(serde_json::to_string(value).unwrap_or_else(|_| "{}".into()).as_bytes())
+        .and_then(|_| out.write_all(b"\n"))
+        .is_ok()
 }
 
 #[cfg(test)]
@@ -759,7 +887,8 @@ mod exec_tests {
             vec!["run_a".to_string()]
         );
         assert!(unknown_run_ids(&json!({})).is_empty());
-        let done = json!({"runs": [{"status": "SUCCEEDED"}], "pending_approvals": [], "session": {"goal_state": "done"}});
+        let done =
+            json!({"runs": [{"status": "SUCCEEDED"}], "pending_approvals": [], "session": {"goal_state": "done"}});
         assert_eq!(exec_outcome(&done, false, true), ("completed", 0));
         assert_eq!(exec_outcome(&done, false, false), ("incomplete", 1));
     }

@@ -85,12 +85,7 @@ impl CodexAppServer {
     pub fn start(self: &Arc<Self>) -> Result<(), String> {
         let args = app_server_args(&self.opts);
         let mut command = Command::new(self.opts.codex_bin.clone().unwrap_or_else(|| "codex".into()));
-        command
-            .args(&args)
-            .current_dir(&self.cwd)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        command.args(&args).current_dir(&self.cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         // own process group (start_new_session + killpg semantics): the shell
         // commands an app-server spawns are its children, and killing only the
         // direct child would leave them running
@@ -341,7 +336,12 @@ pub struct CodexRunner {
 }
 
 impl CodexRunner {
-    pub fn new(opts: CodexOptions, core: Arc<CoreClient>, approvals: Arc<ApprovalGate>, notify: Arc<Notify>) -> Arc<Self> {
+    pub fn new(
+        opts: CodexOptions,
+        core: Arc<CoreClient>,
+        approvals: Arc<ApprovalGate>,
+        notify: Arc<Notify>,
+    ) -> Arc<Self> {
         let runner = Arc::new(Self {
             opts,
             core,
@@ -406,11 +406,18 @@ impl CodexRunner {
             let mut params = json!({"threadId": id, "cwd": self.opts.workdir.to_string_lossy(),
                 "approvalPolicy": self.opts.approval_policy, "sandbox": self.opts.sandbox,
                 "developerInstructions": self.developer_instructions()});
-            if let Some(model) = &self.opts.model { params["model"] = json!(model); }
-            if let Some((_, provider)) = self.opts.config_overrides.iter().rev().find(|(key, _)| key == "model_provider") {
+            if let Some(model) = &self.opts.model {
+                params["model"] = json!(model);
+            }
+            if let Some((_, provider)) =
+                self.opts.config_overrides.iter().rev().find(|(key, _)| key == "model_provider")
+            {
                 params["modelProvider"] = provider.clone();
             }
-            if let Err(e) = server.call("thread/resume", params, 60_000) { server.close(); return Err(e); }
+            if let Err(e) = server.call("thread/resume", params, 60_000) {
+                server.close();
+                return Err(e);
+            }
         }
         *self.thread_id.lock().unwrap() = thread;
         *self.server.lock().unwrap() = Some(server.clone());
@@ -543,11 +550,7 @@ Member-specific instructions below specialize your work within these rules.
                 }
             }
             "turn/completed" => {
-                let status = params
-                    .get("turn")
-                    .and_then(|t| t.get("status"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let status = params.get("turn").and_then(|t| t.get("status")).and_then(|v| v.as_str()).unwrap_or("");
                 let status = turn_status(status);
                 let (text, reported) = {
                     let texts = self.agent_text.lock().unwrap();
@@ -656,15 +659,15 @@ Member-specific instructions below specialize your work within these rules.
             None => match rx.recv_timeout(approval_wait_timeout()) {
                 Ok(decision) => decision,
                 Err(_) => {
-                // ponytail: this waiter thread is not released on server
-                // death, it sits in recv_timeout up to approval_wait_timeout;
-                // upgrade path = server_exited broadcasts a decline through
-                // the approval_waits registry, add when the linger matters
-                // the app-server moves on, so nobody can consume this approval
-                // anymore: void it in the core too, else the user keeps seeing
-                // a PENDING row whose decision is silently dropped
-                self.approvals.expire(&request.approval_id);
-                "decline".to_string()
+                    // ponytail: this waiter thread is not released on server
+                    // death, it sits in recv_timeout up to approval_wait_timeout;
+                    // upgrade path = server_exited broadcasts a decline through
+                    // the approval_waits registry, add when the linger matters
+                    // the app-server moves on, so nobody can consume this approval
+                    // anymore: void it in the core too, else the user keeps seeing
+                    // a PENDING row whose decision is silently dropped
+                    self.approvals.expire(&request.approval_id);
+                    "decline".to_string()
                 }
             },
         };
@@ -834,10 +837,7 @@ impl AgentRunner for CodexRunner {
             Err(e) => return failed(&run_id, format!("CodexError: {e}")),
         };
         self.states.lock().unwrap().insert(run_id.clone(), TurnStatus::Running);
-        self.turn_done
-            .lock()
-            .unwrap()
-            .insert(run_id.clone(), Arc::new((Mutex::new(false), Condvar::new())));
+        self.turn_done.lock().unwrap().insert(run_id.clone(), Arc::new((Mutex::new(false), Condvar::new())));
         self.progress.lock().unwrap().insert(run_id.clone(), vec![]);
         let text = self.render_input(view, wake);
         let mut params = json!({
@@ -847,7 +847,9 @@ impl AgentRunner for CodexRunner {
             "approvalsReviewer": "user",
         });
         let effort = self.opts.effort.clone();
-        if let Some(model) = &self.opts.model { params["model"] = json!(model); }
+        if let Some(model) = &self.opts.model {
+            params["model"] = json!(model);
+        }
         if let Some(value) = &effort {
             params["effort"] = json!(value);
         }
@@ -874,7 +876,8 @@ impl AgentRunner for CodexRunner {
         );
         let mut result = server.call("turn/start", params.clone(), 120_000);
         if let Err(error) = &result {
-            if effort.is_some() && !self.effort_fallback_used.load(Ordering::SeqCst)
+            if effort.is_some()
+                && !self.effort_fallback_used.load(Ordering::SeqCst)
                 && error.to_lowercase().contains("effort")
             {
                 self.effort_fallback_used.store(true, Ordering::SeqCst);
@@ -890,21 +893,14 @@ impl AgentRunner for CodexRunner {
                 return failed(&run_id, format!("CodexError: {e}"));
             }
         };
-        let turn_id = result
-            .get("turn")
-            .and_then(|t| t.get("id"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
+        let turn_id = result.get("turn").and_then(|t| t.get("id")).and_then(|v| v.as_str()).unwrap_or("").to_string();
         self.current_turn.lock().unwrap().insert(run_id.clone(), turn_id.clone());
         let buffered = self.buffered_notes.lock().unwrap().remove(&run_id).unwrap_or_default();
         for message in buffered {
             self.apply_notification(&run_id, &turn_id, message);
         }
-        let _ = self.core.call_in_session(
-            "set_run_external_turn",
-            json!({"run_id": run_id, "external_turn_id": turn_id}),
-        );
+        let _ =
+            self.core.call_in_session("set_run_external_turn", json!({"run_id": run_id, "external_turn_id": turn_id}));
 
         self.await_turn_done(&run_id, None);
         let status = self.states.lock().unwrap().get(&run_id).copied().unwrap_or(TurnStatus::OutcomeUnknown);
@@ -926,10 +922,7 @@ impl AgentRunner for CodexRunner {
                     &format!("{turn_id}:complete"),
                 );
                 if !receipt.ok {
-                    eprintln!(
-                        "completion request rejected for {task_id}: {}",
-                        receipt.error.unwrap_or_default()
-                    );
+                    eprintln!("completion request rejected for {task_id}: {}", receipt.error.unwrap_or_default());
                 }
             }
         }
@@ -968,11 +961,7 @@ impl AgentRunner for CodexRunner {
                 }
             };
         };
-        let _ = server.call(
-            "turn/interrupt",
-            json!({"threadId": thread_id, "turnId": turn_id}),
-            30_000,
-        );
+        let _ = server.call("turn/interrupt", json!({"threadId": thread_id, "turnId": turn_id}), 30_000);
         // cancellation is confirmed only when the turn reports a terminal state
         if !self.await_turn_done(run_id, Some(Duration::from_secs(30))) {
             self.states.lock().unwrap().insert(run_id.to_string(), TurnStatus::OutcomeUnknown);
@@ -994,7 +983,9 @@ impl AgentRunner for CodexRunner {
             let seen = delivered.entry(run_id.to_string()).or_default();
             items
                 .into_iter()
-                .filter(|i| i.get("event_id").and_then(|v| v.as_str()).map(|id| seen.insert(id.to_string())).unwrap_or(true))
+                .filter(|i| {
+                    i.get("event_id").and_then(|v| v.as_str()).map(|id| seen.insert(id.to_string())).unwrap_or(true)
+                })
                 .collect()
         };
         if fresh.is_empty() {
@@ -1011,12 +1002,7 @@ impl AgentRunner for CodexRunner {
                 )
             })
             .collect();
-        self.queued_input
-            .lock()
-            .unwrap()
-            .entry(self.opts.agent_id.clone())
-            .or_default()
-            .extend(texts.clone());
+        self.queued_input.lock().unwrap().entry(self.opts.agent_id.clone()).or_default().extend(texts.clone());
         // a live turn gets nudged via turn/steer when possible
         let turn = self.current_turn.lock().unwrap().get(run_id).cloned();
         let (server, thread) = (self.server.lock().unwrap().clone(), self.thread_id.lock().unwrap().clone());
@@ -1035,15 +1021,9 @@ impl AgentRunner for CodexRunner {
         run.external_turn_id.as_ref()?;
         // no `thread/status` method exists (it is a notification);
         // the history is read instead.
-        let result = server
-            .call("thread/read", json!({"threadId": thread, "includeTurns": true}), 30_000)
-            .ok()?;
-        let turns = result
-            .get("thread")
-            .and_then(|t| t.get("turns"))
-            .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default();
+        let result = server.call("thread/read", json!({"threadId": thread, "includeTurns": true}), 30_000).ok()?;
+        let turns =
+            result.get("thread").and_then(|t| t.get("turns")).and_then(|v| v.as_array()).cloned().unwrap_or_default();
         let last = turns.last()?;
         // a live turn is unverifiable after our restart, same as an unknown status
         Some(match last.get("status").and_then(|v| v.as_str()).unwrap_or("") {
@@ -1078,7 +1058,8 @@ fn failed(run_id: &str, error: String) -> TurnOutcome {
 /// usage shape. `total` is the thread-cumulative breakdown, `last` the latest
 /// turn; last.totalTokens approximates the current context fill.
 fn codex_usage_snapshot(usage: &Json, calls: u64) -> Json {
-    let num = |section: &str, key: &str| usage.get(section).and_then(|s| s.get(key)).and_then(Json::as_u64).unwrap_or(0);
+    let num =
+        |section: &str, key: &str| usage.get(section).and_then(|s| s.get(key)).and_then(Json::as_u64).unwrap_or(0);
     json!({
         "calls": calls,
         "prompt_tokens": num("total", "inputTokens"),
@@ -1178,7 +1159,10 @@ mod tests {
         runner.current_turn.lock().unwrap().insert("r1".into(), "t1".into());
         runner.progress.lock().unwrap().insert("r1".into(), vec!["work".into()]);
         runner.approval_ids.lock().unwrap().insert("r1".into(), "appr-1".into());
-        runner.on_notification("r1", json!({"method": "turn/completed", "params": {"turn": {"id": "t1", "status": "completed"}}}));
+        runner.on_notification(
+            "r1",
+            json!({"method": "turn/completed", "params": {"turn": {"id": "t1", "status": "completed"}}}),
+        );
         assert_eq!(runner.query_state("r1"), Some(TurnStatus::Completed));
         assert!(!runner.current_turn.lock().unwrap().contains_key("r1"));
         assert!(!runner.progress.lock().unwrap().contains_key("r1"));
@@ -1191,12 +1175,11 @@ mod tests {
         runner.current_turn.lock().unwrap().insert("r1".into(), "t1".into());
         runner.progress.lock().unwrap().insert("r1".into(), vec!["work".into()]);
         runner.approval_ids.lock().unwrap().insert("r1".into(), "appr-1".into());
-        runner
-            .turn_done
-            .lock()
-            .unwrap()
-            .insert("r1".into(), Arc::new((Mutex::new(false), Condvar::new())));
-        runner.on_notification("r1", json!({"method": "turn/completed", "params": {"turn": {"id": "t1", "status": "completed"}}}));
+        runner.turn_done.lock().unwrap().insert("r1".into(), Arc::new((Mutex::new(false), Condvar::new())));
+        runner.on_notification(
+            "r1",
+            json!({"method": "turn/completed", "params": {"turn": {"id": "t1", "status": "completed"}}}),
+        );
         assert!(runner.progress.lock().unwrap().contains_key("r1"), "the driver still reads it");
         assert!(runner.approval_ids.lock().unwrap().contains_key("r1"));
         assert!(runner.turn_done.lock().unwrap().contains_key("r1"), "signalled, entry kept for the driver");
@@ -1220,7 +1203,8 @@ mod tests {
         let approvals = ApprovalGate::new(core.clone(), crate::gateway::PermissionPolicy::default());
         let notify = Notify::new(core.clone());
         let runner = CodexRunner::new(CodexOptions::default(), core, approvals, notify);
-        let item = |id: &str| json!({"event_id": id, "from": "user", "kind": "user_message", "payload": {"text": "hi"}});
+        let item =
+            |id: &str| json!({"event_id": id, "from": "user", "kind": "user_message", "payload": {"text": "hi"}});
         let queued = |runner: &Arc<CodexRunner>| {
             runner.queued_input.lock().unwrap().get(&runner.opts.agent_id).cloned().unwrap_or_default().len()
         };
@@ -1244,10 +1228,14 @@ mod tests {
     fn server_exit_fails_a_driverless_parked_run_in_core_and_expires_its_approval() {
         let core = CoreClient::open(":memory:", "s-parked-die").expect("core");
         core.call("create_session", json!({"session_id": "s-parked-die", "cwd": "/tmp"})).expect("create");
-        core.call("set_catalog", json!({"session_id": "s-parked-die", "catalog": {
-            "models": {"m": {"provider": "openai", "protocol": "openai", "model": "test"}},
-            "tools": {}, "skills_paths": [], "instruction_files": [],
-        }})).expect("catalog");
+        core.call(
+            "set_catalog",
+            json!({"session_id": "s-parked-die", "catalog": {
+                "models": {"m": {"provider": "openai", "protocol": "openai", "model": "test"}},
+                "tools": {}, "skills_paths": [], "instruction_files": [],
+            }}),
+        )
+        .expect("catalog");
         core.call("save_spec", json!({"session_id": "s-parked-die", "spec": {
             "leader_id": "leader",
             "agents": [
@@ -1264,13 +1252,17 @@ mod tests {
         .expect("action");
         core.submit(&action).expect("submit");
         let state = core.state_brief().expect("state");
-        let runs: Vec<TurnRun> = serde_json::from_value(state.get("runs").cloned().unwrap_or(Json::Null)).unwrap_or_default();
+        let runs: Vec<TurnRun> =
+            serde_json::from_value(state.get("runs").cloned().unwrap_or(Json::Null)).unwrap_or_default();
         let run_id = runs.iter().find(|r| r.agent_id == "cx").expect("a run for cx").run_id.clone();
-        core.call_in_session("insert_approval", json!({"approval": {
-            "approval_id": "appr-parked", "session_id": "s-parked-die", "agent_id": "cx",
-            "run_id": run_id, "tool_call_id": "call-1", "operation_hash": "h",
-            "requested_scope": {}, "policy_revision": 1,
-        }}))
+        core.call_in_session(
+            "insert_approval",
+            json!({"approval": {
+                "approval_id": "appr-parked", "session_id": "s-parked-die", "agent_id": "cx",
+                "run_id": run_id, "tool_call_id": "call-1", "operation_hash": "h",
+                "requested_scope": {}, "policy_revision": 1,
+            }}),
+        )
         .expect("approval");
 
         let approvals = ApprovalGate::new(core.clone(), crate::gateway::PermissionPolicy::default());
@@ -1283,7 +1275,8 @@ mod tests {
 
         assert_eq!(runner.query_state(&run_id), Some(TurnStatus::Failed));
         let state = core.state_brief().expect("state");
-        let runs: Vec<TurnRun> = serde_json::from_value(state.get("runs").cloned().unwrap_or(Json::Null)).unwrap_or_default();
+        let runs: Vec<TurnRun> =
+            serde_json::from_value(state.get("runs").cloned().unwrap_or(Json::Null)).unwrap_or_default();
         assert_eq!(
             runs.iter().find(|r| r.run_id == run_id).map(|r| r.status),
             Some(TurnStatus::Failed),
@@ -1322,7 +1315,8 @@ mod tests {
     fn approval_waiter_timeout_restores_running_for_a_live_run() {
         std::env::set_var("TEAMAGENTS_CODEX_APPROVAL_WAIT_S", "1");
         let runner = test_runner("s-waiter-live");
-        let reply = runner.on_request("r1", json!({"method": "item/commandExecution/requestApproval", "params": {"itemId": "i1"}}));
+        let reply = runner
+            .on_request("r1", json!({"method": "item/commandExecution/requestApproval", "params": {"itemId": "i1"}}));
         assert_eq!(reply, json!({"decision": "decline"}));
         assert_eq!(runner.query_state("r1"), Some(TurnStatus::Running), "live run resumes Running after the timeout");
     }
@@ -1332,10 +1326,7 @@ mod tests {
     #[test]
     fn an_already_decided_approval_is_read_instead_of_waited_for() {
         let runner = test_runner("s-early-read");
-        runner
-            .core
-            .call("create_session", json!({"session_id": "s-early-read", "cwd": "/tmp"}))
-            .expect("session");
+        runner.core.call("create_session", json!({"session_id": "s-early-read", "cwd": "/tmp"})).expect("session");
         runner
             .core
             .call("save_spec", json!({"session_id": "s-early-read", "spec": {
@@ -1379,10 +1370,16 @@ mod tests {
         let runner = test_runner("s-session-grant");
         // a team spec so the core's submit validation accepts the decision
         runner.core.call("create_session", json!({"session_id": "s-session-grant", "cwd": "/tmp"})).expect("create");
-        runner.core.call("set_catalog", json!({"session_id": "s-session-grant", "catalog": {
-            "models": {"m": {"provider": "openai", "protocol": "openai", "model": "test"}},
-            "tools": {}, "skills_paths": [], "instruction_files": [],
-        }})).expect("catalog");
+        runner
+            .core
+            .call(
+                "set_catalog",
+                json!({"session_id": "s-session-grant", "catalog": {
+                    "models": {"m": {"provider": "openai", "protocol": "openai", "model": "test"}},
+                    "tools": {}, "skills_paths": [], "instruction_files": [],
+                }}),
+            )
+            .expect("catalog");
         runner.core.call("save_spec", json!({"session_id": "s-session-grant", "spec": {
             "leader_id": "leader",
             "agents": [{"id": "leader", "name": "leader", "role": "leader", "runtime_kind": "deepagents", "model_profile": "m"}],
@@ -1454,8 +1451,14 @@ mod tests {
         assert!(runner.resolve_approval_for(&b1_id, "session"));
         assert_eq!(b1.join().expect("b1"), json!({"decision": "accept"}));
         assert_eq!(b2.join().expect("b2 released by the grant"), json!({"decision": "accept"}));
-        let pending = runner.core.state_brief().expect("state")
-            .get("pending_approvals").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        let pending = runner
+            .core
+            .state_brief()
+            .expect("state")
+            .get("pending_approvals")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
         assert!(pending.is_empty(), "the sibling's moot row is expired: {pending:?}");
 
         // 4b. fileChange carries no discriminating field on the wire, so a
@@ -1479,8 +1482,11 @@ mod tests {
         let fc_id = parked_ids(&runner).into_iter().next().unwrap();
         decide(&runner, "decide-fc-2", &fc_id, "deny");
         assert!(runner.resolve_approval_for(&fc_id, "deny"));
-        assert_eq!(waiter.join().expect("fc again"), json!({"decision": "decline"}),
-            "fileChange stays fail-closed: no reusable grant");
+        assert_eq!(
+            waiter.join().expect("fc again"),
+            json!({"decision": "decline"}),
+            "fileChange stays fail-closed: no reusable grant"
+        );
 
         // 5. a policy-mode change clears the grant although the core cache row
         //    survives: the same operation asks again

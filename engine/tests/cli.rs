@@ -36,7 +36,8 @@ fn version_validate_and_sessions_smoke() {
             .arg(flag)
             .env("XDG_STATE_HOME", home.join("unused-state"))
             .env("XDG_CONFIG_HOME", home.join("unused-config"))
-            .output().unwrap();
+            .output()
+            .unwrap();
         assert!(output.status.success(), "{flag}: {output:?}");
         assert!(!output.stdout.is_empty());
         assert!(!home.join("unused-state").exists());
@@ -141,14 +142,18 @@ fn doctor_fresh_install_and_optional_codex() {
             .env("XDG_CONFIG_HOME", root.join("config"))
             .env("XDG_STATE_HOME", root.join("state"))
             .env("TA_DOCTOR_TEST_KEY", key)
-            .output().unwrap();
+            .output()
+            .unwrap();
         (output.status.success(), String::from_utf8_lossy(&output.stdout).into_owned())
     };
     let (ok, text) = run("test-value");
     assert!(!ok && text.contains("[FAIL] user config"), "{text}");
     assert!(text.contains(&config.display().to_string()), "{text}");
-    std::fs::write(&config,
-        "[models.leader_main]\nprovider='openai'\nmodel='test'\napi_key_env='TA_DOCTOR_TEST_KEY'\n").unwrap();
+    std::fs::write(
+        &config,
+        "[models.leader_main]\nprovider='openai'\nmodel='test'\napi_key_env='TA_DOCTOR_TEST_KEY'\n",
+    )
+    .unwrap();
     let (ok, text) = run("test-value");
     assert!(!ok, "missing required bubblewrap must fail doctor: {text}");
     let failures: Vec<_> = text.lines().filter(|line| line.contains("[FAIL]")).collect();
@@ -178,7 +183,8 @@ fn init_creates_private_config_and_never_overwrites_existing_paths() {
             .args(args)
             .env("XDG_CONFIG_HOME", root.join("config with spaces"))
             .env("XDG_STATE_HOME", root.join("state"))
-            .output().unwrap()
+            .output()
+            .unwrap()
     };
     assert!(!run(&["init", "--cwd", "/tmp"]).status.success());
     assert!(!config.exists());

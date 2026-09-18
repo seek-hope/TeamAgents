@@ -26,8 +26,8 @@ fn noisy_stderr_does_not_block_the_handshake() {
     let (tx, rx) = std::sync::mpsc::channel();
     let started = Instant::now();
     std::thread::spawn(move || {
-        let result = McpClient::connect_stdio_in(server, &noisy, &[], &root, "host", false, 60, 120)
-            .and_then(|client| {
+        let result =
+            McpClient::connect_stdio_in(server, &noisy, &[], &root, "host", false, 60, 120).and_then(|client| {
                 let tools = client.tools()?;
                 client.close();
                 Ok(tools.len())
@@ -58,7 +58,11 @@ fn server_environment_is_whitelisted() {
         "sh",
         &["-c".into(), format!("env > {}", dump.display())],
         &[("TA_MCP_BINDING_VAR".into(), "from-binding".into())],
-        &dir, "host", false, 2, 2,
+        &dir,
+        "host",
+        false,
+        2,
+        2,
     );
     let dumped = std::fs::read_to_string(&dump).expect("the child wrote its environment");
     assert!(!dumped.contains("TA_MCP_SENTINEL_KEY"), "model/API keys must not leak:\n{dumped}");
@@ -73,7 +77,16 @@ fn server_environment_is_whitelisted() {
         assert!(
             matches!(
                 *name,
-                "HOME" | "LOGNAME" | "PATH" | "SHELL" | "TERM" | "USER" | "TA_MCP_BINDING_VAR" | "_" | "PWD" | "SHLVL"
+                "HOME"
+                    | "LOGNAME"
+                    | "PATH"
+                    | "SHELL"
+                    | "TERM"
+                    | "USER"
+                    | "TA_MCP_BINDING_VAR"
+                    | "_"
+                    | "PWD"
+                    | "SHLVL"
                     | "OLDPWD"
             ),
             "unexpected inherited variable {name}"

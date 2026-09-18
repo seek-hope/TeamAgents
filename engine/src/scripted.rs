@@ -87,11 +87,7 @@ fn resolve_refs(value: &Json, ctx: &HashMap<String, Json>) -> Json {
             current
         }
         Json::Array(items) => Json::Array(items.iter().map(|v| resolve_refs(v, ctx)).collect()),
-        Json::Object(map) => Json::Object(
-            map.iter()
-                .map(|(k, v)| (k.clone(), resolve_refs(v, ctx)))
-                .collect(),
-        ),
+        Json::Object(map) => Json::Object(map.iter().map(|(k, v)| (k.clone(), resolve_refs(v, ctx))).collect()),
         other => other.clone(),
     }
 }
@@ -179,12 +175,7 @@ impl AgentRunner for ScriptedMember {
             let step = self.script.lock().unwrap().get(index).cloned();
             let Some(step) = step else {
                 self.states.lock().unwrap().insert(run.run_id.clone(), TurnStatus::Completed);
-                return TurnOutcome {
-                    status: TurnStatus::Completed,
-                    error: None,
-                    note: None,
-                    reply_text: None,
-                };
+                return TurnOutcome { status: TurnStatus::Completed, error: None, note: None, reply_text: None };
             };
             match step {
                 Step::Call(tool, args) => {
@@ -200,11 +191,7 @@ impl AgentRunner for ScriptedMember {
                     self.cursor.store(index + 1, Ordering::SeqCst);
                     if receipt.error.as_deref() == Some("approval_required") {
                         self.states.lock().unwrap().insert(run.run_id.clone(), TurnStatus::WaitingApproval);
-                        let note = receipt
-                            .result
-                            .get("approval_id")
-                            .and_then(|v| v.as_str())
-                            .map(str::to_string);
+                        let note = receipt.result.get("approval_id").and_then(|v| v.as_str()).map(str::to_string);
                         return TurnOutcome {
                             status: TurnStatus::WaitingApproval,
                             error: None,
@@ -216,10 +203,7 @@ impl AgentRunner for ScriptedMember {
                 Step::Barrier(name) => {
                     let barrier = {
                         let mut registry = self.barriers.lock().unwrap();
-                        registry
-                            .entry(name)
-                            .or_insert_with(|| Barrier::new(2))
-                            .clone()
+                        registry.entry(name).or_insert_with(|| Barrier::new(2)).clone()
                     };
                     barrier.arrive();
                     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
@@ -271,22 +255,12 @@ impl AgentRunner for ScriptedMember {
                 Step::Wait => {
                     self.cursor.store(index + 1, Ordering::SeqCst);
                     self.states.lock().unwrap().insert(run.run_id.clone(), TurnStatus::WaitingTask);
-                    return TurnOutcome {
-                        status: TurnStatus::WaitingTask,
-                        error: None,
-                        note: None,
-                        reply_text: None,
-                    };
+                    return TurnOutcome { status: TurnStatus::WaitingTask, error: None, note: None, reply_text: None };
                 }
                 Step::End => {
                     self.cursor.store(index + 1, Ordering::SeqCst);
                     self.states.lock().unwrap().insert(run.run_id.clone(), TurnStatus::Completed);
-                    return TurnOutcome {
-                        status: TurnStatus::Completed,
-                        error: None,
-                        note: None,
-                        reply_text: None,
-                    };
+                    return TurnOutcome { status: TurnStatus::Completed, error: None, note: None, reply_text: None };
                 }
                 Step::Fail(message) => {
                     self.cursor.store(index + 1, Ordering::SeqCst);

@@ -7,13 +7,13 @@ use serde_json::{json, Value as Json};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use support::*;
 use teamagents_core::control::TurnOutcome;
 use teamagents_core::models::{TurnRun, TurnStatus, UserConfig};
 use teamagents_engine::gateway::ToolGateway;
 use teamagents_engine::runtime::AgentRunner;
 use teamagents_engine::scripted::Step;
 use teamagents_engine::session::{open_session, OpenOptions};
-use support::*;
 
 // These tests mutate the process-wide XDG_STATE_HOME used by session paths.
 static ENV_LOCK: Mutex<()> = Mutex::new(());

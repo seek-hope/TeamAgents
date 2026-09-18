@@ -5,16 +5,15 @@
 //!
 //! The worker owns the Runtime; the Rust TUI is a pure client of this protocol.
 
+use crate::scripted::Step;
 use crate::session::{open_session, OpenOptions, OpenedSession};
 use crate::sessions::{archive_session, delete_session, list_sessions, new_session_id, session_paths};
-use crate::scripted::Step;
 use crate::{config, VERSION};
 use serde_json::{json, Value as Json};
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-
 
 /// Per-member working plans (`members/<id>/plan.json`), for the UI status strip.
 fn member_plans(session_id: &str) -> Json {
@@ -50,20 +49,11 @@ struct Worker {
 
 impl Worker {
     fn new() -> Self {
-        Self {
-            opened: Mutex::new(None),
-            cwd: Mutex::new(None),
-            full_auto: Mutex::new(false),
-            team: Mutex::new(None),
-        }
+        Self { opened: Mutex::new(None), cwd: Mutex::new(None), full_auto: Mutex::new(false), team: Mutex::new(None) }
     }
 
     fn current(&self) -> Result<Arc<OpenedSession>, String> {
-        self.opened
-            .lock()
-            .unwrap()
-            .clone()
-            .ok_or_else(|| "no open session".to_string())
+        self.opened.lock().unwrap().clone().ok_or_else(|| "no open session".to_string())
     }
 
     fn close_current(&self) {
@@ -74,11 +64,8 @@ impl Worker {
     }
 
     fn open(&self, params: &Json) -> Result<Json, String> {
-        let cwd = params
-            .get("cwd")
-            .and_then(|v| v.as_str())
-            .map(PathBuf::from)
-            .or_else(|| std::env::current_dir().ok());
+        let cwd =
+            params.get("cwd").and_then(|v| v.as_str()).map(PathBuf::from).or_else(|| std::env::current_dir().ok());
         let full_auto = params.get("fullAuto").and_then(|v| v.as_bool()).unwrap_or(false);
         let team = params.get("team").and_then(|v| v.as_str()).map(str::to_string);
 
@@ -151,7 +138,8 @@ impl Worker {
             "call" => {
                 let opened = self.current()?;
                 let inner = params.get("method").and_then(|v| v.as_str()).ok_or("method required")?;
-                let mut reply = opened.runtime.core.call_in_session(inner, params.get("params").cloned().unwrap_or(json!({})))?;
+                let mut reply =
+                    opened.runtime.core.call_in_session(inner, params.get("params").cloned().unwrap_or(json!({})))?;
                 // member plans live in the member directories; the UI reads them
                 // from the same snapshot it already polls
                 if inner == "state" {
@@ -159,7 +147,10 @@ impl Worker {
                         object.insert("plans".into(), member_plans(&opened.session_id));
                         // per-member context usage rides along: the team panel shows
                         // how close each member is to compaction
-                        object.insert("usage".into(), opened.usage_report().get("agents").cloned().unwrap_or_else(|| json!([])));
+                        object.insert(
+                            "usage".into(),
+                            opened.usage_report().get("agents").cloned().unwrap_or_else(|| json!([])),
+                        );
                     }
                 }
                 Ok(reply)
@@ -210,7 +201,8 @@ impl Worker {
             }
             "archive_session" => {
                 let session_id = params.get("session_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let was_current = self.opened.lock().unwrap().as_ref().map(|o| o.session_id == session_id).unwrap_or(false);
+                let was_current =
+                    self.opened.lock().unwrap().as_ref().map(|o| o.session_id == session_id).unwrap_or(false);
                 if was_current {
                     self.close_current();
                 }
@@ -219,7 +211,8 @@ impl Worker {
             }
             "delete_session" => {
                 let session_id = params.get("session_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let was_current = self.opened.lock().unwrap().as_ref().map(|o| o.session_id == session_id).unwrap_or(false);
+                let was_current =
+                    self.opened.lock().unwrap().as_ref().map(|o| o.session_id == session_id).unwrap_or(false);
                 if was_current {
                     self.close_current();
                 }
@@ -235,8 +228,11 @@ impl Worker {
                 let model = params.get("model").and_then(|v| v.as_str()).map(str::to_string);
                 let effort = params.get("effort").and_then(|v| v.as_str()).map(str::to_string);
                 let profile = params.get("profile").and_then(|v| v.as_str()).map(str::to_string);
-                if profile.is_some() { opened.set_model_selection(agent_id, profile, model, effort) }
-                else { opened.set_model_override(agent_id, model, effort) }
+                if profile.is_some() {
+                    opened.set_model_selection(agent_id, profile, model, effort)
+                } else {
+                    opened.set_model_override(agent_id, model, effort)
+                }
             }
             // D-26 rewind/fork (pi-style tree history, leader conversation)
             "rewind_points" => Ok(self.current()?.rewind_points()?),
@@ -249,19 +245,24 @@ impl Worker {
                 let state = opened.core.call_in_session("state", json!({"include_events": false}))?;
                 // fork while a turn is in flight would cancel it on close and
                 // BLOCK its task (see AGENTS.md operations notes)
-                let any_active = state
-                    .get("runs")
-                    .and_then(|v| v.as_array())
-                    .cloned()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .any(|r| r.get("status").and_then(|v| v.as_str()).map(|s| s == "QUEUED" || s == "RUNNING").unwrap_or(false));
+                let any_active =
+                    state.get("runs").and_then(|v| v.as_array()).cloned().unwrap_or_default().into_iter().any(|r| {
+                        r.get("status")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s == "QUEUED" || s == "RUNNING")
+                            .unwrap_or(false)
+                    });
                 if any_active {
                     return Err("有回合进行中，等它结束后再 fork".into());
                 }
                 let leader = state.get("leader_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let source_epoch = state.get("agents").and_then(|v| v.as_array()).and_then(|a| a.iter().find(|x| x.get("id").and_then(|v| v.as_str()) == Some(leader.as_str())))
-                    .and_then(|a| a.get("context_epoch")).and_then(|v| v.as_i64()).unwrap_or(1);
+                let source_epoch = state
+                    .get("agents")
+                    .and_then(|v| v.as_array())
+                    .and_then(|a| a.iter().find(|x| x.get("id").and_then(|v| v.as_str()) == Some(leader.as_str())))
+                    .and_then(|a| a.get("context_epoch"))
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(1);
                 let spec = state.get("spec").cloned().ok_or("no spec")?;
                 let cwd = self.cwd.lock().unwrap().clone().unwrap_or_else(|| PathBuf::from("."));
                 // fork = same spec + leader's history tree, fresh team state
@@ -275,11 +276,15 @@ impl Worker {
                 // Team DB facts, usage, and runs stay fresh in the destination.
                 for name in ["profiles.json", "model_overrides.json"] {
                     let src = session_paths(&opened.session_id).base.join(name);
-                    if src.is_file() { std::fs::copy(&src, session_paths(&new_id).base.join(name)).map_err(|e| e.to_string())?; }
+                    if src.is_file() {
+                        std::fs::copy(&src, session_paths(&new_id).base.join(name)).map_err(|e| e.to_string())?;
+                    }
                 }
                 for name in ["chat_tree.json", "chat_history.json"] {
                     let src = source_member.join(name);
-                    if src.is_file() { std::fs::copy(&src, staged_member.join(name)).map_err(|e| e.to_string())?; }
+                    if src.is_file() {
+                        std::fs::copy(&src, staged_member.join(name)).map_err(|e| e.to_string())?;
+                    }
                 }
                 let mut out = match self.open(&json!({
                     "cwd": cwd.to_string_lossy(),
@@ -298,21 +303,30 @@ impl Worker {
                 // leader tree key to that epoch while retaining all branches.
                 if let Some(new_opened) = self.opened.lock().unwrap().clone() {
                     let state = new_opened.core.call_in_session("state", json!({"include_events": false}))?;
-                    let epoch = state.get("agents").and_then(|v| v.as_array()).and_then(|a| a.iter().find(|x| x.get("id").and_then(|v| v.as_str()) == Some(leader.as_str())))
-                        .and_then(|a| a.get("context_epoch")).and_then(|v| v.as_i64()).unwrap_or(1);
+                    let epoch = state
+                        .get("agents")
+                        .and_then(|v| v.as_array())
+                        .and_then(|a| a.iter().find(|x| x.get("id").and_then(|v| v.as_str()) == Some(leader.as_str())))
+                        .and_then(|a| a.get("context_epoch"))
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(1);
                     for name in ["chat_tree.json", "chat_history.json"] {
-                    let path = session_paths(&new_id).base.join("members").join(&leader).join(name);
-                    if let Ok(text) = std::fs::read_to_string(&path) {
-                        if let Ok(mut tree) = serde_json::from_str::<Json>(&text) {
-                            if let Some(obj) = tree.as_object_mut() {
-                                let source_key = format!("ctx:{leader}:{source_epoch}");
-                                if let Some(value) = obj.remove(&source_key) {
-                                    obj.insert(format!("ctx:{leader}:{epoch}"), value);
-                                    std::fs::write(&path, serde_json::to_vec_pretty(&tree).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+                        let path = session_paths(&new_id).base.join("members").join(&leader).join(name);
+                        if let Ok(text) = std::fs::read_to_string(&path) {
+                            if let Ok(mut tree) = serde_json::from_str::<Json>(&text) {
+                                if let Some(obj) = tree.as_object_mut() {
+                                    let source_key = format!("ctx:{leader}:{source_epoch}");
+                                    if let Some(value) = obj.remove(&source_key) {
+                                        obj.insert(format!("ctx:{leader}:{epoch}"), value);
+                                        std::fs::write(
+                                            &path,
+                                            serde_json::to_vec_pretty(&tree).map_err(|e| e.to_string())?,
+                                        )
+                                        .map_err(|e| e.to_string())?;
+                                    }
                                 }
                             }
                         }
-                    }
                     }
                 }
                 out["forked_from"] = json!(opened.session_id.clone());
@@ -342,12 +356,12 @@ pub fn serve() -> i32 {
         // Slow read-only discovery must not block cancellation, polling or close.
         if method == "discover_models" {
             match (worker.current(), params["provider"].as_str().map(str::to_string)) {
-                (Ok(opened), Some(provider)) => { std::thread::spawn(move || {
-                    match opened.discover_models(&provider) {
+                (Ok(opened), Some(provider)) => {
+                    std::thread::spawn(move || match opened.discover_models(&provider) {
                         Ok(result) => out(&json!({"id":id, "result":result})),
                         Err(error) => out(&json!({"id":id, "error":error})),
-                    }
-                }); }
+                    });
+                }
                 (Err(error), _) => out(&json!({"id":id, "error":error})),
                 (_, None) => out(&json!({"id":id, "error":"provider required"})),
             }

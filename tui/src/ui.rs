@@ -38,51 +38,52 @@ pub fn wrap_line(line: &Line, width: usize) -> Vec<Line<'static>> {
     let mut out: Vec<Line<'static>> = vec![];
     let mut cur: Vec<Span<'static>> = vec![];
     let mut cur_w = 0usize;
-    let push_span = |text: String, style: Style, cur: &mut Vec<Span<'static>>, cur_w: &mut usize, out: &mut Vec<Line<'static>>| {
-        for word in text.split_inclusive(' ') {
-            let mut rest = word;
-            loop {
-                let ww = UnicodeWidthStr::width(rest);
-                if *cur_w + ww <= width {
-                    *cur_w += ww;
-                    cur.push(Span::styled(rest.to_string(), style));
-                    break;
-                }
-                if *cur_w > 0 && !rest.trim().is_empty() {
-                    // Rich never leaves a partial word on the current row: a word
-                    // starts on a fresh line (and is folded there if still too long)
-                    out.push(Line::from(std::mem::take(cur)));
-                    *cur_w = 0;
-                    rest = rest.trim_start();
-                    continue;
-                }
-                // longer than a full row (or row partly full): split by chars
-                let mut take = String::new();
-                let mut take_w = 0usize;
-                for ch in rest.chars() {
-                    let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
-                    if *cur_w + take_w + cw > width {
+    let push_span =
+        |text: String, style: Style, cur: &mut Vec<Span<'static>>, cur_w: &mut usize, out: &mut Vec<Line<'static>>| {
+            for word in text.split_inclusive(' ') {
+                let mut rest = word;
+                loop {
+                    let ww = UnicodeWidthStr::width(rest);
+                    if *cur_w + ww <= width {
+                        *cur_w += ww;
+                        cur.push(Span::styled(rest.to_string(), style));
                         break;
                     }
-                    take.push(ch);
-                    take_w += cw;
-                }
-                if take.is_empty() && *cur_w == 0 {
-                    take.push(rest.chars().next().unwrap_or(' ')); // never lose a char
-                }
-                cur.push(Span::styled(take.clone(), style));
-                *cur_w += take_w;
-                if *cur_w >= width {
-                    out.push(Line::from(std::mem::take(cur)));
-                    *cur_w = 0;
-                }
-                rest = &rest[take.len()..];
-                if rest.is_empty() {
-                    break;
+                    if *cur_w > 0 && !rest.trim().is_empty() {
+                        // Rich never leaves a partial word on the current row: a word
+                        // starts on a fresh line (and is folded there if still too long)
+                        out.push(Line::from(std::mem::take(cur)));
+                        *cur_w = 0;
+                        rest = rest.trim_start();
+                        continue;
+                    }
+                    // longer than a full row (or row partly full): split by chars
+                    let mut take = String::new();
+                    let mut take_w = 0usize;
+                    for ch in rest.chars() {
+                        let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+                        if *cur_w + take_w + cw > width {
+                            break;
+                        }
+                        take.push(ch);
+                        take_w += cw;
+                    }
+                    if take.is_empty() && *cur_w == 0 {
+                        take.push(rest.chars().next().unwrap_or(' ')); // never lose a char
+                    }
+                    cur.push(Span::styled(take.clone(), style));
+                    *cur_w += take_w;
+                    if *cur_w >= width {
+                        out.push(Line::from(std::mem::take(cur)));
+                        *cur_w = 0;
+                    }
+                    rest = &rest[take.len()..];
+                    if rest.is_empty() {
+                        break;
+                    }
                 }
             }
-        }
-    };
+        };
     for span in &line.spans {
         push_span(span.content.to_string(), span.style, &mut cur, &mut cur_w, &mut out);
     }
@@ -241,11 +242,7 @@ pub fn panel_hint(panel: &str) -> &'static str {
 /// Display rows the panel hint wraps to (same wrap the renderer uses).
 fn hint_rows(app: &App, inner: Rect) -> usize {
     let hint = tr(app.lang, panel_hint(PANELS[app.panel]), &[]);
-    wrap_lines(
-        vec![Line::from(hint)],
-        (inner.width as usize).saturating_sub(1).max(1),
-    )
-    .len()
+    wrap_lines(vec![Line::from(hint)], (inner.width as usize).saturating_sub(1).max(1)).len()
 }
 
 pub fn geometry(app: &App, area: Rect) -> Geometry {
@@ -259,11 +256,8 @@ pub fn geometry(app: &App, area: Rect) -> Geometry {
     // the panel box, directly under it, and only reserved when there is a plan
     let plan_h = if app.plan_status().is_some() && stacked.height > side_h + 4 { 1 } else { 0 };
     let plan = Rect { y: stacked.y + side_h, height: plan_h, ..stacked };
-    let chat = Rect {
-        y: stacked.y + side_h + plan_h,
-        height: stacked.height.saturating_sub(side_h + plan_h),
-        ..stacked
-    };
+    let chat =
+        Rect { y: stacked.y + side_h + plan_h, height: stacked.height.saturating_sub(side_h + plan_h), ..stacked };
     let side_inner = Rect {
         x: side.x + 1,
         y: side.y + 1,
@@ -330,30 +324,53 @@ fn render_model_picker(frame: &mut Frame, picker: &crate::model_picker::ModelPic
     let height = area.height.saturating_sub(2).min((rows.len() as u16).saturating_add(5).max(7));
     let rect = Rect {
         x: area.x + area.width.saturating_sub(width) / 2,
-        y: area.y + area.height.saturating_sub(height) / 2, width, height,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
     };
     frame.render_widget(ratatui::widgets::Clear, rect);
     let block = ratatui::widgets::Block::bordered()
         .border_type(ratatui::widgets::BorderType::Rounded)
-        .border_style(Style::default().fg(ACCENT)).style(Style::default().bg(PANEL_BG))
+        .border_style(Style::default().fg(ACCENT))
+        .style(Style::default().bg(PANEL_BG))
         .title(picker.title(lang))
         .title_bottom(tr(lang, "↑↓ 选择 · Enter 确认 · Esc 返回/关闭", &[]));
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
-    if inner.height < 3 || inner.width < 2 { return; }
-    frame.render_widget(Paragraph::new(format!("{} {}", tr(lang, "搜索：", &[]), picker.query)), Rect { height: 1, ..inner });
-    let notice = if picker.loading { tr(lang, "正在获取在线模型；已配置模型可直接选择…", &[]) } else { picker.notice.clone() };
-    frame.render_widget(Paragraph::new(notice).style(Style::default().fg(GREY)), Rect { y: inner.y + 1, height: 1, ..inner });
+    if inner.height < 3 || inner.width < 2 {
+        return;
+    }
+    frame.render_widget(
+        Paragraph::new(format!("{} {}", tr(lang, "搜索：", &[]), picker.query)),
+        Rect { height: 1, ..inner },
+    );
+    let notice = if picker.loading {
+        tr(lang, "正在获取在线模型；已配置模型可直接选择…", &[])
+    } else {
+        picker.notice.clone()
+    };
+    frame.render_widget(
+        Paragraph::new(notice).style(Style::default().fg(GREY)),
+        Rect { y: inner.y + 1, height: 1, ..inner },
+    );
     let list_area = Rect { y: inner.y + 2, height: inner.height - 2, width: inner.width.saturating_sub(1), ..inner };
     if rows.is_empty() {
         frame.render_widget(Paragraph::new(tr(lang, "没有匹配项；检查搜索词或 config.toml 模型配置", &[])), list_area);
         return;
     }
     let start = picker.index.saturating_sub((list_area.height as usize).saturating_sub(1));
-    let lines: Vec<Line> = rows.iter().enumerate().skip(start).take(list_area.height as usize).map(|(i, (_, label))| {
-        Line::styled(format!("{} {label}", if i == picker.index { "›" } else { " " }),
-            if i == picker.index { Style::default().fg(FG).bg(HOVER_BG) } else { Style::default().fg(GREY) })
-    }).collect();
+    let lines: Vec<Line> = rows
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(list_area.height as usize)
+        .map(|(i, (_, label))| {
+            Line::styled(
+                format!("{} {label}", if i == picker.index { "›" } else { " " }),
+                if i == picker.index { Style::default().fg(FG).bg(HOVER_BG) } else { Style::default().fg(GREY) },
+            )
+        })
+        .collect();
     frame.render_widget(Paragraph::new(lines), list_area);
 }
 
@@ -373,12 +390,8 @@ fn pad_left_line(line: Line<'static>) -> Line<'static> {
 }
 
 fn render_status(frame: &mut Frame, app: &App, area: Rect) {
-    let session = app
-        .state
-        .as_ref()
-        .and_then(|s| s.pointer("/session/session_id"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("-");
+    let session =
+        app.state.as_ref().and_then(|s| s.pointer("/session/session_id")).and_then(|v| v.as_str()).unwrap_or("-");
     let mut spans: Vec<Span> = vec![
         Span::styled(" TeamAgents", Style::default().fg(FG).add_modifier(Modifier::BOLD)),
         Span::styled(format!("  {session}"), Style::default().fg(GREY)),
@@ -393,11 +406,7 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
     // chips in priority order; anything that does not fit is dropped (never clipped)
     let mut chips: Vec<Span> = vec![];
     if app.disconnected {
-        chips.push(chip(
-            tr(app.lang, "[界面刷新失败] ", &[]).trim(),
-            BG,
-            Some(ERROR),
-        ));
+        chips.push(chip(tr(app.lang, "[界面刷新失败] ", &[]).trim(), BG, Some(ERROR)));
     }
     if paused {
         chips.push(chip(&tr(app.lang, "已暂停", &[]), BG, Some(WARNING)));
@@ -411,11 +420,7 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
         .unwrap_or(0);
     if approvals > 0 {
         let count = approvals.to_string();
-        chips.push(chip(
-            &format!("⚠ {}", app.t("待批准 {count}", &[("count", &count)])),
-            BG,
-            Some(WARNING),
-        ));
+        chips.push(chip(&format!("⚠ {}", app.t("待批准 {count}", &[("count", &count)])), BG, Some(WARNING)));
     }
     let open_tasks = app
         .state
@@ -436,11 +441,7 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
         .unwrap_or(0);
     if open_tasks > 0 {
         let count = open_tasks.to_string();
-        chips.push(chip(
-            &format!("▸ {}", app.t("未完成任务 {count}", &[("count", &count)])),
-            FG,
-            Some(PANEL_BG),
-        ));
+        chips.push(chip(&format!("▸ {}", app.t("未完成任务 {count}", &[("count", &count)])), FG, Some(PANEL_BG)));
     }
     let mut used: usize = spans.iter().map(|s| UnicodeWidthStr::width(s.content.as_ref())).sum();
     for c in chips {
@@ -517,18 +518,12 @@ pub fn tab_layout(app: &App, inner_x: u16, inner_width: u16) -> (Vec<TabPiece>, 
         let active = i == app.panel;
         let mut spans: Vec<Span> = vec![Span::styled(
             if active { format!("▍{label}") } else { format!(" {label}") },
-            if active {
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(GREY)
-            },
+            if active { Style::default().fg(ACCENT).add_modifier(Modifier::BOLD) } else { Style::default().fg(GREY) },
         )];
         match tab_badge(app, panel) {
             Some(badge) => spans.push(Span::styled(
                 format!(" {badge}"),
-                Style::default()
-                    .fg(if active { ACCENT } else { NOTICE })
-                    .add_modifier(Modifier::DIM),
+                Style::default().fg(if active { ACCENT } else { NOTICE }).add_modifier(Modifier::DIM),
             )),
             None => spans.push(Span::raw(" ")),
         }
@@ -573,10 +568,7 @@ pub fn tab_layout(app: &App, inner_x: u16, inner_width: u16) -> (Vec<TabPiece>, 
 /// Which panel a click at `col` hits, using the same layout the renderer used.
 pub fn tab_at(app: &App, inner_x: u16, inner_width: u16, col: u16) -> Option<usize> {
     let (pieces, _, _) = tab_layout(app, inner_x, inner_width);
-    pieces
-        .into_iter()
-        .find(|p| col >= p.x && (col as usize) < p.x as usize + p.width)
-        .map(|p| p.index)
+    pieces.into_iter().find(|p| col >= p.x && (col as usize) < p.x as usize + p.width).map(|p| p.index)
 }
 
 /// Visible tab range for a strip that cannot fit: the active tab is always
@@ -642,10 +634,7 @@ fn render_sidebar(frame: &mut Frame, app: &mut App, geo: &Geometry) {
     app.tab_row = inner.y;
     let divider_y = inner.y + 1;
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            "─".repeat(inner.width as usize),
-            Style::default().fg(PANEL_BG),
-        ))),
+        Paragraph::new(Line::from(Span::styled("─".repeat(inner.width as usize), Style::default().fg(PANEL_BG)))),
         Rect { y: divider_y, height: 1, ..inner },
     );
 
@@ -656,17 +645,10 @@ fn render_sidebar(frame: &mut Frame, app: &mut App, geo: &Geometry) {
         (inner.width as usize).saturating_sub(1).max(1),
     );
     let hint_h = (hint_rows.len() as u16).min(inner.height.saturating_sub(2));
-    let content = Rect {
-        y: divider_y + 1,
-        height: inner.height.saturating_sub(2 + hint_h),
-        ..inner
-    };
+    let content = Rect { y: divider_y + 1, height: inner.height.saturating_sub(2 + hint_h), ..inner };
     render_panel(frame, app, content);
     let hints: Vec<Line> = hint_rows.into_iter().map(pad_left_line).collect();
-    frame.render_widget(
-        Paragraph::new(hints),
-        Rect { y: inner.y + inner.height - hint_h, height: hint_h, ..inner },
-    );
+    frame.render_widget(Paragraph::new(hints), Rect { y: inner.y + inner.height - hint_h, height: hint_h, ..inner });
 }
 
 fn render_panel(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -731,9 +713,10 @@ fn render_panel(frame: &mut Frame, app: &mut App, area: Rect) {
 /// `/settings` overlay: a centred box over the chat, Esc closes it.
 /// `v`: the selected member's latest edit diff, colored like a patch.
 fn render_review_overlay(frame: &mut Frame, app: &App, area: Rect) {
-    let width = ((area.width as usize * 8 / 10).clamp(40, 120))
-        .min(area.width.saturating_sub(2).max(1) as usize) as u16;
-    let height = ((area.height as usize * 3 / 4).clamp(6, 40)).min(area.height.saturating_sub(2).max(1) as usize) as u16;
+    let width =
+        ((area.width as usize * 8 / 10).clamp(40, 120)).min(area.width.saturating_sub(2).max(1) as usize) as u16;
+    let height =
+        ((area.height as usize * 3 / 4).clamp(6, 40)).min(area.height.saturating_sub(2).max(1) as usize) as u16;
     let x = area.x + (area.width.saturating_sub(width)) / 2;
     let y = area.y + (area.height.saturating_sub(height)) / 2;
     let box_area = Rect { x, y, width, height };
@@ -791,8 +774,7 @@ fn render_settings_overlay(frame: &mut Frame, app: &App, area: Rect) {
     let info = app.settings_lines();
     // stay inside the frame: ratatui's Clear writes every cell of its rect, and
     // a rect that pokes out of the buffer panics on narrow terminals
-    let width = ((area.width as usize * 7 / 10).clamp(48, 92))
-        .min(area.width.saturating_sub(2).max(1) as usize) as u16;
+    let width = ((area.width as usize * 7 / 10).clamp(48, 92)).min(area.width.saturating_sub(2).max(1) as usize) as u16;
     let height = ((info.len() + 5) as u16).min(area.height.saturating_sub(2)).max(1);
     let x = area.x + (area.width.saturating_sub(width)) / 2;
     let y = area.y + (area.height.saturating_sub(height)) / 2;
@@ -803,12 +785,7 @@ fn render_settings_overlay(frame: &mut Frame, app: &App, area: Rect) {
     // short of the right border; the borders then always reach the terminal.
     frame.render_widget(
         ratatui::widgets::Clear,
-        Rect {
-            x: box_area.x.saturating_sub(1),
-            y: box_area.y,
-            width: 1,
-            height: box_area.height,
-        },
+        Rect { x: box_area.x.saturating_sub(1), y: box_area.y, width: 1, height: box_area.height },
     );
     frame.render_widget(ratatui::widgets::Clear, box_area);
     let block = ratatui::widgets::Block::default()
@@ -822,10 +799,7 @@ fn render_settings_overlay(frame: &mut Frame, app: &App, area: Rect) {
         )))
         .title_alignment(ratatui::layout::Alignment::Left);
     let inner = block.inner(box_area);
-    let text = Rect {
-        width: inner.width.saturating_sub(1),
-        ..inner
-    };
+    let text = Rect { width: inner.width.saturating_sub(1), ..inner };
     frame.render_widget(block, box_area);
     if inner.height < 4 || inner.width < 4 {
         return;
@@ -849,22 +823,13 @@ fn render_settings_overlay(frame: &mut Frame, app: &App, area: Rect) {
     let value_col = (1 + UnicodeWidthStr::width(name.as_str())).max(17);
     let pad = value_col.saturating_sub(1 + UnicodeWidthStr::width(name.as_str()));
     frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            label(format!("{name}{}", " ".repeat(pad))),
-            value(value_text, true),
-        ])),
+        Paragraph::new(Line::from(vec![label(format!("{name}{}", " ".repeat(pad))), value(value_text, true)])),
         Rect { y: text.y, height: 1, ..text },
     );
     // the dropdown unfolds onto the blank row under the language row and pushes
     // the info body down while it is open (it used to overlap the first info line)
-    let dropdown_h = if app.lang_open
-        && inner.height >= 6
-        && (text.width as usize) >= value_col + 9
-    {
-        2u16
-    } else {
-        0
-    };
+    let dropdown_h =
+        if app.lang_open && inner.height >= 6 && (text.width as usize) >= value_col + 9 { 2u16 } else { 0 };
     if dropdown_h > 0 {
         let dd = Rect {
             x: text.x + value_col as u16,
@@ -886,24 +851,15 @@ fn render_settings_overlay(frame: &mut Frame, app: &App, area: Rect) {
         }
     }
     let body_y = inner.y + 2 + dropdown_h; // one blank line under the language row
-    let body: Vec<Line> = info
-        .iter()
-        .map(|l| Line::from(Span::styled(format!(" {l}"), Style::default().fg(NOTICE))))
-        .collect();
+    let body: Vec<Line> =
+        info.iter().map(|l| Line::from(Span::styled(format!(" {l}"), Style::default().fg(NOTICE)))).collect();
     frame.render_widget(
         Paragraph::new(body),
-        Rect {
-            y: body_y,
-            height: text.y + text.height.saturating_sub(1).saturating_sub(body_y),
-            ..text
-        },
+        Rect { y: body_y, height: text.y + text.height.saturating_sub(1).saturating_sub(body_y), ..text },
     );
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            format!(
-                " {}",
-                tr(app.lang, "Enter 选择语言 · Esc 关闭", &[])
-            ),
+            format!(" {}", tr(app.lang, "Enter 选择语言 · Esc 关闭", &[])),
             Style::default().fg(GREY),
         ))),
         Rect { y: text.y + text.height - 1, height: 1, ..text },
@@ -913,11 +869,11 @@ fn render_settings_overlay(frame: &mut Frame, app: &App, area: Rect) {
 /// Which columns a table gives up first when the pane is narrow.
 fn drop_order(panel: &str) -> &'static [usize] {
     match panel {
-        "team" => &[2, 5, 6, 3, 1],          // Type, Workspace, Access, Model, Role
-        "tasks" => &[7, 6, 5, 1, 2],         // Created, Result, Dependencies, Requester, Assignee
-        "approvals" => &[3, 1],              // Scope, Operation
-        "sessions" => &[5, 4, 3, 2, 6],      // Updated, Size, Events, Goal, Flags
-        _ => &[4, 2, 0, 1],                  // Shared: Sequence, Kind, Space, Author
+        "team" => &[2, 5, 6, 3, 1],     // Type, Workspace, Access, Model, Role
+        "tasks" => &[7, 6, 5, 1, 2],    // Created, Result, Dependencies, Requester, Assignee
+        "approvals" => &[3, 1],         // Scope, Operation
+        "sessions" => &[5, 4, 3, 2, 6], // Updated, Size, Events, Goal, Flags
+        _ => &[4, 2, 0, 1],             // Shared: Sequence, Kind, Space, Author
     }
 }
 
@@ -949,11 +905,9 @@ fn render_table(
     }
     if rows.is_empty() {
         let y = area.y + (area.height / 3).max(1);
-        let text = Line::from(Span::styled(
-            format!("— {empty} —"),
-            Style::default().fg(GREY).add_modifier(Modifier::DIM),
-        ))
-        .centered();
+        let text =
+            Line::from(Span::styled(format!("— {empty} —"), Style::default().fg(GREY).add_modifier(Modifier::DIM)))
+                .centered();
         frame.render_widget(Paragraph::new(text), Rect { y, height: 1, ..area });
         return;
     }
@@ -972,11 +926,7 @@ fn render_table(
     if !fits(&keep, &widths) {
         // still too wide: shrink the widest kept column until it fits
         while !fits(&keep, &widths) {
-            let Some((i, _)) = keep
-                .iter()
-                .enumerate()
-                .max_by_key(|(_, index)| widths[**index])
-            else {
+            let Some((i, _)) = keep.iter().enumerate().max_by_key(|(_, index)| widths[**index]) else {
                 break;
             };
             let index = keep[i];
@@ -999,10 +949,7 @@ fn render_table(
         .collect();
     frame.render_widget(Paragraph::new(Line::from(header_line)), Rect { height: 1, ..area });
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            "─".repeat(area.width as usize),
-            Style::default().fg(PANEL_BG),
-        ))),
+        Paragraph::new(Line::from(Span::styled("─".repeat(area.width as usize), Style::default().fg(PANEL_BG)))),
         Rect { y: area.y + 1, height: 1, ..area },
     );
 
@@ -1037,24 +984,16 @@ fn render_table(
                     None => Style::default().fg(if selected || hovered { FG } else { NOTICE }),
                 };
                 let modifier = if selected { Modifier::BOLD } else { Modifier::empty() };
-                Span::styled(
-                    ellipsize(&text, widths.get(*j).copied().unwrap_or(6)),
-                    fg.bg(bg).add_modifier(modifier),
-                )
+                Span::styled(ellipsize(&text, widths.get(*j).copied().unwrap_or(6)), fg.bg(bg).add_modifier(modifier))
             })
             .collect::<Vec<_>>()
             .join(Span::styled("  ", Style::default().bg(bg)));
-        lines.push(Line::from(
-            std::iter::once(marker).chain(cells).collect::<Vec<_>>(),
-        ));
+        lines.push(Line::from(std::iter::once(marker).chain(cells).collect::<Vec<_>>()));
     }
     let _ = focused;
     let view = body.height as usize;
-    let text_area = if rows.len() > view && body.width > 3 {
-        Rect { width: body.width.saturating_sub(1), ..body }
-    } else {
-        body
-    };
+    let text_area =
+        if rows.len() > view && body.width > 3 { Rect { width: body.width.saturating_sub(1), ..body } } else { body };
     frame.render_widget(Paragraph::new(lines), text_area);
     if rows.len() > view && body.width > 3 {
         let max_scroll = rows.len() - view;
@@ -1083,11 +1022,7 @@ fn render_plan_strip(frame: &mut Frame, app: &App, area: Rect) {
     let summary = format!(" {} ", summary);
     let used = UnicodeWidthStr::width(summary.as_str()) + 2;
     let room = (area.width as usize).saturating_sub(used);
-    let current = if current.is_empty() {
-        tr(app.lang, "全部完成", &[])
-    } else {
-        current
-    };
+    let current = if current.is_empty() { tr(app.lang, "全部完成", &[]) } else { current };
     let mut spans = vec![
         Span::styled(summary, Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
         Span::styled(
@@ -1110,11 +1045,7 @@ fn render_chat(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
     let live_width = (area.width as usize).saturating_sub(3).max(1);
-    let live_lines = if app.stream_text.is_empty() {
-        vec![]
-    } else {
-        md::render(&app.stream_text, live_width)
-    };
+    let live_lines = if app.stream_text.is_empty() { vec![] } else { md::render(&app.stream_text, live_width) };
     let live_h = (live_lines.len() as u16 + 1).min(9);
     let composer_text_w = (area.width as usize).saturating_sub(5).max(1);
     let composer_h = app.composer.widget_height(composer_text_w) as u16;
@@ -1188,16 +1119,9 @@ fn render_slash_menu(frame: &mut Frame, app: &App, area: Rect, composer: Rect) {
     }
     let matches = app.slash_matches();
     let selected = app.slash_index.min(matches.len().saturating_sub(1));
-    let name_w = matches
-        .iter()
-        .map(|c| UnicodeWidthStr::width(c.name))
-        .max()
-        .unwrap_or(0);
-    let desc_w = matches
-        .iter()
-        .map(|c| UnicodeWidthStr::width(tr(app.lang, c.description, &[]).as_str()))
-        .max()
-        .unwrap_or(0);
+    let name_w = matches.iter().map(|c| UnicodeWidthStr::width(c.name)).max().unwrap_or(0);
+    let desc_w =
+        matches.iter().map(|c| UnicodeWidthStr::width(tr(app.lang, c.description, &[]).as_str())).max().unwrap_or(0);
     // min must stay ≤ max (a 12–27 col terminal used to panic here)
     let width = ((name_w + desc_w + 6) as u16).clamp(8, area.width.saturating_sub(4).max(8));
     let height = (matches.len() as u16 + 2).min(composer.y.saturating_sub(area.y + 1));
@@ -1210,12 +1134,7 @@ fn render_slash_menu(frame: &mut Frame, app: &App, area: Rect, composer: Rect) {
     // short of the right border; the borders then always reach the terminal.
     frame.render_widget(
         ratatui::widgets::Clear,
-        Rect {
-            x: box_area.x.saturating_sub(1),
-            y: box_area.y,
-            width: 1,
-            height: box_area.height,
-        },
+        Rect { x: box_area.x.saturating_sub(1), y: box_area.y, width: 1, height: box_area.height },
     );
     frame.render_widget(ratatui::widgets::Clear, box_area);
     let block = ratatui::widgets::Block::default()
@@ -1236,11 +1155,8 @@ fn render_slash_menu(frame: &mut Frame, app: &App, area: Rect, composer: Rect) {
         .skip(start)
         .take(inner.height as usize)
         .map(|(i, command)| {
-            let style = if i == selected {
-                Style::default().fg(FG).bg(HOVER_BG)
-            } else {
-                Style::default().fg(GREY).bg(BG)
-            };
+            let style =
+                if i == selected { Style::default().fg(FG).bg(HOVER_BG) } else { Style::default().fg(GREY).bg(BG) };
             Line::from(Span::styled(
                 format!(" {:<name_w$}  {}", command.name, tr(app.lang, command.description, &[])),
                 style,
@@ -1257,11 +1173,8 @@ fn render_composer(frame: &mut Frame, app: &App, area: Rect) {
     let focused = app.focus == Focus::Composer;
     let border = if focused { ACCENT } else { GREY };
     let title = format!(" {} ", app.composer_title());
-    let title: String = if UnicodeWidthStr::width(title.as_str()) + 4 > area.width as usize {
-        String::new()
-    } else {
-        title
-    };
+    let title: String =
+        if UnicodeWidthStr::width(title.as_str()) + 4 > area.width as usize { String::new() } else { title };
     // the key hint rides the bottom border and drops parts that do not fit
     let hint_parts = [
         tr(app.lang, "Enter 发送", &[]),
@@ -1283,15 +1196,9 @@ fn render_composer(frame: &mut Frame, app: &App, area: Rect) {
     let block = ratatui::widgets::Block::default()
         .borders(ratatui::widgets::Borders::ALL)
         .border_type(ratatui::widgets::BorderType::Rounded)
-        .title(Line::from(Span::styled(
-            title,
-            Style::default().fg(GREY).add_modifier(Modifier::DIM),
-        )))
+        .title(Line::from(Span::styled(title, Style::default().fg(GREY).add_modifier(Modifier::DIM))))
         .title_alignment(ratatui::layout::Alignment::Right)
-        .title_bottom(Line::from(Span::styled(
-            hint,
-            Style::default().fg(GREY).add_modifier(Modifier::DIM),
-        )))
+        .title_bottom(Line::from(Span::styled(hint, Style::default().fg(GREY).add_modifier(Modifier::DIM))))
         .title_alignment(ratatui::layout::Alignment::Right)
         .border_style(Style::default().fg(border));
     let inner = block.inner(area);
@@ -1333,10 +1240,8 @@ fn render_composer(frame: &mut Frame, app: &App, area: Rect) {
             }
             if r == app.composer.row && app.composer.col >= start && app.composer.col <= end {
                 // the caret is placed by display column: CJK glyphs take two cells
-                let col_w: usize = chars[start..app.composer.col]
-                    .iter()
-                    .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
-                    .sum();
+                let col_w: usize =
+                    chars[start..app.composer.col].iter().map(|c| UnicodeWidthChar::width(*c).unwrap_or(0)).sum();
                 cursor_v = (visual.len(), col_w);
             }
             visual.push(chars[start..end].iter().collect());
@@ -1402,15 +1307,10 @@ fn render_scrolled_lang(
     let max_scroll = total.saturating_sub(view);
     let scroll = scroll.min(max_scroll);
     let offset = max_scroll.saturating_sub(scroll);
-    let text_area = if bar && total > view {
-        Rect { width: area.width.saturating_sub(1), ..area }
-    } else {
-        area
-    };
+    let text_area = if bar && total > view { Rect { width: area.width.saturating_sub(1), ..area } } else { area };
     frame.render_widget(Paragraph::new(lines).scroll((offset as u16, 0)), text_area);
     if bar && total > view && area.width > 2 {
-        let mut state =
-            ratatui::widgets::ScrollbarState::new(max_scroll.max(1)).position(offset);
+        let mut state = ratatui::widgets::ScrollbarState::new(max_scroll.max(1)).position(offset);
         frame.render_stateful_widget(
             ratatui::widgets::Scrollbar::new(ratatui::widgets::ScrollbarOrientation::VerticalRight)
                 .style(Style::default().fg(GREY))
@@ -1474,10 +1374,7 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
         if i > 0 {
             spans.push(Span::styled("  ", Style::default()));
         }
-        spans.push(Span::styled(
-            (*key).to_string(),
-            Style::default().fg(ACCENT).add_modifier(Modifier::DIM),
-        ));
+        spans.push(Span::styled((*key).to_string(), Style::default().fg(ACCENT).add_modifier(Modifier::DIM)));
         spans.push(Span::styled(format!(" {label}"), Style::default().fg(GREY)));
         used += extra;
         shown += 1;
@@ -1511,9 +1408,7 @@ fn render_toasts(frame: &mut Frame, app: &mut App, status_area: Rect) {
         // the box must fit the terminal: 58 is the comfortable cap, but a narrow
         // frame wins (Clear outside the buffer panics)
         let avail = (width as usize).saturating_sub(2).max(8);
-        let text_w = UnicodeWidthStr::width(toast.text.as_str())
-            .min(58)
-            .min(avail.saturating_sub(6).max(4));
+        let text_w = UnicodeWidthStr::width(toast.text.as_str()).min(58).min(avail.saturating_sub(6).max(4));
         let w = (text_w + 6) as u16;
         let x = width.saturating_sub(w + 1);
         let body = wrap_line(

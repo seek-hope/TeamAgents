@@ -12,10 +12,7 @@ pub fn new_id(prefix: &str) -> String {
 }
 
 pub fn now() -> f64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs_f64())
-        .unwrap_or(0.0)
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
 }
 
 macro_rules! str_enum {
@@ -31,23 +28,78 @@ str_enum!(RuntimeKind, "snake_case", Deepagents, Codex);
 str_enum!(ChannelMode, "snake_case", Message, Task, Broadcast);
 str_enum!(WorkspacePolicy, "snake_case", Shared, Isolated, GitWorktree);
 str_enum!(TaskStatus, "SCREAMING_SNAKE_CASE", Pending, Running, Succeeded, Failed, Cancelled, Blocked);
-str_enum!(TurnStatus, "SCREAMING_SNAKE_CASE", Queued, Running, WaitingTask, WaitingApproval,
-          Completed, Failed, Cancelled, OutcomeUnknown);
+str_enum!(
+    TurnStatus,
+    "SCREAMING_SNAKE_CASE",
+    Queued,
+    Running,
+    WaitingTask,
+    WaitingApproval,
+    Completed,
+    Failed,
+    Cancelled,
+    OutcomeUnknown
+);
 str_enum!(AgentStatus, "SCREAMING_SNAKE_CASE", Idle, Busy, Waiting, Draining, Removed);
 str_enum!(PatchStatus, "SCREAMING_SNAKE_CASE", Proposed, Accepted, WaitingBoundary, Applied, Rejected, Failed);
 str_enum!(ApprovalStatus, "SCREAMING_SNAKE_CASE", Pending, ApprovedOnce, ApprovedSession, Denied, Expired);
 str_enum!(PermissionMode, "snake_case", ApprovedScope, FullAuto);
 str_enum!(SessionStatus, "SCREAMING_SNAKE_CASE", Active, Paused, Idle, Closed);
-str_enum!(ActionKind, "snake_case", SendMessage, AssignTask, CompleteTask, WaitForTasks,
-          PublishShared, ReadShared, ListShared, RequestHelp, ProposeTeamChange,
-          ApplyTopologyPatch, SignalDone, UserMessage, UserSupplement, CancelTask,
-          CancelRun, ApprovalDecision, SetPermissionMode, PauseSession, MemberCompletionRequest);
-str_enum!(EventKind, "snake_case", UserMessage, LeaderReply, Message, TaskCreated, TaskReady,
-          TaskStarted, TaskCompleted, TaskFailed, TaskCancelled, TaskBlocked, RunStarted,
-          RunCompleted, RunFailed, RunCancelled, RunWaiting, RunProgress, SharedPublished,
-          TopologyProposed, TopologyApplied, TopologyRejected, ApprovalRequested,
-          ApprovalDecided, GoalDone, LimitReached, MemberAdded, MemberRemoved, MemberStatus,
-          SessionStatus);
+str_enum!(
+    ActionKind,
+    "snake_case",
+    SendMessage,
+    AssignTask,
+    CompleteTask,
+    WaitForTasks,
+    PublishShared,
+    ReadShared,
+    ListShared,
+    RequestHelp,
+    ProposeTeamChange,
+    ApplyTopologyPatch,
+    SignalDone,
+    UserMessage,
+    UserSupplement,
+    CancelTask,
+    CancelRun,
+    ApprovalDecision,
+    SetPermissionMode,
+    PauseSession,
+    MemberCompletionRequest
+);
+str_enum!(
+    EventKind,
+    "snake_case",
+    UserMessage,
+    LeaderReply,
+    Message,
+    TaskCreated,
+    TaskReady,
+    TaskStarted,
+    TaskCompleted,
+    TaskFailed,
+    TaskCancelled,
+    TaskBlocked,
+    RunStarted,
+    RunCompleted,
+    RunFailed,
+    RunCancelled,
+    RunWaiting,
+    RunProgress,
+    SharedPublished,
+    TopologyProposed,
+    TopologyApplied,
+    TopologyRejected,
+    ApprovalRequested,
+    ApprovalDecided,
+    GoalDone,
+    LimitReached,
+    MemberAdded,
+    MemberRemoved,
+    MemberStatus,
+    SessionStatus
+);
 
 impl TaskStatus {
     pub fn is_terminal(self) -> bool {
@@ -56,14 +108,18 @@ impl TaskStatus {
 }
 
 impl TurnStatus {
-    pub fn is_active(self) -> bool { matches!(self, Self::Queued | Self::Running) }
+    pub fn is_active(self) -> bool {
+        matches!(self, Self::Queued | Self::Running)
+    }
     pub fn is_terminal(self) -> bool {
         matches!(self, Self::Completed | Self::Failed | Self::Cancelled | Self::OutcomeUnknown)
     }
 }
 
 pub type Json = serde_json::Value;
-pub fn obj() -> serde_json::Map<String, Json> { serde_json::Map::new() }
+pub fn obj() -> serde_json::Map<String, Json> {
+    serde_json::Map::new()
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -82,7 +138,9 @@ pub struct AgentSpec {
     #[serde(default = "default_workspace_policy")]
     pub workspace_policy: WorkspacePolicy,
 }
-fn default_workspace_policy() -> WorkspacePolicy { WorkspacePolicy::Shared }
+fn default_workspace_policy() -> WorkspacePolicy {
+    WorkspacePolicy::Shared
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -107,8 +165,12 @@ pub struct ObserverSpec {
     #[serde(default)]
     pub capabilities: Vec<String>,
 }
-fn default_payload_scope() -> String { "status".into() }
-fn default_wake_policy() -> String { "none".into() }
+fn default_payload_scope() -> String {
+    "status".into()
+}
+fn default_wake_policy() -> String {
+    "none".into()
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -120,12 +182,24 @@ pub struct SharedSpaceSpec {
     pub writers: Vec<String>,
 }
 
-fn default_max_parallel_workers() -> i64 { 8 }
-fn default_max_members() -> i64 { 20 }
-fn default_max_turns() -> i64 { 1000 }
-fn default_max_steps() -> i64 { 200 }
-fn default_turn_timeout() -> i64 { 1200 }
-fn default_cancel_timeout() -> i64 { 60 }
+fn default_max_parallel_workers() -> i64 {
+    8
+}
+fn default_max_members() -> i64 {
+    20
+}
+fn default_max_turns() -> i64 {
+    1000
+}
+fn default_max_steps() -> i64 {
+    200
+}
+fn default_turn_timeout() -> i64 {
+    1200
+}
+fn default_cancel_timeout() -> i64 {
+    60
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -173,7 +247,9 @@ pub struct TeamSpec {
     #[serde(default)]
     pub limits: Limits,
 }
-fn default_schema_version() -> i64 { SCHEMA_VERSION }
+fn default_schema_version() -> i64 {
+    SCHEMA_VERSION
+}
 
 impl TeamSpec {
     /// Reference validation (plan §5.2).
@@ -251,7 +327,9 @@ impl TeamSpec {
         Ok(())
     }
 
-    pub fn agent(&self, id: &str) -> Option<&AgentSpec> { self.agents.iter().find(|a| a.id == id) }
+    pub fn agent(&self, id: &str) -> Option<&AgentSpec> {
+        self.agents.iter().find(|a| a.id == id)
+    }
 
     /// Channel with mode message/broadcast.
     pub fn can_send(&self, source: &str, target: &str) -> bool {
@@ -270,9 +348,9 @@ impl TeamSpec {
         if source == self.leader_id {
             return true;
         }
-        self.channels.iter().any(|c| {
-            c.source == source && c.mode == ChannelMode::Task && c.targets.iter().any(|t| t == target)
-        })
+        self.channels
+            .iter()
+            .any(|c| c.source == source && c.mode == ChannelMode::Task && c.targets.iter().any(|t| t == target))
     }
 
     pub fn space(&self, space_id: &str) -> Option<&SharedSpaceSpec> {
@@ -308,9 +386,15 @@ pub struct ModelProfile {
     #[serde(default)]
     pub codex_profile: Option<String>,
 }
-fn default_protocol() -> String { "openai".into() }
-fn default_timeout() -> i64 { 120 }
-fn default_retries() -> i64 { 5 }
+fn default_protocol() -> String {
+    "openai".into()
+}
+fn default_timeout() -> i64 {
+    120
+}
+fn default_retries() -> i64 {
+    5
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
@@ -429,7 +513,9 @@ pub struct Task {
     #[serde(default = "now")]
     pub updated_at: f64,
 }
-fn default_task_status() -> TaskStatus { TaskStatus::Pending }
+fn default_task_status() -> TaskStatus {
+    TaskStatus::Pending
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -460,7 +546,9 @@ pub struct TurnRun {
     #[serde(default = "now")]
     pub updated_at: f64,
 }
-fn default_turn_status() -> TurnStatus { TurnStatus::Queued }
+fn default_turn_status() -> TurnStatus {
+    TurnStatus::Queued
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -516,7 +604,9 @@ pub struct TopologyPatch {
     #[serde(default = "now")]
     pub updated_at: f64,
 }
-fn default_patch_status() -> PatchStatus { PatchStatus::Proposed }
+fn default_patch_status() -> PatchStatus {
+    PatchStatus::Proposed
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -536,7 +626,9 @@ pub struct ApprovalRequest {
     #[serde(default)]
     pub decided_at: Option<f64>,
 }
-fn default_approval_status() -> ApprovalStatus { ApprovalStatus::Pending }
+fn default_approval_status() -> ApprovalStatus {
+    ApprovalStatus::Pending
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -557,7 +649,9 @@ pub struct SharedEntry {
     #[serde(default = "now")]
     pub created_at: f64,
 }
-fn default_entry_kind() -> String { "note".into() }
+fn default_entry_kind() -> String {
+    "note".into()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -582,13 +676,7 @@ impl Receipt {
         }
     }
     pub fn success(action: &TeamAction, result: Json) -> Self {
-        Self {
-            action_id: action.action_id.clone(),
-            ok: true,
-            kind: action.kind,
-            result,
-            error: None,
-        }
+        Self { action_id: action.action_id.clone(), ok: true, kind: action.kind, result, error: None }
     }
 }
 
@@ -639,7 +727,10 @@ mod tests {
     fn enum_wire_strings_are_stable() {
         assert_eq!(serde_json::to_string(&TaskStatus::Pending).unwrap(), "\"PENDING\"");
         assert_eq!(serde_json::to_string(&TurnStatus::WaitingApproval).unwrap(), "\"WAITING_APPROVAL\"");
-        assert_eq!(serde_json::to_string(&ActionKind::MemberCompletionRequest).unwrap(), "\"member_completion_request\"");
+        assert_eq!(
+            serde_json::to_string(&ActionKind::MemberCompletionRequest).unwrap(),
+            "\"member_completion_request\""
+        );
         assert_eq!(serde_json::to_string(&WorkspacePolicy::GitWorktree).unwrap(), "\"git_worktree\"");
     }
 }

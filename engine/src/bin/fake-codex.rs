@@ -59,7 +59,9 @@ fn main() {
                     }
                 }
             }
-            if let Some(turn_id) = turns.iter().find(|(_, (_, status))| status == "awaitingApproval").map(|(k, _)| k.clone()) {
+            if let Some(turn_id) =
+                turns.iter().find(|(_, (_, status))| status == "awaitingApproval").map(|(k, _)| k.clone())
+            {
                 let (thread_id, _) = turns[&turn_id].clone();
                 // approval-grant: the first accept is answered by asking for the
                 // identical operation again under fresh per-call ids; the turn
@@ -74,9 +76,13 @@ fn main() {
                     continue;
                 }
                 let item = json!({"type": "agentMessage", "text": format!("approval={decision}")});
-                send(json!({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": item}}));
+                send(
+                    json!({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": item}}),
+                );
                 turns.insert(turn_id.clone(), (thread_id.clone(), "completed".into()));
-                send(json!({"method": "turn/completed", "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": "completed"}}}));
+                send(
+                    json!({"method": "turn/completed", "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": "completed"}}}),
+                );
             }
             continue;
         }
@@ -109,9 +115,13 @@ fn main() {
                     "slow" => {}
                     _ => {
                         let item = json!({"type": "agentMessage", "text": "fake work done"});
-                        send(json!({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": item}}));
+                        send(
+                            json!({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": item}}),
+                        );
                         turns.insert(turn_id.clone(), (thread_id.clone(), "completed".into()));
-                        send(json!({"method": "turn/completed", "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": "completed"}}}));
+                        send(
+                            json!({"method": "turn/completed", "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": "completed"}}}),
+                        );
                     }
                 }
             }
@@ -120,7 +130,9 @@ fn main() {
                 send(json!({"id": id, "result": {}}));
                 if let Some((thread_id, _)) = turns.get(&turn_id).cloned() {
                     turns.insert(turn_id.clone(), (thread_id.clone(), "interrupted".into()));
-                    send(json!({"method": "turn/completed", "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": "interrupted"}}}));
+                    send(
+                        json!({"method": "turn/completed", "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": "interrupted"}}}),
+                    );
                 }
             }
             _ => send(json!({"id": id, "result": {}})),

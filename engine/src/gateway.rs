@@ -4,8 +4,8 @@ use crate::core_client::CoreClient;
 use serde_json::{json, Value as Json};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex, MutexGuard};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use teamagents_core::models::{ActionKind, ApprovalRequest, ApprovalStatus, Receipt};
 
@@ -137,14 +137,21 @@ impl PermissionPolicy {
 fn bound_tool(tool: &str) -> bool {
     matches!(
         tool,
-        "ls" | "read_file" | "write_file" | "edit_file" | "edit_files" | "delete" | "glob" | "grep" | "read_artifact" | "view_image" | "skill"
+        "ls" | "read_file"
+            | "write_file"
+            | "edit_file"
+            | "edit_files"
+            | "delete"
+            | "glob"
+            | "grep"
+            | "read_artifact"
+            | "view_image"
+            | "skill"
     )
 }
 
 fn approval_from(value: Option<&Json>) -> Option<ApprovalRequest> {
-    value
-        .filter(|v| !v.is_null())
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
+    value.filter(|v| !v.is_null()).and_then(|v| serde_json::from_value(v.clone()).ok())
 }
 
 pub struct ApprovalGate {
@@ -217,9 +224,7 @@ impl ApprovalGate {
     /// persisted cache row and the in-memory revision-scoped grant agree:
     /// set_mode clears the set, so a stale row alone cannot authorize (§12.2).
     pub fn session_grant_active(&self, op_hash: &str) -> bool {
-        let cached = self
-            .core
-            .call_in_session("approval_find_session", json!({"operation_hash": op_hash}));
+        let cached = self.core.call_in_session("approval_find_session", json!({"operation_hash": op_hash}));
         matches!(cached, Ok(reply) if !reply.get("scope").map(|v| v.is_null()).unwrap_or(true))
             && self.session_grants.lock().unwrap().contains(op_hash)
     }
@@ -246,18 +251,12 @@ impl ApprovalGate {
         tool_call_id: &str,
     ) -> Result<(Decision, Option<ApprovalRequest>), String> {
         self.refresh_mode();
-        let decision = self
-            .policy
-            .lock()
-            .map_err(|_| "policy lock poisoned".to_string())?
-            .evaluate(tool, args);
+        let decision = self.policy.lock().map_err(|_| "policy lock poisoned".to_string())?.evaluate(tool, args);
         if decision.allow {
             return Ok((decision, None));
         }
         let op_hash = operation_hash(tool, args);
-        let cached = self
-            .core
-            .call_in_session("approval_find_session", json!({"operation_hash": op_hash}))?;
+        let cached = self.core.call_in_session("approval_find_session", json!({"operation_hash": op_hash}))?;
         if !cached.get("scope").map(|v| v.is_null()).unwrap_or(true)
             && self.session_grants.lock().unwrap().contains(&op_hash)
         {
@@ -270,7 +269,11 @@ impl ApprovalGate {
                     return Ok((decision, Some(existing)));
                 }
                 ApprovalStatus::Denied => {
-                    let denied = Decision { allow: false, scope: decision.scope.clone(), reason: Some("denied by the user".into()) };
+                    let denied = Decision {
+                        allow: false,
+                        scope: decision.scope.clone(),
+                        reason: Some("denied by the user".into()),
+                    };
                     return Ok((denied, Some(existing)));
                 }
                 // only an unconsumed once/session approval with the same policy
@@ -290,7 +293,7 @@ impl ApprovalGate {
                             grants.remove(&op_hash);
                         }
                     }
-                    return Ok((Decision::allow(), Some(existing)))
+                    return Ok((Decision::allow(), Some(existing)));
                 }
                 _ => {}
             }
@@ -302,10 +305,7 @@ impl ApprovalGate {
             run_id: run_id.to_string(),
             tool_call_id: tool_call_id.to_string(),
             operation_hash: op_hash.clone(),
-            requested_scope: decision
-                .scope
-                .clone()
-                .unwrap_or_else(|| json!({"tool": tool, "args": args})),
+            requested_scope: decision.scope.clone().unwrap_or_else(|| json!({"tool": tool, "args": args})),
             policy_revision: self.revision(),
             status: ApprovalStatus::Pending,
             created_at: teamagents_core::models::now(),
@@ -317,10 +317,7 @@ impl ApprovalGate {
     }
 
     fn remember(&self, run_id: &str, op_hash: &str, approval_id: &str) {
-        self.parked
-            .lock()
-            .unwrap()
-            .insert((run_id.to_string(), op_hash.to_string()), approval_id.to_string());
+        self.parked.lock().unwrap().insert((run_id.to_string(), op_hash.to_string()), approval_id.to_string());
     }
 
     /// The decision recorded for this run+operation, whatever tool_call_id the
@@ -329,12 +326,7 @@ impl ApprovalGate {
     /// id), then the core's newest still-usable row for the run, then the
     /// exact-call lookup for a core without the `approval_find_run` contract.
     fn decided_for_run(&self, run_id: &str, tool_call_id: &str, op_hash: &str) -> Option<ApprovalRequest> {
-        let parked = self
-            .parked
-            .lock()
-            .unwrap()
-            .get(&(run_id.to_string(), op_hash.to_string()))
-            .cloned();
+        let parked = self.parked.lock().unwrap().get(&(run_id.to_string(), op_hash.to_string())).cloned();
         if let Some(approval_id) = parked {
             if let Ok(reply) = self.core.call_in_session("get_approval", json!({"approval_id": approval_id})) {
                 if let Some(row) = approval_from(reply.get("approval")) {
@@ -345,19 +337,21 @@ impl ApprovalGate {
                 }
             }
         }
-        if let Ok(reply) = self
-            .core
-            .call_in_session("approval_find_run", json!({"run_id": run_id, "operation_hash": op_hash}))
+        if let Ok(reply) =
+            self.core.call_in_session("approval_find_run", json!({"run_id": run_id, "operation_hash": op_hash}))
         {
             return approval_from(reply.get("approval"));
         }
         self.core
-            .call("approval_for_call", json!({
-                "session_id": self.core.session_id,
-                "run_id": run_id,
-                "tool_call_id": tool_call_id,
-                "operation_hash": op_hash,
-            }))
+            .call(
+                "approval_for_call",
+                json!({
+                    "session_id": self.core.session_id,
+                    "run_id": run_id,
+                    "tool_call_id": tool_call_id,
+                    "operation_hash": op_hash,
+                }),
+            )
             .ok()
             .and_then(|v| approval_from(v.get("approval")))
     }
@@ -390,7 +384,11 @@ pub struct TurnControl {
 
 impl TurnControl {
     pub fn check(&self) -> Result<(), String> {
-        if self.cancelled.load(Ordering::SeqCst) { Err("turn interrupted".into()) } else { Ok(()) }
+        if self.cancelled.load(Ordering::SeqCst) {
+            Err("turn interrupted".into())
+        } else {
+            Ok(())
+        }
     }
 
     pub fn enter(&self) -> Result<MutexGuard<'_, ()>, String> {
@@ -410,7 +408,9 @@ impl TurnControl {
                 Ok(_) | Err(std::sync::TryLockError::Poisoned(_)) => return true,
                 Err(std::sync::TryLockError::WouldBlock) => {}
             }
-            if Instant::now() >= deadline { return false; }
+            if Instant::now() >= deadline {
+                return false;
+            }
             std::thread::sleep(Duration::from_millis(10));
         }
     }
@@ -445,8 +445,12 @@ impl ToolGateway {
     }
 
     pub(crate) fn with_control(
-        core: Arc<CoreClient>, agent_id: &str, run_id: &str,
-        approvals: Arc<ApprovalGate>, executor: Option<Executor>, control: Arc<TurnControl>,
+        core: Arc<CoreClient>,
+        agent_id: &str,
+        run_id: &str,
+        approvals: Arc<ApprovalGate>,
+        executor: Option<Executor>,
+        control: Arc<TurnControl>,
         topology_prepare: Option<Arc<dyn Fn(&mut Json) -> Result<(), String> + Send + Sync>>,
         hooks: Option<Arc<crate::hooks::Hooks>>,
     ) -> Arc<Self> {
@@ -464,13 +468,7 @@ impl ToolGateway {
     }
 
     fn receipt_placeholder(&self, call_id: &str, ok: bool, result: Json, error: Option<String>) -> Receipt {
-        Receipt {
-            action_id: call_id.to_string(),
-            ok,
-            kind: ActionKind::CompleteTask,
-            result,
-            error,
-        }
+        Receipt { action_id: call_id.to_string(), ok, kind: ActionKind::CompleteTask, result, error }
     }
 
     pub fn call(&self, tool: &str, args: &Json, tool_call_id: &str) -> Receipt {
@@ -524,7 +522,10 @@ impl ToolGateway {
                         &call_id,
                         false,
                         json!({}),
-                        Some("The user denied this operation. Do not retry it; choose another approach or ask the user.".into()),
+                        Some(
+                            "The user denied this operation. Do not retry it; choose another approach or ask the user."
+                                .into(),
+                        ),
                     );
                 }
                 // consumed after the operation runs, even when it fails
@@ -578,7 +579,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ta-gate-hook-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let script = dir.join("deny.sh");
-        std::fs::write(&script, "#!/bin/sh\ncat > /dev/null\necho 'write_file is banned by policy' >&2\nexit 2\n").unwrap();
+        std::fs::write(&script, "#!/bin/sh\ncat > /dev/null\necho 'write_file is banned by policy' >&2\nexit 2\n")
+            .unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
 
@@ -595,8 +597,14 @@ mod tests {
             Ok(json!({"output": "ran"}))
         });
         let gateway = ToolGateway::with_control(
-            core.clone(), "leader", "run_1", ApprovalGate::new(core.clone(), PermissionPolicy::default()), Some(executor),
-            Arc::new(TurnControl::default()), None, Some(hooks),
+            core.clone(),
+            "leader",
+            "run_1",
+            ApprovalGate::new(core.clone(), PermissionPolicy::default()),
+            Some(executor),
+            Arc::new(TurnControl::default()),
+            None,
+            Some(hooks),
         );
         let receipt = gateway.call("write_file", &json!({"path": "a.txt", "content": "x"}), "call_1");
         assert!(!receipt.ok, "{receipt:?}");
@@ -623,10 +631,7 @@ mod tests {
             operation_hash("shell", &json!({"command": "ls", "network": false})),
             "3b029cd4d67fd563bc49494e01f94404"
         );
-        assert_eq!(
-            operation_hash("shell", &json!({"command": "echo 你好"})),
-            "7e78ae54357806e4c55d0a7b8cad4a8d"
-        );
+        assert_eq!(operation_hash("shell", &json!({"command": "echo 你好"})), "7e78ae54357806e4c55d0a7b8cad4a8d");
         assert_eq!(
             operation_hash("web_fetch", &json!({"url": "https://example.com/a?b=1", "n": null})),
             "c8ce429c3fc12927f239b7e72c84c5a3"
@@ -640,10 +645,14 @@ mod tests {
         let session = "gate-rev-guard";
         let core = CoreClient::open(":memory:", session).expect("core");
         core.call("create_session", json!({"session_id": session, "cwd": "/tmp"})).expect("create");
-        core.call("set_catalog", json!({"session_id": session, "catalog": json!({
-            "models": {"m": {"provider": "openai", "protocol": "openai", "model": "test"}},
-            "tools": {}, "skills_paths": [], "instruction_files": [],
-        })})).expect("catalog");
+        core.call(
+            "set_catalog",
+            json!({"session_id": session, "catalog": json!({
+                "models": {"m": {"provider": "openai", "protocol": "openai", "model": "test"}},
+                "tools": {}, "skills_paths": [], "instruction_files": [],
+            })}),
+        )
+        .expect("catalog");
         core.call("save_spec", json!({"session_id": session, "spec": json!({
             "leader_id": "a",
             "agents": [{"id": "a", "name": "A", "role": "leader", "runtime_kind": "deepagents", "model_profile": "m"}],

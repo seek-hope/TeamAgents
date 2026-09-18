@@ -116,7 +116,9 @@ fn handle(stream: TcpStream, seen: Arc<Mutex<Vec<Seen>>>, mode: Mode) {
             .to_string(),
         ),
         (_, m) if m.starts_with("notifications/") => respond(&mut stream, "202 Accepted", "", ""),
-        (Mode::BadJson, "tools/list") => respond(&mut stream, "200 OK", "content-type: application/json\r\n", "this is not json"),
+        (Mode::BadJson, "tools/list") => {
+            respond(&mut stream, "200 OK", "content-type: application/json\r\n", "this is not json")
+        }
         (_, "tools/list") => respond(
             &mut stream,
             "200 OK",
@@ -186,10 +188,8 @@ fn http_transport_binds_and_calls_tools() {
     );
     let bound = BoundTools::load(&catalog, &["remote".to_string()]).expect("http service binds");
     assert!(bound.names().contains("remote_echo"), "{:?}", bound.names());
-    let result = bound
-        .call("remote_echo", &json!({"text": "hello", "times": 2}))
-        .expect("a bound tool")
-        .expect("call succeeds");
+    let result =
+        bound.call("remote_echo", &json!({"text": "hello", "times": 2})).expect("a bound tool").expect("call succeeds");
     assert_eq!(result, json!("hello hello"));
     bound.close();
 
@@ -216,12 +216,8 @@ fn http_push_stream_answers_requests_and_deletes_the_session() {
 
     // the reader thread needs a moment to answer the pushed requests
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    let declined = || {
-        seen.lock()
-            .unwrap()
-            .iter()
-            .any(|r| r.body.get("id") == Some(&json!(99)) && r.body.get("error").is_some())
-    };
+    let declined =
+        || seen.lock().unwrap().iter().any(|r| r.body.get("id") == Some(&json!(99)) && r.body.get("error").is_some());
     let roots_seen = || {
         seen.lock()
             .unwrap()

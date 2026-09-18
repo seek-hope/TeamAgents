@@ -64,10 +64,8 @@ fn t1_delegation_and_summary_full_lifecycle() {
     assert_eq!(task.get("assignee").and_then(|v| v.as_str()), Some("b"));
 
     let events: Vec<Json> = state.get("events").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-    let kinds: Vec<String> = events
-        .iter()
-        .filter_map(|e| e.get("kind").and_then(|v| v.as_str()).map(str::to_string))
-        .collect();
+    let kinds: Vec<String> =
+        events.iter().filter_map(|e| e.get("kind").and_then(|v| v.as_str()).map(str::to_string)).collect();
     for expected in ["task_created", "task_started", "task_completed", "goal_done"] {
         assert!(kinds.contains(&expected.to_string()), "{expected} missing from {kinds:?}");
     }
@@ -82,15 +80,9 @@ fn t1_delegation_and_summary_full_lifecycle() {
 #[test]
 fn t9_baseline_leader_alone_executes_and_keeps_talking() {
     isolated_state_home("t9");
-    let core = core_with_spec(
-        "s2",
-        json!({"leader_id": "leader", "agents": [member("leader", "leader")]}),
-    );
-    let leader = scripted(
-        "leader",
-        &json!([["call", "signal_done", {"summary": "answered directly"}], ["end"]]),
-        barriers(),
-    );
+    let core = core_with_spec("s2", json!({"leader_id": "leader", "agents": [member("leader", "leader")]}));
+    let leader =
+        scripted("leader", &json!([["call", "signal_done", {"summary": "answered directly"}], ["end"]]), barriers());
     let h = harness_with(core.clone(), vec![("leader", leader.clone())]);
     h.runtime.start();
     h.runtime.user_message("say hello", false).unwrap();
@@ -179,10 +171,8 @@ fn t2_parallel_members_and_mid_run_supplement() {
         "leader never processed the supplement"
     );
     let state = h.runtime.state().unwrap();
-    let by_agent: std::collections::HashMap<String, TurnStatus> = runs(&state)
-        .into_iter()
-        .map(|r| (r.agent_id, r.status))
-        .collect();
+    let by_agent: std::collections::HashMap<String, TurnStatus> =
+        runs(&state).into_iter().map(|r| (r.agent_id, r.status)).collect();
     assert_eq!(by_agent.get("b"), Some(&TurnStatus::Running));
     assert_eq!(by_agent.get("c"), Some(&TurnStatus::Running));
 
@@ -190,10 +180,7 @@ fn t2_parallel_members_and_mid_run_supplement() {
     let final_state = h.runtime.state().unwrap();
     assert_eq!(task_status(&final_state, "b"), Some(TaskStatus::Succeeded));
     assert_eq!(task_status(&final_state, "c"), Some(TaskStatus::Succeeded));
-    assert_eq!(
-        final_state.get("session").and_then(|s| s.get("goal_state")).and_then(|v| v.as_str()),
-        Some("done")
-    );
+    assert_eq!(final_state.get("session").and_then(|s| s.get("goal_state")).and_then(|v| v.as_str()), Some("done"));
     h.runtime.close();
 }
 
@@ -485,18 +472,16 @@ fn full_auto_toggle_reaches_the_approval_gate() {
         teamagents_engine::gateway::PermissionPolicy::default(),
     );
     // network shell is outside the pre-authorized scope: it must pause
-    let (decision, approval) = gate
-        .check("leader", "run-fa", "shell", &json!({"command": "curl x", "network": true}), "c1")
-        .unwrap();
+    let (decision, approval) =
+        gate.check("leader", "run-fa", "shell", &json!({"command": "curl x", "network": true}), "c1").unwrap();
     assert!(!decision.allow);
     assert_eq!(approval.map(|a| a.status), Some(teamagents_core::models::ApprovalStatus::Pending));
 
     // the user flips the session to full auto; the gate follows without restart
     let receipt = submit(&core, "mode-1", "user", "set_permission_mode", json!({"mode": "full_auto"}));
     assert!(receipt.ok);
-    let (decision, approval) = gate
-        .check("leader", "run-fa", "shell", &json!({"command": "curl x", "network": true}), "c2")
-        .unwrap();
+    let (decision, approval) =
+        gate.check("leader", "run-fa", "shell", &json!({"command": "curl x", "network": true}), "c2").unwrap();
     assert!(decision.allow, "full auto allows the same call");
     assert!(approval.is_none());
 }

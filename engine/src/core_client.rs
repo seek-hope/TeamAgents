@@ -22,10 +22,7 @@ impl CoreClient {
 
     /// `method` + params, exactly as the stdio protocol defines them.
     pub fn call(&self, method: &str, params: Json) -> Result<Json, String> {
-        self.server
-            .lock()
-            .map_err(|_| "core lock poisoned".to_string())?
-            .dispatch(method, &params)
+        self.server.lock().map_err(|_| "core lock poisoned".to_string())?.dispatch(method, &params)
     }
 
     /// Call with this session's id injected (the worker's `call` passthrough).

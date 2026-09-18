@@ -18,10 +18,8 @@ fn codex_agent() -> Json {
 
 fn setup(session: &str, mode: &str) -> (Arc<CoreClient>, Arc<CodexRunner>) {
     isolated_state_home("codex");
-    let core = core_with_spec(
-        session,
-        json!({"leader_id": "leader", "agents": [member("leader", "leader"), codex_agent()]}),
-    );
+    let core =
+        core_with_spec(session, json!({"leader_id": "leader", "agents": [member("leader", "leader"), codex_agent()]}));
     let approvals = ApprovalGate::new(core.clone(), PermissionPolicy::default());
     let notify = Notify::new(core.clone());
     // the marker name embeds this test binary's pid and pids get reused: drop
@@ -123,10 +121,7 @@ fn codex_approval_flow_parks_decides_and_resumes() {
     assert!(runner.resolve_approval(&approval_id, "once"), "user approves once");
     let outcome = started.join().unwrap();
     assert_eq!(outcome.status, TurnStatus::Completed);
-    assert!(
-        outcome.reply_text.unwrap_or_default().contains("approval=accept"),
-        "the decision reached the app-server"
-    );
+    assert!(outcome.reply_text.unwrap_or_default().contains("approval=accept"), "the decision reached the app-server");
     runner.close();
 }
 

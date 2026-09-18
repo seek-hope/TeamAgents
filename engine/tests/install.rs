@@ -7,7 +7,9 @@ use std::process::{Command, Output};
 
 const PACKAGE: &str = "teamagents-9.8.7-x86_64-unknown-linux-musl";
 
-struct Fixture { root: PathBuf }
+struct Fixture {
+    root: PathBuf,
+}
 
 fn executable(path: &Path, text: &str) {
     fs::write(path, text).unwrap();
@@ -25,43 +27,75 @@ impl Fixture {
         fixture
     }
 
-    fn archive(&self) -> PathBuf { self.root.join(format!("release/{PACKAGE}.tar.gz")) }
-    fn bin(&self) -> PathBuf { self.root.join("bin with spaces ' quote") }
-    fn config(&self) -> PathBuf { self.root.join("config/teamagents/config.toml") }
+    fn archive(&self) -> PathBuf {
+        self.root.join(format!("release/{PACKAGE}.tar.gz"))
+    }
+    fn bin(&self) -> PathBuf {
+        self.root.join("bin with spaces ' quote")
+    }
+    fn config(&self) -> PathBuf {
+        self.root.join("config/teamagents/config.toml")
+    }
 
     fn pack(&self, supports_init: bool, include_tui: bool) {
         let release = self.root.join("release");
         let package = release.join(PACKAGE);
         let _ = fs::remove_dir_all(&package);
         fs::create_dir_all(&package).unwrap();
-        executable(&package.join("teamagents"), if supports_init {
-            "#!/bin/sh\nprintf 'teamagents init\\n'\n"
-        } else { "#!/bin/sh\nprintf 'legacy help\\n'; exit 2\n" });
-        if include_tui { executable(&package.join("teamagents-tui"), "#!/bin/sh\nexit 0\n"); }
+        executable(
+            &package.join("teamagents"),
+            if supports_init {
+                "#!/bin/sh\nprintf 'teamagents init\\n'\n"
+            } else {
+                "#!/bin/sh\nprintf 'legacy help\\n'; exit 2\n"
+            },
+        );
+        if include_tui {
+            executable(&package.join("teamagents-tui"), "#!/bin/sh\nexit 0\n");
+        }
         fs::write(package.join("config.example.toml"), teamagents_engine::config::INITIAL_CONFIG).unwrap();
-        assert!(Command::new("tar").args(["-czf"]).arg(self.archive())
-            .arg("-C").arg(&release).arg(PACKAGE).status().unwrap().success());
+        assert!(Command::new("tar")
+            .args(["-czf"])
+            .arg(self.archive())
+            .arg("-C")
+            .arg(&release)
+            .arg(PACKAGE)
+            .status()
+            .unwrap()
+            .success());
         let hash = Sha256::digest(fs::read(self.archive()).unwrap());
         // Unrelated assets must not make a single-platform installation fail.
-        fs::write(release.join("SHA256SUMS"), format!("{hash:x}  {PACKAGE}.tar.gz\n{}  other-platform.tar.gz\n", "0".repeat(64))).unwrap();
+        fs::write(
+            release.join("SHA256SUMS"),
+            format!("{hash:x}  {PACKAGE}.tar.gz\n{}  other-platform.tar.gz\n", "0".repeat(64)),
+        )
+        .unwrap();
     }
 
     fn run(&self, local: bool) -> Output {
         let mut command = Command::new("/bin/sh");
-        command.arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../install.sh"))
-            .arg("--bin-dir").arg(self.bin())
+        command
+            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../install.sh"))
+            .arg("--bin-dir")
+            .arg(self.bin())
             .env("XDG_CONFIG_HOME", self.root.join("config"))
             .env("TA_FIXTURE_DIR", self.root.join("release"))
             .env("TA_TRANSPORT_LOG", self.root.join("transport.log"));
         let mut paths = vec![self.root.join("tools")];
         paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()));
         command.env("PATH", std::env::join_paths(paths).unwrap());
-        if local { command.arg("--archive").arg(self.archive()); }
+        if local {
+            command.arg("--archive").arg(self.archive());
+        }
         command.output().unwrap()
     }
 }
 
-impl Drop for Fixture { fn drop(&mut self) { let _ = fs::remove_dir_all(&self.root); } }
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
 
 #[test]
 fn local_install_and_legacy_config_preservation() {
@@ -73,9 +107,12 @@ fn local_install_and_legacy_config_preservation() {
     assert!(String::from_utf8_lossy(&output.stdout).contains("teamagents init"));
     let stdout = String::from_utf8_lossy(&output.stdout);
     let export = stdout.lines().find(|line| line.starts_with("export PATH=")).unwrap();
-    let path = Command::new("/bin/sh").arg("-c")
+    let path = Command::new("/bin/sh")
+        .arg("-c")
         .arg(format!("{export}\nprintf '%s' \"$PATH\""))
-        .env("PATH", "/usr/bin").output().unwrap();
+        .env("PATH", "/usr/bin")
+        .output()
+        .unwrap();
     assert!(path.status.success(), "{path:?}");
     assert_eq!(String::from_utf8(path.stdout).unwrap(), format!("{}:/usr/bin", f.bin().display()));
     f.pack(false, true);
@@ -118,11 +155,14 @@ fn failed_second_replacement_restores_both_old_programs() {
     fs::write(&old, "old engine").unwrap();
     symlink(&old, f.bin().join("teamagents")).unwrap();
     fs::write(f.bin().join("teamagents-tui"), "old tui").unwrap();
-    executable(&f.root.join("tools/mv"), r#"#!/bin/sh
+    executable(
+        &f.root.join("tools/mv"),
+        r#"#!/bin/sh
 if [ "$1" = -f ]; then shift; fi
 case "$1" in */.teamagents-install.*/teamagents-tui) exit 1 ;; esac
 exec /bin/mv "$@"
-"#);
+"#,
+    );
     assert!(!f.run(true).status.success());
     assert!(fs::symlink_metadata(f.bin().join("teamagents")).unwrap().is_symlink());
     assert_eq!(fs::read_to_string(&old).unwrap(), "old engine");
@@ -132,7 +172,9 @@ exec /bin/mv "$@"
 #[test]
 fn authenticated_download_resolves_latest_and_installs() {
     let f = Fixture::new();
-    executable(&f.root.join("tools/gh"), r#"#!/bin/sh
+    executable(
+        &f.root.join("tools/gh"),
+        r#"#!/bin/sh
 printf '%s\n' "$*" >> "$TA_TRANSPORT_LOG"
 case "$1 $2" in
     'auth status') exit 0 ;;
@@ -145,7 +187,8 @@ case "$1 $2" in
         cp "$TA_FIXTURE_DIR"/*.tar.gz "$TA_FIXTURE_DIR/SHA256SUMS" "$dest/" ;;
     *) exit 1 ;;
 esac
-"#);
+"#,
+    );
     let output = f.run(false);
     assert!(output.status.success(), "{output:?}");
     let log = fs::read_to_string(f.root.join("transport.log")).unwrap();
@@ -158,7 +201,9 @@ esac
 fn public_download_works_without_github_login_and_rejects_unsupported_os() {
     let f = Fixture::new();
     executable(&f.root.join("tools/gh"), "#!/bin/sh\nexit 1\n");
-    executable(&f.root.join("tools/curl"), r#"#!/bin/sh
+    executable(
+        &f.root.join("tools/curl"),
+        r#"#!/bin/sh
 printf '%s\n' "$*" >> "$TA_TRANSPORT_LOG"
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -173,7 +218,8 @@ case "$url" in
     */teamagents-9.8.7-x86_64-unknown-linux-musl.tar.gz) cp "$TA_FIXTURE_DIR"/*.tar.gz "$dest" ;;
     *) exit 1 ;;
 esac
-"#);
+"#,
+    );
     let output = f.run(false);
     assert!(output.status.success(), "{output:?}");
     let log = fs::read_to_string(f.root.join("transport.log")).unwrap();

@@ -233,7 +233,11 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let script = dir.join("hook.sh");
         let out = dir.join("seen.txt");
-        std::fs::write(&script, format!("#!/bin/sh\nprintf '%s\\n' \"$1\" > {}\ncat >> {}\n", out.display(), out.display())).unwrap();
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\nprintf '%s\\n' \"$1\" > {}\ncat >> {}\n", out.display(), out.display()),
+        )
+        .unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
 
