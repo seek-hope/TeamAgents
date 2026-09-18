@@ -127,16 +127,13 @@ fn doctor_probes_isolation_codex_and_config_errors() {
 /// Keep diagnostics deterministic on machines without Codex or user namespaces.
 #[test]
 fn doctor_fresh_install_and_optional_codex() {
-    use std::os::unix::fs::PermissionsExt;
     let root = std::env::temp_dir().join(format!("ta-doctor-fresh-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let bin = root.join("bin");
     let config = root.join("config/teamagents/config.toml");
     std::fs::create_dir_all(&bin).unwrap();
     std::fs::create_dir_all(config.parent().unwrap()).unwrap();
-    // This tests the diagnostic classification, not real sandbox enforcement.
-    std::fs::write(bin.join("bwrap"), "#!/bin/sh\nexit 0\n").unwrap();
-    std::fs::set_permissions(bin.join("bwrap"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    // An empty PATH makes required bwrap and optional Codex consistently absent.
     let run = |key: &str| {
         let output = Command::new(env!("CARGO_BIN_EXE_teamagents"))
             .arg("doctor")
@@ -153,7 +150,10 @@ fn doctor_fresh_install_and_optional_codex() {
     std::fs::write(&config,
         "[models.leader_main]\nprovider='openai'\nmodel='test'\napi_key_env='TA_DOCTOR_TEST_KEY'\n").unwrap();
     let (ok, text) = run("test-value");
-    assert!(ok, "optional Codex must not fail doctor: {text}");
+    assert!(!ok, "missing required bubblewrap must fail doctor: {text}");
+    let failures: Vec<_> = text.lines().filter(|line| line.contains("[FAIL]")).collect();
+    assert_eq!(failures.len(), 1, "only missing bubblewrap must fail doctor: {text}");
+    assert!(failures[0].contains("bubblewrap isolation"), "{text}");
     assert!(text.contains("[WARN] codex app-server"), "{text}");
     for key in ["", "   "] {
         let (ok, text) = run(key);
