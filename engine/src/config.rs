@@ -6,6 +6,29 @@ use std::path::{Path, PathBuf};
 use teamagents_core::models::UserConfig;
 
 pub const APP: &str = "teamagents";
+pub const INITIAL_CONFIG: &str = include_str!("../../examples/config.minimal.toml");
+
+/// Create only a missing config; never follow or overwrite an existing leaf.
+pub fn initialize_config(path: &Path) -> Result<bool, String> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let parent = path.parent().ok_or("配置路径缺少父目录")?;
+    std::fs::create_dir_all(parent).map_err(|e| format!("无法创建 {}: {e}", parent.display()))?;
+    let mut file = match std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            let meta = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+            if meta.is_dir() {
+                return Err(format!("{} 是目录，请改用配置文件", path.display()));
+            }
+            return Ok(false);
+        }
+        Err(e) => return Err(format!("无法创建配置 {}: {e}", path.display())),
+    };
+    file.write_all(INITIAL_CONFIG.as_bytes()).and_then(|()| file.sync_all())
+        .map_err(|e| format!("写入配置 {} 失败，请检查此文件是否完整：{e}", path.display()))?;
+    Ok(true)
+}
 
 fn env_path(key: &str) -> Option<PathBuf> {
     std::env::var_os(key)
@@ -54,7 +77,8 @@ pub fn load_spec_file(path: &std::path::Path) -> Result<Json, String> {
 pub fn load_user_config(path: &Path) -> Result<UserConfig, String> {
     match std::fs::read_to_string(path) {
         Ok(text) => parse_user_config(&text).map_err(|e| format!("{}: {e}", path.display())),
-        Err(_) => Ok(UserConfig::default()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(UserConfig::default()),
+        Err(e) => Err(format!("无法读取配置 {}: {e}", path.display())),
     }
 }
 
@@ -86,7 +110,9 @@ pub fn missing_key_envs(catalog: &UserConfig) -> HashMap<String, bool> {
     catalog
         .models
         .iter()
-        .filter_map(|(name, p)| p.api_key_env.clone().map(|env| (name.clone(), std::env::var(&env).is_ok())))
+        .filter_map(|(name, p)| p.api_key_env.as_ref().map(|env| {
+            (name.clone(), std::env::var(env).is_ok_and(|value| !value.trim().is_empty()))
+        }))
         .collect()
 }
 

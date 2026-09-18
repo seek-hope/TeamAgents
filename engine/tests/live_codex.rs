@@ -34,6 +34,7 @@ fn live_codex_turn_through_app_server() {
         CodexOptions {
             agent_id: "cx".into(),
             session_id: "cx-live".into(),
+            instructions: String::new(),
             workdir: workdir.clone(),
             sandbox: "workspace-write".into(),
             approval_policy: "on-request".into(),

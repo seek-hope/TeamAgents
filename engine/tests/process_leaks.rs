@@ -1,6 +1,8 @@
 //! P2-4 / P2-5 regressions: a failed initialize handshake must not leak the
 //! server process. The reader threads hold Arcs, so Drop alone never runs;
 //! the start/connect error path has to kill+wait the child itself.
+//! Fakes read the initialize request first: an unsolicited early response can
+//! race pending-request registration and turn this test into a spurious timeout.
 
 use std::path::{Path, PathBuf};
 
@@ -42,7 +44,7 @@ fn codex_failed_initialize_reaps_the_child() {
     std::fs::write(
         &script,
         format!(
-            "#!/bin/sh\necho $$ > {}\necho '{{\"id\":1,\"error\":{{\"code\":-1,\"message\":\"nope\"}}}}'\nexec sleep 60\n",
+            "#!/bin/sh\necho $$ > {}\nIFS= read -r request\necho '{{\"id\":1,\"error\":{{\"code\":-1,\"message\":\"nope\"}}}}'\nexec sleep 60\n",
             pidfile.display()
         ),
     )
@@ -70,7 +72,7 @@ fn mcp_failed_initialize_reaps_the_child() {
     let dir = scratch("mcp");
     let pidfile = dir.join("pid");
     let script = format!(
-        "echo $$ > {}; echo '{{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{{\"code\":-1,\"message\":\"nope\"}}}}'; exec sleep 60",
+        "echo $$ > {}; IFS= read -r request; echo '{{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{{\"code\":-1,\"message\":\"nope\"}}}}'; exec sleep 60",
         pidfile.display()
     );
     // Host PID is needed for /proc reaping assertions; sandbox PIDs differ.

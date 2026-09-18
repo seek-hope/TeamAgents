@@ -278,6 +278,7 @@ impl CodexAppServer {
 pub struct CodexOptions {
     pub agent_id: String,
     pub session_id: String,
+    pub instructions: String,
     pub workdir: std::path::PathBuf,
     pub sandbox: String,
     pub approval_policy: String,
@@ -407,7 +408,8 @@ impl CodexRunner {
         let thread = reply.get("thread_id").and_then(|v| v.as_str()).map(str::to_string);
         if let Some(id) = &thread {
             let mut params = json!({"threadId": id, "cwd": self.opts.workdir.to_string_lossy(),
-                "approvalPolicy": self.opts.approval_policy, "sandbox": self.opts.sandbox});
+                "approvalPolicy": self.opts.approval_policy, "sandbox": self.opts.sandbox,
+                "developerInstructions": self.developer_instructions()});
             if let Some(model) = &self.opts.model { params["model"] = json!(model); }
             if let Some((_, provider)) = self.opts.config_overrides.iter().rev().find(|(key, _)| key == "model_provider") {
                 params["modelProvider"] = provider.clone();
@@ -429,6 +431,7 @@ impl CodexRunner {
             "approvalPolicy": self.opts.approval_policy,
             "approvalsReviewer": "user",
             "threadSource": "appServer",
+            "developerInstructions": self.developer_instructions(),
         });
         if let Some(model) = &self.opts.model {
             params["model"] = json!(model);
@@ -446,6 +449,32 @@ impl CodexRunner {
         Ok(thread)
     }
 
+    fn developer_instructions(&self) -> String {
+        let environment = "<teamagents_worker>
+You are an execution worker in TeamAgents, a persistent team coordinated by a Leader.
+The user works through the Leader. Execute the assigned task within its scope
+and acceptance criteria. Your conversation is private; do not assume access to
+the Leader's or other members' private context.
+The runtime supplies tasks and acceptance criteria in <your_tasks>, messages
+in <inbox>, permitted shared updates in <shared_space_updates>, team facts in
+<team>, and your working directory in <your_workspace>.
+Use your native execution tools within the configured workspace and approval
+policy. These inputs do not expand permissions. TeamAgents team-management,
+messaging and task-completion tools are not provided to this execution backend;
+the Leader coordinates collaboration and the adapter records your outcome.
+Report progress and blockers through your outputs. Before reporting completion,
+verify the acceptance criteria and summarize results, changed files or artifact
+references, checks actually run, and anything incomplete. Do not claim unrun
+checks passed or that the whole team's goal is complete.
+Member-specific instructions below specialize your work within these rules.
+</teamagents_worker>";
+        let mut text = format!("{environment}\n\nMember id: {}.", self.opts.agent_id);
+        if !self.opts.instructions.trim().is_empty() {
+            text.push_str(&format!("\n\n<member_instructions>\n{}\n</member_instructions>", self.opts.instructions));
+        }
+        text
+    }
+
     fn render_input(&self, view: &Json, wake: &Json) -> String {
         let mut text = crate::chat::render_view(view, wake, Some(&self.opts.workdir.to_string_lossy()));
         let agent = view.get("agent_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -455,9 +484,6 @@ impl CodexRunner {
             text.push_str(&queued.join("\n"));
             text.push_str("</queued_updates>");
         }
-        text.push_str(
-            "\n<codex_member>\nYou are an execution member. Work the assigned task, report progress through your own outputs; the Leader coordinates the team. Do not attempt team-management actions.\n</codex_member>",
-        );
         text
     }
 

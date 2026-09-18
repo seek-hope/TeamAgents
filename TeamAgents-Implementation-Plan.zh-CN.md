@@ -325,6 +325,10 @@ Team 控制图从业务数据库构建紧凑 TeamState，保存事件位置和�
 
 内置成员按配置装配模型、指令、Skills、工具与持久化回合检查点；模型工具循环、上下文整理和个体规划由成员运行时（engine 的 Chat 回合循环）实现。
 
+按 D-38，内置 Worker 总是先获得固定的 TeamAgents 环境 system prompt，说明任务验收、私有上下文、
+动态团队视图、通信/共享空间、权限、求助与完成规则，再拼接成员专属指令、Skills/指令文件和计划。
+即使成员指令与附加上下文为空也必须有 system 消息；具体任务与运行时状态仍作为后续输入投递。
+
 TeamAgents 在回合与工具调用边界负责：注入授权增量输入、团队工具身份绑定、操作批准、边界通知和团队级事件转换。成员的内部子过程仍属于当前成员，继承其权限上限，不进入 TeamSpec，也不能获得独立团队身份。
 
 同一成员线程不允许并发调用；长期上下文必须使用稳定命名。
@@ -336,6 +340,10 @@ TeamAgents 在回合与工具调用边界负责：注入授权增量输入、团
 最小协议范围为初始化、创建/恢复线程、启动回合、读取进度、批准请求、取消回合、查询线程状态。使用 `thread/start`、`thread/resume`、`turn/start`、`turn/interrupt` 及相关通知；按选定 Codex CLI 版本生成 JSON Schema 校验协议。官方接口提供这些生命周期能力。[Codex App Server](https://learn.chatgpt.com/docs/app-server)
 
 Codex 的输入只含当前任务、必要文件/引用和授权摘要；输出转换为任务进度、结果、失败和批准事件。普通成员需要 Codex 执行时向 Leader 提出请求。Codex 不注入 `assign_task`、`send_message` 或拓扑修改工具，其内部委派即使存在，也只属于该执行成员的内部行为。
+
+按 D-38，创建/恢复 Codex 线程时通过 `developerInstructions` 注入执行成员的 TeamAgents 环境说明和
+成员专属指令，在任务输入前生效；保留 Codex 原生 system prompt，不设置 `baseInstructions`。
+该说明要求通过自身输出汇报进度、阻塞与验收证据，不要求调用未提供的团队工具。
 
 持久化 `thread_id` 后再提交回合，并记录提交意图。断线后先核对线程历史及活动回合，确认执行结果后归档；无法确认时进入结果不明状态。取消必须等待 interrupted/terminal 状态或明确连接失败结果，不能因发出取消请求就立即认定停止。
 
@@ -446,6 +454,7 @@ teamagents                         启动 TUI
 teamagents --cwd PATH               在指定工作目录开始
 teamagents --resume SESSION_ID      恢复指定会话
 teamagents --full-auto              用户显式选择全自动模式
+teamagents init                     创建首次配置，保留已有文件（D-37）
 teamagents doctor                  检查模型配置、工具、隔离与 Codex 协议能力
 teamagents validate TEAM_SPEC       校验导入的团队定义
 teamagents --team TEAM_SPEC         为新会话载入 JSON/YAML 团队定义

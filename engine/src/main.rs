@@ -4,10 +4,21 @@
 use std::path::{Path, PathBuf};
 use teamagents_engine::{cli, tools, worker, VERSION};
 
+const HELP: &str = "TeamAgents：在终端里与 Leader 协作\n\n\
+用法：teamagents [--cwd DIR] [--resume ID] [--full-auto] [--team SPEC] [--plain]\n\
+  teamagents init                    创建首次配置（保留已有文件）\n\
+  teamagents doctor                  检查配置、密钥与本机运行条件\n\
+  teamagents validate SPEC           校验团队定义（JSON / YAML）\n\
+  teamagents sessions [-v]           查看会话\n\
+  teamagents sessions prune --days N [--history-days M] [--dry-run]\n\
+  teamagents exec --json [--timeout SEC] [--check COMMAND] PROMPT|-\n\
+  teamagents version | --version     查看版本\n\
+  teamagents --help                  查看帮助\n\n\
+默认进入 TUI；--plain 使用行模式；--cwd DIR 指定工作目录。\n\
+首次使用：teamagents init → 设置密钥环境变量 → teamagents doctor → teamagents。";
+
 fn usage() -> ! {
-    eprintln!("teamagents [--cwd DIR] [--resume ID] [--full-auto] [--team SPEC.json] [--plain]");
-    eprintln!("  teamagents doctor | validate SPEC | sessions [-v] [prune --days N [--history-days M] [--dry-run]] | version");
-    eprintln!("  teamagents exec --json [--timeout SEC] [--check COMMAND] PROMPT|- ");
+    eprintln!("{HELP}");
     std::process::exit(2);
 }
 
@@ -29,6 +40,13 @@ pub struct Args {
 
 fn parse_args() -> Args {
     let argv: Vec<String> = std::env::args().skip(1).collect();
+    if argv.len() == 1 {
+        match argv[0].as_str() {
+            "-h" | "--help" => { println!("{HELP}"); std::process::exit(0); }
+            "--version" | "-V" => std::process::exit(cli::version()),
+            _ => {},
+        }
+    }
     let mut args = Args {
         cwd: None,
         resume: None,
@@ -77,7 +95,7 @@ fn parse_args() -> Args {
                 args.verbose = true;
                 i += 1;
             }
-            "serve" | "doctor" | "validate" | "sessions" | "version" | "exec" => {
+            "serve" | "init" | "doctor" | "validate" | "sessions" | "version" | "exec" => {
                 if args.command.is_some() { usage(); }
                 args.command = Some(argv[i].clone());
                 if argv[i] == "exec" { args.exec_json = false; }
@@ -120,6 +138,10 @@ fn parse_args() -> Args {
         }
     }
     if args.command.as_deref() == Some("exec") && !args.exec_json { usage(); }
+    if args.command.as_deref() == Some("init") && (args.positional.is_some() || args.cwd.is_some()
+        || args.resume.is_some() || args.team.is_some() || args.plain || args.full_auto || args.verbose) {
+        usage();
+    }
     args
 }
 
@@ -157,7 +179,7 @@ fn tui_search_roots(exe: Option<&std::path::Path>) -> Vec<PathBuf> {
 
 fn run_tui(args: &Args) -> i32 {
     let Some(binary) = find_tui_binary() else {
-        eprintln!("找不到 teamagents-tui（先 `cd tui && cargo build`，或用 TEAMAGENTS_TUI 指定路径）");
+        eprintln!("找不到 teamagents-tui。请将发行包中的 teamagents 和 teamagents-tui 安装在同一目录，或用 TEAMAGENTS_TUI 指定路径。\n源码构建：cargo build --manifest-path tui/Cargo.toml；也可用 teamagents --plain 进入行模式。");
         return 1;
     };
     let mut command = std::process::Command::new(binary);
@@ -188,6 +210,7 @@ fn main() {
     let args = parse_args();
     let code = match args.command.as_deref() {
         Some("serve") => worker::serve(),
+        Some("init") => cli::init(),
         Some("doctor") => cli::doctor(),
         Some("validate") => match &args.positional {
             Some(path) => cli::validate_spec(path),

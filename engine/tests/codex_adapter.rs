@@ -33,6 +33,7 @@ fn setup(session: &str, mode: &str) -> (Arc<CoreClient>, Arc<CodexRunner>) {
         CodexOptions {
             agent_id: "cx".into(),
             session_id: session.into(),
+            instructions: String::new(),
             workdir: std::env::temp_dir(),
             sandbox: "workspace-write".into(),
             approval_policy: "on-request".into(),

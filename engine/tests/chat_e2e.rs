@@ -312,6 +312,63 @@ fn text_with_usage(text: &str, prompt: u64) -> Json {
 
 // ---- tests -----------------------------------------------------------------
 
+/// The environment is a system-level field on every supported wire protocol,
+/// including an empty member config and a restart with updated role instructions.
+#[test]
+fn worker_environment_reaches_model_before_leader_task_on_all_protocols() {
+    let _env = env_guard("worker-system-prompt");
+    for protocol in ["openai", "anthropic", "responses"] {
+        let server = FakeOpenAi::start(move |_, _| (200, match protocol {
+            "anthropic" => json!({"id":"msg-1", "type":"message", "role":"assistant", "stop_reason":"end_turn",
+                "content":[{"type":"text", "text":"worker reply"}]}),
+            "responses" => json!({"id":"resp-1", "status":"completed", "output":[{"type":"message", "role":"assistant",
+                "content":[{"type":"output_text", "text":"worker reply"}]}]}),
+            _ => text_response("worker reply"),
+        }));
+        let session = format!("worker-prompt-{protocol}");
+        let mut agent = agent_json("worker", "worker", &[]);
+        let core = core_with_spec(&session, json!({"leader_id":"leader",
+            "agents":[agent_json("leader", "leader", &[]), agent.clone()]}));
+        let view = json!({"agent_id":"worker", "assignment":[{
+            "task_id":"task-1", "description":"Review the parser", "acceptance":"Cite test evidence", "requester":"leader"}],
+            "inbox_delta":[], "permitted_shared_delta":[], "relevant_topology":{"revision":1}});
+        for (index, instructions) in ["", "Focus on parser edge cases."].into_iter().enumerate() {
+            agent["instructions"] = json!(instructions);
+            let runner = chat_runner(&core, &agent, profile(&server.base_url(), protocol, json!({}), 0), "/tmp");
+            let run_id = format!("worker-run-{index}");
+            let run: TurnRun = serde_json::from_value(json!({
+                "run_id":run_id, "session_id":session, "agent_id":"worker", "task_id":"task-1", "goal_id":null,
+                "status":"QUEUED", "config_revision":1, "topology_revision":1, "input_delivery_ids":[],
+                "context_ref":"ctx:worker", "external_turn_id":null, "cancel_requested":false,
+                "waiting_on":[], "created_at":0, "updated_at":0,
+            })).unwrap();
+            let gateway = ToolGateway::new(core.clone(), "worker", &run_id,
+                ApprovalGate::new(core.clone(), PermissionPolicy::default()), None);
+            let outcome = runner.start_or_resume(&run, &view, &gateway, &json!({"reason":"new_input"}));
+            assert_eq!(outcome.status, TurnStatus::Completed, "{protocol}: {outcome:?}");
+            let body = server.body(index);
+            let (system, input) = match protocol {
+                "anthropic" => (body["system"].as_str().unwrap(), body["messages"].to_string()),
+                "responses" => (body["instructions"].as_str().unwrap(), body["input"].to_string()),
+                _ => {
+                    assert_eq!(body["messages"][0]["role"], "system");
+                    assert_eq!(body["messages"].as_array().unwrap().iter().filter(|m| m["role"] == "system").count(), 1);
+                    (body["messages"][0]["content"].as_str().unwrap(), body["messages"][1].to_string())
+                }
+            };
+            assert!(system.starts_with("<teamagents_worker>"), "{protocol}: {body}");
+            assert!(system.contains("acceptance criteria") && system.contains("complete_task"));
+            assert!(!system.contains("Review the parser"), "task input must stay separate from the environment");
+            assert!(input.contains("Review the parser"), "{protocol}: {body}");
+            if !instructions.is_empty() {
+                assert!(system.find("</teamagents_worker>").unwrap() < system.find(instructions).unwrap());
+                assert!(body.to_string().contains("worker reply"), "the prior conversation survives refresh");
+            }
+            runner.close();
+        }
+    }
+}
+
 /// F-3: a once approval must be found again when the model re-sends the call
 /// with a fresh tool_call_id, the operation must run, and the row must be
 /// consumed (EXPIRED) — then the turn finishes.

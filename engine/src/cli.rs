@@ -1,4 +1,4 @@
-//! CLI entry points: doctor / validate / sessions / version / --plain REPL.
+//! CLI entry points: init / doctor / validate / sessions / version / --plain REPL.
 
 use crate::config::{load_user_config, load_user_config_for, missing_key_envs, sessions_dir, user_config_path};
 use crate::core_client::CoreClient;
@@ -11,17 +11,40 @@ use std::io::{BufRead, Read, Write};
 use std::time::{Duration, Instant};
 use std::path::{Path, PathBuf};
 
+pub fn init() -> i32 {
+    let path = user_config_path();
+    match crate::config::initialize_config(&path) {
+        Ok(created) => {
+            if created {
+                println!("已创建配置：{}", path.display());
+                println!("默认模型：deepseek-flash（上下文 1,000,000；推理档位 max）。");
+                println!("在当前终端设置 DEEPSEEK_API_KEY 环境变量；若使用其他服务，请先编辑上述配置。");
+            } else {
+                println!("已保留现有配置：{}（未覆盖）", path.display());
+                println!("请按现有配置的 api_key_env 设置密钥环境变量。");
+            }
+            println!("下一步：teamagents doctor；然后在项目目录运行 teamagents。");
+            0
+        }
+        Err(error) => { eprintln!("初始化失败：{error}"); 1 }
+    }
+}
+
 fn is_executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     path.metadata().map(|meta| meta.permissions().mode() & 0o111 != 0).unwrap_or(false)
 }
 
-fn check(results: &mut Vec<(String, bool, String)>, name: &str, ok: bool, detail: String) {
-    results.push((name.to_string(), ok, detail));
+fn check(results: &mut Vec<(String, &'static str, String)>, name: &str, ok: bool, detail: String) {
+    results.push((name.to_string(), if ok { "ok  " } else { "FAIL" }, detail));
+}
+
+fn optional_check(results: &mut Vec<(String, &'static str, String)>, name: &str, ok: bool, detail: String) {
+    results.push((name.to_string(), if ok { "ok  " } else { "WARN" }, detail));
 }
 
 pub fn doctor() -> i32 {
-    let mut results: Vec<(String, bool, String)> = vec![];
+    let mut results = vec![];
     match CoreClient::open(":memory:", "doctor").and_then(|core| core.call("ping", json!({}))) {
         Ok(info) => {
             let version = info.get("core").and_then(|v| v.as_str()).unwrap_or("?");
@@ -29,12 +52,21 @@ pub fn doctor() -> i32 {
         }
         Err(e) => check(&mut results, "rust core", false, e),
     }
-    match load_user_config(&user_config_path()) {
+    let config_path = user_config_path();
+    let catalog = load_user_config(&config_path);
+    match &catalog {
         Ok(catalog) => {
             let models: Vec<&String> = catalog.models.keys().collect();
             let tools: Vec<&String> = catalog.tools.keys().collect();
-            check(&mut results, "user config", true, format!("models={models:?} tools={tools:?}"));
-            for (name, present) in missing_key_envs(&catalog) {
+            check(&mut results, "user config", !catalog.models.is_empty(),
+                if catalog.models.is_empty() {
+                    format!("{}：尚未配置模型；首次使用请运行 teamagents init，已有文件请补齐 [models.leader_main]", config_path.display())
+                } else {
+                    format!("{} models={models:?} tools={tools:?}", config_path.display())
+                });
+            let mut keys: Vec<_> = missing_key_envs(catalog).into_iter().collect();
+            keys.sort_by(|a, b| a.0.cmp(&b.0));
+            for (name, present) in keys {
                 let profile = &catalog.models[&name];
                 let env = profile.api_key_env.clone().unwrap_or_default();
                 check(
@@ -45,12 +77,12 @@ pub fn doctor() -> i32 {
                         "{}/{} {}",
                         profile.provider,
                         profile.model,
-                        if present { String::new() } else { format!("(missing env {env})") }
+                        if present { String::new() } else { format!("（环境变量 {env} 未设置或为空，请设置后重试）") }
                     ),
                 );
             }
         }
-        Err(e) => check(&mut results, "user config", false, e),
+        Err(e) => check(&mut results, "user config", false, e.clone()),
     }
     let bwrap = bwrap_available();
     // not just "is it installed": run a probe so a broken
@@ -64,11 +96,11 @@ pub fn doctor() -> i32 {
         "bubblewrap isolation",
         bwrap_probe,
         if bwrap_probe {
-            "system files visible, home blocked".into()
+            "隔离探针通过：系统文件可见，主目录不可见".into()
         } else if bwrap {
-            "bwrap present but the isolation probe failed".into()
+            "已安装 bwrap，但隔离探针失败；请检查系统是否允许非特权 user namespace".into()
         } else {
-            "bwrap not found: out-of-scope commands must ask for approval".into()
+            "未找到 bwrap，Shell 无法执行；Debian/Ubuntu: sudo apt install bubblewrap；Fedora: sudo dnf install bubblewrap；Arch: sudo pacman -S bubblewrap".into()
         },
     );
     let codex = which("codex");
@@ -78,15 +110,15 @@ pub fn doctor() -> i32 {
             let help = std::process::Command::new(&codex).args(["app-server", "--help"]).output();
             let app_server = help.map(|out| String::from_utf8_lossy(&out.stdout).contains("app-server")).unwrap_or(false);
             // `codex --version` already prefixes itself ("codex-cli x.y.z")
-            check(&mut results, "codex app-server", app_server, codex_version(&codex));
+            optional_check(&mut results, "codex app-server", app_server, codex_version(&codex));
             let (schema_ok, detail) = codex_schema_check(&codex);
-            check(&mut results, "codex protocol schema", schema_ok, detail);
+            optional_check(&mut results, "codex protocol schema", schema_ok, detail);
         }
-        None => check(&mut results, "codex app-server", false, "codex CLI not found".into()),
+        None => optional_check(&mut results, "codex app-server", false, "未安装 Codex CLI；仅 Codex 执行成员需要，内置成员可正常使用".into()),
     }
     // hooks are easy to break silently: a wrong path only shows up as a stderr
     // line at event time, so doctor checks the programs exist and are executable
-    match load_user_config(&user_config_path()) {
+    match &catalog {
         Ok(catalog) => {
             for (label, argv) in [("hooks.notify", &catalog.hooks.notify), ("hooks.pre_tool", &catalog.hooks.pre_tool)] {
                 let Some(program) = argv.first().filter(|p| !p.trim().is_empty()) else { continue };
@@ -107,7 +139,7 @@ pub fn doctor() -> i32 {
                 );
             }
         }
-        Err(e) => check(&mut results, "hooks", false, e),
+        Err(_) => {},
     }
     let dir = sessions_dir();
     let probe = dir.join(".doctor-probe");
@@ -118,12 +150,13 @@ pub fn doctor() -> i32 {
 
     println!("TeamAgents doctor ({VERSION})");
     let mut failed = 0;
-    for (name, ok, detail) in &results {
-        if !ok {
+    for (name, status, detail) in &results {
+        if *status == "FAIL" {
             failed += 1;
         }
-        println!("  [{}] {:24} {}", if *ok { "ok  " } else { "FAIL" }, name, detail);
+        println!("  [{status}] {name:24} {detail}");
     }
+    println!("自检仅验证本机条件，不调用模型 API；WARN 为可选能力提示。Codex 成员需要相关检查通过。");
     if failed > 0 {
         1
     } else {

@@ -31,6 +31,17 @@ fn version_validate_and_sessions_smoke() {
 
     let version = teamagents(&["version"], &home, &config);
     assert!(version.contains("teamagents-core"), "{version}");
+    for flag in ["--help", "-h", "--version", "-V"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_teamagents"))
+            .arg(flag)
+            .env("XDG_STATE_HOME", home.join("unused-state"))
+            .env("XDG_CONFIG_HOME", home.join("unused-config"))
+            .output().unwrap();
+        assert!(output.status.success(), "{flag}: {output:?}");
+        assert!(!output.stdout.is_empty());
+        assert!(!home.join("unused-state").exists());
+        assert!(!home.join("unused-config").exists());
+    }
 
     let spec_path = home.join("spec.json");
     std::fs::write(
@@ -111,4 +122,87 @@ fn doctor_probes_isolation_codex_and_config_errors() {
     assert!(broken.contains("[FAIL] user config"), "{broken}");
     assert!(broken.contains("must be true/false"), "{broken}");
     let _ = std::fs::remove_dir_all(&home);
+}
+
+/// Keep diagnostics deterministic on machines without Codex or user namespaces.
+#[test]
+fn doctor_fresh_install_and_optional_codex() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = std::env::temp_dir().join(format!("ta-doctor-fresh-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let bin = root.join("bin");
+    let config = root.join("config/teamagents/config.toml");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    // This tests the diagnostic classification, not real sandbox enforcement.
+    std::fs::write(bin.join("bwrap"), "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(bin.join("bwrap"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let run = |key: &str| {
+        let output = Command::new(env!("CARGO_BIN_EXE_teamagents"))
+            .arg("doctor")
+            .env("PATH", &bin)
+            .env("XDG_CONFIG_HOME", root.join("config"))
+            .env("XDG_STATE_HOME", root.join("state"))
+            .env("TA_DOCTOR_TEST_KEY", key)
+            .output().unwrap();
+        (output.status.success(), String::from_utf8_lossy(&output.stdout).into_owned())
+    };
+    let (ok, text) = run("test-value");
+    assert!(!ok && text.contains("[FAIL] user config"), "{text}");
+    assert!(text.contains(&config.display().to_string()), "{text}");
+    std::fs::write(&config,
+        "[models.leader_main]\nprovider='openai'\nmodel='test'\napi_key_env='TA_DOCTOR_TEST_KEY'\n").unwrap();
+    let (ok, text) = run("test-value");
+    assert!(ok, "optional Codex must not fail doctor: {text}");
+    assert!(text.contains("[WARN] codex app-server"), "{text}");
+    for key in ["", "   "] {
+        let (ok, text) = run(key);
+        assert!(!ok && text.contains("[FAIL] model profile leader_main"), "{text}");
+        assert!(text.contains("TA_DOCTOR_TEST_KEY"), "{text}");
+    }
+    std::fs::remove_file(&config).unwrap();
+    std::fs::create_dir(&config).unwrap();
+    let (ok, text) = run("test-value");
+    assert!(!ok && text.contains("无法读取配置"), "{text}");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn init_creates_private_config_and_never_overwrites_existing_paths() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+    let root = std::env::temp_dir().join(format!("ta-init-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let config = root.join("config with spaces/teamagents/config.toml");
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_teamagents"))
+            .args(args)
+            .env("XDG_CONFIG_HOME", root.join("config with spaces"))
+            .env("XDG_STATE_HOME", root.join("state"))
+            .output().unwrap()
+    };
+    assert!(!run(&["init", "--cwd", "/tmp"]).status.success());
+    assert!(!config.exists());
+    let output = run(&["init"]);
+    assert!(output.status.success(), "{output:?}");
+    assert!(!root.join("state").exists(), "init must not open a session");
+    let text = std::fs::read_to_string(&config).unwrap();
+    let catalog = teamagents_engine::config::parse_user_config(&text).unwrap();
+    assert_eq!(catalog.models["leader_main"].context_window, Some(1_000_000));
+    assert_eq!(catalog.models["leader_main"].api_key_env.as_deref(), Some("DEEPSEEK_API_KEY"));
+    assert_eq!(std::fs::metadata(&config).unwrap().permissions().mode() & 0o777, 0o600);
+    std::fs::write(&config, "# existing user content\n").unwrap();
+    let output = run(&["init"]);
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("未覆盖"));
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), "# existing user content\n");
+    std::fs::remove_file(&config).unwrap();
+    let target = root.join("missing-target");
+    symlink(&target, &config).unwrap();
+    assert!(run(&["init"]).status.success());
+    assert!(!target.exists(), "a dangling symlink must not be followed");
+    assert!(std::fs::symlink_metadata(&config).unwrap().is_symlink());
+    std::fs::remove_file(&config).unwrap();
+    std::fs::create_dir(&config).unwrap();
+    assert!(!run(&["init"]).status.success());
+    std::fs::remove_dir_all(root).unwrap();
 }

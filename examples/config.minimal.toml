@@ -1,0 +1,14 @@
+# TeamAgents 首次配置。密钥只引用环境变量，不写入配置。
+# 修改模型时同步填写该模型的原生 context_window。
+# 其他服务、网页搜索与 MCP 配置见 config.example.toml 或 examples/config.toml。
+skills_paths = ["~/.agents/skills"]
+
+[models.leader_main]
+provider = "deepseek"
+protocol = "deepseek"
+model = "deepseek-flash"
+context_window = 1000000
+api_key_env = "DEEPSEEK_API_KEY"
+timeout = 120
+max_retries = 2
+generation_options = { reasoning_effort = "max" }

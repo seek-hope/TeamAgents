@@ -9,6 +9,8 @@
 - **全程可见**：TUI 里有团队、任务、消息、共享空间、批准队列、计划、diff 审查与日志面板。
 - **接得住中断**：回合被中断、任务卡住、目标没跑完，`--resume` 接着走。
 
+> **首次使用：** [下载安装与升级](docs/INSTALL.md) · [最新发行版](https://github.com/seek-hope/TeamAgents/releases/latest)
+
 ## 怎么工作
 
 ```
@@ -46,39 +48,53 @@
 要求：Linux（x86_64）+ `bubblewrap`；`codex` CLI 只有使用 Codex 执行成员时才需要；
 模型密钥从环境变量读，不写进配置。
 
-### 下载发行版
+### 安装最新版（推荐）
 
-[Releases](https://github.com/seek-hope/TeamAgents/releases) 提供 x86_64 静态包
-（musl 静态链接，不挑发行版 glibc）。仓库是私有的，用已登录的 `gh` 拉：
+仓库和 [发行版](https://github.com/seek-hope/TeamAgents/releases/latest) 已公开，无需登录 GitHub，
+也无需 Rust 工具链。安装程序会自动选取最新版本、校验 SHA-256，并将两个程序安装到 `~/.local/bin`：
 
 ```bash
-ver=0.1.1   # 换成要装的版本
-gh release download "v$ver" --repo seek-hope/TeamAgents \
-  --pattern "teamagents-$ver-x86_64-unknown-linux-musl.tar.gz" --pattern SHA256SUMS
-sha256sum -c SHA256SUMS
-tar -xzf "teamagents-$ver-x86_64-unknown-linux-musl.tar.gz"
-install -Dm755 "teamagents-$ver-x86_64-unknown-linux-musl/"{teamagents,teamagents-tui} ~/.local/bin/
+(
+  set -eu
+  installer="$(mktemp)"
+  trap 'rm -f "$installer"' EXIT
+  curl -fsSL https://raw.githubusercontent.com/seek-hope/TeamAgents/main/install.sh -o "$installer"
+  sh "$installer"
+)
+export PATH="$HOME/.local/bin:$PATH"
 ```
 
-两个二进制装在同一目录（或同一 `PATH`）即可：`teamagents` 先找同目录的 `teamagents-tui`，再找 `PATH`。
+将 `export PATH="$HOME/.local/bin:$PATH"` 加入 `~/.bashrc` 或 `~/.zshrc`，以后打开终端也能直接运行。
+升级前退出 TeamAgents，再次执行即可；已有配置和会话会保留。
+支持指定版本、自定义安装目录和本地发行包安装，详见 [安装指南](docs/INSTALL.md)。
 
 ### 从源码构建
 
 ```bash
-for c in core engine tui; do (cd "$c" && cargo build); done   # 联网受限加 --offline
+cargo build --locked --release --manifest-path engine/Cargo.toml --bin teamagents
+cargo build --locked --release --manifest-path tui/Cargo.toml --bin teamagents-tui
+mkdir -p ~/.local/bin
+install -m755 engine/target/release/teamagents tui/target/release/teamagents-tui ~/.local/bin/
+export PATH="$HOME/.local/bin:$PATH"
 ```
 
-需要 Rust 工具链（2026-09-15 用 1.95.0 验证）。产物是 `engine/target/debug/teamagents`
-与 `tui/target/debug/teamagents-tui`。
+需要 Rust 工具链（2026-09-15 用 1.95.0 验证；依赖已缓存时可加 `--offline`）。
+构建完成后使用下面的 `teamagents init` 初始化配置。
 
 ## 快速开始
 
+安装 `bubblewrap`（Debian/Ubuntu：`sudo apt install bubblewrap`；其他发行版见安装指南），
+然后在同一个终端中执行：
+
 ```bash
-mkdir -p ~/.config/teamagents && cp examples/config.toml ~/.config/teamagents/config.toml
-export DEEPSEEK_API_KEY=...      # 配置里 profile 引用的密钥（发行包内示例叫 config.example.toml）
-teamagents doctor                # 自检：依赖 / 配置 / 密钥 / 隔离 / codex 协议 / 状态目录
-teamagents                       # 进入 TUI（源码构建则用 engine/target/debug/teamagents）
+teamagents init                       # 创建内置最小配置；已有配置不会覆盖
+export DEEPSEEK_API_KEY='你的模型密钥'  # 默认配置使用 DeepSeek；其他服务按配置中的 api_key_env 设置
+teamagents doctor                    # 自检：配置 / 密钥 / 隔离 / Codex 可选能力 / 状态目录
+teamagents --cwd /path/to/project     # 换成实际项目目录；省略 --cwd 则使用当前目录
 ```
+
+`init` 遵循 XDG 配置目录；默认使用 DeepSeek Flash（1M 上下文），其他服务可编辑生成的 TOML。
+安装旧版 v0.1.1 时，安装脚本会自动复制配置模板，此时跳过 `init`。
 
 进去以后直接说目标，例如：
 
@@ -105,7 +121,7 @@ teamagents exec --json [--timeout SEC] [--check CMD] PROMPT|-    # 机器可读�
 | `--team SPEC` | 新会话使用指定 TeamSpec（JSON/YAML）；已有会话仍加载保存的团队定义 |
 | `--full-auto` | 用户显式开启全自动（等价 TUI `Ctrl+F`） |
 | `--plain` | 行模式 REPL（不发 TUI） |
-| `doctor` / `validate SPEC` / `sessions [-v]` / `version` | 自检 / 校验 TeamSpec / 会话清单 / 版本 |
+| `init` / `--help` / `doctor` / `validate SPEC` / `sessions [-v]` / `version` | 初始化配置 / 帮助 / 自检 / 校验 TeamSpec / 会话清单 / 版本 |
 
 TUI：`Enter` 发送、`Shift+Enter`/`Ctrl+J` 换行、`Esc` 停止 Leader、`Ctrl+Q` 退出；
 `Tab` 进管理面板（`Ctrl+T` 切页签，面板内 `Esc`/`Tab` 回输入框）、`Ctrl+G` 批准队列、
@@ -138,6 +154,7 @@ TUI：`Enter` 发送、`Shift+Enter`/`Ctrl+J` 换行、`Esc` 停止 Leader、`Ct
 
 | 文档 | 内容 |
 |---|---|
+| [docs/INSTALL.md](docs/INSTALL.md) | 下载、安装、首次配置、升级与卸载 |
 | [docs/USER-GUIDE.md](docs/USER-GUIDE.md) | 配置、权限、团队定义、恢复、故障处理、TUI 布局与键位 |
 | [docs/DECISIONS.md](docs/DECISIONS.md) | 全部已确认决策（D-1..）与架构取舍 |
 | [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) | T1–T24 验收对照与证据 |

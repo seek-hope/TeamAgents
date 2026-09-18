@@ -5,6 +5,14 @@
 
 ## 1. 配置
 
+首次安装运行 `teamagents init` 即可创建最小配置，重复运行保留已有文件；密钥仍从环境变量读取。
+下载安装、升级及旧版兼容说明见 [安装指南](INSTALL.md)。
+
+Worker 的 `instructions` 是成员专属指令。内置 Worker 会先收到固定的 TeamAgents 环境 system prompt，
+再拼接这些指令、选中的 Skills、指令文件和计划；省略 `instructions` 也仍有环境说明。
+任务描述、验收标准、消息和团队状态由运行时另行投递。Codex 执行成员则在创建/恢复线程时通过
+`developerInstructions` 接收环境说明与成员指令，保留其原生 system prompt，通过自身输出汇报执行结果。
+
 ### 1.1 位置
 
 | 内容 | 位置 |
@@ -357,7 +365,7 @@ TUI `/rewind` 列出当前分支的用户输入节点，`/rewind <序号>` 回�
 
 | 现象 | 处理 |
 |---|---|
-| 界面提示“成员 leader 的模型 profile 'leader_main' 未配置” | 会话启动时即提示（TUI 会直接写出配置路径）。创建 `~/.config/teamagents/config.toml`（可复制 `examples/config.toml`），补 `[models.leader_main]` 后重开会话 |
+| 界面提示“成员 leader 的模型 profile 'leader_main' 未配置” | 首次使用运行 `teamagents init`；若已有配置，按界面显示的路径补齐 `[models.leader_main]` 后重开会话（`init` 不覆盖已有文件） |
 | 输入后长时间没有回应 | 先看对话视图：回合失败会以 `✗ …回合失败：<原因>` 显示；若没有该行且状态栏“活动回合 ≥1”，说明模型正在生成（xhigh 思考可能较慢）。最常见原因是模型 profile 未配置或密钥环境变量缺失（`doctor` 可确认） |
 | 报缺少某环境变量 | profile 的 `api_key_env` 指向的变量未导出；导出后重跑 |
 | 命令因“refusing to run without isolation”失败 | 安装 bubblewrap；不要以降低隔离来绕过 |

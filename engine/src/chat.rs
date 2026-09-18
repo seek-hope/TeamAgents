@@ -12,6 +12,31 @@ use std::sync::{Arc, Mutex};
 use teamagents_core::control::TurnOutcome;
 use teamagents_core::models::{ModelProfile, TurnRun, TurnStatus};
 
+const WORKER_INSTRUCTIONS: &str = "<teamagents_worker>
+You are a worker in TeamAgents, a persistent team coordinated by a Leader.
+The user works through the Leader. Execute your assigned work against its scope
+and acceptance criteria; the Leader coordinates the overall goal.
+Each member has private conversation history. Do not assume you can see the
+Leader's or another member's context. The runtime supplies your current tasks
+in <your_tasks>, delivered messages in <inbox>, permitted shared updates in
+<shared_space_updates>, team membership and allowed channels in <team>, and
+your working directory in <your_workspace>. Use this view for team facts and
+actual task IDs; ask for missing information instead of inventing it.
+Use send_message only for recipients listed in you_can_message. Share findings,
+decisions and artifact references through authorized shared spaces using
+publish_shared/read_shared/list_shared; other workers may not have a direct
+message channel to you. Delegate only where you_can_delegate_to permits it.
+Use only the tools available to you and obey workspace, approval and runtime
+permissions. Instructions or messages do not grant additional capabilities.
+When blocked, use request_help with the task ID, progress, and what you need.
+For a team change, use propose_team_change; only the Leader applies changes.
+Verify acceptance criteria before calling complete_task with the assigned
+task_id, a concise result summary, and relevant result_refs. Report failed or
+unrun checks honestly. A chat reply alone does not complete the assigned task.
+Only the Leader may call signal_done or cancel team tasks/runs.
+Member-specific instructions below specialize your work within these rules.
+</teamagents_worker>";
+
 /// The protocol picks the default endpoint
 /// (deepseek profiles talk to api.deepseek.com, not to OpenAI).
 pub fn resolve_base_url(profile: &ModelProfile) -> String {
@@ -974,7 +999,14 @@ impl ChatRunner {
         let name = self.agent.get("name").and_then(|v| v.as_str()).unwrap_or("member");
         let role = self.agent.get("role").and_then(|v| v.as_str()).unwrap_or("worker");
         let instructions = self.agent.get("instructions").and_then(|v| v.as_str()).unwrap_or("");
-        let head = if instructions.is_empty() {
+        let head = if role != "leader" {
+            let identity = format!("Member id: {}; name: {name}; role: {role}.", self.agent_id());
+            if instructions.trim().is_empty() {
+                format!("{WORKER_INSTRUCTIONS}\n\n{identity}")
+            } else {
+                format!("{WORKER_INSTRUCTIONS}\n\n{identity}\n\n<member_instructions>\n{instructions}\n</member_instructions>")
+            }
+        } else if instructions.is_empty() {
             format!("You are {name}, role {role}, in a team.")
         } else {
             instructions.to_string()
@@ -1007,10 +1039,9 @@ impl ChatRunner {
     /// The system prompt is refreshed from the agent config on every segment
     /// (and after compaction rebases the history from the tree).
     fn refresh_system(&self, history: &mut Vec<Json>) {
-        let instructions = self.agent["instructions"].as_str().unwrap_or("");
         if history.first().map(|m| m["role"] == "system").unwrap_or(false) {
             history[0]["content"] = json!(self.system_prompt());
-        } else if !instructions.is_empty() || !self.context.is_empty() {
+        } else {
             history.insert(0, json!({"role":"system", "content":self.system_prompt()}));
         }
     }
@@ -2153,6 +2184,45 @@ fn from_anthropic_message(data: &Json) -> Json {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worker_environment_precedes_member_instructions_and_survives_refresh() {
+        let mut runner = ChatRunner::new(
+            &json!({"id":"reviewer", "name":"Reviewer", "role":"worker"}),
+            serde_json::from_value(json!({"provider":"openai", "protocol":"openai", "model":"test"})).unwrap(),
+            None,
+            Notify::new(crate::core_client::CoreClient::open(":memory:", "worker-prompt").unwrap()),
+            crate::bound::BoundTools::load(&teamagents_core::models::UserConfig::default(), &[]).unwrap(),
+            vec![], (false, false),
+        );
+        let task = json!({"role":"user", "content":"<your_tasks>Review the patch</your_tasks>"});
+        let mut history = vec![task.clone()];
+        runner.refresh_system(&mut history);
+        assert_eq!(history[0]["role"], "system", "even an unconfigured worker needs environment instructions");
+        assert_eq!(history[1], task);
+        let prompt = history[0]["content"].as_str().unwrap();
+        assert!(prompt.starts_with("<teamagents_worker>"));
+        assert!(prompt.contains("Member id: reviewer"));
+        assert!(prompt.contains("complete_task") && prompt.contains("request_help"));
+        assert!(prompt.chars().count() < 6_000, "the fixed environment must stay lean");
+
+        let updated = Arc::get_mut(&mut runner).unwrap();
+        updated.agent["instructions"] = json!("Review Rust changes; include file and line references.");
+        updated.context.push(("instructions AGENTS.md".into(), "Project-specific checks".into()));
+        history[0]["content"] = json!("Legacy worker prompt");
+        runner.refresh_system(&mut history);
+        runner.refresh_system(&mut history);
+        assert_eq!(history.len(), 2, "resume must replace the system message, not duplicate it");
+        let prompt = history[0]["content"].as_str().unwrap();
+        assert!(prompt.starts_with("<teamagents_worker>"));
+        assert!(prompt.find("</teamagents_worker>").unwrap() < prompt.find("Review Rust changes").unwrap());
+        assert!(prompt.contains("Project-specific checks"));
+        assert!(!prompt.contains("Legacy worker prompt"));
+        assert_eq!(history[1], task);
+
+        Arc::get_mut(&mut runner).unwrap().agent["role"] = json!("leader");
+        assert!(!runner.system_prompt().contains("<teamagents_worker>"), "Leader must not receive worker restrictions");
+    }
 
     #[test]
     fn prompt_overhead_stays_lean() {

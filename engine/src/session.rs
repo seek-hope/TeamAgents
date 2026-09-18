@@ -1006,6 +1006,7 @@ fn codex_options(
         return Ok(CodexOptions {
             agent_id: agent.id.clone(),
             session_id: session_id.into(),
+            instructions: agent.instructions.clone(),
             workdir: member_root(agent, cwd, session_id)?,
             sandbox: "workspace-write".into(),
             approval_policy: "on-request".into(),
@@ -1043,6 +1044,7 @@ fn codex_options(
     Ok(CodexOptions {
         agent_id: agent.id.clone(),
         session_id: session_id.into(),
+        instructions: agent.instructions.clone(),
         workdir: member_root(agent, cwd, session_id)?,
         sandbox: "workspace-write".into(),
         approval_policy: "on-request".into(),
@@ -1204,12 +1206,13 @@ mod tests {
         // codex member: the override lands in opts.model / opts.effort
         let agent = AgentSpec {
             id: "cod".into(), name: "Cod".into(), role: "dev".into(),
-            runtime_kind: RuntimeKind::Codex, instructions: String::new(),
+            runtime_kind: RuntimeKind::Codex, instructions: "Review parser edge cases.".into(),
             model_profile: "m".into(), tool_bindings: vec![], skills: vec![],
             workspace_policy: teamagents_core::models::WorkspacePolicy::Shared,
         };
         let opts = codex_options(&agent, Some(&profile), &ov, "s-ov", &root.join("project")).unwrap();
         assert_eq!(opts.model.as_deref(), Some("gpt-5"));
+        assert_eq!(opts.instructions, "Review parser edge cases.");
         assert_eq!(opts.effort.as_deref(), Some("high"));
         assert!(opts.config_overrides.iter().any(|(k, v)| k == "model_provider" && v == &json!("openai")));
         // profile generation_options still pass through as config overrides

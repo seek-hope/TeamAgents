@@ -13,6 +13,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: 校验发行版本
+        run: |
+          set -eu
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' engine/Cargo.toml | head -1)"
+          for crate in core tui; do
+            test "$(sed -n 's/^version = "\(.*\)"/\1/p' "$crate/Cargo.toml" | head -1)" = "$version"
+          done
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            test "$GITHUB_REF_NAME" = "v$version"
+          fi
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-musl
@@ -24,9 +34,9 @@ jobs:
           CARGO_PROFILE_RELEASE_STRIP: symbols
         run: |
           set -eux
-          cargo build --release --target x86_64-unknown-linux-musl \
+          cargo build --locked --release --target x86_64-unknown-linux-musl \
             --manifest-path engine/Cargo.toml --bin teamagents
-          cargo build --release --target x86_64-unknown-linux-musl \
+          cargo build --locked --release --target x86_64-unknown-linux-musl \
             --manifest-path tui/Cargo.toml --bin teamagents-tui
       - name: 打包
         run: |
@@ -42,20 +52,38 @@ jobs:
           install -m755 tui/target/x86_64-unknown-linux-musl/release/teamagents-tui "dist/$name/"
           cp README.md "dist/$name/"
           cp examples/config.toml "dist/$name/config.example.toml"
+          cp install.sh "dist/$name/install.sh"
+          cp -r docs examples "dist/$name/"
+          cp TeamAgents-Implementation-Plan.zh-CN.md AGENTS.md "dist/$name/"
+          "dist/$name/teamagents" --help
+          "dist/$name/teamagents" version
           tar -C dist -czf "dist/$name.tar.gz" "$name"
-          (cd dist && sha256sum "$name.tar.gz" > SHA256SUMS)
+          cp install.sh dist/install.sh
+          (cd dist && sha256sum "$name.tar.gz" install.sh > SHA256SUMS)
+          # Exercise installation and init using the exact release archive.
+          smoke_dir="$(mktemp -d)"
+          XDG_CONFIG_HOME="$smoke_dir/config" sh install.sh \
+            --archive "dist/$name.tar.gz" --bin-dir "$smoke_dir/bin"
+          XDG_CONFIG_HOME="$smoke_dir/config" "$smoke_dir/bin/teamagents" init
+          test -s "$smoke_dir/config/teamagents/config.toml"
+          test -x "$smoke_dir/bin/teamagents-tui"
+          rm -rf "$smoke_dir"
           ls -l dist
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
           name: linux-x86_64
-          path: dist/*.tar.gz
+          path: |
+            dist/*.tar.gz
+            dist/SHA256SUMS
+            dist/install.sh
+          if-no-files-found: error
       - name: 发布
         if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/*.tar.gz dist/SHA256SUMS \
+          gh release create "$GITHUB_REF_NAME" dist/*.tar.gz dist/SHA256SUMS dist/install.sh \
             --title "$GITHUB_REF_NAME" \
-            --notes "$(cat .github/release-notes.md)" \
+            --notes-file .github/release-notes.md \
             --generate-notes

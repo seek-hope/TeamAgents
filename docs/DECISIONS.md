@@ -3,6 +3,41 @@
 基准文档：`TeamAgents-Implementation-Plan.zh-CN.md`。**任何偏离方案的做法，先与用户确认再实现。**
 本文件只记录已确认的决策；未确认的候选方案写在对话里，不写进代码。
 
+## D-38 Worker 固定环境指令（用户要求 2026-09-18）
+
+用户要求 Worker 在接受 Leader 的提示词前先有 system prompt，以理解 TeamAgents 环境。
+
+- 内置 Worker 的固定环境层放在 system 消息开头，介绍 Leader/Worker 关系、私有上下文与运行时视图、
+  任务验收、通信与共享空间、权限、求助、完成任务和 Leader 专属动作；之后才是成员 `instructions`、
+  Skills/指令文件和计划。具体任务与团队状态继续作为后续 user 输入投递。
+- Chat 后端无条件创建/刷新开头的 system 消息，修复空 `instructions` 且无附加上下文时漏注入的问题。
+  恢复时替换旧 system 内容，不重复插入；Leader 不套用 Worker 的角色限制。
+- Codex 执行成员通过 `thread/start` / `thread/resume` 的 `developerInstructions` 获得相应环境层和
+  成员 `instructions`，不替换原生 system 指令（不传 `baseInstructions`）。不授予团队工具，
+  通过自身输出汇报；Skills/指令文件仍由既有后端路径处理，本批未将 Chat 的文件注入搬到 Codex。
+- 已用本机 `codex app-server generate-json-schema` 确认上述两个方法支持 `developerInstructions`。
+  验证覆盖三种模型协议的实际请求与恢复、Codex 创建/恢复线程的请求顺序；不等于真实模型行为验收。
+
+证据：`chat::tests::worker_environment_precedes_member_instructions_and_survives_refresh`、
+`chat_e2e::worker_environment_reaches_model_before_leader_task_on_all_protocols`、
+`codex_contract::worker_environment_is_developer_instructions_on_codex_start_and_resume`。
+
+## D-37 下载与首次配置优化（用户确认 2026-09-18）
+
+用户确认“运行安装脚本 → teamagents init → 设置密钥 → teamagents”的扩展，随后明确要求仓库改为 public。
+
+- `install.sh` 仅承担发行引导：自动选择最新版或指定版本、校验 SHA-256、安装成对的 Linux x86_64
+  程序；支持自定义目录、本地发行包、curl 公开下载与 gh 认证下载。Shell 脚本是安装入口，产品实现仍为 Rust 三 crate。
+- 新增 Rust CLI `init`，模板编译进程序，遵循 XDG；只创建缺失的配置，保留已有文件与符号链接，
+  不写入密钥、不创建会话、不改变权限策略。默认模型与档位沿用 D-8，上下文沿用 D-36 的 1M。
+- `doctor` 明确报告缺配置、配置不可读、空密钥；Codex 为可选能力，相关问题标 WARN，不阻止内置成员使用。
+- 发行包包含安装器、指南及示例；发布检查涵盖三 crate 版本一致性、实际发行包安装与 init。
+- GitHub 仓库 `seek-hope/TeamAgents` 已按用户要求设为 public（API 回读：visibility=public、private=false）。
+  安装脚本和文档随 main 更新提供；新版 init/doctor 随下一次二进制发行提供。
+- 兼容已发布 v0.1.1：该版本没有 init，安装器在配置缺失时复制包内模板；已有配置与会话保持原样。
+
+验证命令与结果见 `review/install-2026-09-18.md`。
+
 ## 阅读口径（2026-09-15 核对）
 
 各条记录的日期、旧路径与测试数量是对应实施批次的历史证据，不是当前环境说明。

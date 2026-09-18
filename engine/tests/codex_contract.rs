@@ -55,6 +55,8 @@ fn runner_with(core: &Arc<CoreClient>, session: &str, bin: &str, extra_env: Vec<
         CodexOptions {
             agent_id: "cx".into(),
             session_id: session.into(),
+            instructions: extra_env.iter().find(|(k, _)| *k == "FAKE_INSTRUCTIONS")
+                .map(|(_, v)| v.to_string()).unwrap_or_default(),
             workdir: std::env::temp_dir(),
             sandbox: "workspace-write".into(),
             approval_policy: "on-request".into(),
@@ -153,6 +155,46 @@ fn model_switch_resumes_codex_thread_with_selected_provider_and_model() {
     let models: Vec<_> = requests.iter().filter(|r| r["method"] == "turn/start").map(|r| r["params"]["model"].as_str().unwrap()).collect();
     assert_eq!(models, ["old-model", "new-model"]);
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn worker_environment_is_developer_instructions_on_codex_start_and_resume() {
+    let _env = env_guard("codex-worker-prompt");
+    let dir = std::env::temp_dir().join(format!("ta-codex-worker-prompt-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let bin = fake_history_server(&dir);
+    let log = dir.join("requests.jsonl");
+    let log_str = log.to_string_lossy();
+    let core = core_with_spec("cx-prompt", json!({"leader_id":"leader", "agents":[member("leader","leader"),codex_agent()]}));
+    let mut task_view = view();
+    task_view["assignment"] = json!([{"task_id":"t1", "description":"Check the parser", "acceptance":"Show test evidence"}]);
+    for (index, instructions) in ["", "Inspect boundary conditions."].into_iter().enumerate() {
+        let runner = runner_with(&core, "cx-prompt", &bin, vec![
+            ("FAKE_INSTRUCTIONS", instructions), ("FAKE_REQUEST_LOG", &log_str),
+        ]);
+        let id = format!("run-prompt-{index}");
+        let outcome = runner.start_or_resume(&run_for("cx-prompt", &id, None), &task_view,
+            &gateway(&core, &id), &json!({"reason":"new_input"}));
+        assert_eq!(outcome.status, TurnStatus::Completed);
+        runner.close();
+    }
+    let requests: Vec<Json> = std::fs::read_to_string(&log).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    for method in ["thread/start", "thread/resume"] {
+        let index = requests.iter().position(|r| r["method"] == method).unwrap();
+        let params = &requests[index]["params"];
+        let environment = params["developerInstructions"].as_str().unwrap();
+        assert!(environment.starts_with("<teamagents_worker>"));
+        assert!(environment.contains("not provided to this execution backend"));
+        assert!(params.get("baseInstructions").is_none(), "preserve the native Codex system prompt");
+        assert!(!environment.contains("Check the parser"));
+        if method == "thread/resume" {
+            assert!(environment.find("</teamagents_worker>").unwrap() < environment.find("Inspect boundary conditions.").unwrap());
+        }
+        let turn = requests[index + 1..].iter().find(|r| r["method"] == "turn/start").unwrap();
+        assert!(turn["params"]["input"][0]["text"].as_str().unwrap().contains("Check the parser"));
+        assert!(!turn["params"]["input"][0]["text"].as_str().unwrap().contains("<teamagents_worker>"));
+    }
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 fn python_available() -> bool {
