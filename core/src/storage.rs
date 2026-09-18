@@ -442,6 +442,7 @@ impl Store {
             .optional()
     }
 
+    #[expect(clippy::too_many_arguments, reason = "The parameters mirror the persisted action columns.")]
     pub fn record_action(
         &self,
         action_id: &str,
@@ -481,7 +482,7 @@ impl Store {
              FROM events WHERE session_id=?1 AND sequence>?2 ORDER BY sequence LIMIT ?3",
         )?;
         let rows = stmt.query_map(params![session_id, after_sequence, limit], event_row)?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        rows.collect::<rusqlite::Result<Vec<_>>>()
     }
 
     pub fn create_delivery(
@@ -561,7 +562,7 @@ impl Store {
                 "created_at": r.get::<_, f64>(4)?,
             }))
         })?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        rows.collect::<rusqlite::Result<Vec<_>>>()
     }
 
     /// Mark exactly these ids applied (never a
@@ -635,7 +636,7 @@ impl Store {
         };
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params![session_id], row_to_task)?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        rows.collect::<rusqlite::Result<Vec<_>>>()
     }
 
     /// Optimistic status transition.
@@ -929,7 +930,7 @@ impl Store {
         };
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params![session_id], row_to_run)?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        rows.collect::<rusqlite::Result<Vec<_>>>()
     }
 
     /// Runs for the `state` wire view: every non-terminal run (scheduler and
@@ -1074,7 +1075,7 @@ impl Store {
              FROM approvals WHERE session_id=?1 AND status='PENDING' ORDER BY created_at",
         )?;
         let rows = stmt.query_map(params![session_id], Self::row_to_approval)?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        rows.collect::<rusqlite::Result<Vec<_>>>()
     }
 
     pub fn expire_run_approvals(&self, run_id: &str) -> rusqlite::Result<Vec<ApprovalRequest>> {
@@ -1126,7 +1127,7 @@ impl Store {
              FROM approvals WHERE run_id=?1 AND status='PENDING' ORDER BY created_at",
         )?;
         let rows = stmt.query_map(params![run_id], Self::row_to_approval)?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        rows.collect::<rusqlite::Result<Vec<_>>>()
     }
 
     pub fn cache_session_approval(&self, session_id: &str, operation_hash: &str, scope: &Json) -> rusqlite::Result<()> {
@@ -1221,7 +1222,7 @@ impl Store {
         let refs: Vec<&dyn rusqlite::ToSql> = p.iter().map(|b| b.as_ref()).collect();
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(refs.as_slice(), Self::row_to_shared)?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        rows.collect::<rusqlite::Result<Vec<_>>>()
     }
 
     pub fn shared_cursor(&self, session_id: &str, agent_id: &str, space_id: &str) -> rusqlite::Result<i64> {
@@ -1306,7 +1307,7 @@ impl Store {
              FROM topology_patches WHERE session_id=?1 AND status=?2 ORDER BY created_at",
         )?;
         let rows = stmt.query_map(params![session_id, enum_str(&status)], Self::row_to_patch)?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        rows.collect::<rusqlite::Result<Vec<_>>>()
     }
 
     pub fn delivery_event_kinds(&self, delivery_ids: &[i64]) -> rusqlite::Result<Vec<String>> {
@@ -1324,7 +1325,7 @@ impl Store {
              WHERE d.delivery_id IN ({marks}) ORDER BY e.sequence"
         ))?;
         let rows = stmt.query_map(refs.as_slice(), |r| r.get::<_, String>(0))?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        rows.collect::<rusqlite::Result<Vec<_>>>()
     }
 
     /// RT-05: ack exactly one delivery (runtime ledger passes the offered ids).
@@ -1408,7 +1409,7 @@ impl Store {
                 "event_sequence": r.get::<_, i64>(9)?,
             }))
         })?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        rows.collect::<rusqlite::Result<Vec<_>>>()
     }
 }
 
@@ -1431,7 +1432,7 @@ impl Store {
              FROM approvals WHERE run_id=?1 AND status!='PENDING' ORDER BY created_at",
         )?;
         let rows = stmt.query_map(params![run_id], Self::row_to_approval)?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        rows.collect::<rusqlite::Result<Vec<_>>>()
     }
 
     /// completion_requests row for a run (runtime._finalize).

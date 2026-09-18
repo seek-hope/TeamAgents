@@ -78,7 +78,7 @@ install -m755 engine/target/release/teamagents tui/target/release/teamagents-tui
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-需要 Rust 工具链（2026-09-15 用 1.95.0 验证；依赖已缓存时可加 `--offline`）。
+需要 Rust 工具链，版本由 `rust-toolchain.toml` 固定；依赖已缓存时可加 `--offline`。
 构建完成后使用下面的 `teamagents init` 初始化配置。
 
 ## 快速开始
@@ -158,8 +158,9 @@ TUI：`Enter` 发送、`Shift+Enter`/`Ctrl+J` 换行、`Esc` 停止 Leader、`Ct
 | [docs/USER-GUIDE.md](docs/USER-GUIDE.md) | 配置、权限、团队定义、恢复、故障处理、TUI 布局与键位 |
 | [docs/DECISIONS.md](docs/DECISIONS.md) | 全部已确认决策（D-1..）与架构取舍 |
 | [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) | T1–T24 验收对照与证据 |
+| [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | 统一检查入口、模块边界、测试隔离与依赖升级 |
 | [AGENTS.md](AGENTS.md) | 开发约定：架构速览、构建/测试命令、代码风格、审查规则 |
 | [TeamAgents-Implementation-Plan.zh-CN.md](TeamAgents-Implementation-Plan.zh-CN.md) | 产品与实现基准 |
 
-开发与测试命令在 [AGENTS.md](AGENTS.md)；缺陷与修复记录在 `review/`。
+开发先运行 `make check`；完整流程见 [开发与维护](docs/DEVELOPMENT.md) 和 [AGENTS.md](AGENTS.md)。缺陷与修复记录在 `review/`。
 打 `v*` tag 会触发 `.github/workflows/release.yml` 自动构建并发布发行包（含 `SHA256SUMS`）。

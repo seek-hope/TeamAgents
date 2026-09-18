@@ -50,6 +50,10 @@ enum Transport {
 
 impl McpClient {
     /// Binding authorizes the service; host execution requires an explicit mode.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing transport API and its explicit isolation options."
+    )]
     pub fn connect_stdio_in(
         command: &str,
         args: &[String],

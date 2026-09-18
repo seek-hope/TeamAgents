@@ -532,7 +532,7 @@ pub fn tab_layout(app: &App, inner_x: u16, inner_width: u16) -> (Vec<TabPiece>, 
     }
     let budget = inner_width as usize;
     let total: usize = raw.iter().map(|(_, w, _)| *w).sum();
-    let (lo, hi, offset) = if total + 1 <= budget {
+    let (lo, hi, offset) = if total < budget {
         (0, raw.len().saturating_sub(1), 1usize)
     } else {
         let widths: Vec<usize> = raw.iter().map(|(_, w, _)| *w).collect();
@@ -889,6 +889,10 @@ pub fn table_start(rows: usize, sel: usize, view: usize) -> usize {
 
 /// A table in the Rust spirit: dim header with a rule under it, subtle zebra,
 /// an accent bar on the selected row, centred empty state.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The renderer receives table data and layout policy from its panel caller."
+)]
 fn render_table(
     app: &App,
     frame: &mut Frame,
@@ -915,7 +919,7 @@ fn render_table(
     let mut keep: Vec<usize> = (0..header.len()).collect();
     let fits = |keep: &[usize], widths: &[usize]| -> bool {
         let text: usize = keep.iter().map(|i| widths[*i]).sum();
-        text + 2 * keep.len().saturating_sub(1) + 1 <= area.width as usize
+        text + 2 * keep.len().saturating_sub(1) < area.width as usize
     };
     for index in drop {
         if keep.len() <= 2 || fits(&keep, &widths) {
@@ -1251,7 +1255,7 @@ fn render_composer(frame: &mut Frame, app: &App, area: Rect) {
             }
         }
     }
-    let scroll = if cursor_v.0 + 1 > visible_h { cursor_v.0 + 1 - visible_h } else { 0 };
+    let scroll = (cursor_v.0 + 1).saturating_sub(visible_h);
     let mut rendered: Vec<Line> = vec![];
     for (i, text) in visual.iter().skip(scroll).take(visible_h).enumerate() {
         let first = i == 0 && scroll == 0;

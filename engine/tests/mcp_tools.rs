@@ -55,7 +55,7 @@ fn unbound_service_tools_are_not_advertised() {
 
 #[test]
 fn member_start_fails_on_unknown_binding() {
-    isolated_state_home("mcp-binding");
+    let _env = isolated_state_home("mcp-binding");
     let catalog = UserConfig::default();
     let err = BoundTools::load(&catalog, &["ghost_service".to_string()]).err();
     assert!(err.unwrap().contains("unknown tool binding"));

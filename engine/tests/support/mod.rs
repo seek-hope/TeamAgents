@@ -1,6 +1,9 @@
 #![allow(dead_code)] // each integration test binary compiles this module and uses a subset
 //! Shared harness for the scenario tests.
 
+mod env;
+pub use env::TestEnv;
+
 use serde_json::{json, Value as Json};
 use std::sync::Arc;
 use teamagents_engine::core_client::CoreClient;
@@ -13,12 +16,9 @@ pub struct Harness {
     pub runtime: Arc<Runtime>,
 }
 
-pub fn isolated_state_home(tag: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("ta-engine-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    std::env::set_var("XDG_STATE_HOME", &dir);
-    dir
+#[must_use = "hold the environment guard for the entire test"]
+pub fn isolated_state_home(tag: &str) -> TestEnv {
+    TestEnv::new(tag)
 }
 
 pub fn member(id: &str, role: &str) -> Json {

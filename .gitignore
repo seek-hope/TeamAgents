@@ -4,3 +4,4 @@ tui/target/
 __pycache__/
 .venv/
 *.pyc
+/review/tmp/

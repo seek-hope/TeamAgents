@@ -26,7 +26,7 @@ fn spec() -> serde_json::Value {
 
 #[test]
 fn t11_member_proposal_is_leader_decision() {
-    isolated_state_home("t11");
+    let _env = isolated_state_home("t11");
     let core = core_with_spec("s1", spec());
     let barriers = barriers();
     let leader = scripted("leader", &json!([["inbox"], ["end"]]), barriers.clone());
@@ -85,7 +85,7 @@ fn t11_member_proposal_is_leader_decision() {
 
 #[test]
 fn t12_conflicting_patches_never_partially_apply() {
-    isolated_state_home("t12");
+    let _env = isolated_state_home("t12");
     let core = core_with_spec("s1", spec());
     let h = harness_with(core.clone(), vec![]);
     h.runtime.start();
@@ -124,7 +124,7 @@ fn t12_conflicting_patches_never_partially_apply() {
 
 #[test]
 fn t13_removed_member_hands_tasks_to_leader_and_keeps_results() {
-    isolated_state_home("t13");
+    let _env = isolated_state_home("t13");
     let core = core_with_spec("s1", spec());
     let barriers = barriers();
     let leader = scripted("leader", &json!([["end"]]), barriers.clone());

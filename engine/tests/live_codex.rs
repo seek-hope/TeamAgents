@@ -18,7 +18,7 @@ fn live_codex_turn_through_app_server() {
         eprintln!("skip: set TEAMAGENTS_LIVE_CODEX=1 to run the live codex check");
         return;
     }
-    isolated_state_home("live-codex");
+    let _env = isolated_state_home("live-codex");
     let workdir = std::env::temp_dir().join("ta-live-codex");
     std::fs::create_dir_all(&workdir).unwrap();
     let core = core_with_spec(

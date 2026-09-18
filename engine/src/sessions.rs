@@ -462,7 +462,7 @@ mod tests {
         let live = root.join("proj_live");
         std::fs::create_dir_all(&live).unwrap();
         std::fs::write(live.join("team.db"), b"x").unwrap();
-        assert_eq!(filetime_days_ago(&live, 90), true);
+        assert!(filetime_days_ago(&live, 90));
         let report = prune_archived(30, Some(&root), false);
         assert!(live.exists(), "pruning only walks the archive");
         assert_eq!(report["removed"].as_array().unwrap().len(), 0, "{report}");

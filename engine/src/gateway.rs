@@ -372,7 +372,10 @@ impl ApprovalGate {
     }
 }
 
-type Executor = Arc<dyn Fn(&str, &Json) -> Result<Json, String> + Send + Sync>;
+/// Session hook that prepares a validated topology change before submission.
+pub type TopologyPrepare = Arc<dyn Fn(&mut Json) -> Result<(), String> + Send + Sync>;
+
+pub(crate) type Executor = Arc<dyn Fn(&str, &Json) -> Result<Json, String> + Send + Sync>;
 
 /// Revocable ownership for a turn segment. The mutex drains tools and private
 /// checkpoint writes before the session releases its execution lock.
@@ -428,7 +431,7 @@ pub struct ToolGateway {
     pub control: Arc<TurnControl>,
     /// D-30: run before an apply_topology_patch submit; may rewrite the payload
     /// (auto-created member profiles) or veto it with Err.
-    topology_prepare: Option<Arc<dyn Fn(&mut Json) -> Result<(), String> + Send + Sync>>,
+    topology_prepare: Option<TopologyPrepare>,
     /// User policy hook (`[hooks] pre_tool`): can veto a native tool call.
     hooks: Option<Arc<crate::hooks::Hooks>>,
 }
@@ -444,6 +447,7 @@ impl ToolGateway {
         Self::with_control(core, agent_id, run_id, approvals, executor, Arc::new(TurnControl::default()), None, None)
     }
 
+    #[expect(clippy::too_many_arguments, reason = "Keep execution identity and authorization dependencies explicit.")]
     pub(crate) fn with_control(
         core: Arc<CoreClient>,
         agent_id: &str,
@@ -451,7 +455,7 @@ impl ToolGateway {
         approvals: Arc<ApprovalGate>,
         executor: Option<Executor>,
         control: Arc<TurnControl>,
-        topology_prepare: Option<Arc<dyn Fn(&mut Json) -> Result<(), String> + Send + Sync>>,
+        topology_prepare: Option<TopologyPrepare>,
         hooks: Option<Arc<crate::hooks::Hooks>>,
     ) -> Arc<Self> {
         Arc::new(Self {

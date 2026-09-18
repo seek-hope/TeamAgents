@@ -781,7 +781,7 @@ mod tests {
 
         app.panel = 0; // team
         app.focus = app::Focus::Panel;
-        app.table_cursors.insert("team".into(), (Some("leader".into()), 0));
+        app.table_cursors.insert("team", (Some("leader".into()), 0));
         app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
         assert!(app.review_open, "p opens the plan");
         assert!(app.review_title().contains("leader"), "{}", app.review_title());
@@ -820,7 +820,7 @@ mod tests {
 
         app.panel = 0; // team
         app.focus = app::Focus::Panel;
-        app.table_cursors.insert("team".into(), (Some("leader".into()), 0));
+        app.table_cursors.insert("team", (Some("leader".into()), 0));
         let effects = app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
         assert_eq!(effects.len(), 1, "{effects:?}");
         assert!(matches!(&effects[0], Effect::AcknowledgeRun(run) if run == "run_x"), "{effects:?}");
@@ -901,7 +901,7 @@ mod tests {
         // the panel key path: `v` on the selected team row opens the same view
         app.panel = 0; // team
         app.focus = app::Focus::Panel;
-        app.table_cursors.insert("team".into(), (Some("alpha".into()), 0));
+        app.table_cursors.insert("team", (Some("alpha".into()), 0));
         app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
         assert!(app.review_open, "v on the member row opens the review");
     }

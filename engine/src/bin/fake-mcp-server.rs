@@ -58,7 +58,7 @@ fn main() {
                 } else {
                     let text = arguments.get("text").and_then(|v| v.as_str()).unwrap_or("");
                     let times = arguments.get("times").and_then(|v| v.as_i64()).unwrap_or(1).max(0) as usize;
-                    let echoed = std::iter::repeat(text).take(times).collect::<Vec<_>>().join(" ");
+                    let echoed = std::iter::repeat_n(text, times).collect::<Vec<_>>().join(" ");
                     json!({"content": [{"type": "text", "text": echoed}]})
                 }
             }

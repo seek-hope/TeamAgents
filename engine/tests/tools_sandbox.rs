@@ -113,6 +113,7 @@ fn batch_edits_recheck_all_versions_after_waiting_for_locks() {
         let hash = format!("{:x}", Sha256::digest(root.join(name).to_string_lossy().as_bytes()));
         std::fs::OpenOptions::new()
             .create(true)
+            .truncate(false)
             .read(true)
             .write(true)
             .open(locks.join(format!("{hash}.lock")))

@@ -44,6 +44,7 @@ pub fn default_leader_spec(profile: &str, tools: &[&str]) -> Json {
     })
 }
 
+#[derive(Default)]
 pub struct OpenOptions {
     pub cwd: Option<PathBuf>,
     pub session_id: Option<String>,
@@ -52,12 +53,6 @@ pub struct OpenOptions {
     pub catalog: Option<UserConfig>,
     /// Worker/test mode: deterministic members instead of model backends.
     pub scripts: Option<HashMap<String, Vec<Step>>>,
-}
-
-impl Default for OpenOptions {
-    fn default() -> Self {
-        Self { cwd: None, session_id: None, full_auto: false, initial_spec: None, catalog: None, scripts: None }
-    }
 }
 
 /// Per-agent usage snapshot source, registered when the runner is built
@@ -510,7 +505,7 @@ fn member_context(
     // skill_candidates canonicalizes and rejects symlink escapes (P2-6)
     for dir in roots.into_iter().rev() {
         for (name, path) in crate::tools::skill_candidates(&dir) {
-            if !agent.skills.iter().any(|s| *s == name) || selected.iter().any(|(n, _)| *n == name) {
+            if !agent.skills.contains(&name) || selected.iter().any(|(n, _)| *n == name) {
                 continue;
             }
             selected.push((name, path));
@@ -801,7 +796,7 @@ fn topology_prepare_hook(
     catalog: UserConfig,
     session_profiles: Arc<Mutex<HashMap<String, ModelProfile>>>,
     model_overrides: ModelOverrides,
-) -> Arc<dyn Fn(&mut Json) -> Result<(), String> + Send + Sync> {
+) -> crate::gateway::TopologyPrepare {
     Arc::new(move |payload: &mut Json| {
         let Some(ops) = payload.get_mut("operations").and_then(|v| v.as_array_mut()) else { return Ok(()) };
         let mut changed = false;
@@ -914,6 +909,10 @@ fn topology_prepare_hook(
     })
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Session bootstrap supplies the shared services once at this composition boundary."
+)]
 fn make_runner_factory(
     core: Arc<CoreClient>,
     notify: Arc<Notify>,
@@ -1219,8 +1218,8 @@ mod tests {
         std::env::set_var("XDG_CONFIG_HOME", home.join(".config"));
         std::env::set_var("XDG_STATE_HOME", home.join(".state"));
 
-        let mut catalog = UserConfig::default();
-        catalog.skills_paths = vec![registry.to_string_lossy().into_owned()];
+        let catalog =
+            UserConfig { skills_paths: vec![registry.to_string_lossy().into_owned()], ..UserConfig::default() };
         let agent = AgentSpec {
             id: "m".into(),
             name: "M".into(),
@@ -1482,7 +1481,7 @@ mod tests {
         // even with a ghost forced back (the pre-fix state), archiving must
         // refuse a source without team.db and keep the real archive
         std::fs::create_dir_all(active.join("artifacts")).unwrap();
-        let err = crate::sessions::archive_session("s-ghost", None).err().expect("ghost must not archive");
+        let err = crate::sessions::archive_session("s-ghost", None).expect_err("ghost must not archive");
         assert!(err.contains("does not exist"), "{err}");
         assert!(crate::config::sessions_dir().join("archived/s-ghost/team.db").exists(), "archive destroyed");
         let _ = std::fs::remove_dir_all(&root);

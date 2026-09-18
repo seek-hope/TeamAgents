@@ -3,23 +3,16 @@
 //! core instead of lingering as PENDING (F-8).
 
 mod support;
+use support::isolated_state_home as env_guard;
 
 use serde_json::{json, Value as Json};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
 use support::{core_with_spec, member, wait_for};
 use teamagents_core::models::{TurnRun, TurnStatus};
 use teamagents_engine::codex::{AppServerOptions, CodexAppServer, CodexOptions, CodexRunner};
 use teamagents_engine::core_client::CoreClient;
 use teamagents_engine::gateway::{ApprovalGate, PermissionPolicy, ToolGateway};
 use teamagents_engine::runtime::{AgentRunner, Notify};
-
-static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-fn env_guard(tag: &str) -> MutexGuard<'static, ()> {
-    let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    support::isolated_state_home(tag);
-    guard
-}
 
 fn codex_agent() -> Json {
     json!({"id": "cx", "name": "C", "role": "worker", "runtime_kind": "codex", "model_profile": "m"})
@@ -279,8 +272,8 @@ fn reconcile_reads_the_thread_history() {
 /// row must go EXPIRED — a later user decision would otherwise be ignored.
 #[test]
 fn codex_approval_timeout_expires_the_row() {
-    let _env = env_guard("codex-approval-timeout");
-    std::env::set_var("TEAMAGENTS_CODEX_APPROVAL_WAIT_S", "1");
+    let mut env = env_guard("codex-approval-timeout");
+    env.set("TEAMAGENTS_CODEX_APPROVAL_WAIT_S", "1");
     let core = core_with_spec(
         "cx-timeout",
         json!({"leader_id": "leader", "agents": [member("leader", "leader"), codex_agent()]}),

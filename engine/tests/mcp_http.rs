@@ -3,6 +3,8 @@
 //! tools/list (plain JSON) → tools/call (SSE stream), plus optional/required
 //! degradation and malformed-JSON robustness.
 
+mod support;
+
 use serde_json::{json, Value as Json};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -138,7 +140,7 @@ fn handle(stream: TcpStream, seen: Arc<Mutex<Vec<Seen>>>, mode: Mode) {
             let args = message.pointer("/params/arguments").cloned().unwrap_or(json!({}));
             let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("");
             let times = args.get("times").and_then(|v| v.as_i64()).unwrap_or(1).max(0) as usize;
-            let echoed = std::iter::repeat(text).take(times).collect::<Vec<_>>().join(" ");
+            let echoed = std::iter::repeat_n(text, times).collect::<Vec<_>>().join(" ");
             let payload = json!({"jsonrpc": "2.0", "id": id,
                 "result": {"content": [{"type": "text", "text": echoed}]}});
             respond(
@@ -177,7 +179,8 @@ fn http_binding(url: &str, extra: Json) -> teamagents_core::models::ToolBinding 
 #[test]
 fn http_transport_binds_and_calls_tools() {
     let (url, seen) = spawn_server(Mode::Good);
-    std::env::set_var("TA_MCP_HTTP_TEST_TOKEN", "test-secret");
+    let mut env = support::isolated_state_home("mcp-http-token");
+    env.set("TA_MCP_HTTP_TEST_TOKEN", "test-secret");
     let mut catalog = UserConfig::default();
     catalog.tools.insert(
         "remote".into(),
@@ -273,7 +276,7 @@ fn optional_http_failure_only_drops_the_capability() {
 fn malformed_server_json_is_an_error_not_a_crash() {
     let (url, _seen) = spawn_server(Mode::BadJson);
     let client = McpClient::connect_http(&url, None, 5, 5).expect("the handshake itself is fine");
-    let err = client.tools().err().expect("bad json surfaces as an error");
+    let err = client.tools().expect_err("bad json surfaces as an error");
     assert!(err.contains("bad json"), "{err}");
 }
 

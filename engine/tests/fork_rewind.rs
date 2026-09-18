@@ -1,7 +1,7 @@
 //! D-26 fork/rewind over the worker protocol (pi-style tree history).
 
 use serde_json::{json, Value as Json};
-use std::io::{BufReader, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 
 fn state_home(tag: &str) -> std::path::PathBuf {
@@ -30,26 +30,22 @@ fn call(child: &mut std::process::Child, stdin: &mut impl Write, id: u64, method
     stdin.flush().unwrap();
     let stdout = child.stdout.as_mut().unwrap();
     let mut line = String::new();
+    let mut reader = std::io::BufReader::new(&mut *stdout);
+    // read until the response with our id (skip pushes)
     loop {
         line.clear();
-        use std::io::BufRead;
-        let mut reader = std::io::BufReader::new(&mut *stdout);
-        // read until the response with our id (skip pushes)
-        loop {
-            line.clear();
-            if reader.read_line(&mut line).unwrap() == 0 {
-                panic!("worker exited");
+        if reader.read_line(&mut line).unwrap() == 0 {
+            panic!("worker exited");
+        }
+        let message: Json = serde_json::from_str(line.trim()).unwrap_or(json!({}));
+        if message.get("push").is_some() {
+            continue;
+        }
+        if message.get("id").and_then(|v| v.as_u64()) == Some(id) {
+            if let Some(error) = message.get("error").and_then(|v| v.as_str()) {
+                panic!("{method} failed: {error}");
             }
-            let message: Json = serde_json::from_str(line.trim()).unwrap_or(json!({}));
-            if message.get("push").is_some() {
-                continue;
-            }
-            if message.get("id").and_then(|v| v.as_u64()) == Some(id) {
-                if let Some(error) = message.get("error").and_then(|v| v.as_str()) {
-                    panic!("{method} failed: {error}");
-                }
-                return message.get("result").cloned().unwrap_or(Json::Null);
-            }
+            return message.get("result").cloned().unwrap_or(Json::Null);
         }
     }
 }

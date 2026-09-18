@@ -138,32 +138,28 @@ pub fn doctor() -> i32 {
     }
     // hooks are easy to break silently: a wrong path only shows up as a stderr
     // line at event time, so doctor checks the programs exist and are executable
-    match &catalog {
-        Ok(catalog) => {
-            for (label, argv) in [("hooks.notify", &catalog.hooks.notify), ("hooks.pre_tool", &catalog.hooks.pre_tool)]
-            {
-                let Some(program) = argv.first().filter(|p| !p.trim().is_empty()) else { continue };
-                let path = Path::new(program);
-                let runnable = if path.components().count() > 1 {
-                    path.is_file() && is_executable(path)
-                } else {
-                    which(program).is_some()
-                };
-                check(&mut results, label, runnable, format!("{argv:?}"));
-            }
-            if catalog.retention.archived_days > 0 || catalog.retention.history_days > 0 {
-                check(
-                    &mut results,
-                    "retention",
-                    true,
-                    format!(
-                        "archived_days={} history_days={}",
-                        catalog.retention.archived_days, catalog.retention.history_days
-                    ),
-                );
-            }
+    if let Ok(catalog) = &catalog {
+        for (label, argv) in [("hooks.notify", &catalog.hooks.notify), ("hooks.pre_tool", &catalog.hooks.pre_tool)] {
+            let Some(program) = argv.first().filter(|p| !p.trim().is_empty()) else { continue };
+            let path = Path::new(program);
+            let runnable = if path.components().count() > 1 {
+                path.is_file() && is_executable(path)
+            } else {
+                which(program).is_some()
+            };
+            check(&mut results, label, runnable, format!("{argv:?}"));
         }
-        Err(_) => {}
+        if catalog.retention.archived_days > 0 || catalog.retention.history_days > 0 {
+            check(
+                &mut results,
+                "retention",
+                true,
+                format!(
+                    "archived_days={} history_days={}",
+                    catalog.retention.archived_days, catalog.retention.history_days
+                ),
+            );
+        }
     }
     let dir = sessions_dir();
     let probe = dir.join(".doctor-probe");

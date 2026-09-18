@@ -80,6 +80,10 @@ impl Default for RuntimeLimits {
     }
 }
 
+type ToolSink = Box<dyn Fn(&str, &str, &Json) + Send + Sync>;
+type JsonSink = Box<dyn Fn(&str, &Json) + Send + Sync>;
+type RunnerCache = HashMap<String, (i64, Arc<dyn AgentRunner>)>;
+
 type Sink = Box<dyn Fn(&str, &str, &str) + Send + Sync>;
 
 /// Runtime-originated notifications: stream deltas to the UI, external backend
@@ -87,11 +91,11 @@ type Sink = Box<dyn Fn(&str, &str, &str) + Send + Sync>;
 pub struct Notify {
     core: Arc<CoreClient>,
     stream: Mutex<Option<Sink>>,
-    tool: Mutex<Option<Box<dyn Fn(&str, &str, &serde_json::Value) + Send + Sync>>>,
+    tool: Mutex<Option<ToolSink>>,
     /// Engine-level events (tool calls, turn ends, team actions) for user hooks.
-    events: Mutex<Option<Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>,
+    events: Mutex<Option<JsonSink>>,
     /// A member's plan changed (the UI shows it as a status component).
-    plan: Mutex<Option<Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>>>,
+    plan: Mutex<Option<JsonSink>>,
     waker: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     accepting: Mutex<bool>,
 }
@@ -115,17 +119,17 @@ impl Notify {
 
     /// Tool activity (which tool, which arguments, ok or failed) for automation
     /// surfaces such as `exec --json`. The UI reads streamed text instead.
-    pub fn set_tool_sink(&self, sink: Box<dyn Fn(&str, &str, &serde_json::Value) + Send + Sync>) {
+    pub fn set_tool_sink(&self, sink: ToolSink) {
         *self.tool.lock().unwrap() = Some(sink);
     }
 
     /// Independent of the UI sinks: whoever consumes tool activity (TUI, exec)
     /// may replace `tool`, but hooks must keep firing.
-    pub fn set_event_sink(&self, sink: Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>) {
+    pub fn set_event_sink(&self, sink: JsonSink) {
         *self.events.lock().unwrap() = Some(sink);
     }
 
-    pub fn set_plan_sink(&self, sink: Box<dyn Fn(&str, &serde_json::Value) + Send + Sync>) {
+    pub fn set_plan_sink(&self, sink: JsonSink) {
         *self.plan.lock().unwrap() = Some(sink);
     }
 
@@ -217,9 +221,7 @@ impl Notify {
         if status == TurnStatus::WaitingApproval {
             let pending: Vec<Json> =
                 state.get("pending_approvals").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-            if let Some(approval) =
-                pending.iter().filter(|a| a.get("run_id").and_then(|v| v.as_str()) == Some(run_id)).next_back()
-            {
+            if let Some(approval) = pending.iter().rfind(|a| a.get("run_id").and_then(|v| v.as_str()) == Some(run_id)) {
                 core_best_effort(
                     &self.core,
                     "approval_requested event",
@@ -297,7 +299,7 @@ struct RunSlot {
 pub struct Runtime {
     pub core: Arc<CoreClient>,
     pub notify: Arc<Notify>,
-    runners: Mutex<HashMap<String, (i64, Arc<dyn AgentRunner>)>>,
+    runners: Mutex<RunnerCache>,
     factory: Option<RunnerFactory>,
     inflight: Mutex<HashMap<String, Arc<RunSlot>>>,
     approvals: Arc<ApprovalGate>,
@@ -311,7 +313,7 @@ pub struct Runtime {
     self_ref: Mutex<Weak<Runtime>>,
     /// D-30: installed by the session; runs before an apply_topology_patch
     /// submit (auto-creates per-member model profiles).
-    topology_prepare: Mutex<Option<Arc<dyn Fn(&mut Json) -> Result<(), String> + Send + Sync>>>,
+    topology_prepare: Mutex<Option<crate::gateway::TopologyPrepare>>,
     /// `[hooks] pre_tool`: user policy each tool gateway consults before running.
     hooks: Mutex<Option<Arc<crate::hooks::Hooks>>>,
 }
@@ -357,7 +359,7 @@ impl Runtime {
         *self.hooks.lock().unwrap() = Some(hooks);
     }
 
-    pub fn set_topology_prepare(&self, hook: Arc<dyn Fn(&mut Json) -> Result<(), String> + Send + Sync>) {
+    pub fn set_topology_prepare(&self, hook: crate::gateway::TopologyPrepare) {
         *self.topology_prepare.lock().unwrap() = Some(hook);
     }
 
@@ -915,7 +917,7 @@ impl Runtime {
         run_id: &str,
         max_steps: i64,
         control: Arc<TurnControl>,
-    ) -> Arc<dyn Fn(&str, &Json) -> Result<Json, String> + Send + Sync> {
+    ) -> crate::gateway::Executor {
         let steps = self.steps.clone();
         let base = self.executor.clone();
         let run_id = run_id.to_string();

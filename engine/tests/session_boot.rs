@@ -7,22 +7,17 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{channel, Receiver};
-use std::sync::Mutex;
+mod support;
+use support::{isolated_state_home, TestEnv};
 use teamagents_core::models::UserConfig;
 use teamagents_engine::session::{open_session, OpenOptions};
 use teamagents_engine::sessions::{acquire_session_lock, is_session_locked};
 
-/// XDG_* are process-wide: tests that repoint them serialise on this lock.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-fn isolate(tag: &str) -> (std::sync::MutexGuard<'static, ()>, PathBuf) {
-    let guard = ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    let root = std::env::temp_dir().join(format!("ta-boot-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(root.join("config")).unwrap();
-    std::env::set_var("XDG_STATE_HOME", root.join("state"));
-    std::env::set_var("XDG_CONFIG_HOME", root.join("config"));
-    (guard, root)
+fn isolate(tag: &str) -> (TestEnv, PathBuf) {
+    let mut env = isolated_state_home(tag);
+    let root = env.to_path_buf();
+    env.set("XDG_STATE_HOME", root.join("state"));
+    (env, root)
 }
 
 fn catalog() -> UserConfig {

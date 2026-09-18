@@ -7,12 +7,11 @@ that row — the display/click alignment the user reported as off by one.
 
 Usage: XDG_STATE_HOME=/tmp/ta-click python3 tui/scripts/pty_click_check.py
 """
-import fcntl, json, os, pty, re, select, struct, subprocess, sys, termios, time
+import fcntl, json, os, pty, re, select, struct, subprocess, sys, tempfile, termios, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 BIN = os.path.join(ROOT, "tui", "target", "debug", "teamagents-tui")
 ENGINE = os.path.join(ROOT, "engine", "target", "debug", "teamagents")
-SPEC = os.path.join(ROOT, "review", "tmp", "click_team.json")
 ANSI = re.compile(r"\x1b\][^\x07]*\x07|\x1b\[[0-9;?]*[a-zA-Z]|\x1b[()][0-9A-B]|\x1b[=>]")
 
 
@@ -88,8 +87,7 @@ class Screen:
         return ["".join(row).rstrip() for row in self.cells]
 
 
-def main() -> int:
-    os.makedirs(os.path.dirname(SPEC), exist_ok=True)
+def check(spec_path: str) -> int:
     workers = ["alpha", "beta", "gamma"] + [f"w{i}" for i in range(6)]
     agents = [
         '{"id": "leader", "name": "L", "role": "leader", "runtime_kind": "deepagents",'
@@ -99,7 +97,7 @@ def main() -> int:
         f' "model_profile": "leader_main", "tool_bindings": []}}'
         for w in workers
     ]
-    with open(SPEC, "w") as fh:
+    with open(spec_path, "w") as fh:
         fh.write(
             '{"leader_id": "leader", "agents": [' + ", ".join(agents) + "],"
             ' "channels": [{"source": "leader", "targets": ' + json.dumps(workers) + ', "mode": "task"}]}'
@@ -107,7 +105,7 @@ def main() -> int:
     pid, fd = pty.fork()
     if pid == 0:
         env = dict(os.environ, TERM="xterm-256color", TEAMAGENTS_ENGINE=ENGINE)
-        os.execvpe(BIN, [BIN, "--cwd", "/tmp", "--team", SPEC], env)
+        os.execvpe(BIN, [BIN, "--cwd", "/tmp", "--team", spec_path], env)
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 96, 0, 0))
     screen = Screen(96, 30)
     screen.feed(read_all(fd, 4.0).decode("utf-8", "replace"))
@@ -191,6 +189,11 @@ def main() -> int:
         return 1
     print("PTY click check ok: row click == selection (plain + scrolled), tab click == panel")
     return 0
+
+
+def main() -> int:
+    with tempfile.TemporaryDirectory(prefix="ta-click-") as root:
+        return check(os.path.join(root, "team.json"))
 
 
 if __name__ == "__main__":

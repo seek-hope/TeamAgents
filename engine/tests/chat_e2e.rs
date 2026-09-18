@@ -7,28 +7,20 @@
 //! and the reasoning-effort fallback (F-7).
 
 mod support;
+use support::isolated_state_home as env_guard;
 
 use serde_json::{json, Value as Json};
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
-use support::{core_with_spec, isolated_state_home, submit, wait_for};
+use std::sync::{Arc, Mutex};
+use support::{core_with_spec, submit, wait_for};
 use teamagents_core::models::{ModelProfile, TurnRun, TurnStatus, UserConfig};
 use teamagents_engine::bound::BoundTools;
 use teamagents_engine::chat::ChatRunner;
 use teamagents_engine::core_client::CoreClient;
 use teamagents_engine::gateway::{ApprovalGate, PermissionPolicy, ToolGateway};
 use teamagents_engine::runtime::{AgentRunner, Notify, Runtime, RuntimeLimits, ToolExecutor};
-
-/// Tests in this binary share process env (XDG_STATE_HOME); serialize them.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-fn env_guard(tag: &str) -> MutexGuard<'static, ()> {
-    let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    isolated_state_home(tag);
-    guard
-}
 
 // ---- fake OpenAI service ---------------------------------------------------
 
@@ -220,7 +212,9 @@ fn start_runtime_with(
     runtime
 }
 
-fn recording_executor() -> (ToolExecutor, Arc<Mutex<Vec<(String, Json)>>>) {
+type RecordedCalls = Arc<Mutex<Vec<(String, Json)>>>;
+
+fn recording_executor() -> (ToolExecutor, RecordedCalls) {
     let calls: Arc<Mutex<Vec<(String, Json)>>> = Arc::new(Mutex::new(vec![]));
     let sink = calls.clone();
     let executor: ToolExecutor =
@@ -897,7 +891,7 @@ fn once_approval_is_consumed_and_the_turn_completes() {
             30_000
         ),
         "the turn completes after the once approval (runs {:?}, pending {}, events {:?})",
-        runs(&core).iter().map(|r| serde_json::to_value(&r.status).unwrap_or(Json::Null)).collect::<Vec<_>>(),
+        runs(&core).iter().map(|r| serde_json::to_value(r.status).unwrap_or(Json::Null)).collect::<Vec<_>>(),
         pending_approvals(&core).len(),
         event_kinds(&core)
     );

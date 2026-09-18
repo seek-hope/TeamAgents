@@ -703,11 +703,10 @@ fn settings_overlay_keeps_its_borders_next_to_wide_text() {
     // the last box row is the one whose left column still holds a corner/edge
     let bottom = lines.iter().rposition(|l| l.contains('╰')).expect("bottom border");
     let bottom = (top + 1..=bottom)
-        .filter(|row| {
+        .rfind(|row| {
             let sym = buffer[(left, *row as u16)].symbol();
             sym == "│" || sym == "╰"
         })
-        .last()
         .expect("box rows");
     assert!(bottom > top + 4, "overlay box drawn");
     for row in (top + 1)..bottom {

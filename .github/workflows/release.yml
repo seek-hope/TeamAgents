@@ -23,8 +23,12 @@ jobs:
           if [ "$GITHUB_REF_TYPE" = tag ]; then
             test "$GITHUB_REF_NAME" = "v$version"
           fi
+      - name: 读取固定工具链版本
+        id: rust-version
+        run: echo "version=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: ${{ steps.rust-version.outputs.version }}
           targets: x86_64-unknown-linux-musl
       # musl 静态链接：不依赖用户机器的 glibc 版本
       - name: 安装 musl 工具链

@@ -8,7 +8,7 @@ use support::*;
 
 #[test]
 fn state_brief_omits_events_and_keeps_the_rest() {
-    isolated_state_home("brief");
+    let _env = isolated_state_home("brief");
     let spec = json!({
         "leader_id": "leader",
         "agents": [member("leader", "leader"), member("b", "worker")],

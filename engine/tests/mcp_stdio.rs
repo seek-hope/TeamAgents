@@ -2,6 +2,8 @@
 //! handshake, and server processes must not inherit the engine's environment
 //! (findings 3/4).
 
+mod support;
+
 use std::time::{Duration, Instant};
 use teamagents_engine::mcp::McpClient;
 
@@ -51,8 +53,9 @@ fn noisy_stderr_does_not_block_the_handshake() {
 fn server_environment_is_whitelisted() {
     let dir = scratch("env");
     let dump = dir.join("env.txt");
-    std::env::set_var("TA_MCP_SENTINEL_KEY", "sk-should-never-leak");
-    std::env::set_var("TA_MCP_SENTINEL_OTHER", "also-not");
+    let mut env = support::isolated_state_home("mcp-env");
+    env.set("TA_MCP_SENTINEL_KEY", "sk-should-never-leak");
+    env.set("TA_MCP_SENTINEL_OTHER", "also-not");
     // a server that dumps its environment and exits (no MCP handshake needed)
     let _ = McpClient::connect_stdio_in(
         "sh",

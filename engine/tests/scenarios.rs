@@ -22,7 +22,7 @@ fn task_status(state: &Json, assignee: &str) -> Option<TaskStatus> {
 
 #[test]
 fn t1_delegation_and_summary_full_lifecycle() {
-    isolated_state_home("t1");
+    let _env = isolated_state_home("t1");
     let spec = json!({
         "leader_id": "leader",
         "agents": [member("leader", "leader"), member("b", "worker")],
@@ -79,7 +79,7 @@ fn t1_delegation_and_summary_full_lifecycle() {
 
 #[test]
 fn t9_baseline_leader_alone_executes_and_keeps_talking() {
-    isolated_state_home("t9");
+    let _env = isolated_state_home("t9");
     let core = core_with_spec("s2", json!({"leader_id": "leader", "agents": [member("leader", "leader")]}));
     let leader =
         scripted("leader", &json!([["call", "signal_done", {"summary": "answered directly"}], ["end"]]), barriers());
@@ -108,7 +108,7 @@ fn t9_baseline_leader_alone_executes_and_keeps_talking() {
 
 #[test]
 fn t2_parallel_members_and_mid_run_supplement() {
-    isolated_state_home("t2");
+    let _env = isolated_state_home("t2");
     let spec = json!({
         "leader_id": "leader",
         "agents": [member("leader", "leader"), member("b", "worker"), member("c", "worker")],
@@ -186,7 +186,7 @@ fn t2_parallel_members_and_mid_run_supplement() {
 
 #[test]
 fn t3_channel_enforcement_and_exactly_once_delivery() {
-    isolated_state_home("t3");
+    let _env = isolated_state_home("t3");
     let spec = json!({
         "leader_id": "leader",
         "agents": [member("leader", "leader"), member("b", "worker"), member("c", "worker"), member("d", "worker")],
@@ -269,7 +269,7 @@ fn t3_channel_enforcement_and_exactly_once_delivery() {
 
 #[test]
 fn t4_observer_scoped_events_without_extra_rights() {
-    isolated_state_home("t4");
+    let _env = isolated_state_home("t4");
     let spec = json!({
         "leader_id": "leader",
         "agents": [member("leader", "leader"), member("b", "worker"), member("watch", "worker")],
@@ -328,7 +328,7 @@ fn t4_observer_scoped_events_without_extra_rights() {
 
 #[test]
 fn t5_shared_space_permissions_and_discovery() {
-    isolated_state_home("t5");
+    let _env = isolated_state_home("t5");
     let spec = json!({
         "leader_id": "leader",
         "agents": [member("leader", "leader"), member("b", "worker"), member("c", "worker"), member("d", "worker")],
@@ -401,7 +401,7 @@ fn t5_shared_space_permissions_and_discovery() {
 
 #[test]
 fn p2_cancel_run_stops_a_slow_member_turn() {
-    isolated_state_home("cancel");
+    let _env = isolated_state_home("cancel");
     let core = core_with_spec("p2", json!({"leader_id": "leader", "agents": [member("leader", "leader")]}));
     let leader = scripted("leader", &json!([["sleep", 30], ["end"]]), barriers());
     let h = harness_with(core.clone(), vec![("leader", leader)]);
@@ -444,7 +444,7 @@ fn paused_session_still_cancels_an_active_member() {
 
 #[test]
 fn p2_pause_then_resume_by_user_input() {
-    isolated_state_home("pause");
+    let _env = isolated_state_home("pause");
     let core = core_with_spec("p2b", json!({"leader_id": "leader", "agents": [member("leader", "leader")]}));
     let leader = scripted("leader", &json!([["call", "signal_done", {"summary": "s"}], ["end"]]), barriers());
     let h = harness_with(core.clone(), vec![("leader", leader)]);
@@ -465,7 +465,7 @@ fn p2_pause_then_resume_by_user_input() {
 
 #[test]
 fn full_auto_toggle_reaches_the_approval_gate() {
-    isolated_state_home("fullauto");
+    let _env = isolated_state_home("fullauto");
     let core = core_with_spec("fa", json!({"leader_id": "leader", "agents": [member("leader", "leader")]}));
     let gate = teamagents_engine::gateway::ApprovalGate::new(
         core.clone(),

@@ -558,11 +558,9 @@ impl App {
             "session_status" => {
                 self.write_chat("system", &self.t("会话状态：{v0}", &[("v0", &compact_json(p))]));
             }
-            "run_progress" => {
-                if p.get("final").and_then(|v| v.as_bool()).unwrap_or(false) {
-                    let who = self.t("{v0}（完成）", &[("v0", &jstr(p, "agent_id"))]);
-                    self.write_chat(&who, &jstr(p, "text"));
-                }
+            "run_progress" if p.get("final").and_then(|v| v.as_bool()).unwrap_or(false) => {
+                let who = self.t("{v0}（完成）", &[("v0", &jstr(p, "agent_id"))]);
+                self.write_chat(&who, &jstr(p, "text"));
             }
             "limit_reached" => {
                 self.write_chat("system", &self.t("[达到上限] {v0}", &[("v0", &compact_json(p))]));
@@ -880,8 +878,7 @@ impl App {
             let mut seen = std::collections::HashSet::new();
             let mut cur = task.clone();
             let mut depth = 0;
-            loop {
-                let Some(parent) = cur.get("parent_task_id").and_then(|v| v.as_str()) else { break };
+            while let Some(parent) = cur.get("parent_task_id").and_then(|v| v.as_str()) {
                 if parent.is_empty() || !seen.insert(jstr(&cur, "task_id")) {
                     break;
                 }
@@ -1233,7 +1230,7 @@ impl App {
         match (key.code, ctrl) {
             (KeyCode::Esc, _) | (KeyCode::Char('q'), false) => self.review_open = false,
             (KeyCode::Char('u'), true) | (KeyCode::Up, _) => {
-                self.review_scroll = self.review_scroll.saturating_sub(5).max(0).min(max)
+                self.review_scroll = self.review_scroll.saturating_sub(5).min(max)
             }
             (KeyCode::Char('d'), true) | (KeyCode::Down, _) => self.review_scroll = (self.review_scroll + 5).min(max),
             _ => {}
@@ -1565,11 +1562,9 @@ impl App {
             "/fork" => vec![Effect::Fork],
             "/model" => vec![Effect::ModelStatus],
             "/help" => {
-                let lines = vec![
-                    self.t("斜杠命令：/help 本说明 · /settings 设置 · /status 用量 · /model 模型 · /rewind 回退 · /fork 分叉 · /quit 退出", &[]),
+                let lines = [self.t("斜杠命令：/help 本说明 · /settings 设置 · /status 用量 · /model 模型 · /rewind 回退 · /fork 分叉 · /quit 退出", &[]),
                     self.t("输入：Enter 发送 · Shift+Enter 换行 · ↑↓ 历史 · PgUp/PgDn 滚动", &[]),
-                    self.t("界面：Ctrl+T 切面板 · Ctrl+G 批准 · Ctrl+F 全自动 · Ctrl+P 暂停 · Esc 停止 Leader · Ctrl+Q 退出", &[]),
-                ];
+                    self.t("界面：Ctrl+T 切面板 · Ctrl+G 批准 · Ctrl+F 全自动 · Ctrl+P 暂停 · Esc 停止 Leader · Ctrl+Q 退出", &[])];
                 self.write_chat("system", &lines.join("\n"));
                 vec![]
             }
@@ -2038,10 +2033,8 @@ impl App {
             ("log", KeyCode::Enter) => {
                 self.log_member = None; // Enter clears the member filter
             }
-            ("team", KeyCode::Enter) => {
-                if selected.is_some() && self.log_member == selected {
-                    self.log_member = None; // Enter on the highlighted member clears the filter
-                }
+            ("team", KeyCode::Enter) if selected.is_some() && self.log_member == selected => {
+                self.log_member = None; // Enter on the highlighted member clears the filter
             }
             ("team", KeyCode::Char('v')) | ("log", KeyCode::Char('v')) => match selected {
                 Some(agent) if self.open_review(&agent) => {}

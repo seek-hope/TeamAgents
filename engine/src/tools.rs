@@ -209,6 +209,7 @@ fn acquire_path_lock(lock_dir: Option<&Path>, target: &Path) -> Result<Option<st
     std::fs::create_dir_all(lock_dir).map_err(|e| format!("cannot create lock directory: {e}"))?;
     let file = std::fs::OpenOptions::new()
         .create(true)
+        .truncate(false)
         .read(true)
         .write(true)
         .open(lock_file(lock_dir, target))
@@ -985,7 +986,7 @@ fn skill_tool(catalog: &teamagents_core::models::UserConfig, args: &Json) -> Res
                 })
                 .filter(|(score, _)| words.is_empty() || *score > 0)
                 .collect();
-            hits.sort_by(|a, b| b.0.cmp(&a.0));
+            hits.sort_by_key(|hit| std::cmp::Reverse(hit.0));
             let total = hits.len();
             let mut lines: Vec<String> = hits.into_iter().take(10).map(|(_, line)| line).collect();
             if total > 10 {
@@ -1722,8 +1723,10 @@ const IPV6_ALLOWED: &[([u16; 8], u8)] = &[
     ([0x2001, 0x30, 0, 0, 0, 0, 0, 0], 28),
 ];
 
-fn ipv6_blocks() -> &'static (Vec<(u128, u8)>, Vec<(u128, u8)>) {
-    static BLOCKS: OnceLock<(Vec<(u128, u8)>, Vec<(u128, u8)>)> = OnceLock::new();
+type Ipv6Blocks = (Vec<(u128, u8)>, Vec<(u128, u8)>);
+
+fn ipv6_blocks() -> &'static Ipv6Blocks {
+    static BLOCKS: OnceLock<Ipv6Blocks> = OnceLock::new();
     BLOCKS.get_or_init(|| {
         let convert = |table: &[([u16; 8], u8)]| -> Vec<(u128, u8)> {
             table.iter().map(|(segments, prefix)| (ipv6_bits(&std::net::Ipv6Addr::from(*segments)), *prefix)).collect()
@@ -1885,15 +1888,12 @@ pub fn web_fetch(url: &str, max_bytes: usize, allow_private: bool) -> Result<Jso
 fn strip_html(html: &str) -> (String, String) {
     let mut out = String::new();
     let mut rest = html;
-    loop {
-        // earliest of the skipped-element openers, not just the first match found
-        let Some((start, opener)) = ["<script", "<style", "<noscript"]
-            .iter()
-            .filter_map(|opener| rest.find(opener).map(|index| (index, *opener)))
-            .min_by_key(|(index, _)| *index)
-        else {
-            break;
-        };
+    // Earliest skipped-element opener, not just the first match found.
+    while let Some((start, opener)) = ["<script", "<style", "<noscript"]
+        .iter()
+        .filter_map(|opener| rest.find(opener).map(|index| (index, *opener)))
+        .min_by_key(|(index, _)| *index)
+    {
         out.push_str(&rest[..start]);
         let close = format!("</{}>", &opener[1..]);
         match rest[start..].find(&close) {
@@ -2297,8 +2297,10 @@ mod tests {
             "---\nname: scanpy\ndescription: single-cell analysis\n---\nscanpy body",
         )
         .unwrap();
-        let mut catalog = teamagents_core::models::UserConfig::default();
-        catalog.skills_paths = vec![root.to_string_lossy().into_owned()];
+        let catalog = teamagents_core::models::UserConfig {
+            skills_paths: vec![root.to_string_lossy().into_owned()],
+            ..Default::default()
+        };
 
         // search hits name and description, ranks multi-word matches first
         let hits = skill_tool(&catalog, &json!({"action": "search", "query": "single-cell"})).unwrap();

@@ -15,6 +15,7 @@ use std::time::Duration;
 use teamagents_core::control::TurnOutcome;
 use teamagents_core::models::{ApprovalRequest, ApprovalStatus, TurnRun, TurnStatus};
 
+type TurnCompletion = Arc<(Mutex<bool>, Condvar)>;
 type Pending = Arc<Mutex<HashMap<u64, Sender<Result<Json, String>>>>>;
 type NotifyHandler = Arc<dyn Fn(Json) + Send + Sync>;
 type RequestHandler = Arc<dyn Fn(Json) -> Json + Send + Sync>;
@@ -312,7 +313,7 @@ pub struct CodexRunner {
     thread_id: Mutex<Option<String>>,
     states: Mutex<HashMap<String, TurnStatus>>,
     current_turn: Mutex<HashMap<String, String>>,
-    turn_done: Mutex<HashMap<String, Arc<(Mutex<bool>, Condvar)>>>,
+    turn_done: Mutex<HashMap<String, TurnCompletion>>,
     progress: Mutex<HashMap<String, Vec<String>>>,
     /// The member's own text for a run, assembled from stream deltas and
     /// completed agent messages. Deltas are contiguous pieces (concatenate,

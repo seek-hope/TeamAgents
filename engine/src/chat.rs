@@ -448,7 +448,7 @@ fn context_overflow(error: &str) -> bool {
 fn estimated_tokens(value: &Json) -> u64 {
     let text = value.to_string();
     let ascii = text.bytes().filter(u8::is_ascii).count();
-    ((ascii + 3) / 4 + text.chars().filter(|c| !c.is_ascii()).count()) as u64
+    (ascii.div_ceil(4) + text.chars().filter(|c| !c.is_ascii()).count()) as u64
 }
 /// ponytail: the summary request itself is capped head+tail; a history larger
 /// than this summarizes the middle away before the model ever sees it.
@@ -2183,11 +2183,9 @@ fn to_anthropic_messages(history: &[Json], image: ImageLoader) -> (String, Vec<J
                 }
                 system.push_str(content);
             }
-            "user" => {
-                // consecutive tool results must share one user message (API rule)
-                if message.get("tool_call_id").is_none() {
-                    out.push(json!({"role": "user", "content": [{"type": "text", "text": content}]}));
-                }
+            // Consecutive tool results must share one user message (API rule).
+            "user" if message.get("tool_call_id").is_none() => {
+                out.push(json!({"role": "user", "content": [{"type": "text", "text": content}]}));
             }
             "assistant" => {
                 if let Some(blocks) = message["anthropic_blocks"].as_array() {
@@ -2525,7 +2523,7 @@ mod tests {
         let message = json!({"role":"assistant","content":"done",
             "responses_output":[{"type":"reasoning","encrypted_content":"opaque"}],
             "anthropic_blocks":[{"type":"thinking","signature":"signed"}]});
-        let wire = runner.wire_chat_messages(&[message.clone()]);
+        let wire = runner.wire_chat_messages(std::slice::from_ref(&message));
         assert_eq!(wire, vec![json!({"role":"assistant","content":"done"})]);
         let (_, anthropic) = to_anthropic_messages(&[message], &|_| None);
         assert!(!serde_json::to_string(&anthropic).unwrap().contains("opaque"));
@@ -2627,7 +2625,7 @@ mod tests {
 
         // a plain text result keeps the plain shape in both formats
         let plain = json!({"role":"tool","tool_call_id":"c1","content":"executed"});
-        let (_i, input) = to_responses_input(&[plain.clone()], &loader);
+        let (_i, input) = to_responses_input(std::slice::from_ref(&plain), &loader);
         assert_eq!(input[0]["output"], "executed");
         let (_s, converted) = to_anthropic_messages(&[plain], &loader);
         assert_eq!(converted[0]["content"][0]["content"], "executed");

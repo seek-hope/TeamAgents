@@ -203,10 +203,8 @@ fn decode(
                 }
                 // reasoning stays private: it is not part of the reply
                 "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {}
-                "response.output_item.done" => {
-                    if !data["item"].is_null() {
-                        items.push(data["item"].clone());
-                    }
+                "response.output_item.done" if !data["item"].is_null() => {
+                    items.push(data["item"].clone());
                 }
                 "response.incomplete" => {
                     return Err(StreamError::Protocol(format!(

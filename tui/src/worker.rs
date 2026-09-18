@@ -26,12 +26,14 @@ pub struct Push {
     pub items: Json,
 }
 
+type PendingReplies = Arc<Mutex<HashMap<u64, Sender<Result<Json, String>>>>>;
+
 pub struct Worker {
     // Mutex so `kill(&self)` can reap the child even while other Arc
     // holders keep the Worker alive (exit path when try_unwrap fails)
     child: Mutex<Child>,
     requests: SyncSender<(u64, String)>,
-    pending: Arc<Mutex<HashMap<u64, Sender<Result<Json, String>>>>>,
+    pending: PendingReplies,
     pushes: Mutex<Receiver<Push>>,
     next_id: Mutex<u64>,
 }
@@ -41,7 +43,7 @@ pub struct PendingCall {
     id: u64,
     method: String,
     rx: Receiver<Result<Json, String>>,
-    pending: Arc<Mutex<HashMap<u64, Sender<Result<Json, String>>>>>,
+    pending: PendingReplies,
     deadline: Instant,
 }
 
@@ -125,7 +127,7 @@ impl Worker {
         };
         let stdout = child.stdout.take().expect("piped");
         let mut stdin = child.stdin.take().expect("piped");
-        let pending: Arc<Mutex<HashMap<u64, Sender<Result<Json, String>>>>> = Arc::new(Mutex::new(HashMap::new()));
+        let pending: PendingReplies = Arc::new(Mutex::new(HashMap::new()));
         // Bounded queue: a stopped reader cannot block input handling or grow
         // one thread/buffer per UI request. One writer preserves enqueue order.
         let (requests, request_rx) = sync_channel::<(u64, String)>(64);

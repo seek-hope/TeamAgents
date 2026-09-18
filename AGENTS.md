@@ -10,6 +10,10 @@
 
 ## 快速命令
 
+统一开发入口与维护约定见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
+工具链固定在 `rust-toolchain.toml`；提交前运行 `make check`（默认离线），格式修复用 `make fmt`，
+隔离配置的真终端检查用 `make pty`。首次下载依赖可用 `make check CARGO_FLAGS=--locked`。
+
 ```bash
 cargo test --offline --manifest-path core/Cargo.toml    # 权威核心
 cargo test --offline --manifest-path engine/Cargo.toml  # 引擎
@@ -68,6 +72,8 @@ review/eval/run.sh [--only ID] [--timeout SEC]   # 固定任务集的真实模�
 
 - Lazy-first：标准库 > 已有依赖 > 新依赖；抽象与脚手架以当前需求为限。
 - 每个非平凡逻辑留一个可运行的检查（acceptance 测试或 `__main__` 自检）；删除代码优于新增代码。
+- CI 与本机共用 Make 目标；Clippy 对全部目标按 `-D warnings` 检查，不在 crate 根统一关闭告警。
+- engine 集成测试修改进程环境时持有 `support::TestEnv`，额外变量用 `env.set`，先关闭运行时再释放隔离对象。
 - 给「已知天花板」的简化留 `ponytail:` 注释（写明升级路径）。
 - 文档、提交信息与面向用户的输出用中文；代码标识与注释用英文。
 - 密钥只从环境变量/本机凭据读取，禁止写入仓库、TeamSpec、提示词或事件。

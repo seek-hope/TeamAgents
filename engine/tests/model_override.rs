@@ -6,7 +6,7 @@ mod support;
 use serde_json::{json, Value as Json};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use support::*;
 use teamagents_core::control::TurnOutcome;
 use teamagents_core::models::{TurnRun, TurnStatus, UserConfig};
@@ -14,9 +14,6 @@ use teamagents_engine::gateway::ToolGateway;
 use teamagents_engine::runtime::AgentRunner;
 use teamagents_engine::scripted::Step;
 use teamagents_engine::session::{open_session, OpenOptions};
-
-// These tests mutate the process-wide XDG_STATE_HOME used by session paths.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 fn catalog() -> UserConfig {
     serde_json::from_value(json!({
@@ -41,7 +38,6 @@ fn spec() -> Json {
 
 #[test]
 fn set_model_override_applies_reports_and_clears() {
-    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = isolated_state_home("model-override");
     let cwd = home.join("project");
     std::fs::create_dir_all(&cwd).unwrap();
@@ -133,7 +129,6 @@ impl AgentRunner for SlowRunner {
 /// with a turn in flight is not closed out from under it.
 #[test]
 fn drop_runner_keeps_an_inflight_turn_alive() {
-    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = isolated_state_home("drop-runner");
     let spec = json!({
         "leader_id": "leader",
@@ -191,7 +186,6 @@ fn drop_runner_keeps_an_inflight_turn_alive() {
 /// the default removes the persisted entry.
 #[test]
 fn model_overrides_survive_session_reopen() {
-    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = isolated_state_home("model-override-reopen");
     let cwd = home.join("project");
     std::fs::create_dir_all(&cwd).unwrap();
@@ -244,7 +238,6 @@ fn model_overrides_survive_session_reopen() {
 /// the codex/effort rules) are dropped at load instead of failing the open.
 #[test]
 fn stale_model_overrides_are_dropped_on_open() {
-    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = isolated_state_home("model-override-stale");
     let cwd = home.join("project");
     std::fs::create_dir_all(&cwd).unwrap();

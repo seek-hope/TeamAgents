@@ -16,8 +16,8 @@ fn codex_agent() -> Json {
     json!({"id": "cx", "name": "C", "role": "worker", "runtime_kind": "codex", "model_profile": "m"})
 }
 
-fn setup(session: &str, mode: &str) -> (Arc<CoreClient>, Arc<CodexRunner>) {
-    isolated_state_home("codex");
+fn setup(session: &str, mode: &str) -> (TestEnv, Arc<CoreClient>, Arc<CodexRunner>) {
+    let env = isolated_state_home(session);
     let core =
         core_with_spec(session, json!({"leader_id": "leader", "agents": [member("leader", "leader"), codex_agent()]}));
     let approvals = ApprovalGate::new(core.clone(), PermissionPolicy::default());
@@ -49,7 +49,7 @@ fn setup(session: &str, mode: &str) -> (Arc<CoreClient>, Arc<CodexRunner>) {
         approvals,
         notify,
     );
-    (core, runner)
+    (env, core, runner)
 }
 
 fn turn_run(session: &str, run_id: &str) -> TurnRun {
@@ -80,7 +80,7 @@ fn gateway(core: &Arc<CoreClient>, run_id: &str) -> Arc<ToolGateway> {
 
 #[test]
 fn codex_simple_turn_completes_and_persists_the_thread() {
-    let (core, runner) = setup("cx1", "simple");
+    let (_env, core, runner) = setup("cx1", "simple");
     let run = turn_run("cx1", "run_cx1");
     let outcome: TurnOutcome =
         runner.start_or_resume(&run, &view(), &gateway(&core, "run_cx1"), &json!({"reason": "new_input"}));
@@ -94,7 +94,7 @@ fn codex_simple_turn_completes_and_persists_the_thread() {
 
 #[test]
 fn codex_approval_flow_parks_decides_and_resumes() {
-    let (core, runner) = setup("cx2", "approval");
+    let (_env, core, runner) = setup("cx2", "approval");
     let run = turn_run("cx2", "run_cx2");
     let gw = gateway(&core, "run_cx2");
     let started = {
@@ -129,7 +129,7 @@ fn codex_approval_flow_parks_decides_and_resumes() {
 /// outcome: no turn/completed is coming to wake it (review 2026-09-15).
 #[test]
 fn codex_app_server_death_mid_turn_fails_the_driver() {
-    let (core, runner) = setup("cx-die", "die");
+    let (_env, core, runner) = setup("cx-die", "die");
     let run = turn_run("cx-die", "run_die");
     let gw = gateway(&core, "run_die");
     let (tx, rx) = std::sync::mpsc::channel();
@@ -153,7 +153,7 @@ fn codex_app_server_death_mid_turn_fails_the_driver() {
 /// (review round 4, F2). die-once crashes only the first spawned process.
 #[test]
 fn codex_reconnects_after_app_server_death() {
-    let (core, runner) = setup("cx-re", "die-once");
+    let (_env, core, runner) = setup("cx-re", "die-once");
     let run1 = turn_run("cx-re", "run_re1");
     let outcome1 = runner.start_or_resume(&run1, &view(), &gateway(&core, "run_re1"), &json!({"reason": "new_input"}));
     assert_eq!(outcome1.status, TurnStatus::Failed);
@@ -166,7 +166,7 @@ fn codex_reconnects_after_app_server_death() {
 
 #[test]
 fn codex_interrupt_stops_a_slow_turn_with_confirmed_status() {
-    let (core, runner) = setup("cx3", "slow");
+    let (_env, core, runner) = setup("cx3", "slow");
     let run = turn_run("cx3", "run_cx3");
     let gw = gateway(&core, "run_cx3");
     let started = {
