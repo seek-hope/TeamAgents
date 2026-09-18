@@ -11,8 +11,6 @@ pub const SUCCESS: Color = Color::Rgb(0x00, 0xff, 0x00);
 pub const NOTICE: Color = Color::Rgb(0xaf, 0xaf, 0xaf);
 pub const ERROR: Color = Color::Red;
 pub const WARNING: Color = Color::Yellow;
-/// `$primary` at 40% over the #0d0d0d background (table cursor row).
-pub const CURSOR_ROW: Color = Color::Rgb(0x1f, 0x3c, 0x6a);
 /// Selected table row: a barely lighter block under the accent bar.
 pub const SELECT_BG: Color = Color::Rgb(0x1a, 0x1a, 0x1a);
 /// Alternating table rows, one step above the background.

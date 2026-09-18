@@ -237,10 +237,6 @@ impl CodexAppServer {
         stdin.flush().map_err(|e| e.to_string())
     }
 
-    pub fn last_stderr(&self) -> Vec<String> {
-        self.stderr_lines.lock().unwrap().clone()
-    }
-
     /// Last few stderr lines, joined for an error message.
     fn stderr_tail(&self) -> String {
         let lines = self.stderr_lines.lock().unwrap();

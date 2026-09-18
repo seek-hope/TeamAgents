@@ -1,6 +1,6 @@
 # 用户指南：配置、权限、恢复与故障处理
 
-适用版本：当前 Rust 实现（2026-09-15 核对）。验收覆盖与尚未满足的方案要求见
+适用版本：当前 Rust 实现（2026-09-18 核对）。验收覆盖与尚未满足的方案要求见
 [验收对照表](ACCEPTANCE.md)。
 
 ## 1. 配置
@@ -35,7 +35,7 @@ api_key_env = "DEEPSEEK_API_KEY"          # 只引用环境变量，密钥不进
 timeout = 120
 max_retries = 2               # 示例显式覆盖；省略时默认 5
 generation_options = { reasoning_effort = "max" }     # 默认档位；嫌慢改 high（实测 high≈10s / max≈240s）
-context_window = 128000   # 可选；填写后启用上下文自动压缩（见 §3.4），/status 也会显示占用比例
+context_window = 1000000   # 可选；填写后启用上下文自动压缩（见 §3.4），/status 也会显示占用比例
 ```
 
 Codex 成员（`runtime_kind: codex`）走 `codex app-server`：给它所在的 model profile 加一行

@@ -910,39 +910,6 @@ fn render_settings_overlay(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-/// A table in the Rust spirit: dim header with a rule under it, subtle zebra,
-/// an accent bar on the selected row, centred empty state.
-/// The active panel's table: translated headers, rows, and its empty-state id.
-pub fn panel_table(app: &App) -> (Vec<String>, Vec<Vec<Cell>>, &'static str) {
-    match PANELS[app.panel] {
-        "tasks" => (
-            table_headers("tasks").iter().map(|h| tr(app.lang, h, &[])).collect(),
-            app.tasks_rows().into_iter().map(|(_, r)| r).collect(),
-            "没有任务",
-        ),
-        "approvals" => (
-            table_headers("approvals").iter().map(|h| tr(app.lang, h, &[])).collect(),
-            app.approvals_rows().into_iter().map(|(_, r)| r).collect(),
-            "没有待批准操作",
-        ),
-        "sessions" => (
-            table_headers("sessions").iter().map(|h| tr(app.lang, h, &[])).collect(),
-            app.sessions_rows().into_iter().map(|(_, r)| r).collect(),
-            "没有会话记录",
-        ),
-        "shared" => (
-            table_headers("shared").iter().map(|h| tr(app.lang, h, &[])).collect(),
-            app.shared_rows().into_iter().map(|(_, r)| r).collect(),
-            "没有共享条目",
-        ),
-        _ => (
-            table_headers("team").iter().map(|h| tr(app.lang, h, &[])).collect(),
-            app.team_rows().into_iter().map(|(_, r)| r).collect(),
-            "没有成员",
-        ),
-    }
-}
-
 /// Which columns a table gives up first when the pane is narrow.
 fn drop_order(panel: &str) -> &'static [usize] {
     match panel {
@@ -964,6 +931,8 @@ pub fn table_start(rows: usize, sel: usize, view: usize) -> usize {
     sel.saturating_sub(view / 2).min(max_start)
 }
 
+/// A table in the Rust spirit: dim header with a rule under it, subtle zebra,
+/// an accent bar on the selected row, centred empty state.
 fn render_table(
     app: &App,
     frame: &mut Frame,

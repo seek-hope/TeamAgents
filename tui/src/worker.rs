@@ -212,11 +212,6 @@ impl Worker {
         self.call("call", json!({"method": sessionless_method, "params": params}))
     }
 
-    /// `core` with a caller-chosen timeout (see `call_timeout`).
-    pub fn core_timeout(&self, sessionless_method: &str, params: Json, timeout: Duration) -> Result<Json, String> {
-        self.call_timeout("call", json!({"method": sessionless_method, "params": params}), timeout)
-    }
-
     pub fn try_push(&self) -> Option<Push> {
         self.pushes.lock().unwrap().try_recv().ok()
     }

@@ -1391,15 +1391,6 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    pub fn run_cancel_requested(&self, run_id: &str) -> rusqlite::Result<bool> {
-        Ok(self
-            .conn
-            .query_row("SELECT cancel_requested FROM turn_runs WHERE run_id=?1", params![run_id], |r| r.get::<_, i64>(0))
-            .optional()?
-            .unwrap_or(0)
-            != 0)
-    }
-
     /// completion_requests row for a run (runtime._finalize).
     pub fn completion_request(&self, run_id: &str) -> rusqlite::Result<Option<Json>> {
         self.conn
@@ -1436,15 +1427,6 @@ impl Store {
             params![thread_id, now(), session_id, agent_id],
         )?;
         Ok(())
-    }
-
-    pub fn bump_context_epoch(&self, session_id: &str, agent_id: &str) -> rusqlite::Result<i64> {
-        self.ensure_agent(session_id, agent_id)?;
-        self.conn.execute(
-            "UPDATE agent_runtime SET context_epoch=context_epoch+1, updated_at=?1 WHERE session_id=?2 AND agent_id=?3",
-            params![now(), session_id, agent_id],
-        )?;
-        self.agent_context_epoch(session_id, agent_id)
     }
 
     pub fn set_run_external_turn(&self, run_id: &str, external_turn_id: &str) -> rusqlite::Result<()> {

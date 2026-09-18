@@ -49,11 +49,6 @@ enum Transport {
 }
 
 impl McpClient {
-    pub fn connect_stdio(command: &str, args: &[String], env: &[(String, String)]) -> Result<Arc<Self>, String> {
-        let root = std::env::current_dir().map_err(|e| e.to_string())?;
-        Self::connect_stdio_in(command, args, env, &root, "workspace", false, 60, 120)
-    }
-
     /// Binding authorizes the service; host execution requires an explicit mode.
     pub fn connect_stdio_in(
         command: &str,

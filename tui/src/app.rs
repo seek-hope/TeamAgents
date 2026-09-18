@@ -600,35 +600,6 @@ impl App {
 
     // ------------------------------------------------------------ activity
 
-    /// Returns (line1, color, line2).
-    pub fn activity_lines(&mut self) -> (String, &'static str, String) {
-        let working: Vec<&RunInfo> = self.activity_runs.iter().filter(|r| r.status == "RUNNING").collect();
-        let waiting_approval = self.activity_runs.iter().any(|r| r.status == "WAITING_APPROVAL");
-        if self.animations && !working.is_empty() {
-            self.activity_frame = (self.activity_frame + 1) % 10;
-        } else {
-            self.activity_frame = 0;
-        }
-        let (summary, color) = if !working.is_empty() {
-            let first = working.iter().min_by(|a, b| a.created_at.partial_cmp(&b.created_at).unwrap()).unwrap();
-            let (mut s, c) = activity_status(self.lang, self.animations, self.activity_frame, "RUNNING", Some(first));
-            let count = working.len().to_string();
-            s += &format!(" · {}", self.t("{count} 个成员正在执行", &[("count", &count)]));
-            s += &format!(" · {}", working.iter().map(|r| r.agent_id.as_str()).collect::<Vec<_>>().join(", "));
-            (s, c)
-        } else if waiting_approval {
-            (format!("! {}", self.t("等待批准", &[])), "warning")
-        } else if let Some(run) = self.activity_runs.first() {
-            activity_status(self.lang, self.animations, self.activity_frame, &run.status.clone(), Some(run))
-        } else {
-            (format!("○ {} · {}", self.t("就绪", &[]), self.t("没有正在执行的回合", &[])), "notice")
-        };
-        let (msg, args) = self.latest_activity.clone();
-        let arg_refs: Vec<(&str, &str)> = args.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-        let line2 = self.t("最近活动：{text}", &[("text", &tr(self.lang, &msg, &arg_refs))]);
-        (summary, color, line2)
-    }
-
     /// Activity line: one chip per visible run (or a single idle chip) plus the
     /// latest-activity text. Chips carry (text, colour-name).
     pub fn activity_chips(&mut self) -> (Vec<(String, &'static str)>, String) {
@@ -677,20 +648,6 @@ impl App {
             .map(|a| self.model_label(a))
             .unwrap_or_default();
         format!("{state} · Leader / {profile}")
-    }
-
-    pub fn composer_status(&self) -> String {
-        let leader = self.leader_id();
-        let run = self.activity_runs.iter().find(|r| r.agent_id == leader);
-        let (state, _) = activity_status(self.lang, self.animations, self.activity_frame, "IDLE", run);
-        let profile = self
-            .spec()
-            .get("agents")
-            .and_then(|v| v.as_array())
-            .and_then(|a| a.iter().find(|x| jstr(x, "id") == leader))
-            .map(|a| self.model_label(a))
-            .unwrap_or_default();
-        self.t("{v0} · Leader / {v1} · 可继续输入补充要求", &[("v0", &state), ("v1", &profile)])
     }
 
     // ------------------------------------------------------------ status bar
@@ -1026,16 +983,6 @@ impl App {
             }
         }
         rows
-    }
-
-    /// LogPanel title line.
-    pub fn log_title(&self) -> String {
-        // the title is always 事件流{filter}
-        let suffix = match &self.log_member {
-            Some(m) => self.t("（成员 {v0} · Enter 取消）", &[("v0", m)]),
-            None => String::new(),
-        };
-        self.t("事件流{v0}", &[("v0", &suffix)])
     }
 
     /// Public wrapper for the mouse hit-test on the tab strip.

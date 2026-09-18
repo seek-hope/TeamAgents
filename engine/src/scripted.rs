@@ -125,11 +125,6 @@ impl ScriptedMember {
         })
     }
 
-    pub fn from_json_scripts(agent_id: &str, steps: &[Json], barriers: BarrierRegistry) -> Result<Arc<Self>, String> {
-        let script = steps.iter().map(Step::from_json).collect::<Result<Vec<_>, _>>()?;
-        Ok(Self::new(agent_id, script, barriers))
-    }
-
     /// Tests re-arm the same member for a second turn (t9).
     pub fn reset(&self, script: Vec<Step>) {
         *self.script.lock().unwrap() = script;
