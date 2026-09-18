@@ -15,7 +15,7 @@ TeamAgents 当前支持 **Linux x86_64**。发行包采用 musl 静态链接，�
 **自定义安装：** 将 README 中的 `sh "$installer"` 换为以下任意一条：
 
 ```bash
-sh "$installer" --version 0.1.1             # 指定版本，支持带 v 前缀
+sh "$installer" --version 0.1.2             # 指定版本，支持带 v 前缀
 sh "$installer" --bin-dir "$HOME/bin"      # 自定义目录，也支持 TEAMAGENTS_BIN_DIR
 sh "$installer" --archive /path/to/teamagents-VERSION-x86_64-unknown-linux-musl.tar.gz
 ```
@@ -77,7 +77,7 @@ teamagents --cwd /path/to/project
 
 `doctor` 验证本机条件，不发送模型请求。`FAIL` 需要修复；`WARN` 表示可选能力有问题，
 例如缺少 Codex CLI 不影响内置成员，但 Codex 成员需要相关检查通过。
-已发布的 v0.1.1 使用旧版诊断，可能将缺少 Codex 列为失败；新版诊断随下次发行提供。
+已发布的 v0.1.1 使用旧版诊断，可能将缺少 Codex 列为失败；从 v0.1.2 起使用新版诊断。
 
 ## 3. 升级与卸载
 
