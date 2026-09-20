@@ -1,0 +1,6 @@
+{
+  "command": "CODEX_HOME=\"$PWD/review/tmp/repo-fork-codex-20260919/home\" review/tmp/repo-fork-codex-20260919/bin/codex sandbox linux --help",
+  "execution": "inside the outer tool sandbox; no model task started",
+  "exit_code": 101,
+  "stderr": "thread 'main' (139) panicked at linux-sandbox/src/linux_run_main.rs:1325:13:\nfailed to open synthetic bubblewrap mount registry lock /tmp/codex-bwrap-synthetic-mount-targets-1000/lock: Read-only file system (os error 30)\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n"
+}

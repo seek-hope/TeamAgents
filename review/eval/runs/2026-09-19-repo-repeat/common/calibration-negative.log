@@ -1,0 +1,20 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s
+     Running tests/eval_grader.rs (engine/target/debug/deps/eval_grader-03a4635aa471883d)
+
+running 1 test
+
+thread 'grade_candidate' (7297) panicked at tests/eval_grader.rs:417:5:
+assertion `left == right` failed: "隐藏或公开测试失败"；证据：/home/rimuru/Projects/Code/for_fun/TeamAgents/review/tmp/repo-repeat-20260919/calibration-negative.json
+  left: Bool(false)
+ right: true
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test grade_candidate ... FAILED
+
+failures:
+
+failures:
+    grade_candidate
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9 filtered out; finished in 13.71s
+
+error: test failed, to rerun pass `--test eval_grader`

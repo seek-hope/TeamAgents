@@ -1,0 +1,57 @@
+{
+  "date": "2026-09-19",
+  "model": "deepseek-flash",
+  "native_context_window": 1000000,
+  "context_window_source": "用户确认；docs/DECISIONS.md D-36",
+  "reasoning_effort": "high",
+  "task_timeout_s": 1200,
+  "sample": 1,
+  "session_id": "proj_d9c92953e804",
+  "runner_exit": 0,
+  "cli_status": "completed",
+  "cli_exit": 0,
+  "duration_ms": 943746,
+  "tool_calls": 149,
+  "tool_counts": {
+    "edit_file": 26,
+    "list_shared": 1,
+    "publish_shared": 1,
+    "read_file": 27,
+    "shell": 89,
+    "signal_done": 1,
+    "update_plan": 3,
+    "write_file": 1
+  },
+  "tool_failures": 0,
+  "agents": [
+    "leader"
+  ],
+  "usage": {
+    "calls": 128,
+    "prompt_tokens": 20410840,
+    "completion_tokens": 146489,
+    "total_tokens": 20557329,
+    "unknown_usage_calls": 0,
+    "cached_input_tokens": 15680512
+  },
+  "public_verification": [
+    {
+      "command": "cargo test --offline --manifest-path engine/Cargo.toml --test fork_rewind --test model_override --test session_boot --test worker_protocol -- --test-threads=1",
+      "output": "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s\n     Running tests/fork_rewind.rs (engine/target/debug/deps/fork_rewind-4fe9ff69e519bfdf)\n\nrunning 1 test\ntest fork_carries_spec_and_leader_tree_but_not_team_facts ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s\n\n     Running tests/model_override.rs (engine/target/debug/deps/model_override-66eaa3c8c68466ab)\n\nrunning 4 tests\ntest drop_runner_keeps_an_inflight_turn_alive ... ok\ntest model_overrides_survive_session_reopen ... ok\ntest set_model_override_applies_reports_and_clears ... ok\ntest stale_model_overrides_are_dropped_on_open ... ok\n\ntest result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.87s\n\n     Running tests/session_boot.rs (engine/target/debug/deps/session_boot-221a56d3a60319a3)\n\nrunning 2 tests\ntest another_process_cannot_open_a_locked_session ... ok\ntest failed_open_releases_the_session_lock_and_can_be_retried ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s\n\n     Running tests/worker_protocol.rs (engine/target/debug/deps/worker_protocol-6184434876e07d71)\n\nrunning 5 tests\ntest model_discovery_does_not_block_worker_requests ... ok\ntest worker_drives_a_scripted_session_end_to_end ... ok\ntest worker_reports_unknown_methods_and_missing_session ... ok\ntest worker_set_model_switches_and_clears_overrides ... ok\ntest worker_usage_reports_per_agent_counters ... ok\n\ntest result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.57s",
+      "exit_code": 0,
+      "ok": true
+    }
+  ],
+  "independent_grade_ok": true,
+  "independent_grade_reason": "隐藏及公开测试通过，受保护文件未改变",
+  "extra_files": [],
+  "missing_files": [],
+  "protected_changed": [],
+  "fully_successful": true,
+  "input_and_runner_unchanged": true,
+  "collected_at": "2026-09-19T12:03:07.465441+00:00",
+  "shell_nonzero_exits": 9,
+  "shell_failed_test_output_records": 10,
+  "tool_failures_scope": "structured ok=false receipts; shell exit codes are counted separately",
+  "private_checkpoint_model_steps": 128
+}

@@ -1,0 +1,32 @@
+[
+  {
+    "name": "core",
+    "command": [
+      "cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "--manifest-path",
+      "core/Cargo.toml"
+    ],
+    "exit_code": 0,
+    "elapsed_s": 3.826
+  },
+  {
+    "name": "engine-entrypoints",
+    "command": [
+      "cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "--manifest-path",
+      "engine/Cargo.toml",
+      "--test",
+      "cli",
+      "--test",
+      "session_boot"
+    ],
+    "exit_code": 0,
+    "elapsed_s": 5.207
+  }
+]

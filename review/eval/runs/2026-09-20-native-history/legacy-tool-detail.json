@@ -1,0 +1,13 @@
+{
+  "source": "codex",
+  "thread_id": "01a0bc56-0287-7f52-be1f-b4595c5d49ed",
+  "entry": {
+    "turnId": "probe-turn",
+    "record_line": 47,
+    "item": {
+      "type": "function_call_output",
+      "call_id": "probe-call",
+      "output": "SYNTHETIC_NATIVE_TOOL_RESULT"
+    }
+  }
+}

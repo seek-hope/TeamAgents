@@ -1,0 +1,21 @@
+   Compiling teamagents-engine v0.1.2 (/home/rimuru/Projects/Code/for_fun/TeamAgents/engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.96s
+     Running unittests src/lib.rs (engine/target/debug/deps/teamagents_engine-c3f5081013a620de)
+
+running 1 test
+
+thread 'cli::exec_tests::a_completed_goal_can_recover_from_failed_runs_but_not_unresolved_outcomes' (296) panicked at src/cli.rs:905:9:
+assertion `left == right` failed
+  left: ("failed", 1)
+ right: ("completed", 0)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test cli::exec_tests::a_completed_goal_can_recover_from_failed_runs_but_not_unresolved_outcomes ... FAILED
+
+failures:
+
+failures:
+    cli::exec_tests::a_completed_goal_can_recover_from_failed_runs_but_not_unresolved_outcomes
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 101 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--lib`

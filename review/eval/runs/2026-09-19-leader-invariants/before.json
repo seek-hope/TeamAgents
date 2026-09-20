@@ -1,0 +1,45 @@
+{
+  "files": [
+    {
+      "path": "core/src/models.rs",
+      "sha256": "458f1c795eadb59d2dd2997cb795fa683d9a168aac2ea28ae63e2e8db1b80542"
+    },
+    {
+      "path": "core/src/storage.rs",
+      "sha256": "b8b8bf6ee128742bf5a264fab4b4b243b45eca054fade06e77399d7a46da7eb9"
+    },
+    {
+      "path": "core/src/server.rs",
+      "sha256": "117745cfa94733924515596c0ab27776944ee12ee0dd2b02e52397767c3abf33"
+    },
+    {
+      "path": "core/tests/engine.rs",
+      "sha256": "d13c7c4b0a5f8d14f7ed4be9c41c17384cc4304b2dee4b3f3da985edc9eaa849"
+    },
+    {
+      "path": "engine/src/session.rs",
+      "sha256": "8b8be500e22903801110707e85cae90ec1be6b70e4ebeced991df0f23633059a"
+    },
+    {
+      "path": "engine/tests/cli.rs",
+      "sha256": "7fe3b13fa3a417e74035c1650fc88a1ab35ddd095addca3df966f26502dfb39a"
+    },
+    {
+      "path": "engine/tests/session_boot.rs",
+      "sha256": "55ef1ac9b04515e0d2c8263ee94a69c2c77cf909b161bc1a8a8ec3982e1b446e"
+    },
+    {
+      "path": "docs/ACCEPTANCE.md",
+      "sha256": "57531cfe507fb4d5f3ac150ec99a1bf2b5c806c8cf7a05421b332df49467f411"
+    },
+    {
+      "path": "docs/DEVELOPMENT.md",
+      "sha256": "b146b5271a88542f3d9474a1c16e4be95cb65f060c2cc9fbaac476d66c17b5c0"
+    },
+    {
+      "path": "docs/USER-GUIDE.md",
+      "sha256": "c3c2eadfaec99cc6ed2ab9f2d9b418f91a152f0b7758c7e978558bbe3540e9ad"
+    }
+  ],
+  "note": "docs/USER-GUIDE.md was snapshotted later, before its first edit in this batch."
+}

@@ -10,6 +10,199 @@ use std::collections::HashSet;
 
 pub const BUILTIN_TOOL_BINDINGS: &[&str] = &["files", "shell", "web", "skills"];
 
+// Validate before the JSON reducer can discard fields during merges/removals.
+// Keep the original operations in the patch for receipts and audit history.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+enum TopologyOperation {
+    AddAgent {
+        agent: AgentSpec,
+        #[serde(default)]
+        channels: Vec<ChannelSpec>,
+        #[serde(default)]
+        shared_spaces: Vec<SharedSpaceSpec>,
+    },
+    RemoveAgent {
+        agent_id: String,
+    },
+    UpdateAgent {
+        agent_id: String,
+        changes: serde_json::Map<String, Json>,
+    },
+    AddChannel {
+        channel: ChannelSpec,
+    },
+    RemoveChannel {
+        source: String,
+        targets: Vec<String>,
+    },
+    SetObserver {
+        observer: ObserverSpec,
+        #[serde(default)]
+        remove: bool,
+    },
+    SetSpaceAcl {
+        space_id: String,
+        #[serde(default, deserialize_with = "present_value", skip_serializing_if = "Option::is_none")]
+        readers: Option<Vec<String>>,
+        #[serde(default, deserialize_with = "present_value", skip_serializing_if = "Option::is_none")]
+        writers: Option<Vec<String>>,
+    },
+}
+
+// Optional fields may be omitted, but explicit null must satisfy their type.
+fn present_value<'de, D: serde::Deserializer<'de>, T: serde::Deserialize<'de>>(
+    deserializer: D,
+) -> Result<Option<T>, D::Error> {
+    serde::Deserialize::deserialize(deserializer).map(Some)
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TeamChangeRequest {
+    operations: Vec<serde_json::Map<String, Json>>,
+    #[serde(default)]
+    rationale: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TopologyPatchRequest {
+    #[serde(default, deserialize_with = "present_value")]
+    patch_id: Option<String>,
+    #[serde(default, deserialize_with = "present_value")]
+    base_revision: Option<i64>,
+    #[serde(default, deserialize_with = "present_value")]
+    operations: Option<Vec<serde_json::Map<String, Json>>>,
+    #[serde(default)]
+    reject: bool,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AssignTaskRequest {
+    assignee: String,
+    description: String,
+    #[serde(default)]
+    acceptance: String,
+    #[serde(default)]
+    dependencies: Vec<String>,
+    #[serde(default, deserialize_with = "present_value")]
+    task_id: Option<String>,
+    #[serde(default, deserialize_with = "present_value")]
+    parent_task_id: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CompleteTaskRequest {
+    task_id: String,
+    #[serde(default)]
+    result_refs: Vec<String>,
+    #[serde(default)]
+    summary: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WaitForTasksRequest {
+    task_ids: Vec<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CancelTaskRequest {
+    task_id: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CancelRunRequest {
+    run_id: String,
+}
+
+fn task_payload<T: serde::de::DeserializeOwned>(payload: &Json) -> Result<T, String> {
+    serde_json::from_value(payload.clone()).map_err(|e| format!("任务参数无效：{e}"))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UserInputRequest {
+    text: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MessageRequest {
+    target: String,
+    text: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PublishSharedRequest {
+    space_id: String,
+    #[serde(default)]
+    content: String,
+    #[serde(default)]
+    kind: String,
+    #[serde(default, deserialize_with = "present_value")]
+    r#ref: Option<String>,
+    #[serde(default, deserialize_with = "present_value")]
+    supersedes: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReadSharedRequest {
+    #[serde(default, deserialize_with = "present_value")]
+    space_id: Option<String>,
+    #[serde(default, deserialize_with = "present_value")]
+    after_sequence: Option<i64>,
+    #[serde(default = "shared_page_limit")]
+    limit: i64,
+}
+
+fn shared_page_limit() -> i64 {
+    50
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HelpRequest {
+    message: String,
+    #[serde(default, deserialize_with = "present_value")]
+    task_id: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SignalDoneRequest {
+    #[serde(default)]
+    summary: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApprovalDecisionRequest {
+    approval_id: String,
+    decision: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PermissionModeRequest {
+    mode: PermissionMode,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EmptyRequest {}
+
+fn action_payload<T: serde::de::DeserializeOwned>(payload: &Json) -> Result<T, String> {
+    serde_json::from_value(payload.clone()).map_err(|e| format!("动作参数无效：{e}"))
+}
+
 #[derive(Debug, Clone)]
 pub struct EventDraft {
     pub kind: EventKind,
@@ -32,6 +225,19 @@ pub struct Reduction {
     pub receipt: Receipt,
 }
 
+/// Trusted Rust preparation is separate from the original wire request. The
+/// original payload identifies its receipt; only the reducer sees filled defaults.
+pub enum ActionSubmission<'a> {
+    Original(&'a TeamAction),
+    PreparedTopology { action: &'a TeamAction, preparation: Result<&'a [Json], &'a str> },
+}
+
+impl<'a> From<&'a TeamAction> for ActionSubmission<'a> {
+    fn from(action: &'a TeamAction) -> Self {
+        Self::Original(action)
+    }
+}
+
 pub struct Control {
     pub store: Store,
     pub session_id: String,
@@ -40,11 +246,15 @@ pub struct Control {
     pub mid_turn_pushes: Vec<(String, Vec<Json>)>,
 }
 
-// -- payload helpers ----------------------------------------------------------
-
-fn pget<'a>(p: &'a Json, key: &str) -> Option<&'a Json> {
-    p.get(key).filter(|v| !v.is_null())
+/// Resolve routing and current visibility before consuming a buffered batch.
+#[derive(Debug, serde::Serialize)]
+pub struct MidTurnPush {
+    pub run_id: String,
+    pub agent_id: String,
+    pub items: Vec<Json>,
 }
+
+// -- payload helpers ----------------------------------------------------------
 
 fn pstr(p: &Json, key: &str) -> String {
     match p.get(key) {
@@ -52,13 +262,6 @@ fn pstr(p: &Json, key: &str) -> String {
         Some(v) if !v.is_null() => v.to_string(),
         _ => String::new(),
     }
-}
-
-fn plist(p: &Json, key: &str) -> Vec<String> {
-    p.get(key)
-        .and_then(|v| v.as_array())
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
-        .unwrap_or_default()
 }
 
 fn pbool(p: &Json, key: &str) -> bool {
@@ -74,17 +277,6 @@ fn truthy(v: Option<&Json>) -> bool {
         Some(Json::Number(n)) => n.as_f64().map(|f| f != 0.0).unwrap_or(true),
         Some(Json::Array(a)) => !a.is_empty(),
         Some(Json::Object(o)) => !o.is_empty(),
-    }
-}
-
-/// Strict integer coercion over wire JSON: numbers truncate, bools are 0/1,
-/// integer strings parse; anything else is None (callers turn that into an error).
-fn py_int(v: &Json) -> Option<i64> {
-    match v {
-        Json::Bool(b) => Some(*b as i64),
-        Json::Number(n) => n.as_i64().or_else(|| n.as_f64().map(|f| f.trunc() as i64)),
-        Json::String(s) => s.trim().parse::<i64>().ok(),
-        _ => None,
     }
 }
 
@@ -177,8 +369,12 @@ impl Control {
     /// A failed attempt rolls back every write it
     /// made; the failure receipt then commits in a clean transaction.
     /// Err means even that receipt could not be recorded (store still busy).
-    pub fn submit(&mut self, action: &TeamAction) -> Result<Receipt, String> {
-        match self.submit_in_tx(action) {
+    pub fn submit<'a>(&mut self, submission: impl Into<ActionSubmission<'a>>) -> Result<Receipt, String> {
+        let (action, preparation) = match submission.into() {
+            ActionSubmission::Original(action) => (action, None),
+            ActionSubmission::PreparedTopology { action, preparation } => (action, Some(preparation)),
+        };
+        match self.submit_in_tx(action, preparation) {
             Ok(r) => Ok(r),
             Err(e) => {
                 let _ = self.store.rollback();
@@ -209,13 +405,58 @@ impl Control {
         }
     }
 
-    fn submit_in_tx(&mut self, action: &TeamAction) -> Result<Receipt, String> {
+    fn submit_in_tx(
+        &mut self,
+        action: &TeamAction,
+        preparation: Option<Result<&[Json], &str>>,
+    ) -> Result<Receipt, String> {
         self.in_tx(|ctl| {
             if let Some(prior) = prior_receipt(&ctl.store, action)? {
                 return Ok(prior);
             }
             let spec = ctl.store.load_team_spec(&ctl.session_id.clone(), None).map_err(|e| e.to_string())?;
-            if let Some(error) = ctl.validate(action, &spec) {
+            let mut error = ctl.validate(action, &spec);
+            let prepared_action = if error.is_none() {
+                if let Some(preparation) = preparation {
+                    if action.kind != ActionKind::ApplyTopologyPatch {
+                        return Err("prepared operations require apply_topology_patch".into());
+                    }
+                    match preparation {
+                        Ok(operations) => {
+                            let mut prepared = action.clone();
+                            prepared.payload["operations"] = json!(operations);
+                            error = ctl.validate(&prepared, &spec);
+                            Some(prepared)
+                        }
+                        Err(reason) => {
+                            error = Some(reason.into());
+                            None
+                        }
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            if error.is_none() {
+                let field = match action.kind {
+                    ActionKind::PublishShared => Some("ref"),
+                    ActionKind::CompleteTask => Some("result_refs"),
+                    _ => None,
+                };
+                if let Some(field) = field {
+                    error = crate::references::validate(
+                        &ctl.store,
+                        &ctl.session_id,
+                        &spec,
+                        &action.actor_id,
+                        &action.payload,
+                        field,
+                    )?;
+                }
+            }
+            if let Some(error) = error {
                 let receipt = Receipt::failure(action, error);
                 ctl.store
                     .record_action(
@@ -230,7 +471,7 @@ impl Control {
                     .map_err(|e| e.to_string())?;
                 return Ok(receipt);
             }
-            let reduction = ctl.reduce(action, &spec)?;
+            let reduction = ctl.reduce(prepared_action.as_ref().unwrap_or(action), &spec)?;
             ctl.persist_events(action, &spec, &reduction.events)?;
             ctl.schedule_inner(&spec)?;
             ctl.store
@@ -254,6 +495,67 @@ impl Control {
             let spec = ctl.store.load_team_spec(&ctl.session_id.clone(), None).map_err(|e| e.to_string())?;
             ctl.schedule_inner(&spec)
         })
+    }
+
+    /// Projection and its rejection audit commit at the same read boundary.
+    pub fn agent_view(&mut self, agent_id: &str) -> Result<Json, String> {
+        self.in_tx(|ctl| {
+            let spec = ctl.store.load_team_spec(&ctl.session_id, None)?;
+            ctl.restrict_pending_deliveries(&spec, agent_id)?;
+            views::build_agent_view(&ctl.store, &spec, &ctl.session_id, agent_id)
+        })
+    }
+
+    /// Re-read only the offered IDs at a backend's actual injection boundary.
+    pub fn delivery_items(&mut self, agent_id: &str, ids: &[i64]) -> Result<Vec<Json>, String> {
+        self.in_tx(|ctl| {
+            let spec = ctl.store.load_team_spec(&ctl.session_id, None)?;
+            ctl.restrict_pending_deliveries(&spec, agent_id)?
+                .iter()
+                .filter(|d| d["delivery_id"].as_i64().is_some_and(|id| ids.contains(&id)))
+                .map(|d| views::project_delivery(&spec, agent_id, d))
+                .collect()
+        })
+    }
+
+    /// External backends confirm acceptance separately from an in-memory offer.
+    /// This ledger survives runner retirement/restart and is read at finalize.
+    pub fn confirm_delivery_ids(&mut self, run_id: &str, ids: &[i64]) -> Result<(), String> {
+        self.in_tx(|ctl| {
+            let run = ctl
+                .store
+                .get_run_for_session(&ctl.session_id, run_id)
+                .map_err(|e| e.to_string())?
+                .ok_or("unknown run")?;
+            let mut accepted = ctl.confirmed_delivery_ids(run_id)?;
+            for id in ids {
+                if !ctl.store.delivery_belongs_to(&ctl.session_id, &run.agent_id, *id).map_err(|e| e.to_string())? {
+                    return Err("delivery does not belong to the run's member".into());
+                }
+                accepted.push(*id);
+            }
+            accepted.sort_unstable();
+            accepted.dedup();
+            ctl.store
+                .set_meta(&format!("confirmed_input:{run_id}"), &json!(accepted).to_string())
+                .map_err(|e| e.to_string())?;
+            // A steer response may arrive after turn/completed. Confirmation
+            // is still durable evidence; do not leave that input replayable.
+            if run.status.is_terminal() {
+                for id in ids {
+                    ctl.store.ack_delivery_by_id(*id).map_err(|e| e.to_string())?;
+                }
+            }
+            Ok(())
+        })
+    }
+
+    pub fn confirmed_delivery_ids(&self, run_id: &str) -> Result<Vec<i64>, String> {
+        self.store.get_run_for_session(&self.session_id, run_id).map_err(|e| e.to_string())?.ok_or("unknown run")?;
+        let stored = self.store.get_meta(&format!("confirmed_input:{run_id}")).map_err(|e| e.to_string())?;
+        stored
+            .map(|s| serde_json::from_str(&s).map_err(|e| format!("invalid input ledger: {e}")))
+            .unwrap_or_else(|| Ok(vec![]))
     }
 
     /// Persist runtime-originated events and schedule.
@@ -286,6 +588,8 @@ impl Control {
             .collect()
     }
 
+    /// Semantic preflight; publication references are checked in submit's
+    /// transaction so storage failures propagate separately from refusals.
     /// Returns Some(error) on refusal.
     pub fn validate(&mut self, action: &TeamAction, spec: &TeamSpec) -> Option<String> {
         if action.session_id != self.session_id {
@@ -295,12 +599,20 @@ impl Control {
         let member_ids: HashSet<&str> = spec.agents.iter().map(|a| a.id.as_str()).collect();
         let actor = action.actor_id.as_str();
         let p = &action.payload;
+        // Serde structs can accept JSON sequences too; wire actions require objects.
+        if !p.is_object() {
+            return Some("动作参数必须是 JSON 对象。".into());
+        }
 
         if matches!(kind, ActionKind::UserMessage | ActionKind::UserSupplement) {
             if actor != "user" {
                 return Some("only the local user can submit user input".into());
             }
-            if pstr(p, "text").trim().is_empty() {
+            let request = match action_payload::<UserInputRequest>(p) {
+                Ok(request) => request,
+                Err(error) => return Some(error),
+            };
+            if request.text.trim().is_empty() {
                 return Some("user input text must not be empty".into());
             }
             return None;
@@ -322,23 +634,32 @@ impl Control {
         }
         if member_ids.contains(actor) && action.run_id.is_some() {
             let run_id = action.run_id.as_deref().unwrap();
-            match self.store.get_run(run_id).ok().flatten() {
+            match self.store.get_run_for_session(&self.session_id, run_id).ok().flatten() {
                 None => return Some(format!("unknown run {run_id:?}")),
                 Some(run) if run.agent_id != actor => return Some("run does not belong to the acting member".into()),
+                Some(run)
+                    if matches!(run.status, TurnStatus::Completed | TurnStatus::Failed | TurnStatus::Cancelled) =>
+                {
+                    return Some(format!("run {run_id:?} already ended as {}", enum_name(run.status)));
+                }
                 _ => {}
             }
         }
 
         match kind {
             ActionKind::SendMessage => {
-                let target = p.get("target").and_then(|v| v.as_str());
-                if target == Some("*") {
+                let request = match action_payload::<MessageRequest>(p) {
+                    Ok(request) => request,
+                    Err(error) => return Some(error),
+                };
+                let target = request.target.as_str();
+                if target == "*" {
                     let has_broadcast =
                         spec.channels.iter().any(|ch| ch.source == actor && ch.mode == ChannelMode::Broadcast);
                     return if has_broadcast { None } else { Some(format!("{actor:?} has no broadcast channel")) };
                 }
                 match target {
-                    Some(t) if member_ids.contains(t) => {
+                    t if member_ids.contains(t) => {
                         if spec.can_send(actor, t) {
                             None
                         } else {
@@ -356,7 +677,11 @@ impl Control {
                 }
             }
             ActionKind::AssignTask => {
-                let assignee = p.get("assignee").and_then(|v| v.as_str()).unwrap_or("");
+                let request = match task_payload::<AssignTaskRequest>(p) {
+                    Ok(request) => request,
+                    Err(error) => return Some(error),
+                };
+                let assignee = request.assignee.as_str();
                 if !member_ids.contains(assignee) {
                     return Some(format!("unknown assignee {assignee:?}"));
                 }
@@ -366,12 +691,20 @@ impl Control {
                 if spec.agent(assignee).map(|a| a.runtime_kind) == Some(RuntimeKind::Codex) && actor != spec.leader_id {
                     return Some("codex members can only be delegated to by the Leader".into());
                 }
-                if pstr(p, "description").trim().is_empty() {
+                if request.description.trim().is_empty() {
                     return Some("task description must not be empty".into());
                 }
-                let deps = plist(p, "dependencies");
+                if request.task_id.as_ref().is_some_and(|id| id.trim().is_empty()) {
+                    return Some("task_id must not be empty".into());
+                }
+                if let Some(parent) = &request.parent_task_id {
+                    if self.store.get_task_for_session(&self.session_id, parent).ok().flatten().is_none() {
+                        return Some(format!("unknown parent task {parent:?}"));
+                    }
+                }
+                let deps = request.dependencies;
                 for dep in &deps {
-                    if self.store.get_task(dep).ok().flatten().is_none() {
+                    if self.store.get_task_for_session(&self.session_id, dep).ok().flatten().is_none() {
                         return Some(format!("unknown dependency task {dep:?}"));
                     }
                 }
@@ -381,11 +714,15 @@ impl Control {
                 None
             }
             ActionKind::CompleteTask => {
+                let request = match task_payload::<CompleteTaskRequest>(p) {
+                    Ok(request) => request,
+                    Err(error) => return Some(error),
+                };
                 if action.run_id.is_none() {
                     return Some("complete_task requires an active run".into());
                 }
-                let tid = p.get("task_id").and_then(|v| v.as_str()).unwrap_or("");
-                match self.store.get_task(tid).ok().flatten() {
+                let tid = request.task_id.as_str();
+                match self.store.get_task_for_session(&self.session_id, tid).ok().flatten() {
                     None => Some(format!("unknown task {tid:?}")),
                     Some(task) if task.assignee != actor => {
                         Some("only the current assignee can complete a task".into())
@@ -405,18 +742,31 @@ impl Control {
                 }
             }
             ActionKind::WaitForTasks => {
+                let request = match task_payload::<WaitForTasksRequest>(p) {
+                    Ok(request) => request,
+                    Err(error) => return Some(error),
+                };
                 if action.run_id.is_none() {
                     return Some("wait_for_tasks requires an active run".into());
                 }
-                for tid in plist(p, "task_ids") {
-                    if self.store.get_task(&tid).ok().flatten().is_none() {
+                for tid in request.task_ids {
+                    let Some(task) = self.store.get_task_for_session(&self.session_id, &tid).ok().flatten() else {
+                        return Some(format!("unknown task {tid:?}"));
+                    };
+                    if !Self::can_wait_for_task(spec, actor, &task) {
+                        // Keep the error indistinguishable from a missing task:
+                        // task ids must not become an existence oracle.
                         return Some(format!("unknown task {tid:?}"));
                     }
                 }
                 None
             }
             ActionKind::PublishShared => {
-                let space_id = p.get("space_id").and_then(|v| v.as_str()).unwrap_or("");
+                let request = match action_payload::<PublishSharedRequest>(p) {
+                    Ok(request) => request,
+                    Err(error) => return Some(error),
+                };
+                let space_id = request.space_id.as_str();
                 let Some(space) = spec.space(space_id) else {
                     return Some(format!(
                         "unknown shared space {space_id:?}; available: {:?}",
@@ -426,13 +776,44 @@ impl Control {
                 if !space.writers.iter().any(|w| w == actor) {
                     return Some(format!("{actor:?} has no write access to shared space {space_id:?}"));
                 }
-                if !truthy(pget(p, "content")) && !truthy(pget(p, "ref")) {
+                if request.content.trim().is_empty()
+                    && request.r#ref.as_deref().is_none_or(|reference| reference.trim().is_empty())
+                {
                     return Some("shared entry needs content or a ref".into());
+                }
+                if let Some(id) = &request.supersedes {
+                    let entry = match self.store.shared_entry_for_session(&self.session_id, id) {
+                        Ok(entry) => entry,
+                        Err(error) => return Some(format!("读取共享条目引用失败：{error}")),
+                    };
+                    let visible = entry.as_ref().is_some_and(|entry| {
+                        spec.space(&entry.space_id)
+                            .is_some_and(|space| space.readers.iter().chain(&space.writers).any(|id| id == actor))
+                    });
+                    if !visible {
+                        return Some(format!("未知的共享条目引用 {id:?}。"));
+                    }
                 }
                 None
             }
-            ActionKind::ReadShared | ActionKind::ListShared => {
-                if let Some(sid) = p.get("space_id").and_then(|v| v.as_str()) {
+            ActionKind::ReadShared => {
+                // Value deserialization errors omit field paths; retain useful paging diagnostics.
+                for field in ["after_sequence", "limit"] {
+                    if p.get(field).is_some_and(|value| value.as_i64().is_none()) {
+                        return Some(format!("{field} 必须是整数。"));
+                    }
+                }
+                let request = match action_payload::<ReadSharedRequest>(p) {
+                    Ok(request) => request,
+                    Err(error) => return Some(error),
+                };
+                if request.after_sequence.is_some_and(|sequence| sequence < 0) {
+                    return Some("after_sequence 必须是非负整数。".into());
+                }
+                if request.limit <= 0 {
+                    return Some("limit must be positive".into());
+                }
+                if let Some(sid) = request.space_id.as_deref() {
                     let Some(space) = spec.space(sid) else {
                         return Some(format!(
                             "unknown shared space {sid:?}; available: {:?}",
@@ -445,50 +826,86 @@ impl Control {
                 }
                 None
             }
+            ActionKind::ListShared => action_payload::<EmptyRequest>(p).err(),
             ActionKind::RequestHelp => {
-                if pstr(p, "message").trim().is_empty() {
+                let request = match action_payload::<HelpRequest>(p) {
+                    Ok(request) => request,
+                    Err(error) => return Some(error),
+                };
+                if request.message.trim().is_empty() {
                     return Some("help request must include a message".into());
+                }
+                if let Some(task_id) = &request.task_id {
+                    match self.store.get_task_for_session(&self.session_id, task_id) {
+                        Ok(Some(_)) => {}
+                        Ok(None) => return Some(format!("未知任务 {task_id:?}。")),
+                        Err(error) => return Some(format!("读取求助任务失败：{error}")),
+                    }
                 }
                 None
             }
-            ActionKind::ProposeTeamChange => {
-                let ops = p.get("operations").and_then(|v| v.as_array());
-                match ops {
-                    Some(ops) if !ops.is_empty() => None,
-                    _ => Some("proposal needs a non-empty operations list".into()),
-                }
-            }
+            ActionKind::ProposeTeamChange => match serde_json::from_value::<TeamChangeRequest>(p.clone()) {
+                Ok(request) if !request.operations.is_empty() => None,
+                Ok(_) => Some("proposal needs a non-empty operations list".into()),
+                Err(e) => Some(format!("invalid proposal payload: {e}")),
+            },
             ActionKind::ApplyTopologyPatch => {
                 if actor != spec.leader_id {
                     return Some("only the Leader can apply topology patches".into());
                 }
-                if let Some(patch_id) = p.get("patch_id").and_then(|v| v.as_str()) {
-                    let Some(patch) = self.store.get_patch(patch_id).ok().flatten() else {
-                        return Some(format!("unknown patch {patch_id:?}"));
+                let request = match serde_json::from_value::<TopologyPatchRequest>(p.clone()) {
+                    Ok(request) => request,
+                    Err(e) => return Some(format!("invalid topology patch payload: {e}")),
+                };
+                if let Some(patch_id) = &request.patch_id {
+                    if patch_id.trim().is_empty() {
+                        return Some("patch_id must not be empty".into());
+                    }
+                    let patch = match self.store.get_patch_for_session(&self.session_id, patch_id) {
+                        Ok(Some(patch)) => patch,
+                        Ok(None) => return Some(format!("unknown patch {patch_id:?}")),
+                        Err(e) => return Some(format!("cannot read topology patch: {e}")),
                     };
                     // a WAITING_BOUNDARY patch may still be rejected; accepting it is
                     // pointless (the boundary applies it once members go idle)
                     let decidable = matches!(patch.status, PatchStatus::Proposed | PatchStatus::Accepted)
-                        || (pbool(p, "reject") && patch.status == PatchStatus::WaitingBoundary);
+                        || (request.reject && patch.status == PatchStatus::WaitingBoundary);
                     if !decidable {
                         return Some(format!("patch is {}, cannot decide", enum_name(patch.status)));
                     }
-                    if !pbool(p, "reject")
-                        && patch.base_revision != self.store.current_revision(&self.session_id).unwrap_or(0)
-                    {
-                        return Some(format!(
-                            "patch base_revision {} is stale; propose again against the current revision",
-                            patch.base_revision
-                        ));
+                    if !request.reject {
+                        let current = match self.store.current_revision(&self.session_id) {
+                            Ok(current) => current,
+                            Err(e) => return Some(format!("cannot read topology revision: {e}")),
+                        };
+                        if patch.base_revision != current {
+                            return Some(format!(
+                                "patch base_revision {} is stale; current is {current}; propose again",
+                                patch.base_revision
+                            ));
+                        }
+                        if request.base_revision.is_some_and(|base| base != current) {
+                            return Some(format!(
+                                "patch needs base_revision {current}; omit it to use the stored revision"
+                            ));
+                        }
+                        if request.operations.as_ref().is_none_or(|ops| ops.is_empty()) && patch.operations.is_empty() {
+                            return Some("stored patch needs a non-empty operations list".into());
+                        }
                     }
                     return None;
                 }
-                let ops = p.get("operations").and_then(|v| v.as_array());
-                if ops.map(|o| o.is_empty()).unwrap_or(true) {
+                if request.reject {
+                    return Some("reject requires the patch_id of an existing proposal".into());
+                }
+                if request.operations.as_ref().is_none_or(|ops| ops.is_empty()) {
                     return Some("patch needs a non-empty operations list".into());
                 }
-                let base = p.get("base_revision").and_then(|v| v.as_i64());
-                let current = self.store.current_revision(&self.session_id).unwrap_or(0);
+                let base = request.base_revision;
+                let current = match self.store.current_revision(&self.session_id) {
+                    Ok(current) => current,
+                    Err(e) => return Some(format!("cannot read topology revision: {e}")),
+                };
                 if base != Some(current) {
                     return Some(match base {
                         // an absent base_revision is a retryable authoring mistake,
@@ -508,24 +925,32 @@ impl Control {
                 if action.run_id.is_none() {
                     return Some("signal_done requires an active run".into());
                 }
-                None
+                action_payload::<SignalDoneRequest>(p).err()
             }
             ActionKind::CancelTask => {
+                let request = match task_payload::<CancelTaskRequest>(p) {
+                    Ok(request) => request,
+                    Err(error) => return Some(error),
+                };
                 if actor != spec.leader_id && actor != "user" {
                     return Some("only the Leader or the user can cancel tasks".into());
                 }
-                let tid = p.get("task_id").and_then(|v| v.as_str()).unwrap_or("");
-                if self.store.get_task(tid).ok().flatten().is_none() {
+                let tid = request.task_id.as_str();
+                if self.store.get_task_for_session(&self.session_id, tid).ok().flatten().is_none() {
                     return Some(format!("unknown task {tid:?}"));
                 }
                 None
             }
             ActionKind::CancelRun => {
+                let request = match task_payload::<CancelRunRequest>(p) {
+                    Ok(request) => request,
+                    Err(error) => return Some(error),
+                };
                 if actor != spec.leader_id && actor != "user" {
                     return Some("only the Leader or the user can cancel runs".into());
                 }
-                let rid = p.get("run_id").and_then(|v| v.as_str()).unwrap_or("");
-                let Some(run) = self.store.get_run(rid).ok().flatten() else {
+                let rid = request.run_id.as_str();
+                let Some(run) = self.store.get_run_for_session(&self.session_id, rid).ok().flatten() else {
                     return Some(format!("unknown run {rid:?}"));
                 };
                 // An OUTCOME_UNKNOWN run is a turn that was interrupted mid-command:
@@ -540,15 +965,18 @@ impl Control {
                 if actor != "user" {
                     return Some("only the local user can decide approvals".into());
                 }
-                let aid = p.get("approval_id").and_then(|v| v.as_str()).unwrap_or("");
+                let request = match action_payload::<ApprovalDecisionRequest>(p) {
+                    Ok(request) => request,
+                    Err(error) => return Some(error),
+                };
+                let aid = request.approval_id.as_str();
                 let Some(req) = self.store.get_approval_for_session(&self.session_id, aid).ok().flatten() else {
                     return Some(format!("unknown approval {aid:?}"));
                 };
                 if req.status != ApprovalStatus::Pending {
                     return Some(format!("approval is already {}", enum_name(req.status)));
                 }
-                let decision = p.get("decision").and_then(|v| v.as_str());
-                if !matches!(decision, Some("once") | Some("session") | Some("deny")) {
+                if !matches!(request.decision.as_str(), "once" | "session" | "deny") {
                     return Some("decision must be one of: once, session, deny".into());
                 }
                 None
@@ -557,17 +985,13 @@ impl Control {
                 if actor != "user" {
                     return Some("only the local user can change the permission mode".into());
                 }
-                let mode = p.get("mode").and_then(|v| v.as_str());
-                if !matches!(mode, Some("approved_scope") | Some("full_auto")) {
-                    return Some("mode must be approved_scope or full_auto".into());
-                }
-                None
+                action_payload::<PermissionModeRequest>(p).err()
             }
             ActionKind::PauseSession => {
                 if actor != "user" {
                     return Some("only the local user can pause the session".into());
                 }
-                None
+                action_payload::<EmptyRequest>(p).err()
             }
             other => Some(format!("unsupported action kind {}", enum_name(other))),
         }
@@ -583,7 +1007,7 @@ impl Control {
             if !seen.insert(tid.clone()) {
                 continue;
             }
-            if let Ok(Some(t)) = self.store.get_task(&tid) {
+            if let Ok(Some(t)) = self.store.get_task_for_session(&self.session_id, &tid) {
                 stack.extend(t.dependencies);
             }
         }
@@ -600,6 +1024,7 @@ impl Control {
 
         match kind {
             ActionKind::UserMessage | ActionKind::UserSupplement => {
+                let request = action_payload::<UserInputRequest>(p)?;
                 // user input resumes a paused session (plan §9.3)
                 if let Some(session) = self.store.get_session(&self.session_id).map_err(|e| e.to_string())? {
                     if session.get("status").and_then(|v| v.as_str()) == Some("PAUSED") {
@@ -610,7 +1035,7 @@ impl Control {
                 }
                 self.store.clear_goal_completion_requests(&self.session_id).map_err(|e| e.to_string())?;
                 let goal_id = self.ensure_goal(spec)?;
-                let text = pstr(p, "text");
+                let text = request.text;
                 Ok(Reduction {
                     events: vec![EventDraft {
                         kind: EventKind::UserMessage,
@@ -625,15 +1050,15 @@ impl Control {
             }
 
             ActionKind::SendMessage => {
-                let target = p.get("target").and_then(|v| v.as_str());
-                let targets: Vec<String> = if target == Some("*") {
+                let request = action_payload::<MessageRequest>(p)?;
+                let targets: Vec<String> = if request.target == "*" {
                     spec.agents.iter().map(|a| a.id.clone()).filter(|id| id != &actor).collect()
                 } else {
-                    target.map(|t| vec![t.to_string()]).unwrap_or_default()
+                    vec![request.target]
                 };
                 let targets: Vec<String> =
                     targets.into_iter().filter(|t| t != &actor && spec.can_send(&actor, t)).collect();
-                let text = pstr(p, "text");
+                let text = request.text;
                 Ok(Reduction {
                     events: targets
                         .iter()
@@ -649,15 +1074,16 @@ impl Control {
             }
 
             ActionKind::AssignTask => {
-                let deps = plist(p, "dependencies");
+                let request = task_payload::<AssignTaskRequest>(p)?;
+                let deps = request.dependencies;
                 let task = Task {
                     task_id: derived_task_id(action),
-                    parent_task_id: p.get("parent_task_id").and_then(|v| v.as_str()).map(str::to_string),
+                    parent_task_id: request.parent_task_id,
                     goal_id: self.current_goal_id()?,
                     requester: actor.clone(),
-                    assignee: pstr(p, "assignee"),
-                    description: pstr(p, "description"),
-                    acceptance: pstr(p, "acceptance"),
+                    assignee: request.assignee,
+                    description: request.description,
+                    acceptance: request.acceptance,
                     dependencies: deps.clone(),
                     status: TaskStatus::Pending,
                     result_refs: vec![],
@@ -680,9 +1106,7 @@ impl Control {
             }
 
             ActionKind::CompleteTask => {
-                let task_id = pstr(p, "task_id");
-                let result_refs = plist(p, "result_refs");
-                let summary = pstr(p, "summary");
+                let CompleteTaskRequest { task_id, result_refs, summary } = task_payload(p)?;
                 self.store
                     .record_completion_request(action.run_id.as_deref().unwrap_or(""), &task_id, &result_refs, &summary)
                     .map_err(|e| e.to_string())?;
@@ -693,20 +1117,26 @@ impl Control {
             }
 
             ActionKind::WaitForTasks => {
-                let task_ids = plist(p, "task_ids");
+                let WaitForTasksRequest { task_ids } = task_payload(p)?;
                 let pending: Vec<String> = task_ids
                     .iter()
-                    .filter(|t| {
-                        matches!(
-                            self.store.get_task(t).ok().flatten().map(|t| t.status),
-                            Some(TaskStatus::Pending | TaskStatus::Running)
-                        )
+                    .map(|t| -> rusqlite::Result<Option<String>> {
+                        Ok(self
+                            .store
+                            .get_task_for_session(&self.session_id, t)?
+                            .filter(|task| matches!(task.status, TaskStatus::Pending | TaskStatus::Running))
+                            .map(|_| t.clone()))
                     })
-                    .cloned()
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| e.to_string())?
+                    .into_iter()
+                    .flatten()
                     .collect();
                 if !pending.is_empty() {
                     if let Some(run_id) = action.run_id.as_deref() {
-                        if let Some(run) = self.store.get_run(run_id).map_err(|e| e.to_string())? {
+                        if let Some(run) =
+                            self.store.get_run_for_session(&self.session_id, run_id).map_err(|e| e.to_string())?
+                        {
                             self.store
                                 .update_run_status_where(&run.run_id, TurnStatus::Running, TurnStatus::WaitingTask)
                                 .map_err(|e| e.to_string())?;
@@ -722,20 +1152,23 @@ impl Control {
                     });
                 }
                 // results keyed by task id
-                let results: serde_json::Map<String, Json> =
-                    task_ids.iter().map(|t| (t.clone(), self.task_result(t))).collect();
+                let results: serde_json::Map<String, Json> = task_ids
+                    .iter()
+                    .map(|t| Ok((t.clone(), self.task_result_for(t, &actor, spec)?)))
+                    .collect::<Result<_, String>>()?;
                 Ok(Reduction { events: vec![], receipt: ok(json!({"waiting": false, "results": results})) })
             }
 
             ActionKind::PublishShared => {
+                let request = action_payload::<PublishSharedRequest>(p)?;
                 let entry = SharedEntry {
                     entry_id: new_id("share"),
-                    space_id: pstr(p, "space_id"),
+                    space_id: request.space_id,
                     author: actor.clone(),
-                    kind: if pstr(p, "kind").is_empty() { "note".into() } else { pstr(p, "kind") },
-                    content: pstr(p, "content"),
-                    r#ref: p.get("ref").and_then(|v| v.as_str()).map(str::to_string),
-                    supersedes: p.get("supersedes").and_then(|v| v.as_str()).map(str::to_string),
+                    kind: if request.kind.is_empty() { "note".into() } else { request.kind },
+                    content: request.content,
+                    r#ref: request.r#ref,
+                    supersedes: request.supersedes,
                     sequence: 0,
                     created_at: now(),
                 };
@@ -753,7 +1186,7 @@ impl Control {
                 })
             }
 
-            ActionKind::ReadShared => self.read_shared(action, spec, true),
+            ActionKind::ReadShared => self.read_shared(action, spec),
 
             ActionKind::ListShared => {
                 let spaces: Vec<&SharedSpaceSpec> = spec
@@ -763,14 +1196,12 @@ impl Control {
                     .collect();
                 let mut infos = vec![];
                 for s in spaces {
-                    let entries = self
-                        .store
-                        .shared_entries(&self.session_id, std::slice::from_ref(&s.id), 0, 1000)
-                        .map_err(|e| e.to_string())?;
+                    let (entries, last_sequence) =
+                        self.store.shared_space_summary(&self.session_id, &s.id).map_err(|e| e.to_string())?;
                     infos.push(json!({
                         "space_id": s.id,
-                        "entries": entries.len(),
-                        "last_sequence": entries.last().map(|e| e.sequence).unwrap_or(0),
+                        "entries": entries,
+                        "last_sequence": last_sequence,
                         "readable": true,
                         "writable": s.writers.contains(&actor),
                     }));
@@ -779,11 +1210,12 @@ impl Control {
             }
 
             ActionKind::RequestHelp => {
-                let task_id = p.get("task_id").and_then(|v| v.as_str()).map(str::to_string);
+                let request = action_payload::<HelpRequest>(p)?;
+                let task_id = request.task_id;
                 Ok(Reduction {
                     events: vec![EventDraft {
                         kind: EventKind::Message,
-                        payload: json!({"text": pstr(p, "message"), "from": actor,
+                        payload: json!({"text": request.message, "from": actor,
                                         "target": spec.leader_id, "help": true, "task_id": task_id}),
                         targets: Some(vec![spec.leader_id.clone()]),
                         task_id,
@@ -794,12 +1226,13 @@ impl Control {
             }
 
             ActionKind::ProposeTeamChange => {
+                let request: TeamChangeRequest = serde_json::from_value(p.clone()).map_err(|e| e.to_string())?;
                 let patch = TopologyPatch {
                     patch_id: new_id("patch"),
                     base_revision: self.store.current_revision(&self.session_id).map_err(|e| e.to_string())?,
                     proposer: actor.clone(),
                     decided_by: None,
-                    operations: p.get("operations").and_then(|v| v.as_array()).cloned().unwrap_or_default(),
+                    operations: request.operations.into_iter().map(Json::Object).collect(),
                     affected_agents: vec![],
                     status: PatchStatus::Proposed,
                     created_at: now(),
@@ -811,7 +1244,7 @@ impl Control {
                         EventKind::TopologyProposed,
                         json!({"patch_id": patch.patch_id, "proposer": actor,
                                "base_revision": patch.base_revision, "operations": patch.operations,
-                               "rationale": pstr(p, "rationale")}),
+                               "rationale": request.rationale}),
                     )],
                     receipt: ok(json!({"patch_id": patch.patch_id, "status": "PROPOSED"})),
                 })
@@ -820,6 +1253,7 @@ impl Control {
             ActionKind::ApplyTopologyPatch => self.apply_patch_action(action, spec),
 
             ActionKind::SignalDone => {
+                let request = action_payload::<SignalDoneRequest>(p)?;
                 let blockers = self.completion_blockers(spec, action.run_id.as_deref())?;
                 if !blockers.is_empty() {
                     return Ok(Reduction {
@@ -834,13 +1268,13 @@ impl Control {
                     });
                 }
                 self.store
-                    .record_completion_request(action.run_id.as_deref().unwrap_or(""), "", &[], &pstr(p, "summary"))
+                    .record_completion_request(action.run_id.as_deref().unwrap_or(""), "", &[], &request.summary)
                     .map_err(|e| e.to_string())?;
                 Ok(Reduction {
                     events: vec![],
                     receipt: ok(json!({"accepted": true,
                                        "note": "completion commits when the turn ends",
-                                       "summary": pstr(p, "summary")})),
+                                       "summary": request.summary})),
                 })
             }
 
@@ -850,7 +1284,7 @@ impl Control {
                 let run_id = pstr(p, "run_id");
                 let run = self
                     .store
-                    .get_run(&run_id)
+                    .get_run_for_session(&self.session_id, &run_id)
                     .map_err(|e| e.to_string())?
                     .ok_or_else(|| format!("unknown run {run_id:?}"))?;
                 if run.status == TurnStatus::OutcomeUnknown {
@@ -866,6 +1300,12 @@ impl Control {
                         receipt: ok(json!({"run_id": run.run_id, "status": "acknowledged", "was": "OUTCOME_UNKNOWN"})),
                     });
                 }
+                if run.status == TurnStatus::Queued && run.external_turn_id.is_none() {
+                    return Ok(Reduction {
+                        events: self.cancel_inactive_run(&run, &run.input_delivery_ids)?,
+                        receipt: ok(json!({"run_id":run.run_id, "status":"CANCELLED"})),
+                    });
+                }
                 self.store.set_run_cancel_requested(&run.run_id).map_err(|e| e.to_string())?;
                 Ok(Reduction {
                     events: vec![EventDraft::new(
@@ -877,13 +1317,14 @@ impl Control {
             }
 
             ActionKind::ApprovalDecision => {
-                let aid = pstr(p, "approval_id");
+                let request = action_payload::<ApprovalDecisionRequest>(p)?;
+                let aid = request.approval_id;
                 let req = self
                     .store
                     .get_approval_for_session(&self.session_id, &aid)
                     .map_err(|e| e.to_string())?
                     .ok_or_else(|| format!("unknown approval {aid:?}"))?;
-                let status = match pstr(p, "decision").as_str() {
+                let status = match request.decision.as_str() {
                     "once" => ApprovalStatus::ApprovedOnce,
                     "session" => ApprovalStatus::ApprovedSession,
                     _ => ApprovalStatus::Denied,
@@ -906,10 +1347,8 @@ impl Control {
             }
 
             ActionKind::SetPermissionMode => {
-                let mode = pstr(p, "mode");
-                let pm: PermissionMode =
-                    serde_json::from_value(Json::String(mode.clone())).map_err(|e| e.to_string())?;
-                self.store.set_permission_mode(&self.session_id, pm).map_err(|e| e.to_string())?;
+                let mode = action_payload::<PermissionModeRequest>(p)?.mode;
+                self.store.set_permission_mode(&self.session_id, mode).map_err(|e| e.to_string())?;
                 Ok(Reduction {
                     events: vec![EventDraft::new(EventKind::SessionStatus, json!({"permission_mode": mode}))],
                     receipt: ok(json!({"mode": mode})),
@@ -933,37 +1372,33 @@ impl Control {
 
     // ------------------------------------------------------------- reductions
 
-    fn read_shared(&mut self, action: &TeamAction, spec: &TeamSpec, advance: bool) -> Result<Reduction, String> {
+    fn read_shared(&mut self, action: &TeamAction, spec: &TeamSpec) -> Result<Reduction, String> {
         let actor = &action.actor_id;
-        let p = &action.payload;
-        let spaces: Vec<String> = match p.get("space_id").and_then(|v| v.as_str()) {
+        let request = action_payload::<ReadSharedRequest>(&action.payload)?;
+        let spaces: Vec<String> = match request.space_id {
             None => spec
                 .shared_spaces
                 .iter()
                 .filter(|s| s.readers.contains(actor) || s.writers.contains(actor))
                 .map(|s| s.id.clone())
                 .collect(),
-            Some(sid) => vec![sid.to_string()],
+            Some(sid) => vec![sid],
         };
-        let after: i64 = match p.get("after_sequence") {
-            None | Some(Json::Null) => spaces
-                .iter()
-                .map(|s| self.store.shared_cursor(&self.session_id, actor, s).unwrap_or(0))
-                .min()
-                .unwrap_or(0),
-            // a malformed cursor becomes a failed receipt — it must never
-            // read from 0 silently.
-            Some(v) => py_int(v).ok_or_else(|| format!("bad after_sequence {v}"))?,
-        };
-        let limit: i64 = match p.get("limit") {
-            None => 50,
-            Some(v) => py_int(v).ok_or_else(|| format!("bad limit {v}"))?,
-        };
-        if limit <= 0 {
-            return Err("limit must be positive".into());
-        }
-        let entries = self.store.shared_entries(&self.session_id, &spaces, after, limit).map_err(|e| e.to_string())?;
-        if advance && !entries.is_empty() {
+        let cursors: Vec<(&str, i64)> = spaces
+            .iter()
+            .map(|space| {
+                let after = match request.after_sequence {
+                    Some(after) => after,
+                    None => self.store.shared_cursor(&self.session_id, actor, space).map_err(|e| e.to_string())?,
+                };
+                Ok((space.as_str(), after))
+            })
+            .collect::<Result<_, String>>()?;
+        let after =
+            request.after_sequence.unwrap_or_else(|| cursors.iter().map(|(_, after)| *after).min().unwrap_or(0));
+        let entries =
+            self.store.shared_entries_after(&self.session_id, &cursors, request.limit).map_err(|e| e.to_string())?;
+        if !entries.is_empty() {
             for s in &spaces {
                 let seq = entries.iter().filter(|e| &e.space_id == s).map(|e| e.sequence).max().unwrap_or(0);
                 if seq > 0 {
@@ -983,15 +1418,18 @@ impl Control {
     }
 
     fn apply_patch_action(&mut self, action: &TeamAction, spec: &TeamSpec) -> Result<Reduction, String> {
-        let p = &action.payload;
-        let patch_id = p.get("patch_id").and_then(|v| v.as_str()).map(str::to_string);
+        let request: TopologyPatchRequest =
+            serde_json::from_value(action.payload.clone()).map_err(|e| e.to_string())?;
+        let patch_id = request.patch_id;
+        let supplied_operations: Vec<Json> =
+            request.operations.unwrap_or_default().into_iter().map(Json::Object).collect();
         let mut patch = if let Some(pid) = &patch_id {
             let patch = self
                 .store
-                .get_patch(pid)
+                .get_patch_for_session(&self.session_id, pid)
                 .map_err(|e| e.to_string())?
                 .ok_or_else(|| format!("unknown patch {pid:?}"))?;
-            if pbool(p, "reject") {
+            if request.reject {
                 self.store.set_patch_status(&patch.patch_id, PatchStatus::Rejected).map_err(|e| e.to_string())?;
                 // a WAITING_BOUNDARY patch parked its affected members in Draining; release them
                 for agent_id in &patch.affected_agents {
@@ -1013,24 +1451,20 @@ impl Control {
         } else {
             TopologyPatch {
                 patch_id: new_id("patch"),
-                base_revision: p.get("base_revision").and_then(|v| v.as_i64()).unwrap_or(0),
+                base_revision: request.base_revision.unwrap_or(0),
                 proposer: action.actor_id.clone(),
                 decided_by: None,
-                operations: p.get("operations").and_then(|v| v.as_array()).cloned().unwrap_or_default(),
+                operations: supplied_operations.clone(),
                 affected_agents: vec![],
                 status: PatchStatus::Proposed,
                 created_at: now(),
                 updated_at: now(),
             }
         };
-        let operations = if patch_id.is_some() {
-            // `p.get("operations") or patch.operations` — an explicit
-            // empty list falls back to the stored patch's operations.
-            match p.get("operations").and_then(|v| v.as_array()) {
-                Some(ops) if !ops.is_empty() => ops.clone(),
-                _ => patch.operations.clone(),
-            }
+        let operations = if patch_id.is_some() && !supplied_operations.is_empty() {
+            supplied_operations
         } else {
+            // An explicitly empty list retains the stored proposal's operations.
             patch.operations.clone()
         };
         let (new_spec, error) = self.apply_operations(spec, &operations);
@@ -1041,16 +1475,17 @@ impl Control {
         patch.decided_by = Some(action.actor_id.clone());
         patch.operations = operations.clone();
         patch.affected_agents = affected.clone();
-        let waiting: Vec<String> = affected.iter().filter(|a| self.agent_has_live_run(a)).cloned().collect();
+        let mut waiting = vec![];
+        for agent in &affected {
+            if self.agent_has_live_run(agent)? {
+                waiting.push(agent.clone());
+            }
+        }
         if !waiting.is_empty() {
             patch.status = PatchStatus::WaitingBoundary;
             self.store.insert_patch(&patch, &self.session_id).map_err(|e| e.to_string())?;
-            for a in &affected {
-                if self.agent_has_live_run(a) {
-                    self.store
-                        .set_agent_status(&self.session_id, a, AgentStatus::Draining)
-                        .map_err(|e| e.to_string())?;
-                }
+            for a in &waiting {
+                self.store.set_agent_status(&self.session_id, a, AgentStatus::Draining).map_err(|e| e.to_string())?;
             }
             return Ok(Reduction {
                 events: vec![EventDraft::new(
@@ -1086,6 +1521,9 @@ impl Control {
 
     /// Returns (None, error) on failure.
     fn apply_operations(&mut self, spec: &TeamSpec, operations: &[Json]) -> (Option<TeamSpec>, Option<String>) {
+        if operations.is_empty() {
+            return (None, Some("patch needs a non-empty operations list".into()));
+        }
         let mut data = serde_json::to_value(spec).expect("spec serializes");
         let cfg_tools: HashSet<&String> = self.catalog.tools.keys().collect();
         let leader_id = spec.leader_id.clone();
@@ -1095,6 +1533,10 @@ impl Control {
             let source = channel.get("source").and_then(|v| v.as_str()).unwrap_or("");
             if source == leader_id {
                 return None;
+            }
+            // Broadcast grants access to the whole team regardless of targets.
+            if channel.get("mode").and_then(|v| v.as_str()) == Some("broadcast") {
+                return Some(format!("channel {source:?} broadcast is member-to-member; use a shared space instead"));
             }
             channel
                 .get("targets")
@@ -1108,9 +1550,15 @@ impl Control {
         let err = |msg: String| (None, Some(msg));
 
         for op in operations {
-            let Some(op) = op.as_object() else {
+            if !op.is_object() {
                 return err(format!("operation must be a mapping, got {}", op_type(op)));
+            }
+            let validated = match serde_json::from_value::<TopologyOperation>(op.clone()) {
+                Ok(operation) => operation,
+                Err(e) => return err(format!("invalid topology operation: {e}")),
             };
+            let normalized = serde_json::to_value(validated).expect("topology operation serializes");
+            let op = normalized.as_object().expect("topology operation is an object");
             let what = op.get("op").and_then(|v| v.as_str()).unwrap_or("");
             match what {
                 "add_agent" => {
@@ -1224,6 +1672,9 @@ impl Control {
                         for (k, v) in obj {
                             target[k] = v.clone();
                         }
+                    }
+                    if let Err(e) = serde_json::from_value::<AgentSpec>(target.clone()) {
+                        return err(format!("invalid topology operation: {e}"));
                     }
                 }
                 "add_channel" => {
@@ -1379,14 +1830,17 @@ impl Control {
                 v.sort();
                 v
             };
-            let observers: Vec<(String, Vec<String>, Vec<String>)> = {
-                let mut v: Vec<(String, Vec<String>, Vec<String>)> = spec
+            let observers = {
+                let mut v: Vec<_> = spec
                     .observers
                     .iter()
+                    .filter(|o| o.agent_id == agent_id)
                     .map(|o| {
                         let mut et = o.event_types.clone();
                         et.sort();
-                        (o.agent_id.clone(), o.subjects.clone(), et)
+                        let mut subjects = o.subjects.clone();
+                        subjects.sort();
+                        (subjects, et, o.payload_scope.clone(), o.wake_policy.clone())
                     })
                     .collect();
                 v.sort();
@@ -1420,6 +1874,9 @@ impl Control {
                 self.hand_over_removed_member(&a.id, new)?;
             }
         }
+        for a in &new.agents {
+            self.restrict_pending_deliveries(new, &a.id)?;
+        }
         Ok(())
     }
 
@@ -1427,7 +1884,7 @@ impl Control {
     fn hand_over_removed_member(&mut self, agent_id: &str, spec: &TeamSpec) -> Result<(), String> {
         let handed = self
             .store
-            .reassign_tasks(agent_id, &spec.leader_id, &[TaskStatus::Pending, TaskStatus::Blocked])
+            .reassign_tasks(&self.session_id, agent_id, &spec.leader_id, &[TaskStatus::Pending, TaskStatus::Blocked])
             .map_err(|e| e.to_string())?;
         for task_id in &handed {
             // a handed-over task must be announced to its new assignee
@@ -1458,25 +1915,35 @@ impl Control {
     }
 
     fn cancel_task(&mut self, action: &TeamAction, _spec: &TeamSpec) -> Result<Reduction, String> {
-        let task =
-            self.store.get_task(&pstr(&action.payload, "task_id")).map_err(|e| e.to_string())?.ok_or("unknown task")?;
+        let task = self
+            .store
+            .get_task_for_session(&self.session_id, &pstr(&action.payload, "task_id"))
+            .map_err(|e| e.to_string())?
+            .ok_or("unknown task")?;
         if matches!(task.status, TaskStatus::Succeeded | TaskStatus::Failed | TaskStatus::Cancelled) {
             return Ok(Reduction {
                 events: vec![],
                 receipt: Receipt::success(action, json!({"task_id": task.task_id, "status": enum_name(task.status)})),
             });
         }
-        // QUEUED runs have no executor to interrupt: drop them to CANCELLED
-        // outright so the engine never begins a run for an already-cancelled task.
+        let mut events = vec![];
+        let mut external_queued = None;
+        // Other tasks and messages may share the queued intent. Their inputs
+        // remain pending; only this task's wake is discarded below.
         for run in self.store.runs_for_session(&self.session_id, &[TurnStatus::Queued]).map_err(|e| e.to_string())? {
             if run.task_id.as_deref() == Some(task.task_id.as_str()) {
-                self.store
-                    .update_run_status_where(&run.run_id, TurnStatus::Queued, TurnStatus::Cancelled)
-                    .map_err(|e| e.to_string())?;
+                if run.external_turn_id.is_some() {
+                    external_queued = Some(run);
+                } else {
+                    events.extend(self.cancel_inactive_run(&run, &[])?);
+                }
             }
         }
-        let mut active =
-            self.store.active_run_for_agent(&self.session_id, &task.assignee).map_err(|e| e.to_string())?;
+        let mut active = self
+            .store
+            .active_run_for_agent(&self.session_id, &task.assignee)
+            .map_err(|e| e.to_string())?
+            .or(external_queued);
         if active.is_none() {
             // a parked turn (approval or task wait) has no executor to interrupt:
             // requesting its cancel lets schedule converge it (run -> CANCELLED)
@@ -1492,30 +1959,44 @@ impl Control {
                 }
             }
         }
-        let events = vec![EventDraft {
-            kind: EventKind::TaskCancelled,
-            payload: json!({"task_id": task.task_id, "assignee": task.assignee,
-                            "requester": task.requester, "status": "CANCEL_REQUESTED"}),
-            task_id: Some(task.task_id.clone()),
-            ..EventDraft::new(EventKind::TaskCancelled, json!({}))
-        }];
-        let status;
-        if let Some(active) = &active {
-            if active.task_id.as_deref() == Some(task.task_id.as_str()) || active.task_id.is_none() {
-                self.store.set_run_cancel_requested(&active.run_id).map_err(|e| e.to_string())?;
-                self.store.set_task_cancel_requested(&task.task_id).map_err(|e| e.to_string())?;
-                status = "CANCEL_REQUESTED";
-            } else {
-                self.store
-                    .compare_and_set_task(&task.task_id, &enum_name(task.status), TaskStatus::Cancelled, None)
-                    .map_err(|e| e.to_string())?;
-                status = "CANCELLED";
-            }
+        let active =
+            active.filter(|run| run.task_id.as_deref() == Some(task.task_id.as_str()) || run.task_id.is_none());
+        let (status, changed) = if let Some(active) = active {
+            self.store.set_run_cancel_requested(&active.run_id).map_err(|e| e.to_string())?;
+            self.store.set_task_cancel_requested(&task.task_id).map_err(|e| e.to_string())?;
+            ("CANCEL_REQUESTED", true)
         } else {
-            self.store
+            let changed = self
+                .store
                 .compare_and_set_task(&task.task_id, &enum_name(task.status), TaskStatus::Cancelled, None)
                 .map_err(|e| e.to_string())?;
-            status = "CANCELLED";
+            for delivery in
+                self.store.pending_deliveries_joined(&self.session_id, &task.assignee).map_err(|e| e.to_string())?
+            {
+                if delivery["event_kind"] == "task_ready"
+                    && delivery["event_task_id"].as_str() == Some(task.task_id.as_str())
+                {
+                    self.store
+                        .restrict_pending_delivery(
+                            &self.session_id,
+                            &task.assignee,
+                            delivery["delivery_id"].as_i64().ok_or("delivery id is missing")?,
+                            &json!({"dropped_reason":"task cancelled before input consumption", "task_id":task.task_id}),
+                            true,
+                        )
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+            ("CANCELLED", changed)
+        };
+        if changed {
+            events.push(EventDraft {
+                kind: EventKind::TaskCancelled,
+                payload: json!({"task_id": task.task_id, "assignee": task.assignee,
+                                "requester": task.requester, "status": status}),
+                task_id: Some(task.task_id.clone()),
+                ..EventDraft::new(EventKind::TaskCancelled, json!({}))
+            });
         }
         Ok(Reduction { events, receipt: Receipt::success(action, json!({"task_id": task.task_id, "status": status})) })
     }
@@ -1571,10 +2052,11 @@ impl Control {
     }
 
     /// Void a run's PENDING approvals and return the audit events (RT-06).
-    pub fn expire_run_approvals(&mut self, run_id: &str) -> Vec<EventDraft> {
-        self.store
+    pub fn expire_run_approvals(&mut self, run_id: &str) -> Result<Vec<EventDraft>, String> {
+        Ok(self
+            .store
             .expire_run_approvals(run_id)
-            .unwrap_or_default()
+            .map_err(|e| e.to_string())?
             .into_iter()
             .map(|a| {
                 EventDraft::new(
@@ -1584,7 +2066,7 @@ impl Control {
                            "note": "turn ended before a decision"}),
                 )
             })
-            .collect()
+            .collect())
     }
 
     // ----------------------------------------------------------------- persist
@@ -1606,6 +2088,11 @@ impl Control {
                     v
                 };
             }
+            // A push is only an optimization for an already-authorized event;
+            // it must not create a new information channel. This is especially
+            // important for task waiters, whose explicit push list is built
+            // from persisted run state.
+            let allowed: HashSet<String> = audience.iter().cloned().collect();
             let revision = self.store.current_revision(&self.session_id).map_err(|e| e.to_string())?;
             let event = TeamEvent {
                 event_id: new_id("evt"),
@@ -1621,7 +2108,7 @@ impl Control {
                 created_at: now(),
             };
             self.store.append_event(&event).map_err(|e| e.to_string())?;
-            for recipient in push {
+            for recipient in push.into_iter().filter(|recipient| allowed.contains(recipient)) {
                 let batch = match batch_by_agent.get(&recipient) {
                     Some(b) => *b,
                     None => {
@@ -1643,6 +2130,40 @@ impl Control {
 
     // ---------------------------------------------------------------- schedule
 
+    fn restrict_pending_deliveries(&self, spec: &TeamSpec, agent: &str) -> Result<Vec<Json>, String> {
+        let pending = self.store.pending_deliveries_joined(&self.session_id, agent).map_err(|e| e.to_string())?;
+        let mut visible = vec![];
+        for mut d in pending {
+            let id = d["delivery_id"].as_i64().ok_or("delivery id is missing")?;
+            match views::project_delivery(spec, agent, &d) {
+                Ok(item) => {
+                    let payload = &item["payload"];
+                    let previous = d["payload_override"].as_str().or_else(|| d["payload_json"].as_str());
+                    let encoded = payload.to_string();
+                    if previous != Some(encoded.as_str()) {
+                        self.store
+                            .restrict_pending_delivery(&self.session_id, agent, id, payload, false)
+                            .map_err(|e| e.to_string())?;
+                        d["payload_override"] = json!(encoded);
+                    }
+                    visible.push(d);
+                }
+                Err(reason) => {
+                    self.store
+                        .restrict_pending_delivery(
+                            &self.session_id,
+                            agent,
+                            id,
+                            &json!({"dropped_reason": reason}),
+                            true,
+                        )
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+        }
+        Ok(visible)
+    }
+
     /// Create/wake runs for pending deliveries
     /// and ready tasks.
     fn schedule_inner(&mut self, spec: &TeamSpec) -> Result<(), String> {
@@ -1654,7 +2175,7 @@ impl Control {
         let draining: HashSet<String> = self
             .store
             .patches_in_status(&session, PatchStatus::WaitingBoundary)
-            .unwrap_or_default()
+            .map_err(|e| e.to_string())?
             .into_iter()
             .flat_map(|p| p.affected_agents)
             .collect();
@@ -1662,21 +2183,21 @@ impl Control {
             if draining.contains(&agent.id) {
                 self.store.set_agent_status(&session, &agent.id, AgentStatus::Draining).map_err(|e| e.to_string())?;
             }
-            let parked = self.waiting_run(&agent.id)?;
-            if let Some(parked) = &parked {
-                if matches!(parked.status, TurnStatus::WaitingApproval | TurnStatus::WaitingTask)
-                    && parked.cancel_requested
-                    && parked.external_turn_id.is_none()
-                {
-                    // a parked in-process turn has no executor to finalize it
-                    self.converge_cancelled_waiting_run(parked, &spec)?;
+            let inactive = self
+                .store
+                .runs_for_session(&session, &[TurnStatus::Queued, TurnStatus::WaitingApproval, TurnStatus::WaitingTask])
+                .map_err(|e| e.to_string())?;
+            for run in inactive {
+                if run.agent_id == agent.id && run.cancel_requested && run.external_turn_id.is_none() {
+                    // Includes a queued cancellation persisted by an older build.
+                    self.converge_cancelled_inactive_run(&run, &spec)?;
                 }
             }
             let status = self.store.agent_status(&session, &agent.id).map_err(|e| e.to_string())?;
             if matches!(status, Some(AgentStatus::Removed) | Some(AgentStatus::Draining)) {
                 continue;
             }
-            let pending = self.store.pending_deliveries_joined(&session, &agent.id).map_err(|e| e.to_string())?;
+            let pending = self.restrict_pending_deliveries(&spec, &agent.id)?;
             let waiting = self.waiting_run(&agent.id)?;
             let active = self.active_runs(&agent.id)?;
             if pending.is_empty() && active.is_empty() && waiting.is_none() {
@@ -1711,9 +2232,6 @@ impl Control {
                     .map_err(|e| e.to_string())?;
                 continue;
             }
-            if pending.is_empty() {
-                continue;
-            }
             if !active.is_empty() {
                 let run = &active[0];
                 let fresh: Vec<&Json> = pending
@@ -1728,22 +2246,7 @@ impl Control {
                 if run.status == TurnStatus::Running {
                     self.mid_turn_pushes.push((
                         run.run_id.clone(),
-                        fresh
-                            .iter()
-                            .map(|d| {
-                                // same trim as views::build_agent_view: the delivery's scoped
-                                // override wins, raw event payload is only the fallback
-                                let payload = d["payload_override"]
-                                    .as_str()
-                                    .and_then(|o| serde_json::from_str(o).ok())
-                                    .or_else(|| serde_json::from_str(d["payload_json"].as_str().unwrap_or("null")).ok())
-                                    .unwrap_or(Json::Null);
-                                json!({"kind": d["event_kind"], "from": d["event_actor"],
-                                       "event_id": d["event_id"], "delivery_id": d["delivery_id"],
-                                       "task_id": d["event_task_id"],
-                                       "payload": payload})
-                            })
-                            .collect(),
+                        fresh.iter().map(|d| views::project_delivery(&spec, &agent.id, d)).collect::<Result<_, _>>()?,
                     ));
                 }
                 continue;
@@ -1752,18 +2255,25 @@ impl Control {
                 if waiting.status == TurnStatus::WaitingApproval {
                     continue;
                 }
-                // ponytail: a waiting turn resumes when ALL waited tasks are
-                // terminal, or on user input / cancel.
+                // Also release waits after access is revoked. wake_info
+                // returns no task data for an inaccessible result.
                 let pending_wait: Vec<String> = waiting
                     .waiting_on
                     .iter()
-                    .filter(|t| {
-                        matches!(
-                            self.store.get_task(t).ok().flatten().map(|t| t.status),
-                            Some(TaskStatus::Pending | TaskStatus::Running)
-                        )
+                    .map(|t| -> rusqlite::Result<Option<String>> {
+                        Ok(self
+                            .store
+                            .get_task_for_session(&self.session_id, t)?
+                            .filter(|task| {
+                                matches!(task.status, TaskStatus::Pending | TaskStatus::Running)
+                                    && Self::can_wait_for_task(&spec, &agent.id, task)
+                            })
+                            .map(|_| t.clone()))
                     })
-                    .cloned()
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| e.to_string())?
+                    .into_iter()
+                    .flatten()
                     .collect();
                 let seen: HashSet<i64> = waiting.input_delivery_ids.iter().copied().collect();
                 let user_input = pending.iter().any(|d| {
@@ -1810,19 +2320,25 @@ impl Control {
         Ok(())
     }
 
-    /// Finalize a run cancelled while parked on an approval (RT-06) or a task wait.
-    fn converge_cancelled_waiting_run(&mut self, run: &TurnRun, spec: &TeamSpec) -> Result<(), String> {
+    /// The caller selects queued inputs to discard in the same cancellation transaction.
+    fn cancel_inactive_run(&mut self, run: &TurnRun, cancelled_input_ids: &[i64]) -> Result<Vec<EventDraft>, String> {
+        if run.external_turn_id.is_some()
+            || !matches!(run.status, TurnStatus::Queued | TurnStatus::WaitingApproval | TurnStatus::WaitingTask)
+        {
+            return Err("run requires confirmation from its executor before cancellation".into());
+        }
         if !self
             .store
             .update_run_status_where(&run.run_id, run.status, TurnStatus::Cancelled)
             .map_err(|e| e.to_string())?
         {
-            return Ok(());
+            return Ok(vec![]);
         }
-        let mut events = self.expire_run_approvals(&run.run_id);
+        let mut events = self.expire_run_approvals(&run.run_id)?;
         if let Some(task_id) = &run.task_id {
-            if let Ok(Some(task)) = self.store.get_task(task_id) {
-                if matches!(task.status, TaskStatus::Pending | TaskStatus::Running)
+            if let Some(task) = self.store.get_task_for_session(&self.session_id, task_id).map_err(|e| e.to_string())? {
+                if task.assignee == run.agent_id
+                    && matches!(task.status, TaskStatus::Pending | TaskStatus::Running)
                     && self
                         .store
                         .compare_and_set_task(&task.task_id, &enum_name(task.status), TaskStatus::Cancelled, None)
@@ -1838,13 +2354,51 @@ impl Control {
                 }
             }
         }
-        self.store.set_agent_status(&self.session_id, &run.agent_id, AgentStatus::Idle).map_err(|e| e.to_string())?;
-        self.store.ack_run_deliveries(run).map_err(|e| e.to_string())?;
+        let other_run = self
+            .store
+            .runs_for_session(
+                &self.session_id,
+                &[TurnStatus::Queued, TurnStatus::Running, TurnStatus::WaitingApproval, TurnStatus::WaitingTask],
+            )
+            .map_err(|e| e.to_string())?
+            .iter()
+            .any(|other| other.agent_id == run.agent_id);
+        if !other_run
+            && self.store.agent_status(&self.session_id, &run.agent_id).map_err(|e| e.to_string())?
+                != Some(AgentStatus::Removed)
+        {
+            self.store
+                .set_agent_status(&self.session_id, &run.agent_id, AgentStatus::Idle)
+                .map_err(|e| e.to_string())?;
+        }
+        let reason =
+            if run.status == TurnStatus::Queued { "cancelled while queued" } else { "cancelled while waiting" };
+        if run.status == TurnStatus::Queued {
+            for id in cancelled_input_ids {
+                self.store
+                    .restrict_pending_delivery(
+                        &self.session_id,
+                        &run.agent_id,
+                        *id,
+                        &json!({"dropped_reason":reason, "run_id":run.run_id}),
+                        true,
+                    )
+                    .map_err(|e| e.to_string())?;
+            }
+        } else {
+            self.store.ack_run_deliveries(run).map_err(|e| e.to_string())?;
+        }
         events.push(EventDraft::new(
             EventKind::RunCancelled,
             json!({"run_id": run.run_id, "agent_id": run.agent_id, "status": "CANCELLED",
-                   "error": "cancelled while waiting"}),
+                   "error": reason}),
         ));
+        Ok(events)
+    }
+
+    /// Converge a persisted cancellation without entering an inactive executor.
+    fn converge_cancelled_inactive_run(&mut self, run: &TurnRun, spec: &TeamSpec) -> Result<(), String> {
+        let events = self.cancel_inactive_run(run, &run.input_delivery_ids)?;
         let action = TeamAction {
             action_id: format!("cancel-parked:{}", run.run_id),
             session_id: self.session_id.clone(),
@@ -1862,7 +2416,11 @@ impl Control {
             let broken: Vec<Task> = task
                 .dependencies
                 .iter()
-                .filter_map(|d| self.store.get_task(d).ok().flatten())
+                .map(|d| self.store.get_task_for_session(&self.session_id, d))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .flatten()
                 .filter(|d| matches!(d.status, TaskStatus::Failed | TaskStatus::Cancelled))
                 .collect();
             if broken.is_empty() {
@@ -1900,9 +2458,7 @@ impl Control {
         let mut pending = self.store.tasks_for_session(&self.session_id, &["PENDING"]).map_err(|e| e.to_string())?;
         pending.sort_by(|a, b| a.created_at.partial_cmp(&b.created_at).unwrap_or(std::cmp::Ordering::Equal));
         for task in pending {
-            let ready = task.dependencies.iter().all(|d| {
-                matches!(self.store.get_task(d).ok().flatten().map(|t| t.status), Some(TaskStatus::Succeeded))
-            });
+            let ready = self.dependencies_succeeded(&task)?;
             if !ready {
                 continue;
             }
@@ -1936,7 +2492,11 @@ impl Control {
         for patch in
             self.store.patches_in_status(&self.session_id, PatchStatus::WaitingBoundary).map_err(|e| e.to_string())?
         {
-            if patch.affected_agents.iter().any(|a| self.agent_has_live_run(a)) {
+            let mut waiting = false;
+            for agent in &patch.affected_agents {
+                waiting |= self.agent_has_live_run(agent)?;
+            }
+            if waiting {
                 continue;
             }
             let current = self.store.load_team_spec(&self.session_id, None).map_err(|e| e.to_string())?;
@@ -2030,13 +2590,14 @@ impl Control {
 
     // ------------------------------------------------------------- small helpers
 
-    fn agent_has_live_run(&self, agent_id: &str) -> bool {
-        self.store
+    fn agent_has_live_run(&self, agent_id: &str) -> Result<bool, String> {
+        Ok(self
+            .store
             .runs_for_session(
                 &self.session_id,
                 &[TurnStatus::Queued, TurnStatus::Running, TurnStatus::WaitingTask, TurnStatus::WaitingApproval],
             )
-            .unwrap_or_default()
+            .map_err(|e| e.to_string())?
             .iter()
             // ponytail: in-process runs parked on an approval or task wait have no
             // live thread (the executor exited at TurnPaused); counting them
@@ -2047,7 +2608,7 @@ impl Control {
                 r.agent_id == agent_id
                     && !(matches!(r.status, TurnStatus::WaitingApproval | TurnStatus::WaitingTask)
                         && r.external_turn_id.is_none())
-            })
+            }))
     }
 
     fn active_runs(&self, agent_id: &str) -> Result<Vec<TurnRun>, String> {
@@ -2076,14 +2637,22 @@ impl Control {
             if task.assignee != agent_id {
                 continue;
             }
-            let ready = task.dependencies.iter().all(|d| {
-                matches!(self.store.get_task(d).ok().flatten().map(|t| t.status), Some(TaskStatus::Succeeded))
-            });
+            let ready = self.dependencies_succeeded(&task)?;
             if ready {
                 return Ok(Some(task));
             }
         }
         Ok(None)
+    }
+
+    fn dependencies_succeeded(&self, task: &Task) -> Result<bool, String> {
+        let dependencies = task
+            .dependencies
+            .iter()
+            .map(|id| self.store.get_task_for_session(&self.session_id, id))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        Ok(dependencies.iter().all(|dependency| dependency.as_ref().is_some_and(|t| t.status == TaskStatus::Succeeded)))
     }
 
     fn turn_budget_ok(&self) -> Result<bool, String> {
@@ -2093,11 +2662,56 @@ impl Control {
         Ok(used < spec.limits.max_turns_per_goal)
     }
 
-    fn task_result(&self, task_id: &str) -> Json {
-        let task = self.store.get_task(task_id).ok().flatten();
-        json!({"task_id": task_id,
-               "status": task.as_ref().map(|t| enum_name(t.status)).unwrap_or_else(|| "UNKNOWN".into()),
-               "result_refs": task.map(|t| t.result_refs).unwrap_or_default()})
+    fn task_result_for(&self, task_id: &str, actor: &str, spec: &TeamSpec) -> Result<Json, String> {
+        let unknown = json!({"task_id": task_id, "status": "UNKNOWN"});
+        let Some(task) = self.store.get_task_for_session(&self.session_id, task_id).map_err(|e| e.to_string())? else {
+            return Ok(unknown);
+        };
+        let kind = Self::task_status_event(task.status);
+        let Some(scope) = Self::task_event_scope(spec, actor, &task, kind) else { return Ok(unknown) };
+        Ok(views::scope_payload(
+            &scope,
+            kind,
+            &json!({"task_id": task.task_id, "status": enum_name(task.status), "result_refs": task.result_refs}),
+        ))
+    }
+
+    fn task_status_event(status: TaskStatus) -> EventKind {
+        match status {
+            TaskStatus::Pending => EventKind::TaskCreated,
+            TaskStatus::Running => EventKind::TaskStarted,
+            TaskStatus::Succeeded => EventKind::TaskCompleted,
+            TaskStatus::Failed => EventKind::TaskFailed,
+            TaskStatus::Cancelled => EventKind::TaskCancelled,
+            TaskStatus::Blocked => EventKind::TaskBlocked,
+        }
+    }
+
+    /// Waiting grants no additional observation rights. For unfinished tasks,
+    /// a subscription to any outcome can register a wait; snapshots still
+    /// require authorization for the actual state reached.
+    fn can_wait_for_task(spec: &TeamSpec, actor: &str, task: &Task) -> bool {
+        if matches!(task.status, TaskStatus::Pending | TaskStatus::Running) {
+            [EventKind::TaskCompleted, EventKind::TaskFailed, EventKind::TaskCancelled, EventKind::TaskBlocked]
+                .iter()
+                .any(|kind| Self::task_event_scope(spec, actor, task, *kind).is_some())
+        } else {
+            Self::task_event_scope(spec, actor, task, Self::task_status_event(task.status)).is_some()
+        }
+    }
+
+    fn task_event_scope(spec: &TeamSpec, actor: &str, task: &Task, kind: EventKind) -> Option<String> {
+        spec.agent(actor)?;
+        if actor == spec.leader_id || actor == task.requester || actor == task.assignee {
+            return Some("result".into());
+        }
+        views::observer_scope_for(
+            spec,
+            actor,
+            kind,
+            &task.assignee,
+            &json!({"assignee": task.assignee, "requester": task.requester}),
+        )
     }
 
     fn context_ref(&self, agent_id: &str) -> Result<String, String> {
@@ -2131,7 +2745,7 @@ impl Control {
     }
 
     fn wake_approval_run(&self, run_id: &str) -> Result<(), String> {
-        if let Ok(Some(run)) = self.store.get_run(run_id) {
+        if let Ok(Some(run)) = self.store.get_run_for_session(&self.session_id, run_id) {
             if run.status == TurnStatus::WaitingApproval {
                 self.store
                     .update_run_status_where(run_id, TurnStatus::WaitingApproval, TurnStatus::Running)
@@ -2151,7 +2765,57 @@ pub struct TurnOutcome {
     pub reply_text: Option<String>,
 }
 
+/// State observed inside the finalization transaction, after scheduling.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FinalizationResult {
+    pub applied: bool,
+    pub status: TurnStatus,
+}
+
 impl Control {
+    /// Re-enter recovery for queued runs with backend execution evidence.
+    /// The engine must identify that evidence before calling this method.
+    /// Admit the whole batch before any result/tool receipt can schedule peers.
+    pub fn restore_queued_runs(&mut self, run_ids: &[String]) -> Result<Vec<TurnRun>, String> {
+        self.in_tx(|ctl| {
+            let mut restored = Vec::with_capacity(run_ids.len());
+            for run_id in run_ids {
+                let mut run = ctl
+                    .store
+                    .get_run_for_session(&ctl.session_id, run_id)
+                    .map_err(|e| e.to_string())?
+                    .ok_or("恢复回合不属于当前会话或不存在")?;
+                if run.status == TurnStatus::Queued {
+                    ctl.store.set_run_status(run_id, TurnStatus::Running).map_err(|e| e.to_string())?;
+                    let status = ctl.store.agent_status(&ctl.session_id, &run.agent_id).map_err(|e| e.to_string())?;
+                    if !matches!(status, Some(AgentStatus::Removed | AgentStatus::Draining)) {
+                        ctl.store
+                            .set_agent_status(&ctl.session_id, &run.agent_id, AgentStatus::Busy)
+                            .map_err(|e| e.to_string())?;
+                    }
+                    run = ctl
+                        .store
+                        .get_run_for_session(&ctl.session_id, run_id)
+                        .map_err(|e| e.to_string())?
+                        .ok_or("恢复回合记录丢失")?;
+                }
+                restored.push(run);
+            }
+            Ok(restored)
+        })
+    }
+
+    /// Prepare the first model input and start bookkeeping atomically. An
+    /// unreadable view must leave the same execution intent queued for retry.
+    pub fn prepare_run(&mut self, run_id: &str) -> Result<Json, String> {
+        self.in_tx(|ctl| {
+            let run = ctl.begin_run_inner(run_id)?;
+            let view = ctl.agent_view(&run.agent_id)?;
+            let wake = ctl.wake_info(&run)?;
+            Ok(json!({"run": run, "view": view, "wake": wake}))
+        })
+    }
+
     /// Turn start semantics: mark RUNNING, start the
     /// attached task, emit lifecycle events. Returns the fresh run row.
     pub fn begin_run(&mut self, run_id: &str) -> Result<TurnRun, String> {
@@ -2159,7 +2823,11 @@ impl Control {
     }
 
     fn begin_run_inner(&mut self, run_id: &str) -> Result<TurnRun, String> {
-        let mut run = self.store.get_run(run_id).map_err(|e| e.to_string())?.ok_or("unknown run")?;
+        let mut run = self
+            .store
+            .get_run_for_session(&self.session_id, run_id)
+            .map_err(|e| e.to_string())?
+            .ok_or("unknown run")?;
         if !run.status.is_active() {
             return Err(format!("run {run_id:?} cannot start from {}", enum_name(run.status)));
         }
@@ -2169,7 +2837,13 @@ impl Control {
         }
         self.store.set_agent_status(&self.session_id, &run.agent_id, AgentStatus::Busy).map_err(|e| e.to_string())?;
         if let Some(task_id) = &run.task_id {
-            if let Ok(Some(task)) = self.store.get_task(task_id) {
+            if let Some(task) = self.store.get_task_for_session(&self.session_id, task_id).map_err(|e| e.to_string())? {
+                if task.assignee != run.agent_id {
+                    return Err("task no longer belongs to the run's member".into());
+                }
+                if !matches!(task.status, TaskStatus::Pending | TaskStatus::Running) {
+                    return Err(format!("task cannot start from {}", enum_name(task.status)));
+                }
                 if self
                     .store
                     .compare_and_set_task(&task.task_id, "PENDING", TaskStatus::Running, None)
@@ -2190,12 +2864,14 @@ impl Control {
                         }],
                     )?;
                 }
+            } else {
+                return Err("unknown task for this run".into());
             }
         }
         // Every turn announces its start; the wake
         // reason tells the member why this segment is running.
         let spec = self.store.load_team_spec(&self.session_id, None).map_err(|e| e.to_string())?;
-        let wake = self.wake_info(&run)["reason"].clone();
+        let wake = self.wake_info(&run)?["reason"].clone();
         let action = self.sys_action(ActionKind::SendMessage, &run.agent_id);
         self.persist_events(
             &action,
@@ -2215,7 +2891,11 @@ impl Control {
     /// the run's pending approvals with audit events.
     pub fn stop_timeout(&mut self, run_id: &str) -> Result<(), String> {
         self.in_tx(|ctl| {
-            let run = ctl.store.get_run(run_id).map_err(|e| e.to_string())?.ok_or("unknown run")?;
+            let run = ctl
+                .store
+                .get_run_for_session(&ctl.session_id, run_id)
+                .map_err(|e| e.to_string())?
+                .ok_or("unknown run")?;
             let changed = ctl
                 .store
                 .update_run_status_where(run_id, TurnStatus::Running, TurnStatus::OutcomeUnknown)
@@ -2223,7 +2903,7 @@ impl Control {
             if !changed {
                 return Ok(());
             }
-            let events = ctl.expire_run_approvals(run_id);
+            let events = ctl.expire_run_approvals(run_id)?;
             if !events.is_empty() {
                 let spec = ctl.store.load_team_spec(&ctl.session_id.clone(), None).map_err(|e| e.to_string())?;
                 let action = ctl.sys_action(ActionKind::CancelRun, &run.agent_id);
@@ -2234,35 +2914,60 @@ impl Control {
     }
 
     /// Drain mid-turn pushes recorded by schedule.
-    pub fn drain_mid_turn_pushes(&mut self) -> Vec<(String, Vec<Json>)> {
-        std::mem::take(&mut self.mid_turn_pushes)
+    pub fn drain_mid_turn_pushes(&mut self) -> Result<Vec<MidTurnPush>, String> {
+        if self.mid_turn_pushes.is_empty() {
+            return Ok(vec![]);
+        }
+        let projected = self.in_tx(|ctl| {
+            let mut projected = vec![];
+            for (run_id, items) in ctl.mid_turn_pushes.clone() {
+                let Some(run) = ctl.store.get_run_for_session(&ctl.session_id, &run_id).map_err(|e| e.to_string())?
+                else {
+                    continue;
+                };
+                if run.status != TurnStatus::Running {
+                    continue;
+                }
+                let ids: Vec<i64> = items.iter().filter_map(|i| i["delivery_id"].as_i64()).collect();
+                let current = ctl.delivery_items(&run.agent_id, &ids)?;
+                if !current.is_empty() {
+                    projected.push(MidTurnPush { run_id, agent_id: run.agent_id, items: current });
+                }
+            }
+            Ok(projected)
+        })?;
+        self.mid_turn_pushes.clear();
+        Ok(projected)
     }
 
     /// Why this turn is waking.
-    pub fn wake_info(&self, run: &TurnRun) -> Json {
-        let decisions = self.store.decided_approvals_for_run(&run.run_id).unwrap_or_default();
+    pub fn wake_info(&self, run: &TurnRun) -> Result<Json, String> {
+        if run.session_id != self.session_id {
+            return Ok(json!({"reason":"new_input","payload":{}}));
+        }
+        let decisions = self.store.decided_approvals_for_run(&run.run_id).map_err(|e| e.to_string())?;
         if !decisions.is_empty() {
             let denied = decisions.iter().any(|d| d.status == ApprovalStatus::Denied);
-            return json!({"reason": "approval",
+            return Ok(json!({"reason": "approval",
                           "payload": {"decisions": decisions.iter().map(|d| json!({
                               "approval_id": d.approval_id, "status": enum_name(d.status)})).collect::<Vec<_>>(),
-                              "denied": denied}});
+                              "denied": denied}}));
         }
-        let kinds = self.store.delivery_event_kinds(&run.input_delivery_ids).unwrap_or_default();
+        let kinds = self.store.delivery_event_kinds(&run.input_delivery_ids).map_err(|e| e.to_string())?;
         if kinds.last().map(|k| k.as_str()) == Some("user_message") {
-            return json!({"reason": "user_input", "payload": {"kinds": kinds}});
+            return Ok(json!({"reason": "user_input", "payload": {"kinds": kinds}}));
         }
         if !run.waiting_on.is_empty() {
             // results are keyed by task id
-            let results: serde_json::Map<String, Json> = run.waiting_on.iter().map(|tid| (tid.clone(), {
-                match self.store.get_task(tid).ok().flatten() {
-                    Some(t) => json!({"task_id": t.task_id, "status": enum_name(t.status), "result_refs": t.result_refs}),
-                    None => json!({"task_id": tid, "status": "UNKNOWN"}),
-                }
-            })).collect();
-            return json!({"reason": "task_results", "payload": {"task_ids": run.waiting_on, "results": results}});
+            let spec = self.store.load_team_spec(&self.session_id, None).map_err(|e| e.to_string())?;
+            let results: serde_json::Map<String, Json> = run
+                .waiting_on
+                .iter()
+                .map(|tid| Ok((tid.clone(), self.task_result_for(tid, &run.agent_id, &spec)?)))
+                .collect::<Result<_, String>>()?;
+            return Ok(json!({"reason": "task_results", "payload": {"task_ids": run.waiting_on, "results": results}}));
         }
-        json!({"reason": "new_input", "payload": {}})
+        Ok(json!({"reason": "new_input", "payload": {}}))
     }
 
     fn sys_action(&self, kind: ActionKind, actor: &str) -> TeamAction {
@@ -2279,26 +2984,95 @@ impl Control {
     /// Apply the turn result: completion requests,
     /// task semantics, run status, member state, delivery ack, one transaction.
     /// `ack_ids` = the deliveries actually handed to the runner (RT-05 ledger).
-    pub fn finalize_run(&mut self, run_id: &str, outcome: &TurnOutcome, ack_ids: &[i64]) -> Result<(), String> {
+    pub fn finalize_run(
+        &mut self,
+        run_id: &str,
+        outcome: &TurnOutcome,
+        ack_ids: &[i64],
+    ) -> Result<FinalizationResult, String> {
         self.in_tx(|ctl| ctl.finalize_run_inner(run_id, outcome, ack_ids))
     }
 
-    fn finalize_run_inner(&mut self, run_id: &str, outcome: &TurnOutcome, ack_ids: &[i64]) -> Result<(), String> {
-        let run = self.store.get_run(run_id).map_err(|e| e.to_string())?.ok_or("unknown run")?;
+    fn finalize_run_inner(
+        &mut self,
+        run_id: &str,
+        outcome: &TurnOutcome,
+        ack_ids: &[i64],
+    ) -> Result<FinalizationResult, String> {
+        let run = self
+            .store
+            .get_run_for_session(&self.session_id, run_id)
+            .map_err(|e| e.to_string())?
+            .ok_or("unknown run")?;
         // A late callback cannot undo a settled cancellation or replay completion.
         // OUTCOME_UNKNOWN remains reconcilable when the backend confirms a result.
         if matches!(run.status, TurnStatus::Completed | TurnStatus::Failed | TurnStatus::Cancelled) {
-            return Ok(());
+            return Ok(FinalizationResult { applied: false, status: run.status });
         }
-        let req = self.store.completion_request(&run.run_id).map_err(|e| e.to_string())?;
+        for id in ack_ids {
+            if !self.store.delivery_belongs_to(&self.session_id, &run.agent_id, *id).map_err(|e| e.to_string())? {
+                return Err("delivery does not belong to the run's member".into());
+            }
+        }
+        let mut req = self.store.completion_request(&run.run_id).map_err(|e| e.to_string())?;
+        let mut invalid_completion = None;
+        let mut completion_task = None;
+        if outcome.status == TurnStatus::Completed {
+            if let Some(request) =
+                req.as_ref().filter(|request| request["task_id"].as_str().is_some_and(|id| !id.is_empty()))
+            {
+                let spec = self.store.load_team_spec(&self.session_id, None).map_err(|e| e.to_string())?;
+                let task_id = request["task_id"].as_str().unwrap();
+                completion_task =
+                    self.store.get_task_for_session(&self.session_id, task_id).map_err(|e| e.to_string())?;
+                invalid_completion = match &completion_task {
+                    None => Some("完成申请的任务不属于当前会话或已不存在。".into()),
+                    Some(task) if task.assignee != run.agent_id || spec.agent(&run.agent_id).is_none() => {
+                        Some("完成申请的承接者已变更或成员已移除。".into())
+                    }
+                    Some(task)
+                        if matches!(task.status, TaskStatus::Pending | TaskStatus::Running)
+                        // The original unknown run can still supply a confirmed
+                        // result for its own blocked task. Never reopen terminal
+                        // tasks or apply this exception to a sibling task.
+                        || (task.status == TaskStatus::Blocked
+                            && run.status == TurnStatus::OutcomeUnknown
+                            && run.task_id.as_deref() == Some(task_id)) =>
+                    {
+                        crate::references::validate(
+                            &self.store,
+                            &self.session_id,
+                            &spec,
+                            &run.agent_id,
+                            request,
+                            "result_refs",
+                        )?
+                        .map(|reason| format!("完成申请未通过输出引用检查：{reason}"))
+                    }
+                    Some(task) => Some(format!("完成申请的任务已处于 {}，不能再次完成。", enum_name(task.status))),
+                };
+                if invalid_completion.is_some() {
+                    // Keep the persisted request as audit evidence, but do not
+                    // turn it into a successful task result or recipient event.
+                    req = None;
+                }
+            }
+        }
         let terminal = matches!(
             outcome.status,
             TurnStatus::Completed | TurnStatus::Failed | TurnStatus::Cancelled | TurnStatus::OutcomeUnknown
         );
         let mut events: Vec<EventDraft> = vec![];
+        if let Some(reason) = &invalid_completion {
+            events.push(EventDraft::new(
+                EventKind::RunProgress,
+                json!({"run_id": run.run_id, "agent_id": run.agent_id,
+                       "text": reason}),
+            ));
+        }
         if terminal {
             // a turn that ended can never use a pending decision (RT-06)
-            events.extend(self.expire_run_approvals(&run.run_id));
+            events.extend(self.expire_run_approvals(&run.run_id)?);
         }
         if outcome.status == TurnStatus::Completed {
             if let Some(req) = &req {
@@ -2308,7 +3082,7 @@ impl Control {
                     .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
                     .unwrap_or_default();
                 if !req_task.is_empty() {
-                    if let Ok(Some(task)) = self.store.get_task(req_task) {
+                    if let Some(task) = &completion_task {
                         if self
                             .store
                             .compare_and_set_task(
@@ -2378,8 +3152,9 @@ impl Control {
         if outcome.status == TurnStatus::Completed && run.task_id.is_some() && req_other {
             // its own task was left unfinished: block it for intervention
             if let Some(tid) = &run.task_id {
-                if let Ok(Some(task)) = self.store.get_task(tid) {
-                    if matches!(task.status, TaskStatus::Pending | TaskStatus::Running)
+                if let Some(task) = self.store.get_task_for_session(&self.session_id, tid).map_err(|e| e.to_string())? {
+                    if task.assignee == run.agent_id
+                        && matches!(task.status, TaskStatus::Pending | TaskStatus::Running)
                         && self
                             .store
                             .compare_and_set_task(&task.task_id, &enum_name(task.status), TaskStatus::Blocked, None)
@@ -2389,7 +3164,7 @@ impl Control {
                             kind: EventKind::TaskBlocked,
                             payload: json!({"task_id": task.task_id, "assignee": task.assignee,
                                             "requester": task.requester,
-                                            "reason": "turn ended without complete_task or wait_for_tasks"}),
+                                            "reason": invalid_completion.as_deref().unwrap_or("turn ended without complete_task or wait_for_tasks")}),
                             task_id: Some(task.task_id.clone()),
                             ..EventDraft::new(EventKind::TaskBlocked, json!({}))
                         });
@@ -2398,8 +3173,9 @@ impl Control {
             }
         } else if outcome.status == TurnStatus::Failed && run.task_id.is_some() {
             if let Some(tid) = &run.task_id {
-                if let Ok(Some(task)) = self.store.get_task(tid) {
-                    if matches!(task.status, TaskStatus::Pending | TaskStatus::Running)
+                if let Some(task) = self.store.get_task_for_session(&self.session_id, tid).map_err(|e| e.to_string())? {
+                    if task.assignee == run.agent_id
+                        && matches!(task.status, TaskStatus::Pending | TaskStatus::Running)
                         && self
                             .store
                             .compare_and_set_task(&task.task_id, &enum_name(task.status), TaskStatus::Failed, None)
@@ -2417,8 +3193,9 @@ impl Control {
             }
         } else if outcome.status == TurnStatus::OutcomeUnknown && run.task_id.is_some() {
             if let Some(tid) = &run.task_id {
-                if let Ok(Some(task)) = self.store.get_task(tid) {
-                    if matches!(task.status, TaskStatus::Pending | TaskStatus::Running) {
+                if let Some(task) = self.store.get_task_for_session(&self.session_id, tid).map_err(|e| e.to_string())? {
+                    if task.assignee == run.agent_id && matches!(task.status, TaskStatus::Pending | TaskStatus::Running)
+                    {
                         self.store
                             .compare_and_set_task(&task.task_id, &enum_name(task.status), TaskStatus::Blocked, None)
                             .map_err(|e| e.to_string())?;
@@ -2435,8 +3212,9 @@ impl Control {
             }
         } else if outcome.status == TurnStatus::Cancelled && run.task_id.is_some() {
             if let Some(tid) = &run.task_id {
-                if let Ok(Some(task)) = self.store.get_task(tid) {
-                    if matches!(task.status, TaskStatus::Pending | TaskStatus::Running)
+                if let Some(task) = self.store.get_task_for_session(&self.session_id, tid).map_err(|e| e.to_string())? {
+                    if task.assignee == run.agent_id
+                        && matches!(task.status, TaskStatus::Pending | TaskStatus::Running)
                         && self
                             .store
                             .compare_and_set_task(&task.task_id, &enum_name(task.status), TaskStatus::Cancelled, None)
@@ -2457,19 +3235,48 @@ impl Control {
         // the terminal status, the member state and the delivery acknowledgement
         // are one write: a crash can never leave "run ended + input un-acked" (F-C3)
         self.store.set_run_status(&run.run_id, outcome.status).map_err(|e| e.to_string())?;
-        if matches!(outcome.status, TurnStatus::WaitingTask | TurnStatus::WaitingApproval) {
-            self.store
-                .set_agent_status(&self.session_id, &run.agent_id, AgentStatus::Waiting)
-                .map_err(|e| e.to_string())?;
-        } else {
-            self.store
-                .set_agent_status(&self.session_id, &run.agent_id, AgentStatus::Idle)
-                .map_err(|e| e.to_string())?;
+        // Reconciliation can archive an old run, but must not revive a removed
+        // identity or mark a member idle while a newer run owns its activity.
+        let other_run = self
+            .store
+            .runs_for_session(
+                &self.session_id,
+                &[TurnStatus::Queued, TurnStatus::Running, TurnStatus::WaitingTask, TurnStatus::WaitingApproval],
+            )
+            .map_err(|e| e.to_string())?
+            .iter()
+            .any(|other| other.agent_id == run.agent_id && other.run_id != run.run_id);
+        if self.store.agent_status(&self.session_id, &run.agent_id).map_err(|e| e.to_string())?
+            != Some(AgentStatus::Removed)
+            && !other_run
+        {
+            let member_status = if matches!(outcome.status, TurnStatus::WaitingTask | TurnStatus::WaitingApproval) {
+                AgentStatus::Waiting
+            } else {
+                AgentStatus::Idle
+            };
+            self.store.set_agent_status(&self.session_id, &run.agent_id, member_status).map_err(|e| e.to_string())?;
         }
         if terminal && !ack_ids.is_empty() {
             // ack exactly the deliveries handed to the runner (RT-05)
             for id in ack_ids {
                 self.store.ack_delivery_by_id(*id).map_err(|e| e.to_string())?;
+            }
+        }
+        if outcome.status == TurnStatus::OutcomeUnknown {
+            // Acceptance cannot be inferred from an offer. Keep an explicit
+            // rejection audit instead of acknowledging or replaying uncertain
+            // input as a new run while the Leader investigates the outcome.
+            for id in &run.input_delivery_ids {
+                self.store
+                    .restrict_pending_delivery(
+                        &self.session_id,
+                        &run.agent_id,
+                        *id,
+                        &json!({"dropped_reason":"input outcome unknown", "run_id":run.run_id}),
+                        true,
+                    )
+                    .map_err(|e| e.to_string())?;
             }
         }
 
@@ -2531,7 +3338,13 @@ impl Control {
             self.persist_events(&action, &spec, &events)?;
         }
         let spec = self.store.load_team_spec(&self.session_id, None).map_err(|e| e.to_string())?;
-        self.schedule_inner(&spec)
+        self.schedule_inner(&spec)?;
+        let committed = self
+            .store
+            .get_run_for_session(&self.session_id, run_id)
+            .map_err(|e| e.to_string())?
+            .ok_or("finalized run is missing")?;
+        Ok(FinalizationResult { applied: true, status: committed.status })
     }
 }
 

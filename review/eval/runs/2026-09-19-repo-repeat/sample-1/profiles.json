@@ -1,0 +1,16 @@
+{
+  "verifier": {
+    "provider": "deepseek",
+    "protocol": "deepseek",
+    "model": "deepseek-flash",
+    "base_url": null,
+    "api_key_env": "DEEPSEEK_API_KEY",
+    "timeout": 120,
+    "max_retries": 5,
+    "generation_options": {
+      "reasoning_effort": "high"
+    },
+    "context_window": 1000000,
+    "codex_profile": null
+  }
+}

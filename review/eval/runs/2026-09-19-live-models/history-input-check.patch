@@ -1,0 +1,56 @@
+--- a/engine/tests/live_models.rs
++++ b/engine/tests/live_models.rs
+@@ -290,6 +290,18 @@
+                 }
+                 std::fs::remove_file(work.join("seed.txt")).map_err(|_| "无法移除阶段输入")?;
+             }
++            // A leftover copy would let a model pass by rereading the workspace
++            // even if conversation persistence were broken.
++            let empty = std::fs::read_dir(&work).map_err(|_| "无法检查续接前的工作目录")?.next().is_none();
++            let key = if phase.name == "files_and_tool_result" {
++                "workspace_empty_before_same_session"
++            } else {
++                "workspace_empty_before_cold_session"
++            };
++            result[key] = json!(empty);
++            if !empty {
++                return Err("续接前存在额外文件，不能证明历史恢复");
++            }
+         }
+         let saved_usage = usage(&session.0);
+         drop(session);
+@@ -669,6 +681,8 @@
+         let result = &report["results"][0];
+         assert_eq!(result["usage_restored"], true);
+         assert_eq!(result["seed_unchanged"], true);
++        assert_eq!(result["workspace_empty_before_same_session"], true);
++        assert_eq!(result["workspace_empty_before_cold_session"], true);
+         assert_eq!(result["phases"].as_array().unwrap().len(), 3);
+         assert_eq!(result["phases"][2]["usage_after"]["calls"], 10);
+         assert_eq!(result["phases"][2]["usage_after"]["total_tokens"], 80);
+@@ -714,3 +728,25 @@
+         assert_eq!(serde_json::from_str::<Json>(&saved).unwrap(), report);
+     }
+ }
++
++#[test]
++fn matrix_contract_rejects_leftover_files_as_history_evidence() {
++    let env = support::isolated_state_home("live-leftover");
++    let server = FakeModel::start(|body, index| {
++        let reply = if index == 2 {
++            stream_reply("openai", index, Some(("write_file", json!({"path":"notes.txt","content":"extra copy"}))), "")
++        } else {
++            scripted_reply("openai", body, index)
++        };
++        (200, reply)
++    });
++    let catalog =
++        UserConfig { models: [("m".into(), fixture_profile("openai", &server.base_url))].into(), ..Default::default() };
++    let mut report = json!({"kind":"offline_contract","status":"running"});
++    execute_matrix(fixture_manifest(), &catalog, &env, &mut report, &env.join("report.json")).unwrap();
++    assert_eq!(report["status"], "failed", "a correct first output alone cannot prove history recovery");
++    assert_eq!(report["results"][0]["phases"][0]["file_matches"], true);
++    assert_eq!(report["results"][0]["workspace_empty_before_same_session"], false);
++    assert_eq!(report["results"][0]["phases"].as_array().unwrap().len(), 1);
++    assert_eq!(server.bodies.lock().unwrap().len(), 4, "continuation never starts with leftover inputs");
++}

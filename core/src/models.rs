@@ -267,9 +267,12 @@ impl TeamSpec {
         if !ids.contains(&self.leader_id.as_str()) {
             return Err(format!("leader_id {:?} is not a member", self.leader_id));
         }
-        let leaders: Vec<_> = self.agents.iter().filter(|a| a.id == self.leader_id && a.role == "leader").collect();
-        if leaders.len() != 1 {
-            return Err("exactly one member with role 'leader' must exist".into());
+        let leaders: Vec<_> = self.agents.iter().filter(|a| a.role == "leader").collect();
+        if leaders.len() != 1 || leaders[0].id != self.leader_id {
+            return Err("leader_id 必须指向团队中唯一的 leader 成员".into());
+        }
+        if leaders[0].runtime_kind != RuntimeKind::Deepagents {
+            return Err("Leader 必须由内置成员承担（runtime_kind = deepagents）".into());
         }
         if self.agents.len() as i64 > self.limits.max_members {
             return Err(format!("team has {} members, limit is {}", self.agents.len(), self.limits.max_members));

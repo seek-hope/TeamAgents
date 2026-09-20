@@ -15,6 +15,14 @@ use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UserMessageRequest {
+    text: String,
+    #[serde(default)]
+    supplement: bool,
+}
+
 /// Per-member working plans (`members/<id>/plan.json`), for the UI status strip.
 fn member_plans(session_id: &str) -> Json {
     let members = crate::sessions::session_paths(session_id).base.join("members");
@@ -144,6 +152,7 @@ impl Worker {
                 // from the same snapshot it already polls
                 if inner == "state" {
                     if let Some(object) = reply.as_object_mut() {
+                        object.insert("runtime_errors".into(), json!(opened.runtime.errors()));
                         object.insert("plans".into(), member_plans(&opened.session_id));
                         // per-member context usage rides along: the team panel shows
                         // how close each member is to compaction
@@ -168,9 +177,12 @@ impl Worker {
             }
             "user_message" => {
                 let opened = self.current()?;
-                let text = params.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let supplement = params.get("supplement").and_then(|v| v.as_bool()).unwrap_or(false);
-                let receipt = opened.runtime.user_message(&text, supplement)?;
+                if !params.is_object() {
+                    return Err("用户输入参数必须是 JSON 对象。".into());
+                }
+                let request: UserMessageRequest =
+                    serde_json::from_value(params.clone()).map_err(|error| format!("用户输入参数无效：{error}"))?;
+                let receipt = opened.runtime.user_message(&request.text, request.supplement)?;
                 Ok(serde_json::to_value(receipt).map_err(|e| e.to_string())?)
             }
             "list_sessions" => {
@@ -344,6 +356,12 @@ impl Worker {
 pub fn serve() -> i32 {
     let worker = Worker::new();
     let stdin = std::io::stdin();
+    let reviewing = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let review_cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut review_thread: Option<std::thread::JoinHandle<()>> = None;
+    let history_busy = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let history_cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut history_thread: Option<std::thread::JoinHandle<()>> = None;
     for line in stdin.lock().lines() {
         let Ok(line) = line else { break };
         if line.trim().is_empty() {
@@ -353,6 +371,97 @@ pub fn serve() -> i32 {
         let id = request.get("id").cloned().unwrap_or(Json::Null);
         let method = request.get("method").and_then(|v| v.as_str()).unwrap_or("").to_string();
         let params = request.get("params").cloned().unwrap_or(json!({}));
+        if matches!(
+            method.as_str(),
+            "open" | "switch_session" | "new_session" | "archive_session" | "delete_session" | "fork_session" | "close"
+        ) {
+            history_cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
+            if let Some(handle) = history_thread.take() {
+                let _ = handle.join();
+            }
+            history_cancelled.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+        if method == "history" {
+            use std::sync::atomic::Ordering;
+            if history_busy.swap(true, Ordering::SeqCst) {
+                out(&json!({"id":id,"error":"已有历史读取请求进行中，请稍后重试"}));
+                continue;
+            }
+            match worker.current() {
+                Ok(opened) => {
+                    if let Some(previous) = history_thread.take() {
+                        let _ = previous.join();
+                    }
+                    let busy = history_busy.clone();
+                    let cancelled = history_cancelled.clone();
+                    history_thread = Some(std::thread::spawn(move || {
+                        let result = serde_json::from_value::<crate::history::Request>(params)
+                            .map_err(|e| format!("无效历史请求：{e}"))
+                            .and_then(|request| crate::history::read(&opened.session_id, &request, &cancelled));
+                        busy.store(false, Ordering::SeqCst);
+                        match result {
+                            Ok(result) => out(&json!({"id":id,"result":result})),
+                            Err(error) => out(&json!({"id":id,"error":error})),
+                        }
+                    }));
+                }
+                Err(error) => {
+                    history_busy.store(false, Ordering::SeqCst);
+                    out(&json!({"id":id,"error":error}));
+                }
+            }
+            continue;
+        }
+        // A bounded review read must not serialize cancellation or state polls.
+        // Only one is admitted at a time; the UI drops replies to closed views.
+        if method == "review" {
+            use std::sync::atomic::Ordering;
+            if reviewing.swap(true, Ordering::SeqCst) {
+                out(&json!({"id":id, "error":"已有工作区审查请求进行中，请稍后重试"}));
+                continue;
+            }
+            match worker.current() {
+                Ok(opened) => {
+                    if let Some(previous) = review_thread.take() {
+                        let _ = previous.join();
+                    }
+                    let busy = reviewing.clone();
+                    let cancelled = review_cancelled.clone();
+                    review_thread = Some(std::thread::spawn(move || {
+                        let result = (|| {
+                            let agent = params["agent_id"].as_str().ok_or("agent_id required")?;
+                            let path = match params.get("path") {
+                                None | Some(Json::Null) => None,
+                                Some(Json::String(path)) => Some(path.as_str()),
+                                _ => return Err("path must be a string".into()),
+                            };
+                            let offset = match params.get("offset") {
+                                None => 0,
+                                Some(value) => {
+                                    value.as_u64().and_then(|v| usize::try_from(v).ok()).ok_or("invalid offset")?
+                                }
+                            };
+                            let revision = match params.get("revision") {
+                                None | Some(Json::Null) => None,
+                                Some(Json::String(revision)) => Some(revision.as_str()),
+                                _ => return Err("revision must be a string".into()),
+                            };
+                            opened.review_cancellable(agent, path, offset, revision, &cancelled)
+                        })();
+                        busy.store(false, Ordering::SeqCst);
+                        match result {
+                            Ok(result) => out(&json!({"id":id, "result":result})),
+                            Err(error) => out(&json!({"id":id, "error":error})),
+                        }
+                    }));
+                }
+                Err(error) => {
+                    reviewing.store(false, Ordering::SeqCst);
+                    out(&json!({"id":id, "error":error}));
+                }
+            }
+            continue;
+        }
         // Slow read-only discovery must not block cancellation, polling or close.
         if method == "discover_models" {
             match (worker.current(), params["provider"].as_str().map(str::to_string)) {
@@ -374,6 +483,15 @@ pub fn serve() -> i32 {
         if method == "close" {
             break;
         }
+    }
+    // Do not abandon a Git subprocess when stdin closes or the user quits.
+    review_cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
+    history_cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
+    if let Some(handle) = history_thread {
+        let _ = handle.join();
+    }
+    if let Some(handle) = review_thread {
+        let _ = handle.join();
     }
     worker.close_current();
     0

@@ -1,0 +1,19 @@
+   Compiling teamagents-engine v0.1.2 (/home/rimuru/Projects/Code/for_fun/TeamAgents/engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.22s
+     Running tests/recovery.rs (engine/target/debug/deps/recovery-9412ac2939d20a13)
+
+running 9 tests
+killed mid-turn (run left RUNNING in proj_e9671acd2448)
+test t8_killed_turn_is_reconciled_and_stays_exactly_once ... ok
+test chat_cold_resume_does_not_repeat_an_external_effect_without_a_receipt ... ok
+test chat_cold_resume_keeps_tool_results_and_unconsumed_supplements ... ok
+test t22_goal_turn_budget_is_enforced ... ok
+test chat_model_failure_survives_a_failed_commit_and_sigkill_without_another_request ... ok
+test chat_cold_resume_preserves_pending_approval_and_consumes_it_once ... ok
+test chat_failed_outcome_commit_is_retried_without_restarting_the_member ... ok
+teamagents: 回合 run_c38528b0f7574eba 归档失败，将重试提交：injected leader commit failure
+test finalization_retries_while_paused_without_blocking_other_members_or_premature_hooks ... ok
+test chat_completed_checkpoint_survives_an_uncommitted_outcome_and_shutdown ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.65s
+

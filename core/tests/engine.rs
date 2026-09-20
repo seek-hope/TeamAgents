@@ -371,6 +371,450 @@ fn cancel_task_without_run_cancels_immediately() {
     assert!(matches!(task.status, TaskStatus::Cancelled));
 }
 
+fn assert_invalid_topology_patch(operation: Json, expected_error: &str) {
+    for active_leader in [false, true] {
+        for proposed in [false, true] {
+            let mut ctl = harness();
+            ctl.catalog =
+                serde_json::from_value(json!({"models": {"m": {"provider": "openai", "model": "test"}}})).unwrap();
+            if active_leader {
+                assert!(ctl.submit(&user("start", "continue working")).unwrap().ok);
+                let run = ctl.store.runs_for_session("s1", &[TurnStatus::Queued]).unwrap().remove(0);
+                ctl.begin_run(&run.run_id).unwrap();
+            }
+            let operations = json!([
+                {"op": "update_agent", "agent_id": "b", "changes": {"name": "must not persist"}},
+                operation
+            ]);
+            let payload = if proposed {
+                let receipt = ctl
+                    .submit(&action(
+                        "proposal",
+                        "b",
+                        ActionKind::ProposeTeamChange,
+                        json!({"operations": operations}),
+                        None,
+                    ))
+                    .unwrap();
+                assert!(receipt.ok, "{receipt:?}");
+                json!({"patch_id": receipt.result["patch_id"]})
+            } else {
+                json!({"base_revision": 1, "operations": operations})
+            };
+            let snapshot = |ctl: &Control| {
+                json!({
+                    "spec": ctl.store.load_team_spec("s1", None).unwrap(),
+                    "revision": ctl.store.current_revision("s1").unwrap(),
+                    "agents": (["leader", "b", "cx", "extra"].map(|id| (
+                        id,
+                        ctl.store.agent_status("s1", id).unwrap(),
+                        ctl.store.agent_config_revision("s1", id).unwrap(),
+                    ))),
+                    "runs": ctl.store.runs_for_session("s1", &[]).unwrap(),
+                    "tasks": ctl.store.tasks_for_session("s1", &[]).unwrap(),
+                    "patches": ([PatchStatus::Proposed, PatchStatus::WaitingBoundary, PatchStatus::Applied]
+                        .map(|status| ctl.store.patches_in_status("s1", status).unwrap())),
+                })
+            };
+            let before = snapshot(&ctl);
+            let patch = action("invalid-patch", "leader", ActionKind::ApplyTopologyPatch, payload, None);
+            let receipt = ctl.submit(&patch).unwrap();
+            assert!(!receipt.ok, "active={active_leader}, proposed={proposed}: {receipt:?}");
+            assert!(receipt.error.as_deref().unwrap_or("").contains(expected_error), "{receipt:?}");
+            assert_eq!(snapshot(&ctl), before, "a rejected patch must leave configuration and live work intact");
+            let events = ctl.store.events("s1", 0, 100).unwrap();
+            assert!(!events.iter().any(|e| e["kind"] == json!(EventKind::TopologyApplied)));
+            let replay = ctl.submit(&patch).unwrap();
+            assert_eq!(json!(replay), json!(receipt));
+            assert_eq!(json!(ctl.store.events("s1", 0, 100).unwrap()), json!(events));
+            assert_eq!(snapshot(&ctl), before);
+
+            let receipt = ctl
+                .submit(&action(
+                    "valid-patch",
+                    "leader",
+                    ActionKind::ApplyTopologyPatch,
+                    json!({"base_revision": 1, "operations": [
+                        {"op": "update_agent", "agent_id": "b", "changes": {"name": "Reviewer", "role": "reviewer"}}
+                    ]}),
+                    None,
+                ))
+                .unwrap();
+            assert!(receipt.ok, "{receipt:?}");
+            assert_eq!(receipt.result["status"], "APPLIED");
+            assert_eq!(ctl.store.current_revision("s1").unwrap(), 2);
+            assert_eq!(ctl.store.load_team_spec("s1", None).unwrap().agent("b").unwrap().role, "reviewer");
+            let receipt = ctl
+                .submit(&action(
+                    "task-after-rejection",
+                    "leader",
+                    ActionKind::AssignTask,
+                    json!({"assignee": "b", "description": "review the change"}),
+                    None,
+                ))
+                .unwrap();
+            assert!(receipt.ok, "normal work must remain possible: {receipt:?}");
+        }
+    }
+}
+
+#[test]
+fn topology_patch_rejects_adding_a_second_leader() {
+    assert_invalid_topology_patch(
+        json!({"op": "add_agent", "agent": {
+            "id": "extra", "name": "Extra", "role": "leader", "runtime_kind": "deepagents", "model_profile": "m"
+        }}),
+        "唯一",
+    );
+}
+
+#[test]
+fn topology_patch_rejects_promoting_a_second_leader() {
+    assert_invalid_topology_patch(
+        json!({"op": "update_agent", "agent_id": "b", "changes": {"role": "leader"}}),
+        "唯一",
+    );
+}
+
+#[test]
+fn topology_patch_rejects_switching_the_leader_to_codex() {
+    assert_invalid_topology_patch(
+        json!({"op": "update_agent", "agent_id": "leader", "changes": {"runtime_kind": "codex"}}),
+        "内置",
+    );
+}
+
+#[test]
+fn topology_patch_rejects_malformed_operation_fields() {
+    for operation in [
+        json!({"op":"update_agent", "agent_id":"b", "changes":[]}),
+        json!({"op":"update_agent", "agent_id":"b"}),
+        json!({"op":"update_agent", "agent_id":"b", "changes":{}, "unknown":true}),
+        json!({"op":"remove_channel", "source":"b", "targets":"leader"}),
+        json!({"op":"remove_channel", "source":"b"}),
+        json!({"op":"remove_channel", "source":"b", "targets":[false]}),
+        json!({"op":"set_observer", "observer":{"agent_id":"b"}, "remove":"false"}),
+        json!({"op":"set_observer", "observer":{"agent_id":"b", "subjects":7}, "remove":true}),
+        json!({"op":"set_observer", "observer":{"agent_id":"b", "unknown":true}, "remove":true}),
+        json!({"op":"set_space_acl", "space_id":"lib", "readers":null}),
+        json!({"op":"set_space_acl", "space_id":"lib", "writers":[false]}),
+        json!({"op":"set_space_acl", "space_id":"lib", "reader":["leader"]}),
+    ] {
+        assert_invalid_topology_patch(operation, "invalid topology operation");
+    }
+}
+
+#[test]
+fn topology_patch_rejects_malformed_embedded_channels_and_spaces() {
+    for (key, value) in [
+        ("channels", json!({})),
+        ("shared_spaces", json!({})),
+        ("channels", json!([{"source":"leader", "targets":["extra"], "mode":"message", "unknown":true}])),
+        ("shared_spaces", json!([{"id":"lib", "readers":true}])),
+        ("shared_spaces", json!([{"id":"lib", "readers":["extra"], "unknown":true}])),
+        ("shared_spaces", json!([{"id":"new", "readers":["extra"], "unknown":true}])),
+    ] {
+        let mut operation = json!({"op":"add_agent", "agent":{
+            "id":"extra", "name":"Extra", "role":"worker", "runtime_kind":"deepagents", "model_profile":"m"
+        }});
+        operation[key] = value;
+        assert_invalid_topology_patch(operation, "invalid topology operation");
+    }
+}
+
+#[test]
+fn topology_patch_rejects_member_broadcast_even_when_targets_only_name_the_leader() {
+    assert_invalid_topology_patch(
+        json!({"op":"add_channel", "channel":{"source":"b", "targets":["leader"], "mode":"broadcast"}}),
+        "member-to-member",
+    );
+    assert_invalid_topology_patch(
+        json!({"op":"add_agent", "agent":{
+            "id":"extra", "name":"Extra", "role":"worker", "runtime_kind":"deepagents", "model_profile":"m"
+        }, "channels":[{"source":"extra", "targets":["leader"], "mode":"broadcast"}]}),
+        "member-to-member",
+    );
+}
+
+#[test]
+fn topology_patch_keeps_observer_removal_partial_acl_and_leader_broadcast() {
+    let mut ctl = harness();
+    let receipt = ctl
+        .submit(&action(
+            "valid-shorthands",
+            "leader",
+            ActionKind::ApplyTopologyPatch,
+            json!({
+                "base_revision":1, "operations":[
+                    {"op":"set_observer", "observer":{"agent_id":"b", "subjects":["leader"]}},
+                    {"op":"set_observer", "observer":{"agent_id":"b"}, "remove":true},
+                    {"op":"set_space_acl", "space_id":"lib", "readers":[]},
+                    {"op":"remove_channel", "source":"leader", "targets":["b"]},
+                    {"op":"add_channel", "channel":{"source":"leader", "targets":["b"], "mode":"broadcast"}}
+                ]
+            }),
+            None,
+        ))
+        .unwrap();
+    assert!(receipt.ok, "{receipt:?}");
+    let spec = ctl.store.load_team_spec("s1", None).unwrap();
+    assert!(spec.observers.is_empty());
+    assert!(spec.space("lib").unwrap().readers.is_empty());
+    assert_eq!(spec.space("lib").unwrap().writers, ["b"]);
+    assert!(!spec.channels.iter().any(|channel| channel.source == "leader"
+        && channel.mode == ChannelMode::Task
+        && channel.targets.contains(&"b".into())));
+    assert!(spec.can_send("leader", "cx"));
+}
+
+fn assert_topology_request_refused(ctl: &mut Control, request: &TeamAction) {
+    let snapshot = |ctl: &Control| {
+        json!({
+            "spec":ctl.store.load_team_spec("s1", None).unwrap(),
+            "revision":ctl.store.current_revision("s1").unwrap(),
+            "runs":ctl.store.runs_for_session("s1", &[]).unwrap(),
+            "tasks":ctl.store.tasks_for_session("s1", &[]).unwrap(),
+            "patches":([PatchStatus::Proposed, PatchStatus::WaitingBoundary, PatchStatus::Applied, PatchStatus::Rejected]
+                .map(|status| ctl.store.patches_in_status("s1", status).unwrap())),
+            "agents":(["leader", "b", "cx"].map(|id| (id, ctl.store.agent_status("s1", id).unwrap()))),
+            "events":ctl.store.events("s1", 0, 100).unwrap(),
+        })
+    };
+    let before = snapshot(ctl);
+    let receipt = ctl.submit(request).unwrap();
+    assert!(!receipt.ok, "invalid request {:?} was accepted: {receipt:?}", request.payload);
+    assert!(receipt.error.is_some());
+    assert_eq!(snapshot(ctl), before, "a refused request must not change the team or proposal");
+    assert_eq!(json!(ctl.store.get_action_receipt(&request.action_id).unwrap().unwrap()), json!(receipt));
+    assert_eq!(json!(ctl.submit(request).unwrap()), json!(receipt));
+    assert_eq!(snapshot(ctl), before, "replay must return the same durable refusal without side effects");
+}
+
+#[test]
+fn topology_request_rejects_malformed_inline_envelopes() {
+    for (key, value) in [
+        ("reject", json!(true)),
+        ("reject", json!("false")),
+        ("reject", Json::Null),
+        ("patch_id", json!(7)),
+        ("patch_id", Json::Null),
+        ("patch_id", json!(" ")),
+        ("base_revision", json!("1")),
+        ("base_revision", json!(1.5)),
+        ("base_revision", json!(true)),
+        ("base_revision", Json::Null),
+        ("operations", Json::Null),
+        ("operations", json!({})),
+        ("operations", json!([false])),
+        ("unknown", json!(true)),
+    ] {
+        let mut ctl = harness();
+        let mut payload = json!({"base_revision":1, "operations":[
+            {"op":"update_agent", "agent_id":"b", "changes":{"name":"must not persist"}}
+        ]});
+        payload[key] = value;
+        assert_topology_request_refused(
+            &mut ctl,
+            &action("bad-envelope", "leader", ActionKind::ApplyTopologyPatch, payload, None),
+        );
+    }
+}
+
+#[test]
+fn topology_request_rejects_malformed_stored_decisions_without_deciding_the_proposal() {
+    for (key, value) in [
+        ("operations", Json::Null),
+        ("operations", json!("use original")),
+        ("operations", json!({})),
+        ("operations", json!([7])),
+        ("reject", json!("false")),
+        ("reject", json!(0)),
+        ("reject", Json::Null),
+        ("base_revision", json!("1")),
+        ("base_revision", json!(0)),
+        ("base_revision", Json::Null),
+        ("unknown", json!(true)),
+    ] {
+        let mut ctl = harness();
+        let proposal = ctl
+            .submit(&action(
+                "proposal",
+                "b",
+                ActionKind::ProposeTeamChange,
+                json!({
+                    "operations":[{"op":"update_agent", "agent_id":"b", "changes":{"name":"Reviewer"}}]
+                }),
+                None,
+            ))
+            .unwrap();
+        assert!(proposal.ok, "{proposal:?}");
+        let mut payload = json!({"patch_id":proposal.result["patch_id"]});
+        payload[key] = value;
+        assert_topology_request_refused(
+            &mut ctl,
+            &action("bad-decision", "leader", ActionKind::ApplyTopologyPatch, payload, None),
+        );
+        let valid = ctl
+            .submit(&action(
+                "corrected-decision",
+                "leader",
+                ActionKind::ApplyTopologyPatch,
+                json!({"patch_id":proposal.result["patch_id"], "base_revision":1, "operations":[], "reject":false}),
+                None,
+            ))
+            .unwrap();
+        assert!(valid.ok, "a corrected decision must remain possible: {valid:?}");
+        assert_eq!(ctl.store.load_team_spec("s1", None).unwrap().agent("b").unwrap().name, "Reviewer");
+    }
+}
+
+#[test]
+fn topology_request_rejects_malformed_proposal_envelopes() {
+    for (key, value) in [
+        ("rationale", json!(false)),
+        ("rationale", Json::Null),
+        ("operations", json!([7])),
+        ("operations", json!([[]])),
+        ("operations", json!([null])),
+        ("unknown", json!(true)),
+    ] {
+        let mut ctl = harness();
+        let mut payload = json!({"operations":[
+            {"op":"update_agent", "agent_id":"b", "changes":{"name":"Reviewer"}}
+        ]});
+        payload[key] = value;
+        assert_topology_request_refused(
+            &mut ctl,
+            &action("bad-proposal", "b", ActionKind::ProposeTeamChange, payload, None),
+        );
+        let valid = ctl
+            .submit(&action(
+                "corrected-proposal",
+                "b",
+                ActionKind::ProposeTeamChange,
+                json!({
+                    "operations":[{"op":"update_agent", "agent_id":"b", "changes":{"name":"Reviewer"}}],
+                    "rationale":"need a reviewer"
+                }),
+                None,
+            ))
+            .unwrap();
+        assert!(valid.ok, "{valid:?}");
+    }
+}
+
+#[test]
+fn topology_request_cannot_decide_another_sessions_proposal() {
+    for reject in [false, true] {
+        let mut ctl = harness();
+        ctl.store.create_session("other", "/tmp", "approved_scope").unwrap();
+        ctl.store.save_team_spec("other", &spec()).unwrap();
+        let proposal: TopologyPatch = serde_json::from_value(json!({
+            "patch_id":"other-patch", "base_revision":1, "proposer":"b",
+            "operations":[{"op":"update_agent", "agent_id":"b", "changes":{"name":"foreign change"}}]
+        }))
+        .unwrap();
+        ctl.store.insert_patch(&proposal, "other").unwrap();
+        assert_topology_request_refused(
+            &mut ctl,
+            &action(
+                "foreign-decision",
+                "leader",
+                ActionKind::ApplyTopologyPatch,
+                json!({"patch_id":"other-patch", "reject":reject}),
+                None,
+            ),
+        );
+        assert_eq!(json!(ctl.store.get_patch("other-patch").unwrap().unwrap()), json!(proposal));
+        assert_eq!(ctl.store.current_revision("other").unwrap(), 1);
+        assert!(ctl.store.events("other", 0, 100).unwrap().is_empty());
+    }
+}
+
+#[test]
+fn topology_request_preserves_corrupt_stored_operations_and_allows_repair() {
+    for (column, broken) in [("operations", "{"), ("operations", "[]"), ("affected_agents", "[7]")] {
+        let mut ctl = harness();
+        let proposal = ctl
+            .submit(&action(
+                "proposal",
+                "b",
+                ActionKind::ProposeTeamChange,
+                json!({
+                    "operations":[{"op":"update_agent", "agent_id":"b", "changes":{"name":"Reviewer"}}]
+                }),
+                None,
+            ))
+            .unwrap();
+        assert!(proposal.ok);
+        let patch_id = proposal.result["patch_id"].as_str().unwrap();
+        let original: String = ctl
+            .store
+            .conn
+            .query_row(&format!("SELECT {column} FROM topology_patches WHERE patch_id=?1"), [patch_id], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        ctl.store
+            .conn
+            .execute(&format!("UPDATE topology_patches SET {column}=?1 WHERE patch_id=?2"), [broken, patch_id])
+            .unwrap();
+        let raw = |ctl: &Control| -> (String, String, String) {
+            ctl.store
+                .conn
+                .query_row(
+                    "SELECT operations, affected_agents, status FROM topology_patches WHERE patch_id=?1",
+                    [patch_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .unwrap()
+        };
+        let before = raw(&ctl);
+        let request =
+            action("bad-stored-patch", "leader", ActionKind::ApplyTopologyPatch, json!({"patch_id":patch_id}), None);
+        let receipt = ctl.submit(&request).unwrap();
+        assert!(!receipt.ok, "corrupt {column} became a successful patch: {receipt:?}");
+        assert_eq!(raw(&ctl), before, "preserve the original bytes and proposal status");
+        assert_eq!(ctl.store.current_revision("s1").unwrap(), 1);
+        assert_eq!(json!(ctl.submit(&request).unwrap()), json!(receipt));
+        ctl.store
+            .conn
+            .execute(&format!("UPDATE topology_patches SET {column}=?1 WHERE patch_id=?2"), [&original, patch_id])
+            .unwrap();
+        let corrected = ctl
+            .submit(&action(
+                "repaired-patch",
+                "leader",
+                ActionKind::ApplyTopologyPatch,
+                json!({"patch_id":patch_id}),
+                None,
+            ))
+            .unwrap();
+        assert!(corrected.ok, "{corrected:?}");
+        assert_eq!(ctl.store.load_team_spec("s1", None).unwrap().agent("b").unwrap().name, "Reviewer");
+    }
+}
+
+#[test]
+fn topology_request_empty_waiting_patch_fails_without_advancing_revision() {
+    let mut ctl = harness();
+    let patch: TopologyPatch = serde_json::from_value(json!({
+        "patch_id":"empty-waiting", "base_revision":1, "proposer":"b", "decided_by":"leader",
+        "status":"WAITING_BOUNDARY", "operations":[], "affected_agents":["b"]
+    }))
+    .unwrap();
+    ctl.store.insert_patch(&patch, "s1").unwrap();
+    ctl.store.set_agent_status("s1", "b", AgentStatus::Draining).unwrap();
+    ctl.schedule().unwrap();
+    assert_eq!(ctl.store.get_patch("empty-waiting").unwrap().unwrap().status, PatchStatus::Failed);
+    assert_eq!(ctl.store.current_revision("s1").unwrap(), 1);
+    assert_eq!(ctl.store.agent_status("s1", "b").unwrap(), Some(AgentStatus::Idle));
+    let events = ctl.store.events("s1", 0, 100).unwrap();
+    assert!(!events.iter().any(|event| event["kind"] == "topology_applied"));
+    assert!(events.iter().any(|event| event["kind"] == "topology_rejected"
+        && event["payload"]["error"].as_str().unwrap_or("").contains("non-empty operations")));
+}
+
 fn running_task(task_id: &str, assignee: &str) -> Task {
     let mut t: Task = serde_json::from_value(json!({
         "task_id": task_id, "requester": "leader", "assignee": assignee, "description": "d"
@@ -449,7 +893,7 @@ fn rolled_back_transaction_drops_mid_turn_pushes() {
         .find(|r| r.agent_id == "b")
         .unwrap();
     ctl.begin_run(&b_run.run_id).unwrap();
-    ctl.drain_mid_turn_pushes();
+    ctl.drain_mid_turn_pushes().unwrap();
 
     // fail the tx after schedule pushed: record_action is the last write before commit
     ctl.store
@@ -468,7 +912,7 @@ fn rolled_back_transaction_drops_mid_turn_pushes() {
     );
     let err = ctl.submit(&a).unwrap_err();
     assert!(err.contains("boom_push"), "{err}");
-    assert!(ctl.drain_mid_turn_pushes().is_empty(), "a rolled-back push must never drain");
+    assert!(ctl.drain_mid_turn_pushes().unwrap().is_empty(), "a rolled-back push must never drain");
 
     // the next clean submit rebuilds the push from persisted state
     ctl.store.conn.execute_batch("DROP TRIGGER boom_push").unwrap();
@@ -481,9 +925,10 @@ fn rolled_back_transaction_drops_mid_turn_pushes() {
     );
     let r = ctl.submit(&a).unwrap();
     assert!(r.ok, "{}", r.error.unwrap_or_default());
-    let pushes = ctl.drain_mid_turn_pushes();
+    let pushes = ctl.drain_mid_turn_pushes().unwrap();
     assert_eq!(pushes.len(), 1);
-    assert_eq!(pushes[0].0, b_run.run_id);
+    assert_eq!(pushes[0].run_id, b_run.run_id);
+    assert_eq!(pushes[0].agent_id, "b");
 }
 
 #[test]
@@ -537,10 +982,10 @@ fn failed_transaction_keeps_prior_committed_pushes() {
     assert!(err.contains("boom_push"), "{err}");
 
     // tx#1's push survives; tx#2's own push is dropped with its rollback
-    let pushes = ctl.drain_mid_turn_pushes();
+    let pushes = ctl.drain_mid_turn_pushes().unwrap();
     assert_eq!(pushes.len(), 1, "{pushes:?}");
-    assert_eq!(pushes[0].0, b_run.run_id);
-    let body = serde_json::to_string(&pushes[0].1).unwrap();
+    assert_eq!(pushes[0].run_id, b_run.run_id);
+    let body = serde_json::to_string(&pushes[0].items).unwrap();
     assert!(body.contains("second") && !body.contains("third"), "{body}");
 }
 
@@ -596,8 +1041,181 @@ fn cancel_task_cancels_queued_run() {
     // the queued run is cancelled outright: the engine must never begin it
     assert_eq!(ctl.store.get_run(&b_run.run_id).unwrap().unwrap().status, TurnStatus::Cancelled);
     assert!(matches!(ctl.store.get_task(&task_id).unwrap().unwrap().status, TaskStatus::Cancelled));
+    ctl.schedule().unwrap();
+    assert!(
+        ctl.store
+            .runs_for_session("s1", &[])
+            .unwrap()
+            .iter()
+            .all(|run| run.agent_id != "b" || run.run_id == b_run.run_id),
+        "cancelled task input must not restart the member as an unassigned chat"
+    );
+    assert!(ctl.store.pending_deliveries("s1", "b").unwrap().is_empty());
+    assert_eq!(ctl.store.applied_batch("s1", "b").unwrap(), 0);
     // the unrelated leader run is untouched
     assert_eq!(ctl.store.get_run(&leader_run.run_id).unwrap().unwrap().status, TurnStatus::Queued);
+}
+
+#[test]
+fn cancelling_one_queued_task_preserves_other_messages_and_assignments() {
+    for with_second_task in [false, true] {
+        let mut ctl = harness();
+        let mut team = spec();
+        team.channels
+            .push(serde_json::from_value(json!({"source":"leader","targets":["b"],"mode":"message"})).unwrap());
+        ctl.store.save_team_spec("s1", &team).unwrap();
+        assert!(ctl.submit(&user("goal", "go")).unwrap().ok);
+        let assignment = action(
+            "cancelled-work",
+            "leader",
+            ActionKind::AssignTask,
+            json!({"assignee":"b","description":"CANCELLED_ASSIGNMENT"}),
+            None,
+        );
+        let cancelled_task = derived_task_id(&assignment);
+        assert!(ctl.submit(&assignment).unwrap().ok);
+        assert!(
+            ctl.submit(&action(
+                "keep-message",
+                "leader",
+                ActionKind::SendMessage,
+                json!({"target":"b","text":"KEEP_INDEPENDENT_MESSAGE"}),
+                None,
+            ))
+            .unwrap()
+            .ok
+        );
+        let other_task = if with_second_task {
+            let assignment = action(
+                "other-work",
+                "leader",
+                ActionKind::AssignTask,
+                json!({"assignee":"b","description":"KEEP_OTHER_ASSIGNMENT"}),
+                None,
+            );
+            assert!(ctl.submit(&assignment).unwrap().ok);
+            Some(derived_task_id(&assignment))
+        } else {
+            None
+        };
+        let queued = ctl
+            .store
+            .runs_for_session("s1", &[TurnStatus::Queued])
+            .unwrap()
+            .into_iter()
+            .find(|run| run.agent_id == "b")
+            .unwrap();
+        assert_eq!(queued.input_delivery_ids.len(), if with_second_task { 3 } else { 2 });
+        let before = ctl.store.pending_deliveries_joined("s1", "b").unwrap();
+        let kept_ids: Vec<_> = before
+            .iter()
+            .filter(|item| item["event_task_id"].as_str() != Some(cancelled_task.as_str()))
+            .map(|item| item["delivery_id"].as_i64().unwrap())
+            .collect();
+        let receipt = ctl
+            .submit(&action("cancel", "user", ActionKind::CancelTask, json!({"task_id":cancelled_task}), None))
+            .unwrap();
+        assert!(receipt.ok, "{receipt:?}");
+        assert_eq!(ctl.store.get_run(&queued.run_id).unwrap().unwrap().status, TurnStatus::Cancelled);
+        assert_eq!(ctl.store.get_task(&cancelled_task).unwrap().unwrap().status, TaskStatus::Cancelled);
+        assert_eq!(ctl.store.applied_batch("s1", "b").unwrap(), 0);
+        let remaining = ctl.store.pending_deliveries_joined("s1", "b").unwrap();
+        assert_eq!(
+            remaining.iter().map(|item| item["delivery_id"].as_i64().unwrap()).collect::<Vec<_>>(),
+            kept_ids,
+            "cancelling a task must preserve unrelated inputs in the same queued run"
+        );
+        let fresh = ctl
+            .store
+            .runs_for_session("s1", &[TurnStatus::Queued])
+            .unwrap()
+            .into_iter()
+            .find(|run| run.agent_id == "b")
+            .expect("the remaining work must still be scheduled");
+        assert_ne!(fresh.run_id, queued.run_id);
+        assert_eq!(fresh.task_id, other_task);
+        assert_eq!(fresh.input_delivery_ids, kept_ids);
+        let input = ctl.prepare_run(&fresh.run_id).unwrap();
+        let inbox = input["view"]["inbox_delta"].to_string();
+        assert!(inbox.contains("KEEP_INDEPENDENT_MESSAGE"), "{input}");
+        assert_eq!(inbox.contains("KEEP_OTHER_ASSIGNMENT"), with_second_task);
+        assert!(!inbox.contains("CANCELLED_ASSIGNMENT"), "{input}");
+        assert_eq!(
+            ctl.store
+                .events("s1", 0, 100)
+                .unwrap()
+                .iter()
+                .filter(|event| event["kind"] == "task_cancelled" && event["payload"]["task_id"] == cancelled_task)
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn cancelling_a_second_task_removes_only_its_wake_from_the_queued_run() {
+    let mut ctl = harness();
+    let mut tasks = vec![];
+    for id in ["first", "second"] {
+        let assignment = action(id, "leader", ActionKind::AssignTask, json!({"assignee":"b","description":id}), None);
+        assert!(ctl.submit(&assignment).unwrap().ok);
+        tasks.push(derived_task_id(&assignment));
+    }
+    let queued = ctl.store.runs_for_session("s1", &[TurnStatus::Queued]).unwrap().remove(0);
+    assert_eq!(queued.task_id.as_ref(), Some(&tasks[0]));
+    assert_eq!(queued.input_delivery_ids.len(), 2);
+    let receipt = ctl
+        .submit(&action("cancel-second", "user", ActionKind::CancelTask, json!({"task_id":tasks[1]}), None))
+        .unwrap();
+    assert!(receipt.ok, "{receipt:?}");
+    assert_eq!(ctl.store.get_task(&tasks[1]).unwrap().unwrap().status, TaskStatus::Cancelled);
+    assert_eq!(ctl.store.get_run(&queued.run_id).unwrap().unwrap().status, TurnStatus::Queued);
+    assert!(!ctl.store.get_run(&queued.run_id).unwrap().unwrap().cancel_requested);
+    let pending = ctl.store.pending_deliveries_joined("s1", "b").unwrap();
+    assert_eq!(pending.len(), 1, "cancelled assignment must not be delivered with another task");
+    assert_eq!(pending[0]["event_task_id"], tasks[0]);
+    let input = ctl.prepare_run(&queued.run_id).unwrap();
+    assert_eq!(input["view"]["inbox_delta"].as_array().unwrap().len(), 1);
+    assert_eq!(input["view"]["inbox_delta"][0]["payload"]["task_id"], tasks[0]);
+    assert_eq!(ctl.store.runs_for_session("s1", &[]).unwrap().iter().filter(|run| run.agent_id == "b").count(), 1);
+}
+
+#[test]
+fn queued_external_turn_requires_stop_confirmation_for_task_and_run_cancellation() {
+    for kind in [ActionKind::CancelRun, ActionKind::CancelTask] {
+        let mut ctl = harness();
+        let assignment = action(
+            "external-work",
+            "leader",
+            ActionKind::AssignTask,
+            json!({"assignee":"cx","description":"external assignment"}),
+            None,
+        );
+        let task_id = derived_task_id(&assignment);
+        assert!(ctl.submit(&assignment).unwrap().ok);
+        let queued = ctl.store.runs_for_session("s1", &[TurnStatus::Queued]).unwrap().remove(0);
+        ctl.store.set_run_external_turn(&queued.run_id, "external-turn").unwrap();
+        let payload = match kind {
+            ActionKind::CancelTask => json!({"task_id":task_id}),
+            _ => json!({"run_id":queued.run_id}),
+        };
+        let receipt = ctl.submit(&action("cancel-external", "user", kind, payload, None)).unwrap();
+        assert!(receipt.ok, "{receipt:?}");
+        ctl.schedule().unwrap();
+        let after = ctl.store.get_run(&queued.run_id).unwrap().unwrap();
+        assert!(after.cancel_requested);
+        assert_eq!(after.status, TurnStatus::Queued, "an external turn has not confirmed it stopped");
+        assert_eq!(ctl.store.get_task(&task_id).unwrap().unwrap().status, TaskStatus::Pending);
+        assert_eq!(ctl.store.pending_deliveries("s1", "cx").unwrap().len(), 1);
+        assert_eq!(ctl.store.applied_batch("s1", "cx").unwrap(), 0);
+        assert_eq!(ctl.store.runs_for_session("s1", &[]).unwrap().iter().filter(|run| run.agent_id == "cx").count(), 1);
+        let events = ctl.store.events("s1", 0, 100).unwrap();
+        assert!(events.iter().any(|event| {
+            matches!(event["kind"].as_str(), Some("run_cancelled" | "task_cancelled"))
+                && event["payload"]["status"] == "CANCEL_REQUESTED"
+        }));
+        assert!(!events.iter().any(|event| event["payload"]["status"] == "CANCELLED"));
+    }
 }
 
 #[test]
@@ -694,6 +1312,14 @@ fn approval_parked_run_does_not_block_boundary() {
 #[test]
 fn task_wait_parked_run_does_not_block_boundary() {
     let mut ctl = harness();
+    let mut team = spec();
+    team.observers.push(
+        serde_json::from_value(json!({
+            "agent_id": "b", "subjects": ["leader"], "event_types": ["task_completed"], "payload_scope": "status"
+        }))
+        .unwrap(),
+    );
+    ctl.store.save_team_spec("s1", &team).unwrap();
     ctl.submit(&user("a1", "go")).unwrap();
     let leader_run = ctl.store.runs_for_session("s1", &[TurnStatus::Queued]).unwrap().remove(0);
     let a = action(
@@ -939,6 +1565,353 @@ fn finalize_commits_task_and_wakes_waiter() {
 
     // b's delivery acked: nothing pending for b
     assert_eq!(ctl.store.pending_deliveries("s1", "b").unwrap().len(), 0);
+}
+
+#[test]
+fn wait_for_tasks_rejects_unrelated_member_and_filters_stale_waiter() {
+    let mut ctl = harness();
+    ctl.submit(&user("a1", "go")).unwrap();
+    let leader_run = ctl.store.runs_for_session("s1", &[TurnStatus::Queued]).unwrap().remove(0);
+    let assign = action(
+        "private-wait-task",
+        "leader",
+        ActionKind::AssignTask,
+        json!({"assignee": "cx", "description": "private result"}),
+        Some(leader_run.run_id.clone()),
+    );
+    let task_id = derived_task_id(&assign);
+    assert!(ctl.submit(&assign).unwrap().ok);
+
+    let b_run = TurnRun { task_id: None, ..parked_run("run-unrelated-waiter", "b", "", TurnStatus::Queued, vec![]) };
+    ctl.store.insert_run(&b_run).unwrap();
+    ctl.begin_run(&b_run.run_id).unwrap();
+
+    let refused = ctl
+        .submit(&action(
+            "unrelated-wait",
+            "b",
+            ActionKind::WaitForTasks,
+            json!({"task_ids": [task_id.clone()]}),
+            Some(b_run.run_id.clone()),
+        ))
+        .unwrap();
+    assert!(!refused.ok);
+    assert!(refused.error.as_deref().unwrap_or_default().contains("unknown task"));
+    let b_after = ctl.store.get_run(&b_run.run_id).unwrap().unwrap();
+    assert_eq!(b_after.status, TurnStatus::Running);
+    assert!(b_after.waiting_on.is_empty());
+
+    // Simulate a pre-fix/stale persisted waiter. Completion must not use the
+    // explicit push list to create a new delivery outside the event audience.
+    ctl.store.set_run_status(&b_run.run_id, TurnStatus::WaitingTask).unwrap();
+    ctl.store.deliver_wait_registration(&b_run.run_id, std::slice::from_ref(&task_id)).unwrap();
+
+    let cx_run = ctl
+        .store
+        .runs_for_session("s1", &[TurnStatus::Queued])
+        .unwrap()
+        .into_iter()
+        .find(|r| r.agent_id == "cx")
+        .unwrap();
+    ctl.begin_run(&cx_run.run_id).unwrap();
+    let completion_receipt = ctl
+        .submit(&action(
+            "private-complete",
+            "cx",
+            ActionKind::CompleteTask,
+            json!({"task_id": task_id, "result_refs": ["secret/ref"], "summary": "secret summary"}),
+            Some(cx_run.run_id.clone()),
+        ))
+        .unwrap();
+    assert!(completion_receipt.ok, "{}", completion_receipt.error.unwrap_or_default());
+    ctl.finalize_run(&cx_run.run_id, &completed(None), &[]).unwrap();
+
+    assert!(ctl.store.pending_deliveries("s1", "b").unwrap().is_empty());
+    let b_after = ctl.store.get_run(&b_run.run_id).unwrap().unwrap();
+    assert_eq!(b_after.status, TurnStatus::Running, "a stale waiter must not remain parked");
+    let wake = ctl.wake_info(&b_after).unwrap();
+    let result = &wake["payload"]["results"][&task_id];
+    assert_eq!(result, &json!({"task_id": task_id, "status": "UNKNOWN"}));
+}
+
+#[test]
+fn wait_for_tasks_refuses_invisible_tasks_without_partial_registration() {
+    let mut ctl = harness();
+    ctl.store.insert_task("s1", &running_task("own-task", "b")).unwrap();
+    ctl.store.insert_run(&parked_run("waiter", "b", "own-task", TurnStatus::Running, vec![])).unwrap();
+    let wait = |id| {
+        action(
+            id,
+            "b",
+            ActionKind::WaitForTasks,
+            json!({"task_ids": ["own-task", "hidden-task"]}),
+            Some("waiter".into()),
+        )
+    };
+    let missing = ctl.submit(&wait("missing")).unwrap();
+    ctl.store.insert_task("s1", &running_task("hidden-task", "cx")).unwrap();
+    let invisible = ctl.submit(&wait("invisible")).unwrap();
+    assert!(!missing.ok && !invisible.ok);
+    assert_eq!(invisible.error, missing.error);
+    assert_eq!(invisible.result, missing.result);
+    let run = ctl.store.get_run("waiter").unwrap().unwrap();
+    assert_eq!(run.status, TurnStatus::Running);
+    assert!(run.waiting_on.is_empty());
+    assert!(ctl.store.events("s1", 0, 100).unwrap().is_empty(), "no partial wait event");
+}
+
+fn observer_wait_harness(scope: &str, wake_policy: &str) -> (Control, String, TurnRun) {
+    let mut ctl = harness();
+    let mut team = spec();
+    team.observers.push(
+        serde_json::from_value(json!({
+            "agent_id": "b",
+            "subjects": ["cx"],
+            "event_types": ["task_completed"],
+            "payload_scope": scope,
+            "wake_policy": wake_policy
+        }))
+        .unwrap(),
+    );
+    ctl.store.save_team_spec("s1", &team).unwrap();
+    let assign = ctl
+        .submit(&action(
+            "observed-task",
+            "leader",
+            ActionKind::AssignTask,
+            json!({"assignee": "cx", "description": "observed result"}),
+            None,
+        ))
+        .unwrap();
+    assert!(assign.ok, "{:?}", assign.error);
+    let task_id = assign.result["task_id"].as_str().unwrap().to_string();
+    ctl.store
+        .insert_run(&TurnRun { task_id: None, ..parked_run("observer", "b", "", TurnStatus::Running, vec![]) })
+        .unwrap();
+    let wait = ctl
+        .submit(&action(
+            "observer-wait",
+            "b",
+            ActionKind::WaitForTasks,
+            json!({"task_ids": [task_id]}),
+            Some("observer".into()),
+        ))
+        .unwrap();
+    assert!(wait.ok, "{:?}", wait.error);
+    assert_eq!(wait.result["waiting"], json!(true));
+    assert_eq!(ctl.store.get_run("observer").unwrap().unwrap().status, TurnStatus::WaitingTask);
+    assert!(ctl.store.pending_deliveries("s1", "b").unwrap().is_empty());
+    let worker = ctl
+        .store
+        .runs_for_session("s1", &[TurnStatus::Queued])
+        .unwrap()
+        .into_iter()
+        .find(|r| r.agent_id == "cx")
+        .unwrap();
+    (ctl, task_id, worker)
+}
+
+fn complete_observed_task(ctl: &mut Control, task_id: &str, worker: &TurnRun) {
+    ctl.begin_run(&worker.run_id).unwrap();
+    let completed_task = ctl
+        .submit(&action(
+            "observer-complete",
+            "cx",
+            ActionKind::CompleteTask,
+            json!({"task_id": task_id, "result_refs": ["private/ref"], "summary": "public summary"}),
+            Some(worker.run_id.clone()),
+        ))
+        .unwrap();
+    assert!(completed_task.ok, "{:?}", completed_task.error);
+    ctl.finalize_run(&worker.run_id, &completed(None), &worker.input_delivery_ids).unwrap();
+}
+
+#[test]
+fn authorized_observer_wait_receives_only_its_declared_scope() {
+    for scope in ["status", "public_message", "result"] {
+        for wake_policy in ["on_event", "none"] {
+            let (mut ctl, task_id, worker) = observer_wait_harness(scope, wake_policy);
+            let run = ctl.store.get_run("observer").unwrap().unwrap();
+            assert_eq!(
+                ctl.wake_info(&run).unwrap()["payload"]["results"][&task_id],
+                json!({"task_id": task_id, "status": "UNKNOWN"}),
+                "completion-only access must not expose the pending state",
+            );
+            complete_observed_task(&mut ctl, &task_id, &worker);
+
+            let pending = ctl.store.pending_deliveries_joined("s1", "b").unwrap();
+            assert_eq!(pending.len(), 1, "only the subscribed completion is delivered");
+            assert_eq!(pending[0]["event_kind"], json!("task_completed"));
+            let payload: Json = serde_json::from_str(pending[0]["payload_override"].as_str().unwrap()).unwrap();
+            let mut expected_payload = json!({
+                "task_id": task_id, "assignee": "cx", "requester": "leader", "status": "SUCCEEDED"
+            });
+            let mut expected_result = json!({"task_id": task_id, "status": "SUCCEEDED"});
+            if scope != "status" {
+                expected_payload["summary"] = json!("public summary");
+            }
+            if scope == "result" {
+                expected_payload["result_refs"] = json!(["private/ref"]);
+                expected_result["result_refs"] = json!(["private/ref"]);
+            }
+            assert_eq!(payload, expected_payload, "{scope}/{wake_policy}");
+            let run = ctl.store.get_run("observer").unwrap().unwrap();
+            assert_eq!(run.status, TurnStatus::Running);
+            assert_eq!(ctl.wake_info(&run).unwrap()["payload"]["results"][&task_id], expected_result);
+
+            let immediate = ctl
+                .submit(&action(
+                    "observer-wait-again",
+                    "b",
+                    ActionKind::WaitForTasks,
+                    json!({"task_ids": [task_id]}),
+                    Some(run.run_id),
+                ))
+                .unwrap();
+            assert!(immediate.ok, "{:?}", immediate.error);
+            assert_eq!(immediate.result, json!({"waiting": false, "results": {task_id: expected_result}}));
+        }
+    }
+}
+
+#[test]
+fn observer_wait_resumes_without_disclosing_unsubscribed_outcomes() {
+    for outcome in [TurnStatus::Failed, TurnStatus::Cancelled, TurnStatus::Completed] {
+        let (mut ctl, task_id, worker) = observer_wait_harness("result", "on_event");
+        ctl.begin_run(&worker.run_id).unwrap();
+        let run = ctl.store.get_run("observer").unwrap().unwrap();
+        assert_eq!(
+            ctl.wake_info(&run).unwrap()["payload"]["results"][&task_id],
+            json!({"task_id": task_id, "status": "UNKNOWN"}),
+            "completion-only access must not expose the running state",
+        );
+        // A completed turn without complete_task makes its task BLOCKED.
+        ctl.finalize_run(
+            &worker.run_id,
+            &TurnOutcome { status: outcome, error: Some("private failure".into()), note: None, reply_text: None },
+            &worker.input_delivery_ids,
+        )
+        .unwrap();
+        let expected_status = match outcome {
+            TurnStatus::Failed => TaskStatus::Failed,
+            TurnStatus::Cancelled => TaskStatus::Cancelled,
+            _ => TaskStatus::Blocked,
+        };
+        assert_eq!(ctl.store.get_task(&task_id).unwrap().unwrap().status, expected_status);
+        assert!(ctl.store.pending_deliveries("s1", "b").unwrap().is_empty());
+        let run = ctl.store.get_run("observer").unwrap().unwrap();
+        assert_eq!(run.status, TurnStatus::Running, "wait must finish without an event delivery");
+        assert_eq!(
+            ctl.wake_info(&run).unwrap()["payload"]["results"][&task_id],
+            json!({"task_id": task_id, "status": "UNKNOWN"}),
+        );
+        let immediate = ctl
+            .submit(&action(
+                "unsubscribed-result",
+                "b",
+                ActionKind::WaitForTasks,
+                json!({"task_ids": [task_id]}),
+                Some(run.run_id),
+            ))
+            .unwrap();
+        assert!(!immediate.ok);
+        assert_eq!(immediate.error, Some(format!("unknown task {task_id:?}")));
+    }
+}
+
+#[test]
+fn observer_wait_uses_current_permissions_after_topology_change() {
+    for revoke in [false, true] {
+        let (mut ctl, task_id, worker) = observer_wait_harness("result", "none");
+        let observer = if revoke {
+            json!({"agent_id": "b"})
+        } else {
+            json!({
+                "agent_id": "b", "subjects": ["cx"], "event_types": ["task_completed"],
+                "payload_scope": "status", "wake_policy": "none"
+            })
+        };
+        let proposed = ctl
+            .submit(&action(
+                "change-observer",
+                "leader",
+                ActionKind::ProposeTeamChange,
+                json!({"operations": [{
+                    "op": "set_observer", "remove": revoke, "observer": observer
+                }]}),
+                None,
+            ))
+            .unwrap();
+        assert!(proposed.ok, "{:?}", proposed.error);
+        let applied = ctl
+            .submit(&action(
+                "apply-observer",
+                "leader",
+                ActionKind::ApplyTopologyPatch,
+                json!({"patch_id": proposed.result["patch_id"]}),
+                None,
+            ))
+            .unwrap();
+        assert!(applied.ok, "{:?}", applied.error);
+        assert_eq!(applied.result["status"], json!("APPLIED"));
+        let run = ctl.store.get_run("observer").unwrap().unwrap();
+        assert_eq!(run.status, if revoke { TurnStatus::Running } else { TurnStatus::WaitingTask });
+        assert_eq!(
+            ctl.wake_info(&run).unwrap()["payload"]["results"][&task_id],
+            json!({"task_id": task_id, "status": "UNKNOWN"}),
+        );
+
+        complete_observed_task(&mut ctl, &task_id, &worker);
+        let run = ctl.store.get_run("observer").unwrap().unwrap();
+        assert_eq!(run.status, TurnStatus::Running);
+        assert_eq!(
+            ctl.wake_info(&run).unwrap()["payload"]["results"][&task_id],
+            json!({"task_id": task_id, "status": if revoke { "UNKNOWN" } else { "SUCCEEDED" }}),
+        );
+        let pending = ctl.store.pending_deliveries_joined("s1", "b").unwrap();
+        if revoke {
+            assert!(pending.is_empty());
+        } else {
+            assert_eq!(pending.len(), 1);
+            let payload: Json = serde_json::from_str(pending[0]["payload_override"].as_str().unwrap()).unwrap();
+            assert_eq!(
+                payload,
+                json!({
+                    "task_id": task_id, "assignee": "cx", "requester": "leader", "status": "SUCCEEDED"
+                })
+            );
+        }
+    }
+}
+
+#[test]
+fn task_participants_keep_full_wait_results() {
+    let mut ctl = harness();
+    let task = Task {
+        requester: "b".into(),
+        status: TaskStatus::Succeeded,
+        result_refs: vec!["result/ref".into()],
+        ..running_task("delegated-task", "cx")
+    };
+    ctl.store.insert_task("s1", &task).unwrap();
+    let expected = json!({"task_id": task.task_id, "status": "SUCCEEDED", "result_refs": ["result/ref"]});
+    for actor in ["leader", "b", "cx"] {
+        let run =
+            TurnRun { task_id: None, ..parked_run(actor, actor, "", TurnStatus::Running, vec![task.task_id.clone()]) };
+        ctl.store.insert_run(&run).unwrap();
+        let receipt = ctl
+            .submit(&action(
+                &format!("wait-{actor}"),
+                actor,
+                ActionKind::WaitForTasks,
+                json!({"task_ids": [task.task_id]}),
+                Some(run.run_id.clone()),
+            ))
+            .unwrap();
+        assert!(receipt.ok, "{:?}", receipt.error);
+        assert_eq!(receipt.result, json!({"waiting": false, "results": {task.task_id.clone(): expected}}));
+        assert_eq!(ctl.wake_info(&run).unwrap()["payload"]["results"][&task.task_id], expected);
+    }
 }
 
 #[test]
@@ -1312,7 +2285,7 @@ fn wake_info_reports_task_results_keyed_by_task_id() {
     assert!(r.ok && r.result["waiting"] == json!(true));
 
     let run = ctl.store.get_run(&leader_run.run_id).unwrap().unwrap();
-    let wake = ctl.wake_info(&run);
+    let wake = ctl.wake_info(&run).unwrap();
     assert_eq!(wake["reason"], json!("task_results"));
     let results = &wake["payload"]["results"];
     assert!(results.is_object(), "snapshots are keyed by task id, got {results}");
@@ -1507,11 +2480,12 @@ fn mid_turn_push_uses_scoped_observer_payload() {
     let r = ctl.submit(&a).unwrap();
     assert!(r.ok, "{}", r.error.unwrap_or_default());
 
-    let pushes = ctl.drain_mid_turn_pushes();
+    let pushes = ctl.drain_mid_turn_pushes().unwrap();
     assert_eq!(pushes.len(), 1);
-    assert_eq!(pushes[0].0, "run-obs");
-    assert!(!pushes[0].1.is_empty());
-    for item in &pushes[0].1 {
+    assert_eq!(pushes[0].run_id, "run-obs");
+    assert_eq!(pushes[0].agent_id, "obs");
+    assert!(!pushes[0].items.is_empty());
+    for item in &pushes[0].items {
         let rendered = item["payload"].to_string();
         assert!(!rendered.contains("TOP-SECRET-DESCRIPTION"), "mid-turn push leaked the unscoped payload: {rendered}");
         assert!(item["payload"].get("task_id").is_some(), "scoped payload keeps status keys: {rendered}");

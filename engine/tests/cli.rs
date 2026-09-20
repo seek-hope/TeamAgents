@@ -125,6 +125,64 @@ fn doctor_probes_isolation_codex_and_config_errors() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
+#[test]
+fn validate_enforces_one_builtin_leader_in_json_and_yaml() {
+    use serde_json::json;
+    let root = std::env::temp_dir().join(format!("ta-cli-leader-invariants-{}", std::process::id()));
+    let config = root.join("config/teamagents");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("config.toml"), "[models.m]\nprovider = 'openai'\nmodel = 'test'\n").unwrap();
+    let valid = json!({
+        "leader_id": "leader", "agents": [
+            {"id": "leader", "name": "Lead", "role": "leader", "runtime_kind": "deepagents", "model_profile": "m"},
+            {"id": "b", "name": "Review", "role": "reviewer", "runtime_kind": "deepagents", "model_profile": "m"},
+            {"id": "cx", "name": "Code", "role": "coder", "runtime_kind": "codex", "model_profile": "m"}
+        ]
+    });
+    let mut duplicate = valid.clone();
+    duplicate["agents"][1]["role"] = json!("leader");
+    let mut external = valid.clone();
+    external["agents"][0]["runtime_kind"] = json!("codex");
+    let mut missing = valid.clone();
+    missing["agents"][0]["role"] = json!("worker");
+    let mut mismatched = valid.clone();
+    mismatched["leader_id"] = json!("b");
+    for (name, spec, expected) in [
+        ("duplicate", duplicate, Some("唯一")),
+        ("external", external, Some("内置")),
+        ("missing", missing, Some("leader")),
+        ("mismatched", mismatched, Some("leader")),
+        ("mixed", valid, None),
+    ] {
+        for extension in ["json", "yaml"] {
+            let text = if extension == "json" {
+                serde_json::to_string_pretty(&spec).unwrap()
+            } else {
+                serde_yaml::to_string(&spec).unwrap()
+            };
+            let path = root.join(format!("{name}.{extension}"));
+            std::fs::write(&path, &text).unwrap();
+            let output = Command::new(env!("CARGO_BIN_EXE_teamagents"))
+                .arg("validate")
+                .arg(&path)
+                .env("XDG_CONFIG_HOME", root.join("config"))
+                .env("XDG_STATE_HOME", root.join("state"))
+                .output()
+                .unwrap();
+            let message =
+                format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+            assert_eq!(output.status.success(), expected.is_none(), "{name}.{extension}: {message}");
+            if let Some(expected) = expected {
+                assert!(message.contains("invalid:") && message.contains(expected), "{message}");
+            } else {
+                assert!(message.contains("ok:"), "{message}");
+            }
+            assert_eq!(std::fs::read_to_string(path).unwrap(), text);
+        }
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 /// Keep diagnostics deterministic on machines without Codex or user namespaces.
 #[test]
 fn doctor_fresh_install_and_optional_codex() {

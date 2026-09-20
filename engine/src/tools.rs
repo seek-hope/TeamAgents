@@ -67,9 +67,64 @@ const O_DIRECTORY: i32 = 0x10000;
 // ponytail: serialize native mutations in this process; use per-path locks if
 // unrelated writes contend. Shell/external editors still need hash checks.
 static FILE_WRITES: Mutex<()> = Mutex::new(());
-/// Virtual prefix members use to read long shell output back (`/artifacts/`
-/// routes to the session artifact directory).
+/// Explicitly shared deliverables and private automatic output have separate
+/// virtual roots. Knowing a private filename never grants another member access.
 const ARTIFACTS_PREFIX: &str = "/artifacts/";
+const TOOL_OUTPUT_PREFIX: &str = "/tool-output/";
+
+#[derive(Default)]
+pub(crate) struct ArtifactPaths {
+    shared: Option<PathBuf>,
+    private_output: Option<PathBuf>,
+}
+
+impl ArtifactPaths {
+    fn shared(shared: Option<PathBuf>) -> Self {
+        Self { shared, private_output: None }
+    }
+
+    pub(crate) fn for_member(shared: PathBuf, member_dir: &Path) -> Self {
+        Self { shared: Some(shared), private_output: Some(member_dir.join("tool-output")) }
+    }
+
+    fn shared_path(&self, key: &str) -> Result<PathBuf, String> {
+        let path = resolve_artifact(self.shared.as_ref(), key)?;
+        // Older releases mixed unowned automatic logs with shared deliverables.
+        // Preserve those bytes for the human, but never guess their owner or
+        // make an old private log readable by every member after an upgrade.
+        if self.private_output.is_some()
+            && path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("exec-") && name.ends_with(".log"))
+        {
+            return Err("legacy automatic output is private; use your /tool-output/ reference".into());
+        }
+        Ok(path)
+    }
+
+    fn read_path(&self, key: &str) -> Result<(&Path, PathBuf), String> {
+        if let Some(name) = key.strip_prefix(TOOL_OUTPUT_PREFIX) {
+            let root = self.private_output.as_deref().ok_or("no private output directory for this member")?;
+            return Ok((root, resolve_in_root(root, name)?));
+        }
+        let path = self.shared_path(key)?;
+        Ok((self.shared.as_deref().expect("shared_path checked the root"), path))
+    }
+
+    fn output(&self) -> OutputLocation<'_> {
+        match self.private_output.as_deref() {
+            Some(root) => OutputLocation { root: Some(root), prefix: TOOL_OUTPUT_PREFIX },
+            None => OutputLocation { root: self.shared.as_deref(), prefix: ARTIFACTS_PREFIX },
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct OutputLocation<'a> {
+    root: Option<&'a Path>,
+    prefix: &'static str,
+}
 
 /// Resolve `key` inside root; reject traversal and symlinks escaping root.
 pub fn resolve_in_root(root: &Path, key: &str) -> Result<PathBuf, String> {
@@ -109,7 +164,7 @@ pub fn resolve_in_root(root: &Path, key: &str) -> Result<PathBuf, String> {
 
 /// Pin the parent directory before opening a member file. Linux /proc fd paths
 /// keep a concurrent symlink replacement from redirecting creates or writes.
-fn open_member_file(root: &Path, path: &Path) -> Result<std::fs::File, String> {
+pub(crate) fn open_member_file(root: &Path, path: &Path) -> Result<std::fs::File, String> {
     let root = std::fs::canonicalize(root).map_err(|e| e.to_string())?;
     let parent = member_parent(&root, path, false)?;
     let leaf = PathBuf::from(format!("/proc/self/fd/{}", parent.as_raw_fd()))
@@ -543,9 +598,17 @@ pub fn load_image_reference(
     reference: &str,
     media_type: &str,
 ) -> Result<Vec<u8>, String> {
-    let file = if let Some(name) = reference.strip_prefix(ARTIFACTS_PREFIX) {
-        let dir = artifacts.ok_or("artifact directory unavailable")?;
-        let path = resolve_in_root(dir, name)?;
+    load_member_image_reference(root, &ArtifactPaths::shared(artifacts.map(Path::to_path_buf)), reference, media_type)
+}
+
+pub(crate) fn load_member_image_reference(
+    root: &Path,
+    artifacts: &ArtifactPaths,
+    reference: &str,
+    media_type: &str,
+) -> Result<Vec<u8>, String> {
+    let file = if reference.starts_with(ARTIFACTS_PREFIX) || reference.starts_with(TOOL_OUTPUT_PREFIX) {
+        let (dir, path) = artifacts.read_path(reference)?;
         open_member_file(dir, &path)?
     } else {
         let path = resolve_in_root(root, reference)?;
@@ -585,43 +648,45 @@ fn resolve_artifact(artifacts: Option<&PathBuf>, key: &str) -> Result<PathBuf, S
     resolve_in_root(root, name)
 }
 
-/// File/tool executor for one member's workspace. `artifacts` is the session
-/// artifact directory: long shell output lands there
-/// and members read it back through read_file/read_artifact.
+/// Standalone workspace executor. Session members use separate shared
+/// deliverables and private automatic output through `ArtifactPaths`.
 pub fn workspace_executor(
     root: PathBuf,
     artifacts: Option<PathBuf>,
 ) -> impl Fn(&str, &Json) -> Result<Json, String> + Send + Sync + 'static {
-    let executor = workspace_executor_with_control(root, artifacts, None);
+    let executor = workspace_executor_with_control(root, ArtifactPaths::shared(artifacts), None);
     move |tool, args| executor(tool, args, &TurnControl::default())
 }
 
 fn workspace_executor_with_control(
     root: PathBuf,
-    artifacts: Option<PathBuf>,
+    artifacts: ArtifactPaths,
     shell_state: Option<PathBuf>,
 ) -> impl Fn(&str, &Json, &TurnControl) -> Result<Json, String> + Send + Sync + 'static {
     // cross-process write locks live beside the session state, never in the project
-    let lock_dir = artifacts.as_ref().and_then(|dir| dir.parent()).map(|state| state.join("locks"));
+    let lock_dir = artifacts.shared.as_ref().and_then(|dir| dir.parent()).map(|state| state.join("locks"));
     move |tool: &str, args: &Json, control: &TurnControl| -> Result<Json, String> {
         control.check()?;
         let arg = |key: &str| args.get(key).and_then(|v| v.as_str()).unwrap_or("").to_string();
         let arg_or = |args: &Json, key: &str, default: &str| -> String {
             args.get(key).and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or(default).to_string()
         };
-        // `/artifacts/...` is a virtual path for this member, not a host path;
-        // that prefix routes to the session artifact directory
+        // Mutations can publish shared artifacts, but cannot rewrite automatic
+        // output receipts. Private output is exposed only through the read path.
         let member_path = |key: &str| -> Result<PathBuf, String> {
             if key.starts_with(ARTIFACTS_PREFIX) {
-                resolve_artifact(artifacts.as_ref(), key)
+                artifacts.shared_path(key)
             } else {
                 resolve_in_root(&root, key)
             }
         };
         let member_file = |key: &str| {
-            let path = member_path(key)?;
-            let file_root = if key.starts_with(ARTIFACTS_PREFIX) { artifacts.as_ref().unwrap() } else { &root };
-            open_member_file(file_root, &path)
+            if key.starts_with(ARTIFACTS_PREFIX) || key.starts_with(TOOL_OUTPUT_PREFIX) {
+                let (file_root, path) = artifacts.read_path(key)?;
+                open_member_file(file_root, &path)
+            } else {
+                open_member_file(&root, &member_path(key)?)
+            }
         };
         match tool {
             "ls" => {
@@ -652,8 +717,8 @@ fn workspace_executor_with_control(
             "read_artifact" => {
                 let key = arg("path");
                 let key = if key.is_empty() { arg("name") } else { key };
-                let path = resolve_artifact(artifacts.as_ref(), &key)?;
-                read_page(open_member_file(artifacts.as_ref().unwrap(), &path)?, args, control)
+                let (file_root, path) = artifacts.read_path(&key)?;
+                read_page(open_member_file(file_root, &path)?, args, control)
             }
             "write_file" => {
                 let _guard = FILE_WRITES.lock().map_err(|_| "file mutation lock poisoned")?;
@@ -661,7 +726,7 @@ fn workspace_executor_with_control(
                 let path = member_path(&arg("path"))?;
                 let content = args.get("content").and_then(|v| v.as_str()).ok_or("content must be a string")?;
                 let file_root =
-                    if arg("path").starts_with(ARTIFACTS_PREFIX) { artifacts.as_ref().unwrap() } else { &root };
+                    if arg("path").starts_with(ARTIFACTS_PREFIX) { artifacts.shared.as_ref().unwrap() } else { &root };
                 atomic_write(file_root, lock_dir.as_deref(), &path, content.as_bytes(), expected_hash(args)?, control)?;
                 Ok(json!(format!("wrote {}", path.display())))
             }
@@ -685,7 +750,7 @@ fn workspace_executor_with_control(
                     return Err("file conflict: expected_sha256 no longer matches; read the file again".into());
                 }
                 let file_root =
-                    if arg("path").starts_with(ARTIFACTS_PREFIX) { artifacts.as_ref().unwrap() } else { &root };
+                    if arg("path").starts_with(ARTIFACTS_PREFIX) { artifacts.shared.as_ref().unwrap() } else { &root };
                 atomic_write(
                     file_root,
                     lock_dir.as_deref(),
@@ -734,7 +799,7 @@ fn workspace_executor_with_control(
                         ));
                     }
                     let file_root = if key.starts_with(ARTIFACTS_PREFIX) {
-                        artifacts.as_ref().unwrap().clone()
+                        artifacts.shared.as_ref().unwrap().clone()
                     } else {
                         root.clone()
                     };
@@ -787,7 +852,7 @@ fn workspace_executor_with_control(
                         "set -o pipefail; rg --files -- . | rg --color never -- {}",
                         shell_quote(&glob_regex(&pattern))
                     );
-                    return shell_run_with_control(&command, &root, 30, false, artifacts.as_deref(), control)
+                    return shell_run_at(&command, &root, 30, false, artifacts.output(), None, control)
                         .map(Json::String);
                 }
                 let mut hits = vec![];
@@ -803,22 +868,14 @@ fn workspace_executor_with_control(
                 } else {
                     format!("grep -rn -- {pattern} {path}")
                 };
-                shell_run_with_control(&command, &root, 30, false, artifacts.as_deref(), control).map(Json::String)
+                shell_run_at(&command, &root, 30, false, artifacts.output(), None, control).map(Json::String)
             }
             "shell" => {
                 let command = arg("command");
                 let timeout = args.get("timeout").and_then(|v| v.as_u64()).unwrap_or(120);
                 let network = args.get("network").and_then(|v| v.as_bool()).unwrap_or(false);
-                shell_run_stateful(
-                    &command,
-                    &root,
-                    timeout,
-                    network,
-                    artifacts.as_deref(),
-                    shell_state.as_deref(),
-                    control,
-                )
-                .map(Json::String)
+                shell_run_at(&command, &root, timeout, network, artifacts.output(), shell_state.as_deref(), control)
+                    .map(Json::String)
             }
             other => Err(format!("unknown tool {other}")),
         }
@@ -1013,7 +1070,7 @@ pub fn member_executor(
     bindings: Vec<String>,
     artifacts: Option<PathBuf>,
 ) -> impl Fn(&str, &Json) -> Result<Json, String> + Send + Sync + 'static {
-    let executor = member_executor_with_control(root, catalog, bindings, artifacts, None);
+    let executor = member_executor_with_control(root, catalog, bindings, ArtifactPaths::shared(artifacts), None);
     move |tool, args| executor(tool, args, &TurnControl::default())
 }
 
@@ -1021,7 +1078,7 @@ pub(crate) fn member_executor_with_control(
     root: PathBuf,
     catalog: teamagents_core::models::UserConfig,
     bindings: Vec<String>,
-    artifacts: Option<PathBuf>,
+    artifacts: ArtifactPaths,
     shell_state: Option<PathBuf>,
 ) -> impl Fn(&str, &Json, &TurnControl) -> Result<Json, String> + Send + Sync + 'static {
     let workspace = workspace_executor_with_control(root, artifacts, shell_state);
@@ -1216,17 +1273,59 @@ pub fn which(name: &str) -> Option<PathBuf> {
 /// Where a member's shell state lives inside the sandbox (bound rw).
 const SHELL_STATE_SANDBOX: &str = "/tmp/.teamagents-shell";
 
+pub(crate) fn sandbox_home(persistent_shell: bool) -> &'static str {
+    if persistent_shell {
+        // ponytail: caches follow session retention; add an explicit cache
+        // quota here if real projects exhaust the member's disk budget.
+        "/tmp/.teamagents-shell/home"
+    } else {
+        // The doctor and some direct callers use /tmp as their workspace.
+        // Keep this home outside that bind so it remains private and writable.
+        "/run/teamagents/home"
+    }
+}
+
 /// A real terminal keeps `cd` and `export` between commands; a fresh sandbox per
 /// call does not. The state travels through a small file the shell writes itself
 /// (and reads next time), which also survives a session resume. It is written to
 /// a temp name and renamed, so a killed command cannot leave a half-written state.
 fn shell_state_preamble(sandbox_dir: &str) -> String {
-    format!("__ta_state={sandbox_dir}/state.sh\nif [ -r \"$__ta_state\" ]; then . \"$__ta_state\"; fi\n")
+    // Legacy snapshots contain an unguarded `cd` followed by exports, so the
+    // source command's final status cannot tell whether the directory restored.
+    // Catch that failure before any caller command can write in the wrong root.
+    // Only migrate an unversioned snapshot's old default HOME. New snapshots
+    // preserve deliberate HOME exports, including the workspace itself.
+    format!(
+        r#"__ta_state={sandbox_dir}/state.sh
+__ta_initial_cwd=$(builtin pwd)
+__ta_default_home=$HOME
+__ta_home_version=0
+__ta_restore_cwd_failed=0
+if [ -r "$__ta_state" ]; then
+    cd() {{ builtin cd "$@" || {{ __ta_restore_cwd_failed=1; return 1; }}; }}
+    . "$__ta_state"
+    unset -f cd
+    if [ "$__ta_home_version" = 0 ] && [ "$HOME" = "$__ta_initial_cwd" ]; then
+        export HOME="$__ta_default_home"
+    fi
+    if [ "$__ta_restore_cwd_failed" = 1 ]; then
+        printf '%s\n' 'ShellStateUnavailable: 已保存工作目录无法恢复，本次命令未执行。' >&2
+        builtin cd -- "$__ta_initial_cwd" || exit 1
+        printf '后续命令将从工作区 %s 开始。沙箱临时文件只在单次调用内保留；请在同一次调用中创建并使用临时副本。\n' "$PWD" >&2
+        false
+        {}
+    fi
+fi
+"#,
+        shell_state_capture(sandbox_dir)
+    )
 }
 
 fn shell_state_capture(sandbox_dir: &str) -> String {
+    // PWD is exported and can be stale or reassigned; ask bash for its actual
+    // directory before serializing both the restore recipe and the output hint.
     format!(
-        "\n__ta_rc=$?\n{{ printf 'cd %q\\n' \"$PWD\"; export -p; }} > \"$__ta_state.tmp\" 2>/dev/null && mv \"$__ta_state.tmp\" \"$__ta_state\"\nprintf '%s\\n' \"$PWD\" > \"{sandbox_dir}/cwd\" 2>/dev/null\nexit $__ta_rc\n"
+        "\n__ta_rc=$?\nif PWD=$(builtin pwd); then\n{{ printf '__ta_home_version=1\\ncd %q\\n' \"$PWD\"; export -p; }} > \"$__ta_state.tmp\" 2>/dev/null && mv \"$__ta_state.tmp\" \"$__ta_state\"\nprintf '%s\\n' \"$PWD\" > \"{sandbox_dir}/cwd\" 2>/dev/null\nfi\nexit $__ta_rc\n"
     )
 }
 
@@ -1262,6 +1361,10 @@ pub fn bwrap_argv(workdir: &Path, network: bool, command: &str, shell_state: Opt
     if let Some(state) = shell_state {
         argv.extend(["--bind".into(), state.to_string_lossy().into_owned(), SHELL_STATE_SANDBOX.into()]);
     }
+    // Create inside the namespace, so an old home symlink cannot make the
+    // engine create directories outside the sandbox. Caches belong to the
+    // member, not to package contents or the shared project.
+    argv.extend(["--dir".into(), sandbox_home(shell_state.is_some()).into()]);
     argv.extend(["--bind".into(), workdir.clone(), workdir.clone()]);
     argv.extend(["--chdir".into(), workdir]);
     argv.extend([
@@ -1351,8 +1454,8 @@ struct OutputSink {
 }
 
 impl OutputSink {
-    fn new(dir: Option<&Path>) -> Result<Self, String> {
-        let (artifact, reference) = if let Some(dir) = dir {
+    fn new(location: OutputLocation<'_>) -> Result<Self, String> {
+        let (artifact, reference) = if let Some(dir) = location.root {
             std::fs::create_dir_all(dir).map_err(|e| format!("cannot create output artifact directory: {e}"))?;
             let name = format!("exec-{}.log", uuid::Uuid::new_v4());
             let file = std::fs::OpenOptions::new()
@@ -1361,7 +1464,7 @@ impl OutputSink {
                 .open(dir.join(&name))
                 .map_err(|e| format!("cannot create output artifact: {e}"))?;
             prune_artifacts(dir, ARTIFACT_DIR_BYTES);
-            (Some(file), Some(format!("{ARTIFACTS_PREFIX}{name}")))
+            (Some(file), Some(format!("{}{name}", location.prefix)))
         } else {
             (None, None)
         };
@@ -1497,6 +1600,26 @@ pub fn shell_run_stateful(
     shell_state: Option<&Path>,
     control: &TurnControl,
 ) -> Result<String, String> {
+    shell_run_at(
+        command,
+        workdir,
+        timeout_s,
+        network,
+        OutputLocation { root: artifacts, prefix: ARTIFACTS_PREFIX },
+        shell_state,
+        control,
+    )
+}
+
+fn shell_run_at(
+    command: &str,
+    workdir: &Path,
+    timeout_s: u64,
+    network: bool,
+    output: OutputLocation<'_>,
+    shell_state: Option<&Path>,
+    control: &TurnControl,
+) -> Result<String, String> {
     control.check()?;
     if !bwrap_available() {
         return Err("IsolationUnavailable: bwrap is not available: refusing to run commands without isolation".into());
@@ -1515,7 +1638,7 @@ pub fn shell_run_stateful(
     };
     let workdir = std::fs::canonicalize(workdir).unwrap_or_else(|_| workdir.to_path_buf());
     let argv = bwrap_argv(&workdir, network, &wrapped, shell_state);
-    let sink = Arc::new(Mutex::new(OutputSink::new(artifacts)?));
+    let sink = Arc::new(Mutex::new(OutputSink::new(output)?));
     let mut sandbox = Command::new(&argv[0]);
     // whitelist environment: no model keys, no credentials (plan §12.2)
     sandbox
@@ -1525,7 +1648,7 @@ pub fn shell_run_stateful(
         .stderr(Stdio::piped())
         .env_clear()
         .env("PATH", sandbox_path())
-        .env("HOME", &workdir)
+        .env("HOME", sandbox_home(shell_state.is_some()))
         .env("LANG", std::env::var("LANG").unwrap_or_else(|_| "C.UTF-8".into()))
         .env("TERM", "dumb")
         .env("TMPDIR", "/tmp")
@@ -1998,8 +2121,9 @@ mod tests {
     #[test]
     fn output_capture_spools_bounded_previews_and_reports_storage_errors() {
         let dir = std::env::temp_dir().join(format!("ta-output-{}", uuid::Uuid::new_v4()));
-        let mut first = OutputSink::new(Some(&dir)).unwrap();
-        let second = OutputSink::new(Some(&dir)).unwrap();
+        let location = OutputLocation { root: Some(&dir), prefix: ARTIFACTS_PREFIX };
+        let mut first = OutputSink::new(location).unwrap();
+        let second = OutputSink::new(location).unwrap();
         assert_ne!(first.reference, second.reference);
         for _ in 0..100 {
             first.append(&[b'x'; 8192]);
@@ -2013,7 +2137,10 @@ mod tests {
         assert!(first.finish(false).unwrap_err().contains("output artifact write failed"));
         let not_a_dir = dir.join("file");
         std::fs::write(&not_a_dir, "x").unwrap();
-        assert!(OutputSink::new(Some(&not_a_dir)).err().unwrap().contains("artifact directory"));
+        assert!(OutputSink::new(OutputLocation { root: Some(&not_a_dir), prefix: ARTIFACTS_PREFIX })
+            .err()
+            .unwrap()
+            .contains("artifact directory"));
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -2127,7 +2254,10 @@ mod tests {
     #[test]
     fn shell_artifact_stops_at_the_size_cap() {
         let dir = std::env::temp_dir().join(format!("ta-artifact-cap-{}", uuid::Uuid::new_v4()));
-        let mut sink = OutputSink { cap: 3 * 1024 * 1024, ..OutputSink::new(Some(&dir)).unwrap() };
+        let mut sink = OutputSink {
+            cap: 3 * 1024 * 1024,
+            ..OutputSink::new(OutputLocation { root: Some(&dir), prefix: ARTIFACTS_PREFIX }).unwrap()
+        };
         for _ in 0..64 {
             sink.append(&[b'x'; 65536]);
         }

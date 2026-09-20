@@ -6,7 +6,7 @@ use crate::gateway::{operation_hash, ApprovalGate, ToolGateway};
 use crate::runtime::{AgentRunner, Notify};
 use serde_json::{json, Value as Json};
 use std::collections::{HashMap, HashSet};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Sender};
@@ -15,10 +15,28 @@ use std::time::Duration;
 use teamagents_core::control::TurnOutcome;
 use teamagents_core::models::{ApprovalRequest, ApprovalStatus, TurnRun, TurnStatus};
 
+mod history;
+pub(crate) use history::read_page as read_history_page;
+
 type TurnCompletion = Arc<(Mutex<bool>, Condvar)>;
-type Pending = Arc<Mutex<HashMap<u64, Sender<Result<Json, String>>>>>;
+type Pending = Arc<Mutex<HashMap<u64, Sender<Result<Json, RpcError>>>>>;
 type NotifyHandler = Arc<dyn Fn(Json) + Send + Sync>;
 type RequestHandler = Arc<dyn Fn(Json) -> Json + Send + Sync>;
+
+#[derive(Clone, Debug)]
+enum RpcError {
+    Rejected(Json),
+    Transport(String),
+}
+
+impl std::fmt::Display for RpcError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Rejected(error) => write!(f, "{error}"),
+            Self::Transport(error) => write!(f, "{error}"),
+        }
+    }
+}
 
 #[derive(Default)]
 pub struct AppServerOptions {
@@ -26,6 +44,8 @@ pub struct AppServerOptions {
     pub codex_home: Option<String>,
     pub env: Vec<(String, String)>,
     pub config_overrides: Vec<(String, Json)>,
+    pub experimental_api: bool,
+    pub max_message_bytes: Option<usize>,
 }
 
 /// Minimal JSON-RPC client for one app-server process.
@@ -40,6 +60,7 @@ pub struct CodexAppServer {
     on_exit: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     next_id: AtomicU64,
     stderr_lines: Mutex<Vec<String>>,
+    read_error: Mutex<Option<String>>,
 }
 
 /// argv for `codex app-server`. Codex config profiles are layered as `-c`
@@ -70,6 +91,7 @@ impl CodexAppServer {
             on_exit: Mutex::new(None),
             next_id: AtomicU64::new(1),
             stderr_lines: Mutex::new(vec![]),
+            read_error: Mutex::new(None),
         })
     }
 
@@ -109,8 +131,25 @@ impl CodexAppServer {
 
         let this = self.clone();
         std::thread::spawn(move || {
-            for line in BufReader::new(stdout).lines() {
-                let Ok(line) = line else { break };
+            let mut reader = BufReader::new(stdout);
+            loop {
+                let mut line = String::new();
+                let read = match this.opts.max_message_bytes {
+                    Some(limit) => (&mut reader).take(limit as u64 + 1).read_line(&mut line),
+                    None => reader.read_line(&mut line),
+                };
+                match read {
+                    Ok(0) => break,
+                    Ok(_) => {}
+                    Err(error) => {
+                        *this.read_error.lock().unwrap() = Some(error.to_string());
+                        break;
+                    }
+                }
+                if this.opts.max_message_bytes.is_some_and(|limit| line.len() > limit) {
+                    *this.read_error.lock().unwrap() = Some("Codex 历史响应超过 32 MiB 浏览上限".into());
+                    break;
+                }
                 if line.trim().is_empty() {
                     continue;
                 }
@@ -121,14 +160,16 @@ impl CodexAppServer {
             // server explained itself on stderr (a bad flag/profile is otherwise
             // indistinguishable from a crash)
             let detail = this.stderr_tail();
-            let reason = if detail.is_empty() {
+            let reason = if let Some(error) = this.read_error.lock().unwrap().clone() {
+                error
+            } else if detail.is_empty() {
                 "codex app-server exited".to_string()
             } else {
                 format!("codex app-server exited: {detail}")
             };
             let pending: Vec<_> = this.pending.lock().unwrap().drain().collect();
             for (_, tx) in pending {
-                let _ = tx.send(Err(reason.clone()));
+                let _ = tx.send(Err(RpcError::Transport(reason.clone())));
             }
             // no turn/completed is coming either: release the driving threads
             if let Some(on_exit) = this.on_exit.lock().unwrap().clone() {
@@ -152,11 +193,12 @@ impl CodexAppServer {
 
         // P2-4: on a failed handshake kill the half-started server — the reader
         // threads hold Arcs, so returning Err without close() leaks the process.
-        if let Err(e) = self.call(
-            "initialize",
-            json!({"clientInfo": {"name": "teamagents", "title": "TeamAgents", "version": env!("CARGO_PKG_VERSION")}}),
-            60_000,
-        ) {
+        let mut initialize =
+            json!({"clientInfo": {"name": "teamagents", "title": "TeamAgents", "version": env!("CARGO_PKG_VERSION")}});
+        if self.opts.experimental_api {
+            initialize["capabilities"] = json!({"experimentalApi":true});
+        }
+        if let Err(e) = self.call("initialize", initialize, 60_000) {
             self.close();
             return Err(e);
         }
@@ -172,7 +214,7 @@ impl CodexAppServer {
             let slot = self.pending.lock().unwrap().remove(&numeric);
             if let Some(tx) = slot {
                 let result = match message.get("error") {
-                    Some(error) if !error.is_null() => Err(format!("{error}")),
+                    Some(error) if !error.is_null() => Err(RpcError::Rejected(error.clone())),
                     _ => Ok(message.get("result").cloned().unwrap_or(Json::Null)),
                 };
                 let _ = tx.send(result);
@@ -203,19 +245,23 @@ impl CodexAppServer {
     }
 
     pub fn call(&self, method: &str, params: Json, timeout_ms: u64) -> Result<Json, String> {
+        self.request(method, params, timeout_ms).map_err(|e| e.to_string())
+    }
+
+    fn request(&self, method: &str, params: Json, timeout_ms: u64) -> Result<Json, RpcError> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = channel();
         self.pending.lock().unwrap().insert(id, tx);
         if let Err(e) = self.write(json!({"id": id, "method": method, "params": params})) {
             // a dead server never answers: drop the entry we just parked
             self.pending.lock().unwrap().remove(&id);
-            return Err(e);
+            return Err(RpcError::Transport(e));
         }
         match rx.recv_timeout(Duration::from_millis(timeout_ms)) {
             Ok(result) => result,
             Err(_) => {
                 self.pending.lock().unwrap().remove(&id);
-                Err(format!("{method} timed out"))
+                Err(RpcError::Transport(format!("{method} timed out")))
             }
         }
     }
@@ -242,7 +288,6 @@ impl CodexAppServer {
 
     pub fn close(&self) {
         let child = self.child.lock().unwrap().take();
-        *self.stdin.lock().unwrap() = None;
         if let Some(mut child) = child {
             #[cfg(unix)]
             {
@@ -263,6 +308,9 @@ impl CodexAppServer {
             let _ = child.kill();
             let _ = child.wait();
         }
+        // Killing the reader first also releases a writer blocked on a full
+        // stdin pipe; acquiring that pipe's mutex before kill can deadlock.
+        *self.stdin.lock().unwrap() = None;
     }
 }
 
@@ -323,7 +371,7 @@ pub struct CodexRunner {
     reported: Mutex<HashMap<String, usize>>,
     approval_waits: Mutex<HashMap<String, Sender<String>>>,
     approval_ids: Mutex<HashMap<String, String>>,
-    queued_input: Mutex<HashMap<String, Vec<String>>>,
+    queued_input: Mutex<HashMap<String, Vec<Json>>>,
     /// run_id → event_ids already injected (steer/queued), the same guard as
     /// ChatRunner's checkpoint.input_events: a re-drained push is not delivered twice
     delivered: Mutex<HashMap<String, HashSet<String>>>,
@@ -398,14 +446,24 @@ impl CodexRunner {
                 codex_home: self.opts.codex_home.clone(),
                 env: self.opts.env.clone(),
                 config_overrides: overrides,
+                ..Default::default()
             },
         );
         server.start()?;
+        *self.server.lock().unwrap() = Some(server.clone());
+        Ok(server)
+    }
+
+    fn ensure_thread(&self, server: &Arc<CodexAppServer>) -> Result<String, String> {
+        if let Some(thread) = self.thread_id.lock().unwrap().clone() {
+            return Ok(thread);
+        }
         let reply = self.core.call_in_session("get_codex_thread", json!({"agent_id": self.opts.agent_id}))?;
         let thread = reply.get("thread_id").and_then(|v| v.as_str()).map(str::to_string);
         if let Some(id) = &thread {
             let mut params = json!({"threadId": id, "cwd": self.opts.workdir.to_string_lossy(),
                 "approvalPolicy": self.opts.approval_policy, "sandbox": self.opts.sandbox,
+                "approvalsReviewer": "user",
                 "developerInstructions": self.developer_instructions()});
             if let Some(model) = &self.opts.model {
                 params["model"] = json!(model);
@@ -415,19 +473,9 @@ impl CodexRunner {
             {
                 params["modelProvider"] = provider.clone();
             }
-            if let Err(e) = server.call("thread/resume", params, 60_000) {
-                server.close();
-                return Err(e);
-            }
-        }
-        *self.thread_id.lock().unwrap() = thread;
-        *self.server.lock().unwrap() = Some(server.clone());
-        Ok(server)
-    }
-
-    fn ensure_thread(&self, server: &Arc<CodexAppServer>) -> Result<String, String> {
-        if let Some(thread) = self.thread_id.lock().unwrap().clone() {
-            return Ok(thread);
+            server.call("thread/resume", params, 60_000)?;
+            *self.thread_id.lock().unwrap() = Some(id.clone());
+            return Ok(id.clone());
         }
         let mut params = json!({
             "cwd": self.opts.workdir.to_string_lossy(),
@@ -479,16 +527,108 @@ Member-specific instructions below specialize your work within these rules.
         text
     }
 
-    fn render_input(&self, view: &Json, wake: &Json) -> String {
-        let mut text = crate::chat::render_view(view, wake, Some(&self.opts.workdir.to_string_lossy()));
-        let agent = view.get("agent_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let queued = self.queued_input.lock().unwrap().remove(&agent).unwrap_or_default();
-        if !queued.is_empty() {
-            text.push_str("\n<queued_updates>");
-            text.push_str(&queued.join("\n"));
-            text.push_str("</queued_updates>");
+    fn render_input(&self, view: &Json, wake: &Json) -> Result<(String, Vec<i64>), String> {
+        let mut view = view.clone();
+        let mut items = view["inbox_delta"].as_array().cloned().unwrap_or_default();
+        let queued = self.queued_input.lock().unwrap().get(&self.opts.agent_id).cloned().unwrap_or_default();
+        let queued_ids: HashSet<i64> = queued.iter().filter_map(|i| i["delivery_id"].as_i64()).collect();
+        items.extend(queued);
+        view["inbox_delta"] = json!(items);
+        let view = self.core.revalidate_inbox(&self.opts.agent_id, view)?;
+        let ids: Vec<i64> =
+            view["inbox_delta"].as_array().into_iter().flatten().filter_map(|i| i["delivery_id"].as_i64()).collect();
+        if let Some(queued) = self.queued_input.lock().unwrap().get_mut(&self.opts.agent_id) {
+            queued
+                .retain(|i| i["delivery_id"].as_i64().is_some_and(|id| !queued_ids.contains(&id) || ids.contains(&id)));
         }
-        text
+        Ok((crate::chat::render_view(&view, wake, Some(&self.opts.workdir.to_string_lossy())), ids))
+    }
+
+    fn confirm_input(&self, run_id: &str, ids: &[i64]) -> Result<(), String> {
+        if !ids.is_empty() {
+            self.core.call_in_session("confirm_delivery_ids", json!({"run_id": run_id, "delivery_ids": ids}))?;
+            if let Some(queued) = self.queued_input.lock().unwrap().get_mut(&self.opts.agent_id) {
+                queued.retain(|item| !item["delivery_id"].as_i64().is_some_and(|id| ids.contains(&id)));
+            }
+        }
+        Ok(())
+    }
+
+    fn complete_task(&self, run: &TurnRun, turn_id: &str, text: &str, gateway: &ToolGateway) -> Result<(), String> {
+        let Some(task_id) = &run.task_id else { return Ok(()) };
+        let receipt = gateway.call(
+            "complete_task",
+            &json!({"task_id":task_id, "summary":text_tail(text, 2000), "result_refs":[]}),
+            &format!("{turn_id}:complete"),
+        );
+        if receipt.ok {
+            Ok(())
+        } else {
+            Err(format!("completion request rejected for {task_id}: {}", receipt.error.unwrap_or_default()))
+        }
+    }
+
+    fn recover_turn(&self, run: &TurnRun, gateway: &ToolGateway) -> Result<TurnOutcome, String> {
+        // A missing ID does not prove the turn was never submitted. In
+        // particular, the process may have died before persisting the reply.
+        let turn_id = run.external_turn_id.as_deref().filter(|id| !id.is_empty()).ok_or("no saved Codex turn id")?;
+        let reply = self.core.call_in_session("get_codex_thread", json!({"agent_id":self.opts.agent_id}))?;
+        let thread_id = reply["thread_id"].as_str().filter(|id| !id.is_empty()).ok_or("no saved Codex thread id")?;
+        // Reading persisted history does not require resuming the thread.
+        // Do not load a live thread or replay its input merely to inspect it.
+        let server = self.ensure_server()?;
+        let result = server.call("thread/read", json!({"threadId":thread_id,"includeTurns":true}), 30_000)?;
+        if result["thread"]["id"].as_str() != Some(thread_id) {
+            return Err("Codex returned a different thread".into());
+        }
+        let turns = result["thread"]["turns"].as_array().ok_or("Codex thread has no turn history")?;
+        let mut matching = turns.iter().filter(|t| t["id"].as_str() == Some(turn_id));
+        let turn = matching.next().ok_or("saved Codex turn is absent from thread history")?;
+        if matching.next().is_some() {
+            return Err("Codex thread has duplicate turn ids".into());
+        }
+        let status = match turn["status"].as_str() {
+            Some("completed") => TurnStatus::Completed,
+            Some("interrupted") => TurnStatus::Cancelled,
+            Some("failed") => TurnStatus::Failed,
+            _ => return Err("saved Codex turn has no confirmed terminal status".into()),
+        };
+        let text = if status == TurnStatus::Completed {
+            let items = turn["items"].as_array().ok_or("completed Codex turn has no result items")?;
+            // Only assistant output is a task result. Tool outputs, reasoning,
+            // user input and other turns stay private to the external thread.
+            items
+                .iter()
+                .filter(|i| i["type"] == "agentMessage")
+                .filter_map(|i| i["text"].as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else {
+            String::new()
+        };
+        if status == TurnStatus::Completed {
+            if let Some(task_id) = &run.task_id {
+                // Live deltas and persisted item text can have different
+                // separators. Never rebuild an already committed action with
+                // different bytes under its stable deduplication ID.
+                let saved = self.core.call_in_session("get_completion_request", json!({"run_id":run.run_id}))?;
+                if saved["completion"].is_null() {
+                    self.complete_task(run, turn_id, &text, gateway)?;
+                } else if saved["completion"]["task_id"].as_str() != Some(task_id) {
+                    return Err("saved completion request belongs to a different task".into());
+                }
+            }
+        }
+        Ok(TurnOutcome {
+            status,
+            error: if status == TurnStatus::Failed {
+                Some(turn["error"]["message"].as_str().unwrap_or("Codex turn failed").into())
+            } else {
+                None
+            },
+            note: Some("restored from Codex thread history".into()),
+            reply_text: if text.is_empty() { None } else { Some(text_tail(&text, 4000)) },
+        })
     }
 
     fn on_notification(&self, run_id: &str, message: Json) {
@@ -753,7 +893,7 @@ Member-specific instructions below specialize your work within these rules.
     }
 
     /// The app-server's stdout closed mid-turn: no turn/completed is coming,
-    /// so fail every live run and wake its driver to finalize with Failed.
+    /// so the external outcome is unknown until its history can be checked.
     /// A run without a driver (parked on an approval) has nobody left to
     /// finalize it: land the terminal status in core and void the approval
     /// nobody can answer anymore, else the core row stays non-terminal and
@@ -762,6 +902,7 @@ Member-specific instructions below specialize your work within these rules.
         // drop the dead handle so the next ensure_server respawns instead of
         // reusing a corpse whose every write is a Broken pipe
         self.server.lock().unwrap().take();
+        self.thread_id.lock().unwrap().take();
         let live: Vec<String> = self
             .states
             .lock()
@@ -772,13 +913,13 @@ Member-specific instructions below specialize your work within these rules.
             .collect();
         for run_id in live {
             self.progress.lock().unwrap().entry(run_id.clone()).or_default().push("codex app-server exited".into());
-            self.states.lock().unwrap().insert(run_id.clone(), TurnStatus::Failed);
+            self.states.lock().unwrap().insert(run_id.clone(), TurnStatus::OutcomeUnknown);
             if let Some(done) = self.turn_done.lock().unwrap().get(&run_id).cloned() {
                 let (lock, cv) = &*done;
                 *lock.lock().unwrap() = true;
                 cv.notify_all();
             } else {
-                self.notify.note_external_status(&run_id, TurnStatus::Failed);
+                self.notify.note_external_status(&run_id, TurnStatus::OutcomeUnknown);
                 if let Some(approval_id) = self.approval_ids.lock().unwrap().get(&run_id).cloned() {
                     self.approvals.expire(&approval_id);
                 }
@@ -797,6 +938,7 @@ Member-specific instructions below specialize your work within these rules.
         self.reported.lock().unwrap().remove(run_id);
         self.approval_ids.lock().unwrap().remove(run_id);
         self.delivered.lock().unwrap().remove(run_id);
+        self.buffered_notes.lock().unwrap().remove(run_id);
     }
 
     fn await_turn_done(&self, run_id: &str, timeout: Option<Duration>) -> bool {
@@ -837,10 +979,13 @@ impl AgentRunner for CodexRunner {
             Ok(thread) => thread,
             Err(e) => return failed(&run_id, format!("CodexError: {e}")),
         };
+        let (text, mut input_ids) = match self.render_input(view, wake) {
+            Ok(input) => input,
+            Err(e) => return failed(&run_id, format!("DeliveryError: {e}")),
+        };
         self.states.lock().unwrap().insert(run_id.clone(), TurnStatus::Running);
         self.turn_done.lock().unwrap().insert(run_id.clone(), Arc::new((Mutex::new(false), Condvar::new())));
         self.progress.lock().unwrap().insert(run_id.clone(), vec![]);
-        let text = self.render_input(view, wake);
         let mut params = json!({
             "threadId": thread_id,
             "input": [{"type": "text", "text": text}],
@@ -875,26 +1020,59 @@ impl AgentRunner for CodexRunner {
                 None => json!({}),
             }),
         );
-        let mut result = server.call("turn/start", params.clone(), 120_000);
-        if let Err(error) = &result {
+        let mut result = server.request("turn/start", params.clone(), 120_000);
+        if let Err(RpcError::Rejected(error)) = &result {
             if effort.is_some()
                 && !self.effort_fallback_used.load(Ordering::SeqCst)
-                && error.to_lowercase().contains("effort")
+                && error.to_string().to_lowercase().contains("effort")
             {
                 self.effort_fallback_used.store(true, Ordering::SeqCst);
                 params["effort"] = json!("max");
-                result = server.call("turn/start", params.clone(), 120_000);
+                result = match self.render_input(view, wake) {
+                    Ok((text, ids)) => {
+                        input_ids = ids;
+                        params["input"] = json!([{"type": "text", "text": text}]);
+                        server.request("turn/start", params.clone(), 120_000)
+                    }
+                    Err(e) => {
+                        self.states.lock().unwrap().insert(run_id.clone(), TurnStatus::Failed);
+                        self.clear_run_state(&run_id);
+                        return failed(&run_id, format!("DeliveryError: {e}"));
+                    }
+                };
             }
         }
         let result = match result {
             Ok(result) => result,
             Err(e) => {
-                self.states.lock().unwrap().insert(run_id.clone(), TurnStatus::Failed);
+                let status = match e {
+                    RpcError::Rejected(_) => TurnStatus::Failed,
+                    RpcError::Transport(_) => TurnStatus::OutcomeUnknown,
+                };
+                self.states.lock().unwrap().insert(run_id.clone(), status);
                 self.clear_run_state(&run_id);
-                return failed(&run_id, format!("CodexError: {e}"));
+                if status == TurnStatus::OutcomeUnknown {
+                    server.close();
+                }
+                return TurnOutcome { status, error: Some(format!("CodexError: {e}")), note: None, reply_text: None };
             }
         };
-        let turn_id = result.get("turn").and_then(|t| t.get("id")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        if let Err(e) = self.confirm_input(&run_id, &input_ids) {
+            // The external turn has accepted input. Keep driving it, but never
+            // acknowledge deliveries without their durable confirmation.
+            eprintln!("teamagents: Codex input confirmation failed: {e}");
+        }
+        let Some(turn_id) = result["turn"]["id"].as_str().filter(|id| !id.is_empty()).map(str::to_string) else {
+            self.states.lock().unwrap().insert(run_id.clone(), TurnStatus::OutcomeUnknown);
+            self.clear_run_state(&run_id);
+            server.close();
+            return TurnOutcome {
+                status: TurnStatus::OutcomeUnknown,
+                error: Some("Codex accepted turn/start without a usable turn id".into()),
+                note: None,
+                reply_text: None,
+            };
+        };
         self.current_turn.lock().unwrap().insert(run_id.clone(), turn_id.clone());
         let buffered = self.buffered_notes.lock().unwrap().remove(&run_id).unwrap_or_default();
         for message in buffered {
@@ -910,30 +1088,21 @@ impl AgentRunner for CodexRunner {
             let note = self.approval_ids.lock().unwrap().get(&run_id).cloned();
             return TurnOutcome { status, error: None, note, reply_text: None };
         }
-        if status == TurnStatus::Completed {
-            if let Some(task_id) = &run.task_id {
-                let summary: String = {
-                    let joined = self.agent_text.lock().unwrap().get(&run_id).cloned().unwrap_or_default();
-                    let chars: Vec<char> = joined.chars().collect();
-                    chars[chars.len().saturating_sub(2000)..].iter().collect()
-                };
-                let receipt = gateway.call(
-                    "complete_task",
-                    &json!({"task_id": task_id, "summary": summary, "result_refs": []}),
-                    &format!("{turn_id}:complete"),
-                );
-                if !receipt.ok {
-                    eprintln!("completion request rejected for {task_id}: {}", receipt.error.unwrap_or_default());
-                }
-            }
-        }
         let pieces = self.progress.lock().unwrap().get(&run_id).cloned().unwrap_or_default();
         let joined = self.agent_text.lock().unwrap().get(&run_id).cloned().unwrap_or_default();
-        let chars: Vec<char> = joined.chars().collect();
-        let reply: String = chars[chars.len().saturating_sub(4000)..].iter().collect();
+        if status == TurnStatus::Completed {
+            if let Err(error) = self.complete_task(run, &turn_id, &joined, gateway) {
+                eprintln!("{error}");
+            }
+        }
+        let reply = text_tail(&joined, 4000);
         let outcome = TurnOutcome {
             status,
-            error: if status == TurnStatus::Failed { pieces.last().cloned() } else { None },
+            error: if matches!(status, TurnStatus::Failed | TurnStatus::OutcomeUnknown) {
+                pieces.last().cloned()
+            } else {
+                None
+            },
             note: None,
             reply_text: if reply.is_empty() { None } else { Some(reply) },
         };
@@ -978,6 +1147,17 @@ impl AgentRunner for CodexRunner {
         self.states.lock().unwrap().get(run_id).copied()
     }
 
+    fn applied_delivery_ids(&self, run: &TurnRun) -> Option<Vec<i64>> {
+        let confirmed = self.core.call_in_session("confirmed_delivery_ids", json!({"run_id": run.run_id}));
+        match confirmed.and_then(|v| serde_json::from_value(v["delivery_ids"].clone()).map_err(|e| e.to_string())) {
+            Ok(ids) => Some(ids),
+            Err(e) => {
+                eprintln!("teamagents: Codex input ledger read failed: {e}");
+                Some(vec![])
+            }
+        }
+    }
+
     fn deliver_mid_turn(&self, run_id: &str, items: Vec<Json>) {
         let fresh: Vec<Json> = {
             let mut delivered = self.delivered.lock().unwrap();
@@ -992,47 +1172,52 @@ impl AgentRunner for CodexRunner {
         if fresh.is_empty() {
             return;
         }
-        let texts: Vec<String> = fresh
-            .iter()
-            .map(|i| {
-                format!(
-                    "<inbox from=\"{}\" kind=\"{}\">{}</inbox>",
-                    i.get("from").and_then(|v| v.as_str()).unwrap_or(""),
-                    i.get("kind").and_then(|v| v.as_str()).unwrap_or(""),
-                    i.get("payload").cloned().unwrap_or(json!({}))
-                )
-            })
-            .collect();
-        self.queued_input.lock().unwrap().entry(self.opts.agent_id.clone()).or_default().extend(texts.clone());
+        self.queued_input.lock().unwrap().entry(self.opts.agent_id.clone()).or_default().extend(fresh.clone());
         // a live turn gets nudged via turn/steer when possible
         let turn = self.current_turn.lock().unwrap().get(run_id).cloned();
         let (server, thread) = (self.server.lock().unwrap().clone(), self.thread_id.lock().unwrap().clone());
         if let (Some(turn), Some(server), Some(thread)) = (turn, server, thread) {
-            let input: Vec<Json> = texts.iter().map(|t| json!({"type": "text", "text": t})).collect();
+            let Some(runner) = self.me() else { return };
+            let run_id = run_id.to_string();
             std::thread::spawn(move || {
-                let _ = server.call("turn/steer", json!({"threadId": thread, "turnId": turn, "input": input}), 30_000);
+                let result = (|| -> Result<(), String> {
+                    let current = runner.core.revalidate_inbox(&runner.opts.agent_id, json!({"inbox_delta": fresh}))?;
+                    let items = current["inbox_delta"].as_array().ok_or("invalid inbox projection")?;
+                    if items.is_empty() {
+                        return Ok(());
+                    }
+                    let input: Vec<Json> = items
+                        .iter()
+                        .map(|i| {
+                            json!({
+                                "type": "text",
+                                "text": format!("<inbox from=\"{}\" kind=\"{}\">{}</inbox>",
+                                    i["from"].as_str().unwrap_or(""), i["kind"].as_str().unwrap_or(""), i["payload"])
+                            })
+                        })
+                        .collect();
+                    server.call(
+                        "turn/steer",
+                        json!({"threadId": thread, "expectedTurnId": turn, "input": input}),
+                        30_000,
+                    )?;
+                    let ids: Vec<i64> = items.iter().filter_map(|i| i["delivery_id"].as_i64()).collect();
+                    runner.confirm_input(&run_id, &ids)
+                })();
+                if let Err(e) = result {
+                    eprintln!("teamagents: Codex pending input was not confirmed: {e}");
+                }
             });
         }
     }
 
-    /// A codex turn survives our restart; query the live thread state.
-    fn reconcile(&self, run: &TurnRun) -> Option<TurnStatus> {
-        let server = self.server.lock().unwrap().clone()?;
-        let thread = self.thread_id.lock().unwrap().clone()?;
-        run.external_turn_id.as_ref()?;
-        // no `thread/status` method exists (it is a notification);
-        // the history is read instead.
-        let result = server.call("thread/read", json!({"threadId": thread, "includeTurns": true}), 30_000).ok()?;
-        let turns =
-            result.get("thread").and_then(|t| t.get("turns")).and_then(|v| v.as_array()).cloned().unwrap_or_default();
-        let last = turns.last()?;
-        // a live turn is unverifiable after our restart, same as an unknown status
-        Some(match last.get("status").and_then(|v| v.as_str()).unwrap_or("") {
-            "completed" => TurnStatus::Completed,
-            "interrupted" => TurnStatus::Cancelled,
-            "failed" => TurnStatus::Failed,
-            _ => TurnStatus::OutcomeUnknown,
-        })
+    fn reconcile(&self, run: &TurnRun, gateway: &ToolGateway) -> Option<TurnOutcome> {
+        Some(self.recover_turn(run, gateway).unwrap_or_else(|error| TurnOutcome {
+            status: TurnStatus::OutcomeUnknown,
+            error: Some(format!("Codex recovery: {error}")),
+            note: None,
+            reply_text: None,
+        }))
     }
 
     fn resolve_approval(&self, approval_id: &str, decision: &str) -> bool {
@@ -1048,6 +1233,10 @@ impl AgentRunner for CodexRunner {
             server.close();
         }
     }
+}
+
+fn text_tail(text: &str, limit: usize) -> String {
+    text.chars().skip(text.chars().count().saturating_sub(limit)).collect()
 }
 
 fn failed(run_id: &str, error: String) -> TurnOutcome {
@@ -1145,6 +1334,7 @@ mod tests {
             codex_home: None,
             env: vec![],
             config_overrides: vec![("model".into(), json!("deepseek-flash"))],
+            ..Default::default()
         };
         assert_eq!(
             app_server_args(&with_profile),
@@ -1223,10 +1413,10 @@ mod tests {
     }
 
     /// Round 5 (F2): the app-server dying while a run is parked on an
-    /// approval — no driving thread, no turn_done waiter — must land Failed
+    /// approval — no driving thread, no turn_done waiter — must land unknown
     /// in the core and void the pending approval, not just mark the map.
     #[test]
-    fn server_exit_fails_a_driverless_parked_run_in_core_and_expires_its_approval() {
+    fn server_exit_marks_driverless_run_unknown_and_expires_approval() {
         let core = CoreClient::open(":memory:", "s-parked-die").expect("core");
         core.call("create_session", json!({"session_id": "s-parked-die", "cwd": "/tmp"})).expect("create");
         core.call(
@@ -1274,13 +1464,13 @@ mod tests {
         runner.approval_ids.lock().unwrap().insert(run_id.clone(), "appr-parked".into());
         runner.server_exited();
 
-        assert_eq!(runner.query_state(&run_id), Some(TurnStatus::Failed));
+        assert_eq!(runner.query_state(&run_id), Some(TurnStatus::OutcomeUnknown));
         let state = core.state_brief().expect("state");
         let runs: Vec<TurnRun> =
             serde_json::from_value(state.get("runs").cloned().unwrap_or(Json::Null)).unwrap_or_default();
         assert_eq!(
             runs.iter().find(|r| r.run_id == run_id).map(|r| r.status),
-            Some(TurnStatus::Failed),
+            Some(TurnStatus::OutcomeUnknown),
             "the core row is finalized, not left non-terminal"
         );
         let pending = state.get("pending_approvals").and_then(|v| v.as_array()).cloned().unwrap_or_default();

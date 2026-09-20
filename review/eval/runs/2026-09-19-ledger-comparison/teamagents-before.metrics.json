@@ -1,0 +1,54 @@
+{
+  "status": "completed",
+  "exit_code": 0,
+  "duration_ms": 497668,
+  "usage": {
+    "calls": 114,
+    "prompt_tokens": 4560035,
+    "completion_tokens": 105545,
+    "cached_input_tokens": 3790464
+  },
+  "members": [
+    {
+      "agent_id": "leader",
+      "model": "deepseek-flash",
+      "context_window": 1000000
+    },
+    {
+      "agent_id": "verifier",
+      "model": "deepseek-flash",
+      "context_window": 1000000
+    }
+  ],
+  "tools": {
+    "shell": 46,
+    "ls": 1,
+    "read_file": 33,
+    "update_plan": 2,
+    "write_file": 13,
+    "edit_file": 20,
+    "read_history": 29,
+    "apply_topology_patch": 1,
+    "assign_task": 1,
+    "wait_for_tasks": 1,
+    "send_message": 1,
+    "complete_task": 1,
+    "publish_shared": 1,
+    "signal_done": 1
+  },
+  "tool_count": 151,
+  "failed_tool_receipts": 3,
+  "history_read_calls": 29,
+  "history_reading_another_readback": 9,
+  "maximum_history_read_depth": 4,
+  "verification": [
+    {
+      "command": "cargo test --offline --quiet",
+      "output": "\nrunning 21 tests\n.....................\ntest result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\nrunning 3 tests\n...\ntest result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+      "exit_code": 0,
+      "ok": true
+    }
+  ],
+  "hidden_and_protection_ok": true,
+  "fully_successful": true
+}

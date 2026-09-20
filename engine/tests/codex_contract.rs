@@ -81,10 +81,12 @@ import json, os, sys
 mode = os.environ.get("FAKE_TURNS", "completed")
 log = os.environ.get("FAKE_METHOD_LOG")
 turns = {
-    "completed": [{"id": "t1", "status": "completed"}],
-    "inprogress": [{"id": "t1", "status": "inProgress"}],
+    "completed": [{"id": "turn-1", "status": "completed", "items": []}],
+    "inprogress": [{"id": "turn-1", "status": "inProgress", "items": []}],
     "empty": [],
-}.get(mode, [{"id": "t1", "status": "completed"}])
+    "later": [{"id": "turn-1", "status": "failed", "items": []},
+              {"id": "turn-2", "status": "completed", "items": []}],
+}.get(mode, [])
 
 for line in sys.stdin:
     line = line.strip()
@@ -107,11 +109,20 @@ for line in sys.stdin:
         result = {"thread": {"id": "thr-1"}}
     elif method == "turn/start":
         result = {"turn": {"id": "turn-1", "status": "inProgress"}}
-        print(json.dumps({"method": "item/completed", "params": {
-            "threadId": "thr-1", "turnId": "turn-1",
-            "item": {"type": "agentMessage", "text": "history done"}}}), flush=True)
+        if not os.environ.get("FAKE_KEEP_OPEN"):
+            print(json.dumps({"method": "item/completed", "params": {
+                "threadId": "thr-1", "turnId": "turn-1",
+                "item": {"type": "agentMessage", "text": "history done"}}}), flush=True)
+            print(json.dumps({"method": "turn/completed", "params": {
+                "threadId": "thr-1", "turn": {"id": "turn-1", "status": "completed"}}}), flush=True)
+    elif method == "turn/steer":
+        if message["params"].get("expectedTurnId") != "turn-1" or os.environ.get("FAKE_STEER_REJECT"):
+            print(json.dumps({"id": message["id"], "error": {"code": -32000, "message": "steer refused"}}), flush=True)
+            continue
+        result = {"turnId": "turn-1"}
+    elif method == "turn/interrupt":
         print(json.dumps({"method": "turn/completed", "params": {
-            "threadId": "thr-1", "turn": {"id": "turn-1", "status": "completed"}}}), flush=True)
+            "threadId": "thr-1", "turn": {"id": "turn-1", "status": "interrupted"}}}), flush=True)
     elif method == "thread/read":
         result = {"thread": {"id": "thr-1", "turns": turns}}
     print(json.dumps({"id": message.get("id"), "result": result}), flush=True)
@@ -126,6 +137,181 @@ fn fake_history_server(dir: &std::path::Path) -> String {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
     path.to_string_lossy().into_owned()
+}
+
+#[test]
+fn codex_rechecks_stale_and_queued_input_and_confirms_only_accepted_ids() {
+    let env = env_guard("codex-delivery-acl");
+    for buffered in [false, true] {
+        for revoke in [false, true] {
+            let dir = env.join(format!("codex-{buffered}-{revoke}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            let bin = fake_history_server(&dir);
+            let log = dir.join("requests.jsonl");
+            let log_str = log.to_string_lossy();
+            let session = format!("codex-delivery-{buffered}-{revoke}");
+            let mut spec = json!({
+                "leader_id": "leader",
+                "agents": [member("leader", "leader"), member("worker", "worker"), codex_agent()],
+                "observers": [{
+                    "agent_id": "cx", "subjects": ["worker"], "event_types": ["task_completed"],
+                    "payload_scope": "result", "wake_policy": "on_event"
+                }]
+            });
+            let core = core_with_spec(&session, spec.clone());
+            core.call_in_session(
+                "emit",
+                json!({"actor_id": "worker", "events": [{
+                    "kind": "task_completed", "payload": {
+                        "task_id": "private-task", "assignee": "worker", "requester": "leader",
+                        "status": "SUCCEEDED", "result_refs": ["PRIVATE-REF"], "summary": "PRIVATE SUMMARY"
+                    }
+                }]}),
+            )
+            .unwrap();
+            let mut old_view = core.call_in_session("agent_view", json!({"agent_id": "cx"})).unwrap();
+            let offered_ids: Vec<i64> = serde_json::from_value(old_view["delivery_ids"].clone()).unwrap();
+            assert_eq!(offered_ids.len(), 1);
+            let run: TurnRun = serde_json::from_value(
+                core.state_brief().unwrap()["runs"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|r| r["agent_id"] == "cx")
+                    .unwrap()
+                    .clone(),
+            )
+            .unwrap();
+            let runner = runner_with(&core, &session, &bin, vec![("FAKE_REQUEST_LOG", &log_str)]);
+            if buffered {
+                runner.deliver_mid_turn(&run.run_id, old_view["inbox_delta"].as_array().unwrap().clone());
+                old_view["inbox_delta"] = json!([]);
+                old_view["delivery_ids"] = json!([]);
+            }
+            assert_eq!(runner.applied_delivery_ids(&run), Some(vec![]), "an offer is not acceptance");
+            if revoke {
+                spec["observers"] = json!([]);
+            } else {
+                spec["observers"][0]["payload_scope"] = json!("status");
+            }
+            core.call_in_session("save_spec", json!({"spec": spec})).unwrap();
+            let outcome = runner.start_or_resume(&run, &old_view, &gateway(&core, &run.run_id), &Json::Null);
+            assert_eq!(outcome.status, TurnStatus::Completed, "{outcome:?}");
+            runner.close();
+            let requests: Vec<Json> =
+                std::fs::read_to_string(&log).unwrap().lines().map(|s| serde_json::from_str(s).unwrap()).collect();
+            let input = requests.iter().find(|r| r["method"] == "turn/start").unwrap()["params"]["input"].to_string();
+            assert!(!input.contains("PRIVATE-REF") && !input.contains("PRIVATE SUMMARY"), "{input}");
+            assert_eq!(input.contains("private-task"), !revoke);
+            let expected = if revoke { vec![] } else { offered_ids };
+            assert_eq!(runner.applied_delivery_ids(&run), Some(expected.clone()));
+            let rebuilt = runner_with(&core, &session, &bin, vec![]);
+            assert_eq!(rebuilt.applied_delivery_ids(&run), Some(expected), "retiring a runner keeps acceptance");
+            rebuilt.close();
+        }
+    }
+}
+
+#[test]
+fn codex_steer_rechecks_scope_and_failed_delivery_remains_pending() {
+    let env = env_guard("codex-steer-delivery");
+    for rejected in [false, true] {
+        let dir = env.join(format!("steer-{rejected}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin = fake_history_server(&dir);
+        let log = dir.join("requests.jsonl");
+        let log_str = log.to_string_lossy();
+        let session = format!("steer-{rejected}");
+        let mut spec = json!({
+            "leader_id": "leader", "agents": [member("leader", "leader"), member("worker", "worker"), codex_agent()],
+            "observers": [{
+                "agent_id": "cx", "subjects": ["worker"], "event_types": ["task_completed"],
+                "payload_scope": "result", "wake_policy": "on_event"
+            }]
+        });
+        let core = core_with_spec(&session, spec.clone());
+        let emit =
+            |id: &str| {
+                core.call_in_session("emit", json!({"actor_id": "worker", "events": [{
+                "kind": "task_completed", "payload": {"task_id": id, "assignee": "worker", "requester": "leader",
+                    "status": "SUCCEEDED", "result_refs": ["PRIVATE-REF"], "summary": "PRIVATE SUMMARY"}
+            }]})).unwrap();
+            };
+        emit("first");
+        let run: TurnRun = serde_json::from_value(
+            core.state_brief().unwrap()["runs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["agent_id"] == "cx")
+                .unwrap()
+                .clone(),
+        )
+        .unwrap();
+        core.call_in_session("begin_run", json!({"run_id": run.run_id})).unwrap();
+        let view = core.call_in_session("agent_view", json!({"agent_id": "cx"})).unwrap();
+        let initial_ids: Vec<i64> = serde_json::from_value(view["delivery_ids"].clone()).unwrap();
+        let mut vars = vec![("FAKE_REQUEST_LOG", log_str.as_ref()), ("FAKE_KEEP_OPEN", "1")];
+        if rejected {
+            vars.push(("FAKE_STEER_REJECT", "1"));
+        }
+        let runner = runner_with(&core, &session, &bin, vars);
+        let driver = {
+            let runner = runner.clone();
+            let gate = gateway(&core, &run.run_id);
+            let run = run.clone();
+            std::thread::spawn(move || runner.start_or_resume(&run, &view, &gate, &Json::Null))
+        };
+        assert!(wait_for(
+            || core.state_brief().unwrap()["runs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|r| r["run_id"] == run.run_id && r["external_turn_id"].as_str() == Some("turn-1")),
+            3000
+        ));
+        assert_eq!(runner.applied_delivery_ids(&run), Some(initial_ids.clone()));
+        emit("buffered");
+        let pushes = core.call_in_session("drain_mid_turn", json!({})).unwrap();
+        let items = pushes["pushes"].as_array().unwrap().iter().find(|p| p["run_id"] == run.run_id).unwrap()["items"]
+            .as_array()
+            .unwrap()
+            .clone();
+        let new_id = items[0]["delivery_id"].as_i64().unwrap();
+        spec["observers"][0]["payload_scope"] = json!("status");
+        core.call_in_session("save_spec", json!({"spec": spec})).unwrap();
+        runner.deliver_mid_turn(&run.run_id, items);
+        let requests = || -> Vec<Json> {
+            std::fs::read_to_string(&log)
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|s| serde_json::from_str(s).ok())
+                .collect()
+        };
+        assert!(wait_for(|| requests().iter().any(|r| r["method"] == "turn/steer"), 3000));
+        let steer = requests().into_iter().find(|r| r["method"] == "turn/steer").unwrap();
+        let input = steer["params"]["input"].to_string();
+        assert!(input.contains("buffered"));
+        assert!(!input.contains("PRIVATE"), "{input}");
+        if !rejected {
+            assert!(wait_for(|| runner.applied_delivery_ids(&run).unwrap().contains(&new_id), 3000));
+        }
+        runner.request_interrupt(&run.run_id);
+        let outcome = driver.join().unwrap();
+        assert_eq!(outcome.status, TurnStatus::Cancelled, "{outcome:?}");
+        let accepted = runner.applied_delivery_ids(&run).unwrap();
+        assert_eq!(accepted.contains(&new_id), !rejected);
+        core.call_in_session(
+            "finalize_run",
+            json!({
+                "run_id": run.run_id, "status": "CANCELLED", "ack_ids": accepted
+            }),
+        )
+        .unwrap();
+        let pending = core.call_in_session("agent_view", json!({"agent_id": "cx"})).unwrap();
+        assert_eq!(pending["delivery_ids"].as_array().unwrap().contains(&json!(new_id)), rejected);
+        runner.close();
+    }
 }
 
 #[test]
@@ -228,7 +414,7 @@ fn python_available() -> bool {
 }
 
 /// F-5: reconcile uses `thread/read` (the app-server has no `thread/status`
-/// method) and maps the last turn.
+/// method) and maps the saved turn.
 #[test]
 fn reconcile_reads_the_thread_history() {
     if !python_available() {
@@ -246,7 +432,7 @@ fn reconcile_reads_the_thread_history() {
     for (mode, session, expected) in [
         ("completed", "cx-hist-1", Some(TurnStatus::Completed)),
         ("inprogress", "cx-hist-2", Some(TurnStatus::OutcomeUnknown)),
-        ("empty", "cx-hist-3", None),
+        ("empty", "cx-hist-3", Some(TurnStatus::OutcomeUnknown)),
     ] {
         let core = core_with_spec(
             session,
@@ -259,13 +445,33 @@ fn reconcile_reads_the_thread_history() {
         assert_eq!(outcome.status, TurnStatus::Completed, "{mode}: setup turn completes");
 
         let parked = run_for(session, &format!("{session}-run"), Some("turn-1"));
-        assert_eq!(runner.reconcile(&parked), expected, "{mode}: history decides the status");
+        assert_eq!(runner.reconcile(&parked, &gw).map(|o| o.status), expected, "{mode}: history decides the status");
         runner.close();
     }
     let methods = std::fs::read_to_string(&log).unwrap_or_default();
     assert!(methods.contains("thread/read"), "reconcile must read the thread: {methods}");
     assert!(!methods.contains("thread/status"), "thread/status does not exist in the app-server schema: {methods}");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn reconcile_matches_the_saved_turn_even_when_a_later_turn_completed() {
+    let env = env_guard("codex-matching-history");
+    let bin = fake_history_server(&env);
+    let core = core_with_spec(
+        "cx-matching",
+        json!({"leader_id":"leader", "agents":[member("leader","leader"),codex_agent()]}),
+    );
+    let runner = runner_with(&core, "cx-matching", &bin, vec![("FAKE_TURNS", "later")]);
+    let run = run_for("cx-matching", "run-matching", None);
+    assert_eq!(
+        runner.start_or_resume(&run, &view(), &gateway(&core, &run.run_id), &Json::Null).status,
+        TurnStatus::Completed
+    );
+    let parked = run_for("cx-matching", "run-matching", Some("turn-1"));
+    let status = runner.reconcile(&parked, &gateway(&core, &run.run_id)).map(|o| o.status);
+    runner.close();
+    assert_eq!(status, Some(TurnStatus::Failed), "a later turn cannot prove this run succeeded");
 }
 
 /// F-8: when the approval wait times out the app-server move on, so the core

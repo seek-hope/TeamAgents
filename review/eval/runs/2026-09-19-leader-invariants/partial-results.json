@@ -1,0 +1,34 @@
+[
+  {
+    "name": "core",
+    "command": [
+      "cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "--manifest-path",
+      "core/Cargo.toml"
+    ],
+    "exit_code": 0,
+    "elapsed_s": 3.875
+  },
+  {
+    "name": "session",
+    "command": [
+      "cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "--manifest-path",
+      "engine/Cargo.toml",
+      "--test",
+      "session_boot",
+      "resume_rejects_invalid_leaders_without_replacing_persisted_work",
+      "--",
+      "--exact",
+      "--nocapture"
+    ],
+    "exit_code": 101,
+    "elapsed_s": 4.432
+  }
+]

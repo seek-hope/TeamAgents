@@ -1,0 +1,544 @@
+--- a/core/src/models.rs
++++ b/core/src/models.rs
+@@ -267,9 +267,12 @@
+         if !ids.contains(&self.leader_id.as_str()) {
+             return Err(format!("leader_id {:?} is not a member", self.leader_id));
+         }
+-        let leaders: Vec<_> = self.agents.iter().filter(|a| a.id == self.leader_id && a.role == "leader").collect();
+-        if leaders.len() != 1 {
+-            return Err("exactly one member with role 'leader' must exist".into());
++        let leaders: Vec<_> = self.agents.iter().filter(|a| a.role == "leader").collect();
++        if leaders.len() != 1 || leaders[0].id != self.leader_id {
++            return Err("leader_id 必须指向团队中唯一的 leader 成员".into());
++        }
++        if leaders[0].runtime_kind != RuntimeKind::Deepagents {
++            return Err("Leader 必须由内置成员承担（runtime_kind = deepagents）".into());
+         }
+         if self.agents.len() as i64 > self.limits.max_members {
+             return Err(format!("team has {} members, limit is {}", self.agents.len(), self.limits.max_members));
+--- a/core/src/storage.rs
++++ b/core/src/storage.rs
+@@ -365,6 +365,12 @@
+ 
+     // -- team specs ------------------------------------------------------------
+ 
++    pub fn has_team_spec(&self, session_id: &str) -> rusqlite::Result<bool> {
++        self.conn.query_row("SELECT EXISTS(SELECT 1 FROM team_specs WHERE session_id=?1)", params![session_id], |row| {
++            row.get(0)
++        })
++    }
++
+     pub fn save_team_spec(&self, session_id: &str, spec: &TeamSpec) -> rusqlite::Result<i64> {
+         let revision = self.current_revision(session_id)? + 1;
+         self.conn.execute(
+@@ -385,9 +391,9 @@
+             .unwrap_or(0))
+     }
+ 
+-    /// Stored specs are read for their own errors
+-    /// (no panic), and limits keys removed since the row was written are dropped
+-    /// so old sessions keep loading (TeamSpec *files* stay strict).
++    /// Validate stored specs after dropping retired limits keys so valid old
++    /// sessions keep loading (TeamSpec *files* stay strict). Never rewrite a
++    /// rejected revision or fall back to an earlier one.
+     pub fn load_team_spec(&self, session_id: &str, revision: Option<i64>) -> Result<TeamSpec, String> {
+         let revision = match revision {
+             Some(r) => r,
+@@ -410,7 +416,9 @@
+         if let Some(Json::Object(limits)) = data.get_mut("limits") {
+             limits.retain(|k, _| LIMITS_KEYS.contains(&k.as_str()));
+         }
+-        serde_json::from_value(data).map_err(|e| format!("stored spec is invalid: {e}"))
++        let spec: TeamSpec = serde_json::from_value(data).map_err(|e| format!("stored spec is invalid: {e}"))?;
++        spec.validate().map_err(|e| format!("会话 {session_id:?} 的 TeamSpec 修订 {revision} 无效：{e}"))?;
++        Ok(spec)
+     }
+ 
+     // -- actions / receipts ----------------------------------------------------
+@@ -1717,6 +1725,45 @@
+     }
+ 
+     #[test]
++    fn stored_leader_invariants_are_checked_without_rewriting_revisions() {
++        let store = store_with_spec();
++        let valid = serde_json::to_value(store.load_team_spec("s1", None).unwrap()).unwrap();
++        let mut duplicate = valid.clone();
++        duplicate["agents"].as_array_mut().unwrap().push(json!({
++            "id": "extra", "name": "Extra", "role": "leader", "runtime_kind": "deepagents", "model_profile": "m"
++        }));
++        let mut external = valid.clone();
++        external["agents"][0]["runtime_kind"] = json!("codex");
++        for (revision, invalid, expected) in [(2, duplicate, "唯一"), (3, external, "内置")] {
++            let blob = invalid.to_string();
++            store
++                .conn
++                .execute(
++                    "INSERT INTO team_specs(session_id, revision, spec_json, created_at) VALUES('s1', ?1, ?2, 0)",
++                    params![revision, blob],
++                )
++                .unwrap();
++            for selected in [None, Some(revision)] {
++                let error = store.load_team_spec("s1", selected).unwrap_err();
++                assert!(error.contains("s1") && error.contains(&revision.to_string()), "{error}");
++                assert!(error.contains(expected), "{error}");
++            }
++            let stored: String = store
++                .conn
++                .query_row(
++                    "SELECT spec_json FROM team_specs WHERE session_id='s1' AND revision=?1",
++                    [revision],
++                    |row| row.get(0),
++                )
++                .unwrap();
++            assert_eq!(stored, blob);
++            assert_eq!(store.current_revision("s1").unwrap(), revision);
++            assert_eq!(json!(store.load_team_spec("s1", Some(1)).unwrap()), valid);
++        }
++        assert!(store.load_team_spec("s1", Some(2)).unwrap_err().contains("唯一"));
++    }
++
++    #[test]
+     fn unknown_stored_status_is_an_error_not_a_dropped_row() {
+         let store = store_with_spec();
+         store
+--- a/core/src/server.rs
++++ b/core/src/server.rs
+@@ -111,6 +111,14 @@
+             "schedule" => self.with(params, |ctl, _p| {
+                 ctl.schedule()?;
+                 Ok(json!({"ok": true}))
++            }),
++            // Bootstrap distinguishes a missing spec from an unreadable one;
++            // only an empty session can accept an initial spec on retry.
++            "session_metadata" => self.with(params, |ctl, _p| {
++                Ok(json!({
++                    "session": ctl.store.get_session(&ctl.session_id).map_err(|e| e.to_string())?,
++                    "has_spec": ctl.store.has_team_spec(&ctl.session_id).map_err(|e| e.to_string())?,
++                }))
+             }),
+             // cheap permission-mode read (the approval gate refreshes from it,
+             // so a user's full-auto toggle takes effect mid-session)
+@@ -416,6 +424,41 @@
+     }
+ 
+     #[test]
++    fn save_spec_rejects_invalid_leaders_without_advancing_revision() {
++        let mut server = server_with_session();
++        let before = server.dispatch("state", &json!({"session_id": "s1"})).unwrap();
++        let mut duplicate = spec_json();
++        duplicate["agents"].as_array_mut().unwrap().push(json!({
++            "id": "extra", "name": "Extra", "role": "leader", "runtime_kind": "deepagents", "model_profile": "m"
++        }));
++        let mut external = spec_json();
++        external["agents"][0]["runtime_kind"] = json!("codex");
++        for (spec, expected) in [(duplicate, "唯一"), (external, "内置")] {
++            let error = server.dispatch("save_spec", &json!({"session_id": "s1", "spec": spec})).unwrap_err();
++            assert!(error.contains(expected), "{error}");
++            assert_eq!(server.dispatch("state", &json!({"session_id": "s1"})).unwrap(), before);
++            assert_eq!(server.controls["s1"].store.agent_status("s1", "extra").unwrap(), None);
++        }
++    }
++
++    #[test]
++    fn session_metadata_distinguishes_missing_and_unreadable_specs() {
++        let mut server = Server::new(":memory:");
++        let params = json!({"session_id": "s1"});
++        assert_eq!(server.dispatch("session_metadata", &params).unwrap(), json!({"session": null, "has_spec": false}));
++        server.dispatch("create_session", &json!({"session_id": "s1", "cwd": "/tmp"})).unwrap();
++        let metadata = server.dispatch("session_metadata", &params).unwrap();
++        assert_eq!(metadata["session"]["session_id"], "s1");
++        assert_eq!(metadata["has_spec"], false);
++        server.dispatch("save_spec", &json!({"session_id": "s1", "spec": spec_json()})).unwrap();
++        server.controls["s1"].store.conn.execute("UPDATE team_specs SET spec_json='{broken json'", []).unwrap();
++        assert_eq!(server.dispatch("session_metadata", &params).unwrap()["has_spec"], true);
++        assert!(server.dispatch("state", &params).unwrap_err().contains("stored spec is invalid"));
++        server.controls["s1"].store.conn.execute("DROP TABLE team_specs", []).unwrap();
++        assert!(server.dispatch("session_metadata", &params).is_err(), "a read failure is not a missing spec");
++    }
++
++    #[test]
+     fn expire_approval_endpoint_contract() {
+         let mut server = server_with_session();
+         insert(&mut server, "a1", "PENDING", "h1", 1.0);
+--- a/core/tests/engine.rs
++++ b/core/tests/engine.rs
+@@ -369,6 +369,116 @@
+     assert!(r.ok);
+     let task = ctl.store.get_task(&task_id).unwrap().unwrap();
+     assert!(matches!(task.status, TaskStatus::Cancelled));
++}
++
++fn assert_invalid_leader_patch(operation: Json, expected_error: &str) {
++    for active_leader in [false, true] {
++        for proposed in [false, true] {
++            let mut ctl = harness();
++            ctl.catalog =
++                serde_json::from_value(json!({"models": {"m": {"provider": "openai", "model": "test"}}})).unwrap();
++            if active_leader {
++                assert!(ctl.submit(&user("start", "continue working")).unwrap().ok);
++                let run = ctl.store.runs_for_session("s1", &[TurnStatus::Queued]).unwrap().remove(0);
++                ctl.begin_run(&run.run_id).unwrap();
++            }
++            let operations = json!([
++                {"op": "update_agent", "agent_id": "b", "changes": {"name": "must not persist"}},
++                operation
++            ]);
++            let payload = if proposed {
++                let receipt = ctl
++                    .submit(&action(
++                        "proposal",
++                        "b",
++                        ActionKind::ProposeTeamChange,
++                        json!({"operations": operations}),
++                        None,
++                    ))
++                    .unwrap();
++                assert!(receipt.ok, "{receipt:?}");
++                json!({"patch_id": receipt.result["patch_id"]})
++            } else {
++                json!({"base_revision": 1, "operations": operations})
++            };
++            let snapshot = |ctl: &Control| {
++                json!({
++                    "spec": ctl.store.load_team_spec("s1", None).unwrap(),
++                    "revision": ctl.store.current_revision("s1").unwrap(),
++                    "agents": (["leader", "b", "cx", "extra"].map(|id| (
++                        id,
++                        ctl.store.agent_status("s1", id).unwrap(),
++                        ctl.store.agent_config_revision("s1", id).unwrap(),
++                    ))),
++                    "runs": ctl.store.runs_for_session("s1", &[]).unwrap(),
++                    "tasks": ctl.store.tasks_for_session("s1", &[]).unwrap(),
++                    "patches": ([PatchStatus::Proposed, PatchStatus::WaitingBoundary, PatchStatus::Applied]
++                        .map(|status| ctl.store.patches_in_status("s1", status).unwrap())),
++                })
++            };
++            let before = snapshot(&ctl);
++            let patch = action("invalid-patch", "leader", ActionKind::ApplyTopologyPatch, payload, None);
++            let receipt = ctl.submit(&patch).unwrap();
++            assert!(!receipt.ok, "active={active_leader}, proposed={proposed}: {receipt:?}");
++            assert!(receipt.error.as_deref().unwrap_or("").contains(expected_error), "{receipt:?}");
++            assert_eq!(snapshot(&ctl), before, "a rejected patch must leave configuration and live work intact");
++            let events = ctl.store.events("s1", 0, 100).unwrap();
++            assert!(!events.iter().any(|e| e["kind"] == json!(EventKind::TopologyApplied)));
++            let replay = ctl.submit(&patch).unwrap();
++            assert_eq!(json!(replay), json!(receipt));
++            assert_eq!(json!(ctl.store.events("s1", 0, 100).unwrap()), json!(events));
++            assert_eq!(snapshot(&ctl), before);
++
++            let receipt = ctl
++                .submit(&action(
++                    "valid-patch",
++                    "leader",
++                    ActionKind::ApplyTopologyPatch,
++                    json!({"base_revision": 1, "operations": [
++                        {"op": "update_agent", "agent_id": "b", "changes": {"name": "Reviewer", "role": "reviewer"}}
++                    ]}),
++                    None,
++                ))
++                .unwrap();
++            assert!(receipt.ok, "{receipt:?}");
++            assert_eq!(receipt.result["status"], "APPLIED");
++            assert_eq!(ctl.store.current_revision("s1").unwrap(), 2);
++            assert_eq!(ctl.store.load_team_spec("s1", None).unwrap().agent("b").unwrap().role, "reviewer");
++            let receipt = ctl
++                .submit(&action(
++                    "task-after-rejection",
++                    "leader",
++                    ActionKind::AssignTask,
++                    json!({"assignee": "b", "description": "review the change"}),
++                    None,
++                ))
++                .unwrap();
++            assert!(receipt.ok, "normal work must remain possible: {receipt:?}");
++        }
++    }
++}
++
++#[test]
++fn topology_patch_rejects_adding_a_second_leader() {
++    assert_invalid_leader_patch(
++        json!({"op": "add_agent", "agent": {
++            "id": "extra", "name": "Extra", "role": "leader", "runtime_kind": "deepagents", "model_profile": "m"
++        }}),
++        "唯一",
++    );
++}
++
++#[test]
++fn topology_patch_rejects_promoting_a_second_leader() {
++    assert_invalid_leader_patch(json!({"op": "update_agent", "agent_id": "b", "changes": {"role": "leader"}}), "唯一");
++}
++
++#[test]
++fn topology_patch_rejects_switching_the_leader_to_codex() {
++    assert_invalid_leader_patch(
++        json!({"op": "update_agent", "agent_id": "leader", "changes": {"runtime_kind": "codex"}}),
++        "内置",
++    );
+ }
+ 
+ fn running_task(task_id: &str, assignee: &str) -> Task {
+--- a/engine/src/session.rs
++++ b/engine/src/session.rs
+@@ -743,53 +743,45 @@
+     let core = CoreClient::open(&db, &session_id)?;
+ 
+     let result = (|| -> Result<Arc<OpenedSession>, String> {
+-        let probe = core.call("state", json!({"session_id": session_id})).ok();
+-        let exists =
+-            probe.as_ref().and_then(|state| state.get("session")).map(|session| !session.is_null()).unwrap_or(false);
++        let metadata = core.call("session_metadata", json!({"session_id": session_id}))?;
++        let exists = !metadata["session"].is_null();
++        let has_spec = metadata["has_spec"].as_bool().ok_or("会话元数据缺少配置存在状态")?;
+         if !exists {
+-            match core.call(
++            core.call(
+                 "create_session",
+                 json!({
+                     "session_id": session_id,
+                     "cwd": cwd.to_string_lossy(),
+                     "permissions_mode": if full_auto { "full_auto" } else { "approved_scope" },
+                 }),
+-            ) {
+-                Ok(_) => {
+-                    let spec = opts
+-                        .initial_spec
+-                        .clone()
+-                        .unwrap_or_else(|| default_leader_spec("leader_main", &["files", "shell", "web"]));
+-                    core.call("save_spec", json!({"session_id": session_id, "spec": spec}))?;
+-                }
+-                // the row exists but `state` failed: a session left without a
+-                // loadable spec by an earlier failed open. An explicitly given
+-                // spec repairs it; otherwise keep going so the real problem is
+-                // reported instead of a UNIQUE-constraint error.
+-                Err(e) if e.contains("UNIQUE") => {
+-                    if let Some(spec) = opts.initial_spec.clone() {
+-                        core.call("save_spec", json!({"session_id": session_id, "spec": spec}))?;
+-                    }
+-                }
+-                Err(e) => return Err(e),
+-            }
+-        } else if full_auto {
+-            if let Ok(state) = core.state() {
+-                if state.get("session").and_then(|s| s.get("permissions_mode")).and_then(|v| v.as_str())
+-                    != Some("full_auto")
+-                {
+-                    let receipt = core.submit(&TeamAction {
+-                        action_id: teamagents_core::models::new_id("mode"),
+-                        session_id: session_id.clone(),
+-                        actor_id: "user".into(),
+-                        run_id: None,
+-                        kind: teamagents_core::models::ActionKind::SetPermissionMode,
+-                        payload: json!({"mode": "full_auto"}),
+-                    })?;
+-                    if !receipt.ok {
+-                        return Err(receipt.error.unwrap_or_else(|| "cannot enable full auto".into()));
+-                    }
+-                }
++            )?;
++        }
++        if !has_spec {
++            // An explicit spec can repair an initial save that failed before
++            // writing any revision. Existing revisions must never be replaced
++            // merely because loading or validating them failed.
++            let initial_spec = opts
++                .initial_spec
++                .clone()
++                .or_else(|| (!exists).then(|| default_leader_spec("leader_main", &["files", "shell", "web"])));
++            if let Some(spec) = initial_spec {
++                core.call("save_spec", json!({"session_id": session_id, "spec": spec}))?;
++            }
++        }
++        // Validate persisted work before changing permission mode or creating
++        // any member runtime, including when the caller supplies a new spec.
++        let state = core.state()?;
++        if exists && full_auto && state["session"]["permissions_mode"].as_str() != Some("full_auto") {
++            let receipt = core.submit(&TeamAction {
++                action_id: teamagents_core::models::new_id("mode"),
++                session_id: session_id.clone(),
++                actor_id: "user".into(),
++                run_id: None,
++                kind: teamagents_core::models::ActionKind::SetPermissionMode,
++                payload: json!({"mode": "full_auto"}),
++            })?;
++            if !receipt.ok {
++                return Err(receipt.error.unwrap_or_else(|| "cannot enable full auto".into()));
+             }
+         }
+ 
+--- a/engine/tests/cli.rs
++++ b/engine/tests/cli.rs
+@@ -123,6 +123,64 @@
+     assert!(broken.contains("[FAIL] user config"), "{broken}");
+     assert!(broken.contains("must be true/false"), "{broken}");
+     let _ = std::fs::remove_dir_all(&home);
++}
++
++#[test]
++fn validate_enforces_one_builtin_leader_in_json_and_yaml() {
++    use serde_json::json;
++    let root = std::env::temp_dir().join(format!("ta-cli-leader-invariants-{}", std::process::id()));
++    let config = root.join("config/teamagents");
++    std::fs::create_dir_all(&config).unwrap();
++    std::fs::write(config.join("config.toml"), "[models.m]\nprovider = 'openai'\nmodel = 'test'\n").unwrap();
++    let valid = json!({
++        "leader_id": "leader", "agents": [
++            {"id": "leader", "name": "Lead", "role": "leader", "runtime_kind": "deepagents", "model_profile": "m"},
++            {"id": "b", "name": "Review", "role": "reviewer", "runtime_kind": "deepagents", "model_profile": "m"},
++            {"id": "cx", "name": "Code", "role": "coder", "runtime_kind": "codex", "model_profile": "m"}
++        ]
++    });
++    let mut duplicate = valid.clone();
++    duplicate["agents"][1]["role"] = json!("leader");
++    let mut external = valid.clone();
++    external["agents"][0]["runtime_kind"] = json!("codex");
++    let mut missing = valid.clone();
++    missing["agents"][0]["role"] = json!("worker");
++    let mut mismatched = valid.clone();
++    mismatched["leader_id"] = json!("b");
++    for (name, spec, expected) in [
++        ("duplicate", duplicate, Some("唯一")),
++        ("external", external, Some("内置")),
++        ("missing", missing, Some("leader")),
++        ("mismatched", mismatched, Some("leader")),
++        ("mixed", valid, None),
++    ] {
++        for extension in ["json", "yaml"] {
++            let text = if extension == "json" {
++                serde_json::to_string_pretty(&spec).unwrap()
++            } else {
++                serde_yaml::to_string(&spec).unwrap()
++            };
++            let path = root.join(format!("{name}.{extension}"));
++            std::fs::write(&path, &text).unwrap();
++            let output = Command::new(env!("CARGO_BIN_EXE_teamagents"))
++                .arg("validate")
++                .arg(&path)
++                .env("XDG_CONFIG_HOME", root.join("config"))
++                .env("XDG_STATE_HOME", root.join("state"))
++                .output()
++                .unwrap();
++            let message =
++                format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
++            assert_eq!(output.status.success(), expected.is_none(), "{name}.{extension}: {message}");
++            if let Some(expected) = expected {
++                assert!(message.contains("invalid:") && message.contains(expected), "{message}");
++            } else {
++                assert!(message.contains("ok:"), "{message}");
++            }
++            assert_eq!(std::fs::read_to_string(path).unwrap(), text);
++        }
++    }
++    std::fs::remove_dir_all(root).unwrap();
+ }
+ 
+ /// Keep diagnostics deterministic on machines without Codex or user namespaces.
+--- a/engine/tests/session_boot.rs
++++ b/engine/tests/session_boot.rs
+@@ -150,6 +150,105 @@
+     let _ = std::fs::remove_dir_all(&root);
+ }
+ 
++#[test]
++fn resume_rejects_invalid_leaders_without_replacing_persisted_work() {
++    use teamagents_core::control::Control;
++    use teamagents_core::models::{ActionKind, TeamAction, TeamSpec};
++    use teamagents_core::storage::Store;
++    use teamagents_engine::sessions::session_paths;
++
++    let (_env, root) = isolate("leader-invariants");
++    let cwd = root.join("project");
++    std::fs::create_dir_all(&cwd).unwrap();
++    let mut valid = spec("m");
++    valid["agents"].as_array_mut().unwrap().push(json!({
++        "id": "b", "name": "Worker", "role": "reviewer", "runtime_kind": "deepagents", "model_profile": "m"
++    }));
++    let mut duplicate = valid.clone();
++    duplicate["agents"][1]["role"] = json!("leader");
++    let mut external = valid.clone();
++    external["agents"][0]["runtime_kind"] = json!("codex");
++    for (id, blob, expected) in [
++        ("duplicate", duplicate.to_string(), "唯一"),
++        ("external", external.to_string(), "内置"),
++        ("corrupt", "{broken json".into(), "stored spec is invalid"),
++    ] {
++        let paths = session_paths(id);
++        std::fs::create_dir_all(&paths.base).unwrap();
++        let store = Store::open(&paths.db).unwrap();
++        store.create_session(id, cwd.to_str().unwrap(), "approved_scope").unwrap();
++        let team: TeamSpec = serde_json::from_value(valid.clone()).unwrap();
++        store.save_team_spec(id, &team).unwrap();
++        for agent in &team.agents {
++            store.ensure_agent(id, &agent.id).unwrap();
++        }
++        let mut control = Control::new(store, id);
++        for (action_id, actor_id, kind, payload) in [
++            ("user", "user", ActionKind::UserMessage, json!({"text": "preserve this goal"})),
++            ("task", "leader", ActionKind::AssignTask, json!({"assignee": "b", "description": "preserve this task"})),
++        ] {
++            let receipt = control
++                .submit(&TeamAction {
++                    action_id: action_id.into(),
++                    session_id: id.into(),
++                    actor_id: actor_id.into(),
++                    run_id: None,
++                    kind,
++                    payload,
++                })
++                .unwrap();
++            assert!(receipt.ok, "{receipt:?}");
++        }
++        control.store.conn.execute("UPDATE team_specs SET spec_json=?1 WHERE revision=1", [&blob]).unwrap();
++        drop(control);
++        let snapshot = || {
++            let store = Store::open(&paths.db).unwrap();
++            let mut statement =
++                store.conn.prepare("SELECT revision, spec_json FROM team_specs ORDER BY revision").unwrap();
++            let specs: Vec<(i64, String)> = statement
++                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
++                .unwrap()
++                .collect::<Result<_, _>>()
++                .unwrap();
++            json!({
++                "specs": specs,
++                "session": store.get_session(id).unwrap(),
++                "events": store.events(id, 0, 100).unwrap(),
++                "tasks": store.tasks_for_session(id, &[]).unwrap(),
++                "runs": store.runs_for_session(id, &[]).unwrap(),
++                "receipts": (["user", "task"].map(|action| store.get_action_receipt(action).unwrap())),
++                "agents": (["leader", "b"].map(|agent| (
++                    store.agent_status(id, agent).unwrap(),
++                    store.agent_config_revision(id, agent).unwrap(),
++                    store.agent_context_epoch(id, agent).unwrap(),
++                ))),
++            })
++        };
++        let before = snapshot();
++        for initial_spec in [None, Some(valid.clone())] {
++            let result = open_session(OpenOptions {
++                cwd: Some(cwd.clone()),
++                session_id: Some(id.into()),
++                full_auto: true,
++                initial_spec,
++                catalog: Some(catalog()),
++                scripts: Some(Default::default()),
++            });
++            let error = match result {
++                Ok(opened) => {
++                    opened.close();
++                    panic!("{id}: an invalid persisted spec must stop session construction");
++                }
++                Err(error) => error,
++            };
++            assert!(error.contains(expected), "{id}: {error}");
++            assert_eq!(snapshot(), before, "resuming must not repair over or mutate existing work");
++            assert!(!is_session_locked(id, None), "failed resume must release the lock");
++            assert!(!paths.base.join("members").exists(), "validation must run before member construction");
++        }
++    }
++}
++
+ /// finding 7: the lock is a kernel file lock, so another process sees it.
+ #[test]
+ fn another_process_cannot_open_a_locked_session() {

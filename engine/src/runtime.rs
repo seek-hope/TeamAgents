@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, RecvTimeoutError};
 use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::{Duration, Instant};
-use teamagents_core::control::TurnOutcome;
+use teamagents_core::control::{FinalizationResult, TurnOutcome};
 use teamagents_core::models::{AgentSpec, AgentStatus, Receipt, TeamAction, TurnRun, TurnStatus};
 
 /// Best-effort core call: the core now reports real write failures, so log them
@@ -31,9 +31,15 @@ pub trait AgentRunner: Send + Sync {
         None
     }
     fn deliver_mid_turn(&self, run_id: &str, items: Vec<Json>);
-    /// Optional restart convergence (RT-04): a backend that survives our
-    /// restart reports the live status of a parked turn.
-    fn reconcile(&self, _run: &TurnRun) -> Option<TurnStatus> {
+    /// Read-only evidence that a queued intent was already executed. Missing
+    /// evidence leaves a genuinely new intent queued; unreadable evidence fails.
+    fn has_recovery_state(&self, run: &TurnRun) -> Result<bool, String> {
+        Ok(run.external_turn_id.is_some())
+    }
+    /// Optional restart convergence (RT-04). Return the recorded result as
+    /// well as its status; the gateway may restore a team completion receipt.
+    /// Reconciliation must not replay external execution tools.
+    fn reconcile(&self, _run: &TurnRun, _gateway: &ToolGateway) -> Option<TurnOutcome> {
         None
     }
     /// Optional: resolve a parked approval in a backend that asked for it.
@@ -49,8 +55,8 @@ pub trait AgentRunner: Send + Sync {
     /// D-26 rewind: chat backends own a tree-structured history; backends that
     /// keep history server-side (codex) report unsupported — use their native
     /// fork instead.
-    fn rewind_points(&self, _thread: &str) -> Vec<Json> {
-        vec![]
+    fn rewind_points(&self, _thread: &str) -> Result<Vec<Json>, String> {
+        Ok(vec![])
     }
     fn rewind(&self, _thread: &str, _node: Option<&str>) -> Result<usize, String> {
         Err("this backend does not support rewind".into())
@@ -296,20 +302,45 @@ struct RunSlot {
     control: Arc<TurnControl>,
 }
 
+#[derive(Clone)]
+struct PendingFinalization {
+    run: TurnRun,
+    outcome: TurnOutcome,
+    ack_ids: Vec<i64>,
+    retry_after: Instant,
+}
+
+struct RuntimeError {
+    phase: &'static str,
+    run_id: Option<String>,
+    agent_id: Option<String>,
+    error: String,
+    retry_after: Instant,
+}
+
 pub struct Runtime {
     pub core: Arc<CoreClient>,
     pub notify: Arc<Notify>,
     runners: Mutex<RunnerCache>,
     factory: Option<RunnerFactory>,
     inflight: Mutex<HashMap<String, Arc<RunSlot>>>,
+    // Retry the core transaction, never a member that has already returned.
+    // Cold recovery still uses the backend's durable checkpoint/turn identity.
+    finalizing: Mutex<HashMap<String, PendingFinalization>>,
+    // Transient diagnostics are not a second source of execution state.
+    errors: Mutex<HashMap<String, RuntimeError>>,
+    reconciliation_pending: AtomicBool,
     approvals: Arc<ApprovalGate>,
     executor: ToolExecutor,
+    // Keep core drain order through backend handoff across submit/loop threads.
+    mid_turn_delivery: Mutex<()>,
     offered: Mutex<HashMap<String, HashSet<i64>>>,
     steps: Arc<Mutex<HashMap<String, i64>>>,
     limits: RuntimeLimits,
     closed: AtomicBool,
     wake: (Mutex<bool>, Condvar),
     loop_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
+    retiring: Mutex<Vec<std::thread::JoinHandle<()>>>,
     self_ref: Mutex<Weak<Runtime>>,
     /// D-30: installed by the session; runs before an apply_topology_patch
     /// submit (auto-creates per-member model profiles).
@@ -333,14 +364,19 @@ impl Runtime {
             runners: Mutex::new(HashMap::new()),
             factory,
             inflight: Mutex::new(HashMap::new()),
+            finalizing: Mutex::new(HashMap::new()),
+            errors: Mutex::new(HashMap::new()),
+            reconciliation_pending: AtomicBool::new(true),
             approvals,
             executor,
+            mid_turn_delivery: Mutex::new(()),
             offered: Mutex::new(HashMap::new()),
             steps: Arc::new(Mutex::new(HashMap::new())),
             limits,
             closed: AtomicBool::new(false),
             wake: (Mutex::new(false), Condvar::new()),
             loop_thread: Mutex::new(None),
+            retiring: Mutex::new(vec![]),
             self_ref: Mutex::new(Weak::new()),
             topology_prepare: Mutex::new(None),
             hooks: Mutex::new(None),
@@ -451,6 +487,10 @@ impl Runtime {
         for runner in runners {
             runner.close();
         }
+        let retiring = std::mem::take(&mut *self.retiring.lock().unwrap());
+        for handle in retiring {
+            let _ = handle.join();
+        }
         for slot in slots {
             while !slot.control.wait_idle(Duration::from_millis(50)) {}
             if let Some(handle) = slot.handle.lock().unwrap().take() {
@@ -462,6 +502,7 @@ impl Runtime {
     fn run_loop(&self) {
         while !self.closed.load(Ordering::SeqCst) {
             self.start_ready_runs();
+            self.drain_mid_turn();
             self.sleep_or_wake(50);
         }
     }
@@ -469,6 +510,11 @@ impl Runtime {
     // -- ingress -------------------------------------------------------------
 
     pub fn submit(&self, action: TeamAction) -> Result<Receipt, String> {
+        if self.reconciliation_pending.load(Ordering::SeqCst) {
+            // exec accepts new input before start(), and recovery may be
+            // waiting on storage. Neither path may schedule unchecked intents.
+            self.prepare_reconciliation()?;
+        }
         let receipt = self.core.submit(&action)?;
         if action.kind == teamagents_core::models::ActionKind::ApprovalDecision && receipt.ok {
             let payload = &action.payload;
@@ -535,22 +581,27 @@ impl Runtime {
     }
 
     fn drain_mid_turn(&self) {
-        let Ok(reply) = self.core.call_in_session("drain_mid_turn", json!({})) else { return };
-        let pushes = reply.get("pushes").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        let _delivery = self.mid_turn_delivery.lock().unwrap();
+        if self.closed.load(Ordering::SeqCst) || !self.retry_due("delivery", "") {
+            return;
+        }
+        let pushes = match self.core.drain_mid_turn() {
+            Ok(pushes) => {
+                self.clear_error("delivery", "");
+                pushes
+            }
+            Err(error) => {
+                // The core transaction leaves all batches buffered on failure.
+                // Retry from the loop even without another user/tool action.
+                self.record_error("delivery", None, error);
+                return;
+            }
+        };
         for push in pushes {
-            let run_id = push.get("run_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let items = push.get("items").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-            let Ok(state) = self.core.state_brief() else { return };
-            let runs: Vec<TurnRun> =
-                serde_json::from_value(state.get("runs").cloned().unwrap_or(Json::Null)).unwrap_or_default();
-            let Some(run) = runs.iter().find(|r| r.run_id == run_id) else { continue };
-            if let Some(runner) = self.runner(&run.agent_id) {
-                runner.deliver_mid_turn(&run_id, items);
-                let mut offered = self.offered.lock().unwrap();
-                let slot = offered.entry(run_id.clone()).or_default();
-                for id in &run.input_delivery_ids {
-                    slot.insert(*id);
-                }
+            if let Some(runner) = self.runner(&push.agent_id) {
+                let ids: Vec<i64> = push.items.iter().filter_map(|i| i["delivery_id"].as_i64()).collect();
+                self.offered.lock().unwrap().entry(push.run_id.clone()).or_default().extend(ids);
+                runner.deliver_mid_turn(&push.run_id, push.items);
             }
         }
     }
@@ -558,19 +609,135 @@ impl Runtime {
     /// Full session snapshot including events. Internal hot paths use
     /// `core.state_brief()` instead (P2-9).
     pub fn state(&self) -> Result<Json, String> {
-        self.core.state()
+        let mut state = self.core.state()?;
+        state["runtime_errors"] = json!(self.errors());
+        Ok(state)
+    }
+
+    /// User-visible reasons why durable work is waiting for storage recovery.
+    /// Keep this independent of SQLite: a failed write cannot record its own
+    /// diagnostic there. Stable fields let polling surfaces deduplicate it.
+    pub fn errors(&self) -> Vec<Json> {
+        let errors = self.errors.lock().unwrap();
+        let mut ordered: Vec<_> = errors.iter().collect();
+        ordered.sort_by(|a, b| a.0.cmp(b.0));
+        ordered
+            .into_iter()
+            .map(|(_, error)| {
+                json!({
+                    "phase": error.phase, "run_id": error.run_id, "agent_id": error.agent_id, "error": error.error,
+                })
+            })
+            .collect()
+    }
+
+    fn record_error(&self, phase: &'static str, run: Option<&TurnRun>, error: String) {
+        let run_id = run.map(|run| run.run_id.as_str()).unwrap_or("");
+        let key = format!("{phase}:{run_id}");
+        let mut errors = self.errors.lock().unwrap();
+        if errors.get(&key).is_none_or(|previous| previous.error != error) {
+            eprintln!("teamagents: 运行时暂缓处理（{phase} {run_id}），将重试：{error}");
+        }
+        errors.insert(
+            key,
+            RuntimeError {
+                phase,
+                run_id: run.map(|run| run.run_id.clone()),
+                agent_id: run.map(|run| run.agent_id.clone()),
+                error,
+                retry_after: Instant::now() + Duration::from_secs(1),
+            },
+        );
+    }
+
+    fn clear_error(&self, phase: &str, run_id: &str) {
+        self.errors.lock().unwrap().remove(&format!("{phase}:{run_id}"));
+    }
+
+    fn retry_due(&self, phase: &str, run_id: &str) -> bool {
+        self.errors
+            .lock()
+            .unwrap()
+            .get(&format!("{phase}:{run_id}"))
+            .is_none_or(|error| Instant::now() >= error.retry_after)
     }
 
     // -- scheduler -----------------------------------------------------------
 
+    /// State only lists current members: absence from the committed spec is
+    /// the removal signal, not a REMOVED row in state.agents. A draining member
+    /// remains in the spec until its boundary, and its wrapper must exit before
+    /// we close the runner (finalization still consults its delivery checkpoint).
+    fn retire_removed_runners(&self, members: &HashSet<&str>) {
+        let removed = {
+            let inflight = self.inflight.lock().unwrap();
+            let mut runners = self.runners.lock().unwrap();
+            let ids: Vec<_> = runners
+                .keys()
+                .filter(|id| !members.contains(id.as_str()) && !inflight.values().any(|slot| slot.agent_id == **id))
+                .cloned()
+                .collect();
+            ids.into_iter().filter_map(|id| runners.remove(&id).map(|(_, runner)| runner)).collect::<Vec<_>>()
+        };
+        let finished = {
+            let mut retiring = self.retiring.lock().unwrap();
+            let mut finished = vec![];
+            let mut index = 0;
+            while index < retiring.len() {
+                if retiring[index].is_finished() {
+                    finished.push(retiring.swap_remove(index));
+                } else {
+                    index += 1;
+                }
+            }
+            // MCP HTTP shutdown may wait for the peer. Never hold scheduler or
+            // runner locks while closing a backend; session.close joins these.
+            for runner in removed {
+                retiring.push(std::thread::spawn(move || runner.close()));
+            }
+            finished
+        };
+        for handle in finished {
+            let _ = handle.join();
+        }
+    }
+
     fn start_ready_runs(&self) {
-        let Ok(state) = self.core.state_brief() else { return };
+        self.retry_finalizations();
+        if self.reconciliation_pending.load(Ordering::SeqCst) {
+            if self.retry_due("reconcile", "") {
+                self.reconcile();
+            }
+            if self.reconciliation_pending.load(Ordering::SeqCst) {
+                return;
+            }
+        }
+        if !self.retry_due("state", "") {
+            return;
+        }
+        let state = match self.core.state_brief() {
+            Ok(state) => {
+                self.clear_error("state", "");
+                state
+            }
+            Err(error) => {
+                self.record_error("state", None, error);
+                return;
+            }
+        };
         let session = state.get("session").cloned().unwrap_or(Json::Null);
         if session.is_null() {
             return;
         }
+        let Some(agents) = state.pointer("/spec/agents").and_then(Json::as_array) else { return };
+        let members: HashSet<&str> = agents.iter().filter_map(|a| a["id"].as_str()).collect();
+        self.retire_removed_runners(&members);
         let runs: Vec<TurnRun> =
             serde_json::from_value(state.get("runs").cloned().unwrap_or(Json::Null)).unwrap_or_default();
+        self.errors.lock().unwrap().retain(|_, error| {
+            error.phase != "prepare"
+                || runs.iter().any(|run| error.run_id.as_deref() == Some(run.run_id.as_str()) && run.status.is_active())
+        });
         if session.get("status").and_then(|v| v.as_str()) == Some("PAUSED") {
             // Pausing stops dispatch, but must not suppress requests to stop work.
             self.watch_cancellations(&runs);
@@ -582,18 +749,6 @@ impl Runtime {
             .and_then(|l| l.get("max_parallel_workers"))
             .and_then(|v| v.as_i64())
             .unwrap_or(self.limits.max_parallel_workers);
-        let removed: HashSet<String> = state
-            .get("agents")
-            .and_then(|v| v.as_array())
-            .map(|agents| {
-                agents
-                    .iter()
-                    .filter(|a| a.get("status").and_then(|v| v.as_str()) == Some("REMOVED"))
-                    .filter_map(|a| a.get("id").and_then(|v| v.as_str()).map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_default();
-
         let mut workers_busy = 0i64;
         for run_id in self.inflight.lock().unwrap().keys() {
             if let Some(run) = runs.iter().find(|r| &r.run_id == run_id) {
@@ -604,7 +759,11 @@ impl Runtime {
         }
         let active: Vec<TurnRun> = runs.iter().filter(|r| r.status.is_active()).cloned().collect();
         for run in active {
-            if self.inflight.lock().unwrap().contains_key(&run.run_id) {
+            if !members.contains(run.agent_id.as_str())
+                || self.inflight.lock().unwrap().contains_key(&run.run_id)
+                || self.finalizing.lock().unwrap().contains_key(&run.run_id)
+                || !self.retry_due("prepare", &run.run_id)
+            {
                 continue;
             }
             if self.factory.is_some() {
@@ -652,9 +811,6 @@ impl Runtime {
             };
             let Some(runner) = runner else { continue };
             if run.agent_id != leader_id && workers_busy >= limit_workers {
-                continue;
-            }
-            if removed.contains(&run.agent_id) {
                 continue;
             }
             if run.agent_id != leader_id {
@@ -785,11 +941,22 @@ impl Runtime {
             );
             return Ok(());
         };
-        let begin = self.core.call_in_session("begin_run", json!({"run_id": run.run_id}))?;
+        let begin = match self.core.call_in_session("prepare_run", json!({"run_id": run.run_id})) {
+            Ok(begin) => {
+                self.clear_error("prepare", &run.run_id);
+                begin
+            }
+            Err(error) => {
+                // No runner has been entered. The atomic preparation rolled
+                // back, so retry this intent without ending or replacing it.
+                self.record_error("prepare", Some(run), error);
+                return Ok(());
+            }
+        };
         let fresh: TurnRun = serde_json::from_value(begin.get("run").cloned().unwrap_or(Json::Null))
             .map_err(|e| format!("bad run: {e}"))?;
         let wake = begin.get("wake").cloned().unwrap_or(Json::Null);
-        let view = self.core.call_in_session("agent_view", json!({"agent_id": fresh.agent_id}))?;
+        let view = begin.get("view").cloned().ok_or("prepared run lacks its member view")?;
         let delivery_ids: Vec<i64> =
             view.get("delivery_ids").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
         if !delivery_ids.is_empty() {
@@ -818,21 +985,43 @@ impl Runtime {
         );
         let mut outcome = self.run_with_timeout(runner.clone(), &fresh, &view, gateway, &wake, timeout);
 
-        let state = self.core.state_brief()?;
-        let runs: Vec<TurnRun> =
-            serde_json::from_value(state.get("runs").cloned().unwrap_or(Json::Null)).unwrap_or_default();
+        // The backend has returned and may have committed external effects.
+        // Retain its exact outcome while the cancellation read is unavailable;
+        // never replace it with an infrastructure error or enter the runner again.
+        let runs = loop {
+            if self.closed.load(Ordering::SeqCst) {
+                return Ok(());
+            }
+            if !self.retry_due("outcome", &fresh.run_id) {
+                std::thread::sleep(Duration::from_millis(20));
+                continue;
+            }
+            let result = self.core.state_brief().and_then(|state| {
+                serde_json::from_value::<Vec<TurnRun>>(state.get("runs").cloned().unwrap_or(Json::Null))
+                    .map_err(|error| format!("读取回合状态失败：{error}"))
+            });
+            match result {
+                Ok(runs) => {
+                    self.clear_error("outcome", &fresh.run_id);
+                    break runs;
+                }
+                Err(error) => self.record_error("outcome", Some(&fresh), error),
+            }
+        };
         let cancel_requested =
             runs.iter().find(|r| r.run_id == fresh.run_id).map(|r| r.cancel_requested).unwrap_or(false);
         if cancel_requested
             && matches!(outcome.status, TurnStatus::Completed | TurnStatus::WaitingTask | TurnStatus::WaitingApproval)
         {
             let confirmed = self.interrupt_confirm(&fresh.run_id, runner);
-            outcome = TurnOutcome {
-                status: confirmed,
-                error: None,
-                note: Some("cancelled by request".into()),
-                reply_text: outcome.reply_text,
-            };
+            if confirmed != outcome.status {
+                outcome = TurnOutcome {
+                    status: confirmed,
+                    error: None,
+                    note: Some("cancelled by request".into()),
+                    reply_text: outcome.reply_text,
+                };
+            }
         }
         self.finalize(&fresh, outcome);
         Ok(())
@@ -958,125 +1147,252 @@ impl Runtime {
         if let Some(applied) = self.runner(&run.agent_id).and_then(|r| r.applied_delivery_ids(run)) {
             ack.retain(|id| applied.contains(id));
         }
-        core_best_effort(
-            &self.core,
-            "run finalization",
-            "finalize_run",
-            json!({
-                "run_id": run.run_id,
-                "status": outcome.status,
-                "error": outcome.error,
-                "note": outcome.note,
-                "reply_text": outcome.reply_text,
-                "ack_ids": ack,
-            }),
-        );
-        let event = match outcome.status {
-            TurnStatus::Completed => "run_completed",
-            TurnStatus::Failed | TurnStatus::OutcomeUnknown => "run_failed",
-            TurnStatus::Cancelled => "run_cancelled",
-            _ => "run_paused",
-        };
-        self.notify.note_event(
-            event,
-            &json!({
-                "run_id": run.run_id,
-                "agent_id": run.agent_id,
-                "status": outcome.status,
-                "error": outcome.error,
-                "reply_text": outcome.reply_text,
-            }),
-        );
-        self.drain_mid_turn();
+        self.finalizing.lock().unwrap().entry(run.run_id.clone()).or_insert(PendingFinalization {
+            run: run.clone(),
+            outcome,
+            ack_ids: ack,
+            retry_after: Instant::now(),
+        });
+        self.retry_finalizations();
         self.signal();
+    }
+
+    fn retry_finalizations(&self) {
+        let mut committed = vec![];
+        {
+            // Serialize attempts with immediate finalization so parked segments
+            // cannot emit duplicate events. Keep the original receipt and input
+            // acknowledgements until the entire core transaction commits.
+            let mut pending = self.finalizing.lock().unwrap();
+            if self.closed.load(Ordering::SeqCst) {
+                return;
+            }
+            pending.retain(|_, item| {
+                if Instant::now() < item.retry_after {
+                    return true;
+                }
+                let result = self
+                    .core
+                    .call_in_session(
+                        "finalize_run",
+                        json!({
+                            "run_id": item.run.run_id,
+                            "status": item.outcome.status,
+                            "error": item.outcome.error,
+                            "note": item.outcome.note,
+                            "reply_text": item.outcome.reply_text,
+                            "ack_ids": item.ack_ids,
+                        }),
+                    )
+                    .and_then(|value| {
+                        serde_json::from_value::<FinalizationResult>(value)
+                            .map_err(|error| format!("invalid finalization result: {error}"))
+                    });
+                match result {
+                    Ok(result) => {
+                        committed.push((item.clone(), result));
+                        false
+                    }
+                    Err(error) => {
+                        self.record_error("finalize", Some(&item.run), error);
+                        item.retry_after = Instant::now() + Duration::from_secs(1);
+                        true
+                    }
+                }
+            });
+        }
+        for (item, result) in &committed {
+            self.clear_error("finalize", &item.run.run_id);
+            if !result.applied {
+                continue;
+            }
+            let event = match result.status {
+                TurnStatus::Completed => "run_completed",
+                TurnStatus::Failed | TurnStatus::OutcomeUnknown => "run_failed",
+                TurnStatus::Cancelled => "run_cancelled",
+                TurnStatus::WaitingTask | TurnStatus::WaitingApproval => "run_paused",
+                TurnStatus::Queued | TurnStatus::Running => continue,
+            };
+            // A late decision/cancellation can replace a parked segment inside
+            // the core transaction. Its old payload does not describe that state.
+            let same_outcome = result.status == item.outcome.status;
+            self.notify.note_event(
+                event,
+                &json!({
+                    "run_id": item.run.run_id,
+                    "agent_id": item.run.agent_id,
+                    "status": result.status,
+                    "error": same_outcome.then_some(item.outcome.error.as_deref()).flatten(),
+                    "reply_text": same_outcome.then_some(item.outcome.reply_text.as_deref()).flatten(),
+                }),
+            );
+        }
+        if !committed.is_empty() {
+            self.drain_mid_turn();
+            self.signal();
+        }
     }
 
     // -- restart convergence (RT-04) ------------------------------------------
 
     /// After a restart: re-check in-flight runs, never blind-retry side effects.
     pub fn reconcile(&self) {
-        let Ok(state) = self.core.state_brief() else { return };
-        let runs: Vec<TurnRun> =
-            serde_json::from_value(state.get("runs").cloned().unwrap_or(Json::Null)).unwrap_or_default();
+        match self.reconcile_inner() {
+            Ok(()) => {
+                self.reconciliation_pending.store(false, Ordering::SeqCst);
+                self.clear_error("reconcile", "");
+            }
+            Err(error) => {
+                self.reconciliation_pending.store(true, Ordering::SeqCst);
+                self.record_error("reconcile", None, error);
+            }
+        }
+    }
+
+    pub(crate) fn prepare_reconciliation(&self) -> Result<Vec<TurnRun>, String> {
+        let state = self.core.state_brief()?;
+        let mut runs: Vec<TurnRun> =
+            serde_json::from_value(state["runs"].clone()).map_err(|error| format!("invalid recovery runs: {error}"))?;
+        let mut recover = vec![];
+        let queued_ids: Vec<String> = runs
+            .iter()
+            .filter(|run| {
+                run.status == TurnStatus::Queued
+                    && !self.inflight.lock().unwrap().contains_key(&run.run_id)
+                    && !self.finalizing.lock().unwrap().contains_key(&run.run_id)
+            })
+            .map(|run| run.run_id.clone())
+            .collect();
+        let started_ids = self.core.run_started_ids(&queued_ids)?;
+        for run in &runs {
+            if run.status != TurnStatus::Queued
+                || self.inflight.lock().unwrap().contains_key(&run.run_id)
+                || self.finalizing.lock().unwrap().contains_key(&run.run_id)
+            {
+                continue;
+            }
+            if let Some(runner) = self.runner(&run.agent_id) {
+                if started_ids.contains(&run.run_id) || runner.has_recovery_state(run)? {
+                    recover.push(run.run_id.clone());
+                }
+            }
+        }
+        if !recover.is_empty() {
+            let restored: HashMap<_, _> =
+                self.core.restore_queued_runs(&recover)?.into_iter().map(|run| (run.run_id.clone(), run)).collect();
+            for run in &mut runs {
+                if let Some(fresh) = restored.get(&run.run_id) {
+                    *run = fresh.clone();
+                }
+            }
+        }
+        Ok(runs)
+    }
+
+    fn reconcile_inner(&self) -> Result<(), String> {
+        let runs = self.prepare_reconciliation()?;
         let parked: Vec<TurnRun> = runs
             .iter()
             .filter(|r| matches!(r.status, TurnStatus::Running | TurnStatus::WaitingTask | TurnStatus::WaitingApproval))
             .cloned()
             .collect();
         for run in parked {
+            if self.finalizing.lock().unwrap().contains_key(&run.run_id)
+                || self.inflight.lock().unwrap().contains_key(&run.run_id)
+            {
+                continue;
+            }
             let runner = self.runner(&run.agent_id);
-            let mut status = runner.as_ref().and_then(|r| r.query_state(&run.run_id));
-            if status.is_none() {
+            let mut outcome = runner.as_ref().and_then(|r| r.query_state(&run.run_id)).map(|status| TurnOutcome {
+                status,
+                error: None,
+                note: None,
+                reply_text: None,
+            });
+            if outcome.is_none() {
                 if let Some(runner) = &runner {
-                    status = runner.reconcile(&run);
+                    let gateway =
+                        ToolGateway::new(self.core.clone(), &run.agent_id, &run.run_id, self.approvals.clone(), None);
+                    outcome = runner.reconcile(&run, &gateway);
                 }
             }
+            let status = outcome.as_ref().map(|o| o.status);
             if status == Some(TurnStatus::Queued) {
-                core_best_effort(&self.core, "checkpoint resume", "requeue_run", json!({"run_id": run.run_id}));
+                self.core.call_in_session("requeue_run", json!({"run_id": run.run_id}))?;
                 continue;
             }
             if run.status != TurnStatus::Running {
                 if status == Some(run.status) {
                     continue;
                 }
-                match status {
-                    Some(s) if s.is_terminal() => self.converge(&run, s, None),
-                    Some(s) => self.finalize(
-                        &run,
-                        TurnOutcome { status: s, error: None, note: Some("pause restored".into()), reply_text: None },
-                    ),
+                match outcome {
+                    Some(o) => self.converge(&run, o),
                     None => self.converge(
                         &run,
-                        TurnStatus::OutcomeUnknown,
-                        Some("suspended turn could not be restored after restart"),
+                        TurnOutcome {
+                            status: TurnStatus::OutcomeUnknown,
+                            error: Some("suspended turn could not be restored after restart".into()),
+                            note: None,
+                            reply_text: None,
+                        },
                     ),
                 }
                 continue;
             }
-            if let Some(s) = status {
-                if s.is_terminal() || matches!(s, TurnStatus::WaitingTask | TurnStatus::WaitingApproval) {
-                    self.converge(&run, s, None);
+            if let Some(o) = outcome {
+                if o.status.is_terminal() || matches!(o.status, TurnStatus::WaitingTask | TurnStatus::WaitingApproval) {
+                    self.converge(&run, o);
                 }
                 continue;
             }
             if run.external_turn_id.is_some() {
-                self.converge(&run, TurnStatus::OutcomeUnknown, Some("external turn outcome could not be confirmed"));
+                self.converge(
+                    &run,
+                    TurnOutcome {
+                        status: TurnStatus::OutcomeUnknown,
+                        error: Some("external turn outcome could not be confirmed".into()),
+                        note: None,
+                        reply_text: None,
+                    },
+                );
             } else {
                 // in-process runner only: safe to re-run the segment
-                core_best_effort(&self.core, "run requeue", "requeue_run", json!({"run_id": run.run_id}));
+                self.core.call_in_session("requeue_run", json!({"run_id": run.run_id}))?;
             }
         }
-        core_best_effort(&self.core, "scheduling pass", "schedule", json!({}));
+        self.core.call_in_session("schedule", json!({}))?;
         self.signal();
+        Ok(())
     }
 
-    /// Finalize a run found at restart; its input counts as injected (F-C3/RT-05).
-    fn converge(&self, run: &TurnRun, status: TurnStatus, error: Option<&str>) {
-        self.offered
-            .lock()
-            .unwrap()
-            .entry(run.run_id.clone())
-            .or_default()
-            .extend(run.input_delivery_ids.iter().copied());
-        self.finalize(run, TurnOutcome { status, error: error.map(str::to_string), note: None, reply_text: None });
+    /// Recover the durable injection evidence, including mid-turn input.
+    fn converge(&self, run: &TurnRun, outcome: TurnOutcome) {
+        let applied = self
+            .runner(&run.agent_id)
+            .and_then(|runner| runner.applied_delivery_ids(run))
+            .unwrap_or_else(|| run.input_delivery_ids.clone());
+        self.offered.lock().unwrap().entry(run.run_id.clone()).or_default().extend(applied);
+        self.finalize(run, outcome);
     }
 
     // -- helpers -------------------------------------------------------------
+
+    /// A single wait observation; interactive callers must be able to report
+    /// read failures instead of treating them as more work to wait for.
+    pub(crate) fn is_settled(&self) -> Result<bool, String> {
+        let state = self.core.state_brief()?;
+        let runs: Vec<TurnRun> = serde_json::from_value(state.get("runs").cloned().unwrap_or(Json::Null))
+            .map_err(|error| format!("读取回合状态失败：{error}"))?;
+        Ok(!runs.iter().any(|run| run.status.is_active())
+            && self.inflight.lock().unwrap().is_empty()
+            && self.finalizing.lock().unwrap().is_empty())
+    }
 
     /// Wait until no runs are executing or queued.
     pub fn settle(&self, timeout_s: u64) -> bool {
         let deadline = Instant::now() + Duration::from_secs(timeout_s);
         while Instant::now() < deadline {
-            let busy = self
-                .core
-                .state_brief()
-                .ok()
-                .and_then(|state| {
-                    serde_json::from_value::<Vec<TurnRun>>(state.get("runs").cloned().unwrap_or(Json::Null)).ok()
-                })
-                .map(|runs| runs.iter().any(|r| r.status.is_active()))
-                .unwrap_or(true);
-            if !busy && self.inflight.lock().unwrap().is_empty() {
+            if self.is_settled().unwrap_or(false) {
                 return true;
             }
             std::thread::sleep(Duration::from_millis(20));

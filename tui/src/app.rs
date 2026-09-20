@@ -30,6 +30,8 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
     SlashCommand { name: "/quit", description: "退出 TeamAgents" },
     SlashCommand { name: "/settings", description: "打开设置浮层（界面语言）" },
     SlashCommand { name: "/status", description: "查看 token 用量与上下文窗口" },
+    SlashCommand { name: "/review", description: "审查工作区相对首次观察基线的实际差异" },
+    SlashCommand { name: "/history", description: "只读浏览成员记录（包括已移除成员）" },
     SlashCommand {
         name: "/rewind", description: "回退对话到历史节点（/rewind 列出，/rewind <序号> 回退）"
     },
@@ -73,6 +75,17 @@ pub enum Effect {
     /// /status: main loop calls the worker's "usage" method and feeds the
     /// result to App::show_usage (rendering stays in app.rs for testability).
     UsageStatus,
+    History {
+        params: Json,
+        generation: u64,
+    },
+    Review {
+        agent_id: String,
+        path: Option<String>,
+        offset: usize,
+        generation: u64,
+        revision: Option<String>,
+    },
     /// /rewind: list targets (main loop calls "rewind_points") / move the tip
     RewindPoints,
     Rewind {
@@ -251,8 +264,10 @@ pub struct App {
     tool_activity: std::collections::HashMap<String, ToolActivity>,
     /// Per-member working plans (the upper status strip shows one).
     pub plans: std::collections::HashMap<String, Vec<Json>>,
-    /// Per-member review material: the diff lines of its recent edits.
-    reviews: std::collections::HashMap<String, Vec<String>>,
+    pub workspace_review: Option<crate::review::Review>,
+    review_generation: u64,
+    pub member_history: Option<crate::history::History>,
+    history_generation: u64,
     /// Per-member context usage: (context window, last prompt tokens).
     usage: std::collections::HashMap<String, (Option<u64>, u64)>,
     /// member id -> run id whose outcome is still unknown
@@ -327,7 +342,10 @@ impl App {
             log_lines: vec![],
             tool_activity: std::collections::HashMap::new(),
             plans: std::collections::HashMap::new(),
-            reviews: std::collections::HashMap::new(),
+            workspace_review: None,
+            review_generation: 0,
+            member_history: None,
+            history_generation: 0,
             usage: std::collections::HashMap::new(),
             unknown_runs: std::collections::HashMap::new(),
             review_open: false,
@@ -386,6 +404,29 @@ impl App {
     /// New committed state snapshot + event drain.
     pub fn apply_state(&mut self, st: &Json) -> Vec<Effect> {
         let mut effects = vec![];
+        let errors = st.get("runtime_errors").and_then(Json::as_array).cloned().unwrap_or_default();
+        let previous = self
+            .state
+            .as_ref()
+            .and_then(|state| state.get("runtime_errors"))
+            .and_then(Json::as_array)
+            .cloned()
+            .unwrap_or_default();
+        for error in &errors {
+            if !previous.contains(error) {
+                let where_at = [jstr(error, "phase"), jstr(error, "run_id")]
+                    .into_iter()
+                    .filter(|value| !value.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let text = self.t("运行时暂缓处理（{v0}）：{v1}", &[("v0", &where_at), ("v1", &jstr(error, "error"))]);
+                self.write_chat("system", &text);
+                self.notify(text, Severity::Error, 8);
+            }
+        }
+        if !previous.is_empty() && errors.is_empty() {
+            self.write_chat("system", &self.t("运行时读取或提交已恢复。", &[]));
+        }
         let events = st.get("events").and_then(|v| v.as_array()).cloned().unwrap_or_default();
         for ev in &events {
             let seq = ev.get("sequence").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -640,6 +681,14 @@ impl App {
             format!("{:02}:{:02}", total / 60, total % 60)
         };
         let mut chips: Vec<(String, &'static str)> = vec![];
+        if self
+            .state
+            .as_ref()
+            .and_then(|state| state["runtime_errors"].as_array())
+            .is_some_and(|errors| !errors.is_empty())
+        {
+            chips.push((format!("! {}", self.t("等待存储恢复", &[])), "warning"));
+        }
         for run in self.activity_runs.iter() {
             let (icon, style) =
                 activity_status(self.lang, self.animations, self.activity_frame, &run.status, Some(run));
@@ -1172,21 +1221,34 @@ impl App {
         Some((format!("{summary} · {agent}"), current.to_string()))
     }
 
-    /// Review material for `v`: the diff a member's edit reported back.
-    /// ponytail: newest edit batch per member, not a full history.
-    fn record_review(&mut self, agent_id: &str, tool: &str, result: &str) {
-        if !matches!(tool, "edit_file" | "edit_files" | "write_file") || result.trim().is_empty() {
-            return;
-        }
-        self.reviews.insert(agent_id.to_string(), result.lines().map(str::to_string).collect());
+    pub fn open_history(&mut self, agent_id: Option<String>) -> Vec<Effect> {
+        self.history_generation += 1;
+        let mut view = crate::history::History::new(agent_id, self.history_generation);
+        let effect = view.request();
+        self.history_generation = view.generation;
+        self.member_history = Some(view);
+        vec![effect]
     }
 
-    /// `v` on a member row: show what that member last changed.
-    pub fn open_review(&mut self, agent_id: &str) -> bool {
-        let Some(lines) = self.reviews.get(agent_id) else { return false };
-        let title = self.t("改动审查：{v0}", &[("v0", agent_id)]);
-        self.show_overlay(agent_id, title, lines.clone());
-        true
+    pub fn show_history(&mut self, generation: u64, report: Result<Json, String>) {
+        if let Some(view) = &mut self.member_history {
+            view.apply(generation, report);
+        }
+    }
+
+    pub fn open_review(&mut self, agent_id: &str) -> Vec<Effect> {
+        self.review_generation += 1;
+        let mut view = crate::review::Review::new(agent_id.to_string(), self.review_generation);
+        let effect = view.request();
+        self.review_generation = view.generation;
+        self.workspace_review = Some(view);
+        vec![effect]
+    }
+
+    pub fn show_review(&mut self, generation: u64, report: Result<Json, String>) {
+        if let Some(view) = &mut self.workspace_review {
+            view.apply(generation, report);
+        }
     }
 
     /// `p` on a member row: the whole plan, not just the strip's progress line.
@@ -1242,10 +1304,7 @@ impl App {
         self.on_tool_result(agent_id, tool, ok, arguments, "");
     }
 
-    pub fn on_tool_result(&mut self, agent_id: &str, tool: &str, ok: bool, arguments: &str, result: &str) {
-        if ok {
-            self.record_review(agent_id, tool, result);
-        }
+    pub fn on_tool_result(&mut self, agent_id: &str, tool: &str, ok: bool, arguments: &str, _result: &str) {
         if !agent_id.is_empty() {
             self.tool_activity
                 .insert(agent_id.to_string(), ToolActivity { tool: tool.to_string(), ok, at: Instant::now() });
@@ -1271,7 +1330,6 @@ impl App {
     pub fn replay_log(&mut self, events: &[Json]) {
         self.log_lines.clear();
         self.tool_activity.clear();
-        self.reviews.clear();
         self.log_cursor = 0;
         self.append_log(events);
     }
@@ -1361,6 +1419,9 @@ impl App {
     }
 
     pub fn handle_paste(&mut self, text: &str) {
+        if self.workspace_review.is_some() || self.member_history.is_some() {
+            return;
+        }
         if let Some(picker) = &mut self.model_picker {
             picker.query.extend(text.chars().filter(|c| !c.is_control()));
             picker.index = 0;
@@ -1379,6 +1440,30 @@ impl App {
     pub fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> Vec<Effect> {
         use crossterm::event::{KeyCode, KeyModifiers as Mod};
         let ctrl = key.modifiers.contains(Mod::CONTROL);
+        if let Some(mut view) = self.member_history.take() {
+            let effects = view.handle_key(key);
+            self.history_generation = self.history_generation.max(view.generation);
+            if key.code == KeyCode::Char('g') && ctrl {
+                self.panel = PANELS.iter().position(|p| *p == "approvals").unwrap();
+                self.focus = Focus::Panel;
+            }
+            if !view.closed {
+                self.member_history = Some(view);
+            }
+            return effects;
+        }
+        if let Some(mut view) = self.workspace_review.take() {
+            let effects = view.handle_key(key);
+            self.review_generation = self.review_generation.max(view.generation);
+            if key.code == KeyCode::Char('g') && ctrl {
+                self.panel = PANELS.iter().position(|p| *p == "approvals").unwrap();
+                self.focus = Focus::Panel;
+            }
+            if !view.closed {
+                self.workspace_review = Some(view);
+            }
+            return effects;
+        }
         if let Some(mut picker) = self.model_picker.take() {
             let effects = picker.handle_key(key, self.lang);
             if effects.iter().any(|e| matches!(e, Effect::DiscoverModels { .. })) {
@@ -1558,11 +1643,16 @@ impl App {
             }
             "/quit" => vec![Effect::Quit],
             "/status" => vec![Effect::UsageStatus],
+            "/history" => self.open_history(None),
+            "/review" => {
+                let leader = self.leader_id().to_string();
+                self.open_review(&leader)
+            }
             "/rewind" => vec![Effect::RewindPoints],
             "/fork" => vec![Effect::Fork],
             "/model" => vec![Effect::ModelStatus],
             "/help" => {
-                let lines = [self.t("斜杠命令：/help 本说明 · /settings 设置 · /status 用量 · /model 模型 · /rewind 回退 · /fork 分叉 · /quit 退出", &[]),
+                let lines = [self.t("斜杠命令：/help 本说明 · /settings 设置 · /status 用量 · /model 模型 · /review 审查 · /history 记录 · /rewind 回退 · /fork 分叉 · /quit 退出", &[]),
                     self.t("输入：Enter 发送 · Shift+Enter 换行 · ↑↓ 历史 · PgUp/PgDn 滚动", &[]),
                     self.t("界面：Ctrl+T 切面板 · Ctrl+G 批准 · Ctrl+F 全自动 · Ctrl+P 暂停 · Esc 停止 Leader · Ctrl+Q 退出", &[])];
                 self.write_chat("system", &lines.join("\n"));
@@ -1651,7 +1741,10 @@ impl App {
         self.log_cursor = 0;
         self.log_lines.clear();
         self.tool_activity.clear();
-        self.reviews.clear();
+        self.workspace_review = None;
+        self.review_generation += 1;
+        self.member_history = None;
+        self.history_generation += 1;
         self.state = None;
         self.pending_delete = None;
         self.rewind_list.clear();
@@ -2036,14 +2129,18 @@ impl App {
             ("team", KeyCode::Enter) if selected.is_some() && self.log_member == selected => {
                 self.log_member = None; // Enter on the highlighted member clears the filter
             }
-            ("team", KeyCode::Char('v')) | ("log", KeyCode::Char('v')) => match selected {
-                Some(agent) if self.open_review(&agent) => {}
-                Some(agent) => {
-                    let translated = self.t("{v0} 还没有可审查的改动", &[("v0", &agent)]);
-                    self.notify(translated, Severity::Info, 3);
-                }
-                None => {}
-            },
+            ("team", KeyCode::Char('v')) | ("log", KeyCode::Char('v')) => {
+                let agent = if panel == "log" {
+                    self.log_member.clone().unwrap_or_else(|| self.leader_id())
+                } else {
+                    selected.unwrap_or_else(|| self.leader_id())
+                };
+                return self.open_review(&agent);
+            }
+            ("team", KeyCode::Char('h')) | ("log", KeyCode::Char('h')) => {
+                let agent = if panel == "log" { self.log_member.clone() } else { selected };
+                return self.open_history(agent);
+            }
             ("tasks", KeyCode::Enter) => {
                 if let Some(task_id) = selected {
                     if let Some(t) = self.find_task(&task_id) {

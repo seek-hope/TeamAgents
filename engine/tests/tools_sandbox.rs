@@ -224,6 +224,104 @@ fn persistent_shell_keeps_cd_and_exports_between_commands() {
 }
 
 #[test]
+fn persistent_shell_refuses_missing_workdirs_before_running_the_command() {
+    if !has_bwrap() {
+        return;
+    }
+    for temporary in [true, false] {
+        let base = scratch(if temporary { "shell-missing-tmp" } else { "shell-missing-workspace-dir" });
+        let workspace = base.join("workspace");
+        let state = base.join("state");
+        std::fs::create_dir_all(workspace.join("sub")).unwrap();
+        std::fs::write(workspace.join("protected.txt"), "keep").unwrap();
+        let control = teamagents_engine::gateway::TurnControl::default();
+        let command = if temporary {
+            "mkdir -p /tmp/verify && cd /tmp/verify && export TA_MARK=42 && printf temporary > scratch.txt"
+        } else {
+            "cd sub && export TA_MARK=42"
+        };
+        let first = tools::shell_run_stateful(command, &workspace, 30, false, None, Some(&state), &control).unwrap();
+        assert!(!first.contains("(exit"), "setup must execute inside the real sandbox: {first}");
+        if !temporary {
+            std::fs::remove_dir(workspace.join("sub")).unwrap();
+        }
+
+        let refused = tools::shell_run_stateful(
+            "printf overwritten > protected.txt",
+            &workspace,
+            30,
+            false,
+            None,
+            Some(&state),
+            &control,
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("protected.txt")).unwrap(),
+            "keep",
+            "a missing saved cwd must not execute relative writes in the workspace: {refused}"
+        );
+        assert!(refused.contains("ShellStateUnavailable") && refused.contains("(exit 1)"), "{refused}");
+        assert!(refused.starts_with(&format!("[cwd: {}]\n", workspace.display())), "{refused}");
+
+        // Recovery must not strand the member or discard its exported settings.
+        let recovered = tools::shell_run_stateful(
+            "printf 'mark=%s\\n' \"$TA_MARK\"; printf 'logical=%s\\n' \"$PWD\"; pwd -P; test ! -e /tmp/verify/scratch.txt",
+            &workspace,
+            30,
+            false,
+            None,
+            Some(&state),
+            &control,
+        )
+        .unwrap();
+        assert!(recovered.contains("mark=42"), "{recovered}");
+        assert!(recovered.contains(&format!("logical={}", workspace.display())), "{recovered}");
+        assert!(!recovered.contains("(exit") && !recovered.contains("ShellStateUnavailable"), "{recovered}");
+        std::fs::remove_dir_all(base).unwrap();
+    }
+}
+
+#[test]
+fn persistent_shell_captures_the_actual_directory_instead_of_exported_pwd() {
+    if !has_bwrap() {
+        return;
+    }
+    let base = scratch("shell-exported-pwd");
+    let workspace = base.join("workspace");
+    let state = base.join("state");
+    let sub = workspace.join("sub with spaces");
+    std::fs::create_dir_all(&sub).unwrap();
+    let control = teamagents_engine::gateway::TurnControl::default();
+    let first = tools::shell_run_stateful(
+        "cd 'sub with spaces' && export PWD=/tmp/incorrect && export TA_MARK=42",
+        &workspace,
+        30,
+        false,
+        None,
+        Some(&state),
+        &control,
+    )
+    .unwrap();
+    assert!(first.starts_with(&format!("[cwd: {}]\n", sub.display())), "{first}");
+    let second = tools::shell_run_stateful(
+        "printf 'logical=%s\\n' \"$PWD\"; pwd -P; printf '%s' \"$TA_MARK\" > value.txt",
+        &workspace,
+        30,
+        false,
+        None,
+        Some(&state),
+        &control,
+    )
+    .unwrap();
+    assert!(!second.contains("(exit") && !second.contains("ShellStateUnavailable"), "{second}");
+    assert!(second.contains(&format!("logical={}", sub.display())), "{second}");
+    assert_eq!(std::fs::read_to_string(sub.join("value.txt")).unwrap(), "42");
+    assert!(!workspace.join("value.txt").exists());
+    std::fs::remove_dir_all(base).unwrap();
+}
+
+#[test]
 fn an_interrupted_command_does_not_advance_the_shell_state() {
     if !has_bwrap() {
         return;

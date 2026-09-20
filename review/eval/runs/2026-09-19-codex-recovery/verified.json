@@ -1,0 +1,12 @@
+{
+  "model": "deepseek-flash",
+  "provider": "deepseek",
+  "context_window": 1000000,
+  "duration_ms": 12879,
+  "run_status": "COMPLETED",
+  "task_status": "SUCCEEDED",
+  "same_thread": true,
+  "proof_lines": 1,
+  "external_turn_id": "01a0b864-94fb-7671-a492-a5d0de4a5b20",
+  "thread_id": "01a0b864-94c6-7b22-9277-f811e3c733fe"
+}

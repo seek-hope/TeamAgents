@@ -1,0 +1,86 @@
+{
+  "sessions": [
+    {
+      "session_id": "proj_d9c92953e804",
+      "status": "ACTIVE",
+      "cwd": "/home/rimuru/Projects/Code/for_fun/TeamAgents/review/tmp/repo-fork-current-20260919/sample-1/work/repo-session-fork",
+      "permissions_mode": "full_auto",
+      "goal_id": "goal_e132954e76364f3e",
+      "goal_state": "done",
+      "created_at": 1789818398.3553057,
+      "updated_at": 1789819339.4923692
+    }
+  ],
+  "turn_runs": [
+    {
+      "run_id": "run_0735f10d7b2c4c97",
+      "session_id": "proj_d9c92953e804",
+      "task_id": null,
+      "goal_id": "goal_e132954e76364f3e",
+      "agent_id": "leader",
+      "config_revision": 1,
+      "topology_revision": 1,
+      "status": "COMPLETED",
+      "input_delivery_ids": "[1]",
+      "context_ref": "ctx:leader:1",
+      "external_turn_id": null,
+      "cancel_requested": 0,
+      "waiting_on": "[]",
+      "created_at": 1789818398.3763902,
+      "updated_at": 1789819339.492386
+    }
+  ],
+  "tasks": [],
+  "agent_runtime": [
+    {
+      "session_id": "proj_d9c92953e804",
+      "agent_id": "leader",
+      "status": "IDLE",
+      "config_revision": 1,
+      "context_epoch": 1,
+      "last_applied_batch": 1,
+      "next_batch_no": 2,
+      "external_thread_id": null,
+      "updated_at": 1789819339.4924328
+    }
+  ],
+  "completion_events": [
+    {
+      "sequence": 4,
+      "event_id": "evt_240f2d801d0a42c7",
+      "actor_id": "leader",
+      "task_id": null,
+      "kind": "goal_done",
+      "payload": {
+        "goal_id": "goal_e132954e76364f3e",
+        "agent_id": "leader",
+        "summary": "修复了 TeamAgents 快照中的会话分叉与切换问题，只改动 engine/src/worker.rs 与 engine/src/session.rs（含这两个文件的局部测试），未新增文件、未改协议/依赖/其他源码。行为变化：(1) fork_session 先复制源会话 profiles.json（D-30 会话级自动 profile）与 model_overrides.json（/model 覆盖）再打开目标会话，profile/模型/思考档位与源会话一致且重开仍一致；(2) Leader 对话按 ctx:<leader>:<epoch> 映射到新会话自己的线程，完整保留分支/节点/leaf，旧线性 chat_history.json 同样映射，源文件只读；(3) 新会话不继承任务/运行记录/共享事实/成员私有历史/Shell 状态，不回滚项目文件；(4) open/switch_session/new_session 改为先建成功再关旧会话，失败时旧会话、cwd、团队配置、权限模式原样保留，切到当前会话为 no-op；fork 失败只清理本次新建的目标目录，不删不归档源会话；(5) 成员有 QUEUED/RUNNING 回合仍拒绝 fork 且不取消回合。测试：指定命令 4 个测试文件 12/12 通过；engine lib 63/63（含 4 项新增局部测试）；真实 serve 进程 JSON-lines 探针 44 项检查全部通过；core 50/50。既有失败仅环境造成（无 codex CLI 的 cli.rs doctor、无 DNS 的 tools_sandbox、tui render_tests 缺 fixture）。报告见 /artifacts/session-fork-fix-report.md。"
+      },
+      "audience": [
+        "leader"
+      ],
+      "topology_revision": 1,
+      "causation_id": "sys_2fb7002348124e86",
+      "created_at": 1789819339.4926186
+    },
+    {
+      "sequence": 6,
+      "event_id": "evt_3c452fb565a2433d",
+      "actor_id": "leader",
+      "task_id": null,
+      "kind": "run_completed",
+      "payload": {
+        "run_id": "run_0735f10d7b2c4c97",
+        "agent_id": "leader",
+        "status": "COMPLETED",
+        "error": null
+      },
+      "audience": [
+        "leader"
+      ],
+      "topology_revision": 1,
+      "causation_id": "sys_2fb7002348124e86",
+      "created_at": 1789819339.4928076
+    }
+  ]
+}

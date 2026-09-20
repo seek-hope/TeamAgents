@@ -1,0 +1,7 @@
+repo-session-fork rc=1    362s /tmp/teamagents-repo-fork-20260919/sample-1/run/repo-session-fork.jsonl [期望 rc=0 实际 rc=1]
+
+| 任务 | status | exit | 秒 | tokens(prompt/completion) | 验收 |
+|---|---|---|---|---|---|
+| repo-session-fork | 失败 | — | — | — | 进程退出码、期望退出码与 result.exit_code 不一致 |
+
+原始 JSONL 与 stderr：/tmp/teamagents-repo-fork-20260919/sample-1/run

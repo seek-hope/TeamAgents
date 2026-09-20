@@ -4,6 +4,7 @@
 use crate::models::*;
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde_json::json;
+use std::collections::HashSet;
 
 pub const DB_SCHEMA_VERSION: i64 = 1;
 
@@ -204,6 +205,46 @@ fn stored_enum<T: serde::de::DeserializeOwned>(v: String, what: &str) -> rusqlit
     })
 }
 
+/// Preserve corrupt data for repair; never substitute an empty collection.
+/// Diagnostics identify the field without copying private payload contents.
+fn stored_json<T: serde::de::DeserializeOwned>(text: &str, column: usize, field: &str) -> rusqlite::Result<T> {
+    serde_json::from_str(text).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            column,
+            rusqlite::types::Type::Text,
+            Box::<dyn std::error::Error + Send + Sync>::from(format!(
+                "数据库中的 {field} 字段含有无效 JSON（{:?}，第 {} 行第 {} 列）",
+                error.classify(),
+                error.line(),
+                error.column()
+            )),
+        )
+    })
+}
+
+#[derive(serde::Deserialize)]
+struct RunStartedEvidence {
+    run_id: String,
+    agent_id: String,
+    status: TurnStatus,
+}
+
+fn invalid_start_evidence(column: usize) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(
+        column,
+        rusqlite::types::Type::Text,
+        Box::<dyn std::error::Error + Send + Sync>::from("数据库中的 events.run_started 回合或成员引用无效"),
+    )
+}
+
+fn start_evidence(text: &str, column: usize) -> rusqlite::Result<RunStartedEvidence> {
+    let evidence: RunStartedEvidence = stored_json(text, column, "events.run_started.payload_json")?;
+    if evidence.run_id.is_empty() || evidence.agent_id.is_empty() || evidence.status != TurnStatus::Running {
+        return Err(invalid_start_evidence(column));
+    }
+    Ok(evidence)
+}
+
 /// `Limits` fields that still exist; anything else in a stored spec is a key
 /// removed from the model since (D-10) and is dropped on load.
 const LIMITS_KEYS: &[&str] = &[
@@ -365,6 +406,12 @@ impl Store {
 
     // -- team specs ------------------------------------------------------------
 
+    pub fn has_team_spec(&self, session_id: &str) -> rusqlite::Result<bool> {
+        self.conn.query_row("SELECT EXISTS(SELECT 1 FROM team_specs WHERE session_id=?1)", params![session_id], |row| {
+            row.get(0)
+        })
+    }
+
     pub fn save_team_spec(&self, session_id: &str, spec: &TeamSpec) -> rusqlite::Result<i64> {
         let revision = self.current_revision(session_id)? + 1;
         self.conn.execute(
@@ -385,9 +432,9 @@ impl Store {
             .unwrap_or(0))
     }
 
-    /// Stored specs are read for their own errors
-    /// (no panic), and limits keys removed since the row was written are dropped
-    /// so old sessions keep loading (TeamSpec *files* stay strict).
+    /// Validate stored specs after dropping retired limits keys so valid old
+    /// sessions keep loading (TeamSpec *files* stay strict). Never rewrite a
+    /// rejected revision or fall back to an earlier one.
     pub fn load_team_spec(&self, session_id: &str, revision: Option<i64>) -> Result<TeamSpec, String> {
         let revision = match revision {
             Some(r) => r,
@@ -410,7 +457,9 @@ impl Store {
         if let Some(Json::Object(limits)) = data.get_mut("limits") {
             limits.retain(|k, _| LIMITS_KEYS.contains(&k.as_str()));
         }
-        serde_json::from_value(data).map_err(|e| format!("stored spec is invalid: {e}"))
+        let spec: TeamSpec = serde_json::from_value(data).map_err(|e| format!("stored spec is invalid: {e}"))?;
+        spec.validate().map_err(|e| format!("会话 {session_id:?} 的 TeamSpec 修订 {revision} 无效：{e}"))?;
+        Ok(spec)
     }
 
     // -- actions / receipts ----------------------------------------------------
@@ -483,6 +532,41 @@ impl Store {
         )?;
         let rows = stmt.query_map(params![session_id, after_sequence, limit], event_row)?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
+    }
+
+    /// Return run IDs for which a valid `run_started` event is still present.
+    /// The event is execution evidence, so malformed records must stop
+    /// recovery rather than silently looking like a fresh queued intent.
+    pub fn run_started_ids(&self, session_id: &str, wanted: &[String]) -> rusqlite::Result<HashSet<String>> {
+        if wanted.is_empty() {
+            return Ok(HashSet::new());
+        }
+        let wanted: HashSet<&str> = wanted.iter().map(String::as_str).collect();
+        let mut stmt = self.conn.prepare(
+            "SELECT payload_json, actor_id FROM events
+             WHERE session_id=?1 AND kind='run_started'
+             ORDER BY sequence",
+        )?;
+        let rows = stmt.query_map(params![session_id], |row| {
+            let evidence = start_evidence(&row.get::<_, String>(0)?, 0)?;
+            if row.get::<_, String>(1)? != evidence.agent_id {
+                return Err(invalid_start_evidence(0));
+            }
+            Ok(evidence)
+        })?;
+        let mut found = HashSet::new();
+        for row in rows {
+            let evidence = row?;
+            if wanted.contains(evidence.run_id.as_str()) {
+                let run =
+                    self.get_run_for_session(session_id, &evidence.run_id)?.ok_or_else(|| invalid_start_evidence(0))?;
+                if run.agent_id != evidence.agent_id {
+                    return Err(invalid_start_evidence(0));
+                }
+                found.insert(evidence.run_id);
+            }
+        }
+        Ok(found)
     }
 
     pub fn create_delivery(
@@ -565,6 +649,14 @@ impl Store {
         rows.collect::<rusqlite::Result<Vec<_>>>()
     }
 
+    pub fn delivery_belongs_to(&self, session_id: &str, agent_id: &str, delivery_id: i64) -> rusqlite::Result<bool> {
+        self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM deliveries WHERE session_id=?1 AND agent_id=?2 AND delivery_id=?3)",
+            params![session_id, agent_id, delivery_id],
+            |r| r.get(0),
+        )
+    }
+
     /// Mark exactly these ids applied (never a
     /// batch range) and advance the member's applied-batch cursor.
     /// `_batch_no` is kept for existing callers; matching is by id.
@@ -614,13 +706,21 @@ impl Store {
         Ok(())
     }
 
-    // ponytail: lookups by primary key assume one DB serves one session
-    // (engine opens a per-session team.db today). If a single DB ever hosts
-    // multiple sessions, get_task/get_run/decide_approval/reassign_tasks need
-    // a session_id filter.
+    // Global reads are for trusted storage callers. Session control must use
+    // the scoped variants even though production normally has one DB per session.
     pub fn get_task(&self, task_id: &str) -> rusqlite::Result<Option<Task>> {
         self.conn
             .query_row(&format!("SELECT {TASK_COLS} FROM tasks WHERE task_id=?1"), params![task_id], row_to_task)
+            .optional()
+    }
+
+    pub fn get_task_for_session(&self, session_id: &str, task_id: &str) -> rusqlite::Result<Option<Task>> {
+        self.conn
+            .query_row(
+                &format!("SELECT {TASK_COLS} FROM tasks WHERE session_id=?1 AND task_id=?2"),
+                params![session_id, task_id],
+                row_to_task,
+            )
             .optional()
     }
 
@@ -680,6 +780,16 @@ impl Store {
     pub fn get_run(&self, run_id: &str) -> rusqlite::Result<Option<TurnRun>> {
         self.conn
             .query_row(&format!("SELECT {RUN_COLS} FROM turn_runs WHERE run_id=?1"), params![run_id], row_to_run)
+            .optional()
+    }
+
+    pub fn get_run_for_session(&self, session_id: &str, run_id: &str) -> rusqlite::Result<Option<TurnRun>> {
+        self.conn
+            .query_row(
+                &format!("SELECT {RUN_COLS} FROM turn_runs WHERE session_id=?1 AND run_id=?2"),
+                params![session_id, run_id],
+                row_to_run,
+            )
             .optional()
     }
 
@@ -809,9 +919,9 @@ fn row_to_task(row: &Row) -> rusqlite::Result<Task> {
         assignee: row.get(4)?,
         description: row.get(5)?,
         acceptance: row.get(6)?,
-        dependencies: serde_json::from_str(&row.get::<_, String>(7)?).unwrap_or_default(),
+        dependencies: stored_json(&row.get::<_, String>(7)?, 7, "tasks.dependencies")?,
         status: stored_enum(row.get::<_, String>(8)?, "task status")?,
-        result_refs: serde_json::from_str(&row.get::<_, String>(9)?).unwrap_or_default(),
+        result_refs: stored_json(&row.get::<_, String>(9)?, 9, "tasks.result_refs")?,
         created_at: row.get(10)?,
         updated_at: row.get(11)?,
     })
@@ -827,11 +937,11 @@ fn row_to_run(row: &Row) -> rusqlite::Result<TurnRun> {
         config_revision: row.get(5)?,
         topology_revision: row.get(6)?,
         status: stored_enum(row.get::<_, String>(7)?, "turn status")?,
-        input_delivery_ids: serde_json::from_str(&row.get::<_, String>(8)?).unwrap_or_default(),
+        input_delivery_ids: stored_json(&row.get::<_, String>(8)?, 8, "turn_runs.input_delivery_ids")?,
         context_ref: row.get(9)?,
         external_turn_id: row.get(10)?,
         cancel_requested: row.get::<_, i64>(11)? != 0,
-        waiting_on: serde_json::from_str(&row.get::<_, String>(12)?).unwrap_or_default(),
+        waiting_on: stored_json(&row.get::<_, String>(12)?, 12, "turn_runs.waiting_on")?,
         created_at: row.get(13)?,
         updated_at: row.get(14)?,
     })
@@ -843,9 +953,9 @@ fn event_row(row: &Row) -> rusqlite::Result<Json> {
         "event_id": row.get::<_, String>(1)?,
         "actor_id": row.get::<_, String>(2)?,
         "task_id": row.get::<_, Option<String>>(3)?,
-        "kind": row.get::<_, String>(4)?,
-        "payload": serde_json::from_str::<Json>(&row.get::<_, String>(5)?).unwrap_or(Json::Null),
-        "audience": serde_json::from_str::<Json>(&row.get::<_, String>(6)?).unwrap_or(Json::Null),
+        "kind": stored_enum::<EventKind>(row.get::<_, String>(4)?, "events.kind")?,
+        "payload": stored_json::<Json>(&row.get::<_, String>(5)?, 5, "events.payload_json")?,
+        "audience": stored_json::<Vec<String>>(&row.get::<_, String>(6)?, 6, "events.audience_json")?,
         "topology_revision": row.get::<_, i64>(7)?,
         "causation_id": row.get::<_, Option<String>>(8)?,
         "created_at": row.get::<_, f64>(9)?,
@@ -870,19 +980,21 @@ impl Store {
 
     pub fn reassign_tasks(
         &self,
+        session_id: &str,
         assignee: &str,
         new_assignee: &str,
         statuses: &[TaskStatus],
     ) -> rusqlite::Result<Vec<String>> {
         let marks = statuses.iter().map(|s| format!("'{}'", enum_str(s))).collect::<Vec<_>>().join(",");
-        let mut stmt =
-            self.conn.prepare(&format!("SELECT task_id FROM tasks WHERE assignee=?1 AND status IN ({marks})"))?;
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT task_id FROM tasks WHERE session_id=?1 AND assignee=?2 AND status IN ({marks})"
+        ))?;
         let ids: Vec<String> =
-            stmt.query_map(params![assignee], |r| r.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            stmt.query_map(params![session_id, assignee], |r| r.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
         for id in &ids {
             self.conn.execute(
-                "UPDATE tasks SET assignee=?1, updated_at=?2 WHERE task_id=?3",
-                params![new_assignee, now(), id],
+                "UPDATE tasks SET assignee=?1, updated_at=?2 WHERE task_id=?3 AND session_id=?4",
+                params![new_assignee, now(), id, session_id],
             )?;
         }
         Ok(ids)
@@ -896,6 +1008,24 @@ impl Store {
             params![json!({"dropped_reason": reason}).to_string(), session_id, agent_id],
         )?;
         Ok(n)
+    }
+
+    /// Persist a narrower projection or a rejection without advancing the
+    /// consumption ledger. Dropped rows keep their audit event and reason.
+    pub fn restrict_pending_delivery(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        delivery_id: i64,
+        payload: &Json,
+        dropped: bool,
+    ) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE deliveries SET status=?1, payload_override=?2
+             WHERE session_id=?3 AND agent_id=?4 AND delivery_id=?5 AND status='pending'",
+            params![if dropped { "dropped" } else { "pending" }, j(payload), session_id, agent_id, delivery_id],
+        )?;
+        Ok(())
     }
 
     pub fn append_run_inputs(&self, run_id: &str, delivery_ids: &[i64]) -> rusqlite::Result<()> {
@@ -1035,7 +1165,7 @@ impl Store {
             run_id: row.get(3)?,
             tool_call_id: row.get(4)?,
             operation_hash: row.get(5)?,
-            requested_scope: serde_json::from_str(&row.get::<_, String>(6)?).unwrap_or(Json::Null),
+            requested_scope: stored_json(&row.get::<_, String>(6)?, 6, "approvals.requested_scope")?,
             policy_revision: row.get(7)?,
             status: stored_enum(row.get::<_, String>(8)?, "approval status")?,
             created_at: row.get(9)?,
@@ -1144,10 +1274,9 @@ impl Store {
             .query_row(
                 "SELECT scope_json FROM session_approval_cache WHERE session_id=?1 AND operation_hash=?2",
                 params![session_id, operation_hash],
-                |r| r.get::<_, String>(0),
+                |r| stored_json(&r.get::<_, String>(0)?, 0, "session_approval_cache.scope_json"),
             )
             .optional()
-            .map(|o| o.and_then(|s| serde_json::from_str(&s).ok()))
     }
 
     /// The decision (if any) already recorded for this exact call.
@@ -1198,6 +1327,25 @@ impl Store {
         })
     }
 
+    pub fn shared_entry_for_session(&self, session_id: &str, entry_id: &str) -> rusqlite::Result<Option<SharedEntry>> {
+        self.conn
+            .query_row(
+                "SELECT sequence, entry_id, session_id, space_id, author, kind, content, ref, supersedes, created_at
+                 FROM shared_entries WHERE session_id=?1 AND entry_id=?2",
+                params![session_id, entry_id],
+                Self::row_to_shared,
+            )
+            .optional()
+    }
+
+    pub fn shared_space_summary(&self, session_id: &str, space_id: &str) -> rusqlite::Result<(i64, i64)> {
+        self.conn.query_row(
+            "SELECT COUNT(*), COALESCE(MAX(sequence), 0) FROM shared_entries WHERE session_id=?1 AND space_id=?2",
+            params![session_id, space_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+    }
+
     pub fn shared_entries(
         &self,
         session_id: &str,
@@ -1205,19 +1353,30 @@ impl Store {
         after_sequence: i64,
         limit: i64,
     ) -> rusqlite::Result<Vec<SharedEntry>> {
-        if space_ids.is_empty() {
+        let cursors: Vec<(&str, i64)> = space_ids.iter().map(|space| (space.as_str(), after_sequence)).collect();
+        self.shared_entries_after(session_id, &cursors, limit)
+    }
+
+    /// Merge per-space unread ranges in sequence order with one global page limit.
+    pub fn shared_entries_after(
+        &self,
+        session_id: &str,
+        cursors: &[(&str, i64)],
+        limit: i64,
+    ) -> rusqlite::Result<Vec<SharedEntry>> {
+        if cursors.is_empty() {
             return Ok(vec![]);
         }
-        let marks = space_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let marks = cursors.iter().map(|_| "(space_id=? AND sequence>?)").collect::<Vec<_>>().join(" OR ");
         let sql = format!(
             "SELECT sequence, entry_id, session_id, space_id, author, kind, content, ref, supersedes, created_at
-             FROM shared_entries WHERE session_id=? AND space_id IN ({marks}) AND sequence>? ORDER BY sequence LIMIT ?"
+             FROM shared_entries WHERE session_id=? AND ({marks}) ORDER BY sequence LIMIT ?"
         );
         let mut p: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(session_id.to_string())];
-        for s in space_ids {
-            p.push(Box::new(s.clone()));
+        for (space, after) in cursors {
+            p.push(Box::new(space.to_string()));
+            p.push(Box::new(*after));
         }
-        p.push(Box::new(after_sequence));
         p.push(Box::new(limit));
         let refs: Vec<&dyn rusqlite::ToSql> = p.iter().map(|b| b.as_ref()).collect();
         let mut stmt = self.conn.prepare(&sql)?;
@@ -1282,8 +1441,10 @@ impl Store {
             base_revision: row.get(2)?,
             proposer: row.get(3)?,
             decided_by: row.get(4)?,
-            operations: serde_json::from_str(&row.get::<_, String>(5)?).unwrap_or_default(),
-            affected_agents: serde_json::from_str(&row.get::<_, String>(6)?).unwrap_or_default(),
+            operations: serde_json::from_str(&row.get::<_, String>(5)?)
+                .map_err(|e| rusqlite::Error::FromSqlConversionFailure(5, rusqlite::types::Type::Text, Box::new(e)))?,
+            affected_agents: serde_json::from_str(&row.get::<_, String>(6)?)
+                .map_err(|e| rusqlite::Error::FromSqlConversionFailure(6, rusqlite::types::Type::Text, Box::new(e)))?,
             status: stored_enum(row.get::<_, String>(7)?, "patch status")?,
             created_at: row.get(8)?,
             updated_at: row.get(9)?,
@@ -1296,6 +1457,17 @@ impl Store {
                 "SELECT patch_id, session_id, base_revision, proposer, decided_by, operations, affected_agents, status, created_at, updated_at
                  FROM topology_patches WHERE patch_id=?1",
                 params![patch_id],
+                Self::row_to_patch,
+            )
+            .optional()
+    }
+
+    pub fn get_patch_for_session(&self, session_id: &str, patch_id: &str) -> rusqlite::Result<Option<TopologyPatch>> {
+        self.conn
+            .query_row(
+                "SELECT patch_id, session_id, base_revision, proposer, decided_by, operations, affected_agents, status, created_at, updated_at
+                 FROM topology_patches WHERE session_id=?1 AND patch_id=?2",
+                params![session_id, patch_id],
                 Self::row_to_patch,
             )
             .optional()
@@ -1328,41 +1500,91 @@ impl Store {
         rows.collect::<rusqlite::Result<Vec<_>>>()
     }
 
-    /// RT-05: ack exactly one delivery (runtime ledger passes the offered ids).
     /// Retention for one session's high-volume bookkeeping: applied deliveries
-    /// and events older than `days`. A delivery that is still pending (and every
-    /// event it needs) is kept, so replay after a crash stays possible; the
-    /// caller decides how much audit history to drop.
+    /// and events older than `days`. Keep pending inputs and start evidence for
+    /// unresolved runs, including OUTCOME_UNKNOWN. Plan and delete in one
+    /// transaction so errors or concurrent changes cannot partially prune.
     /// Returns (deliveries, events, vacuumed).
     pub fn prune_history(&self, session_id: &str, days: u64, dry_run: bool) -> rusqlite::Result<(i64, i64, bool)> {
-        let cutoff = now() - (days as f64) * 86_400.0;
-        let count = |sql: &str| -> rusqlite::Result<i64> {
-            self.conn.query_row(sql, params![session_id, cutoff], |row| row.get(0))
+        self.conn.execute_batch("SAVEPOINT retention_prune")?;
+        let result = self.prune_history_inner(session_id, days, dry_run).and_then(|counts| {
+            self.conn.execute_batch("RELEASE retention_prune")?;
+            Ok(counts)
+        });
+        let (deliveries, events) = match result {
+            Ok(counts) => counts,
+            Err(error) => {
+                let _ = self.conn.execute_batch("ROLLBACK TO retention_prune; RELEASE retention_prune");
+                return Err(error);
+            }
         };
-        let deliveries =
-            count("SELECT COUNT(*) FROM deliveries WHERE session_id=?1 AND status='applied' AND created_at < ?2")?;
-        // an event is only droppable once no live delivery still points at it
-        let events = count(
-            "SELECT COUNT(*) FROM events WHERE session_id=?1 AND created_at < ?2
-             AND event_id NOT IN (SELECT event_id FROM deliveries WHERE session_id=?1 AND status != 'applied')",
+        let vacuumed = !dry_run
+            && (deliveries != 0 || events != 0)
+            && self.conn.is_autocommit()
+            && self.conn.execute_batch("VACUUM").is_ok();
+        Ok((deliveries, events, vacuumed))
+    }
+
+    fn prune_history_inner(&self, session_id: &str, days: u64, dry_run: bool) -> rusqlite::Result<(i64, i64)> {
+        let cutoff = now() - (days as f64) * 86_400.0;
+        let deliveries: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM deliveries WHERE session_id=?1 AND status='applied' AND created_at < ?2",
+            params![session_id, cutoff],
+            |row| row.get(0),
         )?;
-        if dry_run || (deliveries == 0 && events == 0) {
-            return Ok((deliveries, events, false));
+        let mut stmt = self.conn.prepare(
+            "SELECT e.sequence, e.kind, e.payload_json, e.actor_id
+             FROM events e
+             WHERE e.session_id=?1 AND e.created_at < ?2
+               AND e.event_id NOT IN (
+                   SELECT event_id FROM deliveries
+                   WHERE session_id=?1 AND status != 'applied'
+               )
+             ORDER BY e.sequence",
+        )?;
+        let rows = stmt.query_map(params![session_id, cutoff], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?))
+        })?;
+        let mut sequences = Vec::new();
+        for row in rows {
+            let (sequence, kind, payload, actor) = row?;
+            if kind == "run_started" {
+                let evidence = start_evidence(&payload, 2)?;
+                let run =
+                    self.get_run_for_session(session_id, &evidence.run_id)?.ok_or_else(|| invalid_start_evidence(2))?;
+                if run.agent_id != evidence.agent_id || actor != evidence.agent_id {
+                    return Err(invalid_start_evidence(2));
+                }
+                if !matches!(run.status, TurnStatus::Completed | TurnStatus::Failed | TurnStatus::Cancelled) {
+                    continue;
+                }
+            }
+            sequences.push(sequence);
+        }
+        drop(stmt);
+        let events = sequences.len() as i64;
+        if dry_run {
+            return Ok((deliveries, events));
         }
         self.conn.execute(
             "DELETE FROM deliveries WHERE session_id=?1 AND status='applied' AND created_at < ?2",
             params![session_id, cutoff],
         )?;
-        self.conn.execute(
-            "DELETE FROM events WHERE session_id=?1 AND created_at < ?2
-             AND event_id NOT IN (SELECT event_id FROM deliveries WHERE session_id=?1 AND status != 'applied')",
-            params![session_id, cutoff],
-        )?;
-        // VACUUM cannot run inside a transaction
-        let vacuumed = self.conn.execute_batch("VACUUM").is_ok();
-        Ok((deliveries, events, vacuumed))
+        // Bound statement parameters independently of retained history size.
+        for chunk in sequences.chunks(256) {
+            let marks = vec!["?"; chunk.len()].join(",");
+            self.conn.execute(
+                &format!("DELETE FROM events WHERE session_id=? AND sequence IN ({marks})"),
+                rusqlite::params_from_iter(
+                    std::iter::once(&session_id as &dyn rusqlite::ToSql)
+                        .chain(chunk.iter().map(|id| id as &dyn rusqlite::ToSql)),
+                ),
+            )?;
+        }
+        Ok((deliveries, events))
     }
 
+    /// RT-05: ack exactly one delivery (runtime ledger passes the offered ids).
     pub fn ack_delivery_by_id(&self, delivery_id: i64) -> rusqlite::Result<()> {
         let n = self.conn.execute(
             "UPDATE deliveries SET status='applied', applied_at=?1 WHERE delivery_id=?2 AND status='pending'",
@@ -1390,23 +1612,36 @@ impl Store {
     pub fn pending_deliveries_joined(&self, session_id: &str, agent_id: &str) -> rusqlite::Result<Vec<Json>> {
         let mut stmt = self.conn.prepare(
             "SELECT d.delivery_id, d.event_id, d.batch_no, d.payload_override, d.created_at,
-                    e.kind AS event_kind, e.payload_json, e.actor_id AS event_actor, e.task_id AS event_task_id, e.sequence AS event_sequence
+                    e.kind AS event_kind, e.payload_json, e.actor_id AS event_actor, e.task_id AS event_task_id, e.sequence AS event_sequence,
+                    e.audience_json
              FROM deliveries d JOIN events e ON e.event_id = d.event_id
              WHERE d.session_id=?1 AND d.agent_id=?2 AND d.status='pending'
              ORDER BY d.batch_no, e.sequence",
         )?;
         let rows = stmt.query_map(params![session_id, agent_id], |r| {
+            // Projection errors below this read boundary are permission changes.
+            // Bad persisted JSON must abort the transaction, not drop the input.
+            let kind: EventKind = stored_enum(r.get::<_, String>(5)?, "events.kind")?;
+            let payload: String = r.get(6)?;
+            let _: serde_json::Map<String, Json> = stored_json(&payload, 6, "events.payload_json")?;
+            let audience: String = r.get(10)?;
+            let _: Vec<String> = stored_json(&audience, 10, "events.audience_json")?;
+            let payload_override: Option<String> = r.get(3)?;
+            if let Some(text) = &payload_override {
+                let _: serde_json::Map<String, Json> = stored_json(text, 3, "deliveries.payload_override")?;
+            }
             Ok(serde_json::json!({
                 "delivery_id": r.get::<_, i64>(0)?,
                 "event_id": r.get::<_, String>(1)?,
                 "batch_no": r.get::<_, i64>(2)?,
-                "payload_override": r.get::<_, Option<String>>(3)?,
+                "payload_override": payload_override,
                 "created_at": r.get::<_, f64>(4)?,
-                "event_kind": r.get::<_, String>(5)?,
-                "payload_json": r.get::<_, String>(6)?,
+                "event_kind": kind,
+                "payload_json": payload,
                 "event_actor": r.get::<_, String>(7)?,
                 "event_task_id": r.get::<_, Option<String>>(8)?,
                 "event_sequence": r.get::<_, i64>(9)?,
+                "audience_json": audience,
             }))
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -1445,7 +1680,9 @@ impl Store {
                     Ok(serde_json::json!({
                         "run_id": r.get::<_, String>(0)?,
                         "task_id": r.get::<_, String>(1)?,
-                        "result_refs": serde_json::from_str::<Json>(&r.get::<_, String>(2)?).unwrap_or(json!([])),
+                        "result_refs": serde_json::from_str::<Json>(&r.get::<_, String>(2)?).map_err(|error| {
+                            rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(error))
+                        })?,
                         "summary": r.get::<_, String>(3)?,
                     }))
                 },
@@ -1462,6 +1699,15 @@ impl Store {
             )
             .optional()
             .map(|o| o.flatten())
+    }
+
+    pub(crate) fn is_private_context_reference(&self, reference: &str) -> rusqlite::Result<bool> {
+        self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM agent_runtime WHERE external_thread_id=?1)
+             OR EXISTS(SELECT 1 FROM turn_runs WHERE context_ref=?1 OR external_turn_id=?1)",
+            params![reference],
+            |row| row.get(0),
+        )
     }
 
     pub fn set_codex_thread(&self, session_id: &str, agent_id: &str, thread_id: &str) -> rusqlite::Result<()> {
@@ -1675,6 +1921,45 @@ mod tests {
             .unwrap();
         let err = store.load_team_spec("s1", None).unwrap_err();
         assert!(err.contains("stored spec is invalid"), "{err}");
+    }
+
+    #[test]
+    fn stored_leader_invariants_are_checked_without_rewriting_revisions() {
+        let store = store_with_spec();
+        let valid = serde_json::to_value(store.load_team_spec("s1", None).unwrap()).unwrap();
+        let mut duplicate = valid.clone();
+        duplicate["agents"].as_array_mut().unwrap().push(json!({
+            "id": "extra", "name": "Extra", "role": "leader", "runtime_kind": "deepagents", "model_profile": "m"
+        }));
+        let mut external = valid.clone();
+        external["agents"][0]["runtime_kind"] = json!("codex");
+        for (revision, invalid, expected) in [(2, duplicate, "唯一"), (3, external, "内置")] {
+            let blob = invalid.to_string();
+            store
+                .conn
+                .execute(
+                    "INSERT INTO team_specs(session_id, revision, spec_json, created_at) VALUES('s1', ?1, ?2, 0)",
+                    params![revision, blob],
+                )
+                .unwrap();
+            for selected in [None, Some(revision)] {
+                let error = store.load_team_spec("s1", selected).unwrap_err();
+                assert!(error.contains("s1") && error.contains(&revision.to_string()), "{error}");
+                assert!(error.contains(expected), "{error}");
+            }
+            let stored: String = store
+                .conn
+                .query_row(
+                    "SELECT spec_json FROM team_specs WHERE session_id='s1' AND revision=?1",
+                    [revision],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(stored, blob);
+            assert_eq!(store.current_revision("s1").unwrap(), revision);
+            assert_eq!(json!(store.load_team_spec("s1", Some(1)).unwrap()), valid);
+        }
+        assert!(store.load_team_spec("s1", Some(2)).unwrap_err().contains("唯一"));
     }
 
     #[test]

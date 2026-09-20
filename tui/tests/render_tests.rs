@@ -1044,6 +1044,41 @@ fn ctrl_home_reaches_the_oldest_entry_on_a_narrow_frame() {
 
 /// P2-12: repeated poll failures raise a status chip; recovery clears it.
 #[test]
+fn storage_wait_is_visible_deduplicated_and_clears_after_recovery() {
+    for lang in ["en", "zh-CN"] {
+        let mut app = sample_app();
+        app.lang = lang;
+        let initial_chat = app.chat.len();
+        let mut state = app.state.clone().unwrap();
+        state["runtime_errors"] = json!([{
+            "phase":"prepare","run_id":"r1","agent_id":"leader","error":"shared cursor is unreadable"
+        }]);
+        app.apply_state(&state);
+        app.apply_state(&state);
+        assert_eq!(app.chat.len(), initial_chat + 1);
+        assert!(app.chat.last().unwrap().1.contains("shared cursor is unreadable"));
+        assert!(!app.disconnected, "runtime wait is distinct from an unresponsive worker");
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|f| ui::render(f, &mut app)).unwrap();
+        let text = frame_text(terminal.backend().buffer());
+        let label = app.t("等待存储恢复", &[]);
+        assert!(text.contains(&label), "{text}");
+        state["runtime_errors"] = json!([]);
+        app.apply_state(&state);
+        app.apply_state(&state);
+        assert_eq!(app.chat.len(), initial_chat + 2);
+        assert_eq!(app.chat.last().unwrap().1, app.t("运行时读取或提交已恢复。", &[]));
+        terminal.draw(|f| ui::render(f, &mut app)).unwrap();
+        assert!(!frame_text(terminal.backend().buffer()).contains(&label));
+        state["runtime_errors"] = json!([{
+            "phase":"prepare","run_id":"r1","agent_id":"leader","error":"shared cursor is unreadable"
+        }]);
+        app.apply_state(&state);
+        assert_eq!(app.chat.len(), initial_chat + 3, "a new occurrence must be reported");
+    }
+}
+
+#[test]
 fn disconnect_chip_shows_and_clears() {
     let mut app = sample_app();
     let backend = TestBackend::new(100, 30);

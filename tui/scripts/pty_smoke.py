@@ -5,7 +5,7 @@ message, cycles panels, quits. Asserts on what lands on the screen.
 Usage: XDG_STATE_HOME=/tmp/ta-pty python3 tui/scripts/pty_smoke.py
 Requires: built tui + engine binaries (tui/target/... and engine/target/...).
 """
-import fcntl, os, pty, termios, re, select, struct, subprocess, sys, time
+import fcntl, os, pty, termios, re, select, struct, subprocess, sys, tempfile, time
 
 BIN = os.path.join(os.path.dirname(__file__), "..", "target", "debug", "teamagents-tui")
 ENV = dict(os.environ, TERM="xterm-256color", XDG_STATE_HOME=os.environ.get("XDG_STATE_HOME", "/tmp/ta-pty"))
@@ -31,10 +31,10 @@ def screen(raw: bytes) -> str:
     txt = re.sub(r"\x1b[=>]", "", txt)
     return txt
 
-def main():
+def main(project):
     pid, fd = pty.fork()
     if pid == 0:
-        os.execvpe(BIN, [BIN, "--cwd", "/tmp"], ENV)
+        os.execvpe(BIN, [BIN, "--cwd", project], ENV)
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 110, 0, 0))
     failures = []
 
@@ -114,4 +114,5 @@ def main():
     return 0
 
 if __name__ == "__main__":
-    sys.exit(main())
+    with tempfile.TemporaryDirectory(prefix="ta-smoke-project-") as project:
+        sys.exit(main(project))

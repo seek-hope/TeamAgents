@@ -40,23 +40,23 @@ fn codex_failed_initialize_reaps_the_child() {
 
     let dir = scratch("codex");
     let pidfile = dir.join("pid");
-    let script = dir.join("fake-codex-init-fail.sh");
+    // CodexAppServer supplies "app-server" as argv[1]. Have a stable shell
+    // read that fixture, so a just-written script never becomes an executable
+    // image (which can race parallel child creation with ETXTBSY).
+    let script = dir.join("app-server");
     std::fs::write(
         &script,
-        format!(
-            "#!/bin/sh\necho $$ > {}\nIFS= read -r request\necho '{{\"id\":1,\"error\":{{\"code\":-1,\"message\":\"nope\"}}}}'\nexec sleep 60\n",
-            pidfile.display()
-        ),
+        "echo $$ > \"$TA_TEST_PID_FILE\"\nIFS= read -r request\necho '{\"id\":1,\"error\":{\"code\":-1,\"message\":\"nope\"}}'\nexec sleep 60\n",
     )
     .unwrap();
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
 
     let server = CodexAppServer::new(
         &dir,
-        AppServerOptions { codex_bin: Some(script.to_string_lossy().into_owned()), ..Default::default() },
+        AppServerOptions {
+            codex_bin: Some("/bin/sh".into()),
+            env: vec![("TA_TEST_PID_FILE".into(), pidfile.to_string_lossy().into_owned())],
+            ..Default::default()
+        },
     );
     let err = server.start().expect_err("initialize must fail");
     assert!(err.contains("nope"), "{err}");

@@ -256,6 +256,22 @@ fn http_transport_tolerates_servers_without_push_or_delete() {
     assert!(seen.iter().any(|r| r.http_method == "DELETE"), "{seen:?}");
 }
 
+#[test]
+fn close_is_idempotent_and_a_closed_http_client_cannot_send_tools() {
+    let (url, seen) = spawn_server(Mode::NoPush);
+    let client = McpClient::connect_http(&url, None, 5, 5).unwrap();
+    assert!(client.tools().is_ok());
+    client.close();
+    client.close();
+    assert!(client.tools().unwrap_err().contains("closed"));
+    assert!(client.call_tool("echo", &json!({"text":"not sent"})).unwrap_err().contains("closed"));
+    drop(client);
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.iter().filter(|r| r.http_method == "DELETE").count(), 1);
+    assert_eq!(seen.iter().filter(|r| r.method == "tools/list").count(), 1);
+    assert!(!seen.iter().any(|r| r.method == "tools/call"));
+}
+
 /// An optional http service that is down only drops the capability; a required
 /// one fails the load. (Port 1 refuses connections deterministically.)
 #[test]

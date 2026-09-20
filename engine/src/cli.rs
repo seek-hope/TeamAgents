@@ -489,6 +489,53 @@ pub fn print_usage_table(report: &Json) {
     }
 }
 
+fn repl_storage_error(runtime: &crate::runtime::Runtime) -> Option<String> {
+    let errors = runtime.errors();
+    if errors.is_empty() {
+        return None;
+    }
+    let reasons = errors
+        .iter()
+        .map(|error| {
+            format!(
+                "{}：{}",
+                error["phase"].as_str().unwrap_or("运行时"),
+                error["error"].as_str().unwrap_or("未知错误"),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("；");
+    Some(format!("等待存储恢复：{reasons}"))
+}
+
+fn repl_wait(runtime: &crate::runtime::Runtime, timeout: Duration) -> Result<bool, String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(error) = repl_storage_error(runtime) {
+            return Err(error);
+        }
+        if runtime.is_settled().map_err(|error| format!("读取状态失败：{error}"))? {
+            return Ok(true);
+        }
+        if Instant::now() >= deadline {
+            return Ok(false);
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn print_repl_events(core: &CoreClient, cursor: &mut i64) {
+    match core.call_in_session("state", json!({"after_sequence": *cursor})) {
+        Ok(state) => {
+            for event in state.get("events").and_then(Json::as_array).into_iter().flatten() {
+                *cursor = event.get("sequence").and_then(Json::as_i64).unwrap_or(*cursor);
+                print_event(event);
+            }
+        }
+        Err(error) => println!("  [读取状态失败：{error}]"),
+    }
+}
+
 pub fn repl(cwd: Option<String>, resume: Option<String>, full_auto: bool, team: Option<String>) -> i32 {
     let initial_spec = match &team {
         Some(path) => match crate::config::load_spec_file(std::path::Path::new(path)) {
@@ -525,6 +572,10 @@ pub fn repl(cwd: Option<String>, resume: Option<String>, full_auto: bool, team: 
         }
         if line.trim() == "status" {
             print_usage_table(&opened.usage_report());
+            print_repl_events(&opened.core, &mut cursor);
+            if let Some(error) = repl_storage_error(&opened.runtime) {
+                println!("  [{error}]");
+            }
             continue;
         }
         // D-26 rewind/fork (pi-style tree history; leader conversation only)
@@ -594,17 +645,26 @@ pub fn repl(cwd: Option<String>, resume: Option<String>, full_auto: bool, team: 
             continue;
         }
         match opened.runtime.user_message(&line, false) {
-            Ok(receipt) => {
-                println!("  [input received: {}]", receipt.result.get("goal_id").and_then(|v| v.as_str()).unwrap_or(""))
+            Ok(receipt) if receipt.ok => {
+                println!("  [输入已接收：{}]", receipt.result.get("goal_id").and_then(|v| v.as_str()).unwrap_or(""))
             }
-            Err(e) => println!("  [rejected: {e}]"),
+            result => {
+                let error = match result {
+                    Ok(receipt) => receipt.error.unwrap_or_else(|| "输入请求被拒绝".into()),
+                    Err(error) => error,
+                };
+                println!("  [输入被拒绝：{error}]");
+                continue;
+            }
         }
-        opened.runtime.settle(600);
-        if let Ok(state) = opened.core.call_in_session("state", json!({"after_sequence": cursor})) {
-            for event in state.get("events").and_then(|v| v.as_array()).cloned().unwrap_or_default() {
-                cursor = event.get("sequence").and_then(|v| v.as_i64()).unwrap_or(cursor);
-                print_event(&event);
+        match repl_wait(&opened.runtime, Duration::from_secs(600)) {
+            Ok(settled) => {
+                if !settled {
+                    println!("  [等待超时，后台仍在处理；可输入 status 查看状态]");
+                }
+                print_repl_events(&opened.core, &mut cursor);
             }
+            Err(error) => println!("  [{error}；可输入 status 查看状态]"),
         }
     }
     let _ = std::io::stdout().flush();
@@ -679,11 +739,22 @@ pub fn exec_json(args: &ExecOptions) -> i32 {
             "error":activity["error"],"arguments":activity["arguments"],"result":activity["result"],
         }));
     }));
-    opened.runtime.start();
-    if let Err(e) = opened.runtime.user_message(&prompt, false) {
-        eprintln!("提交消息失败：{e}");
-        opened.close();
-        return 1;
+    let failure = |phase: &str, error: String| {
+        json!({
+            "phase": phase, "run_id": null, "agent_id": null, "error": error,
+        })
+    };
+    let mut runtime_errors = vec![];
+    match opened.runtime.user_message(&prompt, false) {
+        Ok(receipt) if receipt.ok => opened.runtime.start(),
+        result => {
+            let error = match result {
+                Ok(receipt) => receipt.error.unwrap_or_else(|| "输入请求被拒绝".into()),
+                Err(error) => error,
+            };
+            eprintln!("提交消息失败：{error}");
+            runtime_errors.push(failure("input", error));
+        }
     }
     let timeout = args.timeout.unwrap_or(1200);
     let deadline = Instant::now()
@@ -691,14 +762,19 @@ pub fn exec_json(args: &ExecOptions) -> i32 {
         .unwrap_or_else(|| Instant::now() + Duration::from_secs(1200));
     let mut cursor = 0i64;
     let mut timed_out = false;
-    loop {
+    while runtime_errors.is_empty() {
         let state = match opened.core.call_in_session("state", json!({"after_sequence": cursor})) {
             Ok(v) => v,
             Err(e) => {
                 eprintln!("读取状态失败：{e}");
+                runtime_errors.push(failure("state", e));
                 break;
             }
         };
+        runtime_errors.extend(opened.runtime.errors());
+        if !runtime_errors.is_empty() {
+            break;
+        }
         for event in state.get("events").and_then(Json::as_array).cloned().unwrap_or_default() {
             cursor = event.get("sequence").and_then(Json::as_i64).unwrap_or(cursor);
             if !json_line(&json!({"schema_version":1,"type":"event","session_id":sid,"event":event})) {
@@ -742,7 +818,21 @@ pub fn exec_json(args: &ExecOptions) -> i32 {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    let state = opened.core.call_in_session("state", json!({"after_sequence": cursor})).unwrap_or_else(|_| json!({}));
+    let state = match opened.core.call_in_session("state", json!({"after_sequence": cursor})) {
+        Ok(state) => state,
+        Err(error) => {
+            let error = failure("state", error);
+            if !runtime_errors.contains(&error) {
+                runtime_errors.push(error);
+            }
+            json!({})
+        }
+    };
+    for error in opened.runtime.errors() {
+        if !runtime_errors.contains(&error) {
+            runtime_errors.push(error);
+        }
+    }
     for event in state.get("events").and_then(Json::as_array).cloned().unwrap_or_default() {
         cursor = event.get("sequence").and_then(Json::as_i64).unwrap_or(cursor);
         if !json_line(&json!({"schema_version":1,"type":"event","session_id":sid,"event":event})) {
@@ -751,7 +841,9 @@ pub fn exec_json(args: &ExecOptions) -> i32 {
         }
     }
     let mut verification = Vec::new();
-    for command in &args.checks {
+    // A rejected request or unavailable authoritative state has no deliverable
+    // to verify. Never run a user's check against an older completed goal.
+    for command in args.checks.iter().filter(|_| runtime_errors.is_empty()) {
         let marker = format!("__TEAMAGENTS_CHECK_RC_{}__", uuid::Uuid::new_v4());
         let wrapped = format!("{{ {command}; rc=$?; printf '\\n{marker}%s\\n' \"$rc\"; exit $rc; }}");
         let result = crate::tools::shell_run(
@@ -777,7 +869,11 @@ pub fn exec_json(args: &ExecOptions) -> i32 {
         let _ = std::fs::write(path, serde_json::to_vec_pretty(&verification).unwrap_or_default());
     }
     let checks_ok = verification.iter().all(|v| v.get("ok").and_then(Json::as_bool).unwrap_or(false));
-    let (status, code) = exec_outcome(&state, timed_out, checks_ok);
+    let (status, code) = if !runtime_errors.is_empty() && !timed_out {
+        ("failed", 1)
+    } else {
+        exec_outcome(&state, timed_out, checks_ok)
+    };
     // runs whose outcome nobody accepted: they block goal completion, so a CI
     // caller needs their ids to acknowledge them (`cancel_run`)
     let unknown = unknown_run_ids(&state);
@@ -789,6 +885,7 @@ pub fn exec_json(args: &ExecOptions) -> i32 {
         "duration_ms": started.elapsed().as_millis() as u64,
         "usage": usage.get("agents").cloned().unwrap_or_else(|| json!([])),
         "outcome_unknown": unknown,
+        "runtime_errors": runtime_errors,
         "verification":verification,
     }));
     opened.close();
@@ -825,10 +922,14 @@ fn exec_outcome(state: &Json, timed_out: bool, checks_ok: bool) -> (&'static str
         ("timeout", 124)
     } else if has_pending_approvals(state) {
         ("approval_required", 3)
-    } else if run_in(&["FAILED", "OUTCOME_UNKNOWN"]) {
+    } else if run_in(&["OUTCOME_UNKNOWN"]) {
         ("failed", 1)
     } else if goal_done && checks_ok {
+        // FAILED runs remain audit history after recovery. The committed goal
+        // is authoritative once verification passes; unknown outcomes are not.
         ("completed", 0)
+    } else if run_in(&["FAILED"]) {
+        ("failed", 1)
     } else {
         ("incomplete", 1)
     }
@@ -887,5 +988,32 @@ mod exec_tests {
             json!({"runs": [{"status": "SUCCEEDED"}], "pending_approvals": [], "session": {"goal_state": "done"}});
         assert_eq!(exec_outcome(&done, false, true), ("completed", 0));
         assert_eq!(exec_outcome(&done, false, false), ("incomplete", 1));
+    }
+
+    #[test]
+    fn a_completed_goal_can_recover_from_failed_runs_but_not_unresolved_outcomes() {
+        // A real repository run hit a step limit, continued after a member
+        // result, and committed goal_done with the earlier FAILED row intact.
+        let recovered = json!({
+            "session": {"goal_state": "done"},
+            "runs": [
+                {"run_id": "earlier-leader", "status": "FAILED"},
+                {"run_id": "verifier", "status": "COMPLETED"},
+                {"run_id": "later-leader", "status": "COMPLETED"}
+            ],
+            "pending_approvals": []
+        });
+        assert_eq!(exec_outcome(&recovered, false, true), ("completed", 0));
+        assert_eq!(exec_outcome(&recovered, true, true), ("timeout", 124));
+        assert_ne!(exec_outcome(&recovered, false, false).1, 0, "failed checks still reject completion");
+        let mut incomplete = recovered.clone();
+        incomplete["session"]["goal_state"] = json!("active");
+        assert_eq!(exec_outcome(&incomplete, false, true), ("failed", 1));
+        let mut unknown = recovered.clone();
+        unknown["runs"][0]["status"] = json!("OUTCOME_UNKNOWN");
+        assert_eq!(exec_outcome(&unknown, false, true), ("failed", 1));
+        let mut approval = recovered;
+        approval["pending_approvals"] = json!([{"approval_id": "unanswered"}]);
+        assert_eq!(exec_outcome(&approval, false, true), ("approval_required", 3));
     }
 }

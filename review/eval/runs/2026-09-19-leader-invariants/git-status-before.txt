@@ -1,0 +1,91 @@
+ M Makefile
+ M README.md
+ M core/src/control.rs
+ M core/src/lib.rs
+ M core/src/server.rs
+ M core/src/storage.rs
+ M core/src/views.rs
+ M core/tests/engine.rs
+ M docs/ACCEPTANCE.md
+ M docs/DECISIONS.md
+ M docs/DEVELOPMENT.md
+ M docs/USER-GUIDE.md
+ M engine/src/chat.rs
+ M engine/src/cli.rs
+ M engine/src/codex.rs
+ M engine/src/core_client.rs
+ M engine/src/lib.rs
+ M engine/src/mcp.rs
+ M engine/src/runtime.rs
+ M engine/src/session.rs
+ M engine/src/sessions.rs
+ M engine/src/tools.rs
+ M engine/src/worker.rs
+ M engine/src/workspace.rs
+ M engine/tests/chat_e2e.rs
+ M engine/tests/codex_adapter.rs
+ M engine/tests/codex_contract.rs
+ M engine/tests/eval_grader.rs
+ M engine/tests/fork_rewind.rs
+ M engine/tests/live_codex.rs
+ M engine/tests/mcp_http.rs
+ M engine/tests/process_leaks.rs
+ M engine/tests/tools_sandbox.rs
+ M engine/tests/worker_protocol.rs
+ M review/eval/README.md
+ M review/eval/check-runner.sh
+ M review/eval/run.sh
+ M tui/scripts/pty_click_check.py
+ M tui/scripts/pty_smoke.py
+ M tui/src/app.rs
+ M tui/src/i18n.rs
+ M tui/src/lib.rs
+ M tui/src/main.rs
+ M tui/src/ui.rs
+?? core/src/references.rs
+?? core/tests/delivery_acl.rs
+?? core/tests/output_references.rs
+?? engine/src/history.rs
+?? engine/src/review.rs
+?? engine/tests/codex_recovery.rs
+?? engine/tests/history_protocol.rs
+?? engine/tests/live_models.rs
+?? engine/tests/member_lifecycle.rs
+?? engine/tests/private_context.rs
+?? engine/tests/session_identity.rs
+?? engine/tests/workspace_lifecycle.rs
+?? engine/tests/workspace_review.rs
+?? engine/tests/workspace_review_protocol.rs
+?? review/chat-subagent-2026-09-19.md
+?? review/codex-recovery-2026-09-19.md
+?? review/codex-skills-2026-09-19.md
+?? review/context-budget-2026-09-19.md
+?? review/delivery-acl-2026-09-19.md
+?? review/eval/live-models.example.toml
+?? review/eval/runs/2026-09-19-codex-recovery/
+?? review/eval/runs/2026-09-19-context-budget/
+?? review/eval/runs/2026-09-19-history-integrity/
+?? review/eval/runs/2026-09-19-ledger-comparison/
+?? review/eval/runs/2026-09-19-live-models/
+?? review/eval/runs/2026-09-19-repo-codex-comparison/
+?? review/eval/runs/2026-09-19-repo-current/
+?? review/eval/runs/2026-09-19-repo-session-fork/
+?? review/eval/runs/2026-09-19-shell-cwd/
+?? review/eval/tasks/repo-session-fork/
+?? review/history-integrity-2026-09-19.md
+?? review/live-models-2026-09-19.md
+?? review/member-history-2026-09-19.md
+?? review/member-lifecycle-2026-09-19.md
+?? review/output-references-2026-09-19.md
+?? review/private-context-2026-09-19.md
+?? review/readback-pointer-2026-09-19.md
+?? review/repository-eval-2026-09-19.md
+?? review/shell-cwd-2026-09-19.md
+?? review/wait-task-isolation-2026-09-19.md
+?? review/workspace-lifecycle-2026-09-19.md
+?? review/workspace-review-2026-09-19.md
+?? tui/scripts/pty_review_check.py
+?? tui/src/history.rs
+?? tui/src/review.rs
+?? tui/tests/history_tests.rs
+?? tui/tests/review_tests.rs

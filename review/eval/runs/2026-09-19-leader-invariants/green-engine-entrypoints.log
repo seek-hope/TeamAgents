@@ -1,0 +1,23 @@
+   Compiling teamagents-core v0.1.2 (/home/rimuru/Projects/Code/for_fun/TeamAgents/core)
+   Compiling teamagents-engine v0.1.2 (/home/rimuru/Projects/Code/for_fun/TeamAgents/engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.37s
+     Running tests/cli.rs (engine/target/debug/deps/cli-b6cca93ad5aba689)
+
+running 5 tests
+test init_creates_private_config_and_never_overwrites_existing_paths ... ok
+test doctor_fresh_install_and_optional_codex ... ok
+test version_validate_and_sessions_smoke ... ok
+test validate_enforces_one_builtin_leader_in_json_and_yaml ... ok
+test doctor_probes_isolation_codex_and_config_errors ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.71s
+
+     Running tests/session_boot.rs (engine/target/debug/deps/session_boot-7362be43ac57a45d)
+
+running 3 tests
+test another_process_cannot_open_a_locked_session ... ok
+test resume_rejects_invalid_leaders_without_replacing_persisted_work ... ok
+test failed_open_releases_the_session_lock_and_can_be_retried ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+

@@ -1,0 +1,758 @@
+--- a/src/amount.rs
++++ b/src/amount.rs
+@@ -1,8 +1,200 @@
++//! Exact conversion between textual decimal amounts and `i64` cents.
++//!
++//! The whole module is integer based: no `f64` is ever involved, so no value is
++//! truncated, rounded or saturated. Out-of-range inputs return an error instead
++//! of panicking, and the full `i64` cent range round-trips exactly.
++
++/// Longest magnitude a legal (possibly negative) cent value can have.
++const MAX_MAGNITUDE: i128 = i64::MAX as i128 + 1;
++
++fn invalid() -> String {
++    "金额无效".to_owned()
++}
++
++/// Parse a textual amount into cents.
++///
++/// Accepted grammar (after trimming surrounding whitespace):
++///
++/// ```text
++/// ["-"] digits [ "." 1*2 digits ]
++/// ```
++///
++/// * leading/trailing whitespace is ignored;
++/// * an optional `-` sign is allowed; `+` is not;
++/// * at least one integer digit is required, so `.5`, `-`, and `""` are invalid;
++/// * the fractional part, when present, must have exactly one or two digits,
++///   so `12.` and `1.234` are invalid;
++/// * exponents, non-ASCII/non-digit characters and separators are invalid.
++///
++/// The conversion is exact and supports the complete `i64` range; any overflow
++/// yields `Err`.
+ pub fn parse_cents(input: &str) -> Result<i64, String> {
+-    let amount: f64 = input.trim().parse().map_err(|_| "金额无效".to_owned())?;
+-    Ok((amount * 100.0) as i64)
+-}
+-
++    let trimmed = input.trim();
++    let (negative, unsigned) = match trimmed.strip_prefix('-') {
++        Some(rest) => (true, rest),
++        None => (false, trimmed),
++    };
++
++    let mut parts = unsigned.split('.');
++    let integer = parts.next().unwrap_or("");
++    let fraction = parts.next();
++    // A second '.' (e.g. `1.2.3`) means more than one separator.
++    if parts.next().is_some() {
++        return Err(invalid());
++    }
++
++    if integer.is_empty() || !integer.bytes().all(|byte| byte.is_ascii_digit()) {
++        return Err(invalid());
++    }
++
++    let fraction_value: i128 = match fraction {
++        None => 0,
++        Some(digits) => {
++            if digits.is_empty()
++                || digits.len() > 2
++                || !digits.bytes().all(|byte| byte.is_ascii_digit())
++            {
++                return Err(invalid());
++            }
++            let mut value = 0i128;
++            for byte in digits.bytes() {
++                value = value * 10 + i128::from(byte - b'0');
++            }
++            if digits.len() == 1 {
++                value *= 10;
++            }
++            value
++        }
++    };
++
++    // Accumulate the integer part with checked arithmetic so arbitrarily long
++    // inputs cannot overflow the intermediate type or panic.
++    let mut magnitude = 0i128;
++    for byte in integer.bytes() {
++        let digit = i128::from(byte - b'0');
++        magnitude = magnitude
++            .checked_mul(10)
++            .and_then(|value| value.checked_add(digit))
++            .ok_or_else(invalid)?;
++    }
++    let magnitude = magnitude
++        .checked_mul(100)
++        .and_then(|value| value.checked_add(fraction_value))
++        .ok_or_else(invalid)?;
++
++    if negative {
++        if magnitude > MAX_MAGNITUDE {
++            return Err(invalid());
++        }
++        // `magnitude == MAX_MAGNITUDE` is exactly `i64::MIN`.
++        Ok((-magnitude) as i64)
++    } else {
++        if magnitude > i64::MAX as i128 {
++            return Err(invalid());
++        }
++        Ok(magnitude as i64)
++    }
++}
++
++/// Format cents as a fixed two-decimal amount, keeping the sign of negative
++/// values and covering the complete `i64` range.
+ pub fn format_cents(cents: i64) -> String {
+-    format!("{}.{:02}", cents / 100, (cents % 100).abs())
+-}
++    // Use i128 so that `i64::MIN` can be negated without overflowing.
++    let magnitude = (cents as i128).abs();
++    let integer = magnitude / 100;
++    let fraction = magnitude % 100;
++    if cents < 0 {
++        format!("-{}.{:02}", integer, fraction)
++    } else {
++        format!("{}.{:02}", integer, fraction)
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn accepts_documented_examples() {
++        assert_eq!(parse_cents("-0.01").unwrap(), -1);
++        assert_eq!(parse_cents("12").unwrap(), 1200);
++        assert_eq!(parse_cents("12.3").unwrap(), 1230);
++        assert_eq!(parse_cents("12.30").unwrap(), 1230);
++        assert_eq!(parse_cents("  7.5  ").unwrap(), 750);
++        assert_eq!(parse_cents("0.01").unwrap(), 1);
++        assert_eq!(parse_cents("-12.34").unwrap(), -1234);
++        assert_eq!(parse_cents("00012.00").unwrap(), 1200);
++    }
++
++    #[test]
++    fn exactness_that_f64_would_break() {
++        // 0.29 * 100 == 28.999... in binary floating point.
++        assert_eq!(parse_cents("0.29").unwrap(), 29);
++        assert_eq!(parse_cents("8.29").unwrap(), 829);
++        assert_eq!(parse_cents("1.15").unwrap(), 115);
++        assert_eq!(parse_cents("-8.29").unwrap(), -829);
++        assert_eq!(
++            parse_cents("92233720368547758.07").unwrap(),
++            i64::MAX
++        );
++        assert_eq!(
++            parse_cents("-92233720368547758.08").unwrap(),
++            i64::MIN
++        );
++    }
++
++    #[test]
++    fn rejects_invalid_forms() {
++        for bad in [
++            "", "   ", "+5", "+5.0", "abc", "1e3", "1E3", "1.2.3", ".5", "-.5", "-", ".",
++            "12.", "1.234", "-1.234", "1,5", "1 5", "--1", "-+1", "0x10", "NaN", "inf",
++            "- 1", "+.5", "1_000",
++        ] {
++            assert!(parse_cents(bad).is_err(), "expected error for {:?}", bad);
++        }
++    }
++
++    #[test]
++    fn rejects_overflow_without_panicking() {
++        assert!(parse_cents("92233720368547758.08").is_err());
++        assert!(parse_cents("-92233720368547758.09").is_err());
++        assert!(parse_cents("999999999999999999999999999999999999999999").is_err());
++        assert!(parse_cents("-999999999999999999999999999999999999999999").is_err());
++    }
++
++    #[test]
++    fn format_keeps_sign_and_pads() {
++        assert_eq!(format_cents(0), "0.00");
++        assert_eq!(format_cents(1), "0.01");
++        assert_eq!(format_cents(-1), "-0.01");
++        assert_eq!(format_cents(-100), "-1.00");
++        assert_eq!(format_cents(1230), "12.30");
++        assert_eq!(format_cents(i64::MAX), "92233720368547758.07");
++        assert_eq!(format_cents(i64::MIN), "-92233720368547758.08");
++    }
++
++    #[test]
++    fn round_trips_over_full_range() {
++        let samples = [
++            i64::MIN,
++            i64::MIN + 1,
++            -123456,
++            -829,
++            -100,
++            -99,
++            -1,
++            0,
++            1,
++            99,
++            100,
++            829,
++            123456,
++            i64::MAX - 1,
++            i64::MAX,
++        ];
++        for cents in samples {
++            let text = format_cents(cents);
++            assert_eq!(parse_cents(&text).unwrap(), cents, "text = {:?}", text);
++        }
++    }
++}
+--- a/src/csv.rs
++++ b/src/csv.rs
+@@ -1,9 +1,32 @@
++//! Parser for the merchant transaction statement format.
++//!
++//! The format is unquoted, comma separated UTF-8 text with one transaction per
++//! physical line:
++//!
++//! ```text
++//! deposit,请求ID,账户,金额
++//! transfer,请求ID,源账户,目标账户,金额
++//! ```
++//!
++//! Every field is trimmed, empty lines and whole-line `#` comments are ignored,
++//! and every invalid line produces an error prefixed with its 1-based physical
++//! line number in the original input.
++
+ use crate::amount::parse_cents;
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+ pub enum Event {
+-    Deposit { id: String, account: String, cents: i64 },
+-    Transfer { id: String, from: String, to: String, cents: i64 },
++    Deposit {
++        id: String,
++        account: String,
++        cents: i64,
++    },
++    Transfer {
++        id: String,
++        from: String,
++        to: String,
++        cents: i64,
++    },
+ }
+ 
+ impl Event {
+@@ -14,19 +37,133 @@
+     }
+ }
+ 
++/// Request IDs and account names are limited to ASCII letters, digits,
++/// underscore and hyphen, and must be non-empty.
++pub(crate) fn is_valid_name(name: &str) -> bool {
++    !name.is_empty()
++        && name
++            .bytes()
++            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
++}
++
++fn require_name(value: &str) -> Result<&str, String> {
++    if is_valid_name(value) {
++        Ok(value)
++    } else {
++        Err("请求ID或账户只能包含 ASCII 字母、数字、下划线和连字符".to_owned())
++    }
++}
++
++fn require_positive_amount(value: &str) -> Result<i64, String> {
++    let cents = parse_cents(value)?;
++    if cents <= 0 {
++        return Err("金额必须大于零".to_owned());
++    }
++    Ok(cents)
++}
++
++fn parse_line(fields: &[&str]) -> Result<Event, String> {
++    match fields {
++        ["deposit", id, account, amount] => Ok(Event::Deposit {
++            id: require_name(id)?.to_owned(),
++            account: require_name(account)?.to_owned(),
++            cents: require_positive_amount(amount)?,
++        }),
++        ["transfer", id, from, to, amount] => Ok(Event::Transfer {
++            id: require_name(id)?.to_owned(),
++            from: require_name(from)?.to_owned(),
++            to: require_name(to)?.to_owned(),
++            cents: require_positive_amount(amount)?,
++        }),
++        _ => Err("流水格式无效".to_owned()),
++    }
++}
++
++/// Parse a complete statement, returning an error on the first invalid line.
+ pub fn parse_events(input: &str) -> Result<Vec<Event>, String> {
+-    input.lines().filter(|line| !line.is_empty() && !line.starts_with('#'))
+-        .enumerate().map(|(index, line)| {
+-            let fields: Vec<_> = line.split(',').collect();
+-            let result = match fields.as_slice() {
+-                ["deposit", id, account, amount] => parse_cents(amount).map(|cents| Event::Deposit {
+-                    id: (*id).to_owned(), account: (*account).to_owned(), cents,
+-                }),
+-                ["transfer", id, from, to, amount] => parse_cents(amount).map(|cents| Event::Transfer {
+-                    id: (*id).to_owned(), from: (*from).to_owned(), to: (*to).to_owned(), cents,
+-                }),
+-                _ => Err("流水格式无效".to_owned()),
+-            };
+-            result.map_err(|error| format!("第 {} 行：{}", index + 1, error))
+-        }).collect()
++    let mut events = Vec::new();
++    for (index, raw_line) in input.lines().enumerate() {
++        let line_number = index + 1;
++        let line = raw_line.trim();
++        if line.is_empty() || line.starts_with('#') {
++            continue;
++        }
++        let fields: Vec<&str> = line.split(',').map(str::trim).collect();
++        let event = parse_line(&fields).map_err(|error| format!("第 {} 行：{}", line_number, error))?;
++        events.push(event);
++    }
++    Ok(events)
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn trims_fields_and_ignores_blank_and_comment_lines() {
++        let input = "\n   \n# a comment\n  # indented comment\n deposit , d1 , alice , 10.00 \n\ntransfer ,t1, alice , bob , 2.5\n";
++        let events = parse_events(input).unwrap();
++        assert_eq!(
++            events,
++            vec![
++                Event::Deposit {
++                    id: "d1".to_owned(),
++                    account: "alice".to_owned(),
++                    cents: 1000
++                },
++                Event::Transfer {
++                    id: "t1".to_owned(),
++                    from: "alice".to_owned(),
++                    to: "bob".to_owned(),
++                    cents: 250
++                },
++            ]
++        );
++    }
++
++    #[test]
++    fn reports_physical_line_numbers() {
++        let err = parse_events("deposit,d1,alice,1.00\n# comment\n\nbogus,line\n").unwrap_err();
++        assert!(err.starts_with("第 4 行："), "got {err:?}");
++    }
++
++    #[test]
++    fn first_bad_line_wins() {
++        let err = parse_events("deposit,d1,alice,oops\nbogus\n").unwrap_err();
++        assert!(err.starts_with("第 1 行："), "got {err:?}");
++    }
++
++    #[test]
++    fn rejects_bad_names_amounts_and_shapes() {
++        let cases = [
++            "deposit,d 1,alice,1.00",   // space inside id
++            "deposit,d1,ali ce,1.00",   // space inside account
++            "deposit,d1,,1.00",         // empty account
++            "deposit,,alice,1.00",      // empty id
++            "deposit,d1,支付宝,1.00",     // non-ASCII account
++            "deposit,d1,alice,0",       // not > 0
++            "deposit,d1,alice,0.00",    // not > 0
++            "deposit,d1,alice,-1.00",   // not > 0
++            "deposit,d1,alice,1.234",   // too many decimals
++            "deposit,d1,alice,+1.00",   // plus sign
++            "deposit,d1,alice,1e3",     // exponent
++            "deposit,d1,alice",         // missing column
++            "deposit,d1,alice,1.00,x",  // extra column
++            "withdraw,d1,alice,1.00",   // unsupported kind
++            "transfer,t1,a,b",          // missing amount
++            "transfer,t1,a,b,c,1.00",   // extra column
++            "kind,id,account,amount",   // header not supported
++            "deposit,d1,alice,1.00 # inline", // inline comment not supported
++        ];
++        for case in cases {
++            let err = parse_events(case).unwrap_err();
++            assert!(err.starts_with("第 1 行："), "case {case:?} -> {err:?}");
++        }
++    }
++
++    #[test]
++    fn amount_errors_are_wrapped_with_line_number() {
++        let err = parse_events("deposit,d1,alice,not-a-number\n").unwrap_err();
++        assert!(err.starts_with("第 1 行："), "got {err:?}");
++    }
++}
+--- a/src/ledger.rs
++++ b/src/ledger.rs
+@@ -1,5 +1,13 @@
++//! In-memory ledger with idempotent request handling.
++//!
++//! `Ledger::apply` validates the event on its own (it does not trust the CSV
++//! layer), mutates state only after all checks pass, and remembers successful
++//! request IDs so that replays of the exact same request are no-ops while
++//! conflicting reuses are rejected.
++
+ use std::collections::BTreeMap;
+-use crate::csv::Event;
++
++use crate::csv::{is_valid_name, Event};
+ 
+ #[derive(Debug, Default)]
+ pub struct Ledger {
+@@ -8,27 +16,202 @@
+ }
+ 
+ impl Ledger {
+-    pub fn new() -> Self { Self::default() }
+-
+-    pub fn balance(&self, account: &str) -> Option<i64> { self.balances.get(account).copied() }
+-
+-    pub fn balances(&self) -> &BTreeMap<String, i64> { &self.balances }
+-
++    pub fn new() -> Self {
++        Self::default()
++    }
++
++    pub fn balance(&self, account: &str) -> Option<i64> {
++        self.balances.get(account).copied()
++    }
++
++    pub fn balances(&self) -> &BTreeMap<String, i64> {
++        &self.balances
++    }
++
++    /// Apply one event.
++    ///
++    /// * returns `Ok(true)` when the event was applied for the first time;
++    /// * returns `Ok(false)` when the exact same successful request is replayed
++    ///   (balances are left untouched);
++    /// * returns `Err` for an invalid event or a reused ID with different
++    ///   content. On `Err` neither the balances nor the request history change,
++    ///   so a failed request never occupies its ID.
+     pub fn apply(&mut self, event: &Event) -> Result<bool, String> {
+-        if self.requests.contains_key(event.id()) { return Ok(false); }
+-        self.requests.insert(event.id().to_owned(), event.clone());
++        Self::validate(event)?;
++
++        if let Some(previous) = self.requests.get(event.id()) {
++            if previous == event {
++                return Ok(false);
++            }
++            return Err(format!("请求ID {} 已被不同内容使用", event.id()));
++        }
++
+         match event {
+             Event::Deposit { account, cents, .. } => {
+-                *self.balances.entry(account.clone()).or_default() += cents;
++                let current = self.balances.get(account).copied().unwrap_or(0);
++                let updated = current.checked_add(*cents).ok_or("账户余额溢出")?;
++                self.balances.insert(account.clone(), updated);
+             }
+             Event::Transfer { from, to, cents, .. } => {
+-                let source = self.balances.get_mut(from).ok_or("源账户不存在")?;
+-                if *source < *cents { return Err("余额不足".to_owned()); }
+-                *source -= cents;
+-                let target = self.balances.get_mut(to).ok_or("目标账户不存在")?;
+-                *target += cents;
+-            }
+-        }
++                if from == to {
++                    return Err("源账户与目标账户不能相同".to_owned());
++                }
++                let source = self
++                    .balances
++                    .get(from)
++                    .copied()
++                    .ok_or("源账户不存在")?;
++                if source < *cents {
++                    return Err("余额不足".to_owned());
++                }
++                let target = self
++                    .balances
++                    .get(to)
++                    .copied()
++                    .ok_or("目标账户不存在")?;
++                let updated_target = target.checked_add(*cents).ok_or("目标账户余额溢出")?;
++                // All checks passed: mutate both sides together so a rejected
++                // transfer can never only debit (or create) one account.
++                self.balances.insert(from.clone(), source - *cents);
++                self.balances.insert(to.clone(), updated_target);
++            }
++        }
++
++        self.requests.insert(event.id().to_owned(), event.clone());
+         Ok(true)
+     }
++
++    /// Independent validation of an event, mirroring the CSV-layer rules.
++    fn validate(event: &Event) -> Result<(), String> {
++        if !is_valid_name(event.id()) {
++            return Err("请求ID无效".to_owned());
++        }
++        match event {
++            Event::Deposit { account, cents, .. } => {
++                if !is_valid_name(account) {
++                    return Err("账户无效".to_owned());
++                }
++                if *cents <= 0 {
++                    return Err("金额必须大于零".to_owned());
++                }
++            }
++            Event::Transfer { from, to, cents, .. } => {
++                if !is_valid_name(from) || !is_valid_name(to) {
++                    return Err("账户无效".to_owned());
++                }
++                if *cents <= 0 {
++                    return Err("金额必须大于零".to_owned());
++                }
++            }
++        }
++        Ok(())
++    }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn deposit(id: &str, account: &str, cents: i64) -> Event {
++        Event::Deposit {
++            id: id.to_owned(),
++            account: account.to_owned(),
++            cents,
++        }
++    }
++
++    fn transfer(id: &str, from: &str, to: &str, cents: i64) -> Event {
++        Event::Transfer {
++            id: id.to_owned(),
++            from: from.to_owned(),
++            to: to.to_owned(),
++            cents,
++        }
++    }
++
++    #[test]
++    fn deposit_creates_account_and_is_idempotent() {
++        let mut ledger = Ledger::new();
++        assert_eq!(ledger.apply(&deposit("d1", "alice", 1000)).unwrap(), true);
++        assert_eq!(ledger.apply(&deposit("d1", "alice", 1000)).unwrap(), false);
++        assert_eq!(ledger.balance("alice"), Some(1000));
++    }
++
++    #[test]
++    fn conflicting_reuse_of_id_is_rejected_and_changes_nothing() {
++        let mut ledger = Ledger::new();
++        ledger.apply(&deposit("d1", "alice", 1000)).unwrap();
++        let err = ledger.apply(&deposit("d1", "alice", 2000)).unwrap_err();
++        assert!(err.contains("d1"));
++        assert_eq!(ledger.balance("alice"), Some(1000));
++    }
++
++    #[test]
++    fn failed_transfer_does_not_debit_or_create() {
++        let mut ledger = Ledger::new();
++        ledger.apply(&deposit("d1", "alice", 1000)).unwrap();
++        // Target missing: must not debit alice nor create bob.
++        assert!(ledger.apply(&transfer("t1", "alice", "bob", 100)).is_err());
++        assert_eq!(ledger.balance("alice"), Some(1000));
++        assert_eq!(ledger.balance("bob"), None);
++
++        // Insufficient funds: must not touch anything.
++        assert!(ledger.apply(&transfer("t3", "alice", "alice2", 5000)).is_err());
++        assert_eq!(ledger.balance("alice"), Some(1000));
++        assert_eq!(ledger.balance("alice2"), None);
++    }
++
++    #[test]
++    fn self_transfer_and_overflow_are_rejected() {
++        let mut ledger = Ledger::new();
++        ledger.apply(&deposit("d1", "alice", 1000)).unwrap();
++        assert!(ledger.apply(&transfer("s1", "alice", "alice", 1)).is_err());
++        assert_eq!(ledger.balance("alice"), Some(1000));
++
++        ledger.apply(&deposit("d2", "bob", i64::MAX)).unwrap();
++        assert!(ledger.apply(&transfer("o1", "alice", "bob", 1)).is_err());
++        assert_eq!(ledger.balance("alice"), Some(1000));
++        assert_eq!(ledger.balance("bob"), Some(i64::MAX));
++    }
++
++    #[test]
++    fn deposit_overflow_is_rejected() {
++        let mut ledger = Ledger::new();
++        ledger.apply(&deposit("d1", "alice", i64::MAX)).unwrap();
++        assert!(ledger.apply(&deposit("d2", "alice", 1)).is_err());
++        assert_eq!(ledger.balance("alice"), Some(i64::MAX));
++    }
++
++    #[test]
++    fn non_positive_amount_is_rejected_by_the_ledger_too() {
++        let mut ledger = Ledger::new();
++        assert!(ledger.apply(&deposit("d1", "alice", 0)).is_err());
++        assert!(ledger.apply(&deposit("d2", "alice", -5)).is_err());
++        assert!(ledger.apply(&transfer("t1", "alice", "bob", -5)).is_err());
++        assert_eq!(ledger.balance("alice"), None);
++    }
++
++    #[test]
++    fn corrected_retry_reuses_the_same_id() {
++        let mut ledger = Ledger::new();
++        // Fails: source account unknown.
++        assert!(ledger.apply(&transfer("t1", "alice", "bob", 100)).is_err());
++        ledger.apply(&deposit("d1", "alice", 1000)).unwrap();
++        ledger.apply(&deposit("d2", "bob", 100)).unwrap();
++        // Same ID now succeeds because the earlier failure did not reserve it.
++        assert_eq!(ledger.apply(&transfer("t1", "alice", "bob", 100)).unwrap(), true);
++        assert_eq!(ledger.balance("alice"), Some(900));
++        assert_eq!(ledger.balance("bob"), Some(200));
++        // Exact replay is a no-op.
++        assert_eq!(ledger.apply(&transfer("t1", "alice", "bob", 100)).unwrap(), false);
++        assert_eq!(ledger.balance("alice"), Some(900));
++        assert_eq!(ledger.balance("bob"), Some(200));
++    }
++
++    #[test]
++    fn ids_are_globally_unique_across_kinds() {
++        let mut ledger = Ledger::new();
++        ledger.apply(&deposit("x1", "alice", 100)).unwrap();
++        assert!(ledger.apply(&transfer("x1", "alice", "carol", 1)).is_err());
++    }
++}
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -7,14 +7,96 @@
+ use csv::parse_events;
+ use ledger::Ledger;
+ 
++/// Build a report from a complete statement.
++///
++/// Any parse or bookkeeping error aborts the whole run, so callers never see a
++/// partial report. Successfully applied duplicate requests are ignored and do
++/// not affect the balances.
+ pub fn run(input: &str) -> Result<String, String> {
+     let mut ledger = Ledger::new();
+     for event in parse_events(input)? {
+-        let _ = ledger.apply(&event);
++        // `Ok(false)` means an exact replay of an already-applied request.
++        ledger.apply(&event)?;
+     }
++
+     let mut output = format!("{}\n", user_policy::REPORT_HEADER);
+     for (account, cents) in ledger.balances() {
+         output.push_str(&format!("{},{}\n", account, format_cents(*cents)));
+     }
+     Ok(output)
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn empty_input_yields_only_the_header() {
++        assert_eq!(
++            run("").unwrap(),
++            format!("{}\n", user_policy::REPORT_HEADER)
++        );
++        assert_eq!(
++            run("\n# nothing here\n\n").unwrap(),
++            format!("{}\n", user_policy::REPORT_HEADER)
++        );
++    }
++
++    #[test]
++    fn report_is_sorted_and_preserves_cents() {
++        let input = "\
++deposit,d1,bob,0.29
++deposit,d2,alice,12.3
++transfer,t1,alice,bob,0.01
++";
++        let report = run(input).unwrap();
++        assert_eq!(
++            report,
++            "merchant_account,balance_cny\nalice,12.29\nbob,0.30\n"
++        );
++    }
++
++    #[test]
++    fn duplicate_requests_do_not_affect_the_report() {
++        let input = "\
++deposit,d1,alice,10.00
++deposit,d1,alice,10.00
++deposit,d1,alice,10.00
++";
++        assert_eq!(
++            run(input).unwrap(),
++            "merchant_account,balance_cny\nalice,10.00\n"
++        );
++    }
++
++    #[test]
++    fn conflicting_duplicate_is_an_error() {
++        let err = run("deposit,d1,alice,10.00\ndeposit,d1,alice,20.00\n").unwrap_err();
++        assert!(!err.is_empty());
++    }
++
++    #[test]
++    fn any_error_aborts_the_whole_report() {
++        let err = run("deposit,d1,alice,10.00\nbogus line\n").unwrap_err();
++        assert!(err.starts_with("第 2 行："), "got {err:?}");
++
++        // A later ledger error must also abort the run.
++        let err = run("transfer,t1,nobody,alice,1.00\n").unwrap_err();
++        assert!(!err.is_empty());
++    }
++
++    #[test]
++    fn failed_transfer_does_not_change_the_report() {
++        let input = "\
++deposit,d1,alice,10.00
++transfer,t1,alice,ghost,5.00
++";
++        assert!(run(input).is_err());
++    }
++
++    #[test]
++    fn trailing_newline_is_always_present() {
++        let report = run("deposit,d1,alice,1.00").unwrap();
++        assert!(report.ends_with('\n'));
++    }
++}
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,4 +1,4 @@
+-use std::io::{self, Read};
++use std::io::{self, Read, Write};
+ 
+ fn main() {
+     let mut input = String::new();
+@@ -6,9 +6,18 @@
+         eprintln!("读取流水失败：{error}");
+         std::process::exit(1);
+     }
++
+     match eval_ledger::run(&input) {
+-        Ok(output) => print!("{output}"),
++        Ok(output) => {
++            let stdout = io::stdout();
++            let mut handle = stdout.lock();
++            if let Err(error) = handle.write_all(output.as_bytes()).and_then(|()| handle.flush()) {
++                eprintln!("输出报表失败：{error}");
++                std::process::exit(1);
++            }
++        }
+         Err(error) => {
++            // Nothing has been written to stdout, so the report is all-or-nothing.
+             eprintln!("导入失败：{error}");
+             std::process::exit(1);
+         }

@@ -1,0 +1,4 @@
+评测脚本契约：14 项通过（使用假 agent，未调用模型）
+Traceback (most recent call last):
+  File "<stdin>", line 129, in <module>
+AssertionError: (1, 'hidden-probe     rc=0      0s /tmp/teamagents-eval-contract-zceiu_cf/hidden_restrictive_umask/hidden-probe.jsonl [rc=0 ok]\n\n| 任务 | status | exit | 秒 | tokens(prompt/completion) | 验收 |\n|---|---|---|---|---|---|\n| hidden-probe | completed | 0 | 0.0 | 0/0 | n/a |\n\n原始 JSONL 与 stderr：/tmp/teamagents-eval-contract-zceiu_cf/hidden_restrictive_umask\n', 'hidden-probe     隐藏评分失败：/tmp/teamagents-eval-contract-zceiu_cf/hidden_restrictive_umask/hidden-probe.grade.json（执行日志：/tmp/teamagents-eval-contract-zceiu_cf/hidden_restrictive_umask/hidden-probe.grade.log）\n', {'ok': False, 'reason': '候选修改了受保护文件：Cargo.toml', 'candidate_sha256': {'src/lib.rs': 'a33db20869249b28af01c8e0cde00b70a603f5aa4bb715aae2044b84dbdd9c8e'}, 'output': ''})

@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "git_diff_check_exit_code": 0,
+  "manifest_hashes_verified": 23,
+  "json_files_parsed_before_this_record": 10,
+  "stage_records_matched": 7,
+  "documentation_files_checked": 5,
+  "existing_local_markdown_targets": 59,
+  "authored_markdown_json_trailing_whitespace": 0,
+  "credential_pattern_candidates": 0,
+  "credential_patterns": [
+    "private_key",
+    "openai_key",
+    "aws_key",
+    "github_token",
+    "google_api_key",
+    "slack_token",
+    "jwt",
+    "bearer_literal"
+  ],
+  "patch_replay_verified": true,
+  "notes": [
+    "链接验证本地目标存在，不验证标题锚点。",
+    "原始日志与补丁上下文不纳入尾空白检查，不修改原始证据。",
+    "凭据检查为模式扫描，未读取或输出宿主环境凭据。"
+  ]
+}

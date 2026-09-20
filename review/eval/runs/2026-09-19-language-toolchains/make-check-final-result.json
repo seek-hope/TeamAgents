@@ -1,0 +1,8 @@
+{
+  "command": [
+    "make",
+    "check"
+  ],
+  "exit_code": 0,
+  "elapsed_s": 81.107
+}

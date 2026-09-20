@@ -5,6 +5,8 @@
 //! falls back to shared mode and says why. Directories with unmerged results,
 //! unresolved conflicts or local modifications are never auto-deleted.
 
+use serde::{Deserialize, Serialize};
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use teamagents_core::models::{AgentSpec, WorkspacePolicy};
@@ -18,8 +20,21 @@ pub struct Workspace {
     pub base_commit: Option<String>,
 }
 
-fn git(cwd: &Path, args: &[&str]) -> (i32, String, String) {
-    let output = Command::new("git").arg("-C").arg(cwd).args(args).output();
+fn git<I, S>(cwd: &Path, args: I) -> (i32, String, String)
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["-c", "core.fsmonitor=false"])
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_COMMON_DIR")
+        .env_remove("GIT_INDEX_FILE")
+        .args(args)
+        .output();
     match output {
         Ok(out) => (
             out.status.code().unwrap_or(-1),
@@ -31,20 +46,99 @@ fn git(cwd: &Path, args: &[&str]) -> (i32, String, String) {
 }
 
 pub fn is_git_repo(cwd: &Path) -> bool {
-    git(cwd, &["rev-parse", "--git-dir"]).0 == 0
+    git(cwd, ["rev-parse", "--git-dir"]).0 == 0
 }
 
 pub fn is_dirty(cwd: &Path) -> bool {
-    !git(cwd, &["status", "--porcelain"]).1.trim().is_empty()
+    dirty_status(cwd, false).unwrap_or(true)
+}
+
+fn dirty_status(cwd: &Path, include_ignored: bool) -> Result<bool, String> {
+    let (code, out, err) = git(
+        cwd,
+        [
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            "--ignore-submodules=none",
+            if include_ignored { "--ignored=matching" } else { "--ignored=no" },
+        ],
+    );
+    if code != 0 {
+        return Err(format!("无法检查工作目录 {}：{}", cwd.display(), err.trim()));
+    }
+    Ok(!out.is_empty())
 }
 
 pub fn head_commit(cwd: &Path) -> Option<String> {
-    let (code, out, _) = git(cwd, &["rev-parse", "HEAD"]);
+    let (code, out, _) = git(cwd, ["rev-parse", "--verify", "HEAD^{commit}"]);
     if code == 0 {
         Some(out.trim().to_string())
     } else {
         None
     }
+}
+
+/// Stored outside the worktree: a checked-out branch name alone is not proof
+/// that TeamAgents owns it. Older sessions without this file keep their refs.
+#[derive(Serialize, Deserialize)]
+struct WorktreeOrigin {
+    branch: String,
+    base_commit: String,
+}
+
+fn origin_path(work: &Path) -> PathBuf {
+    work.parent().unwrap_or(work).join("worktree.json")
+}
+
+fn read_origin(work: &Path) -> Option<WorktreeOrigin> {
+    serde_json::from_slice(&std::fs::read(origin_path(work)).ok()?).ok()
+}
+
+fn git_path(cwd: &Path, option: &str) -> Result<PathBuf, String> {
+    let (code, out, err) = git(cwd, ["rev-parse", "--path-format=absolute", option]);
+    if code != 0 {
+        return Err(format!("无法核对 Git 工作目录 {}：{}", cwd.display(), err.trim()));
+    }
+    std::fs::canonicalize(out.trim()).map_err(|e| format!("无法核对 Git 路径 {}：{e}", cwd.display()))
+}
+
+/// Inspect actual Git state, never a cached branch hint or the caller's cwd.
+pub(crate) fn inspect_worktree(project_cwd: &Path, path: &Path) -> Result<Workspace, String> {
+    let directory = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+    let marker = std::fs::symlink_metadata(path.join(".git")).map_err(|e| e.to_string())?;
+    if !directory.is_dir() || !marker.is_file() {
+        return Err(format!("{} 不是有效的成员 Git worktree", path.display()));
+    }
+    let canonical = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
+    if git_path(path, "--show-toplevel")? != canonical
+        || git_path(path, "--git-common-dir")? != git_path(project_cwd, "--git-common-dir")?
+    {
+        return Err(format!("成员工作目录 {} 不属于当前项目，拒绝切换或清理", path.display()));
+    }
+    let head = head_commit(path).ok_or_else(|| format!("无法读取成员工作目录 {} 的 HEAD", path.display()))?;
+    let (code, out, err) = git(path, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+    let branch = match code {
+        0 => Some(out.trim().to_string()),
+        1 => None, // Detached HEAD is valid, but its commits still need protection.
+        _ => return Err(format!("无法读取成员分支：{}", err.trim())),
+    };
+    let base_commit = read_origin(path).map(|origin| origin.base_commit).or_else(|| {
+        let (code, out, _) = git(project_cwd, ["merge-base", "HEAD", &head]);
+        (code == 0).then(|| out.trim().to_string())
+    });
+    Ok(Workspace { path: path.to_path_buf(), policy: WorkspacePolicy::GitWorktree, note: None, branch, base_commit })
+}
+
+/// A moved session must not leave a prunable backlink in the project's .git.
+pub(crate) fn repair_worktree(project_cwd: &Path, path: &Path) -> Result<(), String> {
+    inspect_worktree(project_cwd, path)?;
+    let (code, _, err) = git(project_cwd, [OsStr::new("worktree"), OsStr::new("repair"), path.as_os_str()]);
+    if code != 0 {
+        return Err(format!("无法修复 worktree 注册 {}：{}", path.display(), err.trim()));
+    }
+    Ok(())
 }
 
 /// Resolve where this member works, applying its configured policy.
@@ -72,61 +166,83 @@ pub fn prepare(agent: &AgentSpec, project_cwd: &Path, member_dir: &Path) -> Resu
             })
         }
         WorkspacePolicy::GitWorktree => {
+            let path = member_dir.join("work");
+            // Existing member identity wins over the project's current dirtiness.
+            // Otherwise a resumed runner silently loses its root and edits the
+            // user's shared checkout instead of continuing its own work.
+            if path.try_exists().map_err(|e| e.to_string())?
+                || origin_path(&path).try_exists().map_err(|e| e.to_string())?
+            {
+                let workspace = inspect_worktree(project_cwd, &path)?;
+                repair_worktree(project_cwd, &path)?;
+                return Ok(workspace);
+            }
             if !is_git_repo(project_cwd) {
                 return Ok(fallback(
                     project_cwd,
                     "git_worktree requested but the directory is not a git repository; using shared mode",
                 ));
             }
-            if is_dirty(project_cwd) {
+            if dirty_status(project_cwd, false)? {
                 return Ok(fallback(project_cwd, "git_worktree requested but the project has uncommitted changes; using shared mode so those inputs are not ignored"));
             }
-            let path = member_dir.join("work");
-            let base = head_commit(project_cwd);
-            if path.join(".git").is_file() {
-                // Reopening a session must reuse the worktree this member already
-                // owns: a second `worktree add` fails and would hide its work.
-                let head = git(&path, &["rev-parse", "--abbrev-ref", "HEAD"]).1.trim().to_string();
-                let branch = if head.is_empty() || head == "HEAD" { None } else { Some(head) };
-                let merged = git(project_cwd, &["merge-base", "HEAD", branch.as_deref().unwrap_or("HEAD")]);
-                return Ok(Workspace {
-                    path,
-                    policy: WorkspacePolicy::GitWorktree,
-                    note: None,
-                    branch,
-                    base_commit: if merged.1.trim().is_empty() { base } else { Some(merged.1.trim().to_string()) },
-                });
-            }
-            if path.exists() {
-                return Err(format!(
-                    "{} exists but is not a git worktree (no .git file); archive or remove it before starting a new worktree",
-                    path.display()
-                ));
-            }
-            let branch = format!("teamagents/{}-{}", agent.id, teamagents_core::models::now() as i64);
+            let base = head_commit(project_cwd).ok_or("项目没有可用于建立 worktree 的 HEAD 提交")?;
+            let branch = format!("teamagents/{}-{}", agent.id, uuid::Uuid::new_v4().simple());
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
-            let branch_exists =
-                git(project_cwd, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).0 == 0;
-            let path_str = path.to_string_lossy().into_owned();
-            let (code, _, err) = if branch_exists {
-                // branch left behind by a crashed or removed worktree: re-attach it
-                git(project_cwd, &["worktree", "add", &path_str, &branch])
-            } else {
-                git(project_cwd, &["worktree", "add", "-b", &branch, &path_str, base.as_deref().unwrap_or("HEAD")])
-            };
+            let (code, _, err) = git(
+                project_cwd,
+                [
+                    OsStr::new("worktree"),
+                    OsStr::new("add"),
+                    OsStr::new("-b"),
+                    branch.as_ref(),
+                    path.as_os_str(),
+                    base.as_ref(),
+                ],
+            );
             if code != 0 {
                 return Err(format!("git worktree add failed: {}", err.trim()));
             }
+            let origin = WorktreeOrigin { branch: branch.clone(), base_commit: base.clone() };
+            let metadata = origin_path(&path);
+            let staged = metadata.with_extension("json.tmp");
+            std::fs::write(&staged, serde_json::to_vec(&origin).map_err(|e| e.to_string())?)
+                .and_then(|()| std::fs::rename(&staged, &metadata))
+                .map_err(|e| format!("worktree 已保留在 {}，但来源记录写入失败：{e}", path.display()))?;
             Ok(Workspace {
                 path,
                 policy: WorkspacePolicy::GitWorktree,
                 note: None,
                 branch: Some(branch),
-                base_commit: base,
+                base_commit: Some(base),
             })
         }
+    }
+}
+
+/// Fail closed before deleting anything, including a detached or switched HEAD.
+pub(crate) fn check_worktree_cleanup(work: &Path, project_cwd: &Path) -> Result<(), String> {
+    // ponytail: cooperative session locks cannot exclude external Git/editors
+    // between these probes and removal; a durable staged deletion journal would
+    // be needed for a crash-atomic lifecycle across the repository and session.
+    inspect_worktree(project_cwd, work)?;
+    if git_path(work, "--absolute-git-dir")?.join("locked").try_exists().map_err(|e| e.to_string())? {
+        return Err(format!("worktree {} 已被 Git 锁定，请先核对并解锁", work.display()));
+    }
+    // Git worktree remove deletes ignored files even without --force; .gitignore
+    // is not permission to discard outputs when deleting a whole session.
+    if dirty_status(work, true)? {
+        return Err("worktree 存在未提交、被忽略的文件或冲突；请先保留成果再清理".into());
+    }
+    let head = head_commit(work).ok_or("无法读取成员 HEAD，保留工作目录")?;
+    let project_head = head_commit(project_cwd).ok_or("无法读取项目 HEAD，保留工作目录")?;
+    let (code, _, err) = git(project_cwd, ["merge-base", "--is-ancestor", &head, &project_head]);
+    match code {
+        0 => Ok(()),
+        1 => Err("worktree results are unmerged (committed but not merged); merge them before cleanup".into()),
+        _ => Err(format!("无法验证 worktree 提交是否已合并，保留工作目录：{}", err.trim())),
     }
 }
 
@@ -146,39 +262,36 @@ pub fn cleanup(workspace: &Workspace, project_cwd: &Path, force: bool) -> (bool,
         WorkspacePolicy::Shared => (false, "shared workspace is never removed".into()),
         WorkspacePolicy::GitWorktree => {
             if !force {
-                if is_dirty(&workspace.path) {
-                    return (false, "worktree has uncommitted or unmerged changes; review and merge them first".into());
-                }
-                let porcelain = git(&workspace.path, &["status", "--porcelain"]).1;
-                if porcelain
-                    .lines()
-                    .any(|line| matches!(&line[..line.len().min(2)], "UU" | "AA" | "DD" | "AU" | "UA" | "DU" | "UD"))
-                {
-                    return (false, "unresolved merge conflicts in the worktree".into());
-                }
-                if let Some(branch) = &workspace.branch {
-                    let unmerged = git(project_cwd, &["branch", "--no-merged", "HEAD", "--list", branch]).1;
-                    if unmerged.contains(branch.as_str()) {
-                        return (
-                            false,
-                            "worktree results are unmerged (committed but not merged); merge them before cleanup"
-                                .into(),
-                        );
-                    }
+                if let Err(error) = check_worktree_cleanup(&workspace.path, project_cwd) {
+                    return (false, error);
                 }
             }
-            let path_str = workspace.path.to_string_lossy().into_owned();
-            let mut args: Vec<&str> = vec!["worktree", "remove"];
+            if let Err(error) = repair_worktree(project_cwd, &workspace.path) {
+                return (false, error);
+            }
+            let mut args: Vec<&OsStr> = vec![OsStr::new("worktree"), OsStr::new("remove")];
             if force {
-                args.push("--force");
+                args.push(OsStr::new("--force"));
             }
-            args.push(&path_str);
+            args.push(workspace.path.as_os_str());
             let (code, _, err) = git(project_cwd, &args);
             if code != 0 {
                 return (false, err.trim().to_string());
             }
-            if let Some(branch) = &workspace.branch {
-                git(project_cwd, &["branch", if force { "-D" } else { "-d" }, branch]);
+            if let Some(origin) = read_origin(&workspace.path) {
+                // No -D: even a once-owned branch may have advanced elsewhere.
+                // Old sessions without ownership evidence retain their branch.
+                let reference = format!("refs/heads/{}", origin.branch);
+                if git(project_cwd, ["merge-base", "--is-ancestor", &reference, "HEAD"]).0 == 0 {
+                    git(project_cwd, ["branch", "-d", "--", &origin.branch]);
+                }
+            }
+            match std::fs::remove_file(origin_path(&workspace.path)) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return (false, format!("worktree 已移除，但来源记录清理失败：{error}；请核对成员目录后重试"));
+                }
             }
             (true, "worktree removed".into())
         }
@@ -200,7 +313,7 @@ pub fn cleanup(workspace: &Workspace, project_cwd: &Path, force: bool) -> (bool,
 /// Leader-side merge helper: merge a member branch, report conflicts.
 pub fn merge_branch(project_cwd: &Path, branch: &str, message: Option<&str>) -> (bool, String) {
     let msg = message.map(str::to_string).unwrap_or_else(|| format!("merge {branch}"));
-    let (code, out, err) = git(project_cwd, &["merge", "--no-ff", branch, "-m", &msg]);
+    let (code, out, err) = git(project_cwd, ["merge", "--no-ff", branch, "-m", &msg]);
     if code == 0 {
         return (true, out.trim().to_string());
     }
@@ -210,14 +323,30 @@ pub fn merge_branch(project_cwd: &Path, branch: &str, message: Option<&str>) -> 
     (false, err.trim().to_string())
 }
 
-/// Member work directories that are git worktrees (`.git` file, not directory).
-pub fn member_worktrees(session_dir: &Path) -> Vec<PathBuf> {
+/// Candidate Git member roots, including broken markers. Inspection must fail
+/// closed rather than treating unreadable or damaged worktrees as absent.
+pub fn member_worktrees(session_dir: &Path) -> Result<Vec<PathBuf>, String> {
     let members = session_dir.join("members");
-    let Ok(entries) = std::fs::read_dir(&members) else { return vec![] };
-    let mut found: Vec<PathBuf> =
-        entries.flatten().map(|entry| entry.path().join("work")).filter(|work| work.join(".git").is_file()).collect();
+    let entries = match std::fs::read_dir(&members) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(error) => return Err(format!("无法检查成员工作目录 {}：{error}", members.display())),
+    };
+    let mut found = vec![];
+    for entry in entries {
+        let work = entry.map_err(|e| e.to_string())?.path().join("work");
+        match std::fs::symlink_metadata(work.join(".git")) {
+            Ok(_) => found.push(work),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if origin_path(&work).try_exists().map_err(|e| e.to_string())? {
+                    found.push(work);
+                }
+            }
+            Err(error) => return Err(format!("无法检查工作目录 {}：{error}", work.display())),
+        }
+    }
     found.sort();
-    found
+    Ok(found)
 }
 
 #[cfg(test)]
@@ -240,12 +369,12 @@ mod tests {
     }
 
     fn init_repo(dir: &Path) {
-        git(dir, &["init", "-q", "-b", "main"]);
-        git(dir, &["config", "user.email", "t@example.com"]);
-        git(dir, &["config", "user.name", "T"]);
+        git(dir, ["init", "-q", "-b", "main"]);
+        git(dir, ["config", "user.email", "t@example.com"]);
+        git(dir, ["config", "user.name", "T"]);
         std::fs::write(dir.join("README.md"), "hi").unwrap();
-        git(dir, &["add", "."]);
-        git(dir, &["commit", "-q", "-m", "init"]);
+        git(dir, ["add", "."]);
+        git(dir, ["commit", "-q", "-m", "init"]);
     }
 
     #[test]
@@ -291,8 +420,8 @@ mod tests {
         assert!(ws.path.join("draft.txt").exists());
 
         // committed-but-unmerged work is refused too, then a merge unblocks cleanup
-        git(&ws.path, &["add", "."]);
-        git(&ws.path, &["commit", "-q", "-m", "member work"]);
+        git(&ws.path, ["add", "."]);
+        git(&ws.path, ["commit", "-q", "-m", "member work"]);
         let (ok, reason) = cleanup(&ws, &project, false);
         assert!(!ok && reason.contains("unmerged"), "{reason}");
         let (merged, out) = merge_branch(&project, &branch, Some("merge dev"));

@@ -1,0 +1,11 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running unittests src/lib.rs (engine/target/debug/deps/teamagents_engine-c3f5081013a620de)
+
+running 1 test
+history nodes=4000, materialize+rewind_points=166.335053ms
+history nodes=8000, materialize+rewind_points=672.021426ms
+history nodes=16000, materialize+rewind_points=2.467442949s
+test chat::tests::long_history_traversal_preserves_branches_and_compaction ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 106 filtered out; finished in 6.71s
+

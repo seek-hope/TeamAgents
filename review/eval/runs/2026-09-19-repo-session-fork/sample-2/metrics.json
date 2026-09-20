@@ -1,0 +1,219 @@
+{
+  "sample": 2,
+  "session_id": "proj_b40acc321676",
+  "status": "timeout",
+  "exit_code": 124,
+  "duration_ms": 1202596,
+  "wrapper": {
+    "sample": 2,
+    "exit_code": 1,
+    "outer_timeout": false,
+    "duration_seconds": 1203.0171327590942,
+    "started_unix": 1789809967.9657419,
+    "finished_unix": 1789811170.982875
+  },
+  "malformed_jsonl_lines": 0,
+  "usage": {
+    "calls": 609,
+    "prompt_tokens": 39069274,
+    "completion_tokens": 420975,
+    "cached_input_tokens": 35264896
+  },
+  "members": [
+    {
+      "agent_id": "leader",
+      "model_profile": "leader_main",
+      "model": "deepseek-flash",
+      "context_window": 1000000
+    },
+    {
+      "agent_id": "verifier-behavior",
+      "model_profile": "verifier-behavior",
+      "model": "deepseek-flash",
+      "context_window": 1000000
+    },
+    {
+      "agent_id": "verifier-failure",
+      "model_profile": "verifier-failure",
+      "model": "deepseek-flash",
+      "context_window": 1000000
+    }
+  ],
+  "native_context_verified": true,
+  "limit_events": [
+    {
+      "sequence": 12,
+      "event_id": "evt_89e63fbabe3b4ee0",
+      "actor_id": "leader",
+      "task_id": null,
+      "kind": "limit_reached",
+      "payload": {
+        "kind": "max_model_steps_per_turn",
+        "run_id": "run_2dbd1e9ea709411d",
+        "agent_id": "leader",
+        "detail": "model-step limit 200 reached for this turn"
+      },
+      "audience": [
+        "leader"
+      ],
+      "topology_revision": 2,
+      "causation_id": "sys_a82c7cf66c5346b1",
+      "created_at": 1789810405.1777716
+    },
+    {
+      "sequence": 16,
+      "event_id": "evt_7e2d1e650c654273",
+      "actor_id": "verifier-behavior",
+      "task_id": null,
+      "kind": "limit_reached",
+      "payload": {
+        "kind": "max_model_steps_per_turn",
+        "run_id": "run_47e833d34fe54f62",
+        "agent_id": "verifier-behavior",
+        "detail": "step limit 200 reached for this turn"
+      },
+      "audience": [
+        "leader"
+      ],
+      "topology_revision": 2,
+      "causation_id": "sys_3474392c4ec04733",
+      "created_at": 1789810711.5066662
+    }
+  ],
+  "terminal_run_events": [
+    {
+      "sequence": 13,
+      "event_id": "evt_781d0b7946a8468b",
+      "actor_id": "leader",
+      "task_id": null,
+      "kind": "run_failed",
+      "payload": {
+        "run_id": "run_2dbd1e9ea709411d",
+        "agent_id": "leader",
+        "status": "FAILED",
+        "error": "model-step limit 200 reached for this turn"
+      },
+      "audience": [
+        "leader"
+      ],
+      "topology_revision": 2,
+      "causation_id": "sys_a82c7cf66c5346b1",
+      "created_at": 1789810405.1778479
+    },
+    {
+      "sequence": 17,
+      "event_id": "evt_475f4aed0e9a404d",
+      "actor_id": "verifier-behavior",
+      "task_id": null,
+      "kind": "run_failed",
+      "payload": {
+        "run_id": "run_47e833d34fe54f62",
+        "agent_id": "verifier-behavior",
+        "status": "FAILED",
+        "error": "step limit 200 reached for this turn"
+      },
+      "audience": [
+        "leader"
+      ],
+      "topology_revision": 2,
+      "causation_id": "sys_3474392c4ec04733",
+      "created_at": 1789810711.5067666
+    },
+    {
+      "sequence": 21,
+      "event_id": "evt_c483bf7ef23a4084",
+      "actor_id": "user",
+      "task_id": null,
+      "kind": "run_cancelled",
+      "payload": {
+        "run_id": "run_7f6cf5a137214e50",
+        "agent_id": "verifier-failure",
+        "status": "CANCEL_REQUESTED"
+      },
+      "audience": [
+        "leader"
+      ],
+      "topology_revision": 2,
+      "causation_id": "cancel_0e0c9e88a0fc47f9",
+      "created_at": 1789811168.165131
+    },
+    {
+      "sequence": 22,
+      "event_id": "evt_51575b4247824883",
+      "actor_id": "user",
+      "task_id": null,
+      "kind": "run_cancelled",
+      "payload": {
+        "run_id": "run_cc7d14146a4f484f",
+        "agent_id": "leader",
+        "status": "CANCEL_REQUESTED"
+      },
+      "audience": [
+        "leader"
+      ],
+      "topology_revision": 2,
+      "causation_id": "cancel_0e2e36f489ea4c80",
+      "created_at": 1789811168.1703742
+    },
+    {
+      "sequence": 23,
+      "event_id": "evt_e7ddcb7c89a84626",
+      "actor_id": "user",
+      "task_id": null,
+      "kind": "run_cancelled",
+      "payload": {
+        "run_id": "run_bef08f8314b74e4e",
+        "agent_id": "verifier-behavior",
+        "status": "CANCEL_REQUESTED"
+      },
+      "audience": [
+        "leader"
+      ],
+      "topology_revision": 2,
+      "causation_id": "cancel_12f3c0de64b24f35",
+      "created_at": 1789811168.1724207
+    }
+  ],
+  "goal_done_events": 0,
+  "tools": {
+    "shell": 250,
+    "ls": 6,
+    "read_file": 218,
+    "read_history": 108,
+    "update_plan": 1,
+    "apply_topology_patch": 1,
+    "assign_task": 2,
+    "write_file": 9,
+    "grep": 58,
+    "edit_files": 2,
+    "edit_file": 18,
+    "send_message": 2,
+    "cancel_task": 1
+  },
+  "tool_count": 676,
+  "failed_tool_receipts": 8,
+  "shell_nonzero_outputs": 14,
+  "shell_restore_refusals": 5,
+  "read_history_calls": 108,
+  "private_subagent_calls": 0,
+  "verification": [
+    {
+      "command": "cargo test --offline --manifest-path engine/Cargo.toml --test fork_rewind --test model_override --test session_boot --test worker_protocol -- --test-threads=1",
+      "output": "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s\n     Running tests/fork_rewind.rs (engine/target/debug/deps/fork_rewind-df022b58f32b4968)\n\nrunning 1 test\ntest fork_carries_spec_and_leader_tree_but_not_team_facts ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s\n\n     Running tests/model_override.rs (engine/target/debug/deps/model_override-a201d1fa655b035a)\n\nrunning 4 tests\ntest drop_runner_keeps_an_inflight_turn_alive ... ok\ntest model_overrides_survive_session_reopen ... ok\ntest set_model_override_applies_reports_and_clears ... ok\ntest stale_model_overrides_are_dropped_on_open ... ok\n\ntest result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.86s\n\n     Running tests/session_boot.rs (engine/target/debug/deps/session_boot-356df16209bc419b)\n\nrunning 2 tests\ntest another_process_cannot_open_a_locked_session ... ok\ntest failed_open_releases_the_session_lock_and_can_be_retried ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s\n\n     Running tests/worker_protocol.rs (engine/target/debug/deps/worker_protocol-64fc45f210ecd085)\n\nrunning 5 tests\ntest model_discovery_does_not_block_worker_requests ... ok\ntest worker_drives_a_scripted_session_end_to_end ... ok\ntest worker_reports_unknown_methods_and_missing_session ... ok\ntest worker_set_model_switches_and_clears_overrides ... ok\ntest worker_usage_reports_per_agent_counters ... ok\n\ntest result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.56s",
+      "exit_code": 0,
+      "ok": true
+    }
+  ],
+  "hidden_and_final_protection_ok": false,
+  "final_file_protection_ok": false,
+  "hidden_passed": null,
+  "hidden_failed": null,
+  "grading_reason": "候选新增了未允许的文件：.local/state/teamagents/engine-stderr.log",
+  "protected_input_mismatches": [],
+  "unexpected_final_paths": [
+    ".local/state/teamagents/engine-stderr.log"
+  ],
+  "fully_successful": false,
+  "supplemental_source_only_ok": true,
+  "supplemental_scope": "仅诊断允许源码：原始可信输入上叠加两个允许文件；不替换正式成绩，不计成功"
+}

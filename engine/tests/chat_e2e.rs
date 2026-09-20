@@ -149,6 +149,18 @@ fn text_response(text: &str) -> Json {
     json!({"id": "x", "choices": [{"message": {"role": "assistant", "content": text}}]})
 }
 
+fn private_helper_request(body: &Json) -> bool {
+    body["messages"]
+        .as_array()
+        .and_then(|messages| messages.first())
+        .and_then(|message| message["content"].as_str())
+        .is_some_and(|content| content.contains("<teamagents_private_subagent>"))
+}
+
+fn body_has_role(body: &Json, role: &str) -> bool {
+    body["messages"].as_array().is_some_and(|messages| messages.iter().any(|message| message["role"] == role))
+}
+
 // ---- harness ---------------------------------------------------------------
 
 fn agent_json(id: &str, role: &str, bindings: &[&str]) -> Json {
@@ -173,6 +185,76 @@ fn profile(base_url: &str, protocol: &str, options: Json, max_retries: i64) -> M
 
 fn chat_runner(core: &Arc<CoreClient>, agent: &Json, profile: ModelProfile, workdir: &str) -> Arc<ChatRunner> {
     chat_runner_with(agent, profile, workdir, Notify::new(core.clone()))
+}
+
+#[test]
+fn stale_views_and_buffered_inbox_are_rechecked_before_chat_history() {
+    let _env = env_guard("chat-delivery-acl");
+    for buffered in [false, true] {
+        for revoke in [false, true] {
+            let session = format!("chat-delivery-{buffered}-{revoke}");
+            let agent = agent_json("watch", "worker", &[]);
+            let mut spec = json!({
+                "leader_id": "leader",
+                "agents": [agent_json("leader", "leader", &[]), agent_json("worker", "worker", &[]), agent],
+                "observers": [{
+                    "agent_id": "watch", "subjects": ["worker"], "event_types": ["task_completed"],
+                    "payload_scope": "result", "wake_policy": "on_event"
+                }]
+            });
+            let core = core_with_spec(&session, spec.clone());
+            core.call_in_session(
+                "emit",
+                json!({"actor_id": "worker", "events": [{
+                    "kind": "task_completed", "payload": {
+                        "task_id": "private-task", "assignee": "worker", "requester": "leader",
+                        "status": "SUCCEEDED", "result_refs": ["PRIVATE-REF"], "summary": "PRIVATE SUMMARY"
+                    }
+                }]}),
+            )
+            .unwrap();
+            let mut view = core.call_in_session("agent_view", json!({"agent_id": "watch"})).unwrap();
+            assert!(view.to_string().contains("PRIVATE-REF"));
+            let offered_ids: Vec<i64> = serde_json::from_value(view["delivery_ids"].clone()).unwrap();
+            let run: TurnRun = serde_json::from_value(
+                core.state_brief().unwrap()["runs"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|r| r["agent_id"] == "watch")
+                    .unwrap()
+                    .clone(),
+            )
+            .unwrap();
+            let server = FakeOpenAi::start(|_, _| (200, text_response("received authorized input")));
+            let runner = chat_runner(&core, &agent, profile(&server.base_url(), "openai", json!({}), 0), "/tmp");
+            if buffered {
+                runner.deliver_mid_turn(&run.run_id, view["inbox_delta"].as_array().unwrap().clone());
+                view["inbox_delta"] = json!([]);
+                view["delivery_ids"] = json!([]);
+            }
+            if revoke {
+                spec["observers"] = json!([]);
+            } else {
+                spec["observers"][0]["payload_scope"] = json!("status");
+            }
+            core.call_in_session("save_spec", json!({"spec": spec})).unwrap();
+            let gate = ToolGateway::new(
+                core.clone(),
+                "watch",
+                &run.run_id,
+                ApprovalGate::new(core.clone(), PermissionPolicy::default()),
+                None,
+            );
+            let outcome = runner.start_or_resume(&run, &view, &gate, &Json::Null);
+            assert_eq!(outcome.status, TurnStatus::Completed, "{outcome:?}");
+            let wire = server.body(0).to_string();
+            assert!(!wire.contains("PRIVATE-REF") && !wire.contains("PRIVATE SUMMARY"), "{wire}");
+            assert_eq!(wire.contains("private-task"), !revoke);
+            assert_eq!(runner.applied_delivery_ids(&run).unwrap(), if revoke { vec![] } else { offered_ids });
+            runner.close();
+        }
+    }
 }
 
 fn chat_runner_with(agent: &Json, profile: ModelProfile, workdir: &str, notify: Arc<Notify>) -> Arc<ChatRunner> {
@@ -1008,6 +1090,315 @@ fn denied_approval_blocks_the_operation() {
     runtime.close();
 }
 
+#[test]
+fn private_subagent_uses_parent_bindings_without_team_identity_or_history() {
+    let _env = env_guard("chat-private-subagent");
+    let server = FakeOpenAi::start(|body, _index| {
+        if private_helper_request(body) {
+            if body_has_role(body, "tool") {
+                (200, text_response("helper inspected the workspace"))
+            } else {
+                (200, tool_call_response("child-write", "write_file", json!({"path": "child.txt", "content": "ok"})))
+            }
+        } else if body_has_role(body, "tool") {
+            (200, text_response("parent received the private result"))
+        } else {
+            (
+                200,
+                tool_call_response(
+                    "parent-subagent",
+                    "run_subagent",
+                    json!({"task": "Inspect the workspace and leave a small evidence file.", "context": "helper-only-context"}),
+                ),
+            )
+        }
+    });
+    let agent = agent_json("leader", "leader", &["files"]);
+    let core = core_with_spec("s-private-subagent", json!({"leader_id":"leader", "agents":[agent.clone()]}));
+    let notify = Notify::new(core.clone());
+    let events: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(vec![]));
+    let event_sink = events.clone();
+    notify.set_event_sink(Box::new(move |kind, _payload| event_sink.lock().unwrap().push(kind.to_string())));
+    let runner = chat_runner_with(&agent, profile(&server.base_url(), "openai", json!({}), 0), "/tmp", notify.clone());
+    let (executor, calls) = recording_executor();
+    let runtime = start_runtime_with(
+        &core,
+        runner,
+        "leader",
+        PermissionPolicy::default(),
+        RuntimeLimits::default(),
+        executor,
+        notify,
+    );
+
+    runtime.user_message("parent-secret: keep this out of the helper", false).unwrap();
+    assert!(
+        wait_for(|| !runs(&core).iter().any(|run| run.status.is_active()), 15_000),
+        "the parent and private helper finish"
+    );
+
+    assert_eq!(calls.lock().unwrap().as_slice(), [("write_file".into(), json!({"path":"child.txt", "content":"ok"}))]);
+    assert!(server.calls() >= 4, "parent, helper tool, helper final, parent final: {}", server.calls());
+    let helper = server.body(1);
+    assert!(private_helper_request(&helper), "the nested request has its private environment prompt: {helper}");
+    assert!(helper.to_string().contains("helper-only-context"));
+    assert!(!helper.to_string().contains("parent-secret"), "parent history leaked into helper: {helper}");
+    let helper_tools: Vec<&str> = helper["tools"]
+        .as_array()
+        .map(|tools| tools.as_slice())
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|tool| tool.pointer("/function/name").and_then(|name| name.as_str()))
+        .collect();
+    assert!(helper_tools.contains(&"write_file"));
+    assert!(!helper_tools.contains(&"send_message"));
+    assert!(!helper_tools.contains(&"run_subagent"));
+    assert!(!helper_tools.contains(&"update_plan"));
+    let parent_followup = server.body(server.calls() - 1);
+    assert!(parent_followup.to_string().contains("helper inspected the workspace"));
+    assert!(events.lock().unwrap().contains(&"private_subagent_tool_call".to_string()));
+    runtime.close();
+}
+
+#[test]
+fn private_subagent_approval_resumes_nested_tool_once_and_keeps_protocol_order() {
+    let _env = env_guard("chat-private-approval");
+    let server = FakeOpenAi::start(|body, _index| {
+        if private_helper_request(body) {
+            if body_has_role(body, "tool") {
+                (200, text_response("network check completed"))
+            } else {
+                (
+                    200,
+                    tool_call_response(
+                        "child-network",
+                        "shell",
+                        json!({"command": "echo private-network", "network": true}),
+                    ),
+                )
+            }
+        } else if body_has_role(body, "tool") {
+            (200, text_response("parent continued after approval"))
+        } else {
+            (
+                200,
+                tool_call_response(
+                    "parent-approval",
+                    "run_subagent",
+                    json!({"task": "Run the approved network probe.", "context": "approval regression"}),
+                ),
+            )
+        }
+    });
+    let agent = agent_json("leader", "leader", &["shell"]);
+    let core = core_with_spec("s-private-approval", json!({"leader_id":"leader", "agents":[agent.clone()]}));
+    let notify = Notify::new(core.clone());
+    let events: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(vec![]));
+    let event_sink = events.clone();
+    notify.set_event_sink(Box::new(move |kind, _payload| event_sink.lock().unwrap().push(kind.to_string())));
+    let runner = chat_runner_with(&agent, profile(&server.base_url(), "openai", json!({}), 0), "/tmp", notify.clone());
+    let (executor, calls) = recording_executor();
+    let runtime = start_runtime_with(
+        &core,
+        runner,
+        "leader",
+        approval_policy_for_shell(),
+        RuntimeLimits::default(),
+        executor,
+        notify,
+    );
+
+    runtime.user_message("ask the helper to use the network", false).unwrap();
+    assert!(wait_for(|| !pending_approvals(&core).is_empty(), 15_000), "the helper shell call needs approval");
+    let approval_id = pending_approvals(&core)[0]["approval_id"].as_str().unwrap().to_string();
+    submit(
+        &core,
+        "private-approval-once",
+        "user",
+        "approval_decision",
+        json!({"approval_id": approval_id, "decision": "once"}),
+    );
+    assert!(
+        wait_for(
+            || runs(&core).iter().any(|run| run.status == TurnStatus::Completed)
+                && !runs(&core).iter().any(|run| run.status.is_active()),
+            20_000,
+        ),
+        "the nested helper resumes after approval"
+    );
+
+    assert_eq!(calls.lock().unwrap().len(), 1, "the approved child shell executes exactly once");
+    assert_eq!(calls.lock().unwrap()[0].0, "shell");
+    assert_eq!(approval_status(&core, &approval_id), "EXPIRED");
+    let resumed_helper = (0..server.calls())
+        .map(|index| server.body(index))
+        .find(|body| private_helper_request(body) && body_has_role(body, "tool"))
+        .expect("a resumed helper request contains the child tool result");
+    let messages = resumed_helper["messages"].as_array().unwrap();
+    let assistant = messages.iter().position(|message| message["role"] == "assistant").unwrap();
+    let tool = messages.iter().position(|message| message["role"] == "tool").unwrap();
+    assert_eq!(tool, assistant + 1, "the resume keeps assistant tool call/result ordering: {resumed_helper}");
+    assert!(events.lock().unwrap().contains(&"private_subagent_tool_call".to_string()));
+    runtime.close();
+}
+
+#[test]
+fn private_subagent_model_failure_is_returned_to_parent_and_parent_can_continue() {
+    let _env = env_guard("chat-private-failure");
+    let server = FakeOpenAi::start(|body, _index| {
+        if private_helper_request(body) {
+            (500, json!({"error":{"message":"helper backend unavailable"}}))
+        } else if body_has_role(body, "tool") {
+            assert!(body.to_string().contains("private helper model error"));
+            (200, text_response("parent handled helper failure"))
+        } else {
+            (
+                200,
+                tool_call_response(
+                    "parent-failure",
+                    "run_subagent",
+                    json!({"task": "Try the unavailable helper.", "context": "failure regression"}),
+                ),
+            )
+        }
+    });
+    let agent = agent_json("leader", "leader", &[]);
+    let core = core_with_spec("s-private-failure", json!({"leader_id":"leader", "agents":[agent.clone()]}));
+    let runner = chat_runner(&core, &agent, profile(&server.base_url(), "openai", json!({}), 0), "/tmp");
+    let (executor, _calls) = recording_executor();
+    let runtime =
+        start_runtime(&core, runner, "leader", PermissionPolicy::default(), RuntimeLimits::default(), executor);
+    runtime.user_message("continue even if the helper fails", false).unwrap();
+    assert!(wait_for(|| !runs(&core).iter().any(|run| run.status.is_active()), 15_000));
+    assert_eq!(runs(&core)[0].status, TurnStatus::Completed);
+    runtime.close();
+}
+
+#[test]
+fn private_subagent_model_steps_share_the_parent_turn_budget() {
+    let _env = env_guard("chat-private-budget");
+    let server = FakeOpenAi::start(|body, _index| {
+        if private_helper_request(body) {
+            (200, text_response("helper would need another step"))
+        } else {
+            (
+                200,
+                tool_call_response(
+                    "parent-budget",
+                    "run_subagent",
+                    json!({"task": "Use one helper model step.", "context": "budget regression"}),
+                ),
+            )
+        }
+    });
+    let agent = agent_json("leader", "leader", &[]);
+    let core = core_with_spec(
+        "s-private-budget",
+        json!({"leader_id":"leader", "agents":[agent.clone()], "limits":{"max_model_steps_per_turn":1}}),
+    );
+    let runner = chat_runner(&core, &agent, profile(&server.base_url(), "openai", json!({}), 0), "/tmp");
+    let (executor, _calls) = recording_executor();
+    let runtime =
+        start_runtime(&core, runner, "leader", PermissionPolicy::default(), RuntimeLimits::default(), executor);
+    runtime.user_message("the parent call itself consumes the only step", false).unwrap();
+    assert!(wait_for(|| !runs(&core).iter().any(|run| run.status.is_active()), 15_000));
+    assert_eq!(runs(&core)[0].status, TurnStatus::Failed);
+    assert_eq!(server.calls(), 1, "the helper cannot start after the parent exhausted the budget");
+    assert!(event_kinds(&core).contains(&"limit_reached".to_string()));
+    runtime.close();
+}
+
+#[test]
+fn private_subagent_receipt_recovers_without_replaying_the_child_tool() {
+    let _env = env_guard("chat-private-receipt-recovery");
+    let server = FakeOpenAi::start(|body, _index| {
+        if private_helper_request(body) {
+            assert!(body_has_role(body, "tool"), "the recovered child result precedes the helper resume: {body}");
+            (200, text_response("helper resumed from the durable child receipt"))
+        } else {
+            assert!(body_has_role(body, "tool"), "the parent receives the helper result: {body}");
+            (200, text_response("parent resumed without repeating the child operation"))
+        }
+    });
+    let agent = agent_json("leader", "leader", &["shell"]);
+    let core = core_with_spec("s-private-receipt", json!({"leader_id":"leader", "agents":[agent.clone()]}));
+    let runner = chat_runner(&core, &agent, profile(&server.base_url(), "openai", json!({}), 0), "/tmp");
+    let run: TurnRun = serde_json::from_value(json!({
+        "run_id":"receipt-recovery", "session_id":"s-private-receipt", "task_id":null, "goal_id":null,
+        "agent_id":"leader", "config_revision":1, "topology_revision":1, "status":"QUEUED",
+        "input_delivery_ids":[], "context_ref":"ctx:receipt-recovery", "external_turn_id":null,
+        "cancel_requested":false, "waiting_on":[], "created_at":0, "updated_at":0
+    }))
+    .unwrap();
+
+    // Model the durable state immediately after the child operation returned
+    // and its receipt was checkpointed, but before the nested tool message was
+    // appended. The external operation is represented by this receipt; the
+    // executor must not be called again during recovery.
+    let checkpoint = json!({
+        "history":[
+            {"role":"system", "content":"old parent system"},
+            {"role":"user", "content":"resume the private helper"},
+            {"role":"assistant", "content":null, "tool_calls":[{
+                "id":"parent-receipt", "type":"function",
+                "function":{"name":"run_subagent", "arguments":
+                    "{\"task\":\"resume the helper\",\"context\":\"receipt regression\"}"}
+            }]}
+        ],
+        "model_steps":1,
+        "pending_external":null,
+        "outcome":null,
+        "input_events":[],
+        "delivery_ids":[],
+        "tree_base":0,
+        "tree_leaf":null,
+        "rewind_epoch":0,
+        "tree_pending":[],
+        "private_subagent":{
+            "parent_call_id":"parent-receipt",
+            "task":"resume the helper",
+            "context":"receipt regression",
+            "history":[
+                {"role":"system", "content":"<teamagents_private_subagent>private helper</teamagents_private_subagent>"},
+                {"role":"user", "content":"<private_task>resume the helper</private_task>"},
+                {"role":"assistant", "content":null, "tool_calls":[{
+                    "id":"child-receipt", "type":"function",
+                    "function":{"name":"shell", "arguments":"{\"command\":\"echo once\"}"}
+                }]}
+            ],
+            "result":null,
+            "pending_tool":{"call_id":"child-receipt", "name":"shell", "args":{"command":"echo once"}},
+            "tool_receipt":{"ok":true, "result":{"output":"already executed"}, "error":null},
+            "tool_attempted":true
+        }
+    });
+    let checkpoint_path = runner.history_dir().unwrap().join("turns/receipt-recovery.json");
+    std::fs::create_dir_all(checkpoint_path.parent().unwrap()).unwrap();
+    std::fs::write(&checkpoint_path, checkpoint.to_string()).unwrap();
+
+    let executed: RecordedCalls = Arc::new(Mutex::new(vec![]));
+    let sink = executed.clone();
+    let executor = Arc::new(move |tool: &str, args: &Json| {
+        sink.lock().unwrap().push((tool.to_string(), args.clone()));
+        Ok(json!({"output":"unexpected replay"}))
+    });
+    let gateway = ToolGateway::new(
+        core.clone(),
+        "leader",
+        "receipt-recovery",
+        ApprovalGate::new(core, PermissionPolicy::default()),
+        Some(executor),
+    );
+    let view = json!({"inbox_delta":[], "delivery_ids":[], "relevant_topology":{"revision":1}});
+    let outcome = runner.start_or_resume(&run, &view, &gateway, &Json::Null);
+
+    assert_eq!(outcome.status, TurnStatus::Completed, "{outcome:?}");
+    assert_eq!(outcome.reply_text.as_deref(), Some("parent resumed without repeating the child operation"));
+    assert_eq!(server.calls(), 2, "helper resume and parent continuation only");
+    assert!(executed.lock().unwrap().is_empty(), "the child operation was replayed");
+    runner.close();
+}
+
 /// F-1: the spec's max_model_steps_per_turn caps *model requests*; hitting it
 /// fails the turn and the core emits `limit_reached`.
 #[test]
@@ -1330,7 +1721,7 @@ fn isolated_project(tag: &str) -> std::path::PathBuf {
     let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
     let dir = std::env::temp_dir().join(format!("ta-review-{tag}-{}-{nonce}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    std::env::set_var("XDG_CONFIG_HOME", dir.join("config"));
+    // env_guard owns XDG config/state outside the member's project root.
     dir
 }
 
@@ -1353,6 +1744,365 @@ fn open_chat_session(
         ..Default::default()
     })
     .unwrap()
+}
+
+#[test]
+fn persisted_work_is_checked_before_session_start_and_resumes_after_repair() {
+    use teamagents_core::control::Control;
+    use teamagents_core::models::{ActionKind, ApprovalRequest, Task, TeamAction, TeamSpec};
+    use teamagents_core::storage::Store;
+    use teamagents_engine::sessions::{is_session_locked, session_paths};
+
+    // Snapshot raw values, including invalid JSON and original permission mode.
+    fn snapshot(store: &Store) -> Json {
+        let mut state = serde_json::Map::new();
+        for table in [
+            "sessions",
+            "team_specs",
+            "tasks",
+            "turn_runs",
+            "approvals",
+            "events",
+            "deliveries",
+            "agent_runtime",
+            "actions",
+        ] {
+            let mut statement = store.conn.prepare(&format!("SELECT * FROM {table} ORDER BY rowid")).unwrap();
+            let columns = statement.column_count();
+            let rows: Vec<Vec<String>> = statement
+                .query_map([], |row| {
+                    (0..columns).map(|index| row.get_ref(index).map(|value| format!("{value:?}"))).collect()
+                })
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            state.insert(table.into(), json!(rows));
+        }
+        json!(state)
+    }
+
+    let env = env_guard("stored-work-integrity");
+    let api = FakeOpenAi::start(|_, index| {
+        (
+            200,
+            match index % 3 {
+                0 => tool_call_response(
+                    "report",
+                    "write_file",
+                    json!({"path":"report.txt","content":"recovered once\n"}),
+                ),
+                1 => tool_call_response("done", "signal_done", json!({"summary":"recovered"})),
+                _ => text_response("Recovered the original input."),
+            },
+        )
+    });
+    let mut catalog = UserConfig::default();
+    catalog.models.insert("m".into(), profile(&api.base_url(), "openai", json!({}), 0));
+    let spec = json!({"leader_id":"leader","agents":[agent_json("leader","leader",&["files"])]});
+    for (index, (table, field, bad)) in [
+        ("tasks", "dependencies", "["),
+        ("tasks", "result_refs", "[true]"),
+        ("turn_runs", "input_delivery_ids", r#"["PRIVATE_BAD_VALUE"]"#),
+        ("turn_runs", "waiting_on", "{}"),
+        ("approvals", "requested_scope", "{"),
+        ("events", "payload_json", "{"),
+        ("events", "audience_json", "[false]"),
+        ("events", "kind", "future_event"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let id = format!("stored-work-{index}");
+        let cwd = env.join(format!("project-{index}"));
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::write(cwd.join("sentinel.txt"), "original user file\n").unwrap();
+        let paths = session_paths(&id);
+        std::fs::create_dir_all(&paths.base).unwrap();
+        let store = Store::open(&paths.db).unwrap();
+        store.create_session(&id, cwd.to_str().unwrap(), "approved_scope").unwrap();
+        let team: TeamSpec = serde_json::from_value(spec.clone()).unwrap();
+        store.save_team_spec(&id, &team).unwrap();
+        store.ensure_agent(&id, "leader").unwrap();
+        let mut control = Control::new(store, &id);
+        assert!(
+            control
+                .submit(&TeamAction {
+                    action_id: "input".into(),
+                    session_id: id.clone(),
+                    actor_id: "user".into(),
+                    run_id: None,
+                    kind: ActionKind::UserMessage,
+                    payload: json!({"text":"PRESERVE_ORIGINAL_INPUT"}),
+                })
+                .unwrap()
+                .ok
+        );
+        let run = control.store.runs_for_session(&id, &[TurnStatus::Queued]).unwrap().remove(0);
+        let task: Task = serde_json::from_value(json!({
+            "task_id":"prior-task","requester":"leader","assignee":"leader","description":"prior work","status":"SUCCEEDED"
+        })).unwrap();
+        control.store.insert_task(&id, &task).unwrap();
+        let approval: ApprovalRequest = serde_json::from_value(json!({
+            "approval_id":"prior-approval","session_id":id,"agent_id":"leader","run_id":run.run_id,
+            "tool_call_id":"old-call","operation_hash":"old-operation","requested_scope":{},"policy_revision":1
+        }))
+        .unwrap();
+        control.store.insert_approval(&approval).unwrap();
+        let original: String = control
+            .store
+            .conn
+            .query_row(&format!("SELECT {field} FROM {table} LIMIT 1"), [], |row| row.get(0))
+            .unwrap();
+        control.store.conn.execute(&format!("UPDATE {table} SET {field}=?1"), [bad]).unwrap();
+        let before = snapshot(&control.store);
+        let calls = api.calls();
+        for initial_spec in [None, Some(spec.clone())] {
+            let result = open_session(OpenOptions {
+                cwd: Some(cwd.clone()),
+                session_id: Some(id.clone()),
+                catalog: Some(catalog.clone()),
+                initial_spec,
+                full_auto: true,
+                ..Default::default()
+            });
+            let error = match result {
+                Ok(opened) => {
+                    opened.close();
+                    panic!("{table}.{field}: corrupt persisted work was accepted");
+                }
+                Err(error) => error,
+            };
+            assert!(error.contains(field), "{table}.{field}: {error}");
+            assert!(!error.contains("PRIVATE_BAD_VALUE"), "a diagnostic exposed private data");
+            assert_eq!(snapshot(&control.store), before, "failed startup changed authoritative work");
+            assert_eq!(api.calls(), calls, "failed startup requested the model");
+            assert!(!is_session_locked(&id, None));
+            assert!(!paths.base.join("members").exists(), "failed startup constructed a member");
+            assert!(!cwd.join("report.txt").exists());
+        }
+        control.store.conn.execute(&format!("UPDATE {table} SET {field}=?1"), [original]).unwrap();
+        control.store.expire_approval("prior-approval").unwrap();
+        drop(control);
+        let opened = open_session(OpenOptions {
+            cwd: Some(cwd.clone()),
+            session_id: Some(id.clone()),
+            catalog: Some(catalog.clone()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(opened.core.state().unwrap()["session"]["permissions_mode"], "approved_scope");
+        opened.runtime.start();
+        assert!(opened.runtime.settle(10));
+        let state = opened.core.state().unwrap();
+        opened.close();
+        assert_eq!(api.calls(), calls + 3, "{table}.{field}: the repaired run was not resumed exactly once");
+        assert!(api.body(calls)["messages"].to_string().contains("PRESERVE_ORIGINAL_INPUT"));
+        assert_eq!(state["events"].as_array().unwrap().iter().filter(|event| event["kind"] == "goal_done").count(), 1);
+        assert_eq!(std::fs::read_to_string(cwd.join("report.txt")).unwrap(), "recovered once\n");
+        assert_eq!(std::fs::read_to_string(cwd.join("sentinel.txt")).unwrap(), "original user file\n");
+        assert_eq!(state["runs"].as_array().unwrap().len(), 1);
+        assert_eq!(state["runs"][0]["run_id"], run.run_id);
+    }
+}
+
+#[test]
+fn task_requests_can_be_corrected_through_model_tools_and_survive_reopen() {
+    for full_auto in [false, true] {
+        let env = env_guard("task-request-correction");
+        let cwd = env.join("project");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let api = FakeOpenAi::start(|_, index| {
+            (
+                200,
+                match index {
+                    0 => {
+                        tool_call_response("bad-assign", "assign_task", json!({"assignee":"leader","description":true}))
+                    }
+                    1 => tool_call_response(
+                        "good-assign",
+                        "assign_task",
+                        json!({"assignee":"leader","task_id":"explicit-work","description":"Write a report",
+                            "acceptance":"report.md contains verified"}),
+                    ),
+                    2 => tool_call_response(
+                        "bad-complete",
+                        "complete_task",
+                        json!({"task_id":"explicit-work","summary":false}),
+                    ),
+                    3 => tool_call_response(
+                        "write-report",
+                        "write_file",
+                        json!({"path":"report.md","content":"verified\n"}),
+                    ),
+                    4 => tool_call_response(
+                        "good-complete",
+                        "complete_task",
+                        json!({"task_id":"explicit-work","summary":"verified","result_refs":["report.md"]}),
+                    ),
+                    _ => text_response("The report is ready."),
+                },
+            )
+        });
+        let opened = open_chat_session(&cwd, &api, &["files"], UserConfig::default());
+        if full_auto {
+            assert!(submit(&opened.core, "auto", "user", "set_permission_mode", json!({"mode":"full_auto"})).ok);
+        }
+        opened.runtime.start();
+        opened.runtime.user_message("write and verify the report", false).unwrap();
+        assert!(opened.runtime.settle(10));
+        let state = opened.core.state().unwrap();
+        opened.close();
+        assert_eq!(state["tasks"].as_array().unwrap().len(), 1, "bad assign must not create a task: {state}");
+        assert_eq!(state["tasks"][0]["status"], "SUCCEEDED", "{state}");
+        assert_eq!(state["tasks"][0]["task_id"], "explicit-work");
+        assert_eq!(state["tasks"][0]["result_refs"], json!(["report.md"]));
+        assert_eq!(std::fs::read_to_string(cwd.join("report.md")).unwrap(), "verified\n");
+        for (index, call_id, expected) in
+            [(1, "bad-assign", false), (2, "good-assign", true), (3, "bad-complete", false), (5, "good-complete", true)]
+        {
+            let body = api.body(index);
+            let result = body["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|message| message["role"] == "tool" && message["tool_call_id"] == call_id)
+                .unwrap_or_else(|| panic!("missing {call_id} in {body}"));
+            let receipt: Json = serde_json::from_str(result["content"].as_str().unwrap()).unwrap();
+            assert_eq!(receipt["error"].is_null(), expected, "{call_id}: {receipt}");
+            if expected {
+                assert_eq!(receipt["task_id"], "explicit-work", "{call_id}: {receipt}");
+            } else {
+                assert!(receipt["error"].as_str().is_some_and(|error| error.contains("任务参数无效")));
+            }
+        }
+        let request = api.body(0);
+        for name in ["assign_task", "complete_task", "wait_for_tasks", "cancel_task", "cancel_run"] {
+            let tool =
+                request["tools"].as_array().unwrap().iter().find(|tool| tool["function"]["name"] == name).unwrap();
+            assert_eq!(tool["function"]["parameters"]["additionalProperties"], false);
+        }
+        let count = api.calls();
+        drop(opened);
+        let reopened = open_chat_session(&cwd, &api, &["files"], UserConfig::default());
+        let restored = reopened.core.state().unwrap();
+        reopened.close();
+        assert_eq!(restored["tasks"], state["tasks"]);
+        assert_eq!(api.calls(), count, "opening the session must not replay the completed request");
+        assert_eq!(
+            restored["events"].as_array().unwrap().iter().filter(|event| event["kind"] == "task_completed").count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn communication_tools_correct_refusals_preserve_shared_pages_and_finish_after_reopen() {
+    for full_auto in [false, true] {
+        let env = env_guard("communication-correction");
+        let cwd = env.join("project");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let api = FakeOpenAi::start(|_, index| {
+            (
+                200,
+                match index {
+                    0 => tool_call_response("bad-publish", "publish_shared", json!({"space_id":"one","content":true})),
+                    1 => {
+                        tool_call_response("publish-one", "publish_shared", json!({"space_id":"one","content":"first"}))
+                    }
+                    2 => tool_call_response(
+                        "publish-two",
+                        "publish_shared",
+                        json!({"space_id":"two","content":"second"}),
+                    ),
+                    3 => tool_call_response("bad-read", "read_shared", json!({"space_id":false})),
+                    4 => tool_call_response("read-one", "read_shared", json!({"space_id":"one","limit":1})),
+                    5 => tool_call_response("read-next", "read_shared", json!({"limit":1})),
+                    6 => tool_call_response("bad-done", "signal_done", json!({"summary":false})),
+                    7 => tool_call_response(
+                        "report",
+                        "write_file",
+                        json!({"path":"report.md","content":"checked two entries\n"}),
+                    ),
+                    8 => tool_call_response("done", "signal_done", json!({"summary":"verified"})),
+                    _ => text_response("Verified both shared entries and the report."),
+                },
+            )
+        });
+        let mut catalog = UserConfig::default();
+        catalog.models.insert("m".into(), profile(&api.base_url(), "openai", json!({}), 0));
+        let spec = json!({
+            "leader_id":"leader",
+            "agents":[agent_json("leader","leader",&["files"])],
+            "shared_spaces":[
+                {"id":"one","readers":["leader"],"writers":["leader"]},
+                {"id":"two","readers":["leader"],"writers":["leader"]}
+            ]
+        });
+        let open = || {
+            open_session(OpenOptions {
+                cwd: Some(cwd.clone()),
+                session_id: Some("communication".into()),
+                initial_spec: Some(spec.clone()),
+                catalog: Some(catalog.clone()),
+                ..Default::default()
+            })
+            .unwrap()
+        };
+        let opened = open();
+        if full_auto {
+            assert!(submit(&opened.core, "auto", "user", "set_permission_mode", json!({"mode":"full_auto"})).ok);
+        }
+        opened.runtime.start();
+        opened.runtime.user_message("Check the shared findings and write a report.", false).unwrap();
+        assert!(opened.runtime.settle(15));
+        let state = opened.core.state().unwrap();
+        opened.close();
+        assert_eq!(std::fs::read_to_string(cwd.join("report.md")).unwrap(), "checked two entries\n");
+        assert_eq!(state["events"].as_array().unwrap().iter().filter(|e| e["kind"] == "goal_done").count(), 1);
+        for (index, call_id, expected) in [
+            (1, "bad-publish", false),
+            (2, "publish-one", true),
+            (3, "publish-two", true),
+            (4, "bad-read", false),
+            (5, "read-one", true),
+            (6, "read-next", true),
+            (7, "bad-done", false),
+            (9, "done", true),
+        ] {
+            let body = api.body(index);
+            let result = body["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|message| message["role"] == "tool" && message["tool_call_id"] == call_id)
+                .unwrap();
+            let receipt: Json = serde_json::from_str(result["content"].as_str().unwrap()).unwrap();
+            assert_eq!(receipt["error"].is_null(), expected, "{call_id}: {receipt}");
+            if call_id == "read-one" || call_id == "read-next" {
+                assert_eq!(receipt["entries"].as_array().unwrap().len(), 1);
+                assert_eq!(receipt["entries"][0]["content"], if call_id == "read-one" { "first" } else { "second" });
+            }
+        }
+        let body = api.body(0);
+        for name in ["send_message", "publish_shared", "read_shared", "list_shared", "request_help", "signal_done"] {
+            let tool = body["tools"].as_array().unwrap().iter().find(|tool| tool["function"]["name"] == name).unwrap();
+            assert_eq!(tool["function"]["parameters"]["additionalProperties"], false);
+            if name == "publish_shared" {
+                assert_eq!(tool["function"]["parameters"]["properties"]["supersedes"]["type"], "string");
+            }
+        }
+        let calls = api.calls();
+        drop(opened);
+        let restored = open();
+        assert_eq!(api.calls(), calls);
+        let page = submit(&restored.core, "after-reopen", "leader", "read_shared", json!({}));
+        let spaces = submit(&restored.core, "list-after-reopen", "leader", "list_shared", json!({}));
+        restored.close();
+        assert!(page.ok && spaces.ok);
+        assert_eq!(page.result["entries"], json!([]));
+        assert!(spaces.result["spaces"].as_array().unwrap().iter().all(|space| space["entries"] == 1));
+        assert_eq!(api.calls(), calls, "reopening and reading must not repeat the model turn");
+    }
 }
 
 #[test]
@@ -1502,6 +2252,498 @@ fn review_add_agent_auto_creates_member_profile() {
 }
 
 #[test]
+fn topology_nonleader_cannot_change_profiles_before_core_refuses_the_patch() {
+    let env = env_guard("topology-nonleader");
+    let cwd = env.join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let api = FakeOpenAi::start(|_, index| {
+        (
+            200,
+            if index == 0 {
+                tool_call_response(
+                    "unauthorized-patch",
+                    "apply_topology_patch",
+                    json!({
+                        "base_revision": 2, "operations": [{"op":"add_agent", "agent":{
+                            "id":"m", "name":"M", "role":"worker", "runtime_kind":"deepagents",
+                            "model_profile":"forbidden-model"
+                        }}]
+                    }),
+                )
+            } else {
+                text_response("done")
+            },
+        )
+    });
+    let opened = open_chat_session(&cwd, &api, &[], UserConfig::default());
+    assert!(
+        submit(
+            &opened.core,
+            "add-worker",
+            "leader",
+            "apply_topology_patch",
+            json!({
+                "base_revision":1, "operations":[{"op":"add_agent", "agent":agent_json("worker", "worker", &[])}]
+            })
+        )
+        .ok
+    );
+    assert!(
+        submit(
+            &opened.core,
+            "worker-task",
+            "leader",
+            "assign_task",
+            json!({
+                "assignee":"worker", "description":"Report an invalid topology request."
+            })
+        )
+        .ok
+    );
+    opened.runtime.start();
+    assert!(opened.runtime.settle(10));
+    let state = opened.core.state().unwrap();
+    let selected =
+        opened.model_report()["agents"].as_array().unwrap().iter().find(|agent| agent["agent_id"] == "leader").unwrap()
+            ["model"]
+            .clone();
+    let profiles_path = env.join("teamagents/sessions/review/profiles.json");
+    let wrote_profiles = profiles_path.exists();
+    opened.close();
+
+    let receipt = api.body(1)["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message["tool_call_id"] == "unauthorized-patch")
+        .unwrap()["content"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(receipt.contains("only the Leader"), "the core must refuse the actor: {receipt}");
+    assert_eq!(state["revision"], 2);
+    assert_eq!(selected, "test", "a refused worker request replaced the Leader's model");
+    assert!(!wrote_profiles, "a non-Leader must never prepare persistent model profiles");
+
+    let reopened = open_chat_session(&cwd, &api, &[], UserConfig::default());
+    let before = api.calls();
+    reopened.runtime.start();
+    reopened.runtime.user_message("continue as Leader", false).unwrap();
+    assert!(reopened.runtime.settle(10));
+    reopened.close();
+    assert_eq!(api.body(before)["model"], "test", "reopening must keep the authorized connection");
+}
+
+#[test]
+fn topology_duplicate_member_refusal_preserves_profiles_and_allows_correction() {
+    let env = env_guard("topology-duplicate-profile");
+    let cwd = env.join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let api = FakeOpenAi::start(|_, index| {
+        (
+            200,
+            match index {
+                0 => tool_call_response(
+                    "duplicate-member",
+                    "apply_topology_patch",
+                    json!({
+                        "base_revision":2, "operations":[{"op":"add_agent", "agent":{
+                            "id":"m", "name":"Duplicate", "role":"worker", "runtime_kind":"deepagents",
+                            "model_profile":"forbidden-model"
+                        }}]
+                    }),
+                ),
+                1 => tool_call_response(
+                    "corrected-member",
+                    "apply_topology_patch",
+                    json!({
+                        "base_revision":2, "operations":[{"op":"add_agent", "agent":{
+                            "id":"reviewer", "name":"Reviewer", "role":"worker", "runtime_kind":"deepagents",
+                            "model_profile":"review-model"
+                        }}]
+                    }),
+                ),
+                _ => text_response("done"),
+            },
+        )
+    });
+    let opened = open_chat_session(&cwd, &api, &[], UserConfig::default());
+    assert!(
+        submit(
+            &opened.core,
+            "existing-member",
+            "leader",
+            "apply_topology_patch",
+            json!({
+                "base_revision":1, "operations":[{"op":"add_agent", "agent":agent_json("m", "worker", &[])}]
+            })
+        )
+        .ok
+    );
+    opened.runtime.start();
+    opened.runtime.user_message("build a team and correct invalid proposals", false).unwrap();
+    assert!(opened.runtime.settle(10));
+    let selected =
+        opened.model_report()["agents"].as_array().unwrap().iter().find(|agent| agent["agent_id"] == "leader").unwrap()
+            ["model"]
+            .clone();
+    let state = opened.core.state().unwrap();
+    opened.close();
+
+    let profiles: Json =
+        serde_json::from_str(&std::fs::read_to_string(env.join("teamagents/sessions/review/profiles.json")).unwrap())
+            .unwrap();
+    assert_eq!(selected, "test", "rejected duplicate identity poisoned a referenced profile");
+    assert!(profiles.get("m").is_none(), "the rejected request must not shadow user configuration: {profiles}");
+    assert_eq!(profiles["reviewer"]["model"], "review-model");
+    assert_eq!(state["revision"], 3, "only the corrected request changes the team");
+    assert_eq!(state["spec"]["agents"].as_array().unwrap().len(), 3);
+
+    let reopened = open_chat_session(&cwd, &api, &[], UserConfig::default());
+    let before = api.calls();
+    reopened.runtime.start();
+    reopened.runtime.user_message("continue", false).unwrap();
+    assert!(reopened.runtime.settle(10));
+    let reviewer = reopened.model_report()["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|agent| agent["agent_id"] == "reviewer")
+        .unwrap()["model"]
+        .clone();
+    reopened.close();
+    assert_eq!(api.body(before)["model"], "test");
+    assert_eq!(reviewer, "review-model");
+}
+
+#[test]
+fn topology_prepare_failure_preserves_memory_catalog_and_allows_retry() {
+    for storage_failure in [false, true] {
+        let env = env_guard("topology-prepare-failure");
+        let cwd = env.join("project");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let member = json!({"op":"add_agent", "agent":{
+            "id":"reviewer", "name":"Reviewer", "role":"worker", "runtime_kind":"deepagents",
+            "model_profile":"review-model"
+        }});
+        let mut operations = vec![member.clone()];
+        if !storage_failure {
+            operations.push(json!({"op":"add_agent", "agent":{
+                "id":"invalid", "name":"Invalid", "role":"worker", "runtime_kind":"deepagents",
+                "model_profile":false
+            }}));
+        }
+        let api = FakeOpenAi::start(move |_, index| {
+            (
+                200,
+                match index {
+                    0 => tool_call_response(
+                        "failed-prepare",
+                        "apply_topology_patch",
+                        json!({
+                            "base_revision":1, "operations":operations
+                        }),
+                    ),
+                    2 => tool_call_response(
+                        "retry-prepare",
+                        "apply_topology_patch",
+                        json!({
+                            "base_revision":1, "operations":[member]
+                        }),
+                    ),
+                    _ => text_response("done"),
+                },
+            )
+        });
+        let opened = open_chat_session(&cwd, &api, &[], UserConfig::default());
+        let path = env.join("teamagents/sessions/review/profiles.json");
+        if storage_failure {
+            // A directory at the staging path deterministically rejects the write.
+            std::fs::create_dir(path.with_extension("tmp")).unwrap();
+        }
+        opened.runtime.start();
+        opened.runtime.user_message("try the invalid patch", false).unwrap();
+        assert!(opened.runtime.settle(10));
+        assert_eq!(api.calls(), 2);
+        assert_eq!(opened.core.state().unwrap()["revision"], 1);
+        assert!(!path.exists(), "failed preparation must not publish the valid prefix");
+        assert!(!opened.model_report()["profiles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|profile| profile["id"] == "reviewer"));
+        let receipt = submit(
+            &opened.core,
+            "probe-catalog",
+            "leader",
+            "apply_topology_patch",
+            json!({
+                "base_revision":1, "operations":[{"op":"update_agent", "agent_id":"leader", "changes":{
+                    "model_profile":"reviewer"
+                }}]
+            }),
+        );
+        assert!(!receipt.ok, "failed preparation leaked a profile into the core catalog: {receipt:?}");
+        assert!(receipt.error.unwrap().contains("unknown model profile"));
+        let error = api.body(1)["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|message| message["tool_call_id"] == "failed-prepare")
+            .unwrap()["content"]
+            .to_string();
+        assert!(error.contains(if storage_failure { "persist session profiles" } else { "必须是字符串" }), "{error}");
+        if storage_failure {
+            std::fs::remove_dir(path.with_extension("tmp")).unwrap();
+        }
+        opened.runtime.user_message("retry the corrected patch", false).unwrap();
+        assert!(opened.runtime.settle(10));
+        assert_eq!(opened.core.state().unwrap()["revision"], 2);
+        opened.close();
+        let profiles: Json = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(profiles["reviewer"]["model"], "review-model");
+        assert!(profiles.get("invalid").is_none());
+    }
+}
+
+#[test]
+fn topology_unused_profile_can_be_corrected_but_referenced_profile_cannot_be_replaced() {
+    let env = env_guard("topology-unused-profile");
+    let cwd = env.join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let api = FakeOpenAi::start(|_, index| {
+        (
+            200,
+            if index < 3 {
+                tool_call_response(
+                    &format!("patch-{index}"),
+                    "apply_topology_patch",
+                    json!({
+                        "base_revision": if index == 2 { 2 } else { 1 },
+                        "operations":[{"op":"add_agent", "agent":{
+                            "id":"reviewer", "name":"Reviewer", "runtime_kind":"deepagents",
+                            "role": if index == 0 { "leader" } else { "worker" },
+                            "model_profile": (["bad-model", "review-model", "forbidden-model"][index])
+                        }}]
+                    }),
+                )
+            } else {
+                text_response("done")
+            },
+        )
+    });
+    let opened = open_chat_session(&cwd, &api, &[], UserConfig::default());
+    opened.runtime.start();
+    opened.runtime.user_message("correct the rejected profile and preserve its final selection", false).unwrap();
+    assert!(opened.runtime.settle(10));
+    assert_eq!(api.calls(), 4);
+    assert_eq!(opened.core.state().unwrap()["revision"], 2);
+    opened.close();
+    let profiles: Json =
+        serde_json::from_str(&std::fs::read_to_string(env.join("teamagents/sessions/review/profiles.json")).unwrap())
+            .unwrap();
+    assert_eq!(profiles["reviewer"]["model"], "review-model", "an unused residue must not pin the rejected model");
+    let reopened = open_chat_session(&cwd, &api, &[], UserConfig::default());
+    let report = reopened.model_report();
+    assert_eq!(
+        report["agents"].as_array().unwrap().iter().find(|agent| agent["agent_id"] == "reviewer").unwrap()["model"],
+        "review-model"
+    );
+    reopened.close();
+}
+
+#[test]
+fn topology_profile_name_collision_allows_explicit_existing_profile() {
+    let env = env_guard("topology-profile-collision");
+    let cwd = env.join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let api = FakeOpenAi::start(|_, index| {
+        (
+            200,
+            if index < 2 {
+                tool_call_response(
+                    &format!("collision-{index}"),
+                    "apply_topology_patch",
+                    json!({
+                        "base_revision":1, "operations":[{"op":"add_agent", "agent":{
+                            "id":"other", "name":"Other", "role":"worker", "runtime_kind":"deepagents",
+                            "model_profile": if index == 0 { "forbidden-model" } else { "other" }
+                        }}]
+                    }),
+                )
+            } else {
+                text_response("done")
+            },
+        )
+    });
+    let opened = open_chat_session(&cwd, &api, &[], UserConfig::default());
+    opened.runtime.start();
+    opened.runtime.user_message("use the existing profile explicitly", false).unwrap();
+    assert!(opened.runtime.settle(10));
+    assert_eq!(api.calls(), 3);
+    assert_eq!(opened.core.state().unwrap()["revision"], 2);
+    let report = opened.model_report();
+    assert_eq!(
+        report["agents"].as_array().unwrap().iter().find(|agent| agent["agent_id"] == "other").unwrap()["model"],
+        "new-model"
+    );
+    opened.close();
+    assert!(!env.join("teamagents/sessions/review/profiles.json").exists());
+}
+
+#[test]
+fn topology_request_invalid_or_stale_envelope_never_prepares_profiles() {
+    for (key, value) in [
+        ("base_revision", None),
+        ("base_revision", Some(json!(0))),
+        ("base_revision", Some(json!("1"))),
+        ("base_revision", Some(Json::Null)),
+        ("reject", Some(json!(true))),
+        ("reject", Some(json!("false"))),
+        ("reject", Some(Json::Null)),
+        ("patch_id", Some(json!(7))),
+        ("patch_id", Some(Json::Null)),
+        ("patch_id", Some(json!("missing-patch"))),
+        ("unknown", Some(json!(true))),
+    ] {
+        let env = env_guard("topology-invalid-envelope");
+        let cwd = env.join("project");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let valid = json!({"base_revision":1, "operations":[{"op":"add_agent", "agent":{
+            "id":"reviewer", "name":"Reviewer", "role":"worker", "runtime_kind":"deepagents"
+        }}]});
+        let mut invalid = valid.clone();
+        if let Some(value) = value {
+            invalid[key] = value;
+        } else {
+            invalid.as_object_mut().unwrap().remove(key);
+        }
+        let api = FakeOpenAi::start(move |_, index| {
+            (
+                200,
+                match index {
+                    0 => tool_call_response("invalid-envelope", "apply_topology_patch", invalid.clone()),
+                    2 => tool_call_response("valid-envelope", "apply_topology_patch", valid.clone()),
+                    _ => text_response("done"),
+                },
+            )
+        });
+        let opened = open_chat_session(&cwd, &api, &[], UserConfig::default());
+        opened.runtime.start();
+        opened.runtime.user_message("try an invalid request", false).unwrap();
+        assert!(opened.runtime.settle(10));
+        let state = opened.core.state().unwrap();
+        let report = opened.model_report();
+        opened.close();
+        assert_eq!(api.calls(), 2);
+        assert_eq!(state["revision"], 1, "{key}: {state}");
+        assert!(
+            !env.join("teamagents/sessions/review/profiles.json").exists(),
+            "{key}: invalid request persisted profiles"
+        );
+        assert!(
+            !report["profiles"].as_array().unwrap().iter().any(|profile| profile["id"] == "reviewer"),
+            "{key}: {report}"
+        );
+
+        let reopened = open_chat_session(&cwd, &api, &[], UserConfig::default());
+        reopened.runtime.start();
+        reopened.runtime.user_message("retry the corrected request", false).unwrap();
+        assert!(reopened.runtime.settle(10));
+        let state = reopened.core.state().unwrap();
+        reopened.close();
+        assert_eq!(state["revision"], 2, "corrected request after {key} must apply: {state}");
+        assert!(state["spec"]["agents"].as_array().unwrap().iter().any(|agent| agent["id"] == "reviewer"));
+    }
+}
+
+#[test]
+fn topology_request_stored_proposal_inherits_leader_defaults_when_applied() {
+    for empty_operations in [false, true] {
+        let env = env_guard("topology-stored-defaults");
+        let cwd = env.join("project");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let decision = Arc::new(Mutex::new(Json::Null));
+        let response = decision.clone();
+        let api = FakeOpenAi::start(move |_, index| {
+            (
+                200,
+                if index == 0 {
+                    tool_call_response("accept-proposal", "apply_topology_patch", response.lock().unwrap().clone())
+                } else {
+                    text_response("done")
+                },
+            )
+        });
+        let opened = open_chat_session(&cwd, &api, &["files"], UserConfig::default());
+        assert!(
+            submit(
+                &opened.core,
+                "add-b",
+                "leader",
+                "apply_topology_patch",
+                json!({
+                    "base_revision":1, "operations":[{"op":"add_agent", "agent":agent_json("b", "worker", &[])}]
+                })
+            )
+            .ok
+        );
+        let proposed = submit(
+            &opened.core,
+            "propose-reviewer",
+            "b",
+            "propose_team_change",
+            json!({
+                "operations":[{"op":"add_agent", "agent":{
+                    "id":"reviewer", "name":"Reviewer", "role":"worker", "runtime_kind":"deepagents"
+                }}], "rationale":"need a reviewer"
+            }),
+        );
+        assert!(proposed.ok, "{proposed:?}");
+        let mut payload = json!({"patch_id":proposed.result["patch_id"]});
+        if empty_operations {
+            payload["operations"] = json!([]);
+        }
+        *decision.lock().unwrap() = payload;
+        opened.runtime.start();
+        opened.runtime.user_message("accept the member proposal", false).unwrap();
+        assert!(opened.runtime.settle(10));
+        let state = opened.core.state().unwrap();
+        let report = opened.model_report();
+        opened.close();
+        assert_eq!(
+            state["revision"], 3,
+            "stored proposal must receive the same preparation as an inline patch: {state}"
+        );
+        let reviewer =
+            state["spec"]["agents"].as_array().unwrap().iter().find(|agent| agent["id"] == "reviewer").unwrap();
+        assert_eq!(reviewer["model_profile"], "reviewer");
+        assert_eq!(reviewer["tool_bindings"], json!(["files"]));
+        for (source, target) in [("leader", "reviewer"), ("reviewer", "leader")] {
+            assert!(state["spec"]["channels"].as_array().unwrap().iter().any(|channel| channel["source"] == source
+                && channel["mode"] == "message"
+                && channel["targets"].as_array().unwrap().contains(&json!(target))));
+        }
+        assert_eq!(
+            report["agents"].as_array().unwrap().iter().find(|agent| agent["agent_id"] == "reviewer").unwrap()["model"],
+            "test"
+        );
+        assert!(state["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["kind"] == "topology_proposed" && event["payload"]["proposer"] == "b"));
+        let reopened = open_chat_session(&cwd, &api, &["files"], UserConfig::default());
+        let report = reopened.model_report();
+        reopened.close();
+        assert_eq!(
+            report["agents"].as_array().unwrap().iter().find(|agent| agent["agent_id"] == "reviewer").unwrap()["model"],
+            "test"
+        );
+    }
+}
+
+#[test]
 fn review_bound_mcp_must_be_advertised_to_model() {
     let _env = env_guard("review-mcp");
     let cwd = isolated_project("mcp");
@@ -1641,6 +2883,7 @@ impl Drop for ProbeWorker {
 
 fn worker_files(base: &std::path::Path, api: Option<&FakeOpenAi>) -> std::path::PathBuf {
     std::fs::create_dir_all(base.join("config/teamagents")).unwrap();
+    std::fs::create_dir_all(base.join("project")).unwrap();
     let mut config = "[models.m]\nprovider='openai'\nprotocol='openai'\nmodel='test'\nmax_retries=0\n".to_string();
     if let Some(api) = api {
         config.push_str(&format!("base_url='{}'\n", api.base_url()));
@@ -1688,7 +2931,7 @@ fn review_crash_after_committed_chat_action_must_not_replay_it() {
         });
         let team = worker_files(&base, Some(&api));
         let mut worker = ProbeWorker::spawn(&base);
-        let opened = worker.call("open", json!({"cwd":base,"team":team})).unwrap();
+        let opened = worker.call("open", json!({"cwd":base.join("project"),"team":team})).unwrap();
         worker.call("user_message", json!({"text":"publish once"})).unwrap();
         assert!(wait_for(|| api.calls() >= 2, 5000));
         assert_eq!(worker.entries().as_array().unwrap().len(), 1);
@@ -1714,7 +2957,7 @@ fn review_crash_after_committed_chat_action_must_not_replay_it() {
             std::fs::write(history_path, history.to_string()).unwrap();
         }
         let mut worker = ProbeWorker::spawn(&base);
-        worker.call("open", json!({"cwd":base,"team":team,"resume":opened["session_id"]})).unwrap();
+        worker.call("open", json!({"cwd":base.join("project"),"team":team,"resume":opened["session_id"]})).unwrap();
         assert!(wait_for(|| api.calls() >= 3, 5000));
         assert!(
             api.body(2)["messages"]
@@ -1831,18 +3074,19 @@ fn review_unknown_external_effect_is_not_replayed_after_crash() {
     spec["agents"][0]["tool_bindings"] = json!(["shell"]);
     std::fs::write(&team, spec.to_string()).unwrap();
     let mut worker = ProbeWorker::spawn(&base);
-    let opened = worker.call("open", json!({"cwd":base,"team":team})).unwrap();
+    let project = base.join("project");
+    let opened = worker.call("open", json!({"cwd":project,"team":team})).unwrap();
     worker.call("user_message", json!({"text":"run once"})).unwrap();
-    assert!(wait_for(|| base.join("count.txt").exists(), 5000), "real sandbox never executed");
+    assert!(wait_for(|| project.join("count.txt").exists(), 5000), "real sandbox never executed");
     worker.kill();
     let mut worker = ProbeWorker::spawn(&base);
-    worker.call("open", json!({"cwd":base,"team":team,"resume":opened["session_id"]})).unwrap();
+    worker.call("open", json!({"cwd":project,"team":team,"resume":opened["session_id"]})).unwrap();
     let state = worker.call("call", json!({"method":"state", "params":{}})).unwrap();
     assert_eq!(state["runs"][0]["status"], "OUTCOME_UNKNOWN", "{state}");
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(api.calls(), 1, "uncertain external effect must not trigger a new model/tool call");
-    assert_eq!(std::fs::read_to_string(base.join("count.txt")).unwrap(), "x");
-    assert!(!base.join("late.txt").exists());
+    assert_eq!(std::fs::read_to_string(project.join("count.txt")).unwrap(), "x");
+    assert!(!project.join("late.txt").exists());
 }
 
 #[test]
@@ -1926,7 +3170,9 @@ fn review_completed_checkpoint_restores_reply_without_another_model_call() {
         ApprovalGate::new(core, PermissionPolicy::default()),
         None,
     );
-    assert_eq!(restored.reconcile(&run), Some(TurnStatus::Queued));
+    let reconciled = restored.reconcile(&run, &restored_gateway).expect("durable completed checkpoint");
+    assert_eq!(reconciled.status, TurnStatus::Completed);
+    assert_eq!(reconciled.reply_text.as_deref(), Some("original final reply"));
     let outcome = restored.start_or_resume(&run, &view, &restored_gateway, &Json::Null);
     assert_eq!(outcome.status, TurnStatus::Completed);
     assert_eq!(outcome.reply_text.as_deref(), Some("original final reply"));
@@ -1966,24 +3212,30 @@ fn review_tree_commit_recovers_on_both_sides_of_rename() {
     let mut checkpoint: Json = serde_json::from_slice(&std::fs::read(&cp_path).unwrap()).unwrap();
     checkpoint["tree_pending"] = tree["ctx:leader:1"]["nodes"].clone();
     for renamed in [false, true] {
-        std::fs::write(&cp_path, checkpoint.to_string()).unwrap();
-        std::fs::write(
-            &tree_path,
-            if renamed {
-                tree.to_string()
+        for reconcile in [false, true] {
+            std::fs::write(&cp_path, checkpoint.to_string()).unwrap();
+            std::fs::write(
+                &tree_path,
+                if renamed {
+                    tree.to_string()
+                } else {
+                    json!({"ctx:leader:1":{"nodes":[], "leaf":null, "rewind_epoch":0}}).to_string()
+                },
+            )
+            .unwrap();
+            let restored = build();
+            let outcome = if reconcile {
+                restored.reconcile(&run, &gateway()).unwrap()
             } else {
-                json!({"ctx:leader:1":{"nodes":[], "leaf":null, "rewind_epoch":0}}).to_string()
-            },
-        )
-        .unwrap();
-        let restored = build();
-        let outcome = restored.start_or_resume(&run, &view, &gateway(), &Json::Null);
-        assert_eq!(outcome.status, TurnStatus::Completed, "renamed={renamed}: {outcome:?}");
-        assert_eq!(outcome.reply_text.as_deref(), Some("durable reply"));
-        let actual: Json = serde_json::from_slice(&std::fs::read(&tree_path).unwrap()).unwrap();
-        assert_eq!(actual, tree, "journal replay must not duplicate nodes");
-        assert_eq!(api.calls(), 1, "saved final response must not be requested again");
-        restored.close();
+                restored.start_or_resume(&run, &view, &gateway(), &Json::Null)
+            };
+            assert_eq!(outcome.status, TurnStatus::Completed, "renamed={renamed}, reconcile={reconcile}: {outcome:?}");
+            assert_eq!(outcome.reply_text.as_deref(), Some("durable reply"));
+            let actual: Json = serde_json::from_slice(&std::fs::read(&tree_path).unwrap()).unwrap();
+            assert_eq!(actual, tree, "journal replay must not duplicate nodes");
+            assert_eq!(api.calls(), 1, "saved final response must not be requested again");
+            restored.close();
+        }
     }
     // Only a deliberate rewind invalidates the old completed checkpoint.
     let restored = build();
@@ -2226,6 +3478,226 @@ fn compaction_triggers_on_threshold_and_read_history_recovers_output() {
     // shell actually ran once; read_history never reaches the executor
     let called = tool_calls.lock().unwrap().clone();
     assert_eq!(called.iter().map(|(t, _)| t.as_str()).collect::<Vec<_>>(), vec!["shell"]);
+}
+
+#[test]
+fn masked_history_readback_keeps_original_page_coordinates_on_the_wire() {
+    let _env = env_guard("history-page-pointer");
+    let page_args = json!({"tool_call_id":"source-output", "offset":7900, "limit":500});
+    let repeated_args = page_args.clone();
+    let server = FakeOpenAi::start(move |_, index| {
+        let response = match index {
+            0 => tool_call_response("source-output", "shell", json!({"command":"source"})),
+            1 => tool_call_response("page-first", "read_history", repeated_args.clone()),
+            2 => tool_call_response("other-output", "shell", json!({"command":"other"})),
+            3 => tool_call_response("small-step", "list_shared", json!({})),
+            4 => tool_call_response("page-again", "read_history", repeated_args.clone()),
+            _ => text_response("Recovered the original page without wrapping a readback result."),
+        };
+        (200, response)
+    });
+    let agent = agent_json("leader", "leader", &["shell"]);
+    let core = core_with_spec("history-page-pointer", json!({"leader_id":"leader", "agents":[agent.clone()]}));
+    let executions = Arc::new(AtomicUsize::new(0));
+    let counter = executions.clone();
+    let executor: ToolExecutor = Arc::new(move |_, _, args, _| {
+        counter.fetch_add(1, Ordering::SeqCst);
+        let output = if args["command"] == "source" {
+            format!("{}ORIGINAL_PAGE_MARKER{}", "甲".repeat(8000), "尾".repeat(8000))
+        } else {
+            "x".repeat(20_000)
+        };
+        Ok(json!({"output":output}))
+    });
+    let runtime = start_runtime(
+        &core,
+        chat_runner(&core, &agent, profile(&server.base_url(), "openai", json!({}), 0), "/tmp"),
+        "leader",
+        PermissionPolicy::default(),
+        RuntimeLimits::default(),
+        executor,
+    );
+    runtime.user_message("Inspect the original page after other tool work.", false).unwrap();
+    assert!(runtime.settle(10));
+    runtime.close();
+    assert!(runs(&core).iter().all(|run| run.status == TurnStatus::Completed));
+    assert_eq!(server.calls(), 6);
+    let tool_content = |index, id: &str| {
+        server.body(index)["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["role"] == "tool" && m["tool_call_id"] == id)
+            .unwrap()["content"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let hint = tool_content(4, "page-first");
+    for field in [r#""tool_call_id":"source-output""#, r#""offset":7900"#, r#""limit":500"#] {
+        assert!(hint.contains(field), "{hint}");
+    }
+    let first: Json = serde_json::from_str(&tool_content(2, "page-first")).unwrap();
+    let recovered: Json = serde_json::from_str(&tool_content(5, "page-again")).unwrap();
+    assert_eq!(first, recovered, "rereading must return the same source characters, not another JSON wrapper");
+    assert!(recovered["output"].as_str().unwrap().contains("ORIGINAL_PAGE_MARKER"));
+    assert_eq!(recovered["offset"], page_args["offset"]);
+    assert_eq!(recovered["next_offset"], 8400);
+    assert_eq!(executions.load(Ordering::SeqCst), 2, "readback never re-executes either source operation");
+}
+
+#[test]
+fn large_window_keeps_recent_source_and_history_pages_on_the_wire() {
+    for window in [None, Some(64_000), Some(1_000_000)] {
+        check_recent_source_visibility(window, false);
+    }
+}
+
+#[test]
+fn private_subagent_large_window_keeps_its_recent_source_and_history_pages() {
+    for window in [None, Some(64_000), Some(1_000_000)] {
+        check_recent_source_visibility(window, true);
+    }
+}
+
+fn check_recent_source_visibility(window: Option<u64>, nested: bool) {
+    let session = format!("recent-source-{}-{nested}", window.unwrap_or(0));
+    let _env = env_guard(&session);
+    let server = FakeOpenAi::start(move |body, _| {
+        let tool_count = body["messages"].as_array().unwrap().iter().filter(|m| m["role"] == "tool").count();
+        let response = if nested && !private_helper_request(body) {
+            if tool_count == 0 {
+                tool_call_response("helper", "run_subagent", json!({"task":"Compare the two source files."}))
+            } else {
+                text_response("Received the private comparison.")
+            }
+        } else {
+            match tool_count {
+                0 => tool_call_response("first-source", "read_file", json!({"path":"first.rs"})),
+                1 => tool_call_response(
+                    "first-page",
+                    "read_history",
+                    json!({"tool_call_id":"first-source", "offset":0, "limit":12_000}),
+                ),
+                2 => tool_call_response("second-source", "read_file", json!({"path":"second.rs"})),
+                3 => tool_call_response(
+                    "second-page",
+                    "read_history",
+                    json!({"tool_call_id":"second-source", "offset":0, "limit":12_000}),
+                ),
+                _ => text_response("Compared the source files."),
+            }
+        };
+        (200, response)
+    });
+    let agent = agent_json("leader", "leader", &["files"]);
+    let core = core_with_spec(&session, json!({"leader_id":"leader", "agents":[agent.clone()]}));
+    let mut prof = profile(&server.base_url(), "openai", json!({}), 0);
+    prof.context_window = window;
+    let executions = Arc::new(AtomicUsize::new(0));
+    let counter = executions.clone();
+    let executor: ToolExecutor = Arc::new(move |_, tool, args, _| {
+        assert_eq!(tool, "read_file");
+        counter.fetch_add(1, Ordering::SeqCst);
+        let marker = if args["path"] == "first.rs" { "FIRST_SOURCE" } else { "SECOND_SOURCE" };
+        Ok(json!({"output":format!("{marker}\n{}", "x".repeat(20_000))}))
+    });
+    let runtime = start_runtime(
+        &core,
+        chat_runner(&core, &agent, prof, "/tmp"),
+        "leader",
+        PermissionPolicy::default(),
+        RuntimeLimits::default(),
+        executor,
+    );
+    runtime.user_message("Compare the source files and their earlier pages.", false).unwrap();
+    assert!(runtime.settle(10));
+    runtime.close();
+    assert!(runs(&core).iter().all(|run| run.status == TurnStatus::Completed));
+    assert_eq!(server.calls(), if nested { 7 } else { 5 });
+    assert_eq!(executions.load(Ordering::SeqCst), 2, "history pages must not execute the source operation again");
+
+    let request = server.body(if nested { 5 } else { 4 });
+    let messages = request["messages"].as_array().unwrap();
+    let content = |id: &str| {
+        messages.iter().find(|m| m["role"] == "tool" && m["tool_call_id"] == id).unwrap()["content"].as_str().unwrap()
+    };
+    let keep_older = window == Some(1_000_000);
+    for (id, marker) in
+        [("first-source", "FIRST_SOURCE"), ("first-page", "FIRST_SOURCE"), ("second-source", "SECOND_SOURCE")]
+    {
+        assert_eq!(content(id).contains(marker), keep_older, "{session}: recent {id} visibility");
+        assert_eq!(content(id).contains("tool output hidden"), !keep_older);
+    }
+    assert!(content("second-page").contains("SECOND_SOURCE"), "the latest answer remains visible at every window");
+    if nested {
+        let parent = server.body(6).to_string();
+        assert!(!parent.contains("FIRST_SOURCE") && !parent.contains("SECOND_SOURCE"), "helper history stays private");
+    }
+}
+
+#[test]
+fn compaction_after_empty_rewind_keeps_the_new_branch_root_across_restart() {
+    let _env = env_guard("compaction-rewound-root");
+    let server = FakeOpenAi::start(|_, index| {
+        (
+            200,
+            match index {
+                0 => text_with_usage("Finished the old branch.", 100),
+                1 => tool_call_with_usage("new-branch-tool", "shell", shell_args(), 10_000),
+                2 => text_with_usage("Summary of the new branch only.", 100),
+                _ => text_with_usage("Continued the new branch.", 100),
+            },
+        )
+    });
+    let agent = agent_json("leader", "leader", &["shell"]);
+    let core = core_with_spec("compaction-rewound-root", json!({"leader_id":"leader","agents":[agent.clone()]}));
+    let mut prof = profile(&server.base_url(), "openai", json!({}), 0);
+    prof.context_window = Some(10_000); // Local fixture, not a real model window.
+    let runner = chat_runner(&core, &agent, prof.clone(), "/tmp");
+    let history_path = runner.history_dir().unwrap().join("chat_tree.json");
+    let runtime = start_runtime(
+        &core,
+        runner.clone(),
+        "leader",
+        PermissionPolicy::default(),
+        RuntimeLimits::default(),
+        Arc::new(|_, _, _, _| Ok(json!({"output":"new branch output"}))),
+    );
+    runtime.user_message("OLD_BRANCH_ONLY", false).unwrap();
+    assert!(runtime.settle(5));
+    let original: Json = serde_json::from_slice(&std::fs::read(&history_path).unwrap()).unwrap();
+    runner.rewind("ctx:leader:1", None).unwrap();
+    runtime.user_message("NEW_BRANCH_ONLY", false).unwrap();
+    assert!(runtime.settle(5));
+    runtime.close();
+    assert!(runs(&core).iter().all(|run| run.status == TurnStatus::Completed));
+    assert_eq!(server.calls(), 4);
+    let saved: Json = serde_json::from_slice(&std::fs::read(&history_path).unwrap()).unwrap();
+    let nodes = saved["ctx:leader:1"]["nodes"].as_array().unwrap();
+    let old_nodes = original["ctx:leader:1"]["nodes"].as_array().unwrap();
+    assert!(nodes.starts_with(old_nodes), "rewind and compaction preserve the abandoned branch");
+    let new_root = nodes.iter().find(|node| node["parent"].is_null() && node["id"] != old_nodes[0]["id"]).unwrap();
+    let summary = nodes.iter().find(|node| node["skip_to"].is_string()).unwrap();
+    assert_eq!(summary["skip_to"], new_root["id"], "summary must not jump to an abandoned root");
+    for index in 1..4 {
+        assert!(!server.body(index).to_string().contains("OLD_BRANCH_ONLY"));
+    }
+    let restarted = start_runtime(
+        &core,
+        chat_runner(&core, &agent, prof, "/tmp"),
+        "leader",
+        PermissionPolicy::default(),
+        RuntimeLimits::default(),
+        Arc::new(|_, _, _, _| panic!("no new tool execution expected")),
+    );
+    restarted.user_message("Resume the current branch.", false).unwrap();
+    assert!(restarted.settle(5));
+    restarted.close();
+    assert!(runs(&core).iter().all(|run| run.status == TurnStatus::Completed));
+    assert_eq!(server.calls(), 5);
+    assert!(!server.body(4).to_string().contains("OLD_BRANCH_ONLY"));
+    assert!(server.body(4).to_string().contains("NEW_BRANCH_ONLY"));
 }
 
 #[test]

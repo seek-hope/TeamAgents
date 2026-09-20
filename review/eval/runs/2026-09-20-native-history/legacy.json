@@ -1,0 +1,39 @@
+{
+  "codex_version": "codex-cli 0.155.0",
+  "history_mode": "legacy",
+  "model_invoked": false,
+  "fixture_records": true,
+  "native_read_capabilities": {
+    "thread/items/list": {
+      "error": {
+        "code": -32601,
+        "message": "thread/items/list is not supported yet"
+      }
+    },
+    "thread/read": {
+      "error": {
+        "code": -32600,
+        "message": "thread 01a0bc56-0287-7f52-be1f-b4595c5d49ed is not materialized yet; includeTurns is unavailable before first user message"
+      }
+    }
+  },
+  "setup_methods": [
+    "initialize",
+    "thread/start",
+    "thread/read",
+    "thread/items/list",
+    "thread/read"
+  ],
+  "fixture_source": "synthetic ResponseItem records appended to an isolated legacy rollout",
+  "status": "passed",
+  "pages": [
+    40,
+    5
+  ],
+  "tool_output_preserved": true,
+  "team_state_unchanged": true,
+  "native_rollout_unchanged": true,
+  "rollout_sha256": "b015104a49cd3afbd0013accf77da8240d467d4c40bad31efd31331564544941",
+  "evidence_kind": "local_cli_with_synthetic_history",
+  "reader_item_identity_source": "rollout"
+}

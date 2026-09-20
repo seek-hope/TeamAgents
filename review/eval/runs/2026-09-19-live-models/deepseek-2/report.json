@@ -1,0 +1,173 @@
+{
+  "schema_version": 1,
+  "kind": "live_chat_model_smoke",
+  "status": "passed",
+  "results": [
+    {
+      "profile": "leader_main",
+      "expected_model": "deepseek-flash",
+      "status": "passed",
+      "phases": [
+        {
+          "name": "files_and_tool_result",
+          "status": "passed",
+          "duration_ms": 7121,
+          "submitted": true,
+          "settled": true,
+          "run_statuses": [
+            "COMPLETED"
+          ],
+          "required_tools_ok": true,
+          "file_matches": true,
+          "reply_marker_received": true,
+          "tools": {
+            "read_file": {
+              "ok": 2,
+              "failed": 0
+            },
+            "shell": {
+              "ok": 1,
+              "failed": 0
+            },
+            "signal_done": {
+              "ok": 1,
+              "failed": 0
+            },
+            "write_file": {
+              "ok": 1,
+              "failed": 0
+            }
+          },
+          "usage_recorded": true,
+          "usage_before": {
+            "calls": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "unknown_usage_calls": 0,
+            "cached_input_tokens": 0,
+            "model_elapsed_ms": 0
+          },
+          "usage_after": {
+            "calls": 6,
+            "prompt_tokens": 23749,
+            "completion_tokens": 809,
+            "total_tokens": 24558,
+            "unknown_usage_calls": 0,
+            "cached_input_tokens": 22400,
+            "model_elapsed_ms": 7049
+          }
+        },
+        {
+          "name": "same_session_shell",
+          "status": "passed",
+          "duration_ms": 4544,
+          "submitted": true,
+          "settled": true,
+          "run_statuses": [
+            "COMPLETED"
+          ],
+          "required_tools_ok": true,
+          "file_matches": true,
+          "reply_marker_received": true,
+          "tools": {
+            "read_file": {
+              "ok": 1,
+              "failed": 0
+            },
+            "shell": {
+              "ok": 1,
+              "failed": 0
+            },
+            "signal_done": {
+              "ok": 1,
+              "failed": 0
+            }
+          },
+          "usage_recorded": true,
+          "usage_before": {
+            "calls": 6,
+            "prompt_tokens": 23749,
+            "completion_tokens": 809,
+            "total_tokens": 24558,
+            "unknown_usage_calls": 0,
+            "cached_input_tokens": 22400,
+            "model_elapsed_ms": 7049
+          },
+          "usage_after": {
+            "calls": 10,
+            "prompt_tokens": 44841,
+            "completion_tokens": 1269,
+            "total_tokens": 46110,
+            "unknown_usage_calls": 0,
+            "cached_input_tokens": 42624,
+            "model_elapsed_ms": 11538
+          }
+        },
+        {
+          "name": "cold_session_history",
+          "status": "passed",
+          "duration_ms": 3252,
+          "submitted": true,
+          "settled": true,
+          "run_statuses": [
+            "COMPLETED"
+          ],
+          "required_tools_ok": true,
+          "file_matches": true,
+          "reply_marker_received": true,
+          "tools": {
+            "read_file": {
+              "ok": 1,
+              "failed": 0
+            },
+            "signal_done": {
+              "ok": 1,
+              "failed": 0
+            },
+            "write_file": {
+              "ok": 1,
+              "failed": 0
+            }
+          },
+          "usage_recorded": true,
+          "usage_before": {
+            "calls": 10,
+            "prompt_tokens": 44841,
+            "completion_tokens": 1269,
+            "total_tokens": 46110,
+            "unknown_usage_calls": 0,
+            "cached_input_tokens": 42624,
+            "model_elapsed_ms": 11538
+          },
+          "usage_after": {
+            "calls": 14,
+            "prompt_tokens": 69301,
+            "completion_tokens": 1567,
+            "total_tokens": 70868,
+            "unknown_usage_calls": 0,
+            "cached_input_tokens": 66048,
+            "model_elapsed_ms": 14736
+          }
+        }
+      ],
+      "native_context_window": 1000000,
+      "context_source": "用户确认 DeepSeek Flash 原生 1M；docs/DECISIONS.md D-36（2026-09-17）",
+      "provider": "deepseek",
+      "protocol": "deepseek",
+      "model": "deepseek-flash",
+      "profile_context_window": 1000000,
+      "request_timeout_s": 120,
+      "max_retries": 5,
+      "profile_sha256": "230f927182e6aa9d9977e0bbb5b465025fbdee1c0ba08cfeb1cc1a299f8cd39d",
+      "reasoning_effort": "high",
+      "effective_profile_sha256": "230f927182e6aa9d9977e0bbb5b465025fbdee1c0ba08cfeb1cc1a299f8cd39d",
+      "seed_unchanged": true,
+      "workspace_empty_before_same_session": true,
+      "workspace_empty_before_cold_session": true,
+      "usage_restored": true,
+      "duration_ms": 14933
+    }
+  ],
+  "phase_timeout_s": 600
+}

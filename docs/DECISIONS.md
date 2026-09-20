@@ -14,13 +14,35 @@
   恢复时替换旧 system 内容，不重复插入；Leader 不套用 Worker 的角色限制。
 - Codex 执行成员通过 `thread/start` / `thread/resume` 的 `developerInstructions` 获得相应环境层和
   成员 `instructions`，不替换原生 system 指令（不传 `baseInstructions`）。不授予团队工具，
-  通过自身输出汇报；Skills/指令文件仍由既有后端路径处理，本批未将 Chat 的文件注入搬到 Codex。
+  通过自身输出汇报；从 2026-09-19 起，Codex 也接收与 Chat 相同的已选、限量且符号链接安全的
+  Skills/指令文件文本，仍不使用 Codex 自身的 Skills 发现协议。
 - 已用本机 `codex app-server generate-json-schema` 确认上述两个方法支持 `developerInstructions`。
   验证覆盖三种模型协议的实际请求与恢复、Codex 创建/恢复线程的请求顺序；不等于真实模型行为验收。
 
 证据：`chat::tests::worker_environment_precedes_member_instructions_and_survives_refresh`、
 `chat_e2e::worker_environment_reaches_model_before_leader_task_on_all_protocols`、
 `codex_contract::worker_environment_is_developer_instructions_on_codex_start_and_resume`。
+
+## D-39 Chat 成员私有子代理（2026-09-19）
+
+按方案中“私有子代理不自动成为团队成员、个体私有子任务计入所属成员资源”的约束，Chat 后端增加
+`run_subagent` 作为成员内部工具。该实现不改变 TeamSpec、成员拓扑或 Leader 可见范围：
+
+- 辅助 transcript 嵌套在父成员的回合检查点中；只接收显式 `task`/`context`，不读取父历史，也不获得
+  TeamSpec 身份、团队动作、`update_plan` 或递归 `run_subagent`。
+- 辅助继承父成员的工作目录、已绑定执行工具、权限/批准闸门和 `TurnControl`；辅助模型请求共用父回合的
+  `max_model_steps_per_turn`，辅助最终文本作为父工具结果返回，父成员继续负责所有团队动作。
+- 辅助模型失败作为失败工具结果回给父模型；需要用户批准的辅助工具调用可以暂停父回合，批准后从嵌套
+  transcript 继续，不把未执行的调用伪装成成功。
+- 外部工具的恢复采用两阶段检查点：执行前写入 pending marker；执行完成后先保存 child receipt，只有
+  嵌套 `tool` 结果与 marker 清理在同一次检查点写入后才允许继续。崩溃若只有 marker、没有 receipt，
+  进入 `OUTCOME_UNKNOWN` 并拒绝重放；若已有 receipt，则补写嵌套结果而不重复执行副作用。
+
+证据：`engine/tests/chat_e2e.rs` 中 `private_subagent_uses_parent_bindings_without_team_identity_or_history`、
+`private_subagent_approval_resumes_nested_tool_once_and_keeps_protocol_order`、
+`private_subagent_model_failure_is_returned_to_parent_and_parent_can_continue`、
+`private_subagent_model_steps_share_the_parent_turn_budget`、
+`private_subagent_receipt_recovers_without_replaying_the_child_tool`。
 
 ## D-37 下载与首次配置优化（用户确认 2026-09-18）
 
@@ -152,6 +174,10 @@ Deep Agents 的 `permissions` 只覆盖其内置文件工具，不约束 Shell/M
 - `ModelProfile.max_retries` 2→**5**（模型请求的 SDK 级重试）。
 - 沙箱命令输出上限 100 KB→**200 KB**（超出仍转存 artifact 文件；Rust 版已于 D-21 对齐：
   落 `<session>/artifacts/exec-*.log`，工具结果给 `/artifacts/...` 引用，成员经同一前缀读回）。
+  2026-09-19 按方案 §5.1、§12.2 修复自动输出归属：现存
+  `members/<成员>/tool-output/exec-*.log`，通过成员私有的 `/tool-output/` 读回；
+  `/artifacts/` 保留为主动共享制品。旧无归属自动日志保留但不再由成员工具读取，
+  证据见[私有上下文隔离记录](../review/private-context-2026-09-19.md)。
 - **删除未被任何代码读取的配置**：`leader_reserve`、`model_request_timeout_s`、
   `max_auto_retries`（`Limits` 为 `extra="forbid"`，旧 TeamSpec 里若仍写这三个键会校验失败）。
   真正生效的模型请求超时/重试是 `ModelProfile.timeout` / `ModelProfile.max_retries`。
@@ -619,6 +645,12 @@ MCP-Protocol-Version 回带、多行 SSE 按事件拼接并匹配请求 ID、Bea
 出口：worker `rewind_points`/`rewind`/`fork_session`、TUI `/rewind` `/fork`、--plain `rewind`。
 证据：chat.rs 树单测两项、engine/tests/fork_rewind.rs、tui app_tests 两项。
 
+2026-09-19 实施更新（D-32/D-35 范围内）：旧线性历史读取/结构错误不再降级为空对话；
+树在持久化边界检查 ID、父节点、leaf 与摘要祖先关系，损坏恢复沿用
+`CheckpointError / OUTCOME_UNKNOWN` 并保留原文件，回退列表显式传出错误。
+祖先遍历改为线性，清空路径后压缩使用当前分支根；分支、线程与持久 JSON 格式不变。
+新增八项回归及 DeepSeek 原生 1M 有效历史重建检查，见[完整性修复记录](../review/history-integrity-2026-09-19.md)。
+
 ## D-27 会话内切换模型/档位（/model，2026-09-14）
 
 用户确认补充（对照 Codex CLI /model，审查 A6）；本轮追加供应商选择和交互式选择器。
@@ -660,10 +692,20 @@ app-server 自行压缩，为已知天花板）：
    历史→全树分支，取回被遮蔽/覆盖的已保存输出（受 L0 限制）。
    摘要请求和结果均附工具输出 ID 索引，从当前分支完整祖先链生成；连续压缩也保留旧索引，
    不依赖模型在摘要正文中复述 ID。摘要树与检查点写入共用 TurnControl，关闭会话后的迟到结果不能落盘。
-出口：自动生效，无命令；触发信号复用 D-24 的 usage 采集。可调常量（50k/16k/0.9/100k）
-在 chat.rs 顶部，均为 ponytail 注释的已知天花板。
+出口：自动生效，无命令；触发信号复用 D-24 的 usage 采集。可调常量（50k/16k/256k/0.9/100k）
+在 chat.rs 顶部，分别覆盖 L0 上限、L1 预算下限/L1 上限、L2 阈值和摘要输入上限，
+均为 ponytail 注释的已知天花板。
 证据：chat.rs 单测 4 项（截断/遮蔽/摘要节点+rewind/read_history）、chat_e2e.rs
 compaction_triggers_on_threshold_and_read_history_recovers_output。
+
+2026-09-19 实施更新（D-32/D-35 范围内）：L0 已改为只截减发送副本，完整工具结果保存在
+私有检查点与树里；旧读回页的占位符使用原始来源及分页参数，见
+[读回指针记录](../review/readback-pointer-2026-09-19.md)。固定 16,000 字节的 L1 在 1M 窗口
+下过早遮蔽中等源码，主成员与私有子代理的实际请求回归均复现。沿用本条可调预算的方向，
+将旧回执预算设为 `clamp(context_window / 4, 16_000, 256_000)` 字节，未配置时仍为 16,000；
+这是有上限的保留启发式，不是 token 数保证。L2 估算、主请求、溢出恢复请求和私有子代理
+使用同一窗口预算。当前原生窗口、模型步骤/时限、权限与持久记录格式均沿用原约束。
+实现与真实对照见[上下文预算记录](../review/context-budget-2026-09-19.md)。
 
 ## D-29 /model 覆盖随会话落盘（2026-09-14）
 
@@ -699,6 +741,15 @@ stale_model_overrides_are_dropped_on_open（未知成员/未知 profile/越规�
 证据：chat_e2e::review_add_agent_auto_creates_member_profile（省略/模型 ID 两种写法、
 改写落 spec、profiles.json 内容、报表解析、重开后仍生效）。
 
+2026-09-20 实施修复：仅实际 Leader 可进入准备钩子；自动创建不覆盖同名用户模型配置或已被
+成员引用的会话 profile。候选先在局部准备，保存和 catalog 更新成功后才安装内存视图；
+未使用的拒绝残留允许修正。原有跨存储非原子边界保留，见[组队校验记录](../review/topology-validation-2026-09-20.md)。
+
+同日补齐提交边界：准备前复用 core 的身份/请求/版本校验；按 `patch_id` 批准的提案也使用相同
+默认值。`Control::submit` 的 Rust 参数可同时接收原始动作和可信准备结果，原始动作记录去重回执，
+准备后的操作在同一事务中校验和应用。JSON 协议和数据库结构不变，准备失败也保存拒绝回执。
+旧版回执不迁移，跨存储非原子限制保留；见[请求与重放记录](../review/topology-requests-2026-09-20.md)。
+
 ## D-32 成熟度与稳定性改进授权（2026-09-15）
 
 用户明确要求「按你建议的顺序对 TeamAgents 进行改进，核心目标是足够成熟、稳定」。
@@ -707,6 +758,68 @@ stale_model_overrides_are_dropped_on_open（未知成员/未知 profile/越规�
 此授权覆盖上述改进与相应文档更新。保留 Rust 三 crate、core 单事务权威、操作级批准、
 成员隔离和已有会话兼容性；新行为使用已有依赖，提供可重跑的回归证据。
 实施进度与验证记录见 `review/stability-2026-09-15.md`；未执行的真实模型评测不能记为通过。
+
+实施补充（方案 §5.2/§5.3/§6.2/§7/§9 范围内）：任务类动作按严格类型校验，任务和回合引用按会话限定；
+迟到结算复核承接者、任务状态和成员存在性，保留原结果不明回合的正常核对路径，不覆盖已结清/移交任务或成员新回合状态。
+十五项 core 回归及一项普通/全自动 ChatRunner 参数修正、交付与重开检查见
+[任务边界记录](../review/task-boundaries-2026-09-19.md)。沿用 SQLite 单事务权威，不新增架构偏离或真实服务验收结论。
+
+同范围继续补齐受支持团队动作的外层参数校验及 `serve` 用户输入类型；共享读取按各空间游标分页，
+条目统计使用实际聚合，求助任务与替代条目引用复核会话/访问边界。错误请求、游标故障回滚、
+持久回执重放及生产入口修正路径见[动作请求记录](../review/action-requests-2026-09-19.md)。
+沿用原追加式共享记录与现有数据库结构，没有增加跨存储事务或扩大真实供应商验收结论。
+
+持久记录补充：任务/回合列表、事件/投递和批准 JSON 不再以默认值掩盖坏数据；
+视图、调度、唤醒及批准过期错误传入现有事务，失败保留原记录并回滚状态。
+十项 core 回归与生产 ChatRunner 启动拒绝、字段恢复后继续交付的检查见
+[持久业务记录完整性](../review/stored-integrity-2026-09-19.md)。
+没有迁移或自动修复机制，不改变权限裁剪、合法空值或原有会话身份，不增加真实服务验收结论。
+
+运行时错误传播补充：回合开始与成员视图/唤醒读取在原 core 事务内完成，失败保留同一个排队意图；
+成员返回后的状态读取失败保留原结果等待恢复，恢复核对的存储错误也继续重试。
+`runtime_errors` 是进程内用户诊断，供 CLI/TUI 显示，不形成第二份业务权威。
+`exec --json` 拒绝未受理输入的成功判定，有运行时错误时跳过交付检查。
+实现、五项新增回归及未覆盖的故障组合见[运行时存储恢复记录](../review/runtime-storage-2026-09-19.md)；
+保持数据库格式、权限边界及冷恢复依据，不新增真实服务验收结论。
+
+运行中投递补充：核心的投递事务同时返回接收成员与当前权限投影，内部 `drain_mid_turn`
+回复增加 `agent_id`；进程内客户端使用同一核心方法的类型化结果，避免排空后的读取故障丢失交接。
+运行时周期派送并重试投影错误；原有投递确认与后端注入前授权复核保持。
+五项新增行为检查包括真实进程的补充消息、成员通信及 SIGKILL 后重新排队故障恢复，
+见[运行中消息记录](../review/mid-turn-storage-2026-09-19.md)。没有新增数据库结构、持久队列或权限偏离。
+
+排队取消补充（方案 §6.3、§7、§9）：无外部回合 ID 的 QUEUED 在原事务中直接结清；
+不调用成员执行器或读取其输入视图来确认未活动状态。整回合取消记录其未消费输入的失效原因，
+任务取消仅移除目标任务的待投递就绪通知，保留其他消息和任务。批准/任务/回合/投递失败整体回滚，
+旧 QUEUED 取消请求可在调度时收敛；外部回合继续等待停止确认。六项 core、两项 engine 新检查及
+结果等待状态读取期间退出的补充证据见[排队取消记录](../review/queued-cancellation-2026-09-19.md)。
+不改变数据库格式、等待回合的既有投递确认策略或外部副作用保证，不新增真实供应商验收。
+
+plain 与终态恢复补充：行模式检查输入回执，读取/存储错误明确反馈并返回命令输入；
+`status` 读取新增事件，后台重试保留原工作。Chat 中断接口保持已知终态，与既有 Codex 处理一致；
+恢复已返回结果的回合时先核对历史 epoch、修复提交日志，再直接归档终态检查点，
+避免取消标记与重新排队的时序覆盖结果。四项新增 engine 检查、历史日志重放扩展及范围见
+[plain 与终态恢复记录](../review/repl-finalization-2026-09-19.md)。
+保持方案 §9 的状态权威、停止确认与副作用边界，不新增数据库格式、后台守护进程或真实供应商结论。
+
+归档通知与旧排队记录补充（方案 §9）：`finalize_run` 在原事务中返回 `applied` 和调度后的
+`status`，运行时按该次提交发通知，无变更不发旧结果。恢复用成员检查点/外部回合 ID
+识别已有执行的 QUEUED，整批恢复为 RUNNING 后再核对后端；保留取消和输入，不重记开始事件。
+内部准备由进程内客户端调用、SQLite 单事务提交，失败整体回滚。首次用户输入及重开时的
+全自动模式变更也先准备，避免其调度提前结清旧回合。数据库格式及权限规则保持，
+九项新增检查及证据识别上限见[通知与恢复记录](../review/recovery-state-2026-09-19.md)。
+
+执行证据与保留补充（同属方案 §9）：旧排队回合额外核对数据库 `run_started`，避免检查点丢失后
+把已执行工作当成新意图。恢复和清理共用载荷/身份校验；历史清理保留未结清回合的开始事件，
+包括仍可继续核对的 OUTCOME_UNKNOWN。候选读取、投递及分块事件删除在同一 savepoint 内，
+失败整体回滚；数据库格式、脚本后端的稳定动作重放和原后端核对方式保持。
+四项 core、一项 engine 新回归及 Codex 扩展见[恢复证据记录](../review/recovery-evidence-2026-09-19.md)。
+开始事件不等于结果证据，全部执行依据丢失的识别上限与真实服务验收缺口保留。
+
+成员记录补充（方案 §9.1/§13）：用户可按持久线程 ID 读取 Codex 原生对话与工具记录，
+采用独立只读客户端和受限的旧格式文件回退；不复制外部历史、不恢复成员回合、不扩大模型权限。
+保持 Codex 历史权威与原有 worker 后台读取方式。接口、路径/身份边界、失败回归和本机无模型
+联调见[原生历史记录](../review/native-history-2026-09-20.md)；不新增架构偏离或真实供应商验收结论。
 
 ## D-31 codex 通道 session 级批准收紧为按 operation_hash 绑定（2026-09-15）
 
@@ -766,6 +879,10 @@ stale_model_overrides_are_dropped_on_open（未知成员/未知 profile/越规�
 - `core/tests/engine.rs::topology_patch_add_and_stale_reject`（成员间 `add_channel` 被拒）；
 - 真实评测：`review/eval/runs/2026-09-15-deepseek/`（含 `team-collab` 前后对比）。
 
+2026-09-20 补齐广播语义：动态新增的非 Leader `broadcast` 无论 targets 如何都被拒绝，
+避免只写 Leader 目标却获得全队发送权。Leader 广播和历史导入行为保持原约定；本地回归见
+[组队校验记录](../review/topology-validation-2026-09-20.md)，没有追加真实模型验收。
+
 ## D-34 Skills 配套范围（2026-09-17）
 
 用户确认配套范围为 `K-Dense-AI/scientific-agent-skills` 科学技能集合、`browser-use`、`find-skills`。
@@ -786,6 +903,11 @@ stale_model_overrides_are_dropped_on_open（未知成员/未知 profile/越规�
 评测扩展采用 Agent 执行结束后的独立评分，隐藏检查不复制到其执行工作区；待评分代码仍在
 原有 Linux 沙箱内构建和运行。保持 Rust 三 crate、既有权限边界与会话兼容性。
 本选择不自动授权跨平台、新的后台终端协议、插件市场或跨会话记忆等产品范围变化。
+
+2026-09-19 验收补充（D-32/D-35 与方案 §11/T7/T19 范围内）：增加 Rust 的显式启用
+Chat 模型矩阵入口，使用完整所选 profile 与有来源的原生窗口，隔离项目/配置/状态，
+独立断言文件、同会话续接与重建后的历史；缺配置和失败均留证据，不能以跳过替代通过。
+本批仅实跑 DeepSeek Flash，不扩大供应商验收结论，见[真实模型矩阵记录](../review/live-models-2026-09-19.md)。
 
 ## D-36 模型评测使用原生上下文长度（2026-09-17）
 

@@ -1,0 +1,14 @@
+{
+  "source": "codex",
+  "thread_id": "01a0bc56-06b0-7e52-8207-0c3ace1270ca",
+  "entry": {
+    "turnId": "probe-turn",
+    "item": {
+      "type": "functionCallOutput",
+      "id": "item-44",
+      "name": "exec_command",
+      "namespace": null,
+      "output": "SYNTHETIC_NATIVE_TOOL_RESULT"
+    }
+  }
+}

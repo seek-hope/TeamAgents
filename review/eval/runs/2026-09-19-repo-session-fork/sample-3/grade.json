@@ -1,0 +1,9 @@
+{
+  "ok": false,
+  "reason": "候选新增了未允许的文件：.local/state/teamagents/engine-stderr.log",
+  "candidate_sha256": {
+    "engine/src/session.rs": "beadb4439521a222ccf01432b96ea5fb5e55bf3f948f5a5798350d04f7b73205",
+    "engine/src/worker.rs": "28facdf9d2990ca92bcf23bd5f571a681487df1bd565b86186182bb63437a14b"
+  },
+  "output": ""
+}

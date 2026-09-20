@@ -6,7 +6,7 @@
 - **结构由核心校验**：团队拓扑、通信权限、观察范围由核心在运行时校验并存入 SQLite。
 - **混合团队**：内置成员可接 Responses / Anthropic / OpenAI 兼容（chat-completions）三类线上协议，
   也能直接拉起本机 `codex` CLI 当执行成员。
-- **全程可见**：TUI 里有团队、任务、消息、共享空间、批准队列、计划、diff 审查与日志面板。
+- **全程可见**：TUI 里有团队、任务、消息、共享空间、批准队列、计划、diff 审查、日志面板和成员持久记录浏览。
 - **接得住中断**：回合被中断、任务卡住、目标没跑完，`--resume` 接着走。
 
 > **首次使用：** [下载安装与升级](docs/INSTALL.md) · [最新发行版](https://github.com/seek-hope/TeamAgents/releases/latest)
@@ -33,12 +33,17 @@
 - **多模型混合**：同一团队里可以同时有 DeepSeek / Kimi / GLM / Anthropic / OpenAI 系模型与 Codex 执行成员。
 - **共享空间与信息隔离**：`publish_shared` / `read_shared` 按读写权限；观察者只看被授权的对象与载荷；
   成员私有上下文不进 Leader 上下文，也不因此获得回信通道。
+- **Chat 私有辅助**：Chat 成员可用 `run_subagent` 在本回合内运行一个不具团队身份的私有辅助；辅助只继承
+  成员已绑定的执行工具和权限，模型步骤计入父回合预算，团队动作与父历史保持隔离。
 - **权限门**：`approved_scope`（默认，越界请求批准）与 `full_auto`（仅用户可开，TUI `Ctrl+F`）。
   批准绑定具体操作与参数：`once` 用后即失效，参数变了要重新批准。
 - **执行前策略钩子**：`[hooks] pre_tool` 能在任何原生工具执行前拦下（exit 2 = 拒绝，stderr 作原因）；
   `[hooks] notify` 做异步事件通知。
 - **断点恢复**：会话、任务、消息投递位置、成员线程、批准队列全部持久化；中断留下的
   "结果不明回合"可在界面里按 `c` 结清。
+- **成员记录（只读）**：`/history` 或团队/日志页签按 `h`，可查看当前及已移除成员已经落盘的
+  对话树、线性快照、回合检查点和相关团队事件；不会启动后端、注入 Leader 或修改执行状态。
+  Codex 的完整外部历史、工具详情和内部推理仍由 Codex 自身保存，不由 TeamAgents 冒充展示。
 - **工具面**：文件读写/搜索/原子多文件编辑、持久 shell（`cd`/`export` 跨命令保留）、网页搜索与抓取、
   MCP（stdio 与 streamable HTTP）、Skills。
 - **隔离**：成员 shell 走 `bubblewrap`；缺失时明确报错，不会静默退化成不隔离执行。
@@ -126,7 +131,9 @@ teamagents exec --json [--timeout SEC] [--check CMD] PROMPT|-    # 机器可读�
 TUI：`Enter` 发送、`Shift+Enter`/`Ctrl+J` 换行、`Esc` 停止 Leader、`Ctrl+Q` 退出；
 `Tab` 进管理面板（`Ctrl+T` 切页签，面板内 `Esc`/`Tab` 回输入框）、`Ctrl+G` 批准队列、
 `Ctrl+F` 全自动、`Ctrl+P` 暂停；
-团队页签 `p` 看计划、`v` 看 diff，日志页签 `v` 看 diff，任务页签 `c` 结清无活动回合的任务。
+团队页签 `p` 看计划、`v` 审查实际工作区，日志页签 `v` 看当前成员工作区，`/review` 看 Leader 工作区；
+对比首次观察快照，支持多批次改动、恢复和分页，共享目录不归因单个成员；团队/日志页签 `h` 浏览成员记录，
+`/history` 浏览全部成员。任务页签 `c` 结清无活动回合的任务。
 完整键位与面板说明见 [用户指南](docs/USER-GUIDE.md)。
 
 ## 配置与团队

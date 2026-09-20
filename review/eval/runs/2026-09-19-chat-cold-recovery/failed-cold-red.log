@@ -1,0 +1,19 @@
+   Compiling teamagents-engine v0.1.2 (/home/rimuru/Projects/Code/for_fun/TeamAgents/engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.38s
+     Running tests/recovery.rs (engine/target/debug/deps/recovery-9412ac2939d20a13)
+
+running 1 test
+
+thread 'chat_model_failure_survives_a_failed_commit_and_sigkill_without_another_request' (147) panicked at tests/recovery.rs:364:9:
+no additional model request is allowed at this boundary
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test chat_model_failure_survives_a_failed_commit_and_sigkill_without_another_request ... FAILED
+
+failures:
+
+failures:
+    chat_model_failure_survives_a_failed_commit_and_sigkill_without_another_request
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.07s
+
+error: test failed, to rerun pass `--test recovery`

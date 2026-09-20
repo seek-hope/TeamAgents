@@ -482,25 +482,50 @@ impl ToolGateway {
             Err(e) => return self.receipt_placeholder(&call_id, false, json!({}), Some(e)),
         };
         if let Some(kind) = team_action_kind(tool) {
-            let mut payload = args.clone();
-            if tool == "apply_topology_patch" && payload.get("reject").and_then(|v| v.as_bool()) != Some(true) {
-                if let Some(prepare) = &self.topology_prepare {
-                    if let Err(e) = prepare(&mut payload) {
-                        return self.receipt_placeholder(&call_id, false, json!({}), Some(e));
-                    }
-                }
-            }
             let action = teamagents_core::models::TeamAction {
                 action_id: call_id.clone(),
                 session_id: self.core.session_id.clone(),
                 actor_id: self.agent_id.clone(),
                 run_id: Some(self.run_id.clone()),
                 kind,
-                payload,
+                payload: args.clone(),
             };
-            return match self.core.submit(&action) {
+            let mut prepared_operations = None;
+            if kind == ActionKind::ApplyTopologyPatch {
+                if let Some(prepare) = &self.topology_prepare {
+                    // Validate identity, envelope, proposal and revision before
+                    // any profile writes. Stored proposals use the same defaults
+                    // as inline operations; submit remains the final authority.
+                    let operations = match self.core.topology_operations_for_preparation(&action) {
+                        Ok(operations) => operations,
+                        Err(e) => return Receipt::failure(&action, e),
+                    };
+                    if let Some(operations) = operations {
+                        let mut payload = action.payload.clone();
+                        payload["operations"] = json!(operations);
+                        if let Err(e) = prepare(&mut payload) {
+                            return self
+                                .core
+                                .submit_prepared_topology(&action, Err(&e))
+                                .unwrap_or_else(|error| Receipt::failure(&action, error));
+                        }
+                        prepared_operations = payload["operations"].as_array().cloned();
+                        if prepared_operations.is_none() {
+                            return self
+                                .core
+                                .submit_prepared_topology(&action, Err("prepared topology operations must be an array"))
+                                .unwrap_or_else(|error| Receipt::failure(&action, error));
+                        }
+                    }
+                }
+            }
+            let submitted = match &prepared_operations {
+                Some(operations) => self.core.submit_prepared_topology(&action, Ok(operations)),
+                None => self.core.submit(&action),
+            };
+            return match submitted {
                 Ok(receipt) => receipt,
-                Err(e) => self.receipt_placeholder(&call_id, false, json!({}), Some(e)),
+                Err(e) => Receipt::failure(&action, e),
             };
         }
         let (decision, approval) = match self.approvals.check(&self.agent_id, &self.run_id, tool, args, &call_id) {
@@ -575,6 +600,177 @@ impl ToolGateway {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prepared_topology_rechecks_revision_after_preparation() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use teamagents_core::models::TeamAction;
+
+        let core = CoreClient::open(":memory:", "s-race").unwrap();
+        core.call_in_session("create_session", json!({"cwd":"/tmp"})).unwrap();
+        core.call_in_session(
+            "save_spec",
+            json!({"spec":{
+                "leader_id":"leader", "agents":[{"id":"leader", "name":"Leader", "role":"leader",
+                    "runtime_kind":"deepagents", "model_profile":"m"}]
+            }}),
+        )
+        .unwrap();
+        core.call_in_session("set_catalog", json!({"catalog":{"models":{"m":{"provider":"openai", "model":"test"}}}}))
+            .unwrap();
+        assert!(
+            core.submit(&TeamAction {
+                action_id: "start".into(),
+                session_id: "s-race".into(),
+                actor_id: "user".into(),
+                run_id: None,
+                kind: ActionKind::UserMessage,
+                payload: json!({"text":"build"}),
+            })
+            .unwrap()
+            .ok
+        );
+        let run_id = core.state().unwrap()["runs"][0]["run_id"].as_str().unwrap().to_string();
+        let other = core.clone();
+        let preparations = Arc::new(AtomicUsize::new(0));
+        let counter = preparations.clone();
+        let prepare: TopologyPrepare = Arc::new(move |payload| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            let receipt = other.submit(&TeamAction {
+                action_id: "concurrent-patch".into(),
+                session_id: "s-race".into(),
+                actor_id: "leader".into(),
+                run_id: None,
+                kind: ActionKind::ApplyTopologyPatch,
+                payload: json!({
+                    "base_revision":1, "operations":[{"op":"add_channel",
+                        "channel":{"source":"leader", "targets":["leader"], "mode":"message"}}]
+                }),
+            })?;
+            assert!(receipt.ok, "{receipt:?}");
+            payload["operations"][0]["agent"]["model_profile"] = json!("m");
+            Ok(())
+        });
+        let gateway = ToolGateway::with_control(
+            core.clone(),
+            "leader",
+            &run_id,
+            ApprovalGate::new(core.clone(), PermissionPolicy::default()),
+            None,
+            Arc::new(TurnControl::default()),
+            Some(prepare),
+            None,
+        );
+        let payload = json!({"base_revision":1, "operations":[{"op":"add_agent", "agent":{
+            "id":"worker", "name":"Worker", "role":"worker", "runtime_kind":"deepagents"
+        }}]});
+        let receipt = gateway.call("apply_topology_patch", &payload, "racing-call");
+        assert!(!receipt.ok && receipt.error.as_deref().unwrap_or("").contains("stale"), "{receipt:?}");
+        assert_eq!(core.state().unwrap()["revision"], 2);
+        assert_eq!(core.state().unwrap()["spec"]["agents"].as_array().unwrap().len(), 1);
+        assert_eq!(json!(gateway.call("apply_topology_patch", &payload, "racing-call")), json!(receipt));
+        assert_eq!(preparations.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn prepared_topology_replays_original_receipt_without_running_preparation_again() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use teamagents_core::models::TeamAction;
+
+        for stored in [false, true] {
+            for outcome in ["applied", "core_refused", "prepare_refused"] {
+                let dir = std::env::temp_dir().join(format!("ta-gate-topology-{}", uuid::Uuid::new_v4()));
+                std::fs::create_dir_all(&dir).unwrap();
+                let database = dir.join("team.db");
+                let core = CoreClient::open(database.to_str().unwrap(), "s-topology").unwrap();
+                core.call_in_session("create_session", json!({"cwd":dir})).unwrap();
+                core.call_in_session(
+                    "save_spec",
+                    json!({"spec":{
+                        "leader_id":"leader", "agents":[{"id":"leader", "name":"Leader", "role":"leader",
+                            "runtime_kind":"deepagents", "model_profile":"m"}]
+                    }}),
+                )
+                .unwrap();
+                core.call_in_session(
+                    "set_catalog",
+                    json!({"catalog":{"models":{"m":{"provider":"openai", "model":"test"}}}}),
+                )
+                .unwrap();
+                let action = |id: &str, kind, payload| TeamAction {
+                    action_id: id.into(),
+                    session_id: "s-topology".into(),
+                    actor_id: "leader".into(),
+                    run_id: None,
+                    kind,
+                    payload,
+                };
+                let mut start = action("start", ActionKind::UserMessage, json!({"text":"build a team"}));
+                start.actor_id = "user".into();
+                assert!(core.submit(&start).unwrap().ok);
+                let run_id = core.state().unwrap()["runs"][0]["run_id"].as_str().unwrap().to_string();
+                let operations = json!([{"op":"add_agent", "agent":{
+                    "id":"worker", "name":"Worker", "role":"worker", "runtime_kind":"deepagents"
+                }}]);
+                let payload = if stored {
+                    let proposed = core
+                        .submit(&action("proposal", ActionKind::ProposeTeamChange, json!({"operations":operations})))
+                        .unwrap();
+                    assert!(proposed.ok);
+                    json!({"patch_id":proposed.result["patch_id"]})
+                } else {
+                    json!({"base_revision":1, "operations":operations})
+                };
+                let preparations = Arc::new(AtomicUsize::new(0));
+                let counter = preparations.clone();
+                let prepare: TopologyPrepare = Arc::new(move |payload| {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    payload["operations"][0]["agent"]["model_profile"] = json!("m");
+                    if outcome == "prepare_refused" {
+                        return Err("profile persistence failed".into());
+                    }
+                    if outcome == "core_refused" {
+                        payload["operations"][0]["agent"]["role"] = json!("leader");
+                    }
+                    Ok(())
+                });
+                let gateway_for = |core: Arc<CoreClient>| {
+                    ToolGateway::with_control(
+                        core.clone(),
+                        "leader",
+                        &run_id,
+                        ApprovalGate::new(core, PermissionPolicy::default()),
+                        None,
+                        Arc::new(TurnControl::default()),
+                        Some(prepare.clone()),
+                        None,
+                    )
+                };
+                let gateway = gateway_for(core.clone());
+                let receipt = gateway.call("apply_topology_patch", &payload, "same-call");
+                assert_eq!(receipt.ok, outcome == "applied", "{receipt:?}");
+                let before = core.state().unwrap();
+                assert_eq!(json!(gateway.call("apply_topology_patch", &payload, "same-call")), json!(receipt));
+                assert_eq!(preparations.load(Ordering::SeqCst), 1);
+                drop(gateway);
+                drop(core);
+
+                let reopened = CoreClient::open(database.to_str().unwrap(), "s-topology").unwrap();
+                let gateway = gateway_for(reopened.clone());
+                assert_eq!(json!(gateway.call("apply_topology_patch", &payload, "same-call")), json!(receipt));
+                let mut changed = payload.clone();
+                changed["reject"] = json!(true);
+                let collision = gateway.call("apply_topology_patch", &changed, "same-call");
+                assert!(!collision.ok);
+                assert!(collision.error.unwrap().contains("different action data"));
+                assert_eq!(preparations.load(Ordering::SeqCst), 1, "replay/collision must not repeat preparation");
+                assert_eq!(reopened.state().unwrap(), before);
+                drop(gateway);
+                drop(reopened);
+                std::fs::remove_dir_all(dir).unwrap();
+            }
+        }
+    }
 
     /// `[hooks] pre_tool` is a real policy gate: a denied call must not reach the
     /// executor at all, and the reason must reach the model.

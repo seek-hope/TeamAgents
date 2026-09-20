@@ -1,0 +1,26 @@
+   Compiling teamagents-engine v0.1.2 (/home/rimuru/Projects/Code/for_fun/TeamAgents/engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.25s
+     Running tests/tools_sandbox.rs (engine/target/debug/deps/tools_sandbox-64a47c1ad562dbe8)
+
+running 18 tests
+test isolated_workspace_inputs_note_is_not_truncated ... ok
+test file_tools_reject_fifo_without_waiting_for_a_writer ... ok
+test web_tools_are_fail_closed_and_ordered_by_member_binding ... ok
+test guard_url_matches_the_blocked_range_table ... ok
+test paged_reads_preserve_middle_lines_and_multibyte_long_lines ... ok
+test batch_edits_recheck_all_versions_after_waiting_for_locks ... ok
+test independent_members_cannot_both_commit_the_same_file_version ... ok
+test batch_edits_reject_oversized_results_before_changing_any_file ... ok
+test batch_edits_are_all_or_nothing ... ok
+test file_tools_reject_dangling_links_and_keep_in_root_links_working ... ok
+test long_shell_output_is_stored_as_a_readable_artifact ... ok
+test edits_reject_ambiguous_matches_and_writes_preserve_permissions_and_versions ... ok
+test persistent_shell_captures_the_actual_directory_instead_of_exported_pwd ... ok
+test persistent_shell_keeps_cd_and_exports_between_commands ... ok
+test searches_respect_ignores_and_workspace_boundaries ... ok
+test persistent_shell_refuses_missing_workdirs_before_running_the_command ... ok
+test an_interrupted_command_does_not_advance_the_shell_state ... ok
+test shell_survives_output_larger_than_the_pipe_buffer ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.09s
+

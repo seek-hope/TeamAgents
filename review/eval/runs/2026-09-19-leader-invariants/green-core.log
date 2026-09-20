@@ -1,0 +1,128 @@
+   Compiling teamagents-core v0.1.2 (/home/rimuru/Projects/Code/for_fun/TeamAgents/core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.50s
+     Running unittests src/lib.rs (core/target/debug/deps/teamagents_core-41334669e1558585)
+
+running 25 tests
+test control::tests::pbool_uses_json_truthiness ... ok
+test models::tests::spec_roundtrip_and_refs ... ok
+test models::tests::spec_rejects_unknown_fields_and_bad_refs ... ok
+test models::tests::enum_wire_strings_are_stable ... ok
+test views::tests::unknown_observer_scope_is_rejected_and_fails_closed ... ok
+test views::tests::task_completed_reaches_requester_only ... ok
+test views::tests::user_message_pushes_to_leader ... ok
+test storage::tests::drop_pending_deliveries_keeps_the_reason ... ok
+test server::tests::approval_find_run_endpoint_returns_newest_usable ... ok
+test storage::tests::missing_or_corrupt_spec_is_an_error_not_a_panic ... ok
+test storage::tests::unknown_stored_status_is_an_error_not_a_dropped_row ... ok
+test server::tests::expire_approval_endpoint_contract ... ok
+test storage::tests::find_run_approval_returns_the_newest_usable_decision ... ok
+test storage::tests::next_batch_no_advances_the_runtime_ledger ... ok
+test server::tests::emit_persists_events_and_reports_ok ... ok
+test server::tests::session_metadata_distinguishes_missing_and_unreadable_specs ... ok
+test storage::tests::stored_leader_invariants_are_checked_without_rewriting_revisions ... ok
+test storage::tests::expire_approval_only_touches_pending_and_approved_once ... ok
+test storage::tests::ack_advances_last_applied_batch ... ok
+test storage::tests::legacy_limits_keys_are_dropped_on_load ... ok
+test server::tests::save_spec_rejects_invalid_leaders_without_advancing_revision ... ok
+test storage::tests::future_schema_version_is_an_error_not_a_panic ... ok
+test storage::tests::runs_for_state_keeps_every_active_run_and_caps_terminal_history ... ok
+test server::tests::malformed_params_are_errors_not_crashes ... ok
+test storage::tests::history_pruning_keeps_pending_deliveries_and_their_events ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running unittests src/main.rs (core/target/debug/deps/teamagents_core-b2e30d53da06c892)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/delivery_acl.rs (core/target/debug/deps/delivery_acl-6c3aa0ca3fffa58b)
+
+running 10 tests
+test invalid_observer_override_never_falls_back_to_the_raw_payload ... ok
+test delivery_rejection_failure_rolls_back_the_permission_change ... ok
+test queued_direct_message_is_dropped_when_channel_is_revoked ... ok
+test external_acceptance_ledger_does_not_consume_offers_or_accept_foreign_ids ... ok
+test buffered_mid_turn_push_is_rechecked_before_drain ... ok
+test shared_delivery_loses_read_access_but_task_receipts_keep_their_return_path ... ok
+test scope_only_patch_waits_for_the_receiving_observers_execution_boundary ... ok
+test original_audience_and_payload_remain_limits_after_a_new_grant ... ok
+test unknown_input_is_audited_without_acknowledgement_or_automatic_replay ... ok
+test queued_observer_deliveries_follow_revocation_and_never_regain_old_payload ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+     Running tests/engine.rs (core/target/debug/deps/engine-10ecf23a5d07fd98)
+
+running 50 tests
+test cancelled_queued_run_cannot_begin ... ok
+test action_id_reuse_with_different_payload_is_rejected ... ok
+test begin_run_emits_run_started_with_the_wake_reason ... ok
+test delivery_batch_ledger_round_trips_through_finalize ... ok
+test begin_run_starts_the_task_before_announcing_the_run ... ok
+test complete_task_requires_an_active_run ... ok
+test apply_patch_with_empty_operations_uses_the_stored_operations ... ok
+test payload_hash_matches_golden_wire_vectors ... ok
+test cancel_task_without_run_cancels_immediately ... ok
+test cancel_task_converges_run_parked_on_task_wait ... ok
+test cancel_task_cancels_queued_run ... ok
+test confirmed_recovery_can_commit_a_pending_goal_completion ... ok
+test acknowledging_an_unknown_run_unblocks_completion ... ok
+test finalize_rechecks_work_added_after_signal_done ... ok
+test finalize_goal_done_after_signal_done ... ok
+test approval_parked_run_does_not_block_boundary ... ok
+test blocked_tasks_are_recoverable_by_the_leader ... ok
+test failed_transaction_keeps_prior_committed_pushes ... ok
+test mid_turn_push_uses_scoped_observer_payload ... ok
+test finalize_commits_task_and_wakes_waiter ... ok
+test late_completion_does_not_resurrect_a_cancelled_task_or_run ... ok
+test emit_reports_store_errors_instead_of_swallowing_them ... ok
+test p1_validation_guards ... ok
+test refused_messages_and_spaces_name_the_valid_options ... ok
+test read_shared_rejects_malformed_paging_arguments ... ok
+test publish_shared_needs_nonempty_content_or_ref ... ok
+test reduce_failure_rolls_back_and_the_refusal_replays ... ok
+test reduce_write_failure_rolls_back_the_shared_entry ... ok
+test t1_user_message_queues_leader_run ... ok
+test t1_assign_task_dispatches_to_worker ... ok
+test signal_done_blocked_by_unfinished_work ... ok
+test run_parked_after_its_approval_was_decided_is_woken_instead_of_stuck ... ok
+test shared_publish_and_read_flow ... ok
+test task_participants_keep_full_wait_results ... ok
+test stale_goal_completion_cannot_overwrite_a_new_goal ... ok
+test wait_for_tasks_refuses_invisible_tasks_without_partial_registration ... ok
+test rolled_back_transaction_drops_mid_turn_pushes ... ok
+test task_wait_parked_run_does_not_block_boundary ... ok
+test topology_patch_add_and_stale_reject ... ok
+test wait_for_tasks_reports_results_keyed_by_task_id ... ok
+test wait_for_tasks_rejects_unrelated_member_and_filters_stale_waiter ... ok
+test wake_info_reports_task_results_keyed_by_task_id ... ok
+test waiting_boundary_patch_can_be_rejected_and_releases_draining ... ok
+test observer_wait_uses_current_permissions_after_topology_change ... ok
+test observer_wait_resumes_without_disclosing_unsubscribed_outcomes ... ok
+test new_user_input_invalidates_an_earlier_goal_completion_request ... ok
+test topology_patch_rejects_adding_a_second_leader ... ok
+test topology_patch_rejects_promoting_a_second_leader ... ok
+test topology_patch_rejects_switching_the_leader_to_codex ... ok
+test authorized_observer_wait_receives_only_its_declared_scope ... ok
+
+test result: ok. 50 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.70s
+
+     Running tests/output_references.rs (core/target/debug/deps/output_references-9a2dd67f09bad692)
+
+running 5 tests
+test reference_validation_storage_failure_does_not_settle_or_acknowledge_the_run ... ok
+test rejected_reference_settlement_rolls_back_its_status_events_and_deliveries_together ... ok
+test task_result_references_validate_the_whole_array_and_keep_the_last_valid_request ... ok
+test pending_private_or_retargeted_references_block_completion_without_publishing ... ok
+test shared_references_reject_private_handles_paths_and_invalid_types_without_publishing ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+   Doc-tests teamagents_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

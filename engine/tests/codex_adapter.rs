@@ -125,10 +125,9 @@ fn codex_approval_flow_parks_decides_and_resumes() {
     runner.close();
 }
 
-/// The app-server dying mid-turn must release the driver with a Failed
-/// outcome: no turn/completed is coming to wake it (review 2026-09-15).
+/// A broken connection is not a confirmed failed external execution.
 #[test]
-fn codex_app_server_death_mid_turn_fails_the_driver() {
+fn codex_app_server_death_mid_turn_releases_the_driver_with_unknown_outcome() {
     let (_env, core, runner) = setup("cx-die", "die");
     let run = turn_run("cx-die", "run_die");
     let gw = gateway(&core, "run_die");
@@ -143,8 +142,8 @@ fn codex_app_server_death_mid_turn_fails_the_driver() {
     let outcome = rx
         .recv_timeout(std::time::Duration::from_secs(10))
         .expect("driver released within 10s of the app-server's death");
-    assert_eq!(outcome.status, TurnStatus::Failed);
-    assert_eq!(runner.query_state("run_die"), Some(TurnStatus::Failed));
+    assert_eq!(outcome.status, TurnStatus::OutcomeUnknown);
+    assert_eq!(runner.query_state("run_die"), Some(TurnStatus::OutcomeUnknown));
     runner.close();
 }
 
@@ -156,7 +155,7 @@ fn codex_reconnects_after_app_server_death() {
     let (_env, core, runner) = setup("cx-re", "die-once");
     let run1 = turn_run("cx-re", "run_re1");
     let outcome1 = runner.start_or_resume(&run1, &view(), &gateway(&core, "run_re1"), &json!({"reason": "new_input"}));
-    assert_eq!(outcome1.status, TurnStatus::Failed);
+    assert_eq!(outcome1.status, TurnStatus::OutcomeUnknown);
     let run2 = turn_run("cx-re", "run_re2");
     let outcome2 = runner.start_or_resume(&run2, &view(), &gateway(&core, "run_re2"), &json!({"reason": "new_input"}));
     assert_eq!(outcome2.status, TurnStatus::Completed);

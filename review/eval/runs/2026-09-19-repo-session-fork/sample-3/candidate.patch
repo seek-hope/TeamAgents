@@ -1,0 +1,321 @@
+--- a/engine/src/worker.rs
++++ b/engine/src/worker.rs
+@@ -5,8 +5,11 @@
+ //!
+ //! The worker owns the Runtime; the Rust TUI is a pure client of this protocol.
+ 
+-use crate::session::{open_session, OpenOptions, OpenedSession};
+-use crate::sessions::{archive_session, delete_session, list_sessions, new_session_id, session_paths};
++use crate::session::{
++    copy_session_model_config, discard_session_dir, fork_leader_conversation, open_session, OpenOptions,
++    OpenedSession,
++};
++use crate::sessions::{archive_session, delete_session, list_sessions, new_session_id};
+ use crate::scripted::Step;
+ use crate::{config, VERSION};
+ use serde_json::{json, Value as Json};
+@@ -55,7 +58,21 @@
+     }
+ 
+     fn open(&self, params: &Json) -> Result<Json, String> {
+-        self.close_current();
++        let resume = params.get("resume").and_then(|v| v.as_str()).map(str::to_string);
++        // Reopening the session we already hold has to release its lock first;
++        // any other target is opened while the current session stays mounted, so
++        // a failed open leaves the old session (cwd/team/mode) usable (D-26).
++        let remount = resume.is_some()
++            && self
++                .opened
++                .lock()
++                .unwrap()
++                .as_ref()
++                .map(|o| Some(&o.session_id) == resume.as_ref())
++                .unwrap_or(false);
++        if remount {
++            self.close_current();
++        }
+         let cwd = params
+             .get("cwd")
+             .and_then(|v| v.as_str())
+@@ -63,14 +80,15 @@
+             .or_else(|| std::env::current_dir().ok());
+         let full_auto = params.get("fullAuto").and_then(|v| v.as_bool()).unwrap_or(false);
+         let team = params.get("team").and_then(|v| v.as_str()).map(str::to_string);
+-        *self.cwd.lock().unwrap() = cwd.clone();
+-        *self.full_auto.lock().unwrap() = full_auto;
+-        *self.team.lock().unwrap() = team.clone();
+-
+-        let initial_spec = match &team {
+-            Some(path) => Some(config::load_spec_file(std::path::Path::new(path))?),
+-            // fork passes the source session's live spec directly (D-26)
+-            None => params.get("initial_spec").cloned(),
++
++        let initial_spec = match params.get("initial_spec").filter(|v| !v.is_null()) {
++            // fork passes the source session's live spec directly (D-26), so an
++            // explicit spec wins over the team file the source was opened from
++            Some(spec) => Some(spec.clone()),
++            None => match &team {
++                Some(path) => Some(config::load_spec_file(std::path::Path::new(path))?),
++                None => None,
++            },
+         };
+         let scripts: Option<HashMap<String, Vec<Step>>> = params
+             .get("scripts")
+@@ -89,8 +107,8 @@
+             .transpose()?;
+ 
+         let opened = open_session(OpenOptions {
+-            cwd,
+-            session_id: params.get("resume").and_then(|v| v.as_str()).map(str::to_string),
++            cwd: cwd.clone(),
++            session_id: resume,
+             full_auto,
+             initial_spec,
+             catalog: None,
+@@ -102,7 +120,16 @@
+             out(&json!({"push": "delta", "run_id": run_id, "agent_id": agent_id, "text": text}));
+         }));
+         opened.runtime.start();
+-        *self.opened.lock().unwrap() = Some(opened.clone());
++        // only now that the new session is up does the old one go away
++        let previous = self.opened.lock().unwrap().replace(opened.clone());
++        *self.cwd.lock().unwrap() = cwd;
++        *self.full_auto.lock().unwrap() = full_auto;
++        *self.team.lock().unwrap() = team;
++        if let Some(previous) = previous {
++            if previous.session_id != opened.session_id {
++                previous.close();
++            }
++        }
+         Ok(json!({
+             "session_id": opened.session_id,
+             "state_dir": config::state_dir().to_string_lossy(),
+@@ -219,23 +246,38 @@
+                 let leader = state.get("leader_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                 let spec = state.get("spec").cloned().ok_or("no spec")?;
+                 let cwd = self.cwd.lock().unwrap().clone().unwrap_or_else(|| PathBuf::from("."));
+-                // fork = same spec + leader's history tree, fresh team state
++                let (_src_leader, src_thread) = opened.leader_thread()?;
++                // fork = same spec + leader's conversation, fresh team state
+                 // (tasks/runs/events are facts of the source session and are
+                 // NOT copied; file changes are never rolled back — D-26)
+                 let new_id = new_session_id(&cwd);
+-                let tree_src = session_paths(&opened.session_id).base.join("members").join(&leader).join("chat_tree.json");
+-                if tree_src.is_file() {
+-                    let dest_dir = session_paths(&new_id).base.join("members").join(&leader);
+-                    std::fs::create_dir_all(&dest_dir).map_err(|e| e.to_string())?;
+-                    std::fs::copy(&tree_src, dest_dir.join("chat_tree.json")).map_err(|e| e.to_string())?;
++                // the session-scoped model config (/model overrides + profiles
++                // this session created) belongs to the conversation, and has to
++                // be in place before the new session boots
++                if let Err(error) = copy_session_model_config(&opened.session_id, &new_id) {
++                    discard_session_dir(&new_id);
++                    return Err(error);
+                 }
+-                let mut out = self.open(&json!({
++                let mut out = match self.open(&json!({
+                     "cwd": cwd.to_string_lossy(),
+-                    "resume": new_id,
++                    "resume": new_id.clone(),
+                     "fullAuto": *self.full_auto.lock().unwrap(),
+-                    "team": Json::Null,
++                    "team": self.team.lock().unwrap().clone(),
+                     "initial_spec": spec,
+-                }))?;
++                })) {
++                    Ok(out) => out,
++                    // the source session stays mounted and usable; the session
++                    // this fork had started is dropped again
++                    Err(error) => {
++                        discard_session_dir(&new_id);
++                        return Err(error);
++                    }
++                };
++                // the tree and the linear history move onto the new session's
++                // own thread (its epoch, not the source session's)
++                let forked = self.current()?;
++                let (_leader, dst_thread) = forked.leader_thread()?;
++                fork_leader_conversation(&opened.session_id, &new_id, &leader, &src_thread, &dst_thread)?;
+                 out["forked_from"] = json!(opened.session_id.clone());
+                 Ok(out)
+             }
+--- a/engine/src/session.rs
++++ b/engine/src/session.rs
+@@ -102,14 +102,23 @@
+ 
+ /// Load persisted overrides, dropping entries that no longer validate against
+ /// the current spec/catalog (members or profiles may have changed since).
+-fn load_model_overrides(session_id: &str, catalog: &UserConfig, agents: &[AgentSpec]) -> HashMap<String, ModelOverride> {
++fn load_model_overrides(
++    session_id: &str,
++    catalog: &UserConfig,
++    session_profiles: &HashMap<String, ModelProfile>,
++    agents: &[AgentSpec],
++) -> HashMap<String, ModelOverride> {
+     let Ok(text) = std::fs::read_to_string(overrides_path(session_id)) else { return HashMap::new() };
+     let parsed: HashMap<String, ModelOverride> = serde_json::from_str(&text).unwrap_or_default();
+     parsed
+         .into_iter()
+         .filter(|(id, ov)| {
+             let Some(agent) = agents.iter().find(|a| &a.id == id) else { return false };
+-            let Some(profile) = catalog.models.get(ov.profile.as_ref().unwrap_or(&agent.model_profile)) else { return false };
++            // session-scoped profiles (D-30) are configured names too: without
++            // them an override onto an auto-created profile would be dropped on
++            // the next open (the model report would silently fall back)
++            let name = ov.profile.as_ref().unwrap_or(&agent.model_profile);
++            let Some(profile) = session_profiles.get(name).or_else(|| catalog.models.get(name)) else { return false };
+             if ov.profile.is_some() && agent.runtime_kind == RuntimeKind::Codex && profile.protocol != "openai" {
+                 return false;
+             }
+@@ -197,7 +206,7 @@
+ 
+     /// (leader_id, current conversation thread) for rewind/fork (D-26).
+     /// The thread is `ctx:{agent}:{context_epoch}` (control.rs::context_ref).
+-    fn leader_thread(&self) -> Result<(String, String), String> {
++    pub fn leader_thread(&self) -> Result<(String, String), String> {
+         let state = self.core.call_in_session("state", json!({"include_events": false}))?;
+         let leader = state
+             .get("leader_id")
+@@ -520,6 +529,74 @@
+     let dir = session_paths(session_id).base.join("members").join(agent_id);
+     let _ = std::fs::create_dir_all(&dir);
+     dir
++}
++
++/// Session-scoped model config (`profiles.json` + `model_overrides.json`) is
++/// part of what the conversation was configured with, so a fork inherits both
++/// files. They have to be in place before the new session boots, because
++/// `open_session` reads them while bootstrapping (D-26/D-29/D-30).
++pub fn copy_session_model_config(src_session_id: &str, dst_session_id: &str) -> Result<(), String> {
++    let dst = session_paths(dst_session_id).base;
++    for src in [profiles_path(src_session_id), overrides_path(src_session_id)] {
++        if !src.is_file() {
++            continue;
++        }
++        std::fs::create_dir_all(&dst).map_err(|e| format!("fork: {}: {e}", dst.display()))?;
++        let target = dst.join(src.file_name().unwrap_or_default());
++        std::fs::copy(&src, &target).map_err(|e| format!("fork {}: {e}", src.display()))?;
++    }
++    Ok(())
++}
++
++/// Copy the Leader's conversation into a freshly forked session: the chat tree
++/// and the (linear) history move from the source thread onto the new session's
++/// own `ctx:<leader>:<epoch>` thread, keeping every branch, node and leaf. The
++/// source files are only read — a fork never rewrites them (D-26).
++pub fn fork_leader_conversation(
++    src_session_id: &str,
++    dst_session_id: &str,
++    leader: &str,
++    src_thread: &str,
++    dst_thread: &str,
++) -> Result<(), String> {
++    let src_dir = session_paths(src_session_id).base.join("members").join(leader);
++    let dst_dir = session_paths(dst_session_id).base.join("members").join(leader);
++    for name in ["chat_tree.json", "chat_history.json"] {
++        let src = src_dir.join(name);
++        if !src.is_file() {
++            continue;
++        }
++        std::fs::create_dir_all(&dst_dir).map_err(|e| format!("fork: {}: {e}", dst_dir.display()))?;
++        let dst = dst_dir.join(name);
++        if src_thread == dst_thread {
++            // same thread name: the conversation is inherited verbatim
++            std::fs::copy(&src, &dst).map_err(|e| format!("fork {}: {e}", src.display()))?;
++            continue;
++        }
++        let Ok(text) = std::fs::read_to_string(&src) else { continue };
++        let Ok(parsed) = serde_json::from_str::<Json>(&text) else { continue };
++        let mapped = match parsed {
++            // thread-keyed store: the source thread wins over a stale entry that
++            // happens to carry the destination session's epoch
++            Json::Object(mut threads) => {
++                if let Some(messages) = threads.remove(src_thread) {
++                    threads.insert(dst_thread.to_string(), messages);
++                }
++                Json::Object(threads)
++            }
++            // legacy linear history: the whole file is the leader's conversation
++            other => json!({ dst_thread: other }),
++        };
++        let text = serde_json::to_string(&mapped).map_err(|e| e.to_string())?;
++        std::fs::write(&dst, text).map_err(|e| format!("fork {}: {e}", dst.display()))?;
++    }
++    Ok(())
++}
++
++/// Remove the session directory a fork created before its new session could be
++/// opened: a failed fork leaves no half-created session behind.
++pub fn discard_session_dir(session_id: &str) {
++    let _ = std::fs::remove_dir_all(session_paths(session_id).base);
+ }
+ 
+ /// Workspace policy decides one member's working directory — and therefore
+@@ -651,8 +728,12 @@
+         let barriers: BarrierRegistry = Arc::new(Mutex::new(HashMap::new()));
+         let notify = Notify::new(core.clone());
+         let usage_probes: UsageProbes = Arc::new(Mutex::new(HashMap::new()));
+-        let model_overrides: ModelOverrides =
+-            Arc::new(Mutex::new(load_model_overrides(&session_id, &catalog, &agents)));
++        let model_overrides: ModelOverrides = Arc::new(Mutex::new(load_model_overrides(
++            &session_id,
++            &catalog,
++            &session_profiles.lock().unwrap(),
++            &agents,
++        )));
+         let make_runner: RunnerFactory = make_runner_factory(
+             core.clone(),
+             notify.clone(),
+@@ -1291,4 +1372,51 @@
+         assert!(err.contains("no longer configured"), "{err}");
+         let _ = std::fs::remove_dir_all(&root);
+     }
+-}
++
++    #[test]
++    fn fork_conversation_rekeys_the_leaders_thread() {
++        // D-26: a fork keeps the whole tree/linear history but has to move it
++        // onto the new session's own `ctx:<leader>:<epoch>` thread, leaving the
++        // source files untouched.
++        let _env = crate::env_lock();
++        let root = std::env::temp_dir().join(format!("ta-fork-thread-{}", std::process::id()));
++        let _ = std::fs::remove_dir_all(&root);
++        std::env::set_var("XDG_STATE_HOME", root.join("state"));
++        std::env::set_var("XDG_CONFIG_HOME", root.join("config"));
++
++        let src_dir = session_paths("s-src").base.join("members").join("leader");
++        std::fs::create_dir_all(&src_dir).unwrap();
++        let tree = json!({
++            "ctx:leader:1": {"nodes": [{"id": "stale"}]},
++            "ctx:leader:2": {"nodes": [{"id": "u1"}, {"id": "u2"}], "leaf": "u2"},
++        });
++        std::fs::write(src_dir.join("chat_tree.json"), tree.to_string()).unwrap();
++        std::fs::write(
++            src_dir.join("chat_history.json"),
++            json!({"ctx:leader:2": [{"role": "user", "content": "hi"}]}).to_string(),
++        )
++        .unwrap();
++        let before = std::fs::read_to_string(src_dir.join("chat_tree.json")).unwrap();
++
++        fork_leader_conversation("s-src", "s-dst", "leader", "ctx:leader:2", "ctx:leader:1").unwrap();
++
++        let dst_dir = session_paths("s-dst").base.join("members").join("leader");
++        let copied: Json =
++            serde_json::from_str(&std::fs::read_to_string(dst_dir.join("chat_tree.json")).unwrap()).unwrap();
++        // the current thread wins over the stale entry of the new epoch; every
++        // node and the leaf survive
++        assert_eq!(copied["ctx:leader:1"], tree["ctx:leader:2"]);
++        assert!(copied.get("ctx:leader:2").is_none(), "{copied}");
++        let history: Json =
++            serde_json::from_str(&std::fs::read_to_string(dst_dir.join("chat_history.json")).unwrap()).unwrap();
++        assert_eq!(history["ctx:leader:1"][0]["content"], "hi");
++        // the source session is only read
++        assert_eq!(before, std::fs::read_to_string(src_dir.join("chat_tree.json")).unwrap());
++
++        // same epoch on both sides: inherited verbatim
++        fork_leader_conversation("s-src", "s-dst", "leader", "ctx:leader:2", "ctx:leader:2").unwrap();
++        let verbatim = std::fs::read_to_string(dst_dir.join("chat_tree.json")).unwrap();
++        assert!(verbatim.contains("stale"), "{verbatim}");
++        let _ = std::fs::remove_dir_all(&root);
++    }
++}

@@ -1,0 +1,99 @@
+--- a/engine/tests/chat_e2e.rs
++++ b/engine/tests/chat_e2e.rs
+@@ -2688,6 +2688,96 @@
+ }
+ 
+ #[test]
++fn large_window_keeps_recent_source_and_history_pages_on_the_wire() {
++    for window in [None, Some(64_000), Some(1_000_000)] {
++        check_recent_source_visibility(window, false);
++    }
++}
++
++#[test]
++fn private_subagent_large_window_keeps_its_recent_source_and_history_pages() {
++    for window in [None, Some(64_000), Some(1_000_000)] {
++        check_recent_source_visibility(window, true);
++    }
++}
++
++fn check_recent_source_visibility(window: Option<u64>, nested: bool) {
++    let session = format!("recent-source-{}-{nested}", window.unwrap_or(0));
++    let _env = env_guard(&session);
++    let server = FakeOpenAi::start(move |body, _| {
++        let tool_count = body["messages"].as_array().unwrap().iter().filter(|m| m["role"] == "tool").count();
++        let response = if nested && !private_helper_request(body) {
++            if tool_count == 0 {
++                tool_call_response("helper", "run_subagent", json!({"task":"Compare the two source files."}))
++            } else {
++                text_response("Received the private comparison.")
++            }
++        } else {
++            match tool_count {
++                0 => tool_call_response("first-source", "read_file", json!({"path":"first.rs"})),
++                1 => tool_call_response(
++                    "first-page",
++                    "read_history",
++                    json!({"tool_call_id":"first-source", "offset":0, "limit":12_000}),
++                ),
++                2 => tool_call_response("second-source", "read_file", json!({"path":"second.rs"})),
++                3 => tool_call_response(
++                    "second-page",
++                    "read_history",
++                    json!({"tool_call_id":"second-source", "offset":0, "limit":12_000}),
++                ),
++                _ => text_response("Compared the source files."),
++            }
++        };
++        (200, response)
++    });
++    let agent = agent_json("leader", "leader", &["files"]);
++    let core = core_with_spec(&session, json!({"leader_id":"leader", "agents":[agent.clone()]}));
++    let mut prof = profile(&server.base_url(), "openai", json!({}), 0);
++    prof.context_window = window;
++    let executions = Arc::new(AtomicUsize::new(0));
++    let counter = executions.clone();
++    let executor: ToolExecutor = Arc::new(move |_, tool, args, _| {
++        assert_eq!(tool, "read_file");
++        counter.fetch_add(1, Ordering::SeqCst);
++        let marker = if args["path"] == "first.rs" { "FIRST_SOURCE" } else { "SECOND_SOURCE" };
++        Ok(json!({"output":format!("{marker}\n{}", "x".repeat(20_000))}))
++    });
++    let runtime = start_runtime(
++        &core,
++        chat_runner(&core, &agent, prof, "/tmp"),
++        "leader",
++        PermissionPolicy::default(),
++        RuntimeLimits::default(),
++        executor,
++    );
++    runtime.user_message("Compare the source files and their earlier pages.", false).unwrap();
++    assert!(runtime.settle(10));
++    runtime.close();
++    assert!(runs(&core).iter().all(|run| run.status == TurnStatus::Completed));
++    assert_eq!(server.calls(), if nested { 7 } else { 5 });
++    assert_eq!(executions.load(Ordering::SeqCst), 2, "history pages must not execute the source operation again");
++
++    let request = server.body(if nested { 5 } else { 4 });
++    let messages = request["messages"].as_array().unwrap();
++    let content = |id: &str| {
++        messages.iter().find(|m| m["role"] == "tool" && m["tool_call_id"] == id).unwrap()["content"].as_str().unwrap()
++    };
++    let keep_older = window == Some(1_000_000);
++    for (id, marker) in
++        [("first-source", "FIRST_SOURCE"), ("first-page", "FIRST_SOURCE"), ("second-source", "SECOND_SOURCE")]
++    {
++        assert_eq!(content(id).contains(marker), keep_older, "{session}: recent {id} visibility");
++        assert_eq!(content(id).contains("tool output hidden"), !keep_older);
++    }
++    assert!(content("second-page").contains("SECOND_SOURCE"), "the latest answer remains visible at every window");
++    if nested {
++        let parent = server.body(6).to_string();
++        assert!(!parent.contains("FIRST_SOURCE") && !parent.contains("SECOND_SOURCE"), "helper history stays private");
++    }
++}
++
++#[test]
+ fn long_context_compaction_preserves_request_and_reads_large_output_after_restart() {
+     let _env = env_guard("long-context-request");
+     const REQUEST: &str = "请修复解析器；必须保留 CRLF、空字段和用户已有改动。";

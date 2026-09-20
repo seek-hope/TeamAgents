@@ -1,0 +1,20 @@
+{
+  "files": 77,
+  "bytes": 1543900,
+  "rust_files": 58,
+  "rust_lines": 29285,
+  "crates": {
+    "core": {
+      "files": 10,
+      "rust_lines": 6236
+    },
+    "engine": {
+      "files": 40,
+      "rust_lines": 15507
+    },
+    "tui": {
+      "files": 16,
+      "rust_lines": 7542
+    }
+  }
+}

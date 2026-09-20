@@ -1,0 +1,20 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running tests/eval_grader.rs (/tmp/teamagents-repo-fork-20260919/harness/engine/target/debug/deps/eval_grader-36b9c798fa196738)
+
+running 1 test
+
+thread 'grade_candidate' (4757) panicked at tests/eval_grader.rs:406:5:
+assertion `left == right` failed: "隐藏或公开测试失败"；证据：/tmp/teamagents-repo-fork-20260919/sample-1/run/repo-session-fork.grade.json
+  left: Bool(false)
+ right: true
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test grade_candidate ... FAILED
+
+failures:
+
+failures:
+    grade_candidate
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7 filtered out; finished in 11.34s
+
+error: test failed, to rerun pass `--test eval_grader`

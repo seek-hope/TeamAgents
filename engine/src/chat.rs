@@ -160,35 +160,56 @@ pub fn render_view(view: &Json, wake: &Json, workdir: Option<&str>) -> String {
 
 pub const TEAM_TOOL_DOCS: &[(&str, &str)] = &[
     ("send_message", "Send a message to a teammate you are allowed to reach. target='*' broadcasts where a broadcast channel exists."),
-    ("assign_task", "Assign a task to a teammate; returns a task_id immediately and never waits for completion. Include acceptance criteria. The assignee can only run tools listed in its tool_bindings (see members[].tools), so delegate execution work to a member that has files/shell."),
-    ("complete_task", "Report the current task finished with result refs and a short summary; the task becomes SUCCEEDED when your turn ends cleanly."),
+    ("assign_task", "Assign without waiting; returns task_id. Include acceptance criteria. Check members[].tools first: execution work needs files/shell bindings."),
+    ("complete_task", "Submit completion; commits at clean turn end after ownership, state and result_refs checks. Refs must be nonempty strings pointing to work files, /artifacts/ or external evidence. Private context IDs, histories, runtime/config and /tool-output/ refs are refused; first write shareable results."),
     ("wait_for_tasks", "Park this turn until the given tasks finish (or the user sends new input). Releases your execution slot."),
-    ("publish_shared", "Append a structured entry (finding/decision/artifact ref) to a shared space you can write to."),
-    ("read_shared", "Read shared-space entries after a sequence cursor."),
+    ("publish_shared", "Append content or a file/evidence ref to a writable shared space. Private context IDs, histories, runtime/config paths and /tool-output/ refs are refused, including aliases. Write shareable results first; refs grant no file access. supersedes must identify an accessible entry in this session."),
+    ("read_shared", "Read shared entries. Omit after_sequence to continue each space's cursor; pass 0 to reread. limit is a positive integer."),
     ("list_shared", "List shared spaces you can read and their entry counts."),
-    ("request_help", "Ask the Leader for help with your current task."),
+    ("request_help", "Ask the Leader for help. An optional task_id must exist in this session."),
     ("propose_team_change", "Ask the Leader to apply a team change; only the Leader can apply it. Same operations as apply_topology_patch; include a rationale."),
-    ("apply_topology_patch", "Leader only: change the team. Pass base_revision (the number in <team revision=N>) plus operations to apply now, or patch_id to apply/reject a change that propose_team_change created earlier (never invent a patch_id). Operations: {\"op\":\"add_agent\",\"agent\":{\"id\",\"name\",\"role\":\"worker\",\"runtime_kind\":\"deepagents\",\"instructions\",\"tool_bindings\":[\"files\",\"shell\"],\"workspace_policy\":\"shared\"},\"channels\":[{\"source\":\"leader\",\"targets\":[\"<member>\"],\"mode\":\"task\"}]}; {\"op\":\"remove_agent\",\"agent_id\"}; {\"op\":\"update_agent\",\"agent_id\",\"changes\":{...}}. tool_bindings is omitted only for a messaging-only member: omit it and the new member inherits your bindings (pass [] for a member that should only message and wait), and every add_agent also gets message channels both ways with you. add_agent may omit model_profile: a per-member profile is then auto-created from the Leader's current model."),
+    ("apply_topology_patch", "Leader only. Apply nonempty operations with integer base_revision from <team revision=N>, or use an existing patch_id. For a stored proposal, omit operations or pass [] to retain them; a nonempty list replaces them. reject=true requires patch_id. Unknown fields and null are refused. Operations: {\"op\":\"add_agent\",\"agent\":{\"id\",\"name\",\"role\":\"worker\",\"runtime_kind\":\"deepagents\",\"instructions\",\"tool_bindings\":[\"files\",\"shell\"],\"workspace_policy\":\"shared\"},\"channels\":[{\"source\":\"leader\",\"targets\":[\"<member>\"],\"mode\":\"task\"}]}; {\"op\":\"remove_agent\",\"agent_id\"}; {\"op\":\"update_agent\",\"agent_id\",\"changes\":{...}}. Omitted tool_bindings inherit yours; [] grants no execution tools. New members get message channels both ways with you. Omitted model_profile creates a per-member copy of your model. Defaults also apply to stored proposals."),
     ("cancel_task", "Leader only: cancel an unfinished or blocked task; running work stops first. A BLOCKED task (its member turn was interrupted) can only be cleared this way — cancel it and assign the work again as a new task."),
     ("cancel_run", "Leader only: request a turn to stop; side effects are not rolled back. Calling it on a run whose outcome is unknown (a turn interrupted mid-command) acknowledges that outcome and unblocks signal_done."),
     ("signal_done", "Leader only: declare the current user goal complete; the runtime verifies no work, approvals or unknown outcomes are outstanding."),
 ];
 
+/// A private helper belongs to the current Chat member, not to the TeamSpec.
+/// Its only public surface is this parent-member tool; the helper itself gets
+/// an execution-only tool set and never receives team actions or this tool.
+pub const PRIVATE_SUBAGENT_TOOL: &str = "run_subagent";
+const PRIVATE_SUBAGENT_DOC: &str = "Run one private helper synchronously for a bounded task. It shares your model, workspace, permissions and turn budget, but has no team identity, team tools, or access to your conversation history. Supply all necessary task context and acceptance criteria. Its final reply returns here; only you perform team actions. No nested helpers.";
+
+fn private_subagent_schema() -> Json {
+    json!({
+        "name": PRIVATE_SUBAGENT_TOOL,
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "task": {"type": "string", "minLength": 1, "maxLength": 12000},
+                "context": {"type": "string", "maxLength": 16000}
+            },
+            "required": ["task"],
+            "additionalProperties": false
+        }
+    })
+}
+
 fn team_tool_schemas() -> Json {
     json!([
-      {"name": "send_message", "parameters": {"type": "object", "properties": {"target": {"type": "string"}, "text": {"type": "string"}}, "required": ["target", "text"]}},
-      {"name": "assign_task", "parameters": {"type": "object", "properties": {"assignee": {"type": "string"}, "description": {"type": "string"}, "acceptance": {"type": "string"}, "dependencies": {"type": "array", "items": {"type": "string"}}}, "required": ["assignee", "description"]}},
-      {"name": "complete_task", "parameters": {"type": "object", "properties": {"task_id": {"type": "string"}, "result_refs": {"type": "array", "items": {"type": "string"}}, "summary": {"type": "string"}}, "required": ["task_id"]}},
-      {"name": "wait_for_tasks", "parameters": {"type": "object", "properties": {"task_ids": {"type": "array", "items": {"type": "string"}}}, "required": ["task_ids"]}},
-      {"name": "publish_shared", "parameters": {"type": "object", "properties": {"space_id": {"type": "string"}, "content": {"type": "string"}, "kind": {"type": "string"}, "ref": {"type": "string"}}, "required": ["space_id"]}},
-      {"name": "read_shared", "parameters": {"type": "object", "properties": {"space_id": {"type": "string"}, "after_sequence": {"type": "integer"}, "limit": {"type": "integer"}}}},
-      {"name": "list_shared", "parameters": {"type": "object", "properties": {}}},
-      {"name": "request_help", "parameters": {"type": "object", "properties": {"message": {"type": "string"}, "task_id": {"type": "string"}}, "required": ["message"]}},
-      {"name": "propose_team_change", "parameters": {"type": "object", "properties": {"operations": {"type": "array", "items": {"type": "object"}}, "rationale": {"type": "string"}}, "required": ["operations"]}},
-      {"name": "apply_topology_patch", "parameters": {"type": "object", "properties": {"operations": {"type": "array", "items": {"type": "object"}}, "patch_id": {"type": "string"}, "base_revision": {"type": "integer"}, "reject": {"type": "boolean"}}}},
-      {"name": "cancel_task", "parameters": {"type": "object", "properties": {"task_id": {"type": "string"}}, "required": ["task_id"]}},
-      {"name": "cancel_run", "parameters": {"type": "object", "properties": {"run_id": {"type": "string"}}, "required": ["run_id"]}},
-      {"name": "signal_done", "parameters": {"type": "object", "properties": {"summary": {"type": "string"}}}},
+      {"name": "send_message", "parameters": {"type": "object", "properties": {"target": {"type": "string"}, "text": {"type": "string"}}, "required": ["target", "text"], "additionalProperties": false}},
+      {"name": "assign_task", "parameters": {"type": "object", "properties": {"assignee": {"type": "string"}, "description": {"type": "string"}, "acceptance": {"type": "string"}, "dependencies": {"type": "array", "items": {"type": "string"}}, "task_id": {"type": "string", "minLength": 1}, "parent_task_id": {"type": "string"}}, "required": ["assignee", "description"], "additionalProperties": false}},
+      {"name": "complete_task", "parameters": {"type": "object", "properties": {"task_id": {"type": "string"}, "result_refs": {"type": "array", "items": {"type": "string"}}, "summary": {"type": "string"}}, "required": ["task_id"], "additionalProperties": false}},
+      {"name": "wait_for_tasks", "parameters": {"type": "object", "properties": {"task_ids": {"type": "array", "items": {"type": "string"}}}, "required": ["task_ids"], "additionalProperties": false}},
+      {"name": "publish_shared", "parameters": {"type": "object", "properties": {"space_id": {"type": "string"}, "content": {"type": "string"}, "kind": {"type": "string"}, "ref": {"type": "string"}, "supersedes": {"type": "string"}}, "required": ["space_id"], "additionalProperties": false}},
+      {"name": "read_shared", "parameters": {"type": "object", "properties": {"space_id": {"type": "string"}, "after_sequence": {"type": "integer", "minimum": 0}, "limit": {"type": "integer", "minimum": 1}}, "additionalProperties": false}},
+      {"name": "list_shared", "parameters": {"type": "object", "properties": {}, "additionalProperties": false}},
+      {"name": "request_help", "parameters": {"type": "object", "properties": {"message": {"type": "string"}, "task_id": {"type": "string"}}, "required": ["message"], "additionalProperties": false}},
+      {"name": "propose_team_change", "parameters": {"type": "object", "properties": {"operations": {"type": "array", "minItems": 1, "items": {"type": "object"}}, "rationale": {"type": "string"}}, "required": ["operations"], "additionalProperties": false}},
+      {"name": "apply_topology_patch", "parameters": {"type": "object", "properties": {"operations": {"type": "array", "items": {"type": "object"}}, "patch_id": {"type": "string", "minLength": 1}, "base_revision": {"type": "integer"}, "reject": {"type": "boolean"}}, "additionalProperties": false}},
+      {"name": "cancel_task", "parameters": {"type": "object", "properties": {"task_id": {"type": "string"}}, "required": ["task_id"], "additionalProperties": false}},
+      {"name": "cancel_run", "parameters": {"type": "object", "properties": {"run_id": {"type": "string"}}, "required": ["run_id"], "additionalProperties": false}},
+      {"name": "signal_done", "parameters": {"type": "object", "properties": {"summary": {"type": "string"}}, "additionalProperties": false}},
     ])
 }
 
@@ -196,20 +217,20 @@ fn team_tool_schemas() -> Json {
 /// (team tools + shell + bound file/web tools).
 pub const BOUND_TOOL_DOCS: &[(&str, &str)] = &[
     ("ls", "List files in your workspace (path defaults to '.')."),
-    ("read_file", "Read UTF-8 workspace text in bounded pages. offset is a 1-based line; byte_offset is an absolute byte continuation. Follow next_byte_offset until eof. include_sha256 returns a revision for safe edits."),
-    ("write_file", "Write a text file in your workspace, creating parent directories."),
+    ("read_file", "Read UTF-8 workspace text, shared /artifacts/ files, or your private /tool-output/ logs in bounded pages. offset is a 1-based line; byte_offset is an absolute byte continuation. Follow next_byte_offset until eof. include_sha256 returns a revision for safe edits."),
+    ("write_file", "Write a text file in your workspace, creating parent directories. /artifacts/ is shared by the session: write only deliberate deliverables there. /tool-output/ is private and read-only."),
     ("edit_file", "Replace exactly one occurrence of old_string. Ambiguous matches fail unchanged. Pass expected_sha256 from read_file to reject concurrent changes."),
     ("edit_files", "Apply several unique-match edits (different files) as one batch: [{\"path\",\"old_string\",\"new_string\",\"expected_sha256\"?}]. Nothing is written unless every edit matches exactly one place, so a refactor never lands half-applied. Returns the diffs."),
     ("delete", "Delete a file (a directory when recursive=true) from your workspace."),
     ("glob", "Find workspace files matching a glob pattern, e.g. '**/*.py' (max 500 hits)."),
     ("grep", "Search workspace files for a pattern; returns matching lines (max 100)."),
-    ("shell", "Run a shell command in the isolated Linux sandbox (no network by default; network=true requires user approval). Your working directory and exported variables persist between calls; the output starts with [cwd: ...] so you know where the next command will start."),
+    ("shell", "Run a shell command in the isolated Linux sandbox (no network by default; network=true requires user approval). Your working directory and exported variables persist between calls; output starts with [cwd: ...]. Temporary files outside the mounted workspace are discarded after each call: create and use /tmp copies in the same command, or keep needed files in the workspace. If the saved directory disappears, the command is skipped and the next call starts at the workspace root. Long output is saved privately under /tool-output/: use read_file to page through it. /tool-output/ and shared /artifacts/ are file-tool paths and are unavailable inside shell; use write_file to publish shareable results."),
     ("web_search", "Search the web and return title, source URL, snippet, fetch time (and full content when include_content=true)."),
     ("web_fetch", "Fetch a web page and return title, source URL, fetch time and the readable text body (HTML only; capped)."),
     ("skill", "Discover and load agent skills. action='search' with query keywords lists matching skills (name — summary); action='read' with a skill name loads its full instructions. Read a skill before applying it."),
     ("update_plan", "Record or update your short working plan: [{text, status: pending|in_progress|done}]. One item in_progress at a time; mark items done as you finish them. The plan is shown in the UI and repeated back to you each turn."),
     ("view_image", "Look at an image in your workspace (png/jpeg/gif/webp, max 5 MiB). Pass the path; the picture is attached to your next request. Use it for screenshots, diagrams and UI review."),
-    ("read_history", "Retrieve original private tool output by tool_call_id. offset and limit count Unicode characters (offset starts at 0). Follow next_offset until eof."),
+    ("read_history", "Retrieve original private tool output by tool_call_id. offset and limit count Unicode characters (offset starts at 0). Follow next_offset until eof, reusing the original source tool_call_id for every page."),
 ];
 
 fn bound_tool_schemas() -> Json {
@@ -275,10 +296,12 @@ fn tools_payload(bindings: &[String], web: (bool, bool), bound: &[Json]) -> Json
     let allowed: Vec<&str> = TEAM_TOOL_DOCS
         .iter()
         .map(|(name, _)| *name)
+        .chain(std::iter::once(PRIVATE_SUBAGENT_TOOL))
         .chain(bound_tool_names(bindings, web))
         .chain(bound.iter().filter_map(|tool| tool.get("name").and_then(Json::as_str)))
         .collect();
     let mut schemas = team_tool_schemas().as_array().cloned().unwrap_or_default();
+    schemas.push(private_subagent_schema());
     schemas.extend(bound_tool_schemas().as_array().cloned().unwrap_or_default());
     schemas.extend(bound.iter().cloned());
     Json::Array(
@@ -294,11 +317,35 @@ fn tools_payload(bindings: &[String], web: (bool, bool), bound: &[Json]) -> Json
                     "type": "function",
                     "function": {
                         "name": name,
-                        "description": tool.get("description").and_then(Json::as_str)
-                            .unwrap_or_else(|| docs.get(name).copied().unwrap_or(name)),
+                        "description": tool.get("description").and_then(Json::as_str).unwrap_or_else(|| {
+                            if name == PRIVATE_SUBAGENT_TOOL {
+                                PRIVATE_SUBAGENT_DOC
+                            } else {
+                                docs.get(name).copied().unwrap_or(name)
+                            }
+                        }),
                         "parameters": tool.get("parameters").cloned().unwrap_or(json!({})),
                     }
                 })
+            })
+            .collect(),
+    )
+}
+
+/// The private helper may use only the execution tools already available to
+/// its parent member. Team actions, the parent's plan, and recursion are
+/// excluded. read_history is restricted to this helper's own transcript.
+fn private_tools_payload(bindings: &[String], web: (bool, bool), bound: &[Json]) -> Json {
+    let payload = tools_payload(bindings, web, bound);
+    Json::Array(
+        payload
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|tool| {
+                let name = tool.pointer("/function/name").and_then(Json::as_str).unwrap_or("");
+                !TEAM_TOOLS.contains(&name) && !matches!(name, PRIVATE_SUBAGENT_TOOL | "update_plan")
             })
             .collect(),
     )
@@ -357,11 +404,40 @@ fn cap_tool_output(content: String) -> String {
 /// 2508.21433: masking is as efficient as LLM summarization). The checkpoint
 /// and history tree keep the originals — only the wire copy sent to the model
 /// is masked, so `read_history` can always fetch the full output back.
-/// ponytail: fixed 16k trailing budget; make it window-relative if needed.
+/// Scale bytes conservatively with the configured token window, keeping the
+/// old budget for unknown/small windows. This is not a token-count guarantee.
+/// ponytail: cap older output at 256k bytes; tune from real readback evidence
+/// before retaining more or introducing per-tool relevance selection.
 const MASK_KEEP_RECENT: usize = 16_000;
+const MASK_KEEP_MAX: usize = 256_000;
 
-fn mask_old_tool_outputs(messages: &[Json]) -> Vec<Json> {
+fn mask_old_tool_outputs(messages: &[Json], context_window: Option<u64>) -> Vec<Json> {
     let last_assistant = messages.iter().rposition(|m| m["role"] == "assistant").unwrap_or(0);
+    let readbacks: HashMap<&str, Json> = messages
+        .iter()
+        .filter(|message| message["role"] == "assistant")
+        .flat_map(|message| message["tool_calls"].as_array().into_iter().flatten())
+        .filter(|call| call["function"]["name"] == "read_history")
+        .filter_map(|call| {
+            let id = call["id"].as_str()?;
+            let args: Json = serde_json::from_str(call["function"]["arguments"].as_str()?).ok()?;
+            args["tool_call_id"].as_str().filter(|source| !source.is_empty())?;
+            let recipe: serde_json::Map<String, Json> = args
+                .as_object()?
+                .iter()
+                .filter(|(key, _)| matches!(key.as_str(), "tool_call_id" | "offset" | "limit"))
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect();
+            Some((id, Json::Object(recipe)))
+        })
+        .collect();
+    // Repeating the original read operation preserves the page coordinates.
+    // Pointing at the readback call's own receipt adds a JSON wrapper on every
+    // reread and can trap the model in a growing chain of escaped copies.
+    let read_hint = |id: &str| match readbacks.get(id) {
+        Some(recipe) => format!("call read_history with {recipe}"),
+        None => format!("call read_history with tool_call_id={id:?}"),
+    };
     let mut out = messages.to_vec();
     for message in &mut out {
         if message["role"] == "tool" {
@@ -369,8 +445,8 @@ fn mask_old_tool_outputs(messages: &[Json]) -> Vec<Json> {
                 let capped = cap_tool_output(content.to_string());
                 if capped != content {
                     message["content"] = json!(format!(
-                        "{capped}\n[Full output: read_history tool_call_id={}]",
-                        message["tool_call_id"]
+                        "{capped}\n[Full output: {}]",
+                        read_hint(message["tool_call_id"].as_str().unwrap_or(""))
                     ));
                 }
             }
@@ -379,7 +455,9 @@ fn mask_old_tool_outputs(messages: &[Json]) -> Vec<Json> {
     if out.is_empty() {
         return out;
     }
-    let mut budget = MASK_KEEP_RECENT;
+    let mut budget = context_window
+        .map(|window| (window / 4).clamp(MASK_KEEP_RECENT as u64, MASK_KEEP_MAX as u64) as usize)
+        .unwrap_or(MASK_KEEP_RECENT);
     for i in (0..=last_assistant).rev() {
         let message = &out[i];
         if message["role"] != "tool" {
@@ -395,7 +473,7 @@ fn mask_old_tool_outputs(messages: &[Json]) -> Vec<Json> {
         out[i] = json!({
             "role": "tool",
             "tool_call_id": id,
-            "content": format!("[tool output hidden ({len} bytes) — call read_history with tool_call_id={id:?} to retrieve it]"),
+            "content": format!("[tool output hidden ({len} bytes) — {} to retrieve it]", read_hint(id)),
         });
     }
     out
@@ -481,6 +559,79 @@ struct ChatCheckpoint {
     /// Write-ahead record for a tree append, replayed idempotently on recovery.
     #[serde(default)]
     tree_pending: Vec<TreeNode>,
+    /// At most one private helper is active in the parent member's turn. The
+    /// helper transcript is deliberately nested here instead of becoming a
+    /// member/thread/tree: it is not TeamSpec state and is not independently
+    /// addressable by other members.
+    #[serde(default)]
+    private_subagent: Option<PrivateSubagentCheckpoint>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct PrivateSubagentCheckpoint {
+    parent_call_id: String,
+    task: String,
+    context: String,
+    history: Vec<Json>,
+    /// A completed result is journaled before it is copied into the parent
+    /// tool result. If the process dies in that small window, recovery returns
+    /// this value instead of executing the helper (and its tools) again.
+    #[serde(default)]
+    result: Option<PrivateSubagentResult>,
+    /// A write-ahead marker for the next helper tool. If recovery finds this
+    /// marker without a result, the operation may already have happened; fail
+    /// closed instead of replaying a side effect.
+    #[serde(default)]
+    pending_tool: Option<PrivateSubagentToolCall>,
+    /// The result of a child tool is journaled while `pending_tool` remains
+    /// present. This closes the crash window between the external operation
+    /// and appending its result to the nested transcript: recovery can finish
+    /// the transcript without executing the operation again.
+    #[serde(default)]
+    tool_receipt: Option<PrivateSubagentToolReceipt>,
+    #[serde(default)]
+    tool_attempted: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct PrivateSubagentResult {
+    ok: bool,
+    content: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct PrivateSubagentToolCall {
+    call_id: String,
+    name: String,
+    args: Json,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct PrivateSubagentToolReceipt {
+    ok: bool,
+    result: Json,
+    error: Option<String>,
+}
+
+impl PrivateSubagentToolReceipt {
+    fn from_receipt(receipt: &teamagents_core::models::Receipt) -> Self {
+        Self { ok: receipt.ok, result: receipt.result.clone(), error: receipt.error.clone() }
+    }
+
+    fn into_receipt(self, action_id: String) -> teamagents_core::models::Receipt {
+        teamagents_core::models::Receipt {
+            action_id,
+            ok: self.ok,
+            kind: teamagents_core::models::ActionKind::CompleteTask,
+            result: self.result,
+            error: self.error,
+        }
+    }
+}
+
+enum PrivateSubagentExit {
+    Completed(teamagents_core::models::Receipt),
+    WaitingApproval(teamagents_core::models::Receipt),
 }
 
 /// pi-style tree-structured conversation history (D-26): per thread an
@@ -509,28 +660,96 @@ struct TreeNode {
 }
 
 impl ChatTree {
-    /// Linear history for the model API: walk leaf -> root, reversed.
-    fn materialize(&self) -> Vec<Json> {
-        let mut out = vec![];
-        let mut cur = self.leaf.as_deref();
-        while let Some(id) = cur {
-            let Some(node) = self.nodes.iter().find(|n| n.id == id) else { break };
-            out.push(node.message.clone());
-            cur = match &node.skip_to {
-                // "" means the covered range runs to the root.
-                Some(target) if target.is_empty() => None,
-                Some(target) => Some(target.as_str()),
+    /// Validate once at the persistence boundary. Parents must precede their
+    /// children; summary jumps must stay on that node's physical ancestry.
+    fn validate(&self) -> Result<(), String> {
+        let mut indices = HashMap::with_capacity(self.nodes.len());
+        let root = self.nodes.len();
+        let mut children = vec![vec![]; root + 1];
+        for (index, node) in self.nodes.iter().enumerate() {
+            if node.id.is_empty() || indices.contains_key(node.id.as_str()) {
+                return Err(format!("历史节点 ID 为空或重复：{:?}", node.id));
+            }
+            if !valid_history_message(&node.message) {
+                return Err(format!("历史节点 {:?} 的消息格式无效", node.id));
+            }
+            let parent = match node.parent.as_deref() {
+                Some(id) => *indices
+                    .get(id)
+                    .ok_or_else(|| format!("历史节点 {:?} 的父节点不存在或不在其之前：{id:?}", node.id))?,
+                None => root,
+            };
+            children[parent].push(index);
+            indices.insert(node.id.as_str(), index);
+        }
+        if self.leaf.as_deref().is_some_and(|id| !indices.contains_key(id)) {
+            return Err(format!("历史 leaf 指向不存在的节点：{:?}", self.leaf));
+        }
+
+        // Iterative DFS intervals make all summary-ancestor checks linear in
+        // total, even with many compactions. Never recurse on a long session.
+        let mut entered = vec![0; root + 1];
+        let mut exited = vec![0; root + 1];
+        let mut clock = 0;
+        let mut stack = vec![(root, false)];
+        while let Some((index, exiting)) = stack.pop() {
+            if exiting {
+                exited[index] = clock;
+            } else {
+                entered[index] = clock;
+                clock += 1;
+                stack.push((index, true));
+                stack.extend(children[index].iter().rev().map(|child| (*child, false)));
+            }
+        }
+        for (index, node) in self.nodes.iter().enumerate() {
+            if let Some(id) = node.skip_to.as_deref().filter(|id| !id.is_empty()) {
+                let target =
+                    *indices.get(id).ok_or_else(|| format!("历史摘要 {:?} 指向不存在的节点：{id:?}", node.id))?;
+                if !(entered[target] < entered[index] && entered[index] < exited[target]) {
+                    return Err(format!("历史摘要 {:?} 的跳转目标不是其祖先：{id:?}", node.id));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn ancestors(&self, skip_summaries: bool) -> impl Iterator<Item = &TreeNode> {
+        let mut current = self.leaf.as_deref();
+        self.nodes.iter().rev().filter(move |node| {
+            if current != Some(node.id.as_str()) {
+                return false;
+            }
+            current = match node.skip_to.as_deref().filter(|_| skip_summaries) {
+                Some("") => None,
+                Some(target) => Some(target),
                 None => node.parent.as_deref(),
             };
-        }
+            true
+        })
+    }
+
+    /// Linear history for the model API: walk leaf -> root, reversed.
+    fn materialize(&self) -> Vec<Json> {
+        let mut out: Vec<_> = self.ancestors(true).map(|node| node.message.clone()).collect();
         out.reverse();
         out
     }
 
     /// Chain-append messages under the current leaf; returns the new leaf.
     fn append(&mut self, messages: &[Json]) {
+        // Imported trees may have sparse numeric IDs. Keep the existing IDs
+        // and choose the next unused one without rescanning for each message.
+        let mut sequence =
+            self.nodes.iter().filter_map(|node| node.id.strip_prefix('n')?.parse::<u64>().ok()).max().unwrap_or(0);
         for message in messages {
-            let id = format!("n{}", self.nodes.len() + 1);
+            let id = match sequence.checked_add(1) {
+                Some(next) => {
+                    sequence = next;
+                    format!("n{next}")
+                }
+                None => uuid::Uuid::new_v4().to_string(),
+            };
             self.nodes.push(TreeNode {
                 id: id.clone(),
                 parent: self.leaf.take(),
@@ -544,26 +763,15 @@ impl ChatTree {
     /// Append a compaction summary covering everything above `skip_to`
     /// ("" = the whole current chain).
     fn append_summary(&mut self, message: Json, skip_to: &str) {
-        let id = format!("n{}", self.nodes.len() + 1);
-        self.nodes.push(TreeNode {
-            id: id.clone(),
-            parent: self.leaf.take(),
-            skip_to: Some(skip_to.to_string()),
-            message,
-        });
-        self.leaf = Some(id);
+        self.append(&[message]);
+        self.nodes.last_mut().expect("just appended").skip_to = Some(skip_to.to_string());
     }
 
     /// Include earlier compactions' calls, but never an abandoned branch.
     fn tool_references(&self) -> Vec<String> {
         let mut references = vec![];
         let mut seen = HashSet::new();
-        let mut cur = self.leaf.as_deref();
-        // Parents precede their children in the append-only node array.
-        for node in self.nodes.iter().rev() {
-            if cur != Some(node.id.as_str()) {
-                continue;
-            }
+        for node in self.ancestors(false) {
             for call in node.message["tool_calls"].as_array().into_iter().flatten() {
                 if let Some(id) = call["id"].as_str() {
                     // Compaction re-appends retained groups; they still refer
@@ -573,7 +781,6 @@ impl ChatTree {
                     }
                 }
             }
-            cur = node.parent.as_deref();
         }
         references.reverse();
         references
@@ -581,18 +788,7 @@ impl ChatTree {
 
     /// Rewind targets: user-input nodes, newest first, as (id, depth, preview).
     fn rewind_points(&self) -> Vec<Json> {
-        let chain: Vec<&TreeNode> = {
-            let mut out = vec![];
-            let mut cur = self.leaf.as_deref();
-            while let Some(id) = cur {
-                let Some(node) = self.nodes.iter().find(|n| n.id == id) else { break };
-                out.push(node);
-                cur = node.parent.as_deref();
-            }
-            out
-        };
-        chain
-            .iter()
+        self.ancestors(false)
             .enumerate()
             .filter(|(_, n)| n.message["role"] == "user")
             .map(|(depth, n)| {
@@ -603,6 +799,7 @@ impl ChatTree {
     }
 
     fn rewind_to(&mut self, node_id: Option<&str>) -> Result<usize, String> {
+        let next_epoch = self.rewind_epoch.checked_add(1).ok_or("rewind epoch exhausted")?;
         let depth = match node_id {
             None => {
                 self.leaf = None;
@@ -616,9 +813,13 @@ impl ChatTree {
                 self.materialize().len()
             }
         };
-        self.rewind_epoch = self.rewind_epoch.checked_add(1).ok_or("rewind epoch exhausted")?;
+        self.rewind_epoch = next_epoch;
         Ok(depth)
     }
+}
+
+fn valid_history_message(message: &Json) -> bool {
+    message.is_object() && message["role"].as_str().is_some_and(|role| !role.is_empty())
 }
 
 fn write_json_atomic(path: &std::path::Path, value: &Json) -> Result<(), String> {
@@ -643,6 +844,20 @@ fn pending_tool_calls(history: &[Json]) -> Vec<Json> {
         .into_iter()
         .filter(|c| !c["id"].as_str().map(|id| answered.contains(id)).unwrap_or(false))
         .collect()
+}
+
+fn has_pending_private_subagent_call(checkpoint: &ChatCheckpoint) -> bool {
+    let Some(helper) = checkpoint.private_subagent.as_ref() else { return false };
+    pending_tool_calls(&checkpoint.history)
+        .iter()
+        .any(|call| call["id"].as_str() == Some(helper.parent_call_id.as_str()))
+}
+
+fn private_subagent_outcome_unknown(checkpoint: &ChatCheckpoint) -> bool {
+    checkpoint
+        .private_subagent
+        .as_ref()
+        .is_some_and(|helper| helper.tool_attempted && helper.pending_tool.is_some() && helper.tool_receipt.is_none())
 }
 
 /// Token usage of one model response, both wire protocols normalized
@@ -756,13 +971,24 @@ impl ChatRunner {
         })
     }
 
-    /// Conversation history from disk: `{thread_id: [messages]}`. Best effort —
-    /// an unreadable file degrades to a fresh conversation, never a failure.
-    fn load_history(&self, thread: &str) -> Vec<Json> {
-        let Some(path) = &self.history_path else { return vec![] };
-        let Ok(text) = std::fs::read_to_string(path) else { return vec![] };
-        let Ok(data) = serde_json::from_str::<Json>(&text) else { return vec![] };
-        data.get(thread).and_then(|v| v.as_array()).cloned().unwrap_or_default()
+    /// Only absent files/threads mean a new conversation. Unreadable or
+    /// malformed legacy history must never be migrated to an empty tree.
+    fn load_history(&self, thread: &str) -> Result<Vec<Json>, String> {
+        let Some(path) = &self.history_path else { return Ok(vec![]) };
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+            Err(e) => return Err(format!("无法读取历史 {}：{e}", path.display())),
+        };
+        let data: Json =
+            serde_json::from_str(&text).map_err(|e| format!("历史 {} 不是有效 JSON：{e}", path.display()))?;
+        let threads = data.as_object().ok_or_else(|| format!("历史 {} 不是线程映射", path.display()))?;
+        let Some(value) = threads.get(thread) else { return Ok(vec![]) };
+        let messages = value
+            .as_array()
+            .filter(|items| items.iter().all(valid_history_message))
+            .ok_or_else(|| format!("历史 {} 的线程 {thread:?} 消息格式无效", path.display()))?;
+        Ok(messages.clone())
     }
 
     /// Atomic write (tmp + rename) so a crash never truncates the history.
@@ -796,24 +1022,29 @@ impl ChatRunner {
         if let Some(path) = self.tree_path() {
             match std::fs::read_to_string(&path) {
                 Ok(text) => {
-                    let data: Json = serde_json::from_str(&text).map_err(|e| format!("invalid history tree: {e}"))?;
+                    let data: Json = serde_json::from_str(&text)
+                        .map_err(|e| format!("历史树 {} 不是有效 JSON：{e}", path.display()))?;
                     if !data.is_object() {
-                        return Err("invalid member history tree".into());
+                        return Err(format!("历史树 {} 不是线程映射", path.display()));
                     }
                     if let Some(value) = data.get(thread) {
-                        return serde_json::from_value(value.clone()).map_err(|e| format!("invalid history tree: {e}"));
+                        let tree: ChatTree = serde_json::from_value(value.clone())
+                            .map_err(|e| format!("历史树 {} 格式无效：{e}", path.display()))?;
+                        tree.validate().map_err(|e| format!("历史树 {}：{e}", path.display()))?;
+                        return Ok(tree);
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(e.to_string()),
+                Err(e) => return Err(format!("无法读取历史树 {}：{e}", path.display())),
             }
         }
         let mut tree = ChatTree::default();
-        tree.append(&self.load_history(thread));
+        tree.append(&self.load_history(thread)?);
         Ok(tree)
     }
 
     fn save_tree(&self, thread: &str, tree: &ChatTree) -> Result<(), String> {
+        tree.validate()?;
         let Some(path) = self.tree_path() else { return Ok(()) };
         let mut data = match std::fs::read_to_string(&path) {
             Ok(text) => serde_json::from_str::<Json>(&text).map_err(|e| e.to_string())?,
@@ -830,8 +1061,8 @@ impl ChatRunner {
     }
 
     /// Rewind targets for a thread (user inputs, newest first) — the /rewind picker.
-    pub fn rewind_points(&self, thread: &str) -> Vec<Json> {
-        self.load_tree(thread).map(|t| t.rewind_points()).unwrap_or_default()
+    pub fn rewind_points(&self, thread: &str) -> Result<Vec<Json>, String> {
+        self.load_tree(thread).map(|t| t.rewind_points())
     }
 
     /// Move the thread's live tip to `node_id` (None = empty conversation).
@@ -1105,6 +1336,7 @@ impl ChatRunner {
         let tools = TEAM_TOOL_DOCS
             .iter()
             .map(|(name, _)| *name)
+            .chain(std::iter::once(PRIVATE_SUBAGENT_TOOL))
             .chain(bound_tool_names(&self.bindings(), self.web_flags()))
             .chain(bound_docs.iter().map(|(name, _)| name.as_str()))
             .collect::<Vec<_>>()
@@ -1189,10 +1421,12 @@ impl ChatRunner {
             .history_path
             .as_ref()
             .and_then(|p| p.parent())
-            .and_then(|p| p.parent())
-            .and_then(|p| p.parent())
-            .map(|session| session.join("artifacts"));
-        crate::tools::load_image_reference(&root, artifacts.as_deref(), &path, &media_type)
+            .and_then(|member| {
+                let session = member.parent()?.parent()?;
+                Some(crate::tools::ArtifactPaths::for_member(session.join("artifacts"), member))
+            })
+            .unwrap_or_default();
+        crate::tools::load_member_image_reference(&root, &artifacts, &path, &media_type)
             .ok()
             .map(|bytes| (media_type, bytes))
     }
@@ -1573,7 +1807,8 @@ impl ChatRunner {
             .and_then(Json::as_u64)
             .unwrap_or(8192)
             .min(window / 4);
-        let estimate = estimated_tokens(&json!(mask_old_tool_outputs(history))) + estimated_tokens(tools);
+        let estimate = estimated_tokens(&json!(mask_old_tool_outputs(history, self.profile.context_window)))
+            + estimated_tokens(tools);
         last.max(estimate) > window.saturating_sub(reserve).min((window as f64 * COMPACT_AT) as u64)
     }
 
@@ -1671,8 +1906,12 @@ impl ChatRunner {
             return Err(("ChatError".into(), "compaction returned an empty summary".into()));
         }
         // Keep the system root verbatim; everything else is covered.
-        let keep =
-            tree.nodes.first().filter(|n| n.message["role"] == "system").map(|n| n.id.clone()).unwrap_or_default();
+        let keep = tree
+            .ancestors(false)
+            .last()
+            .filter(|n| n.message["role"] == "system")
+            .map(|n| n.id.clone())
+            .unwrap_or_default();
         tree.append_summary(
             json!({"role": "user", "content": format!("[Compacted conversation summary]\n{summary}\n\n{index}\n\n[Earlier tool outputs and replies were removed from context. Call read_history with a tool_call_id to retrieve a tool output.]")}),
             &keep,
@@ -1709,6 +1948,325 @@ impl ChatRunner {
         Err(format!("no tool output recorded for tool_call_id {tool_call_id:?}"))
     }
 
+    /// A private helper can read only its own nested transcript. Do not route
+    /// this through the parent's tree-backed `read_history`.
+    fn read_private_history(&self, history: &[Json], tool_call_id: &str) -> Result<Json, String> {
+        if tool_call_id.is_empty() {
+            return Err("read_history requires tool_call_id".into());
+        }
+        for message in history {
+            if message["tool_call_id"].as_str() == Some(tool_call_id) {
+                return Ok(json!({"output": message["content"].as_str().unwrap_or("")}));
+            }
+        }
+        Err(format!("no private helper tool output recorded for tool_call_id {tool_call_id:?}"))
+    }
+
+    fn private_subagent_prompt(&self) -> String {
+        let workspace = self.workdir.as_deref().unwrap_or("(member workspace unavailable)");
+        format!(
+            "<teamagents_private_subagent>\nYou are a private helper inside one TeamAgents member's current turn. You have no TeamSpec identity, no team membership, no team actions, no access to the parent conversation, and no permissions beyond the listed tools. Work only on <private_task>; use the shared member workspace when needed. Be concise and report acceptance evidence in your final text. Do not delegate or communicate with teammates. Workspace: {workspace}. The parent member performs all team actions and receives only your final reply.\n</teamagents_private_subagent>"
+        )
+    }
+
+    fn private_receipt(
+        &self,
+        call_id: &str,
+        ok: bool,
+        result: Json,
+        error: Option<String>,
+    ) -> teamagents_core::models::Receipt {
+        teamagents_core::models::Receipt {
+            action_id: call_id.to_string(),
+            ok,
+            kind: teamagents_core::models::ActionKind::CompleteTask,
+            result,
+            error,
+        }
+    }
+
+    fn private_tool_allowed(&self, name: &str) -> bool {
+        self.bound.names().contains(name)
+            || (name == "shell" && self.bindings().iter().any(|b| b == "shell"))
+            || (name == "web_search" && self.has_web_search)
+            || (name == "web_fetch" && self.has_web_fetch)
+            || (name == "skill" && self.bindings().iter().any(|b| b == "skills"))
+            || (name != "shell"
+                && ["ls", "read_file", "write_file", "edit_file", "edit_files", "delete", "glob", "grep", "view_image"]
+                    .contains(&name)
+                && self.bindings().iter().any(|b| b == "files"))
+    }
+
+    fn private_tool_call(
+        &self,
+        run: &TurnRun,
+        checkpoint: &mut ChatCheckpoint,
+        gateway: &ToolGateway,
+        helper: &mut PrivateSubagentCheckpoint,
+        call: &Json,
+        args: &Json,
+    ) -> Result<teamagents_core::models::Receipt, (String, String)> {
+        let child_call_id = call["id"].as_str().unwrap_or("");
+        let name = call["function"]["name"].as_str().unwrap_or("");
+        let action_id = format!("{}:subagent:{}", helper.parent_call_id, child_call_id);
+
+        // A prior process may have completed this exact child operation and
+        // durably journaled its receipt, but died before copying the result
+        // into the nested transcript. Reuse that receipt instead of invoking
+        // the external tool a second time.
+        if helper
+            .pending_tool
+            .as_ref()
+            .is_some_and(|pending| pending.call_id == child_call_id && pending.name == name && pending.args == *args)
+        {
+            if let Some(receipt) = helper.tool_receipt.clone() {
+                return Ok(receipt.into_receipt(action_id));
+            }
+        }
+        if TEAM_TOOLS.contains(&name) || matches!(name, PRIVATE_SUBAGENT_TOOL | "update_plan") {
+            return Ok(self.private_receipt(
+                &action_id,
+                false,
+                json!({}),
+                Some(format!("{name} is not available to a private subagent")),
+            ));
+        }
+        if !self.private_tool_allowed(name) {
+            return Ok(self.private_receipt(
+                &action_id,
+                false,
+                json!({}),
+                Some(format!("tool {name} is not bound to this member")),
+            ));
+        }
+
+        // Journal before a potentially side-effecting operation. If the
+        // process dies after this point, recovery fails closed rather than
+        // replaying a file, shell, web, or MCP side effect.
+        helper.pending_tool = Some(PrivateSubagentToolCall {
+            call_id: child_call_id.to_string(),
+            name: name.to_string(),
+            args: args.clone(),
+        });
+        helper.tool_attempted = true;
+        checkpoint.private_subagent = Some(helper.clone());
+        self.save_checkpoint(run, checkpoint, gateway)?;
+
+        let receipt = if name == "read_history" {
+            return Err(("InternalError".into(), "private read_history must be handled by the helper loop".into()));
+        } else if self.bound.names().contains(name) {
+            let _execution = gateway.control.enter().map_err(|e| ("TurnInterrupted".into(), e))?;
+            match self.bound.call(name, args).expect("bound tool has a client") {
+                Ok(output) => self.private_receipt(&action_id, true, json!({"output": output}), None),
+                Err(error) => self.private_receipt(&action_id, false, json!({}), Some(error)),
+            }
+        } else {
+            gateway.call(name, args, &action_id)
+        };
+
+        let approval = receipt.error.as_deref() == Some("approval_required");
+        if approval {
+            // The call was not executed. Keep its marker so the same child
+            // call is retried after the user decides the parked approval.
+            helper.tool_attempted = false;
+        } else {
+            // Keep the pending call until the nested tool result has been
+            // appended and checkpointed below. The receipt is the durable
+            // hand-off across the external-call -> transcript-write window.
+            helper.tool_receipt = Some(PrivateSubagentToolReceipt::from_receipt(&receipt));
+            helper.tool_attempted = true;
+        }
+        checkpoint.private_subagent = Some(helper.clone());
+        self.save_checkpoint(run, checkpoint, gateway)?;
+
+        let content = tool_result_content(receipt.ok, &receipt.result, receipt.error.as_deref());
+        let activity = json!({
+            "run_id": run.run_id,
+            "agent_id": self.agent_id(),
+            "tool": name,
+            "call_id": child_call_id,
+            "parent_call_id": helper.parent_call_id,
+            "private_subagent": true,
+            "ok": receipt.ok,
+            "error": receipt.error,
+            "arguments": bounded_arguments(args),
+            "result": bounded_result(&content),
+        });
+        self.notify.note_tool_activity(&run.run_id, &self.agent_id(), &activity);
+        self.notify.note_event("private_subagent_tool_call", &activity);
+        Ok(receipt)
+    }
+
+    /// Run a nested helper without giving it a TeamAgents identity. The nested
+    /// transcript is checkpointed inside the parent run, all model calls
+    /// reserve the parent's step budget, and all tools use the parent's gate.
+    fn run_private_subagent(
+        &self,
+        run: &TurnRun,
+        checkpoint: &mut ChatCheckpoint,
+        gateway: &ToolGateway,
+        parent_call_id: &str,
+        args: &Json,
+        max_steps: i64,
+    ) -> Result<PrivateSubagentExit, (String, String)> {
+        let task = args.get("task").and_then(Json::as_str).unwrap_or("").trim().to_string();
+        let context = args.get("context").and_then(Json::as_str).unwrap_or("").to_string();
+        if task.is_empty() {
+            return Ok(PrivateSubagentExit::Completed(self.private_receipt(
+                parent_call_id,
+                false,
+                json!({}),
+                Some("run_subagent requires a non-empty task".into()),
+            )));
+        }
+        if task.chars().count() > 12_000 || context.chars().count() > 16_000 {
+            return Ok(PrivateSubagentExit::Completed(self.private_receipt(
+                parent_call_id,
+                false,
+                json!({}),
+                Some("run_subagent task/context exceeds its bounded input size".into()),
+            )));
+        }
+
+        let mut helper = match checkpoint.private_subagent.clone() {
+            Some(mut existing) => {
+                if existing.tool_attempted && existing.pending_tool.is_some() && existing.tool_receipt.is_none() {
+                    return Err((
+                        "OutcomeUnknown".into(),
+                        "private subagent tool call was in flight when the turn stopped; inspect side effects before retrying".into(),
+                    ));
+                }
+                if existing.task != task || existing.context != context {
+                    return Ok(PrivateSubagentExit::Completed(self.private_receipt(
+                        parent_call_id,
+                        false,
+                        json!({}),
+                        Some("a different private subagent request cannot replace the resumable one".into()),
+                    )));
+                }
+                existing.parent_call_id = parent_call_id.to_string();
+                existing
+            }
+            None => PrivateSubagentCheckpoint {
+                parent_call_id: parent_call_id.to_string(),
+                task: task.clone(),
+                context: context.clone(),
+                history: vec![
+                    json!({"role":"system", "content":self.private_subagent_prompt()}),
+                    json!({"role":"user", "content":format!("<private_task>\n{task}\n</private_task>\n<private_context>\n{context}\n</private_context>")}),
+                ],
+                result: None,
+                pending_tool: None,
+                tool_receipt: None,
+                tool_attempted: false,
+            },
+        };
+        checkpoint.private_subagent = Some(helper.clone());
+        self.save_checkpoint(run, checkpoint, gateway)?;
+        let tools = private_tools_payload(&self.bindings(), self.web_flags(), &self.bound.schemas());
+        let thread = run.context_ref.as_deref().unwrap_or(&run.run_id);
+
+        loop {
+            gateway.control.check().map_err(|e| ("TurnInterrupted".into(), e))?;
+            if let Some(result) = helper.result.clone() {
+                return Ok(PrivateSubagentExit::Completed(self.private_receipt(
+                    parent_call_id,
+                    result.ok,
+                    json!({"output": result.content}),
+                    (!result.ok).then_some(result.content),
+                )));
+            }
+
+            let calls = pending_tool_calls(&helper.history);
+            if calls.is_empty() {
+                if let Some(last) = helper.history.last().filter(|m| m["role"] == "assistant") {
+                    if last["tool_calls"].as_array().map(|items| items.is_empty()).unwrap_or(true) {
+                        let content = last["content"].as_str().unwrap_or("").to_string();
+                        helper.result = Some(PrivateSubagentResult { ok: true, content });
+                        checkpoint.private_subagent = Some(helper.clone());
+                        self.save_checkpoint(run, checkpoint, gateway)?;
+                        continue;
+                    }
+                }
+                self.reserve_model_step(run, checkpoint, max_steps, &gateway.control)?;
+                let message = match self.chat(
+                    thread,
+                    &mask_old_tool_outputs(&helper.history, self.profile.context_window),
+                    &tools,
+                    &gateway.control,
+                    None,
+                ) {
+                    Ok(message) => message,
+                    Err(error) if gateway.control.check().is_err() => return Err(("TurnInterrupted".into(), error)),
+                    Err(error) => {
+                        helper.result = Some(PrivateSubagentResult {
+                            ok: false,
+                            content: format!("private helper model error: {error}"),
+                        });
+                        checkpoint.private_subagent = Some(helper.clone());
+                        self.save_checkpoint(run, checkpoint, gateway)?;
+                        continue;
+                    }
+                };
+                helper.history.push(message);
+                checkpoint.private_subagent = Some(helper.clone());
+                self.save_checkpoint(run, checkpoint, gateway)?;
+                continue;
+            }
+
+            for call in calls {
+                gateway.control.check().map_err(|e| ("TurnInterrupted".into(), e))?;
+                let child_call_id = call["id"]
+                    .as_str()
+                    .filter(|id| !id.is_empty())
+                    .ok_or_else(|| ("ChatError".into(), "private subagent tool call id missing".into()))?;
+                let name = call["function"]["name"].as_str().unwrap_or("");
+                let child_args: Json = serde_json::from_str(call["function"]["arguments"].as_str().unwrap_or("{}"))
+                    .map_err(|_| ("ChatError".into(), "private subagent produced invalid JSON arguments".into()))?;
+
+                if name == "read_history" {
+                    let result = self
+                        .read_private_history(&helper.history, child_args["tool_call_id"].as_str().unwrap_or(""))
+                        .and_then(|value| history_page(value["output"].as_str().unwrap_or(""), &child_args));
+                    let receipt = match result {
+                        Ok(value) => self.private_receipt(child_call_id, true, value, None),
+                        Err(error) => self.private_receipt(child_call_id, false, json!({}), Some(error)),
+                    };
+                    helper.history.push(json!({
+                        "role":"tool",
+                        "tool_call_id":child_call_id,
+                        "content":tool_result_content(receipt.ok, &receipt.result, receipt.error.as_deref())
+                    }));
+                    checkpoint.private_subagent = Some(helper.clone());
+                    self.save_checkpoint(run, checkpoint, gateway)?;
+                    continue;
+                }
+
+                let receipt = self.private_tool_call(run, checkpoint, gateway, &mut helper, &call, &child_args)?;
+                if receipt.error.as_deref() == Some("approval_required") {
+                    return Ok(PrivateSubagentExit::WaitingApproval(receipt));
+                }
+                let content = tool_result_content(receipt.ok, &receipt.result, receipt.error.as_deref());
+                helper.history.push(json!({"role":"tool", "tool_call_id":child_call_id, "content":content}));
+                // The child receipt and pending marker are cleared only in
+                // the same checkpoint that contains the nested tool result.
+                // If the process dies before this save, recovery sees the
+                // receipt and takes this branch without re-executing the
+                // external operation.
+                if helper.pending_tool.as_ref().is_some_and(|pending| pending.call_id == child_call_id) {
+                    helper.pending_tool = None;
+                    helper.tool_receipt = None;
+                    helper.tool_attempted = false;
+                }
+                checkpoint.private_subagent = Some(helper.clone());
+                self.save_checkpoint(run, checkpoint, gateway)?;
+                if receipt.error.as_deref().is_some_and(|error| error.contains("step limit")) {
+                    return Err(("TurnLimitExceeded".into(), receipt.error.unwrap_or_default()));
+                }
+            }
+        }
+    }
+
     fn run_loop(
         &self,
         run: &TurnRun,
@@ -1734,11 +2292,11 @@ impl ChatRunner {
                     }
                 }
                 if let Some(input) = input.take() {
-                    self.append_input(checkpoint, input, wake, false);
+                    self.append_input(checkpoint, input, wake, false)?;
                 }
                 let mid = self.mid_turn.lock().unwrap().remove(&run.run_id).unwrap_or_default();
                 if !mid.is_empty() {
-                    self.append_input(checkpoint, json!({"inbox_delta": mid}), &Json::Null, false);
+                    self.append_input(checkpoint, json!({"inbox_delta": mid}), &Json::Null, false)?;
                 }
                 if checkpoint.model_steps >= max_steps {
                     return Err((
@@ -1767,7 +2325,7 @@ impl ChatRunner {
                     }
                 }
                 self.reserve_model_step(run, checkpoint, max_steps, &gateway.control)?;
-                let wire = mask_old_tool_outputs(&checkpoint.history);
+                let wire = mask_old_tool_outputs(&checkpoint.history, self.profile.context_window);
                 let message = match self.chat(thread, &wire, &tools, &gateway.control, Some(&run.run_id)) {
                     Ok(message) => message,
                     Err(e) if context_overflow(&e) => {
@@ -1777,7 +2335,7 @@ impl ChatRunner {
                         self.reserve_model_step(run, checkpoint, max_steps, &gateway.control)?;
                         self.chat(
                             thread,
-                            &mask_old_tool_outputs(&checkpoint.history),
+                            &mask_old_tool_outputs(&checkpoint.history, self.profile.context_window),
                             &tools,
                             &gateway.control,
                             Some(&run.run_id),
@@ -1822,7 +2380,7 @@ impl ChatRunner {
                         continue;
                     }
                 };
-                if !TEAM_TOOLS.contains(&name) {
+                if !TEAM_TOOLS.contains(&name) && name != PRIVATE_SUBAGENT_TOOL {
                     checkpoint.pending_external = Some(call_id.clone());
                     self.save_checkpoint(run, checkpoint, gateway)?;
                 }
@@ -1863,6 +2421,25 @@ impl ChatRunner {
                                 result: json!({}),
                                 error: Some(error),
                             },
+                        }
+                    }
+                } else if name == PRIVATE_SUBAGENT_TOOL {
+                    match self.run_private_subagent(run, checkpoint, gateway, &call_id, &args, max_steps)? {
+                        PrivateSubagentExit::Completed(receipt) => receipt,
+                        PrivateSubagentExit::WaitingApproval(receipt) => {
+                            // The parent run_subagent call is deliberately left
+                            // unanswered.  Its nested helper checkpoint is the
+                            // continuation point; appending a parent tool result
+                            // here would make the next resume skip the helper.
+                            let note = receipt.result["approval_id"].as_str().unwrap_or("").to_string();
+                            checkpoint.outcome = Some(TurnOutcome {
+                                status: TurnStatus::WaitingApproval,
+                                error: None,
+                                note: Some(note.clone()),
+                                reply_text: None,
+                            });
+                            self.save_checkpoint(run, checkpoint, gateway)?;
+                            return Err(("TurnPaused".into(), note));
                         }
                     }
                 } else if name == "read_history" {
@@ -1906,7 +2483,9 @@ impl ChatRunner {
                 } else {
                     gateway.call(name, &args, &call_id)
                 };
-                checkpoint.pending_external = None;
+                if name != PRIVATE_SUBAGENT_TOOL {
+                    checkpoint.pending_external = None;
+                }
                 let approval = receipt.error.as_deref() == Some("approval_required");
                 let waiting = name == "wait_for_tasks" && receipt.result["waiting"].as_bool().unwrap_or(false);
                 let step_limit = receipt.error.as_deref().map(|e| e.contains("step limit")).unwrap_or(false);
@@ -1928,6 +2507,13 @@ impl ChatRunner {
                 self.notify.note_tool_activity(&run.run_id, &self.agent_id(), &activity);
                 self.notify.note_event("tool_call", &activity);
                 checkpoint.history.push(json!({"role":"tool", "tool_call_id":call_id, "content":content}));
+                // The nested transcript is only a resumable write-ahead
+                // record.  Once its result has been copied into the parent's
+                // tool result, keeping it would make a later run_subagent call
+                // accidentally reuse the old helper.
+                if name == PRIVATE_SUBAGENT_TOOL {
+                    checkpoint.private_subagent = None;
+                }
                 if approval || waiting || step_limit {
                     let remaining = pending_tool_calls(&checkpoint.history);
                     fill_unanswered_tool_calls(&mut checkpoint.history, &remaining, &[], "TurnPaused");
@@ -1952,7 +2538,15 @@ impl ChatRunner {
         }
     }
 
-    fn append_input(&self, checkpoint: &mut ChatCheckpoint, mut view: Json, wake: &Json, force: bool) {
+    fn append_input(
+        &self,
+        checkpoint: &mut ChatCheckpoint,
+        view: Json,
+        wake: &Json,
+        force: bool,
+    ) -> Result<(), (String, String)> {
+        let mut view =
+            self.notify.core().revalidate_inbox(&self.agent_id(), view).map_err(|e| ("DeliveryError".into(), e))?;
         let items = view["inbox_delta"].as_array().cloned().unwrap_or_default();
         let fresh: Vec<Json> = items
             .into_iter()
@@ -1974,16 +2568,15 @@ impl ChatRunner {
                 .history
                 .push(json!({"role":"user", "content":render_view(&view, wake, self.workdir.as_deref())}));
         }
+        Ok(())
     }
 
-    fn run_segment(
+    fn restore_checkpoint_history(
         &self,
         run: &TurnRun,
-        view: &Json,
+        loaded: Option<ChatCheckpoint>,
         gateway: &ToolGateway,
-        wake: &Json,
-    ) -> Result<TurnOutcome, (String, String)> {
-        let loaded = self.load_checkpoint(run).map_err(|e| ("CheckpointError".into(), e))?;
+    ) -> Result<(Option<ChatCheckpoint>, ChatTree), (String, String)> {
         let thread = run.context_ref.as_deref().unwrap_or(&run.run_id);
         let mut tree = self.load_tree(thread).map_err(|e| ("CheckpointError".into(), e))?;
         // An epoch changes only on explicit rewind; a leaf mismatch alone can
@@ -2005,12 +2598,31 @@ impl ChatRunner {
                 self.save_tree(thread, &tree).map_err(|e| ("CheckpointError".into(), e))?;
             }
         }
+        Ok((loaded, tree))
+    }
+
+    fn run_segment(
+        &self,
+        run: &TurnRun,
+        view: &Json,
+        gateway: &ToolGateway,
+        wake: &Json,
+    ) -> Result<TurnOutcome, (String, String)> {
+        let loaded = self.load_checkpoint(run).map_err(|e| ("CheckpointError".into(), e))?;
+        let (loaded, tree) = self.restore_checkpoint_history(run, loaded, gateway)?;
+        let thread = run.context_ref.as_deref().unwrap_or(&run.run_id);
         let fresh = loaded.is_none();
         let mut checkpoint = loaded.unwrap_or_default();
         if checkpoint.pending_external.is_some() {
             return Err((
                 "OutcomeUnknown".into(),
                 "external tool result missing; inspect its side effects before retrying".into(),
+            ));
+        }
+        if private_subagent_outcome_unknown(&checkpoint) {
+            return Err((
+                "OutcomeUnknown".into(),
+                "private subagent tool result missing; inspect its side effects before retrying".into(),
             ));
         }
         if let Some(outcome) = checkpoint.outcome.clone().filter(|o| o.status.is_terminal()) {
@@ -2035,10 +2647,15 @@ impl ChatRunner {
         if checkpoint.tree_base > 0 {
             checkpoint.tree_base += checkpoint.history.len() - before_refresh;
         }
-        // New turns/explicit resumes need their new input before examining an
-        // old final assistant message from the preceding turn/segment.
-        if fresh || resumed {
-            self.append_input(&mut checkpoint, view.clone(), wake, true);
+        // New turns/explicit resumes normally need their new input before
+        // examining an old final assistant message from the preceding
+        // turn/segment. A paused private helper is different: its parent
+        // assistant tool call is still unanswered, so inserting a user
+        // message here would violate the provider's assistant-tool-result
+        // ordering. run_loop resumes the nested checkpoint first and appends
+        // this input only after the parent tool result is recorded.
+        if (fresh || resumed) && !has_pending_private_subagent_call(&checkpoint) {
+            self.append_input(&mut checkpoint, view.clone(), wake, true)?;
             self.save_checkpoint(run, &checkpoint, gateway)?;
         }
         let result = self.run_loop(run, &mut checkpoint, gateway, view, wake);
@@ -2051,6 +2668,16 @@ impl ChatRunner {
                 status: TurnStatus::Failed,
                 error: Some(message),
                 note: Some("turn_limit".into()),
+                reply_text: None,
+            },
+            // A provider/protocol failure is a known outcome. Persist it before
+            // the core commit so a failed commit plus restart cannot ask again.
+            // Interrupted, unknown and corrupt-checkpoint paths still stop
+            // without overwriting their recovery evidence.
+            Err((name, message)) if name == "ChatError" => TurnOutcome {
+                status: TurnStatus::Failed,
+                error: Some(format!("{name}: {message}")),
+                note: None,
                 reply_text: None,
             },
             Err(e) => return Err(e),
@@ -2102,6 +2729,9 @@ impl AgentRunner for ChatRunner {
     }
 
     fn request_interrupt(&self, run_id: &str) -> TurnStatus {
+        if let Some(status) = self.query_state(run_id).filter(|status| status.is_terminal()) {
+            return status;
+        }
         self.interrupted.lock().unwrap().insert(run_id.to_string());
         let control = self.controls.lock().unwrap().get(run_id).cloned();
         if let Some(control) = control {
@@ -2117,15 +2747,23 @@ impl AgentRunner for ChatRunner {
                 return TurnStatus::OutcomeUnknown;
             }
         }
-        self.states.lock().unwrap().insert(run_id.to_string(), TurnStatus::Cancelled);
-        TurnStatus::Cancelled
+        // Completion may win while an active tool drains. A late stop request
+        // must agree with the terminal checkpoint and must not erase its result.
+        let mut states = self.states.lock().unwrap();
+        match states.get(run_id).copied() {
+            Some(status) if status.is_terminal() => status,
+            _ => {
+                states.insert(run_id.to_string(), TurnStatus::Cancelled);
+                TurnStatus::Cancelled
+            }
+        }
     }
 
     fn query_state(&self, run_id: &str) -> Option<TurnStatus> {
         self.states.lock().unwrap().get(run_id).copied()
     }
 
-    fn rewind_points(&self, thread: &str) -> Vec<Json> {
+    fn rewind_points(&self, thread: &str) -> Result<Vec<Json>, String> {
         ChatRunner::rewind_points(self, thread)
     }
 
@@ -2137,18 +2775,79 @@ impl AgentRunner for ChatRunner {
         Some(self.load_checkpoint(run).ok().flatten().map(|c| c.delivery_ids.into_iter().collect()).unwrap_or_default())
     }
 
-    fn reconcile(&self, run: &TurnRun) -> Option<TurnStatus> {
-        Some(match self.load_checkpoint(run) {
-            Ok(Some(checkpoint)) if checkpoint.pending_external.is_none() => {
-                if matches!(run.status, TurnStatus::WaitingTask | TurnStatus::WaitingApproval) {
-                    run.status
+    fn has_recovery_state(&self, run: &TurnRun) -> Result<bool, String> {
+        if self.history_path.is_none() {
+            return Ok(false);
+        }
+        // Even an invalid checkpoint proves this is not a fresh intent.
+        // Reconcile decides whether its result or side effects can be known.
+        match std::fs::symlink_metadata(self.checkpoint_path(run)?) {
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    fn reconcile(&self, run: &TurnRun, gateway: &ToolGateway) -> Option<TurnOutcome> {
+        let mut recovery_error = None;
+        let status = match self.load_checkpoint(run) {
+            Ok(Some(checkpoint)) => {
+                if checkpoint.pending_external.is_some() {
+                    recovery_error = Some("Chat 恢复检查点（checkpoint）包含尚未确认的外部副作用".into());
+                    TurnStatus::OutcomeUnknown
+                } else if private_subagent_outcome_unknown(&checkpoint) {
+                    recovery_error = Some("Chat 恢复检查点（checkpoint）包含尚未确认的子代理结果".into());
+                    TurnStatus::OutcomeUnknown
                 } else {
-                    TurnStatus::Queued
+                    if checkpoint.outcome.as_ref().is_some_and(|outcome| outcome.status.is_terminal()) {
+                        // Restore the private history journal before archiving a
+                        // known result. Requeueing would let an old cancellation
+                        // discard this already finished turn before it is read.
+                        let restored = self.restore_checkpoint_history(run, Some(checkpoint), gateway).and_then(
+                            |(checkpoint, _)| {
+                                let Some(checkpoint) = checkpoint else { return Ok(None) };
+                                self.save_checkpoint(run, &checkpoint, gateway)?;
+                                Ok(checkpoint.outcome)
+                            },
+                        );
+                        match restored {
+                            Ok(Some(outcome)) => return Some(outcome),
+                            // An explicit rewind discarded the old checkpoint.
+                            Ok(None) => {
+                                return Some(TurnOutcome {
+                                    status: TurnStatus::Queued,
+                                    error: None,
+                                    note: None,
+                                    reply_text: None,
+                                })
+                            }
+                            Err((kind, error)) => {
+                                return Some(TurnOutcome {
+                                    status: TurnStatus::OutcomeUnknown,
+                                    error: Some(format!("{kind}: {error}")),
+                                    note: None,
+                                    reply_text: None,
+                                })
+                            }
+                        }
+                    }
+                    if matches!(run.status, TurnStatus::WaitingTask | TurnStatus::WaitingApproval) {
+                        run.status
+                    } else {
+                        TurnStatus::Queued
+                    }
                 }
             }
-            // Old/corrupt/missing checkpoints cannot prove a safe replay.
-            _ => TurnStatus::OutcomeUnknown,
-        })
+            Ok(None) => {
+                recovery_error = Some("Chat 恢复检查点（checkpoint）缺失".into());
+                TurnStatus::OutcomeUnknown
+            }
+            Err(error) => {
+                recovery_error = Some(format!("Chat 恢复检查点（checkpoint）无效：{error}"));
+                TurnStatus::OutcomeUnknown
+            }
+        };
+        Some(TurnOutcome { status, error: recovery_error, note: None, reply_text: None })
     }
 
     fn deliver_mid_turn(&self, run_id: &str, items: Vec<Json>) {
@@ -2743,9 +3442,10 @@ mod tests {
         assert!(rendered.contains("<your_workspace>/w</your_workspace>"));
         // a plain new_input wake adds no wake block
         assert!(!render_view(&view, &json!({"reason": "new_input"}), None).contains("<wake"));
-        // tool payload: team tools always, execution tools per binding
-        // +2: read_history and update_plan are runtime-provided, not bindings
-        assert_eq!(tools_payload(&[], (false, false), &[]).as_array().unwrap().len(), TEAM_TOOL_DOCS.len() + 2);
+        // tool payload: team tools always, the private helper entrypoint, and
+        // execution/runtime tools per binding. read_history and update_plan
+        // are runtime-provided, not bindings.
+        assert_eq!(tools_payload(&[], (false, false), &[]).as_array().unwrap().len(), TEAM_TOOL_DOCS.len() + 3);
         let runtime_payload = tools_payload(&[], (false, false), &[]);
         let runtime_tools: Vec<&str> = runtime_payload
             .as_array()
@@ -2886,6 +3586,131 @@ mod tests {
         assert_eq!(tree.rewind_to(None).unwrap(), 0);
     }
 
+    fn integrity_runner(root: &std::path::Path) -> Arc<ChatRunner> {
+        let mut runner = ChatRunner::new(
+            &json!({"id":"leader","role":"leader"}),
+            serde_json::from_value(json!({"provider":"openai","model":"test"})).unwrap(),
+            None,
+            Notify::new(crate::core_client::CoreClient::open(":memory:", "history-integrity").unwrap()),
+            crate::bound::BoundTools { tools: vec![] },
+            vec![],
+            (false, false),
+        );
+        Arc::get_mut(&mut runner).unwrap().history_path = Some(root.join("chat_history.json"));
+        runner
+    }
+
+    #[test]
+    fn legacy_history_damage_is_not_an_empty_conversation() {
+        let root = std::env::temp_dir().join(format!("ta-legacy-integrity-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let runner = integrity_runner(&root);
+        let path = root.join("chat_history.json");
+        for contents in ["{truncated", "[]", r#"{"t":{}}"#, r#"{"t":[null]}"#] {
+            std::fs::write(&path, contents).unwrap();
+            assert!(runner.load_tree("t").is_err(), "damaged legacy history was accepted: {contents}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), contents);
+            assert!(!root.join("chat_tree.json").exists(), "a failed migration must not create an empty tree");
+        }
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(runner.load_tree("t").is_err(), "an unreadable legacy path must be reported");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn malformed_history_graphs_are_refused_before_traversal() {
+        let root = std::env::temp_dir().join(format!("ta-tree-integrity-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let runner = integrity_runner(&root);
+        let mut valid = ChatTree::default();
+        valid.append(&[json!({"role":"user","content":"root"}), json!({"role":"assistant","content":"left"})]);
+        valid.rewind_to(Some("n1")).unwrap();
+        valid.append(&[json!({"role":"assistant","content":"right"})]);
+        valid.append_summary(json!({"role":"user","content":"summary"}), "n1");
+        let original = serde_json::to_value(&valid).unwrap();
+        let cases = [
+            ("unknown leaf", "/leaf", json!("missing")),
+            ("duplicate ID", "/nodes/1/id", json!("n1")),
+            ("empty ID", "/nodes/0/id", json!("")),
+            ("unknown parent", "/nodes/1/parent", json!("missing")),
+            ("self parent", "/nodes/0/parent", json!("n1")),
+            ("forward parent", "/nodes/0/parent", json!("n3")),
+            ("self skip", "/nodes/3/skip_to", json!("n4")),
+            ("unknown skip", "/nodes/3/skip_to", json!("missing")),
+            ("skip to abandoned branch", "/nodes/3/skip_to", json!("n2")),
+            ("invalid message", "/nodes/0/message", Json::Null),
+        ];
+        for (name, pointer, value) in cases {
+            let mut damaged = original.clone();
+            *damaged.pointer_mut(pointer).unwrap() = value;
+            let bytes = json!({"t":damaged}).to_string();
+            let path = root.join("chat_tree.json");
+            std::fs::write(&path, &bytes).unwrap();
+            assert!(runner.load_tree("t").is_err(), "accepted {name}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), bytes);
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn long_history_traversal_preserves_branches_and_compaction() {
+        for count in [4_000, 8_000, 16_000] {
+            let mut tree = ChatTree::default();
+            let messages: Vec<_> =
+                (0..count).map(|i| json!({"role":"user","content":format!("message {i}")})).collect();
+            tree.append(&messages);
+            let started = std::time::Instant::now();
+            assert_eq!(tree.materialize(), messages);
+            let points = tree.rewind_points();
+            assert_eq!(points.len(), count);
+            assert_eq!(points[0]["id"], format!("n{count}"));
+            assert_eq!(points[count - 1]["depth"], count - 1);
+            eprintln!("history nodes={count}, materialize+rewind_points={:?}", started.elapsed());
+            tree.rewind_to(Some("n2")).unwrap();
+            tree.append(&[json!({"role":"assistant","content":"other branch"})]);
+            tree.append_summary(json!({"role":"user","content":"summary"}), "n1");
+            assert_eq!(tree.materialize(), vec![messages[0].clone(), json!({"role":"user","content":"summary"})]);
+            tree.rewind_to(Some(&format!("n{count}"))).unwrap();
+            assert_eq!(tree.materialize(), messages, "compaction and another branch must not delete the old branch");
+            assert_eq!(tree.nodes.len(), count + 2);
+        }
+    }
+
+    #[test]
+    fn history_append_preserves_sparse_ids_and_failed_rewind_keeps_the_tip() {
+        let mut tree: ChatTree = serde_json::from_value(json!({
+            "nodes":[
+                {"id":"imported-root","parent":null,"message":{"role":"user","content":"root"}},
+                {"id":"n3","parent":"imported-root","message":{"role":"assistant","content":"reply"}}
+            ],
+            "leaf":"n3"
+        }))
+        .unwrap();
+        tree.validate().unwrap();
+        let original = tree.nodes.clone();
+        tree.append(&[json!({"role":"user","content":"continue"})]);
+        tree.append_summary(json!({"role":"user","content":"summary"}), "imported-root");
+        tree.validate().unwrap();
+        assert!(tree.nodes.starts_with(&original));
+        assert_eq!(tree.materialize()[1]["content"], "summary");
+        let tip = tree.leaf.clone();
+        tree.rewind_epoch = u64::MAX;
+        for target in [None, Some("imported-root")] {
+            assert!(tree.rewind_to(target).is_err());
+            assert_eq!(tree.leaf, tip, "a failed rewind must not partially move the conversation");
+        }
+        let mut boundary: ChatTree = serde_json::from_value(json!({
+            "nodes":[{"id":format!("n{}",u64::MAX),"parent":null,
+                "message":{"role":"user","content":"imported numeric boundary"}}],
+            "leaf":format!("n{}",u64::MAX)
+        }))
+        .unwrap();
+        boundary.append(&[json!({"role":"assistant","content":"a"}), json!({"role":"user","content":"b"})]);
+        boundary.validate().unwrap();
+        assert_eq!(boundary.materialize().len(), 3);
+    }
+
     #[test]
     fn cap_tool_output_keeps_head_and_tail() {
         let short = "x".repeat(100);
@@ -2909,7 +3734,7 @@ mod tests {
             json!({"role":"assistant","content":null,"tool_calls":[{"id":"new","type":"function","function":{"name":"shell","arguments":"{}"}}]}),
             json!({"role":"tool","tool_call_id":"new","content":"fresh"}),
         ];
-        let masked = mask_old_tool_outputs(&history);
+        let masked = mask_old_tool_outputs(&history, None);
         assert!(
             masked[3]["content"].as_str().unwrap().contains("tool_call_id=\"old\""),
             "old output masked with its id"
@@ -2920,7 +3745,110 @@ mod tests {
             json!({"role":"assistant","content":null,"tool_calls":[{"id":"a","type":"function","function":{"name":"shell","arguments":"{}"}}]}),
             json!({"role":"tool","tool_call_id":"a","content":"tiny"}),
         ];
-        assert_eq!(mask_old_tool_outputs(&small)[1]["content"], "tiny");
+        assert_eq!(mask_old_tool_outputs(&small, None)[1]["content"], "tiny");
+    }
+
+    #[test]
+    fn masking_large_windows_keeps_a_bounded_utf8_tail_without_changing_private_history() {
+        let mut history = Vec::new();
+        for index in 0..8 {
+            let id = format!("old-{index}");
+            history.extend([
+                json!({"role":"assistant","tool_calls":[{"id":id,
+                    "function":{"name":"read_file","arguments":"{}"}}]}),
+                json!({"role":"tool","tool_call_id":id,"content":"中".repeat(16_000)}),
+            ]);
+        }
+        history.extend([
+            json!({"role":"assistant","tool_calls":[{"id":"latest",
+                "function":{"name":"read_file","arguments":"{}"}}]}),
+            json!({"role":"tool","tool_call_id":"latest","content":"L".repeat(60_000)}),
+        ]);
+        let original = history.clone();
+        for (window, kept) in [(None, 0), (Some(0), 0), (Some(64_000), 0), (Some(1_000_000), 5), (Some(u64::MAX), 5)] {
+            let wire = mask_old_tool_outputs(&history, window);
+            for index in 0..8 {
+                let content = wire[index * 2 + 1]["content"].as_str().unwrap();
+                assert_eq!(content.contains("tool output hidden"), index < 8 - kept, "{window:?}: old-{index}");
+                if index >= 8 - kept {
+                    assert_eq!(content.len(), 48_000, "retained budget counts UTF-8 bytes, not characters");
+                }
+            }
+            let latest = wire.last().unwrap()["content"].as_str().unwrap();
+            assert!(!latest.contains("tool output hidden"), "unanswered output is outside the older-output budget");
+            assert!(latest.contains("chars truncated") && latest.contains("Full output:"));
+            assert!(latest.contains("tool_call_id=\"latest\""), "L0 still provides a lossless readback pointer");
+            assert_eq!(history, original, "masking and capping modify only the wire copy");
+        }
+    }
+
+    #[test]
+    fn compaction_threshold_includes_the_large_window_tool_budget() {
+        let _env = crate::env_lock();
+        let runner = ChatRunner::new(
+            &json!({"id":"leader","role":"leader"}),
+            serde_json::from_value(json!({"provider":"openai","model":"test","context_window":1_000_000})).unwrap(),
+            None,
+            Notify::new(crate::core_client::CoreClient::open(":memory:", "mask-threshold").unwrap()),
+            crate::bound::BoundTools { tools: vec![] },
+            vec![],
+            (false, false),
+        );
+        // The older tool results put this request over 90%; estimating the
+        // legacy 16k view instead would incorrectly skip compaction.
+        let mut history = vec![json!({"role":"user","content":"x".repeat(3_480_000)})];
+        for index in 0..3 {
+            let id = format!("source-{index}");
+            history.extend([
+                json!({"role":"assistant","tool_calls":[{"id":id,
+                    "function":{"name":"read_file","arguments":"{}"}}]}),
+                json!({"role":"tool","tool_call_id":id,"content":"S".repeat(50_000)}),
+            ]);
+        }
+        history.push(json!({"role":"assistant","content":"Continue the review."}));
+        let tools = json!([]);
+        assert!(estimated_tokens(&json!(mask_old_tool_outputs(&history, None))) < 900_000);
+        assert!(runner.over_threshold("thread", &history, &tools));
+        history[0]["content"] = json!("Review the files.");
+        assert!(!runner.over_threshold("thread", &history, &tools), "retained sources alone do not need a summary");
+    }
+
+    #[test]
+    fn masking_history_pages_preserves_the_source_and_pagination_recipe() {
+        let original = format!("{}SOURCE_PAGE{}", "甲".repeat(8000), "尾".repeat(8000));
+        let args = json!({"tool_call_id":"source-output", "offset":7900, "limit":500});
+        let page = history_page(&original, &args).unwrap();
+        let mut history = vec![
+            json!({"role":"assistant", "tool_calls":[{"id":"source-output",
+                "function":{"name":"shell","arguments":"{}"}}]}),
+            json!({"role":"tool","tool_call_id":"source-output","content":original}),
+        ];
+        for index in 0..4 {
+            let id = format!("read-page-{index}");
+            history.extend([
+                json!({"role":"assistant","tool_calls":[{"id":id,
+                    "function":{"name":"read_history","arguments":args.to_string()}}]}),
+                json!({"role":"tool","tool_call_id":id,"content":page.to_string()}),
+            ]);
+        }
+        history.extend([
+            json!({"role":"assistant","tool_calls":[{"id":"other-output",
+                "function":{"name":"shell","arguments":"{}"}}]}),
+            json!({"role":"tool","tool_call_id":"other-output","content":"x".repeat(MASK_KEEP_RECENT + 1)}),
+            json!({"role":"assistant","tool_calls":[{"id":"latest",
+                "function":{"name":"shell","arguments":"{}"}}]}),
+            json!({"role":"tool","tool_call_id":"latest","content":"fresh"}),
+        ]);
+        let wire = mask_old_tool_outputs(&history, None);
+        for index in 0..4 {
+            let message = &wire[3 + index * 2];
+            let hint = message["content"].as_str().unwrap();
+            assert!(hint.contains(r#""tool_call_id":"source-output""#), "{hint}");
+            assert!(hint.contains(r#""offset":7900"#), "{hint}");
+            assert!(hint.contains(r#""limit":500"#), "{hint}");
+            assert_eq!(message["tool_call_id"], format!("read-page-{index}"), "protocol pairing is unchanged");
+            assert_eq!(history[3 + index * 2]["content"], page.to_string(), "private receipts stay lossless");
+        }
     }
 
     #[test]
@@ -3033,7 +3961,7 @@ mod tests {
         // fresh load sees the persisted tree
         let reloaded = runner.load_tree("user-dialog").unwrap();
         assert_eq!(reloaded.materialize().len(), 2);
-        assert_eq!(runner.rewind_points("user-dialog").len(), 1);
+        assert_eq!(runner.rewind_points("user-dialog").unwrap().len(), 1);
         // rewind to empty; the epoch distinguishes it from a pending commit
         assert_eq!(runner.rewind("user-dialog", None).unwrap(), 0);
         assert_eq!(runner.load_tree("user-dialog").unwrap().materialize().len(), 0);

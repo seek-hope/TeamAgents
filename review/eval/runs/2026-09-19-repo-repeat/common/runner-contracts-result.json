@@ -1,0 +1,8 @@
+{
+  "command": [
+    "bash",
+    "review/eval/check-runner.sh"
+  ],
+  "exit_code": 0,
+  "elapsed_s": 14.967
+}

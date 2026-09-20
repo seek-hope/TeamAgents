@@ -1,0 +1,10 @@
+# 用对应供应商的实际 profile 添加 [[models]]。
+# 不猜测其他模型的原生窗口；缺少窗口或来源会阻止该项运行。
+# 相同 profile 不可重复。已配置窗口必须与这里一致。
+phase_timeout_s = 600
+
+[[models]]
+profile = "leader_main"
+model = "deepseek-flash"
+context_window = 1000000
+context_source = "用户确认 DeepSeek Flash 原生 1M；docs/DECISIONS.md D-36（2026-09-17）"

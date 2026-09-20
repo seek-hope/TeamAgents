@@ -1,0 +1,20 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running tests/live_models.rs (engine/target/debug/deps/live_models-cf3c6802a617c1a6)
+
+running 1 test
+
+thread 'live_chat_model_matrix' (13) panicked at tests/live_models.rs:400:5:
+assertion `left == right` failed: 真实验收未全部通过；查看 /tmp/teamagents-live-models-20260919/missing-key-final/report.json
+  left: String("incomplete")
+ right: "passed"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test live_chat_model_matrix ... FAILED
+
+failures:
+
+failures:
+    live_chat_model_matrix
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--test live_models`

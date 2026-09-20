@@ -229,7 +229,7 @@ pub struct Geometry {
 /// on render). Its wrapped height is part of the table geometry.
 pub fn panel_hint(panel: &str) -> &'static str {
     match panel {
-        "team" => "高亮成员=筛选日志 · Enter 取消 · p=计划 · v=改动 · c=结清结果不明",
+        "team" => "高亮成员=筛选日志 · Enter 取消 · p=计划 · v=改动 · h=记录 · c=结清结果不明",
         "tasks" => "c=取消选中任务（BLOCKED 直接取消；执行中的回合收到取消请求）",
         "approvals" => "待批准操作：a=本次批准  s=会话内批准  d=拒绝",
         "sessions" => "本目录会话：s=切换  n=新建  a=归档  d=删除（再按 d 确认，删当前会话后退出）",
@@ -308,6 +308,12 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     render_footer(frame, app, geo.footer);
     if app.review_open {
         render_review_overlay(frame, app, area);
+    }
+    if let Some(view) = &app.workspace_review {
+        render_workspace_review(frame, view, app.lang, area);
+    }
+    if let Some(view) = &app.member_history {
+        render_member_history(frame, view, app.lang, area);
     }
     if app.settings_open {
         render_settings_overlay(frame, app, area);
@@ -710,8 +716,83 @@ fn render_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-/// `/settings` overlay: a centred box over the chat, Esc closes it.
-/// `v`: the selected member's latest edit diff, colored like a patch.
+fn render_member_history(frame: &mut Frame, view: &crate::history::History, lang: &str, area: Rect) {
+    let block = ratatui::widgets::Block::default()
+        .borders(ratatui::widgets::Borders::ALL)
+        .border_style(Style::default().fg(ACCENT))
+        .style(Style::default().bg(PANEL_BG))
+        .title(view.title(lang));
+    let inner = block.inner(area);
+    frame.render_widget(ratatui::widgets::Clear, area);
+    frame.render_widget(block, area);
+    if inner.height < 3 || inner.width < 4 {
+        return;
+    }
+    let mut lines = vec![Line::from(Span::styled(view.status(lang), Style::default().fg(GREY)))];
+    lines.extend(
+        view.lines(lang, inner.width.saturating_sub(1) as usize, inner.height.saturating_sub(2) as usize)
+            .into_iter()
+            .map(|(line, selected)| {
+                Line::from(Span::styled(
+                    line,
+                    if selected { Style::default().fg(PANEL_BG).bg(ACCENT) } else { Style::default().fg(FG) },
+                ))
+            }),
+    );
+    frame.render_widget(Paragraph::new(lines), inner);
+    frame.render_widget(
+        Paragraph::new(view.footer(lang)).style(Style::default().fg(ACCENT)),
+        Rect { y: inner.y + inner.height - 1, height: 1, ..inner },
+    );
+}
+
+fn render_workspace_review(frame: &mut Frame, view: &crate::review::Review, lang: &str, area: Rect) {
+    let block = ratatui::widgets::Block::default()
+        .borders(ratatui::widgets::Borders::ALL)
+        .border_style(Style::default().fg(ACCENT))
+        .style(Style::default().bg(PANEL_BG))
+        .title(tr(lang, "改动审查：{v0}", &[("v0", &crate::review::safe(&view.agent))]));
+    let inner = block.inner(area);
+    frame.render_widget(ratatui::widgets::Clear, area);
+    frame.render_widget(block, area);
+    if inner.height < 3 || inner.width < 4 {
+        return;
+    }
+    // Keep the completeness warning visible even on narrow terminals. All
+    // metadata/warnings remain reachable in a separately scrollable info view.
+    let context = if view.info {
+        tr(lang, "审查信息：↑↓ 滚动 · ←→ 横移 · i 返回", &[])
+    } else if let Some(path) = &view.path {
+        crate::review::safe(path).chars().skip(view.horizontal).collect()
+    } else {
+        tr(lang, "文件清单：↑↓ 选择 · Enter 差异 · ←→ 横移", &[])
+    };
+    let header = [view.status(lang), context];
+    let header_height = header.len().min(inner.height.saturating_sub(2) as usize);
+    let body_height = (inner.height as usize).saturating_sub(header_height + 1);
+    let mut lines: Vec<Line> = header
+        .into_iter()
+        .take(header_height)
+        .map(|line| Line::from(Span::styled(line, Style::default().fg(GREY))))
+        .collect();
+    lines.extend(view.lines(lang, body_height).into_iter().map(|(line, selected)| {
+        let style = if selected {
+            Style::default().fg(PANEL_BG).bg(ACCENT)
+        } else if line.starts_with('+') {
+            Style::default().fg(Color::Green)
+        } else if line.starts_with('-') {
+            Style::default().fg(Color::Red)
+        } else {
+            Style::default().fg(FG)
+        };
+        Line::from(Span::styled(line, style))
+    }));
+    frame.render_widget(ratatui::widgets::Paragraph::new(lines), inner);
+    let footer = Rect { y: inner.y + inner.height - 1, height: 1, ..inner };
+    frame.render_widget(ratatui::widgets::Paragraph::new(view.footer(lang)).style(Style::default().fg(ACCENT)), footer);
+}
+
+/// Shared text overlay for member plans.
 fn render_review_overlay(frame: &mut Frame, app: &App, area: Rect) {
     let width =
         ((area.width as usize * 8 / 10).clamp(40, 120)).min(area.width.saturating_sub(2).max(1) as usize) as u16;

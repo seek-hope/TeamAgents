@@ -1,0 +1,73 @@
+{
+  "sample": 2,
+  "started_at": "2026-09-19T23:35:45.818555+08:00",
+  "command": [
+    "/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/run.sh",
+    "--bin",
+    "/home/rimuru/Projects/Code/for_fun/TeamAgents/review/tmp/repo-repeat-20260919/bin/teamagents",
+    "--only",
+    "repo-session-fork",
+    "--out",
+    "/home/rimuru/Projects/Code/for_fun/TeamAgents/review/tmp/repo-repeat-20260919/sample-2/run"
+  ],
+  "status": "finished",
+  "pid": 23346,
+  "finished_at": "2026-09-19T23:48:43.391700+08:00",
+  "exit_code": 0,
+  "elapsed_s": 777.573,
+  "frozen_inputs_unchanged": true,
+  "model_started": true,
+  "session_id": "proj_c87d58f74574",
+  "result": {
+    "schema_version": 1,
+    "type": "result",
+    "session_id": "proj_c87d58f74574",
+    "status": "completed",
+    "exit_code": 0,
+    "duration_ms": 750632,
+    "usage": [
+      {
+        "agent_id": "leader",
+        "name": "Leader",
+        "model_profile": "leader_main",
+        "model": "deepseek-flash",
+        "context_window": 1000000,
+        "usage": {
+          "calls": 94,
+          "prompt_tokens": 11259816,
+          "completion_tokens": 102879,
+          "total_tokens": 11362695,
+          "last_prompt_tokens": 178932,
+          "unknown_usage_calls": 0,
+          "model_elapsed_ms": 534511,
+          "cached_input_tokens": 9473408,
+          "threads": {
+            "ctx:leader:1": {
+              "calls": 94,
+              "prompt": 11259816,
+              "completion": 102879,
+              "total": 11362695,
+              "last_prompt": 178932,
+              "unknown_calls": 0,
+              "elapsed_ms": 534511,
+              "updated_ms": 1789832893656,
+              "cached_input": 9473408
+            }
+          }
+        }
+      }
+    ],
+    "outcome_unknown": [],
+    "verification": [
+      {
+        "command": "XDG_CONFIG_HOME=\"$PWD/.config\" cargo test --offline --manifest-path engine/Cargo.toml --test fork_rewind --test model_override --test session_boot --test worker_protocol -- --test-threads=1",
+        "output": "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s\n     Running tests/fork_rewind.rs (engine/target/debug/deps/fork_rewind-470255ec232f15fa)\n\nrunning 1 test\ntest fork_carries_spec_and_leader_tree_but_not_team_facts ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s\n\n     Running tests/model_override.rs (engine/target/debug/deps/model_override-ac12dfb0f682bc6d)\n\nrunning 4 tests\ntest drop_runner_keeps_an_inflight_turn_alive ... ok\ntest model_overrides_survive_session_reopen ... ok\ntest set_model_override_applies_reports_and_clears ... ok\ntest stale_model_overrides_are_dropped_on_open ... ok\n\ntest result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.91s\n\n     Running tests/session_boot.rs (engine/target/debug/deps/session_boot-7679e150d5c330ce)\n\nrunning 2 tests\ntest another_process_cannot_open_a_locked_session ... ok\ntest failed_open_releases_the_session_lock_and_can_be_retried ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s\n\n     Running tests/worker_protocol.rs (engine/target/debug/deps/worker_protocol-d0dcc12b702f08a7)\n\nrunning 5 tests\ntest model_discovery_does_not_block_worker_requests ... ok\ntest worker_drives_a_scripted_session_end_to_end ... ok\ntest worker_reports_unknown_methods_and_missing_session ... ok\ntest worker_set_model_switches_and_clears_overrides ... ok\ntest worker_usage_reports_per_agent_counters ... ok\n\ntest result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.59s",
+        "exit_code": 0,
+        "ok": true
+      }
+    ]
+  },
+  "grade_ok": true,
+  "grade_reason": "隐藏及公开测试通过，受保护文件未改变",
+  "completed_and_verified": true
+}

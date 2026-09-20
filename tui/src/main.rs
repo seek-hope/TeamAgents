@@ -521,6 +521,10 @@ fn run_effect(effect: Effect, worker: &Worker, app: &mut App, requests: &mut Asy
             json!({"action": {"action_id":format!("ui-approval-{approval_id}-{decision}"),"actor_id":"user","kind":"approval_decision","payload":{"approval_id":approval_id,"decision":decision}}}),
         ),
         Effect::UsageStatus => ("usage", json!({})),
+        Effect::History { params, .. } => ("history", params.clone()),
+        Effect::Review { agent_id, path, offset, revision, .. } => {
+            ("review", json!({"agent_id":agent_id,"path":path,"offset":offset,"revision":revision}))
+        }
         Effect::RewindPoints => ("rewind_points", json!({})),
         Effect::Rewind { node } => ("rewind", json!({"node_id":node})),
         Effect::Fork => ("fork_session", json!({})),
@@ -591,6 +595,8 @@ fn apply_effect_result(effect: Effect, generation: u64, result: Result<Json, Str
             app.notify(msg, if ok { app::Severity::Info } else { app::Severity::Error }, 10);
         }
         Effect::UsageStatus => app.show_usage(result),
+        Effect::History { generation, .. } => app.show_history(generation, result),
+        Effect::Review { generation, .. } => app.show_review(generation, result),
         Effect::RewindPoints => app.show_rewind_points(result),
         Effect::Rewind { .. } => app.show_rewind_done(result),
         Effect::Fork => app.show_fork_done(result),
@@ -654,7 +660,8 @@ fn handle_mouse(m: event::MouseEvent, terminal: &Terminal<CrosstermBackend<std::
     // every mouse event updates the hover position (grey surface + white text marks
     // what a click would hit)
     app.pointer = Some((m.row, m.column));
-    if app.settings_open || app.model_picker.is_some() {
+    if app.settings_open || app.model_picker.is_some() || app.workspace_review.is_some() || app.member_history.is_some()
+    {
         return; // the settings overlay is modal
     }
     let geo = ui::geometry(app, area);
@@ -872,14 +879,12 @@ mod tests {
     }
 
     #[test]
-    fn review_overlay_shows_the_last_edit_diff() {
+    fn review_overlay_requests_actual_workspace_changes_and_ignores_tool_text() {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut app = test_app();
         app.state = Some(json!({"spec": {"agents": [
             {"id": "alpha", "name": "alpha", "role": "worker", "runtime_kind": "deepagents", "model_profile": "m"}
         ]}}));
-        assert!(!app.open_review("alpha"), "nothing to review yet");
-
         app.on_tool_result(
             "alpha",
             "edit_file",
@@ -887,23 +892,24 @@ mod tests {
             "{\"path\":\"a.txt\"}",
             "edited a.txt\n@@ line 1 @@\n-old\n+new",
         );
-        assert!(app.open_review("alpha"), "the member's diff opens");
-        assert!(app.review_open);
-        assert!(app.review_title().contains("alpha"));
-        assert_eq!(app.review_lines[0], "edited a.txt");
-        assert_eq!(app.review_lines[2], "-old");
+        let effects = app.open_review("alpha");
+        let Effect::Review { generation, .. } = &effects[0] else { panic!("expected review request") };
+        assert!(app.workspace_review.is_some());
+        app.show_review(*generation, Ok(json!({"changes":[{"path":"b.txt","status":"modified"}]})));
+        let view = app.workspace_review.as_ref().unwrap();
+        assert_eq!(view.lines("en", 10)[0].0, "modified   b.txt");
 
-        // Esc closes; a member with no recorded edit still reports nothing
+        // Esc closes without submitting a model or team action.
         assert!(app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).is_empty());
-        assert!(!app.review_open);
-        assert!(!app.open_review("ghost"));
+        assert!(app.workspace_review.is_none());
 
         // the panel key path: `v` on the selected team row opens the same view
         app.panel = 0; // team
         app.focus = app::Focus::Panel;
         app.table_cursors.insert("team", (Some("alpha".into()), 0));
-        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
-        assert!(app.review_open, "v on the member row opens the review");
+        let effects = app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert!(matches!(&effects[0], Effect::Review { agent_id, .. } if agent_id == "alpha"));
+        assert!(app.workspace_review.is_some(), "v on the member row opens the review");
     }
 
     #[test]

@@ -1,0 +1,683 @@
+--- a/engine/src/chat.rs
++++ b/engine/src/chat.rs
+@@ -660,28 +660,96 @@
+ }
+ 
+ impl ChatTree {
++    /// Validate once at the persistence boundary. Parents must precede their
++    /// children; summary jumps must stay on that node's physical ancestry.
++    fn validate(&self) -> Result<(), String> {
++        let mut indices = HashMap::with_capacity(self.nodes.len());
++        let root = self.nodes.len();
++        let mut children = vec![vec![]; root + 1];
++        for (index, node) in self.nodes.iter().enumerate() {
++            if node.id.is_empty() || indices.contains_key(node.id.as_str()) {
++                return Err(format!("历史节点 ID 为空或重复：{:?}", node.id));
++            }
++            if !valid_history_message(&node.message) {
++                return Err(format!("历史节点 {:?} 的消息格式无效", node.id));
++            }
++            let parent = match node.parent.as_deref() {
++                Some(id) => *indices
++                    .get(id)
++                    .ok_or_else(|| format!("历史节点 {:?} 的父节点不存在或不在其之前：{id:?}", node.id))?,
++                None => root,
++            };
++            children[parent].push(index);
++            indices.insert(node.id.as_str(), index);
++        }
++        if self.leaf.as_deref().is_some_and(|id| !indices.contains_key(id)) {
++            return Err(format!("历史 leaf 指向不存在的节点：{:?}", self.leaf));
++        }
++
++        // Iterative DFS intervals make all summary-ancestor checks linear in
++        // total, even with many compactions. Never recurse on a long session.
++        let mut entered = vec![0; root + 1];
++        let mut exited = vec![0; root + 1];
++        let mut clock = 0;
++        let mut stack = vec![(root, false)];
++        while let Some((index, exiting)) = stack.pop() {
++            if exiting {
++                exited[index] = clock;
++            } else {
++                entered[index] = clock;
++                clock += 1;
++                stack.push((index, true));
++                stack.extend(children[index].iter().rev().map(|child| (*child, false)));
++            }
++        }
++        for (index, node) in self.nodes.iter().enumerate() {
++            if let Some(id) = node.skip_to.as_deref().filter(|id| !id.is_empty()) {
++                let target =
++                    *indices.get(id).ok_or_else(|| format!("历史摘要 {:?} 指向不存在的节点：{id:?}", node.id))?;
++                if !(entered[target] < entered[index] && entered[index] < exited[target]) {
++                    return Err(format!("历史摘要 {:?} 的跳转目标不是其祖先：{id:?}", node.id));
++                }
++            }
++        }
++        Ok(())
++    }
++
++    fn ancestors(&self, skip_summaries: bool) -> impl Iterator<Item = &TreeNode> {
++        let mut current = self.leaf.as_deref();
++        self.nodes.iter().rev().filter(move |node| {
++            if current != Some(node.id.as_str()) {
++                return false;
++            }
++            current = match node.skip_to.as_deref().filter(|_| skip_summaries) {
++                Some("") => None,
++                Some(target) => Some(target),
++                None => node.parent.as_deref(),
++            };
++            true
++        })
++    }
++
+     /// Linear history for the model API: walk leaf -> root, reversed.
+     fn materialize(&self) -> Vec<Json> {
+-        let mut out = vec![];
+-        let mut cur = self.leaf.as_deref();
+-        while let Some(id) = cur {
+-            let Some(node) = self.nodes.iter().find(|n| n.id == id) else { break };
+-            out.push(node.message.clone());
+-            cur = match &node.skip_to {
+-                // "" means the covered range runs to the root.
+-                Some(target) if target.is_empty() => None,
+-                Some(target) => Some(target.as_str()),
+-                None => node.parent.as_deref(),
+-            };
+-        }
++        let mut out: Vec<_> = self.ancestors(true).map(|node| node.message.clone()).collect();
+         out.reverse();
+         out
+     }
+ 
+     /// Chain-append messages under the current leaf; returns the new leaf.
+     fn append(&mut self, messages: &[Json]) {
++        // Imported trees may have sparse numeric IDs. Keep the existing IDs
++        // and choose the next unused one without rescanning for each message.
++        let mut sequence =
++            self.nodes.iter().filter_map(|node| node.id.strip_prefix('n')?.parse::<u64>().ok()).max().unwrap_or(0);
+         for message in messages {
+-            let id = format!("n{}", self.nodes.len() + 1);
++            let id = match sequence.checked_add(1) {
++                Some(next) => {
++                    sequence = next;
++                    format!("n{next}")
++                }
++                None => uuid::Uuid::new_v4().to_string(),
++            };
+             self.nodes.push(TreeNode {
+                 id: id.clone(),
+                 parent: self.leaf.take(),
+@@ -695,26 +763,15 @@
+     /// Append a compaction summary covering everything above `skip_to`
+     /// ("" = the whole current chain).
+     fn append_summary(&mut self, message: Json, skip_to: &str) {
+-        let id = format!("n{}", self.nodes.len() + 1);
+-        self.nodes.push(TreeNode {
+-            id: id.clone(),
+-            parent: self.leaf.take(),
+-            skip_to: Some(skip_to.to_string()),
+-            message,
+-        });
+-        self.leaf = Some(id);
++        self.append(&[message]);
++        self.nodes.last_mut().expect("just appended").skip_to = Some(skip_to.to_string());
+     }
+ 
+     /// Include earlier compactions' calls, but never an abandoned branch.
+     fn tool_references(&self) -> Vec<String> {
+         let mut references = vec![];
+         let mut seen = HashSet::new();
+-        let mut cur = self.leaf.as_deref();
+-        // Parents precede their children in the append-only node array.
+-        for node in self.nodes.iter().rev() {
+-            if cur != Some(node.id.as_str()) {
+-                continue;
+-            }
++        for node in self.ancestors(false) {
+             for call in node.message["tool_calls"].as_array().into_iter().flatten() {
+                 if let Some(id) = call["id"].as_str() {
+                     // Compaction re-appends retained groups; they still refer
+@@ -724,7 +781,6 @@
+                     }
+                 }
+             }
+-            cur = node.parent.as_deref();
+         }
+         references.reverse();
+         references
+@@ -732,18 +788,7 @@
+ 
+     /// Rewind targets: user-input nodes, newest first, as (id, depth, preview).
+     fn rewind_points(&self) -> Vec<Json> {
+-        let chain: Vec<&TreeNode> = {
+-            let mut out = vec![];
+-            let mut cur = self.leaf.as_deref();
+-            while let Some(id) = cur {
+-                let Some(node) = self.nodes.iter().find(|n| n.id == id) else { break };
+-                out.push(node);
+-                cur = node.parent.as_deref();
+-            }
+-            out
+-        };
+-        chain
+-            .iter()
++        self.ancestors(false)
+             .enumerate()
+             .filter(|(_, n)| n.message["role"] == "user")
+             .map(|(depth, n)| {
+@@ -754,6 +799,7 @@
+     }
+ 
+     fn rewind_to(&mut self, node_id: Option<&str>) -> Result<usize, String> {
++        let next_epoch = self.rewind_epoch.checked_add(1).ok_or("rewind epoch exhausted")?;
+         let depth = match node_id {
+             None => {
+                 self.leaf = None;
+@@ -767,9 +813,13 @@
+                 self.materialize().len()
+             }
+         };
+-        self.rewind_epoch = self.rewind_epoch.checked_add(1).ok_or("rewind epoch exhausted")?;
++        self.rewind_epoch = next_epoch;
+         Ok(depth)
+     }
++}
++
++fn valid_history_message(message: &Json) -> bool {
++    message.is_object() && message["role"].as_str().is_some_and(|role| !role.is_empty())
+ }
+ 
+ fn write_json_atomic(path: &std::path::Path, value: &Json) -> Result<(), String> {
+@@ -921,13 +971,24 @@
+         })
+     }
+ 
+-    /// Conversation history from disk: `{thread_id: [messages]}`. Best effort —
+-    /// an unreadable file degrades to a fresh conversation, never a failure.
+-    fn load_history(&self, thread: &str) -> Vec<Json> {
+-        let Some(path) = &self.history_path else { return vec![] };
+-        let Ok(text) = std::fs::read_to_string(path) else { return vec![] };
+-        let Ok(data) = serde_json::from_str::<Json>(&text) else { return vec![] };
+-        data.get(thread).and_then(|v| v.as_array()).cloned().unwrap_or_default()
++    /// Only absent files/threads mean a new conversation. Unreadable or
++    /// malformed legacy history must never be migrated to an empty tree.
++    fn load_history(&self, thread: &str) -> Result<Vec<Json>, String> {
++        let Some(path) = &self.history_path else { return Ok(vec![]) };
++        let text = match std::fs::read_to_string(path) {
++            Ok(text) => text,
++            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
++            Err(e) => return Err(format!("无法读取历史 {}：{e}", path.display())),
++        };
++        let data: Json =
++            serde_json::from_str(&text).map_err(|e| format!("历史 {} 不是有效 JSON：{e}", path.display()))?;
++        let threads = data.as_object().ok_or_else(|| format!("历史 {} 不是线程映射", path.display()))?;
++        let Some(value) = threads.get(thread) else { return Ok(vec![]) };
++        let messages = value
++            .as_array()
++            .filter(|items| items.iter().all(valid_history_message))
++            .ok_or_else(|| format!("历史 {} 的线程 {thread:?} 消息格式无效", path.display()))?;
++        Ok(messages.clone())
+     }
+ 
+     /// Atomic write (tmp + rename) so a crash never truncates the history.
+@@ -961,24 +1022,29 @@
+         if let Some(path) = self.tree_path() {
+             match std::fs::read_to_string(&path) {
+                 Ok(text) => {
+-                    let data: Json = serde_json::from_str(&text).map_err(|e| format!("invalid history tree: {e}"))?;
++                    let data: Json = serde_json::from_str(&text)
++                        .map_err(|e| format!("历史树 {} 不是有效 JSON：{e}", path.display()))?;
+                     if !data.is_object() {
+-                        return Err("invalid member history tree".into());
++                        return Err(format!("历史树 {} 不是线程映射", path.display()));
+                     }
+                     if let Some(value) = data.get(thread) {
+-                        return serde_json::from_value(value.clone()).map_err(|e| format!("invalid history tree: {e}"));
++                        let tree: ChatTree = serde_json::from_value(value.clone())
++                            .map_err(|e| format!("历史树 {} 格式无效：{e}", path.display()))?;
++                        tree.validate().map_err(|e| format!("历史树 {}：{e}", path.display()))?;
++                        return Ok(tree);
+                     }
+                 }
+                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+-                Err(e) => return Err(e.to_string()),
++                Err(e) => return Err(format!("无法读取历史树 {}：{e}", path.display())),
+             }
+         }
+         let mut tree = ChatTree::default();
+-        tree.append(&self.load_history(thread));
++        tree.append(&self.load_history(thread)?);
+         Ok(tree)
+     }
+ 
+     fn save_tree(&self, thread: &str, tree: &ChatTree) -> Result<(), String> {
++        tree.validate()?;
+         let Some(path) = self.tree_path() else { return Ok(()) };
+         let mut data = match std::fs::read_to_string(&path) {
+             Ok(text) => serde_json::from_str::<Json>(&text).map_err(|e| e.to_string())?,
+@@ -995,8 +1061,8 @@
+     }
+ 
+     /// Rewind targets for a thread (user inputs, newest first) — the /rewind picker.
+-    pub fn rewind_points(&self, thread: &str) -> Vec<Json> {
+-        self.load_tree(thread).map(|t| t.rewind_points()).unwrap_or_default()
++    pub fn rewind_points(&self, thread: &str) -> Result<Vec<Json>, String> {
++        self.load_tree(thread).map(|t| t.rewind_points())
+     }
+ 
+     /// Move the thread's live tip to `node_id` (None = empty conversation).
+@@ -1840,8 +1906,12 @@
+             return Err(("ChatError".into(), "compaction returned an empty summary".into()));
+         }
+         // Keep the system root verbatim; everything else is covered.
+-        let keep =
+-            tree.nodes.first().filter(|n| n.message["role"] == "system").map(|n| n.id.clone()).unwrap_or_default();
++        let keep = tree
++            .ancestors(false)
++            .last()
++            .filter(|n| n.message["role"] == "system")
++            .map(|n| n.id.clone())
++            .unwrap_or_default();
+         tree.append_summary(
+             json!({"role": "user", "content": format!("[Compacted conversation summary]\n{summary}\n\n{index}\n\n[Earlier tool outputs and replies were removed from context. Call read_history with a tool_call_id to retrieve a tool output.]")}),
+             &keep,
+@@ -2661,7 +2731,7 @@
+         self.states.lock().unwrap().get(run_id).copied()
+     }
+ 
+-    fn rewind_points(&self, thread: &str) -> Vec<Json> {
++    fn rewind_points(&self, thread: &str) -> Result<Vec<Json>, String> {
+         ChatRunner::rewind_points(self, thread)
+     }
+ 
+@@ -3426,6 +3496,131 @@
+         assert_eq!(tree.rewind_to(None).unwrap(), 0);
+     }
+ 
++    fn integrity_runner(root: &std::path::Path) -> Arc<ChatRunner> {
++        let mut runner = ChatRunner::new(
++            &json!({"id":"leader","role":"leader"}),
++            serde_json::from_value(json!({"provider":"openai","model":"test"})).unwrap(),
++            None,
++            Notify::new(crate::core_client::CoreClient::open(":memory:", "history-integrity").unwrap()),
++            crate::bound::BoundTools { tools: vec![] },
++            vec![],
++            (false, false),
++        );
++        Arc::get_mut(&mut runner).unwrap().history_path = Some(root.join("chat_history.json"));
++        runner
++    }
++
++    #[test]
++    fn legacy_history_damage_is_not_an_empty_conversation() {
++        let root = std::env::temp_dir().join(format!("ta-legacy-integrity-{}", uuid::Uuid::new_v4()));
++        std::fs::create_dir_all(&root).unwrap();
++        let runner = integrity_runner(&root);
++        let path = root.join("chat_history.json");
++        for contents in ["{truncated", "[]", r#"{"t":{}}"#, r#"{"t":[null]}"#] {
++            std::fs::write(&path, contents).unwrap();
++            assert!(runner.load_tree("t").is_err(), "damaged legacy history was accepted: {contents}");
++            assert_eq!(std::fs::read_to_string(&path).unwrap(), contents);
++            assert!(!root.join("chat_tree.json").exists(), "a failed migration must not create an empty tree");
++        }
++        std::fs::remove_file(&path).unwrap();
++        std::fs::create_dir(&path).unwrap();
++        assert!(runner.load_tree("t").is_err(), "an unreadable legacy path must be reported");
++        std::fs::remove_dir_all(root).unwrap();
++    }
++
++    #[test]
++    fn malformed_history_graphs_are_refused_before_traversal() {
++        let root = std::env::temp_dir().join(format!("ta-tree-integrity-{}", uuid::Uuid::new_v4()));
++        std::fs::create_dir_all(&root).unwrap();
++        let runner = integrity_runner(&root);
++        let mut valid = ChatTree::default();
++        valid.append(&[json!({"role":"user","content":"root"}), json!({"role":"assistant","content":"left"})]);
++        valid.rewind_to(Some("n1")).unwrap();
++        valid.append(&[json!({"role":"assistant","content":"right"})]);
++        valid.append_summary(json!({"role":"user","content":"summary"}), "n1");
++        let original = serde_json::to_value(&valid).unwrap();
++        let cases = [
++            ("unknown leaf", "/leaf", json!("missing")),
++            ("duplicate ID", "/nodes/1/id", json!("n1")),
++            ("empty ID", "/nodes/0/id", json!("")),
++            ("unknown parent", "/nodes/1/parent", json!("missing")),
++            ("self parent", "/nodes/0/parent", json!("n1")),
++            ("forward parent", "/nodes/0/parent", json!("n3")),
++            ("self skip", "/nodes/3/skip_to", json!("n4")),
++            ("unknown skip", "/nodes/3/skip_to", json!("missing")),
++            ("skip to abandoned branch", "/nodes/3/skip_to", json!("n2")),
++            ("invalid message", "/nodes/0/message", Json::Null),
++        ];
++        for (name, pointer, value) in cases {
++            let mut damaged = original.clone();
++            *damaged.pointer_mut(pointer).unwrap() = value;
++            let bytes = json!({"t":damaged}).to_string();
++            let path = root.join("chat_tree.json");
++            std::fs::write(&path, &bytes).unwrap();
++            assert!(runner.load_tree("t").is_err(), "accepted {name}");
++            assert_eq!(std::fs::read_to_string(&path).unwrap(), bytes);
++        }
++        std::fs::remove_dir_all(root).unwrap();
++    }
++
++    #[test]
++    fn long_history_traversal_preserves_branches_and_compaction() {
++        for count in [4_000, 8_000, 16_000] {
++            let mut tree = ChatTree::default();
++            let messages: Vec<_> =
++                (0..count).map(|i| json!({"role":"user","content":format!("message {i}")})).collect();
++            tree.append(&messages);
++            let started = std::time::Instant::now();
++            assert_eq!(tree.materialize(), messages);
++            let points = tree.rewind_points();
++            assert_eq!(points.len(), count);
++            assert_eq!(points[0]["id"], format!("n{count}"));
++            assert_eq!(points[count - 1]["depth"], count - 1);
++            eprintln!("history nodes={count}, materialize+rewind_points={:?}", started.elapsed());
++            tree.rewind_to(Some("n2")).unwrap();
++            tree.append(&[json!({"role":"assistant","content":"other branch"})]);
++            tree.append_summary(json!({"role":"user","content":"summary"}), "n1");
++            assert_eq!(tree.materialize(), vec![messages[0].clone(), json!({"role":"user","content":"summary"})]);
++            tree.rewind_to(Some(&format!("n{count}"))).unwrap();
++            assert_eq!(tree.materialize(), messages, "compaction and another branch must not delete the old branch");
++            assert_eq!(tree.nodes.len(), count + 2);
++        }
++    }
++
++    #[test]
++    fn history_append_preserves_sparse_ids_and_failed_rewind_keeps_the_tip() {
++        let mut tree: ChatTree = serde_json::from_value(json!({
++            "nodes":[
++                {"id":"imported-root","parent":null,"message":{"role":"user","content":"root"}},
++                {"id":"n3","parent":"imported-root","message":{"role":"assistant","content":"reply"}}
++            ],
++            "leaf":"n3"
++        }))
++        .unwrap();
++        tree.validate().unwrap();
++        let original = tree.nodes.clone();
++        tree.append(&[json!({"role":"user","content":"continue"})]);
++        tree.append_summary(json!({"role":"user","content":"summary"}), "imported-root");
++        tree.validate().unwrap();
++        assert!(tree.nodes.starts_with(&original));
++        assert_eq!(tree.materialize()[1]["content"], "summary");
++        let tip = tree.leaf.clone();
++        tree.rewind_epoch = u64::MAX;
++        for target in [None, Some("imported-root")] {
++            assert!(tree.rewind_to(target).is_err());
++            assert_eq!(tree.leaf, tip, "a failed rewind must not partially move the conversation");
++        }
++        let mut boundary: ChatTree = serde_json::from_value(json!({
++            "nodes":[{"id":format!("n{}",u64::MAX),"parent":null,
++                "message":{"role":"user","content":"imported numeric boundary"}}],
++            "leaf":format!("n{}",u64::MAX)
++        }))
++        .unwrap();
++        boundary.append(&[json!({"role":"assistant","content":"a"}), json!({"role":"user","content":"b"})]);
++        boundary.validate().unwrap();
++        assert_eq!(boundary.materialize().len(), 3);
++    }
++
+     #[test]
+     fn cap_tool_output_keeps_head_and_tail() {
+         let short = "x".repeat(100);
+@@ -3676,7 +3871,7 @@
+         // fresh load sees the persisted tree
+         let reloaded = runner.load_tree("user-dialog").unwrap();
+         assert_eq!(reloaded.materialize().len(), 2);
+-        assert_eq!(runner.rewind_points("user-dialog").len(), 1);
++        assert_eq!(runner.rewind_points("user-dialog").unwrap().len(), 1);
+         // rewind to empty; the epoch distinguishes it from a pending commit
+         assert_eq!(runner.rewind("user-dialog", None).unwrap(), 0);
+         assert_eq!(runner.load_tree("user-dialog").unwrap().materialize().len(), 0);
+--- a/engine/src/runtime.rs
++++ b/engine/src/runtime.rs
+@@ -50,8 +50,8 @@
+     /// D-26 rewind: chat backends own a tree-structured history; backends that
+     /// keep history server-side (codex) report unsupported — use their native
+     /// fork instead.
+-    fn rewind_points(&self, _thread: &str) -> Vec<Json> {
+-        vec![]
++    fn rewind_points(&self, _thread: &str) -> Result<Vec<Json>, String> {
++        Ok(vec![])
+     }
+     fn rewind(&self, _thread: &str, _node: Option<&str>) -> Result<usize, String> {
+         Err("this backend does not support rewind".into())
+--- a/engine/src/session.rs
++++ b/engine/src/session.rs
+@@ -266,7 +266,7 @@
+     /// Rewind targets on the leader's conversation (user inputs, newest first).
+     pub fn rewind_points(&self) -> Result<Json, String> {
+         let (leader, thread) = self.leader_thread()?;
+-        let points = self.runtime.runner(&leader).map(|r| r.rewind_points(&thread)).unwrap_or_default();
++        let points = self.runtime.runner(&leader).map(|r| r.rewind_points(&thread)).transpose()?.unwrap_or_default();
+         Ok(json!({"agent_id": leader, "thread": thread, "points": points}))
+     }
+ 
+--- a/engine/tests/session_identity.rs
++++ b/engine/tests/session_identity.rs
+@@ -233,6 +233,147 @@
+     assert_eq!(calls[0]["model"], "local-only");
+     assert_eq!(std::fs::read(&original).unwrap(), original_bytes);
+     fresh.close();
++}
++
++#[test]
++fn damaged_legacy_history_stops_before_model_calls_and_preserves_evidence() {
++    let env = isolated_state_home("damaged-legacy-history");
++    let project = env.join("project");
++    std::fs::create_dir_all(&project).unwrap();
++    let model = LocalModel::start();
++    let session_id = "damaged-legacy";
++    let session =
++        open(&project, session_id, model.catalog(), json!({"leader_id":"leader","agents":[member("leader","leader")]}));
++    session.close();
++    drop(session);
++    let member_dir = session_paths(session_id).base.join("members/leader");
++    std::fs::create_dir_all(&member_dir).unwrap();
++    let original = br#"{"ctx:leader:1":{"damaged_messages":[{"role":"user","content":"keep this task"}]}}"#;
++    let history = member_dir.join("chat_history.json");
++    std::fs::write(&history, original).unwrap();
++
++    let restored =
++        open(&project, session_id, model.catalog(), json!({"leader_id":"leader","agents":[member("leader","leader")]}));
++    restored.runtime.start();
++    restored.runtime.user_message("Continue my previous task.", false).unwrap();
++    let settled = restored.runtime.settle(5);
++    let state = restored.core.state().unwrap();
++    restored.close();
++    drop(restored);
++    assert!(settled);
++    assert!(model.requests.lock().unwrap().is_empty(), "damaged history must not silently start a fresh model request");
++    assert_eq!(state["runs"][0]["status"], "OUTCOME_UNKNOWN", "{state}");
++    assert!(
++        state["events"].as_array().unwrap().iter().any(|event| {
++            event["kind"] == "run_failed"
++                && event["payload"]["error"].as_str().unwrap_or("").contains("chat_history.json")
++        }),
++        "{state}"
++    );
++    assert_eq!(std::fs::read(&history).unwrap(), original);
++    assert!(!member_dir.join("chat_tree.json").exists(), "the invalid legacy source must not migrate to an empty tree");
++}
++
++#[test]
++fn cyclic_history_refuses_resume_and_rewind_without_losing_the_source() {
++    let env = isolated_state_home("cyclic-history");
++    let project = env.join("project");
++    std::fs::create_dir_all(&project).unwrap();
++    let model = LocalModel::start();
++    let session_id = "cyclic-history";
++    let team = json!({"leader_id":"leader","agents":[member("leader","leader")]});
++    let session = open(&project, session_id, model.catalog(), team.clone());
++    session.runtime.start();
++    session.runtime.user_message("Remember the original task.", false).unwrap();
++    assert!(session.runtime.settle(5));
++    session.close();
++    drop(session);
++    let member_dir = session_paths(session_id).base.join("members/leader");
++    let path = member_dir.join("chat_tree.json");
++    let original = std::fs::read(&path).unwrap();
++    let linear = std::fs::read(member_dir.join("chat_history.json")).unwrap();
++    let mut tree: Json = serde_json::from_slice(&original).unwrap();
++    let tip = tree["ctx:leader:1"]["leaf"].clone();
++    tree["ctx:leader:1"]["nodes"][0]["parent"] = tip;
++    let damaged = tree.to_string();
++    std::fs::write(&path, &damaged).unwrap();
++    let calls_before = model.requests.lock().unwrap().len();
++
++    let restored = open(&project, session_id, model.catalog(), team.clone());
++    let points = restored.rewind_points();
++    let rewind = restored.rewind(None);
++    restored.runtime.start();
++    restored.runtime.user_message("Continue after restart.", false).unwrap();
++    let settled = restored.runtime.settle(5);
++    let state = restored.core.state().unwrap();
++    restored.close();
++    drop(restored);
++    assert!(settled);
++    assert!(points.unwrap_err().contains("chat_tree.json"));
++    assert!(rewind.unwrap_err().contains("chat_tree.json"), "even rewind-to-empty must preserve corrupt evidence");
++    assert_eq!(model.requests.lock().unwrap().len(), calls_before, "no new model request or tool side effect");
++    assert!(state["runs"].as_array().unwrap().iter().any(|run| run["status"] == "OUTCOME_UNKNOWN"));
++    assert!(state["events"].as_array().unwrap().iter().any(|event| {
++        event["kind"] == "run_failed" && event["payload"]["error"].as_str().unwrap_or("").contains("chat_tree.json")
++    }));
++    assert_eq!(std::fs::read_to_string(&path).unwrap(), damaged);
++    assert_eq!(std::fs::read(member_dir.join("chat_history.json")).unwrap(), linear);
++
++    // An explicit restore of the original file makes the history readable
++    // again; there is no automatic reset or guessed repair.
++    std::fs::write(&path, &original).unwrap();
++    let repaired = open(&project, session_id, model.catalog(), team);
++    let points = repaired.rewind_points().unwrap();
++    repaired.close();
++    drop(repaired);
++    assert!(!points["points"].as_array().unwrap().is_empty());
++    assert_eq!(std::fs::read(&path).unwrap(), original);
++    assert_eq!(model.requests.lock().unwrap().len(), calls_before);
++}
++
++#[test]
++fn valid_legacy_history_migrates_while_other_threads_remain_intact() {
++    let env = isolated_state_home("valid-legacy-history");
++    let project = env.join("project");
++    std::fs::create_dir_all(&project).unwrap();
++    let model = LocalModel::start();
++    let session_id = "valid-legacy";
++    let team = json!({"leader_id":"leader","agents":[member("leader","leader")]});
++    let session = open(&project, session_id, model.catalog(), team.clone());
++    session.close();
++    drop(session);
++    let member_dir = session_paths(session_id).base.join("members/leader");
++    std::fs::create_dir_all(&member_dir).unwrap();
++    let legacy = json!({
++        "ctx:leader:1":[{"role":"user","content":"LEGACY_TASK_TO_CONTINUE"}],
++        "ctx:leader:0":[{"role":"user","content":"RETIRED_EPOCH"}]
++    });
++    let old_tree = json!({"nodes":[
++        {"id":"old-root","parent":null,"message":{"role":"user","content":"old root"}},
++        {"id":"old-leaf","parent":"old-root","message":{"role":"assistant","content":"abandoned branch"}}
++    ],"leaf":null});
++    std::fs::write(member_dir.join("chat_history.json"), legacy.to_string()).unwrap();
++    std::fs::write(member_dir.join("chat_tree.json"), json!({"ctx:leader:0":old_tree}).to_string()).unwrap();
++    let restored = open(&project, session_id, model.catalog(), team);
++    let points = restored.rewind_points().unwrap();
++    assert_eq!(points["points"][0]["preview"], "LEGACY_TASK_TO_CONTINUE");
++    restored.runtime.start();
++    restored.runtime.user_message("Continue.", false).unwrap();
++    let settled = restored.runtime.settle(5);
++    let state = restored.core.state_brief().unwrap();
++    restored.close();
++    drop(restored);
++    assert!(settled);
++    assert_eq!(state["runs"][0]["status"], "COMPLETED");
++    let requests = model.requests.lock().unwrap();
++    assert_eq!(requests.len(), 1);
++    assert!(requests[0].to_string().contains("LEGACY_TASK_TO_CONTINUE"));
++    assert!(!requests[0].to_string().contains("RETIRED_EPOCH"));
++    let saved: Json = serde_json::from_slice(&std::fs::read(member_dir.join("chat_tree.json")).unwrap()).unwrap();
++    assert_eq!(saved["ctx:leader:0"], old_tree, "unselected tree and abandoned branch remain intact");
++    assert!(saved["ctx:leader:1"].to_string().contains("LEGACY_TASK_TO_CONTINUE"));
++    let linear: Json = serde_json::from_slice(&std::fs::read(member_dir.join("chat_history.json")).unwrap()).unwrap();
++    assert_eq!(linear["ctx:leader:0"], legacy["ctx:leader:0"]);
+ }
+ 
+ fn records(path: &Path) -> Vec<Json> {
+--- a/engine/tests/chat_e2e.rs
++++ b/engine/tests/chat_e2e.rs
+@@ -2778,6 +2778,70 @@
+ }
+ 
+ #[test]
++fn compaction_after_empty_rewind_keeps_the_new_branch_root_across_restart() {
++    let _env = env_guard("compaction-rewound-root");
++    let server = FakeOpenAi::start(|_, index| {
++        (
++            200,
++            match index {
++                0 => text_with_usage("Finished the old branch.", 100),
++                1 => tool_call_with_usage("new-branch-tool", "shell", shell_args(), 10_000),
++                2 => text_with_usage("Summary of the new branch only.", 100),
++                _ => text_with_usage("Continued the new branch.", 100),
++            },
++        )
++    });
++    let agent = agent_json("leader", "leader", &["shell"]);
++    let core = core_with_spec("compaction-rewound-root", json!({"leader_id":"leader","agents":[agent.clone()]}));
++    let mut prof = profile(&server.base_url(), "openai", json!({}), 0);
++    prof.context_window = Some(10_000); // Local fixture, not a real model window.
++    let runner = chat_runner(&core, &agent, prof.clone(), "/tmp");
++    let history_path = runner.history_dir().unwrap().join("chat_tree.json");
++    let runtime = start_runtime(
++        &core,
++        runner.clone(),
++        "leader",
++        PermissionPolicy::default(),
++        RuntimeLimits::default(),
++        Arc::new(|_, _, _, _| Ok(json!({"output":"new branch output"}))),
++    );
++    runtime.user_message("OLD_BRANCH_ONLY", false).unwrap();
++    assert!(runtime.settle(5));
++    let original: Json = serde_json::from_slice(&std::fs::read(&history_path).unwrap()).unwrap();
++    runner.rewind("ctx:leader:1", None).unwrap();
++    runtime.user_message("NEW_BRANCH_ONLY", false).unwrap();
++    assert!(runtime.settle(5));
++    runtime.close();
++    assert!(runs(&core).iter().all(|run| run.status == TurnStatus::Completed));
++    assert_eq!(server.calls(), 4);
++    let saved: Json = serde_json::from_slice(&std::fs::read(&history_path).unwrap()).unwrap();
++    let nodes = saved["ctx:leader:1"]["nodes"].as_array().unwrap();
++    let old_nodes = original["ctx:leader:1"]["nodes"].as_array().unwrap();
++    assert!(nodes.starts_with(old_nodes), "rewind and compaction preserve the abandoned branch");
++    let new_root = nodes.iter().find(|node| node["parent"].is_null() && node["id"] != old_nodes[0]["id"]).unwrap();
++    let summary = nodes.iter().find(|node| node["skip_to"].is_string()).unwrap();
++    assert_eq!(summary["skip_to"], new_root["id"], "summary must not jump to an abandoned root");
++    for index in 1..4 {
++        assert!(!server.body(index).to_string().contains("OLD_BRANCH_ONLY"));
++    }
++    let restarted = start_runtime(
++        &core,
++        chat_runner(&core, &agent, prof, "/tmp"),
++        "leader",
++        PermissionPolicy::default(),
++        RuntimeLimits::default(),
++        Arc::new(|_, _, _, _| panic!("no new tool execution expected")),
++    );
++    restarted.user_message("Resume the current branch.", false).unwrap();
++    assert!(restarted.settle(5));
++    restarted.close();
++    assert!(runs(&core).iter().all(|run| run.status == TurnStatus::Completed));
++    assert_eq!(server.calls(), 5);
++    assert!(!server.body(4).to_string().contains("OLD_BRANCH_ONLY"));
++    assert!(server.body(4).to_string().contains("NEW_BRANCH_ONLY"));
++}
++
++#[test]
+ fn long_context_compaction_preserves_request_and_reads_large_output_after_restart() {
+     let _env = env_guard("long-context-request");
+     const REQUEST: &str = "请修复解析器；必须保留 CRLF、空字段和用户已有改动。";

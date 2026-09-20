@@ -7,7 +7,7 @@ that row — the display/click alignment the user reported as off by one.
 
 Usage: XDG_STATE_HOME=/tmp/ta-click python3 tui/scripts/pty_click_check.py
 """
-import fcntl, json, os, pty, re, select, struct, subprocess, sys, tempfile, termios, time
+import fcntl, json, os, pty, re, select, struct, subprocess, sys, tempfile, termios, time, unicodedata
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 BIN = os.path.join(ROOT, "tui", "target", "debug", "teamagents-tui")
@@ -29,32 +29,64 @@ def read_all(fd, timeout=1.0):
 
 
 class Screen:
-    """Tiny ANSI screen: ratatui positions the cursor, so a buffer + CUP is enough."""
+    """Ratatui's positioned output, including split CSI and wide Unicode cells."""
 
     def __init__(self, cols: int, rows: int) -> None:
         self.cols, self.rows = cols, rows
         self.cells = [[" "] * cols for _ in range(rows)]
         self.x = self.y = 0
+        self.pending = ""
 
     def feed(self, data: str) -> None:
+        data = self.pending + data
+        self.pending = ""
         i = 0
         while i < len(data):
             ch = data[i]
             if ch == "\x1b":
-                m = re.match(r"\x1b\[([0-9;?]*)([A-Za-z])", data[i:])
+                if i + 1 == len(data):
+                    self.pending = data[i:]
+                    break
+                if data[i + 1] == "]":
+                    end = re.search(r"\x07|\x1b\\", data[i + 2:])
+                    if end is None:
+                        self.pending = data[i:]
+                        break
+                    i += 2 + end.end()
+                    continue
+                m = re.match(r"\x1b\[([0-?]*)[ -/]*([@-~])", data[i:])
                 if not m:
-                    i += 1
+                    if data[i + 1] == "[":
+                        self.pending = data[i:]
+                        break
+                    if data[i + 1] in "()":
+                        if i + 2 == len(data):
+                            self.pending = data[i:]
+                            break
+                        i += 3
+                    else:
+                        i += 2
                     continue
                 params, cmd = m.group(1), m.group(2)
                 nums = [int(p) for p in params.replace("?", "").split(";") if p.isdigit()]
-                if cmd == "H":
-                    self.y = (nums[0] - 1) if nums else 0
-                    self.x = (nums[1] - 1) if len(nums) > 1 else 0
+                if cmd in "Hf":
+                    self.y = min(self.rows - 1, max(0, (nums[0] - 1) if nums else 0))
+                    self.x = min(self.cols - 1, max(0, (nums[1] - 1) if len(nums) > 1 else 0))
                 elif cmd == "J":
-                    self.cells = [[" "] * self.cols for _ in range(self.rows)]
+                    mode = nums[0] if nums else 0
+                    for y in range(self.rows):
+                        for x in range(self.cols):
+                            if mode in (2, 3) or (mode == 0 and (y, x) >= (self.y, self.x)) or (mode == 1 and (y, x) <= (self.y, self.x)):
+                                self.cells[y][x] = " "
                 elif cmd == "K":
-                    for x in range(self.x, self.cols):
-                        self.cells[self.y][x] = " "
+                    mode = nums[0] if nums else 0
+                    for x in range(self.cols):
+                        if mode == 2 or (mode == 0 and x >= self.x) or (mode == 1 and x <= self.x):
+                            self.cells[self.y][x] = " "
+                elif cmd == "G":
+                    self.x = min(self.cols - 1, max(0, (nums[0] if nums else 1) - 1))
+                elif cmd == "d":
+                    self.y = min(self.rows - 1, max(0, (nums[0] if nums else 1) - 1))
                 elif cmd in "ABCD":
                     delta = nums[0] if nums else 1
                     if cmd == "A":
@@ -75,9 +107,30 @@ class Screen:
                 self.x = 0
                 i += 1
                 continue
+            if ch == "\b":
+                self.x = max(0, self.x - 1)
+                i += 1
+                continue
+            if ch == "\t":
+                self.x = min(self.cols - 1, (self.x // 8 + 1) * 8)
+                i += 1
+                continue
+            if ord(ch) < 32 or ch == "\x7f":
+                i += 1
+                continue
+            if unicodedata.combining(ch):
+                x = max(0, self.x - 1)
+                while x and self.cells[self.y][x] == "":
+                    x -= 1
+                self.cells[self.y][x] += ch
+                i += 1
+                continue
+            width = 2 if unicodedata.east_asian_width(ch) in "WF" else 1
             if self.y < self.rows and self.x < self.cols:
                 self.cells[self.y][self.x] = ch
-            self.x += 1
+                if width == 2 and self.x + 1 < self.cols:
+                    self.cells[self.y][self.x + 1] = ""
+            self.x += width
             if self.x >= self.cols:
                 self.x = 0
                 self.y = min(self.rows - 1, self.y + 1)
@@ -105,7 +158,7 @@ def check(spec_path: str) -> int:
     pid, fd = pty.fork()
     if pid == 0:
         env = dict(os.environ, TERM="xterm-256color", TEAMAGENTS_ENGINE=ENGINE)
-        os.execvpe(BIN, [BIN, "--cwd", "/tmp", "--team", spec_path], env)
+        os.execvpe(BIN, [BIN, "--cwd", os.path.dirname(spec_path), "--team", spec_path], env)
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 96, 0, 0))
     screen = Screen(96, 30)
     screen.feed(read_all(fd, 4.0).decode("utf-8", "replace"))

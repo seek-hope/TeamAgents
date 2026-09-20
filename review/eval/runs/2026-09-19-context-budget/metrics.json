@@ -1,0 +1,68 @@
+{
+  "date": "2026-09-19",
+  "purpose": "large-window L1 old-tool-output masking exploratory comparison",
+  "production_change": "engine/src/chat.rs only",
+  "candidate_policy": "clamp(context_window / 4, 16000, 256000) bytes; unknown window 16000",
+  "model": "DeepSeek Flash",
+  "native_context_window": 1000000,
+  "context_window_source": "用户确认，docs/DECISIONS.md D-36",
+  "reasoning_effort": "high",
+  "request_timeout_seconds": 120,
+  "max_retries": 5,
+  "task_timeout_seconds": 1200,
+  "results": [
+    {
+      "variant": "baseline",
+      "session_id": "proj_0b2a549bf184",
+      "valid_jsonl_records": 401,
+      "malformed_jsonl_records": 0,
+      "tool_calls": 391,
+      "tool_counts": {
+        "shell": 154,
+        "update_plan": 2,
+        "read_file": 194,
+        "read_history": 21,
+        "apply_topology_patch": 1,
+        "assign_task": 1,
+        "ls": 1,
+        "grep": 3,
+        "edit_files": 2,
+        "edit_file": 8,
+        "send_message": 2,
+        "write_file": 2
+      },
+      "failed_tool_calls": 1,
+      "read_history_calls": 21,
+      "has_result_record": false,
+      "hidden_grade_present": false,
+      "quota_error_seen": false,
+      "termination": "manual stop after the candidate run showed a shared /tmp quota error; no quota error in this log and no hidden grading reached"
+    },
+    {
+      "variant": "candidate",
+      "session_id": "proj_f1723e4d00c0",
+      "valid_jsonl_records": 78,
+      "malformed_jsonl_records": 1,
+      "tool_calls": 75,
+      "tool_counts": {
+        "shell": 40,
+        "read_file": 19,
+        "edit_file": 16
+      },
+      "failed_tool_calls": 0,
+      "read_history_calls": 0,
+      "has_result_record": false,
+      "hidden_grade_present": false,
+      "quota_error_seen": true,
+      "termination": "manual stop after EDQUOT during cargo test linking; no hidden grading reached"
+    }
+  ],
+  "fully_successful_samples": 0,
+  "interpretation": "两次运行都没有 result，不计入模型完成率、成功率或失败率；本机共享 /tmp 配额是阻塞条件。",
+  "offline_validation": {
+    "core_passed": 84,
+    "engine_passed": 307,
+    "engine_ignored": 2,
+    "tui_passed": 104
+  }
+}

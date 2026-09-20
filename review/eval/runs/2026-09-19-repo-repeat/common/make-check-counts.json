@@ -1,0 +1,11 @@
+{
+  "passed": 530,
+  "failed": 0,
+  "ignored": 3,
+  "groups": 49,
+  "crate_passed": {
+    "core": 90,
+    "engine": 336,
+    "tui": 104
+  }
+}

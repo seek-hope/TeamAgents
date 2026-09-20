@@ -1,0 +1,39 @@
+{
+  "codex_version": "codex-cli 0.155.0",
+  "history_mode": "paginated",
+  "model_invoked": false,
+  "fixture_records": true,
+  "native_read_capabilities": {
+    "thread/items/list": {
+      "error": {
+        "code": -32601,
+        "message": "thread/items/list is not supported yet"
+      }
+    },
+    "thread/read": {
+      "error": {
+        "code": -32601,
+        "message": "list_turns is not supported yet"
+      }
+    }
+  },
+  "setup_methods": [
+    "initialize",
+    "thread/start",
+    "thread/read",
+    "thread/items/list",
+    "thread/read"
+  ],
+  "fixture_source": "synthetic ThreadItem rows in the isolated native paginated store",
+  "status": "passed",
+  "pages": [
+    40,
+    5
+  ],
+  "tool_output_preserved": true,
+  "team_state_unchanged": true,
+  "native_rollout_unchanged": true,
+  "rollout_sha256": "b2ccc443521f4ee86e0df4a2572067a87135c67bd0bd9613b5efbbac6db87db7",
+  "evidence_kind": "local_cli_with_synthetic_history",
+  "reader_item_identity_source": "native"
+}

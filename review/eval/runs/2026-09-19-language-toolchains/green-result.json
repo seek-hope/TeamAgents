@@ -1,0 +1,22 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "--manifest-path",
+    "engine/Cargo.toml",
+    "--test",
+    "toolchain_projects",
+    "--test",
+    "tools_sandbox",
+    "--test",
+    "mcp_stdio",
+    "--test",
+    "mcp_tools",
+    "--",
+    "--nocapture"
+  ],
+  "exit_code": 0,
+  "elapsed_s": 11.185
+}

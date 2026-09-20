@@ -1,0 +1,136 @@
+{
+  "sample": 2,
+  "collected_at": "2026-09-19T23:50:25.257030+08:00",
+  "session_id": "proj_c87d58f74574",
+  "runner_exit": 0,
+  "runner_elapsed_s": 777.573,
+  "cli_status": "completed",
+  "cli_exit": 0,
+  "duration_ms": 750632,
+  "completed_and_verified": true,
+  "independent_grade_ok": true,
+  "grade_test_summaries": [
+    {
+      "status": "ok",
+      "passed": 7,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "status": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "status": "ok",
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "status": "ok",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "status": "ok",
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0
+    }
+  ],
+  "public_test_summaries": [
+    [
+      {
+        "status": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "status": "ok",
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "status": "ok",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "status": "ok",
+        "passed": 5,
+        "failed": 0,
+        "ignored": 0
+      }
+    ]
+  ],
+  "tool_calls": 116,
+  "tool_counts": {
+    "edit_file": 13,
+    "publish_shared": 1,
+    "read_file": 21,
+    "shell": 79,
+    "signal_done": 1,
+    "update_plan": 1
+  },
+  "tool_counts_by_agent": {
+    "leader": 116
+  },
+  "structured_tool_failures": 0,
+  "shell_receipts_decoded": 79,
+  "shell_nonzero_exit_markers": 7,
+  "shell_failed_test_output_records": 6,
+  "usage": {
+    "calls": 94,
+    "prompt_tokens": 11259816,
+    "completion_tokens": 102879,
+    "total_tokens": 11362695,
+    "cached_input_tokens": 9473408,
+    "unknown_usage_calls": 0
+  },
+  "usage_by_agent": [
+    {
+      "agent_id": "leader",
+      "name": "Leader",
+      "model_profile": "leader_main",
+      "model": "deepseek-flash",
+      "context_window": 1000000,
+      "usage": {
+        "calls": 94,
+        "prompt_tokens": 11259816,
+        "completion_tokens": 102879,
+        "total_tokens": 11362695,
+        "last_prompt_tokens": 178932,
+        "unknown_usage_calls": 0,
+        "model_elapsed_ms": 534511,
+        "cached_input_tokens": 9473408,
+        "threads": {
+          "ctx:leader:1": {
+            "calls": 94,
+            "prompt": 11259816,
+            "completion": 102879,
+            "total": 11362695,
+            "last_prompt": 178932,
+            "unknown_calls": 0,
+            "elapsed_ms": 534511,
+            "updated_ms": 1789832893656,
+            "cached_input": 9473408
+          }
+        }
+      }
+    }
+  ],
+  "checkpoint_steps_by_run": {
+    "run_abc7048d04e04efe": 94
+  },
+  "extra_files": [],
+  "missing_files": [],
+  "protected_changed": [],
+  "mode_changes": [],
+  "final_file_protection": true
+}

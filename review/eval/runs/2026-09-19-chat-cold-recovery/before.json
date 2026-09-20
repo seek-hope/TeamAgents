@@ -1,0 +1,36 @@
+{
+  "files": [
+    {
+      "path": "engine/tests/recovery.rs",
+      "sha256": "9fa9798d04ff2f2412e7945835eb03682ad68b2006a94b2b6d52da84a621837a"
+    },
+    {
+      "path": "engine/src/chat.rs",
+      "sha256": "9a2bb2ad3b9269618a02473e50d98dddebb518ef12cdd3142e29c57888c1fd32"
+    },
+    {
+      "path": "engine/src/runtime.rs",
+      "sha256": "d775bed7f9e5b5fbbc2ddc0e0d3f0b4174a7549830736099daa3c9b8c9065fdb"
+    },
+    {
+      "path": "core/src/control.rs",
+      "sha256": "8b8146e91671eda548effcee43e41ae1650c5460b6184218f49d63325493edae"
+    },
+    {
+      "path": "core/src/storage.rs",
+      "sha256": "80528e6108177680206c011df0e6eeb913b18bab7ba574e40482ddf985e9297d"
+    },
+    {
+      "path": "docs/ACCEPTANCE.md",
+      "sha256": "de659cf0dd7574553cd03222cf34d68449339fd9142c242e2369ed8c6b1a488f"
+    },
+    {
+      "path": "docs/DEVELOPMENT.md",
+      "sha256": "296989b3c4f6e61aa4a24c1460a84a113ecceaee4b94e221831faca06aa9c094"
+    },
+    {
+      "path": "docs/USER-GUIDE.md",
+      "sha256": "3051664e1fbc8fdc545437763e5e0b288579f4de2d18357e6ac5d5ad6df9ef48"
+    }
+  ]
+}

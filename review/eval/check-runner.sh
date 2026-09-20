@@ -17,6 +17,9 @@ with tempfile.TemporaryDirectory(prefix="teamagents-eval-contract-") as temporar
     fake.write_text('''#!/usr/bin/env python3
 import json, os, sys
 case = os.environ["TA_EVAL_PROBE_CASE"]
+if os.environ.get("TA_EVAL_PROBE_INVOCATIONS"):
+    from pathlib import Path
+    Path(os.environ["TA_EVAL_PROBE_INVOCATIONS"]).write_text("invoked")
 resumed = "--resume" in sys.argv
 if case.startswith("hidden_") or case == "resume_hidden_good" and resumed:
     from pathlib import Path
@@ -120,6 +123,15 @@ sys.exit(code)
             assert "符号链接" in report["reason"], report
         if case == "hidden_added":
             assert "新增了未允许的文件" in report["reason"] and not report["output"], report
+    # A restrictive caller umask must not look like agent permission tampering.
+    output = root / "hidden_restrictive_umask"
+    run = subprocess.run(
+        ["bash", str(copied_runner), "--bin", str(fake), "--only", "hidden-probe", "--out", str(output)],
+        env=dict(os.environ, TA_EVAL_PROBE_CASE="hidden_good"), preexec_fn=lambda: os.umask(0o077),
+        capture_output=True, text=True)
+    report = json.loads((output / "hidden-probe.grade.json").read_text())
+    assert run.returncode == 0, (run.returncode, run.stdout, run.stderr, report)
+    assert report["ok"] is True
     # The interrupted first phase still has broken code. Grading it would
     # incorrectly fail this otherwise successful resumed task.
     (task / "resume.md").write_text("继续修复并完成。\n")
@@ -130,12 +142,46 @@ sys.exit(code)
     assert run.returncode == 0, (run.returncode, run.stdout, run.stderr)
     assert run.stdout.count("隐藏评分通过") == 1, run.stdout
     assert json.loads((output / "hidden-probe.grade.json").read_text())["ok"] is True
-    print(f"隐藏评分 runner 契约：{len(hidden_cases) + 1} 项通过（真实 bwrap，未调用模型）")
+    print(f"隐藏评分 runner 契约：{len(hidden_cases) + 2} 项通过（真实 bwrap，未调用模型）")
 
     # A successful grader process is insufficient without a fresh, valid,
     # explicitly successful report. Stale successes must never be reused.
     (task / "resume.md").unlink()
     (task / "expect.txt").unlink()
+    revision = subprocess.check_output(
+        ["git", "-C", str(runner.parents[2]), "rev-parse", "HEAD"], text=True).strip()
+    source = task / "fixture-source.toml"
+    source.write_text(f'revision = "{revision}"\npaths = ["core/Cargo.toml"]\n')
+    repository_cases = [("valid", 0), ("symbolic_revision", 1), ("missing_revision", 1), ("invalid_manifest", 1)]
+    for case, expected in repository_cases:
+        source.write_text(f'revision = "{revision}"\npaths = ["core/Cargo.toml"]\n')
+        if case == "symbolic_revision":
+            source.write_text('revision = "HEAD"\npaths = ["core/Cargo.toml"]\n')
+        elif case == "missing_revision":
+            source.write_text('revision = "' + "0" * 40 + '"\npaths = ["core/Cargo.toml"]\n')
+        elif case == "invalid_manifest":
+            (task / "grading.toml").write_text('manifest = "../Cargo.toml"\n')
+        output = root / f"repository_{case}"
+        invoked = root / f"repository_{case}.invoked"
+        run = subprocess.run(
+            ["bash", str(copied_runner), "--bin", str(fake), "--only", "hidden-probe", "--out", str(output)],
+            env=dict(os.environ, TA_EVAL_PROBE_CASE="hidden_good", TA_EVAL_PROBE_INVOCATIONS=str(invoked)),
+            capture_output=True, text=True)
+        log = (output / "hidden-probe.fixture.log").read_text()
+        assert run.returncode == expected, (case, run.returncode, run.stdout, run.stderr, log)
+        assert invoked.exists() == (expected == 0), (case, "agent invoked after failed staging", log)
+        assert not (output / "work/hidden-probe/tests/hidden.rs").exists(), case
+        if expected == 0:
+            committed = subprocess.check_output(["git", "-C", str(runner.parents[2]), "show", f"{revision}:core/Cargo.toml"])
+            assert (output / "work/hidden-probe/core/Cargo.toml").read_bytes() == committed
+            assert json.loads((output / "hidden-probe.grade.json").read_text())["ok"] is True
+        else:
+            assert not (output / "hidden-probe.jsonl").exists()
+            assert not (output / "hidden-probe.grade.json").exists()
+    source.unlink()
+    (task / "grading.toml").unlink()
+    print(f"固定仓库输入 runner 契约：{len(repository_cases)} 项通过（真实 Git、评分器与 bwrap，未调用模型）")
+
     fake_tools = root / "fake-tools"
     fake_tools.mkdir()
     fake_cargo = fake_tools / "cargo"

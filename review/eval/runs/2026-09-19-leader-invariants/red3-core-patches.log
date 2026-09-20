@@ -1,0 +1,29 @@
+   Compiling teamagents-core v0.1.2 (/home/rimuru/Projects/Code/for_fun/TeamAgents/core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.04s
+     Running tests/engine.rs (core/target/debug/deps/engine-10ecf23a5d07fd98)
+
+running 3 tests
+
+thread 'topology_patch_rejects_switching_the_leader_to_codex' (127) panicked at tests/engine.rs:422:13:
+active=false, proposed=false: Receipt { action_id: "invalid-patch", ok: true, kind: ApplyTopologyPatch, result: Object {"patch_id": String("patch_667e159730a24fc3"), "revision": Number(2), "status": String("APPLIED"), "affected_agents": Array [String("b"), String("leader")]}, error: None }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'topology_patch_rejects_promoting_a_second_leader' (126) panicked at tests/engine.rs:422:13:
+active=false, proposed=false: Receipt { action_id: "invalid-patch", ok: true, kind: ApplyTopologyPatch, result: Object {"patch_id": String("patch_fd4b2ff2d2e546fa"), "revision": Number(2), "status": String("APPLIED"), "affected_agents": Array [String("b")]}, error: None }
+
+thread 'topology_patch_rejects_adding_a_second_leader' (125) panicked at tests/engine.rs:422:13:
+active=false, proposed=false: Receipt { action_id: "invalid-patch", ok: true, kind: ApplyTopologyPatch, result: Object {"patch_id": String("patch_2c9bea497f2844d4"), "revision": Number(2), "status": String("APPLIED"), "affected_agents": Array [String("b")]}, error: None }
+test topology_patch_rejects_switching_the_leader_to_codex ... FAILED
+test topology_patch_rejects_promoting_a_second_leader ... FAILED
+test topology_patch_rejects_adding_a_second_leader ... FAILED
+
+failures:
+
+failures:
+    topology_patch_rejects_adding_a_second_leader
+    topology_patch_rejects_promoting_a_second_leader
+    topology_patch_rejects_switching_the_leader_to_codex
+
+test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 47 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--test engine`

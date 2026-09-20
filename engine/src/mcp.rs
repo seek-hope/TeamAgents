@@ -1,15 +1,14 @@
 //! Minimal MCP client: stdio + streamable HTTP transports (plan §12.1).
 //!
-//! One short-lived session per service: connect, initialize, tools/list, then
-//! tools/call on demand (no leaked processes; switch to a long-lived session
-//! per service if latency matters).
+//! One connection per bound member service, retained until its runner closes.
+//! Explicit close and failed initialization reap the owned stdio process group.
 
 use serde_json::{json, Value as Json};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -26,6 +25,7 @@ pub struct McpClient {
     next_id: AtomicU64,
     startup_ms: u64,
     tool_ms: u64,
+    closed: AtomicBool,
     /// The member's workspace, answered to `roots/list` requests. The caller sets
     /// it after connecting (the transport itself does not know the member root).
     workspace: Arc<Mutex<Option<std::path::PathBuf>>>,
@@ -104,7 +104,12 @@ impl McpClient {
             cmd.env(key, value);
         }
         if mode == "workspace" {
-            cmd.env("HOME", &root);
+            cmd.env("HOME", crate::tools::sandbox_home(false));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
         }
         let mut child = cmd.spawn().map_err(|e| format!("cannot start MCP server {command:?}: {e}"))?;
         let stdout = child.stdout.take().ok_or("no stdout")?;
@@ -123,6 +128,7 @@ impl McpClient {
             next_id: AtomicU64::new(1),
             startup_ms: startup_timeout_s.max(1).saturating_mul(1000),
             tool_ms: tool_timeout_s.max(1).saturating_mul(1000),
+            closed: AtomicBool::new(false),
             workspace,
         });
         // The reader owns only pending replies, so dropping the final client
@@ -177,10 +183,6 @@ impl McpClient {
     /// Streamable HTTP transport (MCP 2025-06-18): every client message is a
     /// POST; the reply is one JSON document or an SSE stream of `data:` frames.
     /// `token` is read from the environment by the caller, never from config.
-    /// ponytail: no server-initiated messages (the standalone GET SSE stream is
-    /// never opened) and no session-resume DELETE; a server that pushes
-    /// notifications or needs explicit session teardown gets those when one
-    /// shows up in practice.
     pub fn connect_http(
         url: &str,
         token: Option<String>,
@@ -207,6 +209,7 @@ impl McpClient {
             next_id: AtomicU64::new(1),
             startup_ms: startup_timeout_s.max(1).saturating_mul(1000),
             tool_ms: tool_timeout_s.max(1).saturating_mul(1000),
+            closed: AtomicBool::new(false),
             workspace: Arc::new(Mutex::new(None)),
         });
         let initialized = client.call(
@@ -276,12 +279,23 @@ impl McpClient {
     }
 
     pub fn call(&self, method: &str, params: Json, timeout_ms: u64) -> Result<Json, String> {
+        if self.closed.load(Ordering::SeqCst) {
+            return Err("MCP client is closed".into());
+        }
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let body = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
         match &self.transport {
             Transport::Stdio { stdin, pending, .. } => {
                 let (tx, rx) = channel();
-                pending.lock().unwrap().insert(id, tx);
+                {
+                    let mut pending = pending.lock().unwrap();
+                    // Serialize registration with close's drain, so no caller
+                    // can park a new waiter after shutdown released the others.
+                    if self.closed.load(Ordering::SeqCst) {
+                        return Err("MCP client is closed".into());
+                    }
+                    pending.insert(id, tx);
+                }
                 if let Err(error) = write_line(stdin, &body) {
                     pending.lock().unwrap().remove(&id);
                     return Err(error);
@@ -307,6 +321,9 @@ impl McpClient {
     }
 
     fn notify(&self, method: &str, params: Json) -> Result<(), String> {
+        if self.closed.load(Ordering::SeqCst) {
+            return Err("MCP client is closed".into());
+        }
         let body = json!({"jsonrpc": "2.0", "method": method, "params": params});
         match &self.transport {
             Transport::Stdio { stdin, .. } => write_line(stdin, &body),
@@ -341,10 +358,32 @@ impl McpClient {
     }
 
     pub fn close(&self) {
+        if self.closed.swap(true, Ordering::SeqCst) {
+            return;
+        }
         match &self.transport {
-            Transport::Stdio { child, .. } => {
+            Transport::Stdio { child, pending, .. } => {
+                for (_, reply) in pending.lock().unwrap().drain() {
+                    let _ = reply.send(Err("MCP client is closed".into()));
+                }
                 let child = child.lock().unwrap().take();
                 if let Some(mut child) = child {
+                    #[cfg(unix)]
+                    {
+                        // Match the Codex adapter's process-group ownership.
+                        // A descendant may hold stdout open or ignore TERM;
+                        // killing only the server would leave tools running.
+                        let pgid = child.id();
+                        for signal in ["TERM", "KILL"] {
+                            let _ = Command::new("/bin/sh")
+                                .args(["-c", &format!("kill -{signal} -{pgid}")])
+                                .stderr(Stdio::null())
+                                .status();
+                            if signal == "TERM" {
+                                std::thread::sleep(Duration::from_millis(100));
+                            }
+                        }
+                    }
                     let _ = child.kill();
                     let _ = child.wait();
                 }
@@ -601,7 +640,7 @@ for line in sys.stdin:
         sock.settimeout(0.5)
         network = sock.connect_ex(('127.0.0.1', int(sys.argv[2]))) == 0
         sock.close()
-        result = {'cwd': os.getcwd(), 'home': os.environ['HOME'], 'outside': os.path.exists(sys.argv[1]), 'network': network, 'literal': sys.argv[3]}
+        result = {'cwd': os.getcwd(), 'home': os.environ['HOME'], 'home_exists': os.path.isdir(os.environ['HOME']), 'outside': os.path.exists(sys.argv[1]), 'network': network, 'literal': sys.argv[3]}
     print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
 "#;
         let args = vec![
@@ -631,7 +670,8 @@ for line in sys.stdin:
             assert_eq!(response["network"], network || mode == "host");
             assert_eq!(response["literal"], literal);
             if mode == "workspace" {
-                assert_eq!(response["home"], root.display().to_string());
+                assert_ne!(response["home"], root.display().to_string());
+                assert_eq!(response["home_exists"], true);
             }
             assert!(root.join("created").is_file());
             assert!(!root.join("injected").exists());

@@ -1,0 +1,31 @@
+   Compiling teamagents-engine v0.1.2 (/home/rimuru/Projects/Code/for_fun/TeamAgents/engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.61s
+     Running unittests src/lib.rs (engine/target/debug/deps/teamagents_engine-c3f5081013a620de)
+
+running 23 tests
+test chat::tests::base64_matches_the_rfc_vectors ... ok
+test chat::tests::effort_normalization_and_retry_classification ... ok
+test chat::tests::chat_tree_materialize_rewind_and_points ... ok
+test chat::tests::image_references_become_protocol_image_parts ... ok
+test chat::tests::parse_usage_reads_openai_and_anthropic_bodies ... ok
+test chat::tests::mask_old_tool_outputs_masks_beyond_trailing_budget ... ok
+test chat::tests::anthropic_conversion_keeps_tool_pairs_and_merges_results ... ok
+test chat::tests::refused_tool_receipts_keep_their_detail ... ok
+test chat::tests::repeated_compaction_indexes_each_retained_tool_call_once ... ok
+test chat::tests::plan_round_trips_into_the_prompt_block ... ok
+test chat::tests::switching_protocols_does_not_send_internal_history_fields ... ok
+test chat::tests::summary_node_hides_covered_range_but_tree_keeps_it ... ok
+test chat::tests::usage_accumulates_per_thread_and_snapshots_totals ... ok
+test chat::tests::masking_history_pages_preserves_the_source_and_pagination_recipe ... ok
+test chat::tests::worker_environment_precedes_member_instructions_and_survives_refresh ... ok
+test chat::tests::prompt_overhead_stays_lean ... ok
+test chat::tests::cap_tool_output_keeps_head_and_tail ... ok
+test chat::tests::render_view_matches_runners_py_shape ... ok
+test chat::tests::masking_large_windows_keeps_a_bounded_utf8_tail_without_changing_private_history ... ok
+test chat::tests::backoff_waits_in_full_but_stops_on_cancel ... ok
+test chat::tests::compaction_threshold_includes_the_large_window_tool_budget ... ok
+test chat::tests::read_history_finds_outputs_in_history_and_tree ... ok
+test chat::tests::runner_tree_persists_and_rewind_invalidates ... ok
+
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 81 filtered out; finished in 0.35s
+

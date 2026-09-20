@@ -150,6 +150,105 @@ fn failed_open_releases_the_session_lock_and_can_be_retried() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+#[test]
+fn resume_rejects_invalid_leaders_without_replacing_persisted_work() {
+    use teamagents_core::control::Control;
+    use teamagents_core::models::{ActionKind, TeamAction, TeamSpec};
+    use teamagents_core::storage::Store;
+    use teamagents_engine::sessions::session_paths;
+
+    let (_env, root) = isolate("leader-invariants");
+    let cwd = root.join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let mut valid = spec("m");
+    valid["agents"].as_array_mut().unwrap().push(json!({
+        "id": "b", "name": "Worker", "role": "reviewer", "runtime_kind": "deepagents", "model_profile": "m"
+    }));
+    let mut duplicate = valid.clone();
+    duplicate["agents"][1]["role"] = json!("leader");
+    let mut external = valid.clone();
+    external["agents"][0]["runtime_kind"] = json!("codex");
+    for (id, blob, expected) in [
+        ("duplicate", duplicate.to_string(), "唯一"),
+        ("external", external.to_string(), "内置"),
+        ("corrupt", "{broken json".into(), "stored spec is invalid"),
+    ] {
+        let paths = session_paths(id);
+        std::fs::create_dir_all(&paths.base).unwrap();
+        let store = Store::open(&paths.db).unwrap();
+        store.create_session(id, cwd.to_str().unwrap(), "approved_scope").unwrap();
+        let team: TeamSpec = serde_json::from_value(valid.clone()).unwrap();
+        store.save_team_spec(id, &team).unwrap();
+        for agent in &team.agents {
+            store.ensure_agent(id, &agent.id).unwrap();
+        }
+        let mut control = Control::new(store, id);
+        for (action_id, actor_id, kind, payload) in [
+            ("user", "user", ActionKind::UserMessage, json!({"text": "preserve this goal"})),
+            ("task", "leader", ActionKind::AssignTask, json!({"assignee": "b", "description": "preserve this task"})),
+        ] {
+            let receipt = control
+                .submit(&TeamAction {
+                    action_id: action_id.into(),
+                    session_id: id.into(),
+                    actor_id: actor_id.into(),
+                    run_id: None,
+                    kind,
+                    payload,
+                })
+                .unwrap();
+            assert!(receipt.ok, "{receipt:?}");
+        }
+        control.store.conn.execute("UPDATE team_specs SET spec_json=?1 WHERE revision=1", [&blob]).unwrap();
+        drop(control);
+        let snapshot = || {
+            let store = Store::open(&paths.db).unwrap();
+            let mut statement =
+                store.conn.prepare("SELECT revision, spec_json FROM team_specs ORDER BY revision").unwrap();
+            let specs: Vec<(i64, String)> = statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            json!({
+                "specs": specs,
+                "session": store.get_session(id).unwrap(),
+                "events": store.events(id, 0, 100).unwrap(),
+                "tasks": store.tasks_for_session(id, &[]).unwrap(),
+                "runs": store.runs_for_session(id, &[]).unwrap(),
+                "receipts": (["user", "task"].map(|action| store.get_action_receipt(action).unwrap())),
+                "agents": (["leader", "b"].map(|agent| (
+                    store.agent_status(id, agent).unwrap(),
+                    store.agent_config_revision(id, agent).unwrap(),
+                    store.agent_context_epoch(id, agent).unwrap(),
+                ))),
+            })
+        };
+        let before = snapshot();
+        for initial_spec in [None, Some(valid.clone())] {
+            let result = open_session(OpenOptions {
+                cwd: Some(cwd.clone()),
+                session_id: Some(id.into()),
+                full_auto: true,
+                initial_spec,
+                catalog: Some(catalog()),
+                scripts: Some(Default::default()),
+            });
+            let error = match result {
+                Ok(opened) => {
+                    opened.close();
+                    panic!("{id}: an invalid persisted spec must stop session construction");
+                }
+                Err(error) => error,
+            };
+            assert!(error.contains(expected), "{id}: {error}");
+            assert_eq!(snapshot(), before, "resuming must not repair over or mutate existing work");
+            assert!(!is_session_locked(id, None), "failed resume must release the lock");
+            assert!(!paths.base.join("members").exists(), "validation must run before member construction");
+        }
+    }
+}
+
 /// finding 7: the lock is a kernel file lock, so another process sees it.
 #[test]
 fn another_process_cannot_open_a_locked_session() {

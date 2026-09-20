@@ -7,7 +7,7 @@ use std::process::{Command, Stdio};
 fn state_home(tag: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("ta-fork-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::create_dir_all(dir.join("project")).unwrap();
     dir
 }
 
@@ -65,7 +65,8 @@ fn fork_carries_spec_and_leader_tree_but_not_team_facts() {
         .expect("spawn engine");
     let mut stdin = child.stdin.take().unwrap();
 
-    let opened = call(&mut child, &mut stdin, 1, "open", json!({"cwd": "/tmp", "scripts": {"leader": [["end"]]}}));
+    let opened =
+        call(&mut child, &mut stdin, 1, "open", json!({"cwd": home.join("project"), "scripts": {"leader": [["end"]]}}));
     let old_id = opened.get("session_id").and_then(|v| v.as_str()).unwrap().to_string();
 
     // fabricate a leader history tree as a finished turn would have left it
@@ -139,7 +140,8 @@ fn fork_preserves_model_files_and_legacy_history() {
         .spawn()
         .unwrap();
     let mut stdin = child.stdin.take().unwrap();
-    let opened = call(&mut child, &mut stdin, 1, "open", json!({"cwd":"/tmp", "scripts":{"leader":[["end"]]}}));
+    let opened =
+        call(&mut child, &mut stdin, 1, "open", json!({"cwd":home.join("project"), "scripts":{"leader":[["end"]]}}));
     let old = opened["session_id"].as_str().unwrap().to_string();
     let base = home.join("teamagents/sessions").join(&old);
     std::fs::write(base.join("profiles.json"), r#"{"leader":{"model":"m1"}}"#).unwrap();
@@ -172,7 +174,8 @@ fn failed_switch_keeps_current_session_open() {
         .spawn()
         .unwrap();
     let mut stdin = child.stdin.take().unwrap();
-    let opened = call(&mut child, &mut stdin, 1, "open", json!({"cwd":"/tmp", "scripts":{"leader":[["end"]]}}));
+    let opened =
+        call(&mut child, &mut stdin, 1, "open", json!({"cwd":home.join("project"), "scripts":{"leader":[["end"]]}}));
     let old = opened["session_id"].as_str().unwrap().to_string();
     writeln!(stdin, "{}", json!({"id":2,"method":"switch_session","params":{"session_id":"../escape"}})).unwrap();
     stdin.flush().unwrap();

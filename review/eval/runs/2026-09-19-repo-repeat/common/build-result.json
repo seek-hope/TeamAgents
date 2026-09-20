@@ -1,0 +1,14 @@
+{
+  "command": [
+    "cargo",
+    "build",
+    "--offline",
+    "--locked",
+    "--manifest-path",
+    "engine/Cargo.toml",
+    "--bin",
+    "teamagents"
+  ],
+  "exit_code": 0,
+  "elapsed_s": 0.065
+}

@@ -1,0 +1,6 @@
+{
+  "ok": true,
+  "exit_code": 0,
+  "stdout": "{\"absent:/task/hidden_tests.rs\": true, \"absent:/home/rimuru/Projects/Code/for_fun/TeamAgents\": true, \"absent:/home/rimuru/.codex/deepseek.config.toml\": true, \"workspace_write\": true, \"native_outside_write_blocked\": true}\n",
+  "stderr": ""
+}

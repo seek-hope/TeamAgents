@@ -1,0 +1,52 @@
+diff --git a/engine/src/cli.rs b/engine/src/cli.rs
+index 1136fe1..65d3b0d 100644
+--- a/engine/src/cli.rs
++++ b/engine/src/cli.rs
+@@ -825,10 +825,14 @@ fn exec_outcome(state: &Json, timed_out: bool, checks_ok: bool) -> (&'static str
+         ("timeout", 124)
+     } else if has_pending_approvals(state) {
+         ("approval_required", 3)
+-    } else if run_in(&["FAILED", "OUTCOME_UNKNOWN"]) {
++    } else if run_in(&["OUTCOME_UNKNOWN"]) {
+         ("failed", 1)
+     } else if goal_done && checks_ok {
++        // FAILED runs remain audit history after recovery. The committed goal
++        // is authoritative once verification passes; unknown outcomes are not.
+         ("completed", 0)
++    } else if run_in(&["FAILED"]) {
++        ("failed", 1)
+     } else {
+         ("incomplete", 1)
+     }
+@@ -888,4 +892,31 @@ mod exec_tests {
+         assert_eq!(exec_outcome(&done, false, true), ("completed", 0));
+         assert_eq!(exec_outcome(&done, false, false), ("incomplete", 1));
+     }
++
++    #[test]
++    fn a_completed_goal_can_recover_from_failed_runs_but_not_unresolved_outcomes() {
++        // A real repository run hit a step limit, continued after a member
++        // result, and committed goal_done with the earlier FAILED row intact.
++        let recovered = json!({
++            "session": {"goal_state": "done"},
++            "runs": [
++                {"run_id": "earlier-leader", "status": "FAILED"},
++                {"run_id": "verifier", "status": "COMPLETED"},
++                {"run_id": "later-leader", "status": "COMPLETED"}
++            ],
++            "pending_approvals": []
++        });
++        assert_eq!(exec_outcome(&recovered, false, true), ("completed", 0));
++        assert_eq!(exec_outcome(&recovered, true, true), ("timeout", 124));
++        assert_ne!(exec_outcome(&recovered, false, false).1, 0, "failed checks still reject completion");
++        let mut incomplete = recovered.clone();
++        incomplete["session"]["goal_state"] = json!("active");
++        assert_eq!(exec_outcome(&incomplete, false, true), ("failed", 1));
++        let mut unknown = recovered.clone();
++        unknown["runs"][0]["status"] = json!("OUTCOME_UNKNOWN");
++        assert_eq!(exec_outcome(&unknown, false, true), ("failed", 1));
++        let mut approval = recovered;
++        approval["pending_approvals"] = json!([{"approval_id": "unanswered"}]);
++        assert_eq!(exec_outcome(&approval, false, true), ("approval_required", 3));
++    }
+ }

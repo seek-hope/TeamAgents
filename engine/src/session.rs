@@ -55,10 +55,21 @@ pub struct OpenOptions {
     pub scripts: Option<HashMap<String, Vec<Step>>>,
 }
 
-/// Per-agent usage snapshot source, registered when the runner is built
-/// (the AgentRunner trait stays usage-agnostic; runtime.rs untouched).
+/// Per-agent usage source; counters may outlive a backend but never own it.
 type UsageProbe = Box<dyn Fn() -> Json + Send + Sync>;
 type UsageProbes = Arc<Mutex<HashMap<String, UsageProbe>>>;
+
+fn usage_probe<T: Send + Sync + 'static>(runner: &Arc<T>, snapshot: fn(&T) -> Json) -> UsageProbe {
+    let last = Mutex::new(snapshot(runner));
+    let weak = Arc::downgrade(runner);
+    Box::new(move || {
+        let mut last = last.lock().unwrap();
+        if let Some(runner) = weak.upgrade() {
+            *last = snapshot(&runner);
+        }
+        last.clone()
+    })
+}
 
 /// Feature 5 (/model): per-member session-level model/effort override. Either
 /// field left None falls back to the member's ModelProfile. Persisted per
@@ -139,6 +150,43 @@ pub struct OpenedSession {
 }
 
 impl OpenedSession {
+    /// Workspace evidence for the human UI, never part of a member view or tool.
+    pub fn review(&self, agent_id: &str, path: Option<&str>, offset: usize) -> Result<Json, String> {
+        self.review_checked(agent_id, path, offset, None)
+    }
+
+    pub fn review_checked(
+        &self,
+        agent_id: &str,
+        path: Option<&str>,
+        offset: usize,
+        revision: Option<&str>,
+    ) -> Result<Json, String> {
+        self.review_cancellable(agent_id, path, offset, revision, &std::sync::atomic::AtomicBool::new(false))
+    }
+
+    pub(crate) fn review_cancellable(
+        &self,
+        agent_id: &str,
+        path: Option<&str>,
+        offset: usize,
+        revision: Option<&str>,
+        cancelled: &std::sync::atomic::AtomicBool,
+    ) -> Result<Json, String> {
+        let state = self.core.call_in_session("state", json!({"include_events":false}))?;
+        let agent = state["spec"]["agents"]
+            .as_array()
+            .and_then(|agents| agents.iter().find(|a| a["id"].as_str() == Some(agent_id)))
+            .ok_or("审查成员不存在")?;
+        let paths = session_paths(&self.session_id);
+        let root = crate::review::registered_root(&paths.base.join("members").join(agent_id))?;
+        let mut report = crate::review::report_cancellable(&paths.base, &root, path, offset, revision, cancelled)?;
+        report["agent_id"] = json!(agent_id);
+        report["shared"] = json!(root == self.cwd);
+        report["policy"] = agent["workspace_policy"].clone();
+        Ok(report)
+    }
+
     pub fn catalog(&self) -> Json {
         let mut merged = self.catalog.clone();
         merged.models.extend(self.session_profiles.lock().unwrap().clone());
@@ -159,15 +207,17 @@ impl OpenedSession {
     }
 
     /// Per-agent token usage for /status (worker "usage" method, CLI status).
-    /// Session-memory counters only — a restarted session starts from zero.
+    /// Chat counters persist; Codex counters are supplied by the live backend.
     pub fn usage_report(&self) -> Json {
         let agents = self
             .core
-            .state()
+            .state_brief()
             .ok()
             .and_then(|state| state.get("spec").and_then(|s| s.get("agents")).cloned())
             .and_then(|agents| agents.as_array().cloned())
             .unwrap_or_default();
+        // Do not prune by this snapshot: a concurrent patch may already have
+        // registered a new member's probe. Removed probes hold only counters.
         let probes = self.usage_probes.lock().unwrap();
         let report: Vec<Json> = agents
             .iter()
@@ -216,7 +266,7 @@ impl OpenedSession {
     /// Rewind targets on the leader's conversation (user inputs, newest first).
     pub fn rewind_points(&self) -> Result<Json, String> {
         let (leader, thread) = self.leader_thread()?;
-        let points = self.runtime.runner(&leader).map(|r| r.rewind_points(&thread)).unwrap_or_default();
+        let points = self.runtime.runner(&leader).map(|r| r.rewind_points(&thread)).transpose()?.unwrap_or_default();
         Ok(json!({"agent_id": leader, "thread": thread, "points": points}))
     }
 
@@ -331,6 +381,11 @@ impl OpenedSession {
             }
         }
         self.persist_model_overrides()?;
+        // Preserve the latest counters across the idle interval before the
+        // next model runner is built, without retaining its history or tools.
+        if let Some(probe) = self.usage_probes.lock().unwrap().get(agent_id) {
+            probe();
+        }
         self.runtime.drop_runner(agent_id);
         Ok(self.effective_model(agent))
     }
@@ -557,11 +612,74 @@ fn member_dir(session_id: &str, agent_id: &str) -> PathBuf {
 /// Workspace policy decides one member's working directory — and therefore
 /// what its file tools and its backend can reach (plan §8/P5).
 fn member_root(agent: &AgentSpec, cwd: &std::path::Path, session_id: &str) -> Result<PathBuf, String> {
-    let workspace = crate::workspace::prepare(agent, cwd, &member_dir(session_id, &agent.id))?;
+    let member = member_dir(session_id, &agent.id);
+    let workspace = crate::workspace::prepare(agent, cwd, &member)?;
+    if workspace.policy == teamagents_core::models::WorkspacePolicy::Shared {
+        validate_shared_workspace(&workspace.path)?;
+    }
     if let Some(note) = &workspace.note {
         eprintln!("member {}: {}", agent.id, note);
     }
+    if let Err(error) = crate::review::register(&session_paths(session_id).base, &member, &workspace.path) {
+        eprintln!("成员 {} 的工作区审查基线未建立：{error}", agent.id);
+    }
     Ok(workspace.path)
+}
+
+/// A workspace bind must never reintroduce the runtime's hidden state. Managed
+/// isolated/worktree roots are confined to their own `members/<id>/work` subtree;
+/// shared roots (including a git-worktree fallback) have no such boundary.
+fn validate_shared_workspace(root: &std::path::Path) -> Result<(), String> {
+    fn resolved(path: &std::path::Path) -> Result<PathBuf, String> {
+        let path = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir().map_err(|e| e.to_string())?.join(path)
+        };
+        // A config directory can be absent at session open. Resolve its deepest
+        // existing ancestor so symlinked XDG homes cannot evade the comparison.
+        for ancestor in path.ancestors() {
+            match std::fs::canonicalize(ancestor) {
+                Ok(mut base) => {
+                    for part in path.strip_prefix(ancestor).map_err(|e| e.to_string())?.components() {
+                        match part {
+                            std::path::Component::ParentDir => {
+                                base.pop();
+                            }
+                            std::path::Component::Normal(name) => base.push(name),
+                            _ => {}
+                        }
+                    }
+                    return Ok(base);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    if std::fs::symlink_metadata(ancestor).is_ok() {
+                        return Err(format!("无法核对目录 {}：{error}", path.display()));
+                    }
+                }
+                Err(error) => return Err(format!("无法核对目录 {}：{error}", path.display())),
+            }
+        }
+        Err(format!("无法核对目录 {}", path.display()))
+    }
+
+    let root = resolved(root)?;
+    let codex_home = std::env::var_os("CODEX_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| expand_home("~/.codex"));
+    let config = user_config_path();
+    for private in [crate::config::state_dir(), config.parent().unwrap().to_path_buf(), codex_home] {
+        let private = resolved(&private)?;
+        if root.starts_with(&private) || private.starts_with(&root) {
+            return Err(format!(
+                "工作目录与私有运行数据重叠：{} 与 {}。请将项目目录与 TeamAgents/Codex 配置及状态目录分开。",
+                root.display(),
+                private.display()
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub fn open_session(opts: OpenOptions) -> Result<Arc<OpenedSession>, String> {
@@ -625,55 +743,36 @@ pub fn open_session(opts: OpenOptions) -> Result<Arc<OpenedSession>, String> {
     let core = CoreClient::open(&db, &session_id)?;
 
     let result = (|| -> Result<Arc<OpenedSession>, String> {
-        let probe = core.call("state", json!({"session_id": session_id})).ok();
-        let exists =
-            probe.as_ref().and_then(|state| state.get("session")).map(|session| !session.is_null()).unwrap_or(false);
+        let metadata = core.call("session_metadata", json!({"session_id": session_id}))?;
+        let exists = !metadata["session"].is_null();
+        let has_spec = metadata["has_spec"].as_bool().ok_or("会话元数据缺少配置存在状态")?;
         if !exists {
-            match core.call(
+            core.call(
                 "create_session",
                 json!({
                     "session_id": session_id,
                     "cwd": cwd.to_string_lossy(),
                     "permissions_mode": if full_auto { "full_auto" } else { "approved_scope" },
                 }),
-            ) {
-                Ok(_) => {
-                    let spec = opts
-                        .initial_spec
-                        .clone()
-                        .unwrap_or_else(|| default_leader_spec("leader_main", &["files", "shell", "web"]));
-                    core.call("save_spec", json!({"session_id": session_id, "spec": spec}))?;
-                }
-                // the row exists but `state` failed: a session left without a
-                // loadable spec by an earlier failed open. An explicitly given
-                // spec repairs it; otherwise keep going so the real problem is
-                // reported instead of a UNIQUE-constraint error.
-                Err(e) if e.contains("UNIQUE") => {
-                    if let Some(spec) = opts.initial_spec.clone() {
-                        core.call("save_spec", json!({"session_id": session_id, "spec": spec}))?;
-                    }
-                }
-                Err(e) => return Err(e),
-            }
-        } else if full_auto {
-            if let Ok(state) = core.state() {
-                if state.get("session").and_then(|s| s.get("permissions_mode")).and_then(|v| v.as_str())
-                    != Some("full_auto")
-                {
-                    let receipt = core.submit(&TeamAction {
-                        action_id: teamagents_core::models::new_id("mode"),
-                        session_id: session_id.clone(),
-                        actor_id: "user".into(),
-                        run_id: None,
-                        kind: teamagents_core::models::ActionKind::SetPermissionMode,
-                        payload: json!({"mode": "full_auto"}),
-                    })?;
-                    if !receipt.ok {
-                        return Err(receipt.error.unwrap_or_else(|| "cannot enable full auto".into()));
-                    }
-                }
+            )?;
+        }
+        if !has_spec {
+            // An explicit spec can repair an initial save that failed before
+            // writing any revision. Existing revisions must never be replaced
+            // merely because loading or validating them failed.
+            let initial_spec = opts
+                .initial_spec
+                .clone()
+                .or_else(|| (!exists).then(|| default_leader_spec("leader_main", &["files", "shell", "web"])));
+            if let Some(spec) = initial_spec {
+                core.call("save_spec", json!({"session_id": session_id, "spec": spec}))?;
             }
         }
+        // Validate persisted work before changing permission mode or creating
+        // any member runtime, including when the caller supplies a new spec.
+        let state = core.state()?;
+        let enable_full_auto =
+            exists && full_auto && state["session"]["permissions_mode"].as_str() != Some("full_auto");
 
         // keep validation (topology patches, member profiles) in sync with the
         // user config the engine loaded, plus this session's auto-created
@@ -766,6 +865,30 @@ pub fn open_session(opts: OpenOptions) -> Result<Arc<OpenedSession>, String> {
         for (id, runner) in runners {
             runtime.add_runner(&id, runner);
         }
+        if enable_full_auto {
+            let prepare_mode = || -> Result<(), String> {
+                // Mode changes schedule work too. Protect old queued
+                // checkpoints before this first post-restart team transaction.
+                runtime.prepare_reconciliation()?;
+                let receipt = core.submit(&TeamAction {
+                    action_id: teamagents_core::models::new_id("mode"),
+                    session_id: session_id.clone(),
+                    actor_id: "user".into(),
+                    run_id: None,
+                    kind: teamagents_core::models::ActionKind::SetPermissionMode,
+                    payload: json!({"mode": "full_auto"}),
+                })?;
+                if receipt.ok {
+                    Ok(())
+                } else {
+                    Err(receipt.error.unwrap_or_else(|| "cannot enable full auto".into()))
+                }
+            };
+            if let Err(error) = prepare_mode() {
+                runtime.close();
+                return Err(error);
+            }
+        }
         Ok(Arc::new(OpenedSession {
             runtime,
             core,
@@ -801,6 +924,9 @@ fn topology_prepare_hook(
         let Some(ops) = payload.get_mut("operations").and_then(|v| v.as_array_mut()) else { return Ok(()) };
         let mut changed = false;
         let mut team: Option<(String, Vec<String>, String, Vec<ChannelSpec>)> = None;
+        // A failure partway through preparation must not publish its prefix.
+        // Persist the complete candidate before installing its in-memory view.
+        let mut profiles = session_profiles.lock().unwrap().clone();
         for op in ops.iter_mut().filter(|o| o.get("op").and_then(|v| v.as_str()) == Some("add_agent")) {
             let aid = op
                 .get("agent")
@@ -837,7 +963,6 @@ fn topology_prepare_hook(
                 if let Some(agent) = op.get_mut("agent").and_then(|v| v.as_object_mut()) {
                     agent.insert("tool_bindings".into(), json!(leader_tools));
                 }
-                changed = true;
             }
             // D-33 (2): a conversation channel both ways with the Leader. Members
             // talk to each other through shared spaces only, so every directed
@@ -858,27 +983,41 @@ fn topology_prepare_hook(
                 }
             }
             let agent = op.get_mut("agent").and_then(|v| v.as_object_mut()).ok_or("add_agent: missing agent")?;
-            let requested = agent.get("model_profile").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            {
-                let known = session_profiles.lock().unwrap();
-                if (!requested.is_empty()
-                    && (catalog.models.contains_key(&requested) || known.contains_key(&requested)))
-                    || known.contains_key(&aid)
-                {
-                    // existing profile named explicitly, or a retry of a patch whose
-                    // profile was already created: just point the op at it
-                    if requested.is_empty() && known.contains_key(&aid) {
-                        agent.insert("model_profile".into(), json!(aid));
-                        changed = true;
-                    }
-                    continue;
+            let requested = match agent.get("model_profile") {
+                None => "",
+                Some(value) => value.as_str().ok_or("add_agent.model_profile 必须是字符串；省略时继承 Leader 模型")?,
+            }
+            .to_string();
+            if !requested.is_empty() && (catalog.models.contains_key(&requested) || profiles.contains_key(&requested)) {
+                continue;
+            }
+            if requested.is_empty() && profiles.contains_key(&aid) {
+                agent.insert("model_profile".into(), json!(aid));
+                continue;
+            }
+            if catalog.models.contains_key(&aid) {
+                return Err(format!(
+                    "成员 ID {aid:?} 与已有模型配置同名，不能覆盖该配置；请更换成员 ID 或显式引用已有 model_profile"
+                ));
+            }
+            if profiles.contains_key(&aid) {
+                // A rejected earlier patch may have left an unused D-30 profile.
+                // Allow correction of its model ID, but never change a profile
+                // that an existing member (including a /model override) uses.
+                let state = core.state_brief()?;
+                let referenced = state["spec"]["agents"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|member| member["model_profile"] == aid)
+                    || model_overrides.lock().unwrap().values().any(|ov| ov.profile.as_deref() == Some(&aid));
+                if referenced {
+                    return Err(format!("模型配置 {aid:?} 已被成员使用；请更换新成员 ID 或显式引用已有 model_profile"));
                 }
             }
             let ov = model_overrides.lock().unwrap().get(&leader_id).cloned().unwrap_or_default();
             let base_name = ov.profile.clone().unwrap_or(leader_profile);
-            let mut base = session_profiles
-                .lock()
-                .unwrap()
+            let mut base = profiles
                 .get(&base_name)
                 .cloned()
                 .or_else(|| catalog.models.get(&base_name).cloned())
@@ -892,18 +1031,19 @@ fn topology_prepare_hook(
             if !requested.is_empty() {
                 base.model = requested;
             }
-            session_profiles.lock().unwrap().insert(aid.clone(), base);
+            profiles.insert(aid.clone(), base);
             agent.insert("model_profile".into(), json!(aid));
             changed = true;
         }
         if changed {
-            save_session_profiles(&session_id, &session_profiles.lock().unwrap())?;
+            save_session_profiles(&session_id, &profiles)?;
             let mut merged = catalog.clone();
-            merged.models.extend(session_profiles.lock().unwrap().clone());
+            merged.models.extend(profiles.clone());
             // ponytail: push-then-submit is not atomic with the patch; control
             // re-validates on submit, so a lost race fails the patch loudly and
             // the Leader can retry. Serial leader applies make this theoretical.
             core.call("set_catalog", json!({"session_id": session_id, "catalog": merged}))?;
+            *session_profiles.lock().unwrap() = profiles;
         }
         Ok(())
     })
@@ -941,11 +1081,16 @@ fn make_runner_factory(
             .get(profile_name)
             .cloned()
             .or_else(|| catalog.models.get(profile_name).cloned());
+        // Keep the same bounded, symlink-safe Skills/instruction selection for
+        // both member backends. Codex receives the selected text through its
+        // developerInstructions field; it must not discover arbitrary host
+        // files through its own process environment.
+        let context = member_context(&catalog, &cwd, &session_id, agent);
         if agent.runtime_kind == RuntimeKind::Codex {
-            let opts = codex_options(agent, profile.as_ref(), &ov, &session_id, &cwd)?;
+            let instructions = codex_member_instructions(&agent.instructions, &context);
+            let opts = codex_options_with_instructions(agent, profile.as_ref(), &ov, &session_id, &cwd, instructions)?;
             let runner = CodexRunner::new(opts, core.clone(), approvals.clone(), notify.clone());
-            let probe = runner.clone();
-            usage_probes.lock().unwrap().insert(agent.id.clone(), Box::new(move || probe.usage_snapshot()));
+            usage_probes.lock().unwrap().insert(agent.id.clone(), usage_probe(&runner, CodexRunner::usage_snapshot));
             return Ok(runner);
         }
         let Some(profile) = profile else {
@@ -959,7 +1104,6 @@ fn make_runner_factory(
         // the resolved set is also what the model gets advertised, so an explicit
         // binding name (anything but the literal "web") still exposes the tools
         let web = crate::tools::web_tools(&catalog, &agent.tool_bindings)?;
-        let context = member_context(&catalog, &cwd, &session_id, agent);
         let runner = ChatRunner::new(
             &agent_json,
             profile,
@@ -969,8 +1113,7 @@ fn make_runner_factory(
             context,
             (web.search.is_some(), web.fetch.is_some()),
         );
-        let probe = runner.clone();
-        usage_probes.lock().unwrap().insert(agent.id.clone(), Box::new(move || probe.usage_snapshot()));
+        usage_probes.lock().unwrap().insert(agent.id.clone(), usage_probe(&runner, ChatRunner::usage_snapshot));
         Ok(runner)
     })
 }
@@ -988,6 +1131,21 @@ fn apply_model_override(mut profile: ModelProfile, ov: &ModelOverride) -> ModelP
 
 /// CodexOptions for one codex member; the session override wins over the
 /// profile model and over the runner's default "xhigh" effort (feature 5).
+fn codex_member_instructions(base: &str, context: &[(String, String)]) -> String {
+    let mut instructions = base.to_string();
+    for (label, content) in context {
+        if !instructions.trim().is_empty() {
+            instructions.push_str("\n\n");
+        }
+        instructions.push_str("<member_context source=\"");
+        instructions.push_str(label);
+        instructions.push_str("\">\n");
+        instructions.push_str(content);
+        instructions.push_str("\n</member_context>");
+    }
+    instructions
+}
+
 /// Flatten `$CODEX_HOME/<name>.config.toml` into `-c key=value` overrides.
 /// Nested tables become dotted keys (`model_providers.deepseek.base_url`), which
 /// is exactly how the CLI spells them.
@@ -1023,12 +1181,24 @@ fn flatten_json(prefix: &str, value: &Json, out: &mut Vec<(String, Json)>) {
     }
 }
 
+#[cfg(test)]
 fn codex_options(
     agent: &AgentSpec,
     profile: Option<&ModelProfile>,
     ov: &ModelOverride,
     session_id: &str,
     cwd: &std::path::Path,
+) -> Result<CodexOptions, String> {
+    codex_options_with_instructions(agent, profile, ov, session_id, cwd, agent.instructions.clone())
+}
+
+fn codex_options_with_instructions(
+    agent: &AgentSpec,
+    profile: Option<&ModelProfile>,
+    ov: &ModelOverride,
+    session_id: &str,
+    cwd: &std::path::Path,
+    instructions: String,
 ) -> Result<CodexOptions, String> {
     let mut config: Vec<(String, Json)> = vec![];
     let mut model = None;
@@ -1047,7 +1217,7 @@ fn codex_options(
         return Ok(CodexOptions {
             agent_id: agent.id.clone(),
             session_id: session_id.into(),
-            instructions: agent.instructions.clone(),
+            instructions,
             workdir: member_root(agent, cwd, session_id)?,
             sandbox: "workspace-write".into(),
             approval_policy: "on-request".into(),
@@ -1089,7 +1259,7 @@ fn codex_options(
     Ok(CodexOptions {
         agent_id: agent.id.clone(),
         session_id: session_id.into(),
-        instructions: agent.instructions.clone(),
+        instructions,
         workdir: member_root(agent, cwd, session_id)?,
         sandbox: "workspace-write".into(),
         approval_policy: "on-request".into(),
@@ -1136,13 +1306,14 @@ fn member_executor_factory(
             .and_then(|agents| serde_json::from_value::<Vec<AgentSpec>>(agents).ok())
             .and_then(|agents| agents.into_iter().find(|a| a.id == agent_id))
             .ok_or("member is no longer configured")?;
+        let member = member_dir(&session_id, &agent.id);
         let executor: MemberExecutor = Arc::new(crate::tools::member_executor_with_control(
             member_root(&agent, &cwd, &session_id)?,
             catalog.clone(),
             agent.tool_bindings.clone(),
-            Some(artifacts.clone()),
+            crate::tools::ArtifactPaths::for_member(artifacts.clone(), &member),
             // per-member shell continuity (`cd`, exports) survives the sandbox
-            Some(session_paths(&session_id).base.join("members").join(&agent.id).join("shell")),
+            Some(member.join("shell")),
         ));
         cache.lock().unwrap().insert(agent_id.to_string(), (revision, executor.clone()));
         executor(tool, args, control)
@@ -1236,6 +1407,23 @@ mod tests {
         assert!(!context.iter().any(|(l, _)| l == "skill escape"), "{context:?}");
         assert!(!context.iter().any(|(_, body)| body.contains("outside secret")), "{context:?}");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn codex_member_instructions_keep_member_rules_before_selected_context() {
+        let context = vec![
+            ("skill review".to_string(), "review skill body".to_string()),
+            ("instructions AGENTS.md".to_string(), "project instructions".to_string()),
+        ];
+        let instructions = codex_member_instructions("Review parser edge cases.", &context);
+        assert!(instructions.starts_with("Review parser edge cases."));
+        assert!(instructions.contains("<member_context source=\"skill review\">\nreview skill body\n</member_context>"));
+        assert!(instructions
+            .contains("<member_context source=\"instructions AGENTS.md\">\nproject instructions\n</member_context>"));
+        assert!(
+            instructions.find("Review parser edge cases.").unwrap() < instructions.find("review skill body").unwrap()
+        );
+        assert!(instructions.find("review skill body").unwrap() < instructions.find("project instructions").unwrap());
     }
 
     #[test]

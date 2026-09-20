@@ -1,0 +1,114 @@
+{
+  "sessions": [
+    {
+      "session_id": "proj_9cd85bb22212",
+      "status": "ACTIVE",
+      "cwd": "/home/rimuru/Projects/Code/for_fun/TeamAgents/review/tmp/repo-repeat-20260919/sample-3/run/work/repo-session-fork",
+      "permissions_mode": "full_auto",
+      "goal_id": "goal_80917a823a8c4aaf",
+      "goal_state": "done",
+      "created_at": 1789832923.9227653,
+      "updated_at": 1789833403.2079809
+    }
+  ],
+  "turn_runs": [
+    {
+      "run_id": "run_ad33f5c042264ac6",
+      "session_id": "proj_9cd85bb22212",
+      "task_id": null,
+      "goal_id": "goal_80917a823a8c4aaf",
+      "agent_id": "leader",
+      "config_revision": 1,
+      "topology_revision": 1,
+      "status": "COMPLETED",
+      "input_delivery_ids": "[1]",
+      "context_ref": "ctx:leader:1",
+      "external_turn_id": null,
+      "cancel_requested": 0,
+      "waiting_on": "[]",
+      "created_at": 1789832923.9486344,
+      "updated_at": 1789833403.2080054
+    }
+  ],
+  "tasks": [],
+  "agent_runtime": [
+    {
+      "session_id": "proj_9cd85bb22212",
+      "agent_id": "leader",
+      "status": "IDLE",
+      "config_revision": 1,
+      "context_epoch": 1,
+      "last_applied_batch": 1,
+      "next_batch_no": 2,
+      "external_thread_id": null,
+      "updated_at": 1789833403.2080772
+    }
+  ],
+  "events": [
+    {
+      "sequence": 1,
+      "event_id": "evt_83ecdaed081547c3",
+      "session_id": "proj_9cd85bb22212",
+      "actor_id": "user",
+      "task_id": null,
+      "kind": "user_message",
+      "payload_json": "{\"text\":\"请修复这份 TeamAgents 真实 Rust 仓库快照中的会话分叉与切换问题。用户在已有团队里调整过 `/model`，也会自动创建会话级模型 profile；fork 后配置可能丢失、旧对话不能继续，失败的切换还会使原会话不可用。\\n\\n需要满足以下行为：\\n\\n1. `serve` 的 `fork_session` 创建新会话，继承当前 TeamSpec、Leader 对话树及旧版线性对话、会话 `profiles.json` 与 `/model` 覆盖。自动 profile 只在源会话存在时，也必须能 fork；分叉后 `model` 报告的 profile、模型与思考档位应与源会话相同，重开后仍然相同。\\n2. Leader 可能已经重置过上下文，当前 `context_epoch` 不一定为 1。对话按 `ctx:<leader>:<epoch>` 存放，新会话使用自己的 epoch；当前历史必须映射到新会话实际线程。树的全部分支、节点与 leaf 保留。旧线性历史遵循同样的映射，源文件不被修改。\\n3. 新会话不继承源会话的任务、运行记录、共享事实、成员私有历史或 Shell 状态，不回滚或复制项目工作文件。源会话的磁盘事实和用户文件保持完整。\\n4. `open`、`switch_session` 或 fork 打开新会话失败时，旧会话应继续可用，保留原来的工作目录、团队配置和权限模式。fork 的新会话若打开失败，清理本次未完成的目标目录，不删除或归档源会话。\\n5. 任何成员有 QUEUED/RUNNING 回合时仍须拒绝 fork，不能通过取消成员来强行分叉。保留现有 JSON-lines 协议与错误回执，不增加新命令、依赖或产品范围。\\n\\n本次明确授权以上修复，优先于快照内文档对旧限制的描述。只允许修改 `engine/src/worker.rs` 与 `engine/src/session.rs`；可以在这两个文件里增加局部测试。其他源码、Cargo 清单和锁文件、既有测试、文档以及 `.config/teamagents/config.toml` 必须逐字节保留，不新增其他文件。Cargo 生成的各 crate `target/` 构建产物不计入源码范围。\\n\\n仓库含 core、engine、tui 三个独立 crate。依赖已缓存，请使用离线 Cargo；`.config/teamagents/config.toml` 是供旧测试使用的无凭据配置，必须保留。Shell HOME 是独立目录，运行旧测试时须显式使用该配置。在仓库根目录至少运行：\\n\\n```bash\\nXDG_CONFIG_HOME=\\\"$PWD/.config\\\" cargo test --offline --manifest-path engine/Cargo.toml --test fork_rewind --test model_override --test session_boot --test worker_protocol -- --test-threads=1\\n```\\n\\n请先定位调用链，再修复并实际验证，最后报告行为变化、修改位置与测试结果。结束后会在仓库之外进行独立隐藏验收，公开测试通过不能代替以上要求。\\n\",\"goal_id\":\"goal_80917a823a8c4aaf\",\"supplement\":false,\"to\":\"leader\"}",
+      "audience_json": "[\"leader\"]",
+      "topology_revision": 1,
+      "causation_id": "user_2a57cf50f0894a57",
+      "created_at": 1789832923.9470334
+    },
+    {
+      "sequence": 2,
+      "event_id": "evt_fe17a0e333a44c39",
+      "session_id": "proj_9cd85bb22212",
+      "actor_id": "leader",
+      "task_id": null,
+      "kind": "run_started",
+      "payload_json": "{\"run_id\":\"run_ad33f5c042264ac6\",\"agent_id\":\"leader\",\"status\":\"RUNNING\",\"wake\":\"user_input\"}",
+      "audience_json": "[\"leader\"]",
+      "topology_revision": 1,
+      "causation_id": "sys_39ae121abafb4bbc",
+      "created_at": 1789832923.952888
+    },
+    {
+      "sequence": 3,
+      "event_id": "evt_92d33dfe409f49ca",
+      "session_id": "proj_9cd85bb22212",
+      "actor_id": "leader",
+      "task_id": null,
+      "kind": "goal_done",
+      "payload_json": "{\"goal_id\":\"goal_80917a823a8c4aaf\",\"agent_id\":\"leader\",\"summary\":\"修复 TeamAgents 快照中的会话 fork/切换问题，仅改动 engine/src/worker.rs 与 engine/src/session.rs（无新增文件，其他源码/Cargo/docs/.config 逐字节保留）。\\n\\n修改位置：\\n1) engine/src/session.rs\\n   - open_session 统一构造 merged_catalog（用户配置 + 本会话 profiles.json），既用于 set_catalog，也传给 load_model_overrides。修复：/model 覆盖指向自动创建成员 profile（D-30）时，重开/fork 不再被当作 stale 丢弃。\\n   - 新增 fork 文件助手：copy_session_model_config（复制 profiles.json + model_overrides.json）、copy_leader_conversation（复制 chat_tree.json + chat_history.json 并把源当前线程 ctx:<leader>:<src_epoch> 重映射到目标自己的 epoch，节点/分支/leaf 原样保留，源文件只读）、discard_failed_fork（清理失败目标目录）。\\n   - 新增 2 个局部测试。\\n2) engine/src/worker.rs\\n   - open 改为失败原子：先解析请求→已开同一会话则幂等返回→打开新会话→成功后才提交（切换 current、更新 cwd/full_auto/team）并关闭旧会话。失败时旧会话及其 cwd/团队配置/权限模式完全保留。\\n   - fork_session 重写：任何成员有 QUEUED/RUNNING 回合即拒绝（不取消成员强行分叉）；复制会话级模型配置后再打开目标（打开失败清理目标目录，源会话保持当前且可用）；读取目标实际 epoch；按映射复制 Leader 对话；后置失败则关闭目标、删目录、恢复源会话。\\n\\n满足的行为：fork 继承当前 TeamSpec、Leader 对话树与旧线性对话、profiles.json 与 /model 覆盖（自动 profile 也能 fork），分叉后 model 报告与源一致且重开一致；按 ctx:<leader>:<epoch> 映射到新会话线程，保留全部分支/节点/leaf，源文件不变；不复制任务/运行/共享事实/成员私有历史/Shell 状态，不回滚项目文件；open/switch_session/fork 失败时旧会话保持可用，失败 fork 的目标目录被清理、源会话不删不归档；仍拒绝在活跃回合时分叉，协议与命令不变、无新依赖。\\n\\n测试：指定命令 `XDG_CONFIG_HOME=$PWD/.config cargo test --offline --manifest-path engine/Cargo.toml --test fork_rewind --test model_override --test session_boot --test worker_protocol -- --test-threads=1` → 12 passed / 0 failed。engine --lib 61 passed（含 2 个新增测试）。另用真实 `teamagents serve` 二进制做了 44 项独立端到端探针（fork 传递/映射/模型一致与重开一致、失败 open/switch 保留旧会话与 cwd/team/mode、失败 fork 清理、活跃回合拒 fork、fork 后 rewind_points/rewind 可用）全部通过。既有失败均与本次改动无关：engine `cli::doctor_*` 因环境无 codex CLI；tui `render_tests` 因快照缺少 fixture review/tmp/parity_scenario.json。\"}",
+      "audience_json": "[\"leader\"]",
+      "topology_revision": 1,
+      "causation_id": "sys_5c7bfbccd3c94528",
+      "created_at": 1789833403.208347
+    },
+    {
+      "sequence": 4,
+      "event_id": "evt_b516fc835b9b4da8",
+      "session_id": "proj_9cd85bb22212",
+      "actor_id": "leader",
+      "task_id": null,
+      "kind": "leader_reply",
+      "payload_json": "{\"text\":\"修复完成。以下是完整报告。\\n\\n## 结论\\n\\n会话分叉与切换的五项要求已全部实现并通过验证。**只修改了 `engine/src/worker.rs` 与 `engine/src/session.rs`**（各自新增局部测试），没有新增文件；其他源码、Cargo 清单与锁文件、既有测试、文档、`.config/teamagents/config.toml` 未改动。\\n\\n## 调用链定位\\n\\n- `serve` 的 `fork_session`/`open`/`switch_session`/`new_session` 都在 `engine/src/worker.rs`；`open_session`、会话 `profiles.json`、`/model` 覆盖加载在 `engine/src/session.rs`。\\n- 对话存储：`members/<agent>/chat_tree.json`（`{线程: {nodes, leaf}}`）与旧版 `chat_history.json`（`{线程: [消息]}`），线程名为 `ctx:<agent>:<context_epoch>`（`core/src/control.rs::context_ref`，epoch 默认 1、重置后自增）。\\n\\n## 修改位置与行为变化\\n\\n**engine/src/session.rs**\\n1. `open_session`：把「用户配置 + 本会话 `profiles.json`」合并后的 `merged_catalog` 统一用于 `set_catalog` **和** `load_model_overrides`。此前覆盖校验用原始用户配置，导致指向自动创建成员 profile（D-30）的 `/model` 选择在重开/分叉时被当 stale 丢弃。\\n2. 新增 `copy_session_model_config`（复制 `profiles.json` + `model_overrides.json`，源只读）、`copy_leader_conversation`（复制 `chat_tree.json` + `chat_history.json`，把源当前线程 `ctx:<leader>:<src_epoch>` 重映射到目标实际线程，节点/分支/leaf 原样、源文件不变；源当前线程覆盖同名旧线程）、`discard_failed_fork`。\\n3. 新增 2 个局部测试。\\n\\n**engine/src/worker.rs**\\n1. `open` 改为**失败原子**：解析请求 → 若目标就是当前已开会话则幂等返回 → 打开新会话成功后才提交（切 current、更新 cwd/full_auto/team）并关闭旧会话。失败时旧会话及其工作目录、团队配置、权限模式全部保留（修复了“失败切换使原会话不可用”）。\\n2. `fork_session` 重写：任一成员有 `QUEUED/RUNNING` 回合即拒绝（不通过取消成员强行分叉）→ 复制会话级模型配置 → 打开目标（**打开失败即清理本次目标目录**，源会话保持当前可用）→ 读取目标真实 epoch → 按映射复制 Leader 对话（后置失败则关目标、删目录、恢复源会话）→ 返回 `forked_from`。\\n\\n## 测试结果\\n\\n- 指定命令：`XDG_CONFIG_HOME=$PWD/.config cargo test --offline --manifest-path engine/Cargo.toml --test fork_rewind --test model_override --test session_boot --test worker_protocol -- --test-threads=1` → **12 passed / 0 failed**。\\n- `engine --lib`：**61 passed**（含 2 个新增测试）。\\n- 独立端到端探针（真实 `teamagents serve` 二进制，44 项全过）：自动 profile 可 fork 且 `model` 报告与源一致、重开后一致；epoch≠1 时线程正确映射、源文件不变、fork 后 `rewind_points`/`rewind` 可用；失败 `open`/`switch_session` 保留旧会话与 cwd/团队/权限模式；失败 fork 清理目标目录而不动源会话；活跃回合时拒绝 fork。\\n- 既有无关失败：engine `cli::doctor_probes_isolation_codex_and_config_errors`（环境无 codex CLI）、tui `render_tests`（快照缺少 fixture `review/tmp/parity_scenario.json`）。\",\"run_id\":\"run_ad33f5c042264ac6\"}",
+      "audience_json": "[\"leader\"]",
+      "topology_revision": 1,
+      "causation_id": "sys_5c7bfbccd3c94528",
+      "created_at": 1789833403.2084801
+    },
+    {
+      "sequence": 5,
+      "event_id": "evt_c99d5da48eed45de",
+      "session_id": "proj_9cd85bb22212",
+      "actor_id": "leader",
+      "task_id": null,
+      "kind": "run_completed",
+      "payload_json": "{\"run_id\":\"run_ad33f5c042264ac6\",\"agent_id\":\"leader\",\"status\":\"COMPLETED\",\"error\":null}",
+      "audience_json": "[\"leader\"]",
+      "topology_revision": 1,
+      "causation_id": "sys_5c7bfbccd3c94528",
+      "created_at": 1789833403.2085972
+    }
+  ]
+}

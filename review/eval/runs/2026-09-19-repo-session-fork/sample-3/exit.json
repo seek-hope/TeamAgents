@@ -1,0 +1,8 @@
+{
+  "sample": 3,
+  "exit_code": 1,
+  "outer_timeout": false,
+  "duration_seconds": 972.3682100772858,
+  "started_unix": 1789811171.038147,
+  "finished_unix": 1789812143.4063575
+}

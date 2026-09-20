@@ -1,0 +1,4 @@
+manifest = "engine/Cargo.toml"
+public_tests = ["fork_rewind", "model_override", "session_boot", "worker_protocol"]
+timeout_seconds = 300
+config_home = ".config"

@@ -1,0 +1,10 @@
+{
+  "exit_code": 0,
+  "stdout": "",
+  "stderr": "",
+  "hashes": {
+    "engine/src/session.rs": "f342a7871e8b0cd534a4e5cbd00f688e634463a3562c7c53ecf93235173dba4a",
+    "engine/src/worker.rs": "ee5871a7c6ad20254c550a8ae3bacfa7cc8d7e69dd17398fafe849cab15db599"
+  },
+  "matches_candidate": true
+}

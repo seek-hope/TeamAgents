@@ -1,0 +1,19 @@
+   Compiling teamagents-engine v0.1.2 (/home/rimuru/Projects/Code/for_fun/TeamAgents/engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.97s
+     Running unittests src/lib.rs (engine/target/debug/deps/teamagents_engine-c3f5081013a620de)
+
+running 1 test
+
+thread 'chat::tests::legacy_history_damage_is_not_an_empty_conversation' (297) panicked at src/chat.rs:3451:13:
+damaged legacy history was accepted: {truncated
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test chat::tests::legacy_history_damage_is_not_an_empty_conversation ... FAILED
+
+failures:
+
+failures:
+    chat::tests::legacy_history_damage_is_not_an_empty_conversation
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 106 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--lib`

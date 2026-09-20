@@ -1,0 +1,19 @@
+{
+  "verified_at": "2026-09-19T23:58:41.900653+08:00",
+  "samples_planned": 3,
+  "samples_finished": 3,
+  "completed_and_verified": 3,
+  "frozen_hashes_unchanged": 49,
+  "candidate_patch_replays_match": 3,
+  "implementation_patch_replay_hashes": 47,
+  "json_documents_parsed": 64,
+  "compressed_payloads_checked": 248,
+  "credential_scan": {
+    "scope": "values of current credential-like environment variables, including decompressed content",
+    "variable_count": 10,
+    "hits": []
+  },
+  "final_checked_at": "2026-09-20T00:01:40.704125+08:00",
+  "sha256_files_verified": 350,
+  "documentation_local_links_checked": 76
+}

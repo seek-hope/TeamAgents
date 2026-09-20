@@ -69,10 +69,46 @@ fn state_home(tag: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("ta-worker-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
+    std::fs::create_dir_all(dir.join("project")).unwrap();
     std::fs::create_dir_all(dir.join("config/teamagents")).unwrap();
     std::fs::write(dir.join("config/teamagents/config.toml"),
         "[models.leader_main]\nprovider='openai'\nmodel='test'\nbase_url='http://127.0.0.1:9'\nmax_retries=0\n[models.other]\nprovider='openai'\nmodel='other'\n").unwrap();
     dir
+}
+
+#[test]
+fn worker_user_input_rejects_malformed_flags_without_resuming_the_session() {
+    let home = state_home("strict-input");
+    let mut worker = WorkerClient::spawn(&home);
+    worker.call("open", json!({"cwd":home.join("project"),"scripts":{"leader":[["end"]]}})).unwrap();
+    let paused = worker
+        .call(
+            "submit",
+            json!({"action":{
+                "action_id":"pause","kind":"pause_session","payload":{}
+            }}),
+        )
+        .unwrap();
+    assert_eq!(paused["ok"], true);
+    for params in [
+        json!({"text":"continue","supplement":"false"}),
+        json!({"text":"continue","supplement":null}),
+        json!({"text":"continue","unknown":true}),
+        json!(["continue", true]),
+    ] {
+        assert!(worker.call("user_message", params.clone()).is_err(), "accepted {params}");
+        let state = worker.call("call", json!({"method":"state","params":{"after_sequence":0}})).unwrap();
+        assert_eq!(state["session"]["status"], "PAUSED");
+        assert!(!state["events"].as_array().unwrap().iter().any(|event| event["kind"] == "user_message"));
+    }
+    let receipt = worker.call("user_message", json!({"text":"continue","supplement":true})).unwrap();
+    assert_eq!(receipt["ok"], true);
+    let state = worker.call("call", json!({"method":"state","params":{"after_sequence":0}})).unwrap();
+    let input = state["events"].as_array().unwrap().iter().find(|event| event["kind"] == "user_message").unwrap();
+    assert_eq!(input["payload"]["supplement"], true);
+    assert_eq!(input["payload"]["text"], "continue");
+    worker.close();
+    std::fs::remove_dir_all(&home).unwrap();
 }
 
 #[test]
@@ -83,7 +119,7 @@ fn worker_drives_a_scripted_session_end_to_end() {
         .call(
             "open",
             json!({
-                "cwd": "/tmp",
+                "cwd": home.join("project"),
                 "scripts": {"leader": [
                     ["call", "send_message", {"target": "leader", "text": "note to self"}],
                     ["call", "signal_done", {"summary": "shipped"}],
@@ -136,7 +172,8 @@ fn worker_drives_a_scripted_session_end_to_end() {
 fn worker_usage_reports_per_agent_counters() {
     let home = state_home("usage");
     let mut worker = WorkerClient::spawn(&home);
-    let opened = worker.call("open", json!({"cwd": "/tmp", "scripts": {"leader": [["end"]]}})).expect("open");
+    let opened =
+        worker.call("open", json!({"cwd": home.join("project"), "scripts": {"leader": [["end"]]}})).expect("open");
     let session_id = opened.get("session_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
 
     let report = worker.call("usage", json!({})).expect("usage");
@@ -156,7 +193,7 @@ fn worker_usage_reports_per_agent_counters() {
 fn worker_set_model_switches_and_clears_overrides() {
     let home = state_home("model");
     let mut worker = WorkerClient::spawn(&home);
-    worker.call("open", json!({"cwd": "/tmp", "scripts": {"leader": [["end"]]}})).expect("open");
+    worker.call("open", json!({"cwd": home.join("project"), "scripts": {"leader": [["end"]]}})).expect("open");
 
     let set = worker
         .call("set_model", json!({"agent_id": "leader", "model": "gpt-5-mini", "effort": "low"}))
@@ -235,7 +272,7 @@ fn model_discovery_does_not_block_worker_requests() {
         let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
     });
     let mut worker = WorkerClient::spawn(&home);
-    worker.call("open", json!({"cwd":"/tmp","scripts":{"leader":[["end"]]}})).unwrap();
+    worker.call("open", json!({"cwd":home.join("project"),"scripts":{"leader":[["end"]]}})).unwrap();
     writeln!(worker.stdin, "{}", json!({"id":999,"method":"discover_models","params":{"provider":"local"}})).unwrap();
     worker.stdin.flush().unwrap();
     rx.recv_timeout(std::time::Duration::from_secs(3)).unwrap();

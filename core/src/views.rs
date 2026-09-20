@@ -72,13 +72,13 @@ fn all_members(spec: &TeamSpec) -> HashSet<String> {
     spec.agents.iter().map(|a| a.id.clone()).collect()
 }
 
-pub fn event_audience(
+fn direct_audience(
     spec: &TeamSpec,
     kind: EventKind,
     actor_id: &str,
     payload: &Json,
     targets: Option<&[String]>,
-) -> Vec<String> {
+) -> HashSet<String> {
     let members = all_members(spec);
     let mut audience: HashSet<String> = HashSet::new();
     let get = |k: &str| payload.get(k).and_then(|v| v.as_str()).map(str::to_string);
@@ -135,6 +135,19 @@ pub fn event_audience(
             audience.insert(spec.leader_id.clone());
         }
     }
+    audience.retain(|a| members.contains(a));
+    audience
+}
+
+pub fn event_audience(
+    spec: &TeamSpec,
+    kind: EventKind,
+    actor_id: &str,
+    payload: &Json,
+    targets: Option<&[String]>,
+) -> Vec<String> {
+    let members = all_members(spec);
+    let mut audience = direct_audience(spec, kind, actor_id, payload, targets);
     let subjects = observer_subjects(kind, actor_id, payload);
     for ob in &spec.observers {
         if observer_matches(ob, kind, actor_id, &subjects) {
@@ -144,6 +157,71 @@ pub fn event_audience(
     let mut out: Vec<String> = audience.into_iter().filter(|a| members.contains(a)).collect();
     out.sort();
     out
+}
+
+/// Delivery rights are narrower than audit visibility: a message still needs
+/// its current channel, or an independent matching observer grant.
+fn delivery_scope<'a>(
+    spec: &'a TeamSpec,
+    recipient: &str,
+    kind: EventKind,
+    actor: &str,
+    payload: &Json,
+) -> Option<&'a str> {
+    spec.agent(recipient)?;
+    let direct = if kind == EventKind::Message {
+        payload["target"].as_str() == Some(recipient)
+            && (spec.can_send(actor, recipient)
+                || (recipient == spec.leader_id && payload["help"].as_bool() == Some(true)))
+    } else {
+        direct_audience(spec, kind, actor, payload, None).contains(recipient)
+    };
+    if direct {
+        return Some("result");
+    }
+    let subjects = observer_subjects(kind, actor, payload);
+    spec.observers
+        .iter()
+        .find(|ob| ob.agent_id == recipient && observer_matches(ob, kind, actor, &subjects))
+        .map(|ob| ob.payload_scope.as_str())
+}
+
+/// Re-project a persisted delivery. Its original audience and stored payload
+/// remain upper bounds; a later grant never widens an old delivery.
+pub fn project_delivery(spec: &TeamSpec, recipient: &str, delivery: &Json) -> Result<Json, String> {
+    let audience: Vec<String> =
+        serde_json::from_str(delivery["audience_json"].as_str().ok_or("missing original delivery audience")?)
+            .map_err(|_| "invalid original delivery audience")?;
+    if !audience.iter().any(|a| a == recipient) {
+        return Err("recipient was not in the original event audience".into());
+    }
+    let kind: EventKind =
+        serde_json::from_value(delivery["event_kind"].clone()).map_err(|_| "invalid delivery event kind")?;
+    let actor = delivery["event_actor"].as_str().ok_or("missing delivery actor")?;
+    let original: Json =
+        serde_json::from_str(delivery["payload_json"].as_str().ok_or("missing delivery event payload")?)
+            .map_err(|_| "invalid delivery event payload")?;
+    if !original.is_object() {
+        return Err("delivery event payload must be an object".into());
+    }
+    let scope = delivery_scope(spec, recipient, kind, actor, &original)
+        .ok_or("delivery permission revoked before injection")?;
+    let bounded = match &delivery["payload_override"] {
+        Json::Null => original,
+        Json::String(s) => serde_json::from_str(s).map_err(|_| "invalid delivery payload override")?,
+        _ => return Err("invalid delivery payload override".into()),
+    };
+    if !bounded.is_object() {
+        return Err("delivery payload override must be an object".into());
+    }
+    Ok(serde_json::json!({
+        "delivery_id": delivery["delivery_id"],
+        "event_id": delivery["event_id"],
+        "kind": kind,
+        "from": actor,
+        "task_id": delivery["event_task_id"],
+        "payload": scope_payload(scope, kind, &bounded),
+    }))
 }
 
 pub fn event_push(
@@ -207,27 +285,16 @@ pub fn event_push(
 use crate::storage::Store;
 
 /// What one member may see at a delivery boundary (plan §5.2).
-pub fn build_agent_view(store: &Store, spec: &TeamSpec, session_id: &str, agent_id: &str) -> Json {
-    let all_tasks = store.tasks_for_session(session_id, &[]).unwrap_or_default();
+pub fn build_agent_view(store: &Store, spec: &TeamSpec, session_id: &str, agent_id: &str) -> Result<Json, String> {
+    let all_tasks = store.tasks_for_session(session_id, &[]).map_err(|e| e.to_string())?;
     let assignment: Vec<&Task> = all_tasks.iter().filter(|t| t.assignee == agent_id).collect();
-    let pending = store.pending_deliveries_joined(session_id, agent_id).unwrap_or_default();
+    let pending = store.pending_deliveries_joined(session_id, agent_id).map_err(|e| e.to_string())?;
     let mut inbox = vec![];
     let mut delivery_ids: Vec<i64> = vec![];
     let mut batch_max = 0_i64;
     for d in &pending {
-        let payload = d["payload_override"]
-            .as_str()
-            .and_then(|o| serde_json::from_str(o).ok())
-            .or_else(|| serde_json::from_str(d["payload_json"].as_str().unwrap_or("null")).ok())
-            .unwrap_or(Json::Null);
-        inbox.push(serde_json::json!({
-            "delivery_id": d["delivery_id"],
-            "event_id": d["event_id"],
-            "kind": d["event_kind"],
-            "from": d["event_actor"],
-            "task_id": d["event_task_id"],
-            "payload": payload,
-        }));
+        let Ok(item) = project_delivery(spec, agent_id, d) else { continue };
+        inbox.push(item);
         if let Some(id) = d["delivery_id"].as_i64() {
             delivery_ids.push(id);
         }
@@ -241,39 +308,40 @@ pub fn build_agent_view(store: &Store, spec: &TeamSpec, session_id: &str, agent_
         .collect();
     let mut shared_delta: Vec<SharedEntry> = vec![];
     for sid in &readable {
-        let cursor = store.shared_cursor(session_id, agent_id, sid).unwrap_or(0);
-        shared_delta
-            .extend(store.shared_entries(session_id, std::slice::from_ref(sid), cursor, 50).unwrap_or_default());
+        let cursor = store.shared_cursor(session_id, agent_id, sid).map_err(|e| e.to_string())?;
+        shared_delta.extend(
+            store.shared_entries(session_id, std::slice::from_ref(sid), cursor, 50).map_err(|e| e.to_string())?,
+        );
     }
     let capabilities: Vec<String> = spec.agent(agent_id).map(|a| a.tool_bindings.clone()).unwrap_or_default();
     let members: Vec<Json> = spec
         .agents
         .iter()
-        .map(|a| {
-            serde_json::json!({
+        .map(|a| -> rusqlite::Result<Json> {
+            Ok(serde_json::json!({
                 "id": a.id, "name": a.name, "role": a.role,
                 "runtime_kind": a.runtime_kind,
                 // what a member can actually execute: the Leader delegates
                 // against this, so an empty list is visible instead of silent
                 "tools": a.tool_bindings,
-                "status": store.agent_status(session_id, &a.id).ok().flatten()
-                    .map(|s| serde_json::to_value(s).unwrap_or(Json::Null)).unwrap_or(Json::Null),
-            })
+                "status": store.agent_status(session_id, &a.id)?,
+            }))
         })
-        .collect();
+        .collect::<Result<_, _>>()
+        .map_err(|e| e.to_string())?;
     let mut can_send_to: Vec<String> =
         spec.agents.iter().filter(|a| spec.can_send(agent_id, &a.id)).map(|a| a.id.clone()).collect();
     can_send_to.sort();
     let mut can_delegate_to: Vec<String> =
         spec.agents.iter().filter(|a| spec.can_delegate(agent_id, &a.id)).map(|a| a.id.clone()).collect();
     can_delegate_to.sort();
-    serde_json::json!({
+    Ok(serde_json::json!({
         "agent_id": agent_id,
         "assignment": assignment,
         "inbox_delta": inbox,
         "permitted_shared_delta": shared_delta,
         "relevant_topology": {
-            "revision": store.current_revision(session_id).unwrap_or(0),
+            "revision": store.current_revision(session_id).map_err(|e| e.to_string())?,
             "members": members,
             "can_send_to": can_send_to,
             "can_delegate_to": can_delegate_to,
@@ -283,7 +351,7 @@ pub fn build_agent_view(store: &Store, spec: &TeamSpec, session_id: &str, agent_
         "capabilities": capabilities,
         "delivery_ids": delivery_ids,
         "batch_no": batch_max,
-    })
+    }))
 }
 
 #[cfg(test)]

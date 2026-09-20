@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "verified_on": "2026-09-19",
+  "kind": "archive_consistency_verification",
+  "repository_head": "70c83b66df4215965a2320ca01e16a574c7c7a75",
+  "checks": {
+    "repository_head_matches_manifest": true,
+    "git_diff_check_exit_code": 0,
+    "manifest_file_hashes_verified": 24,
+    "archive_json_files_parsed_before_this_record": 14,
+    "stage_metadata_records_matched": 11,
+    "documents_checked": 5,
+    "local_markdown_link_targets_existing": 57,
+    "authored_markdown_json_trailing_whitespace": 0,
+    "credential_pattern_candidates": 0,
+    "archive_checksum_files_verified_before_this_record": 28,
+    "archive_checksum_exit_code_before_this_record": 0
+  },
+  "credential_pattern_scan": [
+    "private_key",
+    "openai_key",
+    "aws_key",
+    "github_token",
+    "google_api_key",
+    "slack_token",
+    "jwt",
+    "bearer_literal"
+  ],
+  "notes": [
+    "哈希校验覆盖 manifest 记录的当前源码、基线副本、文档、补丁及构建输入。",
+    "链接检查验证本地目标文件存在，不验证标题锚点。",
+    "空白检查仅覆盖本批五份 Markdown 文档与归档 JSON；原始日志和补丁上下文保持原样。",
+    "凭据检查为模式扫描，未读取或输出环境中的凭据值。",
+    "沿用已完成的定向测试和 make check 结果，本轮仅核验归档。",
+    "保存本记录后重建 SHA256SUMS，并再次执行 sha256sum -c SHA256SUMS --quiet。"
+  ]
+}

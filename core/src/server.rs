@@ -57,9 +57,15 @@ impl Server {
                 }
                 Err(e) => Err(format!("bad action: {e}")),
             },
+            "prepare_run" => self.with(params, |ctl, p| {
+                let run_id = p.get("run_id").and_then(|v| v.as_str()).ok_or("run_id required")?;
+                ctl.prepare_run(run_id)
+            }),
             "begin_run" => self.with(params, |ctl, p| {
                 let run_id = p.get("run_id").and_then(|v| v.as_str()).ok_or("run_id required")?;
-                ctl.begin_run(run_id).map(|run| json!({"run": run, "wake": ctl.wake_info(&run)}))
+                let run = ctl.begin_run(run_id)?;
+                let wake = ctl.wake_info(&run)?;
+                Ok(json!({"run": run, "wake": wake}))
             }),
             "finalize_run" => self.with(params, |ctl, p| {
                 let run_id = p.get("run_id").and_then(|v| v.as_str()).ok_or("run_id required")?;
@@ -74,7 +80,16 @@ impl Server {
                 let ack_ids: Vec<i64> = p.get("ack_ids").and_then(|v| v.as_array()).map(|a| {
                     a.iter().filter_map(|v| v.as_i64()).collect()
                 }).unwrap_or_default();
-                ctl.finalize_run(run_id, &outcome, &ack_ids).map(|_| json!({"ok": true}))
+                ctl.finalize_run(run_id, &outcome, &ack_ids)
+                    .map(|result| json!({"ok": true, "applied": result.applied, "status": result.status}))
+            }),
+            "get_completion_request" => self.with(params, |ctl, p| {
+                let run_id = p["run_id"].as_str().ok_or("run_id required")?;
+                ctl.store
+                    .get_run_for_session(&ctl.session_id, run_id)
+                    .map_err(|e| e.to_string())?
+                    .ok_or("unknown run")?;
+                Ok(json!({"completion":ctl.store.completion_request(run_id).map_err(|e| e.to_string())?}))
             }),
             "emit" => self.with(params, |ctl, p| {
                 // malformed events are an error, never a silently dropped write
@@ -104,6 +119,14 @@ impl Server {
                 ctl.schedule()?;
                 Ok(json!({"ok": true}))
             }),
+            // Bootstrap distinguishes a missing spec from an unreadable one;
+            // only an empty session can accept an initial spec on retry.
+            "session_metadata" => self.with(params, |ctl, _p| {
+                Ok(json!({
+                    "session": ctl.store.get_session(&ctl.session_id).map_err(|e| e.to_string())?,
+                    "has_spec": ctl.store.has_team_spec(&ctl.session_id).map_err(|e| e.to_string())?,
+                }))
+            }),
             // cheap permission-mode read (the approval gate refreshes from it,
             // so a user's full-auto toggle takes effect mid-session)
             "session_mode" => self.with(params, |ctl, _p| {
@@ -116,8 +139,24 @@ impl Server {
             }),
             "agent_view" => self.with(params, |ctl, p| {
                 let agent = p.get("agent_id").and_then(|v| v.as_str()).ok_or("agent_id required")?;
-                let spec = ctl.store.load_team_spec(&ctl.session_id.clone(), None).map_err(|e| e.to_string())?;
-                Ok(crate::views::build_agent_view(&ctl.store, &spec, &ctl.session_id.clone(), agent))
+                ctl.agent_view(agent)
+            }),
+            "delivery_items" => self.with(params, |ctl, p| {
+                let agent = p.get("agent_id").and_then(|v| v.as_str()).ok_or("agent_id required")?;
+                let ids: Vec<i64> = serde_json::from_value(p["delivery_ids"].clone())
+                    .map_err(|e| format!("bad delivery_ids: {e}"))?;
+                Ok(json!({"items": ctl.delivery_items(agent, &ids)?}))
+            }),
+            "confirm_delivery_ids" => self.with(params, |ctl, p| {
+                let run = p["run_id"].as_str().ok_or("run_id required")?;
+                let ids: Vec<i64> = serde_json::from_value(p["delivery_ids"].clone())
+                    .map_err(|e| format!("bad delivery_ids: {e}"))?;
+                ctl.confirm_delivery_ids(run, &ids)?;
+                Ok(json!({"ok": true}))
+            }),
+            "confirmed_delivery_ids" => self.with(params, |ctl, p| {
+                let run = p["run_id"].as_str().ok_or("run_id required")?;
+                Ok(json!({"delivery_ids": ctl.confirmed_delivery_ids(run)?}))
             }),
             "state" => self.with(params, |ctl, p| {
                 let sid = ctl.session_id.clone();
@@ -175,20 +214,26 @@ impl Server {
                 let run_id = p.get("run_id").and_then(|v| v.as_str()).ok_or("run_id required")?;
                 let call_id = p.get("tool_call_id").and_then(|v| v.as_str()).ok_or("tool_call_id required")?;
                 let hash = p.get("operation_hash").and_then(|v| v.as_str()).ok_or("operation_hash required")?;
-                Ok(json!({"approval": ctl.store.approval_for_call(run_id, call_id, hash).map_err(|e| e.to_string())?}))
+                let approval = ctl.store.approval_for_call(run_id, call_id, hash).map_err(|e| e.to_string())?
+                    .filter(|approval| approval.session_id == ctl.session_id);
+                Ok(json!({"approval": approval}))
             }),
             "insert_approval" => self.with(params, |ctl, p| {
                 let a: ApprovalRequest = serde_json::from_value(p.get("approval").cloned().unwrap_or(Json::Null))
                     .map_err(|e| format!("bad approval: {e}"))?;
+                if a.session_id != ctl.session_id {
+                    return Err("approval does not belong to this session".into());
+                }
+                if let Some(run) = ctl.store.get_run(&a.run_id).map_err(|e| e.to_string())? {
+                    if run.session_id != ctl.session_id || run.agent_id != a.agent_id {
+                        return Err("approval does not belong to this run's member".into());
+                    }
+                }
                 ctl.store.insert_approval(&a).map_err(|e| e.to_string())?;
                 Ok(json!({"ok": true}))
             }),
             "drain_mid_turn" => self.with(params, |ctl, _p| {
-                let pushes: Vec<Json> = ctl
-                    .drain_mid_turn_pushes()
-                    .into_iter()
-                    .map(|(run_id, items)| json!({"run_id": run_id, "items": items}))
-                    .collect();
+                let pushes = ctl.drain_mid_turn_pushes()?;
                 Ok(json!({"pushes": pushes}))
             }),
             "validate_spec" => {
@@ -232,36 +277,46 @@ impl Server {
             "approval_find_run" => self.with(params, |ctl, p| {
                 let run_id = p.get("run_id").and_then(|v| v.as_str()).ok_or("run_id required")?;
                 let hash = p.get("operation_hash").and_then(|v| v.as_str()).ok_or("operation_hash required")?;
-                let found = ctl.store.find_run_approval(run_id, hash).map_err(|e| e.to_string())?;
+                let found = ctl.store.find_run_approval(run_id, hash).map_err(|e| e.to_string())?
+                    .filter(|approval| approval.session_id == ctl.session_id);
                 Ok(json!({"approval": found}))
             }),
             "requeue_run" => self.with(params, |ctl, p| {
                 let run_id = p.get("run_id").and_then(|v| v.as_str()).ok_or("run_id required")?;
+                ctl.store
+                    .get_run_for_session(&ctl.session_id, run_id)
+                    .map_err(|e| e.to_string())?
+                    .ok_or("unknown run")?;
                 let ok = ctl.store.update_run_status_where(run_id, TurnStatus::Running, TurnStatus::Queued).map_err(|e| e.to_string())?;
                 Ok(json!({"requeued": ok}))
             }),
             "set_run_status" => self.with(params, |ctl, p| {
                 let run_id = p.get("run_id").and_then(|v| v.as_str()).ok_or("run_id required")?;
                 let status: TurnStatus = serde_json::from_value(p.get("status").cloned().unwrap_or(Json::Null)).map_err(|e| e.to_string())?;
+                let run = ctl.store
+                    .get_run_for_session(&ctl.session_id, run_id)
+                    .map_err(|e| e.to_string())?
+                    .ok_or("unknown run")?;
                 ctl.store.set_run_status(run_id, status).map_err(|e| e.to_string())?;
-                if status == TurnStatus::WaitingApproval {
-                    if let Some(run) = ctl.store.get_run(run_id).map_err(|e| e.to_string())? {
-                        ctl.store
-                            .set_agent_status(&ctl.session_id.clone(), &run.agent_id, AgentStatus::Waiting)
-                            .map_err(|e| e.to_string())?;
-                    }
-                } else if status == TurnStatus::Running {
-                    if let Some(run) = ctl.store.get_run(run_id).map_err(|e| e.to_string())? {
-                        ctl.store
-                            .set_agent_status(&ctl.session_id.clone(), &run.agent_id, AgentStatus::Busy)
-                            .map_err(|e| e.to_string())?;
-                    }
+                let member_status = match status {
+                    TurnStatus::WaitingApproval => Some(AgentStatus::Waiting),
+                    TurnStatus::Running => Some(AgentStatus::Busy),
+                    _ => None,
+                };
+                if let Some(member_status) = member_status {
+                    ctl.store
+                        .set_agent_status(&ctl.session_id, &run.agent_id, member_status)
+                        .map_err(|e| e.to_string())?;
                 }
                 Ok(json!({"ok": true}))
             }),
             "set_run_external_turn" => self.with(params, |ctl, p| {
                 let run_id = p.get("run_id").and_then(|v| v.as_str()).ok_or("run_id required")?;
                 let ext = p.get("external_turn_id").and_then(|v| v.as_str()).ok_or("external_turn_id required")?;
+                ctl.store
+                    .get_run_for_session(&ctl.session_id, run_id)
+                    .map_err(|e| e.to_string())?
+                    .ok_or("unknown run")?;
                 ctl.store.set_run_external_turn(run_id, ext).map_err(|e| e.to_string())?;
                 Ok(json!({"ok": true}))
             }),
@@ -389,6 +444,41 @@ mod tests {
         let events = server.controls.get("s1").unwrap().store.events("s1", 0, 10).unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0]["kind"], json!("session_status"));
+    }
+
+    #[test]
+    fn save_spec_rejects_invalid_leaders_without_advancing_revision() {
+        let mut server = server_with_session();
+        let before = server.dispatch("state", &json!({"session_id": "s1"})).unwrap();
+        let mut duplicate = spec_json();
+        duplicate["agents"].as_array_mut().unwrap().push(json!({
+            "id": "extra", "name": "Extra", "role": "leader", "runtime_kind": "deepagents", "model_profile": "m"
+        }));
+        let mut external = spec_json();
+        external["agents"][0]["runtime_kind"] = json!("codex");
+        for (spec, expected) in [(duplicate, "唯一"), (external, "内置")] {
+            let error = server.dispatch("save_spec", &json!({"session_id": "s1", "spec": spec})).unwrap_err();
+            assert!(error.contains(expected), "{error}");
+            assert_eq!(server.dispatch("state", &json!({"session_id": "s1"})).unwrap(), before);
+            assert_eq!(server.controls["s1"].store.agent_status("s1", "extra").unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn session_metadata_distinguishes_missing_and_unreadable_specs() {
+        let mut server = Server::new(":memory:");
+        let params = json!({"session_id": "s1"});
+        assert_eq!(server.dispatch("session_metadata", &params).unwrap(), json!({"session": null, "has_spec": false}));
+        server.dispatch("create_session", &json!({"session_id": "s1", "cwd": "/tmp"})).unwrap();
+        let metadata = server.dispatch("session_metadata", &params).unwrap();
+        assert_eq!(metadata["session"]["session_id"], "s1");
+        assert_eq!(metadata["has_spec"], false);
+        server.dispatch("save_spec", &json!({"session_id": "s1", "spec": spec_json()})).unwrap();
+        server.controls["s1"].store.conn.execute("UPDATE team_specs SET spec_json='{broken json'", []).unwrap();
+        assert_eq!(server.dispatch("session_metadata", &params).unwrap()["has_spec"], true);
+        assert!(server.dispatch("state", &params).unwrap_err().contains("stored spec is invalid"));
+        server.controls["s1"].store.conn.execute("DROP TABLE team_specs", []).unwrap();
+        assert!(server.dispatch("session_metadata", &params).is_err(), "a read failure is not a missing spec");
     }
 
     #[test]

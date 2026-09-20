@@ -63,17 +63,24 @@ pub fn acquire_session_lock(session_id: &str) -> Result<SessionLock, String> {
     validate_session_id(session_id)?;
     let paths = session_paths(session_id);
     std::fs::create_dir_all(&paths.base).map_err(|e| e.to_string())?;
+    acquire_lock_at(session_id, &paths.base)
+}
+
+/// Mutations hold the same inode lock as open_session through all checks and
+/// filesystem operations, rather than merely probing whether it was free.
+fn acquire_lock_at(session_id: &str, base: &Path) -> Result<SessionLock, String> {
+    let path = base.join("session.lock");
     let file = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .read(true)
         .write(true)
-        .open(&paths.lock)
+        .open(&path)
         .map_err(|e| format!("cannot lock session {session_id}: {e}"))?;
     match file.try_lock() {
         Ok(()) => {}
         Err(std::fs::TryLockError::WouldBlock) => {
-            let holder = std::fs::read_to_string(&paths.lock).unwrap_or_default();
+            let holder = std::fs::read_to_string(&path).unwrap_or_default();
             let holder = holder.trim();
             return Err(if holder.is_empty() {
                 format!("session {session_id} is already running in another process")
@@ -281,10 +288,8 @@ pub fn new_session_id(cwd: &Path) -> String {
 pub fn archive_session(session_id: &str, base: Option<&Path>) -> Result<String, String> {
     validate_session_id(session_id)?;
     let root = base.map(Path::to_path_buf).unwrap_or_else(sessions_dir);
-    if is_session_locked(session_id, Some(&root)) {
-        return Err(format!("session {session_id} is running"));
-    }
     let source = root.join(session_id);
+    let _lock = acquire_lock_at(session_id, &source)?;
     // checked before touching any old archive: a failed rename must never
     // leave the previously archived copy destroyed
     // team.db specifically, not the bare dir: a ghost left by a failed open
@@ -293,18 +298,42 @@ pub fn archive_session(session_id: &str, base: Option<&Path>) -> Result<String, 
     if !source.join("team.db").exists() {
         return Err(format!("session {session_id} does not exist"));
     }
-    let target_dir = root.join("archived");
-    std::fs::create_dir_all(&target_dir).map_err(|e| e.to_string())?;
-    let target = target_dir.join(session_id);
-    if target.exists() {
-        std::fs::remove_dir_all(&target).map_err(|e| e.to_string())?;
+    let target = root.join("archived").join(session_id);
+    if target.try_exists().map_err(|e| e.to_string())? {
+        return Err(format!("归档目标 {} 已存在；保留现有归档与当前会话，请先处理重名", target.display()));
     }
-    std::fs::rename(root.join(session_id), &target).map_err(|e| e.to_string())?;
+    let worktrees = crate::workspace::member_worktrees(&source)?;
+    let project_cwd = PathBuf::from(read_meta(&source).cwd);
+    // No move until every member root is readable and belongs to this project.
+    for work in &worktrees {
+        if project_cwd.as_os_str().is_empty() {
+            return Err("会话包含 worktree，但项目目录未知；保留会话，请先修复元数据".into());
+        }
+        crate::workspace::inspect_worktree(&project_cwd, work)?;
+    }
+    std::fs::create_dir_all(target.parent().unwrap()).map_err(|e| e.to_string())?;
+    std::fs::rename(&source, &target).map_err(|e| e.to_string())?;
+    for work in &worktrees {
+        let moved = target.join(work.strip_prefix(&source).map_err(|e| e.to_string())?);
+        if let Err(error) = crate::workspace::repair_worktree(&project_cwd, &moved) {
+            // Roll back a failed archive, including any already repaired links.
+            // Never delete either copy to "recover" a failed filesystem action.
+            if let Err(rollback) = std::fs::rename(&target, &source) {
+                return Err(format!(
+                    "{error}；回滚失败：{rollback}。会话保留在 {}，请修复 worktree 注册",
+                    target.display()
+                ));
+            }
+            let failures: Vec<String> = worktrees
+                .iter()
+                .filter_map(|work| crate::workspace::repair_worktree(&project_cwd, work).err())
+                .collect();
+            return Err(format!("{error}；会话已移回 {}。{}", source.display(), failures.join("；")));
+        }
+    }
     Ok(target.to_string_lossy().into_owned())
 }
 
-/// Refuses while it runs elsewhere, and refuses to delete member worktrees
-/// that still hold uncommitted or unmerged work.
 /// One session's database housekeeping: applied deliveries and events older
 /// than `days` go, pending deliveries (and the events they still need) stay.
 pub fn prune_session_history(session_id: &str, days: u64, dry_run: bool) -> Result<serde_json::Value, String> {
@@ -388,14 +417,14 @@ pub fn prune_archived(days: u64, base: Option<&Path>, dry_run: bool) -> Json {
     })
 }
 
+/// Refuses while it runs elsewhere, and preflights all worktrees before any
+/// removal so one protected member cannot leave the session half-deleted.
 pub fn delete_session(session_id: &str, base: Option<&Path>) -> Result<(), String> {
     validate_session_id(session_id)?;
     let root = base.map(Path::to_path_buf).unwrap_or_else(sessions_dir);
-    if is_session_locked(session_id, Some(&root)) {
-        return Err(format!("session {session_id} is running"));
-    }
     let path = root.join(session_id);
-    let worktrees = crate::workspace::member_worktrees(&path);
+    let _lock = acquire_lock_at(session_id, &path)?;
+    let worktrees = crate::workspace::member_worktrees(&path)?;
     if !worktrees.is_empty() {
         let project_cwd = read_meta(&path).cwd;
         if project_cwd.is_empty() {
@@ -403,20 +432,12 @@ pub fn delete_session(session_id: &str, base: Option<&Path>) -> Result<(), Strin
                 "session has member worktrees but its project directory is unknown; remove them manually first".into(),
             );
         }
+        for work in &worktrees {
+            crate::workspace::check_worktree_cleanup(work, Path::new(&project_cwd))
+                .map_err(|error| format!("成员工作目录 {} 暂不能删除：{error}", work.display()))?;
+        }
         for work in worktrees {
-            let branch = std::process::Command::new("git")
-                .args(["-C", &work.to_string_lossy(), "rev-parse", "--abbrev-ref", "HEAD"])
-                .output()
-                .ok()
-                .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
-                .filter(|b| !b.is_empty());
-            let workspace = crate::workspace::Workspace {
-                path: work.clone(),
-                policy: teamagents_core::models::WorkspacePolicy::GitWorktree,
-                note: None,
-                branch,
-                base_commit: None,
-            };
+            let workspace = crate::workspace::inspect_worktree(Path::new(&project_cwd), &work)?;
             let (ok, reason) = crate::workspace::cleanup(&workspace, Path::new(&project_cwd), false);
             if !ok {
                 return Err(format!("member worktree {} keeps unmerged or uncommitted work: {reason}", work.display()));
