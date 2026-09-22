@@ -918,3 +918,26 @@ Chat 模型矩阵入口，使用完整所选 profile 与有来源的原生窗口
 不合理的非原生窗口模型测试应作废并删除，不能改名为压力实验或历史证据保留。
 上下文压缩算法的本地假服务回归属于确定性逻辑检查，不代表任何真实模型的上下文能力
 或模型评测结果；其独立复现的代码缺陷与回归检查正常保留。
+
+## D-40 /model 添加自定义模型供应商（2026-09-22）
+
+用户明确要求通过 `/model` 添加自定义供应商，供应商支持 Responses、Anthropic、
+Chat Completions 中任意一种 API 即可。本项扩展 D-27 的选择入口，复用已有 Rust HTTP
+适配器和 `ModelProfile`，不增加供应商插件框架。
+
+- `/model` 的供应商页提供「添加自定义供应商」，`/model add` 直接打开向导。
+  填写名称、API 格式、基础地址、模型 ID、可选密钥环境变量名与原生上下文长度；
+  未知窗口留空。手填模型可直接使用，获取在线模型列表失败不影响配置候选。
+- 名称同时用作 provider 和 profile ID；三种格式分别存为 `responses`、`anthropic`、
+  `chat/completions`，worker 也接受 `response` 作为 `responses` 的别名。
+  Chat 成员可用全部三种；Codex 成员可选择 Responses，旧 `openai` 配置保留既有语义，
+  显式 Chat Completions/Anthropic 配置不作为 Codex 候选。
+- 连接保存到用户级 `config.toml`，跨会话可用；当前会话通过已有共享 profile 映射立即可见。
+  使用已有依赖树中的 `toml_edit` 保留注释与无关配置；同名拒绝、锁文件串行化、临时文件
+  写入成功后原子替换，失败不加入内存目录。配置为符号链接或目录时明确报错，避免替换链接。
+- 仅存认证环境变量名，不接收密钥值；带凭据或查询参数的地址被拒绝。
+  添加连接不自动切换成员；选择模型后沿用 D-27/D-29，下一回合生效并随会话保存。
+- 验证：`engine/tests/custom_providers.rs`（三格式真实本地 HTTP 路径、认证、历史续接与重开，
+  配置保留/校验/锁冲突）、`model_override`、`worker_protocol::worker_adds_custom_provider*`、
+  TUI `app_tests`/`render_tests` 与 `tui/scripts/pty_model_provider.py`。均为本地确定性检查，
+  不追加真实供应商验收结论。

@@ -369,6 +369,9 @@ profile 包含 `provider, protocol, model, base_url, api_key_env, timeout, max_r
 及可选 `context_window`（用量展示与自动压缩）；敏感值仅引用环境变量或凭据源。
 配置模型名和地址不能改变团队通信权限。会话 `/model` 覆盖见 D-27/D-29，
 `add_agent` 自动创建会话 profile 见 D-30。
+按用户追加要求（D-40），`/model` 供应商页和 `/model add` 可添加自定义供应商，
+选择 Responses、Anthropic Messages、Chat Completions 中的一种即可；复用已有适配器，
+保存为用户配置中的 model profile，不要求供应商提供模型目录接口。
 
 智谱通用 OpenAI 兼容 API 的基础地址可配置为 `https://open.bigmodel.cn/api/paas/v4/`，具体模型名由使用者配置。[智谱 OpenAI API 兼容](https://docs.bigmodel.cn/cn/guide/develop/openai/introduction)
 
@@ -376,7 +379,7 @@ Kimi 文档提供多种兼容协议及扩展参数；DeepSeek 的思考模式和
 
 每家都必须通过相同的契约测试：流式输出、工具参数拼接、工具调用/结果配对、多轮续接、配置与错误透传、取消、用量记录，以及所选模型的推理字段续传。模型不支持某项能力时显式报出，不把供应商名称当作能力保证。
 
-原有集成无法保留 Kimi/GLM 所需字段时，仅在模型适配处补必要的消息转换；不新增自定义供应商框架，也不通过关闭用户所选功能绕过测试。无密钥时可运行假模型测试，但发布前必须完成五家真实服务冒烟测试。
+原有集成无法保留 Kimi/GLM 所需字段时，仅在模型适配处补必要的消息转换；自定义供应商配置入口复用现有协议适配器，不新增供应商插件框架，也不通过关闭用户所选功能绕过测试。无密钥时可运行假模型测试，但发布前必须完成五家真实服务冒烟测试。
 
 ## 12. 工具、权限与工作目录
 

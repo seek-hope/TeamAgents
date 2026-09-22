@@ -1,6 +1,6 @@
 # 验收对照表（T1–T24）
 
-基准：方案 §17；当前 Rust 实现于 **2026-09-20** 核对。
+基准：方案 §17；当前 Rust 实现于 **2026-09-22** 核对。
 ✅ = 所列路径有自动化证据，不代表场景中的每项发布条件均已证明；🔶 = 部分覆盖/存在已知缺口；⚠ = 尚未实现。
 历史实测结果按当时日期保留；2026-09-17 补跑 DeepSeek 5 类真实任务与两项 PTY 检查，详见下方本轮记录。
 2026-09-18 完成下载/首次配置优化的回归与公开下载实测，见 [安装验证记录](../review/install-2026-09-18.md)。
@@ -206,6 +206,11 @@ plain 现在明确反馈拒绝/读取错误/存储等待，`status` 可显示新
 工具结果与状态不变；没有调用真实模型。见[原生历史记录](../review/native-history-2026-09-20.md)。
 本批不改变 T17/T20 的部分覆盖状态，六项发布验收缺口保持。
 
+2026-09-22 按 D-40 增加 `/model` 自定义供应商向导，支持 Responses、Anthropic、
+Chat Completions 任一格式，配置保存和选择不依赖在线模型目录。
+`make check` 与四项 PTY 通过，见[自定义供应商记录](../review/custom-providers-2026-09-22.md)。
+协议请求与恢复使用本地假服务；未增加真实供应商验收。
+
 ## 当前离线基线
 
 在仓库根目录运行（本次 Rust 1.95.0，bubblewrap 与 python3 可用）：
@@ -219,8 +224,8 @@ cargo test --offline --manifest-path tui/Cargo.toml
 | crate | Cargo 报告通过 | 组成 / 实际执行范围 |
 |---|---:|---|
 | core | 152 | 25 库单测 + 63 控制场景 + 64 投递/未知输入/成果引用/任务边界/动作请求/持久记录集成测试 |
-| engine | 375 | 110 库单测 + 1 CLI 单测 + 264 集成测试；另有 3 项显式 ignored（`eval_grader` 两项、`live_models` 真实入口一项）；`live_codex` 未设开关时提前返回，2026-09-19 已单独运行 Codex + DeepSeek 的真实恢复检查 |
-| tui | 106 | 14 库单测 + 11 CLI 单测 + 37 app + 6 history + 30 render + 8 review |
+| engine | 378 | 110 库单测 + 1 CLI 单测 + 267 集成测试；另有 3 项显式 ignored（`eval_grader` 两项、`live_models` 真实入口一项）；`live_codex` 未设开关时提前返回，2026-09-19 已单独运行 Codex + DeepSeek 的真实恢复检查 |
+| tui | 109 | 14 库单测 + 11 CLI 单测 + 39 app + 6 history + 31 render + 8 review |
 
 **CI（GitHub Actions，2026-09-15 起）**：`Test core` / `Test engine` / `Test tui` / 行尾空格检查全绿。
 runner 上装了 bubblewrap 也用不了（内核/AppArmor 限制非特权 user namespace），因此依赖真实隔离的用例

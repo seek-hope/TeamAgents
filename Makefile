@@ -42,7 +42,8 @@ pty: build
 			> "$$XDG_CONFIG_HOME/teamagents/config.toml"; \
 		python3 tui/scripts/pty_smoke.py; \
 		XDG_STATE_HOME="$$check_dir/click-state" python3 tui/scripts/pty_click_check.py; \
-		python3 tui/scripts/pty_review_check.py
+		python3 tui/scripts/pty_review_check.py; \
+		python3 tui/scripts/pty_model_provider.py
 
 hygiene:
 	git diff --check

@@ -19,6 +19,8 @@ fn catalog() -> UserConfig {
     serde_json::from_value(json!({
         "models": {"m": {"provider": "openai", "protocol": "openai", "model": "gpt-default",
                          "generation_options": {"reasoning_effort": "medium"}},
+                   "rsp": {"provider":"custom-responses", "protocol":"responses", "model":"response-model"},
+                   "chat-only": {"provider":"custom-chat", "protocol":"chat/completions", "model":"chat-model"},
                    "claude": {"provider":"anthropic", "protocol":"anthropic", "model":"claude-test",
                               "generation_options":{"output_config":{"effort":"high"}}}},
     }))
@@ -100,6 +102,8 @@ fn set_model_override_applies_reports_and_clears() {
     assert_eq!(selected["provider"], "anthropic", "manual model names keep the selected provider");
     assert_eq!(selected["effort"], "low");
     assert!(opened.set_model_selection("cod", Some("claude".into()), None, None).unwrap_err().contains("Responses"));
+    assert!(opened.set_model_selection("cod", Some("chat-only".into()), None, None).unwrap_err().contains("Responses"));
+    assert_eq!(opened.set_model_selection("cod", Some("rsp".into()), None, None).unwrap()["model"], "response-model");
     assert_eq!(opened.set_model_override("leader", None, None).unwrap()["model_profile"], "m");
     opened.close();
 }
@@ -215,6 +219,7 @@ fn model_overrides_survive_session_reopen() {
 
     let first = open();
     first.set_model_selection("leader", Some("claude".into()), None, Some("low".into())).expect("set");
+    first.set_model_selection("cod", Some("rsp".into()), None, None).unwrap();
     first.close();
 
     let second = open();
@@ -223,7 +228,11 @@ fn model_overrides_survive_session_reopen() {
     assert_eq!(leader["model"], json!("claude-test"));
     assert_eq!(leader["effort"], json!("low"));
     assert_eq!(leader["overridden"], json!(true));
-    assert_eq!(effective(&second, "cod")["overridden"], json!(false), "unset member stays default");
+    assert_eq!(
+        effective(&second, "cod")["model_profile"],
+        "rsp",
+        "Responses remains a valid Codex selection after reopen"
+    );
 
     second.set_model_override("leader", None, None).expect("restore default");
     second.close();

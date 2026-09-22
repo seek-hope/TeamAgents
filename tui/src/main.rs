@@ -498,6 +498,9 @@ fn run_effect(effect: Effect, worker: &Worker, app: &mut App, requests: &mut Asy
         _ => {}
     }
     if requests.switching {
+        if matches!(effect, Effect::AddModelProvider { .. }) {
+            app.show_provider_added(app.model_generation, Err("会话操作进行中，请稍后重试。".into()));
+        }
         if let Effect::UserMessage(text) = &effect {
             if app.composer.text().is_empty() {
                 app.composer.set_text(text);
@@ -528,7 +531,8 @@ fn run_effect(effect: Effect, worker: &Worker, app: &mut App, requests: &mut Asy
         Effect::RewindPoints => ("rewind_points", json!({})),
         Effect::Rewind { node } => ("rewind", json!({"node_id":node})),
         Effect::Fork => ("fork_session", json!({})),
-        Effect::ModelStatus => ("model", json!({})),
+        Effect::ModelStatus | Effect::AddProviderForm => ("model", json!({})),
+        Effect::AddModelProvider { params } => ("add_model_provider", params.clone()),
         Effect::DiscoverModels { provider } => ("discover_models", json!({"provider":provider})),
         Effect::SetModel { agent_id, profile, model, effort } => {
             ("set_model", json!({"agent_id":agent_id,"profile":profile,"model":model,"effort":effort}))
@@ -601,6 +605,16 @@ fn apply_effect_result(effect: Effect, generation: u64, result: Result<Json, Str
         Effect::Rewind { .. } => app.show_rewind_done(result),
         Effect::Fork => app.show_fork_done(result),
         Effect::ModelStatus => app.show_models(result),
+        Effect::AddProviderForm => {
+            let success = result.is_ok();
+            app.show_models(result);
+            if success {
+                if let Some(picker) = &mut app.model_picker {
+                    picker.start_add_provider();
+                }
+            }
+        }
+        Effect::AddModelProvider { .. } => app.show_provider_added(generation, result),
         Effect::DiscoverModels { provider } => {
             app.show_discovered_models(&app.session_id.clone(), generation, &provider, result)
         }

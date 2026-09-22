@@ -234,6 +234,10 @@ impl Worker {
             "usage" => Ok(self.current()?.usage_report()),
             // feature 5 (/model): effective model/effort per member
             "model" => Ok(self.current()?.model_report()),
+            "add_model_provider" => {
+                let input = serde_json::from_value(params.clone()).map_err(|_| "自定义供应商参数无效")?;
+                self.current()?.add_model_provider(input)
+            }
             "set_model" => {
                 let opened = self.current()?;
                 let agent_id = params.get("agent_id").and_then(|v| v.as_str()).ok_or("agent_id required")?;

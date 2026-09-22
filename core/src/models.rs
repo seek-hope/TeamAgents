@@ -366,7 +366,7 @@ impl TeamSpec {
 pub struct ModelProfile {
     pub provider: String,
     #[serde(default = "default_protocol")]
-    pub protocol: String, // "openai" (chat completions) | "responses" | "anthropic" | "deepseek"
+    pub protocol: String, // "openai" (legacy) | "chat/completions" | "responses" | "anthropic" | "deepseek"
     pub model: String,
     #[serde(default)]
     pub base_url: Option<String>,

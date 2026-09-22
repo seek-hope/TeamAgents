@@ -3,7 +3,7 @@
 use serde_json::Value as Json;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use teamagents_core::models::UserConfig;
+use teamagents_core::models::{ModelProfile, UserConfig};
 
 pub const APP: &str = "teamagents";
 pub const INITIAL_CONFIG: &str = include_str!("../../examples/config.minimal.toml");
@@ -49,6 +49,128 @@ pub fn xdg_state_home() -> PathBuf {
 
 pub fn user_config_path() -> PathBuf {
     xdg_config_home().join(APP).join("config.toml")
+}
+
+/// User-entered connection settings. Credentials remain environment references.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CustomProvider {
+    pub name: String,
+    pub protocol: String,
+    pub base_url: String,
+    pub model: String,
+    pub api_key_env: Option<String>,
+    pub context_window: Option<u64>,
+}
+
+impl CustomProvider {
+    pub fn profile(&self) -> Result<(String, ModelProfile), String> {
+        if [&self.name, &self.model, &self.base_url].iter().any(|value| value.chars().any(char::is_control)) {
+            return Err("供应商名称、模型 ID 和 API 基础地址不能包含控制字符".into());
+        }
+        let name = self.name.trim();
+        let model = self.model.trim();
+        for (label, value) in [("供应商名称", name), ("模型 ID", model)] {
+            if value.is_empty() || value.len() > 512 || value.chars().any(char::is_control) {
+                return Err(format!("{label}不能为空、包含控制字符或超过 512 字节"));
+            }
+        }
+        let protocol = match self.protocol.trim().to_ascii_lowercase().as_str() {
+            "response" | "responses" => "responses",
+            "anthropic" => "anthropic",
+            "chat/completions" => "chat/completions",
+            _ => return Err("API 格式须为 responses、anthropic 或 chat/completions".into()),
+        };
+        let base = self.base_url.trim().trim_end_matches('/');
+        let url = url::Url::parse(base).map_err(|_| "API 基础地址须为有效的 HTTP(S) URL")?;
+        if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+            return Err("API 基础地址须为有效的 HTTP(S) URL".into());
+        }
+        if !url.username().is_empty() || url.password().is_some() || url.query().is_some() || url.fragment().is_some() {
+            return Err("API 基础地址不能包含凭据、查询参数或片段；密钥请使用环境变量".into());
+        }
+        if ["/responses", "/chat/completions", "/messages"].iter().any(|suffix| url.path().ends_with(suffix)) {
+            return Err("请填写 API 基础地址（如 https://example.com/v1），不含具体调用路径".into());
+        }
+        let env = self.api_key_env.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        if let Some(env) = env {
+            if env.len() > 256
+                || !env
+                    .bytes()
+                    .enumerate()
+                    .all(|(i, c)| c == b'_' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit()))
+            {
+                return Err("密钥环境变量名须以字母或下划线开头，只能包含字母、数字和下划线；请勿填写密钥本身".into());
+            }
+        }
+        if self.context_window == Some(0) {
+            return Err("原生上下文长度须为正整数；未知时留空".into());
+        }
+        let profile = serde_json::from_value(serde_json::json!({
+            "provider":name, "protocol":protocol, "base_url":base, "model":model,
+            "api_key_env":env, "context_window":self.context_window,
+        }))
+        .map_err(|e| format!("供应商配置无效：{e}"))?;
+        Ok((name.into(), profile))
+    }
+}
+
+/// Preserve comments and unrelated settings; serialize concurrent UI writers.
+pub fn save_custom_provider(name: &str, profile: &ModelProfile) -> Result<(), String> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let path = user_config_path();
+    let parent = path.parent().ok_or("配置路径缺少父目录")?;
+    std::fs::create_dir_all(parent).map_err(|e| format!("无法创建配置目录：{e}"))?;
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .mode(0o600)
+        .open(parent.join("config.lock"))
+        .map_err(|e| format!("无法锁定配置：{e}"))?;
+    lock.try_lock().map_err(|_| "配置正在被其他进程修改，请稍后重试")?;
+    // Do not replace a symlink's target or silently recover an unreadable config.
+    let original = match std::fs::symlink_metadata(&path) {
+        Ok(meta) if !meta.is_file() => return Err("用户配置须为普通文件；请先处理符号链接或目录".into()),
+        Ok(_) => std::fs::read_to_string(&path).map_err(|e| format!("无法读取配置：{e}"))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(format!("无法读取配置：{e}")),
+    };
+    let existing = parse_user_config(&original)?;
+    if existing.models.contains_key(name) || existing.models.values().any(|p| p.provider == profile.provider) {
+        return Err("此供应商名称或同名模型配置已存在，请使用其他名称".into());
+    }
+    let mut doc = original.parse::<toml_edit::DocumentMut>().map_err(|e| format!("配置 TOML 无效：{e}"))?;
+    let serialized = toml::to_string(&std::collections::BTreeMap::from([(
+        "models",
+        std::collections::BTreeMap::from([(name, profile)]),
+    )]))
+    .map_err(|e| format!("无法编码供应商：{e}"))?;
+    let addition = serialized.parse::<toml_edit::DocumentMut>().map_err(|e| e.to_string())?;
+    if !doc.contains_key("models") {
+        doc["models"] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+    let models = doc["models"].as_table_like_mut().ok_or("models 须为配置表")?;
+    models.insert(name, addition["models"][name].clone());
+    let updated = doc.to_string();
+    parse_user_config(&updated)?;
+    let tmp = parent.join(format!(".config-{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| {
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp)?;
+        file.write_all(updated.as_bytes())?;
+        file.sync_all()?;
+        // An editor need not take our lock. Refuse a detected concurrent edit.
+        if std::fs::read_to_string(&path).unwrap_or_default() != original {
+            return Err(std::io::Error::other("配置已被其他程序修改，请重试"));
+        }
+        std::fs::rename(&tmp, &path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result.map_err(|e| format!("保存供应商失败：{e}"))
 }
 
 pub fn state_dir() -> PathBuf {

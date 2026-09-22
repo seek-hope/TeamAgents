@@ -6,7 +6,7 @@
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -327,7 +327,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 fn render_model_picker(frame: &mut Frame, picker: &crate::model_picker::ModelPicker, lang: &str, area: Rect) {
     let rows = picker.options(lang);
     let width = area.width.saturating_sub(2).min(100);
-    let height = area.height.saturating_sub(2).min((rows.len() as u16).saturating_add(5).max(7));
+    let height = area.height.saturating_sub(2).min(if picker.form.is_some() {
+        13
+    } else {
+        (rows.len() as u16).saturating_add(5).max(7)
+    });
     let rect = Rect {
         x: area.x + area.width.saturating_sub(width) / 2,
         y: area.y + area.height.saturating_sub(height) / 2,
@@ -340,10 +344,49 @@ fn render_model_picker(frame: &mut Frame, picker: &crate::model_picker::ModelPic
         .border_style(Style::default().fg(ACCENT))
         .style(Style::default().bg(PANEL_BG))
         .title(picker.title(lang))
-        .title_bottom(tr(lang, "↑↓ 选择 · Enter 确认 · Esc 返回/关闭", &[]));
+        .title_bottom(tr(
+            lang,
+            if picker.form.is_some() {
+                "Enter 下一项/保存 · ↑ 上一项 · Esc 返回"
+            } else {
+                "↑↓ 选择 · Enter 确认 · Esc 返回/关闭"
+            },
+            &[],
+        ));
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
     if inner.height < 3 || inner.width < 2 {
+        return;
+    }
+    if let Some(form) = &picker.form {
+        let rows = form.rows(lang);
+        let height = inner.height.saturating_sub(3) as usize;
+        let start = form.field.saturating_sub(height.saturating_sub(1));
+        let lines: Vec<Line> = rows
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(height)
+            .map(|(i, row)| {
+                Line::styled(
+                    format!(
+                        "{} {row}{}",
+                        if i == form.field { "›" } else { " " },
+                        if i == form.field && i != 1 && i < 6 && !form.saving { "▏" } else { "" }
+                    ),
+                    if i == form.field { Style::default().fg(FG).bg(HOVER_BG) } else { Style::default().fg(GREY) },
+                )
+            })
+            .collect();
+        frame.render_widget(Paragraph::new(lines), Rect { height: height as u16, ..inner });
+        frame.render_widget(
+            Paragraph::new(form.hint(lang)).wrap(Wrap { trim: false }).style(Style::default().fg(GREY)),
+            Rect { y: inner.y + height as u16, height: 2, ..inner },
+        );
+        frame.render_widget(
+            Paragraph::new(picker.notice.clone()),
+            Rect { y: inner.y + inner.height - 1, height: 1, ..inner },
+        );
         return;
     }
     frame.render_widget(

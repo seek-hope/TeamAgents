@@ -25,6 +25,7 @@ Cargo 报告 passed 可能包含缺少依赖时提前返回的测试，不能代
 
 ```bash
 cargo test --offline --locked --manifest-path engine/Cargo.toml --test model_override
+cargo test --offline --locked --manifest-path engine/Cargo.toml --test custom_providers
 cargo test --offline --locked --manifest-path core/Cargo.toml --test engine topology_patch_rejects_
 cargo test --offline --locked --manifest-path engine/Cargo.toml --test cli --test session_boot
 cargo test --offline --locked --manifest-path engine/Cargo.toml --test chat_e2e worker_environment
@@ -67,7 +68,7 @@ cargo test --offline --locked --manifest-path tui/Cargo.toml --test history_test
 | plain 输入与故障反馈 | CLI 先检查 `Receipt.ok`，失败不等待执行；通过 Runtime 的单次等待观察传出读取错误，存储诊断使行模式及时回到命令输入。`status` 显示新增事件，后台仍按既有策略重试；原 `settle` 的限时等待行为保持 | `recovery::plain_rejects_uncommitted_input_and_accepts_a_new_request_after_repair`、`plain_storage_failure_returns_control_and_recovers_without_resubmitting_input`，见[记录](../review/repl-finalization-2026-09-19.md) |
 | 运行中消息交接 | core `drain_mid_turn_pushes` 原子取得接收成员和当前投影，成功后排空；进程内客户端使用类型化结果，Runtime 串行交接并周期重试。后端注入/确认仍走既有权限与投递账本 | `delivery_acl::failed_mid_turn_batch_*`、`recovery::mid_turn_input_retries_after_*` / `member_tool_messages_*`；恢复核对另有 `chat_cold_recovery_retries_requeue_failure_without_replaying_tools`，见[记录](../review/mid-turn-storage-2026-09-19.md) |
 | 排队取消与输入范围 | core `cancel_inactive_run` 在调用者事务中结清无外部回合的执行意图和批准；取消整个回合丢弃其未消费输入，取消任务只丢弃带该 `event_task_id` 的待投递 `task_ready`。旧取消标记经 schedule 结清；外部回合保持停止确认 | `engine::cancelling_*` / `queued_external_turn_*`、`stored_integrity` 的取消与回滚检查；`recovery::unstarted_member_*`、`returned_chat_outcome_survives_read_failure_across_close_and_sigkill`，见[记录](../review/queued-cancellation-2026-09-19.md) |
-| 模型配置、会话启动 | `engine/config.rs`、`session.rs`、`sessions.rs` | `cli`、`session_boot`、`model_override` |
+| 模型配置、会话启动 | `engine/config.rs`、`session.rs`、`sessions.rs`；`/model add` 保存用户配置并通过共享 profile 映射供当前会话使用 | `cli`、`session_boot`、`model_override`、`custom_providers`、`worker_protocol`、`make pty` |
 | 组队准备与结构校验 | `gateway` 准备前复用 core 的身份/请求/版本校验；`session` 局部准备 profile；`Control::submit` 按原请求记录回执、在同一事务中校验准备后的操作；已有提案按 session 读取，拒绝非法变更与成员广播 | `chat_e2e::topology_*`、`core/tests/engine.rs::topology_*`、`gateway::tests::prepared_topology_*`；失败修正、恢复、提案批准、去重与竞态 |
 | TeamSpec 结构与恢复 | `core/models.rs::TeamSpec::validate` 为统一结构校验，持久读取保留旧 limits 兼容后也须校验；`session_metadata` 只报告会话/配置是否存在，已有非法配置不得由启动参数覆盖 | `core` 库单测、`core/tests/engine.rs::topology_patch_rejects_*`、`cli`、`session_boot` |
 | 工具执行、隔离、批准 | `engine/tools.rs`、`gateway.rs`；自动输出按成员归属，主动制品按会话共享；已绑定 MCP 经 `bound.rs`/`mcp.rs` | `private_context`、`tools_sandbox`、`mcp_*`、批准回归 |

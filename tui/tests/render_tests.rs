@@ -579,6 +579,32 @@ fn slash_command_menu_lists_navigates_and_runs() {
 }
 
 #[test]
+fn custom_provider_form_renders_fields_and_scrolls_on_small_terminals() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    for lang in ["en", "zh-CN"] {
+        let mut app = fixture_app();
+        app.lang = lang;
+        app.show_models(Ok(json!({"agents":[], "profiles":[]})));
+        app.model_picker.as_mut().unwrap().start_add_provider();
+        app.handle_paste("private");
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        for (width, height) in [(120, 36), (60, 12), (12, 6), (1, 1)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|f| ui::render(f, &mut app)).unwrap();
+            if width >= 60 {
+                let text = frame_text(terminal.backend().buffer());
+                assert!(text.contains("responses"), "{text}");
+                assert!(text.contains(if lang == "en" { "Add custom provider" } else { "添加自定义供应商" }), "{text}");
+                assert!(
+                    text.contains(if lang == "en" { "API format: responses" } else { "API 格式: responses" }),
+                    "{text}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn model_picker_keeps_selected_model_visible_and_renders_both_languages() {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     for lang in ["en", "zh-CN"] {

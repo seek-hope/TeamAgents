@@ -710,6 +710,7 @@ dependencies = [
  "sha2",
  "teamagents-core",
  "toml",
+ "toml_edit",
  "ureq",
  "url",
  "uuid",

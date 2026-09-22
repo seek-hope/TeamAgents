@@ -12,6 +12,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 ureq = { version = "2", features = ["json"] }
 url = "2"
 toml = "0.8"
+toml_edit = "0.22"
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
 

@@ -641,8 +641,27 @@ TUI `/rewind` 列出当前分支的用户输入节点，`/rewind <序号>` 回�
   当前回合继续运行并可正常取消。覆盖随会话保存（`sessions/<id>/model_overrides.json`），
   重开同一会话仍然生效；`/model <成员> clear` 或选择器中的恢复默认会移除保存的覆盖。
   若重开时对应成员/profile 已不存在或不再合法，该条覆盖被静默丢弃。
-  Chat 成员支持配置中的 OpenAI 兼容/DeepSeek/Anthropic 模型；Codex 成员只显示 OpenAI
-  兼容配置，端点必须支持 Responses API。模型不支持所选档位时会显示服务端错误。
+  Chat 成员支持配置中的 Chat Completions、Responses、DeepSeek、Anthropic 模型；Codex 成员
+  只显示 Responses 与历史 OpenAI 兼容配置，端点必须支持 Responses API。
+  模型不支持所选档位时会显示服务端错误。
+- **添加自定义供应商**：输入 `/model add`，或在 `/model` 选择成员后进入供应商页，
+  选择「添加自定义供应商」。依次填写名称、API 格式（左右键选择）、基础地址、模型 ID、
+  密钥环境变量名及原生上下文长度；Enter 下一项，↑ 或 Esc 返回修改，最后 Enter 保存。
+  供应商只需支持以下一种 API，名称同时作为新 profile 的 ID，不能与已有供应商/profile 重名。
+
+  | API 格式 | 基础地址示例 | 实际调用路径 |
+  |---|---|---|
+  | `responses` | `https://example.com/v1` | `/v1/responses` |
+  | `anthropic` | `https://example.com` 或 `https://example.com/v1` | `/v1/messages` |
+  | `chat/completions` | `https://example.com/v1` | `/v1/chat/completions` |
+
+  基础地址不要包含具体调用路径、密钥或查询参数。模型 ID 可直接手填，供应商无需提供
+  `/models`；保存后从配置候选选择即可。密钥栏只填环境变量名（如 `MY_API_KEY`），
+  在启动 TeamAgents 的终端预先设置该变量；无需认证的本地服务可留空。
+  上下文长度按模型原生窗口填写，未知时留空，不自动假定长度。
+  配置保存到 `$XDG_CONFIG_HOME/teamagents/config.toml`（默认 `~/.config/teamagents/config.toml`），
+  保留已有注释与设置，重启及新会话均可用。保存供应商后继续选择成员/模型才会切换；
+  Codex 成员仅能使用支持 Responses 的自定义供应商。
   在线发现复用相应 profile 的地址、协议、认证和生成选项，仅覆盖模型 ID；需要供应商支持
   models 列表接口。选择器关闭后不保存在线目录，重新进入供应商会再次获取。
 - **设置（`/settings`）**：居中浮层，只有一项可调——界面语言（语言行下方留一行空白，

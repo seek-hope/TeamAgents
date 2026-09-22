@@ -36,7 +36,7 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         name: "/rewind", description: "回退对话到历史节点（/rewind 列出，/rewind <序号> 回退）"
     },
     SlashCommand { name: "/fork", description: "从当前对话分叉新会话（团队事实不复制）" },
-    SlashCommand { name: "/model", description: "查看或切换成员模型与推理档位" },
+    SlashCommand { name: "/model", description: "切换成员模型、推理档位或添加供应商" },
 ];
 
 #[derive(Clone, Debug)]
@@ -95,6 +95,10 @@ pub enum Effect {
     Fork,
     /// /model with no args: worker "model" → App::show_models.
     ModelStatus,
+    AddProviderForm,
+    AddModelProvider {
+        params: Json,
+    },
     DiscoverModels {
         provider: String,
     },
@@ -1423,8 +1427,7 @@ impl App {
             return;
         }
         if let Some(picker) = &mut self.model_picker {
-            picker.query.extend(text.chars().filter(|c| !c.is_control()));
-            picker.index = 0;
+            picker.handle_paste(text);
             return;
         }
         self.pin_to_bottom();
@@ -1466,7 +1469,7 @@ impl App {
         }
         if let Some(mut picker) = self.model_picker.take() {
             let effects = picker.handle_key(key, self.lang);
-            if effects.iter().any(|e| matches!(e, Effect::DiscoverModels { .. })) {
+            if effects.iter().any(|e| matches!(e, Effect::DiscoverModels { .. } | Effect::AddModelProvider { .. })) {
                 self.model_generation += 1;
             }
             if !picker.closed {
@@ -1778,6 +1781,7 @@ impl App {
     fn run_model_args(&mut self, rest: &str) -> Vec<Effect> {
         let tokens: Vec<&str> = rest.split_whitespace().collect();
         match tokens.as_slice() {
+            ["add"] => vec![Effect::AddProviderForm],
             [member, "clear"] => {
                 vec![Effect::SetModel { agent_id: member.to_string(), profile: None, model: None, effort: None }]
             }
@@ -1794,7 +1798,8 @@ impl App {
                 effort: Some(effort.to_string()),
             }],
             _ => {
-                let msg = self.t("用法：/model <成员> <模型> [档位] · /model <成员> clear 恢复默认", &[]);
+                let msg = self
+                    .t("用法：/model add 添加供应商 · /model <成员> <模型> [档位] · /model <成员> clear 恢复默认", &[]);
                 self.write_chat("system", &msg);
                 vec![]
             }
@@ -1818,7 +1823,7 @@ impl App {
         }
         self.model_generation += 1;
         self.model_picker = Some(crate::model_picker::ModelPicker::new(&report));
-        let mut lines = vec![self.t("成员模型（* = 会话内覆盖，重开会话失效）：", &[])];
+        let mut lines = vec![self.t("成员模型（* = 会话内覆盖，随会话保存）：", &[])];
         for agent in report.get("agents").and_then(|v| v.as_array()).cloned().unwrap_or_default() {
             let not_configured = self.t("未配置", &[]);
             let name = agent.get("name").and_then(|v| v.as_str()).unwrap_or("?").to_string();
@@ -1830,6 +1835,15 @@ impl App {
             lines.push(self.t("{v0} | 模型 {v1} | 档位 {v2}{v3}", &refs));
         }
         self.write_chat("system", &lines.join("\n"));
+    }
+
+    pub fn show_provider_added(&mut self, generation: u64, result: Result<Json, String>) {
+        if generation != self.model_generation {
+            return;
+        }
+        if let Some(picker) = &mut self.model_picker {
+            picker.provider_added(result, self.lang);
+        }
     }
 
     pub fn show_discovered_models(

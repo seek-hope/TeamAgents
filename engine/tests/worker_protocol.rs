@@ -77,6 +77,51 @@ fn state_home(tag: &str) -> std::path::PathBuf {
 }
 
 #[test]
+fn worker_adds_custom_provider_and_restores_selection_after_restart() {
+    let home = state_home("custom-provider");
+    let mut worker = WorkerClient::spawn(&home);
+    let opened = worker.call("open", json!({"cwd":home.join("project"),"scripts":{"leader":[["end"]]}})).unwrap();
+    let path = home.join("config/teamagents/config.toml");
+    let original = std::fs::read_to_string(&path).unwrap();
+    let params = json!({"name":"private","protocol":"response","base_url":"http://127.0.0.1:9/v1", "model":"private-model", "context_window":1000000});
+    for invalid in [json!({"name":"missing"}), {
+        let mut invalid = params.clone();
+        invalid["api_key"] = json!("must-never-be-stored");
+        invalid
+    }] {
+        assert!(worker.call("add_model_provider", invalid).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+    // Failed writes must not create a selectable in-memory profile.
+    std::fs::rename(&path, path.with_extension("saved")).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    assert!(worker.call("add_model_provider", params.clone()).is_err());
+    let report = worker.call("model", json!({})).unwrap();
+    assert!(!report["profiles"].as_array().unwrap().iter().any(|p| p["id"] == "private"));
+    std::fs::remove_dir(&path).unwrap();
+    std::fs::rename(path.with_extension("saved"), &path).unwrap();
+    let added = worker.call("add_model_provider", params.clone()).unwrap();
+    let profile = added["profiles"].as_array().unwrap().iter().find(|p| p["id"] == "private").unwrap();
+    assert_eq!(profile["protocol"], "responses");
+    assert!(worker.call("add_model_provider", params).is_err());
+    worker.call("set_model", json!({"agent_id":"leader","profile":"private"})).unwrap();
+    let session_id = opened["session_id"].clone();
+    worker.close();
+    let mut reopened = WorkerClient::spawn(&home);
+    reopened
+        .call("open", json!({"cwd":home.join("project"),"resume":session_id,"scripts":{"leader":[["end"]]}}))
+        .unwrap();
+    let report = reopened.call("model", json!({})).unwrap();
+    assert_eq!(report["agents"][0]["model"], "private-model");
+    assert_eq!(reopened.call("usage", json!({})).unwrap()["agents"][0]["context_window"], 1000000);
+    reopened.call("new_session", json!({"scripts":{"leader":[["end"]]}})).unwrap();
+    let report = reopened.call("model", json!({})).unwrap();
+    assert!(report["profiles"].as_array().unwrap().iter().any(|p| p["id"] == "private"));
+    reopened.close();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[test]
 fn worker_user_input_rejects_malformed_flags_without_resuming_the_session() {
     let home = state_home("strict-input");
     let mut worker = WorkerClient::spawn(&home);

@@ -126,7 +126,7 @@ fn load_model_overrides(
             let Some(profile) = catalog.models.get(ov.profile.as_ref().unwrap_or(&agent.model_profile)) else {
                 return false;
             };
-            if ov.profile.is_some() && agent.runtime_kind == RuntimeKind::Codex && profile.protocol != "openai" {
+            if ov.profile.is_some() && agent.runtime_kind == RuntimeKind::Codex && !codex_compatible(profile) {
                 return false;
             }
             ov.effort.as_ref().is_none_or(|e| model_efforts(&profile.protocol).contains(&e.as_str()))
@@ -204,6 +204,26 @@ impl OpenedSession {
             self.catalog.models.clone().into_iter().collect();
         merged.extend(self.session_profiles.lock().unwrap().clone());
         merged
+    }
+
+    /// Save the connection globally and expose it to this session's runner factory.
+    pub fn add_model_provider(&self, input: crate::config::CustomProvider) -> Result<Json, String> {
+        let (name, profile) = input.profile()?;
+        let mut local = self.session_profiles.lock().unwrap();
+        if local.contains_key(&name)
+            || self.catalog.models.contains_key(&name)
+            || local.values().chain(self.catalog.models.values()).any(|p| p.provider == name)
+        {
+            return Err("此供应商名称或同名模型配置已存在，请使用其他名称".into());
+        }
+        crate::config::save_custom_provider(&name, &profile)?;
+        // Existing factory closures share this overlay. New sessions load the
+        // saved user config; no restart or replacement of a live runner is needed.
+        local.insert(name.clone(), profile);
+        drop(local);
+        let mut report = self.model_report();
+        report["added_profile"] = json!(name);
+        Ok(report)
     }
 
     /// Per-agent token usage for /status (worker "usage" method, CLI status).
@@ -356,7 +376,7 @@ impl OpenedSession {
         };
         if profile.is_some()
             && agent.runtime_kind == RuntimeKind::Codex
-            && selected.as_ref().is_some_and(|p| p.protocol != "openai")
+            && selected.as_ref().is_some_and(|p| !codex_compatible(p))
         {
             return Err("Codex 成员需要支持 Responses API 的 OpenAI 兼容供应商".into());
         }
@@ -461,6 +481,11 @@ impl OpenedSession {
         self.runtime.close();
         let _ = self.lock.lock().unwrap().take();
     }
+}
+
+fn codex_compatible(profile: &ModelProfile) -> bool {
+    // Legacy `openai` profiles also served Codex; explicit chat-only profiles do not.
+    matches!(profile.protocol.as_str(), "openai" | "responses")
 }
 
 fn profile_effort(profile: &ModelProfile) -> Option<&str> {

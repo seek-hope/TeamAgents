@@ -712,6 +712,84 @@ fn model_slash_command_with_args_sets_or_clears() {
 }
 
 #[test]
+fn model_provider_form_saves_retries_and_selects_without_discovery() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let key = |app: &mut App, code| app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+    let mut app = app_with(state(vec![]));
+    app.handle_paste("/model add");
+    assert!(matches!(key(&mut app, KeyCode::Enter).as_slice(), [Effect::AddProviderForm]));
+    app.show_models(Ok(
+        json!({"agents":[{"agent_id":"leader","name":"Leader","runtime_kind":"deepagents"}],"profiles":[]}),
+    ));
+    key(&mut app, KeyCode::Enter); // member
+    key(&mut app, KeyCode::Enter); // add provider
+    assert!(app.model_picker.as_ref().unwrap().form.is_some());
+    key(&mut app, KeyCode::Enter); // required name
+    assert_eq!(app.model_picker.as_ref().unwrap().form.as_ref().unwrap().field, 0);
+    for text in ["local", "", "http://localhost:8080/v1", "private-model", "MY_API_KEY", "invalid"] {
+        app.handle_paste(text);
+        key(&mut app, KeyCode::Enter);
+    }
+    assert!(key(&mut app, KeyCode::Enter).is_empty()); // invalid context window
+    assert_eq!(app.model_picker.as_ref().unwrap().form.as_ref().unwrap().field, 5);
+    for _ in 0..7 {
+        key(&mut app, KeyCode::Backspace);
+    }
+    app.handle_paste("1000000");
+    key(&mut app, KeyCode::Enter);
+    let effects = key(&mut app, KeyCode::Enter);
+    let [Effect::AddModelProvider { params }] = effects.as_slice() else { panic!("{effects:?}") };
+    assert_eq!(
+        params,
+        &json!({"name":"local","protocol":"responses","base_url":"http://localhost:8080/v1","model":"private-model","api_key_env":"MY_API_KEY","context_window":1000000})
+    );
+    assert!(key(&mut app, KeyCode::Enter).is_empty(), "saving must not submit twice");
+    app.handle_paste("ignored while saving");
+    let generation = app.model_generation;
+    app.show_provider_added(generation - 1, Err("stale".into()));
+    assert!(app.model_picker.as_ref().unwrap().form.as_ref().unwrap().saving);
+    app.show_provider_added(generation, Err("disk error".into()));
+    assert_eq!(app.model_picker.as_ref().unwrap().notice, "disk error");
+    assert_eq!(app.model_picker.as_ref().unwrap().form.as_ref().unwrap().values[3], "private-model");
+    assert!(matches!(key(&mut app, KeyCode::Enter).as_slice(), [Effect::AddModelProvider { .. }]));
+    app.show_provider_added(app.model_generation, Ok(json!({"added_profile":"local","profiles":[{"id":"local","provider":"local","protocol":"responses","model":"private-model","efforts":["low","high"]}]})));
+    assert!(app.model_picker.as_ref().unwrap().form.is_none());
+    assert_eq!(app.model_picker.as_ref().unwrap().options("en")[0].1, "private-model (local)");
+    assert!(key(&mut app, KeyCode::Enter).is_empty()); // configured model, no discovery
+    assert!(
+        matches!(key(&mut app, KeyCode::Enter).as_slice(), [Effect::SetModel { profile:Some(profile), .. }] if profile == "local")
+    );
+    assert!(app.composer.text().is_empty());
+}
+
+#[test]
+fn model_provider_form_cancel_and_codex_protocol_filter() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let key = |app: &mut App, code| app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+    let mut app = app_with(state(vec![]));
+    app.show_models(Ok(json!({"agents":[{"agent_id":"cod","name":"Codex","runtime_kind":"codex"}],"profiles":[
+        {"id":"rsp","provider":"responses-vendor","protocol":"responses","model":"m"},
+        {"id":"chat","provider":"chat-vendor","protocol":"chat/completions","model":"m"},
+        {"id":"anth","provider":"anth-vendor","protocol":"anthropic","model":"m"}
+    ]})));
+    key(&mut app, KeyCode::Enter);
+    let options = app.model_picker.as_ref().unwrap().options("en");
+    assert!(options.iter().any(|(_, label)| label == "responses-vendor"));
+    assert!(!options.iter().any(|(_, label)| label == "chat-vendor" || label == "anth-vendor"));
+    key(&mut app, KeyCode::Down); // add
+    key(&mut app, KeyCode::Enter);
+    app.handle_paste("cancelled");
+    key(&mut app, KeyCode::Enter);
+    key(&mut app, KeyCode::Right);
+    assert_eq!(app.model_picker.as_ref().unwrap().form.as_ref().unwrap().values[1], "anthropic");
+    key(&mut app, KeyCode::Esc);
+    assert_eq!(app.model_picker.as_ref().unwrap().form.as_ref().unwrap().values[0], "cancelled");
+    key(&mut app, KeyCode::Esc);
+    assert!(app.model_picker.as_ref().unwrap().form.is_none());
+    assert_eq!(app.model_picker.as_ref().unwrap().options("en"), options);
+}
+
+#[test]
 fn model_picker_selects_members_profiles_effort_and_restores_defaults() {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     let key = |app: &mut App, code| app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
