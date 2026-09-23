@@ -1394,6 +1394,21 @@ fn begin_request(tx: &Connection, session_id: &str, params: &Json, identity: &Id
             .map_err(|e| format!("task goal read: {e}"))?,
     };
     if let Some(goal) = goal_id.as_deref() {
+        // A35: past the goal deadline no new request begins — the daemon
+        // honors the deadline even if an eval client expired or was killed.
+        // A committed refusal with an auditable event, same as the budget
+        // gate; the request never registers and the instance stays READY.
+        if goal_deadline_passed(tx, goal)? {
+            event(
+                tx,
+                session_id,
+                "goal_deadline_refused",
+                instance_id,
+                &json!({"goal_id": goal, "request_id": request_id}),
+            )?;
+            return Ok(json!({"request_id": request_id, "deadline_refused": true,
+                             "reason": format!("goal {goal} deadline passed")}));
+        }
         // Budget refusal is a committed outcome, not a transaction failure:
         // rolling back would lose the auditable event (§8). The request
         // never registers and the instance stays READY.
@@ -1416,6 +1431,15 @@ fn begin_request(tx: &Connection, session_id: &str, params: &Json, identity: &Id
     publish_list(tx, session_id, params)?;
     event(tx, session_id, "request_began", instance_id, &json!({"request_id": request_id}))?;
     Ok(json!({"request_id": request_id, "phase": "MODEL_PENDING", "epoch": epoch}))
+}
+
+/// Goal deadline gate (A35): the absolute deadline lives on the goal; once
+/// it passes, new requests and new side-effect dispatches are refused.
+fn goal_deadline_passed(tx: &Connection, goal_id: &str) -> Result<bool, String> {
+    let deadline: Option<f64> = tx
+        .query_row("SELECT deadline FROM goals WHERE id = ?1", [goal_id], |row| row.get(0))
+        .map_err(|e| format!("goal deadline read: {e}"))?;
+    Ok(deadline.is_some_and(|d| crate::models::now() > d))
 }
 
 /// Budget gate and reservation (§8): a request may only start while known +
@@ -2006,12 +2030,60 @@ fn complete_operation(tx: &Connection, session_id: &str, params: &Json) -> Resul
         rusqlite::params![status, receipt.to_string(), operation_id],
     )
     .map_err(|e| format!("operation complete: {e}"))?;
+    // §6.3/A09: an operation that crossed the execution boundary without a
+    // verifiable outcome parks the instance's running tasks and notifies;
+    // independent work continues. Never silently completable.
+    if status == "OUTCOME_UNKNOWN" {
+        park_tasks_for_unknown(tx, session_id, &decision_id, operation_id)?;
+    }
     expire_pending_approvals(tx, operation_id)?;
     publish_list(tx, session_id, params)?;
     let open = consume_if_closed(tx, session_id, &decision_id)?;
     event(tx, session_id, "operation_completed", operation_id, &json!({"status": status}))?;
     let woken = wake_satisfied(tx, session_id)?;
     Ok(json!({"operation_id": operation_id, "status": status, "decision_open": open, "woken": woken}))
+}
+
+/// Park the running tasks of the operation's instance (A09): the honest
+/// BLOCKED state plus a task_blocked event per task is the notification;
+/// the receipt in context tells the instance not to blindly redo.
+fn park_tasks_for_unknown(
+    tx: &Connection,
+    session_id: &str,
+    decision_id: &str,
+    operation_id: &str,
+) -> Result<(), String> {
+    let instance: String = tx
+        .query_row(
+            "SELECT r.instance_id FROM decisions d JOIN model_requests r ON d.request_id = r.request_id
+             WHERE d.decision_id = ?1",
+            [decision_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("decision instance: {e}"))?;
+    let tasks: Vec<String> = {
+        let mut stmt = tx
+            .prepare("SELECT id FROM tasks WHERE assignee = ?1 AND status = 'RUNNING'")
+            .map_err(|e| format!("running tasks: {e}"))?;
+        let rows =
+            stmt.query_map([&instance], |row| row.get::<_, String>(0)).map_err(|e| format!("running tasks: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("running tasks: {e}"))?
+    };
+    for task in tasks {
+        tx.execute(
+            "UPDATE tasks SET status = 'BLOCKED', revision = revision + 1 WHERE id = ?1 AND status = 'RUNNING'",
+            [&task],
+        )
+        .map_err(|e| format!("park task {task}: {e}"))?;
+        event(
+            tx,
+            session_id,
+            "task_blocked",
+            &task,
+            &json!({"task_id": task, "reason": "outcome_unknown", "operation_id": operation_id}),
+        )?;
+    }
+    Ok(())
 }
 
 fn decision_open(tx: &Connection, decision_id: &str) -> Result<bool, String> {
@@ -2100,15 +2172,22 @@ fn dispatch_operation(tx: &Connection, session_id: &str, params: &Json) -> Resul
             "operation {operation_id} authorized at permission revision {grant_revision}, current {permission_revision}: refusing dispatch"
         ));
     }
-    let instance: String = tx
+    let (instance, op_goal): (String, Option<String>) = tx
         .query_row(
-            "SELECT r.instance_id FROM decisions d JOIN model_requests r ON d.request_id = r.request_id
+            "SELECT r.instance_id, r.goal_id FROM decisions d JOIN model_requests r ON d.request_id = r.request_id
              WHERE d.decision_id = ?1",
             [&decision_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .map_err(|e| format!("decision instance: {e}"))?;
     let (_, _, lifecycle, _, _) = load_instance(tx, &instance)?;
+    // A35: no new side effects past the goal deadline either — the driver
+    // lands this as a dispatch_refused receipt and the turn closes out.
+    if let Some(goal) = op_goal.as_deref() {
+        if goal_deadline_passed(tx, goal)? {
+            return Err(format!("operation {operation_id} refused: goal {goal} deadline passed"));
+        }
+    }
     if lifecycle != "ACTIVE" {
         return Err(format!("instance {instance} is {lifecycle}, not dispatching"));
     }
@@ -4764,6 +4843,147 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("refusing to overwrite"), "{err}");
         cleanup(&path);
+    }
+
+    #[test]
+    fn unknown_outcome_parks_running_tasks_and_notifies() {
+        let (mut ctl, path) = control("unknown-park");
+        create_instance(&mut ctl, "i1");
+        create_instance(&mut ctl, "i2");
+        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1"})), Identity::User).expect("goal");
+        ctl.submit(
+            cmd("dt-1", "delegate_task", json!({"task_id": "t1", "assignee": "i2", "goal_id": "g1"})),
+            Identity::User,
+        )
+        .expect("delegate");
+        ctl.submit(
+            cmd("dt-2", "delegate_task", json!({"task_id": "t2", "assignee": "i2", "goal_id": "g1"})),
+            Identity::User,
+        )
+        .expect("delegate 2");
+        ctl.submit(cmd("st-1", "start_task", json!({"task_id": "t1"})), Identity::Instance("i2".into()))
+            .expect("start");
+        open_decision(&mut ctl, "u", "i2", 0, 1);
+        let done = ctl
+            .submit(
+                cmd(
+                    "co-u",
+                    "complete_operation",
+                    json!({"operation_id": "d-u:0", "status": "OUTCOME_UNKNOWN",
+                           "receipt": {"name": "shell", "started": true,
+                                       "error": {"class": "outcome_unknown", "message": "runner crashed"}}}),
+                ),
+                Identity::System,
+            )
+            .expect("complete");
+        assert_eq!(done["status"], json!("OUTCOME_UNKNOWN"));
+        // §6.3/A09: the running task parks and the event notifies; the
+        // pending queue (independent work) is untouched
+        let status = |id: &str| -> String {
+            ctl.connection().query_row("SELECT status FROM tasks WHERE id = ?1", [id], |row| row.get(0)).unwrap()
+        };
+        assert_eq!(status("t1"), "BLOCKED");
+        assert_eq!(status("t2"), "PENDING");
+        let blocked_events: i64 = ctl
+            .connection()
+            .query_row("SELECT COUNT(*) FROM events WHERE kind = 'task_blocked' AND scope = 't1'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(blocked_events, 1);
+        // a replayed completion returns the stored state without re-parking
+        let replay = ctl
+            .submit(
+                cmd(
+                    "co-u2",
+                    "complete_operation",
+                    json!({"operation_id": "d-u:0", "status": "OUTCOME_UNKNOWN",
+                           "receipt": {"name": "shell", "started": true,
+                                       "error": {"class": "outcome_unknown", "message": "runner crashed"}}}),
+                ),
+                Identity::System,
+            )
+            .expect("replay");
+        assert_eq!(replay["replayed"], json!(true));
+        let blocked_events: i64 = ctl
+            .connection()
+            .query_row("SELECT COUNT(*) FROM events WHERE kind = 'task_blocked'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(blocked_events, 1);
+        drop(ctl);
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn goal_deadline_refuses_new_requests_and_dispatches() {
+        let (mut ctl, path) = control("goal-deadline");
+        create_instance(&mut ctl, "i1");
+        let past = crate::models::now() - 100.0;
+        ctl.submit(
+            cmd("g1", "create_goal", json!({"id": "g1", "instance_id": "i1", "deadline": past})),
+            Identity::User,
+        )
+        .expect("goal");
+        // A35: past the deadline no new request registers; the refusal is a
+        // committed, auditable outcome and the instance stays READY
+        let refused = ctl
+            .submit(
+                cmd("b-1", "begin_request", json!({"instance_id": "i1", "request_id": "r1", "revision": 1})),
+                Identity::Instance("i1".into()),
+            )
+            .expect("refusal is committed");
+        assert_eq!(refused["deadline_refused"], json!(true));
+        let phase: String =
+            ctl.connection().query_row("SELECT phase FROM instances WHERE id = 'i1'", [], |row| row.get(0)).unwrap();
+        assert_eq!(phase, "READY");
+        let refused_events: i64 = ctl
+            .connection()
+            .query_row("SELECT COUNT(*) FROM events WHERE kind = 'goal_deadline_refused'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(refused_events, 1);
+        // move the deadline forward: requests begin again
+        let future = crate::models::now() + 1000.0;
+        ctl.connection().execute("UPDATE goals SET deadline = ?1 WHERE id = 'g1'", [future]).unwrap();
+        let ok = ctl
+            .submit(
+                cmd("b-2", "begin_request", json!({"instance_id": "i1", "request_id": "r1", "revision": 1})),
+                Identity::Instance("i1".into()),
+            )
+            .expect("begin after extension");
+        assert_eq!(ok["phase"], json!("MODEL_PENDING"));
+        ctl.submit(
+            cmd(
+                "a-1",
+                "record_attempt",
+                json!({"attempt_id": "at-1", "request_id": "r1", "status": "COMPLETE",
+                       "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}}),
+            ),
+            Identity::System,
+        )
+        .expect("attempt");
+        ctl.submit(
+            cmd(
+                "imp-1",
+                "import_response",
+                json!({"request_id": "r1", "decision_id": "d-1",
+                       "entry": {"role": "assistant", "content": ""},
+                       "intents": [{"index": 0, "call_id": "call_0", "name": "shell",
+                                    "args": {"command": "echo late"}}]}),
+            ),
+            Identity::System,
+        )
+        .expect("import");
+        // the deadline passes mid-turn: no new side-effect dispatch either
+        ctl.connection()
+            .execute("UPDATE goals SET deadline = ?1 WHERE id = 'g1'", [crate::models::now() - 1.0])
+            .unwrap();
+        let error = ctl
+            .submit(
+                cmd("dp-1", "dispatch_operation", json!({"operation_id": "d-1:0", "approval_required": false})),
+                Identity::System,
+            )
+            .unwrap_err();
+        assert!(error.contains("deadline passed"), "{error}");
+        drop(ctl);
+        std::fs::remove_file(path).ok();
     }
 
     #[test]

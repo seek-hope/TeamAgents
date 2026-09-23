@@ -428,6 +428,28 @@ async fn budget_exhaustion_parks_the_instance() {
     handle.shutdown().await.expect("shutdown");
 }
 
+/// A35: the goal deadline is enforced by the daemon even if the eval
+/// client died — past it, new requests are refused and the instance parks
+/// with the reason instead of silently continuing to answer.
+#[tokio::test]
+async fn goal_deadline_parks_the_instance() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let root = root("deadline");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let config = root.config(ScriptedProvider { script: Mutex::new(vec![].into()) });
+    let db = config.session_db.clone();
+    let handle = start(config).await.expect("start");
+    {
+        let conn = rusqlite::Connection::open(&db).expect("open db");
+        conn.execute("UPDATE goals SET deadline = ?1", [teamagents_core::models::now() - 1.0]).expect("deadline");
+    }
+    handle.input("answer after the deadline").await.expect("input");
+    wait_event(&handle, "goal_deadline_refused", 5_000).await;
+    let snapshot = handle.snapshot().await.unwrap();
+    assert_eq!(snapshot["instance"]["lifecycle"], json!("PARKED"));
+    handle.shutdown().await.expect("shutdown");
+}
+
 #[tokio::test]
 async fn shell_approval_blocks_then_allows_and_denial_cancels() {
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));

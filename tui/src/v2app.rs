@@ -357,6 +357,14 @@ impl V2App {
                 "task_delegated" | "task_started" | "task_completed" => {
                     refresh.tasks = true;
                 }
+                "task_blocked" => {
+                    refresh.tasks = true;
+                    self.note(format!(
+                        "任务 {} 停放（BLOCKED）：{}",
+                        payload["task_id"].as_str().unwrap_or("?"),
+                        payload["reason"].as_str().unwrap_or("")
+                    ));
+                }
                 "task_cancelled" => {
                     refresh.tasks = true;
                     self.note(format!(

@@ -186,3 +186,24 @@ async fn second_runner_over_a_live_job_is_refused() {
     assert!(result.is_err(), "second runner must be refused");
     client::shutdown(&dir).await.expect("shutdown");
 }
+
+/// A12/D-41: a successful command that starts a background service finishes
+/// promptly — output goes to a file, never a held pipe — and the service,
+/// in the command's own process group and never signalled on success,
+/// outlives both the job and the runner (跨调用、跨 CLI 退出存活).
+#[tokio::test]
+async fn a_successful_commands_service_outlives_the_job() {
+    runner_bin();
+    let dir = root("service");
+    let pidfile = dir.join("svc.pid");
+    let script = format!("sleep 300 & echo $! > {}; echo service-started", pidfile.display());
+    client::spawn(&dir, &spec("op-svc", &script, future(30_000))).await.expect("spawn");
+    client::go(&dir).await.expect("go");
+    assert_eq!(wait_terminal(&dir, 10_000).await, "SUCCEEDED");
+    let pid: i32 = std::fs::read_to_string(&pidfile).unwrap().trim().parse().unwrap();
+    let alive = || std::path::Path::new(&format!("/proc/{pid}")).exists();
+    assert!(alive(), "the service survives job completion");
+    client::shutdown(&dir).await.expect("shutdown");
+    assert!(alive(), "the service survives the runner shutdown");
+    unsafe { libc::kill(pid, libc::SIGKILL) };
+}

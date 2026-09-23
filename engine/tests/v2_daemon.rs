@@ -317,3 +317,34 @@ async fn approvals_surface_lists_and_decides_pending_operations() {
     assert_eq!(status, "SUCCEEDED");
     handle.shutdown().await.expect("shutdown");
 }
+
+/// A33: one coordinator per state root (jobs::state_lock) — a second daemon
+/// is refused while the first runs; after shutdown and client disconnect
+/// the kernel releases the lock and a new coordinator recovers the session.
+#[tokio::test]
+async fn second_daemon_is_refused_and_shutdown_releases_the_lock() {
+    let root = root("lock");
+    let socket = root.dir.join("state/daemon.sock");
+    let handle = serve(config(&root, HashMap::new())).await.expect("first daemon");
+    let second = serve(config(&root, HashMap::new())).await;
+    let error = second.err().map(|e| e.to_string()).unwrap_or_else(|| "second daemon unexpectedly booted".into());
+    assert!(error.contains("already has a coordinator"), "{error}");
+    // the refused attempt did not disturb the running coordinator
+    let mut client = Client::connect(&socket).await;
+    let reply = client.call("checkpoint", json!({})).await;
+    assert!(reply["result"].get("snapshot").is_some(), "{reply}");
+    drop(client);
+    handle.shutdown().await.expect("shutdown");
+    // connection tasks release their supervisor refs asynchronously; poll
+    let mut recovered = None;
+    for _ in 0..50 {
+        match serve(config(&root, HashMap::new())).await {
+            Ok(handle) => {
+                recovered = Some(handle);
+                break;
+            }
+            Err(_) => tokio::time::sleep(Duration::from_millis(20)).await,
+        }
+    }
+    recovered.expect("lock released for recovery").shutdown().await.expect("shutdown");
+}

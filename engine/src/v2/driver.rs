@@ -694,9 +694,10 @@ impl<P: Provider> Driver<P> {
             )
             .await;
         match begun {
-            Ok(result) if result["budget_refused"] == json!(true) => {
-                // user budgets stay authoritative (§8): park with the reason
-                let reason = result["reason"].as_str().unwrap_or("budget refused").to_string();
+            Ok(result) if result["budget_refused"] == json!(true) || result["deadline_refused"] == json!(true) => {
+                // user budgets and goal deadlines stay authoritative (§8,
+                // A35): park with the reason
+                let reason = result["reason"].as_str().unwrap_or("request refused").to_string();
                 self.submit(
                     self.command(
                         format!("park-budget-{}", uuid::Uuid::new_v4()),
