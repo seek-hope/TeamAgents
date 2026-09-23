@@ -6,8 +6,10 @@ use serde_json::{json, Value as Json};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use teamagents_core::kernel::ModelRequest;
+use teamagents_engine::providers::anthropic::Anthropic;
 use teamagents_engine::providers::chat_completions::ChatCompletions;
-use teamagents_engine::providers::{Cancel, ErrorClass, Provider, ProviderEvent};
+use teamagents_engine::providers::responses::Responses;
+use teamagents_engine::providers::{AttemptOutcome, Cancel, ErrorClass, Provider, ProviderError, ProviderEvent};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -54,7 +56,7 @@ impl FakeServer {
                             body.extend_from_slice(&buf[..n]);
                         }
                         seen.lock().unwrap().push(format!(
-                            "{}{}",
+                            "{}\r\n\r\n{}",
                             String::from_utf8_lossy(&head[..pos]),
                             String::from_utf8_lossy(&body)
                         ));
@@ -101,15 +103,22 @@ fn request() -> ModelRequest {
     }
 }
 
-fn run(
+fn run<P: Provider>(
     rt: &tokio::runtime::Runtime,
-    provider: &ChatCompletions,
+    provider: &P,
     request: &ModelRequest,
-) -> Result<teamagents_engine::providers::AttemptOutcome, teamagents_engine::providers::ProviderError> {
+) -> Result<AttemptOutcome, ProviderError> {
     rt.block_on(async {
         let cancel = Cancel::new();
         provider.complete(request, &cancel, &mut |_| {}).await
     })
+}
+
+/// Recorded raw request → parsed JSON body.
+fn request_body(server: &FakeServer) -> Json {
+    let raw = server.last_request();
+    let pos = raw.find("\r\n\r\n").expect("recorded request carries a body");
+    serde_json::from_str(&raw[pos + 4..]).expect("request body is JSON")
 }
 
 fn runtime() -> tokio::runtime::Runtime {
@@ -258,5 +267,439 @@ fn text_deltas_arrive_as_preview_events() {
             .unwrap();
     });
     assert_eq!(events.lock().unwrap().join(""), "ab");
+    rt.block_on(server.task).unwrap();
+}
+
+fn responses_request() -> ModelRequest {
+    ModelRequest {
+        request_id: "req-1".into(),
+        model: "gpt-5".into(),
+        messages: vec![
+            json!({"role":"system","content":"You are lead."}),
+            json!({"role":"system","content":"Be brief."}),
+            json!({"role":"user","content":"hi"}),
+            json!({"role":"assistant","content":"done","tool_calls":[{"id":"c1","type":"function","function":{"name":"shell","arguments":"{}"}}]}),
+            json!({"role":"tool","tool_call_id":"c1","content":"{}"}),
+            json!({"role":"assistant","responses_output":[{"type":"reasoning","id":"r1"},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"kept"}]}]}),
+        ],
+        tools: vec![
+            json!({"type":"function","function":{"name":"shell","description":"run","parameters":{"type":"object"}}}),
+        ],
+        options: json!({"max_tokens": 1024, "reasoning_effort": "low", "temperature": 0.2}),
+        est_prompt_tokens: 5,
+    }
+}
+
+const RESPONSES_COMPLETED: &str = "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok\"}]}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n";
+
+#[test]
+fn responses_request_body_translates_history_tools_and_options() {
+    let rt = runtime();
+    let server = rt.block_on(FakeServer::start(vec![sse_response(RESPONSES_COMPLETED)]));
+    let provider = Responses::new(&server.base, "k", Duration::from_secs(5)).unwrap();
+    run(&rt, &provider, &responses_request()).unwrap();
+    let raw = server.last_request();
+    assert!(raw.starts_with("POST /responses "), "request line: {}", raw.lines().next().unwrap_or(""));
+    let body = request_body(&server);
+    assert_eq!(body["instructions"], "You are lead.\n\nBe brief.");
+    assert_eq!(body["store"], false);
+    assert_eq!(body["stream"], true);
+    assert_eq!(body["max_output_tokens"], 1024, "max_tokens maps to max_output_tokens");
+    assert!(body.get("max_tokens").is_none());
+    assert_eq!(body["reasoning"], json!({"effort": "low"}), "reasoning_effort maps to reasoning.effort");
+    assert!(body.get("reasoning_effort").is_none());
+    assert_eq!(body["temperature"], 0.2, "other options pass through verbatim");
+    assert_eq!(
+        body["tools"],
+        json!([{"type":"function","name":"shell","description":"run","parameters":{"type":"object"}}]),
+        "tools are flattened to the Responses shape"
+    );
+    let input = body["input"].as_array().unwrap();
+    assert_eq!(input[0], json!({"role":"user","content":[{"type":"input_text","text":"hi"}]}));
+    assert_eq!(input[1], json!({"role":"assistant","content":[{"type":"output_text","text":"done"}]}));
+    assert_eq!(input[2], json!({"type":"function_call","call_id":"c1","name":"shell","arguments":"{}"}));
+    assert_eq!(input[3], json!({"type":"function_call_output","call_id":"c1","output":"{}"}));
+    // Native continuation: the original items are replayed verbatim (§7).
+    assert_eq!(input[4], json!({"type":"reasoning","id":"r1"}));
+    assert_eq!(input[5], json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":"kept"}]}));
+    assert_eq!(input.len(), 6);
+    rt.block_on(server.task).unwrap();
+}
+
+#[test]
+fn responses_sse_assembles_items_usage_and_native() {
+    let rt = runtime();
+    let server = rt.block_on(FakeServer::start(vec![sse_response(
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hel\"}\n\n\
+         data: {\"type\":\"response.output_text.delta\",\"delta\":\"lo\"}\n\n\
+         data: {\"type\":\"response.reasoning_text.delta\",\"delta\":\"secret\"}\n\n\
+         data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"reasoning\",\"id\":\"rs_1\",\"status\":\"completed\"}}\n\n\
+         data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"reasoning\",\"id\":\"rs_1\",\"status\":\"completed\"},{\"type\":\"message\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hello\"}]},{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"shell\",\"arguments\":\"{\\\"cmd\\\":\\\"ls\\\"}\",\"status\":\"completed\"}],\"usage\":{\"input_tokens\":10,\"output_tokens\":4,\"total_tokens\":14}}}\n\n",
+    )]));
+    let provider = Responses::new(&server.base, "k", Duration::from_secs(5)).unwrap();
+    let events = Arc::new(Mutex::new(vec![]));
+    let collected = events.clone();
+    let outcome = rt
+        .block_on(async {
+            let cancel = Cancel::new();
+            provider
+                .complete(&responses_request(), &cancel, &mut |event| {
+                    let ProviderEvent::TextDelta(text) = event;
+                    collected.lock().unwrap().push(text);
+                })
+                .await
+        })
+        .unwrap();
+    assert_eq!(events.lock().unwrap().join(""), "Hello", "text deltas stream as previews");
+    let message = &outcome.response.message;
+    assert_eq!(message["content"], "Hello");
+    assert_eq!(message["tool_calls"][0]["id"], "call_1");
+    assert_eq!(message["tool_calls"][0]["function"]["name"], "shell");
+    assert_eq!(message["tool_calls"][0]["function"]["arguments"], "{\"cmd\":\"ls\"}");
+    let output = message["responses_output"].as_array().unwrap();
+    assert_eq!(output.len(), 3, "the original items survive for continuation");
+    assert_eq!(output[0]["type"], "reasoning", "opaque reasoning keeps its place in the ordering");
+    let usage = outcome.response.usage.unwrap();
+    assert_eq!((usage.prompt, usage.completion, usage.total), (10, 4, 14));
+    assert_eq!(outcome.response.native["protocol"], "responses");
+    rt.block_on(server.task).unwrap();
+}
+
+#[test]
+fn responses_text_only_stream_synthesizes_a_message_item() {
+    let rt = runtime();
+    let server = rt.block_on(FakeServer::start(vec![sse_response(
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"plain\"}\n\n\
+         data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n",
+    )]));
+    let provider = Responses::new(&server.base, "k", Duration::from_secs(5)).unwrap();
+    let outcome = run(&rt, &provider, &responses_request()).unwrap();
+    assert_eq!(outcome.response.message["content"], "plain");
+    assert_eq!(outcome.response.usage.unwrap().total, 2);
+    rt.block_on(server.task).unwrap();
+}
+
+#[test]
+fn responses_incomplete_and_failed_events_are_permanent() {
+    let rt = runtime();
+    for events in [
+        "data: {\"type\":\"response.incomplete\",\"response\":{\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"}}}\n\n",
+        "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"boom\"}}}\n\n",
+        // completed envelope but the payload says otherwise (ported contract)
+        "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"},\"output\":[]}}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"function_call\",\"status\":\"incomplete\",\"call_id\":\"p\",\"name\":\"shell\",\"arguments\":\"{}\"}]}}\n\n",
+    ] {
+        let server = rt.block_on(FakeServer::start(vec![sse_response(events)]));
+        let provider = Responses::new(&server.base, "k", Duration::from_secs(5)).unwrap();
+        let error = run(&rt, &provider, &responses_request()).unwrap_err();
+        assert_eq!(error.class, ErrorClass::Permanent, "events: {events}");
+        rt.block_on(server.task).unwrap();
+    }
+}
+
+#[test]
+fn responses_truncated_stream_classes() {
+    let rt = runtime();
+    // only partial tool items, nothing visible: safe to retry
+    let server = rt.block_on(FakeServer::start(vec![sse_response(
+        "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"function_call\",\"call_id\":\"c1\"}}\n\n",
+    )]));
+    let provider = Responses::new(&server.base, "k", Duration::from_secs(5)).unwrap();
+    let error = run(&rt, &provider, &responses_request()).unwrap_err();
+    assert_eq!(error.class, ErrorClass::Transient);
+    assert!(error.message.contains("ended before completion"));
+    rt.block_on(server.task).unwrap();
+    // visible text already went out: never replay
+    let server = rt.block_on(FakeServer::start(vec![sse_response(
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n",
+    )]));
+    let provider = Responses::new(&server.base, "k", Duration::from_secs(5)).unwrap();
+    let error = run(&rt, &provider, &responses_request()).unwrap_err();
+    assert_eq!(error.class, ErrorClass::Permanent);
+    rt.block_on(server.task).unwrap();
+}
+
+#[test]
+fn responses_non_sse_json_body() {
+    let rt = runtime();
+    let server = rt.block_on(FakeServer::start(vec![json_response(
+        "200 OK",
+        &json!({"status":"completed",
+                "output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"plain"}]}],
+                "usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5}}),
+    )]));
+    let provider = Responses::new(&server.base, "k", Duration::from_secs(5)).unwrap();
+    let outcome = run(&rt, &provider, &responses_request()).unwrap();
+    assert_eq!(outcome.response.message["content"], "plain");
+    assert_eq!(outcome.response.usage.unwrap().total, 5);
+    rt.block_on(server.task).unwrap();
+}
+
+#[test]
+fn responses_empty_output_is_rejected() {
+    let rt = runtime();
+    let server = rt.block_on(FakeServer::start(vec![sse_response(
+        "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[],\"usage\":{}}}\n\n",
+    )]));
+    let provider = Responses::new(&server.base, "k", Duration::from_secs(5)).unwrap();
+    let error = run(&rt, &provider, &responses_request()).unwrap_err();
+    assert_eq!(error.class, ErrorClass::Permanent);
+    assert!(error.message.contains("empty output"), "{}", error.message);
+    rt.block_on(server.task).unwrap();
+}
+
+#[test]
+fn responses_status_classes_drive_retry_decisions() {
+    let rt = runtime();
+    for (status, body, class) in [
+        ("429 Too Many Requests", json!({"error":{"message":"slow down"}}), ErrorClass::Transient),
+        ("400 Bad Request", json!({"error":{"message":"prompt is too long"}}), ErrorClass::ContextOverflow),
+        ("401 Unauthorized", json!({"error":{"message":"bad key"}}), ErrorClass::Permanent),
+    ] {
+        let server = rt.block_on(FakeServer::start(vec![json_response(status, &body)]));
+        let provider = Responses::new(&server.base, "k", Duration::from_secs(5)).unwrap();
+        let error = run(&rt, &provider, &responses_request()).unwrap_err();
+        assert_eq!(error.class, class, "status {status}");
+        rt.block_on(server.task).unwrap();
+    }
+}
+
+fn anthropic_request() -> ModelRequest {
+    ModelRequest {
+        request_id: "req-1".into(),
+        model: "claude-sonnet".into(),
+        messages: vec![
+            json!({"role":"system","content":"You are lead."}),
+            json!({"role":"system","content":"Be brief."}),
+            json!({"role":"user","content":"hi"}),
+            json!({"role":"assistant","content":"done","tool_calls":[{"id":"t1","type":"function","function":{"name":"shell","arguments":"{\"cmd\":\"ls\"}"}}]}),
+            json!({"role":"tool","tool_call_id":"t1","content":"{}"}),
+            json!({"role":"tool","tool_call_id":"t2","content":"[]"}),
+            json!({"role":"assistant","anthropic_blocks":[{"type":"thinking","thinking":"hmm","signature":"sig"},{"type":"text","text":"kept"}]}),
+        ],
+        tools: vec![
+            json!({"type":"function","function":{"name":"shell","description":"run","parameters":{"type":"object"}}}),
+        ],
+        options: json!({"max_tokens": 2048, "reasoning_effort": "high", "temperature": 0.2}),
+        est_prompt_tokens: 5,
+    }
+}
+
+const ANTHROPIC_TEXT_DONE: &str =
+    "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n\
+     data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n\
+     data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n\
+     data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":2}}\n\n\
+     data: {\"type\":\"message_stop\"}\n\n";
+
+#[test]
+fn anthropic_request_body_translates_history_tools_and_options() {
+    let rt = runtime();
+    let server = rt.block_on(FakeServer::start(vec![sse_response(ANTHROPIC_TEXT_DONE)]));
+    // the /v1 suffix on the configured base is trimmed, not duplicated
+    let provider = Anthropic::new(format!("{}/v1", server.base), "k", Duration::from_secs(5)).unwrap();
+    run(&rt, &provider, &anthropic_request()).unwrap();
+    let raw = server.last_request();
+    assert!(raw.starts_with("POST /v1/messages "), "request line: {}", raw.lines().next().unwrap_or(""));
+    assert!(raw.contains("anthropic-version: 2023-06-01"), "headers: {raw}");
+    assert!(raw.contains("x-api-key: k"), "headers: {raw}");
+    let body = request_body(&server);
+    assert_eq!(body["system"], "You are lead.\n\nBe brief.");
+    assert_eq!(body["max_tokens"], 2048, "max_tokens is required by this API");
+    assert_eq!(body["output_config"], json!({"effort": "high"}), "reasoning_effort maps to output_config.effort");
+    assert!(body.get("reasoning_effort").is_none());
+    assert_eq!(body["temperature"], 0.2, "other options pass through verbatim");
+    assert_eq!(body["stream"], true);
+    assert_eq!(
+        body["tools"],
+        json!([{"name":"shell","description":"run","input_schema":{"type":"object"}}]),
+        "tools are flattened to the Anthropic shape"
+    );
+    let messages = body["messages"].as_array().unwrap();
+    assert_eq!(messages[0], json!({"role":"user","content":[{"type":"text","text":"hi"}]}));
+    assert_eq!(
+        messages[1],
+        json!({"role":"assistant","content":[
+            {"type":"text","text":"done"},
+            {"type":"tool_use","id":"t1","name":"shell","input":{"cmd":"ls"}}]})
+    );
+    // consecutive tool results share one user message (API rule)
+    assert_eq!(
+        messages[2],
+        json!({"role":"user","content":[
+            {"type":"tool_result","tool_use_id":"t1","content":"{}"},
+            {"type":"tool_result","tool_use_id":"t2","content":"[]"}]})
+    );
+    // native continuation: signed thinking replays verbatim (§7)
+    assert_eq!(
+        messages[3],
+        json!({"role":"assistant","content":[
+            {"type":"thinking","thinking":"hmm","signature":"sig"},
+            {"type":"text","text":"kept"}]})
+    );
+    assert_eq!(messages.len(), 4);
+    rt.block_on(server.task).unwrap();
+}
+
+#[test]
+fn anthropic_sse_assembles_blocks_usage_and_native() {
+    let rt = runtime();
+    let server = rt.block_on(FakeServer::start(vec![sse_response(
+        "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":1}}}\n\n\
+         data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n\
+         data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hel\"}}\n\n\
+         data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"lo\"}}\n\n\
+         data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"shell\",\"input\":{}}}\n\n\
+         data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"cmd\\\":\"}}\n\n\
+         data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"ls\\\"}\"}}\n\n\
+         data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":7}}\n\n\
+         data: {\"type\":\"message_stop\"}\n\n",
+    )]));
+    let provider = Anthropic::new(&server.base, "k", Duration::from_secs(5)).unwrap();
+    let events = Arc::new(Mutex::new(vec![]));
+    let collected = events.clone();
+    let outcome = rt
+        .block_on(async {
+            let cancel = Cancel::new();
+            provider
+                .complete(&anthropic_request(), &cancel, &mut |event| {
+                    let ProviderEvent::TextDelta(text) = event;
+                    collected.lock().unwrap().push(text);
+                })
+                .await
+        })
+        .unwrap();
+    assert_eq!(events.lock().unwrap().join(""), "Hello", "text deltas stream as previews");
+    let message = &outcome.response.message;
+    assert_eq!(message["content"], "Hello");
+    assert_eq!(message["tool_calls"][0]["id"], "toolu_1");
+    assert_eq!(message["tool_calls"][0]["function"]["name"], "shell");
+    assert_eq!(message["tool_calls"][0]["function"]["arguments"], "{\"cmd\":\"ls\"}");
+    let blocks = message["anthropic_blocks"].as_array().unwrap();
+    assert_eq!(blocks.len(), 2, "the original blocks survive for continuation");
+    assert_eq!(blocks[1]["input"], json!({"cmd": "ls"}), "streamed arguments parse into the block");
+    let usage = outcome.response.usage.unwrap();
+    assert_eq!((usage.prompt, usage.completion, usage.total), (10, 7, 17));
+    assert_eq!(outcome.response.native["protocol"], "anthropic");
+    rt.block_on(server.task).unwrap();
+}
+
+#[test]
+fn anthropic_thinking_blocks_stay_verbatim() {
+    let rt = runtime();
+    let server = rt.block_on(FakeServer::start(vec![sse_response(
+        "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}}\n\n\
+         data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\",\"signature\":\"\"}}\n\n\
+         data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"hmm\"}}\n\n\
+         data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"sig1\"}}\n\n\
+         data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n\
+         data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"answer\"}}\n\n\
+         data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n\n\
+         data: {\"type\":\"message_stop\"}\n\n",
+    )]));
+    let provider = Anthropic::new(&server.base, "k", Duration::from_secs(5)).unwrap();
+    let outcome = run(&rt, &provider, &anthropic_request()).unwrap();
+    let message = &outcome.response.message;
+    assert_eq!(message["content"], "answer");
+    assert_eq!(
+        message["anthropic_blocks"][0],
+        json!({"type":"thinking","thinking":"hmm","signature":"sig1"}),
+        "thinking + signature accumulate verbatim for the signed replay"
+    );
+    rt.block_on(server.task).unwrap();
+}
+
+#[test]
+fn anthropic_truncated_stream_classes() {
+    let rt = runtime();
+    // only partial tool arguments, nothing visible: safe to retry
+    let server = rt.block_on(FakeServer::start(vec![sse_response(
+        "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"t\",\"name\":\"shell\"}}\n\n\
+         data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\"}}\n\n",
+    )]));
+    let provider = Anthropic::new(&server.base, "k", Duration::from_secs(5)).unwrap();
+    let error = run(&rt, &provider, &anthropic_request()).unwrap_err();
+    assert_eq!(error.class, ErrorClass::Transient);
+    assert!(error.message.contains("ended before completion"));
+    rt.block_on(server.task).unwrap();
+    // visible text already went out: never replay
+    let server = rt.block_on(FakeServer::start(vec![sse_response(
+        "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n\
+         data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"partial\"}}\n\n",
+    )]));
+    let provider = Anthropic::new(&server.base, "k", Duration::from_secs(5)).unwrap();
+    let error = run(&rt, &provider, &anthropic_request()).unwrap_err();
+    assert_eq!(error.class, ErrorClass::Permanent);
+    rt.block_on(server.task).unwrap();
+}
+
+#[test]
+fn anthropic_incomplete_stop_reasons_are_permanent() {
+    let rt = runtime();
+    for reason in ["max_tokens", "model_context_window_exceeded", "pause_turn"] {
+        let events = format!(
+            "data: {{\"type\":\"message_start\",\"message\":{{\"usage\":{{\"input_tokens\":1,\"output_tokens\":1}}}}}}\n\n\
+             data: {{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{{\"type\":\"text\",\"text\":\"\"}}}}\n\n\
+             data: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text_delta\",\"text\":\"cut\"}}}}\n\n\
+             data: {{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":\"{reason}\"}},\"usage\":{{\"output_tokens\":3}}}}\n\n\
+             data: {{\"type\":\"message_stop\"}}\n\n"
+        );
+        let server = rt.block_on(FakeServer::start(vec![sse_response(&events)]));
+        let provider = Anthropic::new(&server.base, "k", Duration::from_secs(5)).unwrap();
+        let error = run(&rt, &provider, &anthropic_request()).unwrap_err();
+        assert_eq!(error.class, ErrorClass::Permanent, "stop_reason {reason}");
+        assert!(error.message.contains(reason), "{}", error.message);
+        rt.block_on(server.task).unwrap();
+    }
+}
+
+#[test]
+fn anthropic_protocol_violations_are_permanent() {
+    let rt = runtime();
+    // delta for a block that never started
+    let server = rt.block_on(FakeServer::start(vec![sse_response(
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"x\"}}\n\n",
+    )]));
+    let provider = Anthropic::new(&server.base, "k", Duration::from_secs(5)).unwrap();
+    let error = run(&rt, &provider, &anthropic_request()).unwrap_err();
+    assert_eq!(error.class, ErrorClass::Permanent);
+    assert!(error.message.contains("delta without content block"), "{}", error.message);
+    rt.block_on(server.task).unwrap();
+    // streamed tool arguments that do not parse
+    let server = rt.block_on(FakeServer::start(vec![sse_response(
+        "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"t\",\"name\":\"shell\"}}\n\n\
+         data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{bad\"}}\n\n\
+         data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{}}\n\n\
+         data: {\"type\":\"message_stop\"}\n\n",
+    )]));
+    let provider = Anthropic::new(&server.base, "k", Duration::from_secs(5)).unwrap();
+    let error = run(&rt, &provider, &anthropic_request()).unwrap_err();
+    assert_eq!(error.class, ErrorClass::Permanent);
+    assert!(error.message.contains("invalid streamed tool arguments"), "{}", error.message);
+    rt.block_on(server.task).unwrap();
+}
+
+#[test]
+fn anthropic_non_sse_json_body_and_empty_content() {
+    let rt = runtime();
+    let server = rt.block_on(FakeServer::start(vec![json_response(
+        "200 OK",
+        &json!({"content":[{"type":"text","text":"plain"}],"stop_reason":"end_turn",
+                "usage":{"input_tokens":3,"output_tokens":2}}),
+    )]));
+    let provider = Anthropic::new(&server.base, "k", Duration::from_secs(5)).unwrap();
+    let outcome = run(&rt, &provider, &anthropic_request()).unwrap();
+    assert_eq!(outcome.response.message["content"], "plain");
+    assert_eq!(outcome.response.usage.unwrap().total, 5);
+    rt.block_on(server.task).unwrap();
+    // an empty message is not a usable turn
+    let server = rt.block_on(FakeServer::start(vec![json_response(
+        "200 OK",
+        &json!({"content":[],"stop_reason":"end_turn","usage":{}}),
+    )]));
+    let provider = Anthropic::new(&server.base, "k", Duration::from_secs(5)).unwrap();
+    let error = run(&rt, &provider, &anthropic_request()).unwrap_err();
+    assert_eq!(error.class, ErrorClass::Permanent);
+    assert!(error.message.contains("empty content"), "{}", error.message);
     rt.block_on(server.task).unwrap();
 }

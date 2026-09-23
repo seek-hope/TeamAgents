@@ -3,6 +3,7 @@
 //! provider classifies failures, never loops. Protocol type is separate from
 //! vendor name; native fields keep provenance and are never flattened away.
 
+pub mod anthropic;
 pub mod chat_completions;
 pub mod responses;
 
