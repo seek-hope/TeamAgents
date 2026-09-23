@@ -1,0 +1,7 @@
+[event] instance_created {"instance_id":"i-main"}
+[event] goal_created {"goal_id":"goal-s-p2"}
+[event] input {"envelope_id":"env-c135327b-e27f-448d-be39-444e0e5993d6","applied":true}
+[event] request_began {"request_id":"req-866103e3-92fd-4d5f-b125-5b134de14c91"}
+[event] attempt_recorded {"attempt_id":"req-866103e3-92fd-4d5f-b125-5b134de14c91/a1","status":"COMPLETE","selected":true}
+[event] response_imported {"request_id":"req-866103e3-92fd-4d5f-b125-5b134de14c91","decision_id":"d-req-866103e3-92fd-4d5f-b125-5b134de14c91","intents":1,"phase":"TOOLS_PENDING"}
+[event] operation_dispatched {"operation_id":"d-req-866103e3-92fd-4d5f-b125-5b134de14c91:0"}

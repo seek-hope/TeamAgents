@@ -981,8 +981,20 @@ impl<P: Provider> Driver<P> {
             // filled by the runner spawn; reconnects read it from job.json
             token: String::new(),
         };
-        if !job_dir.join("job.json").exists() {
-            client::spawn(&job_dir, &job).await?;
+        if !job_dir.join("journal.json").exists() {
+            // no runner ever persisted READY: (re)spawn over the same dir —
+            // the persisted token keeps the job identity stable (A11)
+            if let Err(error) = client::spawn(&job_dir, &job).await {
+                // spawn failed before the READY handshake and GO is only sent
+                // after READY, so the command never started (A14): fail the
+                // op honestly instead of killing the driver task
+                let reason = format!("job runner did not start: {error}");
+                let receipt = self.receipt_skeleton(operation_id, intent, false, json!({"error": reason}).to_string());
+                let receipt = ToolReceipt { error: Some(ReceiptError { class: "spawn".into(), reason }), ..receipt };
+                return self
+                    .complete_op(operation_id, "FAILED", &serde_json::to_value(receipt).unwrap_or(Json::Null), vec![])
+                    .await;
+            }
         }
         // GO dedups: a replay never starts a second command (A10)
         let _ = client::go(&job_dir).await;
@@ -1089,10 +1101,15 @@ impl<P: Provider> Driver<P> {
                             &std::fs::read(job_dir.join("job.json")).map_err(|e| format!("read job.json: {e}"))?,
                         )
                         .map_err(|e| format!("parse job.json: {e}"))?;
-                        client::spawn(job_dir, &spec).await?;
-                        if let Ok(recovered) = client::status(job_dir).await {
-                            if recovered.terminal() {
-                                return Ok(recovered);
+                        if client::spawn(job_dir, &spec).await.is_ok() {
+                            if let Ok(recovered) = client::status(job_dir).await {
+                                if recovered.terminal() {
+                                    return Ok(recovered);
+                                }
+                                // READY again: the original GO may have died
+                                // with the old runner; a duplicate GO is a
+                                // no-op once a command started (A10)
+                                let _ = client::go(job_dir).await;
                             }
                         }
                     } else {
