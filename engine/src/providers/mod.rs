@@ -111,6 +111,63 @@ pub fn context_overflow(error: &str) -> bool {
     .any(|needle| error.contains(needle))
 }
 
+/// pi-ai style tool-call id normalization (transform-messages): Anthropic
+/// requires tool ids matching ^[a-zA-Z0-9_-]{1,64}$, but Responses-protocol
+/// ids run 450+ chars with '|'. Ids failing the rule rewrite to a
+/// deterministic `tc_<hash16>`; the same original maps identically within a
+/// request, so assistant tool_calls and their tool results stay paired.
+/// Stored context keeps the original ids — only the outbound copy rewrites.
+pub(crate) fn normalize_tool_call_ids(messages: &[Json]) -> Vec<Json> {
+    use sha2::{Digest, Sha256};
+    let valid = |id: &str| {
+        !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    };
+    let mut rewritten: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut normalized_for = |id: &str| -> String {
+        if valid(id) {
+            return id.to_string();
+        }
+        rewritten
+            .entry(id.to_string())
+            .or_insert_with(|| {
+                let digest = format!("{:x}", Sha256::digest(id.as_bytes()));
+                format!("tc_{}", &digest[..16])
+            })
+            .clone()
+    };
+    messages
+        .iter()
+        .map(|message| {
+            let mut message = message.clone();
+            if let Some(calls) = message.get_mut("tool_calls").and_then(|v| v.as_array_mut()) {
+                for call in calls {
+                    if let Some(id) = call.get("id").and_then(|v| v.as_str()).map(str::to_string) {
+                        call["id"] = json!(normalized_for(&id));
+                    }
+                }
+            }
+            if let Some(id) = message.get("tool_call_id").and_then(|v| v.as_str()).map(str::to_string) {
+                message["tool_call_id"] = json!(normalized_for(&id));
+            }
+            message
+        })
+        .collect()
+}
+
+/// pi-ai style max_tokens clamp (simple-options): never request more than
+/// the context window has left after the estimated prompt and a 4k safety
+/// margin; an unknown window means no clamp.
+pub(crate) fn clamp_max_tokens(configured: u64, est_prompt_tokens: u64, context_window: Option<u64>) -> u64 {
+    const SAFETY_TOKENS: u64 = 4096;
+    match context_window {
+        Some(window) if window > 0 => {
+            let available = window.saturating_sub(est_prompt_tokens).saturating_sub(SAFETY_TOKENS);
+            configured.min(available.max(1))
+        }
+        _ => configured,
+    }
+}
+
 /// Streaming preview events. Previews are never authoritative facts (§9):
 /// slow clients may drop them; only the complete AttemptOutcome matters.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -212,16 +269,14 @@ pub fn build_for_profile(profile: &ModelProfile) -> Result<AnyProvider, String> 
     let timeout = Duration::from_secs(profile.timeout.max(1) as u64);
     let configured = profile.base_url.as_deref().map(str::trim).filter(|base| !base.is_empty());
     match profile.protocol.as_str() {
-        "anthropic" => Ok(AnyProvider::Anthropic(anthropic::Anthropic::new(
-            configured.unwrap_or("https://api.anthropic.com"),
-            api_key,
-            timeout,
-        )?)),
-        "responses" => Ok(AnyProvider::Responses(responses::Responses::new(
-            configured.unwrap_or("https://api.openai.com/v1"),
-            api_key,
-            timeout,
-        )?)),
+        "anthropic" => Ok(AnyProvider::Anthropic(
+            anthropic::Anthropic::new(configured.unwrap_or("https://api.anthropic.com"), api_key, timeout)?
+                .with_context_window(profile.context_window),
+        )),
+        "responses" => Ok(AnyProvider::Responses(
+            responses::Responses::new(configured.unwrap_or("https://api.openai.com/v1"), api_key, timeout)?
+                .with_context_window(profile.context_window),
+        )),
         // "openai" (legacy), "chat/completions" and "deepseek" share the
         // chat-completions wire shape (ported contract).
         _ => {
@@ -230,11 +285,10 @@ pub fn build_for_profile(profile: &ModelProfile) -> Result<AnyProvider, String> 
             } else {
                 "https://api.openai.com/v1"
             };
-            Ok(AnyProvider::ChatCompletions(chat_completions::ChatCompletions::new(
-                configured.unwrap_or(default),
-                api_key,
-                timeout,
-            )?))
+            Ok(AnyProvider::ChatCompletions(
+                chat_completions::ChatCompletions::new(configured.unwrap_or(default), api_key, timeout)?
+                    .with_context_window(profile.context_window),
+            ))
         }
     }
 }

@@ -5,8 +5,8 @@
 //! shape is served by this one adapter.
 
 use super::{
-    append, pump_sse, stream_failure_msg, AttemptOutcome, Cancel, ErrorClass, Provider, ProviderError, ProviderEvent,
-    SseEnd,
+    append, clamp_max_tokens, normalize_tool_call_ids, pump_sse, stream_failure_msg, AttemptOutcome, Cancel,
+    ErrorClass, Provider, ProviderError, ProviderEvent, SseEnd,
 };
 use serde_json::{json, Value as Json};
 use std::collections::BTreeMap;
@@ -22,6 +22,7 @@ pub struct Anthropic {
     base: String,
     api_key: String,
     timeout: Duration,
+    context_window: Option<u64>,
 }
 
 impl Anthropic {
@@ -35,15 +36,24 @@ impl Anthropic {
             .build()
             .map_err(|e| format!("anthropic client: {e}"))?;
         let base = base.into().trim_end_matches('/').trim_end_matches("/v1").to_string();
-        Ok(Anthropic { client, base, api_key: api_key.into(), timeout })
+        Ok(Anthropic { client, base, api_key: api_key.into(), timeout, context_window: None })
+    }
+
+    /// Attach the catalog-declared context window: max_tokens clamps to the
+    /// remaining budget at the wire boundary (pi-ai simple-options).
+    pub fn with_context_window(mut self, window: Option<u64>) -> Self {
+        self.context_window = window;
+        self
     }
 
     pub fn official(api_key: impl Into<String>, timeout: Duration) -> Result<Self, String> {
         Self::new("https://api.anthropic.com", api_key, timeout)
     }
 
-    fn body(request: &ModelRequest) -> Json {
-        let (system, messages) = to_anthropic_messages(&request.messages);
+    fn body(&self, request: &ModelRequest) -> Json {
+        // Cross-protocol continuation safety (pi-ai transform-messages): ids
+        // minted under another protocol may violate this API's id rules.
+        let (system, messages) = to_anthropic_messages(&normalize_tool_call_ids(&request.messages));
         let tools: Vec<Json> = request
             .tools
             .iter()
@@ -56,10 +66,13 @@ impl Anthropic {
                 }))
             })
             .collect();
-        // max_tokens is required by this API (ported default).
+        // max_tokens is required by this API (ported default), clamped to
+        // what the context window still has left (pi-ai simple-options).
+        let configured_max = request.options.get("max_tokens").and_then(|v| v.as_u64()).unwrap_or(8192);
+        let max_tokens = clamp_max_tokens(configured_max, request.est_prompt_tokens, self.context_window);
         let mut body = json!({
             "model": request.model,
-            "max_tokens": request.options.get("max_tokens").cloned().unwrap_or(json!(8192)),
+            "max_tokens": max_tokens,
             "messages": messages,
         });
         if !system.is_empty() {
@@ -110,7 +123,7 @@ impl Provider for Anthropic {
             http = http.header("x-api-key", &self.api_key);
         }
         let response = tokio::select! {
-            send = http.body(Self::body(request).to_string()).send() => {
+            send = http.body(self.body(request).to_string()).send() => {
                 send.map_err(|e| {
                     if e.is_timeout() || e.is_connect() || e.is_request() {
                         ProviderError::transient(format!("anthropic API: {e}"))

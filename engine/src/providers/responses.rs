@@ -5,7 +5,8 @@
 //! endpoint speaking this wire shape is served by this one adapter.
 
 use super::{
-    pump_sse, stream_failure_msg, AttemptOutcome, Cancel, ErrorClass, Provider, ProviderError, ProviderEvent, SseEnd,
+    clamp_max_tokens, normalize_tool_call_ids, pump_sse, stream_failure_msg, AttemptOutcome, Cancel, ErrorClass,
+    Provider, ProviderError, ProviderEvent, SseEnd,
 };
 use serde_json::{json, Value as Json};
 use std::ops::ControlFlow;
@@ -20,6 +21,7 @@ pub struct Responses {
     base: String,
     api_key: String,
     timeout: Duration,
+    context_window: Option<u64>,
 }
 
 impl Responses {
@@ -32,15 +34,23 @@ impl Responses {
             .connect_timeout(Duration::from_secs(30))
             .build()
             .map_err(|e| format!("responses client: {e}"))?;
-        Ok(Responses { client, base: base.into(), api_key: api_key.into(), timeout })
+        Ok(Responses { client, base: base.into(), api_key: api_key.into(), timeout, context_window: None })
+    }
+
+    /// Attach the catalog-declared context window: max_output_tokens clamps
+    /// to the remaining budget at the wire boundary (pi-ai simple-options).
+    pub fn with_context_window(mut self, window: Option<u64>) -> Self {
+        self.context_window = window;
+        self
     }
 
     pub fn openai(api_key: impl Into<String>, timeout: Duration) -> Result<Self, String> {
         Self::new("https://api.openai.com/v1", api_key, timeout)
     }
 
-    fn body(request: &ModelRequest) -> Json {
-        let (instructions, input) = to_responses_input(&request.messages);
+    fn body(&self, request: &ModelRequest) -> Json {
+        // Cross-protocol continuation safety (pi-ai transform-messages).
+        let (instructions, input) = to_responses_input(&normalize_tool_call_ids(&request.messages));
         let tools: Vec<Json> = request
             .tools
             .iter()
@@ -82,6 +92,12 @@ impl Responses {
             if let Some(effort) = map.remove("reasoning_effort") {
                 map.insert("reasoning".into(), json!({"effort": effort}));
             }
+            // Clamp to what the context window still has left (pi-ai
+            // simple-options); absent means the API default applies.
+            if let Some(value) = map.get("max_output_tokens").and_then(|v| v.as_u64()) {
+                let clamped = clamp_max_tokens(value, request.est_prompt_tokens, self.context_window);
+                map.insert("max_output_tokens".into(), json!(clamped));
+            }
         }
         body
     }
@@ -111,7 +127,7 @@ impl Provider for Responses {
             http = http.bearer_auth(&self.api_key);
         }
         let response = tokio::select! {
-            send = http.body(Self::body(request).to_string()).send() => {
+            send = http.body(self.body(request).to_string()).send() => {
                 send.map_err(|e| {
                     if e.is_timeout() || e.is_connect() || e.is_request() {
                         ProviderError::transient(format!("responses API: {e}"))

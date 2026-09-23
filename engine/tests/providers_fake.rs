@@ -727,3 +727,109 @@ fn chat_completions_body_strips_native_continuation_fields() {
     assert!(!wire.contains("opaque") && !wire.contains("signed"), "{wire}");
     rt.block_on(server.task).unwrap();
 }
+
+// ---- R17 follow-ups ported from pi-ai (transform-messages / simple-options) ----
+
+const CHAT_TEXT_DONE: &str = "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\ndata: [DONE]\n\n";
+
+#[test]
+fn tool_call_ids_normalize_for_cross_protocol_continuation() {
+    let rt = runtime();
+    // a Responses-protocol id (long, with '|') stored in the context
+    let long_id = format!("fc_{}|{}", "x".repeat(80), "y".repeat(80));
+    let make_request = || {
+        let long_id = long_id.clone();
+        ModelRequest {
+            request_id: "req-1".into(),
+            model: "claude-sonnet".into(),
+            messages: vec![
+                json!({"role":"user","content":"hi"}),
+                json!({"role":"assistant","content":"done","tool_calls":[
+                    {"id": long_id, "type":"function","function":{"name":"shell","arguments":"{}"}},
+                    {"id":"toolu_ok","type":"function","function":{"name":"grep","arguments":"{}"}}]}),
+                json!({"role":"tool","tool_call_id": long_id,"content":"{}"}),
+            ],
+            tools: vec![],
+            options: json!({}),
+            est_prompt_tokens: 5,
+        }
+    };
+    let server =
+        rt.block_on(FakeServer::start(vec![sse_response(ANTHROPIC_TEXT_DONE), sse_response(ANTHROPIC_TEXT_DONE)]));
+    let provider = Anthropic::new(&server.base, "k", Duration::from_secs(5)).unwrap();
+    run(&rt, &provider, &make_request()).unwrap();
+    let body = request_body(&server);
+    let messages = body["messages"].as_array().unwrap();
+    let uses = messages[1]["content"].as_array().unwrap();
+    let rewritten = uses[1]["id"].as_str().unwrap().to_string();
+    assert!(
+        !rewritten.is_empty()
+            && rewritten.len() <= 64
+            && rewritten.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
+        "Anthropic rejects anything else: {rewritten}"
+    );
+    assert_ne!(rewritten, long_id);
+    assert_eq!(uses[2]["id"], "toolu_ok", "already-valid ids pass through unchanged");
+    let results = messages[2]["content"].as_array().unwrap();
+    assert_eq!(results[0]["tool_use_id"], rewritten, "call and result stay paired");
+    // deterministic: the same original maps identically on the next request
+    run(&rt, &provider, &make_request()).unwrap();
+    let again = request_body(&server);
+    assert_eq!(again["messages"][1]["content"][1]["id"], rewritten);
+    rt.block_on(server.task).unwrap();
+}
+
+#[test]
+fn anthropic_max_tokens_clamps_to_the_remaining_context_window() {
+    let rt = runtime();
+    let server = rt.block_on(FakeServer::start(vec![
+        sse_response(ANTHROPIC_TEXT_DONE),
+        sse_response(ANTHROPIC_TEXT_DONE),
+        sse_response(ANTHROPIC_TEXT_DONE),
+    ]));
+    let provider = Anthropic::new(&server.base, "k", Duration::from_secs(5)).unwrap().with_context_window(Some(10_000));
+    let mut req = request();
+    req.options = json!({"max_tokens": 8192});
+    req.est_prompt_tokens = 3904;
+    run(&rt, &provider, &req).unwrap();
+    assert_eq!(request_body(&server)["max_tokens"], 2000, "8192 clamps to 10000-3904-4096");
+    // floor: a nearly-full window still asks for one token
+    req.est_prompt_tokens = 9999;
+    run(&rt, &provider, &req).unwrap();
+    assert_eq!(request_body(&server)["max_tokens"], 1);
+    // no declared window → no clamp
+    let provider = Anthropic::new(&server.base, "k", Duration::from_secs(5)).unwrap();
+    req.est_prompt_tokens = 3904;
+    run(&rt, &provider, &req).unwrap();
+    assert_eq!(request_body(&server)["max_tokens"], 8192);
+    rt.block_on(server.task).unwrap();
+}
+
+#[test]
+fn responses_max_output_tokens_clamps_to_the_remaining_context_window() {
+    let rt = runtime();
+    let server = rt.block_on(FakeServer::start(vec![sse_response(RESPONSES_COMPLETED)]));
+    let provider = Responses::new(&server.base, "k", Duration::from_secs(5)).unwrap().with_context_window(Some(10_000));
+    let mut req = request();
+    req.options = json!({"max_tokens": 8192});
+    req.est_prompt_tokens = 3904;
+    run(&rt, &provider, &req).unwrap();
+    let body = request_body(&server);
+    assert_eq!(body["max_output_tokens"], 2000);
+    assert!(body.get("max_tokens").is_none());
+    rt.block_on(server.task).unwrap();
+}
+
+#[test]
+fn chat_completions_max_tokens_clamps_to_the_remaining_context_window() {
+    let rt = runtime();
+    let server = rt.block_on(FakeServer::start(vec![sse_response(CHAT_TEXT_DONE)]));
+    let provider =
+        ChatCompletions::new(&server.base, "k", Duration::from_secs(5)).unwrap().with_context_window(Some(10_000));
+    let mut req = request();
+    req.options = json!({"max_tokens": 8192});
+    req.est_prompt_tokens = 3904;
+    run(&rt, &provider, &req).unwrap();
+    assert_eq!(request_body(&server)["max_tokens"], 2000);
+    rt.block_on(server.task).unwrap();
+}
