@@ -1363,6 +1363,21 @@ fn begin_request(tx: &Connection, session_id: &str, params: &Json, identity: &Id
     let goal_id: Option<String> = tx
         .query_row("SELECT active_goal_id FROM instances WHERE id = ?1", [instance_id], |row| row.get(0))
         .map_err(|e| format!("goal read: {e}"))?;
+    // A18: a goal-less instance (a worker) shares the budget of the goal its
+    // task queue serves — running work first, then the pending queue, FIFO —
+    // so reservations and usage from every instance stay visible on the goal
+    let goal_id = match goal_id {
+        Some(goal) => Some(goal),
+        None => tx
+            .query_row(
+                "SELECT goal_id FROM tasks WHERE assignee = ?1 AND status IN ('RUNNING', 'PENDING')
+                 ORDER BY CASE status WHEN 'RUNNING' THEN 0 ELSE 1 END, rowid LIMIT 1",
+                [instance_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| format!("task goal read: {e}"))?,
+    };
     if let Some(goal) = goal_id.as_deref() {
         // Budget refusal is a committed outcome, not a transaction failure:
         // rolling back would lose the auditable event (§8). The request
@@ -4097,6 +4112,95 @@ mod tests {
             .submit(cmd("cc-2", "close_completion", json!({"instance_id": "i1"})), Identity::System)
             .expect("reclose");
         assert_eq!(again["already_closed"], json!(true));
+        cleanup(&path);
+    }
+
+    #[test]
+    fn a_worker_shares_the_budget_of_the_goal_its_queue_serves() {
+        let (mut ctl, path) = control("a18-budget");
+        create_instance(&mut ctl, "i-leader");
+        create_instance(&mut ctl, "i-worker");
+        ctl.submit(
+            cmd(
+                "g1",
+                "create_goal",
+                json!({"id": "g1", "instance_id": "i-leader", "limits": {"max_total_tokens": 100}}),
+            ),
+            Identity::User,
+        )
+        .expect("goal");
+        ctl.submit(
+            cmd("dt-1", "delegate_task", json!({"task_id": "t1", "assignee": "i-worker", "goal_id": "g1"})),
+            Identity::User,
+        )
+        .expect("delegate");
+        // the goal-less worker reserves against the shared goal (A18)
+        let begun = ctl
+            .submit(
+                cmd(
+                    "b-1",
+                    "begin_request",
+                    json!({"instance_id": "i-worker", "request_id": "r1", "revision": 0, "est_prompt_tokens": 40}),
+                ),
+                Identity::Instance("i-worker".into()),
+            )
+            .expect("begin");
+        assert!(begun.get("budget_refused").is_none(), "{begun}");
+        let reservations: String = ctl
+            .connection()
+            .query_row("SELECT reservations_json FROM goals WHERE id = 'g1'", [], |row| row.get(0))
+            .unwrap();
+        assert!(reservations.contains("r1"), "the worker reservation is visible on the goal: {reservations}");
+        // the worker's completed attempt bills to the shared goal
+        ctl.submit(
+            cmd(
+                "a-1",
+                "record_attempt",
+                json!({"attempt_id": "at-1", "request_id": "r1", "status": "COMPLETE",
+                       "usage": {"prompt_tokens": 30, "completion_tokens": 15, "total_tokens": 45}}),
+            ),
+            Identity::System,
+        )
+        .expect("attempt");
+        ctl.submit(
+            cmd(
+                "imp-1",
+                "import_response",
+                json!({"request_id": "r1", "decision_id": "d-1", "entry": {"role": "assistant", "content": "partial"}}),
+            ),
+            Identity::System,
+        )
+        .expect("import");
+        let known: String = ctl
+            .connection()
+            .query_row("SELECT known_usage_json FROM goals WHERE id = 'g1'", [], |row| row.get(0))
+            .unwrap();
+        assert!(known.contains("45"), "worker usage billed to the shared goal: {known}");
+        // 45 known + 60 estimated > 100: the shared gate refuses the worker…
+        let refused = ctl
+            .submit(
+                cmd(
+                    "b-2",
+                    "begin_request",
+                    json!({"instance_id": "i-worker", "request_id": "r2", "revision": 2, "est_prompt_tokens": 60}),
+                ),
+                Identity::Instance("i-worker".into()),
+            )
+            .expect("refused begin");
+        assert_eq!(refused["budget_refused"], json!(true));
+        assert_eq!(phase_of(&ctl, "i-worker"), "READY");
+        // …and the leader alike: one budget governs every instance (A18)
+        let refused = ctl
+            .submit(
+                cmd(
+                    "b-3",
+                    "begin_request",
+                    json!({"instance_id": "i-leader", "request_id": "r3", "revision": 1, "est_prompt_tokens": 60}),
+                ),
+                Identity::Instance("i-leader".into()),
+            )
+            .expect("leader refused begin");
+        assert_eq!(refused["budget_refused"], json!(true));
         cleanup(&path);
     }
 
