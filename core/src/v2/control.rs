@@ -108,6 +108,13 @@ fn dispatch(
         "reauthorize_operation" => reauthorize_operation(tx, session_id, params),
         "reset_instance" => reset_instance(tx, session_id, params, identity),
         "create_goal" => create_goal(tx, session_id, params),
+        "send_message" => send_message(tx, session_id, params, identity),
+        "drain_inbox" => drain_inbox(tx, session_id, params, identity),
+        "delegate_task" => delegate_task(tx, session_id, params, identity),
+        "start_task" => start_task(tx, session_id, params, identity),
+        "complete_task" => complete_task(tx, session_id, params, identity),
+        "cancel_task" => cancel_task(tx, session_id, params, identity),
+        "read_history" => read_history(tx, session_id, params, identity),
         "submit_input" => submit_input(tx, session_id, params, identity),
         "begin_request" => begin_request(tx, session_id, params, identity),
         "record_attempt" => record_attempt(tx, session_id, params),
@@ -536,6 +543,505 @@ fn create_instance(tx: &Connection, session_id: &str, params: &Json, identity: &
     }
     event(tx, session_id, "instance_created", id, &json!({"instance_id": id}))?;
     Ok(json!({"instance_id": id, "phase": "READY", "revision": 0, "epoch": 0}))
+}
+
+/// Default inbox capacity per recipient (§5.3): a full inbox fails the
+/// send openly so the sender can retry later — nothing is silently dropped.
+const DEFAULT_MAX_INBOX: i64 = 64;
+
+/// One queued envelope before insertion (§5.3).
+struct Outbox<'a> {
+    sender: &'a str,
+    recipient: &'a str,
+    epoch: i64,
+    kind: &'a str,
+    correlation_id: Option<&'a str>,
+    payload: &'a Json,
+}
+
+/// Insert a queued envelope for a recipient of this session. Shared by
+/// messages, task assignment, results and cancellations (§5.3): the
+/// envelope persists inside the caller's transaction and the recipient
+/// applies it once at a safe boundary; receiving alone never wakes a turn.
+fn queue_envelope(tx: &Connection, session_id: &str, outbox: &Outbox) -> Result<String, String> {
+    let envelope_id = format!("m-{}", uuid::Uuid::new_v4());
+    let sequence: i64 = tx
+        .query_row("SELECT COALESCE(MAX(sequence), 0) + 1 FROM envelopes WHERE session_id = ?1", [session_id], |row| {
+            row.get(0)
+        })
+        .map_err(|e| format!("envelope sequence: {e}"))?;
+    tx.execute(
+        "INSERT INTO envelopes
+         (id, session_id, sender, recipient, epoch, kind, correlation_id, payload_json, sequence, state)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'ACCEPTED')",
+        rusqlite::params![
+            envelope_id,
+            session_id,
+            outbox.sender,
+            outbox.recipient,
+            outbox.epoch,
+            outbox.kind,
+            outbox.correlation_id,
+            outbox.payload.to_string(),
+            sequence
+        ],
+    )
+    .map_err(|e| format!("envelope {envelope_id}: {e}"))?;
+    Ok(envelope_id)
+}
+
+/// Instance-to-instance message (§5.3, Q5): the sender must hold a message
+/// grant covering the recipient; the envelope queues for the recipient's
+/// boundary drain. A full inbox is an explicit backpressure error.
+fn send_message(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
+    let recipient = params["recipient"].as_str().ok_or("send_message.recipient required")?;
+    let text = params["text"].as_str().ok_or("send_message.text required")?;
+    let (session, epoch, lifecycle, _, _) = load_instance(tx, recipient)?;
+    if session != session_id {
+        return Err(format!("instance {recipient} does not belong to this session"));
+    }
+    if lifecycle == "TERMINATED" {
+        return Err(format!("recipient {recipient} is terminated"));
+    }
+    let sender = match identity {
+        Identity::User => "user".to_string(),
+        Identity::System => return Err("the system does not send messages".into()),
+        Identity::Instance(actor) => {
+            let scope = format!("instance:{recipient}");
+            if !authorized(tx, actor, "message", &scope)? {
+                return Err(format!("instance {actor} holds no message grant over {recipient}"));
+            }
+            actor.clone()
+        }
+    };
+    let max_inbox = params["max_inbox"].as_i64().unwrap_or(DEFAULT_MAX_INBOX);
+    let queued: i64 = tx
+        .query_row("SELECT COUNT(*) FROM envelopes WHERE recipient = ?1 AND state = 'ACCEPTED'", [recipient], |row| {
+            row.get(0)
+        })
+        .map_err(|e| format!("inbox read: {e}"))?;
+    if queued >= max_inbox {
+        return Err(format!("recipient {recipient} inbox full ({queued}/{max_inbox}): backpressure"));
+    }
+    let correlation = params["correlation_id"].as_str();
+    let envelope_id = queue_envelope(
+        tx,
+        session_id,
+        &Outbox {
+            sender: &sender,
+            recipient,
+            epoch,
+            kind: "message",
+            correlation_id: correlation,
+            payload: &json!({"text": text}),
+        },
+    )?;
+    event(
+        tx,
+        session_id,
+        "message_sent",
+        recipient,
+        &json!({"envelope_id": envelope_id, "sender": sender, "correlation_id": correlation}),
+    )?;
+    Ok(json!({"envelope_id": envelope_id, "queued": true}))
+}
+
+/// The context text one queued envelope becomes (§5.3): the structured
+/// sender/kind stay on the envelope row; the model sees a plain user-role
+/// line with the origin prefixed.
+fn envelope_text(kind: &str, sender: &str, correlation: Option<&str>, payload: &Json) -> String {
+    let text =
+        payload["text"].as_str().or(payload["description"].as_str()).or(payload["summary"].as_str()).unwrap_or("");
+    match (kind, correlation) {
+        ("message", _) => format!("[message from {sender}] {text}"),
+        ("task_assigned", Some(task)) => format!("[task {task} assigned by {sender}] {text}"),
+        ("task_result", Some(task)) => format!("[task {task} result from {sender}] {text}"),
+        ("task_cancelled", Some(task)) => format!("[task {task} cancelled by {sender}] {text}"),
+        (other, _) => format!("[{other} from {sender}] {text}"),
+    }
+}
+
+/// Drain the recipient inbox at a safe boundary (§5.3, A06): every queued
+/// envelope of the current epoch applies once in sequence order — the
+/// apply-dedup makes a replayed drain a no-op — and stale-epoch leftovers
+/// seal as SUPERSEDED instead of leaking into the new epoch.
+fn drain_inbox(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
+    let instance_id = params["instance_id"].as_str().ok_or("drain_inbox.instance_id required")?;
+    match identity {
+        Identity::User => {}
+        Identity::Instance(actor) if *actor == instance_id => {}
+        _ => return Err("only the user or the instance itself may drain its inbox".into()),
+    }
+    let (session, epoch, lifecycle, _, _) = load_instance(tx, instance_id)?;
+    if session != session_id {
+        return Err(format!("instance {instance_id} does not belong to this session"));
+    }
+    if lifecycle == "TERMINATED" {
+        return Err(format!("instance {instance_id} is terminated"));
+    }
+    let queued: Vec<(String, String, i64, String, Option<String>, String)> = {
+        let mut stmt = tx
+            .prepare(
+                "SELECT id, sender, epoch, kind, correlation_id, payload_json FROM envelopes
+                 WHERE recipient = ?1 AND session_id = ?2 AND state = 'ACCEPTED' ORDER BY sequence",
+            )
+            .map_err(|e| format!("inbox read: {e}"))?;
+        let rows = stmt
+            .query_map(rusqlite::params![instance_id, session_id], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?))
+            })
+            .map_err(|e| format!("inbox query: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("inbox collect: {e}"))?
+    };
+    let mut applied = 0i64;
+    let mut sealed = 0i64;
+    for (id, sender, envelope_epoch, kind, correlation, payload_json) in queued {
+        if envelope_epoch != epoch {
+            tx.execute("UPDATE envelopes SET state = 'SUPERSEDED' WHERE id = ?1", [&id])
+                .map_err(|e| format!("seal envelope {id}: {e}"))?;
+            sealed += 1;
+            continue;
+        }
+        let payload: Json = serde_json::from_str(&payload_json).unwrap_or(json!({}));
+        let content = envelope_text(&kind, &sender, correlation.as_deref(), &payload);
+        append_context(tx, instance_id, epoch, "user", &json!({"role": "user", "content": content}), Some(&id), &[])?;
+        tx.execute("UPDATE envelopes SET state = 'APPLIED' WHERE id = ?1", [&id])
+            .map_err(|e| format!("apply envelope {id}: {e}"))?;
+        applied += 1;
+    }
+    if applied > 0 || sealed > 0 {
+        event(tx, session_id, "inbox_drained", instance_id, &json!({"applied": applied, "sealed": sealed}))?;
+    }
+    Ok(json!({"instance_id": instance_id, "applied": applied, "sealed": sealed}))
+}
+
+/// Delegate a task (§5.2/§5.3): the requester atomically registers the task,
+/// the narrow return capability (task_result@task:<id>, just enough to
+/// settle this task — no general reverse channel) and the assignment
+/// envelope. Dependencies must already exist; a fresh task id cannot close
+/// a dependency cycle, so explicit prerequisites stay acyclic (§5.3).
+fn delegate_task(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
+    let task_id = params["task_id"].as_str().ok_or("delegate_task.task_id required")?;
+    let assignee = params["assignee"].as_str().ok_or("delegate_task.assignee required")?;
+    let description = params["description"].as_str().unwrap_or("");
+    let acceptance = params.get("acceptance_refs").cloned().unwrap_or(json!([]));
+    let dependencies = params.get("dependencies").cloned().unwrap_or(json!([]));
+    let (session, epoch, lifecycle, _, _) = load_instance(tx, assignee)?;
+    if session != session_id {
+        return Err(format!("instance {assignee} does not belong to this session"));
+    }
+    if lifecycle == "TERMINATED" {
+        return Err(format!("assignee {assignee} is terminated"));
+    }
+    let (requester, parent_grant) = match identity {
+        Identity::User => ("user".to_string(), None),
+        Identity::System => return Err("the system does not delegate tasks".into()),
+        Identity::Instance(actor) => {
+            let scope = format!("instance:{assignee}");
+            let Some((grant_id, _)) = active_grant(tx, actor, "delegate", &scope)? else {
+                return Err(format!("instance {actor} holds no delegate grant over {assignee}"));
+            };
+            (actor.clone(), Some(grant_id))
+        }
+    };
+    let goal_id = match params["goal_id"].as_str() {
+        Some(goal) => goal.to_string(),
+        None => {
+            if requester == "user" {
+                return Err("delegate_task.goal_id required when the user delegates".into());
+            }
+            tx.query_row("SELECT active_goal_id FROM instances WHERE id = ?1", [&requester], |row| {
+                row.get::<_, Option<String>>(0)
+            })
+            .map_err(|e| format!("requester goal: {e}"))?
+            .ok_or("delegate_task.goal_id required: requester has no active goal")?
+        }
+    };
+    let deps: Vec<String> = dependencies
+        .as_array()
+        .map(|items| items.iter().filter_map(|item| item.as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    for dep in &deps {
+        if dep == task_id {
+            return Err("task must not depend on itself".into());
+        }
+        let exists: Option<String> = tx
+            .query_row(
+                "SELECT id FROM tasks WHERE id = ?1 AND session_id = ?2",
+                rusqlite::params![dep, session_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| format!("dependency {dep}: {e}"))?;
+        if exists.is_none() {
+            return Err(format!("dependency {dep} does not exist in this session"));
+        }
+    }
+    tx.execute(
+        "INSERT INTO tasks (id, goal_id, session_id, requester, assignee, dependencies_json,
+                            acceptance_refs_json, status, result_refs_json, revision)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'PENDING', '[]', 0)",
+        rusqlite::params![
+            task_id,
+            goal_id,
+            session_id,
+            requester,
+            assignee,
+            dependencies.to_string(),
+            acceptance.to_string()
+        ],
+    )
+    .map_err(|e| format!("delegate_task {task_id}: {e}"))?;
+    let return_grant = format!("g-{}", uuid::Uuid::new_v4());
+    tx.execute(
+        "INSERT INTO grants (id, session_id, issuer, subject, action, resource_scope, parent_grant_id, revision, revoked_at)
+         VALUES (?1, ?2, ?3, ?4, 'task_result', ?5, ?6, 0, NULL)",
+        rusqlite::params![return_grant, session_id, requester, assignee, format!("task:{task_id}"), parent_grant],
+    )
+    .map_err(|e| format!("return grant: {e}"))?;
+    bump_grant_revision(tx)?;
+    let envelope_id = queue_envelope(
+        tx,
+        session_id,
+        &Outbox {
+            sender: &requester,
+            recipient: assignee,
+            epoch,
+            kind: "task_assigned",
+            correlation_id: Some(task_id),
+            payload: &json!({"task_id": task_id, "description": description, "acceptance_refs": acceptance}),
+        },
+    )?;
+    event(
+        tx,
+        session_id,
+        "task_delegated",
+        assignee,
+        &json!({"task_id": task_id, "requester": requester, "goal_id": goal_id, "envelope_id": envelope_id}),
+    )?;
+    Ok(json!({"task_id": task_id, "status": "PENDING", "return_grant": return_grant, "envelope_id": envelope_id}))
+}
+
+fn load_task(tx: &Connection, session_id: &str, task_id: &str) -> Result<(String, String, String, String), String> {
+    tx.query_row(
+        "SELECT goal_id, requester, assignee, status FROM tasks WHERE id = ?1 AND session_id = ?2",
+        rusqlite::params![task_id, session_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    )
+    .map_err(|e| format!("task {task_id}: {e}"))
+}
+
+/// The assignee starts its task (PENDING → RUNNING).
+fn start_task(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
+    let task_id = params["task_id"].as_str().ok_or("start_task.task_id required")?;
+    let (_, _, assignee, status) = load_task(tx, session_id, task_id)?;
+    match identity {
+        Identity::User => {}
+        Identity::Instance(actor) if *actor == assignee => {}
+        _ => return Err("only the user or the assignee may start a task".into()),
+    }
+    if status != "PENDING" {
+        return Err(format!("task {task_id} is {status}, not startable"));
+    }
+    tx.execute("UPDATE tasks SET status = 'RUNNING', revision = revision + 1 WHERE id = ?1", [task_id])
+        .map_err(|e| format!("start task {task_id}: {e}"))?;
+    event(tx, session_id, "task_started", &assignee, &json!({"task_id": task_id}))?;
+    Ok(json!({"task_id": task_id, "status": "RUNNING"}))
+}
+
+/// Settle or report a task (§5.3): the assignee proves the narrow return
+/// capability for exactly this task; the result is delivered only to a
+/// still-available requester, and a terminal settlement consumes the return
+/// grant in the same transaction.
+fn complete_task(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
+    let task_id = params["task_id"].as_str().ok_or("complete_task.task_id required")?;
+    let target = params["status"].as_str().ok_or("complete_task.status required")?;
+    if !matches!(target, "SUCCEEDED" | "FAILED" | "BLOCKED") {
+        return Err(format!("complete_task status {target:?} must be SUCCEEDED, FAILED or BLOCKED"));
+    }
+    let summary = params["summary"].as_str().unwrap_or("");
+    let result_refs = params.get("result_refs").cloned().unwrap_or(json!([]));
+    let (_, requester, assignee, status) = load_task(tx, session_id, task_id)?;
+    // terminal tasks answer from the stored state before any authorization
+    // work — the return grant may already be consumed by the first settle
+    if matches!(status.as_str(), "SUCCEEDED" | "FAILED" | "CANCELLED") {
+        if status == target {
+            return Ok(json!({"task_id": task_id, "status": status, "replayed": true}));
+        }
+        return Err(format!("task {task_id} is already {status}"));
+    }
+    match identity {
+        Identity::User => {}
+        Identity::Instance(actor) => {
+            if *actor != assignee {
+                return Err(format!("instance {actor} is not the assignee of task {task_id}"));
+            }
+            let scope = format!("task:{task_id}");
+            if !authorized(tx, &assignee, "task_result", &scope)? {
+                return Err(format!("instance {assignee} holds no task_result grant for {task_id}"));
+            }
+        }
+        Identity::System => return Err("the system does not complete tasks".into()),
+    }
+    tx.execute(
+        "UPDATE tasks SET status = ?1, result_refs_json = ?2, revision = revision + 1 WHERE id = ?3",
+        rusqlite::params![target, result_refs.to_string(), task_id],
+    )
+    .map_err(|e| format!("complete task {task_id}: {e}"))?;
+    let terminal = matches!(target, "SUCCEEDED" | "FAILED");
+    let mut delivered = false;
+    if requester != "user" {
+        let alive: Option<String> = tx
+            .query_row("SELECT lifecycle FROM instances WHERE id = ?1", [&requester], |row| row.get(0))
+            .optional()
+            .map_err(|e| format!("requester {requester}: {e}"))?;
+        if alive.as_deref().is_some_and(|state| state != "TERMINATED") {
+            let epoch: i64 = tx
+                .query_row("SELECT context_epoch FROM instances WHERE id = ?1", [&requester], |row| row.get(0))
+                .map_err(|e| format!("requester epoch: {e}"))?;
+            queue_envelope(
+                tx,
+                session_id,
+                &Outbox {
+                    sender: &assignee,
+                    recipient: &requester,
+                    epoch,
+                    kind: "task_result",
+                    correlation_id: Some(task_id),
+                    payload: &json!({"task_id": task_id, "status": target, "summary": summary, "result_refs": result_refs}),
+                },
+            )?;
+            delivered = true;
+        }
+    }
+    if terminal {
+        // a settled task consumes its return path (§5.3)
+        let grants: Vec<String> = {
+            let mut stmt = tx
+                .prepare(
+                    "SELECT id FROM grants WHERE subject = ?1 AND action = 'task_result'
+                     AND resource_scope = ?2 AND revoked_at IS NULL",
+                )
+                .map_err(|e| format!("return grants: {e}"))?;
+            let rows = stmt
+                .query_map(rusqlite::params![assignee, format!("task:{task_id}")], |row| row.get(0))
+                .map_err(|e| format!("return grants query: {e}"))?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("return grants collect: {e}"))?
+        };
+        let mut revoked = false;
+        for id in grants {
+            revoked |= !revoke_grant_tree(tx, &id)?.is_empty();
+        }
+        if revoked {
+            bump_grant_revision(tx)?;
+        }
+    }
+    event(
+        tx,
+        session_id,
+        "task_completed",
+        &requester,
+        &json!({"task_id": task_id, "status": target, "assignee": assignee, "delivered": delivered}),
+    )?;
+    Ok(json!({"task_id": task_id, "status": target, "delivered": delivered}))
+}
+
+/// Cancel a task (§5.3): the requester or the user closes it, the return
+/// path dies with it and the assignee learns via a queued envelope.
+fn cancel_task(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
+    let task_id = params["task_id"].as_str().ok_or("cancel_task.task_id required")?;
+    let reason = params["reason"].as_str().unwrap_or("cancelled by requester");
+    let (_, requester, assignee, status) = load_task(tx, session_id, task_id)?;
+    match identity {
+        Identity::User => {}
+        Identity::Instance(actor) if *actor == requester => {}
+        _ => return Err("only the user or the requester may cancel a task".into()),
+    }
+    if matches!(status.as_str(), "SUCCEEDED" | "FAILED" | "CANCELLED") {
+        return Ok(json!({"task_id": task_id, "status": status, "already_terminal": true}));
+    }
+    tx.execute("UPDATE tasks SET status = 'CANCELLED', revision = revision + 1 WHERE id = ?1", [task_id])
+        .map_err(|e| format!("cancel task {task_id}: {e}"))?;
+    let grants: Vec<String> = {
+        let mut stmt = tx
+            .prepare(
+                "SELECT id FROM grants WHERE subject = ?1 AND action = 'task_result'
+                 AND resource_scope = ?2 AND revoked_at IS NULL",
+            )
+            .map_err(|e| format!("return grants: {e}"))?;
+        let rows = stmt
+            .query_map(rusqlite::params![assignee, format!("task:{task_id}")], |row| row.get(0))
+            .map_err(|e| format!("return grants query: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("return grants collect: {e}"))?
+    };
+    let mut revoked = false;
+    for id in grants {
+        revoked |= !revoke_grant_tree(tx, &id)?.is_empty();
+    }
+    if revoked {
+        bump_grant_revision(tx)?;
+    }
+    let alive: Option<String> = tx
+        .query_row("SELECT lifecycle FROM instances WHERE id = ?1", [&assignee], |row| row.get(0))
+        .optional()
+        .map_err(|e| format!("assignee {assignee}: {e}"))?;
+    if alive.as_deref().is_some_and(|state| state != "TERMINATED") {
+        let epoch: i64 = tx
+            .query_row("SELECT context_epoch FROM instances WHERE id = ?1", [&assignee], |row| row.get(0))
+            .map_err(|e| format!("assignee epoch: {e}"))?;
+        queue_envelope(
+            tx,
+            session_id,
+            &Outbox {
+                sender: &requester,
+                recipient: &assignee,
+                epoch,
+                kind: "task_cancelled",
+                correlation_id: Some(task_id),
+                payload: &json!({"task_id": task_id, "reason": reason}),
+            },
+        )?;
+    }
+    event(tx, session_id, "task_cancelled", &assignee, &json!({"task_id": task_id, "reason": reason}))?;
+    Ok(json!({"task_id": task_id, "status": "CANCELLED"}))
+}
+
+/// Controlled history entry (A05, Q8): the user reads every instance; an
+/// instance reads only its own context — anything else fails closed.
+fn read_history(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
+    let instance_id = params["instance_id"].as_str().ok_or("read_history.instance_id required")?;
+    match identity {
+        Identity::User => {}
+        Identity::Instance(actor) if *actor == instance_id => {}
+        Identity::Instance(actor) => {
+            return Err(format!("instance {actor} may not read the private history of {instance_id}"));
+        }
+        Identity::System => return Err("the system does not read history".into()),
+    }
+    let (session, epoch, _, _, _) = load_instance(tx, instance_id)?;
+    if session != session_id {
+        return Err(format!("instance {instance_id} does not belong to this session"));
+    }
+    let epoch = params["epoch"].as_i64().unwrap_or(epoch);
+    let limit = params["limit"].as_i64().unwrap_or(200);
+    let entries: Vec<Json> = {
+        let mut stmt = tx
+            .prepare(
+                "SELECT id, idx, kind, message_json, refs_json FROM context_entries
+                 WHERE instance_id = ?1 AND epoch = ?2 ORDER BY idx LIMIT ?3",
+            )
+            .map_err(|e| format!("history read: {e}"))?;
+        let rows = stmt
+            .query_map(rusqlite::params![instance_id, epoch, limit], |row| {
+                Ok(json!({"id": row.get::<_, String>(0)?, "idx": row.get::<_, i64>(1)?,
+                          "kind": row.get::<_, String>(2)?,
+                          "message": serde_json::from_str::<Json>(&row.get::<_, String>(3)?).unwrap_or(Json::Null),
+                          "refs": serde_json::from_str::<Json>(&row.get::<_, String>(4)?).unwrap_or(json!([]))}))
+            })
+            .map_err(|e| format!("history query: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("history collect: {e}"))?
+    };
+    Ok(json!({"instance_id": instance_id, "epoch": epoch, "entries": entries}))
 }
 
 fn create_goal(tx: &Connection, session_id: &str, params: &Json) -> Result<Json, String> {
@@ -2595,6 +3101,270 @@ mod tests {
             )
             .unwrap();
         assert_eq!(i1_grants, 1);
+        cleanup(&path);
+    }
+
+    /// Give `subject` a message grant over `instance:<peer>` issued by the
+    /// user — the edges of the communication graph (§5.1).
+    fn grant_message(ctl: &mut Control, subject: &str, peer: &str, tag: &str) {
+        ctl.submit(
+            cmd(
+                &format!("gm-{tag}"),
+                "issue_grant",
+                json!({"subject": subject, "action": "message", "resource_scope": format!("instance:{peer}")}),
+            ),
+            Identity::User,
+        )
+        .expect("grant message");
+    }
+
+    fn drain(ctl: &mut Control, instance: &str) -> Json {
+        ctl.submit(
+            cmd(&format!("dr-{instance}-{}", uuid::Uuid::new_v4()), "drain_inbox", json!({"instance_id": instance})),
+            Identity::Instance(instance.into()),
+        )
+        .expect("drain")
+    }
+
+    #[test]
+    fn messages_flow_across_an_authorized_ring() {
+        let (mut ctl, path) = control("ring");
+        create_instance(&mut ctl, "i1");
+        create_instance(&mut ctl, "i2");
+        create_instance(&mut ctl, "i3");
+        // A02: i1→i2→i3→i1, every edge an explicit grant
+        grant_message(&mut ctl, "i1", "i2", "a");
+        grant_message(&mut ctl, "i2", "i3", "b");
+        grant_message(&mut ctl, "i3", "i1", "c");
+        for (from, to, text) in [("i1", "i2", "ping-b"), ("i2", "i3", "ping-c"), ("i3", "i1", "ping-a")] {
+            ctl.submit(
+                cmd(&format!("sm-{from}"), "send_message", json!({"recipient": to, "text": text})),
+                Identity::Instance(from.into()),
+            )
+            .expect("send");
+        }
+        // queued, not yet in any context: receiving never wakes a turn (§5.3)
+        for instance in ["i1", "i2", "i3"] {
+            assert_eq!(context_count(&ctl, instance), 0);
+        }
+        let drained = drain(&mut ctl, "i2");
+        assert_eq!(drained["applied"], json!(1));
+        let message: String = ctl
+            .connection()
+            .query_row(
+                "SELECT message_json FROM context_entries WHERE instance_id = 'i2' AND kind = 'user'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(message.contains("[message from i1] ping-b"), "{message}");
+        // a replayed drain does not re-apply (A06)
+        let again = drain(&mut ctl, "i2");
+        assert_eq!(again["applied"], json!(0));
+        assert_eq!(context_count(&ctl, "i2"), 1);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn send_message_requires_grant_and_backpressure_is_explicit() {
+        let (mut ctl, path) = control("backpressure");
+        create_instance(&mut ctl, "i1");
+        create_instance(&mut ctl, "i2");
+        // no grant: the send fails closed
+        let err = ctl
+            .submit(
+                cmd("sm-0", "send_message", json!({"recipient": "i2", "text": "hi"})),
+                Identity::Instance("i1".into()),
+            )
+            .unwrap_err();
+        assert!(err.contains("message grant"), "{err}");
+        grant_message(&mut ctl, "i1", "i2", "a");
+        ctl.submit(
+            cmd("sm-1", "send_message", json!({"recipient": "i2", "text": "one", "max_inbox": 1})),
+            Identity::Instance("i1".into()),
+        )
+        .expect("first send");
+        // the second send sees the full inbox and fails openly (§5.3)
+        let err = ctl
+            .submit(
+                cmd("sm-2", "send_message", json!({"recipient": "i2", "text": "two", "max_inbox": 1})),
+                Identity::Instance("i1".into()),
+            )
+            .unwrap_err();
+        assert!(err.contains("backpressure"), "{err}");
+        // draining frees the inbox; nothing was silently dropped
+        drain(&mut ctl, "i2");
+        ctl.submit(
+            cmd("sm-3", "send_message", json!({"recipient": "i2", "text": "three", "max_inbox": 1})),
+            Identity::Instance("i1".into()),
+        )
+        .expect("send after drain");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn delegate_and_complete_task_uses_the_narrow_return_path() {
+        let (mut ctl, path) = control("delegate");
+        create_instance(&mut ctl, "i1");
+        create_instance(&mut ctl, "i2");
+        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1"})), Identity::User).expect("goal");
+        // unknown and self dependencies are refused (§5.3 acyclic prerequisites)
+        let err = ctl
+            .submit(
+                cmd(
+                    "dt-bad",
+                    "delegate_task",
+                    json!({"task_id": "t-bad", "assignee": "i2", "goal_id": "g1", "dependencies": ["t-missing"]}),
+                ),
+                Identity::User,
+            )
+            .unwrap_err();
+        assert!(err.contains("does not exist"), "{err}");
+        // i1 needs a delegate grant over i2 to assign work (Q5)
+        let err = ctl
+            .submit(
+                cmd(
+                    "dt-ng",
+                    "delegate_task",
+                    json!({"task_id": "t0", "assignee": "i2", "goal_id": "g1", "description": "nope"}),
+                ),
+                Identity::Instance("i1".into()),
+            )
+            .unwrap_err();
+        assert!(err.contains("delegate grant"), "{err}");
+        ctl.submit(
+            cmd("gd-1", "issue_grant", json!({"subject": "i1", "action": "delegate", "resource_scope": "instance:i2"})),
+            Identity::User,
+        )
+        .expect("grant delegate");
+        let delegated = ctl
+            .submit(
+                cmd(
+                    "dt-1",
+                    "delegate_task",
+                    json!({"task_id": "t1", "assignee": "i2", "goal_id": "g1",
+                           "description": "summarise the report", "acceptance_refs": ["spec:1"]}),
+                ),
+                Identity::Instance("i1".into()),
+            )
+            .expect("delegate");
+        assert!(delegated["return_grant"].as_str().is_some());
+        // the assignment queues for i2 and applies at its boundary
+        let drained = drain(&mut ctl, "i2");
+        assert_eq!(drained["applied"], json!(1));
+        let message: String = ctl
+            .connection()
+            .query_row(
+                "SELECT message_json FROM context_entries WHERE instance_id = 'i2' AND kind = 'user'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(message.contains("[task t1 assigned by i1] summarise the report"), "{message}");
+        ctl.submit(cmd("st-1", "start_task", json!({"task_id": "t1"})), Identity::Instance("i2".into()))
+            .expect("start");
+        // settlement delivers the result to the requester and consumes the
+        // return grant in the same transaction (§5.3)
+        let done = ctl
+            .submit(
+                cmd(
+                    "ct-1",
+                    "complete_task",
+                    json!({"task_id": "t1", "status": "SUCCEEDED", "summary": "done", "result_refs": ["art:9"]}),
+                ),
+                Identity::Instance("i2".into()),
+            )
+            .expect("complete");
+        assert_eq!(done["delivered"], json!(true));
+        let return_grants: i64 = ctl
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM grants WHERE action = 'task_result' AND resource_scope = 'task:t1'
+                 AND revoked_at IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(return_grants, 0);
+        // i1 learns the result at its own boundary
+        let drained = drain(&mut ctl, "i1");
+        assert_eq!(drained["applied"], json!(1));
+        let message: String = ctl
+            .connection()
+            .query_row(
+                "SELECT message_json FROM context_entries WHERE instance_id = 'i1' AND kind = 'user'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(message.contains("[task t1 result from i2]"), "{message}");
+        // the return path is gone: no second settlement, no new channel
+        let replay = ctl
+            .submit(
+                cmd("ct-2", "complete_task", json!({"task_id": "t1", "status": "SUCCEEDED", "summary": "done"})),
+                Identity::Instance("i2".into()),
+            )
+            .expect("replay");
+        assert_eq!(replay["replayed"], json!(true));
+        let err = ctl
+            .submit(
+                cmd("ct-3", "complete_task", json!({"task_id": "t1", "status": "FAILED", "summary": "changed mind"})),
+                Identity::Instance("i2".into()),
+            )
+            .unwrap_err();
+        assert!(err.contains("already SUCCEEDED"), "{err}");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn cancel_task_severs_the_return_path() {
+        let (mut ctl, path) = control("cancel-task");
+        create_instance(&mut ctl, "i1");
+        create_instance(&mut ctl, "i2");
+        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1"})), Identity::User).expect("goal");
+        ctl.submit(
+            cmd("dt-1", "delegate_task", json!({"task_id": "t1", "assignee": "i2", "goal_id": "g1"})),
+            Identity::User,
+        )
+        .expect("delegate");
+        ctl.submit(cmd("ct-x", "cancel_task", json!({"task_id": "t1", "reason": "superseded"})), Identity::User)
+            .expect("cancel");
+        // the assignee is informed at its boundary (assignment + cancel);
+        // settlement is refused
+        let drained = drain(&mut ctl, "i2");
+        assert_eq!(drained["applied"], json!(2));
+        let err = ctl
+            .submit(
+                cmd("ct-1", "complete_task", json!({"task_id": "t1", "status": "SUCCEEDED", "summary": "late"})),
+                Identity::Instance("i2".into()),
+            )
+            .unwrap_err();
+        assert!(err.contains("task_result grant") || err.contains("already CANCELLED"), "{err}");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn read_history_is_user_or_self_only() {
+        let (mut ctl, path) = control("history");
+        create_instance(&mut ctl, "i1");
+        create_instance(&mut ctl, "i2");
+        ctl.submit(
+            cmd("in-1", "submit_input", json!({"instance_id": "i1", "envelope_id": "e1", "text": "secret"})),
+            Identity::User,
+        )
+        .expect("input");
+        // A05: another instance is refused at the controlled entry
+        let err = ctl
+            .submit(cmd("rh-0", "read_history", json!({"instance_id": "i1"})), Identity::Instance("i2".into()))
+            .unwrap_err();
+        assert!(err.contains("private history"), "{err}");
+        // self and the user read fine
+        let own = ctl
+            .submit(cmd("rh-1", "read_history", json!({"instance_id": "i2"})), Identity::Instance("i2".into()))
+            .expect("own history");
+        assert_eq!(own["entries"].as_array().unwrap().len(), 0);
+        let full = ctl.submit(cmd("rh-2", "read_history", json!({"instance_id": "i1"})), Identity::User).expect("user");
+        assert_eq!(full["entries"].as_array().unwrap().len(), 1);
         cleanup(&path);
     }
 

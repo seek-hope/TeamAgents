@@ -537,6 +537,17 @@ impl<P: Provider> Driver<P> {
     /// READY: consume input or last tool results into a fixed request, then
     /// reserve budget and register it — one transaction (§3).
     async fn step_ready(&mut self, snapshot: &Snapshot) -> Result<bool, String> {
+        // queued envelopes apply at this safe boundary, before the request
+        // is fixed (§5.3); a replayed drain is a no-op
+        self.submit(
+            self.command(
+                format!("drain-{}", uuid::Uuid::new_v4()),
+                "drain_inbox",
+                json!({"instance_id": self.config.instance_id}),
+            ),
+            Identity::Instance(self.config.instance_id.clone()),
+        )
+        .await?;
         let entries = self.context_entries(snapshot).await?;
         // nothing unconsumed: the last word was the assistant's — idle
         if entries.last().is_none_or(|entry| entry.kind == EntryKind::Assistant) {
