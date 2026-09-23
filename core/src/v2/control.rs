@@ -103,6 +103,7 @@ fn dispatch(
 ) -> Result<Json, String> {
     match method {
         "create_instance" => create_instance(tx, session_id, params, identity),
+        "spawn_instance" => spawn_instance(tx, session_id, params, identity),
         "issue_grant" => issue_grant(tx, session_id, params, identity),
         "revoke_grant" => revoke_grant(tx, session_id, params, identity),
         "reauthorize_operation" => reauthorize_operation(tx, session_id, params),
@@ -217,12 +218,38 @@ fn authorized(tx: &Connection, subject: &str, action: &str, resource: &str) -> R
 }
 
 /// The capability a tool intent needs (§5.1): shell touches the explicitly
-/// granted shared workspace; other built-ins stay session-internal.
+/// granted shared workspace; collaboration intents need their connection or
+/// management grant — re-checked at the dispatch linearization point (§6.1,
+/// A04), so a revocation between import and dispatch fails the operation.
 fn capability_gap(tx: &Connection, instance: &str, intent: &Json) -> Result<Option<String>, String> {
-    if intent["name"].as_str() == Some("shell") && !authorized(tx, instance, "shell", "workspace")? {
-        return Ok(Some(format!("instance {instance} holds no shell@workspace grant")));
-    }
-    Ok(None)
+    let gap = match intent["name"].as_str() {
+        Some("shell") if !authorized(tx, instance, "shell", "workspace")? => {
+            Some(format!("instance {instance} holds no shell@workspace grant"))
+        }
+        Some(crate::kernel::SEND_TOOL) => {
+            let recipient = intent["args"]["recipient"].as_str().unwrap_or("");
+            let scope = format!("instance:{recipient}");
+            if authorized(tx, instance, "message", &scope)? {
+                None
+            } else {
+                Some(format!("instance {instance} holds no message grant over {recipient}"))
+            }
+        }
+        Some(crate::kernel::DELEGATE_TOOL) => {
+            let assignee = intent["args"]["assignee"].as_str().unwrap_or("");
+            let scope = format!("instance:{assignee}");
+            if authorized(tx, instance, "delegate", &scope)? {
+                None
+            } else {
+                Some(format!("instance {instance} holds no delegate grant over {assignee}"))
+            }
+        }
+        Some(crate::kernel::SPAWN_TOOL) if !authorized(tx, instance, "manage", "session")? => {
+            Some(format!("instance {instance} holds no manage grant over the session"))
+        }
+        _ => None,
+    };
+    Ok(gap)
 }
 
 /// Issue a scoped grant (§5.1): the User is the root of authority; an
@@ -545,6 +572,61 @@ fn create_instance(tx: &Connection, session_id: &str, params: &Json, identity: &
     }
     event(tx, session_id, "instance_created", id, &json!({"instance_id": id}))?;
     Ok(json!({"instance_id": id, "phase": "READY", "revision": 0, "epoch": 0}))
+}
+
+/// Atomic spawn (§5.2): create the instance, derive the spawner's delegate
+/// authority over it from its manage grant, and register the optional
+/// initial task with its narrow return path — one transaction, so a spawned
+/// worker never exists without its task and return channel. Creation itself
+/// grants no connections or file scopes (§5.1).
+fn spawn_instance(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
+    let spawner = match identity {
+        Identity::User => "user".to_string(),
+        Identity::System => return Err("the system does not spawn instances".into()),
+        Identity::Instance(actor) => {
+            if !authorized(tx, actor, "manage", "session")? {
+                return Err(format!("instance {actor} holds no manage grant over the session"));
+            }
+            actor.clone()
+        }
+    };
+    let instance_id = params["instance_id"].as_str().ok_or("spawn_instance.instance_id required")?;
+    if let Some(instructions) = params["instructions"].as_str() {
+        if instructions.is_empty() {
+            return Err("spawn_instance.instructions must not be empty".into());
+        }
+    }
+    let create = json!({"id": instance_id, "profile": params.get("profile").cloned().unwrap_or(json!({})),
+                        "workspace_ref": params["workspace_ref"].as_str().unwrap_or("")});
+    // Identity::Instance here on purpose: spawn grants no automatic
+    // shell@workspace — that path belongs to user-driven creation only (§5.1)
+    create_instance(tx, session_id, &create, &Identity::Instance(spawner.clone()))?;
+    if spawner != "user" {
+        // the spawner's delegate authority over the new instance is derived
+        // from its manage grant (management of connections, Q5)
+        issue_grant(
+            tx,
+            session_id,
+            &json!({"subject": spawner, "action": "delegate", "resource_scope": format!("instance:{instance_id}")}),
+            &Identity::Instance(spawner.clone()),
+        )?;
+    }
+    let mut task = Json::Null;
+    if let Some(description) = params["task"].as_str() {
+        let task_id =
+            params["task_id"].as_str().map(str::to_string).unwrap_or_else(|| format!("t-{}", uuid::Uuid::new_v4()));
+        let mut delegate = json!({"task_id": task_id, "assignee": instance_id, "description": description});
+        if let Some(goal) = params["goal_id"].as_str() {
+            delegate["goal_id"] = json!(goal);
+        }
+        if let Some(acceptance) = params.get("acceptance_refs") {
+            delegate["acceptance_refs"] = acceptance.clone();
+        }
+        let delegation_identity = if spawner == "user" { Identity::User } else { Identity::Instance(spawner.clone()) };
+        task = delegate_task(tx, session_id, &delegate, &delegation_identity)?;
+    }
+    event(tx, session_id, "instance_spawned", instance_id, &json!({"spawner": spawner, "task": !task.is_null()}))?;
+    Ok(json!({"instance_id": instance_id, "task": task}))
 }
 
 /// Default inbox capacity per recipient (§5.3): a full inbox fails the
@@ -1607,6 +1689,19 @@ fn wake_satisfied_at(tx: &Connection, session_id: &str, now: f64) -> Result<Vec<
         }
         tx.execute("UPDATE waits SET status = 'SATISFIED' WHERE id = ?1", [&wait_id])
             .map_err(|e| format!("wake {wait_id}: {e}"))?;
+        // the wake reason joins the context: without it the last entry would
+        // be the instance's own assistant turn and the loop would park idle
+        // instead of letting the model continue (§5.3). Dedup key = wait id;
+        // the PENDING → SATISFIED guard above fires once.
+        append_context(
+            tx,
+            &instance_id,
+            epoch,
+            "note",
+            &json!({"role": "user", "content": format!("[wait {wait_id} satisfied] mode={mode} conditions={conditions_json} timer_at={timer_at:?}")}),
+            Some(&wait_id),
+            &[],
+        )?;
         // WAITING → READY is the ready-intent registration of §3; a phase
         // that already advanced (user input, reset) is not rewritten
         tx.execute(
@@ -1754,7 +1849,14 @@ fn import_response(tx: &Connection, session_id: &str, params: &Json, identity: &
         if conditions.is_empty() {
             return Err("import_response.wait.conditions must not be empty".into());
         }
-        let timer_at = wait["timer_at"].as_f64();
+        // timer_at is absolute; timer_seconds is relative to this
+        // transaction's single clock reading (§5.3)
+        let timer_at = match (wait["timer_at"].as_f64(), wait["timer_seconds"].as_f64()) {
+            (Some(at), _) => Some(at),
+            (None, Some(seconds)) if seconds > 0.0 => Some(crate::models::now() + seconds),
+            (None, Some(_)) => return Err("import_response.wait.timer_seconds must be positive".into()),
+            (None, None) => None,
+        };
         let spec = WaitSpec { mode, conditions: &conditions, timer_at };
         let (satisfied, _) = evaluate_wait(tx, session_id, &request_instance, epoch, &spec, crate::models::now())?;
         let wait_id = format!("w-{decision_id}");
@@ -3895,6 +3997,187 @@ mod tests {
         .expect("input");
         assert_eq!(phase_of(&ctl, "i1"), "READY");
         assert_eq!(wait_state(&ctl, &wait_id), "CANCELLED");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn spawn_requires_a_manage_grant() {
+        let (mut ctl, path) = control("spawn");
+        create_instance(&mut ctl, "leader");
+        // without a manage grant the spawn fails closed (§5.1)
+        let err = ctl
+            .submit(
+                cmd("sp-0", "spawn_instance", json!({"instance_id": "w1", "instructions": "work", "task": "dig"})),
+                Identity::Instance("leader".into()),
+            )
+            .unwrap_err();
+        assert!(err.contains("manage grant"), "{err}");
+        let missing: i64 =
+            ctl.connection().query_row("SELECT COUNT(*) FROM instances WHERE id = 'w1'", [], |row| row.get(0)).unwrap();
+        assert_eq!(missing, 0);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn spawn_registers_everything_in_one_transaction() {
+        let (mut ctl, path) = control("spawn-ok");
+        create_instance(&mut ctl, "leader");
+        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1"})), Identity::User).expect("goal");
+        ctl.submit(
+            cmd("mg-1", "issue_grant", json!({"subject": "leader", "action": "manage", "resource_scope": "session"})),
+            Identity::User,
+        )
+        .expect("manage");
+        let spawned = ctl
+            .submit(
+                cmd(
+                    "sp-1",
+                    "spawn_instance",
+                    json!({"instance_id": "w1", "instructions": "work", "task": "dig", "task_id": "t-w1", "goal_id": "g1"}),
+                ),
+                Identity::Instance("leader".into()),
+            )
+            .expect("spawn");
+        assert_eq!(spawned["instance_id"], json!("w1"));
+        // instance exists and holds no automatic shell grant (§5.1)
+        assert_eq!(phase_of(&ctl, "w1"), "READY");
+        let shell_grants: i64 = ctl
+            .connection()
+            .query_row("SELECT COUNT(*) FROM grants WHERE subject = 'w1' AND action = 'shell'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(shell_grants, 0);
+        // the task is registered with its narrow return path (§5.2/§5.3)
+        let task: (String, String) = ctl
+            .connection()
+            .query_row("SELECT requester, assignee FROM tasks WHERE id = 't-w1'", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(task, ("leader".to_string(), "w1".to_string()));
+        let return_grants: i64 = ctl
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM grants WHERE subject = 'w1' AND action = 'task_result'
+                 AND resource_scope = 'task:t-w1' AND revoked_at IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(return_grants, 1);
+        // the assignment waits in w1's inbox for its boundary
+        let queued: i64 = ctl
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM envelopes WHERE recipient = 'w1' AND kind = 'task_assigned' AND state = 'ACCEPTED'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(queued, 1);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn collaboration_intents_are_rechecked_at_dispatch() {
+        let (mut ctl, path) = control("collab-dispatch");
+        create_instance(&mut ctl, "i1");
+        create_instance(&mut ctl, "i2");
+        // a send intent without a message grant: refused at the linearization
+        // point even though the op was imported while the schema was visible
+        let request = begin_and_complete(&mut ctl, "x", "i1", 0);
+        ctl.submit(
+            cmd(
+                "imp-x",
+                "import_response",
+                json!({"request_id": request, "decision_id": "d-x",
+                       "entry": {"role": "assistant", "content": "send"},
+                       "intents": [{"index": 0, "call_id": "c0", "name": "send",
+                                    "args": {"recipient": "i2", "text": "hi"}}]}),
+            ),
+            Identity::System,
+        )
+        .expect("import");
+        let err = ctl
+            .submit(cmd("dp-1", "dispatch_operation", json!({"operation_id": "d-x:0"})), Identity::System)
+            .unwrap_err();
+        assert!(err.contains("message grant"), "{err}");
+        // the grant arrives; re-authorization re-stamps and dispatch passes
+        grant_message(&mut ctl, "i1", "i2", "a");
+        let re = ctl
+            .submit(cmd("ra-1", "reauthorize_operation", json!({"operation_id": "d-x:0"})), Identity::System)
+            .expect("reauthorize");
+        assert_eq!(re["status"], json!("PREPARED"));
+        let ok = ctl
+            .submit(cmd("dp-2", "dispatch_operation", json!({"operation_id": "d-x:0"})), Identity::System)
+            .expect("dispatch");
+        assert_eq!(ok["status"], json!("DISPATCH_COMMITTED"));
+        cleanup(&path);
+    }
+
+    #[test]
+    fn a_relative_timer_closes_the_wait() {
+        let (mut ctl, path) = control("wait-relative");
+        create_instance(&mut ctl, "i1");
+        create_instance(&mut ctl, "i2");
+        let wait_id = open_wait(
+            &mut ctl,
+            "x",
+            "i1",
+            0,
+            json!({"mode": "ANY", "conditions": [{"kind": "message", "from": "i2"}], "timer_seconds": 3600}),
+        );
+        assert_eq!(phase_of(&ctl, "i1"), "WAITING");
+        // the stored deadline is absolute, computed from the import clock
+        let timer_at: f64 = ctl
+            .connection()
+            .query_row("SELECT timer_at FROM waits WHERE id = ?1", [&wait_id], |row| row.get(0))
+            .unwrap();
+        assert!(timer_at > crate::models::now(), "{timer_at}");
+        let fired =
+            ctl.submit(cmd("ft-1", "fire_timer", json!({"now": timer_at + 1.0})), Identity::System).expect("fire");
+        assert_eq!(fired["satisfied"], json!([wait_id.clone()]));
+        assert_eq!(phase_of(&ctl, "i1"), "READY");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn the_wake_reason_joins_the_context() {
+        let (mut ctl, path) = control("wake-note");
+        create_instance(&mut ctl, "i1");
+        create_instance(&mut ctl, "i2");
+        grant_message(&mut ctl, "i2", "i1", "a");
+        let wait_id = open_wait(
+            &mut ctl,
+            "x",
+            "i1",
+            0,
+            json!({"mode": "ANY", "conditions": [{"kind": "message", "from": "i2"}]}),
+        );
+        ctl.submit(
+            cmd("sm-1", "send_message", json!({"recipient": "i1", "text": "ping"})),
+            Identity::Instance("i2".into()),
+        )
+        .expect("send");
+        drain(&mut ctl, "i1");
+        assert_eq!(wait_state(&ctl, &wait_id), "SATISFIED");
+        // the model sees why it woke; the note lands after the message
+        let note: String = ctl
+            .connection()
+            .query_row(
+                "SELECT message_json FROM context_entries WHERE instance_id = 'i1' AND kind = 'note' ORDER BY idx DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(note.contains(&format!("[wait {wait_id} satisfied]")), "{note}");
+        // a replayed wake pass does not duplicate the note
+        let notes: i64 = ctl
+            .connection()
+            .query_row("SELECT COUNT(*) FROM context_entries WHERE instance_id = 'i1' AND kind = 'note'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(notes, 1);
         cleanup(&path);
     }
 

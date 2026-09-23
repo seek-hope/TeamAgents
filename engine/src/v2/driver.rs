@@ -360,6 +360,14 @@ impl<P: Provider> Driver<P> {
                 _ => false,
             };
             if !stepped {
+                if snapshot.phase == "WAITING" {
+                    // due timers close their waits at poll granularity (§5.3)
+                    self.submit(
+                        self.command(format!("timer-{}", uuid::Uuid::new_v4()), "fire_timer", json!({})),
+                        Identity::System,
+                    )
+                    .await?;
+                }
                 self.wait().await;
             }
         }
@@ -453,6 +461,43 @@ impl<P: Provider> Driver<P> {
 
     fn kernel(&self, snapshot: &Snapshot) -> KernelInstance {
         KernelInstance::new(self.config.instance_id.clone(), snapshot.epoch as u64, self.config.profile.clone())
+    }
+
+    /// Kernel with the collaboration surface (§5.2): wait is always
+    /// offered; send/delegate/spawn schemas appear only while the instance
+    /// holds a matching grant (§5.1). The dispatch boundary re-checks the
+    /// grant regardless (§6.1), so a stale schema never authorizes.
+    async fn team_kernel(&self, snapshot: &Snapshot) -> Result<KernelInstance, String> {
+        let instance = self.config.instance_id.clone();
+        let actions = self
+            .storage
+            .call(move |control| {
+                let conn = control.connection();
+                let holds = |action: &str| -> Result<bool, String> {
+                    conn.query_row(
+                        "SELECT COUNT(*) FROM grants WHERE subject = ?1 AND action = ?2 AND revoked_at IS NULL",
+                        rusqlite::params![instance, action],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .map(|n| n > 0)
+                    .map_err(|e| format!("grant read: {e}"))
+                };
+                let mut actions = vec![teamagents_core::kernel::WAIT_TOOL];
+                if holds("message")? {
+                    actions.push(teamagents_core::kernel::SEND_TOOL);
+                }
+                if holds("delegate")? {
+                    actions.push(teamagents_core::kernel::DELEGATE_TOOL);
+                }
+                if holds("manage")? {
+                    actions.push(teamagents_core::kernel::SPAWN_TOOL);
+                }
+                Ok::<Vec<&str>, String>(actions)
+            })
+            .await??;
+        let mut profile = self.config.profile.clone();
+        profile.tools.extend(teamagents_core::kernel::collaboration_tool_schemas(&actions));
+        Ok(KernelInstance::new(self.config.instance_id.clone(), snapshot.epoch as u64, profile))
     }
 
     /// Crash recovery (§6.3): classify the persisted position once, then let
@@ -557,7 +602,7 @@ impl<P: Provider> Driver<P> {
         if entries.last().is_none_or(|entry| entry.kind == EntryKind::Assistant) {
             return Ok(false);
         }
-        let kernel = self.kernel(snapshot);
+        let kernel = self.team_kernel(snapshot).await?;
         let request_id = format!("req-{}", uuid::Uuid::new_v4());
         let request = kernel.prepare_request(&entries, &request_id);
         let begun = self
@@ -629,7 +674,7 @@ impl<P: Provider> Driver<P> {
             Some(request) => request.clone(),
             None => {
                 let entries = self.context_entries(snapshot).await?;
-                self.kernel(snapshot).prepare_request(&entries, &request_id)
+                self.team_kernel(snapshot).await?.prepare_request(&entries, &request_id)
             }
         };
         let attempt = self.attempt_count(&request_id).await? + 1;
@@ -799,16 +844,18 @@ impl<P: Provider> Driver<P> {
         _snapshot: &Snapshot,
     ) -> Result<(), String> {
         let decision_id = format!("d-{request_id}");
-        let (intents, completion) = match &interpretation.output {
+        let (intents, completion, wait) = match &interpretation.output {
             KernelOutput::ToolIntents(intents) => (
                 intents
                     .iter()
                     .map(|intent| json!({"index": intent.index, "call_id": intent.call_id, "name": intent.name, "args": intent.args}))
                     .collect::<Vec<_>>(),
                 Json::Null,
+                Json::Null,
             ),
-            KernelOutput::Completion(candidate) => (vec![], serde_json::to_value(candidate).unwrap_or(Json::Null)),
-            _ => (vec![], Json::Null),
+            KernelOutput::Completion(candidate) => (vec![], serde_json::to_value(candidate).unwrap_or(Json::Null), Json::Null),
+            KernelOutput::Wait(wait) => (vec![], Json::Null, wait.clone()),
+            KernelOutput::Reply(_) => (vec![], Json::Null, Json::Null),
         };
         let mut params = json!({
             "request_id": request_id,
@@ -819,6 +866,9 @@ impl<P: Provider> Driver<P> {
         });
         if !completion.is_null() {
             params["completion"] = completion;
+        }
+        if !wait.is_null() {
+            params["wait"] = wait;
         }
         for note in &interpretation.notes {
             // protocol notes join the context as their own entry in a follow-up
@@ -953,6 +1003,9 @@ impl<P: Provider> Driver<P> {
             match name {
                 "shell" => self.execute_shell(&operation_id, &intent).await?,
                 "read_history" => self.execute_readback(&operation_id, &intent, snapshot).await?,
+                teamagents_core::kernel::SEND_TOOL
+                | teamagents_core::kernel::DELEGATE_TOOL
+                | teamagents_core::kernel::SPAWN_TOOL => self.execute_collaboration(&operation_id, &intent).await?,
                 _ => self.execute_inline(&operation_id, &intent).await?,
             }
         }
@@ -1176,6 +1229,66 @@ impl<P: Provider> Driver<P> {
             vec![],
         )
         .await
+    }
+
+    /// Collaboration intents (§5.2): send/delegate/spawn run as control
+    /// commands under the instance identity — the grant check inside the
+    /// command is the second line behind the dispatch re-check (§6.1). The
+    /// command result becomes the tool receipt the model observes.
+    async fn execute_collaboration(&mut self, operation_id: &str, intent: &Json) -> Result<(), String> {
+        let name = intent["name"].as_str().unwrap_or("");
+        let args = &intent["args"];
+        let (method, params) = match name {
+            teamagents_core::kernel::SEND_TOOL => {
+                ("send_message", json!({"recipient": args["recipient"], "text": args["text"]}))
+            }
+            teamagents_core::kernel::DELEGATE_TOOL => {
+                let task_id =
+                    args["task_id"].as_str().map(str::to_string).unwrap_or_else(|| format!("t-{operation_id}"));
+                let mut params = json!({"task_id": task_id, "assignee": args["assignee"],
+                                        "description": args["description"],
+                                        "goal_id": format!("goal-{}", self.config.session_id)});
+                if let Some(acceptance) = args.get("acceptance_refs") {
+                    params["acceptance_refs"] = acceptance.clone();
+                }
+                ("delegate_task", params)
+            }
+            teamagents_core::kernel::SPAWN_TOOL => {
+                let mut profile = self.config.profile.clone();
+                profile.instructions = args["instructions"].as_str().unwrap_or("").to_string();
+                let mut params = json!({"instance_id": args["instance_id"], "instructions": args["instructions"],
+                                        "profile": {"model": profile.model, "instructions": profile.instructions,
+                                                    "tools": profile.tools, "options": profile.options,
+                                                    "context_window": profile.context_window},
+                                        "workspace_ref": self.config.workspace.to_string_lossy(),
+                                        "goal_id": format!("goal-{}", self.config.session_id)});
+                if let Some(task) = args.get("task") {
+                    params["task"] = task.clone();
+                }
+                ("spawn_instance", params)
+            }
+            other => return Err(format!("execute_collaboration: unknown tool {other}")),
+        };
+        let result = self
+            .submit(
+                self.command(format!("collab-{operation_id}"), method, params),
+                Identity::Instance(self.config.instance_id.clone()),
+            )
+            .await;
+        match result {
+            Ok(value) => {
+                let receipt = self.receipt_skeleton(operation_id, intent, true, value.to_string());
+                let receipt = teamagents_core::kernel::ToolReceipt { ok: true, ..receipt };
+                self.complete_op(
+                    operation_id,
+                    "SUCCEEDED",
+                    &serde_json::to_value(receipt).unwrap_or(Json::Null),
+                    vec![],
+                )
+                .await
+            }
+            Err(error) => self.complete_with_error(operation_id, intent, "collaboration", &error).await,
+        }
     }
 
     /// Read-only inline tools (web search/fetch): no runner needed (§6.2);

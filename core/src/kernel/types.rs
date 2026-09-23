@@ -9,6 +9,13 @@ use serde_json::{json, Value as Json};
 pub const FINISH_TOOL: &str = "finish";
 /// Built-in readback tool: pages the full stored output of an earlier call.
 pub const READBACK_TOOL: &str = "read_history";
+/// Collaboration tools (§5.2): wait is a control-flow action (sole call,
+/// like finish); send/delegate/spawn are ordinary tool intents whose grants
+/// are re-checked at the dispatch linearization point (§6.1).
+pub const WAIT_TOOL: &str = "wait";
+pub const SEND_TOOL: &str = "send";
+pub const DELEGATE_TOOL: &str = "delegate";
+pub const SPAWN_TOOL: &str = "spawn";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryKind {
@@ -140,7 +147,8 @@ pub enum KernelOutput {
     Reply(String),
     /// Single finish call: triggers the completion checks (§8).
     Completion(CompletionCandidate),
-    /// Reserved for jobs/tasks/timers (P2+); unused by the P1 reference.
+    /// Sole wait call (§5.3): the runtime registers the wait against the
+    /// persisted facts in the import transaction — never a lost wake (A23).
     Wait(Json),
 }
 
@@ -231,6 +239,85 @@ pub fn builtin_tool_schemas() -> Vec<Json> {
             }
         }),
     ]
+}
+
+/// Collaboration tool schemas (§5.2), appended by the runtime only for the
+/// actions the instance currently holds grants for; the dispatch boundary
+/// re-checks regardless (§6.1). `wait` needs no grant and is always offered
+/// to team instances.
+pub fn collaboration_tool_schemas(actions: &[&str]) -> Vec<Json> {
+    let mut schemas = Vec::new();
+    for action in actions {
+        let schema = match *action {
+            SEND_TOOL => json!({
+                "type": "function",
+                "function": {
+                    "name": SEND_TOOL,
+                    "description": "Send a message to another instance. Delivery is queued and applied at the recipient's boundary; a message does not by itself start the recipient's turn.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "recipient": {"type": "string", "description": "Target instance id."},
+                            "text": {"type": "string"}
+                        },
+                        "required": ["recipient", "text"]
+                    }
+                }
+            }),
+            DELEGATE_TOOL => json!({
+                "type": "function",
+                "function": {
+                    "name": DELEGATE_TOOL,
+                    "description": "Delegate a task to another instance with a narrow return path: the assignee can settle exactly this task back to you, nothing more.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "assignee": {"type": "string", "description": "Instance id that receives the task."},
+                            "task_id": {"type": "string", "description": "Optional explicit task id; one is generated when omitted."},
+                            "description": {"type": "string"},
+                            "acceptance_refs": {"type": "array", "items": {"type": "string"}, "description": "References the result must satisfy."}
+                        },
+                        "required": ["assignee", "description"]
+                    }
+                }
+            }),
+            SPAWN_TOOL => json!({
+                "type": "function",
+                "function": {
+                    "name": SPAWN_TOOL,
+                    "description": "Create a new instance and atomically register its initial task with the return path. Creation grants no extra connections or file scopes.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "instance_id": {"type": "string"},
+                            "instructions": {"type": "string", "description": "System instructions for the new instance."},
+                            "task": {"type": "string", "description": "Initial task description; registered with its narrow return path when present."}
+                        },
+                        "required": ["instance_id", "instructions"]
+                    }
+                }
+            }),
+            WAIT_TOOL => json!({
+                "type": "function",
+                "function": {
+                    "name": WAIT_TOOL,
+                    "description": "Park this instance until the conditions hold or the timer fires. Must be the only tool call in this response. Conditions: {kind:'message',from?:'<instance>'}, {kind:'task',task_id:'<id>'}, {kind:'operation',operation_id:'<id>'}, {kind:'envelope',envelope_id:'<id>'}.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "mode": {"type": "string", "enum": ["ALL", "ANY"]},
+                            "conditions": {"type": "array", "items": {"type": "object"}},
+                            "timer_seconds": {"type": "number", "description": "Optional deadline from now; the wait closes when it fires."}
+                        },
+                        "required": ["mode", "conditions"]
+                    }
+                }
+            }),
+            _ => continue,
+        };
+        schemas.push(schema);
+    }
+    schemas
 }
 
 /// Readback paging (ported contract: 1..=12000 chars, coordinates preserved).

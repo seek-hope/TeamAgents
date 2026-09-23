@@ -199,6 +199,57 @@ mod tests {
     }
 
     #[test]
+    fn a_sole_wait_call_is_the_wait_output() {
+        let kernel = kernel();
+        let response = ModelResponse {
+            message: json!({"role":"assistant","tool_calls":[
+                {"id":"w1","function":{"name": WAIT_TOOL, "arguments":
+                    "{\"mode\":\"ANY\",\"conditions\":[{\"kind\":\"message\",\"from\":\"i2\"}],\"timer_seconds\":30}"}}
+            ]}),
+            usage: None,
+            native: json!({}),
+        };
+        let out = kernel.interpret_response(&response, "e9");
+        match out.output {
+            KernelOutput::Wait(wait) => {
+                assert_eq!(wait["mode"], json!("ANY"));
+                assert_eq!(wait["timer_seconds"], json!(30));
+            }
+            other => panic!("expected wait, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_combined_wait_is_ignored_with_a_note() {
+        let kernel = kernel();
+        let response = ModelResponse {
+            message: json!({"role":"assistant","tool_calls":[
+                {"id":"w1","function":{"name": WAIT_TOOL, "arguments": "{\"mode\":\"ALL\",\"conditions\":[{\"kind\":\"task\",\"task_id\":\"t1\"}]}"}},
+                {"id":"c1","function":{"name":"shell","arguments":"{\"command\":\"ls\"}"}}
+            ]}),
+            usage: None,
+            native: json!({}),
+        };
+        let out = kernel.interpret_response(&response, "e9");
+        assert!(out.notes.iter().any(|note| note.contains("ignored wait")), "{:?}", out.notes);
+        match out.output {
+            KernelOutput::ToolIntents(intents) => {
+                assert_eq!(intents.len(), 1);
+                assert_eq!(intents[0].name, "shell");
+            }
+            other => panic!("expected tool intents, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn collaboration_schemas_follow_the_requested_actions() {
+        let schemas = collaboration_tool_schemas(&[WAIT_TOOL, SEND_TOOL]);
+        let names: Vec<&str> = schemas.iter().map(|t| t["function"]["name"].as_str().unwrap()).collect();
+        assert_eq!(names, vec![WAIT_TOOL, SEND_TOOL]);
+        assert!(collaboration_tool_schemas(&[]).is_empty());
+    }
+
+    #[test]
     fn page_output_contract() {
         let out = page_output("hello world", &json!({"offset": 6, "limit": 5})).unwrap();
         assert_eq!(out["output"], "world");

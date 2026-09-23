@@ -69,6 +69,19 @@ fn finish_call(summary: &str) -> Json {
                                         "arguments": json!({"status": "success", "summary": summary}).to_string()}}]})
 }
 
+fn wait_call(id: &str, wait: Json) -> Json {
+    json!({"role": "assistant", "content": "",
+           "tool_calls": [{"id": id, "type": "function",
+                           "function": {"name": "wait", "arguments": wait.to_string()}}]})
+}
+
+fn send_call(id: &str, recipient: &str, text: &str) -> Json {
+    json!({"role": "assistant", "content": "",
+           "tool_calls": [{"id": id, "type": "function",
+                           "function": {"name": "send",
+                                        "arguments": json!({"recipient": recipient, "text": text}).to_string()}}]})
+}
+
 struct Root {
     dir: PathBuf,
 }
@@ -160,6 +173,76 @@ async fn end_to_end_shell_then_finish() {
     let events = handle.events(0).await.unwrap();
     assert!(events.iter().any(|e| e["kind"] == json!("response_imported")));
     assert!(events.iter().any(|e| e["kind"] == json!("operation_completed")));
+    handle.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn wait_parks_and_the_timer_wake_lets_the_model_continue() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let root = root("wait-timer");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    // the model waits on a message that never comes, with a 1s deadline;
+    // after the timer wake it finishes (A23/§5.3 end to end)
+    let script = vec![
+        Step::Message(wait_call(
+            "w1",
+            json!({"mode": "ANY", "conditions": [{"kind": "message", "from": "i-peer"}], "timer_seconds": 1}),
+        )),
+        Step::Message(finish_call("waited, nothing came, done")),
+    ];
+    let handle = start(root.config(ScriptedProvider { script: Mutex::new(script.into()) })).await.expect("start");
+    handle.input("try waiting").await.expect("input");
+    wait_phase(&handle, "WAITING", 5_000).await;
+    // the driver fires due timers at poll granularity; the wake reason joins
+    // the context and the model is prompted again
+    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    let events = handle.events(0).await.unwrap();
+    assert!(events.iter().any(|e| e["kind"] == json!("wait_satisfied")), "{events:?}");
+    handle.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn send_executes_through_the_control_plane_with_a_grant() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let root = root("collab-send");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let script = vec![Step::Message(send_call("c1", "i-peer", "hello peer")), Step::Message(finish_call("sent"))];
+    let handle = start(root.config(ScriptedProvider { script: Mutex::new(script.into()) })).await.expect("start");
+    // a second connection issues the peer instance and the message grant
+    let mut control =
+        teamagents_core::v2::Control::open(&root.dir.join("session.sqlite"), "s-test", false).expect("open");
+    control
+        .submit(
+            teamagents_core::v2::Command {
+                command_id: "test-peer".into(),
+                method: "create_instance".into(),
+                params: json!({"id": "i-peer", "workspace_ref": ""}),
+            },
+            teamagents_core::v2::Identity::User,
+        )
+        .expect("peer");
+    control
+        .submit(
+            teamagents_core::v2::Command {
+                command_id: "test-grant".into(),
+                method: "issue_grant".into(),
+                params: json!({"subject": "i-main", "action": "message", "resource_scope": "instance:i-peer"}),
+            },
+            teamagents_core::v2::Identity::User,
+        )
+        .expect("grant");
+    handle.input("say hello").await.expect("input");
+    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    // the envelope persists for the peer's boundary (§5.3)
+    let queued: i64 = control
+        .connection()
+        .query_row(
+            "SELECT COUNT(*) FROM envelopes WHERE recipient = 'i-peer' AND kind = 'message' AND payload_json LIKE '%hello peer%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(queued, 1);
     handle.shutdown().await.expect("shutdown");
 }
 

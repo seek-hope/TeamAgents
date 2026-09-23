@@ -95,6 +95,19 @@ impl KernelInstance {
                 "ignored {FINISH_TOOL}: it must be the only tool call in its response; the other calls ran normally"
             ));
         }
+        // a sole wait call is the Wait output (§5.3): it excludes every
+        // other action in the same response, exactly like finish
+        let wait = calls.iter().position(|call| call["function"]["name"] == WAIT_TOOL);
+        if let Some(pos) = wait {
+            if calls.len() == 1 {
+                let args: Json = serde_json::from_str(calls[pos]["function"]["arguments"].as_str().unwrap_or("{}"))
+                    .unwrap_or_else(|_| json!({"_invalid_arguments": calls[pos]["function"]["arguments"].as_str()}));
+                return Interpretation { entry, output: KernelOutput::Wait(args), notes };
+            }
+            notes.push(format!(
+                "ignored {WAIT_TOOL}: it must be the only tool call in its response; the other calls ran normally"
+            ));
+        }
         if calls.is_empty() {
             let reply = response.message["content"].as_str().unwrap_or("").to_string();
             return Interpretation { entry, output: KernelOutput::Reply(reply), notes };
@@ -102,7 +115,7 @@ impl KernelInstance {
         let intents = calls
             .iter()
             .enumerate()
-            .filter(|(i, _)| Some(*i) != finish)
+            .filter(|(i, _)| Some(*i) != finish && Some(*i) != wait)
             .map(|(index, call)| {
                 let args: Json = serde_json::from_str(call["function"]["arguments"].as_str().unwrap_or("{}"))
                     .unwrap_or_else(|_| json!({"_invalid_arguments": call["function"]["arguments"].as_str()}));
