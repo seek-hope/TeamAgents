@@ -1,0 +1,9 @@
+from pathlib import Path
+
+expected = "teamagents v2 driver"
+content = Path("hello.txt").read_text()
+
+if content.strip() == expected:
+    print("OK")
+else:
+    print("MISMATCH")

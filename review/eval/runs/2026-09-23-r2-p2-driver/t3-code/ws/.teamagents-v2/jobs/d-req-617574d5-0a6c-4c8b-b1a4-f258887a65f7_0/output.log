@@ -1,0 +1,17 @@
+--- buggy.py ---
+def add(a, b):$
+    return a + b$
+print(add(2, 3))$
+--- fixed.py ---
+def add(a, b):$
+    return a + b$
+print(add(2, 3))$
+--- run buggy.py ---
+5
+exit=0
+--- run fixed.py ---
+5
+exit=0
+--- assertion check ---
+5
+assert add(2,3)==5 OK

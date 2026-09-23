@@ -45,6 +45,17 @@ engine/target/debug/examples/rebuild_p1 --task "..." --workdir /tmp/t --trace /t
 
 参考循环是评测组 A 入口，不带生产恢复承诺；证据与边界见 [R2-P1 记录](../review/r2-p1-2026-09-23.md)。
 
+R2-P2 的持久化单实例在 `core/src/v2`、`engine/src/jobs`、`engine/src/v2`；评测组 B 入口
+（同 kernel/工具/模型配置，全部状态经控制面落库，runner 子命令来自同目录 teamagents 二进制）：
+
+```bash
+cargo build --offline --manifest-path engine/Cargo.toml --example rebuild_p2   # 同时需 engine/target/debug/teamagents
+engine/target/debug/examples/rebuild_p2 --task "..." --workdir /tmp/t --trace /tmp/t-trace --full-auto
+cargo test --offline --manifest-path engine/Cargo.toml --test v2_driver --test jobs_runner --test v2_spawn_failure
+```
+
+证据与故障注入矩阵见 [R2-P2 记录](../review/r2-p2-2026-09-23.md)。
+
 局部开发仍直接使用 Cargo，缩短反馈时间：
 
 ```bash

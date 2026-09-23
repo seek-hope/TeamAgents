@@ -16,6 +16,18 @@ R2-P1 于 2026-09-23 落地小型 kernel 与直驱参考：`core/src/kernel` 无
 参考循环不带生产恢复承诺；持久化、多实例、MCP/Skills、其余供应商与正式性能实验仍属后续阶段。
 证据与复跑见 [R2-P1 记录](../review/r2-p1-2026-09-23.md)。
 
+R2-P2 于 2026-09-23 落地持久化单实例：`core/src/v2` 单会话单 SQLite（WAL+FULL、格式印记拒绝外来/错版）与
+可信事务入口 `Control::submit`（命令/输入/信封去重、begin_request 修订检查、attempt 诚实记账、
+import_response 原子消费、派发线性化点、取消持久化优先、预算闸门、批准自动过期）；
+`engine/src/jobs` runner 以 READY/GO/CANCEL 握手执行 shell（重复 GO 去重、OUTCOME_UNKNOWN 恢复、
+pid+boot_id+start_ticks 身份、抽象 socket+token 鉴权）；`engine/src/v2` 驱动按相位机推进，
+模型/工具等待在事务外、状态转换全落库，支持输入/暂停/取消/批准干预与崩溃恢复。
+故障注入 16 项（驱动 7、runner 8、spawn 1）全部通过；验证中发现的三处真缺陷
+（预算拒绝事件随回滚丢失、批准后派发回执重放阻塞、spawn 失败驱动静默死亡）已修复并各有回归。
+3 个真实 DeepSeek 任务经持久化驱动完成（文件验证、长输出问答、修 bug），证据与复跑见
+[R2-P2 记录](../review/r2-p2-2026-09-23.md)；原始归档在 `review/eval/runs/2026-09-23-r2-p2-driver/`。
+多实例、MCP/Skills、其余供应商、TUI 接入与正式性能实验仍属后续阶段。
+
 2026-09-22 按用户确认的 D-41 修复 full_auto Shell：主机环境执行、后台服务跨调用及 CLI 退出存活，
 默认模式保留 bwrap；补齐实时模式切换、进程组停止、输出读取收尾和相同环境的 `exec --check`。
 新增 6 项回归，`make check` 全绿：core 152 / engine 384 / TUI 109，engine 3 ignored。
@@ -245,8 +257,8 @@ cargo test --offline --manifest-path tui/Cargo.toml
 
 | crate | Cargo 报告通过 | 组成 / 实际执行范围 |
 |---|---:|---|
-| core | 152 | 25 库单测 + 63 控制场景 + 64 投递/未知输入/成果引用/任务边界/动作请求/持久记录集成测试 |
-| engine | 378 | 110 库单测 + 1 CLI 单测 + 267 集成测试；另有 3 项显式 ignored（`eval_grader` 两项、`live_models` 真实入口一项）；`live_codex` 未设开关时提前返回，2026-09-19 已单独运行 Codex + DeepSeek 的真实恢复检查 |
+| core | 188 | 61 库单测（含 kernel 9、v2 控制/存储 27）+ 63 控制场景 + 64 投递/未知输入/成果引用/任务边界/动作请求/持久记录集成测试 |
+| engine | 413 | 110 库单测 + 303 集成/CLI 测试（含 P1 参考循环/假服务/对照 13 项、P2 jobs_runner 8 + v2_driver 7 + v2_spawn_failure 1）；另有 3 项显式 ignored（`eval_grader` 两项、`live_models` 真实入口一项）；`live_codex` 未设开关时提前返回，2026-09-19 已单独运行 Codex + DeepSeek 的真实恢复检查 |
 | tui | 109 | 14 库单测 + 11 CLI 单测 + 39 app + 6 history + 31 render + 8 review |
 
 **CI（GitHub Actions，2026-09-15 起）**：`Test core` / `Test engine` / `Test tui` / 行尾空格检查全绿。
