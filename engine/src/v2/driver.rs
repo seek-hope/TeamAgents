@@ -538,16 +538,20 @@ impl<P: Provider> Driver<P> {
     /// reserve budget and register it — one transaction (§3).
     async fn step_ready(&mut self, snapshot: &Snapshot) -> Result<bool, String> {
         // queued envelopes apply at this safe boundary, before the request
-        // is fixed (§5.3); a replayed drain is a no-op
-        self.submit(
-            self.command(
-                format!("drain-{}", uuid::Uuid::new_v4()),
-                "drain_inbox",
-                json!({"instance_id": self.config.instance_id}),
-            ),
-            Identity::Instance(self.config.instance_id.clone()),
-        )
-        .await?;
+        // is fixed (§5.3); a replayed drain is a no-op. An applying drain
+        // bumps the instance revision — begin against the post-drain value
+        // so the executor check (§6.1) compares the freshest snapshot.
+        let drained = self
+            .submit(
+                self.command(
+                    format!("drain-{}", uuid::Uuid::new_v4()),
+                    "drain_inbox",
+                    json!({"instance_id": self.config.instance_id}),
+                ),
+                Identity::Instance(self.config.instance_id.clone()),
+            )
+            .await?;
+        let revision = drained["revision"].as_i64().unwrap_or(snapshot.revision);
         let entries = self.context_entries(snapshot).await?;
         // nothing unconsumed: the last word was the assistant's — idle
         if entries.last().is_none_or(|entry| entry.kind == EntryKind::Assistant) {
@@ -562,7 +566,7 @@ impl<P: Provider> Driver<P> {
                     format!("begin-{request_id}"),
                     "begin_request",
                     json!({"instance_id": self.config.instance_id, "request_id": request_id,
-                           "revision": snapshot.revision, "est_prompt_tokens": request.est_prompt_tokens}),
+                           "revision": revision, "est_prompt_tokens": request.est_prompt_tokens}),
                 ),
                 Identity::Instance(self.config.instance_id.clone()),
             )

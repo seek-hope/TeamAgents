@@ -115,6 +115,8 @@ fn dispatch(
         "complete_task" => complete_task(tx, session_id, params, identity),
         "cancel_task" => cancel_task(tx, session_id, params, identity),
         "read_history" => read_history(tx, session_id, params, identity),
+        "fire_timer" => fire_timer(tx, session_id, params, identity),
+        "blocked_report" => blocked_report(tx, session_id, params, identity),
         "submit_input" => submit_input(tx, session_id, params, identity),
         "begin_request" => begin_request(tx, session_id, params, identity),
         "record_attempt" => record_attempt(tx, session_id, params),
@@ -709,10 +711,23 @@ fn drain_inbox(tx: &Connection, session_id: &str, params: &Json, identity: &Iden
             .map_err(|e| format!("apply envelope {id}: {e}"))?;
         applied += 1;
     }
+    if applied > 0 {
+        // the context moved: any executor holding a pre-drain snapshot is
+        // stale now (§6.1 single-executor revision check)
+        tx.execute("UPDATE instances SET revision = revision + 1 WHERE id = ?1", [instance_id])
+            .map_err(|e| format!("instance revision: {e}"))?;
+    }
     if applied > 0 || sealed > 0 {
         event(tx, session_id, "inbox_drained", instance_id, &json!({"applied": applied, "sealed": sealed}))?;
     }
-    Ok(json!({"instance_id": instance_id, "applied": applied, "sealed": sealed}))
+    // applied envelopes are wait facts: satisfying a pending wait closes it
+    // and wakes the instance in this same transaction (§5.3, A23)
+    let woken = wake_satisfied(tx, session_id)?;
+    let revision: i64 = tx
+        .query_row("SELECT revision FROM instances WHERE id = ?1", [instance_id], |row| row.get(0))
+        .map_err(|e| format!("instance revision read: {e}"))?;
+    Ok(json!({"instance_id": instance_id, "applied": applied, "sealed": sealed, "woken": woken,
+              "revision": revision}))
 }
 
 /// Delegate a task (§5.2/§5.3): the requester atomically registers the task,
@@ -943,7 +958,8 @@ fn complete_task(tx: &Connection, session_id: &str, params: &Json, identity: &Id
         &requester,
         &json!({"task_id": task_id, "status": target, "assignee": assignee, "delivered": delivered}),
     )?;
-    Ok(json!({"task_id": task_id, "status": target, "delivered": delivered}))
+    let woken = wake_satisfied(tx, session_id)?;
+    Ok(json!({"task_id": task_id, "status": target, "delivered": delivered, "woken": woken}))
 }
 
 /// Cancel a task (§5.3): the requester or the user closes it, the return
@@ -1003,7 +1019,8 @@ fn cancel_task(tx: &Connection, session_id: &str, params: &Json, identity: &Iden
         )?;
     }
     event(tx, session_id, "task_cancelled", &assignee, &json!({"task_id": task_id, "reason": reason}))?;
-    Ok(json!({"task_id": task_id, "status": "CANCELLED"}))
+    let woken = wake_satisfied(tx, session_id)?;
+    Ok(json!({"task_id": task_id, "status": "CANCELLED", "woken": woken}))
 }
 
 /// Controlled history entry (A05, Q8): the user reads every instance; an
@@ -1128,7 +1145,14 @@ fn submit_input(tx: &Connection, session_id: &str, params: &Json, identity: &Ide
     if applied {
         tx.execute("UPDATE envelopes SET state = 'APPLIED' WHERE id = ?1", [envelope_id])
             .map_err(|e| format!("envelope apply: {e}"))?;
-        // a fresh input makes the instance runnable again at the next boundary
+        // a fresh input makes the instance runnable again at the next
+        // boundary; pending waits are superseded — the model sees the input
+        // and re-registers what it still needs (§5.3/§5.4)
+        tx.execute(
+            "UPDATE waits SET status = 'CANCELLED' WHERE instance_id = ?1 AND status = 'PENDING'",
+            [instance_id],
+        )
+        .map_err(|e| format!("supersede waits: {e}"))?;
         tx.execute(
             "UPDATE instances SET phase = 'READY', revision = revision + 1 WHERE id = ?1 AND phase = 'WAITING'",
             [instance_id],
@@ -1400,12 +1424,265 @@ fn settle_usage(tx: &Connection, goal_id: &str, usage: &Json) -> Result<(), Stri
 /// Complete-response import (§4.2): unique response reference + conversation
 /// append + decision + tool intents/completion + usage — ONE transaction.
 /// Re-import of the same request dedups by decision_id.
+/// Where one wait condition stands against the persisted facts (§5.3):
+/// already true, still possible, or impossible. Wake uses SATISFIED; the
+/// blocked diagnostic uses DEAD so an ordinary wait cycle among live
+/// instances is never misreported as a deadlock (A22).
+enum ConditionState {
+    Satisfied,
+    Pending,
+    Dead,
+}
+
+fn condition_state(
+    tx: &Connection,
+    session_id: &str,
+    instance_id: &str,
+    epoch: i64,
+    condition: &Json,
+) -> Result<ConditionState, String> {
+    match condition["kind"].as_str() {
+        Some("message") => {
+            let (applied, sender_alive): (i64, bool) = match condition["from"].as_str() {
+                Some(from) => {
+                    let applied: i64 = tx
+                        .query_row(
+                            "SELECT COUNT(*) FROM envelopes WHERE recipient = ?1 AND sender = ?2
+                             AND kind = 'message' AND state = 'APPLIED' AND epoch = ?3",
+                            rusqlite::params![instance_id, from, epoch],
+                            |row| row.get(0),
+                        )
+                        .map_err(|e| format!("wait message: {e}"))?;
+                    let alive = if from == "user" {
+                        true
+                    } else {
+                        tx.query_row("SELECT lifecycle FROM instances WHERE id = ?1", [from], |row| {
+                            row.get::<_, String>(0)
+                        })
+                        .optional()
+                        .map_err(|e| format!("wait sender: {e}"))?
+                        .is_some_and(|state| state != "TERMINATED")
+                    };
+                    (applied, alive)
+                }
+                None => {
+                    let applied: i64 = tx
+                        .query_row(
+                            "SELECT COUNT(*) FROM envelopes WHERE recipient = ?1 AND kind = 'message'
+                             AND state = 'APPLIED' AND epoch = ?2",
+                            rusqlite::params![instance_id, epoch],
+                            |row| row.get(0),
+                        )
+                        .map_err(|e| format!("wait message: {e}"))?;
+                    (applied, true)
+                }
+            };
+            if applied > 0 {
+                return Ok(ConditionState::Satisfied);
+            }
+            if sender_alive {
+                Ok(ConditionState::Pending)
+            } else {
+                Ok(ConditionState::Dead)
+            }
+        }
+        Some("envelope") => {
+            let id = condition["envelope_id"].as_str().ok_or("wait envelope condition needs envelope_id")?;
+            let state: Option<String> = tx
+                .query_row(
+                    "SELECT state FROM envelopes WHERE id = ?1 AND recipient = ?2",
+                    rusqlite::params![id, instance_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| format!("wait envelope: {e}"))?;
+            Ok(match state.as_deref() {
+                Some("APPLIED") => ConditionState::Satisfied,
+                Some("ACCEPTED") => ConditionState::Pending,
+                _ => ConditionState::Dead,
+            })
+        }
+        Some("task") => {
+            let task_id = condition["task_id"].as_str().ok_or("wait task condition needs task_id")?;
+            let status: Option<String> = tx
+                .query_row(
+                    "SELECT status FROM tasks WHERE id = ?1 AND session_id = ?2",
+                    rusqlite::params![task_id, session_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| format!("wait task: {e}"))?;
+            Ok(match status.as_deref() {
+                Some("SUCCEEDED" | "FAILED" | "CANCELLED") => ConditionState::Satisfied,
+                Some(_) => ConditionState::Pending,
+                None => ConditionState::Dead,
+            })
+        }
+        Some("operation") => {
+            let operation_id =
+                condition["operation_id"].as_str().ok_or("wait operation condition needs operation_id")?;
+            let status: Option<String> = tx
+                .query_row("SELECT status FROM operations WHERE operation_id = ?1", [operation_id], |row| row.get(0))
+                .optional()
+                .map_err(|e| format!("wait operation: {e}"))?;
+            Ok(match status.as_deref() {
+                Some(status) if is_terminal_op(status) => ConditionState::Satisfied,
+                Some(_) => ConditionState::Pending,
+                None => ConditionState::Dead,
+            })
+        }
+        other => Err(format!("unknown wait condition kind {other:?}")),
+    }
+}
+
+/// One registered wait's own definition (§5.3): the branch mode, the
+/// conditions and the optional deadline.
+struct WaitSpec<'a> {
+    mode: &'a str,
+    conditions: &'a [Json],
+    timer_at: Option<f64>,
+}
+
+/// Evaluate a wait against current facts (§5.3): satisfied when the mode
+/// holds or the timer is already due; blocked when no branch can ever fire
+/// and no live timer remains — reported, never auto-cancelled (A22).
+fn evaluate_wait(
+    tx: &Connection,
+    session_id: &str,
+    instance_id: &str,
+    epoch: i64,
+    spec: &WaitSpec,
+    now: f64,
+) -> Result<(bool, bool), String> {
+    let (mode, conditions, timer_at) = (spec.mode, spec.conditions, spec.timer_at);
+    let timer_due = timer_at.is_some_and(|at| at <= now);
+    let timer_open = timer_at.is_some_and(|at| at > now);
+    let mut any = false;
+    let mut all = true;
+    let mut dead = 0usize;
+    for condition in conditions {
+        match condition_state(tx, session_id, instance_id, epoch, condition)? {
+            ConditionState::Satisfied => any = true,
+            ConditionState::Pending => all = false,
+            ConditionState::Dead => {
+                all = false;
+                dead += 1;
+            }
+        }
+    }
+    let satisfied = timer_due || (mode == "ALL" && all) || (mode == "ANY" && any);
+    let blocked = !timer_open && !satisfied && (mode == "ALL" && dead > 0 || mode == "ANY" && dead == conditions.len());
+    Ok((satisfied, blocked))
+}
+
+/// Close every pending wait whose conditions now hold, waking its instance
+/// in the same transaction as the fact that satisfied it (§5.3, A23).
+/// Returns the satisfied wait ids.
+fn wake_satisfied(tx: &Connection, session_id: &str) -> Result<Vec<String>, String> {
+    wake_satisfied_at(tx, session_id, crate::models::now())
+}
+
+fn wake_satisfied_at(tx: &Connection, session_id: &str, now: f64) -> Result<Vec<String>, String> {
+    let pending: Vec<(String, String, i64, String, String, Option<f64>)> = {
+        let mut stmt = tx
+            .prepare(
+                "SELECT w.id, w.instance_id, w.epoch, w.mode, w.conditions_json, w.timer_at FROM waits w
+                 JOIN instances i ON w.instance_id = i.id WHERE w.status = 'PENDING' AND i.session_id = ?1",
+            )
+            .map_err(|e| format!("wake scan: {e}"))?;
+        let rows = stmt
+            .query_map([session_id], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?))
+            })
+            .map_err(|e| format!("wake query: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("wake collect: {e}"))?
+    };
+    let mut woken = Vec::new();
+    for (wait_id, instance_id, epoch, mode, conditions_json, timer_at) in pending {
+        let conditions: Vec<Json> = serde_json::from_str(&conditions_json).unwrap_or_default();
+        let spec = WaitSpec { mode: &mode, conditions: &conditions, timer_at };
+        let (satisfied, _) = evaluate_wait(tx, session_id, &instance_id, epoch, &spec, now)?;
+        if !satisfied {
+            continue;
+        }
+        tx.execute("UPDATE waits SET status = 'SATISFIED' WHERE id = ?1", [&wait_id])
+            .map_err(|e| format!("wake {wait_id}: {e}"))?;
+        // WAITING → READY is the ready-intent registration of §3; a phase
+        // that already advanced (user input, reset) is not rewritten
+        tx.execute(
+            "UPDATE instances SET phase = 'READY', revision = revision + 1 WHERE id = ?1 AND phase = 'WAITING'",
+            [&instance_id],
+        )
+        .map_err(|e| format!("wake phase: {e}"))?;
+        event(tx, session_id, "wait_satisfied", &instance_id, &json!({"wait_id": wait_id}))?;
+        woken.push(wait_id);
+    }
+    Ok(woken)
+}
+
+/// Timer pass (§5.3): waits whose timer fell due close satisfied and wake
+/// their instances. `now` may be passed by the caller so one clock reading
+/// covers the whole sweep.
+fn fire_timer(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
+    if !matches!(identity, Identity::User | Identity::System) {
+        return Err("only the user or the system may fire timers".into());
+    }
+    let now = params["now"].as_f64().unwrap_or_else(crate::models::now);
+    Ok(json!({"satisfied": wake_satisfied_at(tx, session_id, now)?}))
+}
+
+/// Blocked-wait diagnostic (A22): pending waits that can never fire again —
+/// every reachable branch dead and no live timer — are reported with their
+/// reasons. Ordinary wait cycles among live instances and waits with open
+/// external paths (running jobs, pending tasks, future timers) are not
+/// reported, and nothing is cancelled automatically.
+fn blocked_report(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
+    if !matches!(identity, Identity::User | Identity::System) {
+        return Err("only the user or the system may request a blocked report".into());
+    }
+    let _ = params;
+    let pending: Vec<(String, String, i64, String, String, Option<f64>)> = {
+        let mut stmt = tx
+            .prepare(
+                "SELECT w.id, w.instance_id, w.epoch, w.mode, w.conditions_json, w.timer_at FROM waits w
+                 JOIN instances i ON w.instance_id = i.id WHERE w.status = 'PENDING' AND i.session_id = ?1",
+            )
+            .map_err(|e| format!("blocked scan: {e}"))?;
+        let rows = stmt
+            .query_map([session_id], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?))
+            })
+            .map_err(|e| format!("blocked query: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("blocked collect: {e}"))?
+    };
+    let mut blocked = Vec::new();
+    let mut waiting = 0usize;
+    for (wait_id, instance_id, epoch, mode, conditions_json, timer_at) in pending {
+        let conditions: Vec<Json> = serde_json::from_str(&conditions_json).unwrap_or_default();
+        let spec = WaitSpec { mode: &mode, conditions: &conditions, timer_at };
+        let (_, is_blocked) = evaluate_wait(tx, session_id, &instance_id, epoch, &spec, crate::models::now())?;
+        if is_blocked {
+            blocked.push(json!({"wait_id": wait_id, "instance_id": instance_id, "mode": mode,
+                                "conditions": conditions, "timer_at": timer_at}));
+        } else {
+            waiting += 1;
+        }
+    }
+    Ok(json!({"blocked": blocked, "waiting": waiting}))
+}
+
 fn import_response(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
     let request_id = params["request_id"].as_str().ok_or("import_response.request_id required")?;
     let decision_id = params["decision_id"].as_str().ok_or("import_response.decision_id required")?;
     let entry_message = params.get("entry").ok_or("import_response.entry required")?;
     let intents = params["intents"].as_array().cloned().unwrap_or_default();
     let completion = params.get("completion").cloned();
+    let wait = params.get("wait").cloned();
+    // one response registers tools, a wait or a completion — never several
+    // at once (§3); a plain reply carries none of them
+    if wait.is_some() && (!intents.is_empty() || completion.is_some()) {
+        return Err("import_response: a wait excludes tool intents and completion".into());
+    }
     let (request_instance, epoch, request_status): (String, i64, String) = tx
         .query_row("SELECT instance_id, epoch, status FROM model_requests WHERE request_id = ?1", [request_id], |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?))
@@ -1464,12 +1741,47 @@ fn import_response(tx: &Connection, session_id: &str, params: &Json, identity: &
         )
         .map_err(|e| format!("operation {operation_id}: {e}"))?;
     }
+    // a wait registers and is checked against the facts that already hold
+    // in the same transaction (§5.3): a result that arrived first still
+    // satisfies it, so no wake is ever lost (A23)
+    let mut wait_registered: Option<(String, bool)> = None;
+    if let Some(wait) = &wait {
+        let mode = wait["mode"].as_str().unwrap_or("");
+        if !matches!(mode, "ALL" | "ANY") {
+            return Err("import_response.wait.mode must be ALL or ANY".into());
+        }
+        let conditions: Vec<Json> = wait["conditions"].as_array().cloned().unwrap_or_default();
+        if conditions.is_empty() {
+            return Err("import_response.wait.conditions must not be empty".into());
+        }
+        let timer_at = wait["timer_at"].as_f64();
+        let spec = WaitSpec { mode, conditions: &conditions, timer_at };
+        let (satisfied, _) = evaluate_wait(tx, session_id, &request_instance, epoch, &spec, crate::models::now())?;
+        let wait_id = format!("w-{decision_id}");
+        tx.execute(
+            "INSERT INTO waits (id, instance_id, epoch, mode, conditions_json, timer_at, status)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                wait_id,
+                request_instance,
+                epoch,
+                mode,
+                json!(conditions).to_string(),
+                timer_at,
+                if satisfied { "SATISFIED" } else { "PENDING" }
+            ],
+        )
+        .map_err(|e| format!("wait {wait_id}: {e}"))?;
+        wait_registered = Some((wait_id, satisfied));
+    }
     let phase = if completion.is_some() {
         "COMPLETION_PENDING"
-    } else if intents.is_empty() {
-        "READY"
-    } else {
+    } else if !intents.is_empty() {
         "TOOLS_PENDING"
+    } else if wait_registered.as_ref().is_some_and(|(_, satisfied)| !satisfied) {
+        "WAITING"
+    } else {
+        "READY"
     };
     tx.execute(
         "UPDATE instances SET phase = ?1, active_request_id = NULL, revision = revision + 1 WHERE id = ?2",
@@ -1488,7 +1800,8 @@ fn import_response(tx: &Connection, session_id: &str, params: &Json, identity: &
         &request_instance,
         &json!({"request_id": request_id, "decision_id": decision_id, "intents": intents.len(), "phase": phase}),
     )?;
-    Ok(json!({"decision_id": decision_id, "phase": phase, "operations": intents.len()}))
+    Ok(json!({"decision_id": decision_id, "phase": phase, "operations": intents.len(),
+              "wait": wait_registered.map(|(id, satisfied)| json!({"wait_id": id, "satisfied": satisfied}))}))
 }
 
 /// Terminal tool receipt import (§4.2): unique operation receipt + the
@@ -1527,7 +1840,8 @@ fn complete_operation(tx: &Connection, session_id: &str, params: &Json) -> Resul
     publish_list(tx, session_id, params)?;
     let open = consume_if_closed(tx, session_id, &decision_id)?;
     event(tx, session_id, "operation_completed", operation_id, &json!({"status": status}))?;
-    Ok(json!({"operation_id": operation_id, "status": status, "decision_open": open}))
+    let woken = wake_satisfied(tx, session_id)?;
+    Ok(json!({"operation_id": operation_id, "status": status, "decision_open": open, "woken": woken}))
 }
 
 fn decision_open(tx: &Connection, decision_id: &str) -> Result<bool, String> {
@@ -3365,6 +3679,222 @@ mod tests {
         assert_eq!(own["entries"].as_array().unwrap().len(), 0);
         let full = ctl.submit(cmd("rh-2", "read_history", json!({"instance_id": "i1"})), Identity::User).expect("user");
         assert_eq!(full["entries"].as_array().unwrap().len(), 1);
+        cleanup(&path);
+    }
+
+    /// Drive one instance into WAITING via a response that registers a
+    /// wait; returns the wait id (`w-d-{tag}`).
+    fn open_wait(ctl: &mut Control, tag: &str, instance: &str, revision: i64, wait: Json) -> String {
+        let request = begin_and_complete(ctl, tag, instance, revision);
+        ctl.submit(
+            cmd(
+                &format!("imp-{tag}"),
+                "import_response",
+                json!({"request_id": request, "decision_id": format!("d-{tag}"),
+                       "entry": {"role": "assistant", "content": "waiting"}, "intents": [], "wait": wait}),
+            ),
+            Identity::System,
+        )
+        .expect("import wait");
+        format!("w-d-{tag}")
+    }
+
+    fn wait_state(ctl: &Control, wait_id: &str) -> String {
+        ctl.connection().query_row("SELECT status FROM waits WHERE id = ?1", [wait_id], |row| row.get(0)).unwrap()
+    }
+
+    #[test]
+    fn wait_for_an_arrived_result_is_satisfied_at_registration() {
+        let (mut ctl, path) = control("wait-late");
+        create_instance(&mut ctl, "i1");
+        create_instance(&mut ctl, "i2");
+        grant_message(&mut ctl, "i2", "i1", "a");
+        // the result arrives BEFORE the wait is registered (A23)
+        ctl.submit(
+            cmd("sm-1", "send_message", json!({"recipient": "i1", "text": "done"})),
+            Identity::Instance("i2".into()),
+        )
+        .expect("send");
+        drain(&mut ctl, "i1");
+        let imported = ctl
+            .submit(
+                cmd("b-w", "begin_request", json!({"instance_id": "i1", "request_id": "r-w", "revision": 1})),
+                Identity::Instance("i1".into()),
+            )
+            .expect("begin");
+        assert_eq!(imported["phase"], json!("MODEL_PENDING"));
+        ctl.submit(
+            cmd(
+                "a-w",
+                "record_attempt",
+                json!({"attempt_id": "at-w", "request_id": "r-w", "status": "COMPLETE",
+                       "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}),
+            ),
+            Identity::System,
+        )
+        .expect("attempt");
+        let imported = ctl
+            .submit(
+                cmd(
+                    "imp-w",
+                    "import_response",
+                    json!({"request_id": "r-w", "decision_id": "d-w",
+                           "entry": {"role": "assistant", "content": "waiting"}, "intents": [],
+                           "wait": {"mode": "ANY", "conditions": [{"kind": "message", "from": "i2"}]}}),
+                ),
+                Identity::System,
+            )
+            .expect("import");
+        // satisfied at registration: the instance never parks (A23)
+        assert_eq!(imported["wait"]["satisfied"], json!(true));
+        assert_eq!(imported["phase"], json!("READY"));
+        assert_eq!(wait_state(&ctl, "w-d-w"), "SATISFIED");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn pending_wait_wakes_in_the_same_transaction_as_the_fact() {
+        let (mut ctl, path) = control("wait-wake");
+        create_instance(&mut ctl, "i1");
+        create_instance(&mut ctl, "i2");
+        grant_message(&mut ctl, "i2", "i1", "a");
+        let wait_id = open_wait(
+            &mut ctl,
+            "x",
+            "i1",
+            0,
+            json!({"mode": "ANY", "conditions": [{"kind": "message", "from": "i2"}]}),
+        );
+        assert_eq!(phase_of(&ctl, "i1"), "WAITING");
+        assert_eq!(wait_state(&ctl, &wait_id), "PENDING");
+        // the message lands; the drain that applies it wakes the wait in the
+        // same transaction — no polling, no lost wake (A23)
+        ctl.submit(
+            cmd("sm-1", "send_message", json!({"recipient": "i1", "text": "result"})),
+            Identity::Instance("i2".into()),
+        )
+        .expect("send");
+        let drained = drain(&mut ctl, "i1");
+        assert_eq!(drained["woken"], json!([wait_id.clone()]));
+        assert_eq!(wait_state(&ctl, &wait_id), "SATISFIED");
+        assert_eq!(phase_of(&ctl, "i1"), "READY");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn task_completion_wakes_the_waiter() {
+        let (mut ctl, path) = control("wait-task");
+        create_instance(&mut ctl, "i1");
+        create_instance(&mut ctl, "i2");
+        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1"})), Identity::User).expect("goal");
+        ctl.submit(
+            cmd("dt-1", "delegate_task", json!({"task_id": "t1", "assignee": "i2", "goal_id": "g1"})),
+            Identity::User,
+        )
+        .expect("delegate");
+        let wait_id = open_wait(
+            &mut ctl,
+            "x",
+            "i1",
+            0,
+            json!({"mode": "ANY", "conditions": [{"kind": "task", "task_id": "t1"}]}),
+        );
+        assert_eq!(phase_of(&ctl, "i1"), "WAITING");
+        let done = ctl
+            .submit(
+                cmd("ct-1", "complete_task", json!({"task_id": "t1", "status": "SUCCEEDED", "summary": "ok"})),
+                Identity::Instance("i2".into()),
+            )
+            .expect("complete");
+        assert_eq!(done["woken"], json!([wait_id.clone()]));
+        assert_eq!(wait_state(&ctl, &wait_id), "SATISFIED");
+        assert_eq!(phase_of(&ctl, "i1"), "READY");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn a_due_timer_closes_the_wait() {
+        let (mut ctl, path) = control("wait-timer");
+        create_instance(&mut ctl, "i1");
+        create_instance(&mut ctl, "i2");
+        let future = crate::models::now() + 3600.0;
+        let wait_id = open_wait(
+            &mut ctl,
+            "x",
+            "i1",
+            0,
+            json!({"mode": "ANY", "conditions": [{"kind": "message", "from": "i2"}], "timer_at": future}),
+        );
+        assert_eq!(phase_of(&ctl, "i1"), "WAITING");
+        // not yet due: the timer pass leaves it pending
+        let early = ctl.submit(cmd("ft-0", "fire_timer", json!({})), Identity::System).expect("early fire");
+        assert_eq!(early["satisfied"], json!([]));
+        // past the deadline the timer branch closes the wait (§5.3)
+        let fired =
+            ctl.submit(cmd("ft-1", "fire_timer", json!({"now": future + 1.0})), Identity::System).expect("fire");
+        assert_eq!(fired["satisfied"], json!([wait_id.clone()]));
+        assert_eq!(wait_state(&ctl, &wait_id), "SATISFIED");
+        assert_eq!(phase_of(&ctl, "i1"), "READY");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn blocked_report_flags_dead_waits_not_cycles() {
+        let (mut ctl, path) = control("wait-blocked");
+        create_instance(&mut ctl, "i1");
+        create_instance(&mut ctl, "i2");
+        create_instance(&mut ctl, "i3");
+        create_instance(&mut ctl, "i4");
+        let dead_wait = open_wait(
+            &mut ctl,
+            "x",
+            "i1",
+            0,
+            json!({"mode": "ANY", "conditions": [{"kind": "message", "from": "i2"}]}),
+        );
+        // an ordinary wait cycle among live instances is not a deadlock (A22)
+        open_wait(&mut ctl, "y", "i3", 0, json!({"mode": "ANY", "conditions": [{"kind": "message", "from": "i4"}]}));
+        open_wait(&mut ctl, "z", "i4", 0, json!({"mode": "ANY", "conditions": [{"kind": "message", "from": "i3"}]}));
+        let report = ctl.submit(cmd("br-0", "blocked_report", json!({})), Identity::User).expect("report");
+        assert_eq!(report["blocked"], json!([]));
+        assert_eq!(report["waiting"], json!(3));
+        // the sender dies: the wait can never fire and is reported — but
+        // nothing is cancelled automatically (A22)
+        ctl.submit(
+            cmd("sl-t", "set_lifecycle", json!({"instance_id": "i2", "lifecycle": "TERMINATED"})),
+            Identity::User,
+        )
+        .expect("terminate");
+        let report = ctl.submit(cmd("br-1", "blocked_report", json!({})), Identity::User).expect("report");
+        let blocked = report["blocked"].as_array().unwrap();
+        assert_eq!(blocked.len(), 1, "{blocked:?}");
+        assert_eq!(blocked[0]["wait_id"], json!(dead_wait.clone()));
+        assert_eq!(report["waiting"], json!(2));
+        assert_eq!(wait_state(&ctl, &dead_wait), "PENDING");
+        assert_eq!(phase_of(&ctl, "i1"), "WAITING");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn user_input_supersedes_a_pending_wait() {
+        let (mut ctl, path) = control("wait-input");
+        create_instance(&mut ctl, "i1");
+        create_instance(&mut ctl, "i2");
+        let wait_id = open_wait(
+            &mut ctl,
+            "x",
+            "i1",
+            0,
+            json!({"mode": "ANY", "conditions": [{"kind": "message", "from": "i2"}]}),
+        );
+        assert_eq!(phase_of(&ctl, "i1"), "WAITING");
+        ctl.submit(
+            cmd("in-1", "submit_input", json!({"instance_id": "i1", "envelope_id": "e1", "text": "stop waiting"})),
+            Identity::User,
+        )
+        .expect("input");
+        assert_eq!(phase_of(&ctl, "i1"), "READY");
+        assert_eq!(wait_state(&ctl, &wait_id), "CANCELLED");
         cleanup(&path);
     }
 
