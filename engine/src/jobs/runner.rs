@@ -70,6 +70,7 @@ impl Runner {
                 self.journal.pid = Some(child.id());
                 self.journal.start_ticks = Some(start_ticks(child.id())?);
                 self.journal.starts += 1;
+                self.journal.started_ms = Some(now_ms());
                 self.journal.state = "RUNNING".into();
                 self.child = Some(child);
                 self.persist();
@@ -163,12 +164,14 @@ impl Runner {
                     "FAILED".into()
                 };
                 self.child = None;
+                self.journal.finished_ms = Some(now_ms());
                 self.persist();
             }
             Ok(None) => {}
             Err(e) => {
                 self.journal.state = "OUTCOME_UNKNOWN".into();
                 self.child = None;
+                self.journal.finished_ms = Some(now_ms());
                 self.persist();
                 tracing_warn(&format!("job {} wait failed: {e}", self.journal.job_id));
             }
@@ -221,6 +224,8 @@ pub async fn serve(root: &Path) -> Result<(), String> {
             boot_id: boot_id()?,
             exit_code: None,
             signal: None,
+            started_ms: None,
+            finished_ms: None,
             starts: 0,
             cancel_saved: false,
         }
@@ -235,11 +240,8 @@ pub async fn serve(root: &Path) -> Result<(), String> {
         test_hooks: std::env::var(TEST_HOOKS_ENV).is_ok(),
     };
     runner.persist();
-    let socket = root.join("runner.sock");
-    if socket.exists() {
-        std::fs::remove_file(&socket).map_err(|e| format!("stale socket: {e}"))?;
-    }
-    let listener = UnixListener::bind(&socket).map_err(|e| format!("bind {}: {e}", socket.display()))?;
+    let listener = UnixListener::bind_addr(&super::socket_addr(&runner.spec.token)?)
+        .map_err(|e| format!("bind job socket: {e}"))?;
     let mut tick = tokio::time::interval(Duration::from_millis(10));
     loop {
         tokio::select! {
@@ -267,6 +269,10 @@ pub async fn serve(root: &Path) -> Result<(), String> {
                         let _ = write.write_all(b"{\"ok\":false,\"error\":\"protocol version mismatch\"}\n").await;
                         continue;
                     }
+                    if request["token"].as_str() != Some(runner.spec.token.as_str()) {
+                        let _ = write.write_all(b"{\"ok\":false,\"error\":\"job token mismatch\"}\n").await;
+                        continue;
+                    }
                     let method = request["method"].as_str().unwrap_or("");
                     let reply = match runner.request(method) {
                         Ok(v) => v,
@@ -289,7 +295,6 @@ pub async fn serve(root: &Path) -> Result<(), String> {
         }
     }
     drop(listener);
-    let _ = std::fs::remove_file(&socket);
     drop(lock);
     Ok(())
 }
@@ -299,7 +304,16 @@ pub async fn serve(root: &Path) -> Result<(), String> {
 /// socket and the persisted journal, never through the child handle (A11).
 pub fn spawn(root: &Path, spec: &JobSpec) -> Result<(), String> {
     std::fs::create_dir_all(root).map_err(|e| format!("job dir {}: {e}", root.display()))?;
-    atomic_json(&root.join("job.json"), spec)?;
+    if !root.join("job.json").exists() {
+        // first spawn fixes the token; respawns keep the persisted identity
+        // (a live runner from a previous incarnation rejects a second runner
+        // via the lock; clients reconnect with the persisted token)
+        let mut spec = spec.clone();
+        if spec.token.is_empty() {
+            spec.token = uuid::Uuid::new_v4().to_string();
+        }
+        atomic_json(&root.join("job.json"), &spec)?;
+    }
     // TEAMAGENTS_RUNNER_BIN overrides the runner image for integration tests
     // (their own executable is the test harness); production uses the same
     // teamagents binary the daemon runs as (§6.2: same Rust binary).

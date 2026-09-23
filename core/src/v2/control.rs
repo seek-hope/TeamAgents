@@ -114,6 +114,9 @@ fn dispatch(
         "approve" => approve(tx, session_id, params, identity),
         "deny" => deny(tx, session_id, params, identity),
         "fail_request" => fail_request(tx, session_id, params),
+        "cancel_request" => cancel_request(tx, session_id, params),
+        "complete_goal" => complete_goal(tx, session_id, params),
+        "artifact_abandon" => artifact_abandon(tx, session_id, params),
         "set_lifecycle" => set_lifecycle(tx, session_id, params, identity),
         "artifact_stage" => artifact_stage(tx, session_id, params),
         "artifact_publish" => artifact_publish(tx, session_id, params),
@@ -167,6 +170,7 @@ fn create_goal(tx: &Connection, session_id: &str, params: &Json) -> Result<Json,
     let original = params["original_request_ref"].as_str().unwrap_or("");
     let limits = params.get("limits").cloned().unwrap_or(json!({}));
     let deadline = params["deadline"].as_f64();
+    let attach = params["instance_id"].as_str();
     tx.execute(
         "INSERT INTO goals
          (id, session_id, original_request_ref, requirement_revision, status, deadline,
@@ -182,6 +186,17 @@ fn create_goal(tx: &Connection, session_id: &str, params: &Json) -> Result<Json,
         ],
     )
     .map_err(|e| format!("create_goal {id}: {e}"))?;
+    if let Some(instance) = attach {
+        let changed = tx
+            .execute(
+                "UPDATE instances SET active_goal_id = ?1, revision = revision + 1 WHERE id = ?2 AND session_id = ?3",
+                rusqlite::params![id, instance, session_id],
+            )
+            .map_err(|e| format!("attach goal: {e}"))?;
+        if changed != 1 {
+            return Err(format!("cannot attach goal {id}: instance {instance} not in this session"));
+        }
+    }
     event(tx, session_id, "goal_created", id, &json!({"goal_id": id}))?;
     Ok(json!({"goal_id": id, "status": "ACTIVE"}))
 }
@@ -326,7 +341,12 @@ fn begin_request(tx: &Connection, session_id: &str, params: &Json, identity: &Id
         .query_row("SELECT active_goal_id FROM instances WHERE id = ?1", [instance_id], |row| row.get(0))
         .map_err(|e| format!("goal read: {e}"))?;
     if let Some(goal) = goal_id.as_deref() {
-        reserve_budget(tx, session_id, goal, instance_id, request_id, est)?;
+        // Budget refusal is a committed outcome, not a transaction failure:
+        // rolling back would lose the auditable event (§8). The request
+        // never registers and the instance stays READY.
+        if let Some(reason) = reserve_budget(tx, session_id, goal, instance_id, request_id, est)? {
+            return Ok(json!({"request_id": request_id, "budget_refused": true, "reason": reason}));
+        }
     }
     tx.execute(
         "INSERT INTO model_requests (request_id, instance_id, epoch, goal_id, request_ref, status, est_prompt_tokens)
@@ -348,6 +368,7 @@ fn begin_request(tx: &Connection, session_id: &str, params: &Json, identity: &Id
 /// Budget gate and reservation (§8): a request may only start while known +
 /// reserved + its estimate fits the goal limit. Reservations release when the
 /// request closes (import or fail); unknown usage stays a visible counter.
+/// Returns the refusal reason when the gate rejects the request.
 fn reserve_budget(
     tx: &Connection,
     session_id: &str,
@@ -355,7 +376,7 @@ fn reserve_budget(
     instance_id: &str,
     request_id: &str,
     est: i64,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     let (limits, known_json, reservations_json): (String, String, String) = tx
         .query_row(
             "SELECT limits_json, known_usage_json, reservations_json FROM goals WHERE id = ?1",
@@ -378,10 +399,10 @@ fn reserve_budget(
                 &json!({"goal_id": goal_id, "request_id": request_id, "known": known.total,
                         "reserved": reserved, "est": est, "max": max}),
             )?;
-            return Err(format!(
+            return Ok(Some(format!(
                 "goal {goal_id} budget exceeded: known {} + reserved {reserved} + est {est} > max {max}",
                 known.total
-            ));
+            )));
         }
     }
     reservations.insert(request_id.to_string(), json!(est));
@@ -390,7 +411,7 @@ fn reserve_budget(
         rusqlite::params![json!(reservations).to_string(), goal_id],
     )
     .map_err(|e| format!("reservation: {e}"))?;
-    Ok(())
+    Ok(None)
 }
 
 /// Release the request's reservation when the request closes (§8).
@@ -419,6 +440,12 @@ fn record_attempt(tx: &Connection, session_id: &str, params: &Json) -> Result<Js
     let elapsed = params["elapsed_ms"].as_i64().unwrap_or(0);
     let usage = params.get("usage").cloned().unwrap_or(Json::Null);
     let response_ref = params["response_ref"].as_str();
+    let request_status: String = tx
+        .query_row("SELECT status FROM model_requests WHERE request_id = ?1", [request_id], |row| row.get(0))
+        .map_err(|e| format!("record_attempt request {request_id}: {e}"))?;
+    if request_status != "PENDING" {
+        return Err(format!("request {request_id} is {request_status}; attempts for closed requests are refused"));
+    }
     tx.execute(
         "INSERT INTO attempts (attempt_id, request_id, status, response_ref, usage_json, elapsed_ms, created)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -448,6 +475,15 @@ fn record_attempt(tx: &Connection, session_id: &str, params: &Json) -> Result<Js
             settle_usage(tx, &goal, &usage)?;
         }
     }
+    // attempts lost mid-flight (crash between dispatch and response) keep the
+    // possibly-duplicated billing honest: a visible unknown counter (§8)
+    if params["unknown_usage"].as_bool().unwrap_or(false) {
+        if let Some(goal) = request_goal(tx, request_id)? {
+            tx.execute("UPDATE goals SET unknown_usage = unknown_usage + 1 WHERE id = ?1", [&goal])
+                .map_err(|e| format!("unknown usage: {e}"))?;
+        }
+    }
+    publish_list(tx, session_id, params)?;
     event(
         tx,
         session_id,
@@ -509,8 +545,8 @@ fn import_response(tx: &Connection, session_id: &str, params: &Json, identity: &
     }
     let inserted = tx
         .execute(
-            "INSERT INTO decisions (decision_id, request_id) VALUES (?1, ?2)",
-            rusqlite::params![decision_id, request_id],
+            "INSERT INTO decisions (decision_id, request_id, completion_json) VALUES (?1, ?2, ?3)",
+            rusqlite::params![decision_id, request_id, completion.as_ref().map(|c| c.to_string())],
         )
         .map_err(|e| format!("decision {decision_id}: {e}"))?;
     if inserted != 1 {
@@ -894,7 +930,15 @@ fn fail_request(tx: &Connection, session_id: &str, params: &Json) -> Result<Json
 /// User lifecycle intervention (§5.4): pause stops new dispatches at the next
 /// safe boundary; resume/park/terminate record the real reason as an event.
 fn set_lifecycle(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
-    require_user(identity)?;
+    // the user controls every transition; the system may only park (budget
+    // exhaustion, permanent errors) — never resume, terminate or dispatch
+    if *identity == Identity::System {
+        if params["lifecycle"].as_str() != Some("PARKED") {
+            return Err("the system may only park instances".into());
+        }
+    } else {
+        require_user(identity)?;
+    }
     let instance_id = params["instance_id"].as_str().ok_or("set_lifecycle.instance_id required")?;
     let lifecycle = params["lifecycle"].as_str().ok_or("set_lifecycle.lifecycle required")?;
     if !matches!(lifecycle, "ACTIVE" | "PAUSED" | "PARKED" | "TERMINATED") {
@@ -919,6 +963,117 @@ fn set_lifecycle(tx: &Connection, session_id: &str, params: &Json, identity: &Id
 
 fn is_terminal_op(status: &str) -> bool {
     matches!(status, "SUCCEEDED" | "FAILED" | "CANCELLED" | "CANCELLED_BEFORE_START" | "OUTCOME_UNKNOWN")
+}
+
+/// User turn cancellation: the active request closes, the reservation
+/// releases, in-flight attempts are refused from now on (the provider read
+/// is abandoned locally; real teardown belongs to the process layer, §6.4).
+fn cancel_request(tx: &Connection, session_id: &str, params: &Json) -> Result<Json, String> {
+    let request_id = params["request_id"].as_str().ok_or("cancel_request.request_id required")?;
+    let reason = params["reason"].as_str().unwrap_or("cancelled by user");
+    let (instance, status): (String, String) = tx
+        .query_row("SELECT instance_id, status FROM model_requests WHERE request_id = ?1", [request_id], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .map_err(|e| format!("cancel_request {request_id}: {e}"))?;
+    if status != "PENDING" {
+        return Ok(json!({"request_id": request_id, "status": status, "already_closed": true}));
+    }
+    release_reservation(tx, request_id)?;
+    tx.execute("UPDATE model_requests SET status = 'CANCELLED' WHERE request_id = ?1", [request_id])
+        .map_err(|e| format!("request cancel: {e}"))?;
+    tx.execute(
+        "UPDATE instances SET phase = 'READY', active_request_id = NULL, revision = revision + 1
+         WHERE id = ?1 AND phase = 'MODEL_PENDING'",
+        [&instance],
+    )
+    .map_err(|e| format!("cancel instance: {e}"))?;
+    event(tx, session_id, "request_cancelled", &instance, &json!({"request_id": request_id, "reason": reason}))?;
+    Ok(json!({"request_id": request_id, "status": "CANCELLED"}))
+}
+
+/// Goal completion (§4.2, §8): the open-operation check, goal result and the
+/// outward event commit atomically. The candidate comes from the decision
+/// that proposed it — never re-taken from the model.
+fn complete_goal(tx: &Connection, session_id: &str, params: &Json) -> Result<Json, String> {
+    let goal_id = params["goal_id"].as_str().ok_or("complete_goal.goal_id required")?;
+    let instance_id = params["instance_id"].as_str().ok_or("complete_goal.instance_id required")?;
+    let goal_status: String = tx
+        .query_row(
+            "SELECT status FROM goals WHERE id = ?1 AND session_id = ?2",
+            rusqlite::params![goal_id, session_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("complete_goal {goal_id}: {e}"))?;
+    if goal_status != "ACTIVE" {
+        return Ok(json!({"goal_id": goal_id, "status": goal_status, "already_closed": true}));
+    }
+    let open: i64 = tx
+        .query_row(
+            "SELECT COUNT(*) FROM operations WHERE goal_id = ?1 AND status IN ('PREPARED', 'DISPATCH_COMMITTED', 'RUNNING')",
+            [goal_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("goal open ops: {e}"))?;
+    if open > 0 {
+        return Err(format!("goal {goal_id} has {open} open operations; cannot complete"));
+    }
+    let completion: Option<String> = tx
+        .query_row(
+            "SELECT d.completion_json FROM decisions d
+             JOIN model_requests r ON d.request_id = r.request_id
+             WHERE r.instance_id = ?1 AND d.completion_json IS NOT NULL
+             ORDER BY d.rowid DESC LIMIT 1",
+            [instance_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("completion read: {e}"))?;
+    let candidate: Json = completion.as_deref().and_then(|c| serde_json::from_str(c).ok()).unwrap_or(Json::Null);
+    let status = match candidate["outcome"].as_str().unwrap_or("failed") {
+        "success" => "SUCCEEDED",
+        "blocked" => "BLOCKED",
+        _ => "FAILED",
+    };
+    tx.execute("UPDATE goals SET status = ?1 WHERE id = ?2", rusqlite::params![status, goal_id])
+        .map_err(|e| format!("goal close: {e}"))?;
+    tx.execute(
+        "UPDATE instances SET phase = 'READY', revision = revision + 1 WHERE id = ?1 AND phase = 'COMPLETION_PENDING'",
+        [instance_id],
+    )
+    .map_err(|e| format!("completion instance: {e}"))?;
+    event(
+        tx,
+        session_id,
+        "goal_completed",
+        goal_id,
+        &json!({"goal_id": goal_id, "status": status, "completion": candidate}),
+    )?;
+    Ok(json!({"goal_id": goal_id, "status": status}))
+}
+
+/// STAGING → ABANDONED (§4.3): orphans from a crash between staging and the
+/// referencing commit are marked, never silently deleted or published.
+fn artifact_abandon(tx: &Connection, session_id: &str, params: &Json) -> Result<Json, String> {
+    let id = params["id"].as_str().ok_or("artifact_abandon.id required")?;
+    let changed = tx
+        .execute(
+            "UPDATE artifacts SET completeness = 'ABANDONED' WHERE id = ?1 AND session_id = ?2 AND completeness = 'STAGING'",
+            rusqlite::params![id, session_id],
+        )
+        .map_err(|e| format!("artifact_abandon {id}: {e}"))?;
+    if changed != 1 {
+        let state: Option<String> = tx
+            .query_row("SELECT completeness FROM artifacts WHERE id = ?1", [id], |row| row.get(0))
+            .optional()
+            .map_err(|e| format!("artifact read {id}: {e}"))?;
+        return Err(format!(
+            "artifact {id} cannot be abandoned from state {}",
+            state.as_deref().unwrap_or("<missing>")
+        ));
+    }
+    event(tx, session_id, "artifact_abandoned", id, &json!({"artifact_id": id}))?;
+    Ok(json!({"artifact_id": id, "completeness": "ABANDONED"}))
 }
 
 /// Artifact publication (§4.3): identity, digest and publishing owner are
@@ -1787,7 +1942,7 @@ mod tests {
             .query_row("SELECT reservations_json FROM goals WHERE id = 'g1'", [], |row| row.get(0))
             .unwrap();
         assert_eq!(released, "{}");
-        let err = ctl
+        let refused = ctl
             .submit(
                 cmd(
                     "b2",
@@ -1796,8 +1951,15 @@ mod tests {
                 ),
                 Identity::Instance("i1".into()),
             )
-            .unwrap_err();
-        assert!(err.contains("budget exceeded"), "{err}");
+            .expect("refusal is a committed outcome, not a command error");
+        assert_eq!(refused["budget_refused"], json!(true), "{refused}");
+        assert!(refused["reason"].as_str().unwrap_or_default().contains("budget exceeded"), "{refused}");
+        // the refusal is persisted as an auditable event (§8)
+        let refusals: i64 = ctl
+            .connection()
+            .query_row("SELECT COUNT(*) FROM events WHERE kind = 'budget_refused'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(refusals, 1);
         // the refused begin left the instance READY, not half-dispatched
         assert_eq!(phase_of(&ctl, "i1"), "READY");
         cleanup(&path);
@@ -1901,6 +2063,142 @@ mod tests {
             .unwrap();
         assert_eq!(status, "EXPIRED");
         assert!(ctl.submit(cmd("ap-late", "approve", json!({"approval_id": approval_id})), Identity::User).is_err());
+        cleanup(&path);
+    }
+    #[test]
+    fn create_goal_attaches_to_instance() {
+        let (mut ctl, path) = control("attach");
+        create_instance(&mut ctl, "i1");
+        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1", "instance_id": "i1"})), Identity::User).expect("goal");
+        let attached: Option<String> = ctl
+            .connection()
+            .query_row("SELECT active_goal_id FROM instances WHERE id = 'i1'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(attached.as_deref(), Some("g1"));
+        let err = ctl
+            .submit(cmd("g2", "create_goal", json!({"id": "g2", "instance_id": "ghost"})), Identity::User)
+            .unwrap_err();
+        assert!(err.contains("not in this session"), "{err}");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn attempts_for_closed_requests_are_refused_and_unknown_usage_is_visible() {
+        let (mut ctl, path) = control("closed-attempt");
+        create_instance(&mut ctl, "i1");
+        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1", "instance_id": "i1"})), Identity::User).expect("goal");
+        ctl.connection().execute("UPDATE instances SET active_goal_id = 'g1' WHERE id = 'i1'", []).unwrap();
+        ctl.submit(
+            cmd("b1", "begin_request", json!({"instance_id": "i1", "request_id": "r1", "revision": 1})),
+            Identity::Instance("i1".into()),
+        )
+        .expect("begin");
+        // a lost in-flight attempt is recorded with the unknown counter (§8)
+        ctl.submit(
+            cmd(
+                "a1",
+                "record_attempt",
+                json!({"attempt_id": "at1", "request_id": "r1", "status": "FAILED", "unknown_usage": true}),
+            ),
+            Identity::System,
+        )
+        .expect("lost attempt");
+        let unknown: i64 = ctl
+            .connection()
+            .query_row("SELECT unknown_usage FROM goals WHERE id = 'g1'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(unknown, 1);
+        ctl.submit(cmd("c1", "cancel_request", json!({"request_id": "r1"})), Identity::User).expect("cancel");
+        let err = ctl
+            .submit(
+                cmd("a2", "record_attempt", json!({"attempt_id": "at2", "request_id": "r1", "status": "COMPLETE"})),
+                Identity::System,
+            )
+            .unwrap_err();
+        assert!(err.contains("closed requests"), "{err}");
+        // cancel is idempotent for the client
+        let again =
+            ctl.submit(cmd("c2", "cancel_request", json!({"request_id": "r1"})), Identity::User).expect("recancel");
+        assert_eq!(again["already_closed"], json!(true));
+        assert_eq!(phase_of(&ctl, "i1"), "READY");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn complete_goal_uses_the_stored_candidate_and_checks_open_operations() {
+        let (mut ctl, path) = control("goal-complete");
+        create_instance(&mut ctl, "i1");
+        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1", "instance_id": "i1"})), Identity::User).expect("goal");
+        // a finish decision lands the instance in COMPLETION_PENDING
+        let request = begin_and_complete(&mut ctl, "fin", "i1", 1);
+        ctl.submit(
+            cmd(
+                "imp-fin",
+                "import_response",
+                json!({"request_id": request, "decision_id": "d-fin",
+                       "entry": {"role": "assistant", "content": ""},
+                       "completion": {"outcome": "success", "summary": "done", "evidence": ["ran tests"]}}),
+            ),
+            Identity::System,
+        )
+        .expect("import");
+        assert_eq!(phase_of(&ctl, "i1"), "COMPLETION_PENDING");
+        let closed = ctl
+            .submit(cmd("cg-1", "complete_goal", json!({"goal_id": "g1", "instance_id": "i1"})), Identity::System)
+            .expect("complete");
+        assert_eq!(closed["status"], json!("SUCCEEDED"));
+        assert_eq!(phase_of(&ctl, "i1"), "READY");
+        // idempotent for clients that missed the reply
+        let again = ctl
+            .submit(cmd("cg-2", "complete_goal", json!({"goal_id": "g1", "instance_id": "i1"})), Identity::System)
+            .expect("recomplete");
+        assert_eq!(again["already_closed"], json!(true));
+        cleanup(&path);
+    }
+
+    #[test]
+    fn artifact_abandon_only_marks_staging_orphans() {
+        let (mut ctl, path) = control("abandon");
+        ctl.submit(
+            cmd("st-1", "artifact_stage", json!({"id": "a1", "digest": "d1", "storage_ref": "file:///tmp/a1"})),
+            Identity::System,
+        )
+        .expect("stage");
+        let abandoned =
+            ctl.submit(cmd("ab-1", "artifact_abandon", json!({"id": "a1"})), Identity::System).expect("abandon");
+        assert_eq!(abandoned["completeness"], json!("ABANDONED"));
+        // abandoned artifacts can never go LIVE afterwards
+        assert!(ctl.submit(cmd("pub-1", "artifact_publish", json!({"id": "a1"})), Identity::System).is_err());
+        // LIVE artifacts are not abandonable
+        ctl.submit(
+            cmd("st-2", "artifact_stage", json!({"id": "a2", "digest": "d2", "storage_ref": "file:///tmp/a2"})),
+            Identity::System,
+        )
+        .expect("stage");
+        ctl.submit(cmd("pub-2", "artifact_publish", json!({"id": "a2"})), Identity::System).expect("publish");
+        assert!(ctl.submit(cmd("ab-2", "artifact_abandon", json!({"id": "a2"})), Identity::System).is_err());
+        cleanup(&path);
+    }
+
+    #[test]
+    fn system_may_park_but_never_resume_or_terminate() {
+        let (mut ctl, path) = control("syspark");
+        create_instance(&mut ctl, "i1");
+        ctl.submit(
+            cmd("sp-1", "set_lifecycle", json!({"instance_id": "i1", "lifecycle": "PARKED", "reason": "budget"})),
+            Identity::System,
+        )
+        .expect("system park");
+        for target in ["ACTIVE", "PAUSED", "TERMINATED"] {
+            assert!(ctl
+                .submit(
+                    cmd(&format!("sp-{target}"), "set_lifecycle", json!({"instance_id": "i1", "lifecycle": target})),
+                    Identity::System
+                )
+                .is_err());
+        }
+        ctl.submit(cmd("sp-u", "set_lifecycle", json!({"instance_id": "i1", "lifecycle": "ACTIVE"})), Identity::User)
+            .expect("user resume");
         cleanup(&path);
     }
 }

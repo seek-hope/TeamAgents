@@ -23,11 +23,20 @@ pub async fn spawn(root: &Path, spec: &JobSpec) -> Result<(), String> {
     Err("runner did not report within 2s of spawn".into())
 }
 
+fn token_of(root: &Path) -> Result<String, String> {
+    let spec: Json =
+        serde_json::from_slice(&std::fs::read(root.join("job.json")).map_err(|e| format!("read job.json: {e}"))?)
+            .map_err(|e| format!("parse job.json: {e}"))?;
+    spec["token"].as_str().map(str::to_string).ok_or_else(|| "job.json has no token".into())
+}
+
 pub async fn request(root: &Path, method: &str) -> Result<Json, String> {
-    let stream = UnixStream::connect(root.join("runner.sock")).await.map_err(|e| format!("connect runner: {e}"))?;
+    let token = token_of(root)?;
+    let stream =
+        UnixStream::connect_addr(&super::socket_addr(&token)?).await.map_err(|e| format!("connect runner: {e}"))?;
     let (read, mut write) = stream.into_split();
     write
-        .write_all(format!("{}\n", json!({"version": 1, "method": method})).as_bytes())
+        .write_all(format!("{}\n", json!({"version": 1, "method": method, "token": token})).as_bytes())
         .await
         .map_err(|e| format!("send {method}: {e}"))?;
     let mut line = String::new();

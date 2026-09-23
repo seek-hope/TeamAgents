@@ -26,6 +26,7 @@ pub mod session;
 pub mod sessions;
 mod stream;
 pub mod tools;
+pub mod v2;
 pub mod worker;
 pub mod workspace;
 

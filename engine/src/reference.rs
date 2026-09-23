@@ -248,7 +248,7 @@ pub async fn run_reference<P: Provider>(
 }
 
 /// Built-in readback: page the stored full output of an earlier call.
-fn readback_receipt(operation_id: &str, intent: &ToolIntent, entries: &[ContextEntry]) -> ToolReceipt {
+pub(crate) fn readback_receipt(operation_id: &str, intent: &ToolIntent, entries: &[ContextEntry]) -> ToolReceipt {
     let source = intent.args.get("tool_call_id").and_then(|v| v.as_str()).unwrap_or("");
     let found = entries.iter().find(|entry| entry.message["tool_call_id"].as_str() == Some(source));
     let (ok, content) = match found {

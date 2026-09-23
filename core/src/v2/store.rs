@@ -139,7 +139,8 @@ CREATE INDEX IF NOT EXISTS idx_attempts_request ON attempts(request_id);
 
 CREATE TABLE IF NOT EXISTS decisions (
     decision_id TEXT PRIMARY KEY,
-    request_id TEXT NOT NULL UNIQUE
+    request_id TEXT NOT NULL UNIQUE,
+    completion_json TEXT
 );
 
 CREATE TABLE IF NOT EXISTS operations (

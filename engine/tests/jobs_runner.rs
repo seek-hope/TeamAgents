@@ -23,6 +23,7 @@ fn spec(job_id: &str, script: &str, deadline_ms: u64) -> JobSpec {
             ("LANG".into(), "C.UTF-8".into()),
         ],
         deadline_ms,
+        token: String::new(),
     }
 }
 
