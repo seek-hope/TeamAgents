@@ -147,9 +147,15 @@ impl DaemonClient {
     }
 }
 
+/// A wedged daemon must mark the client disconnected, never freeze the UI:
+/// local-socket round trips are sub-millisecond, so a multi-second silence
+/// means the server is stuck (§9 断开重连).
+const IO_TIMEOUT: Duration = Duration::from_secs(2);
+
 fn handshake(socket: &Path) -> Result<(Conn, Json), String> {
     let writer = UnixStream::connect(socket).map_err(|e| format!("connect {}: {e}", socket.display()))?;
-    writer.set_read_timeout(Some(Duration::from_secs(30))).map_err(|e| e.to_string())?;
+    writer.set_read_timeout(Some(IO_TIMEOUT)).map_err(|e| e.to_string())?;
+    writer.set_write_timeout(Some(IO_TIMEOUT)).map_err(|e| e.to_string())?;
     let reader = BufReader::new(writer.try_clone().map_err(|e| e.to_string())?);
     let mut conn = Conn { reader, writer };
     let mut line = String::new();

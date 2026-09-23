@@ -163,7 +163,7 @@ async fn handle(request: &Json, supervisor: &SupervisorHandle, session_db: &Path
     let method = request.get("method").and_then(|v| v.as_str()).unwrap_or("");
     let params = request.get("params").cloned().unwrap_or(json!({}));
     match method {
-        "checkpoint" | "events" | "history" | "tasks" | "grants" => {
+        "checkpoint" | "events" | "history" | "tasks" | "grants" | "approvals" => {
             match read_only(session_db, session_id, |conn| read_method(method, &params, conn)) {
                 Ok(result) => reply(true, result),
                 Err(error) => reply(false, json!(error)),
@@ -211,14 +211,15 @@ fn read_snapshot(conn: &rusqlite::Connection) -> Result<Json, String> {
     for row in rows {
         instances.push(row.map_err(|e| format!("snapshot row: {e}"))?);
     }
-    let goal: Option<(String, String, i64)> = conn
-        .query_row("SELECT status, known_usage_json, unknown_usage FROM goals LIMIT 1", [], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+    let goal: Option<(String, String, i64, String)> = conn
+        .query_row("SELECT status, known_usage_json, unknown_usage, limits_json FROM goals LIMIT 1", [], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
         })
         .ok();
-    Ok(json!({"instances": instances, "goal": goal.map(|(status, usage, unknown)|
+    Ok(json!({"instances": instances, "goal": goal.map(|(status, usage, unknown, limits)|
         json!({"status": status, "known_usage": serde_json::from_str::<Json>(&usage).unwrap_or(Json::Null),
-               "unknown_usage": unknown}))}))
+               "unknown_usage": unknown,
+               "limits": serde_json::from_str::<Json>(&limits).unwrap_or(Json::Null)}))}))
 }
 
 fn read_events(conn: &rusqlite::Connection, since: i64) -> Result<Vec<Json>, String> {
@@ -291,6 +292,34 @@ fn read_method(method: &str, params: &Json, conn: &rusqlite::Connection) -> Resu
                 .map_err(|e| format!("tasks query: {e}"))?;
             let tasks: Vec<Json> = rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("tasks: {e}"))?;
             Ok(json!({"tasks": tasks}))
+        }
+        // pending approvals with the operation's fixed intent (§9 first
+        // version: 批准/未知结果处理) — the client renders a preview and
+        // decides through the write surface; args stay a bounded preview
+        "approvals" => {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT a.id, a.operation_id, o.intent_json FROM approvals a
+                     JOIN operations o ON a.operation_id = o.operation_id
+                     WHERE a.status = 'PENDING' ORDER BY a.rowid",
+                )
+                .map_err(|e| format!("approvals prepare: {e}"))?;
+            let rows = stmt
+                .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)))
+                .map_err(|e| format!("approvals query: {e}"))?;
+            let mut approvals = Vec::new();
+            for row in rows {
+                let (id, operation_id, intent_json) = row.map_err(|e| format!("approvals row: {e}"))?;
+                let intent: Json = serde_json::from_str(&intent_json).unwrap_or(Json::Null);
+                let args = intent["args"].clone();
+                let preview = args["command"]
+                    .as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| args.to_string().chars().take(120).collect());
+                approvals.push(json!({"id": id, "operation_id": operation_id,
+                                      "tool": intent["name"].as_str().unwrap_or(""), "preview": preview}));
+            }
+            Ok(json!({"approvals": approvals}))
         }
         "grants" => {
             let mut stmt = conn

@@ -52,8 +52,12 @@ checkpoint 快照+水位同一读事务、断线按水位续读），TUI 侧同�
 修复闭环落地：required_checks 仅用户/项目可预定义（机器契约不可冒充），检查骑乘同一 operation
 回执账本、过检才落 SUCCEEDED、声明输入散列完成前重核、失败进修复或有界 BLOCKED、承认未交付
 绝不升级。确定性证据：providers_fake 23+4、v2_supervisor 5、v2_mcp 6、v2_daemon 2、v2_driver 18、
-core 契约 4；`make check` 全绿——core 220 / engine 457 / tui 112。真实模型验收（§12）与
-TUI 主界面 v2 化（R19-b②③）仍属本阶段及以后。证据与复跑见 [R2-P4 记录](../review/r2-p4-2026-09-24.md)。
+core 契约 4；R19-b② TUI 对话主界面 v2 化落地：--daemon/--state-root 连接会话 daemon，
+history 为权威对话流、事件驱动刷新，批准面板（daemon 新增 approvals 读面）、预算/状态条、
+断开重连指示，提交输入 command_id 即 envelope。确定性证据补 v2_daemon 3、v2app 9、
+真终端冒烟 pty_v2_smoke（进 make pty）；`make check` 全绿——core 220 / engine 458 / tui 121。
+真实模型验收（§12）与实例/任务/授权面板（R19-b③）仍属本阶段及以后。
+证据与复跑见 [R2-P4 记录](../review/r2-p4-2026-09-24.md)。
 
 2026-09-22 按用户确认的 D-41 修复 full_auto Shell：主机环境执行、后台服务跨调用及 CLI 退出存活，
 默认模式保留 bwrap；补齐实时模式切换、进程组停止、输出读取收尾和相同环境的 `exec --check`。

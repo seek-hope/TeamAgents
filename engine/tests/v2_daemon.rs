@@ -47,6 +47,12 @@ fn reply(text: &str) -> Json {
     json!({"role": "assistant", "content": text})
 }
 
+fn shell_call(id: &str, command: &str) -> Json {
+    json!({"role": "assistant", "content": "",
+           "tool_calls": [{"id": id, "type": "function",
+                           "function": {"name": "shell", "arguments": json!({"command": command}).to_string()}}]})
+}
+
 fn finish_call(summary: &str) -> Json {
     json!({"role": "assistant", "content": "",
            "tool_calls": [{"id": "finish-1", "type": "function",
@@ -258,5 +264,56 @@ async fn reconnect_backfills_events_after_the_watermark() {
         client.command("cmd-resume", "set_lifecycle", json!({"instance_id": "i-leader", "lifecycle": "ACTIVE"})).await;
     assert_eq!(resumed["ok"], json!(true), "{resumed}");
     let _ = watermark;
+    handle.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn approvals_surface_lists_and_decides_pending_operations() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let scripts =
+        HashMap::from([("i-leader".to_string(), vec![shell_call("c1", "true"), finish_call("approved and done")])]);
+    let root = root("approvals");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let mut cfg = config(&root, scripts);
+    cfg.supervisor.require_shell_approval = true;
+    let handle = serve(cfg).await.expect("daemon");
+    let mut client = Client::connect(&root.dir.join("state/daemon.sock")).await;
+    let checkpoint = client.call("checkpoint", json!({})).await;
+    let since = checkpoint["result"]["watermark"].as_i64().unwrap();
+    let submitted = client.command("cmd-approval-input", "submit_input", input_params("run it")).await;
+    assert_eq!(submitted["ok"], json!(true), "{submitted}");
+    // the dispatch parks behind a PENDING approval (§9 批准处理)
+    let mut approval_id = String::new();
+    for _ in 0..400 {
+        let events = client.call("events", json!({"since": since})).await;
+        if let Some(event) =
+            events["result"]["events"].as_array().unwrap().iter().find(|e| e["kind"] == json!("approval_requested"))
+        {
+            approval_id = event["payload"]["approval_id"].as_str().unwrap_or("").to_string();
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(!approval_id.is_empty(), "approval was never requested");
+    let approvals = client.call("approvals", json!({})).await;
+    assert_eq!(approvals["ok"], json!(true), "{approvals}");
+    let pending = approvals["result"]["approvals"].as_array().unwrap();
+    assert_eq!(pending.len(), 1, "{pending:?}");
+    assert_eq!(pending[0]["id"], json!(approval_id));
+    assert_eq!(pending[0]["tool"], json!("shell"));
+    assert_eq!(pending[0]["preview"], json!("true"));
+    // the decision rides the write surface with a stable command id
+    let decided = client.command("cmd-approve-1", "approve", json!({"approval_id": approval_id})).await;
+    assert_eq!(decided["ok"], json!(true), "{decided}");
+    // no longer pending, and the goal eventually completes
+    for _ in 0..100 {
+        let approvals = client.call("approvals", json!({})).await;
+        if approvals["result"]["approvals"].as_array().unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let (status, _) = wait_goal(&mut client, since).await;
+    assert_eq!(status, "SUCCEEDED");
     handle.shutdown().await.expect("shutdown");
 }

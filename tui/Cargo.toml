@@ -10,6 +10,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 unicode-width = "0.2"
 time = { version = "0.3", features = ["formatting", "local-offset"] }
+uuid = { version = "1", features = ["v4"] }
 
 [lib]
 name = "teamagents_tui"
