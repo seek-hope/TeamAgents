@@ -12,6 +12,7 @@ const HELP: &str = "TeamAgents：在终端里与 Leader 协作\n\n\
   teamagents sessions [-v]           查看会话\n\
   teamagents sessions prune --days N [--history-days M] [--dry-run]\n\
   teamagents exec --json [--timeout SEC] [--check COMMAND] PROMPT|-\n\
+  teamagents daemon [--state-root PATH] [--cwd DIR] [--model KEY] [--full-auto]\n\
   teamagents version | --version     查看版本\n\
   teamagents --help                  查看帮助\n\n\
 默认进入 TUI；--plain 使用行模式；--cwd DIR 指定工作目录。\n\
@@ -31,6 +32,8 @@ pub struct Args {
     pub verbose: bool,
     pub command: Option<String>,
     pub positional: Option<String>,
+    pub state_root: Option<String>,
+    pub model: Option<String>,
     pub timeout: Option<u64>,
     pub checks: Vec<String>,
     pub exec_json: bool,
@@ -59,6 +62,8 @@ fn parse_args() -> Args {
         verbose: false,
         command: None,
         positional: None,
+        state_root: None,
+        model: None,
         timeout: None,
         checks: Vec::new(),
         exec_json: false,
@@ -121,6 +126,29 @@ fn parse_args() -> Args {
                 args.command = Some(argv[i].clone());
                 args.positional = argv.get(i + 1).cloned();
                 i += 2;
+            }
+            "--state-root" => {
+                if args.state_root.is_some() {
+                    usage();
+                }
+                let v = argv.get(i + 1).cloned().filter(|v| !v.starts_with('-')).unwrap_or_else(|| usage());
+                args.state_root = Some(v);
+                i += 2;
+            }
+            "--model" => {
+                if args.model.is_some() {
+                    usage();
+                }
+                let v = argv.get(i + 1).cloned().filter(|v| !v.starts_with('-')).unwrap_or_else(|| usage());
+                args.model = Some(v);
+                i += 2;
+            }
+            "daemon" => {
+                if args.command.is_some() {
+                    usage();
+                }
+                args.command = Some(argv[i].clone());
+                i += 1;
             }
             "serve" | "init" | "doctor" | "validate" | "sessions" | "version" | "exec" => {
                 if args.command.is_some() {
@@ -288,6 +316,7 @@ fn main() {
             }
             None => usage(),
         },
+        Some("daemon") => cli::daemon(args.state_root.clone(), args.cwd.clone(), args.model.clone(), args.full_auto),
         Some("serve") => worker::serve(),
         Some("init") => cli::init(),
         Some("doctor") => cli::doctor(),

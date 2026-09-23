@@ -57,7 +57,7 @@ pub struct SupervisorHandle {
     shared: Arc<tokio::sync::Notify>,
     shutdown: Arc<std::sync::atomic::AtomicBool>,
     drivers: Arc<std::sync::Mutex<HashMap<String, InstanceDriver>>>,
-    task: tokio::task::JoinHandle<Result<(), String>>,
+    task: std::sync::Mutex<Option<tokio::task::JoinHandle<Result<(), String>>>>,
     _lock: std::fs::File,
 }
 
@@ -68,6 +68,20 @@ fn command(id: impl Into<String>, method: &str, params: Json) -> Command {
 impl SupervisorHandle {
     async fn submit(&self, cmd: Command, identity: Identity) -> Result<Json, String> {
         self.storage.call(move |control| control.submit(cmd, identity)).await?
+    }
+
+    /// User-identity command with a client-chosen command id (§9: stable
+    /// across reconnects; the control plane dedups replays by id). The
+    /// target instance wakes immediately (interactive priority, §7).
+    pub async fn submit_user(&self, cmd: Command) -> Result<Json, String> {
+        let instance = cmd.params["instance_id"].as_str().map(str::to_string);
+        let result = self.submit(cmd, Identity::User).await?;
+        if let Some(instance) = instance {
+            if let Some(driver) = self.drivers.lock().unwrap().get(&instance) {
+                driver.shared.wake.notify_one();
+            }
+        }
+        Ok(result)
     }
 
     /// User input at the accept boundary (§5.4); replay-safe by command id.
@@ -157,8 +171,9 @@ impl SupervisorHandle {
     }
 
     /// Stop the supervisor and every driver; submitted commands stay
-    /// committed (§4.1, §6.4).
-    pub async fn shutdown(self) -> Result<(), String> {
+    /// committed (§4.1, §6.4). Shared form: the daemon holds the handle in
+    /// an Arc and stops it without consuming it; later calls join nothing.
+    pub async fn shutdown_shared(&self) -> Result<(), String> {
         self.shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
         let drivers: Vec<InstanceDriver> = self.drivers.lock().unwrap().drain().map(|(_, d)| d).collect();
         for driver in &drivers {
@@ -169,10 +184,20 @@ impl SupervisorHandle {
         for driver in drivers {
             let _ = driver.task.await;
         }
-        match self.task.await {
-            Ok(result) => result,
-            Err(e) => Err(format!("supervisor task join: {e}")),
+        let task = self.task.lock().unwrap().take();
+        match task {
+            Some(task) => match task.await {
+                Ok(result) => result,
+                Err(e) => Err(format!("supervisor task join: {e}")),
+            },
+            None => Ok(()),
         }
+    }
+
+    /// Stop the supervisor and every driver; submitted commands stay
+    /// committed (§4.1, §6.4).
+    pub async fn shutdown(self) -> Result<(), String> {
+        self.shutdown_shared().await
     }
 }
 
@@ -213,7 +238,15 @@ where
         config,
     };
     let task = tokio::spawn(supervisor.run());
-    Ok(SupervisorHandle { storage, session_id, shared: wake, shutdown, drivers, task, _lock: lock })
+    Ok(SupervisorHandle {
+        storage,
+        session_id,
+        shared: wake,
+        shutdown,
+        drivers,
+        task: std::sync::Mutex::new(Some(task)),
+        _lock: lock,
+    })
 }
 
 struct Supervisor<P, F> {

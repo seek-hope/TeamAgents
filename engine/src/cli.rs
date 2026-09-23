@@ -965,6 +965,102 @@ fn json_line(value: &Json) -> bool {
         .is_ok()
 }
 
+// ---------------------------------------------------------------------------
+// R2-P4 R19: session daemon front-end (plan §9)
+
+/// Run the v2 session daemon: one supervised session over a Unix socket.
+/// The daemon owns the engine; TUI/exec are thin clients of its protocol.
+pub fn daemon(state_root: Option<String>, cwd: Option<String>, model: Option<String>, full_auto: bool) -> i32 {
+    daemon_run(state_root, cwd, model, full_auto)
+}
+
+fn daemon_run(state_root: Option<String>, cwd: Option<String>, model: Option<String>, full_auto: bool) -> i32 {
+    match daemon_boot(state_root, cwd, model, full_auto) {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("daemon: {e}");
+            1
+        }
+    }
+}
+
+fn daemon_boot(
+    state_root: Option<String>,
+    cwd: Option<String>,
+    model: Option<String>,
+    full_auto: bool,
+) -> Result<(), String> {
+    use teamagents_core::kernel::KernelProfile;
+    let catalog = load_user_config(&user_config_path())?;
+    let mut available: Vec<String> = catalog.models.keys().cloned().collect();
+    available.sort();
+    let model_key = match model {
+        Some(key) => key,
+        None if available.len() == 1 => available[0].clone(),
+        None => return Err(format!("请用 --model 指定模型目录键（可用：{}）", available.join(", "))),
+    };
+    if !available.contains(&model_key) {
+        return Err(format!("模型 {model_key:?} 不在用户目录（可用：{}）", available.join(", ")));
+    }
+    // preflight: credentials/protocol resolve at boot, not mid-session (§7)
+    crate::providers::build_for_model(&catalog, &model_key)?;
+    let workspace = match cwd {
+        Some(dir) => PathBuf::from(dir),
+        None => std::env::current_dir().map_err(|e| e.to_string())?,
+    };
+    let state_root = state_root
+        .map(PathBuf::from)
+        .unwrap_or_else(|| crate::config::state_dir().join("v2").join(format!("session-{}", uuid::Uuid::new_v4())));
+    let socket = state_root.join("daemon.sock");
+    let catalog_for_factory = catalog.clone();
+    let config = crate::v2::daemon::DaemonConfig {
+        supervisor: crate::v2::supervisor::SupervisorConfig {
+            marker: std::marker::PhantomData,
+            session_db: state_root.join("session.sqlite"),
+            session_id: "s-main".into(),
+            leader_id: "i-leader".into(),
+            leader_profile: KernelProfile {
+                model: model_key,
+                instructions: crate::v2::daemon::LEADER_INSTRUCTIONS.into(),
+                tools: crate::reference::basic_tool_schemas(true, true),
+                options: json!({}),
+                context_window: None,
+            },
+            state_root: state_root.clone(),
+            workspace,
+            permissions: if full_auto { "full_auto".into() } else { "approved_scope".into() },
+            catalog,
+            bindings: vec!["files".into(), "shell".into(), "web".into(), "skills".into()],
+            max_retries: 2,
+            storage_queue: 256,
+            poll: Duration::from_millis(100),
+            goal_limits: json!({}),
+            require_shell_approval: !full_auto,
+            provider_factory: move |_id: &str, profile: &KernelProfile| {
+                crate::providers::build_for_model(&catalog_for_factory, &profile.model)
+                    .unwrap_or_else(|e| panic!("provider for {}: {e}", profile.model))
+            },
+        },
+        socket: socket.clone(),
+    };
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?;
+    runtime.block_on(async move {
+        let handle = crate::v2::daemon::serve(config).await?;
+        eprintln!(
+            "teamagents daemon 已启动\n  socket: {}\n  状态根: {}\n  客户端连上即可操作；Ctrl-C 停止 daemon（已提交的状态保留）",
+            socket.display(),
+            state_root.display()
+        );
+        tokio::signal::ctrl_c().await.map_err(|e| e.to_string())?;
+        eprintln!("\n正在停止…");
+        handle.shutdown().await
+    })
+}
+
 #[cfg(test)]
 mod exec_tests {
     use super::{exec_outcome, parse_check_result, parse_exit_code, unknown_run_ids};

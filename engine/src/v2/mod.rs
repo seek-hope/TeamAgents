@@ -3,6 +3,7 @@
 //! SQLite. Multi-instance scheduling arrives with P3; the phase machine,
 //! recovery matrix and job protocol here are the ones P3 reuses.
 
+pub mod daemon;
 pub mod driver;
 pub mod storage;
 pub mod supervisor;
