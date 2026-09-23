@@ -148,8 +148,10 @@ CREATE TABLE IF NOT EXISTS operations (
     tool_index INTEGER NOT NULL,
     goal_id TEXT,
     epoch INTEGER NOT NULL,
+    intent_json TEXT NOT NULL DEFAULT '',
     args_hash TEXT NOT NULL,
     grant_revision INTEGER NOT NULL DEFAULT 0,
+    cancel_requested INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL,
     receipt_json TEXT,
     UNIQUE (decision_id, tool_index)

@@ -108,7 +108,13 @@ fn dispatch(
         "begin_request" => begin_request(tx, session_id, params, identity),
         "record_attempt" => record_attempt(tx, session_id, params),
         "import_response" => import_response(tx, session_id, params, identity),
+        "dispatch_operation" => dispatch_operation(tx, session_id, params),
         "complete_operation" => complete_operation(tx, session_id, params),
+        "cancel_operation" => cancel_operation(tx, session_id, params),
+        "approve" => approve(tx, session_id, params, identity),
+        "deny" => deny(tx, session_id, params, identity),
+        "fail_request" => fail_request(tx, session_id, params),
+        "set_lifecycle" => set_lifecycle(tx, session_id, params, identity),
         "artifact_stage" => artifact_stage(tx, session_id, params),
         "artifact_publish" => artifact_publish(tx, session_id, params),
         "artifact_gc_claim" => artifact_gc_claim(tx, session_id, params),
@@ -319,6 +325,9 @@ fn begin_request(tx: &Connection, session_id: &str, params: &Json, identity: &Id
     let goal_id: Option<String> = tx
         .query_row("SELECT active_goal_id FROM instances WHERE id = ?1", [instance_id], |row| row.get(0))
         .map_err(|e| format!("goal read: {e}"))?;
+    if let Some(goal) = goal_id.as_deref() {
+        reserve_budget(tx, session_id, goal, instance_id, request_id, est)?;
+    }
     tx.execute(
         "INSERT INTO model_requests (request_id, instance_id, epoch, goal_id, request_ref, status, est_prompt_tokens)
          VALUES (?1, ?2, ?3, ?4, ?5, 'PENDING', ?6)",
@@ -334,6 +343,71 @@ fn begin_request(tx: &Connection, session_id: &str, params: &Json, identity: &Id
     publish_list(tx, session_id, params)?;
     event(tx, session_id, "request_began", instance_id, &json!({"request_id": request_id}))?;
     Ok(json!({"request_id": request_id, "phase": "MODEL_PENDING", "epoch": epoch}))
+}
+
+/// Budget gate and reservation (§8): a request may only start while known +
+/// reserved + its estimate fits the goal limit. Reservations release when the
+/// request closes (import or fail); unknown usage stays a visible counter.
+fn reserve_budget(
+    tx: &Connection,
+    session_id: &str,
+    goal_id: &str,
+    instance_id: &str,
+    request_id: &str,
+    est: i64,
+) -> Result<(), String> {
+    let (limits, known_json, reservations_json): (String, String, String) = tx
+        .query_row(
+            "SELECT limits_json, known_usage_json, reservations_json FROM goals WHERE id = ?1",
+            [goal_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map_err(|e| format!("goal budget read: {e}"))?;
+    let limits: Json = serde_json::from_str(&limits).unwrap_or(json!({}));
+    let known: crate::kernel::Usage = serde_json::from_str(&known_json).unwrap_or_default();
+    let mut reservations: serde_json::Map<String, Json> = serde_json::from_str(&reservations_json).unwrap_or_default();
+    let reserved: u64 = reservations.values().filter_map(|v| v.as_u64()).sum();
+    if let Some(max) = limits["max_total_tokens"].as_u64() {
+        let projected = known.total + reserved + est.max(0) as u64;
+        if projected > max {
+            event(
+                tx,
+                session_id,
+                "budget_refused",
+                instance_id,
+                &json!({"goal_id": goal_id, "request_id": request_id, "known": known.total,
+                        "reserved": reserved, "est": est, "max": max}),
+            )?;
+            return Err(format!(
+                "goal {goal_id} budget exceeded: known {} + reserved {reserved} + est {est} > max {max}",
+                known.total
+            ));
+        }
+    }
+    reservations.insert(request_id.to_string(), json!(est));
+    tx.execute(
+        "UPDATE goals SET reservations_json = ?1 WHERE id = ?2",
+        rusqlite::params![json!(reservations).to_string(), goal_id],
+    )
+    .map_err(|e| format!("reservation: {e}"))?;
+    Ok(())
+}
+
+/// Release the request's reservation when the request closes (§8).
+fn release_reservation(tx: &Connection, request_id: &str) -> Result<(), String> {
+    let Some(goal) = request_goal(tx, request_id)? else { return Ok(()) };
+    let current: String = tx
+        .query_row("SELECT reservations_json FROM goals WHERE id = ?1", [&goal], |row| row.get(0))
+        .map_err(|e| format!("reservations read: {e}"))?;
+    let mut reservations: serde_json::Map<String, Json> = serde_json::from_str(&current).unwrap_or_default();
+    if reservations.remove(request_id).is_some() {
+        tx.execute(
+            "UPDATE goals SET reservations_json = ?1 WHERE id = ?2",
+            rusqlite::params![json!(reservations).to_string(), goal],
+        )
+        .map_err(|e| format!("reservation release: {e}"))?;
+    }
+    Ok(())
 }
 
 /// One transport attempt's outcome. A COMPLETE attempt is atomically selected
@@ -444,21 +518,30 @@ fn import_response(tx: &Connection, session_id: &str, params: &Json, identity: &
     }
     append_context(tx, &request_instance, epoch, "assistant", entry_message, Some(decision_id), &[])?;
     let goal_id = request_goal(tx, request_id)?;
+    let grant_revision = params["grant_revision"].as_i64().unwrap_or(0);
     for intent in &intents {
         let index = intent["index"].as_i64().ok_or("intent.index required")?;
         let operation_id = format!("{decision_id}:{index}");
+        let name = intent["name"].as_str().ok_or("intent.name required")?;
+        let call_id = intent["call_id"].as_str().unwrap_or("");
+        let args = intent.get("args").cloned().unwrap_or(json!({}));
+        // the hash is computed here from the stored args, never trusted from
+        // the caller: it binds the fixed intent to its parameters (§6.1)
+        let args_hash = crate::kernel::args_hash(&args);
+        let fixed = json!({"index": index, "call_id": call_id, "name": name, "args": args, "args_hash": args_hash});
         tx.execute(
             "INSERT INTO operations
-             (operation_id, decision_id, tool_index, goal_id, epoch, args_hash, grant_revision, status)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'PREPARED')",
+             (operation_id, decision_id, tool_index, goal_id, epoch, intent_json, args_hash, grant_revision, status)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'PREPARED')",
             rusqlite::params![
                 operation_id,
                 decision_id,
                 index,
                 goal_id,
                 epoch,
-                intent["args_hash"].as_str().unwrap_or(""),
-                intent["grant_revision"].as_i64().unwrap_or(0),
+                fixed.to_string(),
+                args_hash,
+                grant_revision
             ],
         )
         .map_err(|e| format!("operation {operation_id}: {e}"))?;
@@ -477,6 +560,7 @@ fn import_response(tx: &Connection, session_id: &str, params: &Json, identity: &
     .map_err(|e| format!("import phase: {e}"))?;
     tx.execute("UPDATE model_requests SET status = 'COMPLETE' WHERE request_id = ?1", [request_id])
         .map_err(|e| format!("request complete: {e}"))?;
+    release_reservation(tx, request_id)?;
     let _ = identity;
     publish_list(tx, session_id, params)?;
     event(
@@ -491,17 +575,29 @@ fn import_response(tx: &Connection, session_id: &str, params: &Json, identity: &
 
 /// Terminal tool receipt import (§4.2): unique operation receipt + the
 /// instance's consumption event in the same transaction. Replaying the same
-/// terminal receipt returns the stored state without a second application.
+/// terminal receipt returns the stored state without a second application;
+/// a different receipt for a terminal operation is refused.
 fn complete_operation(tx: &Connection, session_id: &str, params: &Json) -> Result<Json, String> {
     let operation_id = params["operation_id"].as_str().ok_or("complete_operation.operation_id required")?;
     let status = params["status"].as_str().ok_or("complete_operation.status required")?;
+    if !is_terminal_op(status) {
+        return Err(format!("complete_operation status {status:?} is not terminal"));
+    }
     let receipt = params.get("receipt").cloned().unwrap_or(Json::Null);
-    let (decision_id, current): (String, String) = tx
-        .query_row("SELECT decision_id, status FROM operations WHERE operation_id = ?1", [operation_id], |row| {
-            Ok((row.get(0)?, row.get(1)?))
-        })
+    let (decision_id, current, stored_receipt): (String, String, Option<String>) = tx
+        .query_row(
+            "SELECT decision_id, status, receipt_json FROM operations WHERE operation_id = ?1",
+            [operation_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
         .map_err(|e| format!("operation {operation_id}: {e}"))?;
     if is_terminal_op(&current) {
+        if current == status && stored_receipt.as_deref() == Some(receipt.to_string().as_str()) {
+            let open = decision_open(tx, &decision_id)?;
+            return Ok(
+                json!({"operation_id": operation_id, "status": current, "decision_open": open, "replayed": true}),
+            );
+        }
         return Err(format!("operation {operation_id} already terminal ({current}); refusing to overwrite"));
     }
     tx.execute(
@@ -509,33 +605,316 @@ fn complete_operation(tx: &Connection, session_id: &str, params: &Json) -> Resul
         rusqlite::params![status, receipt.to_string(), operation_id],
     )
     .map_err(|e| format!("operation complete: {e}"))?;
-    // when every operation of the decision is terminal the instance consumes
-    // the receipts and returns to READY (the driver appends observations)
+    expire_pending_approvals(tx, operation_id)?;
+    publish_list(tx, session_id, params)?;
+    let open = consume_if_closed(tx, session_id, &decision_id)?;
+    event(tx, session_id, "operation_completed", operation_id, &json!({"status": status}))?;
+    Ok(json!({"operation_id": operation_id, "status": status, "decision_open": open}))
+}
+
+fn decision_open(tx: &Connection, decision_id: &str) -> Result<bool, String> {
     let remaining: i64 = tx
         .query_row(
             "SELECT COUNT(*) FROM operations WHERE decision_id = ?1 AND status IN ('PREPARED', 'DISPATCH_COMMITTED', 'RUNNING')",
-            [&decision_id],
+            [decision_id],
             |row| row.get(0),
         )
         .map_err(|e| format!("decision remaining: {e}"))?;
-    if remaining == 0 {
-        let instance: String = tx
+    Ok(remaining > 0)
+}
+
+/// When every operation of the decision is terminal, consume the receipts:
+/// append the tool results to the instance context (deduplicated per
+/// operation) and return the instance to READY — one transaction (§4.2, A08).
+/// Returns true while the decision still has open operations.
+fn consume_if_closed(tx: &Connection, session_id: &str, decision_id: &str) -> Result<bool, String> {
+    if decision_open(tx, decision_id)? {
+        return Ok(true);
+    }
+    let (instance, epoch): (String, i64) = tx
+        .query_row(
+            "SELECT r.instance_id, r.epoch FROM decisions d JOIN model_requests r ON d.request_id = r.request_id
+             WHERE d.decision_id = ?1",
+            [decision_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|e| format!("decision instance: {e}"))?;
+    let operations: Vec<(String, String, Option<String>)> = {
+        let mut stmt = tx
+            .prepare("SELECT operation_id, intent_json, receipt_json FROM operations WHERE decision_id = ?1 ORDER BY tool_index")
+            .map_err(|e| format!("consume prepare: {e}"))?;
+        let rows = stmt
+            .query_map([decision_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .map_err(|e| format!("consume query: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("consume collect: {e}"))?
+    };
+    for (operation_id, intent_json, receipt_json) in operations {
+        let intent: Json = serde_json::from_str(&intent_json).unwrap_or(json!({}));
+        let receipt: Json = receipt_json.as_deref().and_then(|r| serde_json::from_str(r).ok()).unwrap_or(Json::Null);
+        let content = receipt["content"].as_str().map(str::to_string).unwrap_or_else(|| receipt.to_string());
+        // envelope_id = operation_id: the apply-dedup index makes a replayed
+        // consumption a no-op, so recovery never double-feeds a receipt
+        append_context(
+            tx,
+            &instance,
+            epoch,
+            "tool_result",
+            &json!({"role": "tool", "tool_call_id": intent["call_id"].as_str().unwrap_or(""), "content": content}),
+            Some(&operation_id),
+            std::slice::from_ref(&operation_id),
+        )?;
+    }
+    tx.execute(
+        "UPDATE instances SET phase = 'READY', revision = revision + 1 WHERE id = ?1 AND phase = 'TOOLS_PENDING'",
+        [&instance],
+    )
+    .map_err(|e| format!("decision ready: {e}"))?;
+    event(tx, session_id, "decision_consumed", &instance, &json!({"decision_id": decision_id}))?;
+    Ok(false)
+}
+
+/// Dispatch commit — the authorization linearization point (§6.1, A04):
+/// permission revision is re-checked inside the transaction; approval mode
+/// parks the operation behind a PENDING approval instead of dispatching.
+fn dispatch_operation(tx: &Connection, session_id: &str, params: &Json) -> Result<Json, String> {
+    let operation_id = params["operation_id"].as_str().ok_or("dispatch_operation.operation_id required")?;
+    let approval_required = params["approval_required"].as_bool().unwrap_or(false);
+    let permission_revision = params["permission_revision"].as_i64().unwrap_or(0);
+    let (decision_id, status, args_hash, grant_revision): (String, String, String, i64) = tx
+        .query_row(
+            "SELECT decision_id, status, args_hash, grant_revision FROM operations WHERE operation_id = ?1",
+            [operation_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .map_err(|e| format!("operation {operation_id}: {e}"))?;
+    if status != "PREPARED" {
+        return Err(format!("operation {operation_id} is {status}, not dispatchable"));
+    }
+    if grant_revision != permission_revision {
+        return Err(format!(
+            "operation {operation_id} authorized at permission revision {grant_revision}, current {permission_revision}: refusing dispatch"
+        ));
+    }
+    let instance: String = tx
+        .query_row(
+            "SELECT r.instance_id FROM decisions d JOIN model_requests r ON d.request_id = r.request_id
+             WHERE d.decision_id = ?1",
+            [&decision_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("decision instance: {e}"))?;
+    let (_, _, lifecycle, _, _) = load_instance(tx, &instance)?;
+    if lifecycle != "ACTIVE" {
+        return Err(format!("instance {instance} is {lifecycle}, not dispatching"));
+    }
+    if approval_required {
+        let approved: Option<String> = tx
             .query_row(
-                "SELECT r.instance_id FROM model_requests r JOIN decisions d ON d.request_id = r.request_id
-                 WHERE d.decision_id = ?1",
-                [&decision_id],
+                "SELECT id FROM approvals
+                 WHERE operation_id = ?1 AND status = 'APPROVED' AND args_hash = ?2 AND grant_revision = ?3
+                   AND (expires_at IS NULL OR expires_at > ?4)",
+                rusqlite::params![operation_id, args_hash, grant_revision, crate::models::now()],
                 |row| row.get(0),
             )
-            .map_err(|e| format!("decision instance: {e}"))?;
-        tx.execute(
-            "UPDATE instances SET phase = 'READY', revision = revision + 1 WHERE id = ?1 AND phase = 'TOOLS_PENDING'",
-            [&instance],
-        )
-        .map_err(|e| format!("decision ready: {e}"))?;
+            .optional()
+            .map_err(|e| format!("approval check: {e}"))?;
+        if approved.is_none() {
+            let pending: Option<String> = tx
+                .query_row(
+                    "SELECT id FROM approvals WHERE operation_id = ?1 AND status = 'PENDING'",
+                    [operation_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| format!("approval pending: {e}"))?;
+            let approval_id = match pending {
+                Some(id) => id,
+                None => {
+                    let id = format!("ap-{operation_id}");
+                    tx.execute(
+                        "INSERT INTO approvals (id, session_id, operation_id, args_hash, grant_revision, expires_at, status)
+                         VALUES (?1, ?2, ?3, ?4, ?5, NULL, 'PENDING')",
+                        rusqlite::params![id, session_id, operation_id, args_hash, grant_revision],
+                    )
+                    .map_err(|e| format!("approval insert: {e}"))?;
+                    event(tx, session_id, "approval_requested", operation_id, &json!({"approval_id": id}))?;
+                    id
+                }
+            };
+            return Ok(
+                json!({"operation_id": operation_id, "status": "APPROVAL_REQUIRED", "approval_id": approval_id}),
+            );
+        }
     }
-    publish_list(tx, session_id, params)?;
-    event(tx, session_id, "operation_completed", operation_id, &json!({"status": status}))?;
-    Ok(json!({"operation_id": operation_id, "status": status, "decision_open": remaining > 0}))
+    let changed = tx
+        .execute(
+            "UPDATE operations SET status = 'DISPATCH_COMMITTED' WHERE operation_id = ?1 AND status = 'PREPARED'",
+            [operation_id],
+        )
+        .map_err(|e| format!("dispatch commit: {e}"))?;
+    if changed != 1 {
+        return Err(format!("operation {operation_id} lost the dispatch race"));
+    }
+    event(tx, session_id, "operation_dispatched", operation_id, &json!({"operation_id": operation_id}))?;
+    Ok(json!({"operation_id": operation_id, "status": "DISPATCH_COMMITTED"}))
+}
+
+/// Cancellation (§6.4): the cancel intent is persisted BEFORE any process
+/// signal. PREPARED operations never started, so they close immediately;
+/// dispatched ones keep their in-flight semantics — the driver stops the
+/// controlled job and imports the real terminal receipt afterwards.
+fn cancel_operation(tx: &Connection, session_id: &str, params: &Json) -> Result<Json, String> {
+    let operation_id = params["operation_id"].as_str().ok_or("cancel_operation.operation_id required")?;
+    let reason = params["reason"].as_str().unwrap_or("cancelled by user");
+    let (decision_id, status): (String, String) = tx
+        .query_row("SELECT decision_id, status FROM operations WHERE operation_id = ?1", [operation_id], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .map_err(|e| format!("operation {operation_id}: {e}"))?;
+    if is_terminal_op(&status) {
+        return Ok(json!({"operation_id": operation_id, "status": status, "already_terminal": true}));
+    }
+    if status == "PREPARED" {
+        let receipt = json!({"operation_id": operation_id, "ok": false, "started": false,
+                             "content": json!({"error": reason}).to_string(),
+                             "error": {"class": "cancelled", "reason": reason}});
+        tx.execute(
+            "UPDATE operations SET status = 'CANCELLED', receipt_json = ?2 WHERE operation_id = ?1",
+            rusqlite::params![operation_id, receipt.to_string()],
+        )
+        .map_err(|e| format!("cancel: {e}"))?;
+        expire_pending_approvals(tx, operation_id)?;
+        let open = consume_if_closed(tx, session_id, &decision_id)?;
+        event(tx, session_id, "operation_cancelled", operation_id, &json!({"reason": reason}))?;
+        return Ok(json!({"operation_id": operation_id, "status": "CANCELLED", "decision_open": open}));
+    }
+    tx.execute("UPDATE operations SET cancel_requested = 1 WHERE operation_id = ?1", [operation_id])
+        .map_err(|e| format!("cancel request: {e}"))?;
+    event(tx, session_id, "operation_cancel_requested", operation_id, &json!({"reason": reason}))?;
+    Ok(json!({"operation_id": operation_id, "status": "CANCEL_REQUESTED"}))
+}
+
+fn require_user(identity: &Identity) -> Result<(), String> {
+    if *identity != Identity::User {
+        return Err("this command requires the trusted user identity".into());
+    }
+    Ok(())
+}
+
+/// User approval: flips a PENDING approval; dispatch re-checks hash/revision.
+fn approve(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
+    require_user(identity)?;
+    let approval_id = params["approval_id"].as_str().ok_or("approve.approval_id required")?;
+    let expires_at = params["expires_at"].as_f64();
+    let changed = tx
+        .execute(
+            "UPDATE approvals SET status = 'APPROVED', expires_at = ?2 WHERE id = ?1 AND status = 'PENDING'",
+            rusqlite::params![approval_id, expires_at],
+        )
+        .map_err(|e| format!("approve: {e}"))?;
+    if changed != 1 {
+        return Err(format!("approval {approval_id} is not pending"));
+    }
+    event(tx, session_id, "approval_granted", approval_id, &json!({"approval_id": approval_id}))?;
+    Ok(json!({"approval_id": approval_id, "status": "APPROVED"}))
+}
+
+/// User denial: the operation is cancelled before any dispatch (no side
+/// effect happened) and the decision is woken for consumption.
+fn deny(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
+    require_user(identity)?;
+    let approval_id = params["approval_id"].as_str().ok_or("deny.approval_id required")?;
+    let operation_id: String = tx
+        .query_row("SELECT operation_id FROM approvals WHERE id = ?1 AND status = 'PENDING'", [approval_id], |row| {
+            row.get(0)
+        })
+        .map_err(|e| format!("deny approval {approval_id}: {e}"))?;
+    tx.execute("UPDATE approvals SET status = 'DENIED' WHERE id = ?1", [approval_id])
+        .map_err(|e| format!("deny: {e}"))?;
+    let receipt = json!({"operation_id": operation_id, "ok": false, "started": false,
+                         "content": json!({"error": "denied by user"}).to_string(),
+                         "error": {"class": "denied", "reason": "denied by user"}});
+    tx.execute(
+        "UPDATE operations SET status = 'CANCELLED', receipt_json = ?2 WHERE operation_id = ?1 AND status = 'PREPARED'",
+        rusqlite::params![operation_id, receipt.to_string()],
+    )
+    .map_err(|e| format!("deny cancel: {e}"))?;
+    let decision_id: String = tx
+        .query_row("SELECT decision_id FROM operations WHERE operation_id = ?1", [&operation_id], |row| row.get(0))
+        .map_err(|e| format!("deny decision: {e}"))?;
+    let open = consume_if_closed(tx, session_id, &decision_id)?;
+    event(tx, session_id, "approval_denied", approval_id, &json!({"operation_id": operation_id}))?;
+    Ok(json!({"approval_id": approval_id, "status": "DENIED", "operation_id": operation_id, "decision_open": open}))
+}
+
+fn expire_pending_approvals(tx: &Connection, operation_id: &str) -> Result<(), String> {
+    tx.execute(
+        "UPDATE approvals SET status = 'EXPIRED' WHERE operation_id = ?1 AND status = 'PENDING'",
+        [operation_id],
+    )
+    .map_err(|e| format!("approval expiry: {e}"))?;
+    Ok(())
+}
+
+/// Permanent request failure (§6.3, A07): the request closes, the budget
+/// reservation releases, and on `park` the instance parks with the input
+/// preserved instead of storming new turns.
+fn fail_request(tx: &Connection, session_id: &str, params: &Json) -> Result<Json, String> {
+    let request_id = params["request_id"].as_str().ok_or("fail_request.request_id required")?;
+    let reason = params["reason"].as_str().unwrap_or("request failed");
+    let park = params["park"].as_bool().unwrap_or(false);
+    let (instance, status): (String, String) = tx
+        .query_row("SELECT instance_id, status FROM model_requests WHERE request_id = ?1", [request_id], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .map_err(|e| format!("fail_request {request_id}: {e}"))?;
+    if status != "PENDING" {
+        return Err(format!("request {request_id} is {status}, already closed"));
+    }
+    release_reservation(tx, request_id)?;
+    tx.execute("UPDATE model_requests SET status = 'FAILED' WHERE request_id = ?1", [request_id])
+        .map_err(|e| format!("request fail: {e}"))?;
+    let lifecycle = if park { "PARKED" } else { "ACTIVE" };
+    tx.execute(
+        "UPDATE instances SET phase = 'READY', active_request_id = NULL, lifecycle = ?1, revision = revision + 1
+         WHERE id = ?2",
+        rusqlite::params![lifecycle, instance],
+    )
+    .map_err(|e| format!("fail_request instance: {e}"))?;
+    event(
+        tx,
+        session_id,
+        "request_failed",
+        &instance,
+        &json!({"request_id": request_id, "reason": reason, "parked": park}),
+    )?;
+    Ok(json!({"request_id": request_id, "status": "FAILED", "parked": park}))
+}
+
+/// User lifecycle intervention (§5.4): pause stops new dispatches at the next
+/// safe boundary; resume/park/terminate record the real reason as an event.
+fn set_lifecycle(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
+    require_user(identity)?;
+    let instance_id = params["instance_id"].as_str().ok_or("set_lifecycle.instance_id required")?;
+    let lifecycle = params["lifecycle"].as_str().ok_or("set_lifecycle.lifecycle required")?;
+    if !matches!(lifecycle, "ACTIVE" | "PAUSED" | "PARKED" | "TERMINATED") {
+        return Err(format!("unknown lifecycle {lifecycle:?}"));
+    }
+    let reason = params["reason"].as_str().unwrap_or("");
+    let (session, _, current, _, _): (String, i64, String, String, i64) = load_instance(tx, instance_id)?;
+    if session != session_id {
+        return Err(format!("instance {instance_id} does not belong to this session"));
+    }
+    if current == "TERMINATED" {
+        return Err(format!("instance {instance_id} is terminated"));
+    }
+    tx.execute(
+        "UPDATE instances SET lifecycle = ?1, revision = revision + 1 WHERE id = ?2",
+        rusqlite::params![lifecycle, instance_id],
+    )
+    .map_err(|e| format!("set_lifecycle: {e}"))?;
+    event(tx, session_id, "instance_lifecycle", instance_id, &json!({"lifecycle": lifecycle, "reason": reason}))?;
+    Ok(json!({"instance_id": instance_id, "lifecycle": lifecycle}))
 }
 
 fn is_terminal_op(status: &str) -> bool {
@@ -886,7 +1265,8 @@ mod tests {
                     "import_response",
                     json!({"request_id": "r1", "decision_id": "d1",
                            "entry": {"role": "assistant", "content": "working"},
-                           "intents": [{"index": 0, "args_hash": "h0"}, {"index": 1, "args_hash": "h1"}]}),
+                           "intents": [{"index": 0, "call_id": "call_0", "name": "shell", "args": {"command": "echo a"}},
+                                        {"index": 1, "call_id": "call_1", "name": "shell", "args": {"command": "echo b"}}]}),
                 ),
                 Identity::System,
             )
@@ -968,7 +1348,8 @@ mod tests {
                 "import_response",
                 json!({"request_id": request, "decision_id": "d1",
                        "entry": {"role": "assistant", "content": "run tools"},
-                       "intents": [{"index": 0, "args_hash": "h0"}, {"index": 1, "args_hash": "h1"}]}),
+                       "intents": [{"index": 0, "call_id": "call_0", "name": "shell", "args": {"command": "echo a"}},
+                        {"index": 1, "call_id": "call_1", "name": "shell", "args": {"command": "echo b"}}]}),
             ),
             Identity::System,
         )
@@ -1087,6 +1468,439 @@ mod tests {
             .query_row("SELECT completeness FROM artifacts WHERE id = 'a1'", [], |row| row.get(0))
             .unwrap();
         assert_eq!(state, "LIVE");
+        cleanup(&path);
+    }
+    /// Drive one instance into TOOLS_PENDING with `n` shell intents; returns
+    /// the decision id.
+    fn open_decision(ctl: &mut Control, tag: &str, instance: &str, revision: i64, n: usize) -> String {
+        let request = begin_and_complete(ctl, tag, instance, revision);
+        let decision = format!("d-{tag}");
+        let intents: Vec<Json> = (0..n)
+            .map(|i| {
+                json!({"index": i, "call_id": format!("call_{i}"), "name": "shell",
+                       "args": {"command": format!("echo {tag}-{i}")}})
+            })
+            .collect();
+        ctl.submit(
+            cmd(
+                &format!("imp-{tag}"),
+                "import_response",
+                json!({"request_id": request, "decision_id": decision,
+                       "entry": {"role": "assistant", "content": "run tools"}, "intents": intents}),
+            ),
+            Identity::System,
+        )
+        .expect("import");
+        decision
+    }
+
+    #[test]
+    fn dispatch_is_the_authorization_linearization_point() {
+        let (mut ctl, path) = control("dispatch");
+        create_instance(&mut ctl, "i1");
+        open_decision(&mut ctl, "x", "i1", 0, 1);
+        // full-auto equivalent: no approval needed, revision matches (0)
+        let ok = ctl
+            .submit(
+                cmd(
+                    "dp-1",
+                    "dispatch_operation",
+                    json!({"operation_id": "d-x:0", "approval_required": false, "permission_revision": 0}),
+                ),
+                Identity::System,
+            )
+            .expect("dispatch");
+        assert_eq!(ok["status"], json!("DISPATCH_COMMITTED"));
+        // already dispatched: not dispatchable again
+        let err = ctl
+            .submit(
+                cmd(
+                    "dp-2",
+                    "dispatch_operation",
+                    json!({"operation_id": "d-x:0", "approval_required": false, "permission_revision": 0}),
+                ),
+                Identity::System,
+            )
+            .unwrap_err();
+        assert!(err.contains("not dispatchable"), "{err}");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn dispatch_rechecks_permission_revision() {
+        let (mut ctl, path) = control("dispatch-rev");
+        create_instance(&mut ctl, "i1");
+        open_decision(&mut ctl, "x", "i1", 0, 1);
+        // the intent was fixed at revision 0; a later revision must re-authorize
+        let err = ctl
+            .submit(
+                cmd(
+                    "dp-rev",
+                    "dispatch_operation",
+                    json!({"operation_id": "d-x:0", "approval_required": false, "permission_revision": 3}),
+                ),
+                Identity::System,
+            )
+            .unwrap_err();
+        assert!(err.contains("refusing dispatch"), "{err}");
+        let status: String = ctl
+            .connection()
+            .query_row("SELECT status FROM operations WHERE operation_id = 'd-x:0'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(status, "PREPARED");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn approval_flow_blocks_then_allows_dispatch() {
+        let (mut ctl, path) = control("approve");
+        create_instance(&mut ctl, "i1");
+        open_decision(&mut ctl, "x", "i1", 0, 1);
+        let asked = ctl
+            .submit(
+                cmd(
+                    "dp-a",
+                    "dispatch_operation",
+                    json!({"operation_id": "d-x:0", "approval_required": true, "permission_revision": 0}),
+                ),
+                Identity::System,
+            )
+            .expect("ask");
+        assert_eq!(asked["status"], json!("APPROVAL_REQUIRED"));
+        let approval_id = asked["approval_id"].as_str().unwrap().to_string();
+        // re-dispatch returns the same pending approval, no duplicate row
+        let again = ctl
+            .submit(
+                cmd(
+                    "dp-b",
+                    "dispatch_operation",
+                    json!({"operation_id": "d-x:0", "approval_required": true, "permission_revision": 0}),
+                ),
+                Identity::System,
+            )
+            .expect("ask again");
+        assert_eq!(again["approval_id"], json!(approval_id));
+        let pending: i64 = ctl
+            .connection()
+            .query_row("SELECT COUNT(*) FROM approvals WHERE status = 'PENDING'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(pending, 1);
+        // approvals are user-only
+        let err =
+            ctl.submit(cmd("ap-sys", "approve", json!({"approval_id": approval_id})), Identity::System).unwrap_err();
+        assert!(err.contains("trusted user"), "{err}");
+        ctl.submit(cmd("ap-1", "approve", json!({"approval_id": approval_id})), Identity::User).expect("approve");
+        let ok = ctl
+            .submit(
+                cmd(
+                    "dp-c",
+                    "dispatch_operation",
+                    json!({"operation_id": "d-x:0", "approval_required": true, "permission_revision": 0}),
+                ),
+                Identity::System,
+            )
+            .expect("dispatch after approval");
+        assert_eq!(ok["status"], json!("DISPATCH_COMMITTED"));
+        cleanup(&path);
+    }
+
+    #[test]
+    fn deny_cancels_the_operation_and_consumes_the_decision() {
+        let (mut ctl, path) = control("deny");
+        create_instance(&mut ctl, "i1");
+        open_decision(&mut ctl, "x", "i1", 0, 1);
+        let asked = ctl
+            .submit(
+                cmd(
+                    "dp-a",
+                    "dispatch_operation",
+                    json!({"operation_id": "d-x:0", "approval_required": true, "permission_revision": 0}),
+                ),
+                Identity::System,
+            )
+            .expect("ask");
+        let approval_id = asked["approval_id"].as_str().unwrap().to_string();
+        let denied =
+            ctl.submit(cmd("dn-1", "deny", json!({"approval_id": approval_id})), Identity::User).expect("deny");
+        assert_eq!(denied["decision_open"], json!(false));
+        // the single denied operation closed the decision: receipts consumed,
+        // instance READY, model sees the denial as the tool result
+        assert_eq!(phase_of(&ctl, "i1"), "READY");
+        let message: String = ctl
+            .connection()
+            .query_row(
+                "SELECT message_json FROM context_entries WHERE instance_id = 'i1' AND kind = 'tool_result'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(message.contains("denied by user"), "{message}");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn cancel_before_dispatch_is_terminal_and_persisted_first() {
+        let (mut ctl, path) = control("cancel");
+        create_instance(&mut ctl, "i1");
+        open_decision(&mut ctl, "x", "i1", 0, 2);
+        // PREPARED: no side effect happened, terminal immediately
+        let cancelled = ctl
+            .submit(cmd("cc-0", "cancel_operation", json!({"operation_id": "d-x:0"})), Identity::User)
+            .expect("cancel prepared");
+        assert_eq!(cancelled["status"], json!("CANCELLED"));
+        assert_eq!(cancelled["decision_open"], json!(true));
+        // idempotent on terminal operations
+        let again = ctl
+            .submit(cmd("cc-0b", "cancel_operation", json!({"operation_id": "d-x:0"})), Identity::User)
+            .expect("cancel replay");
+        assert_eq!(again["already_terminal"], json!(true));
+        // dispatched: only the persisted cancel request, real receipt later
+        ctl.submit(
+            cmd("dp-1", "dispatch_operation", json!({"operation_id": "d-x:1", "permission_revision": 0})),
+            Identity::System,
+        )
+        .expect("dispatch");
+        let requested = ctl
+            .submit(cmd("cc-1", "cancel_operation", json!({"operation_id": "d-x:1"})), Identity::User)
+            .expect("cancel dispatched");
+        assert_eq!(requested["status"], json!("CANCEL_REQUESTED"));
+        let flagged: i64 = ctl
+            .connection()
+            .query_row("SELECT cancel_requested FROM operations WHERE operation_id = 'd-x:1'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(flagged, 1);
+        // the runner's real terminal receipt still lands afterwards
+        let done = ctl
+            .submit(
+                cmd(
+                    "co-1",
+                    "complete_operation",
+                    json!({"operation_id": "d-x:1", "status": "CANCELLED",
+                           "receipt": {"operation_id": "d-x:1", "ok": false, "content": "{\"error\":\"cancelled\"}"}}),
+                ),
+                Identity::System,
+            )
+            .expect("complete cancelled");
+        assert_eq!(done["decision_open"], json!(false));
+        assert_eq!(phase_of(&ctl, "i1"), "READY");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn complete_operation_replay_returns_stored_state() {
+        let (mut ctl, path) = control("replay");
+        create_instance(&mut ctl, "i1");
+        open_decision(&mut ctl, "x", "i1", 0, 1);
+        let receipt = json!({"operation_id": "d-x:0", "ok": true, "content": "{\"output\":\"hi\"}"});
+        let first = ctl
+            .submit(
+                cmd(
+                    "co-1",
+                    "complete_operation",
+                    json!({"operation_id": "d-x:0", "status": "SUCCEEDED", "receipt": receipt}),
+                ),
+                Identity::System,
+            )
+            .expect("complete");
+        assert_eq!(first["decision_open"], json!(false));
+        let entries = context_count(&ctl, "i1");
+        // same receipt replayed (recovery after a lost reply): stored state
+        let replayed = ctl
+            .submit(
+                cmd(
+                    "co-2",
+                    "complete_operation",
+                    json!({"operation_id": "d-x:0", "status": "SUCCEEDED", "receipt": receipt}),
+                ),
+                Identity::System,
+            )
+            .expect("replay");
+        assert_eq!(replayed["replayed"], json!(true));
+        assert_eq!(context_count(&ctl, "i1"), entries);
+        // a different receipt for the terminal operation is refused
+        let err = ctl
+            .submit(
+                cmd(
+                    "co-3",
+                    "complete_operation",
+                    json!({"operation_id": "d-x:0", "status": "SUCCEEDED",
+                           "receipt": {"operation_id": "d-x:0", "ok": true, "content": "{\"output\":\"other\"}"}}),
+                ),
+                Identity::System,
+            )
+            .unwrap_err();
+        assert!(err.contains("refusing to overwrite"), "{err}");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn budget_gate_reserves_settles_and_releases() {
+        let (mut ctl, path) = control("budget");
+        ctl.submit(
+            cmd(
+                "g1",
+                "create_goal",
+                json!({"id": "g1", "original_request_ref": "orig", "limits": {"max_total_tokens": 1000}}),
+            ),
+            Identity::User,
+        )
+        .expect("goal");
+        create_instance(&mut ctl, "i1");
+        ctl.connection().execute("UPDATE instances SET active_goal_id = 'g1' WHERE id = 'i1'", []).unwrap();
+        // est 600 fits (0 + 0 + 600 <= 1000)
+        ctl.submit(
+            cmd(
+                "b1",
+                "begin_request",
+                json!({"instance_id": "i1", "request_id": "r1", "revision": 0, "est_prompt_tokens": 600}),
+            ),
+            Identity::Instance("i1".into()),
+        )
+        .expect("begin");
+        let reserved: String = ctl
+            .connection()
+            .query_row("SELECT reservations_json FROM goals WHERE id = 'g1'", [], |row| row.get(0))
+            .unwrap();
+        assert!(reserved.contains("r1"), "{reserved}");
+        // complete with usage 800, then the next est 600 exceeds (800 + 600 > 1000)
+        ctl.submit(
+            cmd(
+                "a1",
+                "record_attempt",
+                json!({"attempt_id": "at1", "request_id": "r1", "status": "COMPLETE",
+                       "usage": {"prompt_tokens": 700, "completion_tokens": 100, "total_tokens": 800}}),
+            ),
+            Identity::System,
+        )
+        .expect("attempt");
+        ctl.submit(
+            cmd(
+                "i1",
+                "import_response",
+                json!({"request_id": "r1", "decision_id": "d1", "entry": {"role": "assistant", "content": "ok"}}),
+            ),
+            Identity::System,
+        )
+        .expect("import");
+        let released: String = ctl
+            .connection()
+            .query_row("SELECT reservations_json FROM goals WHERE id = 'g1'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(released, "{}");
+        let err = ctl
+            .submit(
+                cmd(
+                    "b2",
+                    "begin_request",
+                    json!({"instance_id": "i1", "request_id": "r2", "revision": 2, "est_prompt_tokens": 600}),
+                ),
+                Identity::Instance("i1".into()),
+            )
+            .unwrap_err();
+        assert!(err.contains("budget exceeded"), "{err}");
+        // the refused begin left the instance READY, not half-dispatched
+        assert_eq!(phase_of(&ctl, "i1"), "READY");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn fail_request_closes_and_parks_without_losing_input() {
+        let (mut ctl, path) = control("fail");
+        create_instance(&mut ctl, "i1");
+        ctl.submit(
+            cmd("in-1", "submit_input", json!({"instance_id": "i1", "envelope_id": "e1", "text": "do work"})),
+            Identity::User,
+        )
+        .expect("input");
+        ctl.submit(
+            cmd("b1", "begin_request", json!({"instance_id": "i1", "request_id": "r1", "revision": 0})),
+            Identity::Instance("i1".into()),
+        )
+        .expect("begin");
+        let failed = ctl
+            .submit(
+                cmd("f1", "fail_request", json!({"request_id": "r1", "reason": "provider down", "park": true})),
+                Identity::System,
+            )
+            .expect("fail");
+        assert_eq!(failed["parked"], json!(true));
+        let lifecycle: String = ctl
+            .connection()
+            .query_row("SELECT lifecycle FROM instances WHERE id = 'i1'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(lifecycle, "PARKED");
+        // a closed request cannot be failed or imported again
+        assert!(ctl.submit(cmd("f2", "fail_request", json!({"request_id": "r1"})), Identity::System).is_err());
+        // the parked input is preserved in the context
+        assert_eq!(context_count(&ctl, "i1"), 1);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn lifecycle_changes_are_user_only_and_termination_sticks() {
+        let (mut ctl, path) = control("lifecycle");
+        create_instance(&mut ctl, "i1");
+        let err = ctl
+            .submit(
+                cmd("sl-0", "set_lifecycle", json!({"instance_id": "i1", "lifecycle": "PAUSED"})),
+                Identity::Instance("i1".into()),
+            )
+            .unwrap_err();
+        assert!(err.contains("trusted user"), "{err}");
+        ctl.submit(cmd("sl-1", "set_lifecycle", json!({"instance_id": "i1", "lifecycle": "PAUSED"})), Identity::User)
+            .expect("pause");
+        // a paused instance is not dispatched
+        let err = ctl
+            .submit(
+                cmd("b-p", "begin_request", json!({"instance_id": "i1", "request_id": "r1", "revision": 1})),
+                Identity::Instance("i1".into()),
+            )
+            .unwrap_err();
+        assert!(err.contains("PAUSED"), "{err}");
+        ctl.submit(cmd("sl-2", "set_lifecycle", json!({"instance_id": "i1", "lifecycle": "ACTIVE"})), Identity::User)
+            .expect("resume");
+        ctl.submit(
+            cmd("sl-3", "set_lifecycle", json!({"instance_id": "i1", "lifecycle": "TERMINATED"})),
+            Identity::User,
+        )
+        .expect("terminate");
+        // terminated is final: no lifecycle change, no input
+        assert!(ctl
+            .submit(cmd("sl-4", "set_lifecycle", json!({"instance_id": "i1", "lifecycle": "ACTIVE"})), Identity::User)
+            .is_err());
+        assert!(ctl
+            .submit(
+                cmd("in-t", "submit_input", json!({"instance_id": "i1", "envelope_id": "e9", "text": "late"})),
+                Identity::User
+            )
+            .is_err());
+        cleanup(&path);
+    }
+
+    #[test]
+    fn pending_approvals_expire_when_the_operation_closes() {
+        let (mut ctl, path) = control("expire");
+        create_instance(&mut ctl, "i1");
+        open_decision(&mut ctl, "x", "i1", 0, 1);
+        let asked = ctl
+            .submit(
+                cmd(
+                    "dp-a",
+                    "dispatch_operation",
+                    json!({"operation_id": "d-x:0", "approval_required": true, "permission_revision": 0}),
+                ),
+                Identity::System,
+            )
+            .expect("ask");
+        let approval_id = asked["approval_id"].as_str().unwrap().to_string();
+        // cancelling the PREPARED operation expires the pending approval
+        ctl.submit(cmd("cc-1", "cancel_operation", json!({"operation_id": "d-x:0"})), Identity::User).expect("cancel");
+        let status: String = ctl
+            .connection()
+            .query_row("SELECT status FROM approvals WHERE id = ?1", [&approval_id], |row| row.get(0))
+            .unwrap();
+        assert_eq!(status, "EXPIRED");
+        assert!(ctl.submit(cmd("ap-late", "approve", json!({"approval_id": approval_id})), Identity::User).is_err());
         cleanup(&path);
     }
 }
