@@ -5,3 +5,4 @@
 
 pub mod driver;
 pub mod storage;
+pub mod supervisor;

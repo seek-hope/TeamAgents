@@ -390,7 +390,19 @@ impl<P: Provider> Driver<P> {
             };
             if !stepped {
                 if snapshot.phase == "WAITING" {
-                    // due timers close their waits at poll granularity (§5.3)
+                    // parked drains are the wake path for envelope-borne
+                    // facts (§5.3, A23): applying one satisfies a matching
+                    // wait in the same transaction; due timers close at
+                    // poll granularity. Both commands are replay-safe.
+                    self.submit(
+                        self.command(
+                            format!("drain-{}", uuid::Uuid::new_v4()),
+                            "drain_inbox",
+                            json!({"instance_id": self.config.instance_id}),
+                        ),
+                        Identity::Instance(self.config.instance_id.clone()),
+                    )
+                    .await?;
                     self.submit(
                         self.command(format!("timer-{}", uuid::Uuid::new_v4()), "fire_timer", json!({})),
                         Identity::System,
