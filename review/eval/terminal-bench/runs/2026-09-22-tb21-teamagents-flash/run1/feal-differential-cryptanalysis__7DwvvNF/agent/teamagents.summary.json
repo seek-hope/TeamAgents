@@ -1,0 +1,26 @@
+{
+  "log": "/tmp/tb21/jobs/tb21-teamagents-flash/feal-differential-cryptanalysis__7DwvvNF/agent/teamagents.jsonl",
+  "lines": {
+    "session": 1,
+    "event": 6,
+    "tool": 42,
+    "result": 1
+  },
+  "exit_code": 0,
+  "status": "completed",
+  "duration_ms": 882154,
+  "session_id": "proj_f53b52ad6d21",
+  "runtime_errors": [],
+  "outcome_unknown": [],
+  "verification": [],
+  "model_usage": {
+    "deepseek-flash": {
+      "n_input_tokens": 1412532,
+      "n_cache_tokens": 1395328,
+      "n_output_tokens": 62633
+    }
+  },
+  "prompt_tokens": 1412532,
+  "completion_tokens": 62633,
+  "cached_input_tokens": 1395328
+}

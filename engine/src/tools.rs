@@ -1,15 +1,17 @@
-//! Sandboxed tool executors: file tools confined to
-//! the member workspace, shell via bwrap when present, web fetch with an SSRF
-//! guard.
+//! File tools confined to the member workspace, mode-aware Shell execution,
+//! and web fetch with an SSRF guard.
 
 use crate::gateway::TurnControl;
 use serde_json::{json, Value as Json};
 use sha2::{Digest, Sha256};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::net::UnixStream;
+use std::os::unix::process::CommandExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -655,17 +657,17 @@ pub fn workspace_executor(
     artifacts: Option<PathBuf>,
 ) -> impl Fn(&str, &Json) -> Result<Json, String> + Send + Sync + 'static {
     let executor = workspace_executor_with_control(root, ArtifactPaths::shared(artifacts), None);
-    move |tool, args| executor(tool, args, &TurnControl::default())
+    move |tool, args| executor(tool, args, &TurnControl::default(), ShellMode::Sandbox)
 }
 
 fn workspace_executor_with_control(
     root: PathBuf,
     artifacts: ArtifactPaths,
     shell_state: Option<PathBuf>,
-) -> impl Fn(&str, &Json, &TurnControl) -> Result<Json, String> + Send + Sync + 'static {
+) -> impl Fn(&str, &Json, &TurnControl, ShellMode) -> Result<Json, String> + Send + Sync + 'static {
     // cross-process write locks live beside the session state, never in the project
     let lock_dir = artifacts.shared.as_ref().and_then(|dir| dir.parent()).map(|state| state.join("locks"));
-    move |tool: &str, args: &Json, control: &TurnControl| -> Result<Json, String> {
+    move |tool: &str, args: &Json, control: &TurnControl, mode: ShellMode| -> Result<Json, String> {
         control.check()?;
         let arg = |key: &str| args.get(key).and_then(|v| v.as_str()).unwrap_or("").to_string();
         let arg_or = |args: &Json, key: &str, default: &str| -> String {
@@ -845,14 +847,14 @@ fn workspace_executor_with_control(
             }
             "glob" => {
                 let pattern = if arg("pattern").is_empty() { "*".to_string() } else { arg("pattern") };
-                if bwrap_available() && sandbox_rg_available() {
+                if (mode == ShellMode::Host || bwrap_available()) && sandbox_rg_available() {
                     // A positive `rg --glob` overrides .gitignore. Filter the
                     // already-ignored file list instead.
                     let command = format!(
                         "set -o pipefail; rg --files -- . | rg --color never -- {}",
                         shell_quote(&glob_regex(&pattern))
                     );
-                    return shell_run_at(&command, &root, 30, false, artifacts.output(), None, control)
+                    return shell_run_at(&command, &root, 30, false, artifacts.output(), None, control, mode)
                         .map(Json::String);
                 }
                 let mut hits = vec![];
@@ -868,14 +870,23 @@ fn workspace_executor_with_control(
                 } else {
                     format!("grep -rn -- {pattern} {path}")
                 };
-                shell_run_at(&command, &root, 30, false, artifacts.output(), None, control).map(Json::String)
+                shell_run_at(&command, &root, 30, false, artifacts.output(), None, control, mode).map(Json::String)
             }
             "shell" => {
                 let command = arg("command");
                 let timeout = args.get("timeout").and_then(|v| v.as_u64()).unwrap_or(120);
                 let network = args.get("network").and_then(|v| v.as_bool()).unwrap_or(false);
-                shell_run_at(&command, &root, timeout, network, artifacts.output(), shell_state.as_deref(), control)
-                    .map(Json::String)
+                shell_run_at(
+                    &command,
+                    &root,
+                    timeout,
+                    network,
+                    artifacts.output(),
+                    shell_state.as_deref(),
+                    control,
+                    mode,
+                )
+                .map(Json::String)
             }
             other => Err(format!("unknown tool {other}")),
         }
@@ -1071,7 +1082,7 @@ pub fn member_executor(
     artifacts: Option<PathBuf>,
 ) -> impl Fn(&str, &Json) -> Result<Json, String> + Send + Sync + 'static {
     let executor = member_executor_with_control(root, catalog, bindings, ArtifactPaths::shared(artifacts), None);
-    move |tool, args| executor(tool, args, &TurnControl::default())
+    move |tool, args| executor(tool, args, &TurnControl::default(), ShellMode::Sandbox)
 }
 
 pub(crate) fn member_executor_with_control(
@@ -1080,10 +1091,10 @@ pub(crate) fn member_executor_with_control(
     bindings: Vec<String>,
     artifacts: ArtifactPaths,
     shell_state: Option<PathBuf>,
-) -> impl Fn(&str, &Json, &TurnControl) -> Result<Json, String> + Send + Sync + 'static {
+) -> impl Fn(&str, &Json, &TurnControl, ShellMode) -> Result<Json, String> + Send + Sync + 'static {
     let workspace = workspace_executor_with_control(root, artifacts, shell_state);
     let web: OnceLock<Result<WebTools, String>> = OnceLock::new();
-    move |tool: &str, args: &Json, control: &TurnControl| match tool {
+    move |tool: &str, args: &Json, control: &TurnControl, mode: ShellMode| match tool {
         "web_search" => {
             let binding = web
                 .get_or_init(|| web_tools(&catalog, &bindings))
@@ -1125,7 +1136,7 @@ pub(crate) fn member_executor_with_control(
             if !bindings.iter().any(|b| b == capability) {
                 return Err(format!("tool {other} is not bound to this member"));
             }
-            workspace(other, args, control)
+            workspace(other, args, control, mode)
         }
     }
 }
@@ -1273,6 +1284,23 @@ pub fn which(name: &str) -> Option<PathBuf> {
 /// Where a member's shell state lives inside the sandbox (bound rw).
 const SHELL_STATE_SANDBOX: &str = "/tmp/.teamagents-shell";
 
+/// Selected only from trusted session state, never from model tool arguments.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ShellMode {
+    Sandbox,
+    Host,
+}
+
+impl ShellMode {
+    pub(crate) fn from_permissions(mode: Option<&str>) -> Result<Self, String> {
+        match mode {
+            Some("approved_scope") => Ok(Self::Sandbox),
+            Some("full_auto") => Ok(Self::Host),
+            _ => Err("ShellPermissionUnavailable: 无法读取有效的会话权限模式，命令未执行".into()),
+        }
+    }
+}
+
 pub(crate) fn sandbox_home(persistent_shell: bool) -> &'static str {
     if persistent_shell {
         // ponytail: caches follow session retention; add an explicit cache
@@ -1295,8 +1323,9 @@ fn shell_state_preamble(sandbox_dir: &str) -> String {
     // Catch that failure before any caller command can write in the wrong root.
     // Only migrate an unversioned snapshot's old default HOME. New snapshots
     // preserve deliberate HOME exports, including the workspace itself.
+    let quoted_dir = shell_quote(sandbox_dir);
     format!(
-        r#"__ta_state={sandbox_dir}/state.sh
+        r#"__ta_state={quoted_dir}/state.sh
 __ta_initial_cwd=$(builtin pwd)
 __ta_default_home=$HOME
 __ta_home_version=0
@@ -1325,7 +1354,8 @@ fn shell_state_capture(sandbox_dir: &str) -> String {
     // PWD is exported and can be stale or reassigned; ask bash for its actual
     // directory before serializing both the restore recipe and the output hint.
     format!(
-        "\n__ta_rc=$?\nif PWD=$(builtin pwd); then\n{{ printf '__ta_home_version=1\\ncd %q\\n' \"$PWD\"; export -p; }} > \"$__ta_state.tmp\" 2>/dev/null && mv \"$__ta_state.tmp\" \"$__ta_state\"\nprintf '%s\\n' \"$PWD\" > \"{sandbox_dir}/cwd\" 2>/dev/null\nfi\nexit $__ta_rc\n"
+        "\n__ta_rc=$?\nif PWD=$(builtin pwd); then\n{{ printf '__ta_home_version=1\\ncd %q\\n' \"$PWD\"; export -p; }} > \"$__ta_state.tmp\" 2>/dev/null && mv \"$__ta_state.tmp\" \"$__ta_state\"\nprintf '%s\\n' \"$PWD\" > {}/cwd 2>/dev/null\nfi\nexit $__ta_rc\n",
+        shell_quote(sandbox_dir)
     )
 }
 
@@ -1525,17 +1555,28 @@ impl OutputSink {
     }
 }
 
-/// Both readers spool immediately and retain only a bounded preview. The
-/// artifact preserves arrival order; separate stdout/stderr ordering is not
-/// recoverable after the OS has delivered their independent pipe chunks.
-fn drain(mut pipe: impl Read + Send + 'static, sink: Arc<Mutex<OutputSink>>) -> std::thread::JoinHandle<()> {
+/// Socket read timeouts let readers drain queued output and then close even
+/// when a background process retains stdout. No reader survives a Shell call.
+fn drain(mut pipe: UnixStream, sink: Arc<Mutex<OutputSink>>, done: Arc<AtomicBool>) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let mut chunk = [0u8; 8192];
+        let mut deadline = None;
         loop {
+            if done.load(Ordering::SeqCst) {
+                let until = deadline.get_or_insert_with(|| Instant::now() + Duration::from_millis(100));
+                if Instant::now() >= *until {
+                    break;
+                }
+            }
             match pipe.read(&mut chunk) {
                 Ok(0) => break,
                 Ok(read) => sink.lock().unwrap().append(&chunk[..read]),
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {
+                    if done.load(Ordering::SeqCst) {
+                        break;
+                    }
+                }
                 Err(e) => {
                     sink.lock().unwrap().error = Some(format!("output pipe read failed: {e}"));
                     break;
@@ -1545,26 +1586,10 @@ fn drain(mut pipe: impl Read + Send + 'static, sink: Arc<Mutex<OutputSink>>) -> 
     })
 }
 
-/// Wait for reader threads, but never block the caller forever: if a pipe is
-/// still open after the grace period the partial buffer is all we can use.
-/// ponytail: a reader that never sees EOF is leaked (its data is already
-/// collected); kill the process group instead if that ever shows up.
-fn join_bounded(handles: Vec<std::thread::JoinHandle<()>>, grace: Duration) -> bool {
-    let deadline = Instant::now() + grace;
-    let mut complete = true;
-    for handle in handles {
-        while !handle.is_finished() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        if handle.is_finished() {
-            complete &= handle.join().is_ok();
-        } else {
-            complete = false;
-        }
-        // else: leak the reader thread rather than hang the engine; its data is
-        // already in the buffer (kill is instantaneous with --die-with-parent)
-    }
-    complete
+fn output_socket() -> Result<(UnixStream, Stdio), String> {
+    let (reader, writer) = UnixStream::pair().map_err(|e| e.to_string())?;
+    reader.set_read_timeout(Some(Duration::from_millis(50))).map_err(|e| e.to_string())?;
+    Ok((reader, Stdio::from(OwnedFd::from(writer))))
 }
 
 /// bwrap-only: missing isolation is an error,
@@ -1608,9 +1633,33 @@ pub fn shell_run_stateful(
         OutputLocation { root: artifacts, prefix: ARTIFACTS_PREFIX },
         shell_state,
         control,
+        ShellMode::Sandbox,
     )
 }
 
+/// Explicit host execution for trusted full-auto callers. A successful command
+/// may leave services running; timeout/cancellation kills its process group.
+pub fn shell_run_host(
+    command: &str,
+    workdir: &Path,
+    timeout_s: u64,
+    artifacts: Option<&Path>,
+    shell_state: Option<&Path>,
+    control: &TurnControl,
+) -> Result<String, String> {
+    shell_run_at(
+        command,
+        workdir,
+        timeout_s,
+        true,
+        OutputLocation { root: artifacts, prefix: ARTIFACTS_PREFIX },
+        shell_state,
+        control,
+        ShellMode::Host,
+    )
+}
+
+#[expect(clippy::too_many_arguments, reason = "Keep trusted execution mode separate from model command parameters.")]
 fn shell_run_at(
     command: &str,
     workdir: &Path,
@@ -1619,33 +1668,51 @@ fn shell_run_at(
     output: OutputLocation<'_>,
     shell_state: Option<&Path>,
     control: &TurnControl,
+    mode: ShellMode,
 ) -> Result<String, String> {
     control.check()?;
-    if !bwrap_available() {
+    if mode == ShellMode::Sandbox && !bwrap_available() {
         return Err("IsolationUnavailable: bwrap is not available: refusing to run commands without isolation".into());
     }
+    // Separate snapshots prevent sandbox HOME/PATH/cwd leaking into host
+    // commands (and vice versa) after a live permission-mode change.
+    let host_state = shell_state.filter(|_| mode == ShellMode::Host).map(|state| state.join("host"));
+    let shell_state = host_state.as_deref().or(shell_state);
     if let Some(state) = shell_state {
         std::fs::create_dir_all(state).map_err(|e| format!("cannot create shell state directory: {e}"))?;
     }
+    let state_dir = match (mode, shell_state) {
+        (ShellMode::Host, Some(state)) => state.to_string_lossy().into_owned(),
+        _ => SHELL_STATE_SANDBOX.to_string(),
+    };
     let wrapped = match shell_state {
-        Some(_) => format!(
-            "{}{}\n{}",
-            shell_state_preamble(SHELL_STATE_SANDBOX),
-            command,
-            shell_state_capture(SHELL_STATE_SANDBOX)
-        ),
+        Some(_) => format!("{}{}\n{}", shell_state_preamble(&state_dir), command, shell_state_capture(&state_dir)),
         None => command.to_string(),
     };
     let workdir = std::fs::canonicalize(workdir).unwrap_or_else(|_| workdir.to_path_buf());
-    let argv = bwrap_argv(&workdir, network, &wrapped, shell_state);
     let sink = Arc::new(Mutex::new(OutputSink::new(output)?));
-    let mut sandbox = Command::new(&argv[0]);
+    let mut sandbox = match mode {
+        ShellMode::Sandbox => {
+            let argv = bwrap_argv(&workdir, network, &wrapped, shell_state);
+            let executable = which("bwrap").ok_or("IsolationUnavailable: bwrap disappeared before execution")?;
+            let mut command = Command::new(executable);
+            command.args(&argv[1..]);
+            command
+        }
+        ShellMode::Host => {
+            let mut command = Command::new("/bin/bash");
+            // Do not source login files that might re-export provider keys.
+            command.args(["--noprofile", "--norc", "-c", &wrapped]).current_dir(&workdir).process_group(0);
+            command
+        }
+    };
+    let (stdout, stdout_stdio) = output_socket()?;
+    let (stderr, stderr_stdio) = output_socket()?;
     // whitelist environment: no model keys, no credentials (plan §12.2)
     sandbox
-        .args(&argv[1..])
         .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stdout(stdout_stdio)
+        .stderr(stderr_stdio)
         .env_clear()
         .env("PATH", sandbox_path())
         .env("HOME", sandbox_home(shell_state.is_some()))
@@ -1656,11 +1723,19 @@ fn shell_run_at(
     for (key, value) in toolchain_env() {
         sandbox.env(key, value);
     }
+    if mode == ShellMode::Host {
+        sandbox
+            .env("PATH", std::env::var_os("PATH").unwrap_or_else(|| "/usr/local/bin:/usr/bin:/bin".into()))
+            .env("HOME", std::env::var_os("HOME").unwrap_or_else(|| "/".into()));
+        for (key, host, _) in toolchain_mounts() {
+            sandbox.env(key, host);
+        }
+    }
     let mut child = sandbox.spawn().map_err(|e| e.to_string())?;
-    let stdout = child.stdout.take().ok_or("no stdout")?;
-    let stderr = child.stderr.take().ok_or("no stderr")?;
-    let stdout_reader = drain(stdout, sink.clone());
-    let stderr_reader = drain(stderr, sink.clone());
+    drop(sandbox);
+    let done = Arc::new(AtomicBool::new(false));
+    let stdout_reader = drain(stdout, sink.clone(), done.clone());
+    let stderr_reader = drain(stderr, sink.clone(), done.clone());
     let started = Instant::now();
     let mut failure = None;
     let mut status = None;
@@ -1690,6 +1765,15 @@ fn shell_run_at(
         }
     }
     if failure.is_some() {
+        if mode == ShellMode::Host {
+            // The direct child is not reaped yet, so its group ID cannot be
+            // reused. ponytail: a deliberate setsid() escapes this group;
+            // cgroup ownership is needed for stronger full-auto containment.
+            let killed = Command::new("/bin/kill").args(["-KILL", "--", &format!("-{}", child.id())]).output();
+            if !matches!(killed, Ok(ref output) if output.status.success()) {
+                failure = Some(format!("{}; process-group stop could not be confirmed", failure.unwrap()));
+            }
+        }
         // Killing bwrap tears down its private PID namespace and command tree.
         if let Err(e) = child.kill() {
             if e.kind() != std::io::ErrorKind::InvalidInput {
@@ -1700,14 +1784,22 @@ fn shell_run_at(
             failure = Some(format!("{}; wait failed: {e}", failure.unwrap()));
         }
     }
-    if !join_bounded(vec![stdout_reader, stderr_reader], Duration::from_secs(5)) {
-        sink.lock().unwrap().error.get_or_insert_with(|| "output capture incomplete: reader did not finish".into());
+    done.store(true, Ordering::SeqCst);
+    for reader in [stdout_reader, stderr_reader] {
+        if reader.join().is_err() {
+            sink.lock().unwrap().error.get_or_insert_with(|| "output capture reader failed".into());
+        }
     }
     let text = sink.lock().unwrap().finish(failure.is_some())?;
     if let Some(note) = failure {
         return Err(if text.is_empty() { note } else { format!("{note}\n{text}") });
     }
     let status = status.ok_or("no exit status")?;
+    if mode == ShellMode::Sandbox && !status.success() && text.starts_with("bwrap: ") {
+        return Err(format!(
+            "IsolationUnavailable: 沙箱启动失败；命令可能未执行。请检查隔离环境，勿重复同一调用。\n{text}"
+        ));
+    }
     let text = match shell_state.and_then(shell_state_cwd) {
         // the next command starts here, so the model must know where "here" is
         Some(cwd) => format!("[cwd: {cwd}]\n{text}"),

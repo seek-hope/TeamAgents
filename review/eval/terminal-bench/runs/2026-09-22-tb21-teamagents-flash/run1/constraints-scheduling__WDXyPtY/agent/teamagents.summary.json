@@ -1,0 +1,26 @@
+{
+  "log": "/tmp/tb21/jobs/tb21-teamagents-flash/constraints-scheduling__WDXyPtY/agent/teamagents.jsonl",
+  "lines": {
+    "session": 1,
+    "event": 6,
+    "tool": 11,
+    "result": 1
+  },
+  "exit_code": 0,
+  "status": "completed",
+  "duration_ms": 26774,
+  "session_id": "proj_f53b52ad6d21",
+  "runtime_errors": [],
+  "outcome_unknown": [],
+  "verification": [],
+  "model_usage": {
+    "deepseek-flash": {
+      "n_input_tokens": 58696,
+      "n_cache_tokens": 54912,
+      "n_output_tokens": 6025
+    }
+  },
+  "prompt_tokens": 58696,
+  "completion_tokens": 6025,
+  "cached_input_tokens": 54912
+}

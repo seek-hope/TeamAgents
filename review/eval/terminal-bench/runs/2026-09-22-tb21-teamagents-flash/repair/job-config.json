@@ -1,0 +1,47 @@
+{
+    "job_name": "tb21-teamagents-flash-repair",
+    "jobs_dir": "/tmp/tb21/jobs",
+    "quiet": true,
+    "retry": {
+        "max_retries": 2,
+        "exclude_exceptions": [
+            "AgentTimeoutError"
+        ]
+    },
+    "environment": {
+        "type": "docker",
+        "extra_docker_compose": [
+            "/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/terminal-bench/teamagents-caps.yaml"
+        ]
+    },
+    "agents": [
+        {
+            "name": "teamagents_agent:TeamAgentsAgent",
+            "model_name": "deepseek/deepseek-flash",
+            "kwargs": {
+                "binary_path": "/home/rimuru/Projects/Code/for_fun/TeamAgents/engine/target/x86_64-unknown-linux-musl/release/teamagents"
+            }
+        }
+    ],
+    "datasets": [
+        {
+            "name": "terminal-bench/terminal-bench-2-1",
+            "ref": "sha256:7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a",
+            "task_names": [
+                "terminal-bench/build-pov-ray",
+                "terminal-bench/caffe-cifar-10",
+                "terminal-bench/circuit-fibsqrt",
+                "terminal-bench/cobol-modernization",
+                "terminal-bench/fix-code-vulnerability",
+                "terminal-bench/llm-inference-batching-scheduler",
+                "terminal-bench/mcmc-sampling-stan",
+                "terminal-bench/merge-diff-arc-agi-task",
+                "terminal-bench/mteb-leaderboard",
+                "terminal-bench/pytorch-model-recovery",
+                "terminal-bench/qemu-alpine-ssh",
+                "terminal-bench/qemu-startup",
+                "terminal-bench/regex-log"
+            ]
+        }
+    ]
+}

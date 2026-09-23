@@ -149,6 +149,140 @@ fn text_response(text: &str) -> Json {
     json!({"id": "x", "choices": [{"message": {"role": "assistant", "content": text}}]})
 }
 
+#[test]
+fn exec_full_auto_service_survives_cli_exit_and_checks_use_host_environment() {
+    let env = env_guard("exec-host-service");
+    let project = env.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(env.join("host-only"), "host evidence").unwrap();
+    std::fs::write(
+        project.join("server.py"),
+        r#"from http.server import HTTPServer, BaseHTTPRequestHandler
+from pathlib import Path
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b'service-survived')
+server = HTTPServer(('127.0.0.1', 0), Handler)
+Path('port').write_text(str(server.server_port))
+server.serve_forever()
+"#,
+    )
+    .unwrap();
+    struct Service(std::path::PathBuf);
+    impl Drop for Service {
+        fn drop(&mut self) {
+            if let Ok(pid) = std::fs::read_to_string(self.0.join("service.pid")) {
+                let _ = std::process::Command::new("/bin/kill").args(["-KILL", pid.trim()]).status();
+            }
+        }
+    }
+    let _service = Service(project.clone());
+    let check = "test -r ../host-only && python3 -c \"import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:'+open('port').read(), timeout=2).read().decode())\"";
+    let api = FakeOpenAi::start(move |_, index| {
+        (
+            200,
+            match index {
+                0 => tool_call_response(
+                    "start",
+                    "shell",
+                    json!({"command":
+            "python3 server.py >service.log 2>&1 </dev/null & echo $! >service.pid; for i in {1..100}; do test -s port && break; sleep 0.02; done; test -s port"}),
+                ),
+                1 => tool_call_response("probe", "shell", json!({"command": check})),
+                2 => tool_call_response("done", "signal_done", json!({"summary":"Separate-call HTTP probe passed"})),
+                _ => text_response("Service ready"),
+            },
+        )
+    });
+    let config = teamagents_engine::config::user_config_path();
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(
+        config,
+        format!("[models.leader_main]\nprovider='openai'\nmodel='test'\nbase_url='{}'\n", api.base_url()),
+    )
+    .unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_teamagents"))
+        .args(["exec", "--json", "--full-auto", "--timeout", "10", "--cwd"])
+        .arg(&project)
+        .args(["--check", check, "Start and verify the local service"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rows: Vec<Json> =
+        String::from_utf8_lossy(&output.stdout).lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+    let result = rows.iter().find(|row| row["type"] == "result").unwrap();
+    assert_eq!(result["verification"][0]["ok"], true, "{result}");
+    assert!(result["verification"][0]["output"].as_str().unwrap().contains("service-survived"));
+    let port = std::fs::read_to_string(project.join("port")).unwrap();
+    assert_eq!(
+        ureq::get(&format!("http://127.0.0.1:{port}/")).call().unwrap().into_string().unwrap(),
+        "service-survived"
+    );
+    let prompt = api.body(0)["messages"][0]["content"].as_str().unwrap().to_string();
+    assert!(prompt.contains("<shell_environment>full_auto"), "{prompt}");
+}
+
+#[test]
+fn shell_execution_and_prompt_follow_live_mode_changes_with_cached_executor() {
+    if !teamagents_engine::tools::bwrap_available() {
+        return;
+    }
+    let env = env_guard("shell-mode-switch");
+    let project = env.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let outside = env.join("host-only");
+    std::fs::write(&outside, "host").unwrap();
+    let command = format!("if test -r '{}'; then echo HOST_VISIBLE; else echo HOST_HIDDEN; fi", outside.display());
+    let api = FakeOpenAi::start(move |_, index| {
+        (
+            200,
+            if index % 2 == 0 {
+                // Model-supplied mode fields cannot select host execution.
+                tool_call_response(
+                    &format!("probe-{index}"),
+                    "shell",
+                    json!({"command":command,"mode":"full_auto","full_auto":true}),
+                )
+            } else {
+                text_response("checked")
+            },
+        )
+    });
+    let mut catalog = UserConfig::default();
+    catalog.models.insert("m".into(), profile(&api.base_url(), "openai", json!({}), 0));
+    let opened = open_session(OpenOptions {
+        cwd: Some(project),
+        session_id: Some("shell-mode-switch".into()),
+        catalog: Some(catalog),
+        full_auto: true,
+        initial_spec: Some(json!({"leader_id":"leader","agents":[agent_json("leader","leader", &["files","shell"])]})),
+        ..Default::default()
+    })
+    .unwrap();
+    opened.runtime.start();
+    for (i, mode, marker) in
+        [(0, "full_auto", "HOST_VISIBLE"), (1, "approved_scope", "HOST_HIDDEN"), (2, "full_auto", "HOST_VISIBLE")]
+    {
+        assert!(submit(&opened.core, &format!("mode-{i}"), "user", "set_permission_mode", json!({"mode":mode})).ok);
+        opened.runtime.user_message("Probe current mode", false).unwrap();
+        assert!(opened.runtime.settle(5));
+        let body = api.body(i * 2 + 1);
+        let messages = body["messages"].as_array().unwrap();
+        let output =
+            messages.iter().rev().find(|message| message["role"] == "tool").unwrap()["content"].as_str().unwrap();
+        assert!(output.contains(marker), "{output}");
+        assert!(messages[0]["content"].as_str().unwrap().contains(&format!("<shell_environment>{mode}")));
+    }
+    opened.close();
+}
+
 fn private_helper_request(body: &Json) -> bool {
     body["messages"]
         .as_array()

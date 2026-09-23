@@ -1,0 +1,26 @@
+{
+  "log": "/tmp/tb21/jobs/tb21-teamagents-flash/mteb-retrieve__MthLoUc/agent/teamagents.jsonl",
+  "lines": {
+    "session": 1,
+    "event": 9,
+    "tool": 42,
+    "result": 1
+  },
+  "exit_code": 0,
+  "status": "completed",
+  "duration_ms": 267268,
+  "session_id": "proj_f53b52ad6d21",
+  "runtime_errors": [],
+  "outcome_unknown": [],
+  "verification": [],
+  "model_usage": {
+    "deepseek-flash": {
+      "n_input_tokens": 532747,
+      "n_cache_tokens": 516224,
+      "n_output_tokens": 20124
+    }
+  },
+  "prompt_tokens": 532747,
+  "completion_tokens": 20124,
+  "cached_input_tokens": 516224
+}

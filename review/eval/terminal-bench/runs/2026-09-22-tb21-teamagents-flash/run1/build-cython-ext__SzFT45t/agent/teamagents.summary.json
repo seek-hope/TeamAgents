@@ -1,0 +1,12 @@
+{
+  "log": "/tmp/tb21/jobs/tb21-teamagents-flash/build-cython-ext__SzFT45t/agent/teamagents.jsonl",
+  "lines": {
+    "session": 1,
+    "event": 9,
+    "tool": 124
+  },
+  "model_usage": {},
+  "prompt_tokens": null,
+  "completion_tokens": null,
+  "cached_input_tokens": null
+}

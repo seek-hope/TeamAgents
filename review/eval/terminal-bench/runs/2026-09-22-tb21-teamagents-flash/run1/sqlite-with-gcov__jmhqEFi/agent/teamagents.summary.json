@@ -1,0 +1,26 @@
+{
+  "log": "/tmp/tb21/jobs/tb21-teamagents-flash/sqlite-with-gcov__jmhqEFi/agent/teamagents.jsonl",
+  "lines": {
+    "session": 1,
+    "event": 27,
+    "tool": 100,
+    "result": 1
+  },
+  "exit_code": 0,
+  "status": "completed",
+  "duration_ms": 528613,
+  "session_id": "proj_f53b52ad6d21",
+  "runtime_errors": [],
+  "outcome_unknown": [],
+  "verification": [],
+  "model_usage": {
+    "deepseek-flash": {
+      "n_input_tokens": 2445057,
+      "n_cache_tokens": 2326400,
+      "n_output_tokens": 99646
+    }
+  },
+  "prompt_tokens": 2445057,
+  "completion_tokens": 99646,
+  "cached_input_tokens": 2326400
+}

@@ -1,0 +1,26 @@
+{
+  "log": "/tmp/tb21/jobs/tb21-teamagents-flash/make-mips-interpreter__XszKPnf/agent/teamagents.jsonl",
+  "lines": {
+    "session": 1,
+    "event": 6,
+    "tool": 116,
+    "result": 1
+  },
+  "exit_code": 0,
+  "status": "completed",
+  "duration_ms": 886395,
+  "session_id": "proj_f53b52ad6d21",
+  "runtime_errors": [],
+  "outcome_unknown": [],
+  "verification": [],
+  "model_usage": {
+    "deepseek-flash": {
+      "n_input_tokens": 9107353,
+      "n_cache_tokens": 8988032,
+      "n_output_tokens": 110482
+    }
+  },
+  "prompt_tokens": 9107353,
+  "completion_tokens": 110482,
+  "cached_input_tokens": 8988032
+}

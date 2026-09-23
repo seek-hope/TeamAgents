@@ -1,0 +1,26 @@
+{
+  "log": "/tmp/tb21/jobs/tb21-teamagents-flash/compile-compcert__xMvNXNM/agent/teamagents.jsonl",
+  "lines": {
+    "session": 1,
+    "event": 25,
+    "tool": 126,
+    "result": 1
+  },
+  "exit_code": 0,
+  "status": "completed",
+  "duration_ms": 1090188,
+  "session_id": "proj_f53b52ad6d21",
+  "runtime_errors": [],
+  "outcome_unknown": [],
+  "verification": [],
+  "model_usage": {
+    "deepseek-flash": {
+      "n_input_tokens": 4802325,
+      "n_cache_tokens": 4719232,
+      "n_output_tokens": 129433
+    }
+  },
+  "prompt_tokens": 4802325,
+  "completion_tokens": 129433,
+  "cached_input_tokens": 4719232
+}

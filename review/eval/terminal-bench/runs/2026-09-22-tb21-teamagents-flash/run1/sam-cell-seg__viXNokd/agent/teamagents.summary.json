@@ -1,0 +1,26 @@
+{
+  "log": "/tmp/tb21/jobs/tb21-teamagents-flash/sam-cell-seg__viXNokd/agent/teamagents.jsonl",
+  "lines": {
+    "session": 1,
+    "event": 42,
+    "tool": 89,
+    "result": 1
+  },
+  "exit_code": 0,
+  "status": "completed",
+  "duration_ms": 762958,
+  "session_id": "proj_f53b52ad6d21",
+  "runtime_errors": [],
+  "outcome_unknown": [],
+  "verification": [],
+  "model_usage": {
+    "deepseek-flash": {
+      "n_input_tokens": 2772119,
+      "n_cache_tokens": 2629760,
+      "n_output_tokens": 190053
+    }
+  },
+  "prompt_tokens": 2772119,
+  "completion_tokens": 190053,
+  "cached_input_tokens": 2629760
+}

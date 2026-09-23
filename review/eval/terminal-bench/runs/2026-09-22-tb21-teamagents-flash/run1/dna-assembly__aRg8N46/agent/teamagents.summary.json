@@ -1,0 +1,26 @@
+{
+  "log": "/tmp/tb21/jobs/tb21-teamagents-flash/dna-assembly__aRg8N46/agent/teamagents.jsonl",
+  "lines": {
+    "session": 1,
+    "event": 17,
+    "tool": 72,
+    "result": 1
+  },
+  "exit_code": 0,
+  "status": "completed",
+  "duration_ms": 691890,
+  "session_id": "proj_f53b52ad6d21",
+  "runtime_errors": [],
+  "outcome_unknown": [],
+  "verification": [],
+  "model_usage": {
+    "deepseek-flash": {
+      "n_input_tokens": 3017304,
+      "n_cache_tokens": 2955136,
+      "n_output_tokens": 125542
+    }
+  },
+  "prompt_tokens": 3017304,
+  "completion_tokens": 125542,
+  "cached_input_tokens": 2955136
+}

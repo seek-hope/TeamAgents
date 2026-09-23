@@ -1,0 +1,26 @@
+{
+  "log": "/tmp/tb21/jobs/tb21-teamagents-flash/cancel-async-tasks__Sk34D4M/agent/teamagents.jsonl",
+  "lines": {
+    "session": 1,
+    "event": 17,
+    "tool": 119,
+    "result": 1
+  },
+  "exit_code": 0,
+  "status": "completed",
+  "duration_ms": 866778,
+  "session_id": "proj_f53b52ad6d21",
+  "runtime_errors": [],
+  "outcome_unknown": [],
+  "verification": [],
+  "model_usage": {
+    "deepseek-flash": {
+      "n_input_tokens": 5907894,
+      "n_cache_tokens": 5752192,
+      "n_output_tokens": 162577
+    }
+  },
+  "prompt_tokens": 5907894,
+  "completion_tokens": 162577,
+  "cached_input_tokens": 5752192
+}

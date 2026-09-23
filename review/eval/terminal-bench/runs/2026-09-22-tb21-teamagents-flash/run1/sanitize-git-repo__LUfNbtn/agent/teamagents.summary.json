@@ -1,0 +1,26 @@
+{
+  "log": "/tmp/tb21/jobs/tb21-teamagents-flash/sanitize-git-repo__LUfNbtn/agent/teamagents.jsonl",
+  "lines": {
+    "session": 1,
+    "event": 6,
+    "tool": 100,
+    "result": 1
+  },
+  "exit_code": 0,
+  "status": "completed",
+  "duration_ms": 351982,
+  "session_id": "proj_f53b52ad6d21",
+  "runtime_errors": [],
+  "outcome_unknown": [],
+  "verification": [],
+  "model_usage": {
+    "deepseek-flash": {
+      "n_input_tokens": 3969804,
+      "n_cache_tokens": 3225600,
+      "n_output_tokens": 64881
+    }
+  },
+  "prompt_tokens": 3969804,
+  "completion_tokens": 64881,
+  "cached_input_tokens": 3225600
+}

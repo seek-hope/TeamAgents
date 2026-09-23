@@ -1,0 +1,26 @@
+{
+  "log": "/tmp/tb21/jobs/tb21-teamagents-flash/mailman__8EETpAa/agent/teamagents.jsonl",
+  "lines": {
+    "session": 1,
+    "event": 3,
+    "tool": 47,
+    "result": 1
+  },
+  "exit_code": 0,
+  "status": "failed",
+  "duration_ms": 954797,
+  "session_id": "proj_f53b52ad6d21",
+  "runtime_errors": [],
+  "outcome_unknown": [],
+  "verification": [],
+  "model_usage": {
+    "deepseek-flash": {
+      "n_input_tokens": 1618991,
+      "n_cache_tokens": 1553024,
+      "n_output_tokens": 60783
+    }
+  },
+  "prompt_tokens": 1618991,
+  "completion_tokens": 60783,
+  "cached_input_tokens": 1553024
+}

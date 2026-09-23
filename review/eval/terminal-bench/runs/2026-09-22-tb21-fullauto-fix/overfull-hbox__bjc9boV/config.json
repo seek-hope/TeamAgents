@@ -1,0 +1,17 @@
+{
+    "task": {
+        "name": "terminal-bench/overfull-hbox",
+        "ref": "sha256:3c3b16e4b2de5fea90ca98db242b155a6843f9cc4dfd00be3479985a34bab4f7",
+        "source": "terminal-bench/terminal-bench-2-1"
+    },
+    "trial_name": "overfull-hbox__bjc9boV",
+    "trials_dir": "/tmp/tb21/jobs/tb21-fullauto-fix-20260922",
+    "agent": {
+        "name": "teamagents_agent:TeamAgentsAgent",
+        "model_name": "deepseek/deepseek-flash",
+        "kwargs": {
+            "binary_path": "/home/rimuru/Projects/Code/for_fun/TeamAgents/engine/target/x86_64-unknown-linux-musl/release/teamagents"
+        }
+    },
+    "job_id": "33ef9e09-ad55-4ce2-85d7-6bc0b55ca1ca"
+}

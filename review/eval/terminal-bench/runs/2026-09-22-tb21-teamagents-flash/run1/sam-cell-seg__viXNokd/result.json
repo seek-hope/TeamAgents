@@ -1,0 +1,156 @@
+{
+    "id": "d456e393-5e65-49bc-aa60-94ea1dd1b404",
+    "task_name": "terminal-bench/sam-cell-seg",
+    "trial_name": "sam-cell-seg__viXNokd",
+    "trial_uri": "file:///tmp/tb21/jobs/tb21-teamagents-flash/sam-cell-seg__viXNokd",
+    "task_id": {
+        "org": "terminal-bench",
+        "name": "sam-cell-seg",
+        "ref": "sha256:37c182b91df18b9c2ea2dceda47430bbd585e7880c56fca2f1975907ce0df8ce"
+    },
+    "source": "terminal-bench/terminal-bench-2-1",
+    "task_checksum": "7ec5aad46e3ecdb169a65cf38392d4a87eb37ce0bf4acef3398dbd60af59b2f4",
+    "config": {
+        "task": {
+            "path": null,
+            "git_url": null,
+            "git_commit_id": null,
+            "name": "terminal-bench/sam-cell-seg",
+            "ref": "sha256:37c182b91df18b9c2ea2dceda47430bbd585e7880c56fca2f1975907ce0df8ce",
+            "overwrite": false,
+            "download_dir": null,
+            "source": "terminal-bench/terminal-bench-2-1"
+        },
+        "trial_name": "sam-cell-seg__viXNokd",
+        "trials_dir": "/tmp/tb21/jobs/tb21-teamagents-flash",
+        "install_only": false,
+        "timeout_multiplier": 1.0,
+        "agent_timeout_multiplier": null,
+        "verifier_timeout_multiplier": null,
+        "agent_setup_timeout_multiplier": null,
+        "environment_build_timeout_multiplier": null,
+        "agent": {
+            "name": "teamagents_agent:TeamAgentsAgent",
+            "import_path": null,
+            "model_name": "deepseek/deepseek-flash",
+            "n_concurrent": null,
+            "concurrency_group": null,
+            "skills": [],
+            "override_timeout_sec": null,
+            "override_setup_timeout_sec": null,
+            "max_timeout_sec": null,
+            "resume_trajectory": false,
+            "load_trajectory": null,
+            "extra_allowed_hosts": [],
+            "kwargs": {
+                "binary_path": "/home/rimuru/Projects/Code/for_fun/TeamAgents/engine/target/x86_64-unknown-linux-musl/release/teamagents"
+            },
+            "mcp_servers": []
+        },
+        "user_agent": null,
+        "environment": {
+            "type": "docker",
+            "import_path": null,
+            "force_build": false,
+            "delete": true,
+            "cpu_enforcement_policy": "auto",
+            "memory_enforcement_policy": "auto",
+            "override_cpus": null,
+            "override_memory_mb": null,
+            "override_storage_mb": null,
+            "override_gpus": null,
+            "override_tpu": null,
+            "mounts": null,
+            "extra_docker_compose": [
+                "/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/terminal-bench/teamagents-caps.yaml"
+            ],
+            "kwargs": {},
+            "extra_allowed_hosts": []
+        },
+        "verifier": {
+            "override_timeout_sec": null,
+            "max_timeout_sec": null,
+            "disable": false
+        },
+        "artifacts": [],
+        "extra_instruction_paths": [],
+        "extra_instructions": [],
+        "job_id": "d3792f89-dedb-459c-a555-40d35e71461f",
+        "source_trial": null
+    },
+    "agent_info": {
+        "name": "teamagents",
+        "version": "0.1.2",
+        "model_info": {
+            "name": "deepseek-flash",
+            "provider": "deepseek"
+        }
+    },
+    "agent_result": {
+        "n_input_tokens": 2772119,
+        "n_cache_tokens": 2629760,
+        "n_output_tokens": 190053,
+        "cost_usd": null,
+        "model_usage": {
+            "deepseek-flash": {
+                "n_input_tokens": 2772119,
+                "n_cache_tokens": 2629760,
+                "n_output_tokens": 190053,
+                "cost_usd": null
+            }
+        },
+        "rollout_details": null,
+        "metadata": {
+            "log": "/tmp/tb21/jobs/tb21-teamagents-flash/sam-cell-seg__viXNokd/agent/teamagents.jsonl",
+            "lines": {
+                "session": 1,
+                "event": 42,
+                "tool": 89,
+                "result": 1
+            },
+            "exit_code": 0,
+            "status": "completed",
+            "duration_ms": 762958,
+            "session_id": "proj_f53b52ad6d21",
+            "runtime_errors": [],
+            "outcome_unknown": [],
+            "verification": [],
+            "model_usage": {
+                "deepseek-flash": {
+                    "n_input_tokens": 2772119,
+                    "n_cache_tokens": 2629760,
+                    "n_output_tokens": 190053
+                }
+            },
+            "prompt_tokens": 2772119,
+            "completion_tokens": 190053,
+            "cached_input_tokens": 2629760
+        }
+    },
+    "verifier_result": {
+        "rewards": {
+            "reward": 1.0
+        }
+    },
+    "verifier_environment_mode": "shared",
+    "exception_info": null,
+    "started_at": "2026-09-22T10:21:49.320832Z",
+    "finished_at": "2026-09-22T10:46:58.166976Z",
+    "environment_setup": {
+        "started_at": "2026-09-22T10:21:49.322134Z",
+        "finished_at": "2026-09-22T10:24:11.695872Z"
+    },
+    "agent_setup": {
+        "started_at": "2026-09-22T10:24:11.695894Z",
+        "finished_at": "2026-09-22T10:24:32.883446Z"
+    },
+    "agent_execution": {
+        "started_at": "2026-09-22T10:24:32.884084Z",
+        "finished_at": "2026-09-22T10:37:15.897520Z"
+    },
+    "verifier": {
+        "started_at": "2026-09-22T10:37:16.047950Z",
+        "finished_at": "2026-09-22T10:46:47.347336Z"
+    },
+    "step_results": null
+}

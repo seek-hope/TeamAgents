@@ -1,0 +1,26 @@
+{
+  "log": "/tmp/tb21/jobs/tb21-teamagents-flash/polyglot-c-py__6VbMgJY/agent/teamagents.jsonl",
+  "lines": {
+    "session": 1,
+    "event": 6,
+    "tool": 43,
+    "result": 1
+  },
+  "exit_code": 0,
+  "status": "completed",
+  "duration_ms": 225910,
+  "session_id": "proj_f53b52ad6d21",
+  "runtime_errors": [],
+  "outcome_unknown": [],
+  "verification": [],
+  "model_usage": {
+    "deepseek-flash": {
+      "n_input_tokens": 812022,
+      "n_cache_tokens": 798336,
+      "n_output_tokens": 38234
+    }
+  },
+  "prompt_tokens": 812022,
+  "completion_tokens": 38234,
+  "cached_input_tokens": 798336
+}

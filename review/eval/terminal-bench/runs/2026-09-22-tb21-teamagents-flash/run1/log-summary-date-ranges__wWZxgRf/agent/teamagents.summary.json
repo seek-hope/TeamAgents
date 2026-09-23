@@ -1,0 +1,12 @@
+{
+  "log": "/tmp/tb21/jobs/tb21-teamagents-flash/log-summary-date-ranges__wWZxgRf/agent/teamagents.jsonl",
+  "lines": {
+    "session": 1,
+    "event": 271,
+    "tool": 1183
+  },
+  "model_usage": {},
+  "prompt_tokens": null,
+  "completion_tokens": null,
+  "cached_input_tokens": null
+}

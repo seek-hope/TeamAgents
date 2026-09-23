@@ -1,0 +1,26 @@
+{
+  "log": "/tmp/tb21/jobs/tb21-teamagents-flash/path-tracing__MP3rxhH/agent/teamagents.jsonl",
+  "lines": {
+    "session": 1,
+    "event": 5,
+    "tool": 41,
+    "result": 1
+  },
+  "exit_code": 0,
+  "status": "completed",
+  "duration_ms": 214888,
+  "session_id": "proj_f53b52ad6d21",
+  "runtime_errors": [],
+  "outcome_unknown": [],
+  "verification": [],
+  "model_usage": {
+    "deepseek-flash": {
+      "n_input_tokens": 1724677,
+      "n_cache_tokens": 1670912,
+      "n_output_tokens": 42133
+    }
+  },
+  "prompt_tokens": 1724677,
+  "completion_tokens": 42133,
+  "cached_input_tokens": 1670912
+}

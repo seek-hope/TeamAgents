@@ -846,13 +846,24 @@ pub fn exec_json(args: &ExecOptions) -> i32 {
     for command in args.checks.iter().filter(|_| runtime_errors.is_empty()) {
         let marker = format!("__TEAMAGENTS_CHECK_RC_{}__", uuid::Uuid::new_v4());
         let wrapped = format!("{{ {command}; rc=$?; printf '\\n{marker}%s\\n' \"$rc\"; exit $rc; }}");
-        let result = crate::tools::shell_run(
-            &wrapped,
-            &opened.cwd,
-            timeout.min(120),
-            false,
-            Some(&session_paths(&sid).artifacts),
-        );
+        let result = match crate::tools::ShellMode::from_permissions(state["session"]["permissions_mode"].as_str()) {
+            Ok(crate::tools::ShellMode::Host) => crate::tools::shell_run_host(
+                &wrapped,
+                &opened.cwd,
+                timeout.min(120),
+                Some(&session_paths(&sid).artifacts),
+                None,
+                &crate::gateway::TurnControl::default(),
+            ),
+            Ok(crate::tools::ShellMode::Sandbox) => crate::tools::shell_run(
+                &wrapped,
+                &opened.cwd,
+                timeout.min(120),
+                false,
+                Some(&session_paths(&sid).artifacts),
+            ),
+            Err(error) => Err(error),
+        };
         let (output, code) = match result {
             Ok(text) => parse_check_result(&text, &marker),
             Err(e) => (e, 1),

@@ -1,0 +1,12 @@
+{
+  "log": "/tmp/tb21/jobs/tb21-teamagents-flash/torch-pipeline-parallelism__qnACH6P/agent/teamagents.jsonl",
+  "lines": {
+    "session": 1,
+    "event": 2,
+    "tool": 54
+  },
+  "model_usage": {},
+  "prompt_tokens": null,
+  "completion_tokens": null,
+  "cached_input_tokens": null
+}

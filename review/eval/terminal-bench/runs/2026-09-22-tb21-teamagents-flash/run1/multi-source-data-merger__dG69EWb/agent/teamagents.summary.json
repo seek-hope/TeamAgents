@@ -1,0 +1,26 @@
+{
+  "log": "/tmp/tb21/jobs/tb21-teamagents-flash/multi-source-data-merger__dG69EWb/agent/teamagents.jsonl",
+  "lines": {
+    "session": 1,
+    "event": 6,
+    "tool": 34,
+    "result": 1
+  },
+  "exit_code": 0,
+  "status": "completed",
+  "duration_ms": 118627,
+  "session_id": "proj_f53b52ad6d21",
+  "runtime_errors": [],
+  "outcome_unknown": [],
+  "verification": [],
+  "model_usage": {
+    "deepseek-flash": {
+      "n_input_tokens": 471544,
+      "n_cache_tokens": 460928,
+      "n_output_tokens": 25166
+    }
+  },
+  "prompt_tokens": 471544,
+  "completion_tokens": 25166,
+  "cached_input_tokens": 460928
+}

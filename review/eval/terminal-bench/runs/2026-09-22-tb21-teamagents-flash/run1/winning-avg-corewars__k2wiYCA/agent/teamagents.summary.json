@@ -1,0 +1,26 @@
+{
+  "log": "/tmp/tb21/jobs/tb21-teamagents-flash/winning-avg-corewars__k2wiYCA/agent/teamagents.jsonl",
+  "lines": {
+    "session": 1,
+    "event": 3,
+    "tool": 33,
+    "result": 1
+  },
+  "exit_code": 0,
+  "status": "timeout",
+  "duration_ms": 1200186,
+  "session_id": "proj_f53b52ad6d21",
+  "runtime_errors": [],
+  "outcome_unknown": [],
+  "verification": [],
+  "model_usage": {
+    "deepseek-flash": {
+      "n_input_tokens": 443383,
+      "n_cache_tokens": 430720,
+      "n_output_tokens": 33722
+    }
+  },
+  "prompt_tokens": 443383,
+  "completion_tokens": 33722,
+  "cached_input_tokens": 430720
+}

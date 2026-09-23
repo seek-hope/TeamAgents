@@ -171,7 +171,7 @@ pub const TEAM_TOOL_DOCS: &[(&str, &str)] = &[
     ("apply_topology_patch", "Leader only. Apply nonempty operations with integer base_revision from <team revision=N>, or use an existing patch_id. For a stored proposal, omit operations or pass [] to retain them; a nonempty list replaces them. reject=true requires patch_id. Unknown fields and null are refused. Operations: {\"op\":\"add_agent\",\"agent\":{\"id\",\"name\",\"role\":\"worker\",\"runtime_kind\":\"deepagents\",\"instructions\",\"tool_bindings\":[\"files\",\"shell\"],\"workspace_policy\":\"shared\"},\"channels\":[{\"source\":\"leader\",\"targets\":[\"<member>\"],\"mode\":\"task\"}]}; {\"op\":\"remove_agent\",\"agent_id\"}; {\"op\":\"update_agent\",\"agent_id\",\"changes\":{...}}. Omitted tool_bindings inherit yours; [] grants no execution tools. New members get message channels both ways with you. Omitted model_profile creates a per-member copy of your model. Defaults also apply to stored proposals."),
     ("cancel_task", "Leader only: cancel an unfinished or blocked task; running work stops first. A BLOCKED task (its member turn was interrupted) can only be cleared this way — cancel it and assign the work again as a new task."),
     ("cancel_run", "Leader only: request a turn to stop; side effects are not rolled back. Calling it on a run whose outcome is unknown (a turn interrupted mid-command) acknowledges that outcome and unblocks signal_done."),
-    ("signal_done", "Leader only: declare the current user goal complete; the runtime verifies no work, approvals or unknown outcomes are outstanding."),
+    ("signal_done", "Leader only: declare completion after checking all requested deliverables; summarize checks/results/limitations. Unmet requirements or failed checks mean incomplete. Runtime checks outstanding work, approvals and unknown outcomes, not deliverable correctness."),
 ];
 
 /// A private helper belongs to the current Chat member, not to the TeamSpec.
@@ -224,7 +224,7 @@ pub const BOUND_TOOL_DOCS: &[(&str, &str)] = &[
     ("delete", "Delete a file (a directory when recursive=true) from your workspace."),
     ("glob", "Find workspace files matching a glob pattern, e.g. '**/*.py' (max 500 hits)."),
     ("grep", "Search workspace files for a pattern; returns matching lines (max 100)."),
-    ("shell", "Run a shell command in the isolated Linux sandbox (no network by default; network=true requires user approval). Your working directory and exported variables persist between calls; output starts with [cwd: ...]. Temporary files outside the mounted workspace are discarded after each call: create and use /tmp copies in the same command, or keep needed files in the workspace. If the saved directory disappears, the command is skipped and the next call starts at the workspace root. Long output is saved privately under /tool-output/: use read_file to page through it. /tool-output/ and shared /artifacts/ are file-tool paths and are unavailable inside shell; use write_file to publish shareable results."),
+    ("shell", "Run Bash in the current shell_environment mode. approved_scope uses bwrap: network=true needs approval; temporary files/background processes end with the call. full_auto uses the host filesystem/network; services may survive CLI exit. For services redirect stdin/stdout/stderr, record PID, verify in a later call, and stop explicitly. Timeout/cancel kills the active process group. cwd/exports persist separately per mode; a missing cwd skips this call and resets to workspace root. Inspect nonzero exits. Page long output with read_file under private /tool-output/. /tool-output/ and /artifacts/ are virtual file-tool paths."),
     ("web_search", "Search the web and return title, source URL, snippet, fetch time (and full content when include_content=true)."),
     ("web_fetch", "Fetch a web page and return title, source URL, fetch time and the readable text body (HTML only; capped)."),
     ("skill", "Discover and load agent skills. action='search' with query keywords lists matching skills (name — summary); action='read' with a skill name loads its full instructions. Read a skill before applying it."),
@@ -1354,9 +1354,27 @@ impl ChatRunner {
             blocks
         };
         format!(
-            "{head}\n\nAvailable tools: {tools}\nRules: use complete_task to finish your assigned task; use signal_done only when the whole user goal is complete (Leader only). See each tool's description in the tool list for its arguments.\n{context}{plan}",
+            "{head}\n\nAvailable tools: {tools}\nRules: use complete_task to finish your assigned task; use signal_done only when the whole user goal is complete (Leader only). See each tool's description in the tool list for its arguments.\n{shell}\n{context}{plan}",
+            shell = self.shell_environment(),
             plan = self.plan_block()
         )
+    }
+
+    fn shell_environment(&self) -> String {
+        if !self.bindings().iter().any(|binding| binding == "shell") {
+            return String::new();
+        }
+        let mode = self.notify.core().call_in_session("session_mode", json!({})).ok();
+        let description = match mode.as_ref().and_then(|reply| reply["mode"].as_str()) {
+            Some("full_auto") => {
+                "full_auto: host filesystem/network, background services can survive calls and CLI exit."
+            }
+            Some("approved_scope") => {
+                "approved_scope: bwrap sandbox, temporary files and background processes do not survive calls."
+            }
+            _ => "unavailable; execution will refuse an unreadable permission mode.",
+        };
+        format!("<shell_environment>{description}</shell_environment>")
     }
 
     /// The system prompt is refreshed from the agent config on every segment
@@ -1965,7 +1983,7 @@ impl ChatRunner {
     fn private_subagent_prompt(&self) -> String {
         let workspace = self.workdir.as_deref().unwrap_or("(member workspace unavailable)");
         format!(
-            "<teamagents_private_subagent>\nYou are a private helper inside one TeamAgents member's current turn. You have no TeamSpec identity, no team membership, no team actions, no access to the parent conversation, and no permissions beyond the listed tools. Work only on <private_task>; use the shared member workspace when needed. Be concise and report acceptance evidence in your final text. Do not delegate or communicate with teammates. Workspace: {workspace}. The parent member performs all team actions and receives only your final reply.\n</teamagents_private_subagent>"
+            "<teamagents_private_subagent>\nYou are a private helper inside one TeamAgents member's current turn. You have no TeamSpec identity, no team membership, no team actions, no access to the parent conversation, and no permissions beyond the listed tools. Work only on <private_task>; use the shared member workspace when needed. Be concise and report acceptance evidence in your final text. Do not delegate or communicate with teammates. Workspace: {workspace}. The parent member performs all team actions and receives only your final reply.\n</teamagents_private_subagent>\n{}", self.shell_environment()
         )
     }
 
@@ -2188,6 +2206,7 @@ impl ChatRunner {
                         continue;
                     }
                 }
+                helper.history[0]["content"] = json!(self.private_subagent_prompt());
                 self.reserve_model_step(run, checkpoint, max_steps, &gateway.control)?;
                 let message = match self.chat(
                     thread,
@@ -2325,6 +2344,7 @@ impl ChatRunner {
                     }
                 }
                 self.reserve_model_step(run, checkpoint, max_steps, &gateway.control)?;
+                self.refresh_system(&mut checkpoint.history);
                 let wire = mask_old_tool_outputs(&checkpoint.history, self.profile.context_window);
                 let message = match self.chat(thread, &wire, &tools, &gateway.control, Some(&run.run_id)) {
                     Ok(message) => message,

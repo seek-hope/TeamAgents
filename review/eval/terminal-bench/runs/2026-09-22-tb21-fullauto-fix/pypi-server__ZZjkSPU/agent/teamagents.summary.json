@@ -1,0 +1,26 @@
+{
+  "log": "/tmp/tb21/jobs/tb21-fullauto-fix-20260922/pypi-server__ZZjkSPU/agent/teamagents.jsonl",
+  "lines": {
+    "session": 1,
+    "event": 5,
+    "tool": 15,
+    "result": 1
+  },
+  "exit_code": 0,
+  "status": "completed",
+  "duration_ms": 52451,
+  "session_id": "proj_f53b52ad6d21",
+  "runtime_errors": [],
+  "outcome_unknown": [],
+  "verification": [],
+  "model_usage": {
+    "deepseek-flash": {
+      "n_input_tokens": 101002,
+      "n_cache_tokens": 92416,
+      "n_output_tokens": 5409
+    }
+  },
+  "prompt_tokens": 101002,
+  "completion_tokens": 5409,
+  "cached_input_tokens": 92416
+}

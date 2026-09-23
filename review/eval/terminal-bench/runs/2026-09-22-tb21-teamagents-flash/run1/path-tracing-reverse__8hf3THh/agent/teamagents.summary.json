@@ -1,0 +1,26 @@
+{
+  "log": "/tmp/tb21/jobs/tb21-teamagents-flash/path-tracing-reverse__8hf3THh/agent/teamagents.jsonl",
+  "lines": {
+    "session": 1,
+    "event": 5,
+    "tool": 41,
+    "result": 1
+  },
+  "exit_code": 0,
+  "status": "completed",
+  "duration_ms": 370756,
+  "session_id": "proj_f53b52ad6d21",
+  "runtime_errors": [],
+  "outcome_unknown": [],
+  "verification": [],
+  "model_usage": {
+    "deepseek-flash": {
+      "n_input_tokens": 1723241,
+      "n_cache_tokens": 1680640,
+      "n_output_tokens": 89749
+    }
+  },
+  "prompt_tokens": 1723241,
+  "completion_tokens": 89749,
+  "cached_input_tokens": 1680640
+}

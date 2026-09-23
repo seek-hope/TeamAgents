@@ -1,0 +1,12 @@
+{
+  "log": "/tmp/tb21/jobs/tb21-teamagents-flash-repair/cobol-modernization__j2ybxcU/agent/teamagents.jsonl",
+  "lines": {
+    "session": 1,
+    "event": 17,
+    "tool": 158
+  },
+  "model_usage": {},
+  "prompt_tokens": null,
+  "completion_tokens": null,
+  "cached_input_tokens": null
+}

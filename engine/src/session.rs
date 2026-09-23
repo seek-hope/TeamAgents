@@ -19,10 +19,21 @@ pub const LEADER_INSTRUCTIONS: &str = "You are the Leader of a team of agents. U
 whether to work alone or build a team, delegate with assign_task, coordinate
 with send_message, and report completion with signal_done. Keep task descriptions
 specific, include acceptance criteria, and never bypass runtime permissions.
-When you add a member, give it the tool bindings its work needs (for example
-[\"files\", \"shell\"] for coding) and add a channel for it in the same patch —
-a member without bindings can only send messages and tasks, and can only reach
-you over an existing channel.
+Work directly on small or tightly coupled tasks. Add members only for bounded,
+independent work that can make progress alongside your own work; avoid repeated
+delegation or polling when one command can compute or verify the result.
+Omitted member tool_bindings inherit yours; an explicit [] gives no execution
+tools. New members automatically get message channels both ways with you.
+Before signal_done, check every requested deliverable against the user's
+acceptance criteria in the actual target environment. Run relevant checks after
+the final change, inspect exit codes and output, and distinguish observed
+evidence from assumptions. For a service, check it from a separate shell call
+after startup. A member's completion report is evidence to review, not proof
+that the whole goal is complete. If a required check fails or cannot run,
+continue fixing or report the blocker; do not signal_done for partial work.
+If a tool repeatedly fails before executing, diagnose the environment once and
+report the blocker rather than repeating the same call or delegating the same
+unavailable operation to more members. Never weaken the requested checks.
 When creating a member via apply_topology_patch add_agent, you may omit
 model_profile (a per-member profile is auto-created from your current model),
 or set it to a model id (reuses your connection) or an existing profile name.
@@ -1305,11 +1316,20 @@ fn member_executor_factory(
     session_id: String,
     cwd: PathBuf,
 ) -> ToolExecutor {
-    type MemberExecutor = Arc<dyn Fn(&str, &Json, &TurnControl) -> Result<Json, String> + Send + Sync>;
+    type MemberExecutor =
+        Arc<dyn Fn(&str, &Json, &TurnControl, crate::tools::ShellMode) -> Result<Json, String> + Send + Sync>;
     let cache: Mutex<HashMap<String, (i64, MemberExecutor)>> = Mutex::new(HashMap::new());
     let artifacts = session_paths(&session_id).artifacts;
     Arc::new(move |agent_id: &str, tool: &str, args: &Json, control: &TurnControl| {
         control.check()?;
+        // Resolve at execution time, including cached members and private
+        // helpers. A missing/corrupt mode never falls back to host execution.
+        let mode = if matches!(tool, "shell" | "grep" | "glob") {
+            let reply = core.call_in_session("session_mode", json!({}))?;
+            crate::tools::ShellMode::from_permissions(reply.get("mode").and_then(Json::as_str))?
+        } else {
+            crate::tools::ShellMode::Sandbox
+        };
         // cheap per-call probe; the full state pull below only happens when the
         // executor must be (re)built, not on every tool call (P2-8)
         let revision = core
@@ -1320,7 +1340,7 @@ fn member_executor_factory(
         let cached = cache.lock().unwrap().get(agent_id).cloned();
         if let Some((cached_revision, executor)) = cached {
             if cached_revision == revision {
-                return executor(tool, args, control);
+                return executor(tool, args, control, mode);
             }
         }
         let state = core.call_in_session("state", json!({"include_events": false}))?;
@@ -1341,7 +1361,7 @@ fn member_executor_factory(
             Some(member.join("shell")),
         ));
         cache.lock().unwrap().insert(agent_id.to_string(), (revision, executor.clone()));
-        executor(tool, args, control)
+        executor(tool, args, control, mode)
     })
 }
 

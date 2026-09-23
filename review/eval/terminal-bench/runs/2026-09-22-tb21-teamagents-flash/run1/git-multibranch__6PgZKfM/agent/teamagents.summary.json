@@ -1,0 +1,12 @@
+{
+  "log": "/tmp/tb21/jobs/tb21-teamagents-flash/git-multibranch__6PgZKfM/agent/teamagents.jsonl",
+  "lines": {
+    "session": 1,
+    "event": 33,
+    "tool": 157
+  },
+  "model_usage": {},
+  "prompt_tokens": null,
+  "completion_tokens": null,
+  "cached_input_tokens": null
+}

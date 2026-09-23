@@ -1,0 +1,26 @@
+{
+  "log": "/tmp/tb21/jobs/tb21-teamagents-flash/git-leak-recovery__tRp5fir/agent/teamagents.jsonl",
+  "lines": {
+    "session": 1,
+    "event": 6,
+    "tool": 54,
+    "result": 1
+  },
+  "exit_code": 0,
+  "status": "completed",
+  "duration_ms": 105225,
+  "session_id": "proj_f53b52ad6d21",
+  "runtime_errors": [],
+  "outcome_unknown": [],
+  "verification": [],
+  "model_usage": {
+    "deepseek-flash": {
+      "n_input_tokens": 358514,
+      "n_cache_tokens": 348800,
+      "n_output_tokens": 21391
+    }
+  },
+  "prompt_tokens": 358514,
+  "completion_tokens": 21391,
+  "cached_input_tokens": 348800
+}

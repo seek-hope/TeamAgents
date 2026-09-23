@@ -1,0 +1,26 @@
+{
+  "log": "/tmp/tb21/jobs/tb21-teamagents-flash/feal-linear-cryptanalysis__ZkRtbir/agent/teamagents.jsonl",
+  "lines": {
+    "session": 1,
+    "event": 6,
+    "tool": 29,
+    "result": 1
+  },
+  "exit_code": 0,
+  "status": "completed",
+  "duration_ms": 346401,
+  "session_id": "proj_f53b52ad6d21",
+  "runtime_errors": [],
+  "outcome_unknown": [],
+  "verification": [],
+  "model_usage": {
+    "deepseek-flash": {
+      "n_input_tokens": 997399,
+      "n_cache_tokens": 989440,
+      "n_output_tokens": 51312
+    }
+  },
+  "prompt_tokens": 997399,
+  "completion_tokens": 51312,
+  "cached_input_tokens": 989440
+}

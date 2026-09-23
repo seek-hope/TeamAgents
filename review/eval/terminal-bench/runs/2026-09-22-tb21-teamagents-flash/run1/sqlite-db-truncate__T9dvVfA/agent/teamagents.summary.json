@@ -1,0 +1,26 @@
+{
+  "log": "/tmp/tb21/jobs/tb21-teamagents-flash/sqlite-db-truncate__T9dvVfA/agent/teamagents.jsonl",
+  "lines": {
+    "session": 1,
+    "event": 6,
+    "tool": 35,
+    "result": 1
+  },
+  "exit_code": 0,
+  "status": "completed",
+  "duration_ms": 104662,
+  "session_id": "proj_f53b52ad6d21",
+  "runtime_errors": [],
+  "outcome_unknown": [],
+  "verification": [],
+  "model_usage": {
+    "deepseek-flash": {
+      "n_input_tokens": 289572,
+      "n_cache_tokens": 280960,
+      "n_output_tokens": 20655
+    }
+  },
+  "prompt_tokens": 289572,
+  "completion_tokens": 20655,
+  "cached_input_tokens": 280960
+}

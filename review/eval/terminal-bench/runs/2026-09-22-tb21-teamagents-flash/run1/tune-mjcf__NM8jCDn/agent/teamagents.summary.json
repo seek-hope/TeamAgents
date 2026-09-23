@@ -1,0 +1,26 @@
+{
+  "log": "/tmp/tb21/jobs/tb21-teamagents-flash/tune-mjcf__NM8jCDn/agent/teamagents.jsonl",
+  "lines": {
+    "session": 1,
+    "event": 3,
+    "tool": 20,
+    "result": 1
+  },
+  "exit_code": 0,
+  "status": "failed",
+  "duration_ms": 377964,
+  "session_id": "proj_f53b52ad6d21",
+  "runtime_errors": [],
+  "outcome_unknown": [],
+  "verification": [],
+  "model_usage": {
+    "deepseek-flash": {
+      "n_input_tokens": 242430,
+      "n_cache_tokens": 233856,
+      "n_output_tokens": 23626
+    }
+  },
+  "prompt_tokens": 242430,
+  "completion_tokens": 23626,
+  "cached_input_tokens": 233856
+}

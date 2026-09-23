@@ -1,0 +1,26 @@
+{
+  "log": "/tmp/tb21/jobs/tb21-teamagents-flash/polyglot-rust-c__CwmjxQg/agent/teamagents.jsonl",
+  "lines": {
+    "session": 1,
+    "event": 6,
+    "tool": 17,
+    "result": 1
+  },
+  "exit_code": 0,
+  "status": "completed",
+  "duration_ms": 644221,
+  "session_id": "proj_f53b52ad6d21",
+  "runtime_errors": [],
+  "outcome_unknown": [],
+  "verification": [],
+  "model_usage": {
+    "deepseek-flash": {
+      "n_input_tokens": 515477,
+      "n_cache_tokens": 509440,
+      "n_output_tokens": 33535
+    }
+  },
+  "prompt_tokens": 515477,
+  "completion_tokens": 33535,
+  "cached_input_tokens": 509440
+}

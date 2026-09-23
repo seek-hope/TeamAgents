@@ -1,0 +1,154 @@
+{
+    "id": "96a1b8ec-6359-4db8-bd09-3b547c076b6c",
+    "task_name": "terminal-bench/pypi-server",
+    "trial_name": "pypi-server__ZZjkSPU",
+    "trial_uri": "file:///tmp/tb21/jobs/tb21-fullauto-fix-20260922/pypi-server__ZZjkSPU",
+    "task_id": {
+        "org": "terminal-bench",
+        "name": "pypi-server",
+        "ref": "sha256:1a1e0542f58e2d3362fec17a9bbb98667717d9a4a3e9a4c8413d3150a4fa0ff1"
+    },
+    "source": "terminal-bench/terminal-bench-2-1",
+    "task_checksum": "9eb21236249d5b42ee64c7229bb1e5a3b3c0be7ed5ee9801bdd0d16ca575941a",
+    "config": {
+        "task": {
+            "path": null,
+            "git_url": null,
+            "git_commit_id": null,
+            "name": "terminal-bench/pypi-server",
+            "ref": "sha256:1a1e0542f58e2d3362fec17a9bbb98667717d9a4a3e9a4c8413d3150a4fa0ff1",
+            "overwrite": false,
+            "download_dir": null,
+            "source": "terminal-bench/terminal-bench-2-1"
+        },
+        "trial_name": "pypi-server__ZZjkSPU",
+        "trials_dir": "/tmp/tb21/jobs/tb21-fullauto-fix-20260922",
+        "install_only": false,
+        "timeout_multiplier": 1.0,
+        "agent_timeout_multiplier": null,
+        "verifier_timeout_multiplier": null,
+        "agent_setup_timeout_multiplier": null,
+        "environment_build_timeout_multiplier": null,
+        "agent": {
+            "name": "teamagents_agent:TeamAgentsAgent",
+            "import_path": null,
+            "model_name": "deepseek/deepseek-flash",
+            "n_concurrent": null,
+            "concurrency_group": null,
+            "skills": [],
+            "override_timeout_sec": null,
+            "override_setup_timeout_sec": null,
+            "max_timeout_sec": null,
+            "resume_trajectory": false,
+            "load_trajectory": null,
+            "extra_allowed_hosts": [],
+            "kwargs": {
+                "binary_path": "/home/rimuru/Projects/Code/for_fun/TeamAgents/engine/target/x86_64-unknown-linux-musl/release/teamagents"
+            },
+            "mcp_servers": []
+        },
+        "user_agent": null,
+        "environment": {
+            "type": "docker",
+            "import_path": null,
+            "force_build": false,
+            "delete": true,
+            "cpu_enforcement_policy": "auto",
+            "memory_enforcement_policy": "auto",
+            "override_cpus": null,
+            "override_memory_mb": null,
+            "override_storage_mb": null,
+            "override_gpus": null,
+            "override_tpu": null,
+            "mounts": null,
+            "extra_docker_compose": [],
+            "kwargs": {},
+            "extra_allowed_hosts": []
+        },
+        "verifier": {
+            "override_timeout_sec": null,
+            "max_timeout_sec": null,
+            "disable": false
+        },
+        "artifacts": [],
+        "extra_instruction_paths": [],
+        "extra_instructions": [],
+        "job_id": "33ef9e09-ad55-4ce2-85d7-6bc0b55ca1ca",
+        "source_trial": null
+    },
+    "agent_info": {
+        "name": "teamagents",
+        "version": "0.1.2",
+        "model_info": {
+            "name": "deepseek-flash",
+            "provider": "deepseek"
+        }
+    },
+    "agent_result": {
+        "n_input_tokens": 101002,
+        "n_cache_tokens": 92416,
+        "n_output_tokens": 5409,
+        "cost_usd": null,
+        "model_usage": {
+            "deepseek-flash": {
+                "n_input_tokens": 101002,
+                "n_cache_tokens": 92416,
+                "n_output_tokens": 5409,
+                "cost_usd": null
+            }
+        },
+        "rollout_details": null,
+        "metadata": {
+            "log": "/tmp/tb21/jobs/tb21-fullauto-fix-20260922/pypi-server__ZZjkSPU/agent/teamagents.jsonl",
+            "lines": {
+                "session": 1,
+                "event": 5,
+                "tool": 15,
+                "result": 1
+            },
+            "exit_code": 0,
+            "status": "completed",
+            "duration_ms": 52451,
+            "session_id": "proj_f53b52ad6d21",
+            "runtime_errors": [],
+            "outcome_unknown": [],
+            "verification": [],
+            "model_usage": {
+                "deepseek-flash": {
+                    "n_input_tokens": 101002,
+                    "n_cache_tokens": 92416,
+                    "n_output_tokens": 5409
+                }
+            },
+            "prompt_tokens": 101002,
+            "completion_tokens": 5409,
+            "cached_input_tokens": 92416
+        }
+    },
+    "verifier_result": {
+        "rewards": {
+            "reward": 1.0
+        }
+    },
+    "verifier_environment_mode": "shared",
+    "exception_info": null,
+    "started_at": "2026-09-22T14:38:00.066907Z",
+    "finished_at": "2026-09-22T14:39:17.860473Z",
+    "environment_setup": {
+        "started_at": "2026-09-22T14:38:00.101914Z",
+        "finished_at": "2026-09-22T14:38:01.042582Z"
+    },
+    "agent_setup": {
+        "started_at": "2026-09-22T14:38:01.042600Z",
+        "finished_at": "2026-09-22T14:38:01.347761Z"
+    },
+    "agent_execution": {
+        "started_at": "2026-09-22T14:38:01.348326Z",
+        "finished_at": "2026-09-22T14:38:53.868496Z"
+    },
+    "verifier": {
+        "started_at": "2026-09-22T14:38:54.059744Z",
+        "finished_at": "2026-09-22T14:39:07.187300Z"
+    },
+    "step_results": null
+}

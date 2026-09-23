@@ -1,0 +1,26 @@
+{
+  "log": "/tmp/tb21/jobs/tb21-teamagents-flash/portfolio-optimization__c8iV2U4/agent/teamagents.jsonl",
+  "lines": {
+    "session": 1,
+    "event": 25,
+    "tool": 72,
+    "result": 1
+  },
+  "exit_code": 0,
+  "status": "completed",
+  "duration_ms": 495156,
+  "session_id": "proj_f53b52ad6d21",
+  "runtime_errors": [],
+  "outcome_unknown": [],
+  "verification": [],
+  "model_usage": {
+    "deepseek-flash": {
+      "n_input_tokens": 631689,
+      "n_cache_tokens": 575872,
+      "n_output_tokens": 32821
+    }
+  },
+  "prompt_tokens": 631689,
+  "completion_tokens": 32821,
+  "cached_input_tokens": 575872
+}

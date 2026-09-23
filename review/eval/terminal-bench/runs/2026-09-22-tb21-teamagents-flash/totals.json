@@ -1,0 +1,13 @@
+{
+  "tasks": 89,
+  "passed": 53,
+  "pass_rate": 0.5955056179775281,
+  "timeouts": 10,
+  "false_completion": 16,
+  "tools_total": 6456,
+  "tools_median": 54.0,
+  "duration_median_s": 390.408,
+  "tokens_in": 128382789,
+  "tokens_out": 4495955,
+  "tokens_cache": 123670400
+}

@@ -1,0 +1,26 @@
+{
+  "log": "/tmp/tb21/jobs/tb21-teamagents-flash/large-scale-text-editing__d5kzuBT/agent/teamagents.jsonl",
+  "lines": {
+    "session": 1,
+    "event": 22,
+    "tool": 97,
+    "result": 1
+  },
+  "exit_code": 0,
+  "status": "timeout",
+  "duration_ms": 1200085,
+  "session_id": "proj_f53b52ad6d21",
+  "runtime_errors": [],
+  "outcome_unknown": [],
+  "verification": [],
+  "model_usage": {
+    "deepseek-flash": {
+      "n_input_tokens": 2214452,
+      "n_cache_tokens": 2185216,
+      "n_output_tokens": 77671
+    }
+  },
+  "prompt_tokens": 2214452,
+  "completion_tokens": 77671,
+  "cached_input_tokens": 2185216
+}

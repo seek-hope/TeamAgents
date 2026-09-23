@@ -1,0 +1,26 @@
+{
+  "log": "/tmp/tb21/jobs/tb21-teamagents-flash/filter-js-from-html__XNkhyok/agent/teamagents.jsonl",
+  "lines": {
+    "session": 1,
+    "event": 3,
+    "tool": 75,
+    "result": 1
+  },
+  "exit_code": 0,
+  "status": "failed",
+  "duration_ms": 1200069,
+  "session_id": "proj_f53b52ad6d21",
+  "runtime_errors": [],
+  "outcome_unknown": [],
+  "verification": [],
+  "model_usage": {
+    "deepseek-flash": {
+      "n_input_tokens": 3691723,
+      "n_cache_tokens": 3633280,
+      "n_output_tokens": 175492
+    }
+  },
+  "prompt_tokens": 3691723,
+  "completion_tokens": 175492,
+  "cached_input_tokens": 3633280
+}

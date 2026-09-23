@@ -1,0 +1,26 @@
+{
+  "log": "/tmp/tb21/jobs/tb21-teamagents-flash-repair/mcmc-sampling-stan__f3wdQdH/agent/teamagents.jsonl",
+  "lines": {
+    "session": 1,
+    "event": 3,
+    "tool": 57,
+    "result": 1
+  },
+  "exit_code": 0,
+  "status": "timeout",
+  "duration_ms": 1200037,
+  "session_id": "proj_f53b52ad6d21",
+  "runtime_errors": [],
+  "outcome_unknown": [],
+  "verification": [],
+  "model_usage": {
+    "deepseek-flash": {
+      "n_input_tokens": 854439,
+      "n_cache_tokens": 835584,
+      "n_output_tokens": 30963
+    }
+  },
+  "prompt_tokens": 854439,
+  "completion_tokens": 30963,
+  "cached_input_tokens": 835584
+}

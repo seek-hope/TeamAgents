@@ -1,0 +1,26 @@
+{
+  "log": "/tmp/tb21/jobs/tb21-fullauto-fix-20260922/log-summary-date-ranges__Ww9dr2D/agent/teamagents.jsonl",
+  "lines": {
+    "session": 1,
+    "event": 6,
+    "tool": 15,
+    "result": 1
+  },
+  "exit_code": 0,
+  "status": "completed",
+  "duration_ms": 33968,
+  "session_id": "proj_f53b52ad6d21",
+  "runtime_errors": [],
+  "outcome_unknown": [],
+  "verification": [],
+  "model_usage": {
+    "deepseek-flash": {
+      "n_input_tokens": 134648,
+      "n_cache_tokens": 127104,
+      "n_output_tokens": 6133
+    }
+  },
+  "prompt_tokens": 134648,
+  "completion_tokens": 6133,
+  "cached_input_tokens": 127104
+}

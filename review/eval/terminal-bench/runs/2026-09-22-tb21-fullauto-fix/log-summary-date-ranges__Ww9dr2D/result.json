@@ -1,0 +1,154 @@
+{
+    "id": "cb601b39-04e8-4583-bdb5-810c53f4fe06",
+    "task_name": "terminal-bench/log-summary-date-ranges",
+    "trial_name": "log-summary-date-ranges__Ww9dr2D",
+    "trial_uri": "file:///tmp/tb21/jobs/tb21-fullauto-fix-20260922/log-summary-date-ranges__Ww9dr2D",
+    "task_id": {
+        "org": "terminal-bench",
+        "name": "log-summary-date-ranges",
+        "ref": "sha256:27b074a2f10fff7606e096f3abd8dced418ad8fda0f53d88acbe477f2d9ceaf6"
+    },
+    "source": "terminal-bench/terminal-bench-2-1",
+    "task_checksum": "c833c594814ec7b8cb32eba3b9cb5ed648171efe5a074767aa64c25ea060f08f",
+    "config": {
+        "task": {
+            "path": null,
+            "git_url": null,
+            "git_commit_id": null,
+            "name": "terminal-bench/log-summary-date-ranges",
+            "ref": "sha256:27b074a2f10fff7606e096f3abd8dced418ad8fda0f53d88acbe477f2d9ceaf6",
+            "overwrite": false,
+            "download_dir": null,
+            "source": "terminal-bench/terminal-bench-2-1"
+        },
+        "trial_name": "log-summary-date-ranges__Ww9dr2D",
+        "trials_dir": "/tmp/tb21/jobs/tb21-fullauto-fix-20260922",
+        "install_only": false,
+        "timeout_multiplier": 1.0,
+        "agent_timeout_multiplier": null,
+        "verifier_timeout_multiplier": null,
+        "agent_setup_timeout_multiplier": null,
+        "environment_build_timeout_multiplier": null,
+        "agent": {
+            "name": "teamagents_agent:TeamAgentsAgent",
+            "import_path": null,
+            "model_name": "deepseek/deepseek-flash",
+            "n_concurrent": null,
+            "concurrency_group": null,
+            "skills": [],
+            "override_timeout_sec": null,
+            "override_setup_timeout_sec": null,
+            "max_timeout_sec": null,
+            "resume_trajectory": false,
+            "load_trajectory": null,
+            "extra_allowed_hosts": [],
+            "kwargs": {
+                "binary_path": "/home/rimuru/Projects/Code/for_fun/TeamAgents/engine/target/x86_64-unknown-linux-musl/release/teamagents"
+            },
+            "mcp_servers": []
+        },
+        "user_agent": null,
+        "environment": {
+            "type": "docker",
+            "import_path": null,
+            "force_build": false,
+            "delete": true,
+            "cpu_enforcement_policy": "auto",
+            "memory_enforcement_policy": "auto",
+            "override_cpus": null,
+            "override_memory_mb": null,
+            "override_storage_mb": null,
+            "override_gpus": null,
+            "override_tpu": null,
+            "mounts": null,
+            "extra_docker_compose": [],
+            "kwargs": {},
+            "extra_allowed_hosts": []
+        },
+        "verifier": {
+            "override_timeout_sec": null,
+            "max_timeout_sec": null,
+            "disable": false
+        },
+        "artifacts": [],
+        "extra_instruction_paths": [],
+        "extra_instructions": [],
+        "job_id": "33ef9e09-ad55-4ce2-85d7-6bc0b55ca1ca",
+        "source_trial": null
+    },
+    "agent_info": {
+        "name": "teamagents",
+        "version": "0.1.2",
+        "model_info": {
+            "name": "deepseek-flash",
+            "provider": "deepseek"
+        }
+    },
+    "agent_result": {
+        "n_input_tokens": 134648,
+        "n_cache_tokens": 127104,
+        "n_output_tokens": 6133,
+        "cost_usd": null,
+        "model_usage": {
+            "deepseek-flash": {
+                "n_input_tokens": 134648,
+                "n_cache_tokens": 127104,
+                "n_output_tokens": 6133,
+                "cost_usd": null
+            }
+        },
+        "rollout_details": null,
+        "metadata": {
+            "log": "/tmp/tb21/jobs/tb21-fullauto-fix-20260922/log-summary-date-ranges__Ww9dr2D/agent/teamagents.jsonl",
+            "lines": {
+                "session": 1,
+                "event": 6,
+                "tool": 15,
+                "result": 1
+            },
+            "exit_code": 0,
+            "status": "completed",
+            "duration_ms": 33968,
+            "session_id": "proj_f53b52ad6d21",
+            "runtime_errors": [],
+            "outcome_unknown": [],
+            "verification": [],
+            "model_usage": {
+                "deepseek-flash": {
+                    "n_input_tokens": 134648,
+                    "n_cache_tokens": 127104,
+                    "n_output_tokens": 6133
+                }
+            },
+            "prompt_tokens": 134648,
+            "completion_tokens": 6133,
+            "cached_input_tokens": 127104
+        }
+    },
+    "verifier_result": {
+        "rewards": {
+            "reward": 1.0
+        }
+    },
+    "verifier_environment_mode": "shared",
+    "exception_info": null,
+    "started_at": "2026-09-22T14:38:00.071142Z",
+    "finished_at": "2026-09-22T14:39:00.046647Z",
+    "environment_setup": {
+        "started_at": "2026-09-22T14:38:00.128395Z",
+        "finished_at": "2026-09-22T14:38:01.053003Z"
+    },
+    "agent_setup": {
+        "started_at": "2026-09-22T14:38:01.053019Z",
+        "finished_at": "2026-09-22T14:38:01.361273Z"
+    },
+    "agent_execution": {
+        "started_at": "2026-09-22T14:38:01.361923Z",
+        "finished_at": "2026-09-22T14:38:35.407251Z"
+    },
+    "verifier": {
+        "started_at": "2026-09-22T14:38:35.628806Z",
+        "finished_at": "2026-09-22T14:38:49.445744Z"
+    },
+    "step_results": null
+}
