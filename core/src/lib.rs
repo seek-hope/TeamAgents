@@ -1,4 +1,5 @@
 pub mod control;
+pub mod kernel;
 pub mod models;
 mod references;
 pub mod server;

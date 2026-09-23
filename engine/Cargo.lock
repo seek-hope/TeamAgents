@@ -1104,6 +1104,7 @@ dependencies = [
 name = "teamagents-engine"
 version = "0.1.2"
 dependencies = [
+ "futures-util",
  "libc",
  "reqwest",
  "rusqlite",

@@ -8,7 +8,7 @@ use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::net::UnixStream;
-use std::os::unix::process::CommandExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -123,7 +123,7 @@ impl ArtifactPaths {
 }
 
 #[derive(Clone, Copy)]
-struct OutputLocation<'a> {
+pub(crate) struct OutputLocation<'a> {
     root: Option<&'a Path>,
     prefix: &'static str,
 }
@@ -1659,8 +1659,66 @@ pub fn shell_run_host(
     )
 }
 
+/// Why a shell command did not run to a normal exit (R2 §7 receipt classes).
+/// `isolation` startup failure is distinct from the command's non-zero exit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ShellFailure {
+    /// isolation | setup | spawn | timeout | interrupted | capture | wait
+    pub class: String,
+    pub reason: String,
+}
+
+/// Structured shell outcome (R2 §7 receipt contract): actual start, execution
+/// mode, cwd, exit code/signal, elapsed time, captured output and the
+/// cancel/timeout reason. The legacy string API renders from this struct.
+#[derive(Clone, Debug)]
+pub(crate) struct ShellOutcome {
+    /// The command process was actually spawned; false for isolation/setup
+    /// failures where the command never started.
+    pub started: bool,
+    pub mode: ShellMode,
+    pub cwd: String,
+    pub exit_code: Option<i32>,
+    pub signal: Option<i32>,
+    pub duration_ms: u64,
+    pub output: String,
+    pub failure: Option<ShellFailure>,
+}
+
+impl ShellOutcome {
+    fn not_started(mode: ShellMode, cwd: String, class: &str, reason: String, started_at: Instant) -> ShellOutcome {
+        ShellOutcome {
+            started: false,
+            mode,
+            cwd,
+            exit_code: None,
+            signal: None,
+            duration_ms: started_at.elapsed().as_millis() as u64,
+            output: String::new(),
+            failure: Some(ShellFailure { class: class.to_string(), reason }),
+        }
+    }
+
+    /// Model-facing text: same shape the legacy string API produced.
+    fn render(&self, shell_state: Option<&Path>) -> Result<String, String> {
+        if let Some(failure) = &self.failure {
+            if !self.started || self.output.is_empty() {
+                return Err(failure.reason.clone());
+            }
+            return Err(format!("{}\n{}", failure.reason, self.output));
+        }
+        let status_ok = self.exit_code == Some(0) && self.signal.is_none();
+        let text = match shell_state.and_then(shell_state_cwd) {
+            // the next command starts here, so the model must know where "here" is
+            Some(cwd) => format!("[cwd: {cwd}]\n{}", self.output),
+            None => self.output.clone(),
+        };
+        Ok(if status_ok { text } else { format!("{text}\n(exit {})", self.exit_code.unwrap_or(-1)) })
+    }
+}
+
 #[expect(clippy::too_many_arguments, reason = "Keep trusted execution mode separate from model command parameters.")]
-fn shell_run_at(
+pub(crate) fn shell_outcome_at(
     command: &str,
     workdir: &Path,
     timeout_s: u64,
@@ -1669,17 +1727,28 @@ fn shell_run_at(
     shell_state: Option<&Path>,
     control: &TurnControl,
     mode: ShellMode,
-) -> Result<String, String> {
-    control.check()?;
+) -> ShellOutcome {
+    let clock = Instant::now();
+    let cwd_display = workdir.to_string_lossy().into_owned();
+    let not_started =
+        |class: &str, reason: String| ShellOutcome::not_started(mode, cwd_display.clone(), class, reason, clock);
+    if let Err(error) = control.check() {
+        return not_started("interrupted", error);
+    }
     if mode == ShellMode::Sandbox && !bwrap_available() {
-        return Err("IsolationUnavailable: bwrap is not available: refusing to run commands without isolation".into());
+        return not_started(
+            "isolation",
+            "IsolationUnavailable: bwrap is not available: refusing to run commands without isolation".into(),
+        );
     }
     // Separate snapshots prevent sandbox HOME/PATH/cwd leaking into host
     // commands (and vice versa) after a live permission-mode change.
     let host_state = shell_state.filter(|_| mode == ShellMode::Host).map(|state| state.join("host"));
     let shell_state = host_state.as_deref().or(shell_state);
     if let Some(state) = shell_state {
-        std::fs::create_dir_all(state).map_err(|e| format!("cannot create shell state directory: {e}"))?;
+        if let Err(e) = std::fs::create_dir_all(state) {
+            return not_started("setup", format!("cannot create shell state directory: {e}"));
+        }
     }
     let state_dir = match (mode, shell_state) {
         (ShellMode::Host, Some(state)) => state.to_string_lossy().into_owned(),
@@ -1690,11 +1759,19 @@ fn shell_run_at(
         None => command.to_string(),
     };
     let workdir = std::fs::canonicalize(workdir).unwrap_or_else(|_| workdir.to_path_buf());
-    let sink = Arc::new(Mutex::new(OutputSink::new(output)?));
+    let sink = match OutputSink::new(output) {
+        Ok(sink) => Arc::new(Mutex::new(sink)),
+        Err(e) => return not_started("capture", e),
+    };
     let mut sandbox = match mode {
         ShellMode::Sandbox => {
             let argv = bwrap_argv(&workdir, network, &wrapped, shell_state);
-            let executable = which("bwrap").ok_or("IsolationUnavailable: bwrap disappeared before execution")?;
+            let executable = match which("bwrap") {
+                Some(executable) => executable,
+                None => {
+                    return not_started("isolation", "IsolationUnavailable: bwrap disappeared before execution".into())
+                }
+            };
             let mut command = Command::new(executable);
             command.args(&argv[1..]);
             command
@@ -1706,8 +1783,14 @@ fn shell_run_at(
             command
         }
     };
-    let (stdout, stdout_stdio) = output_socket()?;
-    let (stderr, stderr_stdio) = output_socket()?;
+    let (stdout, stdout_stdio) = match output_socket() {
+        Ok(pair) => pair,
+        Err(e) => return not_started("capture", e),
+    };
+    let (stderr, stderr_stdio) = match output_socket() {
+        Ok(pair) => pair,
+        Err(e) => return not_started("capture", e),
+    };
     // whitelist environment: no model keys, no credentials (plan §12.2)
     sandbox
         .stdin(Stdio::null())
@@ -1731,21 +1814,27 @@ fn shell_run_at(
             sandbox.env(key, host);
         }
     }
-    let mut child = sandbox.spawn().map_err(|e| e.to_string())?;
+    let mut child = match sandbox.spawn() {
+        Ok(child) => child,
+        Err(e) => return not_started("spawn", e.to_string()),
+    };
     drop(sandbox);
     let done = Arc::new(AtomicBool::new(false));
     let stdout_reader = drain(stdout, sink.clone(), done.clone());
     let stderr_reader = drain(stderr, sink.clone(), done.clone());
     let started = Instant::now();
-    let mut failure = None;
+    let mut failure: Option<ShellFailure> = None;
     let mut status = None;
     loop {
         if control.check().is_err() {
-            failure = Some("turn interrupted".to_string());
+            failure = Some(ShellFailure { class: "interrupted".into(), reason: "turn interrupted".into() });
             break;
         }
         if sink.lock().unwrap().error.is_some() {
-            failure = Some("command stopped because output capture failed".into());
+            failure = Some(ShellFailure {
+                class: "capture".into(),
+                reason: "command stopped because output capture failed".into(),
+            });
             break;
         }
         match child.try_wait() {
@@ -1754,12 +1843,15 @@ fn shell_run_at(
                 break;
             }
             Ok(None) if started.elapsed() >= Duration::from_secs(timeout_s) => {
-                failure = Some(format!("command timed out after {timeout_s}s"));
+                failure = Some(ShellFailure {
+                    class: "timeout".into(),
+                    reason: format!("command timed out after {timeout_s}s"),
+                });
                 break;
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(20)),
             Err(e) => {
-                failure = Some(format!("command wait failed: {e}"));
+                failure = Some(ShellFailure { class: "wait".into(), reason: format!("command wait failed: {e}") });
                 break;
             }
         }
@@ -1771,17 +1863,27 @@ fn shell_run_at(
             // cgroup ownership is needed for stronger full-auto containment.
             let killed = Command::new("/bin/kill").args(["-KILL", "--", &format!("-{}", child.id())]).output();
             if !matches!(killed, Ok(ref output) if output.status.success()) {
-                failure = Some(format!("{}; process-group stop could not be confirmed", failure.unwrap()));
+                let current = failure.take().unwrap();
+                failure = Some(ShellFailure {
+                    class: current.class,
+                    reason: format!("{}; process-group stop could not be confirmed", current.reason),
+                });
             }
         }
         // Killing bwrap tears down its private PID namespace and command tree.
         if let Err(e) = child.kill() {
             if e.kind() != std::io::ErrorKind::InvalidInput {
-                failure = Some(format!("{}; kill failed: {e}", failure.unwrap()));
+                let current = failure.take().unwrap();
+                failure = Some(ShellFailure {
+                    class: current.class,
+                    reason: format!("{}; kill failed: {e}", current.reason),
+                });
             }
         }
         if let Err(e) = child.wait() {
-            failure = Some(format!("{}; wait failed: {e}", failure.unwrap()));
+            let current = failure.take().unwrap();
+            failure =
+                Some(ShellFailure { class: current.class, reason: format!("{}; wait failed: {e}", current.reason) });
         }
     }
     done.store(true, Ordering::SeqCst);
@@ -1790,22 +1892,89 @@ fn shell_run_at(
             sink.lock().unwrap().error.get_or_insert_with(|| "output capture reader failed".into());
         }
     }
-    let text = sink.lock().unwrap().finish(failure.is_some())?;
-    if let Some(note) = failure {
-        return Err(if text.is_empty() { note } else { format!("{note}\n{text}") });
-    }
-    let status = status.ok_or("no exit status")?;
-    if mode == ShellMode::Sandbox && !status.success() && text.starts_with("bwrap: ") {
-        return Err(format!(
-            "IsolationUnavailable: 沙箱启动失败；命令可能未执行。请检查隔离环境，勿重复同一调用。\n{text}"
-        ));
-    }
-    let text = match shell_state.and_then(shell_state_cwd) {
-        // the next command starts here, so the model must know where "here" is
-        Some(cwd) => format!("[cwd: {cwd}]\n{text}"),
-        None => text,
+    let text = match sink.lock().unwrap().finish(failure.is_some()) {
+        Ok(text) => text,
+        Err(e) => {
+            return ShellOutcome {
+                started: true,
+                mode,
+                cwd: workdir.to_string_lossy().into_owned(),
+                exit_code: status.and_then(|s| s.code()),
+                signal: status.and_then(|s| s.signal()),
+                duration_ms: started.elapsed().as_millis() as u64,
+                output: String::new(),
+                failure: Some(ShellFailure { class: "capture".into(), reason: e }),
+            }
+        }
     };
-    Ok(if status.success() { text } else { format!("{text}\n(exit {})", status.code().unwrap_or(-1)) })
+    if let Some(failure) = failure {
+        return ShellOutcome {
+            started: true,
+            mode,
+            cwd: workdir.to_string_lossy().into_owned(),
+            exit_code: status.and_then(|s| s.code()),
+            signal: status.and_then(|s| s.signal()),
+            duration_ms: started.elapsed().as_millis() as u64,
+            output: text,
+            failure: Some(failure),
+        };
+    }
+    let status = match status {
+        Some(status) => status,
+        None => {
+            return ShellOutcome {
+                started: true,
+                mode,
+                cwd: workdir.to_string_lossy().into_owned(),
+                exit_code: None,
+                signal: None,
+                duration_ms: started.elapsed().as_millis() as u64,
+                output: text,
+                failure: Some(ShellFailure { class: "wait".into(), reason: "no exit status".into() }),
+            }
+        }
+    };
+    if mode == ShellMode::Sandbox && !status.success() && text.starts_with("bwrap: ") {
+        return ShellOutcome {
+            started: false,
+            mode,
+            cwd: workdir.to_string_lossy().into_owned(),
+            exit_code: status.code(),
+            signal: status.signal(),
+            duration_ms: started.elapsed().as_millis() as u64,
+            output: text.clone(),
+            failure: Some(ShellFailure {
+                class: "isolation".into(),
+                reason: format!(
+                    "IsolationUnavailable: 沙箱启动失败；命令可能未执行。请检查隔离环境，勿重复同一调用。\n{text}"
+                ),
+            }),
+        };
+    }
+    ShellOutcome {
+        started: true,
+        mode,
+        cwd: workdir.to_string_lossy().into_owned(),
+        exit_code: status.code(),
+        signal: status.signal(),
+        duration_ms: started.elapsed().as_millis() as u64,
+        output: text,
+        failure: None,
+    }
+}
+
+#[expect(clippy::too_many_arguments, reason = "Keep trusted execution mode separate from model command parameters.")]
+fn shell_run_at(
+    command: &str,
+    workdir: &Path,
+    timeout_s: u64,
+    network: bool,
+    output: OutputLocation<'_>,
+    shell_state: Option<&Path>,
+    control: &TurnControl,
+    mode: ShellMode,
+) -> Result<String, String> {
+    shell_outcome_at(command, workdir, timeout_s, network, output, shell_state, control, mode).render(shell_state)
 }
 
 /// Host part of `rest` ("host[:port]/path..."), brackets and userinfo included.
@@ -2168,6 +2337,142 @@ pub fn iso8601(seconds: i64) -> String {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
     format!("{y:04}-{m:02}-{d:02}T{hour:02}:{minute:02}:{second:02}Z")
+}
+
+// ---------------------------------------------------------------------------
+// R2 v2 unified tool entry (plan §7): one gate for basic tools producing
+// structured receipts. The runtime fills identity fields; MCP (P4) enters
+// through the same receipt contract, not a parallel path.
+
+/// Basic-tool gate for the R2 kernel: workspace file/shell tools plus the
+/// member's bound web services, every call producing a ToolReceipt.
+type V2Executor = Box<dyn Fn(&str, &Json, &TurnControl, ShellMode) -> Result<Json, String> + Send + Sync>;
+
+pub(crate) struct V2Toolkit {
+    executor: V2Executor,
+    root: PathBuf,
+    artifacts: Option<PathBuf>,
+    shell_state: Option<PathBuf>,
+}
+
+impl V2Toolkit {
+    pub(crate) fn new(
+        root: PathBuf,
+        catalog: teamagents_core::models::UserConfig,
+        bindings: Vec<String>,
+        artifacts: Option<PathBuf>,
+        shell_state: Option<PathBuf>,
+    ) -> V2Toolkit {
+        let executor = member_executor_with_control(
+            root.clone(),
+            catalog,
+            bindings,
+            ArtifactPaths::shared(artifacts.clone()),
+            shell_state.clone(),
+        );
+        V2Toolkit { executor: Box::new(executor), root, artifacts, shell_state }
+    }
+
+    /// Execute one fixed intent. Same-response tool calls run sequentially
+    /// (§6.2); the caller serializes them.
+    pub(crate) fn call(
+        &self,
+        operation_id: &str,
+        intent: &teamagents_core::kernel::ToolIntent,
+        control: &TurnControl,
+        mode: ShellMode,
+    ) -> teamagents_core::kernel::ToolReceipt {
+        use teamagents_core::kernel::{ReceiptError, ToolReceipt};
+        let started_at = Instant::now();
+        let mut receipt = ToolReceipt {
+            operation_id: operation_id.to_string(),
+            tool: intent.name.clone(),
+            args_hash: intent.args_hash.clone(),
+            ok: false,
+            started: true,
+            mode: None,
+            cwd: None,
+            exit_code: None,
+            signal: None,
+            duration_ms: 0,
+            output_ref: None,
+            content: String::new(),
+            error: None,
+        };
+        if intent.name == "shell" {
+            let command = intent.args.get("command").and_then(|v| v.as_str()).unwrap_or("");
+            let timeout = intent.args.get("timeout").and_then(|v| v.as_u64()).unwrap_or(120);
+            let network = intent.args.get("network").and_then(|v| v.as_bool()).unwrap_or(false);
+            let outcome = shell_outcome_at(
+                command,
+                &self.root,
+                timeout,
+                network,
+                OutputLocation { root: self.artifacts.as_deref(), prefix: ARTIFACTS_PREFIX },
+                self.shell_state.as_deref(),
+                control,
+                mode,
+            );
+            receipt.started = outcome.started;
+            receipt.mode = Some(match outcome.mode {
+                ShellMode::Sandbox => "approved_scope".to_string(),
+                ShellMode::Host => "full_auto".to_string(),
+            });
+            receipt.cwd = Some(outcome.cwd.clone());
+            receipt.exit_code = outcome.exit_code;
+            receipt.signal = outcome.signal;
+            receipt.duration_ms = outcome.duration_ms;
+            // Model-facing envelope ported from the legacy gateway contract:
+            // success {"output": ...}, failure {"error": ...} (chat.rs
+            // tool_result_content). Keeps readback recipes identical.
+            match outcome.render(self.shell_state.as_deref()) {
+                Ok(text) => {
+                    receipt.ok = outcome.failure.is_none();
+                    receipt.content = json!({"output": text}).to_string();
+                    if let Some(failure) = outcome.failure {
+                        receipt.error = Some(ReceiptError { class: failure.class, reason: failure.reason });
+                    }
+                }
+                Err(text) => {
+                    receipt.ok = false;
+                    let failure =
+                        outcome.failure.unwrap_or(ShellFailure { class: "tool_error".into(), reason: text.clone() });
+                    receipt.content = json!({"error": failure.reason}).to_string();
+                    receipt.error = Some(ReceiptError { class: failure.class, reason: failure.reason });
+                }
+            }
+            return receipt;
+        }
+        let result = (self.executor)(&intent.name, &intent.args, control, mode);
+        receipt.duration_ms = started_at.elapsed().as_millis() as u64;
+        match result {
+            Ok(value) => {
+                receipt.ok = true;
+                receipt.content = json!({"output": value}).to_string();
+            }
+            Err(text) => {
+                receipt.ok = false;
+                receipt.content = json!({"error": text}).to_string();
+                receipt.error = Some(ReceiptError { class: receipt_error_class(&text).to_string(), reason: text });
+            }
+        }
+        receipt
+    }
+}
+
+/// Keep the operator-facing error prefixes as the receipt classes.
+fn receipt_error_class(text: &str) -> &'static str {
+    for (prefix, class) in [
+        ("IsolationUnavailable", "isolation"),
+        ("ToolServiceUnavailable", "service_unavailable"),
+        ("ShellPermissionUnavailable", "permission_unavailable"),
+        ("turn interrupted", "interrupted"),
+    ] {
+        if text.starts_with(prefix) {
+            return class;
+        }
+    }
+    "tool_error"
 }
 
 #[cfg(test)]

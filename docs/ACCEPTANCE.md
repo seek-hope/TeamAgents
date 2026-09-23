@@ -8,6 +8,14 @@ Rust 原生重构 R2-P0 于 2026-09-23 完成隔离故障/开销探针及最小�
 复跑命令、单机测量和边界见 [R2-P0 记录](../review/r2-p0-2026-09-23.md)；权威阶段范围见
 [R2-P0 执行合约](R2-P0-CONTRACTS.zh-CN.md)。
 
+R2-P1 于 2026-09-23 落地小型 kernel 与直驱参考：`core/src/kernel` 无 I/O 状态转换、
+`engine/src/providers` 单次尝试协议边（DeepSeek 原生字段保留）、基础工具统一入口产出结构化
+`ToolReceipt`、追加式 JSONL 完整轨迹；`engine/examples/rebuild_p1.rs` 是评测组 A 参考循环。
+确定性测试 22 项、假服务契约 7 项、新旧请求/工具行为对照 1 项全部通过；3 个真实 DeepSeek
+任务（shell 验证、掩码输出 read_history 翻页、网页搜索+抓取）在参考循环上完成。
+参考循环不带生产恢复承诺；持久化、多实例、MCP/Skills、其余供应商与正式性能实验仍属后续阶段。
+证据与复跑见 [R2-P1 记录](../review/r2-p1-2026-09-23.md)。
+
 2026-09-22 按用户确认的 D-41 修复 full_auto Shell：主机环境执行、后台服务跨调用及 CLI 退出存活，
 默认模式保留 bwrap；补齐实时模式切换、进程组停止、输出读取收尾和相同环境的 `exec --check`。
 新增 6 项回归，`make check` 全绿：core 152 / engine 384 / TUI 109，engine 3 ignored。

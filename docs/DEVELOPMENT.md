@@ -35,6 +35,16 @@ python3 tui/scripts/pty_rebuild_p0.py
 取消，以及 TUI 断开重连。结果和限制见 [R2-P0 探针记录](../review/r2-p0-2026-09-23.md) 与
 [执行合约](R2-P0-CONTRACTS.zh-CN.md)；通过只证明隔离原型，不代表生产 kernel/运行时已实现。
 
+R2-P1 的 kernel 与直驱参考在正式产品代码中（`core/src/kernel`、`engine/src/providers`、
+`engine/src/reference.rs`）。参考循环可跑真实任务并写完整轨迹（需模型凭据）：
+
+```bash
+cargo build --offline --manifest-path engine/Cargo.toml --example rebuild_p1
+engine/target/debug/examples/rebuild_p1 --task "..." --workdir /tmp/t --trace /tmp/t-trace [--web]
+```
+
+参考循环是评测组 A 入口，不带生产恢复承诺；证据与边界见 [R2-P1 记录](../review/r2-p1-2026-09-23.md)。
+
 局部开发仍直接使用 Cargo，缩短反馈时间：
 
 ```bash
