@@ -142,7 +142,7 @@ fn main() {
         profile: KernelProfile {
             model: model.clone(),
             instructions,
-            tools: basic_tool_schemas(web),
+            tools: basic_tool_schemas(web, false),
             options: json!({"reasoning_effort": effort}),
             context_window: Some(window),
         },

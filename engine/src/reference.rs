@@ -64,7 +64,7 @@ pub async fn run_reference<P: Provider>(
         config.bindings.clone(),
         config.artifacts.clone(),
         config.shell_state.clone(),
-    ));
+    )?);
     let kernel = KernelInstance::new("reference", 0, config.profile.clone());
     let mut trace = Trace::create(&config.trace_dir, &config.run_id)?;
     trace.record(
@@ -291,8 +291,10 @@ impl WireBytes for ModelRequest {
 
 /// Workspace file/shell tool schemas for the reference profile (ported from
 /// the legacy bound-tool set, wrapped for the wire; readback/finish are
-/// kernel built-ins and must not be repeated here).
-pub fn basic_tool_schemas(web: bool) -> Vec<Json> {
+/// kernel built-ins and must not be repeated here). `skills` adds the skill
+/// discovery tool; it executes only when the member's bindings include
+/// "skills" (tools.rs member_executor_with_control).
+pub fn basic_tool_schemas(web: bool, skills: bool) -> Vec<Json> {
     let wrap = |name: &str, description: &str, parameters: Json| json!({"type": "function", "function": {"name": name, "description": description, "parameters": parameters}});
     let mut schemas = vec![
         wrap("ls", "List files in your workspace (path defaults to '.').",
@@ -317,6 +319,10 @@ pub fn basic_tool_schemas(web: bool) -> Vec<Json> {
             json!({"type":"object","properties":{"query":{"type":"string"},"max_results":{"type":"integer"},"include_content":{"type":"boolean"}},"required":["query"]})));
         schemas.push(wrap("web_fetch", "Fetch a web page and return title, source URL, fetch time and the readable text body (HTML only; capped).",
             json!({"type":"object","properties":{"url":{"type":"string"},"max_bytes":{"type":"integer"}},"required":["url"]})));
+    }
+    if skills {
+        schemas.push(wrap("skill", "Discover and load agent skills. action='search' with query keywords lists matching skills (name — summary); action='read' with a skill name loads its full instructions. Read a skill before applying it.",
+            json!({"type":"object","properties":{"action":{"type":"string","enum":["search","read"]},"query":{"type":"string"},"name":{"type":"string"}},"required":["action"]})));
     }
     schemas
 }

@@ -66,7 +66,7 @@ fn config(workspace: PathBuf, trace_dir: PathBuf) -> ReferenceConfig {
         profile: KernelProfile {
             model: "scripted".into(),
             instructions: "test agent".into(),
-            tools: basic_tool_schemas(false),
+            tools: basic_tool_schemas(false, false),
             options: json!({}),
             context_window: Some(1_000_000),
         },

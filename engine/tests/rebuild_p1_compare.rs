@@ -193,7 +193,7 @@ fn old_and_new_paths_construct_comparable_requests() {
         profile: KernelProfile {
             model: "test".into(),
             instructions: "reference agent".into(),
-            tools: basic_tool_schemas(false),
+            tools: basic_tool_schemas(false, false),
             options: json!({}),
             context_window: Some(1_000_000),
         },

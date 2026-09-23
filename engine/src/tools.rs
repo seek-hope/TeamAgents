@@ -2386,15 +2386,16 @@ pub fn iso8601(seconds: i64) -> String {
 
 // ---------------------------------------------------------------------------
 // R2 v2 unified tool entry (plan §7): one gate for basic tools producing
-// structured receipts. The runtime fills identity fields; MCP (P4) enters
+// structured receipts. The runtime fills identity fields; MCP (R18) enters
 // through the same receipt contract, not a parallel path.
 
 /// Basic-tool gate for the R2 kernel: workspace file/shell tools plus the
-/// member's bound web services, every call producing a ToolReceipt.
+/// member's bound web and MCP services, every call producing a ToolReceipt.
 type V2Executor = Box<dyn Fn(&str, &Json, &TurnControl, ShellMode) -> Result<Json, String> + Send + Sync>;
 
 pub(crate) struct V2Toolkit {
     executor: V2Executor,
+    bound: crate::bound::BoundTools,
     root: PathBuf,
     artifacts: Option<PathBuf>,
     shell_state: Option<PathBuf>,
@@ -2407,7 +2408,11 @@ impl V2Toolkit {
         bindings: Vec<String>,
         artifacts: Option<PathBuf>,
         shell_state: Option<PathBuf>,
-    ) -> V2Toolkit {
+    ) -> Result<V2Toolkit, String> {
+        // Bound MCP services load at driver boot: a required service that is
+        // unavailable fails the boot honestly, an optional one only drops its
+        // capability (same contract as the legacy member start, plan §7).
+        let bound = crate::bound::BoundTools::load_in(&catalog, &bindings, &root)?;
         let executor = member_executor_with_control(
             root.clone(),
             catalog,
@@ -2415,7 +2420,27 @@ impl V2Toolkit {
             ArtifactPaths::shared(artifacts.clone()),
             shell_state.clone(),
         );
-        V2Toolkit { executor: Box::new(executor), root, artifacts, shell_state }
+        Ok(V2Toolkit { executor: Box::new(executor), bound, root, artifacts, shell_state })
+    }
+
+    /// Wire-format schemas of the bound MCP tools; the driver merges them
+    /// into the kernel profile ahead of each model request (§5.2).
+    pub(crate) fn mcp_schemas(&self) -> Vec<Json> {
+        self.bound.schemas().into_iter().map(|schema| json!({"type": "function", "function": schema})).collect()
+    }
+
+    /// True when the name is served by a bound MCP service. Used at the
+    /// recovery boundary (A25): a crashed MCP call must not be re-issued
+    /// blindly, because server idempotence annotations never authorize a
+    /// replay of a remote effect.
+    pub(crate) fn is_mcp_tool(&self, name: &str) -> bool {
+        self.bound.names().contains(name)
+    }
+
+    /// Reap bound MCP server processes on driver shutdown (§6.4); the
+    /// clients' own Drop is the backstop.
+    pub(crate) fn close_mcp(&self) {
+        self.bound.close();
     }
 
     /// Execute one fixed intent. Same-response tool calls run sequentially
@@ -2488,7 +2513,12 @@ impl V2Toolkit {
             }
             return receipt;
         }
-        let result = (self.executor)(&intent.name, &intent.args, control, mode);
+        // Bound MCP tools enter through the same receipt contract as the
+        // built-in executor (plan §7) — no parallel path.
+        let result = match self.bound.call(&intent.name, &intent.args) {
+            Some(result) => result,
+            None => (self.executor)(&intent.name, &intent.args, control, mode),
+        };
         receipt.duration_ms = started_at.elapsed().as_millis() as u64;
         match result {
             Ok(value) => {

@@ -340,13 +340,15 @@ pub(crate) fn spawn_driver<P: Provider + 'static>(
         shutdown: AtomicBool::new(false),
         cancel_attempt: Mutex::new(None),
     });
+    // Bound MCP services load at boot: a required service that is unavailable
+    // fails the boot honestly, an optional one only drops its capability (§7).
     let toolkit = Arc::new(V2Toolkit::new(
         config.workspace.clone(),
         config.catalog.clone(),
         config.bindings.clone(),
         Some(config.state_root.join("artifacts")),
         Some(config.state_root.join("shell")),
-    ));
+    )?);
     let driver = Driver {
         shell_state: config.state_root.join("shell"),
         config,
@@ -361,6 +363,14 @@ pub(crate) fn spawn_driver<P: Provider + 'static>(
 
 impl<P: Provider> Driver<P> {
     async fn run(mut self) -> Result<(), String> {
+        // Reap bound MCP server processes however the loop ends (§6.4); the
+        // clients' own Drop is the backstop.
+        let result = self.drive().await;
+        self.toolkit.close_mcp();
+        result
+    }
+
+    async fn drive(&mut self) -> Result<(), String> {
         self.recover().await?;
         loop {
             if self.shared.shutdown.load(Ordering::SeqCst) {
@@ -538,6 +548,10 @@ impl<P: Provider> Driver<P> {
             .await??;
         let mut profile = self.config.profile.clone();
         profile.tools.extend(teamagents_core::kernel::collaboration_tool_schemas(&actions));
+        // Bound MCP tools advertise per request (§5.2). They merge here rather
+        // than into the stored profile so a spawned child never inherits the
+        // parent's bound services; the child's own driver merges its own.
+        profile.tools.extend(self.toolkit.mcp_schemas());
         Ok(KernelInstance::new(self.config.instance_id.clone(), snapshot.epoch as u64, profile))
     }
 
@@ -1056,7 +1070,10 @@ impl<P: Provider> Driver<P> {
                     }
                 }
             }
-            // DISPATCH_COMMITTED/RUNNING here (fresh or recovered): execute or reconnect
+            // DISPATCH_COMMITTED/RUNNING here (fresh or recovered): execute or reconnect.
+            // A status other than PREPARED at query time means the dispatch was
+            // committed by a previous boot — this execution is a recovery.
+            let recovered = status != "PREPARED";
             let name = intent["name"].as_str().unwrap_or("");
             match name {
                 "shell" => self.execute_shell(&operation_id, &intent).await?,
@@ -1064,6 +1081,25 @@ impl<P: Provider> Driver<P> {
                 teamagents_core::kernel::SEND_TOOL
                 | teamagents_core::kernel::DELEGATE_TOOL
                 | teamagents_core::kernel::SPAWN_TOOL => self.execute_collaboration(&operation_id, &intent).await?,
+                _ if recovered && self.toolkit.is_mcp_tool(name) => {
+                    // A25/§6.3: the call crossed the process boundary before the
+                    // interruption, so the remote effect cannot be verified and
+                    // must not be re-issued — server idempotence annotations
+                    // never authorize a replay of a remote effect.
+                    let reason = format!(
+                        "MCP tool {name} was dispatched before an interruption; the remote outcome cannot be verified, so it was not retried"
+                    );
+                    let mut receipt =
+                        self.receipt_skeleton(&operation_id, &intent, true, json!({"error": reason}).to_string());
+                    receipt.error = Some(ReceiptError { class: "outcome_unknown".into(), reason });
+                    self.complete_op(
+                        &operation_id,
+                        "OUTCOME_UNKNOWN",
+                        &serde_json::to_value(receipt).unwrap_or(Json::Null),
+                        vec![],
+                    )
+                    .await?;
+                }
                 _ => self.execute_inline(&operation_id, &intent).await?,
             }
         }

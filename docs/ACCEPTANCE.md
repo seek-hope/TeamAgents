@@ -41,6 +41,16 @@ R2-P3 于 2026-09-24 落地多实例：能力授权（范围授予/级联撤销/
 统一目标预算成立；真实模型验收、MCP/Skills、其余供应商、TUI 接入与正式性能实验仍属 P4 及以后。
 证据与复跑见 [R2-P3 记录](../review/r2-p3-2026-09-24.md)。
 
+R2-P4 于 2026-09-24 落地供应商协议层（R17）与 MCP/Skills（R18，进行中）：协议层与供应商名分离，
+参照 pi-ai 的 model.api 路由按协议分发——chat-completions / responses / anthropic 三适配器 + AnyProvider
+工厂（目录显式声明协议，凭据在配置边界解析，跨协议不转发旧原生块）；resolve_profile 把目录键解析为
+线上模型 id 与选项快照，supervisor 按实例解析进 kernel，异构模型同会话各自完成回合。MCP 经 V2Toolkit
+进统一回执契约：boot 时加载绑定服务（required 失败公开报错、optional 只丢能力）、schema 随请求注入
+kernel profile、崩前已派发调用恢复后 OUTCOME_UNKNOWN 绝不重放（A25）；skills 的 search/read 经
+basic_tool_schemas 广告、bindings 门控执行。确定性证据：providers_fake 23、v2_supervisor 5、v2_mcp 6；
+`make check` 全绿——core 216 / engine 445 / tui 109。真实模型验收（§12）、TUI 接 v2（R19）与
+完成检查修复闭环（R20）仍属本阶段及以后。证据与复跑见 [R2-P4 记录](../review/r2-p4-2026-09-24.md)。
+
 2026-09-22 按用户确认的 D-41 修复 full_auto Shell：主机环境执行、后台服务跨调用及 CLI 退出存活，
 默认模式保留 bwrap；补齐实时模式切换、进程组停止、输出读取收尾和相同环境的 `exec --check`。
 新增 6 项回归，`make check` 全绿：core 152 / engine 384 / TUI 109，engine 3 ignored。
@@ -270,8 +280,8 @@ cargo test --offline --manifest-path tui/Cargo.toml
 
 | crate | Cargo 报告通过 | 组成 / 实际执行范围 |
 |---|---:|---|
-| core | 188 | 61 库单测（含 kernel 9、v2 控制/存储 27）+ 63 控制场景 + 64 投递/未知输入/成果引用/任务边界/动作请求/持久记录集成测试 |
-| engine | 413 | 110 库单测 + 303 集成/CLI 测试（含 P1 参考循环/假服务/对照 13 项、P2 jobs_runner 8 + v2_driver 7 + v2_spawn_failure 1）；另有 3 项显式 ignored（`eval_grader` 两项、`live_models` 真实入口一项）；`live_codex` 未设开关时提前返回，2026-09-19 已单独运行 Codex + DeepSeek 的真实恢复检查 |
+| core | 216 | 89 库单测（含 kernel 与 v2 控制/存储/授权/协作面）+ 127 控制场景/投递/集成测试 |
+| engine | 445 | 110 库单测 + 335 集成/CLI 测试（含 providers_fake 23、v2_driver、v2_supervisor 5、v2_mcp 6、P1 参考循环/假服务/对照、P2 jobs_runner 等）；另有 3 项显式 ignored（`eval_grader` 两项、`live_models` 真实入口一项）；`live_codex` 未设开关时提前返回，2026-09-19 已单独运行 Codex + DeepSeek 的真实恢复检查 |
 | tui | 109 | 14 库单测 + 11 CLI 单测 + 39 app + 6 history + 31 render + 8 review |
 
 **CI（GitHub Actions，2026-09-15 起）**：`Test core` / `Test engine` / `Test tui` / 行尾空格检查全绿。
