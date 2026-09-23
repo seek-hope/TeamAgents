@@ -8,13 +8,19 @@ teamagents-core = { path = "../core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 serde_yaml = "0.9"
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 ureq = { version = "2", features = ["json"] }
 url = "2"
 toml = "0.8"
 toml_edit = "0.22"
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
+
+[dev-dependencies]
+# R2-P0 probes only; the existing production transport is unchanged until P1.
+tokio = { version = "=1.53.1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "process", "signal"] }
+reqwest = { version = "=0.12.28", default-features = false, features = ["rustls-tls", "stream", "json"] }
+libc = "0.2"
 
 [lib]
 name = "teamagents_engine"

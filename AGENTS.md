@@ -2,7 +2,11 @@
 
 ## 基准与偏离
 
-- `TeamAgents-Implementation-Plan.zh-CN.md` 是产品与实现的基准（P0–P7、T1–T24、DP-1..12）。
+- 重构目标见 `docs/TeamAgents-Agent-System-Rebuild-Plan.zh-CN.md`（R2-P0–P7、R01–R29、A01–A36），
+  用户已确认方向与范围见 `docs/DECISIONS.md` D-42；工程选择的理由与待验证项见
+  `review/agent-system-design-review-2026-09-23.md`。
+- `TeamAgents-Implementation-Plan.zh-CN.md` 保留为现有代码的旧版基准（P0–P7、T1–T24、DP-1..12）；
+  重构目标与旧要求冲突时以 D-42 及新方案为准。方案更新不等于重构已经实现。
 - **任何与方案不同的实现（更简单或更好的方案）必须先告知用户并得到确认，才可写进代码。**
   已确认的偏离记录在 `docs/DECISIONS.md`；未确认的只讨论，不落码。
 - 本仓库是独立的 Rust 项目，实现代码统一使用 Rust（core / engine / tui 三个 crate）；
@@ -34,6 +38,8 @@ review/eval/run.sh [--only ID] [--timeout SEC]   # 固定任务集的真实模�
   DeepSeek Flash 按用户确认的 1M 配置。不合理的非原生窗口测试应作废并删除，不得改名为压力实验保留。
 
 ## 架构速览（改代码前先读这 6 行）
+
+以下描述当前代码；重构中的目标边界以 R2 方案为准，落地后再同步此处。
 
 - 唯一团队事务入口：`core/src/control.rs::Control::submit`（ingest→validate→reduce→schedule→persist，
   单个 SQLite 事务；错误向上传播）
