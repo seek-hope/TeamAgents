@@ -14,6 +14,7 @@ pub mod core_client;
 pub mod gateway;
 pub mod history;
 pub mod hooks;
+pub mod jobs;
 pub mod mcp;
 pub mod observability;
 pub mod providers;

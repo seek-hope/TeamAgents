@@ -113,6 +113,15 @@ fn parse_args() -> Args {
                 args.verbose = true;
                 i += 1;
             }
+            // internal: the controlled shell job runner (§6.2), never user-facing
+            "jobs-runner" => {
+                if args.command.is_some() {
+                    usage();
+                }
+                args.command = Some(argv[i].clone());
+                args.positional = argv.get(i + 1).cloned();
+                i += 2;
+            }
             "serve" | "init" | "doctor" | "validate" | "sessions" | "version" | "exec" => {
                 if args.command.is_some() {
                     usage();
@@ -260,6 +269,25 @@ fn run_tui(args: &Args) -> i32 {
 fn main() {
     let args = parse_args();
     let code = match args.command.as_deref() {
+        Some("jobs-runner") => match &args.positional {
+            Some(dir) => {
+                let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build();
+                match runtime {
+                    Ok(runtime) => match runtime.block_on(teamagents_engine::jobs::runner::serve(Path::new(dir))) {
+                        Ok(()) => 0,
+                        Err(e) => {
+                            eprintln!("jobs-runner: {e}");
+                            1
+                        }
+                    },
+                    Err(e) => {
+                        eprintln!("jobs-runner runtime: {e}");
+                        1
+                    }
+                }
+            }
+            None => usage(),
+        },
         Some("serve") => worker::serve(),
         Some("init") => cli::init(),
         Some("doctor") => cli::doctor(),

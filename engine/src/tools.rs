@@ -1717,6 +1717,98 @@ impl ShellOutcome {
     }
 }
 
+/// Everything needed to spawn one shell command: program, argv, cwd and the
+/// whitelisted environment. Built once here so the synchronous path and the
+/// P2 job runner execute byte-identical commands (§6.2, A15).
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct ShellCommandSpec {
+    pub program: String,
+    pub args: Vec<String>,
+    pub cwd: String,
+    pub env: Vec<(String, String)>,
+    /// The shell-state-wrapped command text; part of the job identity hash.
+    pub wrapped: String,
+}
+
+#[derive(Debug)]
+pub(crate) struct SpecError {
+    /// isolation | setup — matches the receipt failure classes.
+    pub class: &'static str,
+    pub reason: String,
+}
+
+impl SpecError {
+    fn isolation(reason: &str) -> SpecError {
+        SpecError { class: "isolation", reason: reason.to_string() }
+    }
+    fn setup(reason: String) -> SpecError {
+        SpecError { class: "setup", reason }
+    }
+}
+
+pub(crate) fn shell_command_spec(
+    command: &str,
+    workdir: &Path,
+    network: bool,
+    shell_state: Option<&Path>,
+    mode: ShellMode,
+) -> Result<ShellCommandSpec, SpecError> {
+    if mode == ShellMode::Sandbox && !bwrap_available() {
+        return Err(SpecError::isolation(
+            "IsolationUnavailable: bwrap is not available: refusing to run commands without isolation",
+        ));
+    }
+    // Separate snapshots prevent sandbox HOME/PATH/cwd leaking into host
+    // commands (and vice versa) after a live permission-mode change.
+    let host_state = shell_state.filter(|_| mode == ShellMode::Host).map(|state| state.join("host"));
+    let shell_state = host_state.as_deref().or(shell_state);
+    if let Some(state) = shell_state {
+        std::fs::create_dir_all(state)
+            .map_err(|e| SpecError::setup(format!("cannot create shell state directory: {e}")))?;
+    }
+    let state_dir = match (mode, shell_state) {
+        (ShellMode::Host, Some(state)) => state.to_string_lossy().into_owned(),
+        _ => SHELL_STATE_SANDBOX.to_string(),
+    };
+    let wrapped = match shell_state {
+        Some(_) => format!("{}{}\n{}", shell_state_preamble(&state_dir), command, shell_state_capture(&state_dir)),
+        None => command.to_string(),
+    };
+    let cwd = std::fs::canonicalize(workdir).unwrap_or_else(|_| workdir.to_path_buf());
+    let (program, args) = match mode {
+        ShellMode::Sandbox => {
+            let argv = bwrap_argv(&cwd, network, &wrapped, shell_state);
+            let Some(executable) = which("bwrap") else {
+                return Err(SpecError::isolation("IsolationUnavailable: bwrap disappeared before execution"));
+            };
+            (executable.to_string_lossy().into_owned(), argv[1..].to_vec())
+        }
+        // Do not source login files that might re-export provider keys.
+        ShellMode::Host => {
+            ("/bin/bash".into(), vec!["--noprofile".into(), "--norc".into(), "-c".into(), wrapped.clone()])
+        }
+    };
+    // whitelist environment: no model keys, no credentials (plan §12.2)
+    let mut env: Vec<(String, String)> = vec![
+        ("PATH".into(), sandbox_path()),
+        ("HOME".into(), sandbox_home(shell_state.is_some()).into()),
+        ("LANG".into(), std::env::var("LANG").unwrap_or_else(|_| "C.UTF-8".into())),
+        ("TERM".into(), "dumb".into()),
+        ("TMPDIR".into(), "/tmp".into()),
+        ("PYTHONIOENCODING".into(), "utf-8".into()),
+    ];
+    env.extend(toolchain_env());
+    if mode == ShellMode::Host {
+        env.retain(|(key, _)| key != "PATH" && key != "HOME");
+        env.push(("PATH".into(), std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into())));
+        env.push(("HOME".into(), std::env::var("HOME").unwrap_or_else(|_| "/".into())));
+        for (key, host, _) in toolchain_mounts() {
+            env.push((key.to_string(), host.to_string_lossy().into_owned()));
+        }
+    }
+    Ok(ShellCommandSpec { program, args, cwd: cwd.to_string_lossy().into_owned(), env, wrapped })
+}
+
 #[expect(clippy::too_many_arguments, reason = "Keep trusted execution mode separate from model command parameters.")]
 pub(crate) fn shell_outcome_at(
     command: &str,
@@ -1741,48 +1833,19 @@ pub(crate) fn shell_outcome_at(
             "IsolationUnavailable: bwrap is not available: refusing to run commands without isolation".into(),
         );
     }
-    // Separate snapshots prevent sandbox HOME/PATH/cwd leaking into host
-    // commands (and vice versa) after a live permission-mode change.
-    let host_state = shell_state.filter(|_| mode == ShellMode::Host).map(|state| state.join("host"));
-    let shell_state = host_state.as_deref().or(shell_state);
-    if let Some(state) = shell_state {
-        if let Err(e) = std::fs::create_dir_all(state) {
-            return not_started("setup", format!("cannot create shell state directory: {e}"));
-        }
-    }
-    let state_dir = match (mode, shell_state) {
-        (ShellMode::Host, Some(state)) => state.to_string_lossy().into_owned(),
-        _ => SHELL_STATE_SANDBOX.to_string(),
-    };
-    let wrapped = match shell_state {
-        Some(_) => format!("{}{}\n{}", shell_state_preamble(&state_dir), command, shell_state_capture(&state_dir)),
-        None => command.to_string(),
-    };
-    let workdir = std::fs::canonicalize(workdir).unwrap_or_else(|_| workdir.to_path_buf());
     let sink = match OutputSink::new(output) {
         Ok(sink) => Arc::new(Mutex::new(sink)),
         Err(e) => return not_started("capture", e),
     };
-    let mut sandbox = match mode {
-        ShellMode::Sandbox => {
-            let argv = bwrap_argv(&workdir, network, &wrapped, shell_state);
-            let executable = match which("bwrap") {
-                Some(executable) => executable,
-                None => {
-                    return not_started("isolation", "IsolationUnavailable: bwrap disappeared before execution".into())
-                }
-            };
-            let mut command = Command::new(executable);
-            command.args(&argv[1..]);
-            command
-        }
-        ShellMode::Host => {
-            let mut command = Command::new("/bin/bash");
-            // Do not source login files that might re-export provider keys.
-            command.args(["--noprofile", "--norc", "-c", &wrapped]).current_dir(&workdir).process_group(0);
-            command
-        }
+    let spec = match shell_command_spec(command, workdir, network, shell_state, mode) {
+        Ok(spec) => spec,
+        Err(error) => return not_started(error.class, error.reason),
     };
+    let mut sandbox = Command::new(&spec.program);
+    sandbox.args(&spec.args).current_dir(&spec.cwd);
+    if mode == ShellMode::Host {
+        sandbox.process_group(0);
+    }
     let (stdout, stdout_stdio) = match output_socket() {
         Ok(pair) => pair,
         Err(e) => return not_started("capture", e),
@@ -1792,27 +1855,9 @@ pub(crate) fn shell_outcome_at(
         Err(e) => return not_started("capture", e),
     };
     // whitelist environment: no model keys, no credentials (plan §12.2)
-    sandbox
-        .stdin(Stdio::null())
-        .stdout(stdout_stdio)
-        .stderr(stderr_stdio)
-        .env_clear()
-        .env("PATH", sandbox_path())
-        .env("HOME", sandbox_home(shell_state.is_some()))
-        .env("LANG", std::env::var("LANG").unwrap_or_else(|_| "C.UTF-8".into()))
-        .env("TERM", "dumb")
-        .env("TMPDIR", "/tmp")
-        .env("PYTHONIOENCODING", "utf-8");
-    for (key, value) in toolchain_env() {
+    sandbox.stdin(Stdio::null()).stdout(stdout_stdio).stderr(stderr_stdio).env_clear();
+    for (key, value) in &spec.env {
         sandbox.env(key, value);
-    }
-    if mode == ShellMode::Host {
-        sandbox
-            .env("PATH", std::env::var_os("PATH").unwrap_or_else(|| "/usr/local/bin:/usr/bin:/bin".into()))
-            .env("HOME", std::env::var_os("HOME").unwrap_or_else(|| "/".into()));
-        for (key, host, _) in toolchain_mounts() {
-            sandbox.env(key, host);
-        }
     }
     let mut child = match sandbox.spawn() {
         Ok(child) => child,
