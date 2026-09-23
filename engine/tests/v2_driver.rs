@@ -581,3 +581,171 @@ async fn worker_finish_with_an_empty_queue_just_closes_the_turn() {
     wait_phase(&handle, "READY", 5_000).await;
     handle.shutdown().await.expect("shutdown");
 }
+
+fn finish_call_blocked(summary: &str) -> Json {
+    json!({"role": "assistant", "content": "",
+           "tool_calls": [{"id": "finish-1", "type": "function",
+                           "function": {"name": "finish",
+                                        "arguments": json!({"status": "blocked", "summary": summary}).to_string()}}]})
+}
+
+async fn wait_event_where(kind: &str, handle: &DriverHandle, timeout_ms: u64, pred: impl Fn(&Json) -> bool) -> Json {
+    for _ in 0..(timeout_ms / 25) {
+        if let Ok(events) = handle.events(0).await {
+            if let Some(event) = events.iter().find(|e| e["kind"] == json!(kind) && pred(e)) {
+                return event.clone();
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("event {kind} did not arrive within {timeout_ms}ms");
+}
+
+async fn no_event(handle: &DriverHandle, kind: &str) -> bool {
+    !handle.events(0).await.unwrap().iter().any(|e| e["kind"] == json!(kind))
+}
+
+#[tokio::test]
+async fn required_checks_pass_settles_the_goal() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let root = root("checks-pass");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let script = vec![Step::Message(finish_call("all done"))];
+    let mut config = root.config(ScriptedProvider { script: Mutex::new(script.into()) });
+    config.goal_limits = json!({"required_checks": [{"id": "tests", "command": "true"}]});
+    let handle = start(config).await.expect("start");
+    handle.input("do the work").await.expect("input");
+    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    // the check rode the same operation ledger and auto-associated (§8)
+    let events = handle.events(0).await.unwrap();
+    let registered = events.iter().find(|e| e["kind"] == json!("check_round_registered")).expect("registered");
+    assert_eq!(registered["payload"]["round"], json!(1));
+    assert!(events.iter().any(|e| e["kind"] == json!("operation_completed")
+        && e["scope"].as_str().unwrap_or("").starts_with("check:goal-s-test:1:")));
+    let snapshot = handle.snapshot().await.unwrap();
+    assert_eq!(snapshot["instance"]["phase"], json!("READY"));
+    handle.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn required_checks_failure_repairs_then_passes() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let root = root("checks-repair");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    // round 1: finish, the check fails (marker missing); the repair turn
+    // creates the marker and finishes again; round 2 passes (§8)
+    let script = vec![
+        Step::Message(finish_call("claimed done")),
+        Step::Message(shell_call("fix-1", "touch done-marker")),
+        Step::Message(finish_call("actually done now")),
+    ];
+    let mut config = root.config(ScriptedProvider { script: Mutex::new(script.into()) });
+    config.goal_limits = json!({"required_checks": [{"id": "marker", "command": "test -f done-marker"}]});
+    let handle = start(config).await.expect("start");
+    handle.input("do the work").await.expect("input");
+    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    let repair = wait_event_where("completion_repair", &handle, 5_000, |_| true).await;
+    assert_eq!(repair["payload"]["round"], json!(1));
+    assert_eq!(repair["payload"]["failures"][0]["check_id"], json!("marker"));
+    assert_eq!(repair["payload"]["failures"][0]["class"], json!("exit"));
+    let events = handle.events(0).await.unwrap();
+    let rounds: Vec<_> = events.iter().filter(|e| e["kind"] == json!("check_round_registered")).collect();
+    assert_eq!(rounds.len(), 2);
+    assert!(root.dir.join("ws").join("done-marker").exists());
+    handle.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn required_checks_exhausted_parks_the_goal_blocked() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let root = root("checks-exhaust");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let script = vec![Step::Message(finish_call("try one")), Step::Message(finish_call("try two"))];
+    let mut config = root.config(ScriptedProvider { script: Mutex::new(script.into()) });
+    config.goal_limits = json!({"required_checks": [{"id": "never", "command": "exit 1"}], "max_check_rounds": 2});
+    let handle = start(config).await.expect("start");
+    handle.input("do the work").await.expect("input");
+    let blocked = wait_event_where("goal_blocked", &handle, 20_000, |_| true).await;
+    assert_eq!(blocked["payload"]["status"], json!("BLOCKED"));
+    let reason = blocked["payload"]["reason"].as_str().unwrap_or("");
+    assert!(reason.contains("never:exit"), "{reason}");
+    let snapshot = handle.snapshot().await.unwrap();
+    assert_eq!(snapshot["goal"]["status"], json!("BLOCKED"));
+    assert_eq!(snapshot["instance"]["phase"], json!("READY"));
+    assert!(no_event(&handle, "goal_completed").await);
+    handle.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn blocked_candidate_never_runs_the_checks() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let root = root("checks-blocked");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    // §8: a candidate that admits undelivered work is never upgraded by
+    // passing checks — the checks do not even run
+    let script = vec![Step::Message(finish_call_blocked("could not finish the migration"))];
+    let mut config = root.config(ScriptedProvider { script: Mutex::new(script.into()) });
+    config.goal_limits = json!({"required_checks": [{"id": "tests", "command": "true"}]});
+    let handle = start(config).await.expect("start");
+    handle.input("migrate").await.expect("input");
+    let closed =
+        wait_event_where("goal_completed", &handle, 15_000, |e| e["payload"]["status"] == json!("BLOCKED")).await;
+    assert_eq!(closed["payload"]["completion"]["outcome"], json!("blocked"));
+    assert!(no_event(&handle, "check_round_registered").await);
+    handle.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn check_inputs_must_still_hold_at_completion() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let root = root("checks-stale");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    std::fs::write(root.dir.join("ws").join("input.txt"), "original").unwrap();
+    // the check itself mutates its declared input: even with exit 0 the
+    // result bound nothing (§8 hash re-verification before completion)
+    let script = vec![Step::Message(finish_call("done"))];
+    let mut config = root.config(ScriptedProvider { script: Mutex::new(script.into()) });
+    config.goal_limits = json!({"required_checks": [{"id": "bound", "command": "printf changed > input.txt",
+                                                     "inputs": ["input.txt"]}],
+                                "max_check_rounds": 1});
+    let handle = start(config).await.expect("start");
+    handle.input("do the work").await.expect("input");
+    let blocked = wait_event_where("goal_blocked", &handle, 20_000, |_| true).await;
+    assert!(blocked["payload"]["reason"].as_str().unwrap_or("").contains("bound:stale_inputs"));
+    handle.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn check_dispatch_refused_parks_without_burning_repair_rounds() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let root = root("checks-refused");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    // an instance with no shell@workspace grant cannot run checks; that is
+    // verification-infrastructure failure, not model-repairable work (§8)
+    let mut control = second_control(&root);
+    control
+        .submit(
+            cmd("mk-i", "create_instance", json!({"id": "i-main", "workspace_ref": ""})),
+            teamagents_core::v2::Identity::User,
+        )
+        .expect("instance");
+    control
+        .submit(
+            cmd(
+                "mk-g",
+                "create_goal",
+                json!({"id": "goal-s-test", "instance_id": "i-main",
+                                              "limits": {"required_checks": [{"id": "tests", "command": "true"}]}}),
+            ),
+            teamagents_core::v2::Identity::User,
+        )
+        .expect("goal");
+    drop(control);
+    let script = vec![Step::Message(finish_call("claimed done"))];
+    let handle = start(root.config(ScriptedProvider { script: Mutex::new(script.into()) })).await.expect("start");
+    handle.input("do the work").await.expect("input");
+    let blocked = wait_event_where("goal_blocked", &handle, 20_000, |_| true).await;
+    assert!(blocked["payload"]["reason"].as_str().unwrap_or("").contains("dispatch_refused"));
+    assert!(no_event(&handle, "completion_repair").await);
+    handle.shutdown().await.expect("shutdown");
+}

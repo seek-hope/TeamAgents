@@ -23,6 +23,11 @@ use teamagents_core::v2::{Command, Identity};
 const MAX_OUTPUT: usize = 200_000;
 const MAX_ARTIFACT_BYTES: u64 = 64 * 1024 * 1024;
 
+/// Default bound on required-check repair rounds before the goal parks
+/// BLOCKED (§8 requires bounded repair, not a specific number — this is a
+/// policy knob, overridable per goal via limits.max_check_rounds).
+const DEFAULT_MAX_CHECK_ROUNDS: i64 = 3;
+
 pub struct DriverConfig<P> {
     pub session_db: PathBuf,
     pub session_id: String,
@@ -1521,31 +1526,45 @@ impl<P: Provider> Driver<P> {
     }
 
     /// The stored finish candidate — read from its decision, never re-taken
-    /// from the model (mirrors complete_goal's read).
-    async fn completion_candidate(&self) -> Result<Json, String> {
+    /// from the model (mirrors complete_goal's read). The decision rowid
+    /// orders check rounds against the candidate that triggered them (§8).
+    async fn completion_candidate(&self) -> Result<(i64, Json), String> {
         let instance = self.config.instance_id.clone();
-        let stored: Option<String> = self
+        let stored: Option<(i64, String)> = self
             .storage
             .call(move |control| {
                 control
                     .connection()
                     .query_row(
-                        "SELECT d.completion_json FROM decisions d
+                        "SELECT d.rowid, d.completion_json FROM decisions d
                          JOIN model_requests r ON d.request_id = r.request_id
                          WHERE r.instance_id = ?1 AND d.completion_json IS NOT NULL
                          ORDER BY d.rowid DESC LIMIT 1",
                         [&instance],
-                        |row| row.get(0),
+                        |row| Ok((row.get(0)?, row.get(1)?)),
                     )
                     .optional()
                     .map_err(|e| format!("completion candidate: {e}"))
             })
             .await??;
-        Ok(stored.as_deref().and_then(|c| serde_json::from_str(c).ok()).unwrap_or(Json::Null))
+        Ok(match stored {
+            Some((row, json)) => (row, serde_json::from_str(&json).unwrap_or(Json::Null)),
+            None => (0, Json::Null),
+        })
     }
 
     async fn step_completion(&mut self, snapshot: &Snapshot) -> Result<(), String> {
         if let Some(goal) = snapshot.active_goal.clone() {
+            let (candidate_row, candidate) = self.completion_candidate().await?;
+            let outcome = candidate["outcome"].as_str().unwrap_or("failed");
+            // only a claimed success is verified; a candidate that admits
+            // undelivered work is never upgraded by passing checks (§8)
+            if outcome == "success" {
+                let (checks, max_rounds) = self.required_checks(&goal).await?;
+                if !checks.is_empty() {
+                    return self.step_completion_checks(&goal, candidate_row, &checks, max_rounds).await;
+                }
+            }
             self.submit(
                 self.command(
                     format!("complete-goal-{goal}"),
@@ -1561,7 +1580,7 @@ impl<P: Provider> Driver<P> {
         // from the stored candidate (§5.3); an empty queue just closes
         match self.oldest_open_task().await? {
             Some(task_id) => {
-                let candidate = self.completion_candidate().await?;
+                let (_, candidate) = self.completion_candidate().await?;
                 let status = match candidate["outcome"].as_str().unwrap_or("failed") {
                     "success" => "SUCCEEDED",
                     "blocked" => "BLOCKED",
@@ -1593,6 +1612,286 @@ impl<P: Provider> Driver<P> {
         }
         Ok(())
     }
+
+    /// Goal-level required checks from the stored limits (§8): predefined by
+    /// the user or project bootstrap at create_goal; an empty list settles
+    /// completion on the candidate alone. Returns (checks, max_rounds).
+    async fn required_checks(&self, goal: &str) -> Result<(Vec<Json>, i64), String> {
+        let goal = goal.to_string();
+        let stored: Option<String> = self
+            .storage
+            .call(move |control| {
+                control
+                    .connection()
+                    .query_row("SELECT limits_json FROM goals WHERE id = ?1", [&goal], |row| row.get(0))
+                    .optional()
+                    .map_err(|e| format!("goal limits: {e}"))
+            })
+            .await??;
+        let limits: Json = stored.as_deref().and_then(|l| serde_json::from_str(l).ok()).unwrap_or(json!({}));
+        let checks = limits["required_checks"].as_array().cloned().unwrap_or_default();
+        let max_rounds = limits["max_check_rounds"].as_i64().unwrap_or(DEFAULT_MAX_CHECK_ROUNDS).max(1);
+        Ok((checks, max_rounds))
+    }
+
+    /// The latest check round registered against the goal that is newer than
+    /// the triggering candidate, plus how many rounds the goal has used.
+    /// Rounds from before the candidate belong to an older finish.
+    async fn check_round_state(&self, goal: &str, candidate_row: i64) -> Result<(i64, Option<CheckRound>), String> {
+        let goal = goal.to_string();
+        self.storage
+            .call(move |control| {
+                let conn = control.connection();
+                let rounds: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM model_requests WHERE request_ref = 'required_check' AND goal_id = ?1",
+                        [&goal],
+                        |row| row.get(0),
+                    )
+                    .map_err(|e| format!("check rounds: {e}"))?;
+                let latest: Option<(String, i64)> = conn
+                    .query_row(
+                        "SELECT d.decision_id, d.rowid FROM decisions d
+                         JOIN model_requests r ON d.request_id = r.request_id
+                         WHERE r.request_ref = 'required_check' AND r.goal_id = ?1
+                         ORDER BY d.rowid DESC LIMIT 1",
+                        [&goal],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()
+                    .map_err(|e| format!("check decision: {e}"))?;
+                let Some((decision_id, row)) = latest else { return Ok((rounds, None)) };
+                if row <= candidate_row {
+                    return Ok((rounds, None));
+                }
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT operation_id, status, intent_json, receipt_json FROM operations
+                         WHERE decision_id = ?1 ORDER BY tool_index",
+                    )
+                    .map_err(|e| format!("check ops prepare: {e}"))?;
+                let rows = stmt
+                    .query_map([&decision_id], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, Option<String>>(3)?,
+                        ))
+                    })
+                    .map_err(|e| format!("check ops query: {e}"))?;
+                let mut open = Vec::new();
+                let mut terminal = Vec::new();
+                for row in rows {
+                    let (operation_id, status, intent, receipt) = row.map_err(|e| format!("check op row: {e}"))?;
+                    if matches!(status.as_str(), "PREPARED" | "DISPATCH_COMMITTED" | "RUNNING") {
+                        open.push((operation_id, status, intent));
+                    } else {
+                        let intent: Json =
+                            serde_json::from_str(&intent).map_err(|e| format!("check intent {operation_id}: {e}"))?;
+                        let receipt = receipt.and_then(|r| serde_json::from_str(&r).ok()).unwrap_or(Json::Null);
+                        terminal.push((operation_id, status, intent, receipt));
+                    }
+                }
+                Ok((rounds, Some(CheckRound { open, terminal })))
+            })
+            .await?
+    }
+
+    /// The completion-check lifecycle (§8): register a round, execute it
+    /// through the shell ledger, then settle SUCCEEDED, feed the failure
+    /// receipts back as a repair turn, or park BLOCKED. Every state is
+    /// persisted, so a crash mid-round resumes at exactly this machine.
+    async fn step_completion_checks(
+        &mut self,
+        goal: &str,
+        candidate_row: i64,
+        checks: &[Json],
+        max_rounds: i64,
+    ) -> Result<(), String> {
+        let (rounds, current) = self.check_round_state(goal, candidate_row).await?;
+        if let Some(round) = current {
+            if !round.open.is_empty() {
+                return self.execute_check_ops(&round.open).await;
+            }
+            let failures = self.check_verdict(&round.terminal);
+            if failures.is_empty() {
+                self.submit(
+                    self.command(
+                        format!("complete-goal-{goal}"),
+                        "complete_goal",
+                        json!({"goal_id": goal, "instance_id": self.config.instance_id}),
+                    ),
+                    Identity::System,
+                )
+                .await?;
+                return Ok(());
+            }
+            // infrastructure failures are not model-repairable (§8 bounded
+            // handling): the model cannot fix a refused dispatch or a runner
+            // that never started — park instead of burning repair rounds
+            let infra =
+                failures.iter().any(|f| matches!(f["class"].as_str(), Some("dispatch_refused") | Some("spawn")));
+            if infra || rounds >= max_rounds {
+                let summary: Vec<String> = failures
+                    .iter()
+                    .map(|f| {
+                        format!("{}:{}", f["check_id"].as_str().unwrap_or("?"), f["class"].as_str().unwrap_or("?"))
+                    })
+                    .collect();
+                self.submit(
+                    self.command(
+                        format!("block-goal-{goal}"),
+                        "block_goal",
+                        json!({"goal_id": goal, "instance_id": self.config.instance_id,
+                               "reason": format!("required checks failed ({}) after {rounds} round(s)", summary.join(", "))}),
+                    ),
+                    Identity::System,
+                )
+                .await?;
+                return Ok(());
+            }
+            self.submit(
+                self.command(
+                    format!("repair-completion-{goal}-{rounds}"),
+                    "repair_completion",
+                    json!({"instance_id": self.config.instance_id, "goal_id": goal, "round": rounds,
+                           "failures": failures}),
+                ),
+                Identity::System,
+            )
+            .await?;
+            return Ok(());
+        }
+        if rounds >= max_rounds {
+            self.submit(
+                self.command(
+                    format!("block-goal-{goal}"),
+                    "block_goal",
+                    json!({"goal_id": goal, "instance_id": self.config.instance_id,
+                           "reason": format!("required checks did not pass within {max_rounds} rounds")}),
+                ),
+                Identity::System,
+            )
+            .await?;
+            return Ok(());
+        }
+        let observed = self.observe_check_inputs(checks);
+        self.submit(
+            self.command(
+                format!("check-round-{goal}-{}", rounds + 1),
+                "register_check_runs",
+                json!({"goal_id": goal, "instance_id": self.config.instance_id,
+                       "round": rounds + 1, "checks": observed}),
+            ),
+            Identity::System,
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Execute the open operations of a check round in order (§6.2 ledger):
+    /// dispatch without an approval prompt (the user pre-authorized exactly
+    /// these commands), then run or reconnect the shell job. The instance
+    /// stays COMPLETION_PENDING throughout; consumption feeds the receipts
+    /// into context without flipping the phase.
+    async fn execute_check_ops(&mut self, open: &[(String, String, String)]) -> Result<(), String> {
+        for (operation_id, status, intent_json) in open {
+            if self.shared.shutdown.load(Ordering::SeqCst) {
+                return Ok(());
+            }
+            let intent: Json = serde_json::from_str(intent_json).map_err(|e| format!("intent {operation_id}: {e}"))?;
+            if status == "PREPARED" {
+                let dispatched = self
+                    .submit(
+                        self.command(
+                            format!("dispatch-{operation_id}-{}", uuid::Uuid::new_v4()),
+                            "dispatch_operation",
+                            json!({"operation_id": operation_id, "approval_required": false, "permission_revision": 0}),
+                        ),
+                        Identity::System,
+                    )
+                    .await;
+                match dispatched {
+                    Ok(_) => {}
+                    Err(error) if error.contains("not dispatchable") || error.contains("lost the dispatch race") => {
+                        continue;
+                    }
+                    Err(error) => {
+                        self.complete_with_error(operation_id, &intent, "dispatch_refused", &error).await?;
+                        continue;
+                    }
+                }
+            }
+            self.execute_shell(operation_id, &intent).await?;
+        }
+        Ok(())
+    }
+
+    /// Verdict over a closed round (§8): a check passes only when its job
+    /// succeeded and its declared inputs still hash to the values observed
+    /// at registration; anything else is a failure handed to repair.
+    fn check_verdict(&self, terminal: &[(String, String, Json, Json)]) -> Vec<Json> {
+        let mut failures = Vec::new();
+        for (_operation_id, status, intent, receipt) in terminal {
+            let check_id = intent["args"]["check_id"].as_str().unwrap_or("?").to_string();
+            if status != "SUCCEEDED" {
+                let class = receipt["error"]["class"].as_str().unwrap_or("failed");
+                let reason = receipt["error"]["reason"].as_str().unwrap_or(status).to_string();
+                failures.push(json!({"check_id": check_id, "class": class, "reason": reason}));
+                continue;
+            }
+            if let Some(observed) = intent["args"].get("inputs_observed").and_then(Json::as_object) {
+                let current = hash_workspace_inputs(&self.config.workspace, observed.keys().cloned().collect());
+                for (path, before) in observed {
+                    if current.get(path).unwrap_or(&Json::Null) != before {
+                        failures.push(json!({"check_id": check_id, "class": "stale_inputs",
+                                             "reason": format!("declared input {path} changed since the check ran")}));
+                    }
+                }
+            }
+        }
+        failures
+    }
+
+    /// Hash each check's declared inputs at observation time (§8): the
+    /// recorded hashes bind the check results to input versions and are
+    /// re-verified before completion. Unsafe paths never arrive here — the
+    /// create_goal gate rejects absolute paths and `..` escapes.
+    fn observe_check_inputs(&self, checks: &[Json]) -> Vec<Json> {
+        checks
+            .iter()
+            .map(|check| {
+                let mut check = check.clone();
+                if let Some(inputs) = check["inputs"].as_array() {
+                    let paths: Vec<String> = inputs.iter().filter_map(|p| p.as_str().map(str::to_string)).collect();
+                    check["inputs_observed"] = json!(hash_workspace_inputs(&self.config.workspace, paths));
+                }
+                check
+            })
+            .collect()
+    }
+}
+
+/// One persisted required-check round (§8): the operations of the synthetic
+/// check decision, split by execution state.
+struct CheckRound {
+    open: Vec<(String, String, String)>,
+    terminal: Vec<(String, String, Json, Json)>,
+}
+
+/// sha256 of each workspace-relative input (§8): missing or unreadable
+/// entries hash as null — the binding covers what was actually observed.
+/// ponytail: directories currently hash as null; recursive directory
+/// binding is the upgrade path if a check ever declares one.
+fn hash_workspace_inputs(workspace: &Path, paths: Vec<String>) -> serde_json::Map<String, Json> {
+    use sha2::{Digest, Sha256};
+    let mut observed = serde_json::Map::new();
+    for path in paths {
+        let hash = std::fs::read(workspace.join(&path)).ok().map(|bytes| format!("{:x}", Sha256::digest(&bytes)));
+        observed.insert(path, hash.map(Json::String).unwrap_or(Json::Null));
+    }
+    observed
 }
 
 fn outcome_request(attempt_id: &str) -> String {

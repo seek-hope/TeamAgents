@@ -47,9 +47,13 @@ R2-P4 于 2026-09-24 落地供应商协议层（R17）与 MCP/Skills（R18，进
 线上模型 id 与选项快照，supervisor 按实例解析进 kernel，异构模型同会话各自完成回合。MCP 经 V2Toolkit
 进统一回执契约：boot 时加载绑定服务（required 失败公开报错、optional 只丢能力）、schema 随请求注入
 kernel profile、崩前已派发调用恢复后 OUTCOME_UNKNOWN 绝不重放（A25）；skills 的 search/read 经
-basic_tool_schemas 广告、bindings 门控执行。确定性证据：providers_fake 23、v2_supervisor 5、v2_mcp 6；
-`make check` 全绿——core 216 / engine 445 / tui 109。真实模型验收（§12）、TUI 接 v2（R19）与
-完成检查修复闭环（R20）仍属本阶段及以后。证据与复跑见 [R2-P4 记录](../review/r2-p4-2026-09-24.md)。
+basic_tool_schemas 广告、bindings 门控执行。R19-a v2 会话 daemon 与重连协议落地（greeting 先告、
+checkpoint 快照+水位同一读事务、断线按水位续读），TUI 侧同步客户端就绪（R19-b①）。R20 完成检查
+修复闭环落地：required_checks 仅用户/项目可预定义（机器契约不可冒充），检查骑乘同一 operation
+回执账本、过检才落 SUCCEEDED、声明输入散列完成前重核、失败进修复或有界 BLOCKED、承认未交付
+绝不升级。确定性证据：providers_fake 23+4、v2_supervisor 5、v2_mcp 6、v2_daemon 2、v2_driver 18、
+core 契约 4；`make check` 全绿——core 220 / engine 457 / tui 112。真实模型验收（§12）与
+TUI 主界面 v2 化（R19-b②③）仍属本阶段及以后。证据与复跑见 [R2-P4 记录](../review/r2-p4-2026-09-24.md)。
 
 2026-09-22 按用户确认的 D-41 修复 full_auto Shell：主机环境执行、后台服务跨调用及 CLI 退出存活，
 默认模式保留 bwrap；补齐实时模式切换、进程组停止、输出读取收尾和相同环境的 `exec --check`。
