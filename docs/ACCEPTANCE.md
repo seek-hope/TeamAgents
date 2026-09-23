@@ -28,6 +28,19 @@ pid+boot_id+start_ticks 身份、抽象 socket+token 鉴权）；`engine/src/v2`
 [R2-P2 记录](../review/r2-p2-2026-09-23.md)；原始归档在 `review/eval/runs/2026-09-23-r2-p2-driver/`。
 多实例、MCP/Skills、其余供应商、TUI 接入与正式性能实验仍属后续阶段。
 
+R2-P3 于 2026-09-24 落地多实例：能力授权（范围授予/级联撤销/派发线性化点重查）、实例生命周期
+（PAUSED/PARKED/TERMINATED 可运行性状态、重置 epoch 封闭、终止结清任务与回收授权）、收件箱与委派
+（envelope_id 边界去重、背压公开失败、窄返回路径、终态结清消耗返回能力）、等待/唤醒（ALL/ANY+计时器、
+注册即求值、事实产生点同事务唤醒、唤醒原因入上下文、阻塞诊断不误报普通环）、模型可见协作面
+（spawn/delegate/send/wait 按授权注入 schema，原子 spawn 一事务创建实例+派生授权+初始任务）、
+任务结清闭环（完成回合按存储候选结清任务、队列续跑 note、空队 close_completion）、多实例 supervisor
+（发现循环驱动全部 ACTIVE 实例、共享单写存储 worker、输入按实例即时唤醒、全终止退出）与 A18 共享目标预算
+（无目标实例按承接任务队列归属计费）。验证中发现并修复三处真缺陷（supervisor shutdown 挂起、WAITING
+实例消息唤醒缺口、无目标完成回合卡死），各有回归。确定性证据：控制面新增 25 项、驱动 3 项、supervisor
+端到端 4 项；`make check` 全绿——core 216 / engine 422 / tui 109。任意获准通信图可执行、单写上下文与
+统一目标预算成立；真实模型验收、MCP/Skills、其余供应商、TUI 接入与正式性能实验仍属 P4 及以后。
+证据与复跑见 [R2-P3 记录](../review/r2-p3-2026-09-24.md)。
+
 2026-09-22 按用户确认的 D-41 修复 full_auto Shell：主机环境执行、后台服务跨调用及 CLI 退出存活，
 默认模式保留 bwrap；补齐实时模式切换、进程组停止、输出读取收尾和相同环境的 `exec --check`。
 新增 6 项回归，`make check` 全绿：core 152 / engine 384 / TUI 109，engine 3 ignored。

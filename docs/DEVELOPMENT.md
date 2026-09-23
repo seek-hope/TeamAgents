@@ -56,6 +56,15 @@ cargo test --offline --manifest-path engine/Cargo.toml --test v2_driver --test j
 
 证据与故障注入矩阵见 [R2-P2 记录](../review/r2-p2-2026-09-23.md)。
 
+R2-P3 的多实例在同一 `engine/src/v2` 下（supervisor 发现循环驱动全部 ACTIVE 实例，
+spawn/delegate/send/wait 协作面经控制面执行）：
+
+```bash
+cargo test --offline --manifest-path engine/Cargo.toml --test v2_supervisor
+```
+
+证据与已知边界见 [R2-P3 记录](../review/r2-p3-2026-09-24.md)。
+
 局部开发仍直接使用 Cargo，缩短反馈时间：
 
 ```bash
