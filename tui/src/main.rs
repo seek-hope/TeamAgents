@@ -17,7 +17,7 @@ use serde_json::{json, Value as Json};
 
 use teamagents_tui::app::{self, App, Effect, OpResult};
 use teamagents_tui::daemon_client::DaemonClient;
-use teamagents_tui::v2app::{Focus as V2Focus, V2App, V2Effect};
+use teamagents_tui::v2app::{Focus as V2Focus, V2App, V2Effect, View as V2View};
 use teamagents_tui::v2ui;
 use teamagents_tui::worker::{PendingCall, Worker};
 use teamagents_tui::{i18n, ui};
@@ -307,6 +307,20 @@ fn v2_refresh_approvals(client: &mut DaemonClient, app: &mut V2App) {
     }
 }
 
+fn v2_refresh_tasks(client: &mut DaemonClient, app: &mut V2App) {
+    match client.call("tasks", json!({})) {
+        Ok(result) => app.apply_tasks(result),
+        Err(e) => app.mark_disconnected(&e),
+    }
+}
+
+fn v2_refresh_grants(client: &mut DaemonClient, app: &mut V2App) {
+    match client.call("grants", json!({})) {
+        Ok(result) => app.apply_grants(result),
+        Err(e) => app.mark_disconnected(&e),
+    }
+}
+
 fn run_v2_effect(effect: V2Effect, client: &mut DaemonClient, app: &mut V2App) {
     match effect {
         V2Effect::SubmitInput { instance, envelope, text } => {
@@ -332,6 +346,29 @@ fn run_v2_effect(effect: V2Effect, client: &mut DaemonClient, app: &mut V2App) {
                 Err(e) => app.decide_failed(&e),
             }
         }
+        // panel interventions are business commands with fresh command ids;
+        // the user can retry after a disconnect without duplicating an effect
+        V2Effect::SetLifecycle { instance, lifecycle } => {
+            let command_id = format!("lc-{}", uuid::Uuid::new_v4());
+            let result = client.command(
+                &command_id,
+                "set_lifecycle",
+                json!({"instance_id": instance, "lifecycle": lifecycle, "reason": "tui 面板干预"}),
+            );
+            match result {
+                Ok(_) => v2_sync_checkpoint(client, app),
+                Err(e) => app.command_failed(&e),
+            }
+        }
+        V2Effect::CancelTask { task_id } => {
+            let command_id = format!("ct-{}", uuid::Uuid::new_v4());
+            let result =
+                client.command(&command_id, "cancel_task", json!({"task_id": task_id, "reason": "tui 面板取消"}));
+            match result {
+                Ok(_) => v2_refresh_tasks(client, app),
+                Err(e) => app.command_failed(&e),
+            }
+        }
         V2Effect::Quit => {}
     }
 }
@@ -344,10 +381,13 @@ fn run_v2(
     v2_sync_checkpoint(client, app);
     v2_refresh_history(client, app);
     v2_refresh_approvals(client, app);
+    v2_refresh_tasks(client, app);
+    v2_refresh_grants(client, app);
     let mut last_event_poll = Instant::now();
     let mut last_slow = Instant::now();
     let mut dirty = true;
     let mut active_id = app.active_instance().map(|i| i.id.clone());
+    let mut last_view = app.view;
     loop {
         if dirty {
             let _ = terminal.draw(|f| v2ui::render(f, app));
@@ -374,9 +414,28 @@ fn run_v2(
                                 .map(|s| ratatui::layout::Rect::new(0, 0, s.width, s.height))
                                 .unwrap_or_default();
                             let geo = v2ui::geometry(app, size);
-                            if let Some(index) = v2ui::approval_at(&geo, app, m.row, m.column) {
-                                app.focus = V2Focus::Approvals;
-                                app.approval_sel = index;
+                            match app.view {
+                                V2View::Chat => {
+                                    if let Some(index) = v2ui::approval_at(&geo, app, m.row, m.column) {
+                                        app.focus = V2Focus::Approvals;
+                                        app.approval_sel = index;
+                                    }
+                                }
+                                V2View::Instances => {
+                                    if let Some(index) = v2ui::panel_row_at(&geo, m.row, m.column) {
+                                        if index < app.instances.len() {
+                                            app.instance_sel = index;
+                                        }
+                                    }
+                                }
+                                V2View::Tasks => {
+                                    if let Some(index) = v2ui::panel_row_at(&geo, m.row, m.column) {
+                                        if index < app.tasks.len() {
+                                            app.task_sel = index;
+                                        }
+                                    }
+                                }
+                                V2View::Topology => {}
                             }
                         }
                         _ => {}
@@ -404,6 +463,20 @@ fn run_v2(
             v2_refresh_history(client, app);
             dirty = true;
         }
+        // entering a panel refreshes its data once; events keep it current
+        if app.view != last_view {
+            last_view = app.view;
+            match app.view {
+                V2View::Instances => v2_sync_checkpoint(client, app),
+                V2View::Tasks => v2_refresh_tasks(client, app),
+                V2View::Topology => {
+                    v2_refresh_grants(client, app);
+                    v2_refresh_tasks(client, app);
+                }
+                V2View::Chat => {}
+            }
+            dirty = true;
+        }
         if last_event_poll.elapsed() >= Duration::from_millis(150) {
             last_event_poll = Instant::now();
             match client.poll_events() {
@@ -418,6 +491,12 @@ fn run_v2(
                     }
                     if refresh.checkpoint {
                         v2_sync_checkpoint(client, app);
+                    }
+                    if refresh.tasks {
+                        v2_refresh_tasks(client, app);
+                    }
+                    if refresh.grants {
+                        v2_refresh_grants(client, app);
                     }
                     if !events.is_empty() {
                         dirty = true;
@@ -437,6 +516,8 @@ fn run_v2(
                 if !app.disconnected {
                     v2_refresh_history(client, app);
                     v2_refresh_approvals(client, app);
+                    v2_refresh_tasks(client, app);
+                    v2_refresh_grants(client, app);
                     dirty = true;
                 }
             } else {

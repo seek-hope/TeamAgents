@@ -15,6 +15,27 @@ pub enum Focus {
     Approvals,
 }
 
+/// Top-level views (§9: 实例、任务/权限视图、拓扑边列表). F1/F3/F4/F5
+/// switch globally; Esc from a panel returns to the conversation.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum View {
+    Chat,
+    Instances,
+    Tasks,
+    Topology,
+}
+
+impl View {
+    pub fn name(self) -> &'static str {
+        match self {
+            View::Chat => "对话",
+            View::Instances => "实例",
+            View::Tasks => "任务",
+            View::Topology => "拓扑",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ChatKind {
     User,
@@ -47,6 +68,29 @@ pub struct ApprovalInfo {
 }
 
 #[derive(Clone, Debug)]
+pub struct TaskInfo {
+    pub id: String,
+    pub goal_id: String,
+    pub assignee: String,
+    pub status: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct GrantInfo {
+    pub subject: String,
+    pub action: String,
+    pub scope: String,
+    pub revoked: bool,
+}
+
+/// Pending destructive confirmation (termination stays deliberate, §5.4):
+/// y confirms, n/Esc cancels; every other key is swallowed meanwhile.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Confirm {
+    TerminateInstance { instance: String },
+}
+
+#[derive(Clone, Debug)]
 pub struct GoalInfo {
     pub status: String,
     pub known_total: i64,
@@ -57,8 +101,25 @@ pub struct GoalInfo {
 /// Side effects for the main loop to execute through the daemon client.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum V2Effect {
-    SubmitInput { instance: String, envelope: String, text: String },
-    Decide { approval_id: String, decision: &'static str },
+    SubmitInput {
+        instance: String,
+        envelope: String,
+        text: String,
+    },
+    Decide {
+        approval_id: String,
+        decision: &'static str,
+    },
+    /// Instance lifecycle intervention from the panel (§5.4): the main loop
+    /// sends set_lifecycle as Identity::User with a fresh command id.
+    SetLifecycle {
+        instance: String,
+        lifecycle: &'static str,
+    },
+    /// Cancel a non-terminal task from the panel (§5.3).
+    CancelTask {
+        task_id: String,
+    },
     Quit,
 }
 
@@ -68,6 +129,8 @@ pub struct Refresh {
     pub history: bool,
     pub approvals: bool,
     pub checkpoint: bool,
+    pub tasks: bool,
+    pub grants: bool,
 }
 
 /// Retained system-note cap: notes are UI signals layered over the
@@ -78,6 +141,8 @@ const PREVIEW_CHARS: usize = 400;
 
 pub struct V2App {
     pub session_id: String,
+    /// Current top-level view (§9 panels); Chat is the default.
+    pub view: View,
     pub instances: Vec<InstanceInfo>,
     /// Index into `instances`: the conversation shown and input target.
     pub active: usize,
@@ -88,6 +153,14 @@ pub struct V2App {
     pub focus: Focus,
     pub composer: Composer,
     pub disconnected: bool,
+    /// Selection inside the instances panel (Enter promotes it to `active`).
+    pub instance_sel: usize,
+    pub tasks: Vec<TaskInfo>,
+    pub task_sel: usize,
+    pub grants: Vec<GrantInfo>,
+    /// Topology edge-list scroll offset (§9: 拓扑先用边列表表达).
+    pub topo_scroll: usize,
+    pub confirm: Option<Confirm>,
     /// Scroll offset in wrapped lines from the bottom (0 = following).
     pub chat_scroll: usize,
     pub watermark: i64,
@@ -102,6 +175,7 @@ impl V2App {
     pub fn new(session_id: &str) -> V2App {
         V2App {
             session_id: session_id.to_string(),
+            view: View::Chat,
             instances: vec![],
             active: 0,
             entries: vec![],
@@ -111,6 +185,12 @@ impl V2App {
             focus: Focus::Composer,
             composer: Composer::new(vec![]),
             disconnected: false,
+            instance_sel: 0,
+            tasks: vec![],
+            task_sel: 0,
+            grants: vec![],
+            topo_scroll: 0,
+            confirm: None,
             chat_scroll: 0,
             watermark: 0,
             quit: false,
@@ -169,6 +249,9 @@ impl V2App {
                 limit_total: g["limits"]["max_total_tokens"].as_i64(),
             })
         });
+        if self.instance_sel >= self.instances.len() {
+            self.instance_sel = self.instances.len().saturating_sub(1);
+        }
         self.watermark = self.watermark.max(watermark);
         // a fresh checkpoint supersedes earlier UI-level notes
         self.entries.retain(|e| e.kind != ChatKind::System && e.kind != ChatKind::Error);
@@ -267,6 +350,24 @@ impl V2App {
                         payload["lifecycle"].as_str().unwrap_or("?")
                     ));
                 }
+                "instance_created" => {
+                    refresh.checkpoint = true;
+                    self.note(format!("实例 {} 创建", event["scope"].as_str().unwrap_or("?")));
+                }
+                "task_delegated" | "task_started" | "task_completed" => {
+                    refresh.tasks = true;
+                }
+                "task_cancelled" => {
+                    refresh.tasks = true;
+                    self.note(format!(
+                        "任务 {} 已取消：{}",
+                        payload["task_id"].as_str().unwrap_or("?"),
+                        payload["reason"].as_str().unwrap_or("")
+                    ));
+                }
+                "grant_issued" | "grant_revoked" => {
+                    refresh.grants = true;
+                }
                 "approval_requested" | "approval_granted" | "approval_denied" => {
                     refresh.approvals = true;
                 }
@@ -298,6 +399,45 @@ impl V2App {
         if self.approvals.is_empty() && self.focus == Focus::Approvals {
             self.focus = Focus::Composer;
         }
+    }
+
+    pub fn apply_tasks(&mut self, result: Json) {
+        self.tasks = result["tasks"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .map(|t| TaskInfo {
+                id: t["id"].as_str().unwrap_or("").to_string(),
+                goal_id: t["goal_id"].as_str().unwrap_or("").to_string(),
+                assignee: t["assignee"].as_str().unwrap_or("").to_string(),
+                status: t["status"].as_str().unwrap_or("").to_string(),
+            })
+            .collect();
+        if self.task_sel >= self.tasks.len() {
+            self.task_sel = self.tasks.len().saturating_sub(1);
+        }
+    }
+
+    pub fn apply_grants(&mut self, result: Json) {
+        self.grants = result["grants"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .map(|g| GrantInfo {
+                subject: g["subject"].as_str().unwrap_or("").to_string(),
+                action: g["action"].as_str().unwrap_or("").to_string(),
+                scope: g["resource_scope"].as_str().unwrap_or("").to_string(),
+                revoked: g["revoked"].as_bool().unwrap_or(false),
+            })
+            .collect();
+        // the topology render clamps topo_scroll against the visible height
+    }
+
+    /// A panel command (lifecycle/task) the daemon refused (write-surface error).
+    pub fn command_failed(&mut self, error: &str) {
+        self.note_error(format!("命令失败：{error}"));
     }
 
     pub fn mark_disconnected(&mut self, error: &str) {
@@ -332,9 +472,159 @@ impl V2App {
             self.quit = true;
             return Some(V2Effect::Quit);
         }
-        match self.focus {
-            Focus::Approvals => self.approval_key(key),
-            Focus::Composer => self.composer_key(key),
+        // a pending destructive confirmation swallows keys until resolved
+        if self.confirm.is_some() {
+            return self.confirm_key(key);
+        }
+        // view switching is global (F1 returns to the conversation)
+        match key.code {
+            KeyCode::F(1) => {
+                self.view = View::Chat;
+                return None;
+            }
+            KeyCode::F(3) => {
+                self.view = View::Instances;
+                self.instance_sel = self.active;
+                return None;
+            }
+            KeyCode::F(4) => {
+                self.view = View::Tasks;
+                return None;
+            }
+            KeyCode::F(5) => {
+                self.view = View::Topology;
+                return None;
+            }
+            _ => {}
+        }
+        match self.view {
+            View::Chat => match self.focus {
+                Focus::Approvals => self.approval_key(key),
+                Focus::Composer => self.composer_key(key),
+            },
+            View::Instances => self.instances_key(key),
+            View::Tasks => self.tasks_key(key),
+            View::Topology => self.topology_key(key),
+        }
+    }
+
+    fn confirm_key(&mut self, key: crossterm::event::KeyEvent) -> Option<V2Effect> {
+        use crossterm::event::KeyCode;
+        let pending = self.confirm.clone()?;
+        match key.code {
+            KeyCode::Char('y') => {
+                self.confirm = None;
+                match pending {
+                    Confirm::TerminateInstance { instance } => {
+                        Some(V2Effect::SetLifecycle { instance, lifecycle: "TERMINATED" })
+                    }
+                }
+            }
+            KeyCode::Char('n') | KeyCode::Esc => {
+                self.confirm = None;
+                None
+            }
+            _ => None,
+        }
+    }
+
+    fn instances_key(&mut self, key: crossterm::event::KeyEvent) -> Option<V2Effect> {
+        use crossterm::event::KeyCode;
+        match key.code {
+            KeyCode::Esc => {
+                self.view = View::Chat;
+                None
+            }
+            KeyCode::Up => {
+                self.instance_sel = self.instance_sel.saturating_sub(1);
+                None
+            }
+            KeyCode::Down => {
+                if self.instance_sel + 1 < self.instances.len() {
+                    self.instance_sel += 1;
+                }
+                None
+            }
+            // choose the conversation target and jump back to the chat
+            KeyCode::Enter => {
+                if self.instance_sel < self.instances.len() {
+                    self.active = self.instance_sel;
+                    self.chat_scroll = 0;
+                    self.view = View::Chat;
+                }
+                None
+            }
+            KeyCode::Char('p') => self.lifecycle_selected("PAUSED"),
+            KeyCode::Char('r') => self.lifecycle_selected("ACTIVE"),
+            // termination is irreversible for the session: confirm first (§5.4)
+            KeyCode::Char('t') => {
+                if let Some(instance) = self.instances.get(self.instance_sel) {
+                    self.confirm = Some(Confirm::TerminateInstance { instance: instance.id.clone() });
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    fn lifecycle_selected(&mut self, lifecycle: &'static str) -> Option<V2Effect> {
+        let instance = self.instances.get(self.instance_sel)?.id.clone();
+        Some(V2Effect::SetLifecycle { instance, lifecycle })
+    }
+
+    fn tasks_key(&mut self, key: crossterm::event::KeyEvent) -> Option<V2Effect> {
+        use crossterm::event::KeyCode;
+        match key.code {
+            KeyCode::Esc => {
+                self.view = View::Chat;
+                None
+            }
+            KeyCode::Up => {
+                self.task_sel = self.task_sel.saturating_sub(1);
+                None
+            }
+            KeyCode::Down => {
+                if self.task_sel + 1 < self.tasks.len() {
+                    self.task_sel += 1;
+                }
+                None
+            }
+            KeyCode::Char('c') => {
+                let task = self.tasks.get(self.task_sel)?;
+                // terminal tasks have nothing left to cancel
+                if matches!(task.status.as_str(), "SUCCEEDED" | "FAILED" | "CANCELLED") {
+                    return None;
+                }
+                Some(V2Effect::CancelTask { task_id: task.id.clone() })
+            }
+            _ => None,
+        }
+    }
+
+    fn topology_key(&mut self, key: crossterm::event::KeyEvent) -> Option<V2Effect> {
+        use crossterm::event::KeyCode;
+        match key.code {
+            KeyCode::Esc => {
+                self.view = View::Chat;
+                None
+            }
+            KeyCode::Up => {
+                self.topo_scroll = self.topo_scroll.saturating_sub(1);
+                None
+            }
+            KeyCode::Down => {
+                self.topo_scroll += 1; // the render clamps against the height
+                None
+            }
+            KeyCode::PageUp => {
+                self.topo_scroll = self.topo_scroll.saturating_sub(self.last_chat_height.max(1));
+                None
+            }
+            KeyCode::PageDown => {
+                self.topo_scroll += self.last_chat_height.max(1);
+                None
+            }
+            _ => None,
         }
     }
 
@@ -446,10 +736,35 @@ impl V2App {
     }
 
     pub fn wheel(&mut self, up: bool) {
-        if up {
-            self.scroll_chat(3);
-        } else {
-            self.scroll_chat_back(3);
+        match self.view {
+            View::Instances => {
+                if up {
+                    self.instance_sel = self.instance_sel.saturating_sub(1);
+                } else if self.instance_sel + 1 < self.instances.len() {
+                    self.instance_sel += 1;
+                }
+            }
+            View::Tasks => {
+                if up {
+                    self.task_sel = self.task_sel.saturating_sub(1);
+                } else if self.task_sel + 1 < self.tasks.len() {
+                    self.task_sel += 1;
+                }
+            }
+            View::Topology => {
+                if up {
+                    self.topo_scroll = self.topo_scroll.saturating_sub(3);
+                } else {
+                    self.topo_scroll += 3;
+                }
+            }
+            View::Chat => {
+                if up {
+                    self.scroll_chat(3);
+                } else {
+                    self.scroll_chat_back(3);
+                }
+            }
         }
     }
 
@@ -475,20 +790,29 @@ impl V2App {
         let approvals_part =
             if self.approvals.is_empty() { String::new() } else { format!(" · 待批准 {}", self.approvals.len()) };
         let link = if self.disconnected { " · 已断开，重连中…" } else { "" };
-        format!("会话 {} · {instance_part} · {goal_part}{approvals_part}{link}", self.session_id)
+        let view = self.view.name();
+        format!("会话 {} · 视图 {view} · {instance_part} · {goal_part}{approvals_part}{link}", self.session_id)
     }
 
     pub fn footer_hint(&self) -> String {
-        match self.focus {
-            Focus::Composer => {
-                let approvals = if self.approvals.is_empty() {
-                    String::new()
-                } else {
-                    format!(" · F2 批准({})", self.approvals.len())
-                };
-                format!("Enter 发送 · Tab 切换实例 · PgUp/PgDn 滚动{approvals} · Ctrl+C 退出")
-            }
-            Focus::Approvals => "a 批准本次 · d 拒绝 · ↑↓ 选择 · Esc 返回".to_string(),
+        if self.confirm.is_some() {
+            return "确认终止该实例？y 确认 / n 取消".to_string();
+        }
+        match self.view {
+            View::Chat => match self.focus {
+                Focus::Composer => {
+                    let approvals = if self.approvals.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" · F2 批准({})", self.approvals.len())
+                    };
+                    format!("Enter 发送 · Tab 切实例 · F3/F4/F5 面板{approvals} · Ctrl+C 退出")
+                }
+                Focus::Approvals => "a 批准本次 · d 拒绝 · ↑↓ 选择 · Esc 返回".to_string(),
+            },
+            View::Instances => "Enter 切换对话目标 · p 暂停 · r 恢复 · t 终止 · ↑↓ 选择 · Esc 返回".to_string(),
+            View::Tasks => "c 取消任务 · ↑↓ 选择 · Esc 返回".to_string(),
+            View::Topology => "↑↓ 滚动 · Esc 返回".to_string(),
         }
     }
 }

@@ -5,7 +5,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 use serde_json::{json, Value as Json};
-use teamagents_tui::v2app::{ChatKind, Focus, V2App, V2Effect};
+use teamagents_tui::v2app::{ChatKind, Confirm, Focus, V2App, V2Effect, View};
 use teamagents_tui::v2ui;
 
 fn key(code: KeyCode) -> KeyEvent {
@@ -236,4 +236,166 @@ fn frame_shows_status_chat_approvals_composer_and_footer() {
     assert!(geo.approvals.height > 0);
     assert_eq!(v2ui::approval_at(&geo, &app, geo.approvals.y + 1, 2), Some(0));
     assert_eq!(v2ui::approval_at(&geo, &app, geo.approvals.y, 2), None);
+}
+
+// ---- R19-b③ panels: instances / tasks / topology -------------------------
+
+fn tasks_json() -> Json {
+    json!({"tasks": [
+        {"id": "t-1", "goal_id": "g1", "assignee": "i-worker", "status": "RUNNING"},
+        {"id": "t-2", "goal_id": "g1", "assignee": "i-leader", "status": "SUCCEEDED"}
+    ]})
+}
+
+fn grants_json() -> Json {
+    json!({"grants": [
+        {"subject": "i-leader", "action": "manage", "resource_scope": "session", "revoked": false},
+        {"subject": "i-worker", "action": "message", "resource_scope": "instance:i-leader", "revoked": false},
+        {"subject": "i-old", "action": "manage", "resource_scope": "session", "revoked": true}
+    ]})
+}
+
+#[test]
+fn view_switching_is_global_and_esc_returns() {
+    let mut app = app();
+    assert_eq!(app.view, View::Chat);
+    app.handle_key(key(KeyCode::F(3)));
+    assert_eq!(app.view, View::Instances);
+    assert!(app.status_line().contains("视图 实例"), "{}", app.status_line());
+    app.handle_key(key(KeyCode::F(4)));
+    assert_eq!(app.view, View::Tasks);
+    app.handle_key(key(KeyCode::F(5)));
+    assert_eq!(app.view, View::Topology);
+    app.handle_key(key(KeyCode::Esc));
+    assert_eq!(app.view, View::Chat);
+    // F1 also returns from a panel
+    app.handle_key(key(KeyCode::F(4)));
+    app.handle_key(key(KeyCode::F(1)));
+    assert_eq!(app.view, View::Chat);
+}
+
+#[test]
+fn instances_panel_pauses_resumes_and_switches_the_conversation() {
+    let mut app = app();
+    app.handle_key(key(KeyCode::F(3)));
+    assert_eq!(app.instance_sel, 0); // follows the conversation target
+    app.handle_key(key(KeyCode::Down));
+    assert_eq!(app.instance_sel, 1);
+    let effect = app.handle_key(key(KeyCode::Char('p'))).expect("pause effect");
+    assert_eq!(effect, V2Effect::SetLifecycle { instance: "i-worker".into(), lifecycle: "PAUSED" });
+    let effect = app.handle_key(key(KeyCode::Char('r'))).expect("resume effect");
+    assert_eq!(effect, V2Effect::SetLifecycle { instance: "i-worker".into(), lifecycle: "ACTIVE" });
+    // Enter promotes the selection to the conversation target and returns
+    let effect = app.handle_key(key(KeyCode::Enter));
+    assert!(effect.is_none());
+    assert_eq!(app.view, View::Chat);
+    assert_eq!(app.active_instance().unwrap().id, "i-worker");
+}
+
+#[test]
+fn termination_requires_an_explicit_confirmation() {
+    let mut app = app();
+    app.handle_key(key(KeyCode::F(3)));
+    let effect = app.handle_key(key(KeyCode::Char('t')));
+    assert!(effect.is_none());
+    assert_eq!(app.confirm, Some(Confirm::TerminateInstance { instance: "i-leader".into() }));
+    assert!(app.footer_hint().contains("确认终止"), "{}", app.footer_hint());
+    // other keys are swallowed while the confirmation pends
+    assert!(app.handle_key(key(KeyCode::Char('p'))).is_none());
+    assert_eq!(app.confirm, Some(Confirm::TerminateInstance { instance: "i-leader".into() }));
+    // n cancels; a fresh t + y terminates
+    app.handle_key(key(KeyCode::Char('n')));
+    assert_eq!(app.confirm, None);
+    app.handle_key(key(KeyCode::Char('t')));
+    let effect = app.handle_key(key(KeyCode::Char('y'))).expect("terminate effect");
+    assert_eq!(effect, V2Effect::SetLifecycle { instance: "i-leader".into(), lifecycle: "TERMINATED" });
+    assert_eq!(app.confirm, None);
+}
+
+#[test]
+fn tasks_panel_cancels_only_live_tasks() {
+    let mut app = app();
+    app.apply_tasks(tasks_json());
+    app.handle_key(key(KeyCode::F(4)));
+    let effect = app.handle_key(key(KeyCode::Char('c'))).expect("cancel effect");
+    assert_eq!(effect, V2Effect::CancelTask { task_id: "t-1".into() });
+    app.handle_key(key(KeyCode::Down));
+    assert_eq!(app.task_sel, 1);
+    // SUCCEEDED is terminal: nothing to cancel
+    assert!(app.handle_key(key(KeyCode::Char('c'))).is_none());
+}
+
+#[test]
+fn task_and_grant_events_drive_panel_refreshes() {
+    let mut app = app();
+    let refresh = app.apply_events(&[
+        json!({"sequence": 6, "kind": "task_delegated", "scope": "i-worker", "payload": {"task_id": "t-1"}}),
+        json!({"sequence": 7, "kind": "grant_issued", "scope": "g-1", "payload": {}}),
+        json!({"sequence": 8, "kind": "task_cancelled", "scope": "i-worker",
+               "payload": {"task_id": "t-1", "reason": "superseded"}}),
+    ]);
+    assert!(refresh.tasks);
+    assert!(refresh.grants);
+    assert!(app.entries.iter().any(|e| e.text.contains("任务 t-1 已取消：superseded")), "{:?}", app.entries);
+}
+
+#[test]
+fn panel_selections_clamp_after_data_refreshes() {
+    let mut app = app();
+    app.apply_tasks(tasks_json());
+    app.task_sel = 1;
+    app.apply_tasks(json!({"tasks": []}));
+    assert_eq!(app.task_sel, 0);
+    app.instance_sel = 5;
+    app.apply_checkpoint(checkpoint(), 6);
+    assert_eq!(app.instance_sel, 1); // two instances in the checkpoint
+}
+
+#[test]
+fn frame_shows_the_panels_and_panel_hit_testing() {
+    let mut app = app();
+    app.apply_tasks(tasks_json());
+    app.apply_grants(grants_json());
+    let backend = TestBackend::new(72, 18);
+
+    // instances panel
+    app.handle_key(key(KeyCode::F(3)));
+    let mut terminal = Terminal::new(TestBackend::new(72, 18)).unwrap();
+    terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
+    let all = frame_lines(&terminal).join("\n");
+    assert!(all.contains("实例（● 对话目标）"), "{all}");
+    assert!(all.contains("i-leader · ACTIVE · READY"), "{all}");
+    assert!(all.contains("i-worker"), "{all}");
+    assert!(all.contains("t 终止"), "{all}");
+    let geo = v2ui::geometry(&app, ratatui::layout::Rect::new(0, 0, 72, 18));
+    assert_eq!(geo.approvals.height, 0); // panels hide the chat-only boxes
+    assert_eq!(geo.composer.height, 0);
+    assert_eq!(v2ui::panel_row_at(&geo, geo.body.y + 1, 2), Some(0));
+    assert_eq!(v2ui::panel_row_at(&geo, geo.body.y + 2, 2), Some(1));
+    assert_eq!(v2ui::panel_row_at(&geo, geo.body.y, 2), None); // the border
+    drop(terminal);
+
+    // tasks panel
+    app.handle_key(key(KeyCode::F(4)));
+    let mut terminal = Terminal::new(TestBackend::new(72, 18)).unwrap();
+    terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
+    let all = frame_lines(&terminal).join("\n");
+    assert!(all.contains("任务"), "{all}");
+    assert!(all.contains("t-1 · RUNNING · 承接 i-worker · 目标 g1"), "{all}");
+    assert!(all.contains("t-2 · SUCCEEDED"), "{all}");
+    assert!(all.contains("c 取消任务"), "{all}");
+    drop(terminal);
+
+    // topology panel: grant/channel edges + task-delegation edges, revoked hidden
+    app.handle_key(key(KeyCode::F(5)));
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
+    let all = frame_lines(&terminal).join("\n");
+    assert!(all.contains("拓扑 · 活跃授权 2 · 任务 2"), "{all}");
+    assert!(all.contains("授权与通道"), "{all}");
+    assert!(all.contains("i-leader ─manage→ session"), "{all}");
+    assert!(all.contains("i-worker ─message→ instance:i-leader"), "{all}");
+    assert!(!all.contains("i-old"), "{all}"); // revoked grants are not topology
+    assert!(all.contains("任务委派"), "{all}");
+    assert!(all.contains("t-1 ─→ i-worker  [RUNNING]"), "{all}");
 }

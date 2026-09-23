@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""PTY smoke for the v2 conversation interface (R19-b②): a fake v2 session
+"""PTY smoke for the v2 conversation interface (R19-b②/③): a fake v2 session
 daemon (Unix-socket JSON lines, §9 greeting + scripted reads) plus a real
 terminal. Boots teamagents-tui --daemon, types a message, asserts the
-submit_input frame and the event-driven history refresh on screen.
+submit_input frame and the event-driven history refresh on screen, then
+drives the R19-b③ panels: instances (pause/resume through real
+set_lifecycle frames), tasks (cancel_task), topology edge list.
 
 Requires: built tui binary (tui/target/debug/teamagents-tui).
 """
-import fcntl, json, os, pty, re, select, socket, struct, subprocess, sys, tempfile, termios, threading, time
+import fcntl, json, os, pty, re, select, socket, struct, subprocess, sys, tempfile, termios, threading, time, unicodedata
 
 BIN = os.path.join(os.path.dirname(__file__), "..", "target", "debug", "teamagents-tui")
 ENV = dict(os.environ, TERM="xterm-256color")
@@ -15,6 +17,8 @@ INSTANCES = [
     {"id": "i-leader", "lifecycle": "ACTIVE", "phase": "READY"},
     {"id": "i-worker", "lifecycle": "ACTIVE", "phase": "WAITING"},
 ]
+TASKS = [{"id": "t-smoke", "goal_id": "g1", "assignee": "i-worker", "status": "RUNNING"}]
+GRANTS = [{"subject": "i-leader", "action": "manage", "resource_scope": "session", "revoked": False}]
 GOAL = {"status": "ACTIVE", "known_usage": {"prompt": 7, "completion": 3, "total": 10},
         "unknown_usage": 0, "limits": {"max_total_tokens": 1000}}
 
@@ -27,6 +31,8 @@ class FakeDaemon:
         self.sequence = 0
         self.events = []
         self.history = []
+        self.instances = [dict(i) for i in INSTANCES]
+        self.tasks = [dict(t) for t in TASKS]
         self.frames = []
         self.error = None
         self.thread = threading.Thread(target=self.serve, daemon=True)
@@ -74,15 +80,34 @@ class FakeDaemon:
                 method = frame.get("method")
                 params = frame.get("params", {})
                 if method == "checkpoint":
-                    out = {"snapshot": {"instances": INSTANCES, "goal": GOAL}, "watermark": self.sequence}
+                    out = {"snapshot": {"instances": self.instances, "goal": GOAL}, "watermark": self.sequence}
                 elif method == "history":
                     out = {"instance_id": params.get("instance_id", ""), "entries": list(self.history)}
                 elif method == "approvals":
                     out = {"approvals": []}
+                elif method == "tasks":
+                    out = {"tasks": list(self.tasks)}
+                elif method == "grants":
+                    out = {"grants": list(GRANTS)}
                 elif method == "events":
                     since = params.get("since", 0)
                     out = {"events": [e for e in self.events if e["sequence"] > since],
                            "watermark": self.sequence, "resync_required": False}
+                elif method == "set_lifecycle" and frame.get("command_id"):
+                    target = params.get("instance_id", "")
+                    lifecycle = params.get("lifecycle", "")
+                    for inst in self.instances:
+                        if inst["id"] == target:
+                            inst["lifecycle"] = lifecycle
+                    self.emit("instance_lifecycle", target, {"lifecycle": lifecycle, "reason": "tui"})
+                    out = {"instance_id": target, "lifecycle": lifecycle}
+                elif method == "cancel_task" and frame.get("command_id"):
+                    task_id = params.get("task_id", "")
+                    for task in self.tasks:
+                        if task["id"] == task_id:
+                            task["status"] = "CANCELLED"
+                    self.emit("task_cancelled", "i-worker", {"task_id": task_id, "reason": "tui"})
+                    out = {"task_id": task_id, "status": "CANCELLED"}
                 elif method == "submit_input" and frame.get("command_id"):
                     text = params.get("text", "")
                     self.history.append({"idx": len(self.history) + 1, "kind": "user",
@@ -102,6 +127,10 @@ class FakeDaemon:
             self.error = f"fake daemon connection: {e}"
 
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from pty_click_check import Screen  # virtual terminal for diff-rendered frames
+
+
 def read_all(fd, timeout=1.5):
     out = b""
     end = time.time() + timeout
@@ -113,15 +142,6 @@ def read_all(fd, timeout=1.5):
             except OSError:
                 break
     return out
-
-
-def screen(raw: bytes) -> str:
-    txt = raw.decode("utf-8", "replace")
-    txt = re.sub(r"\x1b\][^\x07]*\x07", "", txt)
-    txt = re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]", "", txt)
-    txt = re.sub(r"\x1b[()][0-9A-B]", "", txt)
-    txt = re.sub(r"\x1b[=>]", "", txt)
-    return txt
 
 
 def main():
@@ -141,26 +161,28 @@ def main():
         os.execvpe(BIN, [BIN, "--daemon", daemon.sock_path], ENV)
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 36, 96, 0, 0))
     failures = []
+    scr = Screen(96, 36)
 
-    def expect(needle, label, raw):
-        if needle not in screen(raw):
-            failures.append(f"{label}: {needle!r} not on screen\n{screen(raw)[:2000]}")
+    def expect(needle, label):
+        text = "\n".join(scr.lines())
+        if needle not in text:
+            failures.append(f"{label}: {needle!r} not on screen\n{text[:2000]}")
 
-    boot = read_all(fd, 4.0)
-    expect("s-test", "status session", boot)
-    expect("i-leader [READY]", "status instance phase", boot)
-    expect("ACTIVE", "status goal", boot)
-    expect("10/1000", "status budget", boot)
-    expect("i-leader", "composer target", boot)
-    expect("Enter", "footer", boot)
+    scr.feed(read_all(fd, 4.0).decode("utf-8", "replace"))
+    expect("s-test", "status session")
+    expect("i-leader [READY]", "status instance phase")
+    expect("ACTIVE", "status goal")
+    expect("10/1000", "status budget")
+    expect("i-leader", "composer target")
+    expect("Enter", "footer")
 
     # typing + Enter submits one submit_input business frame whose command id
     # carries the envelope (§9), and the input event drives a history refresh
     os.write(fd, "你好v2".encode())
     time.sleep(0.3)
     os.write(fd, b"\r")
-    shown = read_all(fd, 4.0)
-    expect("你好v2", "conversation after refresh", shown)
+    scr.feed(read_all(fd, 4.0).decode("utf-8", "replace"))
+    expect("你好v2", "conversation after refresh")
     submitted = [f for f in daemon.frames if f.get("method") == "submit_input"]
     if not submitted:
         failures.append("no submit_input frame reached the daemon")
@@ -171,9 +193,51 @@ def main():
         if frame.get("params", {}).get("instance_id") != "i-leader":
             failures.append(f"submit_input targeted {frame.get('params', {}).get('instance_id')!r}")
 
+    # R19-b③ panels: F3 opens the instances panel; p/r send real
+    # set_lifecycle business frames whose events refresh the checkpoint
+    os.write(fd, b"\x1bOR")  # F3 (xterm legacy)
+    scr.feed(read_all(fd, 3.0).decode("utf-8", "replace"))
+    expect("实例（● 对话目标）", "instances panel title")
+    expect("i-leader · ACTIVE · READY", "instance row")
+    os.write(fd, b"p")
+    scr.feed(read_all(fd, 3.0).decode("utf-8", "replace"))
+    expect("PAUSED", "instance paused on screen")
+    pauses = [f for f in daemon.frames if f.get("method") == "set_lifecycle"
+              and f.get("params", {}).get("lifecycle") == "PAUSED"]
+    if not pauses:
+        failures.append("no set_lifecycle PAUSED frame reached the daemon")
+    elif not pauses[0].get("command_id", "").startswith("lc-"):
+        failures.append(f"set_lifecycle command_id: {pauses[0].get('command_id')!r}")
+    os.write(fd, b"r")
+    scr.feed(read_all(fd, 3.0).decode("utf-8", "replace"))
+    expect("i-leader · ACTIVE · READY", "instance resumed on screen")
+
+    # F4 tasks panel: c sends a cancel_task frame; the event refreshes the list
+    os.write(fd, b"\x1bOS")  # F4
+    scr.feed(read_all(fd, 3.0).decode("utf-8", "replace"))
+    expect("t-smoke · RUNNING · 承接 i-worker · 目标 g1", "task row")
+    os.write(fd, b"c")
+    scr.feed(read_all(fd, 3.0).decode("utf-8", "replace"))
+    expect("t-smoke · CANCELLED", "task cancelled on screen")
+    cancels = [f for f in daemon.frames if f.get("method") == "cancel_task"]
+    if not cancels:
+        failures.append("no cancel_task frame reached the daemon")
+
+    # F5 topology panel: grant/channel edges plus task-delegation edges
+    os.write(fd, b"\x1b[15~")  # F5
+    scr.feed(read_all(fd, 3.0).decode("utf-8", "replace"))
+    expect("拓扑 · 活跃授权 1 · 任务 1", "topology title")
+    expect("i-leader ─manage→ session", "grant edge")
+    expect("t-smoke ─→ i-worker", "task edge")
+
+    # Esc returns to the conversation
+    os.write(fd, b"\x1b")
+    scr.feed(read_all(fd, 3.0).decode("utf-8", "replace"))
+    expect("发给 i-leader", "composer back after Esc")
+
     # Ctrl+C quits
     os.write(fd, b"\x03")
-    read_all(fd, 1.0)
+    scr.feed(read_all(fd, 1.0).decode("utf-8", "replace"))
     try:
         os.waitpid(pid, os.WNOHANG)
     except ChildProcessError:
