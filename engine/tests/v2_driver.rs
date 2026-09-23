@@ -152,6 +152,54 @@ async fn run_to_goal_close(handle: &DriverHandle) -> String {
     event["payload"]["status"].as_str().unwrap_or("").to_string()
 }
 
+fn cmd(id: &str, method: &str, params: Json) -> teamagents_core::v2::Command {
+    teamagents_core::v2::Command { command_id: id.into(), method: method.into(), params }
+}
+
+/// Second control connection over the same session DB (WAL multi-connection).
+fn second_control(root: &Root) -> teamagents_core::v2::Control {
+    teamagents_core::v2::Control::open(&root.dir.join("session.sqlite"), "s-test", true).expect("control")
+}
+
+/// Wait for one task's settlement event.
+async fn wait_task_settled(handle: &DriverHandle, task_id: &str, timeout_ms: u64) -> Json {
+    for _ in 0..(timeout_ms / 25) {
+        if let Ok(events) = handle.events(0).await {
+            if let Some(event) = events
+                .iter()
+                .find(|e| e["kind"] == json!("task_completed") && e["payload"]["task_id"] == json!(task_id))
+            {
+                return event.clone();
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("task {task_id} not settled within {timeout_ms}ms");
+}
+
+/// Create an instance with no goal — the worker shape (§5.3): the driver
+/// bootstrap skips existing instances, so no goal is attached and
+/// completions settle tasks instead of goals.
+fn make_worker(control: &mut teamagents_core::v2::Control, root: &Root, instance: &str) {
+    control
+        .submit(
+            cmd(
+                &format!("make-{instance}"),
+                "create_instance",
+                json!({"id": instance, "workspace_ref": root.dir.join("ws").to_string_lossy()}),
+            ),
+            teamagents_core::v2::Identity::User,
+        )
+        .expect("worker instance");
+}
+
+/// Start the driver for a pre-created (goal-less) worker instance.
+async fn start_worker(root: &Root, instance: &str, script: Vec<Step>) -> DriverHandle {
+    let mut config = root.config(ScriptedProvider { script: Mutex::new(script.into()) });
+    config.instance_id = instance.into();
+    start(config).await.expect("worker driver")
+}
+
 #[tokio::test]
 async fn end_to_end_shell_then_finish() {
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
@@ -436,4 +484,100 @@ impl IntoProvider for Vec<Step> {
     fn into_provider(self) -> ScriptedProvider {
         ScriptedProvider { script: Mutex::new(self.into()) }
     }
+}
+
+#[tokio::test]
+async fn worker_finish_settles_the_delegated_task_from_the_stored_candidate() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let root = root("worker-settle");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    // goal + delegation land before the worker driver starts (§5.3)
+    let mut control = second_control(&root);
+    make_worker(&mut control, &root, "i-worker");
+    control.submit(cmd("mk-g", "create_goal", json!({"id": "g1"})), teamagents_core::v2::Identity::User).expect("goal");
+    control
+        .submit(
+            cmd("dt-1", "delegate_task", json!({"task_id": "t1", "assignee": "i-worker", "goal_id": "g1"})),
+            teamagents_core::v2::Identity::User,
+        )
+        .expect("delegate");
+    let script = vec![Step::Message(finish_call("task one done"))];
+    let handle = start_worker(&root, "i-worker", script).await;
+    let settled = wait_task_settled(&handle, "t1", 15_000).await;
+    assert_eq!(settled["payload"]["status"], json!("SUCCEEDED"));
+    assert_eq!(settled["payload"]["assignee"], json!("i-worker"));
+    // the task carries the stored candidate's outcome; the worker adopted
+    // it (PENDING → RUNNING) without any model tool call
+    let row: (String, String) = control
+        .connection()
+        .query_row("SELECT status, result_refs_json FROM tasks WHERE id = 't1'", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .unwrap();
+    assert_eq!(row.0, "SUCCEEDED");
+    assert_eq!(row.1, "[]", "no evidence in the candidate means no result refs");
+    wait_phase(&handle, "READY", 5_000).await;
+    handle.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn worker_queue_continues_after_a_settlement_until_empty() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let root = root("worker-queue");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let mut control = second_control(&root);
+    make_worker(&mut control, &root, "i-worker");
+    control.submit(cmd("mk-g", "create_goal", json!({"id": "g1"})), teamagents_core::v2::Identity::User).expect("goal");
+    for (tag, task) in [("dt-1", "t1"), ("dt-2", "t2")] {
+        control
+            .submit(
+                cmd(tag, "delegate_task", json!({"task_id": task, "assignee": "i-worker", "goal_id": "g1"})),
+                teamagents_core::v2::Identity::User,
+            )
+            .expect("delegate");
+    }
+    // one finish per task: settling t1 must not park the worker — the queue
+    // continuation note wakes the next turn, which adopts and settles t2
+    let script = vec![Step::Message(finish_call("first done")), Step::Message(finish_call("second done"))];
+    let handle = start_worker(&root, "i-worker", script).await;
+    wait_task_settled(&handle, "t1", 15_000).await;
+    wait_task_settled(&handle, "t2", 15_000).await;
+    let statuses: Vec<String> = control
+        .connection()
+        .prepare("SELECT status FROM tasks WHERE id IN ('t1', 't2') ORDER BY rowid")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(statuses, vec!["SUCCEEDED", "SUCCEEDED"]);
+    // the continuation note joined the context between the two turns
+    let notes: i64 = control
+        .connection()
+        .query_row(
+            "SELECT COUNT(*) FROM context_entries WHERE instance_id = 'i-worker' AND kind = 'note'
+             AND message_json LIKE '%settled: SUCCEEDED%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(notes, 1, "exactly one settlement note (t1) — the queue was empty after t2");
+    wait_phase(&handle, "READY", 5_000).await;
+    handle.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn worker_finish_with_an_empty_queue_just_closes_the_turn() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let root = root("worker-idle");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let mut control = second_control(&root);
+    make_worker(&mut control, &root, "i-worker");
+    let script = vec![Step::Message(finish_call("nothing to settle"))];
+    let handle = start_worker(&root, "i-worker", script).await;
+    handle.input("hello worker").await.expect("input");
+    // no goal, no tasks: the finish closes without an error (§5.2)
+    wait_event(&handle, "completion_closed", 15_000).await;
+    wait_phase(&handle, "READY", 5_000).await;
+    handle.shutdown().await.expect("shutdown");
 }

@@ -130,6 +130,7 @@ fn dispatch(
         "fail_request" => fail_request(tx, session_id, params),
         "cancel_request" => cancel_request(tx, session_id, params),
         "complete_goal" => complete_goal(tx, session_id, params),
+        "close_completion" => close_completion(tx, session_id, params),
         "artifact_abandon" => artifact_abandon(tx, session_id, params),
         "set_lifecycle" => set_lifecycle(tx, session_id, params, identity),
         "artifact_stage" => artifact_stage(tx, session_id, params),
@@ -985,6 +986,43 @@ fn complete_task(tx: &Connection, session_id: &str, params: &Json, identity: &Id
         rusqlite::params![target, result_refs.to_string(), task_id],
     )
     .map_err(|e| format!("complete task {task_id}: {e}"))?;
+    // a settlement reported from the assignee's finish turn closes that
+    // turn (mirror of complete_goal's phase rule); conditional, so settling
+    // mid-turn or by the user never rewires a live phase
+    let closed_turn = tx
+        .execute(
+            "UPDATE instances SET phase = 'READY', revision = revision + 1 WHERE id = ?1 AND phase = 'COMPLETION_PENDING'",
+            [&assignee],
+        )
+        .map_err(|e| format!("settlement phase: {e}"))?;
+    if closed_turn == 1 {
+        // queue continuation (§5.3): with further open tasks the instance
+        // must not park on its own assistant tail — the settlement note is
+        // the input that lets the loop advance to the next task
+        let remaining: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM tasks WHERE assignee = ?1 AND status IN ('PENDING', 'RUNNING')",
+                [&assignee],
+                |row| row.get(0),
+            )
+            .map_err(|e| format!("queue depth: {e}"))?;
+        if remaining > 0 {
+            let epoch: i64 = tx
+                .query_row("SELECT context_epoch FROM instances WHERE id = ?1", [&assignee], |row| row.get(0))
+                .map_err(|e| format!("assignee epoch: {e}"))?;
+            append_context(
+                tx,
+                &assignee,
+                epoch,
+                "note",
+                &json!({"role": "user", "content": format!(
+                    "[task {task_id} settled: {target}] {remaining} open task(s) remain in your queue"
+                )}),
+                Some(&format!("settle-note-{task_id}")),
+                &[],
+            )?;
+        }
+    }
     let terminal = matches!(target, "SUCCEEDED" | "FAILED");
     let mut delivered = false;
     if requester != "user" {
@@ -2360,6 +2398,27 @@ fn cancel_request(tx: &Connection, session_id: &str, params: &Json) -> Result<Js
     .map_err(|e| format!("cancel instance: {e}"))?;
     event(tx, session_id, "request_cancelled", &instance, &json!({"request_id": request_id, "reason": reason}))?;
     Ok(json!({"request_id": request_id, "status": "CANCELLED"}))
+}
+
+/// End a completion turn with nothing to settle (§5.2): a finish from an
+/// instance that owns no goal and holds no open assigned task simply
+/// returns to READY. The stored candidate stays on its decision for audit.
+fn close_completion(tx: &Connection, session_id: &str, params: &Json) -> Result<Json, String> {
+    let instance_id = params["instance_id"].as_str().ok_or("close_completion.instance_id required")?;
+    let (session, _, _, phase, _) = load_instance(tx, instance_id)?;
+    if session != session_id {
+        return Err(format!("instance {instance_id} does not belong to this session"));
+    }
+    if phase != "COMPLETION_PENDING" {
+        return Ok(json!({"instance_id": instance_id, "phase": phase, "already_closed": true}));
+    }
+    tx.execute(
+        "UPDATE instances SET phase = 'READY', revision = revision + 1 WHERE id = ?1 AND phase = 'COMPLETION_PENDING'",
+        [instance_id],
+    )
+    .map_err(|e| format!("close completion: {e}"))?;
+    event(tx, session_id, "completion_closed", instance_id, &json!({"instance_id": instance_id}))?;
+    Ok(json!({"instance_id": instance_id, "phase": "READY"}))
 }
 
 /// Goal completion (§4.2, §8): the open-operation check, goal result and the
@@ -3911,6 +3970,133 @@ mod tests {
         assert_eq!(done["woken"], json!([wait_id.clone()]));
         assert_eq!(wait_state(&ctl, &wait_id), "SATISFIED");
         assert_eq!(phase_of(&ctl, "i1"), "READY");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn task_settlement_closes_the_turn_and_notes_queue_continuation() {
+        let (mut ctl, path) = control("settle-note");
+        create_instance(&mut ctl, "i2");
+        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1"})), Identity::User).expect("goal");
+        ctl.submit(
+            cmd("dt-1", "delegate_task", json!({"task_id": "t1", "assignee": "i2", "goal_id": "g1"})),
+            Identity::User,
+        )
+        .expect("delegate t1");
+        ctl.submit(
+            cmd("dt-2", "delegate_task", json!({"task_id": "t2", "assignee": "i2", "goal_id": "g1"})),
+            Identity::User,
+        )
+        .expect("delegate t2");
+        // i2's finish turn parks it in COMPLETION_PENDING
+        let request = begin_and_complete(&mut ctl, "fin", "i2", 0);
+        ctl.submit(
+            cmd(
+                "imp-fin",
+                "import_response",
+                json!({"request_id": request, "decision_id": "d-fin",
+                       "entry": {"role": "assistant", "content": "done"},
+                       "completion": {"outcome": "success", "summary": "t1 done"}}),
+            ),
+            Identity::System,
+        )
+        .expect("import");
+        assert_eq!(phase_of(&ctl, "i2"), "COMPLETION_PENDING");
+        // settling t1 closes the turn and, with t2 still open, notes the
+        // remaining queue so the loop does not park on an assistant tail
+        ctl.submit(
+            cmd("ct-1", "complete_task", json!({"task_id": "t1", "status": "SUCCEEDED", "summary": "t1 done"})),
+            Identity::Instance("i2".into()),
+        )
+        .expect("complete t1");
+        assert_eq!(phase_of(&ctl, "i2"), "READY");
+        let note: String = ctl
+            .connection()
+            .query_row(
+                "SELECT message_json FROM context_entries WHERE instance_id = 'i2' ORDER BY idx DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(note.contains("settled: SUCCEEDED") && note.contains("1 open task(s)"), "{note}");
+        // settling the last open task closes the turn without a continuation note
+        let revision: i64 =
+            ctl.connection().query_row("SELECT revision FROM instances WHERE id = 'i2'", [], |row| row.get(0)).unwrap();
+        let request = begin_and_complete(&mut ctl, "fin2", "i2", revision);
+        ctl.submit(
+            cmd(
+                "imp-fin2",
+                "import_response",
+                json!({"request_id": request, "decision_id": "d-fin2",
+                       "entry": {"role": "assistant", "content": "done again"},
+                       "completion": {"outcome": "success", "summary": "t2 done"}}),
+            ),
+            Identity::System,
+        )
+        .expect("import 2");
+        let before = context_count(&ctl, "i2");
+        ctl.submit(
+            cmd("ct-2", "complete_task", json!({"task_id": "t2", "status": "SUCCEEDED", "summary": "t2 done"})),
+            Identity::Instance("i2".into()),
+        )
+        .expect("complete t2");
+        assert_eq!(phase_of(&ctl, "i2"), "READY");
+        assert_eq!(context_count(&ctl, "i2"), before, "an empty queue needs no continuation note");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn settling_a_task_mid_turn_leaves_the_live_phase_alone() {
+        let (mut ctl, path) = control("settle-mid-turn");
+        create_instance(&mut ctl, "i2");
+        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1"})), Identity::User).expect("goal");
+        ctl.submit(
+            cmd("dt-1", "delegate_task", json!({"task_id": "t1", "assignee": "i2", "goal_id": "g1"})),
+            Identity::User,
+        )
+        .expect("delegate");
+        ctl.submit(
+            cmd("b-1", "begin_request", json!({"instance_id": "i2", "request_id": "r1", "revision": 0})),
+            Identity::Instance("i2".into()),
+        )
+        .expect("begin");
+        assert_eq!(phase_of(&ctl, "i2"), "MODEL_PENDING");
+        // a user-side settlement never rewires a live phase nor notes the queue
+        ctl.submit(cmd("ct-1", "complete_task", json!({"task_id": "t1", "status": "SUCCEEDED"})), Identity::User)
+            .expect("settle");
+        assert_eq!(phase_of(&ctl, "i2"), "MODEL_PENDING");
+        assert_eq!(context_count(&ctl, "i2"), 0);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn close_completion_returns_to_ready_without_a_settlement() {
+        let (mut ctl, path) = control("close-completion");
+        create_instance(&mut ctl, "i1");
+        // a finish from an instance with no goal and no tasks parks in
+        // COMPLETION_PENDING; nothing needs settling
+        let request = begin_and_complete(&mut ctl, "fin", "i1", 0);
+        ctl.submit(
+            cmd(
+                "imp-fin",
+                "import_response",
+                json!({"request_id": request, "decision_id": "d-fin",
+                       "entry": {"role": "assistant", "content": "idle"},
+                       "completion": {"outcome": "success", "summary": "nothing to do"}}),
+            ),
+            Identity::System,
+        )
+        .expect("import");
+        assert_eq!(phase_of(&ctl, "i1"), "COMPLETION_PENDING");
+        let closed =
+            ctl.submit(cmd("cc-1", "close_completion", json!({"instance_id": "i1"})), Identity::System).expect("close");
+        assert_eq!(closed["phase"], json!("READY"));
+        assert_eq!(phase_of(&ctl, "i1"), "READY");
+        // a replayed close is idempotent
+        let again = ctl
+            .submit(cmd("cc-2", "close_completion", json!({"instance_id": "i1"})), Identity::System)
+            .expect("reclose");
+        assert_eq!(again["already_closed"], json!(true));
         cleanup(&path);
     }
 

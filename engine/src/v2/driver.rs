@@ -10,6 +10,7 @@ use crate::providers::{Cancel, ErrorClass, Provider, ProviderEvent};
 use crate::reference::readback_receipt;
 use crate::tools::{shell_command_spec, ShellMode, V2Toolkit};
 use crate::v2::storage::Storage;
+use rusqlite::OptionalExtension;
 use serde_json::{json, Value as Json};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -56,10 +57,10 @@ struct Snapshot {
     active_goal: Option<String>,
 }
 
-struct Shared {
-    wake: tokio::sync::Notify,
-    shutdown: AtomicBool,
-    cancel_attempt: Mutex<Option<Cancel>>,
+pub(crate) struct Shared {
+    pub(crate) wake: tokio::sync::Notify,
+    pub(crate) shutdown: AtomicBool,
+    pub(crate) cancel_attempt: Mutex<Option<Cancel>>,
 }
 
 /// Client handle: user operations go through the same serialized storage
@@ -270,19 +271,29 @@ pub struct Driver<P: Provider> {
 /// duplicating instances, goals or input (§6.3 row 1).
 pub async fn start<P: Provider + 'static>(config: DriverConfig<P>) -> Result<DriverHandle, String> {
     std::fs::create_dir_all(&config.state_root).map_err(|e| format!("state root: {e}"))?;
-    std::fs::create_dir_all(config.state_root.join("jobs")).map_err(|e| format!("jobs dir: {e}"))?;
-    std::fs::create_dir_all(config.state_root.join("artifacts")).map_err(|e| format!("artifacts dir: {e}"))?;
     let lock = crate::jobs::state_lock(&config.state_root.join("coordinator.lock"))?;
     let storage = Storage::open(&config.session_db, &config.session_id, true, config.storage_queue)?;
     let session_id = config.session_id.clone();
     let instance_id = config.instance_id.clone();
     let goal_id = format!("goal-{session_id}");
-    // bootstrap: idempotent via fixed command ids
+    bootstrap(&storage, &instance_id, &config.workspace.to_string_lossy(), &config.goal_limits).await?;
+    let (shared, task) = spawn_driver(config, &storage)?;
+    Ok(DriverHandle { storage, shared, session_id, instance_id, goal_id, task, _lock: lock })
+}
+
+/// Idempotent leader bootstrap (§6.3 row 1): fixed command ids replay
+/// receipts on restart instead of duplicating instances, goals or input.
+pub(crate) async fn bootstrap(
+    storage: &Storage,
+    instance_id: &str,
+    workspace: &str,
+    goal_limits: &Json,
+) -> Result<(), String> {
     storage
         .call({
-            let instance = instance_id.clone();
-            let workspace = config.workspace.to_string_lossy().into_owned();
-            let goal_limits = config.goal_limits.clone();
+            let instance = instance_id.to_string();
+            let workspace = workspace.to_string();
+            let goal_limits = goal_limits.clone();
             move |control| {
                 let exists: bool = control
                     .connection()
@@ -309,6 +320,21 @@ pub async fn start<P: Provider + 'static>(config: DriverConfig<P>) -> Result<Dri
             }
         })
         .await??;
+    Ok(())
+}
+
+/// One running instance driver: shared flags plus the join handle.
+pub(crate) type SpawnedDriver = (Arc<Shared>, tokio::task::JoinHandle<Result<(), String>>);
+
+/// Construct and spawn one instance driver over a shared storage worker
+/// (§6.1 single writer). No coordinator lock, no bootstrap: the caller
+/// (single-instance `start` or the P3 supervisor) owns both.
+pub(crate) fn spawn_driver<P: Provider + 'static>(
+    config: DriverConfig<P>,
+    storage: &Storage,
+) -> Result<SpawnedDriver, String> {
+    std::fs::create_dir_all(config.state_root.join("jobs")).map_err(|e| format!("jobs dir: {e}"))?;
+    std::fs::create_dir_all(config.state_root.join("artifacts")).map_err(|e| format!("artifacts dir: {e}"))?;
     let shared = Arc::new(Shared {
         wake: tokio::sync::Notify::new(),
         shutdown: AtomicBool::new(false),
@@ -330,7 +356,7 @@ pub async fn start<P: Provider + 'static>(config: DriverConfig<P>) -> Result<Dri
         prepared: std::collections::HashMap::new(),
     };
     let task = tokio::spawn(driver.run());
-    Ok(DriverHandle { storage, shared, session_id, instance_id, goal_id, task, _lock: lock })
+    Ok((shared, task))
 }
 
 impl<P: Provider> Driver<P> {
@@ -341,6 +367,9 @@ impl<P: Provider> Driver<P> {
                 return Ok(());
             }
             let snapshot = self.snapshot().await?;
+            if snapshot.lifecycle == "TERMINATED" {
+                return Ok(()); // the supervisor retires this driver (§5.4)
+            }
             if snapshot.lifecycle != "ACTIVE" {
                 self.wait().await;
                 continue;
@@ -598,9 +627,26 @@ impl<P: Provider> Driver<P> {
             .await?;
         let revision = drained["revision"].as_i64().unwrap_or(snapshot.revision);
         let entries = self.context_entries(snapshot).await?;
-        // nothing unconsumed: the last word was the assistant's — idle
-        if entries.last().is_none_or(|entry| entry.kind == EntryKind::Assistant) {
+        // nothing unconsumed: the last word was the assistant's — idle,
+        // unless assigned work still waits in the queue (§5.3): a settled
+        // task's finish message must not park a worker with open tasks
+        if entries.last().is_none_or(|entry| entry.kind == EntryKind::Assistant) && self.open_tasks().await? == 0 {
             return Ok(false);
+        }
+        // adopt assigned work: the turn that addresses a PENDING task also
+        // marks it RUNNING; a lost race just means someone else moved it
+        if let Some(task_id) = self.oldest_task("PENDING").await? {
+            let started = self
+                .submit(
+                    self.command(format!("start-task-{task_id}"), "start_task", json!({"task_id": task_id})),
+                    Identity::Instance(self.config.instance_id.clone()),
+                )
+                .await;
+            match started {
+                Ok(_) => {}
+                Err(error) if error.contains("not startable") => {}
+                Err(error) => return Err(error),
+            }
         }
         let kernel = self.team_kernel(snapshot).await?;
         let request_id = format!("req-{}", uuid::Uuid::new_v4());
@@ -1371,19 +1417,132 @@ impl<P: Provider> Driver<P> {
     }
 
     /// COMPLETION_PENDING: close the goal against the stored candidate (§8).
+    /// Open assigned tasks (PENDING + RUNNING) — the queue depth that keeps
+    /// a worker from parking on its own assistant tail (§5.3).
+    async fn open_tasks(&self) -> Result<i64, String> {
+        let instance = self.config.instance_id.clone();
+        self.storage
+            .call(move |control| {
+                control
+                    .connection()
+                    .query_row(
+                        "SELECT COUNT(*) FROM tasks WHERE assignee = ?1 AND status IN ('PENDING', 'RUNNING')",
+                        [&instance],
+                        |row| row.get(0),
+                    )
+                    .map_err(|e| format!("open tasks: {e}"))
+            })
+            .await?
+    }
+
+    /// Oldest assigned task in the given status — FIFO queue order.
+    async fn oldest_task(&self, status: &str) -> Result<Option<String>, String> {
+        let instance = self.config.instance_id.clone();
+        let status = status.to_string();
+        self.storage
+            .call(move |control| {
+                control
+                    .connection()
+                    .query_row(
+                        "SELECT id FROM tasks WHERE assignee = ?1 AND status = ?2 ORDER BY rowid LIMIT 1",
+                        rusqlite::params![instance, status],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(|e| format!("oldest task: {e}"))
+            })
+            .await?
+    }
+
+    /// Oldest open (PENDING or RUNNING) assigned task.
+    async fn oldest_open_task(&self) -> Result<Option<String>, String> {
+        let instance = self.config.instance_id.clone();
+        self.storage
+            .call(move |control| {
+                control
+                    .connection()
+                    .query_row(
+                        "SELECT id FROM tasks WHERE assignee = ?1 AND status IN ('PENDING', 'RUNNING') ORDER BY rowid LIMIT 1",
+                        [&instance],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(|e| format!("oldest open task: {e}"))
+            })
+            .await?
+    }
+
+    /// The stored finish candidate — read from its decision, never re-taken
+    /// from the model (mirrors complete_goal's read).
+    async fn completion_candidate(&self) -> Result<Json, String> {
+        let instance = self.config.instance_id.clone();
+        let stored: Option<String> = self
+            .storage
+            .call(move |control| {
+                control
+                    .connection()
+                    .query_row(
+                        "SELECT d.completion_json FROM decisions d
+                         JOIN model_requests r ON d.request_id = r.request_id
+                         WHERE r.instance_id = ?1 AND d.completion_json IS NOT NULL
+                         ORDER BY d.rowid DESC LIMIT 1",
+                        [&instance],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(|e| format!("completion candidate: {e}"))
+            })
+            .await??;
+        Ok(stored.as_deref().and_then(|c| serde_json::from_str(c).ok()).unwrap_or(Json::Null))
+    }
+
     async fn step_completion(&mut self, snapshot: &Snapshot) -> Result<(), String> {
-        let Some(goal) = snapshot.active_goal.clone() else {
-            return Err("COMPLETION_PENDING without an active goal".into());
-        };
-        self.submit(
-            self.command(
-                format!("complete-goal-{goal}"),
-                "complete_goal",
-                json!({"goal_id": goal, "instance_id": self.config.instance_id}),
-            ),
-            Identity::System,
-        )
-        .await?;
+        if let Some(goal) = snapshot.active_goal.clone() {
+            self.submit(
+                self.command(
+                    format!("complete-goal-{goal}"),
+                    "complete_goal",
+                    json!({"goal_id": goal, "instance_id": self.config.instance_id}),
+                ),
+                Identity::System,
+            )
+            .await?;
+            return Ok(());
+        }
+        // no owned goal: the finish settles the oldest open assigned task
+        // from the stored candidate (§5.3); an empty queue just closes
+        match self.oldest_open_task().await? {
+            Some(task_id) => {
+                let candidate = self.completion_candidate().await?;
+                let status = match candidate["outcome"].as_str().unwrap_or("failed") {
+                    "success" => "SUCCEEDED",
+                    "blocked" => "BLOCKED",
+                    _ => "FAILED",
+                };
+                let summary = candidate["summary"].as_str().unwrap_or("").to_string();
+                let evidence = candidate.get("evidence").cloned().unwrap_or(json!([]));
+                self.submit(
+                    self.command(
+                        format!("complete-task-{task_id}"),
+                        "complete_task",
+                        json!({"task_id": task_id, "status": status, "summary": summary, "result_refs": evidence}),
+                    ),
+                    Identity::Instance(self.config.instance_id.clone()),
+                )
+                .await?;
+            }
+            None => {
+                self.submit(
+                    self.command(
+                        format!("close-completion-{}", uuid::Uuid::new_v4()),
+                        "close_completion",
+                        json!({"instance_id": self.config.instance_id}),
+                    ),
+                    Identity::System,
+                )
+                .await?;
+            }
+        }
         Ok(())
     }
 }
