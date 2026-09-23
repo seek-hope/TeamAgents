@@ -102,7 +102,10 @@ fn dispatch(
     identity: &Identity,
 ) -> Result<Json, String> {
     match method {
-        "create_instance" => create_instance(tx, session_id, params),
+        "create_instance" => create_instance(tx, session_id, params, identity),
+        "issue_grant" => issue_grant(tx, session_id, params, identity),
+        "revoke_grant" => revoke_grant(tx, session_id, params, identity),
+        "reauthorize_operation" => reauthorize_operation(tx, session_id, params),
         "create_goal" => create_goal(tx, session_id, params),
         "submit_input" => submit_input(tx, session_id, params, identity),
         "begin_request" => begin_request(tx, session_id, params, identity),
@@ -149,7 +152,228 @@ fn load_instance(tx: &Connection, id: &str) -> Result<(String, i64, String, Stri
     .map_err(|e| format!("instance {id}: {e}"))
 }
 
-fn create_instance(tx: &Connection, session_id: &str, params: &Json) -> Result<Json, String> {
+/// Session grant revision (§5.1): every issue/revoke bumps it; dispatch
+/// compares it against the operation's stamped revision (§6.1).
+fn grant_revision(tx: &Connection) -> Result<i64, String> {
+    let value: Option<String> = tx
+        .query_row("SELECT value FROM meta WHERE key = 'grant_revision'", [], |row| row.get(0))
+        .optional()
+        .map_err(|e| format!("grant revision: {e}"))?;
+    Ok(value.and_then(|v| v.parse().ok()).unwrap_or(0))
+}
+
+fn bump_grant_revision(tx: &Connection) -> Result<i64, String> {
+    let next = grant_revision(tx)? + 1;
+    tx.execute(
+        "INSERT INTO meta (key, value) VALUES ('grant_revision', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [next.to_string()],
+    )
+    .map_err(|e| format!("bump grant revision: {e}"))?;
+    Ok(next)
+}
+
+/// Scope coverage (§5.1): "session" covers the whole session; otherwise the
+/// granted scope must equal or be a path prefix of the requested one.
+fn scope_covers(granted: &str, requested: &str) -> bool {
+    granted == "session" || granted == requested || requested.starts_with(&format!("{granted}/"))
+}
+
+/// The most specific active grant covering (subject, action, resource).
+fn active_grant(
+    tx: &Connection,
+    subject: &str,
+    action: &str,
+    resource: &str,
+) -> Result<Option<(String, String)>, String> {
+    let mut stmt = tx
+        .prepare("SELECT id, resource_scope FROM grants WHERE subject = ?1 AND action = ?2 AND revoked_at IS NULL")
+        .map_err(|e| format!("grant read: {e}"))?;
+    let rows = stmt
+        .query_map(rusqlite::params![subject, action], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+        .map_err(|e| format!("grant query: {e}"))?;
+    let mut best: Option<(String, String)> = None;
+    for row in rows {
+        let (id, scope) = row.map_err(|e| format!("grant row: {e}"))?;
+        if scope_covers(&scope, resource) && best.as_ref().is_none_or(|(_, held)| scope.len() > held.len()) {
+            best = Some((id, scope));
+        }
+    }
+    Ok(best)
+}
+
+fn authorized(tx: &Connection, subject: &str, action: &str, resource: &str) -> Result<bool, String> {
+    Ok(active_grant(tx, subject, action, resource)?.is_some())
+}
+
+/// The capability a tool intent needs (§5.1): shell touches the explicitly
+/// granted shared workspace; other built-ins stay session-internal.
+fn capability_gap(tx: &Connection, instance: &str, intent: &Json) -> Result<Option<String>, String> {
+    if intent["name"].as_str() == Some("shell") && !authorized(tx, instance, "shell", "workspace")? {
+        return Ok(Some(format!("instance {instance} holds no shell@workspace grant")));
+    }
+    Ok(None)
+}
+
+/// Issue a scoped grant (§5.1): the User is the root of authority; an
+/// instance may only narrow what it holds, and a manage-grant holder may in
+/// addition issue message/delegate grants inside its scope (management of
+/// connections, Q5). Every issue bumps the session grant revision.
+fn issue_grant(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
+    let subject = params["subject"].as_str().ok_or("issue_grant.subject required")?;
+    let action = params["action"].as_str().ok_or("issue_grant.action required")?;
+    let scope = params["resource_scope"].as_str().ok_or("issue_grant.resource_scope required")?;
+    if subject.is_empty() || action.is_empty() || scope.is_empty() {
+        return Err("issue_grant: subject/action/resource_scope must not be empty".into());
+    }
+    let parent: Option<String> = match identity {
+        Identity::User => params["parent_grant_id"].as_str().map(str::to_string),
+        Identity::System => return Err("the system identity cannot issue grants".into()),
+        Identity::Instance(issuer) => {
+            // manage covers issuing connection grants; everything else is
+            // strict narrowing of the issuer's own same-action grant
+            let covering = if matches!(action, "message" | "delegate") {
+                active_grant(tx, issuer, "manage", scope)?.or(active_grant(tx, issuer, action, scope)?)
+            } else {
+                active_grant(tx, issuer, action, scope)?
+            };
+            let Some((parent_id, _)) = covering else {
+                return Err(format!("instance {issuer} holds no grant covering {action}@{scope}"));
+            };
+            Some(parent_id)
+        }
+    };
+    if let Some(parent_id) = &parent {
+        let row: Option<(String, String)> = tx
+            .query_row(
+                "SELECT action, resource_scope FROM grants WHERE id = ?1 AND revoked_at IS NULL",
+                [parent_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(|e| format!("parent grant: {e}"))?;
+        let Some((p_action, p_scope)) = row else {
+            return Err(format!("parent grant {parent_id} is missing or revoked"));
+        };
+        let action_ok = p_action == action || (p_action == "manage" && matches!(action, "message" | "delegate"));
+        if !action_ok || !scope_covers(&p_scope, scope) {
+            return Err(format!("parent grant {parent_id} does not cover {action}@{scope}"));
+        }
+    }
+    let id = format!("g-{}", uuid::Uuid::new_v4());
+    tx.execute(
+        "INSERT INTO grants (id, session_id, issuer, subject, action, resource_scope, parent_grant_id, revision, revoked_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, NULL)",
+        rusqlite::params![id, session_id, identity.actor(), subject, action, scope, parent],
+    )
+    .map_err(|e| format!("grant insert: {e}"))?;
+    let revision = bump_grant_revision(tx)?;
+    event(
+        tx,
+        session_id,
+        "grant_issued",
+        subject,
+        &json!({"grant_id": id, "subject": subject, "action": action, "resource_scope": scope,
+                "parent_grant_id": parent, "revision": revision}),
+    )?;
+    Ok(json!({"grant_id": id, "revision": revision}))
+}
+
+/// Revoke a grant (§5.1): the User may revoke any grant; an instance may
+/// revoke only grants it issued. Derived grants (transitively parented) are
+/// revoked in the same transaction. Revocation blocks subsequent dispatch;
+/// in-flight authorized operations are cancelled on request, not rewritten
+/// (§5.4/§6.1).
+fn revoke_grant(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
+    let id = params["grant_id"].as_str().ok_or("revoke_grant.grant_id required")?;
+    let issuer: String = tx
+        .query_row(
+            "SELECT issuer FROM grants WHERE id = ?1 AND session_id = ?2",
+            rusqlite::params![id, session_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("grant {id}: {e}"))?;
+    match identity {
+        Identity::User => {}
+        Identity::Instance(me) if *me == issuer => {}
+        _ => return Err("only the user or the issuing instance may revoke a grant".into()),
+    }
+    let mut revoked = vec![id.to_string()];
+    let mut frontier = vec![id.to_string()];
+    while let Some(next) = frontier.pop() {
+        let mut stmt = tx
+            .prepare("SELECT id FROM grants WHERE parent_grant_id = ?1 AND revoked_at IS NULL")
+            .map_err(|e| format!("grant children: {e}"))?;
+        let children: Vec<String> = stmt
+            .query_map([&next], |row| row.get::<_, String>(0))
+            .map_err(|e| format!("grant children query: {e}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("grant children collect: {e}"))?;
+        frontier.extend(children.iter().cloned());
+        revoked.extend(children);
+    }
+    let now = crate::models::now();
+    for grant in &revoked {
+        tx.execute(
+            "UPDATE grants SET revoked_at = ?1 WHERE id = ?2 AND revoked_at IS NULL",
+            rusqlite::params![now, grant],
+        )
+        .map_err(|e| format!("revoke {grant}: {e}"))?;
+    }
+    let revision = bump_grant_revision(tx)?;
+    event(tx, session_id, "grant_revoked", id, &json!({"grant_id": id, "cascade": revoked, "revision": revision}))?;
+    Ok(json!({"grant_id": id, "revoked": revoked, "revision": revision}))
+}
+
+/// Re-authorization after a grant change (§5.4/§6.1): a PREPARED operation
+/// must prove its capability again before dispatch. Still-authorized ops
+/// are re-stamped to the current revision; unauthorized ones are cancelled
+/// before any side effect and the decision is woken for consumption.
+fn reauthorize_operation(tx: &Connection, session_id: &str, params: &Json) -> Result<Json, String> {
+    let operation_id = params["operation_id"].as_str().ok_or("reauthorize_operation.operation_id required")?;
+    let (decision_id, status, intent_json): (String, String, String) = tx
+        .query_row(
+            "SELECT decision_id, status, intent_json FROM operations WHERE operation_id = ?1",
+            [operation_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map_err(|e| format!("operation {operation_id}: {e}"))?;
+    if status != "PREPARED" {
+        return Err(format!("operation {operation_id} is {status}, not reauthorizable"));
+    }
+    let instance: String = tx
+        .query_row(
+            "SELECT r.instance_id FROM decisions d JOIN model_requests r ON d.request_id = r.request_id
+             WHERE d.decision_id = ?1",
+            [&decision_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("decision instance: {e}"))?;
+    let intent: Json = serde_json::from_str(&intent_json).map_err(|e| format!("intent {operation_id}: {e}"))?;
+    let current = grant_revision(tx)?;
+    if let Some(reason) = capability_gap(tx, &instance, &intent)? {
+        let receipt = json!({"operation_id": operation_id, "ok": false, "started": false,
+                             "content": json!({"error": reason}).to_string(),
+                             "error": {"class": "unauthorized", "reason": reason}});
+        tx.execute(
+            "UPDATE operations SET status = 'CANCELLED', receipt_json = ?2 WHERE operation_id = ?1",
+            rusqlite::params![operation_id, receipt.to_string()],
+        )
+        .map_err(|e| format!("unauthorized cancel: {e}"))?;
+        expire_pending_approvals(tx, operation_id)?;
+        let open = consume_if_closed(tx, session_id, &decision_id)?;
+        event(tx, session_id, "operation_unauthorized", operation_id, &json!({"reason": reason}))?;
+        return Ok(json!({"operation_id": operation_id, "status": "CANCELLED", "decision_open": open}));
+    }
+    tx.execute(
+        "UPDATE operations SET grant_revision = ?1 WHERE operation_id = ?2",
+        rusqlite::params![current, operation_id],
+    )
+    .map_err(|e| format!("re-stamp {operation_id}: {e}"))?;
+    Ok(json!({"operation_id": operation_id, "status": "PREPARED", "grant_revision": current}))
+}
+
+fn create_instance(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
     let id = params["id"].as_str().ok_or("create_instance.id required")?;
     let profile = params.get("profile").cloned().unwrap_or(json!({}));
     let workspace = params["workspace_ref"].as_str().unwrap_or("");
@@ -161,6 +385,19 @@ fn create_instance(tx: &Connection, session_id: &str, params: &Json) -> Result<J
         rusqlite::params![id, session_id, workspace, profile.to_string()],
     )
     .map_err(|e| format!("create_instance {id}: {e}"))?;
+    if !workspace.is_empty() && matches!(identity, Identity::User) {
+        // the default shared project directory is an explicitly granted
+        // resource (§5.1); creation grants no other connection or file
+        // scope. Spawned instances get theirs through issue_grant (spawn).
+        let grant_id = format!("g-{}", uuid::Uuid::new_v4());
+        tx.execute(
+            "INSERT INTO grants (id, session_id, issuer, subject, action, resource_scope, parent_grant_id, revision, revoked_at)
+             VALUES (?1, ?2, 'user', ?3, 'shell', 'workspace', NULL, 0, NULL)",
+            rusqlite::params![grant_id, session_id, id],
+        )
+        .map_err(|e| format!("workspace grant: {e}"))?;
+        bump_grant_revision(tx)?;
+    }
     event(tx, session_id, "instance_created", id, &json!({"instance_id": id}))?;
     Ok(json!({"instance_id": id, "phase": "READY", "revision": 0, "epoch": 0}))
 }
@@ -554,7 +791,10 @@ fn import_response(tx: &Connection, session_id: &str, params: &Json, identity: &
     }
     append_context(tx, &request_instance, epoch, "assistant", entry_message, Some(decision_id), &[])?;
     let goal_id = request_goal(tx, request_id)?;
-    let grant_revision = params["grant_revision"].as_i64().unwrap_or(0);
+    let grant_revision = match params["grant_revision"].as_i64() {
+        Some(revision) => revision,
+        None => grant_revision(tx)?,
+    };
     for intent in &intents {
         let index = intent["index"].as_i64().ok_or("intent.index required")?;
         let operation_id = format!("{decision_id}:{index}");
@@ -715,12 +955,15 @@ fn consume_if_closed(tx: &Connection, session_id: &str, decision_id: &str) -> Re
 fn dispatch_operation(tx: &Connection, session_id: &str, params: &Json) -> Result<Json, String> {
     let operation_id = params["operation_id"].as_str().ok_or("dispatch_operation.operation_id required")?;
     let approval_required = params["approval_required"].as_bool().unwrap_or(false);
-    let permission_revision = params["permission_revision"].as_i64().unwrap_or(0);
-    let (decision_id, status, args_hash, grant_revision): (String, String, String, i64) = tx
+    let permission_revision = match params["permission_revision"].as_i64() {
+        Some(revision) => revision,
+        None => grant_revision(tx)?,
+    };
+    let (decision_id, status, args_hash, grant_revision, intent_json): (String, String, String, i64, String) = tx
         .query_row(
-            "SELECT decision_id, status, args_hash, grant_revision FROM operations WHERE operation_id = ?1",
+            "SELECT decision_id, status, args_hash, grant_revision, intent_json FROM operations WHERE operation_id = ?1",
             [operation_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
         )
         .map_err(|e| format!("operation {operation_id}: {e}"))?;
     if status != "PREPARED" {
@@ -742,6 +985,11 @@ fn dispatch_operation(tx: &Connection, session_id: &str, params: &Json) -> Resul
     let (_, _, lifecycle, _, _) = load_instance(tx, &instance)?;
     if lifecycle != "ACTIVE" {
         return Err(format!("instance {instance} is {lifecycle}, not dispatching"));
+    }
+    // authorization is re-checked at dispatch, the linearization point (§6.1)
+    let intent: Json = serde_json::from_str(&intent_json).map_err(|e| format!("intent {operation_id}: {e}"))?;
+    if let Some(reason) = capability_gap(tx, &instance, &intent)? {
+        return Err(format!("operation {operation_id} unauthorized: {reason}"));
     }
     if approval_required {
         let approved: Option<String> = tx
@@ -931,15 +1179,26 @@ fn fail_request(tx: &Connection, session_id: &str, params: &Json) -> Result<Json
 /// safe boundary; resume/park/terminate record the real reason as an event.
 fn set_lifecycle(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
     // the user controls every transition; the system may only park (budget
-    // exhaustion, permanent errors) — never resume, terminate or dispatch
-    if *identity == Identity::System {
-        if params["lifecycle"].as_str() != Some("PARKED") {
-            return Err("the system may only park instances".into());
-        }
-    } else {
-        require_user(identity)?;
-    }
+    // exhaustion, permanent errors) — never resume, terminate or dispatch;
+    // an instance needs a manage grant over the target (§5.1, Q5)
     let instance_id = params["instance_id"].as_str().ok_or("set_lifecycle.instance_id required")?;
+    match identity {
+        Identity::User => {}
+        Identity::System => {
+            if params["lifecycle"].as_str() != Some("PARKED") {
+                return Err("the system may only park instances".into());
+            }
+        }
+        Identity::Instance(actor) => {
+            if params["lifecycle"].as_str() == Some("TERMINATED") {
+                return Err("termination stays with the user".into());
+            }
+            let scope = format!("instance:{instance_id}");
+            if !authorized(tx, actor, "manage", &scope)? {
+                return Err(format!("instance {actor} holds no manage grant over {instance_id}"));
+            }
+        }
+    }
     let lifecycle = params["lifecycle"].as_str().ok_or("set_lifecycle.lifecycle required")?;
     if !matches!(lifecycle, "ACTIVE" | "PAUSED" | "PARKED" | "TERMINATED") {
         return Err(format!("unknown lifecycle {lifecycle:?}"));
@@ -1186,8 +1445,11 @@ mod tests {
     }
 
     fn create_instance(ctl: &mut Control, id: &str) {
-        ctl.submit(cmd(&format!("ci-{id}"), "create_instance", json!({"id": id})), Identity::User)
-            .expect("create instance");
+        ctl.submit(
+            cmd(&format!("ci-{id}"), "create_instance", json!({"id": id, "workspace_ref": "/tmp/ws"})),
+            Identity::User,
+        )
+        .expect("create instance");
     }
 
     fn context_count(ctl: &Control, instance: &str) -> i64 {
@@ -1657,11 +1919,7 @@ mod tests {
         // full-auto equivalent: no approval needed, revision matches (0)
         let ok = ctl
             .submit(
-                cmd(
-                    "dp-1",
-                    "dispatch_operation",
-                    json!({"operation_id": "d-x:0", "approval_required": false, "permission_revision": 0}),
-                ),
+                cmd("dp-1", "dispatch_operation", json!({"operation_id": "d-x:0", "approval_required": false})),
                 Identity::System,
             )
             .expect("dispatch");
@@ -1669,11 +1927,7 @@ mod tests {
         // already dispatched: not dispatchable again
         let err = ctl
             .submit(
-                cmd(
-                    "dp-2",
-                    "dispatch_operation",
-                    json!({"operation_id": "d-x:0", "approval_required": false, "permission_revision": 0}),
-                ),
+                cmd("dp-2", "dispatch_operation", json!({"operation_id": "d-x:0", "approval_required": false})),
                 Identity::System,
             )
             .unwrap_err();
@@ -1713,11 +1967,7 @@ mod tests {
         open_decision(&mut ctl, "x", "i1", 0, 1);
         let asked = ctl
             .submit(
-                cmd(
-                    "dp-a",
-                    "dispatch_operation",
-                    json!({"operation_id": "d-x:0", "approval_required": true, "permission_revision": 0}),
-                ),
+                cmd("dp-a", "dispatch_operation", json!({"operation_id": "d-x:0", "approval_required": true})),
                 Identity::System,
             )
             .expect("ask");
@@ -1726,11 +1976,7 @@ mod tests {
         // re-dispatch returns the same pending approval, no duplicate row
         let again = ctl
             .submit(
-                cmd(
-                    "dp-b",
-                    "dispatch_operation",
-                    json!({"operation_id": "d-x:0", "approval_required": true, "permission_revision": 0}),
-                ),
+                cmd("dp-b", "dispatch_operation", json!({"operation_id": "d-x:0", "approval_required": true})),
                 Identity::System,
             )
             .expect("ask again");
@@ -1747,11 +1993,7 @@ mod tests {
         ctl.submit(cmd("ap-1", "approve", json!({"approval_id": approval_id})), Identity::User).expect("approve");
         let ok = ctl
             .submit(
-                cmd(
-                    "dp-c",
-                    "dispatch_operation",
-                    json!({"operation_id": "d-x:0", "approval_required": true, "permission_revision": 0}),
-                ),
+                cmd("dp-c", "dispatch_operation", json!({"operation_id": "d-x:0", "approval_required": true})),
                 Identity::System,
             )
             .expect("dispatch after approval");
@@ -1766,11 +2008,7 @@ mod tests {
         open_decision(&mut ctl, "x", "i1", 0, 1);
         let asked = ctl
             .submit(
-                cmd(
-                    "dp-a",
-                    "dispatch_operation",
-                    json!({"operation_id": "d-x:0", "approval_required": true, "permission_revision": 0}),
-                ),
+                cmd("dp-a", "dispatch_operation", json!({"operation_id": "d-x:0", "approval_required": true})),
                 Identity::System,
             )
             .expect("ask");
@@ -1810,11 +2048,8 @@ mod tests {
             .expect("cancel replay");
         assert_eq!(again["already_terminal"], json!(true));
         // dispatched: only the persisted cancel request, real receipt later
-        ctl.submit(
-            cmd("dp-1", "dispatch_operation", json!({"operation_id": "d-x:1", "permission_revision": 0})),
-            Identity::System,
-        )
-        .expect("dispatch");
+        ctl.submit(cmd("dp-1", "dispatch_operation", json!({"operation_id": "d-x:1"})), Identity::System)
+            .expect("dispatch");
         let requested = ctl
             .submit(cmd("cc-1", "cancel_operation", json!({"operation_id": "d-x:1"})), Identity::User)
             .expect("cancel dispatched");
@@ -1838,6 +2073,139 @@ mod tests {
             .expect("complete cancelled");
         assert_eq!(done["decision_open"], json!(false));
         assert_eq!(phase_of(&ctl, "i1"), "READY");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn grants_narrow_only_and_parent_revocation_cascades() {
+        let (mut ctl, path) = control("grants");
+        create_instance(&mut ctl, "i1");
+        create_instance(&mut ctl, "i2");
+        // the user delegates session-wide management to i1 (Q5)
+        let manage = ctl
+            .submit(
+                cmd("ig-m", "issue_grant", json!({"subject": "i1", "action": "manage", "resource_scope": "session"})),
+                Identity::User,
+            )
+            .expect("issue manage");
+        let manage_id = manage["grant_id"].as_str().unwrap().to_string();
+        // a manage holder issues connection grants inside its scope
+        let msg = ctl
+            .submit(
+                cmd(
+                    "ig-c",
+                    "issue_grant",
+                    json!({"subject": "i2", "action": "message", "resource_scope": "instance:i1"}),
+                ),
+                Identity::Instance("i1".into()),
+            )
+            .expect("manage holder issues message");
+        let msg_id = msg["grant_id"].as_str().unwrap().to_string();
+        // no widening: i1's own shell grant is workspace-scoped, and manage
+        // does not cover shell — shell@session is refused
+        let err = ctl
+            .submit(
+                cmd("ig-w", "issue_grant", json!({"subject": "i2", "action": "shell", "resource_scope": "session"})),
+                Identity::Instance("i1".into()),
+            )
+            .unwrap_err();
+        assert!(err.contains("holds no grant covering"), "{err}");
+        // no widening: i2's message grant covers instance:i1, not the session
+        let err = ctl
+            .submit(
+                cmd("ig-w2", "issue_grant", json!({"subject": "i1", "action": "message", "resource_scope": "session"})),
+                Identity::Instance("i2".into()),
+            )
+            .unwrap_err();
+        assert!(err.contains("holds no grant covering"), "{err}");
+        // the system identity never issues grants
+        assert!(ctl
+            .submit(
+                cmd("ig-sys", "issue_grant", json!({"subject": "i2", "action": "manage", "resource_scope": "session"})),
+                Identity::System,
+            )
+            .is_err());
+        // revoking the parent manage grant revokes the derived grant too (A03)
+        let revoked = ctl
+            .submit(cmd("rv-1", "revoke_grant", json!({"grant_id": manage_id})), Identity::User)
+            .expect("revoke manage");
+        let cascaded: Vec<String> =
+            revoked["revoked"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect();
+        assert!(cascaded.contains(&manage_id) && cascaded.contains(&msg_id), "{cascaded:?}");
+        let msg_revoked: Option<f64> = ctl
+            .connection()
+            .query_row("SELECT revoked_at FROM grants WHERE id = ?1", [&msg_id], |row| row.get(0))
+            .unwrap();
+        assert!(msg_revoked.is_some());
+        // instances may revoke only grants they issued
+        let err = ctl
+            .submit(cmd("rv-2", "revoke_grant", json!({"grant_id": manage_id})), Identity::Instance("i2".into()))
+            .unwrap_err();
+        assert!(err.contains("issuing instance"), "{err}");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn revocation_blocks_queued_dispatch_until_reauthorized() {
+        let (mut ctl, path) = control("reauth");
+        create_instance(&mut ctl, "i1");
+        open_decision(&mut ctl, "x", "i1", 0, 1);
+        let stamped: i64 = ctl
+            .connection()
+            .query_row("SELECT grant_revision FROM operations WHERE operation_id = 'd-x:0'", [], |row| row.get(0))
+            .unwrap();
+        // the user revokes the workspace shell grant while the op is queued
+        let grant_id: String = ctl
+            .connection()
+            .query_row("SELECT id FROM grants WHERE subject = 'i1' AND action = 'shell'", [], |row| row.get(0))
+            .unwrap();
+        ctl.submit(cmd("rv-1", "revoke_grant", json!({"grant_id": grant_id})), Identity::User).expect("revoke");
+        // default dispatch sees the revision bump and refuses (A04)
+        let err = ctl
+            .submit(cmd("dp-1", "dispatch_operation", json!({"operation_id": "d-x:0"})), Identity::System)
+            .unwrap_err();
+        assert!(err.contains("refusing dispatch"), "{err}");
+        // replaying the stamped revision reaches the capability re-check
+        let err = ctl
+            .submit(
+                cmd("dp-2", "dispatch_operation", json!({"operation_id": "d-x:0", "permission_revision": stamped})),
+                Identity::System,
+            )
+            .unwrap_err();
+        assert!(err.contains("unauthorized"), "{err}");
+        // re-authorization cancels the never-started op and wakes the decision
+        let closed = ctl
+            .submit(cmd("ra-1", "reauthorize_operation", json!({"operation_id": "d-x:0"})), Identity::System)
+            .expect("reauthorize");
+        assert_eq!(closed["status"], json!("CANCELLED"));
+        assert_eq!(closed["decision_open"], json!(false));
+        assert_eq!(phase_of(&ctl, "i1"), "READY");
+        let message: String = ctl
+            .connection()
+            .query_row(
+                "SELECT message_json FROM context_entries WHERE instance_id = 'i1' AND kind = 'tool_result'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(message.contains("holds no shell@workspace grant"), "{message}");
+        // a still-authorized op is re-stamped to the current revision instead
+        ctl.submit(
+            cmd("ig-1", "issue_grant", json!({"subject": "i1", "action": "shell", "resource_scope": "workspace"})),
+            Identity::User,
+        )
+        .expect("re-issue shell");
+        let revision: i64 =
+            ctl.connection().query_row("SELECT revision FROM instances WHERE id = 'i1'", [], |row| row.get(0)).unwrap();
+        open_decision(&mut ctl, "y", "i1", revision, 1);
+        let re_stamped = ctl
+            .submit(cmd("ra-2", "reauthorize_operation", json!({"operation_id": "d-y:0"})), Identity::System)
+            .expect("reauthorize ok");
+        assert_eq!(re_stamped["status"], json!("PREPARED"));
+        let ok = ctl
+            .submit(cmd("dp-3", "dispatch_operation", json!({"operation_id": "d-y:0"})), Identity::System)
+            .expect("dispatch after re-stamp");
+        assert_eq!(ok["status"], json!("DISPATCH_COMMITTED"));
         cleanup(&path);
     }
 
@@ -1999,16 +2367,39 @@ mod tests {
     }
 
     #[test]
-    fn lifecycle_changes_are_user_only_and_termination_sticks() {
+    fn lifecycle_changes_need_the_user_or_a_manage_grant() {
         let (mut ctl, path) = control("lifecycle");
         create_instance(&mut ctl, "i1");
+        // an instance without a manage grant cannot pause itself
         let err = ctl
             .submit(
                 cmd("sl-0", "set_lifecycle", json!({"instance_id": "i1", "lifecycle": "PAUSED"})),
                 Identity::Instance("i1".into()),
             )
             .unwrap_err();
-        assert!(err.contains("trusted user"), "{err}");
+        assert!(err.contains("manage grant"), "{err}");
+        // delegated management (Q5): the user issues manage@instance:i1 and the
+        // holder can pause/resume, but termination still stays with the user
+        let issued = ctl
+            .submit(
+                cmd(
+                    "ig-1",
+                    "issue_grant",
+                    json!({"subject": "i1", "action": "manage", "resource_scope": "instance:i1"}),
+                ),
+                Identity::User,
+            )
+            .expect("issue manage");
+        assert!(issued["grant_id"].as_str().is_some());
+        ctl.submit(cmd("sl-0b", "set_lifecycle", json!({"instance_id": "i1", "lifecycle": "ACTIVE"})), Identity::User)
+            .expect("reset to active");
+        let err = ctl
+            .submit(
+                cmd("sl-0t", "set_lifecycle", json!({"instance_id": "i1", "lifecycle": "TERMINATED"})),
+                Identity::Instance("i1".into()),
+            )
+            .unwrap_err();
+        assert!(err.contains("termination"), "{err}");
         ctl.submit(cmd("sl-1", "set_lifecycle", json!({"instance_id": "i1", "lifecycle": "PAUSED"})), Identity::User)
             .expect("pause");
         // a paused instance is not dispatched
@@ -2046,11 +2437,7 @@ mod tests {
         open_decision(&mut ctl, "x", "i1", 0, 1);
         let asked = ctl
             .submit(
-                cmd(
-                    "dp-a",
-                    "dispatch_operation",
-                    json!({"operation_id": "d-x:0", "approval_required": true, "permission_revision": 0}),
-                ),
+                cmd("dp-a", "dispatch_operation", json!({"operation_id": "d-x:0", "approval_required": true})),
                 Identity::System,
             )
             .expect("ask");
