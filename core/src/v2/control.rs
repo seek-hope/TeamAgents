@@ -106,6 +106,7 @@ fn dispatch(
         "issue_grant" => issue_grant(tx, session_id, params, identity),
         "revoke_grant" => revoke_grant(tx, session_id, params, identity),
         "reauthorize_operation" => reauthorize_operation(tx, session_id, params),
+        "reset_instance" => reset_instance(tx, session_id, params, identity),
         "create_goal" => create_goal(tx, session_id, params),
         "submit_input" => submit_input(tx, session_id, params, identity),
         "begin_request" => begin_request(tx, session_id, params, identity),
@@ -298,8 +299,18 @@ fn revoke_grant(tx: &Connection, session_id: &str, params: &Json, identity: &Ide
         Identity::Instance(me) if *me == issuer => {}
         _ => return Err("only the user or the issuing instance may revoke a grant".into()),
     }
-    let mut revoked = vec![id.to_string()];
-    let mut frontier = vec![id.to_string()];
+    let revoked = revoke_grant_tree(tx, id)?;
+    let revision = bump_grant_revision(tx)?;
+    event(tx, session_id, "grant_revoked", id, &json!({"grant_id": id, "cascade": revoked, "revision": revision}))?;
+    Ok(json!({"grant_id": id, "revoked": revoked, "revision": revision}))
+}
+
+/// Revoke a grant and every active grant derived from it, transitively
+/// (§5.1). Returns the ids actually revoked; the caller bumps the session
+/// grant revision once for the whole batch.
+fn revoke_grant_tree(tx: &Connection, root: &str) -> Result<Vec<String>, String> {
+    let mut ids = vec![root.to_string()];
+    let mut frontier = vec![root.to_string()];
     while let Some(next) = frontier.pop() {
         let mut stmt = tx
             .prepare("SELECT id FROM grants WHERE parent_grant_id = ?1 AND revoked_at IS NULL")
@@ -310,19 +321,144 @@ fn revoke_grant(tx: &Connection, session_id: &str, params: &Json, identity: &Ide
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| format!("grant children collect: {e}"))?;
         frontier.extend(children.iter().cloned());
-        revoked.extend(children);
+        ids.extend(children);
     }
     let now = crate::models::now();
-    for grant in &revoked {
-        tx.execute(
-            "UPDATE grants SET revoked_at = ?1 WHERE id = ?2 AND revoked_at IS NULL",
-            rusqlite::params![now, grant],
-        )
-        .map_err(|e| format!("revoke {grant}: {e}"))?;
+    let mut revoked = Vec::new();
+    for id in ids {
+        let changed = tx
+            .execute(
+                "UPDATE grants SET revoked_at = ?1 WHERE id = ?2 AND revoked_at IS NULL",
+                rusqlite::params![now, id],
+            )
+            .map_err(|e| format!("revoke {id}: {e}"))?;
+        if changed == 1 {
+            revoked.push(id);
+        }
     }
-    let revision = bump_grant_revision(tx)?;
-    event(tx, session_id, "grant_revoked", id, &json!({"grant_id": id, "cascade": revoked, "revision": revision}))?;
-    Ok(json!({"grant_id": id, "revoked": revoked, "revision": revision}))
+    Ok(revoked)
+}
+
+/// Close every open execution artifact of one instance epoch in the same
+/// transaction as the lifecycle change (§5.4): pending requests close and
+/// release their budget reservations, queued operations cancel before any
+/// side effect, in-flight operations keep only the persisted cancel request
+/// for the driver, and pending waits plus unapplied envelopes of the epoch
+/// are sealed so nothing stale reaches the next epoch.
+fn close_epoch_execution(
+    tx: &Connection,
+    session_id: &str,
+    instance_id: &str,
+    epoch: i64,
+    reason: &str,
+) -> Result<Json, String> {
+    let pending_requests: Vec<String> = {
+        let mut stmt = tx
+            .prepare(
+                "SELECT request_id FROM model_requests WHERE instance_id = ?1 AND epoch = ?2 AND status = 'PENDING'",
+            )
+            .map_err(|e| format!("close requests: {e}"))?;
+        let rows = stmt
+            .query_map(rusqlite::params![instance_id, epoch], |row| row.get(0))
+            .map_err(|e| format!("close requests query: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("close requests collect: {e}"))?
+    };
+    for request in &pending_requests {
+        tx.execute("UPDATE model_requests SET status = 'CANCELLED' WHERE request_id = ?1", [request])
+            .map_err(|e| format!("close request {request}: {e}"))?;
+        release_reservation(tx, request)?;
+    }
+    let operations: Vec<(String, String)> = {
+        let mut stmt = tx
+            .prepare(
+                "SELECT o.operation_id, o.status FROM operations o
+                 JOIN decisions d ON o.decision_id = d.decision_id
+                 JOIN model_requests r ON d.request_id = r.request_id
+                 WHERE r.instance_id = ?1 AND r.epoch = ?2
+                   AND o.status IN ('PREPARED', 'DISPATCH_COMMITTED', 'RUNNING')",
+            )
+            .map_err(|e| format!("close operations: {e}"))?;
+        let rows = stmt
+            .query_map(rusqlite::params![instance_id, epoch], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(|e| format!("close operations query: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("close operations collect: {e}"))?
+    };
+    let mut cancelled = 0i64;
+    let mut flagged = 0i64;
+    for (operation_id, status) in &operations {
+        if status == "PREPARED" {
+            let receipt = json!({"operation_id": operation_id, "ok": false, "started": false,
+                                 "content": json!({"error": reason}).to_string(),
+                                 "error": {"class": "cancelled", "reason": reason}});
+            tx.execute(
+                "UPDATE operations SET status = 'CANCELLED', receipt_json = ?2 WHERE operation_id = ?1",
+                rusqlite::params![operation_id, receipt.to_string()],
+            )
+            .map_err(|e| format!("close operation {operation_id}: {e}"))?;
+            expire_pending_approvals(tx, operation_id)?;
+            cancelled += 1;
+        } else {
+            tx.execute("UPDATE operations SET cancel_requested = 1 WHERE operation_id = ?1", [operation_id])
+                .map_err(|e| format!("flag operation {operation_id}: {e}"))?;
+            flagged += 1;
+        }
+    }
+    let waits = tx
+        .execute(
+            "UPDATE waits SET status = 'CANCELLED' WHERE instance_id = ?1 AND epoch = ?2 AND status = 'PENDING'",
+            rusqlite::params![instance_id, epoch],
+        )
+        .map_err(|e| format!("close waits: {e}"))?;
+    let envelopes = tx
+        .execute(
+            "UPDATE envelopes SET state = 'SUPERSEDED'
+             WHERE recipient = ?1 AND epoch = ?2 AND session_id = ?3 AND state = 'ACCEPTED'",
+            rusqlite::params![instance_id, epoch, session_id],
+        )
+        .map_err(|e| format!("seal envelopes: {e}"))?;
+    Ok(json!({"requests_closed": pending_requests.len(), "operations_cancelled": cancelled,
+              "operations_cancel_requested": flagged, "waits_closed": waits, "envelopes_sealed": envelopes}))
+}
+
+/// Reset (§5.4, Q9): the instance keeps its id, goal and tasks but starts a
+/// fresh context epoch. Everything from the old epoch closes in the same
+/// transaction; late receipts of the old epoch keep landing on their
+/// original operations and budget without entering the new epoch (A24).
+fn reset_instance(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
+    let instance_id = params["instance_id"].as_str().ok_or("reset_instance.instance_id required")?;
+    match identity {
+        Identity::User => {}
+        Identity::System => return Err("the system cannot reset instances".into()),
+        Identity::Instance(actor) => {
+            let scope = format!("instance:{instance_id}");
+            if !authorized(tx, actor, "manage", &scope)? {
+                return Err(format!("instance {actor} holds no manage grant over {instance_id}"));
+            }
+        }
+    }
+    let reason = params["reason"].as_str().unwrap_or("reset by user");
+    let (session, epoch, lifecycle, _, _): (String, i64, String, String, i64) = load_instance(tx, instance_id)?;
+    if session != session_id {
+        return Err(format!("instance {instance_id} does not belong to this session"));
+    }
+    if lifecycle == "TERMINATED" {
+        return Err(format!("instance {instance_id} is terminated"));
+    }
+    let closed = close_epoch_execution(tx, session_id, instance_id, epoch, reason)?;
+    tx.execute(
+        "UPDATE instances SET context_epoch = context_epoch + 1, phase = 'READY', active_request_id = NULL,
+         revision = revision + 1 WHERE id = ?1",
+        [instance_id],
+    )
+    .map_err(|e| format!("reset instance: {e}"))?;
+    event(
+        tx,
+        session_id,
+        "instance_reset",
+        instance_id,
+        &json!({"old_epoch": epoch, "new_epoch": epoch + 1, "reason": reason, "closed": closed}),
+    )?;
+    Ok(json!({"instance_id": instance_id, "epoch": epoch + 1, "closed": closed}))
 }
 
 /// Re-authorization after a grant change (§5.4/§6.1): a PREPARED operation
@@ -1204,7 +1340,7 @@ fn set_lifecycle(tx: &Connection, session_id: &str, params: &Json, identity: &Id
         return Err(format!("unknown lifecycle {lifecycle:?}"));
     }
     let reason = params["reason"].as_str().unwrap_or("");
-    let (session, _, current, _, _): (String, i64, String, String, i64) = load_instance(tx, instance_id)?;
+    let (session, epoch, current, _, _): (String, i64, String, String, i64) = load_instance(tx, instance_id)?;
     if session != session_id {
         return Err(format!("instance {instance_id} does not belong to this session"));
     }
@@ -1217,6 +1353,59 @@ fn set_lifecycle(tx: &Connection, session_id: &str, params: &Json, identity: &Id
     )
     .map_err(|e| format!("set_lifecycle: {e}"))?;
     event(tx, session_id, "instance_lifecycle", instance_id, &json!({"lifecycle": lifecycle, "reason": reason}))?;
+    if lifecycle == "TERMINATED" {
+        // termination settles everything the instance leaves behind (§5.4):
+        // open execution of the epoch closes, its pending tasks cancel for
+        // the requesters, and every grant it held or issued dies with it —
+        // the member row is never just deleted
+        let closed = close_epoch_execution(tx, session_id, instance_id, epoch, "instance terminated")?;
+        let tasks = tx
+            .execute(
+                "UPDATE tasks SET status = 'CANCELLED', revision = revision + 1
+                 WHERE assignee = ?1 AND session_id = ?2 AND status IN ('PENDING', 'RUNNING', 'BLOCKED')",
+                rusqlite::params![instance_id, session_id],
+            )
+            .map_err(|e| format!("terminate tasks: {e}"))?;
+        let mut revoked: Vec<String> = Vec::new();
+        let held: Vec<String> = {
+            let mut stmt = tx
+                .prepare("SELECT id FROM grants WHERE subject = ?1 AND session_id = ?2 AND revoked_at IS NULL")
+                .map_err(|e| format!("held grants: {e}"))?;
+            let rows = stmt
+                .query_map(rusqlite::params![instance_id, session_id], |row| row.get(0))
+                .map_err(|e| format!("held grants query: {e}"))?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("held grants collect: {e}"))?
+        };
+        for id in held {
+            revoked.extend(revoke_grant_tree(tx, &id)?);
+        }
+        let issued: Vec<String> = {
+            let mut stmt = tx
+                .prepare("SELECT id FROM grants WHERE issuer = ?1 AND session_id = ?2 AND revoked_at IS NULL")
+                .map_err(|e| format!("issued grants: {e}"))?;
+            let rows = stmt
+                .query_map(rusqlite::params![instance_id, session_id], |row| row.get(0))
+                .map_err(|e| format!("issued grants query: {e}"))?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("issued grants collect: {e}"))?
+        };
+        for id in issued {
+            revoked.extend(revoke_grant_tree(tx, &id)?);
+        }
+        revoked.sort();
+        revoked.dedup();
+        if !revoked.is_empty() {
+            bump_grant_revision(tx)?;
+        }
+        event(
+            tx,
+            session_id,
+            "instance_terminated",
+            instance_id,
+            &json!({"closed": closed, "tasks_cancelled": tasks, "grants_revoked": revoked}),
+        )?;
+        return Ok(json!({"instance_id": instance_id, "lifecycle": lifecycle,
+                         "closed": closed, "tasks_cancelled": tasks, "grants_revoked": revoked}));
+    }
     Ok(json!({"instance_id": instance_id, "lifecycle": lifecycle}))
 }
 
@@ -2206,6 +2395,206 @@ mod tests {
             .submit(cmd("dp-3", "dispatch_operation", json!({"operation_id": "d-y:0"})), Identity::System)
             .expect("dispatch after re-stamp");
         assert_eq!(ok["status"], json!("DISPATCH_COMMITTED"));
+        cleanup(&path);
+    }
+
+    #[test]
+    fn late_receipt_after_reset_lands_on_the_old_epoch_only() {
+        let (mut ctl, path) = control("reset-late");
+        create_instance(&mut ctl, "i1");
+        open_decision(&mut ctl, "x", "i1", 0, 1);
+        ctl.submit(cmd("dp-1", "dispatch_operation", json!({"operation_id": "d-x:0"})), Identity::System)
+            .expect("dispatch");
+        // reset closes the epoch: the dispatched op keeps only a cancel flag
+        let reset =
+            ctl.submit(cmd("rs-1", "reset_instance", json!({"instance_id": "i1"})), Identity::User).expect("reset");
+        assert_eq!(reset["epoch"], json!(1));
+        let flagged: i64 = ctl
+            .connection()
+            .query_row("SELECT cancel_requested FROM operations WHERE operation_id = 'd-x:0'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(flagged, 1);
+        // the late receipt still lands on the original operation (A24)…
+        let done = ctl
+            .submit(
+                cmd(
+                    "co-late",
+                    "complete_operation",
+                    json!({"operation_id": "d-x:0", "status": "SUCCEEDED",
+                           "receipt": {"operation_id": "d-x:0", "ok": true, "content": "{\"output\":\"late\"}"}}),
+                ),
+                Identity::System,
+            )
+            .expect("late complete");
+        assert_eq!(done["status"], json!("SUCCEEDED"));
+        // …but it is audited in the old epoch and never enters the new one
+        let old_epoch: i64 = ctl
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM context_entries WHERE instance_id = 'i1' AND epoch = 0 AND kind = 'tool_result'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(old_epoch, 1);
+        let new_epoch: i64 = ctl
+            .connection()
+            .query_row("SELECT COUNT(*) FROM context_entries WHERE instance_id = 'i1' AND epoch = 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(new_epoch, 0);
+        assert_eq!(phase_of(&ctl, "i1"), "READY");
+        // the new epoch accepts fresh work immediately
+        let revision: i64 =
+            ctl.connection().query_row("SELECT revision FROM instances WHERE id = 'i1'", [], |row| row.get(0)).unwrap();
+        open_decision(&mut ctl, "y", "i1", revision, 1);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn reset_closes_epoch_and_releases_reservations() {
+        let (mut ctl, path) = control("reset-close");
+        create_instance(&mut ctl, "i1");
+        ctl.submit(
+            cmd("g1", "create_goal", json!({"id": "g1", "instance_id": "i1", "limits": {"max_total_tokens": 1000}})),
+            Identity::User,
+        )
+        .expect("goal");
+        ctl.submit(
+            cmd(
+                "b-1",
+                "begin_request",
+                json!({"instance_id": "i1", "request_id": "r1", "revision": 1, "est_prompt_tokens": 800}),
+            ),
+            Identity::Instance("i1".into()),
+        )
+        .expect("begin");
+        // the reservation of 800/1000 is held while the request is pending
+        let held: String = ctl
+            .connection()
+            .query_row("SELECT reservations_json FROM goals WHERE id = 'g1'", [], |row| row.get(0))
+            .unwrap();
+        assert!(held.contains("r1"), "{held}");
+        // reset cancels the pending request and releases its reservation (§8)
+        let reset =
+            ctl.submit(cmd("rs-1", "reset_instance", json!({"instance_id": "i1"})), Identity::User).expect("reset");
+        assert_eq!(reset["closed"]["requests_closed"], json!(1));
+        let status: String = ctl
+            .connection()
+            .query_row("SELECT status FROM model_requests WHERE request_id = 'r1'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(status, "CANCELLED");
+        let reservations: String = ctl
+            .connection()
+            .query_row("SELECT reservations_json FROM goals WHERE id = 'g1'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(reservations, "{}");
+        // budget is whole again: the same estimate fits in the new epoch
+        let revision: i64 =
+            ctl.connection().query_row("SELECT revision FROM instances WHERE id = 'i1'", [], |row| row.get(0)).unwrap();
+        let ok = ctl
+            .submit(
+                cmd(
+                    "b-3",
+                    "begin_request",
+                    json!({"instance_id": "i1", "request_id": "r3", "revision": revision, "est_prompt_tokens": 800}),
+                ),
+                Identity::Instance("i1".into()),
+            )
+            .expect("begin r3");
+        assert_eq!(ok["phase"], json!("MODEL_PENDING"));
+        // a stale request id can never be imported after the reset
+        let err = ctl
+            .submit(
+                cmd(
+                    "imp-stale",
+                    "import_response",
+                    json!({"request_id": "r1", "decision_id": "d-stale",
+                           "entry": {"role": "assistant", "content": "late"}, "intents": []}),
+                ),
+                Identity::System,
+            )
+            .unwrap_err();
+        assert!(err.contains("r1"), "{err}");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn terminate_closes_tasks_grants_and_execution() {
+        let (mut ctl, path) = control("terminate");
+        create_instance(&mut ctl, "i1");
+        create_instance(&mut ctl, "i2");
+        // i2 manages the session and derived a connection grant to i1
+        ctl.submit(
+            cmd("ig-m", "issue_grant", json!({"subject": "i2", "action": "manage", "resource_scope": "session"})),
+            Identity::User,
+        )
+        .expect("issue manage");
+        let derived = ctl
+            .submit(
+                cmd(
+                    "ig-c",
+                    "issue_grant",
+                    json!({"subject": "i1", "action": "message", "resource_scope": "instance:i2"}),
+                ),
+                Identity::Instance("i2".into()),
+            )
+            .expect("derived grant");
+        let derived_id = derived["grant_id"].as_str().unwrap().to_string();
+        // a running task assigned to i2 and a queued operation
+        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1"})), Identity::User).expect("goal");
+        ctl.connection()
+            .execute(
+                "INSERT INTO tasks (id, goal_id, session_id, requester, assignee, dependencies_json,
+                                    acceptance_refs_json, status, result_refs_json, revision)
+                 VALUES ('t1', 'g1', 's1', 'user', 'i2', '[]', '[]', 'RUNNING', '[]', 0)",
+                [],
+            )
+            .unwrap();
+        open_decision(&mut ctl, "x", "i2", 0, 1);
+        // terminate settles everything in one transaction (§5.4)
+        let done = ctl
+            .submit(
+                cmd("sl-t", "set_lifecycle", json!({"instance_id": "i2", "lifecycle": "TERMINATED"})),
+                Identity::User,
+            )
+            .expect("terminate");
+        assert_eq!(done["tasks_cancelled"], json!(1));
+        let task: String =
+            ctl.connection().query_row("SELECT status FROM tasks WHERE id = 't1'", [], |row| row.get(0)).unwrap();
+        assert_eq!(task, "CANCELLED");
+        // the queued op cancelled before any side effect
+        let op: String = ctl
+            .connection()
+            .query_row("SELECT status FROM operations WHERE operation_id = 'd-x:0'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(op, "CANCELLED");
+        // every grant held or issued by i2 is gone, derived ones included
+        let active: i64 = ctl
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM grants WHERE (subject = 'i2' OR issuer = 'i2') AND revoked_at IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(active, 0);
+        let derived_revoked: Option<f64> = ctl
+            .connection()
+            .query_row("SELECT revoked_at FROM grants WHERE id = ?1", [&derived_id], |row| row.get(0))
+            .unwrap();
+        assert!(derived_revoked.is_some());
+        // i1 itself is untouched: its own workspace grant survives
+        let i1_grants: i64 = ctl
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM grants WHERE subject = 'i1' AND action = 'shell' AND revoked_at IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(i1_grants, 1);
         cleanup(&path);
     }
 
