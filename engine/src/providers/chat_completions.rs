@@ -2,9 +2,13 @@
 //! RV-27). DeepSeek native fields such as `reasoning_content` are preserved
 //! in the assembled message; usage comes from the terminal stream frame.
 
-use super::{AttemptOutcome, Cancel, ErrorClass, Provider, ProviderError, ProviderEvent};
+use super::{
+    append, pump_sse, stream_failure_msg, AttemptOutcome, Cancel, ErrorClass, Provider, ProviderError, ProviderEvent,
+    SseEnd,
+};
 use serde_json::{json, Value as Json};
 use std::collections::BTreeMap;
+use std::ops::ControlFlow;
 use std::time::{Duration, Instant};
 use teamagents_core::kernel::{ModelRequest, ModelResponse};
 
@@ -49,13 +53,6 @@ impl ChatCompletions {
             }
         }
         body
-    }
-}
-
-fn append(target: &mut Json, key: &str, delta: &Json) {
-    if let Some(text) = delta.as_str() {
-        let merged = format!("{}{}", target[key].as_str().unwrap_or(""), text);
-        target[key] = Json::String(merged);
     }
 }
 
@@ -118,59 +115,47 @@ impl Provider for ChatCompletions {
         let mut emitted = false;
         let mut complete = false;
         if is_sse {
-            let mut stream = response.bytes_stream();
-            let mut buffer = String::new();
-            loop {
-                let chunk = tokio::select! {
-                    chunk = futures_next(&mut stream) => chunk,
-                    _ = cancel.cancelled() => return Err(ProviderError::interrupted("turn interrupted")),
-                };
-                let Some(chunk) = chunk else { break };
-                let chunk = chunk.map_err(|e| stream_failure(e, emitted))?;
-                buffer.push_str(&String::from_utf8_lossy(&chunk));
-                // SSE frames are separated by a blank line.
-                while let Some(pos) = buffer.find("\n\n") {
-                    let frame = buffer[..pos].to_string();
-                    buffer = buffer[pos + 2..].to_string();
-                    for line in frame.lines() {
-                        let Some(data) = line.strip_prefix("data:").map(str::trim) else { continue };
-                        if data == "[DONE]" {
-                            complete = true;
-                            continue;
-                        }
-                        let Ok(data) = serde_json::from_str::<Json>(data) else { continue };
-                        if data["usage"].is_object() {
-                            usage = data["usage"].clone();
-                        }
-                        let choice = data["choices"]
-                            .as_array()
-                            .and_then(|choices| choices.iter().find(|c| c["index"].as_u64().unwrap_or(0) == 0));
-                        let Some(choice) = choice else { continue };
-                        if !choice["finish_reason"].is_null() {
-                            finish_reason = choice["finish_reason"].clone();
-                        }
-                        let delta = &choice["delta"];
-                        append(&mut message, "content", &delta["content"]);
-                        // DeepSeek native reasoning stays in the message (§7).
-                        append(&mut message, "reasoning_content", &delta["reasoning_content"]);
-                        if let Some(text) = delta["content"].as_str() {
-                            emitted = true;
-                            on_event(ProviderEvent::TextDelta(text.to_string()));
-                        }
-                        for tool in delta["tool_calls"].as_array().into_iter().flatten() {
-                            let index = tool["index"]
-                                .as_u64()
-                                .ok_or_else(|| ProviderError::permanent("stream tool index missing"))?
-                                as usize;
-                            let block = blocks.entry(index).or_insert_with(
-                                || json!({"id":"", "type":"function", "function":{"name":"", "arguments":""}}),
-                            );
-                            append(block, "id", &tool["id"]);
-                            append(&mut block["function"], "name", &tool["function"]["name"]);
-                            append(&mut block["function"], "arguments", &tool["function"]["arguments"]);
-                        }
-                    }
+            let mut on_frame = |data: &str| -> Result<ControlFlow<()>, ProviderError> {
+                if data == "[DONE]" {
+                    complete = true;
+                    return Ok(ControlFlow::Break(()));
                 }
+                let Ok(data) = serde_json::from_str::<Json>(data) else { return Ok(ControlFlow::Continue(())) };
+                if data["usage"].is_object() {
+                    usage = data["usage"].clone();
+                }
+                let choice = data["choices"]
+                    .as_array()
+                    .and_then(|choices| choices.iter().find(|c| c["index"].as_u64().unwrap_or(0) == 0));
+                let Some(choice) = choice else { return Ok(ControlFlow::Continue(())) };
+                if !choice["finish_reason"].is_null() {
+                    finish_reason = choice["finish_reason"].clone();
+                }
+                let delta = &choice["delta"];
+                append(&mut message, "content", &delta["content"]);
+                // DeepSeek native reasoning stays in the message (§7).
+                append(&mut message, "reasoning_content", &delta["reasoning_content"]);
+                if let Some(text) = delta["content"].as_str() {
+                    emitted = true;
+                    on_event(ProviderEvent::TextDelta(text.to_string()));
+                }
+                for tool in delta["tool_calls"].as_array().into_iter().flatten() {
+                    let index =
+                        tool["index"].as_u64().ok_or_else(|| ProviderError::permanent("stream tool index missing"))?
+                            as usize;
+                    let block = blocks
+                        .entry(index)
+                        .or_insert_with(|| json!({"id":"", "type":"function", "function":{"name":"", "arguments":""}}));
+                    append(block, "id", &tool["id"]);
+                    append(&mut block["function"], "name", &tool["function"]["name"]);
+                    append(&mut block["function"], "arguments", &tool["function"]["arguments"]);
+                }
+                Ok(ControlFlow::Continue(()))
+            };
+            match pump_sse(response, cancel, &mut on_frame).await? {
+                SseEnd::Closed => {}
+                SseEnd::Cancelled => return Err(ProviderError::interrupted("turn interrupted")),
+                SseEnd::Transport(message) => return Err(stream_failure_msg(&message, emitted)),
             }
             if !complete {
                 // Clean EOF without a terminator means the connection gave up
@@ -182,7 +167,7 @@ impl Provider for ChatCompletions {
             }
         } else {
             let bytes = tokio::select! {
-                body = response.bytes() => body.map_err(|e| stream_failure(e, false))?,
+                body = response.bytes() => body.map_err(|e| ProviderError::transient(format!("model stream: {e}")))?,
                 _ = cancel.cancelled() => return Err(ProviderError::interrupted("turn interrupted")),
             };
             if bytes.len() > MAX_RESPONSE {
@@ -233,25 +218,4 @@ impl Provider for ChatCompletions {
             elapsed_ms: started.elapsed().as_millis() as u64,
         })
     }
-}
-
-fn stream_failure(error: reqwest::Error, emitted: bool) -> ProviderError {
-    stream_failure_msg(&format!("model stream: {error}"), emitted)
-}
-
-fn stream_failure_msg(message: &str, emitted: bool) -> ProviderError {
-    if emitted {
-        ProviderError::permanent(message)
-    } else {
-        ProviderError::transient(message)
-    }
-}
-
-/// reqwest 0.12 stream helper (futures-util is only used for StreamExt).
-async fn futures_next<S, T>(stream: &mut S) -> Option<Result<T, reqwest::Error>>
-where
-    S: futures_util::Stream<Item = Result<T, reqwest::Error>> + Unpin,
-{
-    use futures_util::StreamExt;
-    stream.next().await
 }

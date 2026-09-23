@@ -4,6 +4,7 @@
 //! vendor name; native fields keep provenance and are never flattened away.
 
 pub mod chat_completions;
+pub mod responses;
 
 use serde_json::{json, Value as Json};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -153,4 +154,78 @@ pub(crate) fn finish_chat_message(
     let raw = json!({"choices": [{"message": message, "finish_reason": finish_reason}], "usage": usage});
     let response_message = raw["choices"][0]["message"].clone();
     Ok((response_message, usage_parsed, raw))
+}
+
+/// Shared SSE framing for streaming adapters (R17): chunk buffering, frame
+/// split on blank lines, `data:` extraction. Protocol events stay with the
+/// caller; the handler returns `ControlFlow::Break` to stop the pump early
+/// (e.g. after a terminal event while the server keeps the socket open).
+pub(crate) enum SseEnd {
+    /// Clean EOF, or the handler asked to stop after a terminal event.
+    Closed,
+    /// Local cancellation while reading.
+    Cancelled,
+    /// Transport failure with the reqwest error text; retry safety depends
+    /// on caller-owned emission state, so classification stays at the call
+    /// site via `stream_failure_msg`.
+    Transport(String),
+}
+
+pub(crate) async fn pump_sse(
+    response: reqwest::Response,
+    cancel: &Cancel,
+    mut on_frame: impl FnMut(&str) -> Result<std::ops::ControlFlow<()>, ProviderError> + Send,
+) -> Result<SseEnd, ProviderError> {
+    use std::ops::ControlFlow;
+    let mut stream = response.bytes_stream();
+    let mut buffer = String::new();
+    loop {
+        let chunk = tokio::select! {
+            chunk = futures_next(&mut stream) => chunk,
+            _ = cancel.cancelled() => return Ok(SseEnd::Cancelled),
+        };
+        let Some(chunk) = chunk else { return Ok(SseEnd::Closed) };
+        let chunk = match chunk {
+            Ok(chunk) => chunk,
+            Err(error) => return Ok(SseEnd::Transport(format!("model stream: {error}"))),
+        };
+        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        // SSE frames are separated by a blank line.
+        while let Some(pos) = buffer.find("\n\n") {
+            let frame = buffer[..pos].to_string();
+            buffer = buffer[pos + 2..].to_string();
+            for line in frame.lines() {
+                let Some(data) = line.strip_prefix("data:").map(str::trim) else { continue };
+                if let ControlFlow::Break(()) = on_frame(data)? {
+                    return Ok(SseEnd::Closed);
+                }
+            }
+        }
+    }
+}
+
+/// Append a string field from a wire delta onto an assembled JSON object.
+pub(crate) fn append(target: &mut Json, key: &str, delta: &Json) {
+    if let Some(text) = delta.as_str() {
+        let merged = format!("{}{}", target[key].as_str().unwrap_or(""), text);
+        target[key] = Json::String(merged);
+    }
+}
+
+/// Mid-stream failure: retryable only before any visible output.
+pub(crate) fn stream_failure_msg(message: &str, emitted: bool) -> ProviderError {
+    if emitted {
+        ProviderError::permanent(message)
+    } else {
+        ProviderError::transient(message)
+    }
+}
+
+/// reqwest 0.12 stream helper (futures-util is only used for StreamExt).
+pub(crate) async fn futures_next<S, T>(stream: &mut S) -> Option<Result<T, reqwest::Error>>
+where
+    S: futures_util::Stream<Item = Result<T, reqwest::Error>> + Unpin,
+{
+    use futures_util::StreamExt;
+    stream.next().await
 }
