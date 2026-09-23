@@ -40,9 +40,23 @@ impl ChatCompletions {
     }
 
     fn body(request: &ModelRequest) -> Json {
+        // Native continuation blocks belong to their own protocol: switching
+        // protocols must not forward them on this wire (§7, ported contract).
+        let messages: Vec<Json> = request
+            .messages
+            .iter()
+            .map(|message| {
+                let mut message = message.clone();
+                if let Some(fields) = message.as_object_mut() {
+                    fields.remove("responses_output");
+                    fields.remove("anthropic_blocks");
+                }
+                message
+            })
+            .collect();
         let mut body = json!({
             "model": request.model,
-            "messages": request.messages,
+            "messages": messages,
             "tools": request.tools,
             "stream": true,
             "stream_options": {"include_usage": true},

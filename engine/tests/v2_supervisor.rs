@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 use teamagents_core::kernel::{KernelProfile, ModelRequest, ModelResponse, Usage};
-use teamagents_core::models::UserConfig;
+use teamagents_core::models::{ModelProfile, UserConfig};
 use teamagents_engine::providers::{AttemptOutcome, Cancel, Provider, ProviderError, ProviderEvent};
 use teamagents_engine::v2::supervisor::{start, SupervisorConfig, SupervisorHandle};
 
@@ -89,10 +89,10 @@ fn factory(scripts: HashMap<String, Vec<Step>>) -> impl Fn(&str, &KernelProfile)
     }
 }
 
-fn config(
-    root: &Root,
-    provider_factory: impl Fn(&str, &KernelProfile) -> ScriptedProvider,
-) -> SupervisorConfig<ScriptedProvider, impl Fn(&str, &KernelProfile) -> ScriptedProvider> {
+fn config<P, F>(root: &Root, provider_factory: F) -> SupervisorConfig<P, F>
+where
+    F: Fn(&str, &KernelProfile) -> P,
+{
     SupervisorConfig {
         marker: std::marker::PhantomData,
         session_db: root.dir.join("session.sqlite"),
@@ -297,4 +297,174 @@ async fn shutdown_with_an_active_instance_still_exits() {
         .await
         .expect("supervisor did not exit with an active instance")
         .expect("shutdown");
+}
+
+/// Minimal SSE-replay HTTP server (one raw response per request; records
+/// request bodies) for wire-level heterogeneous tests.
+struct FakeServer {
+    base: String,
+    bodies: std::sync::Arc<Mutex<Vec<String>>>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl FakeServer {
+    async fn start(responses: Vec<String>) -> FakeServer {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let bodies = std::sync::Arc::new(Mutex::new(vec![]));
+        let seen = bodies.clone();
+        let task = tokio::spawn(async move {
+            for response in responses {
+                let Ok((mut socket, _)) = listener.accept().await else { return };
+                let mut buf = vec![0u8; 65536];
+                let mut head = Vec::new();
+                loop {
+                    let n = socket.read(&mut buf).await.unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    head.extend_from_slice(&buf[..n]);
+                    if let Some(pos) = head.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&head[..pos]).to_string();
+                        let content_length: usize = headers
+                            .lines()
+                            .find_map(|line| {
+                                line.strip_prefix("content-length: ").or_else(|| line.strip_prefix("Content-Length: "))
+                            })
+                            .and_then(|v| v.trim().parse().ok())
+                            .unwrap_or(0);
+                        let mut body = head[pos + 4..].to_vec();
+                        while body.len() < content_length {
+                            let n = socket.read(&mut buf).await.unwrap_or(0);
+                            if n == 0 {
+                                break;
+                            }
+                            body.extend_from_slice(&buf[..n]);
+                        }
+                        seen.lock().unwrap().push(String::from_utf8_lossy(&body).to_string());
+                        break;
+                    }
+                }
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.flush().await;
+            }
+        });
+        FakeServer { base: format!("http://{addr}"), bodies, task }
+    }
+
+    fn bodies(&self) -> Vec<String> {
+        self.bodies.lock().unwrap().clone()
+    }
+}
+
+fn sse_response(events: &str) -> String {
+    format!("HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n{events}")
+}
+
+/// Poll until one model request of the instance reached COMPLETE (proof the
+/// provider round-trip went through the real wire adapter).
+async fn wait_model_request_complete(control: &teamagents_core::v2::Control, instance: &str) {
+    for _ in 0..400 {
+        let count: i64 = control
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM model_requests WHERE instance_id = ?1 AND status = 'COMPLETE'",
+                [instance],
+                |row| row.get(0),
+            )
+            .unwrap();
+        if count > 0 {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("no COMPLETE model request for {instance}");
+}
+
+#[tokio::test]
+async fn heterogeneous_instances_run_different_protocols_in_one_session() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let root = root("hetero");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    // Leader speaks chat completions, the worker speaks Responses: per-model
+    // catalog routing by protocol, never by vendor (R17, pi-ai style).
+    let chat_server = FakeServer::start(vec![sse_response(
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"f1\",\"function\":{\"name\":\"finish\",\"arguments\":\"{\\\"status\\\":\\\"success\\\",\\\"summary\\\":\\\"lead done\\\"}\"}}]}}]}\n\n\
+         data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}\n\n\
+         data: [DONE]\n\n",
+    )])
+    .await;
+    let responses_server = FakeServer::start(vec![sse_response(
+        "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"function_call\",\"call_id\":\"f1\",\"name\":\"finish\",\"arguments\":\"{\\\"status\\\":\\\"success\\\",\\\"summary\\\":\\\"worker done\\\"}\",\"status\":\"completed\"}],\"usage\":{\"input_tokens\":3,\"output_tokens\":2,\"total_tokens\":5}}}\n\n",
+    )])
+    .await;
+    let mut catalog = UserConfig::default();
+    catalog.models.insert(
+        "lead-model".into(),
+        ModelProfile {
+            provider: "deepseek".into(),
+            protocol: "deepseek".into(),
+            model: "ds-flash".into(),
+            base_url: Some(chat_server.base.clone()),
+            api_key_env: None,
+            timeout: 5,
+            max_retries: 0,
+            generation_options: Default::default(),
+            context_window: Some(1_000_000),
+            codex_profile: None,
+        },
+    );
+    catalog.models.insert(
+        "worker-model".into(),
+        ModelProfile {
+            provider: "openai".into(),
+            protocol: "responses".into(),
+            model: "gpt-x".into(),
+            base_url: Some(responses_server.base.clone()),
+            api_key_env: None,
+            timeout: 5,
+            max_retries: 0,
+            generation_options: Default::default(),
+            context_window: Some(200_000),
+            codex_profile: None,
+        },
+    );
+    let catalog = std::sync::Arc::new(catalog);
+    let build = catalog.clone();
+    let factory = move |_id: &str, profile: &KernelProfile| {
+        teamagents_engine::providers::build_for_model(&build, &profile.model).expect("provider")
+    };
+    let mut cfg = config(&root, factory);
+    cfg.leader_profile.model = "lead-model".into();
+    cfg.catalog = (*catalog).clone();
+    let handle = start(cfg).await.expect("start");
+    let mut control = second_control(&root);
+    control
+        .submit(
+            cmd(
+                "mk-worker",
+                "create_instance",
+                json!({"id": "i-worker", "workspace_ref": root.dir.join("ws").to_string_lossy(),
+                       "profile": {"model": "worker-model"}}),
+            ),
+            teamagents_core::v2::Identity::User,
+        )
+        .expect("worker");
+    wait_instance_phase(&handle, "i-worker", "READY", 10_000).await;
+    handle.input("i-leader", "close your turn").await.expect("leader input");
+    handle.input("i-worker", "close your turn").await.expect("worker input");
+    // both instances completed one model request through their own protocol
+    wait_model_request_complete(&control, "i-leader").await;
+    wait_model_request_complete(&control, "i-worker").await;
+    let chat = chat_server.bodies();
+    assert_eq!(chat.len(), 1, "exactly one leader request: {chat:?}");
+    assert!(chat[0].contains("\"model\":\"ds-flash\"") && chat[0].contains("\"messages\""), "{}", chat[0]);
+    let responded = responses_server.bodies();
+    assert_eq!(responded.len(), 1, "exactly one worker request: {responded:?}");
+    assert!(responded[0].contains("\"model\":\"gpt-x\"") && responded[0].contains("\"input\""), "{}", responded[0]);
+    assert!(responded[0].contains("\"store\":false"), "{}", responded[0]);
+    handle.shutdown().await.expect("shutdown");
+    chat_server.task.await.unwrap();
+    responses_server.task.await.unwrap();
 }

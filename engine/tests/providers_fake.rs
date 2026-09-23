@@ -703,3 +703,27 @@ fn anthropic_non_sse_json_body_and_empty_content() {
     assert!(error.message.contains("empty content"), "{}", error.message);
     rt.block_on(server.task).unwrap();
 }
+
+#[test]
+fn chat_completions_body_strips_native_continuation_fields() {
+    // §7: a history crossing protocols must not forward old native blocks.
+    let rt = runtime();
+    let server = rt.block_on(FakeServer::start(vec![sse_response(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+    )]));
+    let provider = ChatCompletions::new(&server.base, "k", Duration::from_secs(5)).unwrap();
+    let mut req = request();
+    req.messages = vec![
+        json!({"role":"assistant","content":"done",
+               "responses_output":[{"type":"reasoning","encrypted_content":"opaque"}],
+               "anthropic_blocks":[{"type":"thinking","signature":"signed"}]}),
+        json!({"role":"user","content":"hi"}),
+    ];
+    run(&rt, &provider, &req).unwrap();
+    let body = request_body(&server);
+    assert_eq!(body["messages"][0], json!({"role":"assistant","content":"done"}));
+    assert_eq!(body["messages"][1], json!({"role":"user","content":"hi"}));
+    let wire = body.to_string();
+    assert!(!wire.contains("opaque") && !wire.contains("signed"), "{wire}");
+    rt.block_on(server.task).unwrap();
+}

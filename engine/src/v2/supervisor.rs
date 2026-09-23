@@ -274,7 +274,9 @@ where
                         state_root: instance_root,
                         workspace,
                         permissions: self.config.permissions.clone(),
-                        profile: profile.clone(),
+                        // the kernel gets the wire-effective profile while
+                        // the factory still sees the catalog key (R17)
+                        profile: crate::providers::resolve_profile(profile.clone(), &self.config.catalog),
                         provider: (self.config.provider_factory)(id, &profile),
                         catalog: self.config.catalog.clone(),
                         bindings: self.config.bindings.clone(),

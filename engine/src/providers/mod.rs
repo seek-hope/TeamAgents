@@ -11,7 +11,8 @@ use serde_json::{json, Value as Json};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use teamagents_core::kernel::{ModelRequest, ModelResponse, Usage};
+use teamagents_core::kernel::{KernelProfile, ModelRequest, ModelResponse, Usage};
+use teamagents_core::models::{ModelProfile, UserConfig};
 
 /// Cooperative cancellation for one attempt. Dropping a future is not
 /// treated as proof an external effect stopped (RV-05): the runner/process
@@ -136,6 +137,106 @@ pub trait Provider: Send + Sync {
         cancel: &Cancel,
         on_event: &mut (dyn FnMut(ProviderEvent) + Send),
     ) -> impl std::future::Future<Output = Result<AttemptOutcome, ProviderError>> + Send;
+}
+
+/// One transport-attempt provider over the supported wire protocols (R17).
+/// The runtime holds this single concrete type; protocol dispatch lives
+/// here, not in the agent loop (§7 — protocol type is separate from vendor
+/// name; pi-ai routes the same way via `model.api`).
+pub enum AnyProvider {
+    ChatCompletions(chat_completions::ChatCompletions),
+    Responses(responses::Responses),
+    Anthropic(anthropic::Anthropic),
+}
+
+impl Provider for AnyProvider {
+    fn protocol(&self) -> &str {
+        match self {
+            AnyProvider::ChatCompletions(provider) => provider.protocol(),
+            AnyProvider::Responses(provider) => provider.protocol(),
+            AnyProvider::Anthropic(provider) => provider.protocol(),
+        }
+    }
+
+    async fn complete(
+        &self,
+        request: &ModelRequest,
+        cancel: &Cancel,
+        on_event: &mut (dyn FnMut(ProviderEvent) + Send),
+    ) -> Result<AttemptOutcome, ProviderError> {
+        match self {
+            AnyProvider::ChatCompletions(provider) => provider.complete(request, cancel, on_event).await,
+            AnyProvider::Responses(provider) => provider.complete(request, cancel, on_event).await,
+            AnyProvider::Anthropic(provider) => provider.complete(request, cancel, on_event).await,
+        }
+    }
+}
+
+/// Resolve a catalog-keyed instance profile into the effective kernel
+/// profile (R17): the wire model id and generation options come from the
+/// catalog entry; instance-stored option overrides win; the context window
+/// follows the resolved model (D-36). Unknown keys pass through verbatim so
+/// scripted/test providers never consult the catalog.
+pub fn resolve_profile(profile: KernelProfile, catalog: &UserConfig) -> KernelProfile {
+    let Some(entry) = catalog.models.get(&profile.model) else { return profile };
+    let mut options = entry.generation_options.clone();
+    if let Some(overrides) = profile.options.as_object() {
+        options.extend(overrides.iter().map(|(key, value)| (key.clone(), value.clone())));
+    }
+    KernelProfile {
+        model: entry.model.clone(),
+        instructions: profile.instructions.clone(),
+        tools: profile.tools.clone(),
+        options: serde_json::to_value(options).unwrap_or_else(|_| serde_json::json!({})),
+        context_window: entry.context_window.or(profile.context_window),
+    }
+}
+
+/// Build the wire adapter for one catalog model id (R17). The catalog entry
+/// owns protocol/base/credential *references*; credentials resolve from the
+/// environment here at the config boundary, never inside an adapter (§7).
+/// ponytail: pi-ai style compat auto-detection is deliberately not ported —
+/// the catalog declares the protocol explicitly and only contract-verified
+/// wire behaviors ship. Effort value normalization (deepseek xhigh→max)
+/// belongs to the config layer's options snapshot, not the adapters.
+pub fn build_for_model(catalog: &UserConfig, model: &str) -> Result<AnyProvider, String> {
+    let profile = catalog.models.get(model).ok_or_else(|| format!("model {model} is not in the user catalog"))?;
+    build_for_profile(profile)
+}
+
+pub fn build_for_profile(profile: &ModelProfile) -> Result<AnyProvider, String> {
+    let api_key = match &profile.api_key_env {
+        Some(env) => std::env::var(env).map_err(|_| format!("missing API key env {env}"))?,
+        None => String::new(),
+    };
+    let timeout = Duration::from_secs(profile.timeout.max(1) as u64);
+    let configured = profile.base_url.as_deref().map(str::trim).filter(|base| !base.is_empty());
+    match profile.protocol.as_str() {
+        "anthropic" => Ok(AnyProvider::Anthropic(anthropic::Anthropic::new(
+            configured.unwrap_or("https://api.anthropic.com"),
+            api_key,
+            timeout,
+        )?)),
+        "responses" => Ok(AnyProvider::Responses(responses::Responses::new(
+            configured.unwrap_or("https://api.openai.com/v1"),
+            api_key,
+            timeout,
+        )?)),
+        // "openai" (legacy), "chat/completions" and "deepseek" share the
+        // chat-completions wire shape (ported contract).
+        _ => {
+            let default = if profile.protocol == "deepseek" || profile.provider == "deepseek" {
+                "https://api.deepseek.com/v1"
+            } else {
+                "https://api.openai.com/v1"
+            };
+            Ok(AnyProvider::ChatCompletions(chat_completions::ChatCompletions::new(
+                configured.unwrap_or(default),
+                api_key,
+                timeout,
+            )?))
+        }
+    }
 }
 
 /// Assemble the final chat-shaped response from accumulated stream state.
