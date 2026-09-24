@@ -1171,3 +1171,73 @@ async fn failed_summaries_fall_back_uncompressed_and_break_after_three() {
     assert_eq!(open, 3, "exactly the three attempted summaries are recorded");
     handle.shutdown().await.expect("shutdown");
 }
+
+/// One user `[hooks]` script: argv[1] is the event name, the JSON is on stdin.
+fn hook_script(dir: &std::path::Path, name: &str, body: &str) -> String {
+    std::fs::create_dir_all(dir).unwrap();
+    let path = dir.join(name);
+    std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path.to_string_lossy().into_owned()
+}
+
+#[tokio::test]
+async fn a_pre_tool_hook_vetoes_a_tool_call_and_the_turn_continues() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let root = root("hook-pre-tool");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let marker = root.dir.join("ws").join("denied.txt");
+    let deny = hook_script(&root.dir, "deny.sh", "cat > /dev/null; echo 'shell is not allowed here' >&2; exit 2");
+    let script = vec![
+        Step::Message(shell_call("c1", &format!("echo nope > {}", marker.display()))),
+        Step::Message(finish_call("the command was vetoed and reported")),
+    ];
+    let (provider, seen) = recording(script);
+    let mut config = root.config_with(provider);
+    config.catalog.hooks.pre_tool = vec![deny];
+    let handle = start(config).await.expect("start");
+    handle.input("run the forbidden command").await.expect("input");
+    // the veto is a tool result, not a crash: the goal still closes
+    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    assert!(!marker.exists(), "the hook stopped the command before it ran");
+    let requests = wait_for_requests(&seen, 2, 10_000).await;
+    let second = request_text(&requests[1]);
+    assert!(second.contains("denied by pre_tool hook"), "the model sees the veto: {second}");
+    assert!(second.contains("not allowed here"), "with the hook's stderr as the reason: {second}");
+    handle.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn notify_hooks_receive_tool_call_and_run_completed() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let root = root("hook-notify");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let seen = root.dir.join("events.txt");
+    let hook = hook_script(
+        &root.dir,
+        "notify.sh",
+        &format!("printf '%s\\n' \"$1\" >> {}\ncat >> {}\n", seen.display(), seen.display()),
+    );
+    let script = vec![Step::Message(shell_call("c1", "echo notified")), Step::Message(finish_call("done"))];
+    let mut config = root.config(ScriptedProvider { script: Mutex::new(script.into()) });
+    config.catalog.hooks.notify = vec![hook];
+    let handle = start(config).await.expect("start");
+    handle.input("do the thing").await.expect("input");
+    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    // the hook runs on its own thread; poll for the two events of this turn
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut text = String::new();
+    while std::time::Instant::now() < deadline {
+        text = std::fs::read_to_string(&seen).unwrap_or_default();
+        if text.contains("tool_call") && text.contains("run_completed") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(text.contains("tool_call\n"), "the tool call was reported: {text}");
+    assert!(text.contains("run_completed"), "the completed run was reported: {text}");
+    assert!(text.contains("\"instance_id\":\"i-main\""), "the payload carries the instance: {text}");
+    assert!(text.contains("echo notified"), "the tool arguments travel on stdin: {text}");
+    handle.shutdown().await.expect("shutdown");
+}

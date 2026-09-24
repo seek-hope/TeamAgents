@@ -63,6 +63,8 @@ teamagents exec --json "用一句话自我介绍"    # 同一后端的无头输�
   原文经 `read_history` 仍可检索，压缩调用计入目标预算。
 - **工具面**：文件读写/搜索/原子多文件编辑、会话内持久 shell（`cd`/`export` 跨命令保留）、
   网页搜索与抓取、MCP（stdio 与 streamable HTTP）、Skills（`~/.agents/skills`）。
+- **用户钩子（`[hooks]`）**：`notify` 把事件（`tool_call`/`team_action`/`run_*`）通知给你自己的程序；
+  `pre_tool` 能在任何原生工具执行前拦截（exit 2 拒绝，stderr 作原因），坏钩子只记日志不卡团队。
 - **隔离**：`approved_scope` 下实例 shell 走 `bubblewrap`；缺失时明确报错，不会静默退化成不隔离执行。
 
 ## 安装

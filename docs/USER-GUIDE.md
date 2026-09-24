@@ -40,8 +40,26 @@ api_key_env = "ANYSEARCH_API_KEY"
 ```
 
 - `context_window` 决定请求预算与压缩阈值；真实模型必须使用原生窗口并记录来源（见 `docs/DECISIONS.md` D-36）。
-- `teamagents doctor` 会逐项检查配置、每个模型 profile 的凭据可解析、v2 状态根（印记/WAL/读写）与
-  bubblewrap 隔离探针；旧版 `sessions/` 布局存在时会明确报告（不迁移）。
+- `teamagents doctor` 会逐项检查配置、每个模型 profile 的凭据可解析、v2 状态根（印记/WAL/读写）、
+  bubblewrap 隔离探针与 `[hooks]` 里的程序是否可执行；旧版 `sessions/` 布局存在时会明确报告（不迁移）。
+
+### 2.1 钩子（`[hooks]`）
+
+钩子是**你自己写的程序**（路径只来自用户配置，模型无法指定），在主机上以你的权限运行：
+
+```toml
+[hooks]
+notify = ["/home/you/bin/teamagent-notify.sh"]    # 事件通知：argv[1] 是事件名，事件 JSON 走 stdin
+pre_tool = ["/home/you/bin/policy.sh"]            # 工具调用前的策略钩子
+```
+
+- `notify`：异步、不阻塞回合，超过 10 秒被杀掉；失败只写引擎 stderr。v2 的事件为 `tool_call`
+  （带 `tool`/`arguments`/`ok`/`error`）、`team_action`、`run_completed`、`run_failed`、
+  `run_cancelled`、`run_paused`（实例进入 PAUSED）。
+- `pre_tool`：每个原生工具调用（文件/Shell/web/Skills/MCP）执行前同步调用。退出码 0 放行；
+  **退出码 2 拒绝**，该次调用的第一行 stderr 作为原因回给模型；其他退出码、启动失败或超时一律放行
+  并记 stderr——坏掉的钩子不会卡死团队。崩溃恢复后的重放不再重问（决定在首次派发时做过），
+  `[checks]` 里的必需检查是用户自己的验收命令，不经过 `pre_tool`。
 
 ## 3. 会话与团队
 

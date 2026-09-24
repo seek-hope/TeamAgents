@@ -5,6 +5,7 @@
 //! losses are recorded honestly, and nothing side-effecting is re-executed
 //! on a guess.
 
+use crate::hooks::Hooks;
 use crate::jobs::{client, JobSpec, Journal};
 use crate::providers::{Cancel, ErrorClass, Provider, ProviderEvent};
 use crate::reference::readback_receipt;
@@ -317,6 +318,11 @@ pub struct Driver<P: Provider> {
     /// storage round trip on the turn path.
     last_prompt: u64,
     last_prompt_loaded: bool,
+    /// User hooks (`[hooks] notify` / `pre_tool`), if the config configures any.
+    hooks: Option<Arc<Hooks>>,
+    /// Last lifecycle seen by the loop: `run_paused` fires on the edge, and the
+    /// boot value never counts as a transition.
+    last_lifecycle: Option<String>,
 }
 
 /// Start the driver over its state root. Bootstrap commands use fixed command
@@ -428,6 +434,7 @@ pub(crate) fn spawn_driver<P: Provider + 'static>(
         Some(config.state_root.join("artifacts")),
         Some(config.state_root.join("shell")),
     )?);
+    let hooks = Hooks::from_config(&config.catalog, &config.session_id);
     let driver = Driver {
         shell_state: config.state_root.join("shell"),
         config,
@@ -439,6 +446,8 @@ pub(crate) fn spawn_driver<P: Provider + 'static>(
         compact_failures: 0,
         last_prompt: 0,
         last_prompt_loaded: false,
+        hooks,
+        last_lifecycle: None,
     };
     let task = tokio::spawn(driver.run());
     Ok((shared, task))
@@ -460,6 +469,18 @@ impl<P: Provider> Driver<P> {
                 return Ok(());
             }
             let snapshot = self.snapshot().await?;
+            if self.last_lifecycle.as_deref() != Some(snapshot.lifecycle.as_str()) {
+                // the boot value is not a transition; a later PAUSED is
+                if self.last_lifecycle.is_some() && snapshot.lifecycle == "PAUSED" {
+                    if let Some(hooks) = &self.hooks {
+                        hooks.fire(
+                            "run_paused",
+                            json!({"session_id": self.config.session_id, "instance_id": self.config.instance_id}),
+                        );
+                    }
+                }
+                self.last_lifecycle = Some(snapshot.lifecycle.clone());
+            }
             if snapshot.lifecycle == "TERMINATED" {
                 return Ok(()); // the supervisor retires this driver (§5.4)
             }
@@ -499,6 +520,32 @@ impl<P: Provider> Driver<P> {
                 }
                 Err(error) => return Err(error),
             }
+        }
+    }
+
+    /// The user's `pre_tool` hook may veto one native tool call before it runs
+    /// (exit 2 denies, stderr is the reason; anything else allows). It is a
+    /// blocking host process, so it runs on the blocking pool. Recovery never
+    /// re-asks: the decision was made when the call was first dispatched.
+    async fn pre_tool_denied(&self, name: &str, args: &Json) -> Option<String> {
+        let hooks = self.hooks.clone()?;
+        if !hooks.has_pre_tool() {
+            return None;
+        }
+        let payload = json!({"session_id": self.config.session_id, "instance_id": self.config.instance_id,
+                             "tool": name, "arguments": args});
+        tokio::task::spawn_blocking(move || hooks.deny_reason(&payload)).await.ok().flatten()
+    }
+
+    /// One native tool call, reported to the user's `notify` hook (if any). The
+    /// arguments travel with it so the hook can tell what actually ran.
+    fn notify_tool_call(&self, tool: &str, args: &Json, ok: bool, error: Option<String>) {
+        if let Some(hooks) = &self.hooks {
+            hooks.fire(
+                "tool_call",
+                json!({"session_id": self.config.session_id, "instance_id": self.config.instance_id,
+                       "tool": tool, "arguments": args, "ok": ok, "error": error}),
+            );
         }
     }
 
@@ -1234,7 +1281,17 @@ impl<P: Provider> Driver<P> {
                 }
                 let entry_id = format!("{}:assistant", request_id);
                 let interpretation = self.kernel(snapshot).interpret_response(&outcome.response, &entry_id);
-                self.import_interpretation(&request_id, interpretation, snapshot).await
+                let imported = self.import_interpretation(&request_id, interpretation, snapshot).await;
+                if imported.is_ok() {
+                    if let Some(hooks) = &self.hooks {
+                        hooks.fire(
+                            "run_completed",
+                            json!({"session_id": self.config.session_id, "instance_id": self.config.instance_id,
+                                   "request_id": request_id}),
+                        );
+                    }
+                }
+                imported
             }
             Err(error) => {
                 let class = format!("{:?}", error.class);
@@ -1271,6 +1328,13 @@ impl<P: Provider> Driver<P> {
                             Identity::System,
                         )
                         .await?;
+                        if let Some(hooks) = &self.hooks {
+                            hooks.fire(
+                                "run_cancelled",
+                                json!({"session_id": self.config.session_id, "instance_id": self.config.instance_id,
+                                       "request_id": request_id}),
+                            );
+                        }
                         Ok(())
                     }
                     other => {
@@ -1282,7 +1346,7 @@ impl<P: Provider> Driver<P> {
                             ErrorClass::Permanent => format!("permanent model error: {}", error.message),
                             ErrorClass::Interrupted => unreachable!(),
                         };
-                        let _ = self
+                        let failed = self
                             .submit(
                                 self.command(
                                     format!("fail-{request_id}"),
@@ -1292,6 +1356,16 @@ impl<P: Provider> Driver<P> {
                                 Identity::System,
                             )
                             .await;
+                        if failed.is_ok() {
+                            if let Some(hooks) = &self.hooks {
+                                hooks.fire(
+                                    "run_failed",
+                                    json!({"session_id": self.config.session_id,
+                                           "instance_id": self.config.instance_id,
+                                           "request_id": request_id, "reason": reason.clone()}),
+                                );
+                            }
+                        }
                         Ok(())
                     }
                 }
@@ -1508,7 +1582,7 @@ impl<P: Provider> Driver<P> {
             let recovered = status != "PREPARED";
             let name = intent["name"].as_str().unwrap_or("");
             match name {
-                "shell" => self.execute_shell(&operation_id, &intent).await?,
+                "shell" => self.execute_shell(&operation_id, &intent, !recovered).await?,
                 "read_history" => self.execute_readback(&operation_id, &intent, snapshot).await?,
                 teamagents_core::kernel::SEND_TOOL
                 | teamagents_core::kernel::DELEGATE_TOOL
@@ -1532,13 +1606,23 @@ impl<P: Provider> Driver<P> {
                     )
                     .await?;
                 }
-                _ => self.execute_inline(&operation_id, &intent).await?,
+                _ => self.execute_inline(&operation_id, &intent, !recovered).await?,
             }
         }
         Ok(true)
     }
 
-    async fn execute_shell(&mut self, operation_id: &str, intent: &Json) -> Result<(), String> {
+    /// `pre_tool`: run the user's policy hook first. False for a recovered call
+    /// (the decision was made at dispatch) and for the required checks, which are
+    /// the user's own acceptance commands rather than model tool calls.
+    async fn execute_shell(&mut self, operation_id: &str, intent: &Json, pre_tool: bool) -> Result<(), String> {
+        if pre_tool {
+            if let Some(reason) = self.pre_tool_denied("shell", &intent["args"]).await {
+                self.notify_tool_call("shell", &intent["args"], false, Some(reason.clone()));
+                let message = format!("denied by pre_tool hook: {reason}");
+                return self.complete_with_error(operation_id, intent, "hook_denied", &message).await;
+            }
+        }
         let job_dir = self.config.state_root.join("jobs").join(operation_id.replace(['/', ':'], "_"));
         let mode = ShellMode::from_permissions(Some(&self.config.permissions))?;
         let command_text = intent["args"]["command"].as_str().unwrap_or("");
@@ -1669,7 +1753,13 @@ impl<P: Provider> Driver<P> {
         receipt.output_ref = output_ref;
         receipt.error =
             error_class.map(|class| ReceiptError { class: class.into(), reason: reason.unwrap_or_default() });
-        self.complete_op(operation_id, status, &serde_json::to_value(receipt).unwrap_or(Json::Null), publish).await
+        let call_ok = receipt.ok;
+        let call_error = receipt.error.as_ref().map(|error| error.reason.clone());
+        let args = intent["args"].clone();
+        let result =
+            self.complete_op(operation_id, status, &serde_json::to_value(receipt).unwrap_or(Json::Null), publish).await;
+        self.notify_tool_call("shell", &args, call_ok, call_error);
+        result
     }
 
     /// Poll the job until terminal; cancellation is forwarded once the cancel
@@ -1797,12 +1887,24 @@ impl<P: Provider> Driver<P> {
             }
             other => return Err(format!("execute_collaboration: unknown tool {other}")),
         };
+        let action = name.to_string();
         let result = self
             .submit(
                 self.command(format!("collab-{operation_id}"), method, params),
                 Identity::Instance(self.config.instance_id.clone()),
             )
             .await;
+        let (action_ok, action_error) = match &result {
+            Ok(_) => (true, None),
+            Err(error) => (false, Some(error.clone())),
+        };
+        if let Some(hooks) = &self.hooks {
+            hooks.fire(
+                "team_action",
+                json!({"session_id": self.config.session_id, "instance_id": self.config.instance_id,
+                       "action": action, "ok": action_ok, "error": action_error}),
+            );
+        }
         match result {
             Ok(value) => {
                 let receipt = self.receipt_skeleton(operation_id, intent, true, value.to_string());
@@ -1821,7 +1923,8 @@ impl<P: Provider> Driver<P> {
 
     /// Read-only inline tools (web search/fetch): no runner needed (§6.2);
     /// recovery re-executes them because they are idempotent reads.
-    async fn execute_inline(&mut self, operation_id: &str, intent: &Json) -> Result<(), String> {
+    /// `pre_tool`: see [`Driver::execute_shell`] — recovery never re-asks.
+    async fn execute_inline(&mut self, operation_id: &str, intent: &Json, pre_tool: bool) -> Result<(), String> {
         let typed = ToolIntent {
             index: intent["index"].as_u64().unwrap_or(0) as usize,
             call_id: intent["call_id"].as_str().unwrap_or("").into(),
@@ -1829,6 +1932,15 @@ impl<P: Provider> Driver<P> {
             args: intent["args"].clone(),
             args_hash: intent["args_hash"].as_str().unwrap_or("").into(),
         };
+        let name = typed.name.clone();
+        let args = typed.args.clone();
+        if pre_tool {
+            if let Some(reason) = self.pre_tool_denied(&name, &args).await {
+                self.notify_tool_call(&name, &args, false, Some(reason.clone()));
+                let message = format!("denied by pre_tool hook: {reason}");
+                return self.complete_with_error(operation_id, intent, "hook_denied", &message).await;
+            }
+        }
         let toolkit = self.toolkit.clone();
         let op = operation_id.to_string();
         let mode = ShellMode::from_permissions(Some(&self.config.permissions))?;
@@ -1836,6 +1948,7 @@ impl<P: Provider> Driver<P> {
             tokio::task::spawn_blocking(move || toolkit.call(&op, &typed, &crate::tools::TurnControl::default(), mode))
                 .await
                 .map_err(|e| format!("tool worker join: {e}"))?;
+        self.notify_tool_call(&name, &args, receipt.ok, receipt.error.as_ref().map(|e| e.reason.clone()));
         self.complete_op(
             operation_id,
             if receipt.ok { "SUCCEEDED" } else { "FAILED" },
@@ -2283,7 +2396,7 @@ impl<P: Provider> Driver<P> {
                     }
                 }
             }
-            self.execute_shell(operation_id, &intent).await?;
+            self.execute_shell(operation_id, &intent, false).await?;
         }
         Ok(())
     }

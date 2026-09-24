@@ -14,12 +14,15 @@
 # archived_days = 30     # 归档会话超过 N 天在打开会话时删除
 # history_days = 30      # 会话库里的已受理投递与旧事件超过 N 天清理（未受理的投递一定保留）
 
-# 事件钩子（可选）：发生这些事件时执行你的命令，事件 JSON 从 stdin 进来、事件名是最后一个参数
-# 事件：tool_call / run_completed / run_failed / run_cancelled / run_paused / team_action
-# 注意：钩子是"你自己写的程序"，在主机上以你的权限运行（不进沙箱）；超时 10 秒后被杀掉，不阻塞回合。
+# 事件钩子（可选）：钩子是你自己写的程序，在主机上以你的权限运行（不进沙箱）。
+#   notify   事件通知，异步、不阻塞回合，超时 10 秒被杀掉；事件名是 argv[1]，事件 JSON 走 stdin。
+#            v2 事件：tool_call（含 tool/arguments/ok/error）/ team_action / run_completed /
+#            run_failed / run_cancelled / run_paused。
+#   pre_tool 原生工具调用前同步执行：exit 0 放行 / exit 2 拒绝（stderr 首行作原因回给模型）；
+#            其他退出码、启动失败或超时一律放行并只记 stderr。恢复后的重放不再重问。
 # [hooks]
-# notify = ["/home/you/bin/teamagents-notify.sh"]      # 事件通知（异步、不阻塞）
-# pre_tool = ["/home/you/bin/teamagents-policy.sh"]    # 执行前策略：exit 0 放行 / exit 2 拒绝（stderr 作原因）
+# notify = ["/home/you/bin/teamagents-notify.sh"]
+# pre_tool = ["/home/you/bin/teamagents-policy.sh"]
 
 [models.leader_main]
 provider = "deepseek"
