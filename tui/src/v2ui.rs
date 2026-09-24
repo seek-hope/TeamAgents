@@ -9,8 +9,8 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
-use crate::ui::wrap_lines;
 use crate::v2app::{ChatKind, Focus, V2App, View};
+use crate::wrap::wrap_lines;
 
 /// Screen regions shared by rendering and hit-testing.
 pub struct V2Geometry {
