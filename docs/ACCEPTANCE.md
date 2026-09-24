@@ -91,6 +91,19 @@ spawn/delegate**（事件与 tasks 表核验），协作能力可用但模型始
 （样本不足即标未证实），但**不能宣称协作收益**；要跑出收益需要远超本轮预算的任务规模（已记入 REPORT 局限）。
 证据与复跑见 [R2-P6 报告](../review/eval/r2-p6/REPORT.md)。
 
+R2-P7 于 2026-09-24 推进切换（R27–R29）：`teamagents init` 写配置并准备 **v2 状态根**
+（默认 `$XDG_STATE_HOME/teamagents/v2`，格式/版本印记经 store 写入），`teamagents doctor` 校验 v2 根
+（外来/错版库直接失败、`journal_mode=wal`、`synchronous=FULL`、读写探针）并把旧版布局列为只报告项；
+daemon 默认根与 init/doctor 统一（socket `v2/daemon.sock`）。R28 按 §14 先出清单再删除：
+`review/r28-legacy-cleanup.py` 清掉旧 v1 状态与探针临时数据 **3894 项 / 881MB**（0 失败），
+保留凭据、`~/.agents/skills`、`~/.codex`、`review/eval/**` 证据、Git 历史与 `/tmp/tb21`；
+清理后真实复验 init → doctor → daemon 全通过。R29 把**默认入口切到 v2**：`teamagents` 探测/启动当前用户
+daemon 后进入 TUI（v1 TUI 路径不可达），`exec` 改为同一 daemon 的无头客户端（真实跑通：自动拉起 daemon、
+`{"end":"reply","reply":"2"}`）；v1 入口 `validate`/`sessions`/`serve`/`--plain`/`--resume`/`--team` 明确拒绝，
+旧测试按退役记录标注（文件头/`#[ignore]` 写明理由与 v2 等价覆盖），源码删除与最终文档清理为 R29 收尾。
+**验收矩阵 A01–A36：36/36 ✅**（A36 由本阶段闭环）。证据与复跑见
+[R2-P7 记录](../review/r2-p7-2026-09-24.md) 与 [R2-P5 记录](../review/r2-p5-2026-09-24.md)。
+
 2026-09-22 按用户确认的 D-41 修复 full_auto Shell：主机环境执行、后台服务跨调用及 CLI 退出存活，
 默认模式保留 bwrap；补齐实时模式切换、进程组停止、输出读取收尾和相同环境的 `exec --check`。
 新增 6 项回归，`make check` 全绿：core 152 / engine 384 / TUI 109，engine 3 ignored。
