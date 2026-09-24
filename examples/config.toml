@@ -39,13 +39,6 @@ generation_options = { reasoning_effort = "max" }    # 默认档位；测试用 
 # base_url = "https://api.kimi.com/coding/v1"
 # api_key_env = "KIMI_API_KEY"
 #
-# [models.leader_apexin]       # gpt-6-astra（apexin 中转）
-# provider = "openai"
-# protocol = "openai"
-# model = "gpt-6-astra"
-# base_url = "https://api.apexin.ai/v1"
-# api_key_env = "APEXIN_API_KEY"
-# generation_options = { reasoning_effort = "xhigh" }
 #
 # [models.claude]
 # provider = "anthropic"

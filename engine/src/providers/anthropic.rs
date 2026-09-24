@@ -209,7 +209,7 @@ impl Provider for Anthropic {
                 }
                 Ok(ControlFlow::Continue(()))
             };
-            match pump_sse(response, cancel, &mut on_frame).await? {
+            match pump_sse(response, cancel, super::stream_stall_bound(self.timeout), &mut on_frame).await? {
                 SseEnd::Closed => {}
                 SseEnd::Cancelled => return Err(ProviderError::interrupted("turn interrupted")),
                 SseEnd::Transport(message) => return Err(stream_failure_msg(&message, emitted)),

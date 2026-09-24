@@ -35,7 +35,7 @@ fn cmd(id: impl Into<String>, method: &str, params: Json) -> Command {
 fn usage() -> ! {
     eprintln!(
         "usage: rebuild_p5_accept --evidence DIR --workspace DIR --lead KEY --worker KEY \\
-[--permissions approved_scope|full_auto] [--timeout S] [--dry-run]"
+[--permissions approved_scope|full_auto] [--timeout S] [--dry-run] [--require-file]"
     );
     std::process::exit(2);
 }
@@ -47,6 +47,7 @@ async fn main() -> Fallible<()> {
     let mut permissions = "approved_scope".to_string();
     let mut timeout_s = 600u64;
     let mut dry_run = false;
+    let mut require_file = false;
     while let Some(flag) = args.next() {
         let value = |args: &mut std::iter::Skip<std::env::Args>| args.next().unwrap_or_else(|| usage());
         match flag.as_str() {
@@ -57,6 +58,7 @@ async fn main() -> Fallible<()> {
             "--permissions" => permissions = value(&mut args),
             "--timeout" => timeout_s = value(&mut args).parse().unwrap_or_else(|_| usage()),
             "--dry-run" => dry_run = true,
+            "--require-file" => require_file = true,
             _ => usage(),
         }
     }
@@ -140,7 +142,8 @@ async fn main() -> Fallible<()> {
         provider_factory: factory,
     };
     let handle = start(config).await?;
-    let result = run_acceptance(&handle, &evidence, &state_root, &workspace, &worker, timeout_s, dry_run).await;
+    let result =
+        run_acceptance(&handle, &evidence, &state_root, &workspace, &worker, timeout_s, dry_run, require_file).await;
     let shutdown = handle.shutdown().await;
     result?;
     shutdown?;
@@ -155,6 +158,7 @@ async fn run_acceptance(
     worker_key: &str,
     timeout_s: u64,
     dry_run: bool,
+    require_file: bool,
 ) -> Fallible<()> {
     // the worker joins the session with its own model key: one session, two
     // protocols (R17/A27)
@@ -185,7 +189,7 @@ async fn run_acceptance(
     // the two sides only need the message plane: the worker replies with the
     // codeword, the leader relays it in its completion summary
     handle.input("i-leader", &leader_task()).await?;
-    handle.input("i-worker", &worker_task(workspace)).await?;
+    handle.input("i-worker", &worker_task(workspace, require_file)).await?;
 
     let started = Instant::now();
     let mut approvals: Vec<Json> = Vec::new();
@@ -193,10 +197,12 @@ async fn run_acceptance(
     let mut file_seen_before_approval = false;
     let file = workspace.join(ACCEPT_FILE);
     let delivered = |events: &[Json], sender: &str, recipient: &str| {
+        // message_sent carries the *recipient* in scope and the sender in the
+        // payload (the delivery fact is scoped to the receiving instance)
         events.iter().any(|event| {
             event["kind"] == json!("message_sent")
-                && event["scope"] == json!(sender)
-                && event["payload"]["recipient"] == json!(recipient)
+                && event["scope"] == json!(recipient)
+                && event["payload"]["sender"] == json!(sender)
         })
     };
     // the acceptance waits on *facts*, not on one instance's phase: both
@@ -223,11 +229,10 @@ async fn run_acceptance(
         let closed = snapshot["goal"]["status"]
             .as_str()
             .is_some_and(|status| matches!(status, "SUCCEEDED" | "FAILED" | "BLOCKED" | "CANCELLED"));
-        if closed
-            && delivered(&events, "i-leader", "i-worker")
+        let facts_hold = delivered(&events, "i-leader", "i-worker")
             && delivered(&events, "i-worker", "i-leader")
-            && file.exists()
-        {
+            && (!require_file || file.exists());
+        if closed && facts_hold {
             break snapshot["goal"]["status"].as_str().unwrap_or("UNKNOWN").to_string();
         }
         if started.elapsed() > Duration::from_secs(timeout_s) {
@@ -256,6 +261,7 @@ async fn run_acceptance(
         "worker_to_leader": delivered(&events, "i-worker", "i-leader"),
         "approvals": approvals.len(),
         "file_written": file.exists(),
+        "require_file": require_file,
         "file_text": file_text,
         "file_seen_before_approval": file_seen_before_approval,
         "instance_count": handle.snapshot().await?["instances"].as_array().map(Vec::len).unwrap_or(0),
@@ -272,8 +278,8 @@ async fn run_acceptance(
     if report["file_seen_before_approval"] == json!(true) {
         return Err("a shell effect ran before the user approved it (A14)".into());
     }
-    if !file.exists() || !file_text.contains(CODEWORD) {
-        return Err("the worker's approved shell effect is missing (A27 real tool path)".into());
+    if require_file && (!file.exists() || !file_text.contains(CODEWORD)) {
+        return Err("the worker's approved shell effect is missing (R23 permission path)".into());
     }
     Ok(())
 }
@@ -285,7 +291,13 @@ fn leader_task() -> String {
     )
 }
 
-fn worker_task(workspace: &Path) -> String {
+fn worker_task(workspace: &Path, require_file: bool) -> String {
+    if !require_file {
+        return format!(
+            "You were sent a message by i-leader. Reply to i-leader (send tool, recipient i-leader) with the \
+codeword {CODEWORD}, then finish with status success."
+        );
+    }
     format!(
         "Do exactly this, in order. (1) Run this shell command: printf '{CODEWORD}' > {}. \
 The command needs your shell tool; if it is waiting for approval, just call it and wait. \

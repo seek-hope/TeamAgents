@@ -219,6 +219,19 @@ pub(crate) fn os_trust_anchors() -> Vec<reqwest::Certificate> {
     anchors
 }
 
+/// Silence longer than this is a stalled stream, not a thinking model (§8
+/// requires per-request stall detection). The bound follows the configured
+/// request timeout but never drops below the floor, so a provider configured
+/// with a short timeout is not killed mid-reasoning, and never exceeds the
+/// ceiling, so a connection that only trickles keep-alives cannot hold a turn
+/// open indefinitely. ponytail: a per-provider knob if real runs disagree.
+const STREAM_STALL_FLOOR: Duration = Duration::from_secs(120);
+const STREAM_STALL_CEILING: Duration = Duration::from_secs(900);
+
+pub(crate) fn stream_stall_bound(timeout: Duration) -> Duration {
+    timeout.max(STREAM_STALL_FLOOR).min(STREAM_STALL_CEILING)
+}
+
 /// One HTTP client policy for every protocol adapter (§7 keeps a single
 /// production stack): 30s connect timeout plus the OS trust anchors.
 pub(crate) fn http_client() -> Result<reqwest::Client, String> {
@@ -421,6 +434,7 @@ pub(crate) enum SseEnd {
 pub(crate) async fn pump_sse(
     response: reqwest::Response,
     cancel: &Cancel,
+    stall: Duration,
     mut on_frame: impl FnMut(&str) -> Result<std::ops::ControlFlow<()>, ProviderError> + Send,
 ) -> Result<SseEnd, ProviderError> {
     use std::ops::ControlFlow;
@@ -430,6 +444,11 @@ pub(crate) async fn pump_sse(
         let chunk = tokio::select! {
             chunk = futures_next(&mut stream) => chunk,
             _ = cancel.cancelled() => return Ok(SseEnd::Cancelled),
+            // no data for the stall bound: fail honestly instead of holding the
+            // turn open until the process dies (§8)
+            _ = tokio::time::sleep(stall) => {
+                return Ok(SseEnd::Transport(format!("model stream stalled: no data for {}s", stall.as_secs())))
+            }
         };
         let Some(chunk) = chunk else { return Ok(SseEnd::Closed) };
         let chunk = match chunk {
@@ -475,4 +494,17 @@ where
 {
     use futures_util::StreamExt;
     stream.next().await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stream_stall_bound;
+    use std::time::Duration;
+
+    #[test]
+    fn the_stream_stall_bound_clamps_between_floor_and_ceiling() {
+        assert_eq!(stream_stall_bound(Duration::from_secs(1)), Duration::from_secs(120));
+        assert_eq!(stream_stall_bound(Duration::from_secs(300)), Duration::from_secs(300));
+        assert_eq!(stream_stall_bound(Duration::from_secs(3600)), Duration::from_secs(900));
+    }
 }
