@@ -150,6 +150,7 @@ fn text_response(text: &str) -> Json {
 }
 
 #[test]
+#[ignore = "v1 后端随 R29 退役（teamagents exec 现为 v2 无头客户端）；等价覆盖：v2_driver::user_cancel_stops_a_running_job、jobs_runner::a_successful_commands_service_outlives_the_job（A12/D-41）、v2_driver 崩溃恢复组"]
 fn exec_full_auto_service_survives_cli_exit_and_checks_use_host_environment() {
     let env = env_guard("exec-host-service");
     let project = env.join("project");
@@ -3035,6 +3036,7 @@ fn worker_files(base: &std::path::Path, api: Option<&FakeOpenAi>) -> std::path::
 }
 
 #[test]
+#[ignore = "v1 后端随 R29 退役（teamagents exec 现为 v2 无头客户端）；等价覆盖：v2_driver::user_cancel_stops_a_running_job、jobs_runner::a_successful_commands_service_outlives_the_job（A12/D-41）、v2_driver 崩溃恢复组"]
 fn review_crash_after_committed_chat_action_must_not_replay_it() {
     let _env = env_guard("review-recovery");
     for lost_receipt in [false, true] {
@@ -3184,6 +3186,7 @@ fn review_turn_timeout_must_stop_running_shell() {
 }
 
 #[test]
+#[ignore = "v1 后端随 R29 退役（teamagents exec 现为 v2 无头客户端）；等价覆盖：v2_driver::user_cancel_stops_a_running_job、jobs_runner::a_successful_commands_service_outlives_the_job（A12/D-41）、v2_driver 崩溃恢复组"]
 fn review_unknown_external_effect_is_not_replayed_after_crash() {
     let _env = env_guard("review-unknown-external");
     if !teamagents_engine::tools::bwrap_available() {

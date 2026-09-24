@@ -5,5 +5,6 @@
 
 pub mod daemon;
 pub mod driver;
+pub mod exec;
 pub mod storage;
 pub mod supervisor;

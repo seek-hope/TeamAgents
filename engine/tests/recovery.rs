@@ -1,3 +1,7 @@
+//! 退役（R29，2026-09-24）：本文件覆盖 v1 后端（chat/codex/session/worker/审查树）。
+//! v1 入口已不可达；等价覆盖在 v2：`v2_driver`/`v2_supervisor`/`v2_daemon`/`v2_mcp`/`v2_spawn_failure`、
+//! `review/eval/r2-p6`（性能）与 `review/eval/r2-p5` 的真实供应商验收。文件待随模块删除。
+#![cfg(any())]
 //! T8/T21: crash windows — a killed session is reconciled on restart and
 //! replayed actions stay exactly-once.
 

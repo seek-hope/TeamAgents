@@ -2,20 +2,18 @@
 //! session worker the TUI talks to (`serve`).
 
 use std::path::{Path, PathBuf};
-use teamagents_engine::{cli, tools, worker, VERSION};
+use teamagents_engine::{cli, tools, VERSION};
 
 const HELP: &str = "TeamAgents：在终端里与 Leader 协作\n\n\
-用法：teamagents [--cwd DIR] [--resume ID] [--full-auto] [--team SPEC] [--plain]\n\
-  teamagents init                    创建首次配置（保留已有文件）\n\
-  teamagents doctor                  检查配置、密钥与本机运行条件\n\
-  teamagents validate SPEC           校验团队定义（JSON / YAML）\n\
-  teamagents sessions [-v]           查看会话\n\
-  teamagents sessions prune --days N [--history-days M] [--dry-run]\n\
-  teamagents exec --json [--timeout SEC] [--check COMMAND] PROMPT|-\n\
+用法：teamagents [--cwd DIR] [--state-root PATH] [--model KEY] [--full-auto]\n\
+  teamagents                          连接当前用户 daemon 的 TUI（不存在则先启动 daemon）\n\
+  teamagents exec [--json] [--timeout SEC] \"…\"   同一后端的无头输入\n\
   teamagents daemon [--state-root PATH] [--cwd DIR] [--model KEY] [--full-auto]\n\
-  teamagents version | --version     查看版本\n\
-  teamagents --help                  查看帮助\n\n\
-默认进入 TUI；--plain 使用行模式；--cwd DIR 指定工作目录。\n\
+  teamagents init [--state-root PATH] 创建配置并准备 v2 状态根\n\
+  teamagents doctor [--state-root PATH] 检查配置、密钥、v2 状态根与本机条件\n\
+  teamagents version | --version      查看版本\n\
+  teamagents --help                   查看帮助\n\n\
+团队由 Leader 通过 spawn/delegate/send/wait 建立；旧版 TeamSpec/行模式/会话恢复入口已随 v1 后端退役。\n\
 首次使用：teamagents init → 设置密钥环境变量 → teamagents doctor → teamagents。";
 
 fn usage() -> ! {
@@ -265,23 +263,27 @@ fn tui_search_roots(exe: Option<&std::path::Path>) -> Vec<PathBuf> {
     exe.map(|exe| exe.ancestors().map(Path::to_path_buf).collect()).unwrap_or_default()
 }
 
+/// R29 default entry: one daemon per user owns the session; the TUI is a thin
+/// client of its socket (§9). The daemon is started detached when no socket is
+/// live, so quitting the TUI never stops the session.
 fn run_tui(args: &Args) -> i32 {
     let Some(binary) = find_tui_binary() else {
-        eprintln!("找不到 teamagents-tui。请将发行包中的 teamagents 和 teamagents-tui 安装在同一目录，或用 TEAMAGENTS_TUI 指定路径。\n源码构建：cargo build --manifest-path tui/Cargo.toml；也可用 teamagents --plain 进入行模式。");
+        eprintln!("找不到 teamagents-tui。请将发行包中的 teamagents 和 teamagents-tui 安装在同一目录，或用 TEAMAGENTS_TUI 指定路径。\n源码构建：cargo build --manifest-path tui/Cargo.toml；无头方式用 teamagents exec。");
         return 1;
     };
+    let state_root = args.state_root.clone().map(PathBuf::from).unwrap_or_else(teamagents_engine::v2_root);
+    let socket = match ensure_daemon(&state_root, args.model.clone()) {
+        Ok(socket) => socket,
+        Err(error) => {
+            eprintln!("{error}");
+            return 1;
+        }
+    };
     let mut command = std::process::Command::new(binary);
+    command.arg("--daemon").arg(&socket);
+    command.arg("--state-root").arg(&state_root);
     if let Some(cwd) = &args.cwd {
         command.args(["--cwd", cwd]);
-    }
-    if let Some(resume) = &args.resume {
-        command.args(["--resume", resume]);
-    }
-    if args.full_auto {
-        command.arg("--full-auto");
-    }
-    if let Some(team) = &args.team {
-        command.args(["--team", team]);
     }
     let engine = std::env::current_exe().unwrap_or_default();
     command.env("TEAMAGENTS_ENGINE", engine);
@@ -292,6 +294,84 @@ fn run_tui(args: &Args) -> i32 {
             1
         }
     }
+}
+
+/// `teamagents exec`: the same backend as the TUI, one headless input (§9).
+fn run_exec(args: &Args) -> i32 {
+    let Some(prompt) = args.positional.clone() else {
+        eprintln!("exec 需要提示词：teamagents exec [--json] [--timeout SEC] \"…\"");
+        return 2;
+    };
+    let state_root = args.state_root.clone().map(PathBuf::from).unwrap_or_else(teamagents_engine::v2_root);
+    let socket = match ensure_daemon(&state_root, args.model.clone()) {
+        Ok(socket) => socket,
+        Err(error) => {
+            eprintln!("{error}");
+            return 2;
+        }
+    };
+    teamagents_engine::v2::exec::run(teamagents_engine::v2::exec::ExecOptions {
+        socket,
+        prompt,
+        timeout_s: args.timeout.unwrap_or(900),
+        json_out: args.exec_json,
+    })
+}
+
+/// Start the session daemon when the socket is not live, then return the socket
+/// path. Detached on purpose: the session must outlive this client (§9).
+fn ensure_daemon(state_root: &Path, model: Option<String>) -> Result<PathBuf, String> {
+    let socket = state_root.join("daemon.sock");
+    // liveness is a *connection*, not the presence of a socket file: a crashed
+    // daemon leaves a stale file that would make bind fail if we kept it
+    if socket.exists() {
+        if std::os::unix::net::UnixStream::connect(&socket).is_ok() {
+            return Ok(socket);
+        }
+        let _ = std::fs::remove_file(&socket);
+    }
+    let exe = std::env::current_exe().map_err(|e| format!("current exe: {e}"))?;
+    let model = model.or_else(default_model_key);
+    let mut command = if which_binary("setsid").is_some() {
+        let mut command = std::process::Command::new("setsid");
+        command.arg(&exe);
+        command
+    } else {
+        std::process::Command::new(&exe)
+    };
+    command.arg("daemon").arg("--state-root").arg(state_root);
+    if let Some(model) = model {
+        command.arg("--model").arg(model);
+    }
+    command.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    command.spawn().map_err(|e| format!("无法启动 daemon: {e}"))?;
+    for _ in 0..150 {
+        if socket.exists() {
+            return Ok(socket);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    Err(format!("daemon 未在 {} 处就绪；请手动运行 teamagents daemon 查看原因", socket.display()))
+}
+
+/// The leader's model key when the caller did not choose one: the documented
+/// default, else the only configured key.
+fn default_model_key() -> Option<String> {
+    let catalog = teamagents_engine::config::load_user_config(&teamagents_engine::config::user_config_path()).ok()?;
+    if catalog.models.contains_key("leader_main") {
+        return Some("leader_main".to_string());
+    }
+    let mut keys: Vec<String> = catalog.models.keys().cloned().collect();
+    keys.sort();
+    match keys.len() {
+        1 => keys.pop(),
+        _ => None,
+    }
+}
+
+fn which_binary(name: &str) -> Option<PathBuf> {
+    std::env::var_os("PATH")
+        .and_then(|paths| std::env::split_paths(&paths).map(|dir| dir.join(name)).find(|candidate| candidate.is_file()))
 }
 
 fn main() {
@@ -317,28 +397,22 @@ fn main() {
             None => usage(),
         },
         Some("daemon") => cli::daemon(args.state_root.clone(), args.cwd.clone(), args.model.clone(), args.full_auto),
-        Some("serve") => worker::serve(),
         Some("init") => cli::init(args.state_root.clone().map(PathBuf::from)),
         Some("doctor") => cli::doctor(args.state_root.clone().map(PathBuf::from)),
-        Some("validate") => match &args.positional {
-            Some(path) => cli::validate_spec(path),
-            None => usage(),
-        },
-        Some("sessions") => match args.positional.as_deref() {
-            Some("prune") => cli::prune_sessions_cmd(args.timeout.unwrap_or(30), args.history_days, args.dry_run),
-            _ => cli::list_sessions_cmd(args.verbose),
-        },
         Some("version") => cli::version(),
-        Some("exec") => cli::exec_json(&cli::ExecOptions {
-            cwd: args.cwd.clone(),
-            resume: args.resume.clone(),
-            full_auto: args.full_auto,
-            team: args.team.clone(),
-            timeout: args.timeout,
-            checks: args.checks.clone(),
-            prompt: args.positional.clone(),
-        }),
-        _ if args.plain => cli::repl(args.cwd.clone(), args.resume.clone(), args.full_auto, args.team.clone()),
+        Some("exec") => run_exec(&args),
+        // v1-only entry points stayed behind with the retired backend (§14/R29)
+        Some("validate") | Some("sessions") | Some("serve") | Some("repl") => {
+            eprintln!(
+                "teamagents {}：旧后端已随 R2 重构退役；团队由 Leader 通过 spawn/delegate 建立，会话由 daemon 拥有。\n用 teamagents 进入 TUI，或用 teamagents exec \"…\" 跑一次无头输入。",
+                args.command.as_deref().unwrap_or("")
+            );
+            2
+        }
+        _ if args.plain || args.resume.is_some() || args.team.is_some() => {
+            eprintln!("--plain/--resume/--team 随旧后端退役；用 teamagents（v2 TUI）或 teamagents exec。");
+            2
+        }
         _ => run_tui(&args),
     };
     if args.command.is_none() && std::env::var("TEAMAGENTS_ENGINE").is_err() && !args.plain {

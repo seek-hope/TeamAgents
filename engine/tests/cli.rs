@@ -15,6 +15,7 @@ fn teamagents(args: &[&str], state_home: &std::path::Path, config_home: &std::pa
 }
 
 #[test]
+#[ignore = "v1 入口随 R29 退役（validate/sessions/--team 已移除）；v2 覆盖见 init_prepares_the_v2_root_and_doctor_verifies_it 与 review/eval/r2-p6"]
 fn version_validate_and_sessions_smoke() {
     let home = std::env::temp_dir().join(format!("ta-cli-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
@@ -126,6 +127,7 @@ fn doctor_probes_isolation_codex_and_config_errors() {
 }
 
 #[test]
+#[ignore = "v1 入口随 R29 退役（validate/sessions/--team 已移除）；v2 覆盖见 init_prepares_the_v2_root_and_doctor_verifies_it 与 review/eval/r2-p6"]
 fn validate_enforces_one_builtin_leader_in_json_and_yaml() {
     use serde_json::json;
     let root = std::env::temp_dir().join(format!("ta-cli-leader-invariants-{}", std::process::id()));

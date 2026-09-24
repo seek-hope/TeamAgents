@@ -45,8 +45,8 @@ impl Args {
 }
 
 fn usage() -> ! {
-    eprintln!("teamagents-tui [--cwd DIR] [--resume ID] [--full-auto] [--team SPEC.json]");
-    eprintln!("              [--daemon SOCK | --state-root DIR]   # 连接 v2 会话 daemon（R19）");
+    eprintln!("teamagents-tui --daemon SOCK | --state-root DIR   # v2 会话 daemon（R19/R29 必填）");
+    eprintln!("              [--cwd DIR]");
     eprintln!("  env: TEAMAGENTS_ENGINE (teamagents binary), --engine PATH");
     std::process::exit(2);
 }
@@ -155,9 +155,14 @@ fn main() {
         eprintln!("TUI 需要真实终端；哑终端请用 teamagents --plain");
         std::process::exit(1);
     }
-    if let Some(socket) = args.daemon_socket() {
-        v2_main(&socket);
-    }
+    // R29: the v2 daemon is the only backend; the legacy in-process path is
+    // retired, so a missing socket is a usage error rather than a silent
+    // fallback to code that no longer receives fixes
+    let Some(socket) = args.daemon_socket() else {
+        usage();
+    };
+    v2_main(&socket);
+    #[allow(unreachable_code)]
     let worker = match Worker::spawn(&args.engine_bin) {
         Ok(w) => Arc::new(w),
         Err(e) => {
