@@ -142,24 +142,35 @@ async fn main() -> Fallible<()> {
         provider_factory: factory,
     };
     let handle = start(config).await?;
-    let result =
-        run_acceptance(&handle, &evidence, &state_root, &workspace, &worker, timeout_s, dry_run, require_file).await;
+    let run = Run {
+        evidence: &evidence,
+        state_root: &state_root,
+        workspace: &workspace,
+        worker_key: &worker,
+        timeout_s,
+        dry_run,
+        require_file,
+    };
+    let result = run_acceptance(&handle, run).await;
     let shutdown = handle.shutdown().await;
     result?;
     shutdown?;
     Ok(())
 }
 
-async fn run_acceptance(
-    handle: &SupervisorHandle,
-    evidence: &Path,
-    state_root: &Path,
-    workspace: &Path,
-    worker_key: &str,
+/// One acceptance run's knobs (the supervisor handle owns the session).
+struct Run<'a> {
+    evidence: &'a Path,
+    state_root: &'a Path,
+    workspace: &'a Path,
+    worker_key: &'a str,
     timeout_s: u64,
     dry_run: bool,
     require_file: bool,
-) -> Fallible<()> {
+}
+
+async fn run_acceptance(handle: &SupervisorHandle, run: Run<'_>) -> Fallible<()> {
+    let Run { evidence, state_root, workspace, worker_key, timeout_s, dry_run, require_file } = run;
     // the worker joins the session with its own model key: one session, two
     // protocols (R17/A27)
     handle
