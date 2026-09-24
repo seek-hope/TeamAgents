@@ -652,7 +652,8 @@ for line in sys.stdin:
             literal.into(),
         ];
         if !crate::tools::bwrap_available() {
-            // 无隔离能力时不允许降级执行：workspace 模式必须直接失败（CI 上没有 bwrap）
+            // never degrade to unsandboxed execution: the workspace mode must fail
+            // outright (CI has no bwrap)
             assert!(
                 McpClient::connect_stdio_in("/usr/bin/python3", &args, &[], &root, "workspace", false, 2, 3).is_err()
             );

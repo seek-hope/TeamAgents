@@ -90,7 +90,7 @@ pub fn render(frame: &mut Frame, app: &mut V2App) {
 }
 
 fn render_instances(frame: &mut Frame, app: &V2App, area: Rect) {
-    let block = Block::default().borders(Borders::ALL).title("实例（● 对话目标）");
+    let block = Block::default().borders(Borders::ALL).title("instances (● conversation target)");
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let lines: Vec<Line<'static>> = app
@@ -124,7 +124,7 @@ fn render_instances(frame: &mut Frame, app: &V2App, area: Rect) {
 }
 
 fn render_tasks(frame: &mut Frame, app: &V2App, area: Rect) {
-    let block = Block::default().borders(Borders::ALL).title("任务");
+    let block = Block::default().borders(Borders::ALL).title("tasks");
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let lines: Vec<Line<'static>> = app
@@ -151,30 +151,30 @@ fn render_tasks(frame: &mut Frame, app: &V2App, area: Rect) {
                 Span::styled(task.id.clone(), style),
                 Span::raw(" · "),
                 Span::styled(task.status.clone(), status_style),
-                Span::raw(format!(" · 承接 {} · 目标 {}", task.assignee, task.goal_id)),
+                Span::raw(format!(" · assignee {} · goal {}", task.assignee, task.goal_id)),
             ])
         })
         .collect();
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-/// Topology as an edge list (§9: 拓扑先用边列表表达，不把图形画布作为执行
-/// 正确性的依赖): active grant/channel edges, then task-delegation edges.
+/// Topology as an edge list (§9: the panel is an edge list; no canvas is required
+/// for execution correctness): active grant/channel edges, then task-delegation edges.
 fn render_topology(frame: &mut Frame, app: &mut V2App, area: Rect) {
     let active_grants = app.grants.iter().filter(|g| !g.revoked).count();
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(format!("拓扑 · 活跃授权 {active_grants} · 任务 {}", app.tasks.len()));
+        .title(format!("topology · active grants {active_grants} · tasks {}", app.tasks.len()));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let dim = Style::default().fg(Color::DarkGray);
     let bold = Style::default().add_modifier(Modifier::BOLD);
-    let mut lines: Vec<Line<'static>> = vec![Line::from(Span::styled("授权与通道", bold))];
+    let mut lines: Vec<Line<'static>> = vec![Line::from(Span::styled("grants and channels", bold))];
     if active_grants == 0 {
-        lines.push(Line::from(Span::styled("  （无活跃授权）", dim)));
+        lines.push(Line::from(Span::styled("  (no active grants)", dim)));
     }
     for grant in app.grants.iter().filter(|g| !g.revoked) {
-        let kind = if grant.action == "message" { "通道" } else { "授权" };
+        let kind = if grant.action == "message" { "channel" } else { "grant" };
         lines.push(Line::from(vec![
             Span::raw("  "),
             Span::styled(grant.subject.clone(), Style::default().fg(Color::Cyan)),
@@ -184,9 +184,9 @@ fn render_topology(frame: &mut Frame, app: &mut V2App, area: Rect) {
         ]));
     }
     lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled("任务委派", bold)));
+    lines.push(Line::from(Span::styled("task delegation", bold)));
     if app.tasks.is_empty() {
-        lines.push(Line::from(Span::styled("  （无任务）", dim)));
+        lines.push(Line::from(Span::styled("  (no tasks)", dim)));
     }
     for task in &app.tasks {
         lines.push(Line::from(vec![
@@ -269,7 +269,7 @@ fn render_approvals(frame: &mut Frame, app: &V2App, area: Rect) {
         return;
     }
     let focused = app.focus == Focus::Approvals;
-    let title = if focused { "待批准（焦点）" } else { "待批准" };
+    let title = if focused { "approvals (focused)" } else { "approvals" };
     let block = Block::default().borders(Borders::ALL).title(title).border_style(if focused {
         Style::default().fg(Color::Yellow)
     } else {
@@ -297,7 +297,7 @@ fn render_approvals(frame: &mut Frame, app: &V2App, area: Rect) {
 
 fn render_composer(frame: &mut Frame, app: &V2App, area: Rect) {
     let target = app.active_instance().map(|i| i.id.clone()).unwrap_or_else(|| "…".into());
-    let block = Block::default().borders(Borders::ALL).title(format!("发给 {target}"));
+    let block = Block::default().borders(Borders::ALL).title(format!("to {target}"));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let text = app.composer.text();

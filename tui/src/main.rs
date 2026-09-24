@@ -40,7 +40,7 @@ impl Args {
 }
 
 fn usage() -> ! {
-    eprintln!("teamagents-tui --daemon SOCK | --state-root DIR   # 会话 daemon（必填）");
+    eprintln!("teamagents-tui --daemon SOCK | --state-root DIR   # session daemon (required)");
     eprintln!("              [--cwd DIR]");
     eprintln!("  env: TEAMAGENTS_ENGINE (teamagents binary), --engine PATH");
     std::process::exit(2);
@@ -147,7 +147,7 @@ fn parse_args() -> Args {
 fn main() {
     let args = parse_args();
     if !atty_stdout() {
-        eprintln!("TUI 需要真实终端；无终端或脚本请用 teamagents exec \"…\"");
+        eprintln!("the TUI needs a real terminal; for scripts use teamagents exec \"…\"");
         std::process::exit(1);
     }
     // the daemon is the only backend: a missing socket is a usage error rather
@@ -177,8 +177,8 @@ fn v2_main(socket: &std::path::Path) -> ! {
     let mut client = match DaemonClient::connect(socket) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("无法连接 daemon ({}): {e}", socket.display());
-            eprintln!("先启动会话：teamagents daemon [--state-root DIR]");
+            eprintln!("cannot connect to the daemon ({}): {e}", socket.display());
+            eprintln!("start the session first: teamagents daemon [--state-root DIR]");
             std::process::exit(1);
         }
     };
@@ -280,7 +280,7 @@ fn run_v2_effect(effect: V2Effect, client: &mut DaemonClient, app: &mut V2App) {
             let result = client.command(
                 &command_id,
                 "set_lifecycle",
-                json!({"instance_id": instance, "lifecycle": lifecycle, "reason": "tui 面板干预"}),
+                json!({"instance_id": instance, "lifecycle": lifecycle, "reason": "tui panel intervention"}),
             );
             match result {
                 Ok(_) => v2_sync_checkpoint(client, app),
@@ -290,7 +290,7 @@ fn run_v2_effect(effect: V2Effect, client: &mut DaemonClient, app: &mut V2App) {
         V2Effect::CancelTask { task_id } => {
             let command_id = format!("ct-{}", uuid::Uuid::new_v4());
             let result =
-                client.command(&command_id, "cancel_task", json!({"task_id": task_id, "reason": "tui 面板取消"}));
+                client.command(&command_id, "cancel_task", json!({"task_id": task_id, "reason": "tui panel cancel"}));
             match result {
                 Ok(_) => v2_refresh_tasks(client, app),
                 Err(e) => app.command_failed(&e),

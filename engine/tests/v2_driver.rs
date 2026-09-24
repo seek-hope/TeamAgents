@@ -1074,7 +1074,7 @@ async fn long_context_compacts_before_the_turn_and_survives_a_restart() {
         )
         .expect("compression request");
     assert_eq!((kind.as_str(), status.as_str()), ("compression", "COMPLETE"));
-    // readback still reaches the covered tool output (A20 原文可追溯)
+    // readback still reaches the covered tool output (A20 original text stays addressable)
     let text: String = control
         .connection()
         .query_row(

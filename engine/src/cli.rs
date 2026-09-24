@@ -12,22 +12,22 @@ pub fn init(state_root: Option<PathBuf>) -> i32 {
     match crate::config::initialize_config(&path) {
         Ok(created) => {
             if created {
-                println!("已创建配置：{}", path.display());
-                println!("默认模型：deepseek-flash（上下文 1,000,000；推理档位 max）。");
-                println!("在当前终端设置 DEEPSEEK_API_KEY 环境变量；若使用其他服务，请先编辑上述配置。");
+                println!("wrote config: {}", path.display());
+                println!("default model: deepseek-flash (context 1,000,000; reasoning effort max).");
+                println!("export DEEPSEEK_API_KEY in this terminal; edit the config above for other services.");
             } else {
-                println!("已保留现有配置：{}（未覆盖）", path.display());
-                println!("请按现有配置的 api_key_env 设置密钥环境变量。");
+                println!("kept the existing config: {} (not overwritten)", path.display());
+                println!("set the credential environment variable named by api_key_env in that config.");
             }
             if let Err(error) = prepare_v2_root(state_root) {
-                eprintln!("v2 状态根初始化失败：{error}");
+                eprintln!("could not prepare the state root: {error}");
                 return 1;
             }
-            println!("下一步：teamagents doctor；然后在项目目录运行 teamagents。");
+            println!("next: teamagents doctor, then run teamagents in your project directory.");
             0
         }
         Err(error) => {
-            eprintln!("初始化失败：{error}");
+            eprintln!("init failed: {error}");
             1
         }
     }
@@ -43,11 +43,11 @@ pub fn prepare_v2_root(state_root: Option<PathBuf>) -> Result<PathBuf, String> {
     // opening with create stamps format/schema; opening an existing foreign or
     // older database fails loudly here instead of mid-session
     teamagents_core::v2::Control::open(&db, "doctor", true).map_err(|e| format!("{}: {e}", db.display()))?;
-    println!("v2 状态根就绪：{}", root.display());
-    println!("  会话库：{}", db.display());
-    println!("  套接字：{}", root.join("daemon.sock").display());
+    println!("state root ready: {}", root.display());
+    println!("  session db: {}", db.display());
+    println!("  socket:     {}", root.join("daemon.sock").display());
     if let Some(legacy) = legacy_layout_hint() {
-        println!("  注意：{legacy}");
+        println!("  note: {legacy}");
     }
     Ok(root)
 }
@@ -93,7 +93,7 @@ pub fn doctor(state_root: Option<PathBuf>) -> i32 {
                 !catalog.models.is_empty(),
                 if catalog.models.is_empty() {
                     format!(
-                        "{}：尚未配置模型；首次使用请运行 teamagents init，已有文件请补齐 [models.leader_main]",
+                        "{}: no model configured yet; run teamagents init on a fresh install, or add [models.leader_main] to the file",
                         config_path.display()
                     )
                 } else {
@@ -116,7 +116,7 @@ pub fn doctor(state_root: Option<PathBuf>) -> i32 {
                         if present {
                             String::new()
                         } else {
-                            format!("（环境变量 {env} 未设置或为空，请设置后重试）")
+                            format!("(environment variable {env} is unset or empty; set it and retry)")
                         }
                     ),
                 );
@@ -133,7 +133,7 @@ pub fn doctor(state_root: Option<PathBuf>) -> i32 {
             &mut results,
             "v2 state root",
             false,
-            format!("尚未初始化（{}）；运行 teamagents init 或 teamagents daemon 会自动创建", v2_root.display()),
+            format!("not initialized yet ({}); teamagents init or teamagents daemon creates it", v2_root.display()),
         );
     } else {
         match teamagents_core::v2::Control::open(&v2_db, "doctor", false) {
@@ -175,11 +175,11 @@ pub fn doctor(state_root: Option<PathBuf>) -> i32 {
         "bubblewrap isolation",
         bwrap_probe,
         if bwrap_probe {
-            "隔离探针通过：系统文件可见，主目录不可见".into()
+            "isolation probe passed: system files visible, home directory hidden".into()
         } else if bwrap {
-            "已安装 bwrap，但隔离探针失败；请检查系统是否允许非特权 user namespace".into()
+            "bwrap is installed but the isolation probe failed; check that the system allows unprivileged user namespaces".into()
         } else {
-            "未找到 bwrap，Shell 无法执行；Debian/Ubuntu: sudo apt install bubblewrap；Fedora: sudo dnf install bubblewrap；Arch: sudo pacman -S bubblewrap".into()
+            "bwrap not found, shell commands cannot run; Debian/Ubuntu: sudo apt install bubblewrap; Fedora: sudo dnf install bubblewrap; Arch: sudo pacman -S bubblewrap".into()
         },
     );
     // hooks are easy to break silently: a wrong path only shows up as a stderr
@@ -222,7 +222,7 @@ pub fn doctor(state_root: Option<PathBuf>) -> i32 {
         }
         println!("  [{status}] {name:24} {detail}");
     }
-    println!("自检仅验证本机条件，不调用模型 API；WARN 为可选能力提示。");
+    println!("doctor checks the local machine only and never calls a model API; WARN marks optional capabilities.");
     if failed > 0 {
         1
     } else {
@@ -275,10 +275,10 @@ fn daemon_boot(
     let model_key = match model {
         Some(key) => key,
         None if available.len() == 1 => available[0].clone(),
-        None => return Err(format!("请用 --model 指定模型目录键（可用：{}）", available.join(", "))),
+        None => return Err(format!("use --model to name a catalog profile (available: {})", available.join(", "))),
     };
     if !available.contains(&model_key) {
-        return Err(format!("模型 {model_key:?} 不在用户目录（可用：{}）", available.join(", ")));
+        return Err(format!("model {model_key:?} is not in the user catalog (available: {})", available.join(", ")));
     }
     // preflight: credentials/protocol resolve at boot, not mid-session (§7)
     crate::providers::build_for_model(&catalog, &model_key)?;
@@ -329,12 +329,12 @@ fn daemon_boot(
     runtime.block_on(async move {
         let handle = crate::v2::daemon::serve(config).await?;
         eprintln!(
-            "teamagents daemon 已启动\n  socket: {}\n  状态根: {}\n  客户端连上即可操作；Ctrl-C 停止 daemon（已提交的状态保留）",
+            "teamagents daemon started\n  socket:    {}\n  state root: {}\n  clients can attach now; Ctrl-C stops the daemon (committed state is kept)",
             socket.display(),
             state_root.display()
         );
         tokio::signal::ctrl_c().await.map_err(|e| e.to_string())?;
-        eprintln!("\n正在停止…");
+        eprintln!("\nstopping...");
         handle.shutdown().await
     })
 }

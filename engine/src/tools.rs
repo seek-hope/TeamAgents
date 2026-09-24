@@ -1291,7 +1291,10 @@ impl ShellMode {
         match mode {
             Some("approved_scope") => Ok(Self::Sandbox),
             Some("full_auto") => Ok(Self::Host),
-            _ => Err("ShellPermissionUnavailable: 无法读取有效的会话权限模式，命令未执行".into()),
+            _ => {
+                Err("ShellPermissionUnavailable: the session permission mode is unreadable, the command was not run"
+                    .into())
+            }
         }
     }
 }
@@ -1333,9 +1336,9 @@ if [ -r "$__ta_state" ]; then
         export HOME="$__ta_default_home"
     fi
     if [ "$__ta_restore_cwd_failed" = 1 ]; then
-        printf '%s\n' 'ShellStateUnavailable: 已保存工作目录无法恢复，本次命令未执行。' >&2
+        printf '%s\n' 'ShellStateUnavailable: the saved working directory cannot be restored, the command was not run.' >&2
         builtin cd -- "$__ta_initial_cwd" || exit 1
-        printf '后续命令将从工作区 %s 开始。沙箱临时文件只在单次调用内保留；请在同一次调用中创建并使用临时副本。\n' "$PWD" >&2
+        printf 'later commands start from workspace %s. Sandbox temp files last for one call only; create and use temp copies in the same call.\n' "$PWD" >&2
         false
         {}
     fi
@@ -1986,7 +1989,7 @@ pub(crate) fn shell_outcome_at(
             failure: Some(ShellFailure {
                 class: "isolation".into(),
                 reason: format!(
-                    "IsolationUnavailable: 沙箱启动失败；命令可能未执行。请检查隔离环境，勿重复同一调用。\n{text}"
+                    "IsolationUnavailable: the sandbox failed to start; the command may not have run. Check the isolation environment instead of repeating the same call.\n{text}"
                 ),
             }),
         };

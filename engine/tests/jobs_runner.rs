@@ -190,7 +190,7 @@ async fn second_runner_over_a_live_job_is_refused() {
 /// A12/D-41: a successful command that starts a background service finishes
 /// promptly — output goes to a file, never a held pipe — and the service,
 /// in the command's own process group and never signalled on success,
-/// outlives both the job and the runner (跨调用、跨 CLI 退出存活).
+/// outlives both the job and the runner (across calls and CLI exits).
 #[tokio::test]
 async fn a_successful_commands_service_outlives_the_job() {
     runner_bin();

@@ -15,7 +15,7 @@ pub enum Focus {
     Approvals,
 }
 
-/// Top-level views (§9: 实例、任务/权限视图、拓扑边列表). F1/F3/F4/F5
+/// Top-level views (§9: conversation, instances, tasks, topology edge list). F1/F3/F4/F5
 /// switch globally; Esc from a panel returns to the conversation.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum View {
@@ -28,10 +28,10 @@ pub enum View {
 impl View {
     pub fn name(self) -> &'static str {
         match self {
-            View::Chat => "对话",
-            View::Instances => "实例",
-            View::Tasks => "任务",
-            View::Topology => "拓扑",
+            View::Chat => "Chat",
+            View::Instances => "Instances",
+            View::Tasks => "Tasks",
+            View::Topology => "Topology",
         }
     }
 }
@@ -139,7 +139,7 @@ pub struct Refresh {
 /// Retained system-note cap: notes are UI signals layered over the
 /// authoritative history; the cap keeps a long session bounded.
 const NOTE_CAP: usize = 200;
-/// Tool-result preview cap in the conversation (界面只取预览, §9).
+/// Tool-result preview cap in the conversation (the UI only renders previews, §9).
 const PREVIEW_CHARS: usize = 400;
 
 pub struct V2App {
@@ -161,7 +161,7 @@ pub struct V2App {
     pub tasks: Vec<TaskInfo>,
     pub task_sel: usize,
     pub grants: Vec<GrantInfo>,
-    /// Topology edge-list scroll offset (§9: 拓扑先用边列表表达).
+    /// Topology edge-list scroll offset (§9: the topology panel is an edge list).
     pub topo_scroll: usize,
     pub confirm: Option<Confirm>,
     /// Scroll offset in wrapped lines from the bottom (0 = following).
@@ -207,7 +207,7 @@ impl V2App {
     }
 
     fn note(&mut self, text: impl Into<String>) {
-        self.entries.push(ChatEntry { kind: ChatKind::System, who: "系统".into(), text: text.into() });
+        self.entries.push(ChatEntry { kind: ChatKind::System, who: "system".into(), text: text.into() });
         if self.entries.len() > NOTE_CAP * 4 {
             let drop = self.entries.len() - NOTE_CAP * 4;
             self.entries.drain(..drop);
@@ -215,7 +215,7 @@ impl V2App {
     }
 
     fn note_error(&mut self, text: impl Into<String>) {
-        self.entries.push(ChatEntry { kind: ChatKind::Error, who: "错误".into(), text: text.into() });
+        self.entries.push(ChatEntry { kind: ChatKind::Error, who: "error".into(), text: text.into() });
     }
 
     // ---- daemon → app application points --------------------------------
@@ -261,7 +261,7 @@ impl V2App {
     }
 
     /// History of the active instance: the authoritative conversation (§9 —
-    /// 界面只取预览). System notes stay layered on top, newest last.
+    /// only renders previews). System notes stay layered on top, newest last.
     pub fn apply_history(&mut self, history: Json) {
         let mut rebuilt: Vec<ChatEntry> = Vec::new();
         for entry in history["entries"].as_array().cloned().unwrap_or_default() {
@@ -270,7 +270,7 @@ impl V2App {
             match kind {
                 "user" => rebuilt.push(ChatEntry {
                     kind: ChatKind::User,
-                    who: "你".into(),
+                    who: "you".into(),
                     text: message["content"].as_str().unwrap_or("").to_string(),
                 }),
                 "assistant" => {
@@ -290,7 +290,7 @@ impl V2App {
                     let content = message["content"].as_str().unwrap_or("");
                     rebuilt.push(ChatEntry {
                         kind: ChatKind::Tool,
-                        who: "结果".into(),
+                        who: "result".into(),
                         text: truncate(content, PREVIEW_CHARS),
                     });
                 }
@@ -298,7 +298,7 @@ impl V2App {
                 // conversation, the model sees the summary (R22/A20)
                 "summary" => rebuilt.push(ChatEntry {
                     kind: ChatKind::Summary,
-                    who: "压缩".into(),
+                    who: "compaction".into(),
                     text: truncate(message["content"].as_str().unwrap_or(""), PREVIEW_CHARS),
                 }),
                 _ => {}
@@ -330,24 +330,30 @@ impl V2App {
                 "goal_completed" => {
                     refresh.history = true;
                     refresh.checkpoint = true;
-                    self.note(format!("目标完成：{}", payload["status"].as_str().unwrap_or("?")));
+                    self.note(format!("goal finished: {}", payload["status"].as_str().unwrap_or("?")));
                 }
                 "goal_blocked" => {
                     refresh.checkpoint = true;
-                    self.note(format!("目标停放（BLOCKED）：{}", payload["reason"].as_str().unwrap_or("")));
+                    self.note(format!("goal parked (BLOCKED): {}", payload["reason"].as_str().unwrap_or("")));
                 }
                 "check_round_registered" => {
                     let count = payload["checks"].as_array().map(|c| c.len()).unwrap_or(0);
-                    self.note(format!("完成检查第 {} 轮开始（{count} 项）", payload["round"].as_i64().unwrap_or(0)));
+                    self.note(format!(
+                        "completion check round {} started ({count} items)",
+                        payload["round"].as_i64().unwrap_or(0)
+                    ));
                 }
                 "completion_repair" => {
                     refresh.history = true;
-                    self.note(format!("完成检查第 {} 轮未过，进入修复回合", payload["round"].as_i64().unwrap_or(0)));
+                    self.note(format!(
+                        "completion check round {} failed, entering a repair turn",
+                        payload["round"].as_i64().unwrap_or(0)
+                    ));
                 }
                 "instance_spawned" => {
                     refresh.checkpoint = true;
                     self.note(format!(
-                        "实例 {} 由 {} 派出",
+                        "instance {} spawned by {}",
                         event["scope"].as_str().unwrap_or("?"),
                         payload["spawner"].as_str().unwrap_or("?")
                     ));
@@ -355,14 +361,14 @@ impl V2App {
                 "instance_lifecycle" => {
                     refresh.checkpoint = true;
                     self.note(format!(
-                        "实例 {} 生命周期 → {}",
+                        "instance {} lifecycle -> {}",
                         event["scope"].as_str().unwrap_or("?"),
                         payload["lifecycle"].as_str().unwrap_or("?")
                     ));
                 }
                 "instance_created" => {
                     refresh.checkpoint = true;
-                    self.note(format!("实例 {} 创建", event["scope"].as_str().unwrap_or("?")));
+                    self.note(format!("instance {} created", event["scope"].as_str().unwrap_or("?")));
                 }
                 "task_delegated" | "task_started" | "task_completed" => {
                     refresh.tasks = true;
@@ -370,7 +376,7 @@ impl V2App {
                 "task_blocked" => {
                     refresh.tasks = true;
                     self.note(format!(
-                        "任务 {} 停放（BLOCKED）：{}",
+                        "task {} parked (BLOCKED): {}",
                         payload["task_id"].as_str().unwrap_or("?"),
                         payload["reason"].as_str().unwrap_or("")
                     ));
@@ -378,7 +384,7 @@ impl V2App {
                 "task_cancelled" => {
                     refresh.tasks = true;
                     self.note(format!(
-                        "任务 {} 已取消：{}",
+                        "task {} cancelled: {}",
                         payload["task_id"].as_str().unwrap_or("?"),
                         payload["reason"].as_str().unwrap_or("")
                     ));
@@ -390,7 +396,10 @@ impl V2App {
                     refresh.approvals = true;
                 }
                 "operation_completed" if payload["status"].as_str() == Some("OUTCOME_UNKNOWN") => {
-                    self.note(format!("操作 {} 结果不明（未重放）", event["scope"].as_str().unwrap_or("?")));
+                    self.note(format!(
+                        "operation {} has an unknown outcome (not replayed)",
+                        event["scope"].as_str().unwrap_or("?")
+                    ));
                 }
                 _ => {}
             }
@@ -455,30 +464,30 @@ impl V2App {
 
     /// A panel command (lifecycle/task) the daemon refused (write-surface error).
     pub fn command_failed(&mut self, error: &str) {
-        self.note_error(format!("命令失败：{error}"));
+        self.note_error(format!("command failed: {error}"));
     }
 
     pub fn mark_disconnected(&mut self, error: &str) {
         if !self.disconnected {
             self.disconnected = true;
-            self.note_error(format!("与 daemon 断开（{error}），重连中…"));
+            self.note_error(format!("disconnected from the daemon ({error}), reconnecting..."));
         }
     }
 
     pub fn mark_connected(&mut self) {
         if self.disconnected {
             self.disconnected = false;
-            self.note("已重新连接 daemon");
+            self.note("reconnected to the daemon");
         }
     }
 
     /// A submitted input the daemon refused (write-surface error).
     pub fn submit_failed(&mut self, error: &str) {
-        self.note_error(format!("发送失败：{error}"));
+        self.note_error(format!("send failed: {error}"));
     }
 
     pub fn decide_failed(&mut self, error: &str) {
-        self.note_error(format!("批准决定失败：{error}"));
+        self.note_error(format!("the approval decision failed: {error}"));
     }
 
     // ---- keys ------------------------------------------------------------
@@ -789,32 +798,35 @@ impl V2App {
     pub fn status_line(&self) -> String {
         let instance = self.active_instance();
         let instance_part =
-            instance.map(|i| format!("{} [{}]", i.id, i.phase)).unwrap_or_else(|| "（无实例）".to_string());
+            instance.map(|i| format!("{} [{}]", i.id, i.phase)).unwrap_or_else(|| "(no instance)".to_string());
         let goal_part = self
             .goal
             .as_ref()
             .map(|g| {
-                let mut text = format!("目标 {}", g.status);
+                let mut text = format!("goal {}", g.status);
                 match g.limit_total {
-                    Some(limit) => text.push_str(&format!(" · 用量 {}/{}", g.known_total, limit)),
-                    None => text.push_str(&format!(" · 用量 {}", g.known_total)),
+                    Some(limit) => text.push_str(&format!(" · usage {}/{}", g.known_total, limit)),
+                    None => text.push_str(&format!(" · usage {}", g.known_total)),
                 }
                 if g.unknown {
-                    text.push_str("（含未知）");
+                    text.push_str(" (includes unknown)");
                 }
                 text
             })
-            .unwrap_or_else(|| "无目标".to_string());
-        let approvals_part =
-            if self.approvals.is_empty() { String::new() } else { format!(" · 待批准 {}", self.approvals.len()) };
-        let link = if self.disconnected { " · 已断开，重连中…" } else { "" };
+            .unwrap_or_else(|| "no goal".to_string());
+        let approvals_part = if self.approvals.is_empty() {
+            String::new()
+        } else {
+            format!(" · {} pending approvals", self.approvals.len())
+        };
+        let link = if self.disconnected { " · disconnected, reconnecting..." } else { "" };
         let view = self.view.name();
-        format!("会话 {} · 视图 {view} · {instance_part} · {goal_part}{approvals_part}{link}", self.session_id)
+        format!("session {} · view {view} · {instance_part} · {goal_part}{approvals_part}{link}", self.session_id)
     }
 
     pub fn footer_hint(&self) -> String {
         if self.confirm.is_some() {
-            return "确认终止该实例？y 确认 / n 取消".to_string();
+            return "terminate this instance? y confirm / n cancel".to_string();
         }
         match self.view {
             View::Chat => match self.focus {
@@ -822,15 +834,18 @@ impl V2App {
                     let approvals = if self.approvals.is_empty() {
                         String::new()
                     } else {
-                        format!(" · F2 批准({})", self.approvals.len())
+                        format!(" · F2 approvals({})", self.approvals.len())
                     };
-                    format!("Enter 发送 · Tab 切实例 · F3/F4/F5 面板{approvals} · Ctrl+C 退出")
+                    format!("Enter send · Tab switch instance · F3/F4/F5 panels{approvals} · Ctrl+C quit")
                 }
-                Focus::Approvals => "a 批准本次 · d 拒绝 · ↑↓ 选择 · Esc 返回".to_string(),
+                Focus::Approvals => "a approve once · d deny · up/down select · Esc back".to_string(),
             },
-            View::Instances => "Enter 切换对话目标 · p 暂停 · r 恢复 · t 终止 · ↑↓ 选择 · Esc 返回".to_string(),
-            View::Tasks => "c 取消任务 · ↑↓ 选择 · Esc 返回".to_string(),
-            View::Topology => "↑↓ 滚动 · Esc 返回".to_string(),
+            View::Instances => {
+                "Enter set conversation target · p pause · r resume · t terminate · up/down select · Esc back"
+                    .to_string()
+            }
+            View::Tasks => "c cancel task · up/down select · Esc back".to_string(),
+            View::Topology => "up/down scroll · Esc back".to_string(),
         }
     }
 }
@@ -853,5 +868,5 @@ fn truncate(text: &str, cap: usize) -> String {
         return text.to_string();
     }
     let kept: String = text.chars().take(cap).collect();
-    format!("{kept}…（共 {count} 字符）")
+    format!("{kept}...({count} chars total)")
 }

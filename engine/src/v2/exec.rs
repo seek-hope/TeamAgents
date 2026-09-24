@@ -115,20 +115,20 @@ pub fn run(options: ExecOptions) -> i32 {
     let mut client = match Client::connect(&options.socket) {
         Ok(client) => client,
         Err(error) => {
-            eprintln!("exec: {error}；先启动 teamagents daemon（或直接运行 teamagents）");
+            eprintln!("exec: {error}; start teamagents daemon first (or just run teamagents)");
             return 2;
         }
     };
     let checkpoint = match client.call("checkpoint", json!({})) {
         Ok(checkpoint) => checkpoint,
         Err(error) => {
-            eprintln!("exec: checkpoint 失败：{error}");
+            eprintln!("exec: checkpoint failed: {error}");
             return 2;
         }
     };
     let instance = leader_instance(&checkpoint);
     let Some(instance) = instance else {
-        eprintln!("exec: 会话里没有可用的 leader 实例：{checkpoint}");
+        eprintln!("exec: the session has no usable leader instance: {checkpoint}");
         return 2;
     };
     let envelope = format!("env-{}", uuid::Uuid::new_v4());
@@ -137,7 +137,7 @@ pub fn run(options: ExecOptions) -> i32 {
         "submit_input",
         json!({"instance_id": instance, "envelope_id": envelope, "text": options.prompt}),
     ) {
-        eprintln!("exec: 提交输入失败：{error}");
+        eprintln!("exec: submitting the input failed: {error}");
         return 2;
     }
     let deadline = Instant::now() + Duration::from_secs(options.timeout_s);
@@ -154,7 +154,7 @@ pub fn run(options: ExecOptions) -> i32 {
                 }
             }
             Err(error) => {
-                eprintln!("exec: 事件流中断：{error}");
+                eprintln!("exec: the event stream broke: {error}");
                 return 2;
             }
         }
@@ -182,7 +182,7 @@ pub fn run(options: ExecOptions) -> i32 {
                 if id != announced_approval.as_str() {
                     announced_approval = id.to_string();
                     eprintln!(
-                        "[exec] 等待用户批准：{}（在 TUI 批准/拒绝；或用 --full-auto 启动 daemon 跳过批准闸）",
+                        "[exec] waiting for user approval: {} (approve or deny in the TUI; or start the daemon with --full-auto to skip the gate)",
                         approval["preview"].as_str().unwrap_or("")
                     );
                 }
@@ -213,9 +213,9 @@ pub fn run(options: ExecOptions) -> i32 {
         println!("{}", serde_json::to_string(&report).unwrap_or_else(|_| "{}".into()));
     } else {
         match (&goal_status, &reply) {
-            (Some(status), _) => println!("目标结束：{status}"),
+            (Some(status), _) => println!("goal ended: {status}"),
             (_, Some(text)) => println!("{text}"),
-            _ => println!("超时：{instance} 仍在进行（{} 秒）", options.timeout_s),
+            _ => println!("timed out: {instance} is still running ({}s)", options.timeout_s),
         }
     }
     match end {

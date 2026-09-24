@@ -11,22 +11,22 @@ pub const INITIAL_CONFIG: &str = include_str!("../../examples/config.minimal.tom
 pub fn initialize_config(path: &Path) -> Result<bool, String> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
-    let parent = path.parent().ok_or("配置路径缺少父目录")?;
-    std::fs::create_dir_all(parent).map_err(|e| format!("无法创建 {}: {e}", parent.display()))?;
+    let parent = path.parent().ok_or("the config path has no parent directory")?;
+    std::fs::create_dir_all(parent).map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
     let mut file = match std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(path) {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
             let meta = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
             if meta.is_dir() {
-                return Err(format!("{} 是目录，请改用配置文件", path.display()));
+                return Err(format!("{} is a directory; point at a config file instead", path.display()));
             }
             return Ok(false);
         }
-        Err(e) => return Err(format!("无法创建配置 {}: {e}", path.display())),
+        Err(e) => return Err(format!("cannot create the config {}: {e}", path.display())),
     };
     file.write_all(INITIAL_CONFIG.as_bytes())
         .and_then(|()| file.sync_all())
-        .map_err(|e| format!("写入配置 {} 失败，请检查此文件是否完整：{e}", path.display()))?;
+        .map_err(|e| format!("writing the config {} failed; check that the file is complete: {e}", path.display()))?;
     Ok(true)
 }
 
@@ -65,31 +65,31 @@ pub struct CustomProvider {
 impl CustomProvider {
     pub fn profile(&self) -> Result<(String, ModelProfile), String> {
         if [&self.name, &self.model, &self.base_url].iter().any(|value| value.chars().any(char::is_control)) {
-            return Err("供应商名称、模型 ID 和 API 基础地址不能包含控制字符".into());
+            return Err("provider name, model id and base URL must not contain control characters".into());
         }
         let name = self.name.trim();
         let model = self.model.trim();
-        for (label, value) in [("供应商名称", name), ("模型 ID", model)] {
+        for (label, value) in [("provider name", name), ("model id", model)] {
             if value.is_empty() || value.len() > 512 || value.chars().any(char::is_control) {
-                return Err(format!("{label}不能为空、包含控制字符或超过 512 字节"));
+                return Err(format!("{label} must be non-empty, free of control characters and at most 512 bytes"));
             }
         }
         let protocol = match self.protocol.trim().to_ascii_lowercase().as_str() {
             "response" | "responses" => "responses",
             "anthropic" => "anthropic",
             "chat/completions" => "chat/completions",
-            _ => return Err("API 格式须为 responses、anthropic 或 chat/completions".into()),
+            _ => return Err("the API format must be responses, anthropic or chat/completions".into()),
         };
         let base = self.base_url.trim().trim_end_matches('/');
-        let url = url::Url::parse(base).map_err(|_| "API 基础地址须为有效的 HTTP(S) URL")?;
+        let url = url::Url::parse(base).map_err(|_| "the base URL must be a valid HTTP(S) URL")?;
         if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
-            return Err("API 基础地址须为有效的 HTTP(S) URL".into());
+            return Err("the base URL must be a valid HTTP(S) URL".into());
         }
         if !url.username().is_empty() || url.password().is_some() || url.query().is_some() || url.fragment().is_some() {
-            return Err("API 基础地址不能包含凭据、查询参数或片段；密钥请使用环境变量".into());
+            return Err("the base URL must not carry credentials, query parameters or fragments; use an environment variable for the key".into());
         }
         if ["/responses", "/chat/completions", "/messages"].iter().any(|suffix| url.path().ends_with(suffix)) {
-            return Err("请填写 API 基础地址（如 https://example.com/v1），不含具体调用路径".into());
+            return Err("enter the base URL (e.g. https://example.com/v1) without the concrete call path".into());
         }
         let env = self.api_key_env.as_deref().map(str::trim).filter(|s| !s.is_empty());
         if let Some(env) = env {
@@ -99,17 +99,17 @@ impl CustomProvider {
                     .enumerate()
                     .all(|(i, c)| c == b'_' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit()))
             {
-                return Err("密钥环境变量名须以字母或下划线开头，只能包含字母、数字和下划线；请勿填写密钥本身".into());
+                return Err("the credential env var must start with a letter or underscore and contain only letters, digits and underscores; never paste the key itself".into());
             }
         }
         if self.context_window == Some(0) {
-            return Err("原生上下文长度须为正整数；未知时留空".into());
+            return Err("the native context window must be a positive integer; leave it empty when unknown".into());
         }
         let profile = serde_json::from_value(serde_json::json!({
             "provider":name, "protocol":protocol, "base_url":base, "model":model,
             "api_key_env":env, "context_window":self.context_window,
         }))
-        .map_err(|e| format!("供应商配置无效：{e}"))?;
+        .map_err(|e| format!("invalid provider config: {e}"))?;
         Ok((name.into(), profile))
     }
 }
@@ -119,8 +119,8 @@ pub fn save_custom_provider(name: &str, profile: &ModelProfile) -> Result<(), St
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     let path = user_config_path();
-    let parent = path.parent().ok_or("配置路径缺少父目录")?;
-    std::fs::create_dir_all(parent).map_err(|e| format!("无法创建配置目录：{e}"))?;
+    let parent = path.parent().ok_or("the config path has no parent directory")?;
+    std::fs::create_dir_all(parent).map_err(|e| format!("cannot create the config directory: {e}"))?;
     let lock = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -128,30 +128,32 @@ pub fn save_custom_provider(name: &str, profile: &ModelProfile) -> Result<(), St
         .write(true)
         .mode(0o600)
         .open(parent.join("config.lock"))
-        .map_err(|e| format!("无法锁定配置：{e}"))?;
-    lock.try_lock().map_err(|_| "配置正在被其他进程修改，请稍后重试")?;
+        .map_err(|e| format!("cannot lock the config: {e}"))?;
+    lock.try_lock().map_err(|_| "another process is editing the config; retry in a moment")?;
     // Do not replace a symlink's target or silently recover an unreadable config.
     let original = match std::fs::symlink_metadata(&path) {
-        Ok(meta) if !meta.is_file() => return Err("用户配置须为普通文件；请先处理符号链接或目录".into()),
-        Ok(_) => std::fs::read_to_string(&path).map_err(|e| format!("无法读取配置：{e}"))?,
+        Ok(meta) if !meta.is_file() => {
+            return Err("the user config must be a regular file; resolve the symlink or directory first".into())
+        }
+        Ok(_) => std::fs::read_to_string(&path).map_err(|e| format!("cannot read the config: {e}"))?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => return Err(format!("无法读取配置：{e}")),
+        Err(e) => return Err(format!("cannot read the config: {e}")),
     };
     let existing = parse_user_config(&original)?;
     if existing.models.contains_key(name) || existing.models.values().any(|p| p.provider == profile.provider) {
-        return Err("此供应商名称或同名模型配置已存在，请使用其他名称".into());
+        return Err("a provider or model with this name already exists; pick another name".into());
     }
-    let mut doc = original.parse::<toml_edit::DocumentMut>().map_err(|e| format!("配置 TOML 无效：{e}"))?;
+    let mut doc = original.parse::<toml_edit::DocumentMut>().map_err(|e| format!("invalid TOML config: {e}"))?;
     let serialized = toml::to_string(&std::collections::BTreeMap::from([(
         "models",
         std::collections::BTreeMap::from([(name, profile)]),
     )]))
-    .map_err(|e| format!("无法编码供应商：{e}"))?;
+    .map_err(|e| format!("cannot encode the provider: {e}"))?;
     let addition = serialized.parse::<toml_edit::DocumentMut>().map_err(|e| e.to_string())?;
     if !doc.contains_key("models") {
         doc["models"] = toml_edit::Item::Table(toml_edit::Table::new());
     }
-    let models = doc["models"].as_table_like_mut().ok_or("models 须为配置表")?;
+    let models = doc["models"].as_table_like_mut().ok_or("the models key must be a table")?;
     models.insert(name, addition["models"][name].clone());
     let updated = doc.to_string();
     parse_user_config(&updated)?;
@@ -162,14 +164,14 @@ pub fn save_custom_provider(name: &str, profile: &ModelProfile) -> Result<(), St
         file.sync_all()?;
         // An editor need not take our lock. Refuse a detected concurrent edit.
         if std::fs::read_to_string(&path).unwrap_or_default() != original {
-            return Err(std::io::Error::other("配置已被其他程序修改，请重试"));
+            return Err(std::io::Error::other("another program changed the config; retry"));
         }
         std::fs::rename(&tmp, &path)
     })();
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
-    result.map_err(|e| format!("保存供应商失败：{e}"))
+    result.map_err(|e| format!("saving the provider failed: {e}"))
 }
 
 pub fn state_dir() -> PathBuf {
@@ -185,7 +187,7 @@ pub fn load_user_config(path: &Path) -> Result<UserConfig, String> {
     match std::fs::read_to_string(path) {
         Ok(text) => parse_user_config(&text).map_err(|e| format!("{}: {e}", path.display())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(UserConfig::default()),
-        Err(e) => Err(format!("无法读取配置 {}: {e}", path.display())),
+        Err(e) => Err(format!("cannot read config {}: {e}", path.display())),
     }
 }
 
@@ -383,11 +385,11 @@ pub fn load_user_config_for(cwd: &Path) -> Result<UserConfig, String> {
         let mut out = user_part;
         for (name, value) in project_part {
             if out.contains_key(&name) {
-                eprintln!("teamagents: 项目配置定义的同名条目 {name:?} 已忽略（用户配置优先）");
+                eprintln!("teamagents: ignoring the project config entry {name:?} (the user config wins)");
                 continue;
             }
             if !allow_project {
-                eprintln!("teamagents: 项目配置定义了 {name:?}，默认不信任项目工具，已忽略");
+                eprintln!("teamagents: the project config defines {name:?}; project tools are untrusted by default, so it was ignored");
                 continue;
             }
             out.insert(name, value);
@@ -409,7 +411,7 @@ pub fn load_user_config_for(cwd: &Path) -> Result<UserConfig, String> {
     } else {
         for key in ["skills_paths", "instruction_files"] {
             if !list(&project, key).is_empty() {
-                eprintln!("teamagents: 项目配置定义了 {key:?}，默认不信任项目工具，已忽略");
+                eprintln!("teamagents: the project config defines {key:?}; project tools are untrusted by default, so it was ignored");
             }
         }
     }
@@ -422,7 +424,7 @@ pub fn load_user_config_for(cwd: &Path) -> Result<UserConfig, String> {
             merged.insert(key.into(), value.clone());
         }
         if project.get(key).is_some() {
-            eprintln!("teamagents: 项目配置里的 {key:?} 已忽略（只能在用户配置中设置）");
+            eprintln!("teamagents: ignoring {key:?} from the project config (it can only be set in the user config)");
         }
     }
     let _ = empty;

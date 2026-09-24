@@ -294,7 +294,7 @@ fn read_method(method: &str, params: &Json, conn: &rusqlite::Connection) -> Resu
             Ok(json!({"tasks": tasks}))
         }
         // pending approvals with the operation's fixed intent (§9 first
-        // version: 批准/未知结果处理) — the client renders a preview and
+        // version: approvals and unknown outcomes) — the client renders a preview and
         // decides through the write surface; args stay a bounded preview
         "approvals" => {
             let mut stmt = conn

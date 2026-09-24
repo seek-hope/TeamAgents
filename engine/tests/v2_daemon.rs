@@ -282,7 +282,7 @@ async fn approvals_surface_lists_and_decides_pending_operations() {
     let since = checkpoint["result"]["watermark"].as_i64().unwrap();
     let submitted = client.command("cmd-approval-input", "submit_input", input_params("run it")).await;
     assert_eq!(submitted["ok"], json!(true), "{submitted}");
-    // the dispatch parks behind a PENDING approval (§9 批准处理)
+    // the dispatch parks behind a PENDING approval (§9 approval handling)
     let mut approval_id = String::new();
     for _ in 0..400 {
         let events = client.call("events", json!({"since": since})).await;

@@ -101,7 +101,7 @@ fn doctor_fresh_install_reports_the_missing_requirements() {
     std::fs::remove_file(&config).unwrap();
     std::fs::create_dir(&config).unwrap();
     let (ok, text) = run("test-value");
-    assert!(!ok && text.contains("无法读取配置"), "{text}");
+    assert!(!ok && text.contains("cannot read config"), "{text}");
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -135,7 +135,7 @@ fn init_creates_private_config_and_never_overwrites_existing_paths() {
     std::fs::write(&config, "# existing user content\n").unwrap();
     let output = run(&["init"]);
     assert!(output.status.success());
-    assert!(String::from_utf8_lossy(&output.stdout).contains("未覆盖"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("not overwritten"));
     assert_eq!(std::fs::read_to_string(&config).unwrap(), "# existing user content\n");
     std::fs::remove_file(&config).unwrap();
     let target = root.join("missing-target");
@@ -166,7 +166,7 @@ provider = \"deepseek\"\nprotocol = \"deepseek\"\nmodel = \"deepseek-flash\"\nap
     .unwrap();
 
     let init = teamagents(&["init"], &home, &config);
-    assert!(init.contains("v2 状态根就绪"), "{init}");
+    assert!(init.contains("state root ready"), "{init}");
     let db = home.join("teamagents/v2/session.sqlite");
     assert!(db.is_file(), "session database missing: {init}");
     let doctor = teamagents(&["doctor"], &home, &config);
@@ -187,7 +187,7 @@ provider = \"deepseek\"\nprotocol = \"deepseek\"\nmodel = \"deepseek-flash\"\nap
         .execute_batch("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); INSERT INTO meta VALUES ('format_id','other-store'),('schema_version','1');")
         .unwrap();
     let refused = teamagents(&["init", "--state-root", foreign.to_str().unwrap()], &home, &config);
-    assert!(refused.contains("refusing to reinterpret") || refused.contains("初始化失败"), "{refused}");
+    assert!(refused.contains("refusing to reinterpret") || refused.contains("init failed"), "{refused}");
 
     // the legacy layout is reported (never touched) when it exists
     std::fs::create_dir_all(home.join("teamagents/sessions/old")).unwrap();

@@ -4,17 +4,18 @@
 use std::path::{Path, PathBuf};
 use teamagents_engine::{cli, tools, VERSION};
 
-const HELP: &str = "TeamAgents：在终端里与 Leader 协作\n\n\
-用法：teamagents [--cwd DIR] [--state-root PATH] [--model KEY] [--full-auto]\n\
-  teamagents                          连接当前用户 daemon 的 TUI（不存在则先启动 daemon）\n\
-  teamagents exec [--json] [--timeout SEC] \"…\"   同一后端的无头输入\n\
+const HELP: &str = "TeamAgents: work with a Leader in your terminal\n\n\
+usage: teamagents [--cwd DIR] [--state-root PATH] [--model KEY] [--full-auto]\n\
+  teamagents                          TUI attached to your daemon (starts one if needed)\n\
+  teamagents exec [--json] [--timeout SEC] \"…\"   one headless input, same backend\n\
   teamagents daemon [--state-root PATH] [--cwd DIR] [--model KEY] [--full-auto]\n\
-  teamagents init [--state-root PATH] 创建配置并准备 v2 状态根\n\
-  teamagents doctor [--state-root PATH] 检查配置、密钥、v2 状态根与本机条件\n\
-  teamagents version | --version      查看版本\n\
-  teamagents --help                   查看帮助\n\n\
-团队由 Leader 通过 spawn/delegate/send/wait 建立；更早发行版的 TeamSpec/行模式/会话恢复入口不再支持。\n\
-首次使用：teamagents init → 设置密钥环境变量 → teamagents doctor → teamagents。";
+  teamagents init [--state-root PATH]   write config and prepare the state root\n\
+  teamagents doctor [--state-root PATH] check config, credentials, state root and host\n\
+  teamagents version | --version      print the version\n\
+  teamagents --help                   print this help\n\n\
+The Leader builds the team through spawn/delegate/send/wait; entry points from older\n\
+releases (TeamSpec files, line mode, session resume) are not supported.\n\
+First run: teamagents init -> set the credential env var -> teamagents doctor -> teamagents.";
 
 fn usage() -> ! {
     eprintln!("{HELP}");
@@ -268,7 +269,7 @@ fn tui_search_roots(exe: Option<&std::path::Path>) -> Vec<PathBuf> {
 /// live, so quitting the TUI never stops the session.
 fn run_tui(args: &Args) -> i32 {
     let Some(binary) = find_tui_binary() else {
-        eprintln!("找不到 teamagents-tui。请将发行包中的 teamagents 和 teamagents-tui 安装在同一目录，或用 TEAMAGENTS_TUI 指定路径。\n源码构建：cargo build --manifest-path tui/Cargo.toml；无头方式用 teamagents exec。");
+        eprintln!("teamagents-tui not found. Install teamagents and teamagents-tui from a release into the same directory, or point TEAMAGENTS_TUI at the binary.\nFrom source: cargo build --manifest-path tui/Cargo.toml; headless use: teamagents exec.");
         return 1;
     };
     let state_root = args.state_root.clone().map(PathBuf::from).unwrap_or_else(teamagents_engine::v2_root);
@@ -290,7 +291,7 @@ fn run_tui(args: &Args) -> i32 {
     match command.status() {
         Ok(status) => status.code().unwrap_or(1),
         Err(e) => {
-            eprintln!("无法启动 TUI: {e}");
+            eprintln!("cannot start the TUI: {e}");
             1
         }
     }
@@ -299,7 +300,7 @@ fn run_tui(args: &Args) -> i32 {
 /// `teamagents exec`: the same backend as the TUI, one headless input (§9).
 fn run_exec(args: &Args) -> i32 {
     let Some(prompt) = args.positional.clone() else {
-        eprintln!("exec 需要提示词：teamagents exec [--json] [--timeout SEC] \"…\"");
+        eprintln!("exec needs a prompt: teamagents exec [--json] [--timeout SEC] \"…\"");
         return 2;
     };
     let state_root = args.state_root.clone().map(PathBuf::from).unwrap_or_else(teamagents_engine::v2_root);
@@ -344,14 +345,14 @@ fn ensure_daemon(state_root: &Path, model: Option<String>) -> Result<PathBuf, St
         command.arg("--model").arg(model);
     }
     command.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-    command.spawn().map_err(|e| format!("无法启动 daemon: {e}"))?;
+    command.spawn().map_err(|e| format!("cannot start the daemon: {e}"))?;
     for _ in 0..150 {
         if socket.exists() {
             return Ok(socket);
         }
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
-    Err(format!("daemon 未在 {} 处就绪；请手动运行 teamagents daemon 查看原因", socket.display()))
+    Err(format!("the daemon is not ready at {}; run teamagents daemon by hand to see why", socket.display()))
 }
 
 /// The leader's model key when the caller did not choose one: the documented
@@ -404,13 +405,13 @@ fn main() {
         // entries that no longer exist: refuse them with a pointer to the current ones
         Some("validate") | Some("sessions") | Some("serve") | Some("repl") => {
             eprintln!(
-                "teamagents {}：该入口不再支持；团队由 Leader 通过 spawn/delegate 建立，会话由 daemon 拥有。\n用 teamagents 进入 TUI，或用 teamagents exec \"…\" 跑一次无头输入。",
+                "teamagents {}: this entry point is no longer supported; the Leader builds the team through spawn/delegate and the daemon owns the session.\nRun teamagents for the TUI, or teamagents exec \"…\" for one headless input.",
                 args.command.as_deref().unwrap_or("")
             );
             2
         }
         _ if args.plain || args.resume.is_some() || args.team.is_some() => {
-            eprintln!("--plain/--resume/--team 不再支持；用 teamagents（TUI）或 teamagents exec。");
+            eprintln!("--plain/--resume/--team are no longer supported; use teamagents (TUI) or teamagents exec.");
             2
         }
         _ => run_tui(&args),

@@ -149,7 +149,7 @@ impl DaemonClient {
 
 /// A wedged daemon must mark the client disconnected, never freeze the UI:
 /// local-socket round trips are sub-millisecond, so a multi-second silence
-/// means the server is stuck (§9 断开重连).
+/// means the server is stuck (§9 reconnect).
 const IO_TIMEOUT: Duration = Duration::from_secs(2);
 
 fn handshake(socket: &Path) -> Result<(Conn, Json), String> {

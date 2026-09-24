@@ -66,7 +66,7 @@ fn dirty_status(cwd: &Path, include_ignored: bool) -> Result<bool, String> {
         ],
     );
     if code != 0 {
-        return Err(format!("无法检查工作目录 {}：{}", cwd.display(), err.trim()));
+        return Err(format!("cannot inspect the working directory {}: {}", cwd.display(), err.trim()));
     }
     Ok(!out.is_empty())
 }
@@ -99,9 +99,9 @@ fn read_origin(work: &Path) -> Option<WorktreeOrigin> {
 fn git_path(cwd: &Path, option: &str) -> Result<PathBuf, String> {
     let (code, out, err) = git(cwd, ["rev-parse", "--path-format=absolute", option]);
     if code != 0 {
-        return Err(format!("无法核对 Git 工作目录 {}：{}", cwd.display(), err.trim()));
+        return Err(format!("cannot verify the Git working directory {}: {}", cwd.display(), err.trim()));
     }
-    std::fs::canonicalize(out.trim()).map_err(|e| format!("无法核对 Git 路径 {}：{e}", cwd.display()))
+    std::fs::canonicalize(out.trim()).map_err(|e| format!("cannot verify the Git path {}: {e}", cwd.display()))
 }
 
 /// Inspect actual Git state, never a cached branch hint or the caller's cwd.
@@ -109,20 +109,24 @@ pub(crate) fn inspect_worktree(project_cwd: &Path, path: &Path) -> Result<Worksp
     let directory = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
     let marker = std::fs::symlink_metadata(path.join(".git")).map_err(|e| e.to_string())?;
     if !directory.is_dir() || !marker.is_file() {
-        return Err(format!("{} 不是有效的成员 Git worktree", path.display()));
+        return Err(format!("{} is not a valid instance Git worktree", path.display()));
     }
     let canonical = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
     if git_path(path, "--show-toplevel")? != canonical
         || git_path(path, "--git-common-dir")? != git_path(project_cwd, "--git-common-dir")?
     {
-        return Err(format!("成员工作目录 {} 不属于当前项目，拒绝切换或清理", path.display()));
+        return Err(format!(
+            "instance workspace {} does not belong to this project; refusing to switch or clean up",
+            path.display()
+        ));
     }
-    let head = head_commit(path).ok_or_else(|| format!("无法读取成员工作目录 {} 的 HEAD", path.display()))?;
+    let head =
+        head_commit(path).ok_or_else(|| format!("cannot read HEAD of the instance workspace {}", path.display()))?;
     let (code, out, err) = git(path, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
     let branch = match code {
         0 => Some(out.trim().to_string()),
         1 => None, // Detached HEAD is valid, but its commits still need protection.
-        _ => return Err(format!("无法读取成员分支：{}", err.trim())),
+        _ => return Err(format!("cannot read the instance branch: {}", err.trim())),
     };
     let base_commit = read_origin(path).map(|origin| origin.base_commit).or_else(|| {
         let (code, out, _) = git(project_cwd, ["merge-base", "HEAD", &head]);
@@ -136,7 +140,7 @@ pub(crate) fn repair_worktree(project_cwd: &Path, path: &Path) -> Result<(), Str
     inspect_worktree(project_cwd, path)?;
     let (code, _, err) = git(project_cwd, [OsStr::new("worktree"), OsStr::new("repair"), path.as_os_str()]);
     if code != 0 {
-        return Err(format!("无法修复 worktree 注册 {}：{}", path.display(), err.trim()));
+        return Err(format!("cannot repair the worktree registration {}: {}", path.display(), err.trim()));
     }
     Ok(())
 }
@@ -226,7 +230,7 @@ pub fn prepare(id: &str, policy: WorkspacePolicy, project_cwd: &Path, member_dir
             if dirty_status(project_cwd, false)? {
                 return Ok(fallback(project_cwd, "git_worktree requested but the project has uncommitted changes; using shared mode so those inputs are not ignored"));
             }
-            let base = head_commit(project_cwd).ok_or("项目没有可用于建立 worktree 的 HEAD 提交")?;
+            let base = head_commit(project_cwd).ok_or("the project has no HEAD commit to base a worktree on")?;
             let branch = format!("teamagents/{id}-{}", uuid::Uuid::new_v4().simple());
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -250,7 +254,12 @@ pub fn prepare(id: &str, policy: WorkspacePolicy, project_cwd: &Path, member_dir
             let staged = metadata.with_extension("json.tmp");
             std::fs::write(&staged, serde_json::to_vec(&origin).map_err(|e| e.to_string())?)
                 .and_then(|()| std::fs::rename(&staged, &metadata))
-                .map_err(|e| format!("worktree 已保留在 {}，但来源记录写入失败：{e}", path.display()))?;
+                .map_err(|e| {
+                    format!(
+                        "the worktree is kept at {} but its origin record could not be written: {e}",
+                        path.display()
+                    )
+                })?;
             Ok(Workspace {
                 path,
                 policy: WorkspacePolicy::GitWorktree,
@@ -269,20 +278,25 @@ pub(crate) fn check_worktree_cleanup(work: &Path, project_cwd: &Path) -> Result<
     // be needed for a crash-atomic lifecycle across the repository and session.
     inspect_worktree(project_cwd, work)?;
     if git_path(work, "--absolute-git-dir")?.join("locked").try_exists().map_err(|e| e.to_string())? {
-        return Err(format!("worktree {} 已被 Git 锁定，请先核对并解锁", work.display()));
+        return Err(format!("worktree {} is locked by Git; inspect and unlock it first", work.display()));
     }
     // Git worktree remove deletes ignored files even without --force; .gitignore
     // is not permission to discard outputs when deleting a whole session.
     if dirty_status(work, true)? {
-        return Err("worktree 存在未提交、被忽略的文件或冲突；请先保留成果再清理".into());
+        return Err(
+            "the worktree has uncommitted, ignored or conflicting files; keep the results before cleaning up".into()
+        );
     }
-    let head = head_commit(work).ok_or("无法读取成员 HEAD，保留工作目录")?;
-    let project_head = head_commit(project_cwd).ok_or("无法读取项目 HEAD，保留工作目录")?;
+    let head = head_commit(work).ok_or("cannot read the instance HEAD; keeping the workspace")?;
+    let project_head = head_commit(project_cwd).ok_or("cannot read the project HEAD; keeping the workspace")?;
     let (code, _, err) = git(project_cwd, ["merge-base", "--is-ancestor", &head, &project_head]);
     match code {
         0 => Ok(()),
         1 => Err("worktree results are unmerged (committed but not merged); merge them before cleanup".into()),
-        _ => Err(format!("无法验证 worktree 提交是否已合并，保留工作目录：{}", err.trim())),
+        _ => Err(format!(
+            "cannot verify whether the worktree commits were merged; keeping the workspace: {}",
+            err.trim()
+        )),
     }
 }
 
@@ -330,7 +344,7 @@ pub fn cleanup(workspace: &Workspace, project_cwd: &Path, force: bool) -> (bool,
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => {
-                    return (false, format!("worktree 已移除，但来源记录清理失败：{error}；请核对成员目录后重试"));
+                    return (false, format!("the worktree was removed but its origin record could not be cleaned: {error}; check the instance directory and retry"));
                 }
             }
             (true, "worktree removed".into())
@@ -374,7 +388,7 @@ pub fn member_worktrees(session_dir: &Path) -> Result<Vec<PathBuf>, String> {
     let entries = match std::fs::read_dir(&members) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
-        Err(error) => return Err(format!("无法检查成员工作目录 {}：{error}", members.display())),
+        Err(error) => return Err(format!("cannot inspect the instance workspace {}: {error}", members.display())),
     };
     let mut found = vec![];
     for entry in entries {
@@ -386,7 +400,7 @@ pub fn member_worktrees(session_dir: &Path) -> Result<Vec<PathBuf>, String> {
                     found.push(work);
                 }
             }
-            Err(error) => return Err(format!("无法检查工作目录 {}：{error}", work.display())),
+            Err(error) => return Err(format!("cannot inspect the workspace {}: {error}", work.display())),
         }
     }
     found.sort();

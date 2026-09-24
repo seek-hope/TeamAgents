@@ -5416,9 +5416,10 @@ mod tests {
         cleanup(&path);
     }
 
-    /// 发现 V-W1 的回归（见 verification/README.md）：wait 的两条非 drain 出口——注册即满足、
-    /// 被取代——也必须回答自己的 tool_call。严格线协议端点拒绝 assistant tool_calls 无对应 tool
-    /// 响应的请求，而这两条路径都不经过 wake_satisfied_at。
+    /// Regression for V-W1 (see verification/README.md): the two non-drain exits of a
+    /// wait — satisfied at registration, superseded — must answer their own tool_call
+    /// too. Strict wire endpoints reject an assistant tool_calls message without
+    /// matching tool responses, and neither path goes through wake_satisfied_at.
     #[test]
     fn wait_call_answered_outside_the_drain_path() {
         let (mut ctl, path) = control("wait-answer");
@@ -5466,10 +5467,10 @@ mod tests {
             .expect("import a");
         assert_eq!(imported["wait"]["satisfied"], json!(true));
         assert_eq!(imported["phase"], json!("READY"));
-        assert_eq!(answered(&ctl, "wait-1"), 1, "注册即满足必须回答 wait-1");
+        assert_eq!(answered(&ctl, "wait-1"), 1, "a wait satisfied at registration must answer wait-1");
         // the fact is already applied: a later sweep must not answer a second time
         drain(&mut ctl, "i1");
-        assert_eq!(answered(&ctl, "wait-1"), 1, "回答只追加一次");
+        assert_eq!(answered(&ctl, "wait-1"), 1, "the answer is appended exactly once");
         // (b) pending, then superseded by a user input
         let rev = revision(&ctl);
         let request = begin_and_complete(&mut ctl, "q", "i1", rev);
@@ -5498,7 +5499,7 @@ mod tests {
         assert!(superseded["applied"].as_bool().unwrap_or(false));
         assert_eq!(wait_state(&ctl, "w-d-q"), "CANCELLED");
         assert_eq!(phase_of(&ctl, "i1"), "READY");
-        assert_eq!(answered(&ctl, "wait-2"), 1, "被取代必须回答 wait-2");
+        assert_eq!(answered(&ctl, "wait-2"), 1, "a superseded wait must answer wait-2");
         let answer: String = ctl
             .connection()
             .query_row(
@@ -6759,8 +6760,9 @@ mod tests {
         cleanup(&path);
     }
 
-    /// 压缩请求的响应只能由 compress_context 提交：import_response 拒绝把它当成回合导进
-    /// 上下文（不变量测试 v2_invariants 的随机游走走出了这条路径）。
+    /// A compression response may only be submitted by compress_context: import_response
+    /// refuses to import it as a turn's context (the random walk in the v2_invariants
+    /// test reaches this path).
     #[test]
     fn import_response_refuses_a_compression_request() {
         let (mut ctl, path) = control("import-compression");
@@ -6796,9 +6798,10 @@ mod tests {
         cleanup(&path);
     }
 
-    /// 终止把执行指针一起收拾干净（不变量测试 v2_invariants 发现）：被取消的请求不能继续挂在
-    /// 实例的 phase/active_request_id 上，否则"phase = MODEL_PENDING ⇒ 有一个 PENDING 请求"在
-    /// 已终止实例上不再成立。
+    /// Termination clears the execution pointer too (found by the v2_invariants test): a
+    /// cancelled request must not stay on the instance's phase/active_request_id, or
+    /// "phase = MODEL_PENDING implies one PENDING request" stops holding for a
+    /// terminated instance.
     #[test]
     fn terminating_an_instance_normalizes_its_execution_pointer() {
         let (mut ctl, path) = control("terminate-pointer");
@@ -6816,19 +6819,20 @@ mod tests {
             .connection()
             .query_row("SELECT status FROM model_requests ORDER BY rowid DESC LIMIT 1", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(request, "CANCELLED", "在途请求随终止取消");
+        assert_eq!(request, "CANCELLED", "the in-flight request is cancelled with the instance");
         assert_eq!(phase_of(&ctl, "i1"), "READY");
         let pointer: Option<String> = ctl
             .connection()
             .query_row("SELECT active_request_id FROM instances WHERE id = 'i1'", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(pointer, None, "执行指针不留在已取消的请求上");
+        assert_eq!(pointer, None, "the execution pointer does not stay on the cancelled request");
         cleanup(&path);
     }
 
-    /// 发现 V-G1 的回归（见 verification/README.md）：目标结清后不再接受新工作。
-    /// 结清时摘除实例的 active_goal_id，委派被拒，新请求不再记账到已结清的目标；
-    /// 新建并挂载目标后恢复记账与委派，而结清目标的记录不再变化。
+    /// Regression for V-G1 (see verification/README.md): a settled goal takes no new
+    /// work. Settling detaches the instance's active_goal_id, delegation is refused and
+    /// new requests stop billing the settled goal; a fresh goal restores both, and the
+    /// settled goal's records never change again.
     #[test]
     fn a_settled_goal_takes_no_new_work() {
         let (mut ctl, path) = control("goal-settled");
@@ -6889,8 +6893,8 @@ mod tests {
             .submit(cmd("cg-1", "complete_goal", json!({"goal_id": "g1", "instance_id": "i1"})), Identity::System)
             .expect("complete");
         assert_eq!(closed["status"], json!("SUCCEEDED"));
-        assert_eq!(closed["detached"], json!(1), "结清时摘除实例上的目标指针");
-        assert_eq!(active_goal(&ctl, "i1"), None, "结清的目标不再挂在实例上");
+        assert_eq!(closed["detached"], json!(1), "settling detaches the goal pointer from the instance");
+        assert_eq!(active_goal(&ctl, "i1"), None, "the settled goal is no longer attached to the instance");
         // new work on the settled goal is refused, both explicitly and implicitly
         let err = ctl
             .submit(
@@ -6918,7 +6922,7 @@ mod tests {
         // a new request runs without a goal: nothing lands on the settled record
         let rev = revision_of(&ctl, "i1");
         let request = begin_and_complete(&mut ctl, "b", "i1", rev);
-        assert_eq!(billed_goal(&ctl, &request), None, "结清的目标不再是记账目标");
+        assert_eq!(billed_goal(&ctl, &request), None, "the settled goal is no longer the billing goal");
         assert_eq!(goal_usage(&ctl), (usage_at_close.clone(), reservations_at_close.clone()));
         import_plain(&mut ctl, "b", &request);
         assert_eq!(goal_usage(&ctl), (usage_at_close.clone(), reservations_at_close.clone()));
