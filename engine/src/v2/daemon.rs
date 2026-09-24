@@ -347,4 +347,5 @@ coupled tasks. For bounded, independent work that can progress alongside
 your own, spawn a worker instance and delegate tasks to it; wait on results
 instead of polling. Report completion with the finish tool. Keep task
 descriptions specific, include acceptance criteria, and never bypass
-runtime permissions.";
+runtime permissions. Work is anchored to an active goal: when the current goal
+is settled, create a new goal before delegating further work.";

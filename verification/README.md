@@ -11,7 +11,6 @@
 make verify-model           # 控制面小配置（秒级；13 不变量 + 4 性质）
 make verify-model-all       # 控制面 + 制品/GC + 等待/唤醒三个模块的小配置
 make verify-model-wide      # 控制面宽配置（2 实例 / 2 操作；约 11 分钟 / 275M 状态）
-make verify-model-contract  # 两处预期反例留档：V-W1（wait 未答其调用）、V-G1（终态目标仍收新工作）
 ```
 
 首次运行会把固定版本（TLC v1.7.1，SHA-256 见 Makefile）的 `tla2tools.jar` 下载到
@@ -27,9 +26,7 @@ make verify-model-contract  # 两处预期反例留档：V-W1（wait 未答其�
 | `tla/MC_wide.cfg` | 控制面宽配置（2 实例 / 2 操作且其一需批准 / 3 请求槽 / 2 尝试槽） |
 | `tla/V2Artifact.tla` + `tla/MC_artifact.cfg` | 制品与 GC：写字节 → STAGING 行 → 引用与 LIVE 同事务 → GC 认领 → 删除/放弃 |
 | `tla/V2Wait.tla` + `tla/MC_wait.cfg` | 等待/唤醒/计时器/取代：注册即求值 → 停放 drain 扫描 → 满足即答同事务 → 取消/取代/重挂 |
-| `tla/MC_wait_contract.cfg` | 同一规格上的**预期反例**：等被解决后必答其 tool_call（当前实现不成立，见 V-W1） |
-| `tla/V2Task.tla` + `tla/MC_task.cfg` | 任务生命周期与目标结清：委派（前置任务必须先存在）→ 启动 → 结清/取消 → 系统停放 → 终止级联；目标与开放操作 |
-| `tla/MC_task_contract.cfg` | 同一规格上的**预期反例**：终态目标不再接受新工作（当前实现不成立，见 V-G1） |
+| `tla/V2Task.tla` + `tla/MC_task.cfg` | 任务生命周期与目标结清：委派（前置任务必须先存在、目标必须 ACTIVE）→ 启动 → 结清/取消 → 系统停放 → 终止级联；目标创建/请求准入/开放操作/结清与摘除 |
 
 环境（工具结果、批准时机、崩溃时点）在模型里是**非确定性**的；这正是要穷举的部分。
 
@@ -94,6 +91,9 @@ make verify-model-contract  # 两处预期反例留档：V-W1（wait 未答其�
 | `DependenciesPointBackwards` | 依赖边只指向更早创建的任务 ⇒ 依赖图**按构造无环** | `delegate_task` 要求 `dependency` 已存在 |
 | `NoSelfDependency` | 任务不依赖自己 | `delegate_task` 的自依赖检查 |
 | `NoOpenTaskOnDeadAssignee` | 已终止实例名下没有未结清任务 | `set_lifecycle` TERMINATED 的级联取消 |
+| `NoStaleActiveGoal` | 没有任何实例指向已结清的目标（结清即摘除指针 + 记账只认 ACTIVE） | `detach_goal`、`budget_goal` 的 `goal_is_active` 过滤（V-G1 修复） |
+| `RegisteredWorkNeedsAnActiveGoal` | 委派只落在 ACTIVE 目标上（监测变量 `lateTask`） | `delegate_task` 的 `goal_is_active` 守卫（V-G1 修复） |
+| `RequestsResolveToActiveGoals` | 请求解析到的目标必定 ACTIVE（监测变量 `lateRequest`） | `budget_goal` 的 `goal_is_active` 过滤（V-G1 修复） |
 
 任务模块只断言安全性：任务能否推进取决于环境（成员的回合），方案不要求系统替用户结清，故不写活性。
 
@@ -110,9 +110,17 @@ make verify-model-contract  # 两处预期反例留档：V-W1（wait 未答其�
 3. **`CANCELLED_BEFORE_START` 的语义**是"效果未发生"而不是"未派发"：代码对一个已派发但未启动的操作取消时
    正是这个状态，因此不变量必须约束 `effect = 0`。
 
-### 发现 V-W1（规范反例 + 代码探针，**待修缺陷**）
+### 发现 V-W1（已修复，2026-09-24）
 
-**等被解决后必须回答它自己的 `wait` tool_call——当前实现有两条路径不回答。**
+**等被解决后必须回答它自己的 `wait` tool_call——修复前有两条路径不回答。**
+
+修复：新增 `answer_closed_waits`，把答案推广到两条非 drain 出口——注册即满足（`import_response` 内、
+`wait_reason` 与 drain 同格式）与被取代/关闭 epoch（`submit_input`、`close_epoch_execution`）。
+去重键仍是 wait id，重放不会追加第二条。规格侧由不变量 `ResolvedWaitIsAnswered` 守着；
+回归测试 `wait_call_answered_outside_the_drain_path`（注册即满足、被取代两条路径断言回答存在且
+只追加一次，取代回答含 `superseded`）。
+
+以下为修复前记录的反例与探针证据。
 
 严格线协议端点（OpenAI 风格 Responses、Anthropic）拒绝"assistant `tool_calls` 没有对应 tool 响应"的请求，
 仓库自己的注释也这么写（`core/src/kernel/mod.rs`、`wake_satisfied_at` 的说明）。代码只在 **drain 路径**
@@ -139,9 +147,9 @@ make verify-model-contract  # 两处预期反例留档：V-W1（wait 未答其�
 DeepSeek chat-completions）容忍，所以真实评测没暴露。修复即把"回答"从 drain 路径推广到这两条路径
 （注册即满足时追加同一格式的答案；取代/关闭 epoch 时给被取消的等待追加上下文回答）。
 
-### 发现 V-G1（规范反例，**需要产品决策的设计边界**）
+### 发现 V-G1（已修复，2026-09-24）
 
-**目标进入终态后，系统仍然接受"记在它名下"的新工作**：委派任务、开新操作、继续记账。三条路径代码里都不看目标状态：
+**目标进入终态后不再接受新工作。** 修复前，委派任务、开新操作、继续记账三条路径都不看目标状态：
 
 - `delegate_task` 只校验承接者与（实例委派时的）委派者活跃、`goal_id` 存在，没有"目标必须 ACTIVE"；
 - `import_response` 开操作时 `goal_id` 来自 `request_goal(active_goal_id)`，同样不看目标状态；
@@ -154,10 +162,23 @@ Error: Invariant RegisteredWorkNeedsAnActiveGoal is violated.     # 目标还没
 Error: Invariant ClosedGoalTakesNoNewOperation is violated.       # 终态目标仍开新操作
 ```
 
-影响：目标已完成（或已 BLOCKED）之后，新回合仍记到该目标上——预算闸门仍有效（不会超发），但
-"目标已结清"与"仍有新工作在它名下"不再自洽；`complete_goal` 的"未结操作"检查只对 ACTIVE 目标生效，
-终态目标名下的开放操作没有结清者。是否要求"新工作必须落在 ACTIVE 目标上"（否则先建新目标）是需要
-用户拍板的产品决策；模型如实保留现状，并把两条契约单独留档。
+修复（用户确认"全部修复"后落码）：
+
+- `budget_goal` 只把 **ACTIVE** 目标作为记账目标（实例的 `active_goal_id` 与其最旧开放任务的目标两条路径）；
+  解析不到就按"无目标"运行（与无目标会话同一模式）；
+- `complete_goal`/`block_goal` 结清时摘除所有指向该目标的实例指针（`detach_goal`，返回 `detached` 计数）；
+- `delegate_task` 要求目标 ACTIVE，否则明确报错并提示先 `create_goal`；
+- 规格侧由 `NoStaleActiveGoal`、`RegisteredWorkNeedsAnActiveGoal`、`RequestsResolveToActiveGoals` 守着；
+  回归测试 `a_settled_goal_takes_no_new_work`（摘除指针、委派被拒、新请求不记账、新目标恢复记账与委派、
+  已结清记录不再变化）。
+
+建模结论（写进 `V2Task.tla` 头注）：**"新工作"的线性化点是请求（`begin_request`），不是操作**。请求在目标
+ACTIVE 时被准入，之后目标结清，它仍会开操作并把用量结算到那个目标——这是诚实记账，不是新工作；因此
+性质写成请求级（`RequestsResolveToActiveGoals`）而不是操作级。
+
+已知边界（未强制，见 `V2Task.tla` 头注）：`complete_goal` 只检查开放操作、不检查任务，所以目标可以在
+自己名下的任务仍开放时结清；那些任务继续运行，其后续请求没有记账目标。要收紧（结清前必须结清任务）
+需要先给 driver 一个"拒绝完成"的已提交结果，属于后续工作。
 
 ### 建模过程中另外两条（性质表述本身的修正）
 
@@ -172,11 +193,14 @@ Error: Invariant ClosedGoalTakesNoNewOperation is violated.       # 终态目标
   不能据此声称"Rust 代码已被证明"。
 - 已建模：控制面状态机、制品与 GC（A30）、等待/唤醒/计时器/取代（A22/A23、RT-06 的去重语义）、
   任务/委派/目标结清（A02/A09/A16）。
-- 尚未建模：压缩提交与原文追溯（A20）、多实例共享预算的跨实例结算（A18 的 worker 归属）、
-  daemon 协议重放与水位（A28）、审批有效期与 RT-06 的过期语义（等待侧已含取代/取消，批准侧未建模）、
-  必需检查（A16 的检查轮次与修复）。
+- 尚未建模：压缩提交与原文追溯（A20）、daemon 协议重放与水位（A28）、审批有效期与 RT-06 的过期语义
+  （等待侧已含取代/取消，批准侧未建模）、必需检查（A16 的检查轮次与修复）；多实例共享预算的跨实例
+  结算（A18 的 worker 归属）已在 `V2Task` 里按 `budget_goal` 的解析规则建模（含"只看最旧开放任务"
+  的取序细节）。
 - 弱公平假设：`V2Wait` 的活性依赖"停放 drain 弱公平"，即 driver 的轮询循环在 `WAITING` 下持续尝试
   （`engine/src/v2/driver.rs`）；这是实现事实，不是被证明的结论。
+- 状态空间前沿（`MC_task`）：1 任务 / 2 实例 / 2 目标 = 5.7M 状态 / 约 20 秒；把任务加到 2 个会发散
+  （实测 43M 状态、4 分钟未收敛），需要对称性或更强的抽象。
 - 状态空间前沿：宽配置 275M 状态 / 11 分钟；继续加实例或操作数需要对称性/约束或改为随机模拟
   （`-simulate`）作为补充。
 

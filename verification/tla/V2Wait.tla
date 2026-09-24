@@ -12,15 +12,14 @@
 (* terminal, a fired timer stays due — which is why "the condition held at   *)
 (* some point" is checkable as a state predicate.                            *)
 (*                                                                          *)
-(* Two paths end a wait without the drain, both faithful to the code:        *)
+(* Two paths end a wait without the drain, and both answer its tool call      *)
+(* (§5.3/A23; finding V-W1, fixed in the code and guarded by the regression    *)
+(* test `wait_call_answered_outside_the_drain_path`):                         *)
 (*  - satisfied at registration (the import evaluates in its own transaction, *)
-(*    A23) — the code appends no answer on this path;                       *)
-(*  - superseded by user input or an epoch close/reset, which sets the        *)
-(*    instance's PENDING waits to CANCELLED — also with no answer.            *)
-(* Both leave the wait's own tool_call unanswered. MC_wait_contract.cfg       *)
-(* checks the intended "a resolved wait answers its call" contract and is     *)
-(* expected to fail on exactly those two paths: that is the recorded evidence *)
-(* for the open defect (see verification/README.md, finding V-W1).            *)
+(*    A23) — answered with the same wake reason the drain uses;               *)
+(*  - superseded by user input or an epoch close/reset, which sets the         *)
+(*    instance's PENDING waits to CANCELLED and answers the cancellation.      *)
+(* `ResolvedWaitIsAnswered` is the invariant that keeps both honest.           *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets
 
@@ -89,8 +88,8 @@ Sweep(f, t) ==
 \* ------------------------------------------------------------------- actions --
 \* Registration (§5.3/A23): the wait is checked against the facts that already
 \* hold in the same transaction, so a result that arrived first is never lost.
-\* `answers` stays 0 — the code appends nothing on this path, and the instance
-\* never parks when the wait is already satisfied.
+\* A wait satisfied right here is answered right here, in the same transaction,
+\* and the instance never parks.
 ArmWait(w, i, mode, conds, call) ==
   /\ waitState[w] = "none" /\ phase[i] = "READY"
   /\ mode \in Modes /\ conds \subseteq Conds /\ conds # {}
@@ -101,8 +100,8 @@ ArmWait(w, i, mode, conds, call) ==
   /\ waitOwner' = [waitOwner EXCEPT ![w] = i]
   /\ LET satisfied == HoldsWith(mode, conds, w, facts, timers) IN
      /\ waitState' = [waitState EXCEPT ![w] = IF satisfied THEN "SATISFIED" ELSE "PENDING"]
-     /\ answers' = [answers EXCEPT ![w] = 0]
-     /\ answerCall' = [answerCall EXCEPT ![w] = nocall]
+     /\ answers' = [answers EXCEPT ![w] = IF satisfied THEN 1 ELSE 0]
+     /\ answerCall' = [answerCall EXCEPT ![w] = IF satisfied THEN call ELSE nocall]
      /\ phase' = [phase EXCEPT ![i] = IF satisfied THEN "READY" ELSE "WAITING"]
   /\ UNCHANGED <<facts, timers>>
 
@@ -136,15 +135,17 @@ Drain(i) ==
   /\ UNCHANGED <<waitMode, waitConds, waitCall, waitOwner, facts, timers>>
 
 \* Supersede (§5.3/§5.4): user input, an epoch close or a reset cancels the
-\* instance's pending waits and makes it runnable again. The pending wait stays
-\* answered by nothing: the model keeps that observable behaviour.
+\* instance's pending waits, answers each of them (a cancelled wait never
+\* reaches the drain, so its call would otherwise stay unanswered) and makes
+\* the instance runnable again.
 Supersede(i) ==
   /\ phase[i] = "WAITING"
-  /\ waitState' = [ w \in Waits |->
-                     IF waitOwner[w] = i /\ waitState[w] = "PENDING" THEN "CANCELLED"
-                       ELSE waitState[w] ]
+  /\ LET cancelled == { w \in Waits : waitOwner[w] = i /\ waitState[w] = "PENDING" } IN
+     /\ waitState' = [ w \in Waits |-> IF w \in cancelled THEN "CANCELLED" ELSE waitState[w] ]
+     /\ answers' = [ w \in Waits |-> IF w \in cancelled THEN 1 ELSE answers[w] ]
+     /\ answerCall' = [ w \in Waits |-> IF w \in cancelled THEN waitCall[w] ELSE answerCall[w] ]
   /\ phase' = [phase EXCEPT ![i] = "READY"]
-  /\ UNCHANGED <<waitMode, waitConds, waitCall, waitOwner, facts, timers, answers, answerCall>>
+  /\ UNCHANGED <<waitMode, waitConds, waitCall, waitOwner, facts, timers>>
 
 \* A new wait row replaces a resolved one (the code keeps one row per decision):
 \* the slot is reusable only while its instance is not parked on it.
@@ -201,13 +202,21 @@ TypeOK ==
 WakeAnswerAtMostOnce ==
   \A w \in Waits : answers[w] <= 1
 
-\* no spurious wake: an answer exists only for a wait whose conditions held
-AnswerImpliesConditions ==
-  \A w \in Waits : answers[w] = 1 => Holds(w, facts, timers)
+\* no spurious wake: a SATISFIED wait really had its conditions hold (the
+\* answer of a CANCELLED wait is a cancellation notice, not a wake)
+SatisfiedHoldsConditions ==
+  \A w \in Waits : waitState[w] = "SATISFIED" => Holds(w, facts, timers)
 
-\* an answer is only ever appended together with SATISFIED
-AnswerImpliesSatisfied ==
-  \A w \in Waits : answers[w] = 1 => waitState[w] = "SATISFIED"
+\* finding V-W1: every wait that ended is answered, whatever ended it — the
+\* drain wake, a registration that was already satisfied, or a supersede. A
+\* strict wire endpoint rejects a request whose assistant tool_calls have no
+\* matching tool response, so an unanswered control call is not an option.
+ResolvedWaitIsAnswered ==
+  \A w \in Waits : waitState[w] \in Resolved => answers[w] = 1
+
+\* an answer is only ever appended together with a resolved wait
+AnswerImpliesResolved ==
+  \A w \in Waits : answers[w] = 1 => waitState[w] \in Resolved
 
 \* the answer names the wait's own tool_call when it had one (R22 pairing fix)
 WakeAnswersItsCall ==
@@ -234,12 +243,5 @@ UnusedSlotHasNoAnswer ==
 NoStrandedPending ==
   \A w \in Waits :
       []( (waitState[w] = "PENDING" /\ Holds(w, facts, timers)) => <>(waitState[w] \in Resolved) )
-
-\* Intended contract, *not* a property of the current code: every resolved wait
-\* answered the tool_call it came from (a strict wire endpoint rejects an
-\* assistant call with no tool response). MC_wait_contract.cfg runs it to keep
-\* the counterexample on file — see finding V-W1.
-ResolvedWaitAnswersItsCall ==
-  \A w \in Waits : (waitState[w] \in Resolved) => answers[w] = 1
 
 =============================================================================

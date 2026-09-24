@@ -70,15 +70,6 @@ verify-model-all: verify-tools
 			| grep -E "No error|violation|violated|states generated"; \
 	done
 
-# 预期反例留档：V-W1（等被解决后必答其 tool_call）、V-G1（终态目标不再收新工作）
-# 当前实现两处都报违反；修复后这两条应转绿并并入对应主配置
-verify-model-contract: verify-tools
-	@cd verification/tla && for pair in "MC_wait_contract.cfg V2Wait.tla" "MC_task_contract.cfg V2Task.tla"; do \
-		set -- $$pair; echo "== $$1（预期违反）=="; \
-		java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
-			tlc2.TLC -config $$1 -fp 64 -workers 4 $$2 \
-			| grep -E "No error|violation|violated|states generated" || true; \
-	done
 
 verify-model-wide: verify-tools
 	@cd verification/tla && java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \

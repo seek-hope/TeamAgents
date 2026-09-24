@@ -5,6 +5,28 @@
 **任何偏离已确认方案的做法，先与用户确认再实现。** 本文件只记录已确认的决策；
 待验证的工程候选在方案和设计复核中标明，不把它们记作用户已逐项确认。
 
+## D-44 形式化验证发现的两处修复（2026-09-24）
+
+用户确认"全部修复"后落码；两处发现都由 TLA+/TLC 规格先给出反例、再由代码探针确认，各自带回归测试。
+修复台账见 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md)。
+
+- **V-W1 wait 的 tool_call 未被回答**：wait 只在 drain 路径回答自己的 tool_call；"注册即满足"与
+  "被取代/关闭 epoch"两条路径把等待置 SATISFIED/CANCELLED 却不追加 tool 响应，严格线协议端点会拒绝
+  下一次请求。修复：`answer_closed_waits` 把回答推广到两条路径（理由文本与 drain 一致，去重键仍为
+  wait id）。规格侧 `ResolvedWaitIsAnswered`；回归 `wait_call_answered_outside_the_drain_path`。
+- **V-G1 终态目标仍接受新工作**：委派任务、开新操作、继续记账三条路径都不看目标状态，目标结清后新回合
+  仍记到已结清的目标上。修复：`budget_goal` 只认 ACTIVE 目标（实例指针与最旧开放任务两条路径），
+  `complete_goal`/`block_goal` 结清即摘除实例指针（`detach_goal`，响应与事件带 `detached`），
+  `delegate_task` 要求目标 ACTIVE 并提示先建目标。规格侧 `NoStaleActiveGoal`、
+  `RegisteredWorkNeedsAnActiveGoal`、`RequestsResolveToActiveGoals`；回归
+  `a_settled_goal_takes_no_new_work`。
+- **语义边界（有意保留）**："新工作"的线性化点是请求而不是操作——请求在目标 ACTIVE 时准入，之后目标
+  结清，其操作与用量仍落到该目标（诚实记账，不是新工作）。`complete_goal` 只检查开放操作、不检查任务，
+  所以目标可在自己名下任务仍开放时结清，那些任务的后续请求没有记账目标；收紧需要先给 driver 一个
+  "拒绝完成"的已提交结果，未列入本次范围。
+- 证据：`make verify-model-all`（控制面/制品/等待/任务四个模块穷举全绿）与 `make check`；性质↔代码↔
+  验收编号映射见 [verification/README.md](../verification/README.md)。
+
 ## D-43 多供应商边界对齐 pi coding agent（2026-09-24）
 
 用户指示多供应商支持直接参考 pi coding agent（现 `earendil-works/pi` 仓库的 pi-ai 包）。

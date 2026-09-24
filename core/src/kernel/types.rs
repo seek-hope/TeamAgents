@@ -268,7 +268,7 @@ pub fn collaboration_tool_schemas(actions: &[&str]) -> Vec<Json> {
                 "type": "function",
                 "function": {
                     "name": DELEGATE_TOOL,
-                    "description": "Delegate a task to another instance with a narrow return path: the assignee can settle exactly this task back to you, nothing more.",
+                    "description": "Delegate a task to another instance with a narrow return path: the assignee can settle exactly this task back to you, nothing more. The task is charged to the delegating instance's active goal, which must still be open — create a new goal first when the previous one is settled.",
                     "parameters": {
                         "type": "object",
                         "properties": {

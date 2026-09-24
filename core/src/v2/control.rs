@@ -460,12 +460,30 @@ fn close_epoch_execution(
             flagged += 1;
         }
     }
+    let sealed: Vec<String> = {
+        let mut stmt = tx
+            .prepare("SELECT id FROM waits WHERE instance_id = ?1 AND epoch = ?2 AND status = 'PENDING'")
+            .map_err(|e| format!("close waits scan: {e}"))?;
+        let rows = stmt
+            .query_map(rusqlite::params![instance_id, epoch], |row| row.get(0))
+            .map_err(|e| format!("close waits query: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("close waits collect: {e}"))?
+    };
     let waits = tx
         .execute(
             "UPDATE waits SET status = 'CANCELLED' WHERE instance_id = ?1 AND epoch = ?2 AND status = 'PENDING'",
             rusqlite::params![instance_id, epoch],
         )
         .map_err(|e| format!("close waits: {e}"))?;
+    for wait_id in &sealed {
+        answer_closed_waits(
+            tx,
+            instance_id,
+            epoch,
+            std::slice::from_ref(wait_id),
+            &format!("[wait {wait_id} cancelled: the epoch closed ({reason})]"),
+        )?;
+    }
     let envelopes = tx
         .execute(
             "UPDATE envelopes SET state = 'SUPERSEDED'
@@ -883,6 +901,12 @@ fn delegate_task(tx: &Connection, session_id: &str, params: &Json, identity: &Id
             .ok_or("delegate_task.goal_id required: requester has no active goal")?
         }
     };
+    // The goal the task serves must still be open (§8, finding V-G1): a task
+    // registered on a settled goal would be new work charged to a closed
+    // record with no one left to settle it. Create or attach a new goal first.
+    if !goal_is_active(tx, &goal_id)? {
+        return Err(format!("goal {goal_id} is not active; create a new goal (create_goal) before delegating"));
+    }
     let deps: Vec<String> = dependencies
         .as_array()
         .map(|items| items.iter().filter_map(|item| item.as_str().map(str::to_string)).collect())
@@ -1308,11 +1332,27 @@ fn submit_input(tx: &Connection, session_id: &str, params: &Json, identity: &Ide
         // a fresh input makes the instance runnable again at the next
         // boundary; pending waits are superseded — the model sees the input
         // and re-registers what it still needs (§5.3/§5.4)
-        tx.execute(
-            "UPDATE waits SET status = 'CANCELLED' WHERE instance_id = ?1 AND status = 'PENDING'",
-            [instance_id],
-        )
-        .map_err(|e| format!("supersede waits: {e}"))?;
+        let superseded: Vec<(String, i64)> = {
+            let mut stmt = tx
+                .prepare("SELECT id, epoch FROM waits WHERE instance_id = ?1 AND status = 'PENDING'")
+                .map_err(|e| format!("supersede scan: {e}"))?;
+            let rows = stmt
+                .query_map([instance_id], |row| Ok((row.get(0)?, row.get(1)?)))
+                .map_err(|e| format!("supersede query: {e}"))?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("supersede collect: {e}"))?
+        };
+        for (wait_id, wait_epoch) in &superseded {
+            tx.execute("UPDATE waits SET status = 'CANCELLED' WHERE id = ?1", [wait_id])
+                .map_err(|e| format!("supersede wait {wait_id}: {e}"))?;
+            // the superseded wait never wakes, so its own call is answered here
+            answer_closed_waits(
+                tx,
+                instance_id,
+                *wait_epoch,
+                std::slice::from_ref(wait_id),
+                &format!("[wait {wait_id} superseded: new input arrived before it could be satisfied]"),
+            )?;
+        }
         tx.execute(
             "UPDATE instances SET phase = 'READY', revision = revision + 1 WHERE id = ?1 AND phase = 'WAITING'",
             [instance_id],
@@ -1461,22 +1501,54 @@ fn begin_request(tx: &Connection, session_id: &str, params: &Json, identity: &Id
 /// or — for a worker — the goal its task queue serves, running work first,
 /// then the pending queue in FIFO order, so reservations and usage from every
 /// instance stay visible on one goal.
+///
+/// Only an ACTIVE goal is a billing target (§8, verification finding V-G1): a
+/// SUCCEEDED/FAILED/BLOCKED goal has been settled, so new requests run under a
+/// live goal or with no goal at all — never charged to a closed record.
 fn budget_goal(tx: &Connection, instance_id: &str) -> Result<Option<String>, String> {
     let goal_id: Option<String> = tx
         .query_row("SELECT active_goal_id FROM instances WHERE id = ?1", [instance_id], |row| row.get(0))
         .map_err(|e| format!("goal read: {e}"))?;
-    match goal_id {
-        Some(goal) => Ok(Some(goal)),
-        None => tx
-            .query_row(
-                "SELECT goal_id FROM tasks WHERE assignee = ?1 AND status IN ('RUNNING', 'PENDING')
-                 ORDER BY CASE status WHEN 'RUNNING' THEN 0 ELSE 1 END, rowid LIMIT 1",
-                [instance_id],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|e| format!("task goal read: {e}")),
+    if let Some(goal) = goal_id {
+        if goal_is_active(tx, &goal)? {
+            return Ok(Some(goal));
+        }
     }
+    let task_goal: Option<String> = tx
+        .query_row(
+            "SELECT goal_id FROM tasks WHERE assignee = ?1 AND status IN ('RUNNING', 'PENDING')
+             ORDER BY CASE status WHEN 'RUNNING' THEN 0 ELSE 1 END, rowid LIMIT 1",
+            [instance_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("task goal read: {e}"))?;
+    match task_goal {
+        Some(goal) if goal_is_active(tx, &goal)? => Ok(Some(goal)),
+        _ => Ok(None),
+    }
+}
+
+/// A goal accepts new work only while it is ACTIVE (§8, verification finding
+/// V-G1): settling it detaches it from every instance, so later work needs a
+/// new goal instead of extending a closed record.
+fn goal_is_active(tx: &Connection, goal_id: &str) -> Result<bool, String> {
+    let status: Option<String> = tx
+        .query_row("SELECT status FROM goals WHERE id = ?1", [goal_id], |row| row.get(0))
+        .optional()
+        .map_err(|e| format!("goal status read: {e}"))?;
+    Ok(status.as_deref() == Some("ACTIVE"))
+}
+
+/// Detach a settled goal from the instances that pointed at it (§8). The
+/// pointer is what admits new requests, so a closed goal must not keep one;
+/// an idempotent repair that also covers rows written before this rule.
+fn detach_goal(tx: &Connection, goal_id: &str) -> Result<usize, String> {
+    tx.execute(
+        "UPDATE instances SET active_goal_id = NULL, revision = revision + 1 WHERE active_goal_id = ?1",
+        [goal_id],
+    )
+    .map_err(|e| format!("detach goal {goal_id}: {e}"))
 }
 
 /// Goal deadline gate (A35): the absolute deadline lives on the goal; once
@@ -2050,6 +2122,57 @@ fn wait_call_id(tx: &Connection, instance_id: &str, epoch: i64, wait_id: &str) -
         .and_then(|call| call["id"].as_str().map(str::to_string)))
 }
 
+/// The wake reason stored as the answer to a wait's own tool call (§5.3): the
+/// same text for the drain wake and for a wait that was already satisfied when
+/// it registered.
+fn wait_reason(wait_id: &str, mode: &str, conditions_json: &str, timer_at: Option<f64>) -> String {
+    format!("[wait {wait_id} satisfied] mode={mode} conditions={conditions_json} timer_at={timer_at:?}")
+}
+
+/// Answer the tool call of every wait that ends without ever reaching
+/// `wake_satisfied_at` (§5.3, A23; verification finding V-W1): a wait that is
+/// already satisfied at registration, or superseded/sealed before it can be
+/// satisfied, would otherwise leave the assistant entry that carried it with
+/// an unanswered `wait` tool_call — and a strict wire endpoint rejects a
+/// request whose assistant `tool_calls` have no matching tool response.
+/// Dedup key = the wait id, exactly like the drain answer, so a replay cannot
+/// append a second answer.
+fn answer_closed_waits(
+    tx: &Connection,
+    instance_id: &str,
+    epoch: i64,
+    waits: &[String],
+    reason: &str,
+) -> Result<(), String> {
+    for wait_id in waits {
+        match wait_call_id(tx, instance_id, epoch, wait_id)? {
+            Some(call_id) => {
+                append_context(
+                    tx,
+                    instance_id,
+                    epoch,
+                    "tool_result",
+                    &json!({"role": "tool", "tool_call_id": call_id, "content": reason}),
+                    Some(wait_id),
+                    &json!([wait_id]),
+                )?;
+            }
+            None => {
+                append_context(
+                    tx,
+                    instance_id,
+                    epoch,
+                    "note",
+                    &json!({"role": "user", "content": reason}),
+                    Some(wait_id),
+                    &json!([wait_id]),
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn wake_satisfied_at(tx: &Connection, session_id: &str, now: f64) -> Result<Vec<String>, String> {
     let pending: Vec<(String, String, i64, String, String, Option<f64>)> = {
         let mut stmt = tx
@@ -2083,8 +2206,7 @@ fn wake_satisfied_at(tx: &Connection, session_id: &str, now: f64) -> Result<Vec<
         // Responses servers) reject a request whose assistant tool_calls have
         // no matching tool message. Dedup key = wait id; the PENDING →
         // SATISFIED guard above fires once.
-        let reason =
-            format!("[wait {wait_id} satisfied] mode={mode} conditions={conditions_json} timer_at={timer_at:?}");
+        let reason = wait_reason(&wait_id, &mode, &conditions_json, timer_at);
         match wait_call_id(tx, &instance_id, epoch, &wait_id)? {
             // answer the wait call itself: the wire then keeps the assistant
             // tool_calls and their responses paired
@@ -2271,6 +2393,7 @@ fn import_response(tx: &Connection, session_id: &str, params: &Json, identity: &
         let spec = WaitSpec { mode, conditions: &conditions, timer_at };
         let (satisfied, _) = evaluate_wait(tx, session_id, &request_instance, epoch, &spec, crate::models::now())?;
         let wait_id = format!("w-{decision_id}");
+        let conditions_json = json!(conditions).to_string();
         tx.execute(
             "INSERT INTO waits (id, instance_id, epoch, mode, conditions_json, timer_at, status)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -2279,12 +2402,24 @@ fn import_response(tx: &Connection, session_id: &str, params: &Json, identity: &
                 request_instance,
                 epoch,
                 mode,
-                json!(conditions).to_string(),
+                conditions_json,
                 timer_at,
                 if satisfied { "SATISFIED" } else { "PENDING" }
             ],
         )
         .map_err(|e| format!("wait {wait_id}: {e}"))?;
+        if satisfied {
+            // a wait that is already satisfied never reaches the drain: it is
+            // answered here, in the registering transaction, or its tool call
+            // would stay unanswered (finding V-W1)
+            answer_closed_waits(
+                tx,
+                &request_instance,
+                epoch,
+                std::slice::from_ref(&wait_id),
+                &wait_reason(&wait_id, mode, &conditions_json, timer_at),
+            )?;
+        }
         wait_registered = Some((wait_id, satisfied));
     }
     let phase = if completion.is_some() {
@@ -3049,10 +3184,12 @@ fn block_goal(tx: &Connection, session_id: &str, params: &Json, identity: &Ident
             [instance_id],
         )
         .map_err(|e| format!("close finished goal: {e}"))?;
+        detach_goal(tx, goal_id)?;
         return Ok(json!({"goal_id": goal_id, "status": goal_status, "already_closed": true}));
     }
     tx.execute("UPDATE goals SET status = 'BLOCKED' WHERE id = ?1", [goal_id])
         .map_err(|e| format!("goal block: {e}"))?;
+    let detached = detach_goal(tx, goal_id)?;
     let epoch: i64 = tx
         .query_row("SELECT context_epoch FROM instances WHERE id = ?1", [instance_id], |row| row.get(0))
         .map_err(|e| format!("block epoch: {e}"))?;
@@ -3076,9 +3213,9 @@ fn block_goal(tx: &Connection, session_id: &str, params: &Json, identity: &Ident
         session_id,
         "goal_blocked",
         goal_id,
-        &json!({"goal_id": goal_id, "status": "BLOCKED", "reason": reason}),
+        &json!({"goal_id": goal_id, "status": "BLOCKED", "reason": reason, "detached": detached}),
     )?;
-    Ok(json!({"goal_id": goal_id, "status": "BLOCKED"}))
+    Ok(json!({"goal_id": goal_id, "status": "BLOCKED", "detached": detached}))
 }
 
 /// End a completion turn with nothing to settle (§5.2): a finish from an
@@ -3137,6 +3274,7 @@ fn complete_goal(tx: &Connection, session_id: &str, params: &Json) -> Result<Jso
             [instance_id],
         )
         .map_err(|e| format!("close finished goal: {e}"))?;
+        detach_goal(tx, goal_id)?;
         return Ok(json!({"goal_id": goal_id, "status": goal_status, "already_closed": true}));
     }
     let open: i64 = tx
@@ -3168,6 +3306,7 @@ fn complete_goal(tx: &Connection, session_id: &str, params: &Json) -> Result<Jso
     };
     tx.execute("UPDATE goals SET status = ?1 WHERE id = ?2", rusqlite::params![status, goal_id])
         .map_err(|e| format!("goal close: {e}"))?;
+    let detached = detach_goal(tx, goal_id)?;
     let epoch: i64 = tx
         .query_row("SELECT context_epoch FROM instances WHERE id = ?1", [instance_id], |row| row.get(0))
         .map_err(|e| format!("close epoch: {e}"))?;
@@ -3197,9 +3336,9 @@ fn complete_goal(tx: &Connection, session_id: &str, params: &Json) -> Result<Jso
         session_id,
         "goal_completed",
         goal_id,
-        &json!({"goal_id": goal_id, "status": status, "completion": candidate}),
+        &json!({"goal_id": goal_id, "status": status, "completion": candidate, "detached": detached}),
     )?;
-    Ok(json!({"goal_id": goal_id, "status": status}))
+    Ok(json!({"goal_id": goal_id, "status": status, "detached": detached}))
 }
 
 /// STAGING → ABANDONED (§4.3): orphans from a crash between staging and the
@@ -5259,17 +5398,30 @@ mod tests {
         cleanup(&path);
     }
 
-    /// 发现 V-W1（TLA+ 反例 + 本探针，见 verification/README.md）：wait 只在 drain 路径上回答自己的
-    /// tool_call。注册即满足与被取代两条路径都不回答，严格线协议端点会因此拒绝下一次请求。
-    /// 这是一条**已记录的缺口**，不是期望行为：修复（把回答推广到这两条路径）后本测试的
-    /// `answers_for_*` 应变成 1。
+    /// 发现 V-W1 的回归（见 verification/README.md）：wait 的两条非 drain 出口——注册即满足、
+    /// 被取代——也必须回答自己的 tool_call。严格线协议端点拒绝 assistant tool_calls 无对应 tool
+    /// 响应的请求，而这两条路径都不经过 wake_satisfied_at。
     #[test]
-    fn wait_call_answer_gap_outside_the_drain_path() {
-        let (mut ctl, path) = control("wait-probe");
+    fn wait_call_answered_outside_the_drain_path() {
+        let (mut ctl, path) = control("wait-answer");
         create_instance(&mut ctl, "i1");
         create_instance(&mut ctl, "i2");
         create_instance(&mut ctl, "i3");
         grant_message(&mut ctl, "i2", "i1", "a");
+        let revision = |ctl: &Control| -> i64 {
+            ctl.connection().query_row("SELECT revision FROM instances WHERE id = 'i1'", [], |row| row.get(0)).unwrap()
+        };
+        // the answer to a call: the tool response that names that call id
+        let answered = |ctl: &Control, call: &str| -> i64 {
+            ctl.connection()
+                .query_row(
+                    "SELECT COUNT(*) FROM context_entries WHERE instance_id = 'i1' AND kind = 'tool_result'
+                     AND json_extract(message_json, '$.tool_call_id') = ?1",
+                    [call],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
         // (a) the fact lands before the wait is registered → satisfied at registration
         ctl.submit(
             cmd("sm-p", "send_message", json!({"recipient": "i1", "text": "done"})),
@@ -5277,9 +5429,6 @@ mod tests {
         )
         .expect("send");
         drain(&mut ctl, "i1");
-        let revision = |ctl: &Control| -> i64 {
-            ctl.connection().query_row("SELECT revision FROM instances WHERE id = 'i1'", [], |row| row.get(0)).unwrap()
-        };
         let rev = revision(&ctl);
         let request = begin_and_complete(&mut ctl, "p", "i1", rev);
         let imported = ctl
@@ -5297,24 +5446,12 @@ mod tests {
                 Identity::System,
             )
             .expect("import a");
-        let answered = |ctl: &Control, call: &str| -> i64 {
-            ctl.connection()
-                .query_row(
-                    "SELECT COUNT(*) FROM context_entries WHERE instance_id = 'i1' AND kind = 'tool_result'
-                     AND message_json LIKE ?1",
-                    [format!("%{call}%")],
-                    |row| row.get(0),
-                )
-                .unwrap()
-        };
-        let registration_answers = answered(&ctl, "wait-1");
-        eprintln!(
-            "GAP A: satisfied={} phase={} answers_for_wait_1={registration_answers}",
-            imported["wait"]["satisfied"], imported["phase"]
-        );
         assert_eq!(imported["wait"]["satisfied"], json!(true));
         assert_eq!(imported["phase"], json!("READY"));
-        assert_eq!(registration_answers, 0, "修复 V-W1 后这里应变成 1");
+        assert_eq!(answered(&ctl, "wait-1"), 1, "注册即满足必须回答 wait-1");
+        // the fact is already applied: a later sweep must not answer a second time
+        drain(&mut ctl, "i1");
+        assert_eq!(answered(&ctl, "wait-1"), 1, "回答只追加一次");
         // (b) pending, then superseded by a user input
         let rev = revision(&ctl);
         let request = begin_and_complete(&mut ctl, "q", "i1", rev);
@@ -5333,23 +5470,27 @@ mod tests {
                 Identity::System,
             )
             .expect("import b");
+        assert_eq!(imported["phase"], json!("WAITING"));
         let superseded = ctl
             .submit(
                 cmd("in-q", "submit_input", json!({"instance_id": "i1", "envelope_id": "e-q", "text": "stop"})),
                 Identity::User,
             )
             .expect("input");
-        let superseded_answers = answered(&ctl, "wait-2");
-        eprintln!(
-            "GAP B: phase_after_import={} wait_state={} phase_after_input={} answers_for_wait_2={superseded_answers}",
-            imported["phase"],
-            wait_state(&ctl, "w-d-q"),
-            phase_of(&ctl, "i1")
-        );
         assert!(superseded["applied"].as_bool().unwrap_or(false));
         assert_eq!(wait_state(&ctl, "w-d-q"), "CANCELLED");
         assert_eq!(phase_of(&ctl, "i1"), "READY");
-        assert_eq!(superseded_answers, 0, "修复 V-W1 后这里应变成 1");
+        assert_eq!(answered(&ctl, "wait-2"), 1, "被取代必须回答 wait-2");
+        let answer: String = ctl
+            .connection()
+            .query_row(
+                "SELECT message_json FROM context_entries WHERE instance_id = 'i1' AND kind = 'tool_result'
+                 AND json_extract(message_json, '$.tool_call_id') = 'wait-2'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(answer.contains("superseded"), "{answer}");
         cleanup(&path);
     }
 
@@ -6597,6 +6738,123 @@ mod tests {
             .expect("replay");
         assert_eq!(again["already_closed"], json!(true));
         assert_eq!(context_count(&ctl, "i1"), 2);
+        cleanup(&path);
+    }
+
+    /// 发现 V-G1 的回归（见 verification/README.md）：目标结清后不再接受新工作。
+    /// 结清时摘除实例的 active_goal_id，委派被拒，新请求不再记账到已结清的目标；
+    /// 新建并挂载目标后恢复记账与委派，而结清目标的记录不再变化。
+    #[test]
+    fn a_settled_goal_takes_no_new_work() {
+        let (mut ctl, path) = control("goal-settled");
+        create_instance(&mut ctl, "i1");
+        create_instance(&mut ctl, "i2");
+        ctl.submit(
+            cmd("g1", "create_goal", json!({"id": "g1", "instance_id": "i1", "limits": {"max_total_tokens": 1000}})),
+            Identity::User,
+        )
+        .expect("goal");
+        let active_goal = |ctl: &Control, instance: &str| -> Option<String> {
+            ctl.connection()
+                .query_row("SELECT active_goal_id FROM instances WHERE id = ?1", [instance], |row| row.get(0))
+                .unwrap()
+        };
+        let billed_goal = |ctl: &Control, request: &str| -> Option<String> {
+            ctl.connection()
+                .query_row("SELECT goal_id FROM model_requests WHERE request_id = ?1", [request], |row| row.get(0))
+                .unwrap()
+        };
+        let goal_usage = |ctl: &Control| -> (String, String) {
+            ctl.connection()
+                .query_row("SELECT known_usage_json, reservations_json FROM goals WHERE id = 'g1'", [], |row| {
+                    Ok((row.get(0)?, row.get(1)?))
+                })
+                .unwrap()
+        };
+        let import_plain = |ctl: &mut Control, tag: &str, request: &str| {
+            ctl.submit(
+                cmd(
+                    &format!("imp-{tag}"),
+                    "import_response",
+                    json!({"request_id": request, "decision_id": format!("d-{tag}"),
+                           "entry": {"role": "assistant", "content": "ok"}, "intents": []}),
+                ),
+                Identity::System,
+            )
+            .expect("import plain");
+        };
+        assert_eq!(active_goal(&ctl, "i1").as_deref(), Some("g1"));
+        // while the goal is ACTIVE its work is billed to it
+        let rev = revision_of(&ctl, "i1");
+        finish_import(&mut ctl, "fin", "i1", rev, "success");
+        let request = ctl
+            .connection()
+            .query_row(
+                "SELECT request_id FROM model_requests WHERE instance_id = 'i1' ORDER BY rowid DESC LIMIT 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap();
+        assert_eq!(billed_goal(&ctl, &request).as_deref(), Some("g1"));
+        let (usage_at_close, reservations_at_close) = goal_usage(&ctl);
+        assert!(usage_at_close.contains("15"), "{usage_at_close}");
+        assert_eq!(reservations_at_close, "{}");
+        // the leader settles the goal
+        let closed = ctl
+            .submit(cmd("cg-1", "complete_goal", json!({"goal_id": "g1", "instance_id": "i1"})), Identity::System)
+            .expect("complete");
+        assert_eq!(closed["status"], json!("SUCCEEDED"));
+        assert_eq!(closed["detached"], json!(1), "结清时摘除实例上的目标指针");
+        assert_eq!(active_goal(&ctl, "i1"), None, "结清的目标不再挂在实例上");
+        // new work on the settled goal is refused, both explicitly and implicitly
+        let err = ctl
+            .submit(
+                cmd(
+                    "dt-1",
+                    "delegate_task",
+                    json!({"task_id": "t1", "assignee": "i2", "goal_id": "g1", "description": "x"}),
+                ),
+                Identity::User,
+            )
+            .unwrap_err();
+        assert!(err.contains("not active"), "{err}");
+        ctl.submit(
+            cmd("gd-1", "issue_grant", json!({"subject": "i1", "action": "delegate", "resource_scope": "instance:i2"})),
+            Identity::User,
+        )
+        .expect("delegate grant");
+        let err = ctl
+            .submit(
+                cmd("dt-1b", "delegate_task", json!({"task_id": "t1b", "assignee": "i2", "description": "x"})),
+                Identity::Instance("i1".into()),
+            )
+            .unwrap_err();
+        assert!(err.contains("no active goal"), "{err}");
+        // a new request runs without a goal: nothing lands on the settled record
+        let rev = revision_of(&ctl, "i1");
+        let request = begin_and_complete(&mut ctl, "b", "i1", rev);
+        assert_eq!(billed_goal(&ctl, &request), None, "结清的目标不再是记账目标");
+        assert_eq!(goal_usage(&ctl), (usage_at_close.clone(), reservations_at_close.clone()));
+        import_plain(&mut ctl, "b", &request);
+        assert_eq!(goal_usage(&ctl), (usage_at_close.clone(), reservations_at_close.clone()));
+        assert_eq!(phase_of(&ctl, "i1"), "READY");
+        // a fresh goal restores the gate, the billing and the delegation right
+        ctl.submit(cmd("g2", "create_goal", json!({"id": "g2", "instance_id": "i1"})), Identity::User)
+            .expect("new goal");
+        ctl.submit(
+            cmd(
+                "dt-2",
+                "delegate_task",
+                json!({"task_id": "t2", "assignee": "i2", "goal_id": "g2", "description": "y"}),
+            ),
+            Identity::User,
+        )
+        .expect("delegation on a live goal");
+        let rev = revision_of(&ctl, "i1");
+        let request = begin_and_complete(&mut ctl, "c", "i1", rev);
+        assert_eq!(billed_goal(&ctl, &request).as_deref(), Some("g2"));
+        // the settled goal's record stays frozen
+        assert_eq!(goal_usage(&ctl), (usage_at_close, reservations_at_close));
         cleanup(&path);
     }
 }
