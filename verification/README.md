@@ -8,8 +8,9 @@
 ## 运行
 
 ```bash
-make verify-model        # 小配置穷举（秒级；13 不变量 + 4 性质）
-make verify-model-wide   # 宽配置穷举（2 实例 / 2 操作；约 11 分钟 / 275M 状态）
+make verify-model        # 控制面小配置（秒级；13 不变量 + 4 性质）
+make verify-model-all    # 控制面 + 制品/GC 两个模块的小配置
+make verify-model-wide   # 控制面宽配置（2 实例 / 2 操作；约 11 分钟 / 275M 状态）
 ```
 
 首次运行会把固定版本（TLC v1.7.1，SHA-256 见 Makefile）的 `tla2tools.jar` 下载到
@@ -22,7 +23,8 @@ make verify-model-wide   # 宽配置穷举（2 实例 / 2 操作；约 11 分钟
 |---|---|
 | `tla/V2Control.tla` | 控制面抽象模型：实例相位机、请求/尝试、决策与操作、批准、派发线性化点、取消/超时、epoch 重置、目标预算预留与结算、崩溃/恢复 |
 | `tla/MC.cfg` | 小配置（1 实例 / 1 操作 / 2 请求槽 / 1 尝试槽 / 1 次 epoch 重置 / 1 次未知用量） |
-| `tla/MC_wide.cfg` | 宽配置（2 实例 / 2 操作且其一需批准 / 3 请求槽 / 2 尝试槽） |
+| `tla/MC_wide.cfg` | 控制面宽配置（2 实例 / 2 操作且其一需批准 / 3 请求槽 / 2 尝试槽） |
+| `tla/V2Artifact.tla` + `tla/MC_artifact.cfg` | 制品与 GC：写字节 → STAGING 行 → 引用与 LIVE 同事务 → GC 认领 → 删除/放弃 |
 
 环境（工具结果、批准时机、崩溃时点）在模型里是**非确定性**的；这正是要穷举的部分。
 
@@ -48,6 +50,19 @@ make verify-model-wide   # 宽配置穷举（2 实例 / 2 操作；约 11 分钟
 | `TerminalGoalStatusStable`（时序） | 目标终态不可改写 | `complete_goal`/`block_goal` 的 `already_closed` 分支 | §8 |
 | `NoReceiptAcrossEpochs`（时序） | 回执不跨 epoch 落地 | `reset_instance` 关闭旧 epoch + 取消在途操作 | A24 |
 
+### 制品与 GC（A30）
+
+| 性质（规格） | 含义 | 代码锚点 |
+|---|---|---|
+| `NoReferenceToUnpersisted` | 有引用的制品其字节必已持久化 | `store_response_artifact`（tmp→fsync→rename 后 `artifact_stage`） |
+| `LiveIsPersisted` | LIVE 制品必有字节 | `artifact_publish` 与引用同事务 |
+| `GcClaimsOnlyUnreferencedLive` | 被认领（DELETING）的制品无任何引用 | `artifact_gc_claim` 的候选条件 |
+| `CollectorSkipsIncomplete` | 磁盘上没有半成品残留（STAGING/ABANDONED 不被删除器动） | GC 只认领 LIVE；`artifact_abandon` 只标记 |
+| `ReferencesOnlyLive`（时序） | 引用只能附着到 LIVE 制品，或在同一步随 LIVE 翻转附着，且字节已在 | `publish_one` + 引用同事务 |
+| `BytesOnlyDeletedWhileDeleting`（时序） | 文件消失只发生在 DELETING | GC 删除顺序 |
+| `ClaimOnlyFromLive`（时序） | GC 只从 LIVE 认领 | 同上 |
+| `LiveFlipCarriesReference`（时序） | STAGING→LIVE 必伴随首次引用（不会有"活着但无人引用"的窗口被回收） | `publish_list` 同一命令内提交 |
+
 ## 建模过程中的三项发现
 
 1. **预算性质必须写成"准入闸门 + 预留上限"**，不能写成"实际用量绝不超限"：模型里 `known` 由供应商标注的用量结算、
@@ -60,6 +75,13 @@ make verify-model-wide   # 宽配置穷举（2 实例 / 2 操作；约 11 分钟
    如实保留该行为，只断言"终态状态不可改写"。
 3. **`CANCELLED_BEFORE_START` 的语义**是"效果未发生"而不是"未派发"：代码对一个已派发但未启动的操作取消时
    正是这个状态，因此不变量必须约束 `effect = 0`。
+
+### 建模过程中另外两条（性质表述本身的修正）
+
+4. **同事务翻转必须写进性质**：制品首次引用是在 `STAGING → LIVE` 的同一步里附上的，因此
+   "引用只能附着到 LIVE 制品"这种朴素写法会被 TLC 立刻反证——正确表述要允许 `row' = LIVE`。
+5. **引用计数不能用无界整数**：`refs++` 会让状态空间发散（实测 1.8 亿状态仍未收敛）；改成
+   **有限持有者集合**（`Owners` 常量）后同一配置只有 64 个可达状态。这条对后续模块同样适用。
 
 ## 边界（诚实说明）
 

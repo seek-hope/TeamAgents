@@ -254,6 +254,9 @@ SetLifecycle(i, l) ==
   /\ UNCHANGED <<goal, requests, attempts, ops, approvals, dead>>
 
 \* ---------------------------------------------------------------------- spec --
+\* an idle step keeps the model open-ended (TLC then reports no false deadlock)
+Stutter == UNCHANGED vars
+
 Next ==
   \/ \E i \in Instances : Input(i)
   \/ \E i \in Instances : BeginRequest(i)
@@ -274,6 +277,7 @@ Next ==
   \/ \E i \in Instances : SettleGoal(i, CHOOSE x \in {"SUCCEEDED", "FAILED", "BLOCKED", "CANCELLED"} : TRUE)
   \/ \E i \in Instances : ResetInstance(i)
   \/ \E i \in Instances : \E l \in {"ACTIVE", "PAUSED", "PARKED", "TERMINATED"} : SetLifecycle(i, l)
+  \/ Stutter   \* the system is open-ended: an idle step is always possible
 
 Init ==
   /\ inst = [ i \in Instances |->

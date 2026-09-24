@@ -61,6 +61,15 @@ verify-model: verify-tools
 	@cd verification/tla && java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
 		tlc2.TLC -config MC.cfg -fp 64 -workers 4 V2Control.tla
 
+# 全部模块的小配置穷举（秒级；宽配置另跑 verify-model-wide）
+verify-model-all: verify-tools
+	@cd verification/tla && for cfg in MC.cfg MC_artifact.cfg; do \
+		echo "== $$cfg =="; \
+		java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
+			tlc2.TLC -config $$cfg -fp 64 -workers 4 $$(case $$cfg in MC.cfg) echo V2Control.tla;; *) echo V2Artifact.tla;; esac) \
+			| grep -E "No error|violation|violated|states generated"; \
+	done
+
 verify-model-wide: verify-tools
 	@cd verification/tla && java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
 		tlc2.TLC -config MC_wide.cfg -fp 64 -workers 8 V2Control.tla
