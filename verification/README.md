@@ -309,6 +309,27 @@ cargo test --offline --manifest-path core/Cargo.toml --test kernel_properties
 - `pair_tool_results` 只把回答**上移**到调用之后，不会下移：回答先于调用的顺序在真实日志里不可能出现
   （运行时先追加调用），所以那条路径只用"置换"性质覆盖。
 
+## Kani 证明：分页算术（`make verify-kani`）
+
+`verification/kani/paging.rs` 用 Kani（有界模型检查器 + CBMC）证明 readback 分页的**算术契约**。
+它需要本机的 Kani 工具链（`cargo install --locked kani-verifier && cargo kani setup`），
+与 TLA+ 目标一样**不进 `make check`**：
+
+| 证明目标 | 覆盖 |
+|---|---|
+| `coordinates_never_overflow_or_overrun` | 对**任意 `usize`**（除 `offset <= total`、`limit >= 1` 外无假设）：页长 ≤ limit、`offset + page` 不溢出且不越过末尾、未到末尾必取满、`eof` 判据与发布实现一致 |
+| `illegal_cursor_is_refused` | 对任意 `usize`：越界判据 `offset > total`、`offset == total` 是合法空页且不动游标 |
+| `paging_covers_the_whole_output_exactly_once` | 展开界内的小长度：逐页取回无重叠、无遗漏、页数有限 |
+
+**诚实的边界**（都是实测结论，不是推测）：
+
+- 证明的是**算术模型**，不是发布函数的对象级验证。与发布代码的对应靠"抽出同一套坐标语义" +
+  具体值穷举（`core/tests/kernel_properties.rs`）。
+- 直接对发布函数做 Kani 在本机**不收敛**：`page_output` 的参数经 serde_json 解析，坐标一旦符号化，
+  数字比较会退化成符号化 `memcmp`（实测展开 2200+ 次仍未收敛），`chars().count()` 的展开同样膨胀；
+  `cap_tool_output` 的 24000 字符阈值要展开到 24000 层，也不可行。
+- 工具链：Kani 0.68.0 + 配套 CBMC 6.11.0，Kani 会安装它 pin 的 nightly（本机 `nightly-2026-08-21`）。
+
 ## 边界（诚实说明）
 
 - 已验证的是**模型**性质：TLC 穷举的是抽象状态机，不是 Rust 实现。除非做精化证明（后续阶段的可选工作），
