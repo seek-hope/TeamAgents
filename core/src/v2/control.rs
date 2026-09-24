@@ -5259,6 +5259,100 @@ mod tests {
         cleanup(&path);
     }
 
+    /// 发现 V-W1（TLA+ 反例 + 本探针，见 verification/README.md）：wait 只在 drain 路径上回答自己的
+    /// tool_call。注册即满足与被取代两条路径都不回答，严格线协议端点会因此拒绝下一次请求。
+    /// 这是一条**已记录的缺口**，不是期望行为：修复（把回答推广到这两条路径）后本测试的
+    /// `answers_for_*` 应变成 1。
+    #[test]
+    fn wait_call_answer_gap_outside_the_drain_path() {
+        let (mut ctl, path) = control("wait-probe");
+        create_instance(&mut ctl, "i1");
+        create_instance(&mut ctl, "i2");
+        create_instance(&mut ctl, "i3");
+        grant_message(&mut ctl, "i2", "i1", "a");
+        // (a) the fact lands before the wait is registered → satisfied at registration
+        ctl.submit(
+            cmd("sm-p", "send_message", json!({"recipient": "i1", "text": "done"})),
+            Identity::Instance("i2".into()),
+        )
+        .expect("send");
+        drain(&mut ctl, "i1");
+        let revision = |ctl: &Control| -> i64 {
+            ctl.connection().query_row("SELECT revision FROM instances WHERE id = 'i1'", [], |row| row.get(0)).unwrap()
+        };
+        let rev = revision(&ctl);
+        let request = begin_and_complete(&mut ctl, "p", "i1", rev);
+        let imported = ctl
+            .submit(
+                cmd(
+                    "imp-p",
+                    "import_response",
+                    json!({"request_id": request, "decision_id": "d-p",
+                           "entry": {"role": "assistant", "content": "",
+                                     "tool_calls": [{"id": "wait-1", "type": "function",
+                                                     "function": {"name": "wait", "arguments": "{}"}}]},
+                           "intents": [],
+                           "wait": {"mode": "ANY", "conditions": [{"kind": "message", "from": "i2"}]}}),
+                ),
+                Identity::System,
+            )
+            .expect("import a");
+        let answered = |ctl: &Control, call: &str| -> i64 {
+            ctl.connection()
+                .query_row(
+                    "SELECT COUNT(*) FROM context_entries WHERE instance_id = 'i1' AND kind = 'tool_result'
+                     AND message_json LIKE ?1",
+                    [format!("%{call}%")],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
+        let registration_answers = answered(&ctl, "wait-1");
+        eprintln!(
+            "GAP A: satisfied={} phase={} answers_for_wait_1={registration_answers}",
+            imported["wait"]["satisfied"], imported["phase"]
+        );
+        assert_eq!(imported["wait"]["satisfied"], json!(true));
+        assert_eq!(imported["phase"], json!("READY"));
+        assert_eq!(registration_answers, 0, "修复 V-W1 后这里应变成 1");
+        // (b) pending, then superseded by a user input
+        let rev = revision(&ctl);
+        let request = begin_and_complete(&mut ctl, "q", "i1", rev);
+        let imported = ctl
+            .submit(
+                cmd(
+                    "imp-q",
+                    "import_response",
+                    json!({"request_id": request, "decision_id": "d-q",
+                           "entry": {"role": "assistant", "content": "",
+                                     "tool_calls": [{"id": "wait-2", "type": "function",
+                                                     "function": {"name": "wait", "arguments": "{}"}}]},
+                           "intents": [],
+                           "wait": {"mode": "ANY", "conditions": [{"kind": "message", "from": "i3"}]}}),
+                ),
+                Identity::System,
+            )
+            .expect("import b");
+        let superseded = ctl
+            .submit(
+                cmd("in-q", "submit_input", json!({"instance_id": "i1", "envelope_id": "e-q", "text": "stop"})),
+                Identity::User,
+            )
+            .expect("input");
+        let superseded_answers = answered(&ctl, "wait-2");
+        eprintln!(
+            "GAP B: phase_after_import={} wait_state={} phase_after_input={} answers_for_wait_2={superseded_answers}",
+            imported["phase"],
+            wait_state(&ctl, "w-d-q"),
+            phase_of(&ctl, "i1")
+        );
+        assert!(superseded["applied"].as_bool().unwrap_or(false));
+        assert_eq!(wait_state(&ctl, "w-d-q"), "CANCELLED");
+        assert_eq!(phase_of(&ctl, "i1"), "READY");
+        assert_eq!(superseded_answers, 0, "修复 V-W1 后这里应变成 1");
+        cleanup(&path);
+    }
+
     #[test]
     fn complete_operation_replay_returns_stored_state() {
         let (mut ctl, path) = control("replay");

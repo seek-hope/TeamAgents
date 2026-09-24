@@ -63,12 +63,18 @@ verify-model: verify-tools
 
 # 全部模块的小配置穷举（秒级；宽配置另跑 verify-model-wide）
 verify-model-all: verify-tools
-	@cd verification/tla && for cfg in MC.cfg MC_artifact.cfg; do \
+	@cd verification/tla && for cfg in MC.cfg MC_artifact.cfg MC_wait.cfg; do \
 		echo "== $$cfg =="; \
 		java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
-			tlc2.TLC -config $$cfg -fp 64 -workers 4 $$(case $$cfg in MC.cfg) echo V2Control.tla;; *) echo V2Artifact.tla;; esac) \
+			tlc2.TLC -config $$cfg -fp 64 -workers 4 $$(case $$cfg in MC.cfg) echo V2Control.tla;; MC_wait.cfg) echo V2Wait.tla;; *) echo V2Artifact.tla;; esac) \
 			| grep -E "No error|violation|violated|states generated"; \
 	done
+
+# 预期反例留档（发现 V-W1）：等被解决后必答其 tool_call，当前实现报违反
+verify-model-contract: verify-tools
+	@cd verification/tla && java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
+		tlc2.TLC -config MC_wait_contract.cfg -fp 64 -workers 4 V2Wait.tla \
+		| grep -E "No error|violation|violated|states generated" || true
 
 verify-model-wide: verify-tools
 	@cd verification/tla && java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \

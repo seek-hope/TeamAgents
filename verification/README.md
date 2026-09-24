@@ -8,9 +8,10 @@
 ## 运行
 
 ```bash
-make verify-model        # 控制面小配置（秒级；13 不变量 + 4 性质）
-make verify-model-all    # 控制面 + 制品/GC 两个模块的小配置
-make verify-model-wide   # 控制面宽配置（2 实例 / 2 操作；约 11 分钟 / 275M 状态）
+make verify-model           # 控制面小配置（秒级；13 不变量 + 4 性质）
+make verify-model-all       # 控制面 + 制品/GC + 等待/唤醒三个模块的小配置
+make verify-model-wide      # 控制面宽配置（2 实例 / 2 操作；约 11 分钟 / 275M 状态）
+make verify-model-contract  # 等被解决后必答其 tool_call 的预期反例留档（见发现 V-W1）
 ```
 
 首次运行会把固定版本（TLC v1.7.1，SHA-256 见 Makefile）的 `tla2tools.jar` 下载到
@@ -25,6 +26,8 @@ make verify-model-wide   # 控制面宽配置（2 实例 / 2 操作；约 11 分
 | `tla/MC.cfg` | 小配置（1 实例 / 1 操作 / 2 请求槽 / 1 尝试槽 / 1 次 epoch 重置 / 1 次未知用量） |
 | `tla/MC_wide.cfg` | 控制面宽配置（2 实例 / 2 操作且其一需批准 / 3 请求槽 / 2 尝试槽） |
 | `tla/V2Artifact.tla` + `tla/MC_artifact.cfg` | 制品与 GC：写字节 → STAGING 行 → 引用与 LIVE 同事务 → GC 认领 → 删除/放弃 |
+| `tla/V2Wait.tla` + `tla/MC_wait.cfg` | 等待/唤醒/计时器/取代：注册即求值 → 停放 drain 扫描 → 满足即答同事务 → 取消/取代/重挂 |
+| `tla/MC_wait_contract.cfg` | 同一规格上的**预期反例**：等被解决后必答其 tool_call（当前实现不成立，见 V-W1） |
 
 环境（工具结果、批准时机、崩溃时点）在模型里是**非确定性**的；这正是要穷举的部分。
 
@@ -63,6 +66,20 @@ make verify-model-wide   # 控制面宽配置（2 实例 / 2 操作；约 11 分
 | `ClaimOnlyFromLive`（时序） | GC 只从 LIVE 认领 | 同上 |
 | `LiveFlipCarriesReference`（时序） | STAGING→LIVE 必伴随首次引用（不会有"活着但无人引用"的窗口被回收） | `publish_list` 同一命令内提交 |
 
+### 等待 / 唤醒 / 计时器（A22/A23、RT-06）
+
+| 性质（规格） | 含义 | 代码锚点 |
+|---|---|---|
+| `TypeOK` | 相位/等待状态/回答计数取值合法 | `waits.status`、`instances.phase` |
+| `WakeAnswerAtMostOnce` | 唤醒回答每个 wait 至多追加一次 | `wake_satisfied_at` 的 `PENDING → SATISFIED` 守卫 + `append_context` 去重 |
+| `AnswerImpliesConditions` | 没有虚假唤醒：回答只在条件真的成立时追加 | `evaluate_wait` 先判 `satisfied` 再追加 |
+| `AnswerImpliesSatisfied` | 回答永远与 `SATISFIED` 同一步出现 | 同上（同一事务） |
+| `WakeAnswersItsCall` | 回答落在等待自己的 tool_call 上（R22 配对修复） | `wait_call_id` + `Observation::ToolResult` |
+| `WaitingHasPendingWait` | 停放实例必有属于自己的 PENDING 等待 | `import_response` 仅在未满足时置 `WAITING` |
+| `PendingImpliesParked` | PENDING 等待的属主一定处于 `WAITING`（drain 恒可用） | `submit_input`/`close_epoch_execution` 取消等待后才置 `READY` |
+| `UnusedSlotHasNoAnswer` | 未使用的等待槽没有回答 | 等待行按决策创建 |
+| `NoStrandedPending`（时序） | 条件成立且未终结的 PENDING 等待终会被关闭（drain 满足或被取代取消），不会永久悬挂 | 停放 drain（弱公平：driver 轮询）+ 取代路径 |
+
 ## 建模过程中的三项发现
 
 1. **预算性质必须写成"准入闸门 + 预留上限"**，不能写成"实际用量绝不超限"：模型里 `known` 由供应商标注的用量结算、
@@ -76,6 +93,35 @@ make verify-model-wide   # 控制面宽配置（2 实例 / 2 操作；约 11 分
 3. **`CANCELLED_BEFORE_START` 的语义**是"效果未发生"而不是"未派发"：代码对一个已派发但未启动的操作取消时
    正是这个状态，因此不变量必须约束 `effect = 0`。
 
+### 发现 V-W1（规范反例 + 代码探针，**待修缺陷**）
+
+**等被解决后必须回答它自己的 `wait` tool_call——当前实现有两条路径不回答。**
+
+严格线协议端点（OpenAI 风格 Responses、Anthropic）拒绝"assistant `tool_calls` 没有对应 tool 响应"的请求，
+仓库自己的注释也这么写（`core/src/kernel/mod.rs`、`wake_satisfied_at` 的说明）。代码只在 **drain 路径**
+（`wake_satisfied_at` 扫 `PENDING` 并追加回答）上配对，另外两条路径没有回答：
+
+1. **注册即满足**（`import_response` 里注册时 `evaluate_wait` 直接判为 satisfied 的那条，正是 A23 用来
+   "不丢唤醒"的分支）：wait 直接落 `SATISFIED`、实例不 park，之后没有任何地方为它追加 tool_result；
+2. **被取代**（`submit_input` 把该实例的 `PENDING` 等待整批置 `CANCELLED`，`close_epoch_execution` 同理）：
+   回答也不追加，实例带着一条未回答的 `wait` 调用进入下一回合。
+
+证据：
+
+- 规格反例（可复跑）：`make verify-model-contract` → `Error: Invariant ResolvedWaitAnswersItsCall is violated`，
+  轨迹为 `ArmWait(PENDING)` → `Supersede` → `CANCELLED` 且 `answers = 0`；
+  注册即满足那条由 `ArmWait` 的 satisfied 分支同样触发（`answers` 保持 0）。
+- 代码探针（`cargo test --offline --manifest-path core/Cargo.toml --lib wait_call_answer_gap_outside_the_drain_path -- --nocapture`）：
+
+  ```text
+  PROBE A: satisfied=true phase="READY" answers_for_wait_1=0   # 注册即满足，无回答
+  PROBE B: phase_after_import="WAITING" wait_state=CANCELLED phase_after_input="READY" answers_for_wait_2=0  # 取代，无回答
+  ```
+
+影响与修复方向（待用户确认后落码）：严格端点下这两条路径的下一次请求会被拒；宽松端点（本机评测用的
+DeepSeek chat-completions）容忍，所以真实评测没暴露。修复即把"回答"从 drain 路径推广到这两条路径
+（注册即满足时追加同一格式的答案；取代/关闭 epoch 时给被取消的等待追加上下文回答）。
+
 ### 建模过程中另外两条（性质表述本身的修正）
 
 4. **同事务翻转必须写进性质**：制品首次引用是在 `STAGING → LIVE` 的同一步里附上的，因此
@@ -87,8 +133,11 @@ make verify-model-wide   # 控制面宽配置（2 实例 / 2 操作；约 11 分
 
 - 已验证的是**模型**性质：TLC 穷举的是抽象状态机，不是 Rust 实现。除非做精化证明（后续阶段的可选工作），
   不能据此声称"Rust 代码已被证明"。
-- 尚未建模：等待/计时器（A22/A23）、制品与 GC（A30）、任务与委派（A02/A16）、压缩（A20）、多实例共享预算的
-  跨实例结算（A18 的 worker 归属）、daemon 协议（A28）、审批有效期与 RT-06 的过期语义。
+- 已建模：控制面状态机、制品与 GC（A30）、等待/唤醒/计时器/取代（A22/A23、RT-06 的去重语义）。
+- 尚未建模：任务与委派（A02/A16）、压缩提交与原文追溯（A20）、多实例共享预算的跨实例结算（A18 的 worker
+  归属）、daemon 协议（A28）、审批有效期与 RT-06 的过期语义（等待侧已含取代/取消，批准侧未建模）。
+- 弱公平假设：`V2Wait` 的活性依赖"停放 drain 弱公平"，即 driver 的轮询循环在 `WAITING` 下持续尝试
+  （`engine/src/v2/driver.rs`）；这是实现事实，不是被证明的结论。
 - 状态空间前沿：宽配置 275M 状态 / 11 分钟；继续加实例或操作数需要对称性/约束或改为随机模拟
   （`-simulate`）作为补充。
 
