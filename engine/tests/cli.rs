@@ -248,7 +248,10 @@ fn init_creates_private_config_and_never_overwrites_existing_paths() {
     assert!(!config.exists());
     let output = run(&["init"]);
     assert!(output.status.success(), "{output:?}");
-    assert!(!root.join("state").exists(), "init must not open a session");
+    // init prepares only the *v2* state root (R27/A36); it never opens a v1
+    // session, so no legacy state directory appears
+    assert!(!root.join("state/teamagents/sessions").exists(), "init must not open a legacy session");
+    assert!(root.join("state/teamagents/v2/session.sqlite").is_file(), "init must prepare the v2 root");
     let text = std::fs::read_to_string(&config).unwrap();
     let catalog = teamagents_engine::config::parse_user_config(&text).unwrap();
     assert_eq!(catalog.models["leader_main"].context_window, Some(1_000_000));
@@ -269,4 +272,51 @@ fn init_creates_private_config_and_never_overwrites_existing_paths() {
     std::fs::create_dir(&config).unwrap();
     assert!(!run(&["init"]).status.success());
     std::fs::remove_dir_all(root).unwrap();
+}
+
+/// A36/R27: `init` prepares an identifiable v2 state root and `doctor` verifies
+/// it; a foreign database in the same path is refused rather than reinterpreted
+/// (A34), and the legacy layout is only reported.
+#[test]
+fn init_prepares_the_v2_root_and_doctor_verifies_it() {
+    let home = std::env::temp_dir().join(format!("ta-cli-v2-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let config = home.join("config");
+    std::fs::create_dir_all(config.join("teamagents")).unwrap();
+    std::fs::write(
+        config.join("teamagents/config.toml"),
+        "[models.leader_main]
+provider = \"deepseek\"\nprotocol = \"deepseek\"\nmodel = \"deepseek-flash\"\napi_key_env = \"DEEPSEEK_API_KEY\"\ncontext_window = 1000000\n",
+    )
+    .unwrap();
+
+    let init = teamagents(&["init"], &home, &config);
+    assert!(init.contains("v2 状态根就绪"), "{init}");
+    let db = home.join("teamagents/v2/session.sqlite");
+    assert!(db.is_file(), "session database missing: {init}");
+    let doctor = teamagents(&["doctor"], &home, &config);
+    assert!(doctor.contains("v2 state root"), "{doctor}");
+    assert!(doctor.contains("journal_mode=wal"), "{doctor}");
+    assert!(doctor.contains("synchronous=FULL"), "{doctor}");
+
+    // an explicit --state-root is honoured and reported
+    let other = home.join("other-root");
+    let custom = teamagents(&["init", "--state-root", other.to_str().unwrap()], &home, &config);
+    assert!(custom.contains(other.to_str().unwrap()), "{custom}");
+
+    // a foreign database under the v2 path is refused (A34)
+    let foreign = home.join("foreign");
+    std::fs::create_dir_all(&foreign).unwrap();
+    rusqlite::Connection::open(foreign.join("session.sqlite"))
+        .unwrap()
+        .execute_batch("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); INSERT INTO meta VALUES ('format_id','other-store'),('schema_version','1');")
+        .unwrap();
+    let refused = teamagents(&["init", "--state-root", foreign.to_str().unwrap()], &home, &config);
+    assert!(refused.contains("refusing to reinterpret") || refused.contains("初始化失败"), "{refused}");
+
+    // the legacy layout is reported (never touched) when it exists
+    std::fs::create_dir_all(home.join("teamagents/sessions/old")).unwrap();
+    let doctor = teamagents(&["doctor"], &home, &config);
+    assert!(doctor.contains("旧版会话目录"), "{doctor}");
+    std::fs::remove_dir_all(&home).unwrap();
 }

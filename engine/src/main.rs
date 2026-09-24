@@ -318,8 +318,8 @@ fn main() {
         },
         Some("daemon") => cli::daemon(args.state_root.clone(), args.cwd.clone(), args.model.clone(), args.full_auto),
         Some("serve") => worker::serve(),
-        Some("init") => cli::init(),
-        Some("doctor") => cli::doctor(),
+        Some("init") => cli::init(args.state_root.clone().map(PathBuf::from)),
+        Some("doctor") => cli::doctor(args.state_root.clone().map(PathBuf::from)),
         Some("validate") => match &args.positional {
             Some(path) => cli::validate_spec(path),
             None => usage(),

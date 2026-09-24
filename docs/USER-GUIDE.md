@@ -13,6 +13,21 @@ Worker 的 `instructions` 是成员专属指令。内置 Worker 会先收到固�
 任务描述、验收标准、消息和团队状态由运行时另行投递。Codex 执行成员则在创建/恢复线程时通过
 `developerInstructions` 接收环境说明与成员指令，保留其原生 system prompt，通过自身输出汇报执行结果。
 
+### 1.0 v2 会话（R2 重构的默认后端，迁移期）
+
+```bash
+teamagents init                  # 写配置，并准备 v2 状态根（$XDG_STATE_HOME/teamagents/v2）
+teamagents doctor                # 检查配置、密钥、v2 状态根（格式印记/WAL/读写探针）与本机条件
+teamagents daemon --model leader_main [--state-root DIR] [--cwd DIR] [--full-auto]
+```
+
+- v2 状态根是一份**单会话单库**（`session.sqlite`，WAL + `synchronous=FULL`），带格式与 schema 版本印记；
+  外来或错版数据库会被拒绝打开（不会把错状态当成本会话继续跑）。
+- `daemon` 通过 Unix socket 对外提供会话；TUI 客户端用 `--daemon`/`--state-root` 连接，
+  断开后按事件水位续读。
+- 旧版 `$XDG_STATE_HOME/teamagents/sessions/` 布局**不迁移**：`doctor` 会明确报告它的存在，
+  清理走 §14 清单式流程（见 `docs/ACCEPTANCE.md` 与 R2 方案第 14 节）。
+
 ### 1.1 位置
 
 | 内容 | 位置 |

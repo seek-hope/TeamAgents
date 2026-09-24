@@ -5,6 +5,12 @@
 //! change; this crate drives it in-process through `teamagents_core::server`,
 //! so the former TypeScript orchestration layer and its stdio hop are gone.
 
+/// Default v2 session state root (plan §14: a separate `v2/` root while the
+/// legacy layout is still identifiable, §4.4).
+pub fn v2_root() -> std::path::PathBuf {
+    config::state_dir().join("v2")
+}
+
 pub mod bound;
 pub mod chat;
 pub mod cli;

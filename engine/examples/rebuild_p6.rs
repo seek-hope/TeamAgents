@@ -14,7 +14,7 @@
 //! experiment's treatment and is billed like everything else.
 
 use serde_json::{json, Value as Json};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use teamagents_core::kernel::{KernelProfile, Usage};
 use teamagents_core::v2::{Command, Control};
@@ -211,15 +211,15 @@ async fn run_reference_trial(
     profile: &KernelProfile,
     args: &Args,
     task: &str,
-    workspace: &PathBuf,
-    state: &PathBuf,
+    workspace: &Path,
+    state: &Path,
     bindings: &[String],
 ) -> Fallible<Json> {
     let provider = build_for_model(catalog, &args.model)?;
     let trace_dir = state.join("trace");
     std::fs::create_dir_all(&trace_dir)?;
     let config = ReferenceConfig {
-        workspace: workspace.clone(),
+        workspace: workspace.to_path_buf(),
         artifacts: Some(state.join("artifacts")),
         shell_state: Some(state.join("shell")),
         permissions: "full_auto".into(),
@@ -256,8 +256,8 @@ async fn run_driver_trial(
     profile: &KernelProfile,
     args: &Args,
     task: &str,
-    workspace: &PathBuf,
-    state: &PathBuf,
+    workspace: &Path,
+    state: &Path,
     bindings: &[String],
     team: bool,
 ) -> Fallible<Json> {
@@ -282,12 +282,12 @@ async fn run_driver_trial(
         };
         let config = SupervisorConfig {
             marker: std::marker::PhantomData,
-            session_db: session_db.clone(),
+            session_db: session_db.to_path_buf(),
             session_id: session_id.into(),
             leader_id: instance.into(),
             leader_profile: profile.clone(),
-            state_root: state.clone(),
-            workspace: workspace.clone(),
+            state_root: state.to_path_buf(),
+            workspace: workspace.to_path_buf(),
             permissions: "full_auto".into(),
             catalog: catalog.clone(),
             bindings: bindings.to_vec(),
@@ -315,11 +315,11 @@ async fn run_driver_trial(
     } else {
         let provider = build_for_model(catalog, &args.model)?;
         let config = DriverConfig {
-            session_db: session_db.clone(),
+            session_db: session_db.to_path_buf(),
             session_id: session_id.into(),
             instance_id: instance.into(),
-            state_root: state.clone(),
-            workspace: workspace.clone(),
+            state_root: state.to_path_buf(),
+            workspace: workspace.to_path_buf(),
             permissions: "full_auto".into(),
             profile: profile.clone(),
             provider,
@@ -350,7 +350,7 @@ async fn run_driver_trial(
 /// Terminal goal status, idle reply, or the deadline: the same stopping rule
 /// for B and C (§13.1 keeps the two groups comparable).
 async fn wait_goal(
-    session_db: &PathBuf,
+    session_db: &Path,
     session_id: &str,
     instance: &str,
     timeout_s: u64,

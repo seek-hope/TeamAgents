@@ -11,7 +11,7 @@ use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-pub fn init() -> i32 {
+pub fn init(state_root: Option<PathBuf>) -> i32 {
     let path = user_config_path();
     match crate::config::initialize_config(&path) {
         Ok(created) => {
@@ -23,6 +23,10 @@ pub fn init() -> i32 {
                 println!("已保留现有配置：{}（未覆盖）", path.display());
                 println!("请按现有配置的 api_key_env 设置密钥环境变量。");
             }
+            if let Err(error) = prepare_v2_root(state_root) {
+                eprintln!("v2 状态根初始化失败：{error}");
+                return 1;
+            }
             println!("下一步：teamagents doctor；然后在项目目录运行 teamagents。");
             0
         }
@@ -31,6 +35,37 @@ pub fn init() -> i32 {
             1
         }
     }
+}
+
+/// Prepare (or verify) the v2 session state root: an empty directory gets the
+/// format stamp through the store, a v2 root is verified, and anything else is
+/// refused — never reinterpreted (A34, §4.4).
+pub fn prepare_v2_root(state_root: Option<PathBuf>) -> Result<PathBuf, String> {
+    let root = state_root.unwrap_or_else(crate::v2_root);
+    std::fs::create_dir_all(&root).map_err(|e| format!("create {}: {e}", root.display()))?;
+    let db = root.join("session.sqlite");
+    // opening with create stamps format/schema; opening an existing foreign or
+    // older database fails loudly here instead of mid-session
+    teamagents_core::v2::Control::open(&db, "doctor", true).map_err(|e| format!("{}: {e}", db.display()))?;
+    println!("v2 状态根就绪：{}", root.display());
+    println!("  会话库：{}", db.display());
+    println!("  套接字：{}", root.join("daemon.sock").display());
+    if let Some(legacy) = legacy_layout_hint() {
+        println!("  注意：{legacy}");
+    }
+    Ok(root)
+}
+
+/// Legacy v1 state: reported, never touched here (R28 owns cleaning it).
+fn legacy_layout_hint() -> Option<String> {
+    let sessions = crate::config::sessions_dir();
+    if sessions.is_dir() {
+        return Some(format!(
+            "检测到旧版会话目录 {}（旧格式不迁移；按 §14 清单式清理，teamagents sessions 仍可查看）",
+            sessions.display()
+        ));
+    }
+    None
 }
 
 fn is_executable(path: &Path) -> bool {
@@ -46,7 +81,7 @@ fn optional_check(results: &mut Vec<(String, &'static str, String)>, name: &str,
     results.push((name.to_string(), if ok { "ok  " } else { "WARN" }, detail));
 }
 
-pub fn doctor() -> i32 {
+pub fn doctor(state_root: Option<PathBuf>) -> i32 {
     let mut results = vec![];
     match CoreClient::open(":memory:", "doctor").and_then(|core| core.call("ping", json!({}))) {
         Ok(info) => {
@@ -97,6 +132,45 @@ pub fn doctor() -> i32 {
             }
         }
         Err(e) => check(&mut results, "user config", false, e.clone()),
+    }
+    // R27/A36: the v2 state root must be identifiable and usable; the legacy
+    // layout is only reported (its cleanup belongs to §14/R28)
+    let v2_root = state_root.unwrap_or_else(crate::v2_root);
+    let v2_db = v2_root.join("session.sqlite");
+    if !v2_db.exists() {
+        optional_check(
+            &mut results,
+            "v2 state root",
+            false,
+            format!("尚未初始化（{}）；运行 teamagents init 或 teamagents daemon 会自动创建", v2_root.display()),
+        );
+    } else {
+        match teamagents_core::v2::Control::open(&v2_db, "doctor", false) {
+            Ok(control) => {
+                let conn = control.connection();
+                let journal: String = conn.query_row("PRAGMA journal_mode", [], |row| row.get(0)).unwrap_or_default();
+                // PRAGMA synchronous answers with the numeric level (2 = FULL)
+                let sync: i64 = conn.query_row("PRAGMA synchronous", [], |row| row.get(0)).unwrap_or(-1);
+                let sync = match sync {
+                    0 => "OFF".to_string(),
+                    1 => "NORMAL".to_string(),
+                    2 => "FULL".to_string(),
+                    3 => "EXTRA".to_string(),
+                    other => other.to_string(),
+                };
+                let probe = conn.execute_batch("CREATE TABLE IF NOT EXISTS doctor_probe(x); DROP TABLE doctor_probe;");
+                check(
+                    &mut results,
+                    "v2 state root",
+                    journal.eq_ignore_ascii_case("wal") && probe.is_ok(),
+                    format!("{}（journal_mode={journal}, synchronous={sync}）", v2_root.display()),
+                );
+            }
+            Err(error) => check(&mut results, "v2 state root", false, error),
+        }
+    }
+    if let Some(hint) = legacy_layout_hint() {
+        optional_check(&mut results, "legacy v1 layout", false, hint);
     }
     let bwrap = bwrap_available();
     // not just "is it installed": run a probe so a broken
