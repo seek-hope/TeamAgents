@@ -29,6 +29,7 @@ make verify-model-wide      # 控制面宽配置（2 实例 / 2 操作；约 11 
 | `tla/V2Task.tla` + `tla/MC_task.cfg` | 任务生命周期与目标结清：委派（前置任务必须先存在、目标必须 ACTIVE）→ 启动 → 结清/取消 → 系统停放 → 终止级联；目标创建/请求准入/开放操作/结清与摘除 |
 | `tla/V2Compress.tla` + `tla/MC_compress.cfg` | 上下文压缩（A20）：开门/提交/失败/被 epoch 关闭取消；总结追加在尾部、覆盖只增不减、原文永不删除 |
 | `tla/V2Daemon.tla` + `tla/MC_daemon.cfg` | 会话 daemon 协议（A28）：稳定命令 id 的去重与回放、checkpoint 的快照+水位原子对、events(since) 无缺口、慢客户端不阻塞写者 |
+| `tla/V2Checks.tla` + `tla/MC_checks.cfg` | 必需检查（A16/§8）：只对"自称成功"的候选做校验、失败进有界修复轮、轮次耗尽或校验路径不可用（陈旧观察/派发被拒）落 BLOCKED，绝不升级候选 |
 
 环境（工具结果、批准时机、崩溃时点）在模型里是**非确定性**的；这正是要穷举的部分。
 
@@ -221,6 +222,21 @@ ACTIVE 时被准入，之后目标结清，它仍会开操作并把用量结算�
 TLC 立刻反证（实测 `Error: Invariant SnapshotNeverLeadsCursor is violated`）。慢客户端不阻塞写者的部分是
 结构性的：`RuntimeEvent` 不依赖任何客户端游标，因此这里不写活性性质。
 
+### 必需检查（A16/§8）
+
+| 性质（规格） | 含义 | 代码锚点 |
+|---|---|---|
+| `SuccessRequiresAllChecksPassed` | 只有**每个必需检查都真的通过**的轮次才能把目标收成 SUCCEEDED（性质写在**观察到的结果**上，不是写在"结论"变量上） | `step_completion_checks`：`failures.is_empty()` 才 `complete_goal` |
+| `NoUpgradeOfTheCandidate` | 运行时不升级模型候选：承认未交付的候选永不会 SUCCEEDED（监测变量 `nonSuccessSuccess`） | 只有候选自称 success 才进校验；`complete_goal` 用**存储的**候选结清 |
+| `ChecksOnlyVerifyAClaimedSuccess` | 不跑检查的候选直接按自身结果结清（监测变量 `lateRound`） | `step_completion_checks` 只在 `outcome == "success"` 时进入 |
+| `RoundsAreMonotone` / `RoundsAreBounded` | 轮次只增、且不超过预算（监测变量 `rewound`） | `rounds >= max_rounds` 分支 |
+| `BlockedAfterTheBudgetOrStale` | 自称成功的候选落 BLOCKED，只可能是"预算耗尽"或"校验路径不可用（陈旧观察）" | `infra`（`dispatch_refused`/`spawn`）与 `stale_inputs` 分类；`block_goal` |
+| `NoUnverifiedSuccess` | 没有未经校验的成功（监测变量 `upgrades`） | 同上 |
+
+非空证据：把 `Accept` 放宽成"有一个 pass 就接受（哪怕同时有 fail）"，TLC 立刻反证
+`SuccessRequiresAllChecksPassed is violated`；把这条性质写成"SUCCEEDED ⇒ 记录的结论是 pass"则是**空性质**
+（动作自己就能写 pass），所以最终断言绑在观察到的结果上。
+
 ## 规格↔代码的可执行对应（`core/tests/v2_invariants.rs`）
 
 规格检查的是抽象状态机。`core/tests/v2_invariants.rs`（随 `make check` 自动运行）把**同一组不变量**在真实
@@ -275,10 +291,12 @@ cargo test --offline --manifest-path core/Cargo.toml --test v2_invariants
 - 已验证的是**模型**性质：TLC 穷举的是抽象状态机，不是 Rust 实现。除非做精化证明（后续阶段的可选工作），
   不能据此声称"Rust 代码已被证明"。
 - 已建模：控制面状态机、制品与 GC（A30）、等待/唤醒/计时器/取代（A22/A23、RT-06 的去重语义）、
-  任务/委派/目标结清（A02/A09/A16）、上下文压缩（A20）、daemon 协议的命令去重与快照水位（A28）。
-- 尚未建模：必需检查的轮次与修复（A16）；审批有效期（`expires_at` 的到时判断）在代码级不变量测试里
-  覆盖（决定终态、操作终结后不得留下待批），但未单独建 TLA 模块。多实例共享预算的跨实例结算（A18 的
-  worker 归属）已在 `V2Task` 里按 `budget_goal` 的解析规则建模（含"只看最旧开放任务"的取序细节）。
+  任务/委派/目标结清（A02/A09）、上下文压缩（A20）、daemon 协议的命令去重与快照水位（A28）、
+  必需检查轮次与修复/阻断（A16）。
+- 尚未建模：审批 `expires_at` 的到时判断（决定终态与"操作终结后不得留下待批"已在代码级不变量测试里
+  覆盖，但未单独建 TLA 模块）；`execute_check_ops` 的检查命令执行细节（派发/超时/重连）只按"轮次与结论"
+  抽象。多实例共享预算的跨实例结算（A18 的 worker 归属）已在 `V2Task` 里按 `budget_goal` 的解析规则
+  建模（含"只看最旧开放任务"的取序细节）。
 - 弱公平假设：`V2Wait` 的活性依赖"停放 drain 弱公平"，即 driver 的轮询循环在 `WAITING` 下持续尝试
   （`engine/src/v2/driver.rs`）；这是实现事实，不是被证明的结论。
 - 状态空间前沿（`MC_task`）：1 任务 / 2 实例 / 2 目标 = 5.7M 状态 / 约 20 秒；把任务加到 2 个会发散
