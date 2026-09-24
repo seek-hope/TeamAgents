@@ -143,6 +143,7 @@ pub fn run(options: ExecOptions) -> i32 {
     let deadline = Instant::now() + Duration::from_secs(options.timeout_s);
     let mut goal_status: Option<String> = None;
     let mut reply: Option<String> = None;
+    let mut announced_approval = String::new();
     loop {
         match client.events() {
             Ok(events) => {
@@ -170,6 +171,20 @@ pub fn run(options: ExecOptions) -> i32 {
                     if last["kind"] == json!("assistant") {
                         reply = last["message"]["content"].as_str().map(str::to_string);
                     }
+                }
+            }
+        }
+        // a pending approval blocks the turn on the user: say so instead of
+        // looking stuck (the TUI is the approval surface, §9)
+        if let Ok(approvals) = client.call("approvals", json!({})) {
+            for approval in approvals["approvals"].as_array().into_iter().flatten() {
+                let id = approval["id"].as_str().unwrap_or("");
+                if id != announced_approval.as_str() {
+                    announced_approval = id.to_string();
+                    eprintln!(
+                        "[exec] 等待用户批准：{}（在 TUI 批准/拒绝；或用 --full-auto 启动 daemon 跳过批准闸）",
+                        approval["preview"].as_str().unwrap_or("")
+                    );
                 }
             }
         }
