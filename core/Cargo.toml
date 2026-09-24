@@ -12,7 +12,3 @@ sha2 = "0.10"
 
 [lib]
 path = "src/lib.rs"
-
-[[bin]]
-name = "teamagents-core"
-path = "src/main.rs"

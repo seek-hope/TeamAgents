@@ -2,16 +2,16 @@
 
 日期：2026-09-23。范围：[R2 实现方案](../docs/TeamAgents-Agent-System-Rebuild-Plan.zh-CN.md) 的设计决策，不是对尚未实现代码的验收报告。本轮只修改文档，没有执行重构、真实模型评测或数据清理。
 
-> 补记（2026-09-24）：本文写于重构前，正文引用的 v1 文件（`engine/src/chat.rs`、`tui/src/worker.rs` 等）
-> 已在 R29 退役；对应的 v2 实现见 `engine/src/v2/`、`core/src/v2/` 与 `tui/src/v2app.rs`，
-> 下文保留原文以记录当时的判断依据。
+> 补记（2026-09-24，2026-09-25 补充）：本文写于重构前，正文引用的 v1 文件（`engine/src/chat.rs`、
+> `tui/src/worker.rs`、`core/src/storage.rs` 等）已随 R29 与 D-45 退役；对应的 v2 实现见
+> `engine/src/v2/`、`core/src/v2/store.rs` 与 `tui/src/v2app.rs`，下文保留原文以记录当时的判断依据。
 
 结论：**Rust 原生方案与已确认需求匹配，但“更少的框架”不是充分的性能证据。** 真正应保留的是短的模型决策路径、一个权威状态来源、明确的副作用边界；不能把 LangGraph 换成更大的自研通用框架。以下 45 项分别列出理由、成本、替代方案和改变选择的条件。
 
 ## 1. 证据与判断边界
 
 - 需求依据是本轮 19 项答复，以及用户明确选定“Rust 小型 kernel + Rust 持久化实例运行时 + SQLite + 独立工具进程管理 + Rust TUI”。已确认项见方案 Q1–Q19 和 [D-42](../docs/DECISIONS.md#d-42-rust-原生-agent-系统重构方向2026-09-23)。具体工程机制不冒充用户逐项批准。
-- 现有产品已经是 Rust：模型循环在 `chat.rs`，SQLite 在 [storage.rs](../core/src/storage.rs)，TUI 通过 `worker.rs` 使用 JSON 协议。此次不是把正在运行的 Python harness 翻译成 Rust；旧名称也不是运行时依赖的证据。
+- 现有产品已经是 Rust：模型循环在 `chat.rs`，SQLite 在 `storage.rs`，TUI 通过 `worker.rs` 使用 JSON 协议。此次不是把正在运行的 Python harness 翻译成 Rust；旧名称也不是运行时依赖的证据。
 - 现有 [engine 依赖](../engine/Cargo.toml) 包含同步 ureq，[core 依赖](../core/Cargo.toml) 包含 bundled rusqlite，[TUI 依赖](../tui/Cargo.toml) 包含 ratatui。改异步 HTTP 有真实适配成本，也必须检查行为是否改变。
 - [旧评测分析](terminal-bench-design-analysis-2026-09-23.md) 已指出永久错误重派、验证环境、完成证据、时限和轨迹等问题。998 次失败是调度风暴，不是 998 次模型推理；单 Leader 执行也不是失败原因。历史机械分数不能成为干净的新架构基线。
 - 本轮没有本地 CPU/RSS/吞吐实测，也没有新成功率数据。表中的“保留”指有需求或机制依据；“候选”指需要探针选定；“删除”指从 R1 或不必要的设计扩展中去除。R/A 编号均对应方案中的实施任务与验收场景。

@@ -69,14 +69,9 @@ cargo test --offline --manifest-path engine/Cargo.toml --test v2_supervisor
 
 ```bash
 # core：v2 控制面、内核、持久化
+cargo test --offline --locked --manifest-path core/Cargo.toml --lib   # v2 控制面单测（A01–A36 的多数引用）
 cargo test --offline --locked --manifest-path core/Cargo.toml --test v2_invariants
 cargo test --offline --locked --manifest-path core/Cargo.toml --test kernel_properties
-cargo test --offline --locked --manifest-path core/Cargo.toml --test engine
-cargo test --offline --locked --manifest-path core/Cargo.toml --test stored_integrity
-cargo test --offline --locked --manifest-path core/Cargo.toml --test task_boundaries
-cargo test --offline --locked --manifest-path core/Cargo.toml --test action_requests
-cargo test --offline --locked --manifest-path core/Cargo.toml --test delivery_acl
-cargo test --offline --locked --manifest-path core/Cargo.toml --test output_references
 # engine：v2 相位机/多实例/daemon/job、假服务与 CLI
 cargo test --offline --locked --manifest-path engine/Cargo.toml --test v2_driver
 cargo test --offline --locked --manifest-path engine/Cargo.toml --test v2_supervisor
@@ -118,14 +113,14 @@ cargo test --offline --locked --manifest-path core/Cargo.toml --test v2_invarian
 
 | 变更 | 所属位置与约束 | 优先回归 |
 |---|---|---|
-| 团队动作、任务、授权与调度 | `core/src/v2/control.rs` 的 `Control::submit` 单事务路径；身份、操作号与权限版本一律由控制面生成，不取自模型或客户端字段 | `core/tests/v2_invariants.rs`、`core/tests/engine.rs`、`engine/tests/v2_supervisor.rs` |
-| 持久化与事务边界 | `core/src/v2/store.rs`（每会话单库，WAL + 显式 `synchronous=FULL`）；进程内调用经 `engine/src/v2/storage.rs` 的有界单写线程串行化 | `core/tests/stored_integrity.rs`、`core/tests/task_boundaries.rs`、`engine/tests/v2_driver.rs` |
-| 回合相位机与工具执行 | `engine/src/v2/driver.rs`：模型/工具等待在事务外，状态迁移只经 `Control::submit`；文件/Shell/web 工具在 `engine/src/tools.rs`，Shell 命令由 `engine/src/jobs` 的 runner 进程执行 | `engine/tests/v2_driver.rs`、`engine/tests/jobs_runner.rs`、`engine/tests/providers_fake.rs`、`providers_stall.rs` |
+| 团队动作、任务、授权与调度 | `core/src/v2/control.rs` 的 `Control::submit` 单事务路径；身份、操作号与权限版本一律由控制面生成，不取自模型或客户端字段 | `core` 库单测（`core/src/v2/control.rs`）、`core/tests/v2_invariants.rs`、`engine/tests/v2_supervisor.rs` |
+| 持久化与事务边界 | `core/src/v2/store.rs`（每会话单库，WAL + 显式 `synchronous=FULL`）；进程内调用经 `engine/src/v2/storage.rs` 的有界单写线程串行化 | `core` 库单测、`engine/tests/v2_driver.rs`、`core/tests/v2_invariants.rs` |
+| 回合相位机与工具执行 | `engine/src/v2/driver.rs`：模型/工具等待在事务外，状态迁移只经 `Control::submit`；文件/Shell/web 工具在 `engine/src/tools.rs`，Shell 命令由 `engine/src/jobs` 的 runner 进程执行；用户钩子在 `engine/src/hooks.rs`（`pre_tool` 拦截 + `notify` 事件） | `engine/tests/v2_driver.rs`、`engine/tests/jobs_runner.rs`、`engine/tests/providers_fake.rs`、`providers_stall.rs` |
 | 多实例协作面 | `engine/src/v2/supervisor.rs`：每个 ACTIVE 实例一个相位机；`spawn`/`delegate`/`send`/`wait` 的授权与派发线性化点在 `core/src/v2/control.rs` | `engine/tests/v2_supervisor.rs`、`core/tests/v2_invariants.rs` |
 | 会话 daemon 与客户端 | `engine/src/v2/daemon.rs`（每状态根一个 Unix socket JSON-lines 服务）、`engine/src/v2/exec.rs`（无头客户端）、`tui/src/daemon_client.rs`（断线按事件水位续读） | `engine/tests/v2_daemon.rs`、`engine/tests/cli.rs`、`make pty` |
-| 信息权限与共享空间 | `core/src/v2/control.rs` 的可见性/投递判定与 `core/src/kernel/*` 的上下文视图；`audience` 可见不等于 `push` 注入 | `core/tests/delivery_acl.rs`、`core/tests/action_requests.rs`、`core/tests/output_references.rs` |
+| 信息权限与共享空间 | `core/src/v2/control.rs` 的可见性/投递判定与 `core/src/kernel/*` 的上下文视图；`audience` 可见不等于 `push` 注入 | `core` 库单测（可见性/投递/引用）、`core/tests/v2_invariants.rs` |
 | MCP、Skills 与工具绑定 | `engine/src/bound.rs`（绑定即授权）、`engine/src/mcp.rs`（stdio + streamable HTTP）；工作区策略在 `engine/src/workspace.rs` | `engine/tests/v2_mcp.rs`、`engine/tests/v2_spawn_failure.rs` |
-| 供应商适配 | `engine/src/providers/*`：一次传输尝试、只做失败分类，重试归运行时；配置与目录在 `engine/src/config.rs` | `engine/tests/providers_fake.rs`、`engine/tests/providers_stall.rs` |
+| 供应商适配 | `engine/src/providers/*`：一次传输尝试、只做失败分类，重试归运行时；配置与目录在 `engine/src/config.rs`（用户目录的解析、`[hooks]`/`[retention]` 校验） | `engine/tests/providers_fake.rs`、`engine/tests/providers_stall.rs`、`engine/src/config.rs` 单测 |
 | 模型调用与内核 | `core/src/kernel/*`（无 I/O 的请求/响应/观察转换）、`engine/src/reference.rs`（评测组 A 直驱参考循环） | `core/tests/kernel_properties.rs`、`engine/tests/rebuild_p1.rs` |
 | 会话界面与真终端 | `tui/src/v2app.rs`（状态与按键）、`tui/src/v2ui.rs`（渲染，`geometry()` 同时供鼠标命中）、`tui/src/wrap.rs` | `tui/tests/v2app_tests.rs`、`make pty` |
 | 安装、自检与发布 | `install.sh`、`engine/src/cli.rs` 的 `init`/`doctor`、`.github/workflows/release.yml` | `engine/tests/install.rs`、`engine/tests/cli.rs`、发行制品冒烟 |

@@ -3,7 +3,7 @@
 use crate::config::{load_user_config, missing_key_envs, sessions_dir, user_config_path};
 use crate::tools::{bwrap_available, shell_run, which};
 use crate::VERSION;
-use serde_json::{json, Value as Json};
+use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -182,25 +182,6 @@ pub fn doctor(state_root: Option<PathBuf>) -> i32 {
             "未找到 bwrap，Shell 无法执行；Debian/Ubuntu: sudo apt install bubblewrap；Fedora: sudo dnf install bubblewrap；Arch: sudo pacman -S bubblewrap".into()
         },
     );
-    let codex = which("codex");
-    match &codex {
-        Some(codex) => {
-            let codex = codex.to_string_lossy().into_owned();
-            let help = std::process::Command::new(&codex).args(["app-server", "--help"]).output();
-            let app_server =
-                help.map(|out| String::from_utf8_lossy(&out.stdout).contains("app-server")).unwrap_or(false);
-            // `codex --version` already prefixes itself ("codex-cli x.y.z")
-            optional_check(&mut results, "codex app-server", app_server, codex_version(&codex));
-            let (schema_ok, detail) = codex_schema_check(&codex);
-            optional_check(&mut results, "codex protocol schema", schema_ok, detail);
-        }
-        None => optional_check(
-            &mut results,
-            "codex app-server",
-            false,
-            "未安装 Codex CLI；仅 Codex 执行成员需要，内置成员可正常使用".into(),
-        ),
-    }
     // hooks are easy to break silently: a wrong path only shows up as a stderr
     // line at event time, so doctor checks the programs exist and are executable
     if let Ok(catalog) = &catalog {
@@ -241,83 +222,11 @@ pub fn doctor(state_root: Option<PathBuf>) -> i32 {
         }
         println!("  [{status}] {name:24} {detail}");
     }
-    println!("自检仅验证本机条件，不调用模型 API；WARN 为可选能力提示。Codex 成员需要相关检查通过。");
+    println!("自检仅验证本机条件，不调用模型 API；WARN 为可选能力提示。");
     if failed > 0 {
         1
     } else {
         0
-    }
-}
-
-fn codex_version(codex: &str) -> String {
-    std::process::Command::new(codex)
-        .arg("--version")
-        .output()
-        .ok()
-        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
-        .filter(|version| !version.is_empty())
-        .unwrap_or_else(|| "unknown".into())
-}
-
-/// Methods declared by one generated schema file (ClientRequest.json shape).
-fn schema_methods(path: &Path) -> Result<std::collections::HashSet<String>, String> {
-    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let doc: Json = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-    let methods = doc
-        .get("oneOf")
-        .and_then(|v| v.as_array())
-        .map(|entries| {
-            entries
-                .iter()
-                .filter_map(|entry| {
-                    entry
-                        .get("properties")
-                        .and_then(|p| p.get("method"))
-                        .and_then(|m| m.get("enum"))
-                        .and_then(|e| e.as_array())
-                        .and_then(|e| e.first())
-                        .and_then(|v| v.as_str())
-                        .map(str::to_string)
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    Ok(methods)
-}
-
-/// D-3: generate the schema from the installed CLI and confirm the required
-/// method sets exist.
-fn codex_schema_check(codex: &str) -> (bool, String) {
-    const NEEDED: &[&str] = &["initialize", "thread/start", "thread/resume", "turn/start", "turn/interrupt"];
-    const NEEDED_REQUESTS: &[&str] =
-        &["item/commandExecution/requestApproval", "item/fileChange/requestApproval", "item/tool/requestUserInput"];
-    let dir = std::env::temp_dir().join(format!("ta-codex-schema-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    let run =
-        std::process::Command::new(codex).args(["app-server", "generate-json-schema", "--out"]).arg(&dir).output();
-    let result = match run {
-        Ok(out) if out.status.success() => (|| -> Result<String, String> {
-            let client = schema_methods(&dir.join("ClientRequest.json"))?;
-            let server = schema_methods(&dir.join("ServerRequest.json"))?;
-            let missing: Vec<&str> = NEEDED
-                .iter()
-                .filter(|method| !client.contains(**method))
-                .chain(NEEDED_REQUESTS.iter().filter(|method| !server.contains(**method)))
-                .copied()
-                .collect();
-            if missing.is_empty() {
-                Ok(format!("schema generated from installed CLI ({} methods)", client.len()))
-            } else {
-                Err(format!("schema from this CLI lacks: {missing:?}"))
-            }
-        })(),
-        Ok(out) => Err(format!("schema generation failed: {}", String::from_utf8_lossy(&out.stderr).trim())),
-        Err(e) => Err(format!("schema generation failed: {e}")),
-    };
-    let _ = std::fs::remove_dir_all(&dir);
-    match result {
-        Ok(detail) => (true, detail),
-        Err(e) => (false, e),
     }
 }
 

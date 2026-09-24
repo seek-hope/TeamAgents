@@ -30,8 +30,8 @@ make verify-kani                         # Kani 证明（分页算术）
 python3 review/eval/r2-p6/run.py --phase pilot --out <新的日期目录>   # 真实模型 A/B/C 对照（需凭据）
 ```
 
-- 基线（2026-09-24）：`make check` 全绿——core 243 / engine 130 / tui 29；engine 等计数低于此前阶段
-  是因为 v1 源码与测试在 R29 一并退役，不是覆盖回退。真实评测原始 JSONL 在 `review/eval/runs/`。
+- 基线（2026-09-25）：`make check` 全绿——core 91 / engine 133 / tui 29；core 计数下降是因为 v1 控制面
+  与其测试已整体删除（见 D-45），不是覆盖回退。真实评测原始 JSONL 在 `review/eval/runs/`。
 
 - 当前基线与跳过项统一见 `docs/ACCEPTANCE.md`；Cargo 的通过数不等于真实服务验收通过数。
   决策记录 `docs/DECISIONS.md`。
@@ -50,14 +50,15 @@ python3 review/eval/r2-p6/run.py --phase pilot --out <新的日期目录>   # �
 - 执行：`engine/src/v2/driver.rs`（相位机，模型/工具等待在事务外）与 `engine/src/v2/supervisor.rs`
   （每状态根一个协调者，驱动全部 ACTIVE 实例）；Shell 命令由 `engine/src/jobs` 的 runner 进程执行
 - 工具与绑定：`engine/src/tools.rs`（文件/Shell/web）、`engine/src/bound.rs`（绑定即授权）、
-  `engine/src/mcp.rs`（stdio + streamable HTTP）、`engine/src/workspace.rs`（共享/隔离/worktree）
+  `engine/src/mcp.rs`（stdio + streamable HTTP）；用户钩子在 `engine/src/hooks.rs`（`[hooks]`
+  `pre_tool` 拦截 + `notify` 事件）
 - 信息权限：`core/src/v2/control.rs` 的可见性/投递判定与 `core/src/kernel/*` 的上下文视图
   （`audience` 可见 ≠ `push` 注入；观察者按 scope 裁剪载荷）
 - 产品层：`engine/src/v2/daemon.rs`（每状态根一个 Unix socket JSON-lines 服务）、`engine/src/v2/exec.rs`
   （无头客户端）、`engine/src/cli.rs`、`tui/src/daemon_client.rs`；渲染与鼠标命中共用
   `tui/src/v2ui.rs::geometry`
-- 遗留：`core/src/{control,storage,views,server}.rs` 与 `teamagents-core` 二进制属 v1 控制面，
-  当前只能被 core 的 v1 测试触达，产品路径不经它们（删除或改造需单独立项并记录决策）
+- 未接线：`engine/src/workspace.rs` 的共享/隔离/worktree 策略只有自身单测调用，v2 的实例目前只带
+  `workspace_ref` 路径；接线或删除需单独立项并记录决策。
 
 ## 代码审查与证据（review/*）
 

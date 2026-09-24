@@ -23,6 +23,11 @@ pub struct BoundTools {
     pub tools: Vec<BoundTool>,
 }
 
+/// Bindings the product implements natively: binding one of these *is* the
+/// authorization for the capability, so they are never looked up in the
+/// user catalog as MCP services (plan §12.1).
+const BUILTIN_TOOL_BINDINGS: &[&str] = &["files", "shell", "web", "skills"];
+
 impl BoundTools {
     pub fn load(catalog: &UserConfig, bindings: &[String]) -> Result<BoundTools, String> {
         let root = std::env::current_dir().map_err(|e| e.to_string())?;
@@ -33,7 +38,7 @@ impl BoundTools {
         let mut tools: Vec<BoundTool> = vec![];
         let mut selected: Vec<(String, ToolBinding)> = vec![];
         for name in bindings {
-            if teamagents_core::control::BUILTIN_TOOL_BINDINGS.contains(&name.as_str()) {
+            if BUILTIN_TOOL_BINDINGS.contains(&name.as_str()) {
                 continue; // built-in capabilities, not catalog services
             }
             let Some(binding) = catalog.tools.get(name) else {

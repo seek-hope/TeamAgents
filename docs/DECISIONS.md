@@ -5,6 +5,33 @@
 **任何偏离已确认方案的做法，先与用户确认再实现。** 本文件只记录已确认的决策；
 待验证的工程候选在方案和设计复核中标明，不把它们记作用户已逐项确认。
 
+## D-45 清理 v1 残留并恢复 `[hooks]`（2026-09-25）
+
+用户逐项确认后的落地：①执行历史重写；②清理 v1 代码；③移除 doctor 的 Codex 探测；④删除两个
+`#[ignore]` 的 v1 CLI 测试；⑤按 v1 语义恢复 `[hooks]`；⑥保留 `review/tmp/` 作探针目录；⑦推送。
+
+- **hooks（⑤）**：`engine/src/hooks.rs` 沿用 v1 的线协议——`notify` 的 argv[1] 是事件名、事件 JSON 走
+  stdin，异步、10 秒上限、失败只记 stderr；`pre_tool` 在任何原生工具调用前同步执行，exit 0 放行、
+  exit 2 拒绝（stderr 首行作原因回给模型），其他退出码/启动失败/超时一律放行并记 stderr。
+  v2 事件集为 `tool_call`（含 `tool`/`arguments`/`ok`/`error`）、`team_action`、`run_completed`、
+  `run_failed`、`run_cancelled`、`run_paused`（进入 PAUSED 的边沿，启动时的既有值不算）。
+  崩溃恢复的重放不再重问 `pre_tool`（决定在首次派发时做过）；必需检查是用户自己的验收命令、
+  不是模型工具调用，因此不经过 `pre_tool`。证据：`engine/src/hooks.rs` 单测 +
+  `engine/tests/v2_driver.rs` 的 `a_pre_tool_hook_vetoes_a_tool_call_and_the_turn_continues` 与
+  `notify_hooks_receive_tool_call_and_run_completed`；doctor 继续检查钩子程序可执行。
+- **v1 控制面删除（②）**：删掉 `core/src/{control,storage,views,server,references}.rs`、`core` 的 stdio
+  二进制 `teamagents-core`、6 个 v1 core 测试文件，以及 `core/src/models.rs` 里只有它们使用的类型；
+  `BUILTIN_TOOL_BINDINGS` 移到唯一的产品使用点 `engine/src/bound.rs`。core 从 243 个用例降到 91 个，
+  产品路径与验收矩阵引用的用例（`core/src/v2/control.rs` 单测、`v2_invariants`、`kernel_properties`）全部保留。
+- **doctor 的 Codex 探测（③）**：v2 已无 Codex 成员类型，移除 `codex app-server` 与
+  `codex protocol schema` 两项检查及辅助函数；`--resume/--team/--plain` 的"已退役"报错保留，
+  因为用户可见的明确错误比静默忽略更好。
+- **两个 v1 CLI 测试（④）**：即使启用也必然失败（断言的是已删除入口返回 `ok:`），随源码删除。
+- **历史重写（①）**：`verification/tla/states/` 只出现在两个未推送的提交里，用
+  `git filter-repo --path verification/tla/states --invert-paths` 从历史移除，HEAD 树与工作区内容不变。
+- **未接线（本次未动，另行立项）**：`engine/src/workspace.rs` 的共享/隔离/worktree 策略当前只有自身
+  单测调用，v2 实例只带 `workspace_ref` 路径；接线或删除都需要单独决策。
+
 ## D-44 形式化验证发现的两处修复（2026-09-24）
 
 用户确认"全部修复"后落码；两处发现都由 TLA+/TLC 规格先给出反例、再由代码探针确认，各自带回归测试。
