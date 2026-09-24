@@ -27,8 +27,11 @@
   `codex protocol schema` 两项检查及辅助函数；`--resume/--team/--plain` 的"已退役"报错保留，
   因为用户可见的明确错误比静默忽略更好。
 - **两个 v1 CLI 测试（④）**：即使启用也必然失败（断言的是已删除入口返回 `ok:`），随源码删除。
-- **历史重写（①）**：`verification/tla/states/` 只出现在两个未推送的提交里，用
-  `git filter-repo --path verification/tla/states --invert-paths` 从历史移除，HEAD 树与工作区内容不变。
+- **历史重写（①）**：`verification/tla/states/`（TLC 状态文件，未压缩约 23 GB）只出现在两个未推送的
+  提交里，用 `git filter-repo --path verification/tla/states --invert-paths` 从历史移除。核对：
+  重写前后 `HEAD^{tree}` 与 `git ls-files` 完全一致（内容未变），历史里已无该路径对象，
+  仓库 pack 从 6.18 GiB 降到约 27 MiB；重写前的 `.git` 备份留在仓库同级目录，确认无误后可删。
+  `verification/REPORT.md` 里引用的旧提交号 `bc536bb5` 同步更新为重写后的 `d37e1b4`。
 - **未接线（本次未动，另行立项）**：`engine/src/workspace.rs` 的共享/隔离/worktree 策略当前只有自身
   单测调用，v2 实例只带 `workspace_ref` 路径；接线或删除都需要单独决策。
 

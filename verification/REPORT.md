@@ -42,7 +42,7 @@
 | 协议模型 | `tla/V2Compress.tla`（8） | 8,467 状态 | 同上 |
 | 协议模型 | `tla/V2Daemon.tla`（10） | 51,713 状态 | 同上 |
 | 协议模型 | `tla/V2Checks.tla`（8） | 469 状态 | 同上 |
-| 协议模型（宽配置） | `MC_wide.cfg`（2 实例 / 2 操作） | 275,004,673 状态 / 11 分 25 秒（历史运行，同文件未改动：`git log -1 -- verification/tla/V2Control.tla MC_wide.cfg` = `bc536bb5`；本轮两次复跑分别跑到约 1.7 亿 / 2.5 亿状态时被本机环境杀掉，未见违反） | `make verify-model-wide` |
+| 协议模型（宽配置） | `MC_wide.cfg`（2 实例 / 2 操作） | 275,004,673 状态 / 11 分 25 秒（历史运行，同文件未改动：`git log -1 -- verification/tla/V2Control.tla MC_wide.cfg` = `d37e1b4`（2026-09-25 历史重写后的新哈希）；本轮两次复跑分别跑到约 1.7 亿 / 2.5 亿状态时被本机环境杀掉，未见违反） | `make verify-model-wide` |
 | 代码级对应 | `core/tests/v2_invariants.rs` | 38 命令；1,482 条短序列 + 60×24 步游走 | `cargo test --offline --manifest-path core/Cargo.toml --test v2_invariants` |
 | 纯函数层 | `core/tests/kernel_properties.rs` | 258 种条目组合 + 分页全枚举 | `cargo test --offline --manifest-path core/Cargo.toml --test kernel_properties` |
 | Kani 证明 | `kani/`（直接编译仓库源码，3 个 harness，0 失败） | 2 条对**任意 `usize`** 成立 + 1 条界内 | `make verify-kani`（需 Kani 工具链，约 7 秒） |
