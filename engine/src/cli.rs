@@ -1082,9 +1082,9 @@ fn daemon_boot(
         Some(dir) => PathBuf::from(dir),
         None => std::env::current_dir().map_err(|e| e.to_string())?,
     };
-    let state_root = state_root
-        .map(PathBuf::from)
-        .unwrap_or_else(|| crate::config::state_dir().join("v2").join(format!("session-{}", uuid::Uuid::new_v4())));
+    // one stable root (and socket) per user: init/doctor/daemon/TUI must agree
+    // on where the session lives, or the default entry cannot find the daemon
+    let state_root = state_root.map(PathBuf::from).unwrap_or_else(crate::v2_root);
     let socket = state_root.join("daemon.sock");
     let catalog_for_factory = catalog.clone();
     let config = crate::v2::daemon::DaemonConfig {
