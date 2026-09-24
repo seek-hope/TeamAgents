@@ -5,6 +5,20 @@
 **任何偏离已确认方案的做法，先与用户确认再实现。** 本文件只记录已确认的决策；
 待验证的工程候选在方案和设计复核中标明，不把它们记作用户已逐项确认。
 
+## D-43 多供应商边界对齐 pi coding agent（2026-09-24）
+
+用户指示多供应商支持直接参考 pi coding agent（现 `earendil-works/pi` 仓库的 pi-ai 包）。
+据此把 R17 对照中列出的差距按当前影响落码，范围如下：
+
+- **已落码**：tool call id 跨协议归一（同一请求内原 id 一致映射）、max_tokens 按上下文
+  剩余钳制（4096 安全余量）——此两项随 R17/R20 已先行落地。本轮补齐：供应商无关的
+  重试文本分类（429 携带配额/账单耗尽措辞 → Permanent，先于状态码表），effort 值在
+  配置边界归一（deepseek xhigh→max 沿用 v1 用户决策；anthropic xhigh/max→high 按
+  pi clampReasoning；其余原样透传，目录条目即用户对模型能力的声明）。
+- **暂不落码**：图像降级（v2 尚无图像流；ponytail 已写明 pi 式升级路径——目录声明
+  input 模态 + 边界占位符替换）；cost 费率目录（A18 按 token 记账，暂不按美元）；
+  google/vertex/bedrock 等更多协议适配器（需要哪个加哪个，适配器模式已就位）。
+
 ## D-42 Rust 原生 Agent 系统重构方向（2026-09-23）
 
 用户在完成 19 项需求澄清、重新审视 Python kernel 与 LangGraph 后，明确选择：

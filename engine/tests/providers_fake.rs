@@ -5,11 +5,14 @@
 use serde_json::{json, Value as Json};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use teamagents_core::kernel::ModelRequest;
+use teamagents_core::kernel::{KernelProfile, ModelRequest};
+use teamagents_core::models::UserConfig;
 use teamagents_engine::providers::anthropic::Anthropic;
 use teamagents_engine::providers::chat_completions::ChatCompletions;
 use teamagents_engine::providers::responses::Responses;
-use teamagents_engine::providers::{AttemptOutcome, Cancel, ErrorClass, Provider, ProviderError, ProviderEvent};
+use teamagents_engine::providers::{
+    normalize_effort, resolve_profile, AttemptOutcome, Cancel, ErrorClass, Provider, ProviderError, ProviderEvent,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -176,6 +179,23 @@ fn status_classes_drive_retry_decisions() {
             ErrorClass::ContextOverflow,
         ),
         ("401 Unauthorized", json!({"error":{"message":"bad key"}}), ErrorClass::Permanent),
+        // pi-ai retry.ts: quota/billing exhaustion wording beats the status
+        // table — a subscription-limit 429 is not a transient throttle.
+        (
+            "429 Too Many Requests",
+            json!({"error":{"code":"insufficient_quota","message":"You exceeded your current quota"}}),
+            ErrorClass::Permanent,
+        ),
+        (
+            "429 Too Many Requests",
+            json!({"error":{"message":"Monthly usage limit reached; enable available balance usage"}}),
+            ErrorClass::Permanent,
+        ),
+        (
+            "402 Payment Required",
+            json!({"error":{"message":"billing: out of budget, quota exceeded"}}),
+            ErrorClass::Permanent,
+        ),
     ] {
         let server = rt.block_on(FakeServer::start(vec![json_response(status, &body)]));
         let provider = ChatCompletions::new(&server.base, "k", Duration::from_secs(5)).unwrap();
@@ -183,6 +203,45 @@ fn status_classes_drive_retry_decisions() {
         assert_eq!(error.class, class, "status {status}");
         rt.block_on(server.task).unwrap();
     }
+}
+
+#[test]
+fn effort_normalizes_at_the_config_boundary() {
+    // Protocol defaults: deepseek has no xhigh (v1 user decision); anthropic
+    // tops out at high (pi-ai simple-options clampReasoning); everything else
+    // passes through verbatim.
+    assert_eq!(normalize_effort("deepseek", "xhigh"), "max");
+    assert_eq!(normalize_effort("deepseek", "XHIGH"), "max");
+    assert_eq!(normalize_effort("anthropic", "xhigh"), "high");
+    assert_eq!(normalize_effort("anthropic", "max"), "high");
+    assert_eq!(normalize_effort("responses", "xhigh"), "xhigh");
+    assert_eq!(normalize_effort("deepseek", "low"), "low");
+
+    // The merged options snapshot normalizes reasoning_effort exactly once,
+    // at the config boundary — adapters see the wire-ready value.
+    let catalog: UserConfig = serde_json::from_value(json!({
+        "models": {
+            "ds": {"provider":"deepseek","protocol":"deepseek","model":"deepseek-chat",
+                   "generation_options":{"reasoning_effort":"xhigh"}},
+            "claude": {"provider":"anthropic","protocol":"anthropic","model":"claude-test"},
+        },
+    }))
+    .unwrap();
+    let kernel = |model: &str, options: Json| KernelProfile {
+        model: model.into(),
+        instructions: String::new(),
+        tools: vec![],
+        options,
+        context_window: None,
+    };
+    let resolved = resolve_profile(kernel("ds", json!({})), &catalog);
+    assert_eq!(resolved.options["reasoning_effort"], "max");
+    // Instance-level overrides win over the catalog and normalize as well.
+    let resolved = resolve_profile(kernel("claude", json!({"reasoning_effort": "max"})), &catalog);
+    assert_eq!(resolved.options["reasoning_effort"], "high");
+    // Models outside the catalog keep their snapshot untouched.
+    let resolved = resolve_profile(kernel("elsewhere", json!({"reasoning_effort": "xhigh"})), &catalog);
+    assert_eq!(resolved.options["reasoning_effort"], "xhigh");
 }
 
 #[test]
@@ -453,6 +512,11 @@ fn responses_status_classes_drive_retry_decisions() {
     let rt = runtime();
     for (status, body, class) in [
         ("429 Too Many Requests", json!({"error":{"message":"slow down"}}), ErrorClass::Transient),
+        (
+            "429 Too Many Requests",
+            json!({"error":{"message":"insufficient_quota: quota exceeded"}}),
+            ErrorClass::Permanent,
+        ),
         ("400 Bad Request", json!({"error":{"message":"prompt is too long"}}), ErrorClass::ContextOverflow),
         ("401 Unauthorized", json!({"error":{"message":"bad key"}}), ErrorClass::Permanent),
     ] {

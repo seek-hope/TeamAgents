@@ -276,9 +276,12 @@ impl Provider for Responses {
 }
 
 /// Chat-completions history → Responses `instructions` + `input` items.
-/// ponytail: image tool results (view_image) travel as `input_image` content
-/// in the legacy chat.rs path; add an ImageLoader here once the v2 tool layer
-/// can produce image references.
+/// ponytail: v2 has no image flow yet (view_image stays on the legacy
+/// chat.rs path). When it lands, port pi-ai transform-messages: catalog
+/// entries declare input modalities, and at this boundary a non-vision
+/// model gets every image block replaced by one placeholder text
+/// ("(tool image omitted: model does not support images)"; consecutive
+/// image blocks collapse into a single placeholder) instead of erroring.
 fn to_responses_input(history: &[Json]) -> (String, Vec<Json>) {
     let mut instructions = String::new();
     let mut out: Vec<Json> = vec![];

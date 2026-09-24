@@ -81,7 +81,9 @@ impl ProviderError {
     }
     pub fn status(code: u16, body: &str, retry_after: Option<Duration>) -> Self {
         let text: String = body.chars().take(500).collect();
-        let class = if retryable_status(code) {
+        let class = if non_retryable_limit_error(&text) {
+            ErrorClass::Permanent
+        } else if retryable_status(code) {
             ErrorClass::Transient
         } else if context_overflow(&text) {
             ErrorClass::ContextOverflow
@@ -94,6 +96,26 @@ impl ProviderError {
 
 pub fn retryable_status(code: u16) -> bool {
     matches!(code, 408 | 409 | 429) || (500..600).contains(&code)
+}
+
+/// pi-ai style quota/billing exhaustion (utils/retry): a 429 carrying
+/// subscription-limit wording is not a transient throttle — retrying burns
+/// the attempt budget with no chance of success, so this is checked before
+/// the status table. Ported pattern set (OpenCode gateway error types
+/// included; they arrive as JSON error `type` strings on 429s).
+pub fn non_retryable_limit_error(error: &str) -> bool {
+    let error = error.to_ascii_lowercase();
+    [
+        "usagelimiteerror", // GoUsageLimitError / FreeUsageLimitError
+        "monthly usage limit reached",
+        "available balance",
+        "insufficient_quota",
+        "out of budget",
+        "quota exceeded",
+        "billing",
+    ]
+    .iter()
+    .any(|needle| error.contains(needle))
 }
 
 /// Provider-reported context exhaustion (ported token list).
@@ -234,11 +256,40 @@ impl Provider for AnyProvider {
 /// catalog entry; instance-stored option overrides win; the context window
 /// follows the resolved model (D-36). Unknown keys pass through verbatim so
 /// scripted/test providers never consult the catalog.
+/// pi-ai style effort normalization (simple-options clampReasoning), applied
+/// to the merged options snapshot at the config boundary — never inside the
+/// adapters. deepseek has no xhigh level (v1 chat.rs user decision) → max;
+/// anthropic tops out at high → xhigh/max clamp down. Every other value and
+/// protocol passes through verbatim: the catalog entry is the user's own
+/// declaration of what the model accepts.
+/// ponytail: pi keeps per-model thinkingLevelMap tables for level support;
+/// if a model rejects a level, that knowledge belongs to the catalog entry,
+/// not another retry dance (the v1 looks_like_effort_error retry is dropped).
+pub fn normalize_effort(protocol: &str, effort: &str) -> String {
+    if effort.eq_ignore_ascii_case("xhigh") {
+        match protocol {
+            "deepseek" => "max".into(),
+            "anthropic" => "high".into(),
+            _ => effort.into(),
+        }
+    } else if effort.eq_ignore_ascii_case("max") && protocol == "anthropic" {
+        "high".into()
+    } else {
+        effort.into()
+    }
+}
+
 pub fn resolve_profile(profile: KernelProfile, catalog: &UserConfig) -> KernelProfile {
     let Some(entry) = catalog.models.get(&profile.model) else { return profile };
     let mut options = entry.generation_options.clone();
     if let Some(overrides) = profile.options.as_object() {
         options.extend(overrides.iter().map(|(key, value)| (key.clone(), value.clone())));
+    }
+    if let Some(effort) = options.get("reasoning_effort").and_then(|v| v.as_str()).map(str::to_string) {
+        let normalized = normalize_effort(&entry.protocol, &effort);
+        if normalized != effort {
+            options.insert("reasoning_effort".into(), serde_json::Value::String(normalized));
+        }
     }
     KernelProfile {
         model: entry.model.clone(),
@@ -254,8 +305,7 @@ pub fn resolve_profile(profile: KernelProfile, catalog: &UserConfig) -> KernelPr
 /// environment here at the config boundary, never inside an adapter (§7).
 /// ponytail: pi-ai style compat auto-detection is deliberately not ported —
 /// the catalog declares the protocol explicitly and only contract-verified
-/// wire behaviors ship. Effort value normalization (deepseek xhigh→max)
-/// belongs to the config layer's options snapshot, not the adapters.
+/// wire behaviors ship. Effort values normalize in resolve_profile above.
 pub fn build_for_model(catalog: &UserConfig, model: &str) -> Result<AnyProvider, String> {
     let profile = catalog.models.get(model).ok_or_else(|| format!("model {model} is not in the user catalog"))?;
     build_for_profile(profile)

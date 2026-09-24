@@ -282,9 +282,12 @@ impl Provider for Anthropic {
 }
 
 /// Chat-completions history → Anthropic `system` + `messages`.
-/// ponytail: image tool results (view_image) travel as base64 image blocks
-/// in the legacy chat.rs path; add an ImageLoader here once the v2 tool
-/// layer can produce image references.
+/// ponytail: v2 has no image flow yet (view_image stays on the legacy
+/// chat.rs path). When it lands, port pi-ai transform-messages: catalog
+/// entries declare input modalities, and at this boundary a non-vision
+/// model gets every image block replaced by one placeholder text
+/// ("(image omitted: model does not support images)"; consecutive image
+/// blocks collapse into a single placeholder) instead of erroring out.
 fn to_anthropic_messages(history: &[Json]) -> (String, Vec<Json>) {
     let mut system = String::new();
     let mut out: Vec<Json> = vec![];
