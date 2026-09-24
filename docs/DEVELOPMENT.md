@@ -21,49 +21,33 @@ make pty                          # 独立配置/状态、无模型凭据的真�
 Clippy 警告视为错误。CI 使用相同的 Make 目标，仅允许联网下载锁定的依赖；发行工作流使用相同的 Rust 版本。
 Cargo 报告 passed 可能包含缺少依赖时提前返回的测试，不能代替真实隔离或真实模型验收。
 
-R2 重构探针独立于现有产品入口。复跑需选用一个新的证据目录；探针会启动并强制结束专属测试子进程，
-不调用模型：
+### 评测与探针入口
+
+产品之外还有几个独立入口：故障/开销探针、评测组 A/B/C 的驱动，以及真终端驱动。它们都不进
+`make check`，复跑时请选用**新的证据目录**，结果与限制写进有日期的报告：
 
 ```bash
-cargo build --offline --locked --manifest-path engine/Cargo.toml --example rebuild_p0
-cargo build --offline --locked --manifest-path tui/Cargo.toml --example rebuild_p0
-engine/target/debug/examples/rebuild_p0 suite review/tmp/r2-p0-new
-python3 tui/scripts/pty_rebuild_p0.py
+# 故障探针：SQLite/制品原子边界、runner 与 daemon 崩溃恢复、存储失败停机、I/O 取消
+cargo build --offline --locked --manifest-path engine/Cargo.toml --example probe
+cargo build --offline --locked --manifest-path tui/Cargo.toml --example probe
+engine/target/debug/examples/probe suite review/tmp/probe-new
+python3 tui/scripts/pty_probe.py            # 真终端里驱动同一协议
+
+# 评测组驱动（真实模型；A = 直驱参考，B = 持久化单实例，C = B + 协作面）
+cargo build --offline --manifest-path engine/Cargo.toml --example eval_group_a
+engine/target/debug/examples/eval_group_a --task "..." --workdir /tmp/t --trace /tmp/t-trace
+cargo build --offline --manifest-path engine/Cargo.toml --example eval_group_b   # 需 engine/target/debug/teamagents
+engine/target/debug/examples/eval_group_b --task "..." --workdir /tmp/t --trace /tmp/t-trace --full-auto
+engine/target/debug/examples/eval_groups_abc --group A --task-file t.md --workdir /tmp/t --trace /tmp/t-trace --state /tmp/t/state
+
+# 负载与验收探针
+engine/target/debug/examples/load_probe DIR [--steps N] [--payload BYTES]
+engine/target/debug/examples/accept_probe --evidence DIR --workspace DIR --lead KEY --worker KEY
 ```
 
-探针覆盖 SQLite/制品原子边界、runner 和 daemon 崩溃恢复、存储失败时停止进程、异步/阻塞网络 I/O
-取消，以及 TUI 断开重连。结果和限制见 [R2-P0 探针记录](../review/r2-p0-2026-09-23.md) 与
-[执行合约](archive/R2-P0-CONTRACTS.zh-CN.md)；通过只证明隔离原型，不代表生产 kernel/运行时已实现。
-
-R2-P1 的 kernel 与直驱参考在正式产品代码中（`core/src/kernel`、`engine/src/providers`、
-`engine/src/reference.rs`）。参考循环可跑真实任务并写完整轨迹（需模型凭据）：
-
-```bash
-cargo build --offline --manifest-path engine/Cargo.toml --example rebuild_p1
-engine/target/debug/examples/rebuild_p1 --task "..." --workdir /tmp/t --trace /tmp/t-trace [--web]
-```
-
-参考循环是评测组 A 入口，不带生产恢复承诺；证据与边界见 [R2-P1 记录](../review/r2-p1-2026-09-23.md)。
-
-R2-P2 的持久化单实例在 `core/src/v2`、`engine/src/jobs`、`engine/src/v2`；评测组 B 入口
-（同 kernel/工具/模型配置，全部状态经控制面落库，runner 子命令来自同目录 teamagents 二进制）：
-
-```bash
-cargo build --offline --manifest-path engine/Cargo.toml --example rebuild_p2   # 同时需 engine/target/debug/teamagents
-engine/target/debug/examples/rebuild_p2 --task "..." --workdir /tmp/t --trace /tmp/t-trace --full-auto
-cargo test --offline --manifest-path engine/Cargo.toml --test v2_driver --test jobs_runner --test v2_spawn_failure
-```
-
-证据与故障注入矩阵见 [R2-P2 记录](../review/r2-p2-2026-09-23.md)。
-
-R2-P3 的多实例在同一 `engine/src/v2` 下（supervisor 发现循环驱动全部 ACTIVE 实例，
-spawn/delegate/send/wait 协作面经控制面执行）：
-
-```bash
-cargo test --offline --manifest-path engine/Cargo.toml --test v2_supervisor
-```
-
-证据与已知边界见 [R2-P3 记录](../review/r2-p3-2026-09-24.md)。
+故障注入与多实例的确定性覆盖用测试文件：`cargo test --manifest-path engine/Cargo.toml --test v2_driver`
+（崩溃复用结果、磁盘满、取消、必需检查）、`--test jobs_runner`（runner/daemon 崩溃、重复 GO）、
+`--test v2_supervisor`（多实例调度与回收）、`--test v2_daemon`（握手、水位续读）。
 
 局部开发仍直接使用 Cargo，缩短反馈时间（下表即当前全部测试入口）：
 
@@ -81,7 +65,7 @@ cargo test --offline --locked --manifest-path engine/Cargo.toml --test v2_spawn_
 cargo test --offline --locked --manifest-path engine/Cargo.toml --test jobs_runner
 cargo test --offline --locked --manifest-path engine/Cargo.toml --test providers_fake
 cargo test --offline --locked --manifest-path engine/Cargo.toml --test providers_stall
-cargo test --offline --locked --manifest-path engine/Cargo.toml --test rebuild_p1
+cargo test --offline --locked --manifest-path engine/Cargo.toml --test eval_group_a
 cargo test --offline --locked --manifest-path engine/Cargo.toml --test cli
 cargo test --offline --locked --manifest-path engine/Cargo.toml --test install
 # tui：会话界面状态与渲染
@@ -122,7 +106,7 @@ cargo test --offline --locked --manifest-path core/Cargo.toml --test v2_invarian
 | MCP、Skills 与工具绑定 | `engine/src/bound.rs`（绑定即授权）、`engine/src/mcp.rs`（stdio + streamable HTTP） | `engine/tests/v2_mcp.rs`、`engine/tests/v2_spawn_failure.rs` |
 | 工作区策略（§12.3） | `engine/src/workspace.rs`：共享/隔离/git worktree；`spawn` 的 `workspace` 参数解析在 `driver::prepare_spawn_workspace`，策略记录写在 `<instances_dir>/<id>/workspace.json`，回收在 supervisor 的终止路径 | `engine/src/workspace.rs` 单测、`engine/tests/v2_driver.rs::spawn_resolves_the_requested_workspace_policy`、`engine/tests/v2_supervisor.rs::terminating_an_instance_retires_its_workspace` |
 | 供应商适配 | `engine/src/providers/*`：一次传输尝试、只做失败分类，重试归运行时；配置与目录在 `engine/src/config.rs`（用户目录的解析、`[hooks]`/`[retention]` 校验） | `engine/tests/providers_fake.rs`、`engine/tests/providers_stall.rs`、`engine/src/config.rs` 单测 |
-| 模型调用与内核 | `core/src/kernel/*`（无 I/O 的请求/响应/观察转换）、`engine/src/reference.rs`（评测组 A 直驱参考循环） | `core/tests/kernel_properties.rs`、`engine/tests/rebuild_p1.rs` |
+| 模型调用与内核 | `core/src/kernel/*`（无 I/O 的请求/响应/观察转换）、`engine/src/reference.rs`（评测组 A 直驱参考循环） | `core/tests/kernel_properties.rs`、`engine/tests/eval_group_a.rs` |
 | 会话界面与真终端 | `tui/src/v2app.rs`（状态与按键）、`tui/src/v2ui.rs`（渲染，`geometry()` 同时供鼠标命中）、`tui/src/wrap.rs` | `tui/tests/v2app_tests.rs`、`make pty` |
 | 安装、自检与发布 | `install.sh`、`engine/src/cli.rs` 的 `init`/`doctor`、`.github/workflows/release.yml` | `engine/tests/install.rs`、`engine/tests/cli.rs`、发行制品冒烟 |
 
@@ -168,33 +152,22 @@ cargo test --offline --locked --manifest-path core/Cargo.toml --test v2_invarian
 发布后从公开地址校验 SHA-256，验证安装、`init` 保留配置和实际 TUI 启动。
 真实模型评测需明确配置凭据与模型原生上下文，单独记录；维护性回归不能宣称扩大供应商兼容范围。
 
-以下固定任务评分器的细节属于 v1 运行器（`review/eval/run.sh`，已随 R29 退役）；
-保留它作为历史证据与评分器设计参考，当前评测入口见下节。
+## 固定任务与评分
 
-固定仓库任务使用 `review/eval/tasks/<id>/fixture-source.toml` 记录完整 Git 提交与输入路径，
-以 `fixture/` 显式叠加用户输入；不读取当前脏工作树，不把隐藏测试或参考修复放入模型目录。
-多 crate 任务用 `grading.toml` 指定清单、公开 suite 与评分时限。候选只在原有 bubblewrap 内
-离线构建和运行；受保护文件的内容及权限在最终候选上核对，不能称作全过程文件审计。
-历史夹具需要用户式配置时，可在 `grading.toml` 显式设置 `config_home = ".config"`；该目录必须来自
-固定输入，不能是绝对路径、父路径或单个文件。评分命令将其映射成评分副本内的绝对 `XDG_CONFIG_HOME`，
-保持私有 HOME，不读取宿主配置。提示词和 `checks.txt` 也须显式使用同一夹具配置。
-`repo-session-fork` 已按此修订测试环境；提示词/评分哈希变化后的样本单独统计，历史成绩原样保留。
-新增或修改评测入口后运行 `bash review/eval/check-runner.sh`；当前覆盖 30 项契约，
-包括固定输入准备失败时禁止启动模型，以及严格 `umask` 下复制输入仍保留文件权限。
-任务集及复跑命令见[评测说明](../review/eval/README.md)。
+任务集与运行器在 `review/eval/r2-p6/`：每个任务 `tasks/<id>/` 提供 `prompt.md`、`checks.txt` 与可选
+`fixture/`；`run.py` 为每个 trial 建全新的工作目录与状态目录，trial 结束后在**同一目录**按 `checks.txt`
+逐条判分，结果写 `runs/<日期>/results.jsonl`。分组定义、冻结参数与限制见
+[评测说明](../review/eval/README.md)。
 
-大型仓库任务的构建输出可能占数 GB。先用 `df -h /tmp .` 核对文件系统；本机 `/tmp` 是
-16GB tmpfs，不能用主磁盘的空闲量推断它也有足够空间。可将新评测输出目录放在被忽略的
-`review/tmp/`，并令 `TMPDIR` 指向同磁盘上的独立目录，使评分器临时副本也使用该磁盘。
-工作区、配置和状态应为同一评测根下的独立子目录，继续保留原有 bubblewrap 和隐藏测试隔离。
-已有证据不自动清理；运行期间不修改输入、评分或候选，不因换存储位置把历史失败改记成功。
-实际完整通过的例子与复跑命令见[仓库任务记录](../review/eval/runs/2026-09-19-repo-current/REPORT.md)。
-
-竞品 CLI 若能读取工作区外的文件，仅把隐藏测试放在工作区之外不足以隔离验收。
-模型启动前，应在独立文件系统视图中只挂载公开输入、必要工具链及独立状态目录，
-用无模型探针确认隐藏测试、当前开发仓库和旧候选不可读，同时确认工作区可写、CLI 自身沙箱仍生效。
-旧快照的无凭据测试配置也须在该视图中可用。若模型已经读到隐藏材料，终止并保留污染轨迹，
-不计入能力完成率；修正隔离后使用全新输入和会话，不能续接已污染上下文。
+- 判分只在 trial 工作目录内执行，不读取当前工作树；任务输入与判分脚本在跑前冻结（`manifest*.json` 记哈希）。
+- 大型任务的构建输出可能占数 GB：先 `df -h /tmp .` 核对文件系统，把输出目录放在被忽略的
+  `review/tmp/` 或独立磁盘，并让 `TMPDIR` 指向同一磁盘。
+- 已有证据不自动清理；运行期间不修改输入、判分或候选，不因换存储位置把历史失败改记成功。
+- 与竞品 CLI 对照时：若它能读工作区外的文件，仅把测试放远不足够——要在独立文件系统视图里只挂载公开输入，
+  用无模型探针确认隐藏材料不可读，同时确认工作区可写、对方沙箱仍生效。发现已污染就终止、保留轨迹、
+  换全新输入重跑，不续接被污染的上下文。
+- 更早实现的固定任务运行器与评分器（含隐藏测试注入）在 `review/eval/archive/`，它们的原始结果仍在
+  `review/eval/runs/`。
 
 ## 真实模型验证
 
@@ -207,7 +180,7 @@ python3 review/eval/r2-p6/run.py --phase formal --out review/eval/r2-p6/runs/<�
 # 单次无头回合：自动拉起 daemon，只报结果（--json 给机器可读摘要）
 engine/target/debug/teamagents exec --json --timeout 180 "1+1=?"
 # 直驱参考循环（评测组 A 入口，同一 kernel/工具/配置）
-engine/target/debug/examples/rebuild_p1 --task "..." --workdir /tmp/t --trace /tmp/t-trace
+engine/target/debug/examples/eval_group_a --task "..." --workdir /tmp/t --trace /tmp/t-trace
 ```
 
 - 必须使用模型的原生上下文长度并在报告里记录数值与来源（D-36）；DeepSeek Flash 按用户确认的 1M。
@@ -215,9 +188,8 @@ engine/target/debug/examples/rebuild_p1 --task "..." --workdir /tmp/t --trace /t
   产物留在 `runs/<日期>/{state,work}/`。trial 的编译缓存与 SQLite 临时文件**不入库**：
   `.gitignore` 忽略 `target/` 与 `*.sqlite-wal|shm`，`make hygiene` 会拒绝误提交。
 - 结论只按预登记口径给出；样本不足、区间含 0 或方差过大时写「未证实」，不写等效也不写收益。
-- v1 的入口（`engine/tests/live_models.rs` 真实矩阵、`live_codex`、`history_protocol`、
-  `review/eval/run.sh`）已随 R29 退役；它们的历史证据保留在 `review/*.md`、`review/eval/runs/`
-  与 `docs/archive/`，不再是可复跑的当前入口。
+- 更早的评测入口（真实模型矩阵、Codex 恢复检查、历史浏览协议、旧的固定任务运行器）与其证据在
+  `review/archive/` 与 `review/eval/archive/`，不再是可复跑的当前入口。
 
 真实模型运行的操作备忘（中断后任务可能落 `BLOCKED`、RT-06 批准随回合终态过期、重任务要尽早落盘）
 见仓库根目录 [AGENTS.md](../AGENTS.md)。

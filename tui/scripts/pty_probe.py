@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""R2-P0 real PTY: start, detach, reconnect, pause, resume, cancel."""
+"""Real PTY probe: start, detach, reconnect, pause, resume, cancel."""
 import fcntl
 import json
 import os
@@ -16,8 +16,8 @@ import time
 import uuid
 
 ROOT = Path(__file__).resolve().parents[2]
-ENGINE = ROOT / "engine/target/debug/examples/rebuild_p0"
-TUI = ROOT / "tui/target/debug/examples/rebuild_p0"
+ENGINE = ROOT / "engine/target/debug/examples/probe"
+TUI = ROOT / "tui/target/debug/examples/probe"
 
 
 def rpc(path, method):
@@ -83,7 +83,7 @@ def main():
             # ratatui positions title characters with cursor movement codes,
             # so the raw PTY stream does not contain the rendered title as a
             # single byte sequence.
-            assert b"TeamAgents" in screen and b"R2-P0" in screen, screen
+            assert b"TeamAgents" in screen and b"probe" in screen, screen
             os.write(fd, b"s")
             started = wait_for(lambda: (v if (v := rpc(path, "status"))["status"] == "RUNNING" else None))
             os.write(fd, b"q")

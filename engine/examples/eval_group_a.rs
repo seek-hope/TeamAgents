@@ -1,7 +1,7 @@
 //! R2-P1 direct-drive reference CLI: one task through the new kernel,
 //! DeepSeek chat-completions edge and basic tools, with a full JSONL trace.
 //!
-//!   cargo run --offline --manifest-path engine/Cargo.toml --example rebuild_p1 -- \
+//!   cargo run --offline --manifest-path engine/Cargo.toml --example eval_group_a -- \
 //!     --task "..." --workdir /tmp/task --trace /tmp/trace
 //!
 //! This binary is the eval group-A reference (RV-38): no team management, no
@@ -18,7 +18,7 @@ use teamagents_engine::reference::{basic_tool_schemas, run_reference, ReferenceC
 
 fn usage() -> ! {
     eprintln!(
-        "usage: rebuild_p1 --task TEXT|--task-file PATH --workdir DIR --trace DIR \\
+        "usage: eval_group_a --task TEXT|--task-file PATH --workdir DIR --trace DIR \\
 [--model deepseek-flash] [--base URL] [--api-key-env DEEPSEEK_API_KEY] [--window N] \\
 [--effort max] [--max-steps N] [--timeout S] [--retries N] [--full-auto] [--web]"
     );

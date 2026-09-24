@@ -33,7 +33,7 @@ sh install.sh --archive ./teamagents-VERSION-x86_64-unknown-linux-musl.tar.gz
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-旧版 v0.1.1 的 Assets 没有安装脚本，可从 README 所用的源码地址下载 `install.sh` 后使用本地安装。
+v0.1.1 的发行包没有安装脚本，可从 README 所用的源码地址下载 `install.sh` 后本地安装。
 
 **源码构建：** 见 [README](../README.md#从源码构建)。只需构建 engine 和 tui，Cargo 会自动构建 core。
 已有源码时也可以直接运行 `sh install.sh` 安装预编译发行版。
@@ -54,7 +54,7 @@ teamagents init
 [用户指南](USER-GUIDE.md#1-配置)，并同步填写所选模型的原生 `context_window`。
 配置中只填写密钥环境变量名；网页搜索与 MCP 需要时再按发行包中的 `config.example.toml` 配置。
 
-旧版 v0.1.1 没有 `init`，安装脚本会在配置缺失时复制发行包模板，直接继续设置密钥即可。
+v0.1.1 没有 `init`，安装脚本会在配置缺失时复制发行包模板，直接继续设置密钥即可。
 
 安装 Shell 隔离依赖，按发行版选择一条：
 
@@ -77,14 +77,14 @@ teamagents --cwd /path/to/project
 
 `doctor` 验证本机条件，不发送模型请求。`FAIL` 需要修复；`WARN` 表示可选能力有问题，
 例如缺少 Codex CLI 不影响内置成员，但 Codex 成员需要相关检查通过。
-已发布的 v0.1.1 使用旧版诊断，可能将缺少 Codex 列为失败；从 v0.1.2 起使用新版诊断。
+v0.1.1 的诊断较粗，可能把缺少 Codex 列为失败；v0.1.2 起使用新版诊断，当前版本不再探测 Codex。
 
 ## 3. 升级与卸载
 
 升级前退出正在运行的 TeamAgents，再执行 README 的安装命令，两个程序会一起更新。
 命令不会覆盖已有配置或删除会话。升级后运行 `teamagents version` 和 `teamagents doctor`。
 若需要为已有配置增加新字段，请自行编辑；`init` 不会自动迁移或合并配置。
-指定旧版本安装可回退程序，但跨版本会话兼容性需查看对应发行说明。
+指定更早的版本安装可回退程序，但跨版本会话兼容性需查看对应发行说明。
 
 卸载程序：
 

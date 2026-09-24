@@ -40,7 +40,7 @@ impl Args {
 }
 
 fn usage() -> ! {
-    eprintln!("teamagents-tui --daemon SOCK | --state-root DIR   # v2 会话 daemon（R19/R29 必填）");
+    eprintln!("teamagents-tui --daemon SOCK | --state-root DIR   # 会话 daemon（必填）");
     eprintln!("              [--cwd DIR]");
     eprintln!("  env: TEAMAGENTS_ENGINE (teamagents binary), --engine PATH");
     std::process::exit(2);
@@ -147,12 +147,11 @@ fn parse_args() -> Args {
 fn main() {
     let args = parse_args();
     if !atty_stdout() {
-        eprintln!("TUI 需要真实终端；哑终端请用 teamagents --plain");
+        eprintln!("TUI 需要真实终端；无终端或脚本请用 teamagents exec \"…\"");
         std::process::exit(1);
     }
-    // R29: the v2 daemon is the only backend; the legacy in-process path is
-    // retired, so a missing socket is a usage error rather than a silent
-    // fallback to code that no longer receives fixes
+    // the daemon is the only backend: a missing socket is a usage error rather
+    // than a silent in-process fallback
     let Some(socket) = args.daemon_socket() else {
         usage();
     };

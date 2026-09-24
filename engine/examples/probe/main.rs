@@ -1,4 +1,4 @@
-//! R2-P0 executable probes, deliberately separate from the production backend.
+//! Executable failure/overhead probes, deliberately separate from the production backend.
 mod daemon;
 mod io_probe;
 mod runner;
@@ -101,7 +101,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         _ => {
-            eprintln!("R2-P0 本地探针：suite EVIDENCE_DIR | daemon STATE_DIR | rpc SOCKET METHOD");
+            eprintln!("本地探针：suite EVIDENCE_DIR | daemon STATE_DIR | rpc SOCKET METHOD");
             Ok(())
         }
     }

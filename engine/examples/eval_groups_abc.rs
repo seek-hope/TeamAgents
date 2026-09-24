@@ -5,7 +5,7 @@
 //!   B 持久化单实例：A 的模型可见内容 + 新持久化运行时（v2 驱动）
 //!   C 按需协作：B + 可见协作能力（spawn/delegate/send/wait 授权 + 协作指令）
 //!
-//!   cargo run --offline --manifest-path engine/Cargo.toml --example rebuild_p6 -- \
+//!   cargo run --offline --manifest-path engine/Cargo.toml --example eval_groups_abc -- \
 //!     --group A|B|C --task-file FILE --workdir DIR --state DIR --out FILE \
 //!     [--model KEY] [--id TASK_ID] [--timeout S] [--max-steps N] [--web]
 //!
@@ -32,7 +32,7 @@ const GROUP_C: &str = "C";
 
 fn usage() -> ! {
     eprintln!(
-        "usage: rebuild_p6 --group A|B|C --task-file FILE --workdir DIR --state DIR --out FILE \\
+        "usage: eval_groups_abc --group A|B|C --task-file FILE --workdir DIR --state DIR --out FILE \\
 [--model KEY] [--id TASK_ID] [--timeout S] [--max-steps N] [--web]"
     );
     std::process::exit(2);

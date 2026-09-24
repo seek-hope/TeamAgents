@@ -192,6 +192,6 @@ provider = \"deepseek\"\nprotocol = \"deepseek\"\nmodel = \"deepseek-flash\"\nap
     // the legacy layout is reported (never touched) when it exists
     std::fs::create_dir_all(home.join("teamagents/sessions/old")).unwrap();
     let doctor = teamagents(&["doctor"], &home, &config);
-    assert!(doctor.contains("旧版会话目录"), "{doctor}");
+    assert!(doctor.contains("an older release's sessions directory"), "{doctor}");
     std::fs::remove_dir_all(&home).unwrap();
 }

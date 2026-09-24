@@ -333,7 +333,7 @@ pub async fn run(output: PathBuf) -> Result<()> {
     std::fs::create_dir(&scratch.0)?;
     let mut processes = Processes(Vec::new());
     let mut report =
-        json!({"phase":"R2-P0","status":"running","model_calls":0,"sqlite_version":rusqlite::version(),"checks":{}});
+        json!({"phase":"probe","status":"running","model_calls":0,"sqlite_version":rusqlite::version(),"checks":{}});
     atomic_json(&output.join("report.json"), &report)?;
     let result: Result<()> = async {
         ensure(rusqlite::version_number() >= 3_051_003, "SQLite 缺少要求的 WAL 修复")?;

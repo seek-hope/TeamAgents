@@ -3,7 +3,7 @@
 //! multi-instance reads, RSS and disk growth over a ~1M-token synthetic
 //! context built through the production `Control` plane.
 //!
-//!   cargo run --offline --manifest-path engine/Cargo.toml --example rebuild_p5_load -- \
+//!   cargo run --offline --manifest-path engine/Cargo.toml --example load_probe -- \
 //!     review/tmp/r2-p5-load [--steps 250] [--payload 20000]
 //!
 //! The probe writes `report.json` into a fresh evidence directory. Synthetic
@@ -128,7 +128,7 @@ fn concurrent_pages(db: &Path, session: &str, readers: usize) -> Fallible<Json> 
 
 fn main() -> Fallible<()> {
     let mut args = std::env::args().skip(1);
-    let dir = PathBuf::from(args.next().ok_or("usage: rebuild_p5_load DIR [--steps N] [--payload BYTES]")?);
+    let dir = PathBuf::from(args.next().ok_or("usage: load_probe DIR [--steps N] [--payload BYTES]")?);
     let mut steps = 250usize;
     let mut payload_bytes = 20_000usize;
     while let Some(flag) = args.next() {

@@ -1,4 +1,5 @@
 # R2-P6 性能实验报告（R24–R26）
+> 说明（2026-09-25）：本记录写作时驱动入口名为 `engine/examples/rebuild_p6.rs`，现已随命名清理改名为 `engine/examples/eval_groups_abc.rs`（其余命令不变）。
 
 日期：2026-09-24。预登记：`review/eval/r2-p6/design.md`、`manifest.json`（第一轮 8 题）、
 `manifest-r2.json`（第二轮 3 题）、`manifest-r3.json`（第三轮 2 题，含 150 s 硬截止）；分析脚本
@@ -84,12 +85,12 @@ trial 数 18，全部通过 18/18；真实 tokens 合计 761,572
   数百次工具调用、或必须并行才能赶上外部截止的真实工作量），本轮**未做**，故 H2 只能记"未证实"。
 - **硬截止维度第三轮无效**：150 s 截止在实测中最慢 trial 也只用了 40 s，截止未起约束作用 → 该维度
   未产生区分度。
-- 本轮没有真实 Codex 成员参与（Codex 后端属 v1 遗留，R29 退役），也未测异构模型的性能（§13.1 另列）。
+- 本轮没有 Codex 执行成员参与（当前实现没有该成员类型），也未测异构模型的性能（§13.1 另列）。
 
 ## 复跑
 
 ```bash
-cargo build --offline --manifest-path engine/Cargo.toml --example rebuild_p6
+cargo build --offline --manifest-path engine/Cargo.toml --example eval_groups_abc
 python3 review/eval/r2-p6/freeze.py manifest.json            # 重算任务摘要（跑前冻结）
 python3 review/eval/r2-p6/run.py --phase pilot  --out review/eval/r2-p6/runs/<新目录>
 python3 review/eval/r2-p6/run.py --phase formal --out review/eval/r2-p6/runs/<新目录>

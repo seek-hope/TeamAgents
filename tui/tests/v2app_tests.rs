@@ -211,7 +211,7 @@ fn scroll_clamps_to_the_wrapped_conversation() {
 
 fn frame_lines(terminal: &Terminal<TestBackend>) -> Vec<String> {
     // wide chars occupy two cells; the continuation cell holds a space and
-    // must be skipped (same reading as render_tests frame_text)
+    // must be skipped when reading frame text
     let buffer = terminal.backend().buffer();
     let area = buffer.area;
     let mut out = Vec::new();

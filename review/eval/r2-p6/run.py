@@ -4,14 +4,14 @@
     python3 review/eval/r2-p6/run.py --phase pilot  --out review/eval/r2-p6/runs/2026-09-24-pilot
     python3 review/eval/r2-p6/run.py --phase formal --out review/eval/r2-p6/runs/2026-09-24-formal
 
-每个 trial：全新 workdir（复制 fixture）→ `rebuild_p6 --group G ...` → 在同一 workdir 按 checks.txt
+每个 trial：全新 workdir（复制 fixture）→ `eval_groups_abc --group G ...` → 在同一 workdir 按 checks.txt
 逐条 `sh -c` 验收 → 结果追加到 `results.jsonl`。失败分类记录，不重试、不择优。
 """
 import argparse, hashlib, json, os, pathlib, shutil, subprocess, sys, time
 
 HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parent.parent.parent
-BIN = REPO / "engine/target/debug/examples/rebuild_p6"
+BIN = REPO / "engine/target/debug/examples/eval_groups_abc"
 TASKS = HERE / "tasks"
 
 

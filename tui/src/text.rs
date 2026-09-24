@@ -4,6 +4,9 @@
 
 use unicode_width::UnicodeWidthStr;
 
+/// Input history depth kept for arrow-key recall.
+pub const HISTORY_LIMIT: usize = 500;
+
 pub struct Composer {
     pub lines: Vec<Vec<char>>,
     pub row: usize,
@@ -179,8 +182,8 @@ impl Composer {
     pub fn record_submission(&mut self, text: &str) {
         if !text.is_empty() && self.history.last().map(|s| s.as_str()) != Some(text) {
             self.history.push(text.to_string());
-            if self.history.len() > crate::i18n::HISTORY_LIMIT {
-                let extra = self.history.len() - crate::i18n::HISTORY_LIMIT;
+            if self.history.len() > HISTORY_LIMIT {
+                let extra = self.history.len() - HISTORY_LIMIT;
                 self.history.drain(..extra);
             }
         }

@@ -1,4 +1,4 @@
-//! CLI entry points (R29): init / doctor / daemon / version — the v2 entry only.
+//! CLI entry points: init / doctor / daemon / exec / version.
 
 use crate::config::{load_user_config, missing_key_envs, sessions_dir, user_config_path};
 use crate::tools::{bwrap_available, shell_run, which};
@@ -57,7 +57,7 @@ fn legacy_layout_hint() -> Option<String> {
     let sessions = crate::config::sessions_dir();
     if sessions.is_dir() {
         return Some(format!(
-            "检测到旧版会话目录 {}（旧格式不迁移；按 §14 清单式清理，teamagents sessions 仍可查看）",
+            "found an older release's sessions directory at {} (the old format is not migrated; remove it by an explicit inventory — nothing is deleted automatically)",
             sessions.display()
         ));
     }

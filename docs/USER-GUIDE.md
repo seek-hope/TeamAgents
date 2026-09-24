@@ -1,7 +1,7 @@
 # TeamAgents 使用指南（v2）
 
-本指南只描述当前实现（R2 重构后的 v2 运行时）。旧产品（TeamSpec 成员、Codex 成员、`--plain` 行模式、
-旧会话恢复）已随 v1 后端退役，历史说明归档在 [docs/archive/](archive/README.md)。
+本指南描述当前实现。更早发行版的说明与迁移期材料归档在
+ [docs/archive/](archive/README.md)，不作为当前口径。
 
 ## 1. 快速开始
 
@@ -41,7 +41,8 @@ api_key_env = "ANYSEARCH_API_KEY"
 
 - `context_window` 决定请求预算与压缩阈值；真实模型必须使用原生窗口并记录来源（见 `docs/DECISIONS.md` D-36）。
 - `teamagents doctor` 会逐项检查配置、每个模型 profile 的凭据可解析、v2 状态根（印记/WAL/读写）、
-  bubblewrap 隔离探针与 `[hooks]` 里的程序是否可执行；旧版 `sessions/` 布局存在时会明确报告（不迁移）。
+  bubblewrap 隔离探针与 `[hooks]` 里的程序是否可执行；更早发行版的 `sessions/` 布局存在时会明确报告
+  （不迁移）。
 
 ### 2.1 钩子（`[hooks]`）
 
@@ -97,8 +98,9 @@ bubblewrap 不可用时启动失败是**分类错误**（`started=false`），�
   磁盘满时停止新的副作用派发并停放，报告在途损失（`A31`）。
 - 长上下文按**实际窗口占用**触发压缩：摘要保留原始要求、用户修订、验收与未决问题，原文经
   `read_history` 仍可检索；压缩调用计入目标预算。
-- 数据清理（§14）：`python3 review/r28-legacy-cleanup.py`（先出清单，`--apply` 才删除）；
-  旧版状态已清理，凭据、`~/.agents/skills`、`~/.codex` 与 `review/` 证据一律保留。
+- 数据清理：更早发行版的会话状态已按清单清理完毕（脚本与清单式做法见
+  `review/archive/r28-legacy-cleanup.py`：先出清单，`--apply` 才删除）；凭据、`~/.agents/skills`、
+  `~/.codex` 与 `review/` 证据一律保留。
 
 ## 7. 常见问题
 

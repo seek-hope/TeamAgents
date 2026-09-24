@@ -243,7 +243,7 @@ fn lock_file(lock_dir: &Path, target: &Path) -> PathBuf {
 }
 
 /// Cross-process write exclusion. The in-process mutex cannot see a second
-/// teamagents process (or a `--resume` in another terminal) editing the same
+/// teamagents process (or another terminal) editing the same
 /// workspace, and the file itself cannot carry the lock because it gets replaced
 /// by rename. Locks live beside the session state instead.
 /// ponytail: one lock per file, held for the whole write; no reader locks.
@@ -2545,9 +2545,9 @@ fn receipt_error_class(text: &str) -> &'static str {
     "tool_error"
 }
 
-/// R29: the turn-cancellation flag the reference loop and the v2 driver share.
-/// It moved out of the retiring v1 gateway module (§14 keeps one owner per
-/// fact: cancellation is a local execution concern, not team state).
+/// The turn-cancellation flag the reference loop and the driver share: cancelling
+/// a running turn is a local execution concern, not team state (§14 keeps one
+/// owner per fact).
 #[derive(Default)]
 pub struct TurnControl {
     cancelled: AtomicBool,

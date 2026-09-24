@@ -1,4 +1,4 @@
-//! R2-P7/R29: the headless client of the v2 session daemon (§9). `teamagents
+//! The headless client of the session daemon (§9). `teamagents
 //! exec` talks to the same backend as the TUI: it submits one input and reports
 //! the outcome — it never runs a second engine.
 

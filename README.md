@@ -26,7 +26,7 @@ teamagents exec --json "用一句话自我介绍"    # 同一后端的无头输�
 | [使用指南](docs/USER-GUIDE.md) | 上手、配置、权限、Skills/MCP、恢复与清理 |
 | [验收对照表](docs/ACCEPTANCE.md) | R2 阶段证据与 A01–A36 验收矩阵 |
 | [开发与维护](docs/DEVELOPMENT.md) | 工具链、门禁、目录约定、复跑命令 |
-| [重构方案](docs/TeamAgents-Agent-System-Rebuild-Plan.zh-CN.md) | R2-P0–P7、R01–R29、验收矩阵与完成定义 |
+| [设计与验收基线](docs/DESIGN.zh-CN.md) | 已确认需求、架构与协议约束、验收矩阵 A01–A36、完成定义 |
 | [决策记录](docs/DECISIONS.md) | 用户确认的方向、边界与偏离记录 |
 | [安装指南](docs/INSTALL.md) | 下载安装与升级 |
 | [形式化验证](verification/README.md) | TLA+ 规格与 Kani 证明：性质 ↔ 代码 ↔ 验收编号、未证明清单 |
@@ -72,7 +72,6 @@ teamagents exec --json "用一句话自我介绍"    # 同一后端的无头输�
 ## 安装
 
 要求：Linux（x86_64）+ `bubblewrap`；模型密钥从环境变量读，不写进配置。
-`teamagents doctor` 还会探测本机 `codex` CLI（v1 的 Codex 执行成员才需要），未安装只报 WARN。
 
 ### 安装最新版（推荐）
 
@@ -120,7 +119,7 @@ teamagents --cwd /path/to/project     # 换成实际项目目录；省略 --cwd 
 ```
 
 `init` 遵循 XDG 配置目录；默认使用 DeepSeek Flash（1M 上下文），其他服务可编辑生成的 TOML。
-安装旧版 v0.1.1 时，安装脚本会自动复制配置模板，此时跳过 `init`。
+从 v0.1.1 升级时，安装脚本会复制配置模板，可直接跳过 `init`。
 
 进去以后直接说目标，例如：
 
@@ -161,8 +160,7 @@ TUI 键位（与屏幕底部提示一致）：`Enter` 发送、`Shift+Enter`/`Ct
   `[permissions] trust_project_tools = true`）。
 - 模型 profile 用 `protocol = "responses" | "anthropic" | "openai" | "deepseek"` 选线上格式，
   `base_url` + `model` 决定实际接哪家；密钥只写环境变量名。
-- 组队由 Leader 在运行时按目标决定（`spawn`/`delegate`/`send`/`wait`），没有 TeamSpec 文件入口；
-  v1 的 TeamSpec 样例已随该入口退役，放入 [`docs/archive/team.yaml`](docs/archive/team.yaml) 供追溯。
+- 组队由 Leader 在运行时按目标决定（`spawn`/`delegate`/`send`/`wait`），没有静态团队定义文件。
 - 工具绑定即授权、批准语义、Skills/MCP、会话保留策略、故障处理：见
   [用户指南](docs/USER-GUIDE.md)。
 

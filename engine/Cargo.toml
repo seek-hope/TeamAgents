@@ -15,8 +15,8 @@ toml = "0.8"
 toml_edit = "0.22"
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
-# R2 async transport (locked by the R2-P0 contract). The legacy ureq stack is
-# removed together with the old chat loop; do not add a third HTTP stack.
+# Async transport. Keep exactly one production HTTP stack: do not add a second
+# one next to hyper (the synchronous ureq path is gone).
 tokio = { version = "=1.53.1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "process", "signal"] }
 # "http2" is required for ALPN: without it hyper-rustls advertises no ALPN at
 # all and edges that require ALPN (e.g. the apexin relay) drop the handshake.

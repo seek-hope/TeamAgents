@@ -2,7 +2,7 @@
 //! one v2 session whose leader and worker run on **different real providers**
 //! (catalog keys), cooperating over the controlled message plane.
 //!
-//!   cargo run --offline --manifest-path engine/Cargo.toml --example rebuild_p5_accept -- \
+//!   cargo run --offline --manifest-path engine/Cargo.toml --example accept_probe -- \
 //!     --evidence review/tmp/r2-p5-accept --workspace /tmp/ws \
 //!     --lead leader_main --worker <openai-key-in-user-config> \
 //!     [--permissions approved_scope|full_auto] [--timeout 600] [--dry-run]
@@ -34,7 +34,7 @@ fn cmd(id: impl Into<String>, method: &str, params: Json) -> Command {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: rebuild_p5_accept --evidence DIR --workspace DIR --lead KEY --worker KEY \\
+        "usage: accept_probe --evidence DIR --workspace DIR --lead KEY --worker KEY \\
 [--permissions approved_scope|full_auto] [--timeout S] [--dry-run] [--require-file] [--shell-only]"
     );
     std::process::exit(2);

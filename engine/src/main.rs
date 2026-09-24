@@ -13,7 +13,7 @@ const HELP: &str = "TeamAgents：在终端里与 Leader 协作\n\n\
   teamagents doctor [--state-root PATH] 检查配置、密钥、v2 状态根与本机条件\n\
   teamagents version | --version      查看版本\n\
   teamagents --help                   查看帮助\n\n\
-团队由 Leader 通过 spawn/delegate/send/wait 建立；旧版 TeamSpec/行模式/会话恢复入口已随 v1 后端退役。\n\
+团队由 Leader 通过 spawn/delegate/send/wait 建立；更早发行版的 TeamSpec/行模式/会话恢复入口不再支持。\n\
 首次使用：teamagents init → 设置密钥环境变量 → teamagents doctor → teamagents。";
 
 fn usage() -> ! {
@@ -263,7 +263,7 @@ fn tui_search_roots(exe: Option<&std::path::Path>) -> Vec<PathBuf> {
     exe.map(|exe| exe.ancestors().map(Path::to_path_buf).collect()).unwrap_or_default()
 }
 
-/// R29 default entry: one daemon per user owns the session; the TUI is a thin
+/// Default entry: one daemon per user owns the session; the TUI is a thin
 /// client of its socket (§9). The daemon is started detached when no socket is
 /// live, so quitting the TUI never stops the session.
 fn run_tui(args: &Args) -> i32 {
@@ -401,16 +401,16 @@ fn main() {
         Some("doctor") => cli::doctor(args.state_root.clone().map(PathBuf::from)),
         Some("version") => cli::version(),
         Some("exec") => run_exec(&args),
-        // v1-only entry points stayed behind with the retired backend (§14/R29)
+        // entries that no longer exist: refuse them with a pointer to the current ones
         Some("validate") | Some("sessions") | Some("serve") | Some("repl") => {
             eprintln!(
-                "teamagents {}：旧后端已随 R2 重构退役；团队由 Leader 通过 spawn/delegate 建立，会话由 daemon 拥有。\n用 teamagents 进入 TUI，或用 teamagents exec \"…\" 跑一次无头输入。",
+                "teamagents {}：该入口不再支持；团队由 Leader 通过 spawn/delegate 建立，会话由 daemon 拥有。\n用 teamagents 进入 TUI，或用 teamagents exec \"…\" 跑一次无头输入。",
                 args.command.as_deref().unwrap_or("")
             );
             2
         }
         _ if args.plain || args.resume.is_some() || args.team.is_some() => {
-            eprintln!("--plain/--resume/--team 随旧后端退役；用 teamagents（v2 TUI）或 teamagents exec。");
+            eprintln!("--plain/--resume/--team 不再支持；用 teamagents（TUI）或 teamagents exec。");
             2
         }
         _ => run_tui(&args),

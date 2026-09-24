@@ -1,4 +1,4 @@
-//! Minimal real-terminal client for the R2-P0 independent daemon.
+//! Minimal real-terminal client for the isolated protocol probe.
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
@@ -45,7 +45,7 @@ impl Drop for Restore {
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    let socket = Path::new(args.get(1).ok_or("用法：rebuild_p0 DAEMON_SOCKET")?);
+    let socket = Path::new(args.get(1).ok_or("用法：probe DAEMON_SOCKET")?);
     let mut state = request(socket, "status")?;
     enable_raw_mode()?;
     let _restore = Restore;
@@ -65,8 +65,8 @@ fn main() -> Result<()> {
         terminal.draw(|frame|{
             let text=format!("后台任务：{}\n状态：{}\n进度计数：{}\n事件水位：{}\n\n{s}\n\n操作：s 开始  p 暂停  r 恢复  c 取消  q 断开\n\n{notice}",
                 state["task_id"].as_str().unwrap_or(""),state["status"].as_str().unwrap_or(""),
-                state["ticks"],state["sequence"],s="此入口仅验证 R2-P0，不调用模型。");
-            frame.render_widget(Paragraph::new(text).block(Block::default().borders(Borders::ALL).title("TeamAgents R2-P0")),frame.area());
+                state["ticks"],state["sequence"],s="此入口仅验证协议与终端行为，不调用模型。");
+            frame.render_widget(Paragraph::new(text).block(Block::default().borders(Borders::ALL).title("TeamAgents probe")),frame.area());
         })?;
         if event::poll(Duration::from_millis(20))? {
             if let Event::Key(key) = event::read()? {

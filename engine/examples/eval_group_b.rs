@@ -1,10 +1,10 @@
 //! R2-P2 persistent-driver validation CLI: one task through the v2 phase
 //! machine (SQLite-backed, crash-safe) with the real DeepSeek edge.
 //!
-//!   cargo run --offline --manifest-path engine/Cargo.toml --example rebuild_p2 -- \
+//!   cargo run --offline --manifest-path engine/Cargo.toml --example eval_group_b -- \
 //!     --task "..." --workdir /tmp/task --trace /tmp/trace
 //!
-//! This is the eval group-B counterpart to rebuild_p1 (RV-38): same kernel,
+//! This is the eval group-B counterpart to eval_group_a (RV-38): same kernel,
 //! same tools, same model configuration — but every transition is persisted
 //! through the v2 control plane. Credentials come from the environment.
 
@@ -21,7 +21,7 @@ use teamagents_engine::v2::driver::{start, DriverConfig};
 
 fn usage() -> ! {
     eprintln!(
-        "usage: rebuild_p2 --task TEXT|--task-file PATH --workdir DIR --trace DIR \\
+        "usage: eval_group_b --task TEXT|--task-file PATH --workdir DIR --trace DIR \\
 [--model deepseek-flash] [--base URL] [--api-key-env DEEPSEEK_API_KEY] [--window N] \\
 [--effort max] [--timeout S] [--retries N] [--full-auto] [--web]"
     );
