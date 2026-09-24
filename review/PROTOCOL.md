@@ -4,7 +4,10 @@
 > 当时批次。当前 Rust 仓库约定见 [AGENTS.md](../AGENTS.md)，现行验证入口见
 > [验收表](../docs/ACCEPTANCE.md)；本文件不作为新审查的执行指令。
 
-> 本文件由 Leader 制定，所有审查员必须遵守。基准：`TeamAgents-Implementation-Plan.zh-CN.md`。
+> 本文件由 Leader 制定，所有审查员必须遵守。
+>
+> **R2 重构后（2026-09-24）**：当前基准是 `docs/TeamAgents-Agent-System-Rebuild-Plan.zh-CN.md`（R2-P0–P7）
+> 与 `docs/ACCEPTANCE.md`（A01–A36）；旧版实施计划已归档到 `docs/archive/`。下列历史引用保留原文。
 
 ## 目标
 

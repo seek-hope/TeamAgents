@@ -1,6 +1,6 @@
 # 实施决策记录（偏离与澄清）
 
-现有实现基准：[旧版方案](../TeamAgents-Implementation-Plan.zh-CN.md)。重构目标见
+现有实现基准：[旧版方案](archive/TeamAgents-Implementation-Plan.zh-CN.md)。重构目标见
 [Rust 原生方案](TeamAgents-Agent-System-Rebuild-Plan.zh-CN.md) 与 D-42。
 **任何偏离已确认方案的做法，先与用户确认再实现。** 本文件只记录已确认的决策；
 待验证的工程候选在方案和设计复核中标明，不把它们记作用户已逐项确认。

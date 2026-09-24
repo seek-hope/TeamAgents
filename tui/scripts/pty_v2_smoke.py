@@ -128,7 +128,7 @@ class FakeDaemon:
 
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from pty_click_check import Screen  # virtual terminal for diff-rendered frames
+from pty_screen import Screen  # virtual terminal for diff-rendered frames
 
 
 def read_all(fd, timeout=1.5):

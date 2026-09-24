@@ -1,6 +1,6 @@
 # 开发与维护
 
-本项目保持 `core`、`engine`、`tui` 三个 Rust crate。产品约束见 [实施方案](../TeamAgents-Implementation-Plan.zh-CN.md)，
+本项目保持 `core`、`engine`、`tui` 三个 Rust crate。产品约束见 [实施方案](archive/TeamAgents-Implementation-Plan.zh-CN.md)，
 已确认决策见 [DECISIONS](DECISIONS.md)，真实服务验收边界见 [ACCEPTANCE](ACCEPTANCE.md)。
 
 ## 环境与统一入口
@@ -33,7 +33,7 @@ python3 tui/scripts/pty_rebuild_p0.py
 
 探针覆盖 SQLite/制品原子边界、runner 和 daemon 崩溃恢复、存储失败时停止进程、异步/阻塞网络 I/O
 取消，以及 TUI 断开重连。结果和限制见 [R2-P0 探针记录](../review/r2-p0-2026-09-23.md) 与
-[执行合约](R2-P0-CONTRACTS.zh-CN.md)；通过只证明隔离原型，不代表生产 kernel/运行时已实现。
+[执行合约](archive/R2-P0-CONTRACTS.zh-CN.md)；通过只证明隔离原型，不代表生产 kernel/运行时已实现。
 
 R2-P1 的 kernel 与直驱参考在正式产品代码中（`core/src/kernel`、`engine/src/providers`、
 `engine/src/reference.rs`）。参考循环可跑真实任务并写完整轨迹（需模型凭据）：

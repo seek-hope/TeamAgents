@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# 固定任务评测（v1，已随 R29 退役）：本脚本驱动旧版 `teamagents exec`（带 --check/--resume），
+# 该入口已不存在；当前评测入口是 `review/eval/r2-p6/run.py`（A/B/C 三组）+ 各阶段 review/*.md 记录。
+# 保留本文件与其任务集作为历史证据（§14）。
 # 固定任务评测：每个任务是 tasks/<id>/（prompt.md + checks.txt + 可选 fixture/）。
 # 每个任务在全新的工作目录里跑一次真实模型回合，结果写进 $OUT/<id>.jsonl。
 # 用法：review/eval/run.sh [--bin PATH] [--timeout S] [--only ID] [--out DIR]

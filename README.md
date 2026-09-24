@@ -1,13 +1,34 @@
 # TeamAgents
 
 **你只和 Leader 说话，Leader 现场组队。** 运行在 Linux 终端上的团队式 Agent 产品：
-你提出目标，Leader 招募成员、派发任务、协调协作、汇总结果；你负责看进度、在越权时点批准。
+你提出目标，Leader 按需招募工作实例、派发任务、协调协作、汇总结果；你负责看进度、在越权时点批准。
 
-- **结构由核心校验**：团队拓扑、通信权限、观察范围由核心在运行时校验并存入 SQLite。
-- **混合团队**：内置成员可接 Responses / Anthropic / OpenAI 兼容（chat-completions）三类线上协议，
-  也能直接拉起本机 `codex` CLI 当执行成员。
-- **全程可见**：TUI 里有团队、任务、消息、共享空间、批准队列、计划、diff 审查、日志面板和成员持久记录浏览。
-- **接得住中断**：回合被中断、任务卡住、目标没跑完，`--resume` 接着走。
+- **唯一权威状态**：每会话单 SQLite（WAL + `synchronous=FULL`），实例/任务/授权/预算/批准/回执与事件
+  同事务提交；崩溃恢复按持久化位置分类，不猜测重放。
+- **一个 daemon 拥有会话**：TUI 与 `exec` 都是它的薄客户端（Unix socket JSON 协议，断线按事件水位续读）。
+- **受控协作**：`spawn`/`delegate`/`send`/`wait` 全部经控制平面授权与派发线性化点重查。
+- **多供应商**：同一会话内可混用 DeepSeek（chat-completions）、Responses、Anthropic 三类协议的真实实例。
+
+## 快速开始
+
+```bash
+teamagents init          # 写配置并准备 v2 状态根
+export DEEPSEEK_API_KEY=...
+teamagents doctor        # 配置 / 密钥 / 状态根 / 隔离探针
+teamagents               # 打开 TUI（必要时自动拉起 daemon）
+teamagents exec --json "用一句话自我介绍"    # 同一后端的无头输入
+```
+
+## 文档
+
+| 文档 | 内容 |
+|---|---|
+| [使用指南](docs/USER-GUIDE.md) | 上手、配置、权限、Skills/MCP、恢复与清理 |
+| [验收对照表](docs/ACCEPTANCE.md) | R2 阶段证据与 A01–A36 验收矩阵 |
+| [开发与维护](docs/DEVELOPMENT.md) | 工具链、门禁、目录约定、复跑命令 |
+| [重构方案](docs/TeamAgents-Agent-System-Rebuild-Plan.zh-CN.md) | R2-P0–P7、R01–R29、验收矩阵与完成定义 |
+| [决策记录](docs/DECISIONS.md) | 用户确认的方向、边界与偏离记录 |
+| [安装指南](docs/INSTALL.md) | 下载安装与升级 |
 
 > **首次使用：** [下载安装与升级](docs/INSTALL.md) · [最新发行版](https://github.com/seek-hope/TeamAgents/releases/latest)
 
@@ -167,7 +188,7 @@ TUI：`Enter` 发送、`Shift+Enter`/`Ctrl+J` 换行、`Esc` 停止 Leader、`Ct
 | [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) | T1–T24 验收对照与证据 |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | 统一检查入口、模块边界、测试隔离与依赖升级 |
 | [AGENTS.md](AGENTS.md) | 开发约定：架构速览、构建/测试命令、代码风格、审查规则 |
-| [TeamAgents-Implementation-Plan.zh-CN.md](TeamAgents-Implementation-Plan.zh-CN.md) | 产品与实现基准 |
+| [TeamAgents-Implementation-Plan.zh-CN.md](archive/TeamAgents-Implementation-Plan.zh-CN.md) | 产品与实现基准 |
 
 开发先运行 `make check`；完整流程见 [开发与维护](docs/DEVELOPMENT.md) 和 [AGENTS.md](AGENTS.md)。缺陷与修复记录在 `review/`。
 打 `v*` tag 会触发 `.github/workflows/release.yml` 自动构建并发布发行包（含 `SHA256SUMS`）。
