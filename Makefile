@@ -51,7 +51,7 @@ verify-tools:
 	@mkdir -p "$(TLA_TOOLS_DIR)"
 	@if [ ! -f "$(TLA_TOOLS_DIR)/tla2tools.jar" ]; then \
 		echo "下载 TLC v$(TLA_VERSION) 到 $(TLA_TOOLS_DIR)"; \
-		curl -sSL -o "$(TLA_TOOLS_DIR)/tla2tools.jar" \
+		curl -fSL --connect-timeout 20 --retry 3 --retry-delay 2 -o "$(TLA_TOOLS_DIR)/tla2tools.jar" \
 			https://github.com/tlaplus/tlaplus/releases/download/v$(TLA_VERSION)/tla2tools.jar; \
 	fi
 	@echo "$(TLA_SHA256)  $(TLA_TOOLS_DIR)/tla2tools.jar" | sha256sum -c - >/dev/null \
