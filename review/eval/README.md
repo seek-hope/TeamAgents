@@ -1,5 +1,8 @@
 # 固定任务评测
 
+> **状态（2026-09-24，R29 之后）**：本文描述的是 v1 固定任务运行器 `run.sh` 与其评分器，已随 R29 退役；`tasks/`、`runs/` 作为历史证据保留，不再复跑。
+> 当前评测入口是 [`r2-p6/run.py`](r2-p6/run.py)（A/B/C 三组真实模型对照）与各阶段 `review/*.md` 记录，真实模型验证的口径见 [开发说明 § 真实模型验证](../../docs/DEVELOPMENT.md#真实模型验证)。
+
 `tasks/<id>/` 每个任务三件套：`prompt.md`（真实提示词）、`checks.txt`（每行一条验收命令，
 在隔离 Shell 里按顺序执行）、可选 `fixture/`（先拷进工作目录的初始文件）。
 两阶段任务（`resume.md`，用于"中断后继续"）：阶段 1 用 `prompt.md` 与 `timeout.txt`（`expect.txt`
@@ -40,7 +43,7 @@ bash review/eval/check-runner.sh
 
 ## 真实 Chat 模型冒烟矩阵
 
-`engine/tests/live_models.rs::live_chat_model_matrix` 提供统一的显式启用入口：
+`engine/tests/live_models.rs::live_chat_model_matrix`（**该入口已随 R29 退役**，下述命令仅存档）提供统一的显式启用入口：
 用 [TOML 清单](live-models.example.toml)选取已有 profile，逐一验证文件工具结果续接、
 同会话 Shell、关闭重开后的历史与用量。精确模型名、原生窗口和来源必填，
 保留原 profile 的请求设置与生成选项。报告随阶段保存；缺配置或凭据明确跳过，

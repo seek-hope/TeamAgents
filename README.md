@@ -29,6 +29,7 @@ teamagents exec --json "用一句话自我介绍"    # 同一后端的无头输�
 | [重构方案](docs/TeamAgents-Agent-System-Rebuild-Plan.zh-CN.md) | R2-P0–P7、R01–R29、验收矩阵与完成定义 |
 | [决策记录](docs/DECISIONS.md) | 用户确认的方向、边界与偏离记录 |
 | [安装指南](docs/INSTALL.md) | 下载安装与升级 |
+| [形式化验证](verification/README.md) | TLA+ 规格与 Kani 证明：性质 ↔ 代码 ↔ 验收编号、未证明清单 |
 
 > **首次使用：** [下载安装与升级](docs/INSTALL.md) · [最新发行版](https://github.com/seek-hope/TeamAgents/releases/latest)
 
@@ -188,7 +189,7 @@ TUI：`Enter` 发送、`Shift+Enter`/`Ctrl+J` 换行、`Esc` 停止 Leader、`Ct
 | [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) | T1–T24 验收对照与证据 |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | 统一检查入口、模块边界、测试隔离与依赖升级 |
 | [AGENTS.md](AGENTS.md) | 开发约定：架构速览、构建/测试命令、代码风格、审查规则 |
-| [TeamAgents-Implementation-Plan.zh-CN.md](archive/TeamAgents-Implementation-Plan.zh-CN.md) | 产品与实现基准 |
+| [TeamAgents-Implementation-Plan.zh-CN.md](docs/archive/TeamAgents-Implementation-Plan.zh-CN.md) | 产品与实现基准 |
 
 开发先运行 `make check`；完整流程见 [开发与维护](docs/DEVELOPMENT.md) 和 [AGENTS.md](AGENTS.md)。缺陷与修复记录在 `review/`。
 打 `v*` tag 会触发 `.github/workflows/release.yml` 自动构建并发布发行包（含 `SHA256SUMS`）。

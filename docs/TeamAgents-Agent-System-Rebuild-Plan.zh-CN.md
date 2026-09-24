@@ -49,7 +49,7 @@
 | TUI/协议 | 复用 Rust/ratatui；Unix socket 上版本化 JSON | 已有界面和本机部署适合此边界；不用网络 RPC、微服务或每实例 socket |
 | 项目结构 | 先保留 core/engine/tui 三 crate，重构内部边界 | 分模块足够表达职责，暂不为每个概念新建 crate 或通用插件接口 |
 
-现有 TUI 已通过 JSON 协议访问引擎，见 [worker.rs](../tui/src/worker.rs)；连接传输和生命周期必须调整，不能直接沿用“前端退出即回收引擎”的行为。已有 Shell 合约、协议解析样本、事务及 UI 几何测试可复用；旧的调度、模型循环和状态组织需按新合约替换。
+现有 TUI 已通过 JSON 协议访问引擎，见 `worker.rs`（v1 实现已按 R29 退役，v2 由 [daemon_client.rs](../tui/src/daemon_client.rs) 经 daemon socket 访问引擎）；连接传输和生命周期必须调整，不能直接沿用“前端退出即回收引擎”的行为。已有 Shell 合约、协议解析样本、事务及 UI 几何测试可复用；旧的调度、模型循环和状态组织需按新合约替换。
 
 异步选择的代价是新增依赖及传输层适配。P0 对比有界阻塞 I/O 的取消和停机表现，验证采用异步方案的具体收益；协议解析逻辑可复用，不能把整个旧 ChatRunner 塞进异步任务。Tokio 已开始的 `spawn_blocking` 工作不能靠 abort 中止；Shell 取消必须走真实进程管理。[Tokio 文档](https://docs.rs/tokio/latest/tokio/task/fn.spawn_blocking.html)
 
