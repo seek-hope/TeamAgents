@@ -59,6 +59,27 @@ history 为权威对话流、事件驱动刷新，批准面板（daemon 新增 a
 真实模型验收（§12）与实例/任务/授权面板（R19-b③）仍属本阶段及以后。
 证据与复跑见 [R2-P4 记录](../review/r2-p4-2026-09-24.md)。
 
+R2-P5 于 2026-09-24 推进可靠性（R21 进程与存储故障、R22 压缩/控制/协议竞态，进行中）。
+R21 补齐：多供应商边界对齐 pi coding agent（429+配额/账单文本判永久错误、effort 归一）；
+单一协调者锁（第二 daemon 拒启、shutdown 释放）、目标截止闸（过期拒绝新请求与新副作用派发）、
+未知结果停放（OUTCOME_UNKNOWN 停放相关任务并逐任务通知）、Shell 服务跨 CLI/TUI 退出存活直测、
+磁盘满分类（`Control::submit` 边界把 SQLITE_FULL 归类 StorageFull，驱动闩停派发并只重试停放）。
+R22 落地 v2 上下文压缩（A20）：schema 1→2（`context_entries.compressed_by`、`model_requests.kind`，
+v1 库单事务迁移、其余版本拒绝）；core 三命令 `begin_compression`/`compress_context`/`fail_compression`
+（压缩请求与回合共用目标预算与截止闸门、不动执行位置与 revision、摘要单事务提交并重标覆盖段、
+原文经 `read_history`/readback 始终可达）；driver 按真实窗口占用触发（真实 usage 与估值取大者、
+90% 阈值减输出预留）、摘要调用计入目标预算并落制品、失败回退不压缩且连续三次熔断、
+恢复释放遗留压缩预留；TUI 把压缩摘要作为独立条目显示。验证中发现并修复一处真缺陷：
+校验完成后再起一回合、二次 finish 会把实例永久留在 COMPLETION_PENDING
+（`complete_goal`/`block_goal` 现于同事务写下运行时收尾条目并让终态目标释放实例）。
+A32 负载点在 v2 生产路径复测（250×20KB 合成历史 ≈1.26M 估算 token）：追加 p50 5.4ms、
+整步四命令 p50 9.2ms、请求构造 p50 397ms、库增长 10.65MB（每步 42.6KB，无全量复制）、
+重开 1.3ms、daemon 历史页 p50 24.3ms、1/4/16 并发只读页 29.8/45.6/256ms、追加后 RSS 9.1MB；
+探针 `engine/examples/rebuild_p5_load.rs`，报告 `review/tmp/r2-p5-load/report.json`。
+`make check` 全绿——core 228 / engine 465（3 ignored）/ tui 129。
+真实供应商混用（A27）与长程/权限验收（R23）尚待授权执行：本机有 DeepSeek 与 OpenAI 凭据、
+无 Anthropic，届时按真实/假服务分列。证据与复跑见 [R2-P5 记录](../review/r2-p5-2026-09-24.md)。
+
 2026-09-22 按用户确认的 D-41 修复 full_auto Shell：主机环境执行、后台服务跨调用及 CLI 退出存活，
 默认模式保留 bwrap；补齐实时模式切换、进程组停止、输出读取收尾和相同环境的 `exec --check`。
 新增 6 项回归，`make check` 全绿：core 152 / engine 384 / TUI 109，engine 3 ignored。
@@ -288,9 +309,9 @@ cargo test --offline --manifest-path tui/Cargo.toml
 
 | crate | Cargo 报告通过 | 组成 / 实际执行范围 |
 |---|---:|---|
-| core | 216 | 89 库单测（含 kernel 与 v2 控制/存储/授权/协作面）+ 127 控制场景/投递/集成测试 |
-| engine | 445 | 110 库单测 + 335 集成/CLI 测试（含 providers_fake 23、v2_driver、v2_supervisor 5、v2_mcp 6、P1 参考循环/假服务/对照、P2 jobs_runner 等）；另有 3 项显式 ignored（`eval_grader` 两项、`live_models` 真实入口一项）；`live_codex` 未设开关时提前返回，2026-09-19 已单独运行 Codex + DeepSeek 的真实恢复检查 |
-| tui | 109 | 14 库单测 + 11 CLI 单测 + 39 app + 6 history + 31 render + 8 review |
+| core | 228 | 库单测（含 kernel、v2 控制/存储/授权/协作面与压缩三命令）+ 控制场景/投递/集成测试 |
+| engine | 465 | 库单测 + 47 个集成/CLI 测试二进制（含 providers_fake 28、v2_driver 22、v2_supervisor 5、v2_mcp 6、v2_daemon 4、P1 参考循环/假服务/对照、P2 jobs_runner 等）；另有 3 项显式 ignored（`eval_grader` 两项、`live_models` 真实入口一项）；`live_codex` 未设开关时提前返回，2026-09-19 已单独运行 Codex + DeepSeek 的真实恢复检查 |
+| tui | 129 | 库单测 + CLI 单测 + app/history/render/review/v2app 测试 |
 
 **CI（GitHub Actions，2026-09-15 起）**：`Test core` / `Test engine` / `Test tui` / 行尾空格检查全绿。
 runner 上装了 bubblewrap 也用不了（内核/AppArmor 限制非特权 user namespace），因此依赖真实隔离的用例
