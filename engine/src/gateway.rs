@@ -4,8 +4,7 @@ use crate::core_client::CoreClient;
 use serde_json::{json, Value as Json};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex};
 use teamagents_core::models::{ActionKind, ApprovalRequest, ApprovalStatus, Receipt};
 
 pub const TEAM_TOOLS: &[&str] = &[
