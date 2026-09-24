@@ -286,6 +286,29 @@ cargo test --offline --manifest-path core/Cargo.toml --test v2_invariants
 在已终止实例上不再成立。修复：终止分支补上与 reset/fail 相同的归一化（phase → READY、指针清空），
 回归测试 `terminating_an_instance_normalizes_its_execution_pointer`。
 
+## 纯函数层的有界穷举（`core/tests/kernel_properties.rs`）
+
+内核里不碰数据库的那部分（线协议视图、输出裁剪、分页、响应分类）用有界穷举/枚举直接检查，同样随
+`make check` 运行：
+
+```bash
+cargo test --offline --manifest-path core/Cargo.toml --test kernel_properties
+```
+
+| 检查 | 性质 |
+|---|---|
+| `wire_view_is_a_paired_permutation` | `prepare_request` 的输出：系统提示在最前、其余是输入条目的**置换**（不丢不重）、有回答的调用后面**紧跟**它的回答（R22 配对）、assistant 之间保持原序。穷举长度 ≤ 3 的全部 258 种条目组合 + 两个长用例，并断言"真的搬动过 ≥ 10 次"（否则这条性质是空转） |
+| `tool_output_cap_keeps_head_and_tail_within_bounds` | 不超上限不改写；超上限后长度有界（≤ 上限 + 64 的截断标记）、保留首尾、明确标记截断 |
+| `paging_reconstructs_the_original_without_gaps` | `page_output` 逐页取回能**无缝重建原文**（长度 0..12 × limit 1..5 全枚举）；坐标自洽（`next_offset` = 已消费长度、`eof` 时无下一页坐标）；非法参数与越界明确报错，不静默截断 |
+| `response_classification_is_exhaustive` | `interpret_response`：单独 finish → 完成候选；单独 wait → 等待；与别的调用混用 → 忽略并记协议注释、其余照常成为意图；空响应 → 普通回复 |
+| `args_hash_is_deterministic` | 同样参数永远得到同样的 `args_hash`（收据、去重与重放都依赖它） |
+
+两处边界（如实记录，不是缺陷）：
+
+- 裁剪对"刚超过上限一点点"的输入会**变长**（首尾 + 截断标记，最多 +64 字符）；真正的收缩发生在远超上限时。
+- `pair_tool_results` 只把回答**上移**到调用之后，不会下移：回答先于调用的顺序在真实日志里不可能出现
+  （运行时先追加调用），所以那条路径只用"置换"性质覆盖。
+
 ## 边界（诚实说明）
 
 - 已验证的是**模型**性质：TLC 穷举的是抽象状态机，不是 Rust 实现。除非做精化证明（后续阶段的可选工作），
