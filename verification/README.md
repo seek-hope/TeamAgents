@@ -11,7 +11,7 @@
 make verify-model           # 控制面小配置（秒级；13 不变量 + 4 性质）
 make verify-model-all       # 控制面 + 制品/GC + 等待/唤醒三个模块的小配置
 make verify-model-wide      # 控制面宽配置（2 实例 / 2 操作；约 11 分钟 / 275M 状态）
-make verify-model-contract  # 等被解决后必答其 tool_call 的预期反例留档（见发现 V-W1）
+make verify-model-contract  # 两处预期反例留档：V-W1（wait 未答其调用）、V-G1（终态目标仍收新工作）
 ```
 
 首次运行会把固定版本（TLC v1.7.1，SHA-256 见 Makefile）的 `tla2tools.jar` 下载到
@@ -28,6 +28,8 @@ make verify-model-contract  # 等被解决后必答其 tool_call 的预期反例
 | `tla/V2Artifact.tla` + `tla/MC_artifact.cfg` | 制品与 GC：写字节 → STAGING 行 → 引用与 LIVE 同事务 → GC 认领 → 删除/放弃 |
 | `tla/V2Wait.tla` + `tla/MC_wait.cfg` | 等待/唤醒/计时器/取代：注册即求值 → 停放 drain 扫描 → 满足即答同事务 → 取消/取代/重挂 |
 | `tla/MC_wait_contract.cfg` | 同一规格上的**预期反例**：等被解决后必答其 tool_call（当前实现不成立，见 V-W1） |
+| `tla/V2Task.tla` + `tla/MC_task.cfg` | 任务生命周期与目标结清：委派（前置任务必须先存在）→ 启动 → 结清/取消 → 系统停放 → 终止级联；目标与开放操作 |
+| `tla/MC_task_contract.cfg` | 同一规格上的**预期反例**：终态目标不再接受新工作（当前实现不成立，见 V-G1） |
 
 环境（工具结果、批准时机、崩溃时点）在模型里是**非确定性**的；这正是要穷举的部分。
 
@@ -80,6 +82,21 @@ make verify-model-contract  # 等被解决后必答其 tool_call 的预期反例
 | `UnusedSlotHasNoAnswer` | 未使用的等待槽没有回答 | 等待行按决策创建 |
 | `NoStrandedPending`（时序） | 条件成立且未终结的 PENDING 等待终会被关闭（drain 满足或被取代取消），不会永久悬挂 | 停放 drain（弱公平：driver 轮询）+ 取代路径 |
 
+### 任务、委派与目标结清（A02/A09/A16）
+
+| 性质（规格） | 含义 | 代码锚点 |
+|---|---|---|
+| `TypeOK` | 任务/目标/操作/生命周期取值合法 | `tasks.status`、`goals.status`、操作状态集 |
+| `SystemOnlyParksTasks` | 系统自己不结清也不取消任务，唯一的任务写是"停放为 BLOCKED" | `complete_task`/`cancel_task` 拒绝 System；`park_tasks_for_unknown` |
+| `OnlyPartiesWriteTasks` | 只有承接者、委派者、用户或系统（停放）能改任务 | 四个动作的身份守卫；委派者即 requester |
+| `SettledIsFinal` | 终态任务不可改写（`SUCCEEDED/FAILED/CANCELLED` 一步到位且不再变） | `complete_task`/`cancel_task` 的终态分支 |
+| `ReturnPathOnlyWhileOpen` | 窄返回能力只在任务未结清时存在；`SUCCEEDED/FAILED` 与取消都会撤销，`BLOCKED` 保留 | `revoke_grant_tree` 的调用点；`terminal = SUCCEEDED\|FAILED` |
+| `DependenciesPointBackwards` | 依赖边只指向更早创建的任务 ⇒ 依赖图**按构造无环** | `delegate_task` 要求 `dependency` 已存在 |
+| `NoSelfDependency` | 任务不依赖自己 | `delegate_task` 的自依赖检查 |
+| `NoOpenTaskOnDeadAssignee` | 已终止实例名下没有未结清任务 | `set_lifecycle` TERMINATED 的级联取消 |
+
+任务模块只断言安全性：任务能否推进取决于环境（成员的回合），方案不要求系统替用户结清，故不写活性。
+
 ## 建模过程中的三项发现
 
 1. **预算性质必须写成"准入闸门 + 预留上限"**，不能写成"实际用量绝不超限"：模型里 `known` 由供应商标注的用量结算、
@@ -122,6 +139,26 @@ make verify-model-contract  # 等被解决后必答其 tool_call 的预期反例
 DeepSeek chat-completions）容忍，所以真实评测没暴露。修复即把"回答"从 drain 路径推广到这两条路径
 （注册即满足时追加同一格式的答案；取代/关闭 epoch 时给被取消的等待追加上下文回答）。
 
+### 发现 V-G1（规范反例，**需要产品决策的设计边界**）
+
+**目标进入终态后，系统仍然接受"记在它名下"的新工作**：委派任务、开新操作、继续记账。三条路径代码里都不看目标状态：
+
+- `delegate_task` 只校验承接者与（实例委派时的）委派者活跃、`goal_id` 存在，没有"目标必须 ACTIVE"；
+- `import_response` 开操作时 `goal_id` 来自 `request_goal(active_goal_id)`，同样不看目标状态；
+- `reserve_budget`/`settle_usage` 也不看目标状态（这条即上面"发现 2"）。
+
+规格反例（可复跑，两条契约都在 `MC_task_contract.cfg` 里，TLC 先报第一条）：
+
+```text
+Error: Invariant RegisteredWorkNeedsAnActiveGoal is violated.     # 目标还没建就委派了任务
+Error: Invariant ClosedGoalTakesNoNewOperation is violated.       # 终态目标仍开新操作
+```
+
+影响：目标已完成（或已 BLOCKED）之后，新回合仍记到该目标上——预算闸门仍有效（不会超发），但
+"目标已结清"与"仍有新工作在它名下"不再自洽；`complete_goal` 的"未结操作"检查只对 ACTIVE 目标生效，
+终态目标名下的开放操作没有结清者。是否要求"新工作必须落在 ACTIVE 目标上"（否则先建新目标）是需要
+用户拍板的产品决策；模型如实保留现状，并把两条契约单独留档。
+
 ### 建模过程中另外两条（性质表述本身的修正）
 
 4. **同事务翻转必须写进性质**：制品首次引用是在 `STAGING → LIVE` 的同一步里附上的，因此
@@ -133,9 +170,11 @@ DeepSeek chat-completions）容忍，所以真实评测没暴露。修复即把"
 
 - 已验证的是**模型**性质：TLC 穷举的是抽象状态机，不是 Rust 实现。除非做精化证明（后续阶段的可选工作），
   不能据此声称"Rust 代码已被证明"。
-- 已建模：控制面状态机、制品与 GC（A30）、等待/唤醒/计时器/取代（A22/A23、RT-06 的去重语义）。
-- 尚未建模：任务与委派（A02/A16）、压缩提交与原文追溯（A20）、多实例共享预算的跨实例结算（A18 的 worker
-  归属）、daemon 协议（A28）、审批有效期与 RT-06 的过期语义（等待侧已含取代/取消，批准侧未建模）。
+- 已建模：控制面状态机、制品与 GC（A30）、等待/唤醒/计时器/取代（A22/A23、RT-06 的去重语义）、
+  任务/委派/目标结清（A02/A09/A16）。
+- 尚未建模：压缩提交与原文追溯（A20）、多实例共享预算的跨实例结算（A18 的 worker 归属）、
+  daemon 协议重放与水位（A28）、审批有效期与 RT-06 的过期语义（等待侧已含取代/取消，批准侧未建模）、
+  必需检查（A16 的检查轮次与修复）。
 - 弱公平假设：`V2Wait` 的活性依赖"停放 drain 弱公平"，即 driver 的轮询循环在 `WAITING` 下持续尝试
   （`engine/src/v2/driver.rs`）；这是实现事实，不是被证明的结论。
 - 状态空间前沿：宽配置 275M 状态 / 11 分钟；继续加实例或操作数需要对称性/约束或改为随机模拟

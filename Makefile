@@ -63,18 +63,22 @@ verify-model: verify-tools
 
 # 全部模块的小配置穷举（秒级；宽配置另跑 verify-model-wide）
 verify-model-all: verify-tools
-	@cd verification/tla && for cfg in MC.cfg MC_artifact.cfg MC_wait.cfg; do \
+	@cd verification/tla && for cfg in MC.cfg MC_artifact.cfg MC_wait.cfg MC_task.cfg; do \
 		echo "== $$cfg =="; \
 		java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
-			tlc2.TLC -config $$cfg -fp 64 -workers 4 $$(case $$cfg in MC.cfg) echo V2Control.tla;; MC_wait.cfg) echo V2Wait.tla;; *) echo V2Artifact.tla;; esac) \
+			tlc2.TLC -config $$cfg -fp 64 -workers 4 $$(case $$cfg in MC.cfg) echo V2Control.tla;; MC_wait.cfg) echo V2Wait.tla;; MC_task.cfg) echo V2Task.tla;; *) echo V2Artifact.tla;; esac) \
 			| grep -E "No error|violation|violated|states generated"; \
 	done
 
-# 预期反例留档（发现 V-W1）：等被解决后必答其 tool_call，当前实现报违反
+# 预期反例留档：V-W1（等被解决后必答其 tool_call）、V-G1（终态目标不再收新工作）
+# 当前实现两处都报违反；修复后这两条应转绿并并入对应主配置
 verify-model-contract: verify-tools
-	@cd verification/tla && java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
-		tlc2.TLC -config MC_wait_contract.cfg -fp 64 -workers 4 V2Wait.tla \
-		| grep -E "No error|violation|violated|states generated" || true
+	@cd verification/tla && for pair in "MC_wait_contract.cfg V2Wait.tla" "MC_task_contract.cfg V2Task.tla"; do \
+		set -- $$pair; echo "== $$1（预期违反）=="; \
+		java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
+			tlc2.TLC -config $$1 -fp 64 -workers 4 $$2 \
+			| grep -E "No error|violation|violated|states generated" || true; \
+	done
 
 verify-model-wide: verify-tools
 	@cd verification/tla && java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
