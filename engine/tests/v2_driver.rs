@@ -18,6 +18,8 @@ enum Step {
     Message(Json),
     /// Block until the driver task is aborted (in-flight crash simulation).
     Hang,
+    /// Sleep, then continue with the next step: a slow provider call.
+    Sleep(u64),
 }
 
 struct ScriptedProvider {
@@ -34,7 +36,11 @@ impl Provider for ScriptedProvider {
         _cancel: &Cancel,
         _on_event: &mut (dyn FnMut(ProviderEvent) + Send),
     ) -> Result<AttemptOutcome, ProviderError> {
-        let next = self.script.lock().unwrap().pop_front().unwrap_or(Step::Message(reply("script exhausted")));
+        let mut next = self.script.lock().unwrap().pop_front().unwrap_or(Step::Message(reply("script exhausted")));
+        while let Step::Sleep(ms) = next {
+            tokio::time::sleep(Duration::from_millis(ms)).await;
+            next = self.script.lock().unwrap().pop_front().unwrap_or(Step::Message(reply("script exhausted")));
+        }
         match next {
             Step::Message(message) => Ok(AttemptOutcome {
                 response: ModelResponse {
@@ -48,6 +54,7 @@ impl Provider for ScriptedProvider {
             Step::Hang => loop {
                 tokio::time::sleep(Duration::from_secs(60)).await;
             },
+            Step::Sleep(_) => unreachable!("sleeps are consumed above"),
         }
     }
 }
@@ -447,6 +454,127 @@ async fn goal_deadline_parks_the_instance() {
     wait_event(&handle, "goal_deadline_refused", 5_000).await;
     let snapshot = handle.snapshot().await.unwrap();
     assert_eq!(snapshot["instance"]["lifecycle"], json!("PARKED"));
+    handle.shutdown().await.expect("shutdown");
+}
+
+/// A31/§4.4: a full disk stops new side-effect dispatch, the in-flight
+/// persistence loss is reported via the park reason, and a user resume
+/// completes the work exactly once — the lost write never double-bills.
+#[tokio::test]
+async fn disk_full_stops_dispatch_reports_and_resumes_after_parking() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let root = root("full");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    // the bulky assistant entry forces real page allocation at import time
+    let bulk = "y".repeat(200_000);
+    let big_finish = |id: &str, summary: &str| {
+        json!({"role": "assistant", "content": bulk,
+               "tool_calls": [{"id": id, "type": "function",
+                               "function": {"name": "finish",
+                                            "arguments": json!({"status": "success", "summary": summary}).to_string()}}]})
+    };
+    let script = vec![
+        Step::Sleep(400),
+        Step::Message(big_finish("f1", "first")),
+        // only consumed when the first attempt could not be recorded at all
+        Step::Message(big_finish("f2", "second")),
+    ];
+    let config = root.config(ScriptedProvider { script: Mutex::new(script.into()) });
+    let handle = start(config).await.expect("start");
+    wait_phase(&handle, "READY", 5_000).await;
+    handle.input("finish with a bulky reply").await.expect("input");
+    // begin_request commits before the provider call; the sleep leaves a wide
+    // window to cap the database before the import write
+    let mut began = false;
+    for _ in 0..80 {
+        let count = handle
+            .with_control(|control| {
+                control
+                    .connection()
+                    .query_row("SELECT COUNT(*) FROM model_requests", [], |row| row.get::<_, i64>(0))
+                    .map_err(|e| e.to_string())
+            })
+            .await
+            .expect("storage")
+            .expect("request count");
+        if count == 1 {
+            began = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(began, "begin_request did not commit");
+    // repack, then cap the shared storage connection at its current size:
+    // the import's allocation fails with a genuine SQLITE_FULL (A31)
+    let pages = handle
+        .with_control(|control| {
+            control.connection().execute_batch("VACUUM").map_err(|e| e.to_string())?;
+            control
+                .connection()
+                .pragma_query_value(None, "page_count", |row| row.get::<_, i64>(0))
+                .map_err(|e| e.to_string())
+        })
+        .await
+        .expect("storage")
+        .expect("vacuum and page count");
+    handle
+        .with_control(move |control| {
+            control.connection().pragma_update(None, "max_page_count", pages).map_err(|e| e.to_string())
+        })
+        .await
+        .expect("storage")
+        .expect("cap pages");
+    // the provider sleep must be fully behind us before judging the latch
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    // while the disk stays full the bulky import can never land: no
+    // completion, no finish dispatch, the request stays open, and the driver
+    // keeps breathing. (The small park write itself may fit in-page slack and
+    // park immediately — the desired report — or wait for space; both are
+    // correct §4.4 outcomes.)
+    for _ in 0..12 {
+        let snapshot = handle.snapshot().await.expect("snapshot");
+        assert_eq!(snapshot["instance"]["phase"], json!("MODEL_PENDING"));
+        let events = handle.events(0).await.expect("events");
+        assert!(!events.iter().any(|e| e["kind"] == json!("goal_completed")), "no completion may land while full");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    // free space: the parked instance can finish the interrupted write again
+    handle
+        .with_control(|control| {
+            control.connection().pragma_update(None, "max_page_count", 1_073_741_823i64).map_err(|e| e.to_string())
+        })
+        .await
+        .expect("storage")
+        .expect("uncap pages");
+    let mut parked_reason = String::new();
+    for _ in 0..200 {
+        if let Ok(events) = handle.events(0).await {
+            if let Some(event) = events
+                .iter()
+                .find(|e| e["kind"] == json!("instance_lifecycle") && e["payload"]["lifecycle"] == json!("PARKED"))
+            {
+                parked_reason = event["payload"]["reason"].as_str().unwrap_or("").to_string();
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(parked_reason.contains("storage full"), "the park reason reports the loss: {parked_reason}");
+    // the user resumes: the stored response imports (or the attempt re-runs
+    // exactly once) and the goal completes exactly once
+    handle.resume().await.expect("resume");
+    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    let attempts = handle
+        .with_control(|control| {
+            control
+                .connection()
+                .query_row("SELECT COUNT(*) FROM attempts", [], |row| row.get::<_, i64>(0))
+                .map_err(|e| e.to_string())
+        })
+        .await
+        .expect("storage")
+        .expect("attempt count");
+    assert_eq!(attempts, 1, "the in-flight loss never double-bills");
     handle.shutdown().await.expect("shutdown");
 }
 

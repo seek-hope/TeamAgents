@@ -250,6 +250,17 @@ impl DriverHandle {
     }
 
     /// Stop driving; submitted commands stay committed (§4.1).
+    /// Run one diagnostics closure on the storage worker — the same single
+    /// connection the driver submits through, so tests can inject real
+    /// storage-level conditions (e.g. a page cap for A31).
+    pub async fn with_control<R, F>(&self, f: F) -> Result<R, String>
+    where
+        R: Send + 'static,
+        F: FnOnce(&mut teamagents_core::v2::Control) -> R + Send + 'static,
+    {
+        self.storage.call(f).await
+    }
+
     pub async fn shutdown(self) -> Result<(), String> {
         self.shared.shutdown.store(true, Ordering::SeqCst);
         self.shared.wake.notify_one();
@@ -269,6 +280,9 @@ pub struct Driver<P: Provider> {
     /// Fixed requests held in memory; after a restart they are rebuilt from
     /// the persisted context under the same request id (§6.3).
     prepared: std::collections::HashMap<String, ModelRequest>,
+    /// A31/§4.4 disk-full latch: once a submit fails StorageFull the driver
+    /// stops stepping and only retries the park until it lands.
+    storage_full: bool,
 }
 
 /// Start the driver over its state root. Bootstrap commands use fixed command
@@ -334,6 +348,13 @@ pub(crate) type SpawnedDriver = (Arc<Shared>, tokio::task::JoinHandle<Result<(),
 /// Construct and spawn one instance driver over a shared storage worker
 /// (§6.1 single writer). No coordinator lock, no bootstrap: the caller
 /// (single-instance `start` or the P3 supervisor) owns both.
+/// Disk-full signatures from both layers (A31): core classifies SQLite's
+/// SQLITE_FULL as "StorageFull: …" at the submit boundary; artifact and
+/// journal file writes surface the OS error verbatim.
+fn storage_full(error: &str) -> bool {
+    error.contains("StorageFull") || error.contains("No space left on device")
+}
+
 pub(crate) fn spawn_driver<P: Provider + 'static>(
     config: DriverConfig<P>,
     storage: &Storage,
@@ -361,6 +382,7 @@ pub(crate) fn spawn_driver<P: Provider + 'static>(
         shared: shared.clone(),
         toolkit,
         prepared: std::collections::HashMap::new(),
+        storage_full: false,
     };
     let task = tokio::spawn(driver.run());
     Ok((shared, task))
@@ -389,44 +411,82 @@ impl<P: Provider> Driver<P> {
                 self.wait().await;
                 continue;
             }
-            let stepped = match snapshot.phase.as_str() {
-                "READY" => self.step_ready(&snapshot).await?,
-                "MODEL_PENDING" => {
-                    self.step_model(&snapshot).await?;
-                    true
-                }
-                "TOOLS_PENDING" => self.step_tools(&snapshot).await?,
-                "COMPLETION_PENDING" => {
-                    self.step_completion(&snapshot).await?;
-                    true
-                }
-                // WAITING: input or a wake flips the phase in one transaction
-                _ => false,
-            };
-            if !stepped {
-                if snapshot.phase == "WAITING" {
-                    // parked drains are the wake path for envelope-borne
-                    // facts (§5.3, A23): applying one satisfies a matching
-                    // wait in the same transaction; due timers close at
-                    // poll granularity. Both commands are replay-safe.
-                    self.submit(
+            if self.storage_full {
+                // Disk-full latch (A31, §4.4): the failed step is never
+                // retried by the driver — new side effects stay stopped and
+                // only the park is retried at poll pace until it lands. The
+                // user frees space and resumes the instance explicitly; the
+                // parked reason reports the in-flight persistence loss.
+                let parked = self
+                    .submit(
                         self.command(
-                            format!("drain-{}", uuid::Uuid::new_v4()),
-                            "drain_inbox",
-                            json!({"instance_id": self.config.instance_id}),
+                            format!("park-storage-{}", uuid::Uuid::new_v4()),
+                            "set_lifecycle",
+                            json!({"instance_id": self.config.instance_id, "lifecycle": "PARKED",
+                                   "reason": "storage full: an in-flight result could not be persisted (§4.4); free space, then resume the instance"}),
                         ),
-                        Identity::Instance(self.config.instance_id.clone()),
-                    )
-                    .await?;
-                    self.submit(
-                        self.command(format!("timer-{}", uuid::Uuid::new_v4()), "fire_timer", json!({})),
                         Identity::System,
                     )
-                    .await?;
+                    .await
+                    .is_ok();
+                if parked {
+                    self.storage_full = false;
                 }
                 self.wait().await;
+                continue;
+            }
+            match self.drive_once(&snapshot).await {
+                Ok(()) => {}
+                Err(error) if storage_full(&error) => {
+                    self.storage_full = true;
+                    eprintln!("driver: {} hit storage full, parking: {error}", self.config.instance_id);
+                }
+                Err(error) => return Err(error),
             }
         }
+    }
+
+    /// One step of the ACTIVE lifecycle: phase work, plus the WAITING drains
+    /// that double as the wake path for envelope-borne facts (§5.3, A23).
+    async fn drive_once(&mut self, snapshot: &Snapshot) -> Result<(), String> {
+        let stepped = match snapshot.phase.as_str() {
+            "READY" => self.step_ready(snapshot).await?,
+            "MODEL_PENDING" => {
+                self.step_model(snapshot).await?;
+                true
+            }
+            "TOOLS_PENDING" => self.step_tools(snapshot).await?,
+            "COMPLETION_PENDING" => {
+                self.step_completion(snapshot).await?;
+                true
+            }
+            // WAITING: input or a wake flips the phase in one transaction
+            _ => false,
+        };
+        if !stepped {
+            if snapshot.phase == "WAITING" {
+                // parked drains are the wake path for envelope-borne facts
+                // (§5.3, A23): applying one satisfies a matching wait in the
+                // same transaction; due timers close at poll granularity.
+                // Both commands are replay-safe.
+                self.submit(
+                    self.command(
+                        format!("drain-{}", uuid::Uuid::new_v4()),
+                        "drain_inbox",
+                        json!({"instance_id": self.config.instance_id}),
+                    ),
+                    Identity::Instance(self.config.instance_id.clone()),
+                )
+                .await?;
+                self.submit(
+                    self.command(format!("timer-{}", uuid::Uuid::new_v4()), "fire_timer", json!({})),
+                    Identity::System,
+                )
+                .await?;
+            }
+            self.wait().await;
+        }
+        Ok(())
     }
 
     async fn wait(&self) {

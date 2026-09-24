@@ -61,6 +61,20 @@ impl Control {
     /// The single entry point. Duplicate command ids return the stored
     /// receipt; the same id with a different payload is rejected (§6.3).
     pub fn submit(&mut self, command: Command, identity: Identity) -> Result<Json, String> {
+        self.submit_inner(command, identity).map_err(|error| {
+            // A31/§4.4: SQLite reports a full disk as SQLITE_FULL ("database
+            // or disk is full") through whichever handler context stringified
+            // it. Classify it at the boundary so drivers can stop dispatching
+            // instead of treating it as an ordinary logic error.
+            if error.contains("database or disk is full") {
+                format!("StorageFull: {error}")
+            } else {
+                error
+            }
+        })
+    }
+
+    fn submit_inner(&mut self, command: Command, identity: Identity) -> Result<Json, String> {
         if command.command_id.is_empty() {
             return Err("command_id must not be empty".into());
         }
@@ -2972,6 +2986,31 @@ mod tests {
 
     fn phase_of(ctl: &Control, instance: &str) -> String {
         ctl.connection().query_row("SELECT phase FROM instances WHERE id = ?1", [instance], |row| row.get(0)).unwrap()
+    }
+
+    #[test]
+    fn disk_full_is_classified_at_the_submit_boundary() {
+        let (mut ctl, path) = control("a31-full");
+        create_instance(&mut ctl, "i1");
+        // repack so no free pages remain, then cap the database at its
+        // current size: the next allocation fails with a genuine SQLITE_FULL,
+        // exactly as a full disk would produce
+        ctl.connection().execute_batch("VACUUM").expect("vacuum");
+        let pages: i64 = ctl.connection().pragma_query_value(None, "page_count", |row| row.get(0)).expect("page count");
+        ctl.connection().pragma_update(None, "max_page_count", pages).expect("cap pages");
+        // a payload far larger than any in-page slack forces page allocation
+        let bulk = "x".repeat(200_000);
+        let error = ctl
+            .submit(
+                cmd("i-full", "submit_input", json!({"instance_id": "i1", "envelope_id": "e1", "text": bulk})),
+                Identity::User,
+            )
+            .expect_err("the write must fail");
+        assert!(error.starts_with("StorageFull: "), "{error}");
+        // nothing half-applied: the rolled-back transaction leaves no input
+        assert_eq!(context_count(&ctl, "i1"), 0);
+        drop(ctl);
+        cleanup(&path);
     }
 
     #[test]
