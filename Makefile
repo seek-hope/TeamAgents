@@ -74,9 +74,10 @@ verify-model-all: verify-tools
 # Kani 证明（readback 分页算术；需要 Kani 工具链，不进 make check）
 KANI_PATH = $(HOME)/.cargo/bin:$(PATH)
 verify-kani:
-	@PATH="$(KANI_PATH)" command -v kani >/dev/null || { \
+	@PATH="$(KANI_PATH)" command -v cargo-kani >/dev/null || { \
 		echo "需要 Kani 工具链：cargo install --locked kani-verifier && cargo kani setup" >&2; exit 1; }
-	@cd verification/kani && PATH="$(KANI_PATH)" kani paging.rs | grep -E "VERIFICATION|Complete -|failed"
+	@cd verification/kani && PATH="$(KANI_PATH)" CARGO_TARGET_DIR=target cargo kani --lib \
+		| grep -E "VERIFICATION|Complete -|failed"
 
 verify-model-wide: verify-tools
 	@cd verification/tla && java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \

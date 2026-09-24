@@ -320,6 +320,16 @@ pub fn collaboration_tool_schemas(actions: &[&str]) -> Vec<Json> {
     schemas
 }
 
+/// Length of the page `page_output` takes for (total, offset, limit): the
+/// arithmetic half of the paging contract, extracted so it is a shipped
+/// function that can be machine-checked (`verification/kani`, `make verify-kani`).
+/// The JSON-argument path itself does not converge under CBMC; this does.
+pub fn page_span(total: usize, offset: usize, limit: usize) -> usize {
+    // offset <= total is enforced by the caller; saturating_sub keeps the
+    // arithmetic total even for the empty page at offset == total
+    limit.min(total.saturating_sub(offset))
+}
+
 /// Readback paging (ported contract: 1..=12000 chars, coordinates preserved).
 pub fn page_output(output: &str, args: &Json) -> Result<Json, String> {
     let integer = |key: &str, default: u64| -> Result<usize, String> {
@@ -338,7 +348,7 @@ pub fn page_output(output: &str, args: &Json) -> Result<Json, String> {
     if offset > total {
         return Err(format!("offset exceeds output length {total}"));
     }
-    let content: String = output.chars().skip(offset).take(limit).collect();
+    let content: String = output.chars().skip(offset).take(page_span(total, offset, limit)).collect();
     let next = offset + content.chars().count();
     Ok(json!({
         "output": content,

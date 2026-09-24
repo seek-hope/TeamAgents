@@ -6,3 +6,4 @@ __pycache__/
 *.pyc
 /review/tmp/
 /verification/tla/states/
+/verification/kani/target/

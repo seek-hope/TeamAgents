@@ -1,0 +1,14 @@
+# Kani 验证用的独立 crate：直接编译仓库里的 kernel/types.rs（见 README 与 Makefile 的 verify-kani）
+[package]
+name = "teamagents-kani-probe"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.10"
+
+[lib]
+path = "src/lib.rs"

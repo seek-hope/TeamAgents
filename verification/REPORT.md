@@ -14,8 +14,9 @@
   （38 种命令、含被拒绝的组合）+ 60 条固定种子的覆盖驱动随机游走，每步之后检查 23 组不变量，
   并带覆盖率断言与检查器灵敏度反向验证。
 - 内核纯函数（线协议视图、输出裁剪、分页、响应分类、参数散列）的性质以有界穷举直接检查；
-  其中 readback 分页的**算术契约**另有 Kani 机器证明：两条性质对**任意 `usize`** 成立
-  （不溢出、不越界、`eof` 判据），一条（逐页取回无缝重建）在展开界内成立。
+  其中 readback 分页的**算术**另有 Kani 机器证明，且被证明的 `page_span` 是**发布函数**
+  （`page_output` 调用它）：两条性质对**任意 `usize`** 成立（不溢出、不越界、`eof` 判据等价），
+  一条（逐页取回无缝重建）在展开界内成立。
 - 上述工作抓到并修复了 4 处代码问题（V-W1/V-G1/V-P1/V-P2，各有反例与回归测试），并纠正了 2 处
   自身写错的性质（空性质/空转检查）。
 
@@ -44,7 +45,7 @@
 | 协议模型（宽配置） | `MC_wide.cfg`（2 实例 / 2 操作） | 275,004,673 状态 | `make verify-model-wide` |
 | 代码级对应 | `core/tests/v2_invariants.rs` | 38 命令；1,482 条短序列 + 60×24 步游走 | `cargo test --offline --manifest-path core/Cargo.toml --test v2_invariants` |
 | 纯函数层 | `core/tests/kernel_properties.rs` | 258 种条目组合 + 分页全枚举 | `cargo test --offline --manifest-path core/Cargo.toml --test kernel_properties` |
-| Kani 证明 | `kani/paging.rs`（3 个 harness，0 失败） | 2 条对所有 `usize` 成立 + 1 条界内 | `make verify-kani`（需 Kani 工具链） |
+| Kani 证明 | `kani/`（直接编译仓库源码，3 个 harness，0 失败） | 2 条对**任意 `usize`** 成立 + 1 条界内 | `make verify-kani`（需 Kani 工具链，约 7 秒） |
 | 门禁 | fmt + clippy `-D warnings` + 全测试 | 31 套 | `make check` |
 
 非空与灵敏度证据（"通过"不是因为检查太弱）：
@@ -129,12 +130,13 @@ A32、A35），其余 **11 项**（A05、A12、A14、A15、A21、A26、A27、A31
    job/进程生命周期、真实供应商行为。这些只由样本测试与真实环境验收覆盖。
 5. **并发**：`Control::submit` 在单连接上串行（单写者），模型不覆盖多连接交错；daemon 的读连接与写
    连接并发只在 A28 的"慢客户端不阻塞写者"结构性说明里体现，没有交错穷举。
-6. **纯函数层**：分页算术有 Kani 机器证明（两条性质对任意 `usize` 成立），但
-   (a) 证明的是**算术模型**，不是发布函数的对象级验证；(b) 发布的 `page_output`（参数走 serde_json）
-   与 `cap_tool_output`（24000 字符阈值）在 CBMC 下不收敛，只有具体值穷举；(c) 其余纯函数
-   （`prepare_request` 的视图、`interpret_response` 分类、`args_hash`）只有有界穷举/枚举。
-   Lean 4 未采用：它是交互式定理证明，需要 elan 工具链与人工证明脚本，本轮的优先级给了"多一个协议面
-   的穷举 + 代码级对应"；升级路径写在 README 的后续阶段。
+6. **纯函数层**：分页算术有 Kani 机器证明，被证明的 `page_span` 是发布函数（`page_output` 调用它），
+   两条性质对**任意 `usize`** 成立。未覆盖的部分：(a) `page_output` 的参数解析走 serde_json，
+   符号化坐标会让数字比较退化成符号化 `memcmp`（实测不收敛），参数合法性只有具体值穷举；
+   (b) `cap_tool_output` 的 24000 字符阈值不可展开，同样只有边界长度的具体值测试；
+   (c) 其余纯函数（`prepare_request` 的视图、`interpret_response` 分类、`args_hash`）只有有界穷举/枚举。
+   Lean 4 未采用：它是交互式定理证明，需要 elan 工具链与人工证明脚本；本轮的优先级给了"多一个协议面
+   的穷举 + 代码级对应 + 把 Kani 用在能收敛的发布函数上"，升级路径写在 README 的后续阶段。
 
 ## 6. 复跑与可推翻性
 
