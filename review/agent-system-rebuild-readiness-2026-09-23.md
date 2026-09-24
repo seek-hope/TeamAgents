@@ -88,7 +88,7 @@
 | 检查项 | 核对结果 |
 |---|---|
 | 共享文件先检查版本再写，是否缺少互斥 | [tools.rs](../engine/src/tools.rs) 已有 FILE_WRITES、with_path_lock、atomic_write_locked 及 path_lock_serializes_two_writers。R2 §10 要求按合约复用。应将此临界区和新跨会话资源范围纳入 R07 的迁移检查；无锁模型的反例不能证明现有实现有该缺陷 |
-| 完成目标是否只看工具、不看子任务/回合 | [旧方案 §6.4](../TeamAgents-Implementation-Plan.zh-CN.md#64-完成与资源约束) 已要求相关任务/回合、批准及未知结果结清，D-42 保留未被替换的有效契约。R01 应将其显式映射到新的 Task/Attempt/Operation，不能把旧字段名称原样搬入 |
+| 完成目标是否只看工具、不看子任务/回合 | [旧方案 §6.4](../docs/archive/TeamAgents-Implementation-Plan.zh-CN.md#64-完成与资源约束) 已要求相关任务/回合、批准及未知结果结清，D-42 保留未被替换的有效契约。R01 应将其显式映射到新的 Task/Attempt/Operation，不能把旧字段名称原样搬入 |
 | 退出界面与取消任务 | R2 已明确区分，符合 Q7；独立 runner 与成功命令后台服务的生命周期也已分开 |
 | 任意通信图与任务 DAG | 二者不是同一图，允许通信环与禁止显式任务依赖环不矛盾 |
 | full_auto 会绕过逻辑隔离 | 已明确由用户接受；不再作为缺陷或重新索取批准 |

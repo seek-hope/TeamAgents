@@ -21,7 +21,7 @@
 ## TUI 交付
 
 - 上区：原右区的团队、任务、共享空间、批准、会话、日志、设置。下区：原左区的 Leader 对话及输入。宽屏和窄屏均可访问两个分区。
-- 参考 [Codex 源码与适配说明](../docs/TUI-CODEX-REFERENCE.md)，使用现有 Textual/Rich 组件实现输入历史、相邻去重、草稿恢复、多行编辑、自适应高度、› 提示符、运行状态和快捷键提示。没有引入新依赖或替换运行时。
+- 参考 [Codex 源码与适配说明](../docs/archive/TUI-CODEX-REFERENCE.md)，使用现有 Textual/Rich 组件实现输入历史、相邻去重、草稿恢复、多行编辑、自适应高度、› 提示符、运行状态和快捷键提示。没有引入新依赖或替换运行时。
 - 流式预览更新同一块区域，最终回复仅归档一次；Ctrl+R 不再重复追加历史。中文聊天在终端缩放后重新换行。
 - Enter 发送；Shift+Enter/Ctrl+J 换行；↑↓ 调取历史；Ctrl+A/Ctrl+E 行首/行尾；Ctrl+G 打开批准；Esc 请求停止 Leader。会话切换清空并重建输入历史。
 - 预览：[宽屏](teamagents-tui-wide.png)、[窄屏](teamagents-tui-narrow.png)。由 `review/tmp/render_tui.py` 使用假成员生成，无模型调用。

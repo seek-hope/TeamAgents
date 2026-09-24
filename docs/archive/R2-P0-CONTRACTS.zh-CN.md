@@ -50,7 +50,7 @@ engine/target/debug/examples/rebuild_p0 suite review/tmp/r2-p0-new
 python3 tui/scripts/pty_rebuild_p0.py
 ```
 
-证据目录必须是新的。本机通过记录见[探针报告](../review/r2-p0-2026-09-23.md)，原始 JSON 在被忽略的 `review/tmp/r2-p0-final/report.json`。
+证据目录必须是新的。本机通过记录见[探针报告](../../review/r2-p0-2026-09-23.md)，原始 JSON 在被忽略的 `review/tmp/r2-p0-final/report.json`。
 
 退出范围：实际 SQLite `SQLITE_FULL` 注入；同库输入在 SIGKILL 提交前/后的恢复与重放去重；制品发布 SIGKILL、GC 保护/认领/重启；CANCEL→GO、重复 GO、GO 接受后崩溃、runner/daemon 崩溃、取消写失败尽力停止、重复回执、截止时间；daemon 锁唯一、runner 独立存活、断连后稳定回执；PTY 断开/重连/暂停/恢复/取消；1M 合成上下文的追加、请求构造和重开；阻塞模型响应下 1/4/16 活跃 I/O 的取消与控制响应。
 

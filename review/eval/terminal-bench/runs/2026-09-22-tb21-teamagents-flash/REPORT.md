@@ -32,7 +32,7 @@
 | 超时 | 任务自带（agent 中位数 900s），不加倍；harness 内部 `exec --timeout` 默认 1200s |
 | 容器内工具集 | 仅原生 shell/文件工具（`fetch`/`web`/`remote_ssh` 依赖宿主密钥与路径，不注入容器） |
 
-命令（完整步骤见上级 [README](../README.md)）：
+命令（完整步骤见上级 [README](../../README.md)）：
 
 ```bash
 PYTHONPATH=review/eval/terminal-bench harbor run \
