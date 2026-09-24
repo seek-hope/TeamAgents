@@ -1,9 +1,14 @@
-core/target/
-engine/target/
-tui/target/
+# Rust 构建产物（含评测 trial 工作目录里的 target/）
+target/
+# Python 缓存与测试夹具缓存
 __pycache__/
-.venv/
+.pytest_cache/
 *.pyc
+.venv/
+# SQLite 临时文件：证据目录只保留 checkpoint 后的主库
+*.sqlite-wal
+*.sqlite-shm
+# 本地探针/临时制品、TLC 状态目录与运行时状态根
 /review/tmp/
 /verification/tla/states/
-/verification/kani/target/
+/states/

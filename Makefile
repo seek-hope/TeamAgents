@@ -86,6 +86,7 @@ verify-model-wide: verify-tools
 hygiene:
 	git diff --check
 	git submodule status
-	@test -z "$$(git ls-files '*.pyc' '*/__pycache__/*')" || \
-		{ echo '仓库包含已跟踪的 Python 缓存，请移除生成物。'; exit 1; }
+	@test -z "$$(git ls-files '*.pyc' '*/__pycache__/*' '*/.pytest_cache/*' '*/target/*' \
+		'*.sqlite-wal' '*.sqlite-shm')" || \
+		{ echo '仓库包含已跟踪的生成物（编译缓存/Python 缓存/SQLite 临时文件），请移除后再提交。'; exit 1; }
 	sh -n install.sh
