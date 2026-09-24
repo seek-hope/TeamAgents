@@ -1,4 +1,4 @@
-//! R2-P5 real-provider acceptance harness (A27 异构供应商合作 + R23 长程/权限):
+//! Real-provider acceptance harness (A27 heterogeneous providers + long-horizon/permission runs):
 //! one v2 session whose leader and worker run on **different real providers**
 //! (catalog keys), cooperating over the controlled message plane.
 //!

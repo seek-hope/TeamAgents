@@ -35,15 +35,15 @@ fn boot_id() -> Result<String> {
 
 fn start_ticks(pid: u32) -> Result<u64> {
     let text = std::fs::read_to_string(format!("/proc/{pid}/stat"))?;
-    let tail = text.rsplit_once(')').ok_or("无效进程身份")?.1;
-    Ok(tail.split_whitespace().nth(19).ok_or("无效进程启动时间")?.parse()?)
+    let tail = text.rsplit_once(')').ok_or("invalid process identity")?.1;
+    Ok(tail.split_whitespace().nth(19).ok_or("invalid process start time")?.parse()?)
 }
 
 fn signal_group(journal: &Journal, signal: i32) -> Result<()> {
-    let pid = journal.pid.ok_or("没有可核验的进程")?;
+    let pid = journal.pid.ok_or("no process to verify")?;
     ensure(
         journal.boot_id == boot_id()? && journal.start_ticks == Some(start_ticks(pid)?),
-        "进程身份已改变，拒绝信号",
+        "process identity changed; refusing to signal",
     )?;
     // The group was created by this runner. Never signal a user-supplied PID.
     let result = unsafe { libc::kill(-(pid as i32), signal) };
@@ -89,7 +89,7 @@ pub async fn serve(root: &Path) -> Result<()> {
     let digest = super::store::hash(job.script.as_bytes());
     let mut journal = if root.join("journal.json").exists() {
         let saved: Journal = serde_json::from_slice(&std::fs::read(root.join("journal.json"))?)?;
-        ensure(saved.job_id == job.id && saved.command_hash == digest, "job 身份或参数不匹配")?;
+        ensure(saved.job_id == job.id && saved.command_hash == digest, "job identity or arguments do not match")?;
         saved
     } else {
         Journal {
@@ -151,10 +151,10 @@ pub async fn serve(root: &Path) -> Result<()> {
                 if !matches!(request,Ok(Ok(_))) || bytes.len()>65_536 { continue; }
                 let request:Request=match serde_json::from_slice(&bytes) { Ok(r)=>r,Err(_)=>continue };
                 let outcome:Result<Value>=(|| {
-                    ensure(request.version==1,"协议版本不匹配")?;
+                    ensure(request.version==1,"protocol version mismatch")?;
                     match request.method.as_str() {
                         "go" | "go-crash-after-accept" if journal.state=="READY" => {
-                            ensure(now_ms()<job.deadline_ms,"命令已过截止时间")?;
+                            ensure(now_ms()<job.deadline_ms,"the command is past its deadline")?;
                             journal.state="START_ACCEPTED".into();
                             persist(root,&journal,fail_writes)?;
                             if request.method=="go-crash-after-accept" {
@@ -204,8 +204,8 @@ pub async fn serve(root: &Path) -> Result<()> {
                         "status" => {},
                         "fault-writes" => { fail_writes=true; },
                         "repair-writes" => { fail_writes=false; persist(root,&journal,false)?; },
-                        "shutdown" => { ensure(child.is_none(),"活动命令必须先停止")?; },
-                        _ => return Err("未知 runner 方法".into()),
+                        "shutdown" => { ensure(child.is_none(),"an active command must stop first")?; },
+                        _ => return Err("unknown runner method".into()),
                     }
                     Ok(json!({"ok":true,"journal":journal,"receipt_saved":!fail_writes}))
                 })();

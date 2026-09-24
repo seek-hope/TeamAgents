@@ -10,7 +10,7 @@ type Work = (Request, oneshot::Sender<std::result::Result<Value, String>>);
 
 async fn query(tx: &mpsc::Sender<Work>, request: Request) -> Result<Value> {
     let (reply, rx) = oneshot::channel();
-    tx.send((request, reply)).await.map_err(|_| "存储队列已关闭")?;
+    tx.send((request, reply)).await.map_err(|_| "the storage queue is closed")?;
     rx.await?.map_err(Into::into)
 }
 
@@ -29,7 +29,7 @@ pub async fn serve(root: &Path) -> Result<()> {
             runners.push(runner::spawn(&job_root, &job)?);
             let until = now_ms() + 3000;
             while rpc(&socket, "status").is_err() {
-                ensure(now_ms() < until, "runner 未就绪")?;
+                ensure(now_ms() < until, "the runner is not ready")?;
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         }
@@ -80,9 +80,9 @@ pub async fn serve(root: &Path) -> Result<()> {
                     let mut bytes=Vec::new();
                     let result:Result<Value>=async {
                         tokio::time::timeout(Duration::from_secs(2),reader.read_until(b'\n',&mut bytes)).await??;
-                        ensure(bytes.len()<=65_536,"控制请求过大")?;
+                        ensure(bytes.len()<=65_536,"control request too large")?;
                         let request:Request=serde_json::from_slice(&bytes)?;
-                        ensure(request.version==1,"协议版本不匹配")?;
+                        ensure(request.version==1,"protocol version mismatch")?;
                         if request.method=="shutdown" {
                             stop.send(()).await?;
                             return Ok(json!({"ok":true}));
@@ -100,7 +100,7 @@ pub async fn serve(root: &Path) -> Result<()> {
     let _ = waiter.await;
     while clients.join_next().await.is_some() {}
     drop(tx);
-    writer.join().map_err(|_| "存储线程退出失败")?;
+    writer.join().map_err(|_| "the storage thread failed to exit")?;
     drop(listener);
     std::fs::remove_file(socket)?;
     Ok(())

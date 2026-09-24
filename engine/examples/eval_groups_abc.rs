@@ -1,9 +1,9 @@
 //! R2-P6 performance experiment runner (§13): one trial of one task in one of
 //! the three pre-registered groups.
 //!
-//!   A 单实例参考：同一个 kernel/协议/工具/上下文策略，直驱循环，无团队管理
-//!   B 持久化单实例：A 的模型可见内容 + 新持久化运行时（v2 驱动）
-//!   C 按需协作：B + 可见协作能力（spawn/delegate/send/wait 授权 + 协作指令）
+//!   A single-instance reference: same kernel/protocol/tools/context policy, direct loop, no team management
+//!   B persistent single instance: A's model-visible content plus the persistent runtime (the driver)
+//!   C collaboration on demand: B plus the visible collaboration surface (spawn/delegate/send/wait grants and instructions)
 //!
 //!   cargo run --offline --manifest-path engine/Cargo.toml --example eval_groups_abc -- \
 //!     --group A|B|C --task-file FILE --workdir DIR --state DIR --out FILE \

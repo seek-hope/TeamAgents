@@ -37,7 +37,7 @@ impl Store {
     pub fn ingest(&self, id: &str, body: &str) -> Result<()> {
         self.db.execute("INSERT OR IGNORE INTO inbox(id,body) VALUES(?1,?2)", params![id, body])?;
         let saved: String = self.db.query_row("SELECT body FROM inbox WHERE id=?1", [id], |r| r.get(0))?;
-        ensure(saved == body, "重复输入 ID 的载荷不一致")
+        ensure(saved == body, "the same input id carried a different payload")
     }
 
     pub fn apply(&mut self, id: &str, crash: Option<&str>) -> Result<()> {
@@ -72,7 +72,7 @@ impl Store {
         let (digest, state): (String, String) =
             self.db
                 .query_row("SELECT digest,state FROM artifacts WHERE id=?1", [id], |r| Ok((r.get(0)?, r.get(1)?)))?;
-        ensure(state == "STAGING" && digest == hash(bytes), "未保留的制品或摘要不匹配")?;
+        ensure(state == "STAGING" && digest == hash(bytes), "an unstaged artifact, or a digest mismatch")?;
         atomic_bytes(&self.root.join("artifacts").join(id), bytes)
     }
 
@@ -82,8 +82,11 @@ impl Store {
         let tx = self.db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let (expected, state): (String, String) =
             tx.query_row("SELECT digest,state FROM artifacts WHERE id=?1", [id], |r| Ok((r.get(0)?, r.get(1)?)))?;
-        ensure(state == "STAGING" || state == "LIVE", "回收中的制品禁止增加引用")?;
-        ensure(expected == digest, "制品丢失或损坏")?;
+        ensure(
+            state == "STAGING" || state == "LIVE",
+            "references cannot be added while the artifact is being collected",
+        )?;
+        ensure(expected == digest, "the artifact is missing or corrupt")?;
         tx.execute("INSERT OR IGNORE INTO artifact_refs VALUES(?1,?2)", params![owner, id])?;
         tx.execute("UPDATE artifacts SET state='LIVE',owner=NULL WHERE id=?1", [id])?;
         tx.commit()?;
@@ -129,7 +132,7 @@ impl Store {
             "UPDATE operations SET state='DISPATCH_COMMITTED' WHERE id=?1 AND state='PREPARED' AND cancel_requested=0",
             [id],
         )?;
-        ensure(changed == 1, "操作不可派发")
+        ensure(changed == 1, "the operation is not dispatchable")
     }
 
     pub fn cancel(&mut self, id: &str) -> Result<()> {
@@ -152,7 +155,7 @@ impl Store {
         let previous: Option<String> =
             tx.query_row("SELECT receipt FROM operations WHERE id=?1", [id], |r| r.get(0))?;
         if let Some(previous) = previous {
-            ensure(previous == text, "同一操作有冲突回执")?;
+            ensure(previous == text, "the same operation has a conflicting receipt")?;
         } else {
             tx.execute("UPDATE operations SET state='TERMINAL',receipt=?2 WHERE id=?1", params![id, text])?;
             tx.execute("INSERT INTO events(kind,payload) VALUES('receipt',?1)", [id])?;
@@ -167,7 +170,7 @@ impl Store {
             .query_row("SELECT method,reply FROM commands WHERE id=?1", [id], |r| Ok((r.get(0)?, r.get(1)?)))
             .optional()?;
         if let Some((saved, reply)) = cached {
-            ensure(saved == method, "command_id 的载荷不一致")?;
+            ensure(saved == method, "the same command_id carried a different payload")?;
             return Ok(serde_json::from_str(&reply)?);
         }
         match method {
@@ -187,7 +190,7 @@ impl Store {
                 tx.execute("UPDATE demo SET ticks=ticks+1 WHERE status='RUNNING'", [])?;
             }
             "status" => {}
-            _ => return Err("未知控制方法".into()),
+            _ => return Err("unknown control method".into()),
         }
         if method != "status" {
             tx.execute("INSERT INTO events(kind,payload) VALUES('demo',?1)", [method])?;
@@ -210,7 +213,7 @@ pub fn hash(bytes: &[u8]) -> String {
 }
 
 fn validate_id(id: &str) -> Result<()> {
-    ensure(!id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'), "无效制品 ID")
+    ensure(!id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'), "invalid artifact id")
 }
 
 fn kill_self() {
@@ -222,12 +225,12 @@ fn kill_self() {
 }
 
 pub fn transaction_child(args: &[String]) -> Result<()> {
-    let mut store = Store::open(Path::new(args.first().ok_or("缺少目录")?))?;
-    store.apply("input", Some(args.get(1).ok_or("缺少故障点")?))
+    let mut store = Store::open(Path::new(args.first().ok_or("missing directory")?))?;
+    store.apply("input", Some(args.get(1).ok_or("missing failure point")?))
 }
 
 pub fn artifact_child(args: &[String]) -> Result<()> {
-    let store = Store::open(Path::new(args.first().ok_or("缺少目录")?))?;
+    let store = Store::open(Path::new(args.first().ok_or("missing directory")?))?;
     let bytes = b"complete-response";
     store.reserve_artifact("response", "request", bytes)?;
     store.publish("response", bytes)?;

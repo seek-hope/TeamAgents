@@ -1,4 +1,4 @@
-//! R2-P5 load probe (A32, scheme §11 P0 探针在 v2 生产路径上的复测): append /
+//! Load probe (A32: the probes from §11 re-run on the production path): append /
 //! step latency, control-boundary latency, request construction, restart,
 //! multi-instance reads, RSS and disk growth over a ~1M-token synthetic
 //! context built through the production `Control` plane.
@@ -96,7 +96,7 @@ fn daemon_history_page(db: &Path, session: &str, instance: &str, limit: i64) -> 
     Ok(entries)
 }
 
-/// `readers` concurrent bounded pages of the big instance (A32 多实例读取):
+/// `readers` concurrent bounded pages of the big instance (A32 multi-instance reads):
 /// each reader opens its own WAL connection, exactly like the daemon does, so
 /// readers never contend for the single writer (§4.1).
 fn concurrent_pages(db: &Path, session: &str, readers: usize) -> Fallible<Json> {

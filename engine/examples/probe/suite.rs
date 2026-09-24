@@ -38,7 +38,7 @@ async fn ready(socket: &Path) -> Result<Value> {
         if let Ok(value) = rpc(socket, "status") {
             return Ok(value);
         }
-        ensure(now_ms() < until, &format!("socket 未就绪：{}", socket.display()))?;
+        ensure(now_ms() < until, &format!("socket not ready: {}", socket.display()))?;
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
@@ -50,7 +50,7 @@ async fn settled(root: &Path) -> Result<Value> {
         if runner::terminal(value["journal"]["state"].as_str().unwrap_or("")) {
             return Ok(value["journal"].clone());
         }
-        ensure(now_ms() < until, "命令未及时进入终态")?;
+        ensure(now_ms() < until, "the command did not reach a terminal state in time")?;
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
@@ -80,19 +80,22 @@ fn transactions(root: &Path) -> Result<Value> {
         store.ingest("input", "durable user input")?;
         drop(store);
         let status = Command::new(executable()?)
-            .args(["transaction-child", case.to_str().ok_or("路径不是 UTF-8")?, point])
+            .args(["transaction-child", case.to_str().ok_or("the path is not UTF-8")?, point])
             .status()?;
-        ensure(status.signal() == Some(libc::SIGKILL), "子进程未在指定故障点被杀")?;
+        ensure(status.signal() == Some(libc::SIGKILL), "the child was not killed at the chosen failure point")?;
         let mut recovered = Store::open(&case)?;
         let before: i64 = recovered.db.query_row("SELECT COUNT(*) FROM context", [], |r| r.get(0))?;
-        ensure(before == if point == "before" { 0 } else { 1 }, "提交断点状态错误")?;
+        ensure(before == if point == "before" { 0 } else { 1 }, "wrong state at the commit failure point")?;
         recovered.apply("input", None)?;
         recovered.apply("input", None)?;
         let counts:(i64,i64,i64)=recovered.db.query_row(
             "SELECT (SELECT COUNT(*) FROM context),(SELECT COUNT(*) FROM events),(SELECT revision FROM execution WHERE id='instance')",
             [],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
-        ensure(counts == (1, 1, 1), "重启后输入重复应用或事件不一致")?;
-        ensure(recovered.ingest("input", "changed payload").is_err(), "相同输入 ID 接受不同载荷")?;
+        ensure(counts == (1, 1, 1), "after restart, input was applied twice or events disagree")?;
+        ensure(
+            recovered.ingest("input", "changed payload").is_err(),
+            "the same input id accepted a different payload",
+        )?;
         results.push(json!({"crash":point,"before_recovery_rows":before,"after_recovery":counts}));
     }
     Ok(json!(results))
@@ -100,24 +103,27 @@ fn transactions(root: &Path) -> Result<Value> {
 
 fn artifacts(root: &Path) -> Result<Value> {
     let status = Command::new(executable()?).arg("artifact-child").arg(root).status()?;
-    ensure(status.signal() == Some(libc::SIGKILL), "制品发布断点未触发")?;
+    ensure(status.signal() == Some(libc::SIGKILL), "the artifact publication failure point did not trigger")?;
     let mut store = Store::open(root)?;
-    ensure(store.collect()? == 0, "GC 删除了尚未导入的响应")?;
+    ensure(store.collect()? == 0, "GC deleted a response that was not imported yet")?;
     store.attach("response", "request")?;
-    ensure(store.collect()? == 0, "GC 删除了活动引用")?;
+    ensure(store.collect()? == 0, "GC deleted a live reference")?;
     store.reserve_artifact("orphan", "failed-request", b"unused")?;
     store.publish("orphan", b"unused")?;
     store.abandon("orphan")?;
-    ensure(store.claim_gc()? == vec!["orphan"], "GC 认领不正确")?;
-    ensure(store.attach("orphan", "late-reference").is_err(), "GC 认领后仍允许新增引用")?;
+    ensure(store.claim_gc()? == vec!["orphan"], "wrong GC claim")?;
+    ensure(store.attach("orphan", "late-reference").is_err(), "a new reference was allowed after the GC claim")?;
     drop(store);
     let mut store = Store::open(root)?;
-    ensure(store.collect()? == 1, "GC 认领后重启无法继续回收")?;
-    ensure(std::fs::read(root.join("artifacts/response"))? == b"complete-response", "已提交引用无法读取")?;
-    ensure(!root.join("artifacts/orphan").exists(), "孤儿制品未回收")?;
+    ensure(store.collect()? == 1, "collection did not continue across a restart after the claim")?;
+    ensure(
+        std::fs::read(root.join("artifacts/response"))? == b"complete-response",
+        "a committed reference is unreadable",
+    )?;
+    ensure(!root.join("artifacts/orphan").exists(), "the orphan artifact was not collected")?;
     store.reserve_artifact("unfinished-job", "runner-job", b"receipt")?;
     store.publish("unfinished-job", b"receipt")?;
-    ensure(store.collect()? == 0, "未导入的 job 制品未受保护")?;
+    ensure(store.collect()? == 0, "an unimported job artifact was not protected")?;
     store.attach("unfinished-job", "operation")?;
     Ok(
         json!({"publication_sigkill":true,"staging_survives_gc":true,"claimed_object_rejects_reference":true,"gc_restart":true,"job_result_pin":true}),
@@ -130,7 +136,7 @@ fn sqlite_full() -> Result<Value> {
     let pages: i64 = db.query_row("PRAGMA page_count", [], |r| r.get(0))?;
     db.pragma_update(None, "max_page_count", pages)?;
     let error = db.execute("INSERT INTO t VALUES(zeroblob(8192))", []).expect_err("SQLITE_FULL not injected");
-    ensure(error.sqlite_error_code() == Some(rusqlite::ErrorCode::DiskFull), "注入的不是 SQLITE_FULL")?;
+    ensure(error.sqlite_error_code() == Some(rusqlite::ErrorCode::DiskFull), "the injected error is not SQLITE_FULL")?;
     Ok(json!({"error":"SQLITE_FULL","host_disk_filled":false}))
 }
 
@@ -148,14 +154,14 @@ async fn runners(root: &Path, processes: &mut Processes) -> Result<Value> {
     processes.kill(index);
     processes.add(runner::spawn(&before, &spec)?, &before);
     ready(&socket).await?;
-    ensure(store.recovery_method(&spec.id)? == "cancel", "恢复重发了过时 GO")?;
+    ensure(store.recovery_method(&spec.id)? == "cancel", "recovery re-sent a stale GO")?;
     rpc(&socket, "go")?;
     let value = rpc(&socket, "go")?;
     ensure(
         value["journal"]["starts"] == 0 && value["journal"]["state"] == "CANCELLED_BEFORE_START",
-        "取消后仍启动了命令",
+        "the command started despite the cancellation",
     )?;
-    ensure(!before.join("effects").exists(), "取消前启动出现外部副作用")?;
+    ensure(!before.join("effects").exists(), "an external effect appeared before the cancellation")?;
 
     let duplicate = root.join("duplicate");
     let spec = job("printf x >> effects; sleep 0.15");
@@ -167,12 +173,12 @@ async fn runners(root: &Path, processes: &mut Processes) -> Result<Value> {
     rpc(&socket, "go")?;
     rpc(&socket, "go")?;
     let receipt = settled(&duplicate).await?;
-    ensure(receipt["state"] == "SUCCEEDED" && receipt["starts"] == 1, "重复 GO 执行多次")?;
-    ensure(std::fs::read(duplicate.join("effects"))? == b"x", "副作用计数错误")?;
+    ensure(receipt["state"] == "SUCCEEDED" && receipt["starts"] == 1, "a duplicate GO ran the command more than once")?;
+    ensure(std::fs::read(duplicate.join("effects"))? == b"x", "wrong effect count")?;
     store.import_receipt(&spec.id, &receipt)?;
     store.import_receipt(&spec.id, &receipt)?;
     let receipts: i64 = store.db.query_row("SELECT COUNT(*) FROM events WHERE kind='receipt'", [], |r| r.get(0))?;
-    ensure(receipts == 1, "回执重复消费")?;
+    ensure(receipts == 1, "the receipt was consumed twice")?;
 
     let failure = root.join("storage-failure");
     let spec = job("sleep 20 & echo $! > descendant; wait");
@@ -183,22 +189,22 @@ async fn runners(root: &Path, processes: &mut Processes) -> Result<Value> {
     store.dispatch(&spec.id)?;
     rpc(&socket, "go")?;
     store.db.pragma_update(None, "query_only", true)?;
-    ensure(store.cancel(&spec.id).is_err(), "取消写失败未注入")?;
+    ensure(store.cancel(&spec.id).is_err(), "the failing cancel write was not injected")?;
     rpc(&socket, "fault-writes")?;
     let started = Instant::now();
     let cancelled = rpc(&socket, "cancel")?;
-    ensure(cancelled["journal"]["cancel_saved"] == false, "错误声称取消已经保存")?;
+    ensure(cancelled["journal"]["cancel_saved"] == false, "wrongly claimed the cancellation was saved")?;
     let receipt = settled(&failure).await?;
-    ensure(receipt["state"] == "CANCELLED", "写失败阻断了真实停止")?;
+    ensure(receipt["state"] == "CANCELLED", "the failed write blocked the real stop")?;
     let cancel_ms = started.elapsed().as_secs_f64() * 1000.0;
-    ensure(runner::read_journal(&failure)?["state"] == "RUNNING", "故障注入没有留下未保存状态")?;
+    ensure(runner::read_journal(&failure)?["state"] == "RUNNING", "the fault injection left no unsaved state")?;
     processes.kill(index);
     processes.add(runner::spawn(&failure, &spec)?, &failure);
     ready(&socket).await?;
     let recovered = rpc(&socket, "go")?;
     ensure(
         recovered["journal"]["state"] == "OUTCOME_UNKNOWN" && recovered["journal"]["starts"] == 1,
-        "未保存取消重启后错误重放",
+        "an unsaved cancellation was wrongly replayed after restart",
     )?;
     store.db.pragma_update(None, "query_only", false)?;
 
@@ -213,24 +219,24 @@ async fn runners(root: &Path, processes: &mut Processes) -> Result<Value> {
     processes.add(runner::spawn(&unknown, &spec)?, &unknown);
     ready(&socket).await?;
     let status = rpc(&socket, "go")?;
-    ensure(status["journal"]["state"] == "OUTCOME_UNKNOWN", "runner 崩溃后猜测成功或重放")?;
+    ensure(status["journal"]["state"] == "OUTCOME_UNKNOWN", "the runner crash was guessed as success, or replayed")?;
     rpc(&socket, "cancel")?;
-    ensure(std::fs::read(unknown.join("effects"))? == b"x", "未知结果被重复执行")?;
+    ensure(std::fs::read(unknown.join("effects"))? == b"x", "an unknown outcome was executed again")?;
 
     let accepted = root.join("accepted-no-pid");
     let spec = job("printf x >> effects");
     let index = processes.add(runner::spawn(&accepted, &spec)?, &accepted);
     let socket = accepted.join("runner.sock");
     ready(&socket).await?;
-    ensure(rpc(&socket, "go-crash-after-accept").is_err(), "启动断点未触发")?;
+    ensure(rpc(&socket, "go-crash-after-accept").is_err(), "the start failure point did not trigger")?;
     let status = processes.0[index].0.wait()?;
-    ensure(status.signal() == Some(libc::SIGKILL), "runner 未在接受 GO 后崩溃")?;
+    ensure(status.signal() == Some(libc::SIGKILL), "the runner did not crash after accepting GO")?;
     processes.add(runner::spawn(&accepted, &spec)?, &accepted);
     ready(&socket).await?;
     let status = rpc(&socket, "go")?;
     ensure(
         status["journal"]["state"] == "OUTCOME_UNKNOWN" && !accepted.join("effects").exists(),
-        "无 PID 的未知启动被重放",
+        "an unknown start without a pid was replayed",
     )?;
 
     let timed = root.join("deadline");
@@ -239,7 +245,7 @@ async fn runners(root: &Path, processes: &mut Processes) -> Result<Value> {
     processes.add(runner::spawn(&timed, &spec)?, &timed);
     ready(&timed.join("runner.sock")).await?;
     rpc(&timed.join("runner.sock"), "go")?;
-    ensure(settled(&timed).await?["state"] == "CANCELLED", "runner 未独立执行截止时间")?;
+    ensure(settled(&timed).await?["state"] == "CANCELLED", "the runner did not enforce the deadline on its own")?;
 
     Ok(json!({"cancel_before_go_restart":true,"duplicate_go_one_effect":true,"receipt_import_once":true,
         "storage_failure_stop_ms":cancel_ms,"cancel_persistence_reported_false":true,"unknown_after_runner_crash":true,
@@ -258,23 +264,29 @@ async fn background(root: &Path, processes: &mut Processes) -> Result<Value> {
     let started = rpc_id(&socket, "start", "stable-start-command")?;
     tokio::time::sleep(Duration::from_millis(130)).await;
     let before = rpc(&socket, "status")?;
-    ensure(before["ticks"].as_u64().unwrap_or(0) > 0, "等待实例阻塞了活动实例")?;
+    ensure(before["ticks"].as_u64().unwrap_or(0) > 0, "a waiting instance blocked an active one")?;
     let lock_result = runner::file_lock(root);
-    ensure(lock_result.is_err(), "允许第二个协调者")?;
+    ensure(lock_result.is_err(), "a second coordinator was allowed")?;
     processes.kill(first);
     let second = processes.add(daemon_process(root)?, root);
     ready(&socket).await?;
     let replay = rpc_id(&socket, "start", "stable-start-command")?;
-    ensure(started == replay, "客户端断线重试未复用同一回执")?;
+    ensure(started == replay, "a client retry did not reuse the same receipt")?;
     let receipt = settled(&job_root).await?;
-    ensure(receipt["state"] == "SUCCEEDED" && receipt["starts"] == 1, "后台崩溃重放或终止了独立 runner")?;
-    ensure(std::fs::read(job_root.join("effects"))? == b"x", "后台恢复副作用重复")?;
+    ensure(
+        receipt["state"] == "SUCCEEDED" && receipt["starts"] == 1,
+        "a daemon crash replayed or killed the independent runner",
+    )?;
+    ensure(std::fs::read(job_root.join("effects"))? == b"x", "daemon recovery duplicated a side effect")?;
     let paused = rpc(&socket, "pause")?;
     tokio::time::sleep(Duration::from_millis(150)).await;
-    ensure(rpc(&socket, "status")?["ticks"] == paused["ticks"], "暂停期间仍推进任务")?;
+    ensure(rpc(&socket, "status")?["ticks"] == paused["ticks"], "work advanced while paused")?;
     rpc(&socket, "resume")?;
     tokio::time::sleep(Duration::from_millis(150)).await;
-    ensure(rpc(&socket, "status")?["ticks"].as_u64() > paused["ticks"].as_u64(), "恢复没有继续同一任务")?;
+    ensure(
+        rpc(&socket, "status")?["ticks"].as_u64() > paused["ticks"].as_u64(),
+        "resume did not continue the same work",
+    )?;
     rpc(&socket, "cancel")?;
     rpc(&socket, "shutdown")?;
     let _ = processes.0[second].0.wait()?;
@@ -282,8 +294,8 @@ async fn background(root: &Path, processes: &mut Processes) -> Result<Value> {
     ready(&socket).await?;
     let store = Store::open(root)?;
     let state: String = store.db.query_row("SELECT state FROM operations WHERE id=?1", [&spec.id], |r| r.get(0))?;
-    ensure(state == "TERMINAL", "重启未导入 runner 的终态回执")?;
-    ensure(rpc(&socket, "status")?["status"] == "CANCELLED", "重启复活了已取消任务")?;
+    ensure(state == "TERMINAL", "the restart did not import the runner terminal receipt")?;
+    ensure(rpc(&socket, "status")?["status"] == "CANCELLED", "the restart revived a cancelled job")?;
     rpc(&socket, "shutdown")?;
     rpc(&job_root.join("runner.sock"), "shutdown")?;
     Ok(json!({"daemon_sigkill":true,"runner_survives":true,"single_effect":true,"command_receipt_stable":true,
@@ -309,7 +321,7 @@ fn storage_benchmark(root: &Path) -> Result<Value> {
     }
     store.db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")?;
     let after = std::fs::metadata(root.join("session.sqlite"))?.len();
-    ensure(after - initial < 1_000_000, "每步存储复制了大历史")?;
+    ensure(after - initial < 1_000_000, "each step copied a large history through storage")?;
     let build = Instant::now();
     let request = serde_json::to_vec(&json!({"messages":[{"role":"user","content":body}]}))?;
     let request_us = build.elapsed().as_micros();
@@ -326,7 +338,7 @@ fn storage_benchmark(root: &Path) -> Result<Value> {
 }
 
 pub async fn run(output: PathBuf) -> Result<()> {
-    ensure(!output.exists(), "证据目录已存在，请使用新目录")?;
+    ensure(!output.exists(), "the evidence directory exists already; use a new one")?;
     std::fs::create_dir_all(&output)?;
     let output = std::fs::canonicalize(output)?;
     let scratch = Scratch(std::env::temp_dir().join(format!("tap0-{}", &uuid::Uuid::new_v4().to_string()[..8])));
@@ -336,7 +348,7 @@ pub async fn run(output: PathBuf) -> Result<()> {
         json!({"phase":"probe","status":"running","model_calls":0,"sqlite_version":rusqlite::version(),"checks":{}});
     atomic_json(&output.join("report.json"), &report)?;
     let result: Result<()> = async {
-        ensure(rusqlite::version_number() >= 3_051_003, "SQLite 缺少要求的 WAL 修复")?;
+        ensure(rusqlite::version_number() >= 3_051_003, "this SQLite lacks the required WAL fix")?;
         report["checks"]["sqlite_full"] = sqlite_full()?;
         report["checks"]["atomic_input"] = transactions(&scratch.0.join("transactions"))?;
         report["checks"]["artifacts_gc"] = artifacts(&scratch.0.join("artifacts"))?;

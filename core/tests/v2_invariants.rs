@@ -1,21 +1,22 @@
-//! 规格↔代码的可执行对应（R2 控制面）。
+//! Executable correspondence between the TLA+ specs and the code (the control plane).
 //!
-//! `verification/tla/*.tla` 用 TLC 穷举的是抽象状态机；本测试把**同一组不变量**在真实
-//! `core::v2::Control` 上重算一遍：先对长度 ≤ 2 的命令序列做穷举，再做固定种子的随机游走，
-//! 每一步之后检查 SQLite 里的事实。命令行：
+//! `verification/tla/*.tla` model-checks an abstract state machine; this test recomputes the
+//! same invariants against the real `core::v2::Control`: it enumerates every command sequence
+//! up to length 2, then runs a fixed-seed random walk, checking the facts in SQLite after
+//! every step. Run it with:
 //!
 //! ```text
 //! cargo test --offline --manifest-path core/Cargo.toml --test v2_invariants
 //! ```
 //!
-//! 覆盖（括号里是 TLA+ 里的同名性质）：
-//! `TypeOK`、任务终态不可改写（`SettledIsFinal`）、窄返回能力随任务结清撤销
-//! （`ReturnPathOnlyWhileOpen`）、依赖只指向更早创建的任务（`DependenciesPointBackwards`）、
-//! 已终止实例名下无未结清任务（`NoOpenTaskOnDeadAssignee`）、实例不悬挂已结清目标
-//! （`NoStaleActiveGoal`，V-G1）、请求关闭必释放预留（`ReservationReleased`）、
-//! 单实例单活跃请求（`OneActiveRequest`）、选中尝试必为完整尝试（`SelectionIsComplete`）、
-//! 等被解决必答其 tool_call（`ResolvedWaitIsAnswered`，V-W1）、未批准不产生效果
-//! （`NoEffectBeforeApproval`）、LIVE 制品必有字节（`LiveIsPersisted`）。
+//! Coverage (the parenthesised names are the properties in the TLA+ specs):
+//! `TypeOK`, settled tasks are final (`SettledIsFinal`), the narrow return path is revoked when a task settles
+//! (`ReturnPathOnlyWhileOpen`), dependencies point at earlier tasks (`DependenciesPointBackwards`),
+//! a dead assignee holds no open task (`NoOpenTaskOnDeadAssignee`), no instance points at a settled goal
+//! (`NoStaleActiveGoal`, V-G1), closing a request releases its reservation (`ReservationReleased`),
+//! one active request per instance (`OneActiveRequest`), a selected attempt is complete (`SelectionIsComplete`),
+//! a resolved wait answers its tool_call (`ResolvedWaitIsAnswered`, V-W1), no effect before approval
+//! (`NoEffectBeforeApproval`), LIVE artifacts have bytes (`LiveIsPersisted`).
 
 use serde_json::{json, Value as Json};
 use std::collections::{HashMap, HashSet};
@@ -50,7 +51,7 @@ fn contains(set: &[&str], value: &str) -> bool {
     set.contains(&value)
 }
 
-/// 游走覆盖到的关键状态（证明探索不是空转）
+/// Key states the walk reached (proof that the exploration is not vacuous)
 #[derive(Default, Clone, Copy)]
 struct Coverage {
     resolved_wait: bool,
@@ -82,7 +83,7 @@ impl Coverage {
     }
 }
 
-/// 一步命令：名字（用于失败信息里的轨迹）与真正的提交。
+/// One command step: a name (for the failure trace) and the actual submission.
 struct Step {
     label: String,
     command: Command,
@@ -95,26 +96,26 @@ struct Harness {
     rng: u64,
     counter: u64,
     trace: Vec<String>,
-    /// 任务 id -> 已见过的终态（`SettledIsFinal` 的跨步记忆）
+    /// task id -> settled status seen (`SettledIsFinal` memory across steps)
     settled: HashMap<String, String>,
-    /// 见过的上下文条目（`NoEntryIsEverLost` 的跨步记忆）
+    /// context entries seen (`NoEntryIsEverLost` memory across steps)
     entries_seen: HashSet<String>,
-    /// 见过被覆盖的条目（`CoverageNeverLifted` 的跨步记忆）
+    /// covered entries seen (`CoverageNeverLifted` memory across steps)
     covered_seen: HashSet<String>,
-    /// 批准 id -> 已见过的决定（`ApprovalDecisionIsFinal` 的跨步记忆）
+    /// approval id -> decision seen (`ApprovalDecisionIsFinal` memory across steps)
     approvals_seen: HashMap<String, String>,
-    /// 命令 id -> 已存回执（`ReceiptsAreStable` 的跨步记忆）
+    /// command id -> stored receipt (`ReceiptsAreStable` memory across steps)
     receipts_seen: HashMap<String, String>,
-    /// 上一次成功提交的命令与其身份（用于重放步骤）
+    /// the last successfully submitted command and its identity (for replay steps)
     last_command: Option<(Command, Identity)>,
-    /// 上一步之后的三张表规模（命令 / 事件 / 上下文条目），重放必须不动它们
+    /// the sizes of three tables (commands / events / context entries) after the last step; a replay must not move them
     sizes: (usize, usize, usize),
-    /// 上一步的标签（判断它是不是重放步骤）
+    /// the previous step's label (to tell whether it was a replay)
     last_label: String,
-    /// 重放覆盖：同 id 同 payload 成功过、同 id 异 payload 被拒过
+    /// Replay coverage: the same id with the same payload succeeded, and the same id with a different payload was refused
     replayed: bool,
     divergent_refused: bool,
-    /// 撤权覆盖：撤过一条有效授权、并且撤权后的派发被拒过
+    /// Revocation coverage: an effective grant was revoked and the following dispatch was refused
     revoked: bool,
     dispatch_refused_after_revoke: bool,
 }
@@ -154,7 +155,7 @@ impl Harness {
     }
 
     fn next_rand(&mut self) -> u64 {
-        // splitmix64：固定种子 ⇒ 可复现的游走
+        // splitmix64: a fixed seed keeps the walk reproducible
         self.rng = self.rng.wrapping_add(0x9E3779B97F4A7C15);
         let mut z = self.rng;
         z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
@@ -170,13 +171,13 @@ impl Harness {
         items.get(index)
     }
 
-    /// 给"计划中的"资源分配一个稳定编号（请求 / 任务 id 之类）
+    /// A stable number for a "planned" resource (request or task ids and the like)
     fn plan_id(&mut self) -> u64 {
         self.counter += 1;
         self.counter
     }
 
-    /// 从表格行里挑一行（任务/请求这类多列对象）
+    /// Pick one row from a table (multi-column objects such as tasks and requests)
     fn pick_rows(&mut self, rows: &[Vec<String>]) -> Option<Vec<String>> {
         if rows.is_empty() {
             return None;
@@ -190,10 +191,10 @@ impl Harness {
         format!("c{}", self.counter)
     }
 
-    /// 执行一步并把结果记进轨迹；标签以 `!` 开头表示规格要求这一步被拒。
+    /// Run one step and record the outcome in the trace; a label starting with `!` means the spec requires the step to be refused.
     fn run_step(&mut self, step: Step) -> Result<Json, String> {
         let Step { label, command, identity } = step;
-        // 重放步骤自带命令 id（客户端在断连重连后重发同一个 id）；其余步骤分配新 id
+        // a replay step carries its own command id (a client re-sends the same id after reconnecting); other steps get a fresh id
         let command =
             if command.command_id.is_empty() { Command { command_id: self.id(), ..command } } else { command };
         self.last_label = label.split('(').next().unwrap_or("").to_string();
@@ -207,7 +208,7 @@ impl Harness {
             self.trace.remove(0);
         }
         if label.starts_with('!') {
-            assert!(result.is_err(), "规格要求被拒但代码接受了：{label}");
+            assert!(result.is_err(), "the spec requires a refusal but the code accepted: {label}");
         }
         if self.last_label == "replay_same" && result.is_ok() {
             self.replayed = true;
@@ -222,7 +223,7 @@ impl Harness {
             self.dispatch_refused_after_revoke = true;
         }
         if result.is_ok() {
-            // 重放也要记住（同一个 id 可以再被重放）
+            // remember replays too (the same id can be replayed again)
             self.last_command = Some((command, identity));
         }
         result
@@ -237,7 +238,7 @@ impl Harness {
         while let Some(row) = rows.next().expect("row") {
             let mut values = Vec::with_capacity(columns);
             for index in 0..columns {
-                // 列可能有整数（计数/Revision）、实数（时间戳）或文本：统一读成字符串
+                // a column may hold an integer (counts, revisions), a float (timestamps) or text: read it as a string
                 let value: rusqlite::types::Value = row.get(index).unwrap_or(rusqlite::types::Value::Null);
                 values.push(match value {
                     rusqlite::types::Value::Null => String::new(),
@@ -277,7 +278,7 @@ impl Harness {
         )
     }
     // ------------------------------------------------------------ invariants --
-    /// 这次游走是否走到了值得检查的状态（用来证明游走不是空转）
+    /// Whether this walk reached states worth checking (proof that it is not vacuous)
     fn coverage(&self) -> Coverage {
         let exists = |sql: &str| !self.rows(sql, &[]).is_empty();
         Coverage {
@@ -298,7 +299,7 @@ impl Harness {
         }
     }
 
-    /// 当前状态违反的不变量（空 = 全部成立）。检查器只看数据库里的事实。
+    /// Invariants the current state violates (empty = all hold). The checker reads only the facts in the database.
     fn violations(&mut self) -> Vec<String> {
         let mut reports: Vec<String> = Vec::new();
         let instances = self.instances();
@@ -358,7 +359,7 @@ impl Harness {
             }
         }
 
-        // SettledIsFinal：终态任务不再改写
+        // SettledIsFinal: a settled task is never rewritten
         for row in &tasks {
             let (id, status) = (row[0].clone(), row[4].clone());
             if let Some(previous) = self.settled.get(&id) {
@@ -388,7 +389,7 @@ impl Harness {
             }
         }
 
-        // ReservationReleased：请求一旦关闭，预留必须释放
+        // ReservationReleased: closing a request releases its reservation
         let open_requests: HashSet<&str> =
             requests.iter().filter(|row| row[2] == "PENDING").map(|row| row[0].as_str()).collect();
         for row in &goals {
@@ -403,8 +404,9 @@ impl Harness {
             }
         }
 
-        // OneActiveRequest：相位只由 turn 请求驱动（压缩请求并发且不动相位，见
-        // begin_compression），所以每实例至多一个未关闭 turn 请求，并与相位一致
+        // OneActiveRequest: the phase is driven by turn requests only (compression requests
+        // run alongside it and do not move the phase, see begin_compression), so each instance
+        // has at most one open turn request, consistent with its phase
         let mut live_per_instance: HashMap<&str, usize> = HashMap::new();
         for row in &requests {
             if row[2] == "PENDING" && row[4] == "turn" {
@@ -433,7 +435,7 @@ impl Harness {
             }
         }
 
-        // SelectionIsComplete：被选中的尝试必须是完整尝试
+        // SelectionIsComplete: the selected attempt must be complete
         for row in &requests {
             let selected = &row[3];
             if selected.is_empty() {
@@ -452,7 +454,7 @@ impl Harness {
             }
         }
 
-        // ReturnPathOnlyWhileOpen：存活的任务结果能力只属于未结清的任务
+        // ReturnPathOnlyWhileOpen: a live return path belongs to an unsettled task
         for row in self
             .rows("SELECT subject, resource_scope FROM grants WHERE action = 'task_result' AND revoked_at IS NULL", &[])
         {
@@ -467,7 +469,8 @@ impl Harness {
             }
         }
 
-        // DependenciesPointBackwards：依赖必须先创建（行序即创建序）⇒ 依赖图无环
+        // DependenciesPointBackwards: a dependency is created earlier (row order is creation
+        // order), so the dependency graph is acyclic
         let order: HashMap<&str, usize> =
             tasks.iter().enumerate().map(|(index, row)| (row[0].as_str(), index)).collect();
         for row in &tasks {
@@ -498,7 +501,7 @@ impl Harness {
             }
         }
 
-        // ResolvedWaitIsAnswered（V-W1）：等一旦结束，必定留下回答它自己 tool_call 的条目
+        // ResolvedWaitIsAnswered (V-W1): once a wait is resolved there is an entry answering its own tool_call
         for row in &waits {
             let answered = self.rows(
                 "SELECT id FROM context_entries WHERE instance_id = ?1 AND envelope_id = ?2",
@@ -520,7 +523,7 @@ impl Harness {
             }
         }
 
-        // NoEffectBeforeApproval / 终态操作必有回执
+        // NoEffectBeforeApproval / a terminal operation always has a receipt
         for row in &operations {
             if !TERMINAL_OPS.contains(&row[1].as_str()) || row[1] == "PREPARED" {
                 continue;
@@ -542,15 +545,15 @@ impl Harness {
             }
         }
 
-        // LiveIsPersisted：LIVE 制品必须有字节
+        // LiveIsPersisted: a LIVE artifact has bytes
         for row in self.rows("SELECT id, completeness, storage_ref FROM artifacts ORDER BY id", &[]) {
             if row[1] == "LIVE" && !std::path::Path::new(&row[2]).exists() {
                 reports.push(format!("LiveIsPersisted: artifact {} is LIVE without bytes at {}", row[0], row[2]));
             }
         }
 
-        // A28：命令回执稳定（同一个 command id 的存量回执不再改写），且重放步骤必须
-        // 完全不动状态（命令/事件/上下文三张表的规模不变）
+        // A28: command receipts are stable (a stored receipt for a command id is never
+        // rewritten), and a replay step must not move state at all (the three table sizes stay put)
         let commands = self.rows("SELECT command_id, result_json FROM commands ORDER BY command_id", &[]);
         for row in &commands {
             match self.receipts_seen.get(&row[0]) {
@@ -579,12 +582,13 @@ impl Harness {
         }
         self.sizes = sizes;
 
-        // A25/RT-06：待批只属于未开动的操作（操作一旦终结，它的批准必须已过期）；
-        // 被拒绝/过期的批准不会有已经发生的效果；批准决定一旦落下不再改写
+        // A25/RT-06: a pending approval belongs to an operation that has not started (once the
+        // operation is terminal its approval must be expired); a denied or expired approval has no
+        // effect; a decided approval is never rewritten
         let approvals = self.rows("SELECT id, operation_id, status FROM approvals ORDER BY id", &[]);
         for row in &approvals {
             let (approval_id, operation_id, status) = (row[0].clone(), row[1].clone(), row[2].clone());
-            // PENDING → 任何决定都合法（RT-06 的过期就是这一条）；决定落下之后不再改写
+            // PENDING -> any decision is legal (RT-06 expiry is one of them); a decided approval never changes
             let decided = |value: &str| matches!(value, "APPROVED" | "DENIED" | "EXPIRED");
             match self.approvals_seen.get(&approval_id) {
                 Some(previous) if decided(previous) && previous != &status => {
@@ -622,7 +626,8 @@ impl Harness {
             }
         }
 
-        // 上下文条目：只增不减、槽位连续（TailAppend）、覆盖不许回抬、覆盖指向更晚的总结
+        // Context entries: append-only, contiguous slots (TailAppend), coverage never lifted, and
+        // coverage points at a later summary
         let entries = self.rows(
             "SELECT instance_id, epoch, id, idx, kind, COALESCE(compressed_by, '') FROM context_entries
              ORDER BY instance_id, epoch, idx",
@@ -668,12 +673,12 @@ impl Harness {
             if let Some(row) = shape.first() {
                 let count: i64 = row[0].parse().unwrap_or(-1);
                 let max: i64 = row[1].parse().unwrap_or(-2);
-                // append_entry 从 idx = 1 开始，只增不减 ⇒ 条目数等于最大 idx
+                // append_entry starts at idx = 1 and never trims, so the entry count equals the max idx
                 if count != max {
                     reports.push(format!("TailAppend: {instance} epoch {epoch} has {count} entries but max idx {max}"));
                 }
             }
-            // 最新的总结必须可见（更早的总结可以被更晚的总结覆盖）
+            // the newest summary must be visible (older summaries may be covered by later ones)
             let newest = self.rows(
                 "SELECT id, COALESCE(compressed_by, '') FROM context_entries
                  WHERE instance_id = ?1 AND epoch = ?2 AND kind = 'summary' ORDER BY idx DESC LIMIT 1",
@@ -686,7 +691,7 @@ impl Harness {
             }
         }
 
-        // context_epoch：条目不能超出实例当前 epoch
+        // context_epoch: entries cannot exceed the instance's current epoch
         for row in &instances {
             let epoch: i64 = row[5].parse().unwrap_or(0);
             for entry in self
@@ -705,7 +710,7 @@ impl Harness {
         let reports = self.violations();
         if !reports.is_empty() {
             let trace = self.trace.join("\n  ");
-            panic!("不变量违反（步 {label}）：\n  {}\n轨迹：\n  {trace}", reports.join("\n  "));
+            panic!("invariant violated at step {label}:\n  {}\ntrace:\n  {trace}", reports.join("\n  "));
         }
     }
 }
@@ -713,7 +718,7 @@ impl Harness {
 // ------------------------------------------------------------- step kinds --
 const STEPS: usize = 38;
 
-/// 按当前状态生成第 `kind` 种命令；前置不成立时返回 None（该步跳过）。
+/// Build command kind `kind` for the current state; returns None when its preconditions do not hold (the step is skipped).
 fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
     let instances = harness.instances();
     let goals = harness.goals();
@@ -731,12 +736,12 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
     let open_tasks: Vec<Vec<String>> =
         tasks.iter().filter(|row| OPEN_TASKS.contains(&row[4].as_str())).cloned().collect();
     let pending_tasks: Vec<Vec<String>> = tasks.iter().filter(|row| row[4] == "PENDING").cloned().collect();
-    // turn 请求：import_response 只接受它们（压缩请求由 compress_context 提交）
+    // turn requests: import_response accepts only these (compression is submitted by compress_context)
     let pending_requests: Vec<Vec<String>> =
         requests.iter().filter(|row| row[2] == "PENDING" && row[4] == "turn").cloned().collect();
-    // 任何未关闭请求：record_attempt 对两种请求都适用
+    // any open request: record_attempt applies to both kinds
     let pending_any: Vec<Vec<String>> = requests.iter().filter(|row| row[2] == "PENDING").cloned().collect();
-    // 可以导入的 turn 请求：已选中一个完整尝试（driver 就是在选中之后导入的）
+    // an importable turn request: one complete attempt is selected (the driver imports right after selection)
     let ready_requests: Vec<Vec<String>> = pending_requests.iter().filter(|row| !row[3].is_empty()).cloned().collect();
     let prepared_ops: Vec<String> = harness
         .rows(
@@ -766,7 +771,7 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
     );
 
     match kind {
-        // 0: 建实例（上限 3）
+        // 0: create an instance (at most 3)
         0 => {
             if ids.len() >= 3 {
                 return None;
@@ -782,7 +787,7 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity: Identity::User,
             })
         }
-        // 1: 建目标并挂到实例上
+        // 1: create a goal and attach it to an instance
         1 => {
             if goal_ids.len() >= 2 || ids.is_empty() {
                 return None;
@@ -799,7 +804,7 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity: Identity::User,
             })
         }
-        // 2: 开会话（begin_request）
+        // 2: open a request (begin_request)
         2 => {
             let row = harness
                 .instances()
@@ -822,7 +827,7 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity: Identity::Instance(row[0].clone()),
             })
         }
-        // 3: 记录完整尝试（turn 与 compression 请求都有尝试）
+        // 3: record a complete attempt (both turn and compression requests have attempts)
         3 => {
             let row = harness.pick_rows(&pending_any)?;
             Some(Step {
@@ -837,7 +842,7 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity: Identity::System,
             })
         }
-        // 4: 导入普通回复
+        // 4: import an ordinary reply
         4 => {
             let row = harness.pick_rows(&ready_requests)?;
             Some(Step {
@@ -851,8 +856,9 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity: Identity::System,
             })
         }
-        // 5: 导入等待（未满足 ⇒ 停放）。有未结清任务时等它（可被结清唤醒），
-        // 否则等一条永远不会来的用户消息（永久停放也是要检查的状态）
+        // 5: import a wait (unsatisfied -> parked). Wait on an open task when one exists (it can
+        // be woken by settling), otherwise on a user message that never arrives (a permanent park is
+        // a state worth checking too)
         5 => {
             let row = harness.pick_rows(&ready_requests)?;
             let condition = match harness.pick_rows(&open_tasks) {
@@ -874,7 +880,7 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity: Identity::System,
             })
         }
-        // 6: 导入等待 + 计时器（可被 fire_timer 关闭）
+        // 6: import a wait plus a timer (closed by fire_timer)
         6 => {
             let row = harness.pick_rows(&ready_requests)?;
             Some(Step {
@@ -893,7 +899,7 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity: Identity::System,
             })
         }
-        // 7: 导入完成候选（进 COMPLETION_PENDING）
+        // 7: import a completion candidate (enters COMPLETION_PENDING)
         7 => {
             let row = harness.pick_rows(&ready_requests)?;
             Some(Step {
@@ -910,7 +916,7 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity: Identity::System,
             })
         }
-        // 8: 结清目标
+        // 8: settle the goal
         8 => {
             let goal = harness.pick(&active_goals)?.clone();
             let ready = harness.instances().into_iter().find(|row| row[2] == "COMPLETION_PENDING")?;
@@ -924,7 +930,7 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity: Identity::System,
             })
         }
-        // 9: 系统阻断目标
+        // 9: the system blocks the goal
         9 => {
             let goal = harness.pick(&active_goals)?.clone();
             let instance = harness.pick(&ids)?.clone();
@@ -938,7 +944,7 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity: Identity::System,
             })
         }
-        // 10: 委派任务（合法目标）
+        // 10: delegate a task (with a legal goal)
         10 => {
             if ids.is_empty() || tasks.len() >= 3 {
                 return None;
@@ -960,7 +966,7 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity: Identity::User,
             })
         }
-        // 11: 承接者启动任务
+        // 11: the assignee starts the task
         11 => {
             let task = harness.pick_rows(&pending_tasks)?;
             Some(Step {
@@ -973,7 +979,7 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity: Identity::Instance(task[2].clone()),
             })
         }
-        // 12: 承接者结清任务
+        // 12: the assignee settles the task
         12 => {
             let task = harness.pick_rows(&open_tasks)?;
             let status = ["SUCCEEDED", "FAILED", "BLOCKED"][(harness.next_rand() % 3) as usize];
@@ -987,7 +993,7 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity: Identity::Instance(task[2].clone()),
             })
         }
-        // 13: 委派者取消任务
+        // 13: the delegator cancels the task
         13 => {
             let task = harness.pick_rows(&open_tasks)?;
             Some(Step {
@@ -1000,7 +1006,7 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity: Identity::User,
             })
         }
-        // 14: 用户输入（可取代等待）
+        // 14: user input (may supersede a wait)
         14 => {
             let instance = harness.pick(&ids)?.clone();
             let envelope = format!("e-{}", harness.counter + 1);
@@ -1014,7 +1020,7 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity: Identity::User,
             })
         }
-        // 15: 停放 drain（等待唤醒路径）
+        // 15: a parked drain (the wake path for waits)
         15 => {
             let instance = harness.pick(&ids)?.clone();
             Some(Step {
@@ -1027,13 +1033,13 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity: Identity::Instance(instance),
             })
         }
-        // 16: 计时器
+        // 16: a timer
         16 => Some(Step {
             label: "fire_timer".into(),
             command: Command { command_id: String::new(), method: "fire_timer".into(), params: json!({"now": 4e9}) },
             identity: Identity::System,
         }),
-        // 17: 授权（message / delegate）
+        // 17: issue a grant (message / delegate)
         17 => {
             if ids.is_empty() {
                 return None;
@@ -1041,7 +1047,7 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
             let subject = harness.pick(&ids)?.clone();
             let target = harness.pick(&ids)?.clone();
             let action = ["message", "delegate", "shell"][(harness.next_rand() % 3) as usize];
-            // shell 授权用与 create_instance 相同的范围，撤销之后还能重新授予
+            // the shell grant uses the same scope as create_instance, so it can be re-issued after a revocation
             let scope = if action == "shell" { "workspace".to_string() } else { format!("instance:{target}") };
             Some(Step {
                 label: format!("issue_grant({subject} {action} {scope})"),
@@ -1053,7 +1059,7 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity: Identity::User,
             })
         }
-        // 18: 发消息（可能需要授权；被拒也是合法结果）
+        // 18: send a message (may need a grant; a refusal is a legal outcome)
         18 => {
             if ids.len() < 2 {
                 return None;
@@ -1073,8 +1079,8 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity: Identity::Instance(sender),
             })
         }
-        // 19: 派发操作。始终要求批准：先走批准闸门（A25），批准后再派发成功；
-        // 不要求批准的直派路径由 core 的单元测试覆盖，这里让游走稳定走到批准链路
+        // 19: dispatch an operation. Approval is always required so the walk reliably exercises the
+        // approval path (A25); the dispatch-without-approval path is covered by the core unit tests
         19 => {
             let operation = harness.pick(&prepared_ops)?.clone();
             let approval = true;
@@ -1089,7 +1095,7 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity: Identity::System,
             })
         }
-        // 20: 结清操作
+        // 20: settle the operation
         20 => {
             let operation = harness.pick(&live_ops)?.clone();
             Some(Step {
@@ -1103,7 +1109,7 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity: Identity::System,
             })
         }
-        // 21: 批准 / 拒绝
+        // 21: approve / deny
         21 => {
             let operation = harness.pick(&pending_approvals)?.clone();
             let method = if harness.next_rand().is_multiple_of(2) { "approve" } else { "deny" };
@@ -1117,7 +1123,7 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity: Identity::User,
             })
         }
-        // 22: 重置 epoch（安全边界：实例不再有在途回合时才重置，与 driver 一致）
+        // 22: reset the epoch (a safe boundary: only when the instance has no in-flight turn, like the driver)
         22 => {
             let ready: Vec<String> = instances
                 .iter()
@@ -1135,7 +1141,8 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity: Identity::User,
             })
         }
-        // 23: 生命周期（暂停 / 恢复 / 终止）。终止同样落在安全边界上：实例处于 READY
+        // 23: lifecycle (pause / resume / terminate). Termination lands on a safe boundary too: the
+        // instance is READY
         23 => {
             let lifecycle = ["PAUSED", "ACTIVE", "TERMINATED"][(harness.next_rand() % 3) as usize];
             let pool: Vec<String> = instances
@@ -1156,7 +1163,7 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity: Identity::User,
             })
         }
-        // 24: 制品 stage / publish
+        // 24: artifact stage / publish
         24 => {
             if harness.next_rand().is_multiple_of(2) {
                 if artifacts.len() >= 2 {
@@ -1191,7 +1198,7 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 })
             }
         }
-        // 28: 导入工具意图（产生 PREPARED 操作，供派发/批准/回执路径使用）
+        // 28: import a tool intent (creates a PREPARED operation for the dispatch/approval/receipt paths)
         28 => {
             if operations.len() >= 3 {
                 return None;
@@ -1213,7 +1220,8 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity: Identity::System,
             })
         }
-        // 29: 重新授权（撤权/换版后把 PREPARED 操作重新盖上当前权限版本）
+        // 29: re-authorize (stamp PREPARED operations with the current permission revision after a
+        // revocation or bump)
         29 => {
             let operation = harness.pick(&prepared_ops)?.clone();
             Some(Step {
@@ -1226,7 +1234,7 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity: Identity::System,
             })
         }
-        // 30: 开门压缩（与 turn 请求共用准入闸门）
+        // 30: open a compression (shares the admission gate with turn requests)
         30 => {
             let instance = harness.pick(&ids)?.clone();
             let request = format!("cr-{}", harness.plan_id());
@@ -1240,7 +1248,8 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity: Identity::Instance(instance),
             })
         }
-        // 31: 提交压缩（追加总结、覆盖旧条目、关请求、释放预留）
+        // 31: submit the compression (append the summary, cover old entries, close the request,
+        // release the reservation)
         31 => {
             let row = harness.pick_rows(&compression)?;
             let instance = row[1].clone();
@@ -1254,7 +1263,7 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                  WHERE instance_id = ?1 AND epoch = ?2 AND compressed_by IS NULL ORDER BY idx",
                 &[&instance, &epoch],
             );
-            // 一半情况保留最早一条可见条目（覆盖其余），另一半全部覆盖
+            // half the time the earliest visible entry is kept (the rest are covered), otherwise all are
             let keep = if harness.next_rand().is_multiple_of(2) {
                 visible.first().map(|entry| json!([entry[0]])).unwrap_or(json!([]))
             } else {
@@ -1271,7 +1280,8 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity: Identity::System,
             })
         }
-        // 32: 压缩失败（上下文不动，只关请求并释放预留）
+        // 32: the compression fails (the context stays put; only the request closes and the
+        // reservation is released)
         32 => {
             let row = harness.pick_rows(&compression)?;
             Some(Step {
@@ -1284,7 +1294,7 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity: Identity::System,
             })
         }
-        // 33: 取消一个 PREPARED 操作（待批批准随之过期，RT-06 的过期路径）
+        // 33: cancel a PREPARED operation (its pending approval expires: the RT-06 path)
         33 => {
             let operation = harness.pick(&prepared_ops)?.clone();
             Some(Step {
@@ -1297,7 +1307,7 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity: Identity::System,
             })
         }
-        // 34: 重放上一条命令（同 id 同 payload）：返回存量回执，状态不动
+        // 34: replay the last command (same id, same payload): returns the stored receipt, state unchanged
         34 => {
             let (last, identity) = harness.last_command.clone()?;
             Some(Step {
@@ -1306,7 +1316,7 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity,
             })
         }
-        // 35: 反例探针——同一个 command id 换了 payload（规格要求拒绝）
+        // 35: counterexample probe - the same command id with a different payload (the spec requires a refusal)
         35 => {
             let (last, identity) = harness.last_command.clone()?;
             let mut params = last.params.clone();
@@ -1319,7 +1329,7 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity,
             })
         }
-        // 36: 撤销一条仍然有效的 shell 授权（A03/A04 的撤权面）
+        // 36: revoke a still-effective shell grant (the revocation surface of A03/A04)
         36 => {
             let live: Vec<String> = harness
                 .rows("SELECT id FROM grants WHERE action = 'shell' AND revoked_at IS NULL", &[])
@@ -1337,7 +1347,7 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity: Identity::User,
             })
         }
-        // 37: 反例探针——授权已被撤销的实例不得再派发（规格要求被拒）
+        // 37: counterexample probe - an instance whose grant was revoked must not dispatch (the spec requires a refusal)
         37 => {
             let instance = prepared_ops.first().and_then(|operation| {
                 harness
@@ -1361,7 +1371,7 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 .and_then(|row| row[0].parse().ok())
                 .unwrap_or(1);
             if live_shell > 0 {
-                return None; // 还有有效授权时这条探针不成立
+                return None; // the probe does not apply while an effective grant exists
             }
             let operation = prepared_ops.first()?.clone();
             Some(Step {
@@ -1374,7 +1384,7 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity: Identity::System,
             })
         }
-        // 26: 反例探针——委派到已结清的目标（规格要求被拒）
+        // 26: counterexample probe - delegating into a settled goal (the spec requires a refusal)
         26 => {
             let goal = settled_goals.first()?.clone();
             let instance = ids.first()?.clone();
@@ -1389,7 +1399,7 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity: Identity::User,
             })
         }
-        // 27: 反例探针——非承接者结清任务（规格要求被拒绝）
+        // 27: counterexample probe - settling a task as someone other than the assignee (the spec requires a refusal)
         27 => {
             let task = harness.pick_rows(&open_tasks)?;
             let foreign = instances.iter().map(|row| row[0].clone()).find(|id| *id != task[2])?;
@@ -1403,7 +1413,7 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity: Identity::Instance(foreign),
             })
         }
-        // 25: GC 认领
+        // 25: GC claim
         25 => {
             if live_artifacts.is_empty() && waits.is_empty() {
                 return None;
@@ -1441,7 +1451,8 @@ fn run_sequence(tag: &str, kinds: &[usize]) {
 
 #[test]
 fn spec_invariants_hold_over_short_command_sequences() {
-    // 长度 ≤ 2 的穷举：每条序列从全新库开始（覆盖所有命令对，包括被拒绝的组合）
+    // exhaustive enumeration up to length 2: every sequence starts from a fresh database (all
+    // command pairs are covered, including refused combinations)
     for first in 0..STEPS {
         run_sequence("exh1", &[first]);
         for second in 0..STEPS {
@@ -1452,7 +1463,7 @@ fn spec_invariants_hold_over_short_command_sequences() {
 
 #[test]
 fn spec_invariants_hold_over_random_walks() {
-    // 固定种子的随机游走：更深的状态空间
+    // fixed-seed random walks: a deeper state space
     let mut reached = Coverage::default();
     for walk in 0..60u64 {
         let mut harness = Harness::new("walk");
@@ -1460,8 +1471,8 @@ fn spec_invariants_hold_over_random_walks() {
         harness.check("init");
         let mut taken: HashMap<String, usize> = HashMap::new();
         for _ in 0..24 {
-            // 只在"当前能用"的命令里挑，并优先挑本游走里用得最少的种类（覆盖驱动）：
-            // 否则游走会反复做同一件安全的事，永远走不到深层链路
+            // pick only among commands usable right now, preferring the kind used least in this walk
+            // (coverage driven): otherwise the walk repeats one safe action and never reaches deep paths
             let mut options: Vec<Step> = (0..STEPS).filter_map(|kind| make_step(&mut harness, kind)).collect();
             if options.is_empty() {
                 break;
@@ -1478,28 +1489,32 @@ fn spec_invariants_hold_over_random_walks() {
         }
         reached.merge(harness.coverage());
     }
-    // 游走必须真的走到这些状态，否则上面的"全部通过"只是空转
+    // the walk must really reach these states, otherwise "everything passed" above is vacuous
     for (name, seen) in [
-        ("等被解决（SATISFIED/CANCELLED）", reached.resolved_wait),
-        ("目标结清", reached.settled_goal),
-        ("任务结清", reached.settled_task),
-        ("操作终态", reached.settled_operation),
-        ("epoch 重置", reached.reset_epoch),
-        ("实例终止", reached.terminated),
-        ("制品 LIVE", reached.artifact_live),
-        ("压缩提交（有条目被覆盖）", reached.compressed),
-        ("批准已决定（批准/拒绝/过期）", reached.approval_decided),
-        ("命令重放（同 id 同 payload 返回存量回执、异 payload 被拒）", reached.replay_checked),
-        ("撤权后派发被拒（A03/A04）", reached.revocation_checked),
+        ("a wait resolved (SATISFIED/CANCELLED)", reached.resolved_wait),
+        ("a settled goal", reached.settled_goal),
+        ("a settled task", reached.settled_task),
+        ("a terminal operation", reached.settled_operation),
+        ("an epoch reset", reached.reset_epoch),
+        ("a terminated instance", reached.terminated),
+        ("a LIVE artifact", reached.artifact_live),
+        ("a submitted compression (with covered entries)", reached.compressed),
+        ("a decided approval (approved/denied/expired)", reached.approval_decided),
+        (
+            "a command replay (same payload returns the stored receipt, a different one is refused)",
+            reached.replay_checked,
+        ),
+        ("a dispatch refused after revocation (A03/A04)", reached.revocation_checked),
     ] {
-        assert!(seen, "随机游走没有覆盖到：{name}");
+        assert!(seen, "the random walk never covered: {name}");
     }
 }
 
-/// 反向验证：人为破坏状态时检查器必须报出来，否则上面的"通过"没有意义。
+/// Negative control: when the state is broken on purpose the checker must report it, otherwise the
+/// "passed" results above mean nothing.
 #[test]
 fn the_invariant_checker_detects_broken_states() {
-    // 1) 未知任务状态
+    // 1) an unknown task status
     let mut harness = Harness::new("broken-status");
     let step = make_step(&mut harness, 0).expect("create instance");
     let _ = harness.run_step(step);
@@ -1508,12 +1523,15 @@ fn the_invariant_checker_detects_broken_states() {
     let step = make_step(&mut harness, 10).expect("delegate task");
     let _ = harness.run_step(step);
     let healthy = harness.violations();
-    assert!(healthy.is_empty(), "健康的起点不应报违反：{healthy:?}");
+    assert!(healthy.is_empty(), "a healthy starting point must report no violation: {healthy:?}");
     harness.ctl.connection().execute("UPDATE tasks SET status = 'WAT'", []).unwrap();
     let reported = harness.violations();
-    assert!(reported.iter().any(|line| line.contains("TypeOK: task")), "应报出未知状态：{reported:?}");
+    assert!(
+        reported.iter().any(|line| line.contains("TypeOK: task")),
+        "the unknown status must be reported: {reported:?}"
+    );
 
-    // 2) 终态任务被改写（跨步记忆）：先经控制面正常结清，再手工改写
+    // 2) a settled task rewritten (memory across steps): settle it through the control plane, then edit it by hand
     let mut harness = Harness::new("broken-terminal");
     let step = make_step(&mut harness, 0).expect("create instance");
     let _ = harness.run_step(step);
@@ -1529,30 +1547,34 @@ fn the_invariant_checker_detects_broken_states() {
         },
         Identity::Instance("i1".into()),
     );
-    assert!(settled.is_ok(), "正常结清应当成功：{settled:?}");
+    assert!(settled.is_ok(), "a normal settle must succeed: {settled:?}");
     let healthy = harness.violations();
-    assert!(healthy.is_empty(), "正常结清后不应报违反：{healthy:?}");
+    assert!(healthy.is_empty(), "a normal settle must report no violation: {healthy:?}");
     harness.ctl.connection().execute("UPDATE tasks SET status = 'RUNNING'", []).unwrap();
     let reported = harness.violations();
-    assert!(reported.iter().any(|line| line.contains("SettledIsFinal")), "应报出终态改写：{reported:?}");
+    assert!(reported.iter().any(|line| line.contains("SettledIsFinal")), "the rewrite must be reported: {reported:?}");
 
-    // 4) 覆盖被回抬（`CoverageNeverLifted`）与覆盖指向更早的条目（`CoveragePointsForward`）
+    // 4) coverage lifted again (`CoverageNeverLifted`) and coverage pointing at an earlier entry
+    // (`CoveragePointsForward`)
     let mut harness = Harness::new("broken-compress");
     for kind in [0, 14, 30, 31] {
         let step = make_step(&mut harness, kind).expect("compression setup");
         let _ = harness.run_step(step);
     }
     let healthy = harness.violations();
-    assert!(healthy.is_empty(), "正常压缩后不应报违反：{healthy:?}");
+    assert!(healthy.is_empty(), "a normal compression must report no violation: {healthy:?}");
     let covered = harness.rows("SELECT id FROM context_entries WHERE compressed_by IS NOT NULL", &[]);
-    assert!(!covered.is_empty(), "压缩提交必须覆盖到条目");
+    assert!(!covered.is_empty(), "a submitted compression must cover entries");
     harness
         .ctl
         .connection()
         .execute("UPDATE context_entries SET compressed_by = NULL WHERE compressed_by IS NOT NULL", [])
         .unwrap();
     let reported = harness.violations();
-    assert!(reported.iter().any(|line| line.contains("CoverageNeverLifted")), "应报出覆盖被回抬：{reported:?}");
+    assert!(
+        reported.iter().any(|line| line.contains("CoverageNeverLifted")),
+        "lifted coverage must be reported: {reported:?}"
+    );
 
     let mut harness = Harness::new("broken-compress-forward");
     for kind in [0, 14, 30, 31] {
@@ -1569,12 +1591,15 @@ fn the_invariant_checker_detects_broken_states() {
             [],
         )
         .unwrap();
-    // 手工把总结指向自己：索引不再严格大于被覆盖条目
+    // point the summary at itself: its index is no longer strictly greater than the covered entry
     harness.ctl.connection().execute("UPDATE context_entries SET kind = 'note' WHERE kind = 'summary'", []).unwrap();
     let reported = harness.violations();
-    assert!(reported.iter().any(|line| line.contains("CoveragePointsForward")), "应报出覆盖指向非总结：{reported:?}");
+    assert!(
+        reported.iter().any(|line| line.contains("CoveragePointsForward")),
+        "coverage pointing at a non-summary must be reported: {reported:?}"
+    );
 
-    // 3) 实例悬挂已结清目标（V-G1）
+    // 3) an instance pointing at a settled goal (V-G1)
     let mut harness = Harness::new("broken-goal");
     let step = make_step(&mut harness, 0).expect("create instance");
     let _ = harness.run_step(step);
@@ -1582,5 +1607,8 @@ fn the_invariant_checker_detects_broken_states() {
     let _ = harness.run_step(step);
     harness.ctl.connection().execute("UPDATE goals SET status = 'SUCCEEDED'", []).unwrap();
     let reported = harness.violations();
-    assert!(reported.iter().any(|line| line.contains("NoStaleActiveGoal")), "应报出悬挂指针：{reported:?}");
+    assert!(
+        reported.iter().any(|line| line.contains("NoStaleActiveGoal")),
+        "the stale pointer must be reported: {reported:?}"
+    );
 }

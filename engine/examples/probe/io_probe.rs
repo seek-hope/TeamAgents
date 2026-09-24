@@ -141,7 +141,7 @@ pub async fn run() -> Result<Value> {
             }
             let until = now_ms() + 2500;
             while ready.load(Ordering::SeqCst) != count {
-                ensure(now_ms() < until, "本地 HTTP 夹具未进入阻塞读取")?;
+                ensure(now_ms() < until, "the local HTTP fixture did not enter a blocking read")?;
                 tokio::time::sleep(Duration::from_millis(1)).await;
             }
             let mut control = Vec::new();
@@ -172,9 +172,9 @@ pub async fn run() -> Result<Value> {
             let cancel_ms = start.elapsed().as_secs_f64() * 1000.0;
             let completed = completed.load(Ordering::SeqCst);
             if mode == "async" {
-                ensure(completed == 0, "异步请求未在阻塞时被取消")?;
+                ensure(completed == 0, "the async request was not cancelled while blocking")?;
             } else {
-                ensure(completed == count, "阻塞线程尚未实际退出")?;
+                ensure(completed == count, "the blocking thread has not actually exited")?;
             }
             results.push(json!({"mode":mode,"active_io":count,"cancel_workers_ms":cancel_ms,
                 "control_roundtrip_us":percentiles(control),"rss_kib":rss,"threads_including_fixture":threads,
