@@ -135,6 +135,9 @@ fn dispatch(
         "submit_input" => submit_input(tx, session_id, params, identity),
         "begin_request" => begin_request(tx, session_id, params, identity),
         "record_attempt" => record_attempt(tx, session_id, params),
+        "begin_compression" => begin_compression(tx, session_id, params, identity),
+        "compress_context" => compress_context(tx, session_id, params, identity),
+        "fail_compression" => fail_compression(tx, session_id, params),
         "import_response" => import_response(tx, session_id, params, identity),
         "dispatch_operation" => dispatch_operation(tx, session_id, params),
         "complete_operation" => complete_operation(tx, session_id, params),
@@ -806,7 +809,15 @@ fn drain_inbox(tx: &Connection, session_id: &str, params: &Json, identity: &Iden
         }
         let payload: Json = serde_json::from_str(&payload_json).unwrap_or(json!({}));
         let content = envelope_text(&kind, &sender, correlation.as_deref(), &payload);
-        append_context(tx, instance_id, epoch, "user", &json!({"role": "user", "content": content}), Some(&id), &[])?;
+        append_context(
+            tx,
+            instance_id,
+            epoch,
+            "user",
+            &json!({"role": "user", "content": content}),
+            Some(&id),
+            &json!([]),
+        )?;
         tx.execute("UPDATE envelopes SET state = 'APPLIED' WHERE id = ?1", [&id])
             .map_err(|e| format!("apply envelope {id}: {e}"))?;
         applied += 1;
@@ -1036,7 +1047,7 @@ fn complete_task(tx: &Connection, session_id: &str, params: &Json, identity: &Id
                     "[task {task_id} settled: {target}] {remaining} open task(s) remain in your queue"
                 )}),
                 Some(&format!("settle-note-{task_id}")),
-                &[],
+                &json!([]),
             )?;
         }
     }
@@ -1289,7 +1300,7 @@ fn submit_input(tx: &Connection, session_id: &str, params: &Json, identity: &Ide
         "user",
         &json!({"role": "user", "content": text}),
         Some(envelope_id),
-        &[],
+        &json!([]),
     )?;
     if applied {
         tx.execute("UPDATE envelopes SET state = 'APPLIED' WHERE id = ?1", [envelope_id])
@@ -1322,7 +1333,7 @@ fn append_context(
     kind: &str,
     message: &Json,
     envelope_id: Option<&str>,
-    refs: &[String],
+    refs: &Json,
 ) -> Result<bool, String> {
     if let Some(envelope) = envelope_id {
         let seen: Option<i64> = tx
@@ -1337,6 +1348,22 @@ fn append_context(
             return Ok(false);
         }
     }
+    append_entry(tx, instance_id, epoch, kind, message, envelope_id, refs)?;
+    Ok(true)
+}
+
+/// Unconditional context append; deduplication is the caller's business.
+/// Returns the new entry id (`instance:epoch:idx`), which summaries use to
+/// name what they cover.
+fn append_entry(
+    tx: &Connection,
+    instance_id: &str,
+    epoch: i64,
+    kind: &str,
+    message: &Json,
+    envelope_id: Option<&str>,
+    refs: &Json,
+) -> Result<String, String> {
     let idx: i64 = tx
         .query_row(
             "SELECT COALESCE(MAX(idx), 0) + 1 FROM context_entries WHERE instance_id = ?1 AND epoch = ?2",
@@ -1363,7 +1390,7 @@ fn append_context(
     .map_err(|e| format!("context append: {e}"))?;
     tx.execute("UPDATE instances SET context_head = ?1 WHERE id = ?2", rusqlite::params![idx, instance_id])
         .map_err(|e| format!("context head: {e}"))?;
-    Ok(true)
+    Ok(id)
 }
 
 /// READY → MODEL_PENDING with the fixed request and budget reservation (§3).
@@ -1389,24 +1416,7 @@ fn begin_request(tx: &Connection, session_id: &str, params: &Json, identity: &Id
             "instance {instance_id} revision {revision} != expected {expected_revision}: stale executor"
         ));
     }
-    let goal_id: Option<String> = tx
-        .query_row("SELECT active_goal_id FROM instances WHERE id = ?1", [instance_id], |row| row.get(0))
-        .map_err(|e| format!("goal read: {e}"))?;
-    // A18: a goal-less instance (a worker) shares the budget of the goal its
-    // task queue serves — running work first, then the pending queue, FIFO —
-    // so reservations and usage from every instance stay visible on the goal
-    let goal_id = match goal_id {
-        Some(goal) => Some(goal),
-        None => tx
-            .query_row(
-                "SELECT goal_id FROM tasks WHERE assignee = ?1 AND status IN ('RUNNING', 'PENDING')
-                 ORDER BY CASE status WHEN 'RUNNING' THEN 0 ELSE 1 END, rowid LIMIT 1",
-                [instance_id],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|e| format!("task goal read: {e}"))?,
-    };
+    let goal_id = budget_goal(tx, instance_id)?;
     if let Some(goal) = goal_id.as_deref() {
         // A35: past the goal deadline no new request begins — the daemon
         // honors the deadline even if an eval client expired or was killed.
@@ -1445,6 +1455,28 @@ fn begin_request(tx: &Connection, session_id: &str, params: &Json, identity: &Id
     publish_list(tx, session_id, params)?;
     event(tx, session_id, "request_began", instance_id, &json!({"request_id": request_id}))?;
     Ok(json!({"request_id": request_id, "phase": "MODEL_PENDING", "epoch": epoch}))
+}
+
+/// The goal an instance's requests are billed to (A18): its own active goal,
+/// or — for a worker — the goal its task queue serves, running work first,
+/// then the pending queue in FIFO order, so reservations and usage from every
+/// instance stay visible on one goal.
+fn budget_goal(tx: &Connection, instance_id: &str) -> Result<Option<String>, String> {
+    let goal_id: Option<String> = tx
+        .query_row("SELECT active_goal_id FROM instances WHERE id = ?1", [instance_id], |row| row.get(0))
+        .map_err(|e| format!("goal read: {e}"))?;
+    match goal_id {
+        Some(goal) => Ok(Some(goal)),
+        None => tx
+            .query_row(
+                "SELECT goal_id FROM tasks WHERE assignee = ?1 AND status IN ('RUNNING', 'PENDING')
+                 ORDER BY CASE status WHEN 'RUNNING' THEN 0 ELSE 1 END, rowid LIMIT 1",
+                [instance_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| format!("task goal read: {e}")),
+    }
 }
 
 /// Goal deadline gate (A35): the absolute deadline lives on the goal; once
@@ -1583,6 +1615,173 @@ fn record_attempt(tx: &Connection, session_id: &str, params: &Json) -> Result<Js
         &json!({"attempt_id": attempt_id, "status": status, "selected": selected}),
     )?;
     Ok(json!({"attempt_id": attempt_id, "selected": selected}))
+}
+
+/// R22/A20 begin step: register a compression call against the goal budget
+/// WITHOUT touching the instance phase or revision — the turn that asked for
+/// the summary keeps its single-writer guarantee, and the compression request
+/// is a billed, archived request like any other (§7, §8).
+fn begin_compression(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
+    use super::models::REQUEST_KIND_COMPRESSION;
+    let instance_id = params["instance_id"].as_str().ok_or("begin_compression.instance_id required")?;
+    let request_id = params["request_id"].as_str().ok_or("begin_compression.request_id required")?;
+    let request_ref = params["request_ref"].as_str().unwrap_or("");
+    let est = params["est_prompt_tokens"].as_i64().unwrap_or(0);
+    let (session, epoch, lifecycle, _, _) = load_instance(tx, instance_id)?;
+    if session != session_id {
+        return Err("instance does not belong to this session".to_string());
+    }
+    if lifecycle != "ACTIVE" {
+        return Err(format!("instance {instance_id} is {lifecycle}, not compressing"));
+    }
+    let goal_id = budget_goal(tx, instance_id)?;
+    if let Some(goal) = goal_id.as_deref() {
+        if goal_deadline_passed(tx, goal)? {
+            event(
+                tx,
+                session_id,
+                "goal_deadline_refused",
+                instance_id,
+                &json!({"goal_id": goal, "request_id": request_id, "kind": REQUEST_KIND_COMPRESSION}),
+            )?;
+            return Ok(json!({"request_id": request_id, "deadline_refused": true,
+                             "reason": format!("goal {goal} deadline passed")}));
+        }
+        if let Some(reason) = reserve_budget(tx, session_id, goal, instance_id, request_id, est)? {
+            return Ok(json!({"request_id": request_id, "budget_refused": true, "reason": reason}));
+        }
+    }
+    tx.execute(
+        "INSERT INTO model_requests
+             (request_id, instance_id, epoch, goal_id, request_ref, status, est_prompt_tokens, kind)
+         VALUES (?1, ?2, ?3, ?4, ?5, 'PENDING', ?6, ?7)",
+        rusqlite::params![request_id, instance_id, epoch, goal_id, request_ref, est, REQUEST_KIND_COMPRESSION],
+    )
+    .map_err(|e| format!("begin_compression {request_id}: {e}"))?;
+    let _ = identity;
+    event(
+        tx,
+        session_id,
+        "compression_began",
+        instance_id,
+        &json!({"request_id": request_id, "goal_id": goal_id, "est_prompt_tokens": est}),
+    )?;
+    Ok(json!({"request_id": request_id, "goal_id": goal_id, "epoch": epoch, "kind": REQUEST_KIND_COMPRESSION}))
+}
+
+/// R22/A20 commit step, one transaction: append the summary entry, hide the
+/// entries the summary covers (older summaries included) and close the
+/// compression request. Coverage is a view fact, never a deletion — the
+/// original text stays in the epoch and stays reachable through
+/// `read_history` and the readback tool (§4.3, A20).
+fn compress_context(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
+    use super::models::REQUEST_KIND_COMPRESSION;
+    let instance_id = params["instance_id"].as_str().ok_or("compress_context.instance_id required")?;
+    let request_id = params["request_id"].as_str().ok_or("compress_context.request_id required")?;
+    let attempt_id = params["attempt_id"].as_str().unwrap_or("");
+    let summary = params["summary"].as_str().ok_or("compress_context.summary required")?;
+    if summary.trim().is_empty() {
+        return Err("compress_context.summary must not be empty".into());
+    }
+    // entries the caller keeps in the model-visible view; everything else
+    // currently visible is covered by the new summary
+    let keep: std::collections::HashSet<String> = params["keep_ids"]
+        .as_array()
+        .map(|ids| ids.iter().filter_map(|id| id.as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    let (session, epoch, _, _, _) = load_instance(tx, instance_id)?;
+    if session != session_id {
+        return Err("instance does not belong to this session".to_string());
+    }
+    let (kind, status, selected): (String, String, Option<String>) = tx
+        .query_row(
+            "SELECT kind, status, selected_attempt_id FROM model_requests WHERE request_id = ?1",
+            [request_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map_err(|e| format!("compression request {request_id}: {e}"))?;
+    if kind != REQUEST_KIND_COMPRESSION {
+        return Err(format!("request {request_id} is not a compression request"));
+    }
+    if status != "PENDING" {
+        return Err(format!("request {request_id} is {status}; a summary commits once"));
+    }
+    if !attempt_id.is_empty() && selected.as_deref() != Some(attempt_id) {
+        return Err(format!("attempt {attempt_id} is not the selected attempt of {request_id}"));
+    }
+    let visible: Vec<(String, i64)> = {
+        let mut stmt = tx
+            .prepare(
+                "SELECT id, idx FROM context_entries
+                 WHERE instance_id = ?1 AND epoch = ?2 AND compressed_by IS NULL ORDER BY idx",
+            )
+            .map_err(|e| format!("compress view: {e}"))?;
+        let rows = stmt
+            .query_map(rusqlite::params![instance_id, epoch], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(|e| format!("compress view query: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("compress view collect: {e}"))?
+    };
+    let covered: Vec<(String, i64)> = visible.into_iter().filter(|(id, _)| !keep.contains(id)).collect();
+    let covers_to = covered.iter().map(|(_, idx)| *idx).max().unwrap_or(0);
+    let refs = json!({
+        "covers_to": covers_to,
+        "covered": covered.len(),
+        "request_id": request_id,
+        "attempt_id": attempt_id,
+        "refs": [request_id, attempt_id],
+    });
+    let entry = json!({"role": "user", "content": summary});
+    let summary_id = append_entry(tx, instance_id, epoch, "summary", &entry, None, &refs)?;
+    for (id, _) in &covered {
+        tx.execute(
+            "UPDATE context_entries SET compressed_by = ?1
+             WHERE instance_id = ?2 AND epoch = ?3 AND id = ?4 AND compressed_by IS NULL",
+            rusqlite::params![summary_id, instance_id, epoch, id],
+        )
+        .map_err(|e| format!("cover {id}: {e}"))?;
+    }
+    tx.execute("UPDATE model_requests SET status = 'COMPLETE' WHERE request_id = ?1", [request_id])
+        .map_err(|e| format!("close compression {request_id}: {e}"))?;
+    release_reservation(tx, request_id)?;
+    let _ = identity;
+    event(
+        tx,
+        session_id,
+        "context_compressed",
+        instance_id,
+        &json!({"request_id": request_id, "summary_id": summary_id, "covered": covered.len(),
+                "covers_to": covers_to, "kept": keep.len()}),
+    )?;
+    Ok(json!({"summary_id": summary_id, "covered": covered.len(), "covers_to": covers_to}))
+}
+
+/// R22/A20 failure step: close the compression request and release its
+/// reservation. The instance is never touched — a failed summary is a lost
+/// optimization, not a failed turn (the caller keeps working uncompressed).
+fn fail_compression(tx: &Connection, session_id: &str, params: &Json) -> Result<Json, String> {
+    use super::models::REQUEST_KIND_COMPRESSION;
+    let request_id = params["request_id"].as_str().ok_or("fail_compression.request_id required")?;
+    let reason = params["reason"].as_str().unwrap_or("");
+    let (kind, instance_id): (String, String) = tx
+        .query_row("SELECT kind, instance_id FROM model_requests WHERE request_id = ?1", [request_id], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .map_err(|e| format!("compression request {request_id}: {e}"))?;
+    if kind != REQUEST_KIND_COMPRESSION {
+        return Err(format!("request {request_id} is not a compression request"));
+    }
+    let changed = tx
+        .execute(
+            "UPDATE model_requests SET status = 'FAILED' WHERE request_id = ?1 AND status = 'PENDING'",
+            [request_id],
+        )
+        .map_err(|e| format!("fail compression {request_id}: {e}"))?;
+    if changed == 0 {
+        return Ok(json!({"request_id": request_id, "already_closed": true}));
+    }
+    release_reservation(tx, request_id)?;
+    event(tx, session_id, "compression_failed", &instance_id, &json!({"request_id": request_id, "reason": reason}))?;
+    Ok(json!({"request_id": request_id, "status": "FAILED"}))
 }
 
 fn request_goal(tx: &Connection, request_id: &str) -> Result<Option<String>, String> {
@@ -1806,7 +2005,7 @@ fn wake_satisfied_at(tx: &Connection, session_id: &str, now: f64) -> Result<Vec<
             "note",
             &json!({"role": "user", "content": format!("[wait {wait_id} satisfied] mode={mode} conditions={conditions_json} timer_at={timer_at:?}")}),
             Some(&wait_id),
-            &[],
+            &json!([]),
         )?;
         // WAITING → READY is the ready-intent registration of §3; a phase
         // that already advanced (user input, reset) is not rewritten
@@ -1909,7 +2108,7 @@ fn import_response(tx: &Connection, session_id: &str, params: &Json, identity: &
     if inserted != 1 {
         return Err(format!("decision {decision_id} not inserted"));
     }
-    append_context(tx, &request_instance, epoch, "assistant", entry_message, Some(decision_id), &[])?;
+    append_context(tx, &request_instance, epoch, "assistant", entry_message, Some(decision_id), &json!([]))?;
     let goal_id = request_goal(tx, request_id)?;
     let grant_revision = match params["grant_revision"].as_i64() {
         Some(revision) => revision,
@@ -2149,7 +2348,7 @@ fn consume_if_closed(tx: &Connection, session_id: &str, decision_id: &str) -> Re
             "tool_result",
             &json!({"role": "tool", "tool_call_id": intent["call_id"].as_str().unwrap_or(""), "content": content}),
             Some(&operation_id),
-            std::slice::from_ref(&operation_id),
+            &json!([operation_id]),
         )?;
     }
     tx.execute(
@@ -2671,7 +2870,7 @@ fn register_check_runs(tx: &Connection, session_id: &str, params: &Json, identit
                 "content": format!("runtime required-check round {round} for goal {goal_id}"),
                 "tool_calls": tool_calls}),
         Some(&format!("check-round-{goal_id}-{round}")),
-        &[],
+        &json!([]),
     )?;
     let summary: Vec<Json> = checks.iter().map(|c| json!({"id": c["id"], "command": c["command"]})).collect();
     event(
@@ -2737,10 +2936,29 @@ fn block_goal(tx: &Connection, session_id: &str, params: &Json, identity: &Ident
         )
         .map_err(|e| format!("block_goal {goal_id}: {e}"))?;
     if goal_status != "ACTIVE" {
+        // same rule as complete_goal: a terminal goal frees the instance
+        tx.execute(
+            "UPDATE instances SET phase = 'READY', revision = revision + 1
+             WHERE id = ?1 AND phase = 'COMPLETION_PENDING'",
+            [instance_id],
+        )
+        .map_err(|e| format!("close finished goal: {e}"))?;
         return Ok(json!({"goal_id": goal_id, "status": goal_status, "already_closed": true}));
     }
     tx.execute("UPDATE goals SET status = 'BLOCKED' WHERE id = ?1", [goal_id])
         .map_err(|e| format!("goal block: {e}"))?;
+    let epoch: i64 = tx
+        .query_row("SELECT context_epoch FROM instances WHERE id = ?1", [instance_id], |row| row.get(0))
+        .map_err(|e| format!("block epoch: {e}"))?;
+    append_context(
+        tx,
+        instance_id,
+        epoch,
+        "assistant",
+        &json!({"role": "assistant", "content": format!("runtime: goal {goal_id} blocked: {reason}")}),
+        Some(&format!("goal-block-{goal_id}")),
+        &json!([]),
+    )?;
     tx.execute(
         "UPDATE instances SET phase = 'READY', revision = revision + 1 WHERE id = ?1 AND phase = 'COMPLETION_PENDING'",
         [instance_id],
@@ -2791,6 +3009,14 @@ fn complete_goal(tx: &Connection, session_id: &str, params: &Json) -> Result<Jso
         )
         .map_err(|e| format!("complete_goal {goal_id}: {e}"))?;
     if goal_status != "ACTIVE" {
+        // a goal that is already terminal never leaves the instance in a
+        // completion state: a late finish ends its turn here (§8)
+        tx.execute(
+            "UPDATE instances SET phase = 'READY', revision = revision + 1
+             WHERE id = ?1 AND phase = 'COMPLETION_PENDING'",
+            [instance_id],
+        )
+        .map_err(|e| format!("close finished goal: {e}"))?;
         return Ok(json!({"goal_id": goal_id, "status": goal_status, "already_closed": true}));
     }
     let open: i64 = tx
@@ -2822,6 +3048,21 @@ fn complete_goal(tx: &Connection, session_id: &str, params: &Json) -> Result<Jso
     };
     tx.execute("UPDATE goals SET status = ?1 WHERE id = ?2", rusqlite::params![status, goal_id])
         .map_err(|e| format!("goal close: {e}"))?;
+    // the runtime's own closing statement: without it the verification
+    // receipts left at the tail would look like pending model work and the
+    // driver would ask for one more turn (§8 completes once, not per round)
+    let epoch: i64 = tx
+        .query_row("SELECT context_epoch FROM instances WHERE id = ?1", [instance_id], |row| row.get(0))
+        .map_err(|e| format!("close epoch: {e}"))?;
+    append_context(
+        tx,
+        instance_id,
+        epoch,
+        "assistant",
+        &json!({"role": "assistant", "content": format!("runtime: goal {goal_id} closed as {status}")}),
+        Some(&format!("goal-close-{goal_id}")),
+        &json!([]),
+    )?;
     tx.execute(
         "UPDATE instances SET phase = 'READY', revision = revision + 1 WHERE id = ?1 AND phase = 'COMPLETION_PENDING'",
         [instance_id],
@@ -2982,6 +3223,20 @@ mod tests {
         ctl.connection()
             .query_row("SELECT COUNT(*) FROM context_entries WHERE instance_id = ?1", [instance], |row| row.get(0))
             .unwrap()
+    }
+
+    /// The model-visible view of one instance, in the order a driver reads it
+    /// (§7, A20): the newest summary first, then the retained entries by idx.
+    fn view_ids(ctl: &Control, instance: &str) -> Vec<String> {
+        let mut stmt = ctl
+            .connection()
+            .prepare(
+                "SELECT id FROM context_entries WHERE instance_id = ?1 AND compressed_by IS NULL
+                 ORDER BY CASE WHEN kind = 'summary' THEN 0 ELSE 1 END, idx",
+            )
+            .unwrap();
+        let rows = stmt.query_map([instance], |row| row.get(0)).unwrap();
+        rows.collect::<Result<Vec<String>, _>>().unwrap()
     }
 
     fn phase_of(ctl: &Control, instance: &str) -> String {
@@ -5644,6 +5899,403 @@ mod tests {
         }
         ctl.submit(cmd("sp-u", "set_lifecycle", json!({"instance_id": "i1", "lifecycle": "ACTIVE"})), Identity::User)
             .expect("user resume");
+        cleanup(&path);
+    }
+    /// R22/A20: one transaction appends the summary, hides exactly the view
+    /// the caller did not keep, and closes the compression request. The
+    /// covered text stays in the epoch for read_history and readback.
+    #[test]
+    fn compression_covers_the_view_and_keeps_the_originals() {
+        let (mut ctl, path) = control("compression");
+        create_instance(&mut ctl, "i1");
+        ctl.submit(cmd("cg", "create_goal", json!({"id": "g1", "instance_id": "i1"})), Identity::User).expect("goal");
+        for (envelope, text) in [("e1", "do the first thing"), ("e2", "actually do the second")] {
+            ctl.submit(
+                cmd(
+                    &format!("in-{envelope}"),
+                    "submit_input",
+                    json!({"instance_id": "i1", "envelope_id": envelope, "text": text}),
+                ),
+                Identity::User,
+            )
+            .expect("input");
+        }
+        let ids: Vec<String> = {
+            let mut stmt = ctl
+                .connection()
+                .prepare("SELECT id FROM context_entries WHERE instance_id = 'i1' ORDER BY idx")
+                .unwrap();
+            let rows = stmt.query_map([], |row| row.get(0)).unwrap();
+            rows.collect::<Result<Vec<String>, _>>().unwrap()
+        };
+        assert_eq!(ids.len(), 2);
+        let revision: i64 =
+            ctl.connection().query_row("SELECT revision FROM instances WHERE id = 'i1'", [], |row| row.get(0)).unwrap();
+        let begun = ctl
+            .submit(
+                cmd(
+                    "bc-1",
+                    "begin_compression",
+                    json!({"instance_id": "i1", "request_id": "comp1", "est_prompt_tokens": 100,
+                           "request_ref": "compression:i1"}),
+                ),
+                Identity::System,
+            )
+            .expect("begin compression");
+        assert_eq!(begun["goal_id"], json!("g1"));
+        // a compression call is a billed request like any other (§8)
+        ctl.submit(
+            cmd(
+                "ca-1",
+                "record_attempt",
+                json!({"attempt_id": "c1", "request_id": "comp1", "status": "COMPLETE",
+                       "usage": {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120}}),
+            ),
+            Identity::System,
+        )
+        .expect("attempt");
+        let done = ctl
+            .submit(
+                cmd(
+                    "cc-1",
+                    "compress_context",
+                    json!({"instance_id": "i1", "request_id": "comp1", "attempt_id": "c1",
+                           "summary": "[Compacted conversation summary]\n1. Original request: the first thing",
+                           "keep_ids": [ids[1].clone()]}),
+                ),
+                Identity::System,
+            )
+            .expect("compress");
+        assert_eq!(done["covered"], json!(1));
+        assert_eq!(done["covers_to"], json!(1));
+        // the view is the summary followed by the retained entry
+        let view = view_ids(&ctl, "i1");
+        assert_eq!(view.len(), 2);
+        let (summary_id, summary_kind): (String, String) = ctl
+            .connection()
+            .query_row(
+                "SELECT id, kind FROM context_entries WHERE instance_id = 'i1' AND kind = 'summary'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(summary_kind, "summary");
+        assert_eq!(view, vec![summary_id.clone(), ids[1].clone()]);
+        // provenance rides the summary's refs, not a second ledger
+        let refs: String = ctl
+            .connection()
+            .query_row("SELECT refs_json FROM context_entries WHERE id = ?1", [&summary_id], |row| row.get(0))
+            .unwrap();
+        let refs: Json = serde_json::from_str(&refs).unwrap();
+        assert_eq!(refs["request_id"], json!("comp1"));
+        assert_eq!(refs["attempt_id"], json!("c1"));
+        assert_eq!(refs["covers_to"], json!(1));
+        // compression changes no execution state: same phase, same revision
+        assert_eq!(phase_of(&ctl, "i1"), "READY");
+        let now: i64 =
+            ctl.connection().query_row("SELECT revision FROM instances WHERE id = 'i1'", [], |row| row.get(0)).unwrap();
+        assert_eq!(now, revision);
+        // the request is closed and its reservation released
+        let (status, reservations): (String, String) = ctl
+            .connection()
+            .query_row("SELECT status FROM model_requests WHERE request_id = 'comp1'", [], |row| row.get(0))
+            .map(|status| {
+                let reservations: String = ctl
+                    .connection()
+                    .query_row("SELECT reservations_json FROM goals WHERE id = 'g1'", [], |row| row.get(0))
+                    .unwrap();
+                (status, reservations)
+            })
+            .unwrap();
+        assert_eq!(status, "COMPLETE");
+        assert_eq!(reservations, "{}");
+        // a summary commits once
+        let err = ctl
+            .submit(
+                cmd(
+                    "cc-1b",
+                    "compress_context",
+                    json!({"instance_id": "i1", "request_id": "comp1", "summary": "again", "keep_ids": []}),
+                ),
+                Identity::System,
+            )
+            .unwrap_err();
+        assert!(err.contains("commits once"), "{err}");
+        // originals stay reachable: the user-facing history keeps them (A20)
+        let history =
+            ctl.submit(cmd("rh-1", "read_history", json!({"instance_id": "i1"})), Identity::User).expect("history");
+        let seen: Vec<String> = history["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["id"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(seen, vec![ids[0].clone(), ids[1].clone(), summary_id.clone()]);
+        // a second round covers the first summary: still one visible summary,
+        // and covering everything leaves exactly that summary in the view
+        ctl.submit(
+            cmd("in-e3", "submit_input", json!({"instance_id": "i1", "envelope_id": "e3", "text": "third"})),
+            Identity::User,
+        )
+        .expect("input");
+        ctl.submit(
+            cmd("bc-2", "begin_compression", json!({"instance_id": "i1", "request_id": "comp2"})),
+            Identity::System,
+        )
+        .expect("begin 2");
+        ctl.submit(
+            cmd("ca-2", "record_attempt", json!({"attempt_id": "c2", "request_id": "comp2", "status": "COMPLETE"})),
+            Identity::System,
+        )
+        .expect("attempt 2");
+        let second = ctl
+            .submit(
+                cmd(
+                    "cc-2",
+                    "compress_context",
+                    json!({"instance_id": "i1", "request_id": "comp2", "attempt_id": "c2",
+                           "summary": "[Compacted conversation summary]\n1. Original request: the first thing",
+                           "keep_ids": []}),
+                ),
+                Identity::System,
+            )
+            .expect("compress 2");
+        assert_eq!(second["covered"], json!(3), "the old summary is covered like any other entry");
+        let view = view_ids(&ctl, "i1");
+        assert_eq!(view.len(), 1);
+        assert_ne!(view[0], summary_id, "a fresh summary entry carries the second round");
+        cleanup(&path);
+    }
+
+    /// R22/A20: compression calls pass the same budget and deadline gates as
+    /// turns, and a failure only loses the summary — the instance keeps
+    /// working and the reservation is released.
+    #[test]
+    fn compression_shares_the_goal_gates_and_fails_honestly() {
+        let (mut ctl, path) = control("compression-gates");
+        create_instance(&mut ctl, "i1");
+        ctl.submit(
+            cmd("cg", "create_goal", json!({"id": "g1", "instance_id": "i1", "limits": {"max_total_tokens": 200}})),
+            Identity::User,
+        )
+        .expect("goal");
+        // over budget: a committed refusal with an event, no request row
+        let refused = ctl
+            .submit(
+                cmd(
+                    "bc-big",
+                    "begin_compression",
+                    json!({"instance_id": "i1", "request_id": "comp-big", "est_prompt_tokens": 1000}),
+                ),
+                Identity::System,
+            )
+            .expect("begin");
+        assert_eq!(refused["budget_refused"], json!(true));
+        let rows: i64 = ctl
+            .connection()
+            .query_row("SELECT COUNT(*) FROM model_requests WHERE request_id = 'comp-big'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(rows, 0);
+        // within budget: the reservation is visible on the shared goal (A18)
+        ctl.submit(
+            cmd(
+                "bc-1",
+                "begin_compression",
+                json!({"instance_id": "i1", "request_id": "comp1", "est_prompt_tokens": 100}),
+            ),
+            Identity::System,
+        )
+        .expect("begin");
+        let reservations: String = ctl
+            .connection()
+            .query_row("SELECT reservations_json FROM goals WHERE id = 'g1'", [], |row| row.get(0))
+            .unwrap();
+        assert!(reservations.contains("comp1"), "{reservations}");
+        // a failed summary releases the reservation and leaves the instance alone
+        let failed = ctl
+            .submit(
+                cmd("fc-1", "fail_compression", json!({"request_id": "comp1", "reason": "provider said no"})),
+                Identity::System,
+            )
+            .expect("fail");
+        assert_eq!(failed["status"], json!("FAILED"));
+        let (status, reservations): (String, String) = ctl
+            .connection()
+            .query_row("SELECT status FROM model_requests WHERE request_id = 'comp1'", [], |row| row.get(0))
+            .map(|status| {
+                let reservations: String = ctl
+                    .connection()
+                    .query_row("SELECT reservations_json FROM goals WHERE id = 'g1'", [], |row| row.get(0))
+                    .unwrap();
+                (status, reservations)
+            })
+            .unwrap();
+        assert_eq!(status, "FAILED");
+        assert_eq!(reservations, "{}");
+        assert_eq!(phase_of(&ctl, "i1"), "READY");
+        // a closed compression request never takes an attempt, and failing it
+        // twice is idempotent
+        let err = ctl
+            .submit(
+                cmd(
+                    "ra-late",
+                    "record_attempt",
+                    json!({"attempt_id": "z", "request_id": "comp1", "status": "COMPLETE"}),
+                ),
+                Identity::System,
+            )
+            .unwrap_err();
+        assert!(err.contains("closed requests"), "{err}");
+        let again = ctl
+            .submit(cmd("fc-1b", "fail_compression", json!({"request_id": "comp1"})), Identity::System)
+            .expect("idempotent");
+        assert_eq!(again["already_closed"], json!(true));
+        // a retry under a new request id is billed to the same goal (A18)
+        ctl.submit(
+            cmd(
+                "bc-2",
+                "begin_compression",
+                json!({"instance_id": "i1", "request_id": "comp2", "est_prompt_tokens": 100}),
+            ),
+            Identity::System,
+        )
+        .expect("begin 2");
+        ctl.submit(
+            cmd(
+                "ca-2",
+                "record_attempt",
+                json!({"attempt_id": "c2", "request_id": "comp2", "status": "COMPLETE",
+                       "usage": {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120}}),
+            ),
+            Identity::System,
+        )
+        .expect("attempt 2");
+        let known: String = ctl
+            .connection()
+            .query_row("SELECT known_usage_json FROM goals WHERE id = 'g1'", [], |row| row.get(0))
+            .unwrap();
+        assert!(known.contains("\"total\":120"), "{known}");
+        // an expired goal deadline refuses a summary exactly like a turn (A35)
+        ctl.submit(
+            cmd("cg-2", "create_goal", json!({"id": "g2", "instance_id": "i1", "deadline": 1.0})),
+            Identity::User,
+        )
+        .expect("expired goal");
+        let refused = ctl
+            .submit(
+                cmd("bc-late", "begin_compression", json!({"instance_id": "i1", "request_id": "comp-late"})),
+                Identity::System,
+            )
+            .expect("begin late");
+        assert_eq!(refused["deadline_refused"], json!(true));
+        cleanup(&path);
+    }
+    /// §8: closing a goal states the close in the context exactly once, and a
+    /// late finish after the close ends its turn instead of leaving the
+    /// instance parked in COMPLETION_PENDING.
+    #[test]
+    fn a_closed_goal_states_its_close_and_settles_a_late_finish() {
+        let (mut ctl, path) = control("goal-close");
+        create_instance(&mut ctl, "i1");
+        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1", "instance_id": "i1"})), Identity::User).expect("goal");
+        let request = begin_and_complete(&mut ctl, "fin", "i1", 1);
+        ctl.submit(
+            cmd(
+                "imp-fin",
+                "import_response",
+                json!({"request_id": request, "decision_id": "d-fin",
+                       "entry": {"role": "assistant", "content": ""},
+                       "completion": {"outcome": "success", "summary": "done"}}),
+            ),
+            Identity::System,
+        )
+        .expect("import");
+        assert_eq!(phase_of(&ctl, "i1"), "COMPLETION_PENDING");
+        ctl.submit(cmd("cg-1", "complete_goal", json!({"goal_id": "g1", "instance_id": "i1"})), Identity::System)
+            .expect("complete");
+        assert_eq!(phase_of(&ctl, "i1"), "READY");
+        let marker: String = ctl
+            .connection()
+            .query_row(
+                "SELECT message_json FROM context_entries WHERE instance_id = 'i1' ORDER BY idx DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(marker.contains("goal g1 closed as SUCCEEDED"), "{marker}");
+        // a replayed close adds nothing
+        ctl.submit(cmd("cg-1b", "complete_goal", json!({"goal_id": "g1", "instance_id": "i1"})), Identity::System)
+            .expect("replay");
+        assert_eq!(context_count(&ctl, "i1"), 2);
+        // a late finish after the close ends its turn: READY, no stuck phase
+        let revision: i64 =
+            ctl.connection().query_row("SELECT revision FROM instances WHERE id = 'i1'", [], |row| row.get(0)).unwrap();
+        let late = begin_and_complete(&mut ctl, "late", "i1", revision);
+        ctl.submit(
+            cmd(
+                "imp-late",
+                "import_response",
+                json!({"request_id": late, "decision_id": "d-late",
+                       "entry": {"role": "assistant", "content": ""},
+                       "completion": {"outcome": "success", "summary": "again"}}),
+            ),
+            Identity::System,
+        )
+        .expect("import");
+        assert_eq!(phase_of(&ctl, "i1"), "COMPLETION_PENDING");
+        ctl.submit(cmd("cg-2", "complete_goal", json!({"goal_id": "g1", "instance_id": "i1"})), Identity::System)
+            .expect("late complete");
+        assert_eq!(phase_of(&ctl, "i1"), "READY");
+        let status: String =
+            ctl.connection().query_row("SELECT status FROM goals WHERE id = 'g1'", [], |row| row.get(0)).unwrap();
+        assert_eq!(status, "SUCCEEDED");
+        cleanup(&path);
+    }
+
+    /// §8: a blocked goal frees its instance the same way, and the block is
+    /// stated once with the reason the checks gave.
+    #[test]
+    fn a_blocked_goal_states_the_block_and_frees_the_instance() {
+        let (mut ctl, path) = control("goal-block");
+        create_instance(&mut ctl, "i1");
+        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1", "instance_id": "i1"})), Identity::User).expect("goal");
+        let request = begin_and_complete(&mut ctl, "fin", "i1", 1);
+        ctl.submit(
+            cmd(
+                "imp-fin",
+                "import_response",
+                json!({"request_id": request, "decision_id": "d-fin",
+                       "entry": {"role": "assistant", "content": ""},
+                       "completion": {"outcome": "success", "summary": "done"}}),
+            ),
+            Identity::System,
+        )
+        .expect("import");
+        ctl.submit(
+            cmd(
+                "bg-1",
+                "block_goal",
+                json!({"goal_id": "g1", "instance_id": "i1", "reason": "required checks failed (never:exit)"}),
+            ),
+            Identity::System,
+        )
+        .expect("block");
+        assert_eq!(phase_of(&ctl, "i1"), "READY");
+        let marker: String = ctl
+            .connection()
+            .query_row(
+                "SELECT message_json FROM context_entries WHERE instance_id = 'i1' ORDER BY idx DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(marker.contains("goal g1 blocked: required checks failed (never:exit)"), "{marker}");
+        // a replayed block is idempotent and never re-adds the marker
+        let again = ctl
+            .submit(cmd("bg-2", "block_goal", json!({"goal_id": "g1", "instance_id": "i1"})), Identity::System)
+            .expect("replay");
+        assert_eq!(again["already_closed"], json!(true));
+        assert_eq!(context_count(&ctl, "i1"), 2);
         cleanup(&path);
     }
 }

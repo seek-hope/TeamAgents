@@ -28,6 +28,29 @@ const MAX_ARTIFACT_BYTES: u64 = 64 * 1024 * 1024;
 /// policy knob, overridable per goal via limits.max_check_rounds).
 const DEFAULT_MAX_CHECK_ROUNDS: i64 = 3;
 
+/// Summary input cap and the output reserve default for the L2 trigger
+/// (ported D-28/L2 constants: 100k summary input, 8k reserve).
+const SUMMARY_INPUT_CAP: usize = 100_000;
+const DEFAULT_OUTPUT_RESERVE: u64 = 8192;
+
+/// R22/A20 compaction prompt: the sections that must survive a summary are the
+/// user's original request, its later revisions, the acceptance conditions and
+/// the open questions — not just progress prose (plan §7, D-28).
+const SUMMARY_PROMPT: &str = "You are compacting an agent conversation to free context space. Summarize it for continuation, in this exact structure:
+1. Original request: the user's objective and its constraints, verbatim where it matters
+2. User revisions: later corrections or changes to that request
+3. Acceptance: what must be true for the work to count as done
+4. Open questions: unresolved items, errors and what was tried
+5. Progress: what has been done, with key decisions and why
+6. Files: paths created/modified/read that matter, one line each
+7. Tasks: pending tasks with their ids/assignees if mentioned
+8. Next: the immediate next step
+Mention the tool_call_ids of tool calls whose full output may be needed later. Be dense; omit small talk.
+
+Conversation to compact:
+
+";
+
 pub struct DriverConfig<P> {
     pub session_db: PathBuf,
     pub session_id: String,
@@ -283,6 +306,17 @@ pub struct Driver<P: Provider> {
     /// A31/§4.4 disk-full latch: once a submit fails StorageFull the driver
     /// stops stepping and only retries the park until it lands.
     storage_full: bool,
+    /// R22/A20 circuit breaker: consecutive failed summaries for this
+    /// instance. Three in a row stop the attempts (the context keeps growing
+    /// until the provider itself reports the overflow, exactly as D-28 L2
+    /// decided) instead of burning a model call on every step.
+    compact_failures: u32,
+    /// R22/A20 L2 input: the provider-reported prompt size of the last
+    /// completed turn. It is cached from live usage and read back from the
+    /// store once per driver (after a crash/restart), so the trigger costs no
+    /// storage round trip on the turn path.
+    last_prompt: u64,
+    last_prompt_loaded: bool,
 }
 
 /// Start the driver over its state root. Bootstrap commands use fixed command
@@ -348,6 +382,17 @@ pub(crate) type SpawnedDriver = (Arc<Shared>, tokio::task::JoinHandle<Result<(),
 /// Construct and spawn one instance driver over a shared storage worker
 /// (§6.1 single writer). No coordinator lock, no bootstrap: the caller
 /// (single-instance `start` or the P3 supervisor) owns both.
+/// Receipt references of one stored entry: a plain array for ordinary
+/// entries, the provenance object a compaction summary carries (§7, A20).
+fn entry_refs(raw: &str) -> Vec<String> {
+    let strings = |items: &Vec<Json>| items.iter().filter_map(|v| v.as_str().map(str::to_string)).collect();
+    match serde_json::from_str::<Json>(raw).unwrap_or(Json::Null) {
+        Json::Array(items) => strings(&items),
+        Json::Object(map) => map.get("refs").and_then(Json::as_array).map(strings).unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
 /// Disk-full signatures from both layers (A31): core classifies SQLite's
 /// SQLITE_FULL as "StorageFull: …" at the submit boundary; artifact and
 /// journal file writes surface the OS error verbatim.
@@ -383,6 +428,9 @@ pub(crate) fn spawn_driver<P: Provider + 'static>(
         toolkit,
         prepared: std::collections::HashMap::new(),
         storage_full: false,
+        compact_failures: 0,
+        last_prompt: 0,
+        last_prompt_loaded: false,
     };
     let task = tokio::spawn(driver.run());
     Ok((shared, task))
@@ -530,18 +578,33 @@ impl<P: Provider> Driver<P> {
             .await?
     }
 
+    /// Model-visible context (§7): entries a compaction summary does not
+    /// cover. At most one summary is visible — a later summary covers the
+    /// older one — and it always precedes the retained tail it summarizes.
     async fn context_entries(&self, snapshot: &Snapshot) -> Result<Vec<ContextEntry>, String> {
+        self.read_entries(snapshot, true).await
+    }
+
+    /// The whole epoch, covered entries included: readback must still reach
+    /// originals after a summary hid them (A20).
+    async fn stored_entries(&self, snapshot: &Snapshot) -> Result<Vec<ContextEntry>, String> {
+        self.read_entries(snapshot, false).await
+    }
+
+    async fn read_entries(&self, snapshot: &Snapshot, visible_only: bool) -> Result<Vec<ContextEntry>, String> {
         let instance = self.config.instance_id.clone();
         let epoch = snapshot.epoch;
         self.storage
             .call(move |control| {
-                let mut stmt = control
-                    .connection()
-                    .prepare(
-                        "SELECT id, kind, message_json, refs_json FROM context_entries
-                         WHERE instance_id = ?1 AND epoch = ?2 ORDER BY idx",
-                    )
-                    .map_err(|e| format!("context prepare: {e}"))?;
+                let sql = if visible_only {
+                    "SELECT id, kind, message_json, refs_json FROM context_entries
+                     WHERE instance_id = ?1 AND epoch = ?2 AND compressed_by IS NULL
+                     ORDER BY CASE WHEN kind = 'summary' THEN 0 ELSE 1 END, idx"
+                } else {
+                    "SELECT id, kind, message_json, refs_json FROM context_entries
+                     WHERE instance_id = ?1 AND epoch = ?2 ORDER BY idx"
+                };
+                let mut stmt = control.connection().prepare(sql).map_err(|e| format!("context prepare: {e}"))?;
                 let rows = stmt
                     .query_map(rusqlite::params![instance, epoch], |row| {
                         Ok((
@@ -559,7 +622,9 @@ impl<P: Provider> Driver<P> {
                         "user" => EntryKind::User,
                         "assistant" => EntryKind::Assistant,
                         "tool_result" => EntryKind::ToolResult,
-                        "note" => EntryKind::Note,
+                        // notes and compaction summaries both ride as user-role
+                        // text; neither is a user turn
+                        "note" | "summary" => EntryKind::Note,
                         _ => EntryKind::Note,
                     };
                     let mut entry = ContextEntry::new(
@@ -567,12 +632,267 @@ impl<P: Provider> Driver<P> {
                         kind,
                         serde_json::from_str(&message).map_err(|e| format!("context message: {e}"))?,
                     );
-                    entry.refs = serde_json::from_str(&refs).unwrap_or_default();
+                    entry.refs = entry_refs(&refs);
                     entries.push(entry);
                 }
                 Ok(entries)
             })
             .await?
+    }
+
+    /// The provider-reported prompt size of the most recent completed turn:
+    /// real usage beats any local estimate (D-28 L2 keeps the larger of the
+    /// two), and unknown usage honestly reads as 0. Live usage updates the
+    /// cache; only a fresh driver reads it back from the store.
+    async fn last_prompt_tokens(&mut self) -> Result<u64, String> {
+        if self.last_prompt_loaded {
+            return Ok(self.last_prompt);
+        }
+        let instance = self.config.instance_id.clone();
+        let usage: Option<String> = self
+            .storage
+            .call(move |control| {
+                control
+                    .connection()
+                    .query_row(
+                        "SELECT a.usage_json FROM attempts a
+                         JOIN model_requests r ON r.request_id = a.request_id
+                         WHERE r.instance_id = ?1 AND r.kind = 'turn' AND a.status = 'COMPLETE'
+                           AND a.usage_json IS NOT NULL AND a.usage_json != 'null'
+                         ORDER BY a.rowid DESC LIMIT 1",
+                        [&instance],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(|e| format!("last usage: {e}"))
+            })
+            .await??;
+        self.last_prompt = usage
+            .and_then(|raw| serde_json::from_str::<Json>(&raw).ok())
+            .and_then(|usage| usage["prompt_tokens"].as_u64())
+            .unwrap_or(0);
+        self.last_prompt_loaded = true;
+        Ok(self.last_prompt)
+    }
+
+    /// L2 trigger (§7, A20): the real last prompt (or this request's
+    /// estimate, whichever is larger) is over 90% of the native window minus
+    /// the output reserve. An unknown window never triggers, and the circuit
+    /// breaker stops after three consecutive failures.
+    fn over_threshold(&self, request: &ModelRequest, last_prompt_tokens: u64) -> bool {
+        let Some(window) = self.config.profile.context_window.filter(|window| *window > 0) else { return false };
+        if self.compact_failures >= 3 {
+            return false;
+        }
+        let reserve = self
+            .config
+            .profile
+            .options
+            .get("max_completion_tokens")
+            .or_else(|| self.config.profile.options.get("max_tokens"))
+            .and_then(Json::as_u64)
+            .unwrap_or(DEFAULT_OUTPUT_RESERVE)
+            .min(window / 4);
+        let threshold = window.saturating_sub(reserve).min((window as f64 * COMPACT_AT) as u64);
+        last_prompt_tokens.max(request.est_prompt_tokens) > threshold
+    }
+
+    /// L2 compaction (§7, A20, the D-28 contract): one model call condenses
+    /// the covered prefix into a summary entry; the originals stay in the
+    /// epoch and stay reachable. Returns whether a summary committed — a
+    /// failed summary is a lost optimization, never a failed turn.
+    async fn compact(&mut self, entries: &[ContextEntry]) -> Result<bool, String> {
+        let Some(window) = self.config.profile.context_window.filter(|window| *window > 0) else { return Ok(false) };
+        // The retained tail is the newest user input and everything after it:
+        // a summary never hides the working set the current turn is using —
+        // the tool results it just produced — so compaction covers exactly
+        // what the turn before left behind (§7, A20).
+        // ponytail: the tail itself is never trimmed. If one turn's own input
+        // plus its tool traffic exceeds the native window, only the provider's
+        // overflow verdict remains as an honest signal — §7 forbids pretending
+        // the window is smaller than it is.
+        let keep_from = entries.iter().rposition(|entry| entry.kind == EntryKind::User).unwrap_or(entries.len());
+        let covered: Vec<&ContextEntry> = entries[..keep_from].iter().collect();
+        // nothing to summarize while no assistant response is covered yet
+        if !covered.iter().any(|entry| entry.kind == EntryKind::Assistant) {
+            return Ok(false);
+        }
+        let keep_ids: Vec<&str> = entries[keep_from..].iter().map(|entry| entry.id.as_str()).collect();
+
+        // the summary input: covered entries only, one truncated block each,
+        // middle-elided when the whole blob exceeds the input cap (§4.3)
+        let mut blob = String::new();
+        for entry in &covered {
+            let message = &entry.message;
+            let role = message["role"].as_str().unwrap_or(entry.kind.as_str());
+            let content = message["content"].as_str().unwrap_or("");
+            let mut content: String = if content.chars().count() > 2_000 {
+                format!("{}…[{} chars]", content.chars().take(2_000).collect::<String>(), content.chars().count())
+            } else {
+                content.to_string()
+            };
+            if let Some(calls) = message["tool_calls"].as_array() {
+                for call in calls {
+                    if let Some(id) = call["id"].as_str() {
+                        let name = call["function"]["name"].as_str().unwrap_or("?");
+                        let args: String =
+                            call["function"]["arguments"].as_str().unwrap_or("").chars().take(200).collect();
+                        content.push_str(&format!("\n[tool_call_id={id}: {name} {args}]"));
+                    }
+                }
+            }
+            if let Some(id) = message["tool_call_id"].as_str() {
+                content = format!("[tool_call_id={id}] {content}");
+            }
+            blob.push_str(&format!("{role}: {content}\n\n"));
+        }
+        let summary_cap = window.saturating_mul(2).min(SUMMARY_INPUT_CAP as u64) as usize;
+        if blob.chars().count() > summary_cap {
+            let half = summary_cap / 2;
+            let chars: Vec<char> = blob.chars().collect();
+            blob = format!(
+                "{}\n[...middle omitted...]\n{}",
+                chars[..half].iter().collect::<String>(),
+                chars[chars.len().saturating_sub(half)..].iter().collect::<String>()
+            );
+        }
+        // the receipt index keeps covered calls discoverable even when the
+        // model omits ids from its prose or the middle was elided
+        let mut index = String::from("Tool output index (read_history tool_call_id):\n");
+        for entry in &covered {
+            if let Some(id) = entry.message["tool_call_id"].as_str() {
+                let refs = if entry.refs.is_empty() { String::new() } else { format!(" [{}]", entry.refs.join(" ")) };
+                index.push_str(&format!("{id}{refs}\n"));
+            }
+        }
+        let messages = vec![json!({"role": "user", "content": format!("{SUMMARY_PROMPT}{blob}\n{index}")})];
+        let request_id = format!("comp-{}", uuid::Uuid::new_v4());
+        let request = ModelRequest {
+            request_id: request_id.clone(),
+            model: self.config.profile.model.clone(),
+            est_prompt_tokens: estimated_tokens(&json!({"messages": messages, "tools": []})),
+            messages,
+            tools: vec![],
+            options: self.config.profile.options.clone(),
+        };
+        let begun = self
+            .submit(
+                self.command(
+                    format!("begin-compression-{request_id}"),
+                    "begin_compression",
+                    json!({"instance_id": self.config.instance_id, "request_id": request_id,
+                           "request_ref": format!("compression:{}", self.config.instance_id),
+                           "est_prompt_tokens": request.est_prompt_tokens}),
+                ),
+                Identity::System,
+            )
+            .await?;
+        if begun["budget_refused"] == json!(true) || begun["deadline_refused"] == json!(true) {
+            // the goal budget and deadline stay authoritative (§8, A35): the
+            // turn proceeds uncompressed and its own request is gated the same way
+            return Ok(false);
+        }
+        // one attempt per summary, no retry: transport retry stays owned by
+        // the request that asked for the turn (§7)
+        let attempt_id = format!("{request_id}/a1");
+        let cancel = Cancel::new();
+        *self.shared.cancel_attempt.lock().unwrap() = Some(cancel.clone());
+        let outcome = self.config.provider.complete(&request, &cancel, &mut |_| {}).await;
+        self.shared.cancel_attempt.lock().unwrap().take();
+        let outcome = match outcome {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                let _ = self
+                    .submit(
+                        self.command(
+                            format!("attempt-{attempt_id}"),
+                            "record_attempt",
+                            json!({"attempt_id": attempt_id, "request_id": request_id, "status": "FAILED",
+                                   "error_class": format!("{:?}", error.class)}),
+                        ),
+                        Identity::System,
+                    )
+                    .await;
+                return self.abandon_compression(&request_id, &format!("{:?}: {}", error.class, error.message)).await;
+            }
+        };
+        let summary = outcome.response.message["content"].as_str().unwrap_or("").trim().to_string();
+        if summary.is_empty() {
+            let _ = self
+                .submit(
+                    self.command(
+                        format!("attempt-{attempt_id}"),
+                        "record_attempt",
+                        json!({"attempt_id": attempt_id, "request_id": request_id, "status": "FAILED",
+                               "error_class": "empty_summary", "elapsed_ms": outcome.elapsed_ms}),
+                    ),
+                    Identity::System,
+                )
+                .await;
+            return self.abandon_compression(&request_id, "the summary was empty").await;
+        }
+        let response_ref = self.store_response_artifact(&attempt_id, &outcome).await?;
+        let recorded = self
+            .submit(
+                self.command(
+                    format!("attempt-{attempt_id}"),
+                    "record_attempt",
+                    json!({"attempt_id": attempt_id, "request_id": request_id, "status": "COMPLETE",
+                           "elapsed_ms": outcome.elapsed_ms,
+                           "usage": outcome.response.usage.map(|u| json!({
+                               "prompt_tokens": u.prompt, "completion_tokens": u.completion, "total_tokens": u.total})),
+                           "response_ref": response_ref, "publish": [response_ref]}),
+                ),
+                Identity::System,
+            )
+            .await;
+        if let Err(error) = recorded {
+            // cancelled mid-flight or a storage failure: the archive stays
+            // honest, the summary never commits, the originals stay in view
+            let _ = self
+                .submit(
+                    self.command(format!("abandon-{response_ref}"), "artifact_abandon", json!({"id": response_ref})),
+                    Identity::System,
+                )
+                .await;
+            return self.abandon_compression(&request_id, &error).await;
+        }
+        let committed = self
+            .submit(
+                self.command(
+                    format!("compress-{request_id}"),
+                    "compress_context",
+                    json!({"instance_id": self.config.instance_id, "request_id": request_id,
+                           "attempt_id": attempt_id, "summary": summary, "keep_ids": keep_ids}),
+                ),
+                Identity::System,
+            )
+            .await;
+        match committed {
+            Ok(_) => {
+                self.compact_failures = 0;
+                Ok(true)
+            }
+            Err(error) => self.abandon_compression(&request_id, &error).await,
+        }
+    }
+
+    /// Close a summary that cannot commit: the reservation is released, the
+    /// instance is untouched and the breaker counts the failure. The originals
+    /// are still in the view, so the turn continues uncompressed (§7, A20).
+    async fn abandon_compression(&mut self, request_id: &str, reason: &str) -> Result<bool, String> {
+        self.compact_failures = self.compact_failures.saturating_add(1);
+        eprintln!("driver: {} could not compact ({}/3): {reason}", self.config.instance_id, self.compact_failures);
+        self.submit(
+            self.command(
+                format!("fail-compression-{request_id}"),
+                "fail_compression",
+                json!({"request_id": request_id, "reason": reason}),
+            ),
+            Identity::System,
+        )
+        .await?;
+        Ok(false)
     }
 
     fn kernel(&self, snapshot: &Snapshot) -> KernelInstance {
@@ -660,6 +980,31 @@ impl<P: Provider> Driver<P> {
                 }
             }
         }
+        // a compression request left PENDING by a crash never committed its
+        // summary (the commit is one transaction): close it, release its
+        // reservation and continue uncompressed — redoing it is safe (§7, A20)
+        let stale: Vec<String> = self
+            .storage
+            .call({
+                let instance = self.config.instance_id.clone();
+                move |control| {
+                    let mut stmt = control
+                        .connection()
+                        .prepare(
+                            "SELECT request_id FROM model_requests
+                             WHERE instance_id = ?1 AND kind = 'compression' AND status = 'PENDING'",
+                        )
+                        .map_err(|e| format!("compression recovery prepare: {e}"))?;
+                    let rows = stmt
+                        .query_map([&instance], |row| row.get(0))
+                        .map_err(|e| format!("compression recovery: {e}"))?;
+                    rows.collect::<Result<Vec<String>, _>>().map_err(|e| format!("compression recovery collect: {e}"))
+                }
+            })
+            .await??;
+        for request_id in stale {
+            self.abandon_compression(&request_id, "an in-flight summary was lost to a restart").await?;
+        }
         // orphan STAGING artifacts (crash between stage and the referencing
         // commit) are marked ABANDONED, never silently deleted (§4.3)
         let orphans: Vec<String> = self
@@ -717,7 +1062,7 @@ impl<P: Provider> Driver<P> {
             )
             .await?;
         let revision = drained["revision"].as_i64().unwrap_or(snapshot.revision);
-        let entries = self.context_entries(snapshot).await?;
+        let mut entries = self.context_entries(snapshot).await?;
         // nothing unconsumed: the last word was the assistant's — idle,
         // unless assigned work still waits in the queue (§5.3): a settled
         // task's finish message must not park a worker with open tasks
@@ -741,7 +1086,15 @@ impl<P: Provider> Driver<P> {
         }
         let kernel = self.team_kernel(snapshot).await?;
         let request_id = format!("req-{}", uuid::Uuid::new_v4());
-        let request = kernel.prepare_request(&entries, &request_id);
+        let mut request = kernel.prepare_request(&entries, &request_id);
+        // L2 (§7, A20): a summary is taken before the request is fixed and
+        // registered, so the compacted view is what begin_request reserves
+        // budget for and what the provider receives
+        let last_prompt = self.last_prompt_tokens().await?;
+        if self.over_threshold(&request, last_prompt) && self.compact(&entries).await? {
+            entries = self.context_entries(snapshot).await?;
+            request = kernel.prepare_request(&entries, &request_id);
+        }
         let begun = self
             .submit(
                 self.command(
@@ -865,6 +1218,11 @@ impl<P: Provider> Driver<P> {
                 };
                 if recorded["selected"] != json!(true) {
                     return Ok(()); // a late complete: archived and billed (§7)
+                }
+                // the real prompt size of this turn feeds the L2 trigger
+                if let Some(usage) = outcome.response.usage {
+                    self.last_prompt = usage.prompt;
+                    self.last_prompt_loaded = true;
                 }
                 let entry_id = format!("{}:assistant", request_id);
                 let interpretation = self.kernel(snapshot).interpret_response(&outcome.response, &entry_id);
@@ -1373,7 +1731,9 @@ impl<P: Provider> Driver<P> {
     }
 
     async fn execute_readback(&mut self, operation_id: &str, intent: &Json, snapshot: &Snapshot) -> Result<(), String> {
-        let entries = self.context_entries(snapshot).await?;
+        // the whole epoch, covered entries included: a summary never makes an
+        // original unreachable (A20)
+        let entries = self.stored_entries(snapshot).await?;
         let typed = ToolIntent {
             index: intent["index"].as_u64().unwrap_or(0) as usize,
             call_id: intent["call_id"].as_str().unwrap_or("").into(),
@@ -1616,6 +1976,20 @@ impl<P: Provider> Driver<P> {
 
     async fn step_completion(&mut self, snapshot: &Snapshot) -> Result<(), String> {
         if let Some(goal) = snapshot.active_goal.clone() {
+            if !self.goal_is_active(&goal).await? {
+                // the goal already reached a terminal status: this turn just
+                // ends, it never re-runs the checks or re-closes the goal
+                self.submit(
+                    self.command(
+                        format!("close-completion-{}", uuid::Uuid::new_v4()),
+                        "close_completion",
+                        json!({"instance_id": self.config.instance_id}),
+                    ),
+                    Identity::System,
+                )
+                .await?;
+                return Ok(());
+            }
             let (candidate_row, candidate) = self.completion_candidate().await?;
             let outcome = candidate["outcome"].as_str().unwrap_or("failed");
             // only a claimed success is verified; a candidate that admits
@@ -1672,6 +2046,24 @@ impl<P: Provider> Driver<P> {
             }
         }
         Ok(())
+    }
+
+    /// Is this goal still the instance's live goal? A terminal goal must not
+    /// run another completion round (§8): a finish that arrives after the goal
+    /// closed ends its turn instead of re-verifying anything.
+    async fn goal_is_active(&self, goal: &str) -> Result<bool, String> {
+        let goal = goal.to_string();
+        let status: Option<String> = self
+            .storage
+            .call(move |control| {
+                control
+                    .connection()
+                    .query_row("SELECT status FROM goals WHERE id = ?1", [&goal], |row| row.get(0))
+                    .optional()
+                    .map_err(|e| format!("goal status: {e}"))
+            })
+            .await??;
+        Ok(status.as_deref() == Some("ACTIVE"))
     }
 
     /// Goal-level required checks from the stored limits (§8): predefined by

@@ -108,6 +108,10 @@ CREATE TABLE IF NOT EXISTS context_entries (
     envelope_id TEXT,
     refs_json TEXT NOT NULL DEFAULT '[]',
     created REAL NOT NULL,
+    -- R22/A20: when a compression summary covers this entry this points at
+    -- the summary entry id. Covered entries are view-hidden, never deleted:
+    -- the original text stays reachable through read_history/readback.
+    compressed_by TEXT,
     PRIMARY KEY (instance_id, epoch, idx)
 );
 -- apply dedup: one context change per (instance, epoch, envelope)
@@ -122,7 +126,10 @@ CREATE TABLE IF NOT EXISTS model_requests (
     request_ref TEXT NOT NULL,
     selected_attempt_id TEXT,
     status TEXT NOT NULL,
-    est_prompt_tokens INTEGER
+    est_prompt_tokens INTEGER,
+    -- 'turn' | 'compression' (R22/A20): both are billed to the goal and
+    -- archived as attempts; only a turn request moves the instance phase.
+    kind TEXT NOT NULL DEFAULT 'turn'
 );
 
 CREATE TABLE IF NOT EXISTS attempts (
@@ -236,14 +243,37 @@ pub fn open(path: &Path, create: bool) -> Result<Connection, String> {
                 .map_err(|e| format!("read schema_version: {e}"))?;
             let parsed = version.parse::<i64>().unwrap_or(-1);
             if parsed != V2_SCHEMA_VERSION {
-                return Err(format!(
-                    "v2 schema version {parsed} != supported {V2_SCHEMA_VERSION}; explicit migration or refusal required"
-                ));
+                // v2's own upgrades migrate explicitly, in one transaction, or
+                // refuse: a half-migrated or unknown version is never
+                // reinterpreted as current state (§4.4, A34).
+                migrate(&conn, parsed)?;
             }
             conn.execute_batch(SCHEMA).map_err(|e| format!("verify schema: {e}"))?;
         }
     }
     Ok(conn)
+}
+
+/// One-step-v1 chains are migrated in a single transaction; anything else is
+/// refused. Each step must be self-contained (DDL + stamp together), so a
+/// crash can only leave the database at its previous version.
+fn migrate(conn: &Connection, from: i64) -> Result<(), String> {
+    if from != V2_SCHEMA_VERSION - 1 {
+        return Err(format!(
+            "v2 schema version {from} != supported {V2_SCHEMA_VERSION}; explicit migration or refusal required"
+        ));
+    }
+    let tx = conn.unchecked_transaction().map_err(|e| format!("migrate tx: {e}"))?;
+    // 1 → 2 (R22/A20): compression provenance needs no table of its own.
+    tx.execute_batch(
+        "ALTER TABLE context_entries ADD COLUMN compressed_by TEXT;
+         ALTER TABLE model_requests ADD COLUMN kind TEXT NOT NULL DEFAULT 'turn';",
+    )
+    .map_err(|e| format!("migrate 1 -> 2: {e}"))?;
+    tx.execute("UPDATE meta SET value = ?1 WHERE key = 'schema_version'", [V2_SCHEMA_VERSION.to_string()])
+        .map_err(|e| format!("migrate stamp: {e}"))?;
+    tx.commit().map_err(|e| format!("migrate commit: {e}"))?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -312,5 +342,46 @@ mod tests {
         let err = open(&versioned, false).unwrap_err();
         assert!(err.contains("schema version 99"), "{err}");
         cleanup(&versioned);
+    }
+
+    #[test]
+    fn open_migrates_the_previous_schema_version() {
+        let p = path("migrate");
+        {
+            let conn = open(&p, true).unwrap();
+            // the previous (v1) shape: no compression columns, older stamp
+            conn.execute_batch(
+                "ALTER TABLE context_entries DROP COLUMN compressed_by;
+                 ALTER TABLE model_requests DROP COLUMN kind;
+                 UPDATE meta SET value = '1' WHERE key = 'schema_version';",
+            )
+            .unwrap();
+        }
+        let conn = open(&p, false).expect("migrate");
+        let version: String =
+            conn.query_row("SELECT value FROM meta WHERE key = 'schema_version'", [], |row| row.get(0)).unwrap();
+        assert_eq!(version, V2_SCHEMA_VERSION.to_string());
+        // the migrated columns exist and carry their defaults
+        conn.execute(
+            "INSERT INTO model_requests (request_id, instance_id, epoch, request_ref, status)
+             VALUES ('r1', 'i1', 0, '', 'PENDING')",
+            [],
+        )
+        .unwrap();
+        let kind: String =
+            conn.query_row("SELECT kind FROM model_requests WHERE request_id = 'r1'", [], |row| row.get(0)).unwrap();
+        assert_eq!(kind, "turn");
+        conn.execute(
+            "INSERT INTO context_entries (instance_id, epoch, idx, id, kind, message_json, created)
+             VALUES ('i1', 0, 1, 'i1:0:1', 'user', '{}', 0)",
+            [],
+        )
+        .unwrap();
+        let covered: Option<String> = conn
+            .query_row("SELECT compressed_by FROM context_entries WHERE id = 'i1:0:1'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(covered, None);
+        drop(conn);
+        cleanup(&p);
     }
 }

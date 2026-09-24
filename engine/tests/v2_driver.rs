@@ -7,7 +7,7 @@
 use serde_json::{json, Value as Json};
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use teamagents_core::kernel::{KernelProfile, ModelRequest, ModelResponse, Usage};
 use teamagents_core::models::UserConfig;
@@ -20,6 +20,8 @@ enum Step {
     Hang,
     /// Sleep, then continue with the next step: a slow provider call.
     Sleep(u64),
+    /// Fail the attempt the way the provider edge reports a permanent error.
+    Error(&'static str),
 }
 
 struct ScriptedProvider {
@@ -55,6 +57,7 @@ impl Provider for ScriptedProvider {
                 tokio::time::sleep(Duration::from_secs(60)).await;
             },
             Step::Sleep(_) => unreachable!("sleeps are consumed above"),
+            Step::Error(message) => Err(ProviderError::permanent(message)),
         }
     }
 }
@@ -101,6 +104,10 @@ fn root(tag: &str) -> Root {
 
 impl Root {
     fn config(&self, provider: ScriptedProvider) -> DriverConfig<ScriptedProvider> {
+        self.config_with(provider)
+    }
+
+    fn config_with<P: Provider + 'static>(&self, provider: P) -> DriverConfig<P> {
         DriverConfig {
             session_db: self.dir.join("session.sqlite"),
             session_id: "s-test".into(),
@@ -157,6 +164,102 @@ async fn wait_phase(handle: &DriverHandle, phase: &str, timeout_ms: u64) {
 async fn run_to_goal_close(handle: &DriverHandle) -> String {
     let event = wait_event(handle, "goal_completed", 15_000).await;
     event["payload"]["status"].as_str().unwrap_or("").to_string()
+}
+
+/// Scripted provider that also records every request it was asked to send, so
+/// a test can prove what the model actually saw (§7, A20). The log is shared
+/// because the driver takes ownership of the provider.
+type RequestLog = Arc<Mutex<Vec<Json>>>;
+
+struct RecordingProvider {
+    inner: ScriptedProvider,
+    seen: RequestLog,
+}
+
+fn recording(script: Vec<Step>) -> (RecordingProvider, RequestLog) {
+    let seen: RequestLog = Arc::new(Mutex::new(Vec::new()));
+    (RecordingProvider { inner: ScriptedProvider { script: Mutex::new(script.into()) }, seen: seen.clone() }, seen)
+}
+
+fn recorded(log: &RequestLog) -> Vec<Json> {
+    log.lock().unwrap().clone()
+}
+
+/// Every message text of one recorded request, joined: assertions about what
+/// the model saw read from this, never from the persisted context.
+fn request_text(request: &Json) -> String {
+    request["messages"]
+        .as_array()
+        .map(|messages| {
+            messages
+                .iter()
+                .map(|message| {
+                    let mut text = message["content"].as_str().unwrap_or("").to_string();
+                    if let Some(calls) = message["tool_calls"].as_array() {
+                        for call in calls {
+                            text.push_str(call["function"]["name"].as_str().unwrap_or(""));
+                        }
+                    }
+                    text
+                })
+                .collect::<Vec<String>>()
+                .join("\n")
+        })
+        .unwrap_or_default()
+}
+
+impl Provider for RecordingProvider {
+    fn protocol(&self) -> &str {
+        self.inner.protocol()
+    }
+    async fn complete(
+        &self,
+        request: &ModelRequest,
+        cancel: &Cancel,
+        on_event: &mut (dyn FnMut(ProviderEvent) + Send),
+    ) -> Result<AttemptOutcome, ProviderError> {
+        self.seen.lock().unwrap().push(json!({
+            "messages": request.messages,
+            "tools": request.tools.len(),
+            "est_prompt_tokens": request.est_prompt_tokens,
+        }));
+        self.inner.complete(request, cancel, on_event).await
+    }
+}
+
+/// `read_history` is the built-in readback tool: it pages the stored output of
+/// an earlier call, covered entries included (A20).
+fn readback_call(id: &str, source: &str) -> Json {
+    json!({"role": "assistant", "content": "",
+           "tool_calls": [{"id": id, "type": "function",
+                           "function": {"name": "read_history",
+                                        "arguments": json!({"tool_call_id": source}).to_string()}}]})
+}
+
+/// Wait until the provider has been asked at least `count` times.
+async fn wait_for_requests(log: &RequestLog, count: usize, timeout_ms: u64) -> Vec<Json> {
+    for _ in 0..(timeout_ms / 25) {
+        let requests = recorded(log);
+        if requests.len() >= count {
+            return requests;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("{count} provider request(s) did not arrive within {timeout_ms}ms");
+}
+
+/// Wait until at least `count` events of one kind have arrived.
+async fn wait_event_count(handle: &DriverHandle, kind: &str, count: usize, timeout_ms: u64) -> Vec<Json> {
+    for _ in 0..(timeout_ms / 25) {
+        if let Ok(events) = handle.events(0).await {
+            let matching: Vec<Json> = events.into_iter().filter(|event| event["kind"] == json!(kind)).collect();
+            if matching.len() >= count {
+                return matching;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("{count} {kind} event(s) did not arrive within {timeout_ms}ms");
 }
 
 fn cmd(id: &str, method: &str, params: Json) -> teamagents_core::v2::Command {
@@ -760,12 +863,22 @@ async fn required_checks_pass_settles_the_goal() {
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
     let root = root("checks-pass");
     std::fs::create_dir_all(root.dir.join("ws")).unwrap();
-    let script = vec![Step::Message(finish_call("all done"))];
+    let script = vec![Step::Message(finish_call("all done")), Step::Message(finish_call("all done again"))];
     let mut config = root.config(ScriptedProvider { script: Mutex::new(script.into()) });
     config.goal_limits = json!({"required_checks": [{"id": "tests", "command": "true"}]});
     let handle = start(config).await.expect("start");
     handle.input("do the work").await.expect("input");
     assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    // a second finish after the goal closed must settle, not park the
+    // instance in COMPLETION_PENDING (§8): no turn starts after the close
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let settled = handle.events(0).await.unwrap();
+    let closed = settled.iter().position(|e| e["kind"] == json!("goal_completed")).expect("goal_completed");
+    assert!(
+        !settled[closed + 1..].iter().any(|e| e["kind"] == json!("request_began")),
+        "no turn may start after the goal closed: {settled:?}"
+    );
+    assert_eq!(handle.snapshot().await.unwrap()["instance"]["phase"], json!("READY"));
     // the check rode the same operation ledger and auto-associated (§8)
     let events = handle.events(0).await.unwrap();
     let registered = events.iter().find(|e| e["kind"] == json!("check_round_registered")).expect("registered");
@@ -897,5 +1010,164 @@ async fn check_dispatch_refused_parks_without_burning_repair_rounds() {
     let blocked = wait_event_where("goal_blocked", &handle, 20_000, |_| true).await;
     assert!(blocked["payload"]["reason"].as_str().unwrap_or("").contains("dispatch_refused"));
     assert!(no_event(&handle, "completion_repair").await);
+    handle.shutdown().await.expect("shutdown");
+}
+
+/// R22/A20: a context that no longer fits the native window is compacted
+/// before the turn is fixed. The summary call is billed to the goal, the
+/// covered text stays reachable through readback, and a restarted driver
+/// keeps using the compacted view.
+#[tokio::test]
+async fn long_context_compacts_before_the_turn_and_survives_a_restart() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let root = root("compact");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    // 32k chars ≈ 8k estimated tokens: over 90% of an 8k native window, but
+    // far under it once the summary replaces the covered entries
+    let bulk = format!("the long specification {}", "padding ".repeat(4_000));
+    let summary = "[Compacted conversation summary]\n1. Original request: keep the evidence";
+    let script = vec![
+        Step::Message(shell_call("c1", "echo stored-evidence")),
+        Step::Message(reply("first answer")),
+        Step::Message(reply(summary)),
+        Step::Message(readback_call("c2", "c1")),
+        Step::Message(reply("second answer")),
+    ];
+    let (provider, log) = recording(script);
+    let mut config = root.config_with(provider);
+    config.profile.context_window = Some(8_000);
+    let handle = start(config).await.expect("start");
+    handle.input(&bulk).await.expect("input");
+    // turn one runs uncompressed: no assistant response exists to summarize
+    wait_event_count(&handle, "response_imported", 2, 15_000).await;
+    assert_eq!(recorded(&log).len(), 2, "turn one must not summarize yet");
+    // turn two arrives with the long input still in view: compact first
+    handle.input("now continue").await.expect("input");
+    let compressed = wait_event_count(&handle, "context_compressed", 1, 15_000).await;
+    assert_eq!(compressed[0]["payload"]["covered"], json!(4), "everything before the new input is covered");
+    assert_eq!(compressed[0]["payload"]["kept"], json!(1), "the new input itself stays verbatim");
+    wait_event_count(&handle, "response_imported", 4, 15_000).await;
+    let requests = recorded(&log);
+    assert_eq!(requests.len(), 5, "one summary call plus two attempts per turn");
+    // the summary call is a plain prompt: no system message, no tools (§7)
+    let compaction = &requests[2];
+    assert_eq!(compaction["tools"], json!(0));
+    assert_eq!(compaction["messages"][0]["role"], json!("user"));
+    assert!(request_text(compaction).contains("You are compacting an agent conversation"));
+    assert!(request_text(compaction).contains("the long specification"));
+    // the turn that follows sees the summary, never the covered original
+    let compacted_turn = request_text(&requests[3]);
+    assert!(compacted_turn.contains("Compacted conversation summary"), "{compacted_turn}");
+    assert!(!compacted_turn.contains("the long specification"), "covered text must leave the view");
+    assert!(compacted_turn.contains("now continue"), "the newest input stays verbatim");
+    // the compression call is billed to the same goal (A18/A20): 5 attempts
+    let snapshot = handle.snapshot().await.unwrap();
+    assert_eq!(snapshot["goal"]["known_usage"]["total"], json!(25));
+    let mut control = second_control(&root);
+    let (kind, status): (String, String) = control
+        .connection()
+        .query_row(
+            "SELECT kind, status FROM model_requests WHERE kind = 'compression' ORDER BY rowid LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("compression request");
+    assert_eq!((kind.as_str(), status.as_str()), ("compression", "COMPLETE"));
+    // readback still reaches the covered tool output (A20 原文可追溯)
+    let text: String = control
+        .connection()
+        .query_row(
+            "SELECT message_json FROM context_entries WHERE instance_id = 'i-main' AND kind = 'tool_result'
+             ORDER BY idx DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .expect("readback result");
+    assert!(text.contains("stored-evidence"), "{text}");
+    // and the originals stay in the epoch for the user-facing history (A05)
+    let history = control
+        .submit(cmd("rh", "read_history", json!({"instance_id": "i-main"})), teamagents_core::v2::Identity::User)
+        .expect("history");
+    let entries = history["entries"].as_array().cloned().unwrap_or_default();
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry["message"]["content"].as_str().unwrap_or("").contains("the long specification")),
+        "the covered original must remain readable"
+    );
+    handle.shutdown().await.expect("shutdown");
+
+    // restart over the same session: the compacted view is the persisted state
+    let (restarted, restarted_log) = recording(vec![Step::Message(reply("third answer"))]);
+    let mut config = root.config_with(restarted);
+    config.profile.context_window = Some(8_000);
+    let handle = start(config).await.expect("restart");
+    handle.input("after the restart").await.expect("input");
+    // events survive the restart, so wait on the new driver's own request log
+    let requests = wait_for_requests(&restarted_log, 1, 15_000).await;
+    assert_eq!(requests.len(), 1, "a small view needs no further summary");
+    let text = request_text(&requests[0]);
+    assert!(text.contains("Compacted conversation summary"), "{text}");
+    assert!(!text.contains("the long specification"), "the restart keeps the compacted view");
+    handle.shutdown().await.expect("shutdown");
+}
+
+/// R22/A20: a failed summary is a lost optimization, never a failed turn —
+/// the turn proceeds uncompressed, the reservation is released, and three
+/// consecutive failures stop the attempts (D-28 breaker).
+#[tokio::test]
+async fn failed_summaries_fall_back_uncompressed_and_break_after_three() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let root = root("compact-fail");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let bulk = format!("the long specification {}", "padding ".repeat(4_000));
+    let script = vec![
+        Step::Message(reply("first answer")),
+        Step::Error("summarizer unavailable"),
+        Step::Message(reply("second answer")),
+        Step::Error("summarizer unavailable"),
+        Step::Message(reply("third answer")),
+        Step::Error("summarizer unavailable"),
+        Step::Message(reply("fourth answer")),
+        Step::Message(reply("fifth answer")),
+    ];
+    let (provider, log) = recording(script);
+    let mut config = root.config_with(provider);
+    config.profile.context_window = Some(8_000);
+    let handle = start(config).await.expect("start");
+    handle.input(&bulk).await.expect("input");
+    wait_event_count(&handle, "response_imported", 1, 15_000).await;
+    for round in 1..=3 {
+        handle.input(&format!("round {round}")).await.expect("input");
+        wait_event_count(&handle, "compression_failed", round, 15_000).await;
+        wait_event_count(&handle, "response_imported", round + 1, 15_000).await;
+    }
+    // the breaker stops trying: the fourth input goes straight to the model
+    handle.input("round 4").await.expect("input");
+    wait_event_count(&handle, "response_imported", 5, 15_000).await;
+    let events = handle.events(0).await.unwrap();
+    let count = |kind: &str| events.iter().filter(|event| event["kind"] == json!(kind)).count();
+    assert_eq!(count("compression_began"), 3);
+    assert_eq!(count("compression_failed"), 3);
+    assert_eq!(count("context_compressed"), 0);
+    // every turn after the failures still ran, uncompressed and unbilled for
+    // the failed summaries: the last request is an ordinary turn request
+    let requests = recorded(&log);
+    assert_eq!(requests.len(), 8, "4 turns + 3 failed summaries + 1 breaker-skipped turn");
+    let last = requests.last().unwrap();
+    assert_eq!(last["messages"][0]["role"], json!("system"));
+    assert!(request_text(last).contains("the long specification"), "the view stays uncompressed");
+    // the failures released their reservations and closed their requests
+    let control = second_control(&root);
+    let reservations: String = control
+        .connection()
+        .query_row("SELECT reservations_json FROM goals LIMIT 1", [], |row| row.get(0))
+        .expect("goal");
+    assert_eq!(reservations, "{}");
+    let open: i64 = control
+        .connection()
+        .query_row("SELECT COUNT(*) FROM model_requests WHERE kind = 'compression'", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(open, 3, "exactly the three attempted summaries are recorded");
     handle.shutdown().await.expect("shutdown");
 }

@@ -6,7 +6,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 
 pub const V2_FORMAT_ID: &str = "teamagents-v2";
-pub const V2_SCHEMA_VERSION: i64 = 1;
+/// 1 → 2 (R22/A20): `context_entries.compressed_by` and `model_requests.kind`
+/// (compression calls are billed requests that never advance an instance).
+pub const V2_SCHEMA_VERSION: i64 = 2;
+
+/// Request kinds (§4.1 ModelRequest): an ordinary turn request advances the
+/// instance phase; a compression request only produces a summary (§7, A20).
+pub const REQUEST_KIND_TURN: &str = "turn";
+pub const REQUEST_KIND_COMPRESSION: &str = "compression";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Lifecycle {
