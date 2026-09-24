@@ -1,0 +1,6 @@
+alpha total([1,2,3]) -> 3 (expected 6, got 3 )
+beta add twice -> [1, 2] [1, 2] (shared mutable default)
+gamma.mean([1,2,3]) -> 2.0 | shadowed builtin 'sum'
+delta.parse(Bad()) -> 0 (bare except swallows everything)
+epsilon.ratio(7,2) -> 3 (expected 3.5, floor division)
+zeta.read_all has open() with no close/with: True

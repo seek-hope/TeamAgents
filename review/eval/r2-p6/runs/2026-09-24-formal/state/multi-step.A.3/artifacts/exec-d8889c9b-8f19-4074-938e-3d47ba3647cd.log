@@ -1,0 +1,6 @@
+Traceback (most recent call last):
+  File "/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-24-formal/work/multi-step.A.3/beta/check.py", line 2, in <module>
+    assert beta.mul(3, 4) == 12, beta.mul(3, 4)
+           ^^^^^^^^^^^^^^^^^^^^
+AssertionError: 7
+exit=1

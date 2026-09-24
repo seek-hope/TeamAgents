@@ -1,0 +1,16 @@
+{
+  "status": "succeeded",
+  "steps": 8,
+  "prompt_tokens": 26874,
+  "completion_tokens": 2782,
+  "total_tokens": 29656,
+  "events": 65,
+  "group": "B",
+  "task_id": "bulk-modules",
+  "model_key": "leader_main",
+  "model": "deepseek-flash",
+  "context_window": 1000000,
+  "permissions": "full_auto",
+  "web": false,
+  "wall_ms": 16598
+}

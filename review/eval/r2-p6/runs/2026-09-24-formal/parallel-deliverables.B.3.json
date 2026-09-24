@@ -1,0 +1,16 @@
+{
+  "status": "succeeded",
+  "steps": 8,
+  "prompt_tokens": 26342,
+  "completion_tokens": 2109,
+  "total_tokens": 28451,
+  "events": 61,
+  "group": "B",
+  "task_id": "parallel-deliverables",
+  "model_key": "leader_main",
+  "model": "deepseek-flash",
+  "context_window": 1000000,
+  "permissions": "full_auto",
+  "web": false,
+  "wall_ms": 37681
+}

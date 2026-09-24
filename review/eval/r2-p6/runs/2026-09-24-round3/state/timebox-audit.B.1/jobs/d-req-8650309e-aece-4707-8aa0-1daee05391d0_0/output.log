@@ -1,0 +1,47 @@
+=== m01.py ===
+def total(xs):$
+    return sum(xs[:-1])$
+=== m02.py ===
+def push(x, xs=[]):$
+    xs.append(x)$
+    return xs$
+=== m03.py ===
+def mean(xs):$
+    sum = 0$
+    for x in xs:$
+        sum += x$
+    return sum / len(xs)$
+=== m04.py ===
+def parse(s):$
+    try:$
+        return int(s)$
+    except:$
+        return 0$
+=== m05.py ===
+def ratio(a, b):$
+    return a // b$
+=== m06.py ===
+def read(p):$
+    h = open(p)$
+    return h.read()$
+=== m07.py ===
+def head(xs, n):$
+    return xs[:n] if n > 3 else xs$
+=== m08.py ===
+CACHE = {}$
+def cached(k, v):$
+    CACHE[k] = v$
+    return CACHE$
+=== m09.py ===
+def withdraw(total, amount):$
+    return total - amount$
+=== m10.py ===
+def connect(host, port=5432, tls=False):$
+    return (host, tls)$
+=== m11.py ===
+def ranked(rows):$
+    return sorted(rows, key=lambda r: r[1])$
+=== m12.py ===
+def process(paths):$
+    handles = [open(p) for p in paths]$
+    return len(handles)$

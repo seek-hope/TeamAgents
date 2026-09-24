@@ -1,0 +1,16 @@
+{
+  "status": "succeeded",
+  "steps": 5,
+  "prompt_tokens": 13959,
+  "completion_tokens": 1318,
+  "total_tokens": 15277,
+  "events": 46,
+  "group": "C",
+  "task_id": "wide-audit",
+  "model_key": "leader_main",
+  "model": "deepseek-flash",
+  "context_window": 1000000,
+  "permissions": "full_auto",
+  "web": false,
+  "wall_ms": 7057
+}

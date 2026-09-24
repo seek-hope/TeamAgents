@@ -1,0 +1,2 @@
+python3 -m pytest -q tests/
+python3 -c "import hashlib,pathlib; assert hashlib.sha256(pathlib.Path('tests/test_ledger.py').read_bytes()).hexdigest()=='249141060049bcdd4c266e0448a139d5f8367d3969491c005ccdb5e4082747c8'; assert hashlib.sha256(pathlib.Path('tests/test_schedule.py').read_bytes()).hexdigest()=='d0eac968ccaa16dd71ca63f9a264f9aca424a03de2e94c6d77e607d7a5585b14'"

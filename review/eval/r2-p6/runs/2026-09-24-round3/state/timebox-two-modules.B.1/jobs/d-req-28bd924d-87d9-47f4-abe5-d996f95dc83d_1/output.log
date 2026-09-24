@@ -1,0 +1,10 @@
+apply: [('deposit', 'a', 100), ('withdraw', 'a', 30)]
+bal a: 70 bal b: 0
+negative rejected
+slots: [(0, 90), (120, 150)]
+slots gap<minutes: [(0, 20)]
+slots empty: []
+slots unsorted: [(0, 90), (120, 150)]
+overlaps overlap: True
+overlaps touch: False
+overlaps nested: True

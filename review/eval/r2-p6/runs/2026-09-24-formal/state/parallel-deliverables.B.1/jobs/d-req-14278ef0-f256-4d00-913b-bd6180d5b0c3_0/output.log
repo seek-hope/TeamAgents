@@ -1,0 +1,16 @@
+F.                                                                       [100%]
+=================================== FAILURES ===================================
+________________________ test_parse_trims_and_validates ________________________
+
+    def test_parse_trims_and_validates():
+>       assert impl.parse(' a , 2 , x ') == ["a", "2", "x"]
+E       AssertionError: assert [' a ', ' 2 ', ' x '] == ['a', '2', 'x']
+E         
+E         At index 0 diff: ' a ' != 'a'
+E         Use -v to get more diff
+
+test_csvfix.py:4: AssertionError
+=========================== short test summary info ============================
+FAILED test_csvfix.py::test_parse_trims_and_validates - AssertionError: asser...
+1 failed, 1 passed in 0.01s
+---exit:1

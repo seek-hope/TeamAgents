@@ -1,0 +1,17 @@
+total 24
+drwxr-xr-x  2 rimuru rimuru 4096 Sep 24 16:02 .
+drwxr-xr-x 65 rimuru rimuru 4096 Sep 24 16:02 ..
+-rw-r--r--  1 rimuru rimuru  199 Sep 24 16:03 service.log
+-rw-r--r--  1 rimuru rimuru    8 Sep 24 16:02 service.pid
+-rw-r--r--  1 rimuru rimuru  947 Sep 24 16:02 service.py
+-rw-r--r--  1 rimuru rimuru   13 Sep 24 16:02 service.txt
+--- service.txt ---
+p6-service-ok
+79cd5fda49217cbebaa4a72e23782d8c53e26cd288b17bfef0e4c7174acf4cf9  service.txt
+3ad4798f4b848193ce4d9d60f3c1ce113a87cfecb920c093bfbefbd91eb9f446  service.py
+--- service.log ---
+listening on http://127.0.0.1:8765
+127.0.0.1 - "GET /health HTTP/1.1" 200 -
+127.0.0.1 - "GET /health HTTP/1.1" 200 -
+127.0.0.1 - "GET /health HTTP/1.1" 200 -
+127.0.0.1 - "GET /health HTTP/1.1" 200 -

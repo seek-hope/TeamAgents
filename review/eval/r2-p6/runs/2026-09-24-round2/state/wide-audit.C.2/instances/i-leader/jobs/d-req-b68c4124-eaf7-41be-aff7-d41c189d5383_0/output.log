@@ -1,0 +1,9 @@
+files on disk: ['alpha.py', 'beta.py', 'delta.py', 'epsilon.py', 'gamma.py', 'zeta.py']
+keys in json : ['alpha.py', 'beta.py', 'delta.py', 'epsilon.py', 'gamma.py', 'zeta.py']
+OK: 6 files, all values in vocab, all distinct
+  alpha.py: off_by_one
+  beta.py: mutable_default
+  gamma.py: shadowed_builtin
+  delta.py: wrong_except
+  epsilon.py: integer_division
+  zeta.py: unclosed_resource

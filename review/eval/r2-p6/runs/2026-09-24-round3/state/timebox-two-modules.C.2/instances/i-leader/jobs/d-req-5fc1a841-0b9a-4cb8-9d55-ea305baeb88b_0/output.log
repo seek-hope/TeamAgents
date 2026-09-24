@@ -1,0 +1,8 @@
+--- extra behavioral checks ---
+empty: [] 0
+neg raises: negative amount: -2
+bal: 75
+slots unsorted: [(0, 90), (120, 150)]
+slots chain gap<min: [(0, 20)]
+slots gap==min split: [(0, 10), (15, 20)]
+overlaps contained: True False True

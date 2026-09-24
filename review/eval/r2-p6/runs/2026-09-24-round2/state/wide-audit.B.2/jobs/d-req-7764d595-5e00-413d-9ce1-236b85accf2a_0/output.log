@@ -1,0 +1,6 @@
+src files      : ['alpha.py', 'beta.py', 'delta.py', 'epsilon.py', 'gamma.py', 'zeta.py']
+findings keys  : ['alpha.py', 'beta.py', 'delta.py', 'epsilon.py', 'gamma.py', 'zeta.py']
+check1 files covered (6): PASS
+check2 values in vocab : PASS
+check3 usage counts    : {'off_by_one': 1, 'mutable_default': 1, 'shadowed_builtin': 1, 'wrong_except': 1, 'integer_division': 1, 'unclosed_resource': 1}
+check3 one-of-each     : PASS

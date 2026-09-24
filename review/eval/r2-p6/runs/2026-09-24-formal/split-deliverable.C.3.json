@@ -1,0 +1,16 @@
+{
+  "status": "succeeded",
+  "steps": 5,
+  "prompt_tokens": 13310,
+  "completion_tokens": 1322,
+  "total_tokens": 14632,
+  "events": 38,
+  "group": "C",
+  "task_id": "split-deliverable",
+  "model_key": "leader_main",
+  "model": "deepseek-flash",
+  "context_window": 1000000,
+  "permissions": "full_auto",
+  "web": false,
+  "wall_ms": 7566
+}

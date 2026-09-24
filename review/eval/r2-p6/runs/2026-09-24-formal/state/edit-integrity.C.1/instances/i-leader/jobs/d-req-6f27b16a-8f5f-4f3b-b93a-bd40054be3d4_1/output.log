@@ -1,0 +1,9 @@
+3:retries = 3
+7:retries = 5
+12:retries = 3
+---diff---
+7c7
+< retries = 3
+---
+> retries = 5
+diff exit=1

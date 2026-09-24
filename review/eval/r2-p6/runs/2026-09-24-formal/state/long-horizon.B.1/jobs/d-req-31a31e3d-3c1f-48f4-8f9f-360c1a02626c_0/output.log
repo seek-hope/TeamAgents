@@ -1,0 +1,4 @@
+./data/edge.csv
+---
+python3: can't open file '/tmp/tmp.EWQpGnll9m/tests/run_tests.py': [Errno 2] No such file or directory
+EXIT=2

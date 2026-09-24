@@ -1,0 +1,14 @@
+locale: LANG=en_US.UTF-8 LC_CTYPE="en_US.UTF-8" LC_NUMERIC="en_US.UTF-8" 
+=== words.txt (LC_ALL=C) ===
+Apple
+apple
+fig
+pear
+plum
+=== notes.txt ===
+sum=44; unique_words=5
+VERIFIED: sum file matches; words file == sorted(set(words)) -> ['Apple', 'apple', 'fig', 'pear', 'plum']
+total 12
+-rw-r--r-- 1 rimuru rimuru 23 Sep 24 16:04 notes.txt
+-rw-r--r-- 1 rimuru rimuru  3 Sep 24 16:04 sum.txt
+-rw-r--r-- 1 rimuru rimuru 26 Sep 24 16:04 words.txt

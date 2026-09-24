@@ -1,0 +1,12 @@
+m01 total([1,2,3]) = 3 (expected 6)
+m02 push(1)= [1, 2] push(2)= [1, 2] (aliasing shows mutable default)
+m03 mean([2,4]) = 3.0 | "sum" local shadows builtin
+m04 parse("abc") = 0 (bare except swallows)
+m05 ratio(7,2) = 3 (expected 3.5)
+m06 read = hi | leaks handle
+m07 head([1,2,3,4,5],2) = [1, 2, 3, 4, 5] (expected [1,2], got full)
+m08 cached("b",2) leaks prior keys: {'a': 1, 'b': 2}
+m09 withdraw(100,150) = -50 (no validation)
+m10 connect("h") = ('h', False) (tls default False)
+m11 ranked ties: [('a', 1), ('b', 1)] (no tie-break)
+m12 process = 2 | leaves handles open

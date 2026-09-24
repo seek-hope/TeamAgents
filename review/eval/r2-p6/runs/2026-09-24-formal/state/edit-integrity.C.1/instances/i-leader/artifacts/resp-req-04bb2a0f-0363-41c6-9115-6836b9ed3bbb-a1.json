@@ -1,0 +1,1 @@
+{"message":{"role":"assistant","reasoning_content":"","content":"","tool_calls":[{"id":"call_00_ET_MlotcEEZ4HGF68T4Y33z7347","type":"function","function":{"name":"read_file","arguments":"{\"path\": \"app.ini\", \"include_sha256\": true}"}}]},"usage":{"prompt":2237,"completion":59,"total":2296},"native":{"protocol":"chat_completions","base":"https://api.deepseek.com/v1"}}

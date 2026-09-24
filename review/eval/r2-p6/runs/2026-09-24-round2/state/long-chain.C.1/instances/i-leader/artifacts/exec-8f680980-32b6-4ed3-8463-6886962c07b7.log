@@ -1,0 +1,9 @@
+./stage3.py
+./stage4.py
+./stage2.py
+./stage1.py
+./data/orders.csv
+./tests/test_stage2.py
+./tests/test_stage1.py
+./tests/test_stage3.py
+./tests/test_stage4.py

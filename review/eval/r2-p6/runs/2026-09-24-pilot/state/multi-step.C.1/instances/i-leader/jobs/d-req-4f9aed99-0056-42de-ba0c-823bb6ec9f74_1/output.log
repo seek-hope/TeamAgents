@@ -1,0 +1,7 @@
+4391d9cc813f85ff330ee11e11b65d9c  alpha/check.py
+35422f37953fbf37963d3672f88eae31  beta/check.py
+---
+def add(a, b):
+    return a + b
+def mul(a, b):
+    return a * b

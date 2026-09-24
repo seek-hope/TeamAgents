@@ -1,0 +1,17 @@
+== files ==
+total 12
+-rw-r--r-- 1 rimuru rimuru 125 Sep 24 16:03 notes.txt
+-rw-r--r-- 1 rimuru rimuru   3 Sep 24 16:03 sum.txt
+-rw-r--r-- 1 rimuru rimuru  26 Sep 24 16:03 words.txt
+== notes ==
+data/a.txt 中所有整数之和为 44；data/b.txt 去重并按字典序（区分大小写）排序后共有 5 个单词。
+== verify sum with python ==
+44
+== verify words with python ==
+['Apple', 'apple', 'fig', 'pear', 'plum'] 5
+== diff check ==
+sum.txt ok: True
+words.txt ok: True
+b1ce0aa6fdf3cf349d773243dab9fbbe09d30619f38b0c1e8977e28c4f0bc495  out/sum.txt
+4fbedbb8fc1461cebee21ef47531dc57427251a7536c0920d1883fc96db68bf0  out/words.txt
+f34179c347ac67bfbc6349125b11e6d78fd4a07b3988d838101cd91d7a5e5059  out/notes.txt

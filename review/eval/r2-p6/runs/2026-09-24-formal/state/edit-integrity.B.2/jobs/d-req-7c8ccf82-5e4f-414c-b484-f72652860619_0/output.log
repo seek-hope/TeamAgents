@@ -1,0 +1,20 @@
+--- file ---
+[dev]$
+host = dev.internal$
+retries = 3$
+$
+[staging]$
+host = staging.internal$
+retries = 5$
+timeout = 30$
+$
+[prod]$
+host = prod.internal$
+retries = 3$
+timeout = 60$
+--- retries per section (awk) ---
+[dev] retries=3
+[staging] retries=5
+[prod] retries=3
+--- md5 ---
+5df0e4bcf832bbfef6705973a9e961a9  app.ini

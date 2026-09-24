@@ -1,0 +1,19 @@
+=== out/sum.txt ===
+44
+=== out/words.txt ===
+Apple
+apple
+fig
+pear
+plum
+=== out/notes.txt ===
+data/a.txt 中所有整数之和为 44；data/b.txt 去重后按字典序排序共有 5 个单词。
+=== verify sum ===
+44
+=== verify dedup sorted ===
+2
+=== files ===
+total 12
+-rw-r--r-- 1 rimuru rimuru 101 Sep 24 16:03 notes.txt
+-rw-r--r-- 1 rimuru rimuru   3 Sep 24 16:03 sum.txt
+-rw-r--r-- 1 rimuru rimuru  26 Sep 24 16:03 words.txt

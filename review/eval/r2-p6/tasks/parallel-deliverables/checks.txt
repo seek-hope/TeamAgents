@@ -1,0 +1,4 @@
+cd csvfix && python3 -m pytest -q
+cd rules && python3 -m pytest -q
+python3 -c "r=open('INDEX.md').read(); assert 'csvfix' in r and 'rules' in r and len(r)>80, r"
+python3 -c "import hashlib,pathlib; assert hashlib.sha256(pathlib.Path('csvfix/test_csvfix.py').read_bytes()).hexdigest()=='588db2b78e9d1365dd8d7563abe70812bf958955665a95ad02b1e6a16c793724', 'csvfix tests modified'; assert hashlib.sha256(pathlib.Path('rules/test_rules.py').read_bytes()).hexdigest()=='4c425638c58c34872b0800f5fe19092c011785e123c15a1c69e2e99d762a5af8', 'rules tests modified'"

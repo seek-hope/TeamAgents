@@ -1,0 +1,20 @@
+--- full file ---
+     1	[dev]
+     2	host = dev.internal
+     3	retries = 3
+     4	
+     5	[staging]
+     6	host = staging.internal
+     7	retries = 5
+     8	timeout = 30
+     9	
+    10	[prod]
+    11	host = prod.internal
+    12	retries = 3
+    13	timeout = 60
+--- retries lines ---
+3:retries = 3
+7:retries = 5
+12:retries = 3
+--- staging section only (awk) ---
+retries = 5

@@ -1,0 +1,14 @@
+== body ==
+p6-service-ok
+== xxd ==
+0000000   p   6   -   s   e   r   v   i   c   e   -   o   k
+0000015
+== raw curl (no -o) ==
+p6-service-ok
+== headers ==
+HTTP/1.1 200 OK
+Server: BaseHTTP/0.6 Python/3.13.15
+Date: Thu, 24 Sep 2026 08:03:01 GMT
+Content-Type: text/plain; charset=utf-8
+Content-Length: 13
+

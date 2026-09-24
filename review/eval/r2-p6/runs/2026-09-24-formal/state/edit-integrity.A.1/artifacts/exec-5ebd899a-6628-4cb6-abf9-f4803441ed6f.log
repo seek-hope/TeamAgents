@@ -1,0 +1,7 @@
+[dev] retries = 3
+[staging] retries = 5
+[prod] retries = 3
+---
+3:retries = 3
+7:retries = 5
+12:retries = 3

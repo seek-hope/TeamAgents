@@ -1,0 +1,19 @@
+pid=320
+    PID STAT CMD
+    320 S    python3 service.py
+--- curl -sS -i ---
+HTTP/1.1 200 OK
+Server: BaseHTTP/0.6 Python/3.13.15
+Date: Thu, 24 Sep 2026 07:32:13 GMT
+Content-Type: text/plain; charset=utf-8
+Content-Length: 13
+
+p6-service-ok
+--- body only -> service.txt ---
+curl_exit=0
+bytes=13
+-rw-r--r-- 1 rimuru rimuru 13 Sep 24 15:32 service.txt
+--- content ---
+p6-service-ok
+sha256=79cd5fda49217cbebaa4a72e23782d8c53e26cd288b17bfef0e4c7174acf4cf9
+expected_sha256=79cd5fda49217cbebaa4a72e23782d8c53e26cd288b17bfef0e4c7174acf4cf9

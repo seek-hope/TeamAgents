@@ -1,0 +1,8 @@
+-rw-r--r-- 1 rimuru rimuru     11 Sep 24 15:52 answer.txt
+-rw-r--r-- 1 rimuru rimuru      0 Sep 24 15:52 gen_err.txt
+-rw-r--r-- 1 rimuru rimuru 282910 Sep 24 15:52 gen_output.txt
+--- answer.txt exact bytes ---
+0000000   m   i   d   -   9   f   3   a   1   c  \n
+0000013
+--- sanity: does answer match grep value? ---
+MATCH

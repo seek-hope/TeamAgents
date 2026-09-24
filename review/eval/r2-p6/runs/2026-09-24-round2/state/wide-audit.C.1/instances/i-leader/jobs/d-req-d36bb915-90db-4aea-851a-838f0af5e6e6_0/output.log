@@ -1,0 +1,9 @@
+keys match: True | count: 6
+all values in vocab: True
+no dup-ish issue (values): ['integer_division', 'mutable_default', 'off_by_one', 'shadowed_builtin', 'unclosed_resource', 'wrong_except']
+  alpha.py: off_by_one
+  beta.py: mutable_default
+  gamma.py: shadowed_builtin
+  delta.py: wrong_except
+  epsilon.py: integer_division
+  zeta.py: unclosed_resource

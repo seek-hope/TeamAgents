@@ -1,0 +1,12 @@
+m01 total([1,2,3]) = 3 expected 6; total([]) = 0
+m02 push(1) = [1, 2]  push(2) = [1, 2] <- shared default
+m03 mean([2,4]) = 3.0 | shadows builtin sum: True
+m04 parse('12') = 12  parse('x') = 0
+m05 ratio(7,2) = 3 expected 3.5
+m06 open file descriptors leaked (no close in src): True
+m07 head([1,2,3,4,5],2) = [1, 2, 3, 4, 5] expected [1,2] (n silently ignored)
+m08 shared module cache: True {'k': 'v', 'x': 1, 'k2': 'v2'}
+m09 withdraw(100,150) = -50 -> negative, no validation
+m10 connect('h', 9999, True) = ('h', True) -> port 9999 dropped: True
+m11 tie order depends on input (no tie-break): [('a', 1), ('b', 1), ('c', 1)] [('c', 1), ('b', 1), ('a', 1)]
+m12 opened and kept 3 handles; fd delta = 0

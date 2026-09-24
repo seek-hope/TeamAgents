@@ -1,0 +1,10 @@
+--- sum.txt
+44
+--- words.txt
+Apple$
+apple$
+fig$
+pear$
+plum$
+--- notes.txt
+sum=44; unique_words=5

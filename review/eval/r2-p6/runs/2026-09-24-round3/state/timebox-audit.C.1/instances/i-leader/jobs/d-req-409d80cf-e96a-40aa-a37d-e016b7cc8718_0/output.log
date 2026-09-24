@@ -1,0 +1,6 @@
+files: ['m01.py', 'm02.py', 'm03.py', 'm04.py', 'm05.py', 'm06.py', 'm07.py', 'm08.py', 'm09.py', 'm10.py', 'm11.py', 'm12.py']
+keys : ['m01.py', 'm02.py', 'm03.py', 'm04.py', 'm05.py', 'm06.py', 'm07.py', 'm08.py', 'm09.py', 'm10.py', 'm11.py', 'm12.py']
+all 12 present: True
+values all allowed: True
+values distinct: True
+missing: set() extra: set()

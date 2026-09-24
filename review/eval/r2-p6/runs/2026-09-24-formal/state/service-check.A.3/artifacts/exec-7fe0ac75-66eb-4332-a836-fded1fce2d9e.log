@@ -1,0 +1,11 @@
+stopping pid=1338330
+--- process alive? ---
+process gone
+--- ss after stop ---
+LISTEN 0      5                127.0.0.1:8765       0.0.0.0:*    users:(("python3",pid=1338332,fd=3))
+--- curl after stop ---
+p6-service-okcurl_exit=0
+--- service.log ---
+listening on http://127.0.0.1:8765 (pid=1338332)
+127.0.0.1 - "GET /health HTTP/1.1" 200 -
+127.0.0.1 - "GET /health HTTP/1.1" 200 -

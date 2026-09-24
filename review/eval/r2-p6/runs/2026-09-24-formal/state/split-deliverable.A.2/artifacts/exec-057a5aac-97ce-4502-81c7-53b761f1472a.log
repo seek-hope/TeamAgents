@@ -1,0 +1,10 @@
+--- sum via awk ---
+44
+--- words unique sorted case-sensitive ---
+Apple
+apple
+fig
+pear
+plum
+--- word count ---
+5

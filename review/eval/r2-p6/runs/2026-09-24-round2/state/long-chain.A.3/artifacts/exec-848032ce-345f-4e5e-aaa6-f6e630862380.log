@@ -1,0 +1,5 @@
+rows: [{'id': 9, 'qty': -3, 'price': 4}, {'id': 10, 'qty': 5, 'price': 2}, {'id': 11, 'qty': 0, 'price': 4}]
+filter: [{'id': 10, 'qty': 5, 'price': 2}]
+totals: {2: 5}
+report: '2:5\n'
+empty report: ''

@@ -1,0 +1,11 @@
+./src/epsilon.py
+./src/alpha.py
+./src/delta.py
+./src/zeta.py
+./src/gamma.py
+./src/beta.py
+---
+total 12
+drwxr-xr-x  3 rimuru rimuru 4096 Sep 24 16:07 .
+drwxr-xr-x 27 rimuru rimuru 4096 Sep 24 16:16 ..
+drwxr-xr-x  2 rimuru rimuru 4096 Sep 24 16:07 src

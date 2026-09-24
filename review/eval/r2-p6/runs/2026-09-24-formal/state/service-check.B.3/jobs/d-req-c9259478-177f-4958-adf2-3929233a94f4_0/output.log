@@ -1,0 +1,10 @@
+curl_exit=0
+--- cat service.txt ---
+p6-service-ok
+--- hexdump ---
+00000000  70 36 2d 73 65 72 76 69  63 65 2d 6f 6b           |p6-service-ok|
+0000000d
+--- wc -c ---
+13
+--- exact match test ---
+EXACT MATCH: p6-service-ok (13 bytes, no newline)

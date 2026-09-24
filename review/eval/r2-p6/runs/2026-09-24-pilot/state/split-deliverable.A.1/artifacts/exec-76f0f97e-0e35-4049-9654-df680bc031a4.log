@@ -1,0 +1,8 @@
+--- a.txt hexdump ---
+0000000   1   7  \n   -   4  \n   2   3  \n   8  \n
+0000013
+--- b.txt hexdump ---
+0000000   p   e   a   r       a   p   p   l   e       p   e   a   r    
+0000020   p   l   u   m       A   p   p   l   e       a   p   p   l   e
+0000040  \n   f   i   g       p   l   u   m  \n
+0000052

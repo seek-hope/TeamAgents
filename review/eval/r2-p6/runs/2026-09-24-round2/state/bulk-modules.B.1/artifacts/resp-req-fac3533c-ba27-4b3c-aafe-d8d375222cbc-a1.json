@@ -1,0 +1,1 @@
+{"message":{"role":"assistant","reasoning_content":"","content":"","tool_calls":[{"id":"call_00_ET_2sgrBO5Je6Kvzm12JoT49752","type":"function","function":{"name":"shell","arguments":"{\"command\": \"python -m pytest -q 2>&1 | tail -20\"}"}}]},"usage":{"prompt":4198,"completion":50,"total":4248},"native":{"protocol":"chat_completions","base":"https://api.deepseek.com/v1"}}

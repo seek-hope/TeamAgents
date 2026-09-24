@@ -1,0 +1,4 @@
+dev {'host': 'dev.internal', 'retries': '3'}
+staging {'host': 'staging.internal', 'retries': '5', 'timeout': '30'}
+prod {'host': 'prod.internal', 'retries': '3', 'timeout': '60'}
+OK: only staging.retries == 5; dev/prod untouched at 3

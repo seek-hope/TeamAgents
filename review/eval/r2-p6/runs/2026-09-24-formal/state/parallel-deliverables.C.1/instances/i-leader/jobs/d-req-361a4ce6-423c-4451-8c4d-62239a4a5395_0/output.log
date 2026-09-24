@@ -1,0 +1,11 @@
+total 20
+drwxr-xr-x  4 rimuru rimuru 4096 Sep 24 15:57 .
+drwxr-xr-x 45 rimuru rimuru 4096 Sep 24 15:57 ..
+drwxr-xr-x  4 rimuru rimuru 4096 Sep 24 15:57 csvfix
+-rw-r--r--  1 rimuru rimuru 1589 Sep 24 15:57 INDEX.md
+drwxr-xr-x  4 rimuru rimuru 4096 Sep 24 15:57 rules
+--- rerun both ---
+..                                                                       [100%]
+2 passed in 0.00s
+.                                                                        [100%]
+1 passed in 0.00s

@@ -1,0 +1,14 @@
+--- sum.txt
+44
+--- words.txt
+fig plum
+pear apple pear plum Apple apple
+--- notes.txt
+sum=44; unique_words=2
+--- ls
+total 20
+drwxr-xr-x 2 rimuru rimuru 4096 Sep 24 16:04 .
+drwxr-xr-x 4 rimuru rimuru 4096 Sep 24 16:04 ..
+-rw-r--r-- 1 rimuru rimuru   23 Sep 24 16:04 notes.txt
+-rw-r--r-- 1 rimuru rimuru    3 Sep 24 16:04 sum.txt
+-rw-r--r-- 1 rimuru rimuru   42 Sep 24 16:04 words.txt

@@ -1,0 +1,16 @@
+=== curl to /health (body -> service.txt) ===
+http_code=200
+content_type=text/plain; charset=utf-8
+size_download=13
+exit=0
+=== headers ===
+HTTP/1.0 200 OK
+Server: BaseHTTP/0.6 Python/3.13.15
+Date: Thu, 24 Sep 2026 08:00:25 GMT
+Content-Type: text/plain; charset=utf-8
+Content-Length: 13
+
+=== service.txt bytes ===
+-rw-r--r-- 1 rimuru rimuru 13 Sep 24 16:00 service.txt
+octets: 70362d736572766963652d6f6b
+content: [p6-service-ok]

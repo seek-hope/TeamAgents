@@ -1,0 +1,13 @@
+  alice , 3 ,apple$
+$
+bob,5,pear$
+alice,2, apple $
+# comment$
+carol,,plum$
+===
+  alice , 3 ,apple
+
+bob,5,pear
+alice,2, apple 
+# comment
+carol,,plum

@@ -1,0 +1,14 @@
+--- out/sum.txt
+44
+--- out/words.txt
+Apple
+apple
+fig
+pear
+plum
+--- out/notes.txt
+sum=44; unique_words=5
+sha256:
+040a22070c6df562504b49d960ac2238ffa9e522ab3792b40320bb04ab91e3b9  out/notes.txt
+b1ce0aa6fdf3cf349d773243dab9fbbe09d30619f38b0c1e8977e28c4f0bc495  out/sum.txt
+4fbedbb8fc1461cebee21ef47531dc57427251a7536c0920d1883fc96db68bf0  out/words.txt

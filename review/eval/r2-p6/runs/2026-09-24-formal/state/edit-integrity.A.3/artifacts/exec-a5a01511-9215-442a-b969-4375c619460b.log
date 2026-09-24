@@ -1,0 +1,13 @@
+--- unified diff (original vs current) ---
+--- /tmp/orig_app.ini	2026-09-24 15:33:24.298711264 +0800
++++ app.ini	2026-09-24 15:33:21.396408391 +0800
+@@ -4,7 +4,7 @@
+ 
+ [staging]
+ host = staging.internal
+-retries = 3
++retries = 5
+ timeout = 30
+ 
+ [prod]
+exit=1

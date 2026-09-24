@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "<string>", line 9, in <module>
+    for k in files: print(k, d[k])
+                             ~^^^
+KeyError: '__pycache__'
+keys match: False 12
+all valid vocab: True
+each vocab used once: True

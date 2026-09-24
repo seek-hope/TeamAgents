@@ -1,0 +1,113 @@
+{
+  "frozen": "2026-09-24",
+  "design": "review/eval/r2-p6/design.md",
+  "groups": {
+    "A": "reference loop (no persistence, eval-only)",
+    "B": "v2 persistent single instance",
+    "C": "v2 supervisor + collaboration grants/instructions"
+  },
+  "model": {
+    "key": "leader_main",
+    "wire_model": "deepseek-flash",
+    "context_window": 1000000,
+    "context_source": "D-36 用户确认 DeepSeek Flash 原生 1M（2026-09-17）",
+    "reasoning_effort": "high",
+    "effort_note": "目录默认 max（简单回合≈240s）；试跑期显式 high 控制成本与时长"
+  },
+  "limits": {
+    "trial_timeout_s": 900,
+    "reference_max_steps": 40,
+    "permissions": "full_auto",
+    "max_retries": 2
+  },
+  "repeats": {
+    "pilot": 1,
+    "formal": 3
+  },
+  "analysis": {
+    "metric": "checks_ok (all checks exit 0 in the trial workspace)",
+    "pairing": "same repeat index within a task",
+    "aggregate": "mean of per-task paired differences",
+    "interval": "95% bootstrap over tasks, 10000 resamples, seed 20260924",
+    "h1": "B vs A: no observed degradation; interval must not be significantly negative",
+    "h2": "C vs B: reproducible gain; per-task positive on >=2 tasks and interval lower bound > 0",
+    "insufficient": "interval contains 0 or too few samples -> report 未证实",
+    "sha256": "52d257b4c435a0513a68df9e4147d33a9946a821e3b0c0edcf012cd7c8bca974"
+  },
+  "tasks": [
+    {
+      "id": "edit-integrity",
+      "prompt_sha256": "72bab9d5ef6cc780418fa147dde0f0e63fc3c395ee2fa39444cdca363a2a4f27",
+      "checks": [
+        "python3 -c \"import configparser; c = configparser.ConfigParser(); assert c.read('app.ini'), 'app.ini missing'; assert c['staging']['retries'] == '5', c['staging']['retries']; assert c['dev']['retries'] == '3' and c['prod']['retries'] == '3', 'unrelated sections changed'\""
+      ],
+      "fixture_sha256": "eb6011401be15dcbf2a06ffddc27612942e29e0fb2cc87a0cc0407e867fa48d9"
+    },
+    {
+      "id": "long-horizon",
+      "prompt_sha256": "2e3e19ab5faf46fd9e2d61387a4527741cc457b8905d4645661f83cb1a9272d2",
+      "checks": [
+        "python3 tests/run_tests.py",
+        "python3 -c \"import hashlib,pathlib; h=hashlib.sha256(pathlib.Path('tests/run_tests.py').read_bytes()).hexdigest(); assert h=='194afab5e4814d4c24c58da62793aac6422de6403e6e6b841c5305af06b5e047', 'tests/run_tests.py was modified'\"",
+        "python3 -c \"r=open('REPORT.md').read(); assert len(r)>80, r\""
+      ],
+      "fixture_sha256": "9ee69af9328a56b38b27e3e92aef8f570777222bf3db9ffda498ba1676b7b12a"
+    },
+    {
+      "id": "long-output",
+      "prompt_sha256": "5b55f03c7121e026027ab2a647acaf42dc45c74dd55687d76ebdc6bf65e07976",
+      "checks": [
+        "python3 -c \"value = open('answer.txt').read().strip(); assert value == 'mid-9f3a1c', repr(value)\""
+      ],
+      "fixture_sha256": "50f297c587088300939deaf00572141a8eb55a7afeb51e51d7e0f3f1a1d61873"
+    },
+    {
+      "id": "multi-step",
+      "prompt_sha256": "83a2a28ced470991724b53ce7228f02869e60bfdad4b079a342d6f370f159515",
+      "checks": [
+        "cd alpha && python3 check.py",
+        "cd beta && python3 check.py"
+      ],
+      "fixture_sha256": "81e0c7d8bb92dadb704c9c5a9c8a3f9895b1525088690cf586cc3c8136a293f6"
+    },
+    {
+      "id": "parallel-deliverables",
+      "prompt_sha256": "f4e35cecace5572cf19f04864e99fe850d393805183ba618b4cc454dd7d6610a",
+      "checks": [
+        "cd csvfix && python3 -m pytest -q",
+        "cd rules && python3 -m pytest -q",
+        "python3 -c \"r=open('INDEX.md').read(); assert 'csvfix' in r and 'rules' in r and len(r)>80, r\"",
+        "python3 -c \"import hashlib,pathlib; assert hashlib.sha256(pathlib.Path('csvfix/test_csvfix.py').read_bytes()).hexdigest()=='588db2b78e9d1365dd8d7563abe70812bf958955665a95ad02b1e6a16c793724', 'csvfix tests modified'; assert hashlib.sha256(pathlib.Path('rules/test_rules.py').read_bytes()).hexdigest()=='4c425638c58c34872b0800f5fe19092c011785e123c15a1c69e2e99d762a5af8', 'rules tests modified'\""
+      ],
+      "fixture_sha256": "3aec5183f7e9c4c9f4e5dffa8bfc71777c425f7882ef968d1f4d04ae12549eb6"
+    },
+    {
+      "id": "rust-fix",
+      "prompt_sha256": "524be699750c3c1bf3e0b6ad6145144e327b535059449cac0de753bb3efeed96",
+      "checks": [
+        "cargo test --offline --quiet"
+      ],
+      "fixture_sha256": "d57cf06346a83c49aba4aff690b69549b61013935639ac03df372025207111f9"
+    },
+    {
+      "id": "service-check",
+      "prompt_sha256": "b372121a182b2165ad64475f582f47f6e0b2091d289414fc1c98db894244ee12",
+      "checks": [
+        "python3 -c \"body=open('service.txt').read().strip(); assert body=='p6-service-ok', repr(body)\"",
+        "python3 -c \"import socket; s=socket.socket(); s.settimeout(0.5); rc=s.connect_ex(('127.0.0.1',8765)); s.close(); assert rc!=0, 'service still listening'\""
+      ],
+      "fixture_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "id": "split-deliverable",
+      "prompt_sha256": "1a678ec86a31f9277f1fab602c0693ca6b29a0258ef8864a312a17f2bcb88848",
+      "checks": [
+        "python3 -c \"v=open('out/sum.txt').read().strip(); assert v=='44', repr(v)\"",
+        "python3 -c \"w=[l.strip() for l in open('out/words.txt') if l.strip()]; assert w==['Apple','apple','fig','pear','plum'], w\"",
+        "python3 -c \"n=open('out/notes.txt').read(); assert '44' in n and '5' in n, n\""
+      ],
+      "fixture_sha256": "c0d11579bcab1f4e634f3b130494c56a3e6203736cea3cf5ef3eb5c3e3055720"
+    }
+  ],
+  "git": "eda3b56e4806ed245eea402f4a9d74dc7890702f"
+}

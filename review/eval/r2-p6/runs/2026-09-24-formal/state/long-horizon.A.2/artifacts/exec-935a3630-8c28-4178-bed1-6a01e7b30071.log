@@ -1,0 +1,4 @@
+[['alice', '3', 'apple'], ['bob', '5', 'pear'], ['alice', '2', 'apple'], ['carol', '', 'plum']]
+{'x': 2}
+[]
+exit=0

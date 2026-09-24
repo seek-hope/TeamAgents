@@ -1,0 +1,13 @@
+== words.txt (LC_ALL=C, case-sensitive) ==
+Apple$
+apple$
+fig$
+pear$
+plum$
+count=5
+== notes.txt ==
+Sum of all integers in data/a.txt is 44; data/b.txt has 5 unique words.
+== sum.txt ==
+44$
+== manual sum check ==
+44

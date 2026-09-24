@@ -1,0 +1,13 @@
+m01 total([1,2,3])= 3 (drops last -> off_by_one)
+m02 push(1)= [1, 2] push(2)= [1, 2] (leaks state -> mutable_default)
+m03 mean([1,2,3])= 2.0 (local sum shadows builtin)
+   module has builtin sum shadowed: False
+m04 parse('abc')= 0 parse(None)= 0 (bare except)
+m05 ratio(7,2)= 3 (// -> integer_division)
+m06 read open handle never closed; source: def read(p): |     h = open(p) |     return h.read() | 
+m07 head([1,2,3,4,5],2)= [1, 2, 3, 4, 5] head(...,10)= [1, 2, 3, 4, 5]
+m08 cached('a',1)= {'a': 1, 'b': 2} cached('b',2)= {'a': 1, 'b': 2}
+m09 withdraw(100,150)= -50 withdraw(100,-50)= 150
+m10 connect('h')= ('h', False) connect('h', port=9999)= ('h', False)
+m11 ranked= [('y', 1), ('x', 2), ('z', 2)]
+m12 process returns len only; source: def process(paths): |     handles = [open(p) for p in paths] |     return len(handles) | 

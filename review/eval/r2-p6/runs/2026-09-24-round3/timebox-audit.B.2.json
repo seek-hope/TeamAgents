@@ -1,0 +1,16 @@
+{
+  "status": "succeeded",
+  "steps": 9,
+  "prompt_tokens": 44069,
+  "completion_tokens": 6032,
+  "total_tokens": 50101,
+  "events": 77,
+  "group": "B",
+  "task_id": "timebox-audit",
+  "model_key": "leader_main",
+  "model": "deepseek-flash",
+  "context_window": 1000000,
+  "permissions": "full_auto",
+  "web": false,
+  "wall_ms": 32660
+}

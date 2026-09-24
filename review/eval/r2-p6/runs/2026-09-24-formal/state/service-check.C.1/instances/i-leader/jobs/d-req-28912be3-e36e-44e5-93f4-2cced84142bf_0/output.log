@@ -1,0 +1,4 @@
+--- stored pid: 1339657
+1339657       1 SNs  python3 service.py
+--- listening sockets on 8765:
+LISTEN 0      5                127.0.0.1:8765       0.0.0.0:*    users:(("python3",pid=1339657,fd=3))

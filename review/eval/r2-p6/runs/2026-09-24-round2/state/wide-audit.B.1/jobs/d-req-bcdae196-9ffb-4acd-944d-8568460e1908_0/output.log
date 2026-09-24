@@ -1,0 +1,6 @@
+src files : ['alpha.py', 'beta.py', 'delta.py', 'epsilon.py', 'gamma.py', 'zeta.py']
+keys      : ['alpha.py', 'beta.py', 'delta.py', 'epsilon.py', 'gamma.py', 'zeta.py']
+6 keys    : True
+keys match: True
+values ok : True
+distinct  : True

@@ -1,0 +1,17 @@
+--- headers ---
+HTTP/1.1 200 OK
+Server: BaseHTTP/0.6 Python/3.13.15
+Date: Thu, 24 Sep 2026 08:02:44 GMT
+Content-Type: text/plain; charset=utf-8
+Content-Length: 13
+
+--- 404 route check ---
+http_code=404
+--- stopping service ---
+process 1339977 exited
+confirmed stopped
+--- curl after stop (expect failure) ---
+curl: (7) Failed to connect to 127.0.0.1:8765 after 0 ms: Could not connect to server
+curl_exit=7
+--- port check ---
+port 8765 not listening

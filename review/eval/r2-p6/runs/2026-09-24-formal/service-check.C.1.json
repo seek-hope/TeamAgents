@@ -1,0 +1,16 @@
+{
+  "status": "succeeded",
+  "steps": 8,
+  "prompt_tokens": 29540,
+  "completion_tokens": 3448,
+  "total_tokens": 32988,
+  "events": 54,
+  "group": "C",
+  "task_id": "service-check",
+  "model_key": "leader_main",
+  "model": "deepseek-flash",
+  "context_window": 1000000,
+  "permissions": "full_auto",
+  "web": false,
+  "wall_ms": 19101
+}

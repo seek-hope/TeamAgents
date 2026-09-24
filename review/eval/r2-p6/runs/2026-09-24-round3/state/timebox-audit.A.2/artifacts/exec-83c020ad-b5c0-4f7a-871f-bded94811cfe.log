@@ -1,0 +1,61 @@
+  2 src/m01.py
+  3 src/m02.py
+  5 src/m03.py
+  5 src/m04.py
+  2 src/m05.py
+  3 src/m06.py
+  2 src/m07.py
+  4 src/m08.py
+  2 src/m09.py
+  2 src/m10.py
+  2 src/m11.py
+  3 src/m12.py
+ 35 total
+---
+== src/m01.py ==
+     1	def total(xs):
+     2	    return sum(xs[:-1])
+== src/m02.py ==
+     1	def push(x, xs=[]):
+     2	    xs.append(x)
+     3	    return xs
+== src/m03.py ==
+     1	def mean(xs):
+     2	    sum = 0
+     3	    for x in xs:
+     4	        sum += x
+     5	    return sum / len(xs)
+== src/m04.py ==
+     1	def parse(s):
+     2	    try:
+     3	        return int(s)
+     4	    except:
+     5	        return 0
+== src/m05.py ==
+     1	def ratio(a, b):
+     2	    return a // b
+== src/m06.py ==
+     1	def read(p):
+     2	    h = open(p)
+     3	    return h.read()
+== src/m07.py ==
+     1	def head(xs, n):
+     2	    return xs[:n] if n > 3 else xs
+== src/m08.py ==
+     1	CACHE = {}
+     2	def cached(k, v):
+     3	    CACHE[k] = v
+     4	    return CACHE
+== src/m09.py ==
+     1	def withdraw(total, amount):
+     2	    return total - amount
+== src/m10.py ==
+     1	def connect(host, port=5432, tls=False):
+     2	    return (host, tls)
+== src/m11.py ==
+     1	def ranked(rows):
+     2	    return sorted(rows, key=lambda r: r[1])
+== src/m12.py ==
+     1	def process(paths):
+     2	    handles = [open(p) for p in paths]
+     3	    return len(handles)

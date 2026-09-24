@@ -1,0 +1,9 @@
+--- grep retries ---
+3:retries = 3
+7:retries = 5
+12:retries = 3
+--- diff vs git if any ---
+--- awk section check ---
+[dev] -> retries = 3
+[staging] -> retries = 5
+[prod] -> retries = 3

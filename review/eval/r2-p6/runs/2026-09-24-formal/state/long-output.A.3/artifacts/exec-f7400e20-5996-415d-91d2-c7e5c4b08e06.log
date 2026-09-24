@@ -1,0 +1,5 @@
+00000000: 6d69 642d 3966 3361 3163                 mid-9f3a1c
+total 288
+-rw-r--r-- 1 rimuru rimuru     10 Sep 24 15:51 answer.txt
+-rw-r--r-- 1 rimuru rimuru 282910 Sep 24 15:51 gen_output.txt
+-rw-r--r-- 1 rimuru rimuru    117 Sep 24 15:15 gen.py

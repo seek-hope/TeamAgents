@@ -1,0 +1,10 @@
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-24-formal/work/service-check.A.2
+/opt/miniconda3/bin/python3
+Python 3.13.15
+/usr/bin/curl
+curl 8.22.0 (x86_64-pc-linux-gnu) libcurl/8.22.0 OpenSSL/3.6.4 zlib/1.3.2 brotli/1.2.0 zstd/1.5.7 libidn2/2.3.8 libpsl/0.21.5 libssh2/1.11.1 nghttp2/1.70.0 ngtcp2/1.25.0 nghttp3/1.18.0 mit-krb5/1.22.2
+Release-Date: 2026-09-02
+---
+total 8
+drwxr-xr-x  2 rimuru rimuru 4096 Sep 24 15:15 .
+drwxr-xr-x 58 rimuru rimuru 4096 Sep 24 16:00 ..

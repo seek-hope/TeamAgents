@@ -1,0 +1,17 @@
+awk sum: 44
+sort -u:
+Apple
+apple
+fig
+pear
+plum
+count: 5
+--- files ---
+total 12
+-rw-r--r-- 1 rimuru rimuru 115 Sep 24 16:03 notes.txt
+-rw-r--r-- 1 rimuru rimuru   2 Sep 24 16:03 sum.txt
+-rw-r--r-- 1 rimuru rimuru  26 Sep 24 16:03 words.txt
+--- diff check ---
+6d5
+< 
+sum verifies 44

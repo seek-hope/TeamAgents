@@ -1,0 +1,12 @@
+=== stopping ===
+sent TERM to 1337579
+sent TERM to 1337576
+1337579 confirmed stopped
+1337576 confirmed stopped
+=== remaining service.py processes ===
+none
+=== port 8765 listener after stop ===
+no listener on 8765
+=== curl after stop (should fail to connect) ===
+curl: (7) Failed to connect to 127.0.0.1:8765 after 0 ms: Could not connect to server
+curl_exit=7

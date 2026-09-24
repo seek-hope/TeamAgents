@@ -1,0 +1,1 @@
+{"message":{"role":"assistant","reasoning_content":"","content":"","tool_calls":[{"id":"call_00_ET_qVgCJp17oSbmcAfb9EVL2957","type":"function","function":{"name":"shell","arguments":"{\"command\": \"cargo test 2>&1 | tail -20\"}"}}]},"usage":{"prompt":2648,"completion":47,"total":2695},"native":{"protocol":"chat_completions","base":"https://api.deepseek.com/v1"}}

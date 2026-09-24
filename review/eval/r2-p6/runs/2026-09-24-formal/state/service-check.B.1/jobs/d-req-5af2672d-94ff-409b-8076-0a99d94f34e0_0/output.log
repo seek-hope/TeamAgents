@@ -1,0 +1,12 @@
+1338810
+pgrep_exit=0
+connect_ex= 111 (0=open, nonzero=closed)
+-rw-r--r-- 1 rimuru rimuru  203 Sep 24 16:01 service.log
+-rw-r--r-- 1 rimuru rimuru 1134 Sep 24 16:01 service.py
+-rw-r--r-- 1 rimuru rimuru   13 Sep 24 16:01 service.txt
+--- service.log:
+listening on http://127.0.0.1:8765/health
+127.0.0.1 - "GET /health HTTP/1.1" 200 -
+127.0.0.1 - "GET /health HTTP/1.1" 200 -
+127.0.0.1 - code 404, message Not Found
+127.0.0.1 - "GET /nope HTTP/1.1" 404 -

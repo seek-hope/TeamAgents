@@ -1,0 +1,10 @@
+sum_check=44
+lines=5
+Apple$
+apple$
+fig$
+pear$
+plum$
+---
+44$
+sum.txt: 整数和为 44；words.txt: 去重后共 5 个单词（字典序，区分大小写）。

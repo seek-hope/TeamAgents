@@ -1,0 +1,5 @@
+exit=0
+4001 /tmp/gen_out.txt
+282910 /tmp/gen_out.txt
+     0 /tmp/gen_err.txt
+282910 total

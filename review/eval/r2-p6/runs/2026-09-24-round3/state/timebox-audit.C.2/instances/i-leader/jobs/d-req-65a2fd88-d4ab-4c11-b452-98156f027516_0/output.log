@@ -1,0 +1,32 @@
+  2 src/m01.py
+  3 src/m02.py
+  5 src/m03.py
+  5 src/m04.py
+  2 src/m05.py
+  3 src/m06.py
+  2 src/m07.py
+  4 src/m08.py
+  2 src/m09.py
+  2 src/m10.py
+  2 src/m11.py
+  3 src/m12.py
+ 35 total
+total 12
+drwxr-xr-x  3 rimuru rimuru 4096 Sep 24 16:22 .
+drwxr-xr-x 10 rimuru rimuru 4096 Sep 24 16:28 ..
+drwxr-xr-x  2 rimuru rimuru 4096 Sep 24 16:22 src
+total 56
+drwxr-xr-x 2 rimuru rimuru 4096 Sep 24 16:22 .
+drwxr-xr-x 3 rimuru rimuru 4096 Sep 24 16:22 ..
+-rw-r--r-- 1 rimuru rimuru   39 Sep 24 16:22 m01.py
+-rw-r--r-- 1 rimuru rimuru   51 Sep 24 16:22 m02.py
+-rw-r--r-- 1 rimuru rimuru   85 Sep 24 16:22 m03.py
+-rw-r--r-- 1 rimuru rimuru   74 Sep 24 16:22 m04.py
+-rw-r--r-- 1 rimuru rimuru   35 Sep 24 16:22 m05.py
+-rw-r--r-- 1 rimuru rimuru   49 Sep 24 16:22 m06.py
+-rw-r--r-- 1 rimuru rimuru   52 Sep 24 16:22 m07.py
+-rw-r--r-- 1 rimuru rimuru   63 Sep 24 16:22 m08.py
+-rw-r--r-- 1 rimuru rimuru   55 Sep 24 16:22 m09.py
+-rw-r--r-- 1 rimuru rimuru   64 Sep 24 16:22 m10.py
+-rw-r--r-- 1 rimuru rimuru   62 Sep 24 16:22 m11.py
+-rw-r--r-- 1 rimuru rimuru   83 Sep 24 16:22 m12.py

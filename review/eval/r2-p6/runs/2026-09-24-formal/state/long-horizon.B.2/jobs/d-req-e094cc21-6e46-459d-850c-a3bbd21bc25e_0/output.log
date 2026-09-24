@@ -1,0 +1,11 @@
+long-horizon ok
+./data/sample.csv
+./REPORT.md
+./tests/run_tests.py
+./tools/__init__.py
+./tools/normalize.py
+./tools/__pycache__/__init__.cpython-313.pyc
+./tools/__pycache__/normalize.cpython-313.pyc
+./tools/__pycache__/stat.cpython-313.pyc
+./tools/stat.py
+[] {'x': 1}

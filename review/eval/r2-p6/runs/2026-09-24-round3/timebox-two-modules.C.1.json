@@ -1,0 +1,16 @@
+{
+  "status": "succeeded",
+  "steps": 9,
+  "prompt_tokens": 43526,
+  "completion_tokens": 4251,
+  "total_tokens": 47777,
+  "events": 68,
+  "group": "C",
+  "task_id": "timebox-two-modules",
+  "model_key": "leader_main",
+  "model": "deepseek-flash",
+  "context_window": 1000000,
+  "permissions": "full_auto",
+  "web": false,
+  "wall_ms": 49735
+}

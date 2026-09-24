@@ -1,0 +1,9 @@
+parse trim+count: ['a', '2', 'x'] None None
+parse quoted comma: ['a,b', '2', 'x']
+parse escaped quote: ['a"b', '2', 'x']
+total blank/missing: 2
+total non-numeric raises: ValueError: invalid literal for int() with base 10: 'oops'
+all empty: True | any empty: False
+missing fact: False
+unknown rule: False
+bool identity: True

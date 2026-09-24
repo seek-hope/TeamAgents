@@ -1,0 +1,9 @@
+port owner pid=1340270
+== ps ==
+    PID STAT CMD
+(pid gone)
+== port ==
+(port 8765 free)
+== curl after stop ==
+curl: (7) Failed to connect to 127.0.0.1:8765 after 0 ms: Could not connect to server
+curl_exit=7

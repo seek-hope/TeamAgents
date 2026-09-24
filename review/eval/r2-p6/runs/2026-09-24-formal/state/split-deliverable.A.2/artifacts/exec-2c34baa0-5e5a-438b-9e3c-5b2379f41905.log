@@ -1,0 +1,13 @@
+--- word count from tokens ---
+5
+--- full token sort (case-sensitive) ---
+apple
+Apple
+fig
+pear
+plum
+--- compare to committed words.txt ---
+1d0
+< apple
+2a2
+> apple

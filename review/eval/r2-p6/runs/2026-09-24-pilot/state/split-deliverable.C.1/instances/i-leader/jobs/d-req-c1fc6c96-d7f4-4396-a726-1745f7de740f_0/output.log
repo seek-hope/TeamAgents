@@ -1,0 +1,10 @@
+== words.txt (LC_ALL=C) ==
+Apple
+apple
+fig
+pear
+plum
+== notes.txt ==
+sum=44 words=5
+py sum: 44
+py words: ['Apple', 'apple', 'fig', 'pear', 'plum'] 5

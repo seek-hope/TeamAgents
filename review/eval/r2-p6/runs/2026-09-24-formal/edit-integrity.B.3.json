@@ -1,0 +1,16 @@
+{
+  "status": "succeeded",
+  "steps": 7,
+  "prompt_tokens": 16296,
+  "completion_tokens": 1634,
+  "total_tokens": 17930,
+  "events": 47,
+  "group": "B",
+  "task_id": "edit-integrity",
+  "model_key": "leader_main",
+  "model": "deepseek-flash",
+  "context_window": 1000000,
+  "permissions": "full_auto",
+  "web": false,
+  "wall_ms": 10571
+}

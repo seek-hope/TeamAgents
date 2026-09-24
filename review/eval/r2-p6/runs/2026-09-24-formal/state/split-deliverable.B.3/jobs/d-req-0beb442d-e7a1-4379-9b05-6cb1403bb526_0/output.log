@@ -1,0 +1,15 @@
+total 12
+-rw-r--r-- 1 rimuru rimuru 23 Sep 24 16:04 notes.txt
+-rw-r--r-- 1 rimuru rimuru  3 Sep 24 16:04 sum.txt
+-rw-r--r-- 1 rimuru rimuru 26 Sep 24 16:04 words.txt
+
+== out/sum.txt
+44
+== out/words.txt
+Apple
+apple
+fig
+pear
+plum
+== out/notes.txt
+sum=44; unique_words=5

@@ -1,0 +1,15 @@
+m01 total([1,2,3]) = 3 (expected 6) -> drops last
+m02 push(1)= [1, 2] push(2)= [1, 2] -> shared default ([1, 2],)
+m03 mean uses shadowed name 'sum' local; mean([2,4])= 3.0
+m04 bare except swallowed TypeError -> returns 0
+m05 ratio(7,2) = 3 (expected 3.5)
+m06 source has no close/with: True True
+m07 head([1,2,3,4],2) = [1, 2, 3, 4] (expected [1,2], n<=3 returns all)
+m08 global CACHE mutated: {'a': 1, 'b': 2}
+m09 withdraw(100,1000) = -900 (no validation -> negative)
+m10 connect('h') = ('h', False) port dropped; tls default False
+m11 sorted([(1,2),(2,2),(3,1)], key r[1]) = [(3, 1), (1, 2), (2, 2)]
+m12 source never closes handles: def process(paths):
+    handles = [open(p) for p in paths]
+    return len(handles)
+

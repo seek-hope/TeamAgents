@@ -1,0 +1,20 @@
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-24-formal/work/parallel-deliverables.B.1/csvfix
+impl.py
+__pycache__
+test_csvfix.py
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_______________________________ test_all_and_any _______________________________
+
+    def test_all_and_any():
+        facts = {"a": True, "b": False}
+>       assert engine.evaluate({"all": ["a"]}, facts) is True
+E       AssertionError: assert False is True
+E        +  where False = <function evaluate at 0x7f1a42378f40>({'all': ['a']}, {'a': True, 'b': False})
+E        +    where <function evaluate at 0x7f1a42378f40> = engine.evaluate
+
+test_rules.py:5: AssertionError
+=========================== short test summary info ============================
+FAILED test_rules.py::test_all_and_any - AssertionError: assert False is True
+1 failed in 0.01s
+---exit:1

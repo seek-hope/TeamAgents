@@ -1,0 +1,11 @@
+total 24
+drwxr-xr-x  2 rimuru rimuru 4096 Sep 24 15:32 .
+drwxr-xr-x 20 rimuru rimuru 4096 Sep 24 15:32 ..
+-rw-r--r--  1 rimuru rimuru  117 Sep 24 15:32 service.nohup
+-rw-r--r--  1 rimuru rimuru    4 Sep 24 15:32 service.pid
+-rw-r--r--  1 rimuru rimuru  946 Sep 24 15:32 service.py
+-rw-r--r--  1 rimuru rimuru   13 Sep 24 15:32 service.txt
+--- service.nohup ---
+listening on http://127.0.0.1:8765
+127.0.0.1 - "GET /health HTTP/1.1" 200 -
+127.0.0.1 - "GET /health HTTP/1.1" 200 -

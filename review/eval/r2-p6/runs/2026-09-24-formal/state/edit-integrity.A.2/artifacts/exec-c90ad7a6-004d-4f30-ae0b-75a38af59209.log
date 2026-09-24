@@ -1,0 +1,29 @@
+=== diff (orig -> current) ===
+--- /tmp/orig_app.ini	2026-09-24 15:33:14.826710904 +0800
++++ app.ini	2026-09-24 15:33:12.366509957 +0800
+@@ -4,7 +4,7 @@
+ 
+ [staging]
+ host = staging.internal
+-retries = 3
++retries = 5
+ timeout = 30
+ 
+ [prod]
+diff exit: 1
+=== changed-line count ===
+2
+=== full file ===
+[dev]$
+host = dev.internal$
+retries = 3$
+$
+[staging]$
+host = staging.internal$
+retries = 5$
+timeout = 30$
+$
+[prod]$
+host = prod.internal$
+retries = 3$
+timeout = 60$

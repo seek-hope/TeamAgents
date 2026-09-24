@@ -1,0 +1,20 @@
+588db2b78e9d1365dd8d7563abe70812bf958955665a95ad02b1e6a16c793724  csvfix/test_csvfix.py
+4c425638c58c34872b0800f5fe19092c011785e123c15a1c69e2e99d762a5af8  rules/test_rules.py
+--- test files content ---
+import impl
+
+def test_parse_trims_and_validates():
+    assert impl.parse(' a , 2 , x ') == ["a", "2", "x"]
+    assert impl.parse('a,2') is None  # 列数不是 3 时返回 None
+
+def test_total_skips_blank_and_reports_bad():
+    rows = [["a", "1", "2"], ["b", "2", ""]]
+    assert impl.total(rows) == 2
+import engine
+
+def test_all_and_any():
+    facts = {"a": True, "b": False}
+    assert engine.evaluate({"all": ["a"]}, facts) is True
+    assert engine.evaluate({"all": ["a", "b"]}, facts) is False
+    assert engine.evaluate({"any": ["b", "a"]}, facts) is True
+    assert engine.evaluate({"any": ["b"]}, facts) is False

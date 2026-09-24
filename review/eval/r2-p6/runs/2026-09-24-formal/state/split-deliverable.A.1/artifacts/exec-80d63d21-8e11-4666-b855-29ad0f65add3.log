@@ -1,0 +1,10 @@
+== out/sum.txt ==
+44
+== out/words.txt ==
+Apple
+apple
+fig
+pear
+plum
+== out/notes.txt ==
+Sum of all integers in data/a.txt is 44; data/b.txt has 5 unique words.

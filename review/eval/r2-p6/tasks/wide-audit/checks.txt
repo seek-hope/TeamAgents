@@ -1,0 +1,1 @@
+python3 -c "import json; want={'alpha.py': 'off_by_one', 'beta.py': 'mutable_default', 'gamma.py': 'shadowed_builtin', 'delta.py': 'wrong_except', 'epsilon.py': 'integer_division', 'zeta.py': 'unclosed_resource'}; got=json.load(open('findings.json')); assert got==want, ('mismatch', got)"

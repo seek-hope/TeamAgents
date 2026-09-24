@@ -1,0 +1,9 @@
+sample: [['alice', '3', 'apple'], ['bob', '5', 'pear'], ['alice', '2', 'apple'], ['carol', '', 'plum']]
+missing: []
+counts: {'apple': 2, 'pear': 1, 'plum': 1}
+edge: [['a', 'b', '#not-comment-in-3rd'], ['x'], ['x', 'y'], ['x', 'y', ''], ['x', 'y', 'z']]
+edge counts: {'#not-comment-in-3rd': 1, 'z': 1}
+counts2: {'k': 2}
+dir path: []
+abs: [['alice', '3', 'apple'], ['bob', '5', 'pear'], ['alice', '2', 'apple'], ['carol', '', 'plum']]
+exit=0

@@ -1,0 +1,5 @@
+[('deposit', 'a', 100), ('withdraw', 'a', 30)]
+70
+[(0, 20)] [(0, 20)] [(0, 8)]
+False True True
+ValueError ok

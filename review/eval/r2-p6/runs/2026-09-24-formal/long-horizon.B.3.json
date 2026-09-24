@@ -1,0 +1,16 @@
+{
+  "status": "succeeded",
+  "steps": 10,
+  "prompt_tokens": 37898,
+  "completion_tokens": 3232,
+  "total_tokens": 41130,
+  "events": 69,
+  "group": "B",
+  "task_id": "long-horizon",
+  "model_key": "leader_main",
+  "model": "deepseek-flash",
+  "context_window": 1000000,
+  "permissions": "full_auto",
+  "web": false,
+  "wall_ms": 24633
+}

@@ -1,0 +1,14 @@
+== independent sum ==
+44
+== independent words ==
+['Apple', 'apple', 'fig', 'pear', 'plum']
+== files ==
+total 12
+-rw-r--r-- 1 rimuru rimuru 15 Sep 24 16:04 notes.txt
+-rw-r--r-- 1 rimuru rimuru  3 Sep 24 16:04 sum.txt
+-rw-r--r-- 1 rimuru rimuru 26 Sep 24 16:04 words.txt
+0000000   4   4  \n
+0000003
+ 5 out/words.txt
+ 1 out/notes.txt
+ 6 total

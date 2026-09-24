@@ -1,0 +1,16 @@
+== tree ==
+./data/sample.csv
+./REPORT.md
+./tests/run_tests.py
+./tools/__init__.py
+./tools/normalize.py
+./tools/__pycache__/__init__.cpython-313.pyc
+./tools/__pycache__/normalize.cpython-313.pyc
+./tools/__pycache__/stat.cpython-313.pyc
+./tools/stat.py
+== tests/ sha256 (should match original content) ==
+194afab5e4814d4c24c58da62793aac6422de6403e6e6b841c5305af06b5e047  tests/run_tests.py
+720d98cd3110e7bba707ec0e42b42b2fb6edd5c6127da9f25cd681b9753d086b  data/sample.csv
+== final acceptance ==
+long-horizon ok
+exit=0

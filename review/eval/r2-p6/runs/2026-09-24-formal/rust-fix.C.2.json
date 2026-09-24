@@ -1,0 +1,16 @@
+{
+  "status": "succeeded",
+  "steps": 6,
+  "prompt_tokens": 16065,
+  "completion_tokens": 645,
+  "total_tokens": 16710,
+  "events": 44,
+  "group": "C",
+  "task_id": "rust-fix",
+  "model_key": "leader_main",
+  "model": "deepseek-flash",
+  "context_window": 1000000,
+  "permissions": "full_auto",
+  "web": false,
+  "wall_ms": 6561
+}

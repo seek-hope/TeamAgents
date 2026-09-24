@@ -1,0 +1,7 @@
+total 16
+drwxr-xr-x  3 rimuru rimuru 4096 Sep 24 15:15 .
+drwxr-xr-x 52 rimuru rimuru 4096 Sep 24 15:59 ..
+-rw-r--r--  1 rimuru rimuru   63 Sep 24 15:15 Cargo.toml
+drwxr-xr-x  2 rimuru rimuru 4096 Sep 24 15:15 src
+./Cargo.toml
+./src/lib.rs

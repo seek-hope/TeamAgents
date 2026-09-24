@@ -1,0 +1,13 @@
+== files ==
+total 20
+-rw-r--r-- 1 rimuru rimuru 1276 Sep 24 16:00 NOTES.md
+-rw-r--r-- 1 rimuru rimuru  148 Sep 24 16:00 service.log
+-rw-r--r-- 1 rimuru rimuru    8 Sep 24 16:00 service.pid
+-rw-r--r-- 1 rimuru rimuru 1812 Sep 24 16:00 service.py
+-rw-r--r-- 1 rimuru rimuru   13 Sep 24 16:00 service.txt
+== service.txt raw bytes ==
+00000000: 7036 2d73 6572 7669 6365 2d6f 6b         p6-service-ok
+== port 8765 listening? ==
+nothing listening on 8765
+== service.py syntax check ==
+py_compile OK

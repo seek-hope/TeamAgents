@@ -1,0 +1,6 @@
+./data/sample.csv
+./REPORT.md
+./tests/run_tests.py
+./tools/__init__.py
+./tools/normalize.py
+./tools/stat.py

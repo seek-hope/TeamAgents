@@ -1,0 +1,4 @@
+/bin/bash: line 28: cd: alpha: No such file or directory
+alpha exit=1
+beta ok
+beta exit=0

@@ -1,0 +1,62 @@
+{
+  "frozen": "2026-09-24",
+  "design": "review/eval/r2-p6/design.md",
+  "groups": {
+    "A": "reference loop (no persistence, eval-only)",
+    "B": "v2 persistent single instance",
+    "C": "v2 supervisor + collaboration grants/instructions"
+  },
+  "model": {
+    "key": "leader_main",
+    "wire_model": "deepseek-flash",
+    "context_window": 1000000,
+    "context_source": "D-36 用户确认 DeepSeek Flash 原生 1M（2026-09-17）",
+    "reasoning_effort": "high",
+    "effort_note": "目录默认 max（简单回合≈240s）；试跑期显式 high 控制成本与时长"
+  },
+  "limits": {
+    "trial_timeout_s": 150,
+    "reference_max_steps": 25,
+    "permissions": "full_auto",
+    "max_retries": 2
+  },
+  "repeats": {
+    "pilot": 1,
+    "formal": 3
+  },
+  "analysis": {
+    "metric": "checks_ok (all checks exit 0 in the trial workspace)",
+    "pairing": "same repeat index within a task",
+    "aggregate": "mean of per-task paired differences",
+    "interval": "95% bootstrap over tasks, 10000 resamples, seed 20260924",
+    "h1": "B vs A: no observed degradation; interval must not be significantly negative",
+    "h2": "C vs B: reproducible gain; per-task positive on >=2 tasks and interval lower bound > 0",
+    "insufficient": "interval contains 0 or too few samples -> report 未证实",
+    "sha256": "52d257b4c435a0513a68df9e4147d33a9946a821e3b0c0edcf012cd7c8bca974"
+  },
+  "tasks": [
+    {
+      "id": "timebox-audit",
+      "prompt_sha256": "17e9d47f1d6121bc42633cf17550edcd6e6248ad6e6cf0f7d5a795e6f147ca9d",
+      "checks": [
+        "python3 -c \"import json; want={'m01.py': 'off_by_one', 'm02.py': 'mutable_default', 'm03.py': 'shadowed_builtin', 'm04.py': 'wrong_except', 'm05.py': 'integer_division', 'm06.py': 'unclosed_resource', 'm07.py': 'silent_truncation', 'm08.py': 'mutable_shared_state', 'm09.py': 'missing_validation', 'm10.py': 'wrong_default', 'm11.py': 'sort_instability', 'm12.py': 'resource_leak'}; got=json.load(open('findings.json')); assert got==want, ('mismatch', {k: (got.get(k), v) for k, v in want.items() if got.get(k) != v})\""
+      ],
+      "fixture_sha256": "7cd6c7390418987b1e3f2b23e856dfa87bb63687c0c23c6ea5c70311e6a23cb3"
+    },
+    {
+      "id": "timebox-two-modules",
+      "prompt_sha256": "183cd39ab06a2ef33e9791a0033d0070991ed34bee8af42e18cd0763e5a26554",
+      "checks": [
+        "python3 -m pytest -q tests/",
+        "python3 -c \"import hashlib,pathlib; assert hashlib.sha256(pathlib.Path('tests/test_ledger.py').read_bytes()).hexdigest()=='249141060049bcdd4c266e0448a139d5f8367d3969491c005ccdb5e4082747c8'; assert hashlib.sha256(pathlib.Path('tests/test_schedule.py').read_bytes()).hexdigest()=='d0eac968ccaa16dd71ca63f9a264f9aca424a03de2e94c6d77e607d7a5585b14'\""
+      ],
+      "fixture_sha256": "619ef48a0d2342a6784318003b7131260afc34c84484dec909d753775703889f"
+    }
+  ],
+  "git": "eda3b56e4806ed245eea402f4a9d74dc7890702f",
+  "round3": {
+    "treatment": "hard per-trial deadline (150s) on two splittable tasks: serial completion typically exceeds it, delegation can finish in time",
+    "registered_before_running": true,
+    "h2_variant": "C vs B: checks_ok under the deadline; a reproducible gain requires the same per-task rule as round 1/2"
+  }
+}

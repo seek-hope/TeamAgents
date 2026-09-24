@@ -1,0 +1,12 @@
+=== csvfix ===
+..                                                                       [100%]
+2 passed in 0.00s
+csvfix_exit=0
+=== rules ===
+.                                                                        [100%]
+1 passed in 0.00s
+rules_exit=0
+=== git-style change check (test files untouched) ===
+-rw-r--r-- 1 rimuru rimuru  302 Sep 24 15:32 csvfix/test_csvfix.py
+-rw-r--r-- 1 rimuru rimuru 1466 Sep 24 15:58 INDEX.md
+-rw-r--r-- 1 rimuru rimuru  319 Sep 24 15:32 rules/test_rules.py

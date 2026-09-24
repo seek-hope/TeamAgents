@@ -1,0 +1,7 @@
+http_code=200 size_download=13 content_type=text/plain; charset=utf-8
+exit=0
+--- service.txt (od, exact bytes) ---
+0000000   p   6   -   s   e   r   v   i   c   e   -   o   k
+0000015
+--- sha256 ---
+79cd5fda49217cbebaa4a72e23782d8c53e26cd288b17bfef0e4c7174acf4cf9  service.txt

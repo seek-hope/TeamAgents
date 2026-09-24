@@ -1,0 +1,14 @@
+== alpha (expect off_by_one) ==
+  total([1,2,3]) = 3 (correct would be 6) -> last element dropped
+== beta (expect mutable_default) ==
+  add(1) = [1]
+  add(2) = [1, 2] -> default list persists across calls
+== gamma (expect shadowed_builtin) ==
+  stored names: ['sum', 'v', 'sum'] -> rebinds builtin 'sum': True
+== delta (expect wrong_except) ==
+  bare except handlers: 1 -> catches all exceptions incl. unexpected
+  parse(Boom()) = 0 -> swallowed KeyError, returned 0
+== epsilon (expect integer_division) ==
+  ratio(7,2) = 3 (correct would be 3.5)
+== zeta (expect unclosed_resource) ==
+  open() present=True, .close() called=False, context manager (with)=False -> leaked file handle

@@ -1,0 +1,14 @@
+total 44
+drwxr-xr-x  6 rimuru rimuru 4096 Sep 24 16:13 .
+drwxr-xr-x 13 rimuru rimuru 4096 Sep 24 16:13 ..
+drwxr-xr-x  2 rimuru rimuru 4096 Sep 24 16:07 data
+drwxr-xr-x  2 rimuru rimuru 4096 Sep 24 16:13 __pycache__
+drwxr-xr-x  3 rimuru rimuru 4096 Sep 24 16:13 .pytest_cache
+-rw-r--r--  1 rimuru rimuru 2998 Sep 24 16:13 REPORT.md
+-rw-r--r--  1 rimuru rimuru  573 Sep 24 16:13 stage1.py
+-rw-r--r--  1 rimuru rimuru  210 Sep 24 16:13 stage2.py
+-rw-r--r--  1 rimuru rimuru  290 Sep 24 16:13 stage3.py
+-rw-r--r--  1 rimuru rimuru  290 Sep 24 16:13 stage4.py
+drwxr-xr-x  3 rimuru rimuru 4096 Sep 24 16:13 tests
+....                                                                     [100%]
+4 passed in 0.01s

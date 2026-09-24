@@ -1,0 +1,10 @@
+def add(a, b):
+    return a + b
+def mul(a, b):
+    return a * b
+import alpha
+assert alpha.add(2, 3) == 5, alpha.add(2, 3)
+print("alpha ok")
+import beta
+assert beta.mul(3, 4) == 12, beta.mul(3, 4)
+print("beta ok")

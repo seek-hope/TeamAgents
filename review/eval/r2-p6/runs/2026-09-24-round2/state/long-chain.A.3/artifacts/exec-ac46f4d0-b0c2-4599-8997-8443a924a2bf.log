@@ -1,0 +1,18 @@
+7eb466eeb5c79c05802011e31446cb24  tests/test_stage1.py
+865c75b7346e8bd421bd679d8ec33d5d  tests/test_stage2.py
+8b4c0e337230c6b2571b6b002788775b  tests/test_stage3.py
+0c40705a7eac99bcf9b9ba56d11d034b  tests/test_stage4.py
+?? engine/examples/rebuild_p6.rs
+?? review/eval/r2-p6/
+---
+total 40
+drwxr-xr-x  6 rimuru rimuru 4096 Sep 24 16:13 .
+drwxr-xr-x 14 rimuru rimuru 4096 Sep 24 16:13 ..
+drwxr-xr-x  2 rimuru rimuru 4096 Sep 24 16:07 data
+drwxr-xr-x  2 rimuru rimuru 4096 Sep 24 16:13 __pycache__
+drwxr-xr-x  3 rimuru rimuru 4096 Sep 24 16:13 .pytest_cache
+-rw-r--r--  1 rimuru rimuru 1249 Sep 24 16:13 stage1.py
+-rw-r--r--  1 rimuru rimuru  402 Sep 24 16:13 stage2.py
+-rw-r--r--  1 rimuru rimuru  439 Sep 24 16:13 stage3.py
+-rw-r--r--  1 rimuru rimuru  530 Sep 24 16:13 stage4.py
+drwxr-xr-x  3 rimuru rimuru 4096 Sep 24 16:13 tests

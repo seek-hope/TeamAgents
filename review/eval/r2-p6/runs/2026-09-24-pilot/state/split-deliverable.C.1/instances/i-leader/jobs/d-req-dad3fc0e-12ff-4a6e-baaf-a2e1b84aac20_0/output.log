@@ -1,0 +1,13 @@
+--- out/sum.txt
+44
+--- out/words.txt
+Apple
+apple
+fig
+pear
+plum
+--- out/notes.txt
+sum=44 words=5
+--- od sum
+0000000   4   4  \n
+0000003

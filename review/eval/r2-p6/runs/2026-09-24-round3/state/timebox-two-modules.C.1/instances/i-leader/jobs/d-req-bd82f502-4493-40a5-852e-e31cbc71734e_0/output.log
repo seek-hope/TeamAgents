@@ -1,0 +1,38 @@
+--- ledger.py ---
+class Ledger:
+    def apply(self, rows, account):
+        for kind, acct, cents in rows:
+            if cents < 0:
+                raise ValueError("negative amount: %r" % ((kind, acct, cents),))
+        return [row for row in rows if row[1] == account]
+
+
+def balance(rows, account):
+    total = 0
+    for kind, acct, cents in rows:
+        if acct != account:
+            continue
+        if kind == "deposit":
+            total += cents
+        elif kind == "withdraw":
+            total -= cents
+        else:
+            raise ValueError("unknown kind: %r" % (kind,))
+    return total
+--- schedule.py ---
+def slots(ranges, minutes):
+    result = []
+    for start, end in sorted(ranges):
+        if result and start - result[-1][1] < minutes:
+            prev_start, prev_end = result[-1]
+            result[-1] = (prev_start, max(prev_end, end))
+        else:
+            result.append((start, end))
+    return result
+
+
+def overlaps(a, b):
+    return a[0] < b[1] and b[0] < a[1]
+--- pytest ---
+....                                                                     [100%]
+4 passed in 0.00s

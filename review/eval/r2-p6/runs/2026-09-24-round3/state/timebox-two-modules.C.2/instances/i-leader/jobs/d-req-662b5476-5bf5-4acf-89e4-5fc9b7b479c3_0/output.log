@@ -1,0 +1,20 @@
+    def test_overlaps():
+>       assert overlaps((0,10),(5,20)) is True
+               ^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_schedule.py:6: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+a = (0, 10), b = (5, 20)
+
+    def overlaps(a, b):
+>       raise NotImplementedError
+E       NotImplementedError
+
+schedule.py:5: NotImplementedError
+=========================== short test summary info ============================
+FAILED tests/test_ledger.py::test_apply_and_balance - NotImplementedError
+FAILED tests/test_ledger.py::test_apply_rejects_negative - NotImplementedError
+FAILED tests/test_schedule.py::test_slots_merges_and_splits - NotImplementedE...
+FAILED tests/test_schedule.py::test_overlaps - NotImplementedError
+4 failed in 0.02s

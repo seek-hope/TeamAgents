@@ -1,0 +1,12 @@
+long-horizon ok
+---files---
+REPORT.md
+tools/__init__.py
+tools/normalize.py
+tools/__pycache__/__init__.cpython-313.pyc
+tools/__pycache__/normalize.cpython-313.pyc
+tools/__pycache__/stat.cpython-313.pyc
+tools/stat.py
+?? engine/examples/rebuild_p6.rs
+?? review/eval/r2-p6/
+done

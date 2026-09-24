@@ -1,0 +1,12 @@
+=== curl verbose-ish (status + body) ===
+http_code=200
+content_type=text/plain
+num_bytes=13
+curl exit=0
+=== service.txt contents ===
+p6-service-ok
+=== byte-level dump of service.txt ===
+0000000   p   6   -   s   e   r   v   i   c   e   -   o   k
+0000015
+=== sha256 ===
+79cd5fda49217cbebaa4a72e23782d8c53e26cd288b17bfef0e4c7174acf4cf9  service.txt

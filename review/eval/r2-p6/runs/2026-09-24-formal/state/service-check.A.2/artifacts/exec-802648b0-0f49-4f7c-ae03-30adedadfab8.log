@@ -1,0 +1,15 @@
+stopping pid=1337915
+exited after ~200ms
+--- process gone?
+    PID STAT CMD
+no such process (stopped)
+--- pgrep:
+(no service.py processes)
+--- curl after stop (expect failure):
+curl: (7) Failed to connect to 127.0.0.1:8765 after 0 ms: Could not connect to server
+http_code=000
+curl_exit=7
+--- final service.log
+listening on http://127.0.0.1:8765/health
+service.py: 127.0.0.1 - "GET /health HTTP/1.1" 200 -
+service.py: 127.0.0.1 - "GET /health HTTP/1.1" 200 -

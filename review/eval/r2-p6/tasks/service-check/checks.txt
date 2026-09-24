@@ -1,0 +1,2 @@
+python3 -c "body=open('service.txt').read().strip(); assert body=='p6-service-ok', repr(body)"
+python3 -c "import socket; s=socket.socket(); s.settimeout(0.5); rc=s.connect_ex(('127.0.0.1',8765)); s.close(); assert rc!=0, 'service still listening'"

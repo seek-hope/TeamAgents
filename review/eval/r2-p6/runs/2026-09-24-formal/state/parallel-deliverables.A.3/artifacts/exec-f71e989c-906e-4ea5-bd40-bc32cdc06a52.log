@@ -1,0 +1,29 @@
+== csvfix ==
+..                                                                       [100%]
+2 passed in 0.00s
+== rules ==
+.                                                                        [100%]
+1 passed in 0.00s
+== tree ==
+.:
+csvfix
+INDEX.md
+rules
+
+./csvfix:
+impl.py
+__pycache__
+test_csvfix.py
+
+./csvfix/__pycache__:
+impl.cpython-313.pyc
+test_csvfix.cpython-313-pytest-9.0.3.pyc
+
+./rules:
+engine.py
+__pycache__
+test_rules.py
+
+./rules/__pycache__:
+engine.cpython-313.pyc
+test_rules.cpython-313-pytest-9.0.3.pyc

@@ -1,0 +1,12 @@
+curl: (7) Failed to connect to 127.0.0.1:8765 after 0 ms: Could not connect to server
+curl exit=7 (nonzero => connection refused, service really stopped)
+=== final workspace listing ===
+total 24
+drwxr-xr-x  2 rimuru rimuru 4096 Sep 24 16:02 .
+drwxr-xr-x 63 rimuru rimuru 4096 Sep 24 16:02 ..
+-rw-r--r--  1 rimuru rimuru   66 Sep 24 16:02 service.log
+-rw-r--r--  1 rimuru rimuru    8 Sep 24 16:02 service.pid
+-rw-r--r--  1 rimuru rimuru 1190 Sep 24 16:02 service.py
+-rw-r--r--  1 rimuru rimuru   13 Sep 24 16:02 service.txt
+=== final service.txt ===
+p6-service-ok

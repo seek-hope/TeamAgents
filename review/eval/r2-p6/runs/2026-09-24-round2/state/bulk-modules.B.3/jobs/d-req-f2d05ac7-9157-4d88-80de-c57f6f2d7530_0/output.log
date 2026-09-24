@@ -1,0 +1,13 @@
+to_cm: 150 3 2 0
+ValueError ok: 'ft'
+ValueError ok: 'M'
+ValueError ok: ''
+ValueError ok: None
+slug: hello-world | a-b | untitled | untitled | a-b | café-déjà
+merge: [(1, 4), (5, 7)] <class 'list'> <class 'tuple'>
+merge empty: []
+merge single: [(1, 1)]
+merge touch: [(1, 5)]
+merge gap: [(1, 2), (3, 5)]
+merge contained: [(1, 10)]
+merge unsorted dup: [(1, 5)]

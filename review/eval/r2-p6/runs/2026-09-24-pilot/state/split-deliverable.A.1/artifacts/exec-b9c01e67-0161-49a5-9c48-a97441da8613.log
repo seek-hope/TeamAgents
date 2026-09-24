@@ -1,0 +1,16 @@
+total 12
+-rw-r--r-- 1 rimuru rimuru 120 Sep 24 15:30 notes.txt
+-rw-r--r-- 1 rimuru rimuru   3 Sep 24 15:30 sum.txt
+-rw-r--r-- 1 rimuru rimuru  26 Sep 24 15:30 words.txt
+=== sum.txt ===
+0000000   4   4  \n
+0000003
+=== words.txt ===
+0000000   A   p   p   l   e  \n   a   p   p   l   e  \n   f   i   g  \n
+0000020   p   e   a   r  \n   p   l   u   m  \n
+0000032
+=== notes.txt ===
+整数和 = 44（data/a.txt）；去重并按字典序（区分大小写）排序后的单词个数 = 5（data/b.txt）
+=== independent re-check ===
+sum = 44
+unique words = 5 ['Apple', 'apple', 'fig', 'pear', 'plum']

@@ -1,0 +1,12 @@
+src files: ['alpha.py', 'beta.py', 'delta.py', 'epsilon.py', 'gamma.py', 'zeta.py']
+keys    : ['alpha.py', 'beta.py', 'delta.py', 'epsilon.py', 'gamma.py', 'zeta.py']
+keys match files: True
+off-vocab: {}
+values: {
+"alpha.py": "off_by_one",
+"beta.py": "mutable_default",
+"gamma.py": "shadowed_builtin",
+"delta.py": "wrong_except",
+"epsilon.py": "integer_division",
+"zeta.py": "unclosed_resource"
+}

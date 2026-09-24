@@ -1,0 +1,26 @@
+===== src/m01.py =====
+     1	def total(xs):
+     2	    return sum(xs[:-1])
+===== src/m02.py =====
+     1	def push(x, xs=[]):
+     2	    xs.append(x)
+     3	    return xs
+===== src/m03.py =====
+     1	def mean(xs):
+     2	    sum = 0
+     3	    for x in xs:
+     4	        sum += x
+     5	    return sum / len(xs)
+===== src/m04.py =====
+     1	def parse(s):
+     2	    try:
+     3	        return int(s)
+     4	    except:
+     5	        return 0
+===== src/m05.py =====
+     1	def ratio(a, b):
+     2	    return a // b
+===== src/m06.py =====
+     1	def read(p):
+     2	    h = open(p)
+     3	    return h.read()

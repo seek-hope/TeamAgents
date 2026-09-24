@@ -1,0 +1,12 @@
+....                                                                     [100%]
+4 passed in 0.01s
+EXIT=0
+---files---
+data
+__pycache__
+REPORT.md
+stage1.py
+stage2.py
+stage3.py
+stage4.py
+tests

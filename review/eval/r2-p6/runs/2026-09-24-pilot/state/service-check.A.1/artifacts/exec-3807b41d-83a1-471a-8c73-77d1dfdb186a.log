@@ -1,0 +1,8 @@
+pid 209 stopped
+port 8765 free
+=== post-stop curl (expect failure) ===
+curl: (7) Failed to connect to 127.0.0.1:8765 after 0 ms: Could not connect to server
+curl_exit=7
+=== service.txt still present ===
+p6-service-ok
+79cd5fda49217cbebaa4a72e23782d8c53e26cd288b17bfef0e4c7174acf4cf9  service.txt

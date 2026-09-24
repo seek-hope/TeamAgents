@@ -1,0 +1,29 @@
+== m01 (off_by_one) ==
+  total([1,2,3,4]) = 6 (expected 10)
+== m02 (mutable_default) ==
+  push(1) = [1, 2]  push(2) = [1, 2] (default list is shared)
+== m03 (shadowed_builtin) ==
+  mean([1,2,3,4]) = 2.5
+  local var names: ['sum', 'x', 'sum'] -> 'sum' shadows builtins.sum
+== m04 (wrong_except) ==
+  parse('abc') = 0
+  parse(None)  = 0 (TypeError silently swallowed by bare except)
+== m05 (integer_division) ==
+  ratio(7,2) = 3 (expected 3.5)
+== m06 (unclosed_resource) ==
+  read() = hello | ResourceWarning(s): ["unclosed file <_io.TextIOWrapper name='/tmp/tmpww3__hvm.txt' mode='r' encoding='UTF-8'>"]
+== m07 (silent_truncation) ==
+  head(range(10), 2) = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9] (n ignored for n<=3, silently returns all)
+  head(range(10), 5) = [0, 1, 2, 3, 4]
+== m08 (mutable_shared_state) ==
+  CACHE after two independent calls: {'a': 3, 'b': 2} (caller receives/mutates module-global dict)
+== m09 (missing_validation) ==
+  withdraw(100, 150) = -50 (negative balance accepted)
+  withdraw(100, -50) = 150 (negative amount accepted)
+== m10 (wrong_default) ==
+  connect('db') = ('db', False) (tls defaults to False)
+== m11 (sort_instability) ==
+  ranked(A) = [('x', 1), ('y', 1), ('z', 1)]
+  ranked(B) = [('z', 1), ('y', 1), ('x', 1)] (equal keys -> order depends on input, no tiebreaker)
+== m12 (resource_leak) ==
+  process(5 paths) = 5 | still-open fds for those paths: 0 | ResourceWarning(s): ["unclosed file <_io.TextIOWrapper name='/tmp/tmp8k20bzuw.txt' mode='r' encoding='UTF-8'>", "unclosed file <_io.TextIOWrapper name='/tmp/tmpw90ms361.txt' mode='r' encoding='UTF-8'>", "unclosed file <_io.TextIOWrapper name='/tmp/tmpk8d2couf.txt' mode='r' encoding='UTF-8'>", "unclosed file <_io.TextIOWrapper name='/tmp/tmp2qexynxc.txt' mode='r' encoding='UTF-8'>", "unclosed file <_io.TextIOWrapper name='/tmp/tmp5do4awox.txt' mode='r' encoding='UTF-8'>"]

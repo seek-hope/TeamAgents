@@ -1,0 +1,7 @@
+handle 0: closed_before_gc=False
+handle 1: closed_before_gc=False
+handle 2: closed_before_gc=False
+handle 3: closed_before_gc=False
+total opened: 4
+--- static check: no 'close'/'with' anywhere in src ---
+(none found)

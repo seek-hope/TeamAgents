@@ -1,0 +1,7 @@
+listener pid=1338332
+process 1338332 gone
+--- ss after stop ---
+port 8765 no longer listening
+--- curl after stop ---
+curl: (7) Failed to connect to 127.0.0.1:8765 after 0 ms: Could not connect to server
+curl_exit=7

@@ -1,0 +1,8 @@
+./tests/run_tests.py
+./data/sample.csv
+---
+total 16
+drwxr-xr-x  4 rimuru rimuru 4096 Sep 24 15:32 .
+drwxr-xr-x 18 rimuru rimuru 4096 Sep 24 15:36 ..
+drwxr-xr-x  2 rimuru rimuru 4096 Sep 24 15:32 data
+drwxr-xr-x  2 rimuru rimuru 4096 Sep 24 15:32 tests

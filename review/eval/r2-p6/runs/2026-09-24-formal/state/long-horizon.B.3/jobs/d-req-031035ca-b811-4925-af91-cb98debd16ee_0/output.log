@@ -1,0 +1,4 @@
+rows = [['alice', '3', 'apple'], ['bob', '5', 'pear'], ['alice', '2', 'apple'], ['carol', '', 'plum']]
+counts = {'apple': 2, 'pear': 1, 'plum': 1}
+missing = []
+short/empty 3rd: {'x': 1}

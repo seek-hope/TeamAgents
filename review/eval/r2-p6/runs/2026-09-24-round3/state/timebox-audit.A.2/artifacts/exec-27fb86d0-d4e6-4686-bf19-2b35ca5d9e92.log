@@ -1,0 +1,14 @@
+total 16
+drwxr-xr-x 4 rimuru rimuru 4096 Sep 24 16:24 .
+drwxr-xr-x 4 rimuru rimuru 4096 Sep 24 16:24 ..
+drwxr-xr-x 3 rimuru rimuru 4096 Sep 24 16:23 timebox-audit.A.1
+drwxr-xr-x 3 rimuru rimuru 4096 Sep 24 16:22 timebox-audit.A.2
+---
+total 28
+drwxr-xr-x 4 rimuru rimuru 4096 Sep 24 16:24 .
+drwxr-xr-x 6 rimuru rimuru 4096 Sep 24 16:23 ..
+-rw-r--r-- 1 rimuru rimuru 2115 Sep 24 16:24 results.jsonl
+-rw-r--r-- 1 rimuru rimuru  364 Sep 24 16:23 run-header.json
+drwxr-xr-x 4 rimuru rimuru 4096 Sep 24 16:24 state
+-rw-r--r-- 1 rimuru rimuru 1502 Sep 24 16:24 timebox-audit.A.1.json
+drwxr-xr-x 4 rimuru rimuru 4096 Sep 24 16:24 work

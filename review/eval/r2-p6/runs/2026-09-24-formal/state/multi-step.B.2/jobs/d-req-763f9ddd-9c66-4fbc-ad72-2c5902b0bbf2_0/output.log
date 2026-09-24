@@ -1,0 +1,12 @@
+Traceback (most recent call last):
+  File "/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-24-formal/work/multi-step.B.2/alpha/check.py", line 2, in <module>
+    assert alpha.add(2, 3) == 5, alpha.add(2, 3)
+           ^^^^^^^^^^^^^^^^^^^^
+AssertionError: -1
+alpha exit=1
+Traceback (most recent call last):
+  File "/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-24-formal/work/multi-step.B.2/beta/check.py", line 2, in <module>
+    assert beta.mul(3, 4) == 12, beta.mul(3, 4)
+           ^^^^^^^^^^^^^^^^^^^^
+AssertionError: 7
+beta exit=1

@@ -1,0 +1,6 @@
+./slugify.py
+./ranges.py
+./measure.py
+./tests/test_slugify.py
+./tests/test_measure.py
+./tests/test_ranges.py

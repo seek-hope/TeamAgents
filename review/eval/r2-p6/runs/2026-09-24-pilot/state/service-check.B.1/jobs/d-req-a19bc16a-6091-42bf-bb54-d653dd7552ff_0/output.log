@@ -1,0 +1,4 @@
+PID=269
+--- service.log ---
+listening on http://127.0.0.1:8765
+Terminated                 setsid nohup python3 service.py > service.log 2>&1 < /dev/null

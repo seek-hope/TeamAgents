@@ -1,0 +1,12 @@
+corrected pidfile: 1337915
+http_code=200
+curl_exit=0
+--- service.txt (cat)
+p6-service-ok
+--- byte size / sha256
+13
+79cd5fda49217cbebaa4a72e23782d8c53e26cd288b17bfef0e4c7174acf4cf9  service.txt
+--- hexdump (proves exact bytes, no trailing newline)
+00000000: 7036 2d73 6572 7669 6365 2d6f 6b         p6-service-ok
+--- expected comparison
+EXACT MATCH: body == p6-service-ok

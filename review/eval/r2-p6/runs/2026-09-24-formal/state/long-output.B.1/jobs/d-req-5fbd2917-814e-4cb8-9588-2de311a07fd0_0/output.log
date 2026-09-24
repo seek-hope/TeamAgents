@@ -1,0 +1,4 @@
+/bin/bash: line 28: /tool-output/gen.log: No such file or directory
+exit=1
+wc: /tool-output/gen.log: No such file or directory
+grep: /tool-output/gen.log: No such file or directory

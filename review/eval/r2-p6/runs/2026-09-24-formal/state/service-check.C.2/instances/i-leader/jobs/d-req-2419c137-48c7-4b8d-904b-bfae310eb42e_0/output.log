@@ -1,0 +1,9 @@
+    PID    PPID STAT     ELAPSED CMD
+1339977       1 SN         00:02 python3 service.py
+--- curl ---
+http_code=200 size=13
+--- body (hexdump) ---
+0000000   p   6   -   s   e   r   v   i   c   e   -   o   k
+0000015
+--- body (raw) ---
+p6-service-ok

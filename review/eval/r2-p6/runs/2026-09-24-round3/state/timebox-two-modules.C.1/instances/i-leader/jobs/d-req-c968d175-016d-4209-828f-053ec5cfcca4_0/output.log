@@ -1,0 +1,5 @@
+Traceback (most recent call last):
+  File "<string>", line 18, in <module>
+    assert slots([(0,10),(20,30)],10)==[(0,30)]                        # gap == minutes -> merge
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError

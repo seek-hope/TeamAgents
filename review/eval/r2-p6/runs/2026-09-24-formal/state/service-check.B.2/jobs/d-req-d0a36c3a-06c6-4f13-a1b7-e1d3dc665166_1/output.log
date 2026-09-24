@@ -1,0 +1,9 @@
+--- headers (-I via GET) ---
+HTTP/1.1 200 OK
+Server: BaseHTTP/0.6 Python/3.13.15
+Date: Thu, 24 Sep 2026 08:01:46 GMT
+Content-Type: text/plain; charset=utf-8
+Content-Length: 13
+
+--- negative control: /nope ---
+http_code=404

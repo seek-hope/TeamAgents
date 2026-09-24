@@ -1,0 +1,14 @@
+== files ==
+total 20
+drwxr-xr-x 2 rimuru rimuru 4096 Sep 24 16:04 .
+drwxr-xr-x 4 rimuru rimuru 4096 Sep 24 16:04 ..
+-rw-r--r-- 1 rimuru rimuru   95 Sep 24 16:04 notes.txt
+-rw-r--r-- 1 rimuru rimuru    3 Sep 24 16:04 sum.txt
+-rw-r--r-- 1 rimuru rimuru   26 Sep 24 16:04 words.txt
+== sum check (python) ==
+sum= 44
+words= ['Apple', 'apple', 'fig', 'pear', 'plum'] count= 5
+sum.txt match: True
+words.txt match: True
+== notes ==
+data/a.txt 中整数之和为 44；data/b.txt 去重并按字典序排序后有 5 个单词。

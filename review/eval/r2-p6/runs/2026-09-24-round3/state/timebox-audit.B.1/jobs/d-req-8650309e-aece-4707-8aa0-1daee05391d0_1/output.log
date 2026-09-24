@@ -1,0 +1,38 @@
+total 56
+drwxr-xr-x 2 rimuru rimuru 4096 Sep 24 16:22 .
+drwxr-xr-x 3 rimuru rimuru 4096 Sep 24 16:22 ..
+-rw-r--r-- 1 rimuru rimuru   39 Sep 24 16:22 m01.py
+-rw-r--r-- 1 rimuru rimuru   51 Sep 24 16:22 m02.py
+-rw-r--r-- 1 rimuru rimuru   85 Sep 24 16:22 m03.py
+-rw-r--r-- 1 rimuru rimuru   74 Sep 24 16:22 m04.py
+-rw-r--r-- 1 rimuru rimuru   35 Sep 24 16:22 m05.py
+-rw-r--r-- 1 rimuru rimuru   49 Sep 24 16:22 m06.py
+-rw-r--r-- 1 rimuru rimuru   52 Sep 24 16:22 m07.py
+-rw-r--r-- 1 rimuru rimuru   63 Sep 24 16:22 m08.py
+-rw-r--r-- 1 rimuru rimuru   55 Sep 24 16:22 m09.py
+-rw-r--r-- 1 rimuru rimuru   64 Sep 24 16:22 m10.py
+-rw-r--r-- 1 rimuru rimuru   62 Sep 24 16:22 m11.py
+-rw-r--r-- 1 rimuru rimuru   83 Sep 24 16:22 m12.py
+ls: cannot access 'src': No such file or directory
+./m01.py
+./m02.py
+./m03.py
+./m04.py
+./m05.py
+./m06.py
+./m07.py
+./m08.py
+./m09.py
+./m10.py
+./m11.py
+./m12.py
+eda3b56 docs(r2-p5): A27 验收矩阵行更新为真实混用通过
+0eaff21 docs(r2-p5): 记录 R23 真实权限验收（批准闸与 A14 证据、效果断言受模型行为影响）
+f254895 fix(r2-p5): state root 规范化——相对路径曾让隔离 shell 的 bwrap 绑定失败
+00176ff fix(r2-p5): 停滞闸改为帧级静默 + 真实回归
+9ba644e fix(r2-p5): 验收探针参数收进 Run 结构，恢复 clippy 门禁
+cc9f92b feat(r2-p5): A27 真实混用验收通过 + 流停滞闸（字节级）+ 删除已弃用 apexin 配置
+b6e805c fix(r2-p5): 收尾路径作答悬空 control 调用 + P5-d 真实验收记录
+fbee980 fix(r17/r22): 真实验收暴露的三处模型边互操作缺陷
+2754594 feat(r2-p5): R23/A27 真实验收探针（dry-run 已验证，真实运行待授权）
+4a546cc docs(r2-p5): ACCEPTANCE 补 R2-P5 段与当前基线计数

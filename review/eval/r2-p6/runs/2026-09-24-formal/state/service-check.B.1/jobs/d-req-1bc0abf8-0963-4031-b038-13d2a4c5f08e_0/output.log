@@ -1,0 +1,5 @@
+
+HTTP_STATUS=200
+p6-service-ok--- body:
+p6-service-ok--- hexdump:
+00000000: 7036 2d73 6572 7669 6365 2d6f 6b         p6-service-ok

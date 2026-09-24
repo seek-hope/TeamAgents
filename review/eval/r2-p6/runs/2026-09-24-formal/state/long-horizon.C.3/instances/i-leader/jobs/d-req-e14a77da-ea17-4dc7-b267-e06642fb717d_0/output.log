@@ -1,0 +1,6 @@
+rows: [['a', '1', 'x'], ['b', '2', ''], ['c', '3'], ['d', '4', 'x'], ['e', '5', '#hash'], ['f', '6', 'été']]
+counts: {'x': 2, '#hash': 1, 'été': 1}
+missing: []
+extra: normalize {'c': 1}
+empty input: {} True
+exit=0

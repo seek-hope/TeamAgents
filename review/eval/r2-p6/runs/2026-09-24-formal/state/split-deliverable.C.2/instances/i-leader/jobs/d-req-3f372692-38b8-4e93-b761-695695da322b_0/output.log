@@ -1,0 +1,14 @@
+=== out/sum.txt ===
+44
+=== out/words.txt ===
+Apple
+apple
+fig
+pear
+plum
+=== out/notes.txt ===
+两数结果：整数和为 44，去重单词共 5 个。
+=== sha256 ===
+b1ce0aa6fdf3cf349d773243dab9fbbe09d30619f38b0c1e8977e28c4f0bc495  out/sum.txt
+4fbedbb8fc1461cebee21ef47531dc57427251a7536c0920d1883fc96db68bf0  out/words.txt
+385848721c2b486464e5a578945ad13daa49bc3eabccf1c9d87e5fee295113e0  out/notes.txt

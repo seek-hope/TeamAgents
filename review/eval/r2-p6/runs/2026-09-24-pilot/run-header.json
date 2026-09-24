@@ -1,0 +1,13 @@
+{
+  "phase": "pilot",
+  "repeats": 1,
+  "groups": [
+    "A",
+    "B",
+    "C"
+  ],
+  "started": "2026-09-24T15:31:31+0800",
+  "manifest_analysis_sha256": "52d257b4c435a0513a68df9e4147d33a9946a821e3b0c0edcf012cd7c8bca974",
+  "harness_sha256": "f997dba864657a292ddbf866a1fd0d6002a8ef7981f5397b4cea20c572a94249",
+  "git": "eda3b56e4806ed245eea402f4a9d74dc7890702f"
+}

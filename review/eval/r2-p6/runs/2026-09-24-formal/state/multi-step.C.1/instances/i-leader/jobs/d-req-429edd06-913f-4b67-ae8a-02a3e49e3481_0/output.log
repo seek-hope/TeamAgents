@@ -1,0 +1,11 @@
+/bin/bash: line 28: cd: alpha: No such file or directory
+alpha exit=1
+beta ok
+beta exit=0
+?? ../../../../../../../engine/examples/rebuild_p6.rs
+?? ../../../../
+--- final files ---
+def add(a, b):
+    return a + b
+def mul(a, b):
+    return a * b

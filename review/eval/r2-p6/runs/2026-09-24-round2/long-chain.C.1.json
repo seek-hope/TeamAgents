@@ -1,0 +1,16 @@
+{
+  "status": "succeeded",
+  "steps": 7,
+  "prompt_tokens": 25571,
+  "completion_tokens": 2993,
+  "total_tokens": 28564,
+  "events": 72,
+  "group": "C",
+  "task_id": "long-chain",
+  "model_key": "leader_main",
+  "model": "deepseek-flash",
+  "context_window": 1000000,
+  "permissions": "full_auto",
+  "web": false,
+  "wall_ms": 15095
+}

@@ -1,0 +1,10 @@
+== sum.txt ==
+44
+== words.txt ==
+apple
+Apple
+fig
+pear
+plum
+== notes.txt ==
+sum=44 words=5

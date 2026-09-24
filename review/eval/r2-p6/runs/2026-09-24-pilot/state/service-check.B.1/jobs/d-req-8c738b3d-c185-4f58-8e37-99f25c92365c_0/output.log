@@ -1,0 +1,11 @@
+pgrep exit: 1
+--- remaining matches (should be empty) ---
+--- /health after stop ---
+curl: (7) Failed to connect to 127.0.0.1:8765 after 0 ms: Could not connect to server
+curl exit=7
+--- files ---
+-rw-r--r-- 1 rimuru rimuru  35 Sep 24 15:31 service.log
+-rw-r--r-- 1 rimuru rimuru 874 Sep 24 15:31 service.py
+-rw-r--r-- 1 rimuru rimuru  13 Sep 24 15:31 service.txt
+--- service.txt ---
+p6-service-ok

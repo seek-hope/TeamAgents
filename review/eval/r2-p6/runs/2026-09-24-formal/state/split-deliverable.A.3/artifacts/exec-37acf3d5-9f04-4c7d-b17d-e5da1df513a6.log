@@ -1,0 +1,10 @@
+total 44 nwords 5
+=== sum.txt ===
+44=== words.txt ===
+Apple
+apple
+fig
+pear
+plum
+=== notes.txt ===
+sum.txt: sum of integers in data/a.txt is 44; words.txt: 5 unique words (case-sensitive) sorted lexicographically.

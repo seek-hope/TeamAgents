@@ -1,0 +1,5 @@
+json keys: ['alpha.py', 'beta.py', 'delta.py', 'epsilon.py', 'gamma.py', 'zeta.py']
+src files: ['alpha.py', 'beta.py', 'delta.py', 'epsilon.py', 'gamma.py', 'zeta.py']
+keys match: True
+values valid: True
+value counts: 6 unique values: 6

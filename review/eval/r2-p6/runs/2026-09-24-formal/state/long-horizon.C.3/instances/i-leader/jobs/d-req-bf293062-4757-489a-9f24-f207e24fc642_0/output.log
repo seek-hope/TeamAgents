@@ -1,0 +1,12 @@
+['normalize', 'word_counts'] [['alice', '3', 'apple'], ['bob', '5', 'pear'], ['alice', '2', 'apple'], ['carol', '', 'plum']] {'apple': 2, 'pear': 1, 'plum': 1}
+long-horizon ok
+exit=0
+total 28
+drwxr-xr-x  5 rimuru rimuru 4096 Sep 24 15:51 .
+drwxr-xr-x 20 rimuru rimuru 4096 Sep 24 15:50 ..
+drwxr-xr-x  2 rimuru rimuru 4096 Sep 24 15:32 data
+-rw-r--r--  1 rimuru rimuru 4926 Sep 24 15:51 REPORT.md
+drwxr-xr-x  2 rimuru rimuru 4096 Sep 24 15:32 tests
+drwxr-xr-x  3 rimuru rimuru 4096 Sep 24 15:50 tools
+tests/run_tests.py: OK
+data/sample.csv: OK

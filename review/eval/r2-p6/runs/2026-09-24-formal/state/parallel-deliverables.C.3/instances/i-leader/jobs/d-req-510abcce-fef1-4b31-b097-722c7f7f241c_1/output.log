@@ -1,0 +1,19 @@
+8d5ddb899fec22f5616a12c186fef11e  csvfix/test_csvfix.py
+12b10bdc4b1b2188c37fe54ebdfd64f0  rules/test_rules.py
+csvfix:
+total 24
+drwxr-xr-x 4 rimuru rimuru 4096 Sep 24 15:58 .
+drwxr-xr-x 4 rimuru rimuru 4096 Sep 24 15:32 ..
+-rw-r--r-- 1 rimuru rimuru  557 Sep 24 15:58 impl.py
+drwxr-xr-x 2 rimuru rimuru 4096 Sep 24 15:58 __pycache__
+drwxr-xr-x 3 rimuru rimuru 4096 Sep 24 15:58 .pytest_cache
+-rw-r--r-- 1 rimuru rimuru  302 Sep 24 15:32 test_csvfix.py
+
+rules:
+total 24
+drwxr-xr-x 4 rimuru rimuru 4096 Sep 24 15:58 .
+drwxr-xr-x 4 rimuru rimuru 4096 Sep 24 15:32 ..
+-rw-r--r-- 1 rimuru rimuru  471 Sep 24 15:58 engine.py
+drwxr-xr-x 2 rimuru rimuru 4096 Sep 24 15:58 __pycache__
+drwxr-xr-x 3 rimuru rimuru 4096 Sep 24 15:58 .pytest_cache
+-rw-r--r-- 1 rimuru rimuru  319 Sep 24 15:32 test_rules.py

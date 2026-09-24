@@ -1,0 +1,33 @@
+   Compiling eval_fix v0.1.0 (/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-24-formal/work/rust-fix.C.3)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s
+     Running unittests src/lib.rs (target/debug/deps/eval_fix-b8db917371f4fc6a)
+
+running 2 tests
+test tests::adds_negative_numbers ... FAILED
+test tests::adds_positive_numbers ... FAILED
+
+failures:
+
+---- tests::adds_negative_numbers stdout ----
+
+thread 'tests::adds_negative_numbers' (1337350) panicked at src/lib.rs:17:9:
+assertion `left == right` failed
+  left: -2
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- tests::adds_positive_numbers stdout ----
+
+thread 'tests::adds_positive_numbers' (1337351) panicked at src/lib.rs:12:9:
+assertion `left == right` failed
+  left: -1
+ right: 5
+
+
+failures:
+    tests::adds_negative_numbers
+    tests::adds_positive_numbers
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--lib`

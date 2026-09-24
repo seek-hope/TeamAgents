@@ -1,0 +1,9 @@
+--- alpha/alpha.py ---
+def add(a, b):
+    return a + b
+--- beta/beta.py ---
+def mul(a, b):
+    return a * b
+--- check.py hashes ---
+8f30e265cbfa6ae5fdcf42d313033cd960d83bd1d7cd7f8f7ba3ca09eb289dd4  alpha/check.py
+4e7ac3aa4b4ddcc08f0e4902f7e25de1af457b7cbcce051aad1394b80ca373e1  beta/check.py

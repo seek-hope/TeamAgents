@@ -1,0 +1,16 @@
+csvfix:
+total 16
+drwxr-xr-x 2 rimuru rimuru 4096 Sep 24 15:32 .
+drwxr-xr-x 4 rimuru rimuru 4096 Sep 24 15:32 ..
+-rw-r--r-- 1 rimuru rimuru  274 Sep 24 15:32 impl.py
+-rw-r--r-- 1 rimuru rimuru  302 Sep 24 15:32 test_csvfix.py
+
+rules:
+total 16
+drwxr-xr-x 2 rimuru rimuru 4096 Sep 24 15:32 .
+drwxr-xr-x 4 rimuru rimuru 4096 Sep 24 15:32 ..
+-rw-r--r-- 1 rimuru rimuru   98 Sep 24 15:32 engine.py
+-rw-r--r-- 1 rimuru rimuru  319 Sep 24 15:32 test_rules.py
+---
+---
+pytest 9.0.3
