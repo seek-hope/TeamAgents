@@ -41,6 +41,9 @@ pub enum ChatKind {
     User,
     Assistant,
     Tool,
+    /// A runtime compaction summary (R22/A20): the model's view is covered by
+    /// it, so the user must see where the conversation was compacted.
+    Summary,
     System,
     Error,
 }
@@ -291,6 +294,13 @@ impl V2App {
                         text: truncate(content, PREVIEW_CHARS),
                     });
                 }
+                // covered entries stay visible here: the user sees the whole
+                // conversation, the model sees the summary (R22/A20)
+                "summary" => rebuilt.push(ChatEntry {
+                    kind: ChatKind::Summary,
+                    who: "压缩".into(),
+                    text: truncate(message["content"].as_str().unwrap_or(""), PREVIEW_CHARS),
+                }),
                 _ => {}
             }
         }

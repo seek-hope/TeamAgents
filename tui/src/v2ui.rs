@@ -224,6 +224,7 @@ fn render_chat(frame: &mut Frame, app: &mut V2App, area: Rect) {
             ChatKind::User => (entry.who.to_string(), Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
             ChatKind::Assistant => (entry.who.clone(), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
             ChatKind::Tool => (entry.who.clone(), Style::default().fg(Color::Yellow)),
+            ChatKind::Summary => (entry.who.clone(), Style::default().fg(Color::Magenta)),
             ChatKind::System => (entry.who.clone(), Style::default().fg(Color::DarkGray)),
             ChatKind::Error => (entry.who.clone(), Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
         };
@@ -232,6 +233,7 @@ fn render_chat(frame: &mut Frame, app: &mut V2App, area: Rect) {
             ChatKind::System => Style::default().fg(Color::DarkGray),
             ChatKind::Error => Style::default().fg(Color::Red),
             ChatKind::Tool => Style::default().fg(Color::Gray),
+            ChatKind::Summary => Style::default().fg(Color::Magenta),
             _ => Style::default(),
         };
         let mut first = true;

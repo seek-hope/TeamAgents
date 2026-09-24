@@ -76,6 +76,31 @@ fn history_rebuilds_the_conversation_and_keeps_system_notes() {
     assert!(app.entries[5].text.contains("目标完成"));
 }
 
+/// R22/A20: a compaction summary is shown as its own entry, so the user can
+/// tell where the model's view was compacted while still seeing every
+/// original exchange.
+#[test]
+fn a_compaction_summary_is_shown_and_does_not_duplicate_notes() {
+    let mut app = app();
+    let history = json!({"entries": [
+        {"idx": 1, "kind": "user", "message": {"role": "user", "content": "长任务"}},
+        {"idx": 2, "kind": "assistant", "message": {"role": "assistant", "content": "做完了"}},
+        {"idx": 3, "kind": "summary", "message": {"role": "user",
+             "content": "[Compacted conversation summary]\n1. Original request: 长任务"}},
+        {"idx": 4, "kind": "user", "message": {"role": "user", "content": "接着来"}}
+    ]});
+    app.apply_history(history.clone());
+    let kinds: Vec<_> = app.entries.iter().map(|e| e.kind.clone()).collect();
+    assert_eq!(kinds, vec![ChatKind::User, ChatKind::Assistant, ChatKind::Summary, ChatKind::User]);
+    assert_eq!(app.entries[2].who, "压缩");
+    assert!(app.entries[2].text.contains("Compacted conversation summary"));
+    // a second rebuild from the same history is not duplicated by the
+    // retained-note path
+    app.apply_history(history);
+    let summaries = app.entries.iter().filter(|e| e.kind == ChatKind::Summary).count();
+    assert_eq!(summaries, 1);
+}
+
 #[test]
 fn events_drive_refreshes_and_notes() {
     let mut app = app();
