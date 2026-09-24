@@ -42,6 +42,29 @@ pty: build
 			> "$$XDG_CONFIG_HOME/teamagents/config.toml"; \
 		python3 tui/scripts/pty_v2_smoke.py
 
+# 形式化验证（TLA+/TLC；不进 make check，首次运行会下载固定版本的 tla2tools.jar）
+TLA_TOOLS_DIR ?= $(HOME)/.local/share/teamagents-verify
+TLA_VERSION := 1.7.1
+TLA_SHA256 := d532ba31aafe17afba1130f92410d9257454ff7393d1eb2fe032f0c07f352da5
+
+verify-tools:
+	@mkdir -p "$(TLA_TOOLS_DIR)"
+	@if [ ! -f "$(TLA_TOOLS_DIR)/tla2tools.jar" ]; then \
+		echo "下载 TLC v$(TLA_VERSION) 到 $(TLA_TOOLS_DIR)"; \
+		curl -sSL -o "$(TLA_TOOLS_DIR)/tla2tools.jar" \
+			https://github.com/tlaplus/tlaplus/releases/download/v$(TLA_VERSION)/tla2tools.jar; \
+	fi
+	@echo "$(TLA_SHA256)  $(TLA_TOOLS_DIR)/tla2tools.jar" | sha256sum -c - >/dev/null \
+		|| { echo "tla2tools.jar 校验失败（版本或内容不符）" >&2; exit 1; }
+
+verify-model: verify-tools
+	@cd verification/tla && java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
+		tlc2.TLC -config MC.cfg -fp 64 -workers 4 V2Control.tla
+
+verify-model-wide: verify-tools
+	@cd verification/tla && java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
+		tlc2.TLC -config MC_wide.cfg -fp 64 -workers 8 V2Control.tla
+
 hygiene:
 	git diff --check
 	git submodule status
