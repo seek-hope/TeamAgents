@@ -5,20 +5,20 @@ set -eu
 repo=seek-hope/TeamAgents
 version=
 archive=
-bin_dir=${TEAMAGENTS_BIN_DIR:-${HOME:?请设置 HOME}/.local/bin}
+bin_dir=${TEAMAGENTS_BIN_DIR:-${HOME:?HOME must be set}/.local/bin}
 
-fail() { printf '安装失败：%s\n' "$*" >&2; exit 1; }
+fail() { printf 'install failed: %s\n' "$*" >&2; exit 1; }
 usage() {
     cat <<'EOF'
-TeamAgents 安装程序（Linux x86_64）
-用法：sh install.sh [--version VERSION] [--bin-dir DIR] [--archive FILE]
-  默认下载最新发行版，校验 SHA-256 并安装 teamagents 与 teamagents-tui。
-  --version VERSION  指定版本，例如 0.1.1 或 v0.1.1
-  --bin-dir DIR      安装目录（默认 ~/.local/bin；无需 sudo）
-  --archive FILE     使用本地发行包，旁边需有配套 SHA256SUMS（不联网）
-  --help            查看帮助
-私有仓库需要先用具有仓库访问权限的账号执行 gh auth login。
-升级前请退出正在运行的 TeamAgents。已有配置与会话会保留。
+TeamAgents installer (Linux x86_64)
+usage: sh install.sh [--version VERSION] [--bin-dir DIR] [--archive FILE]
+  downloads the latest release, verifies SHA-256 and installs teamagents and teamagents-tui.
+  --version VERSION  pick a version, e.g. 0.1.1 or v0.1.1
+  --bin-dir DIR      install directory (default ~/.local/bin; no sudo needed)
+  --archive FILE     use a local release archive with its SHA256SUMS beside it (no network)
+  --help            print this help
+A private repository needs `gh auth login` with an account that can read it.
+Quit a running TeamAgents before upgrading. The existing config and sessions are kept.
 EOF
 }
 
@@ -26,21 +26,21 @@ while [ "$#" -gt 0 ]; do
     case "$1" in
         --help|-h) usage; exit 0 ;;
         --version|--bin-dir|--archive)
-            [ "$#" -ge 2 ] && [ -n "$2" ] || fail "$1 缺少参数"
+            [ "$#" -ge 2 ] && [ -n "$2" ] || fail "$1 needs an argument"
             case "$1" in
                 --version) version=${2#v} ;;
                 --bin-dir) bin_dir=$2 ;;
                 --archive) archive=$2 ;;
             esac
             shift 2 ;;
-        *) fail "未知参数 $1；用 --help 查看用法" ;;
+        *) fail "unknown argument $1; use --help" ;;
     esac
 done
 
-[ "$(uname -s)" = Linux ] || fail "目前只支持 Linux x86_64"
-case "$(uname -m)" in x86_64|amd64) ;; *) fail "目前只提供 Linux x86_64 发行包" ;; esac
+[ "$(uname -s)" = Linux ] || fail "only Linux x86_64 is supported"
+case "$(uname -m)" in x86_64|amd64) ;; *) fail "only Linux x86_64 release archives are published" ;; esac
 for tool in mktemp tar sha256sum install awk cp mv; do
-    command -v "$tool" >/dev/null 2>&1 || fail "缺少命令 $tool"
+    command -v "$tool" >/dev/null 2>&1 || fail "missing command $tool"
 done
 
 temp_dir=$(mktemp -d)
@@ -53,7 +53,7 @@ cleanup() {
         for binary in teamagents teamagents-tui; do
             if [ -e "$stage_dir/backup-$binary" ] || [ -L "$stage_dir/backup-$binary" ]; then
                 mv -f "$stage_dir/backup-$binary" "$bin_dir/$binary" || {
-                    printf '恢复失败，旧程序保留在 %s\n' "$stage_dir" >&2
+                    printf 'restore failed; the previous binaries are kept in %s\n' "$stage_dir" >&2
                     exit 1
                 }
             else
@@ -74,70 +74,70 @@ download() {
 }
 
 if [ -n "$archive" ]; then
-    [ -f "$archive" ] || fail "发行包不存在：$archive"
+    [ -f "$archive" ] || fail "release archive not found: $archive"
     name=$(basename "$archive")
     case "$name" in
         teamagents-*-x86_64-unknown-linux-musl.tar.gz)
             archive_version=${name#teamagents-}
             archive_version=${archive_version%-x86_64-unknown-linux-musl.tar.gz} ;;
-        *) fail "发行包文件名不符合 Linux x86_64 格式：$name" ;;
+        *) fail "the archive name is not a Linux x86_64 release name: $name" ;;
     esac
-    [ -z "$version" ] || [ "$version" = "$archive_version" ] || fail "--version 与本地发行包版本不一致"
+    [ -z "$version" ] || [ "$version" = "$archive_version" ] || fail "--version does not match the local archive version"
     version=$archive_version
     cp "$archive" "$temp_dir/$name"
-    cp "$(dirname "$archive")/SHA256SUMS" "$temp_dir/SHA256SUMS" || fail "本地发行包旁缺少 SHA256SUMS"
+    cp "$(dirname "$archive")/SHA256SUMS" "$temp_dir/SHA256SUMS" || fail "SHA256SUMS is missing next to the local archive"
 else
     transport=curl
     if command -v gh >/dev/null 2>&1 && gh auth status --hostname github.com >/dev/null 2>&1; then
         transport=gh
     else
-        command -v curl >/dev/null 2>&1 || fail "请安装 curl；私有仓库请安装 gh 并执行 gh auth login"
+        command -v curl >/dev/null 2>&1 || fail "install curl; for a private repository also install gh and run gh auth login"
     fi
     if [ -z "$version" ]; then
         if [ "$transport" = gh ]; then
-            tag=$(gh release view --repo "$repo" --json tagName --jq .tagName) || fail "无法查询发行版，请检查网络及仓库访问权限"
+            tag=$(gh release view --repo "$repo" --json tagName --jq .tagName) || fail "cannot list releases; check the network and repository access"
         else
             url=$(download --output /dev/null --write-out '%{url_effective}' "https://github.com/$repo/releases/latest") \
-                || fail "无法查询发行版；私有仓库请先安装 gh 并执行 gh auth login"
+                || fail "cannot list releases; for a private repository install gh and run gh auth login"
             case "$url" in
                 "https://github.com/$repo/releases/tag/"*) tag=${url##*/} ;;
-                *) fail "未找到最新发行版；请检查仓库访问权限及 gh 登录状态" ;;
+                *) fail "no release found; check repository access and the gh login state" ;;
             esac
         fi
         version=${tag#v}
     fi
 fi
 
-case "$version" in ''|*[!a-zA-Z0-9.+-]*|[!0-9]*) fail "无效版本号：$version" ;; esac
+case "$version" in ''|*[!a-zA-Z0-9.+-]*|[!0-9]*) fail "invalid version: $version" ;; esac
 package=teamagents-$version-x86_64-unknown-linux-musl
 name=$package.tar.gz
 if [ -z "$archive" ]; then
-    printf '正在下载 TeamAgents v%s…\n' "$version"
+    printf 'downloading TeamAgents v%s...\n' "$version"
     if [ "$transport" = gh ]; then
         gh release download "v$version" --repo "$repo" --pattern "$name" --pattern SHA256SUMS --dir "$temp_dir" \
-            || fail "下载失败，请检查网络、版本号及仓库权限"
+            || fail "download failed; check the network, the version and repository access"
     else
         base=https://github.com/$repo/releases/download/v$version
-        download --output "$temp_dir/$name" "$base/$name" || fail "发行包下载失败；私有仓库请执行 gh auth login 后重试"
-        download --output "$temp_dir/SHA256SUMS" "$base/SHA256SUMS" || fail "校验文件下载失败"
+        download --output "$temp_dir/$name" "$base/$name" || fail "archive download failed; for a private repository run gh auth login and retry"
+        download --output "$temp_dir/SHA256SUMS" "$base/SHA256SUMS" || fail "checksum file download failed"
     fi
 fi
 
 # Select exactly this archive: future multi-platform manifests may list other files.
 awk -v name="$name" '$2 == name || $2 == "*" name { print; count++ } END { if (count != 1) exit 1 }' \
-    "$temp_dir/SHA256SUMS" > "$temp_dir/selected.sha256" || fail "SHA256SUMS 未唯一列出 $name"
-(cd "$temp_dir" && sha256sum -c selected.sha256) || fail "SHA-256 校验失败，未修改已安装程序"
+    "$temp_dir/SHA256SUMS" > "$temp_dir/selected.sha256" || fail "SHA256SUMS does not list $name exactly once"
+(cd "$temp_dir" && sha256sum -c selected.sha256) || fail "SHA-256 verification failed; installed binaries were left untouched"
 tar -xzf "$temp_dir/$name" -C "$temp_dir" \
-    "$package/teamagents" "$package/teamagents-tui" "$package/config.example.toml" || fail "发行包不完整"
+    "$package/teamagents" "$package/teamagents-tui" "$package/config.example.toml" || fail "the release archive is incomplete"
 for file in teamagents teamagents-tui config.example.toml; do
-    [ -f "$temp_dir/$package/$file" ] && [ ! -L "$temp_dir/$package/$file" ] || fail "发行包内容无效：$file"
+    [ -f "$temp_dir/$package/$file" ] && [ ! -L "$temp_dir/$package/$file" ] || fail "invalid archive content: $file"
 done
 
 mkdir -p "$bin_dir"
 bin_dir=$(cd "$bin_dir" && pwd)
 stage_dir=$(mktemp -d "$bin_dir/.teamagents-install.XXXXXX")
 for binary in teamagents teamagents-tui; do
-    [ ! -d "$bin_dir/$binary" ] || fail "目标是目录：$bin_dir/$binary"
+    [ ! -d "$bin_dir/$binary" ] || fail "the target is a directory: $bin_dir/$binary"
     install -m755 "$temp_dir/$package/$binary" "$stage_dir/$binary"
     if [ -e "$bin_dir/$binary" ] || [ -L "$bin_dir/$binary" ]; then
         cp -Pp "$bin_dir/$binary" "$stage_dir/backup-$binary"
@@ -149,31 +149,31 @@ for binary in teamagents teamagents-tui; do
     mv -f "$stage_dir/$binary" "$bin_dir/$binary"
 done
 install_done=1
-printf '已安装 TeamAgents v%s 到 %s\n' "$version" "$bin_dir"
+printf 'installed TeamAgents v%s into %s\n' "$version" "$bin_dir"
 
 # v0.1.1 predates init; keep the bootstrap usable before the next release.
 help_text=$("$bin_dir/teamagents" --help 2>&1 || true)
 case "$help_text" in
-    *'teamagents init'*) printf '下一步：teamagents init\n' ;;
+    *'teamagents init'*) printf 'next: teamagents init\n' ;;
     *)
         config_path=${XDG_CONFIG_HOME:-$HOME/.config}/teamagents/config.toml
         if [ -e "$config_path" ] || [ -L "$config_path" ]; then
-            printf '已保留现有配置：%s\n' "$config_path"
+            printf 'kept the existing config: %s\n' "$config_path"
         else
             mkdir -p "$(dirname "$config_path")"
             (umask 077; set -C; cat "$temp_dir/$package/config.example.toml" > "$config_path")
-            printf '此版本尚无 init 命令，已创建配置：%s\n' "$config_path"
+            printf 'this release has no init command yet; wrote a config: %s\n' "$config_path"
         fi
-        printf '下一步：按配置设置密钥环境变量，再运行 teamagents doctor。\n' ;;
+        printf 'next: set the credential env var named in the config, then run teamagents doctor.\n' ;;
 esac
 if ! command -v bwrap >/dev/null 2>&1; then
-    printf '还需安装 bubblewrap：Debian/Ubuntu 用 sudo apt install bubblewrap；Fedora 用 sudo dnf install bubblewrap。\n'
+    printf 'also install bubblewrap: Debian/Ubuntu use sudo apt install bubblewrap; Fedora uses sudo dnf install bubblewrap.\n'
 fi
 case ":${PATH:-}:" in
     *":$bin_dir:"*) ;;
     *)
         # Quote custom directories safely when printing a command to copy.
         quoted_dir=$(printf '%s' "$bin_dir" | sed "s/'/'\\\\''/g")
-        printf "请执行以下命令，并加入 ~/.bashrc 或 ~/.zshrc：\nexport PATH='%s':\"\$PATH\"\n" "$quoted_dir" ;;
+        printf "add this to ~/.bashrc or ~/.zshrc:\nexport PATH='%s':\"\$PATH\"\n" "$quoted_dir" ;;
 esac
-printf '启动：在项目目录运行 teamagents；升级时退出程序后重新运行本脚本。\n'
+printf 'start: run teamagents in your project directory; to upgrade, quit it and rerun this script.\n'

@@ -178,11 +178,11 @@ def main():
 
     # typing + Enter submits one submit_input business frame whose command id
     # carries the envelope (§9), and the input event drives a history refresh
-    os.write(fd, "你好v2".encode())
+    os.write(fd, "hello-v2".encode())
     time.sleep(0.3)
     os.write(fd, b"\r")
     scr.feed(read_all(fd, 4.0).decode("utf-8", "replace"))
-    expect("你好v2", "conversation after refresh")
+    expect("hello-v2", "conversation after refresh")
     submitted = [f for f in daemon.frames if f.get("method") == "submit_input"]
     if not submitted:
         failures.append("no submit_input frame reached the daemon")
@@ -197,7 +197,7 @@ def main():
     # set_lifecycle business frames whose events refresh the checkpoint
     os.write(fd, b"\x1bOR")  # F3 (xterm legacy)
     scr.feed(read_all(fd, 3.0).decode("utf-8", "replace"))
-    expect("实例（● 对话目标）", "instances panel title")
+    expect("instances (● conversation target)", "instances panel title")
     expect("i-leader · ACTIVE · READY", "instance row")
     os.write(fd, b"p")
     scr.feed(read_all(fd, 3.0).decode("utf-8", "replace"))
@@ -215,7 +215,7 @@ def main():
     # F4 tasks panel: c sends a cancel_task frame; the event refreshes the list
     os.write(fd, b"\x1bOS")  # F4
     scr.feed(read_all(fd, 3.0).decode("utf-8", "replace"))
-    expect("t-smoke · RUNNING · 承接 i-worker · 目标 g1", "task row")
+    expect("t-smoke · RUNNING · assignee i-worker · goal g1", "task row")
     os.write(fd, b"c")
     scr.feed(read_all(fd, 3.0).decode("utf-8", "replace"))
     expect("t-smoke · CANCELLED", "task cancelled on screen")
@@ -226,14 +226,14 @@ def main():
     # F5 topology panel: grant/channel edges plus task-delegation edges
     os.write(fd, b"\x1b[15~")  # F5
     scr.feed(read_all(fd, 3.0).decode("utf-8", "replace"))
-    expect("拓扑 · 活跃授权 1 · 任务 1", "topology title")
+    expect("topology · active grants 1 · tasks 1", "topology title")
     expect("i-leader ─manage→ session", "grant edge")
     expect("t-smoke ─→ i-worker", "task edge")
 
     # Esc returns to the conversation
     os.write(fd, b"\x1b")
     scr.feed(read_all(fd, 3.0).decode("utf-8", "replace"))
-    expect("发给 i-leader", "composer back after Esc")
+    expect("to i-leader", "composer back after Esc")
 
     # Ctrl+C quits
     os.write(fd, b"\x03")

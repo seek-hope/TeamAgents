@@ -1,4 +1,5 @@
-# Kani 验证用的独立 crate：直接编译仓库里的 kernel/types.rs（见 README 与 Makefile 的 verify-kani）
+# Standalone crate for the Kani proofs: compiles the repository's kernel/types.rs
+# (see verification/README.md and the verify-kani target in the Makefile)
 [package]
 name = "teamagents-kani-probe"
 version = "0.0.0"

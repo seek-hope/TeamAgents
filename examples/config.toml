@@ -1,25 +1,28 @@
-# TeamAgents 用户配置示例 -> ~/.config/teamagents/config.toml
-# 密钥只引用环境变量，不写进本文件。
+# TeamAgents user config sample -> ~/.config/teamagents/config.toml
+# Credentials are referenced by environment variable name, never written here.
 
-# 协议（protocol）决定线上格式，三种主流格式都已支持：
-#   protocol = "responses"   → POST {base_url}/responses（OpenAI 官方模型、Codex 风格网关）
-#   protocol = "anthropic"   → POST {base_url}/v1/messages（Anthropic 官方订阅/兼容网关）
-#   protocol = "openai"      → POST {base_url}/chat/completions（OpenAI 兼容：DeepSeek/GLM/Kimi/…）
-#   protocol = "deepseek"    → 同 chat/completions，另外把 xhigh 档位映射成 max
-# 具体用哪个模型由 base_url + model 决定；官方订阅的模型名写进 model 即可。
+# The protocol selects the wire format; all three mainstream formats are supported:
+#   protocol = "responses"   -> POST {base_url}/responses   (OpenAI models and Responses-style gateways)
+#   protocol = "anthropic"   -> POST {base_url}/v1/messages (Anthropic and compatible gateways)
+#   protocol = "openai"      -> POST {base_url}/chat/completions (OpenAI-compatible: DeepSeek/GLM/Kimi/...)
+#   protocol = "deepseek"    -> same as chat/completions, plus mapping xhigh to max
+# base_url + model decide which service is reached; for a subscription, write the public model name.
 
-# 归档会话保留：v2 目前只在 `teamagents doctor` 里报告这段配置，自动清理尚未落地；
-# 不配就是什么都不删。需要时才填写，别指望它现在就自动清理历史。
+# Retention: today `teamagents doctor` only reports this section; automatic cleanup is not
+# implemented yet, so nothing is deleted unless you delete it yourself.
 # [retention]
-# archived_days = 30     # 归档会话超过 N 天在打开会话时删除
-# history_days = 30      # 会话库里的已受理投递与旧事件超过 N 天清理（未受理的投递一定保留）
+# archived_days = 30     # delete archived sessions untouched for N days
+# history_days = 30      # drop applied deliveries and old events after N days (pending ones are kept)
 
-# 事件钩子（可选）：钩子是你自己写的程序，在主机上以你的权限运行（不进沙箱）。
-#   notify   事件通知，异步、不阻塞回合，超时 10 秒被杀掉；事件名是 argv[1]，事件 JSON 走 stdin。
-#            v2 事件：tool_call（含 tool/arguments/ok/error）/ team_action / run_completed /
+# Event hooks (optional): hooks are your own programs, running on the host with your
+# permissions (outside the sandbox).
+#   notify   event notification: asynchronous, never blocks a turn, killed after 10s; the event
+#            name is argv[1] and the event JSON arrives on stdin. Events: tool_call (with
+#            tool/arguments/ok/error) / team_action / run_completed /
 #            run_failed / run_cancelled / run_paused。
-#   pre_tool 原生工具调用前同步执行：exit 0 放行 / exit 2 拒绝（stderr 首行作原因回给模型）；
-#            其他退出码、启动失败或超时一律放行并只记 stderr。恢复后的重放不再重问。
+#   pre_tool runs before every native tool call: exit 0 allows, exit 2 denies (the first
+#            stderr line is the reason handed to the model); other exit codes, spawn failures
+#            and timeouts allow and only log to stderr. Replays after recovery are not re-asked.
 # [hooks]
 # notify = ["/home/you/bin/teamagents-notify.sh"]
 # pre_tool = ["/home/you/bin/teamagents-policy.sh"]
@@ -31,11 +34,11 @@ model = "deepseek-flash"
 api_key_env = "DEEPSEEK_API_KEY"
 timeout = 120
 max_retries = 2
-generation_options = { reasoning_effort = "max" }    # 默认档位；测试用 high（max 简单回合≈240s）
+generation_options = { reasoning_effort = "max" }    # default effort; tests use high (max takes ~240s per simple turn)
 
-# --- 其他服务示例（按需启用；都是“逻辑名 -> 实际接入”的映射） --------------
+# --- other service samples (enable on demand; each maps a logical name to a real endpoint)
 # [models.research_kimi]
-# provider = "openai"          # Kimi 走 OpenAI 兼容协议
+# provider = "openai"          # Kimi speaks the OpenAI-compatible protocol
 # protocol = "openai"
 # model = "kimi-k2-turbo-preview"
 # base_url = "https://api.kimi.com/coding/v1"
@@ -55,7 +58,7 @@ generation_options = { reasoning_effort = "max" }    # 默认档位；测试用 
 # base_url = "https://open.bigmodel.cn/api/paas/v4/"
 # api_key_env = "ZHIPU_API_KEY"
 
-# --- 工具绑定（成员通过名字引用；绑定即授权） -------------------------------
+# --- tool bindings (instances reference them by name; binding is the authorization) ---
 
 [tools.web]
 kind = "web_search"
@@ -67,7 +70,7 @@ api_key_env = "ANYSEARCH_API_KEY"
 kind = "web_fetch"
 provider = "anysearch"
 
-# 示例：Tavily 走 MCP（需要 TAVILY_API_KEY），替换 [tools.web] 即可
+# Sample: Tavily over MCP (needs TAVILY_API_KEY); replace [tools.web] with it
 # [tools.web]
 # kind = "mcp"
 # mcp_server = "tavily"

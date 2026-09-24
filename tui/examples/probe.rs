@@ -26,11 +26,11 @@ fn request(socket: &Path, method: &str) -> Result<Value> {
     let mut line = String::new();
     BufReader::new(stream.take(65_537)).read_line(&mut line)?;
     if line.len() > 65_536 {
-        return Err("后台回执过大".into());
+        return Err("daemon reply too large".into());
     }
     let value: Value = serde_json::from_str(&line)?;
     if value["ok"] != true {
-        return Err(format!("后台拒绝：{value}").into());
+        return Err(format!("daemon refused: {value}").into());
     }
     Ok(value)
 }
@@ -45,7 +45,7 @@ impl Drop for Restore {
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    let socket = Path::new(args.get(1).ok_or("用法：probe DAEMON_SOCKET")?);
+    let socket = Path::new(args.get(1).ok_or("usage: probe DAEMON_SOCKET")?);
     let mut state = request(socket, "status")?;
     enable_raw_mode()?;
     let _restore = Restore;
@@ -53,19 +53,19 @@ fn main() -> Result<()> {
     execute!(stdout, EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
     let mut next_poll = Instant::now();
-    let mut notice = "已连接独立后台；退出界面后任务继续。".to_string();
+    let mut notice = "attached to the standalone daemon; work continues after you quit.".to_string();
     loop {
         if Instant::now() >= next_poll {
             match request(socket, "status") {
                 Ok(value) => state = value,
-                Err(error) => notice = format!("连接中断，可重连：{error}"),
+                Err(error) => notice = format!("connection lost, reconnect available: {error}"),
             }
             next_poll = Instant::now() + Duration::from_millis(150);
         }
         terminal.draw(|frame|{
-            let text=format!("后台任务：{}\n状态：{}\n进度计数：{}\n事件水位：{}\n\n{s}\n\n操作：s 开始  p 暂停  r 恢复  c 取消  q 断开\n\n{notice}",
+            let text=format!("daemon work: {}\nstatus: {}\nticks: {}\nevent watermark: {}\n\n{s}\n\nkeys: s start  p pause  r resume  c cancel  q detach\n\n{notice}",
                 state["task_id"].as_str().unwrap_or(""),state["status"].as_str().unwrap_or(""),
-                state["ticks"],state["sequence"],s="此入口仅验证协议与终端行为，不调用模型。");
+                state["ticks"],state["sequence"],s="this entry point only verifies the protocol and terminal behaviour; it never calls a model.");
             frame.render_widget(Paragraph::new(text).block(Block::default().borders(Borders::ALL).title("TeamAgents probe")),frame.area());
         })?;
         if event::poll(Duration::from_millis(20))? {
@@ -85,9 +85,9 @@ fn main() -> Result<()> {
                     match request(socket, method) {
                         Ok(value) => {
                             state = value;
-                            notice = "控制命令已由后台保存。".into();
+                            notice = "the daemon stored the control command.".into();
                         }
-                        Err(error) => notice = format!("控制失败：{error}"),
+                        Err(error) => notice = format!("control failed: {error}"),
                     }
                 }
             }

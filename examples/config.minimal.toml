@@ -1,6 +1,6 @@
-# TeamAgents 首次配置。密钥只引用环境变量，不写入配置。
-# 修改模型时同步填写该模型的原生 context_window。
-# 其他服务、网页搜索与 MCP 配置见 config.example.toml 或 examples/config.toml。
+# TeamAgents starter config. Credentials are referenced by env var name, never written.
+# When you change the model, set that model's native context_window too.
+# Other services, web search and MCP are documented in examples/config.toml.
 skills_paths = ["~/.agents/skills"]
 
 [models.leader_main]

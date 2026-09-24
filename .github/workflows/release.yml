@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: 校验发行版本
+      - name: Verify the release version
         run: |
           set -eu
           version="$(sed -n 's/^version = "\(.*\)"/\1/p' engine/Cargo.toml | head -1)"
@@ -23,17 +23,17 @@ jobs:
           if [ "$GITHUB_REF_TYPE" = tag ]; then
             test "$GITHUB_REF_NAME" = "v$version"
           fi
-      - name: 读取固定工具链版本
+      - name: Read the pinned toolchain version
         id: rust-version
         run: echo "version=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ steps.rust-version.outputs.version }}
           targets: x86_64-unknown-linux-musl
-      # musl 静态链接：不依赖用户机器的 glibc 版本
-      - name: 安装 musl 工具链
+      # musl static linking: independent of the user machine's glibc
+      - name: Install the musl toolchain
         run: sudo apt-get update && sudo apt-get install -y musl-tools
-      - name: 构建
+      - name: Build
         env:
           CARGO_PROFILE_RELEASE_STRIP: symbols
         run: |
@@ -42,7 +42,7 @@ jobs:
             --manifest-path engine/Cargo.toml --bin teamagents
           cargo build --locked --release --target x86_64-unknown-linux-musl \
             --manifest-path tui/Cargo.toml --bin teamagents-tui
-      - name: 打包
+      - name: Package
         run: |
           set -eu
           if [ "$GITHUB_REF_TYPE" = tag ]; then
@@ -73,7 +73,7 @@ jobs:
           test -x "$smoke_dir/bin/teamagents-tui"
           rm -rf "$smoke_dir"
           ls -l dist
-      - name: 上传构建产物
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: linux-x86_64
@@ -82,7 +82,7 @@ jobs:
             dist/SHA256SUMS
             dist/install.sh
           if-no-files-found: error
-      - name: 发布
+      - name: Publish
         if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}

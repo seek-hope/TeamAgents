@@ -18,25 +18,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # 全量历史：shallow clone 下 HEAD 没有 parent，`git log --check -1`
-          # 会把整棵树当成"本提交新增"，历史文件里的行尾空格全被算到这次提交头上
+          # Full history: with a shallow clone HEAD has no parent, so `git log --check -1`
+          # treats the whole tree as new and blames this commit for pre-existing whitespace.
           fetch-depth: 0
-      - name: 读取固定工具链版本
+      - name: Read the pinned toolchain version
         id: rust-version
         run: echo "version=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ steps.rust-version.outputs.version }}
           components: rustfmt, clippy
-      # GitHub runner 装了 bubblewrap 也用不了（内核/AppArmor 限制非特权 user namespace），
-      # 所以这里不装：依赖真实隔离的测试会打印 "skipped: bwrap is unavailable" 自行跳过，
-      # 它们的权威验证在有 bwrap 的开发机上（见 docs/ACCEPTANCE.md）。
-      - name: 格式与 Clippy
+      # bubblewrap does not work on GitHub runners (the kernel/AppArmor forbids unprivileged
+      # user namespaces), so it is not installed: tests that need real isolation print
+      # "skipped: bwrap is unavailable" and their authoritative runs happen on a dev machine
+      # with bwrap (see docs/ACCEPTANCE.md).
+      - name: Format and Clippy
         run: make fmt-check lint CARGO_FLAGS=--locked
-      - name: 三 crate 回归
+      - name: Regression tests for the three crates
         run: make test CARGO_FLAGS=--locked
-      - name: 仓库卫生检查
+      - name: Repository hygiene
         run: make hygiene
-      # `git diff --check` 在干净检出上恒为空，检查的是提交本身
+      # `git diff --check` is always empty on a clean checkout; it checks the commit itself
       - name: Check patch whitespace
         run: git log --check --format= -1

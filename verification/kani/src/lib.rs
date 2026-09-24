@@ -1,5 +1,6 @@
-//! Kani 验证入口：`#[path]` 直接编译仓库里的 `core/src/kernel/types.rs`，
-//! 只补一个 `models::now` 垫片（被证明的函数都不读它），因此证明的是**发布的那份代码**。
+//! Kani entry point: `#[path]` compiles the repository's own `core/src/kernel/types.rs`
+//! and adds only a `models::now` shim (none of the proven functions reads it), so the
+//! proofs apply to the published code.
 //!
 //! ```text
 //! make verify-kani
