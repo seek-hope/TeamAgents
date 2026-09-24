@@ -6,11 +6,11 @@ CARGO_FLAGS ?= --offline --locked
 .PHONY: help check fmt fmt-check lint test build pty hygiene
 
 help:
-	@echo 'make check     格式、Clippy、回归测试及仓库卫生检查（默认离线）'
-	@echo 'make fmt       按统一规则格式化三个 crate'
-	@echo 'make build     构建 CLI 与 TUI'
-	@echo 'make pty       在隔离配置下运行真终端检查（需要 Python 3）'
-	@echo '首次下载依赖：make check CARGO_FLAGS=--locked'
+	@echo 'make check     format, Clippy, regression tests and repository hygiene (offline by default)'
+	@echo 'make fmt       format the three crates'
+	@echo 'make build     build the CLI and the TUI'
+	@echo 'make pty       real-terminal smoke check with an isolated config (needs Python 3)'
+	@echo 'first run with downloads: make check CARGO_FLAGS=--locked'
 
 check: fmt-check lint test hygiene
 
@@ -42,7 +42,7 @@ pty: build
 			> "$$XDG_CONFIG_HOME/teamagents/config.toml"; \
 		python3 tui/scripts/pty_v2_smoke.py
 
-# 形式化验证（TLA+/TLC；不进 make check，首次运行会下载固定版本的 tla2tools.jar）
+# Formal verification (TLA+/TLC; not part of make check; the first run downloads the pinned tla2tools.jar)
 TLA_TOOLS_DIR ?= $(HOME)/.local/share/teamagents-verify
 TLA_VERSION := 1.7.1
 TLA_SHA256 := d532ba31aafe17afba1130f92410d9257454ff7393d1eb2fe032f0c07f352da5
@@ -50,18 +50,18 @@ TLA_SHA256 := d532ba31aafe17afba1130f92410d9257454ff7393d1eb2fe032f0c07f352da5
 verify-tools:
 	@mkdir -p "$(TLA_TOOLS_DIR)"
 	@if [ ! -f "$(TLA_TOOLS_DIR)/tla2tools.jar" ]; then \
-		echo "下载 TLC v$(TLA_VERSION) 到 $(TLA_TOOLS_DIR)"; \
+		echo "downloading TLC v$(TLA_VERSION) into $(TLA_TOOLS_DIR)"; \
 		curl -fSL --connect-timeout 20 --retry 3 --retry-delay 2 -o "$(TLA_TOOLS_DIR)/tla2tools.jar" \
 			https://github.com/tlaplus/tlaplus/releases/download/v$(TLA_VERSION)/tla2tools.jar; \
 	fi
 	@echo "$(TLA_SHA256)  $(TLA_TOOLS_DIR)/tla2tools.jar" | sha256sum -c - >/dev/null \
-		|| { echo "tla2tools.jar 校验失败（版本或内容不符）" >&2; exit 1; }
+		|| { echo "tla2tools.jar failed its checksum (wrong version or content)" >&2; exit 1; }
 
 verify-model: verify-tools
 	@cd verification/tla && java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
 		tlc2.TLC -config MC.cfg -fp 64 -workers 4 V2Control.tla
 
-# 全部模块的小配置穷举（秒级；宽配置另跑 verify-model-wide）
+# small exhaustive configurations for every module (seconds; the wide config is verify-model-wide)
 verify-model-all: verify-tools
 	@cd verification/tla && for cfg in MC.cfg MC_artifact.cfg MC_wait.cfg MC_task.cfg MC_compress.cfg MC_daemon.cfg MC_checks.cfg; do \
 		echo "== $$cfg =="; \
@@ -71,11 +71,11 @@ verify-model-all: verify-tools
 	done
 
 
-# Kani 证明（readback 分页算术；需要 Kani 工具链，不进 make check）
+# Kani proofs (readback paging arithmetic; needs the Kani toolchain, not part of make check)
 KANI_PATH = $(HOME)/.cargo/bin:$(PATH)
 verify-kani:
 	@PATH="$(KANI_PATH)" command -v cargo-kani >/dev/null || { \
-		echo "需要 Kani 工具链：cargo install --locked kani-verifier && cargo kani setup" >&2; exit 1; }
+		echo "the Kani toolchain is required: cargo install --locked kani-verifier && cargo kani setup" >&2; exit 1; }
 	@cd verification/kani && PATH="$(KANI_PATH)" CARGO_TARGET_DIR=target cargo kani --lib \
 		| grep -E "VERIFICATION|Complete -|failed"
 
@@ -88,5 +88,5 @@ hygiene:
 	git submodule status
 	@test -z "$$(git ls-files '*.pyc' '*/__pycache__/*' '*/.pytest_cache/*' '*/target/*' \
 		'*.sqlite-wal' '*.sqlite-shm')" || \
-		{ echo '仓库包含已跟踪的生成物（编译缓存/Python 缓存/SQLite 临时文件），请移除后再提交。'; exit 1; }
+		{ echo 'tracked build artifacts (compile caches, Python caches, SQLite temporaries); remove them before committing.'; exit 1; }
 	sh -n install.sh
