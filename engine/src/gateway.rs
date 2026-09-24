@@ -4,7 +4,6 @@ use crate::core_client::CoreClient;
 use serde_json::{json, Value as Json};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use teamagents_core::models::{ActionKind, ApprovalRequest, ApprovalStatus, Receipt};
@@ -379,45 +378,8 @@ pub(crate) type Executor = Arc<dyn Fn(&str, &Json) -> Result<Json, String> + Sen
 
 /// Revocable ownership for a turn segment. The mutex drains tools and private
 /// checkpoint writes before the session releases its execution lock.
-#[derive(Default)]
-pub struct TurnControl {
-    cancelled: AtomicBool,
-    active: Mutex<()>,
-}
-
-impl TurnControl {
-    pub fn check(&self) -> Result<(), String> {
-        if self.cancelled.load(Ordering::SeqCst) {
-            Err("turn interrupted".into())
-        } else {
-            Ok(())
-        }
-    }
-
-    pub fn enter(&self) -> Result<MutexGuard<'_, ()>, String> {
-        let guard = self.active.lock().map_err(|_| "turn execution lock poisoned")?;
-        self.check()?;
-        Ok(guard)
-    }
-
-    pub fn cancel(&self) {
-        self.cancelled.store(true, Ordering::SeqCst);
-    }
-
-    pub fn wait_idle(&self, timeout: Duration) -> bool {
-        let deadline = Instant::now() + timeout;
-        loop {
-            match self.active.try_lock() {
-                Ok(_) | Err(std::sync::TryLockError::Poisoned(_)) => return true,
-                Err(std::sync::TryLockError::WouldBlock) => {}
-            }
-            if Instant::now() >= deadline {
-                return false;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-    }
-}
+/// TurnControl now lives in `tools` (one owner per fact, §14).
+pub use crate::tools::TurnControl;
 
 /// The single path for a member's tool calls, team actions and approvals.
 /// Identity is injected here, never trusted from model fields (§5.2).

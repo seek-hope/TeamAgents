@@ -1,7 +1,6 @@
 //! File tools confined to the member workspace, mode-aware Shell execution,
 //! and web fetch with an SSRF guard.
 
-use crate::gateway::TurnControl;
 use serde_json::{json, Value as Json};
 use sha2::{Digest, Sha256};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
@@ -12,7 +11,7 @@ use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
@@ -2548,6 +2547,49 @@ fn receipt_error_class(text: &str) -> &'static str {
         }
     }
     "tool_error"
+}
+
+/// R29: the turn-cancellation flag the reference loop and the v2 driver share.
+/// It moved out of the retiring v1 gateway module (§14 keeps one owner per
+/// fact: cancellation is a local execution concern, not team state).
+#[derive(Default)]
+pub struct TurnControl {
+    cancelled: AtomicBool,
+    active: Mutex<()>,
+}
+
+impl TurnControl {
+    pub fn check(&self) -> Result<(), String> {
+        if self.cancelled.load(Ordering::SeqCst) {
+            Err("turn interrupted".into())
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn enter(&self) -> Result<MutexGuard<'_, ()>, String> {
+        let guard = self.active.lock().map_err(|_| "turn execution lock poisoned")?;
+        self.check()?;
+        Ok(guard)
+    }
+
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+    }
+
+    pub fn wait_idle(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            match self.active.try_lock() {
+                Ok(_) | Err(std::sync::TryLockError::Poisoned(_)) => return true,
+                Err(std::sync::TryLockError::WouldBlock) => {}
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
 }
 
 #[cfg(test)]

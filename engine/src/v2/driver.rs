@@ -1832,11 +1832,10 @@ impl<P: Provider> Driver<P> {
         let toolkit = self.toolkit.clone();
         let op = operation_id.to_string();
         let mode = ShellMode::from_permissions(Some(&self.config.permissions))?;
-        let receipt = tokio::task::spawn_blocking(move || {
-            toolkit.call(&op, &typed, &crate::gateway::TurnControl::default(), mode)
-        })
-        .await
-        .map_err(|e| format!("tool worker join: {e}"))?;
+        let receipt =
+            tokio::task::spawn_blocking(move || toolkit.call(&op, &typed, &crate::tools::TurnControl::default(), mode))
+                .await
+                .map_err(|e| format!("tool worker join: {e}"))?;
         self.complete_op(
             operation_id,
             if receipt.ok { "SUCCEEDED" } else { "FAILED" },

@@ -4,9 +4,9 @@
 //! evaluation and carries no production recovery promise; it is not a second
 //! kernel and reuses `core::kernel` for every model-facing decision.
 
-use crate::gateway::TurnControl;
 use crate::observability::trace::Trace;
 use crate::providers::{Cancel, ErrorClass, Provider, ProviderEvent};
+use crate::tools::TurnControl;
 use crate::tools::{ShellMode, V2Toolkit};
 use serde_json::{json, Value as Json};
 use std::path::PathBuf;
