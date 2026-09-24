@@ -24,8 +24,13 @@
   结清，其操作与用量仍落到该目标（诚实记账，不是新工作）。`complete_goal` 只检查开放操作、不检查任务，
   所以目标可在自己名下任务仍开放时结清，那些任务的后续请求没有记账目标；收紧需要先给 driver 一个
   "拒绝完成"的已提交结果，未列入本次范围。
-- 证据：`make verify-model-all`（控制面/制品/等待/任务四个模块穷举全绿）与 `make check`；性质↔代码↔
-  验收编号映射见 [verification/README.md](../verification/README.md)。
+- **V-P1 终止后残留执行指针**：规格↔代码的可执行对应测试（`core/tests/v2_invariants.rs`）在随机游走里
+  发现终止实例后 phase 停在 `MODEL_PENDING` 而 `active_request_id` 指向一个已取消的请求；修复为终止分支
+  与 `reset_instance`/`fail_request` 一样归一化执行指针。回归
+  `terminating_an_instance_normalizes_its_execution_pointer`。
+- 证据：`make verify-model-all`（控制面/制品/等待/任务四个模块穷举全绿）、`make check`（含
+  `core/tests/v2_invariants.rs`：穷举长度 ≤ 2 命令序列 + 60 条固定种子游走 + 覆盖率断言 + 检查器灵敏度
+  反向验证）；性质↔代码↔验收编号映射见 [verification/README.md](../verification/README.md)。
 
 ## D-43 多供应商边界对齐 pi coding agent（2026-09-24）
 

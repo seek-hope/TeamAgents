@@ -51,6 +51,18 @@
   自己名下任务仍开放时结清；这类任务的后续请求没有记账目标。收紧需要先给 driver 一个"拒绝完成"的
   已提交结果，未列入本次范围；边界写进 `verification/tla/V2Task.tla` 头注与 README。
 
+## 3. V-P1：终止实例后残留执行指针（代码级不变量测试发现）
+
+- **发现方式**：`core/tests/v2_invariants.rs`（规格↔代码的可执行对应）在随机游走里报出
+  `OneActiveRequest: instance i1 is MODEL_PENDING with 0 pending requests`。
+- **根因**：`set_lifecycle` 的 TERMINATED 分支调用 `close_epoch_execution` 取消了在途请求，但没有像
+  `reset_instance`/`fail_request` 那样把执行指针归零，实例停在 `phase = MODEL_PENDING`、
+  `active_request_id` 指向一个已 `CANCELLED` 的请求。
+- **修复**：`core/src/v2/control.rs` 终止分支补上同一归一化（`phase = 'READY'`、`active_request_id = NULL`）。
+- **回归**：`core::v2::control::tests::terminating_an_instance_normalizes_its_execution_pointer`。
+- **同时新增**：`core/tests/v2_invariants.rs`（穷举长度 ≤ 2 的命令序列 + 60 条固定种子游走，每步重查
+  13 组不变量；带覆盖率断言与"检查器灵敏度"反向验证）。
+
 ## 附带修正
 
 - `verification/tla/V2Wait.tla`：取代语义按代码修正为"整批置 CANCELLED 并回答"，并补

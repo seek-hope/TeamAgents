@@ -2882,6 +2882,15 @@ fn set_lifecycle(tx: &Connection, session_id: &str, params: &Json, identity: &Id
         // the requesters, and every grant it held or issued dies with it —
         // the member row is never just deleted
         let closed = close_epoch_execution(tx, session_id, instance_id, epoch, "instance terminated")?;
+        // the execution pointer is part of the termination cleanup: the request
+        // the instance was running is cancelled above, so no phase or pointer
+        // may keep referring to it (the same normalization reset_instance and
+        // fail_request apply) — found by the v2 invariant harness
+        tx.execute(
+            "UPDATE instances SET phase = 'READY', active_request_id = NULL, revision = revision + 1 WHERE id = ?1",
+            [instance_id],
+        )
+        .map_err(|e| format!("terminate instance: {e}"))?;
         let tasks = tx
             .execute(
                 "UPDATE tasks SET status = 'CANCELLED', revision = revision + 1
@@ -6738,6 +6747,36 @@ mod tests {
             .expect("replay");
         assert_eq!(again["already_closed"], json!(true));
         assert_eq!(context_count(&ctl, "i1"), 2);
+        cleanup(&path);
+    }
+
+    /// 终止把执行指针一起收拾干净（不变量测试 v2_invariants 发现）：被取消的请求不能继续挂在
+    /// 实例的 phase/active_request_id 上，否则"phase = MODEL_PENDING ⇒ 有一个 PENDING 请求"在
+    /// 已终止实例上不再成立。
+    #[test]
+    fn terminating_an_instance_normalizes_its_execution_pointer() {
+        let (mut ctl, path) = control("terminate-pointer");
+        create_instance(&mut ctl, "i1");
+        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1", "instance_id": "i1"})), Identity::User).expect("goal");
+        let rev = revision_of(&ctl, "i1");
+        begin_and_complete(&mut ctl, "live", "i1", rev);
+        assert_eq!(phase_of(&ctl, "i1"), "MODEL_PENDING");
+        ctl.submit(
+            cmd("sl-t", "set_lifecycle", json!({"instance_id": "i1", "lifecycle": "TERMINATED"})),
+            Identity::User,
+        )
+        .expect("terminate");
+        let request: String = ctl
+            .connection()
+            .query_row("SELECT status FROM model_requests ORDER BY rowid DESC LIMIT 1", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(request, "CANCELLED", "在途请求随终止取消");
+        assert_eq!(phase_of(&ctl, "i1"), "READY");
+        let pointer: Option<String> = ctl
+            .connection()
+            .query_row("SELECT active_request_id FROM instances WHERE id = 'i1'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(pointer, None, "执行指针不留在已取消的请求上");
         cleanup(&path);
     }
 

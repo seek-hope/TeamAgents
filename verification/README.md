@@ -187,6 +187,41 @@ ACTIVE 时被准入，之后目标结清，它仍会开操作并把用量结算�
 5. **引用计数不能用无界整数**：`refs++` 会让状态空间发散（实测 1.8 亿状态仍未收敛）；改成
    **有限持有者集合**（`Owners` 常量）后同一配置只有 64 个可达状态。这条对后续模块同样适用。
 
+## 规格↔代码的可执行对应（`core/tests/v2_invariants.rs`）
+
+规格检查的是抽象状态机。`core/tests/v2_invariants.rs`（随 `make check` 自动运行）把**同一组不变量**在真实
+`core::v2::Control` 上重算一遍：
+
+```bash
+cargo test --offline --manifest-path core/Cargo.toml --test v2_invariants
+```
+
+- **穷举**：长度 ≤ 2 的命令序列，每条从全新数据库开始（30 种命令 ⇒ 930 条序列），含被拒绝的组合；
+- **随机游走**：60 条固定种子的 24 步游走，每步只在"当前可用"的命令里挑（否则大部分步会被前置条件浪费），
+  种子固定 ⇒ 轨迹可复现；
+- **每步之后重查**：`TypeOK`、`SettledIsFinal`、`ReturnPathOnlyWhileOpen`、`DependenciesPointBackwards`、
+  `NoOpenTaskOnDeadAssignee`、`NoStaleActiveGoal`、`ReservationReleased`、`OneActiveRequest`、
+  `SelectionIsComplete`、`ResolvedWaitIsAnswered`、`NoEffectBeforeApproval`、`LiveIsPersisted`、
+  上下文 epoch 一致性；
+- **覆盖率断言**：游走必须真的走到"等被解决 / 目标结清 / 任务结清 / 操作终态 / epoch 重置 / 实例终止 /
+  制品 LIVE"，否则测试失败（防止"空转通过"）；
+- **反向验证**（`the_invariant_checker_detects_broken_states`）：人为破坏状态（未知状态值、终态被改写、
+  悬挂目标指针）时检查器必须报出来，否则"全部通过"没有意义。
+
+这条可执行对应已经抓到一处代码问题（V-P1，见下），并已被两个反例探针覆盖（委派到已结清目标、
+非承接者结清任务在代码里都必须被拒绝）。
+
+边界：这是**有界穷举 + 采样**，不是证明；它检查"实现状态是否满足不变量"，不检查活性，也不覆盖并发交错
+（`Control::submit` 在单个连接上串行，交错属于 driver 层）。
+
+### 发现 V-P1（代码级不变量测试发现，已修复）
+
+终止实例时 `close_epoch_execution` 取消了在途请求，但 `set_lifecycle` 的 TERMINATED 分支没有像
+`reset_instance`/`fail_request` 那样把执行指针归零：实例停在 `phase = MODEL_PENDING`，
+`active_request_id` 指向一个已 `CANCELLED` 的请求，于是"phase 为 `MODEL_PENDING` ⇒ 存在 PENDING 请求"
+在已终止实例上不再成立。修复：终止分支补上与 reset/fail 相同的归一化（phase → READY、指针清空），
+回归测试 `terminating_an_instance_normalizes_its_execution_pointer`。
+
 ## 边界（诚实说明）
 
 - 已验证的是**模型**性质：TLC 穷举的是抽象状态机，不是 Rust 实现。除非做精化证明（后续阶段的可选工作），
@@ -201,6 +236,8 @@ ACTIVE 时被准入，之后目标结清，它仍会开操作并把用量结算�
   （`engine/src/v2/driver.rs`）；这是实现事实，不是被证明的结论。
 - 状态空间前沿（`MC_task`）：1 任务 / 2 实例 / 2 目标 = 5.7M 状态 / 约 20 秒；把任务加到 2 个会发散
   （实测 43M 状态、4 分钟未收敛），需要对称性或更强的抽象。
+- 代码级对应（`core/tests/v2_invariants.rs`）是采样 + 有界穷举，不是证明；它给不出"所有执行都满足"，
+  只给"这些执行都满足"+ 检查器灵敏度（反向验证）。
 - 状态空间前沿：宽配置 275M 状态 / 11 分钟；继续加实例或操作数需要对称性/约束或改为随机模拟
   （`-simulate`）作为补充。
 
