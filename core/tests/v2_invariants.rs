@@ -60,6 +60,7 @@ struct Coverage {
     reset_epoch: bool,
     terminated: bool,
     artifact_live: bool,
+    compressed: bool,
 }
 
 impl Coverage {
@@ -71,6 +72,7 @@ impl Coverage {
         self.reset_epoch |= other.reset_epoch;
         self.terminated |= other.terminated;
         self.artifact_live |= other.artifact_live;
+        self.compressed |= other.compressed;
     }
 }
 
@@ -89,6 +91,10 @@ struct Harness {
     trace: Vec<String>,
     /// 任务 id -> 已见过的终态（`SettledIsFinal` 的跨步记忆）
     settled: HashMap<String, String>,
+    /// 见过的上下文条目（`NoEntryIsEverLost` 的跨步记忆）
+    entries_seen: HashSet<String>,
+    /// 见过被覆盖的条目（`CoverageNeverLifted` 的跨步记忆）
+    covered_seen: HashSet<String>,
 }
 
 impl Drop for Harness {
@@ -104,7 +110,16 @@ impl Harness {
         let path = std::env::temp_dir().join(format!("teamagents-v2-invariants-{tag}-{}.db", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let ctl = Control::open(&path, "s1", true).expect("open control");
-        Harness { ctl, path, rng: 0x9E3779B97F4A7C15, counter: 0, trace: Vec::new(), settled: HashMap::new() }
+        Harness {
+            ctl,
+            path,
+            rng: 0x9E3779B97F4A7C15,
+            counter: 0,
+            trace: Vec::new(),
+            settled: HashMap::new(),
+            entries_seen: HashSet::new(),
+            covered_seen: HashSet::new(),
+        }
     }
 
     fn next_rand(&mut self) -> u64 {
@@ -122,6 +137,12 @@ impl Harness {
         }
         let index = (self.next_rand() % items.len() as u64) as usize;
         items.get(index)
+    }
+
+    /// 给"计划中的"资源分配一个稳定编号（请求 / 任务 id 之类）
+    fn plan_id(&mut self) -> u64 {
+        self.counter += 1;
+        self.counter
     }
 
     /// 从表格行里挑一行（任务/请求这类多列对象）
@@ -194,7 +215,7 @@ impl Harness {
         self.rows("SELECT id, instance_id, status, epoch FROM waits ORDER BY id", &[])
     }
     fn requests(&self) -> Vec<Vec<String>> {
-        self.rows("SELECT request_id, instance_id, status, COALESCE(selected_attempt_id,'') FROM model_requests ORDER BY rowid", &[])
+        self.rows("SELECT request_id, instance_id, status, COALESCE(selected_attempt_id,''), kind FROM model_requests ORDER BY rowid", &[])
     }
     fn operations(&self) -> Vec<Vec<String>> {
         self.rows("SELECT operation_id, status, CASE WHEN receipt_json IS NULL THEN '' ELSE 'receipt' END, decision_id FROM operations ORDER BY operation_id", &[])
@@ -214,6 +235,7 @@ impl Harness {
             reset_epoch: exists("SELECT id FROM instances WHERE context_epoch > 0"),
             terminated: exists("SELECT id FROM instances WHERE lifecycle = 'TERMINATED'"),
             artifact_live: exists("SELECT id FROM artifacts WHERE completeness = 'LIVE'"),
+            compressed: exists("SELECT id FROM context_entries WHERE compressed_by IS NOT NULL"),
         }
     }
 
@@ -322,16 +344,17 @@ impl Harness {
             }
         }
 
-        // OneActiveRequest：每实例至多一个未关闭请求，且与相位一致
+        // OneActiveRequest：相位只由 turn 请求驱动（压缩请求并发且不动相位，见
+        // begin_compression），所以每实例至多一个未关闭 turn 请求，并与相位一致
         let mut live_per_instance: HashMap<&str, usize> = HashMap::new();
         for row in &requests {
-            if row[2] == "PENDING" {
+            if row[2] == "PENDING" && row[4] == "turn" {
                 *live_per_instance.entry(row[1].as_str()).or_default() += 1;
             }
         }
         for (instance, count) in &live_per_instance {
             if *count > 1 {
-                reports.push(format!("OneActiveRequest: instance {instance} has {count} pending requests"));
+                reports.push(format!("OneActiveRequest: instance {instance} has {count} pending turn requests"));
             }
         }
         for row in &instances {
@@ -339,13 +362,15 @@ impl Harness {
             let live = live_per_instance.get(row[0].as_str()).copied().unwrap_or(0);
             if phase == "MODEL_PENDING" && live != 1 {
                 reports.push(format!(
-                    "OneActiveRequest: instance {} is MODEL_PENDING with {live} pending requests",
+                    "OneActiveRequest: instance {} is MODEL_PENDING with {live} pending turn requests",
                     row[0]
                 ));
             }
             if phase != "MODEL_PENDING" && live > 0 {
-                reports
-                    .push(format!("OneActiveRequest: instance {} is {phase} while a request is still pending", row[0]));
+                reports.push(format!(
+                    "OneActiveRequest: instance {} is {phase} while a turn request is still pending",
+                    row[0]
+                ));
             }
         }
 
@@ -465,6 +490,70 @@ impl Harness {
             }
         }
 
+        // 上下文条目：只增不减、槽位连续（TailAppend）、覆盖不许回抬、覆盖指向更晚的总结
+        let entries = self.rows(
+            "SELECT instance_id, epoch, id, idx, kind, COALESCE(compressed_by, '') FROM context_entries
+             ORDER BY instance_id, epoch, idx",
+            &[],
+        );
+        for row in &entries {
+            let key = format!("{}|{}|{}", row[0], row[1], row[2]);
+            self.entries_seen.insert(key.clone());
+            if row[5].is_empty() {
+                if self.covered_seen.contains(&key) {
+                    reports.push(format!("CoverageNeverLifted: entry {key} is visible again"));
+                }
+            } else {
+                self.covered_seen.insert(key.clone());
+                let summary =
+                    entries.iter().find(|other| other[0] == row[0] && other[1] == row[1] && other[2] == row[5]);
+                match summary {
+                    Some(summary) if summary[4] == "summary" && summary[3] > row[3] => {}
+                    Some(summary) => reports.push(format!(
+                        "CoveragePointsForward: {key} covered by idx {} kind {}",
+                        summary[3], summary[4]
+                    )),
+                    None => reports.push(format!("CoveragePointsForward: {key} covered by unknown {}", row[5])),
+                }
+            }
+        }
+        for key in &self.entries_seen {
+            let mut parts = key.split('|');
+            let (instance, epoch) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+            let id = parts.next().unwrap_or("");
+            if !entries.iter().any(|row| row[0] == instance && row[1] == epoch && row[2] == id) {
+                reports.push(format!("NoEntryIsEverLost: entry {key} disappeared"));
+            }
+        }
+        let mut epochs: Vec<(String, String)> = entries.iter().map(|row| (row[0].clone(), row[1].clone())).collect();
+        epochs.sort();
+        epochs.dedup();
+        for (instance, epoch) in epochs {
+            let shape = self.rows(
+                "SELECT COUNT(*), COALESCE(MAX(idx), -1) FROM context_entries WHERE instance_id = ?1 AND epoch = ?2",
+                &[&instance, &epoch],
+            );
+            if let Some(row) = shape.first() {
+                let count: i64 = row[0].parse().unwrap_or(-1);
+                let max: i64 = row[1].parse().unwrap_or(-2);
+                // append_entry 从 idx = 1 开始，只增不减 ⇒ 条目数等于最大 idx
+                if count != max {
+                    reports.push(format!("TailAppend: {instance} epoch {epoch} has {count} entries but max idx {max}"));
+                }
+            }
+            // 最新的总结必须可见（更早的总结可以被更晚的总结覆盖）
+            let newest = self.rows(
+                "SELECT id, COALESCE(compressed_by, '') FROM context_entries
+                 WHERE instance_id = ?1 AND epoch = ?2 AND kind = 'summary' ORDER BY idx DESC LIMIT 1",
+                &[&instance, &epoch],
+            );
+            if let Some(row) = newest.first() {
+                if !row[1].is_empty() {
+                    reports.push(format!("NewestSummaryIsVisible: newest summary {} is covered", row[0]));
+                }
+            }
+        }
+
         // context_epoch：条目不能超出实例当前 epoch
         for row in &instances {
             let epoch: i64 = row[5].parse().unwrap_or(0);
@@ -490,7 +579,7 @@ impl Harness {
 }
 
 // ------------------------------------------------------------- step kinds --
-const STEPS: usize = 30;
+const STEPS: usize = 33;
 
 /// 按当前状态生成第 `kind` 种命令；前置不成立时返回 None（该步跳过）。
 fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
@@ -523,6 +612,10 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
         artifacts.iter().filter(|row| row[1] == "LIVE").map(|row| row[0].clone()).collect();
     let pending_approvals: Vec<String> =
         approvals.iter().filter(|row| row[2] == "PENDING").map(|row| row[1].clone()).collect();
+    let compression: Vec<Vec<String>> = harness.rows(
+        "SELECT request_id, instance_id FROM model_requests WHERE kind = 'compression' AND status = 'PENDING'",
+        &[],
+    );
 
     match kind {
         // 0: 建实例（上限 3）
@@ -971,6 +1064,64 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity: Identity::System,
             })
         }
+        // 30: 开门压缩（与 turn 请求共用准入闸门）
+        30 => {
+            let instance = harness.pick(&ids)?.clone();
+            let request = format!("cr-{}", harness.plan_id());
+            Some(Step {
+                label: format!("begin_compression({instance})"),
+                command: Command {
+                    command_id: String::new(),
+                    method: "begin_compression".into(),
+                    params: json!({"instance_id": instance, "request_id": request, "est_prompt_tokens": 50}),
+                },
+                identity: Identity::Instance(instance),
+            })
+        }
+        // 31: 提交压缩（追加总结、覆盖旧条目、关请求、释放预留）
+        31 => {
+            let row = harness.pick_rows(&compression)?;
+            let instance = row[1].clone();
+            let epoch = harness
+                .rows("SELECT context_epoch FROM instances WHERE id = ?1", &[&instance])
+                .first()?
+                .first()?
+                .clone();
+            let visible = harness.rows(
+                "SELECT id FROM context_entries
+                 WHERE instance_id = ?1 AND epoch = ?2 AND compressed_by IS NULL ORDER BY idx",
+                &[&instance, &epoch],
+            );
+            // 一半情况保留最早一条可见条目（覆盖其余），另一半全部覆盖
+            let keep = if harness.next_rand().is_multiple_of(2) {
+                visible.first().map(|entry| json!([entry[0]])).unwrap_or(json!([]))
+            } else {
+                json!([])
+            };
+            Some(Step {
+                label: format!("compress_context({})", row[0]),
+                command: Command {
+                    command_id: String::new(),
+                    method: "compress_context".into(),
+                    params: json!({"instance_id": instance, "request_id": row[0], "attempt_id": "",
+                                   "summary": "compressed view", "keep_ids": keep}),
+                },
+                identity: Identity::System,
+            })
+        }
+        // 32: 压缩失败（上下文不动，只关请求并释放预留）
+        32 => {
+            let row = harness.pick_rows(&compression)?;
+            Some(Step {
+                label: format!("fail_compression({})", row[0]),
+                command: Command {
+                    command_id: String::new(),
+                    method: "fail_compression".into(),
+                    params: json!({"request_id": row[0], "reason": "summary unavailable"}),
+                },
+                identity: Identity::System,
+            })
+        }
         // 26: 反例探针——委派到已结清的目标（规格要求被拒）
         26 => {
             let goal = settled_goals.first()?.clone();
@@ -1078,6 +1229,7 @@ fn spec_invariants_hold_over_random_walks() {
         ("epoch 重置", reached.reset_epoch),
         ("实例终止", reached.terminated),
         ("制品 LIVE", reached.artifact_live),
+        ("压缩提交（有条目被覆盖）", reached.compressed),
     ] {
         assert!(seen, "随机游走没有覆盖到：{name}");
     }
@@ -1122,6 +1274,44 @@ fn the_invariant_checker_detects_broken_states() {
     harness.ctl.connection().execute("UPDATE tasks SET status = 'RUNNING'", []).unwrap();
     let reported = harness.violations();
     assert!(reported.iter().any(|line| line.contains("SettledIsFinal")), "应报出终态改写：{reported:?}");
+
+    // 4) 覆盖被回抬（`CoverageNeverLifted`）与覆盖指向更早的条目（`CoveragePointsForward`）
+    let mut harness = Harness::new("broken-compress");
+    for kind in [0, 14, 30, 31] {
+        let step = make_step(&mut harness, kind).expect("compression setup");
+        let _ = harness.run_step(step);
+    }
+    let healthy = harness.violations();
+    assert!(healthy.is_empty(), "正常压缩后不应报违反：{healthy:?}");
+    let covered = harness.rows("SELECT id FROM context_entries WHERE compressed_by IS NOT NULL", &[]);
+    assert!(!covered.is_empty(), "压缩提交必须覆盖到条目");
+    harness
+        .ctl
+        .connection()
+        .execute("UPDATE context_entries SET compressed_by = NULL WHERE compressed_by IS NOT NULL", [])
+        .unwrap();
+    let reported = harness.violations();
+    assert!(reported.iter().any(|line| line.contains("CoverageNeverLifted")), "应报出覆盖被回抬：{reported:?}");
+
+    let mut harness = Harness::new("broken-compress-forward");
+    for kind in [0, 14, 30, 31] {
+        let step = make_step(&mut harness, kind).expect("compression setup");
+        let _ = harness.run_step(step);
+    }
+    harness
+        .ctl
+        .connection()
+        .execute(
+            "UPDATE context_entries SET compressed_by =
+                 (SELECT id FROM context_entries WHERE kind = 'summary' LIMIT 1)
+             WHERE compressed_by IS NOT NULL",
+            [],
+        )
+        .unwrap();
+    // 手工把总结指向自己：索引不再严格大于被覆盖条目
+    harness.ctl.connection().execute("UPDATE context_entries SET kind = 'note' WHERE kind = 'summary'", []).unwrap();
+    let reported = harness.violations();
+    assert!(reported.iter().any(|line| line.contains("CoveragePointsForward")), "应报出覆盖指向非总结：{reported:?}");
 
     // 3) 实例悬挂已结清目标（V-G1）
     let mut harness = Harness::new("broken-goal");

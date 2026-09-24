@@ -212,15 +212,16 @@ ACTIVE 时被准入，之后目标结清，它仍会开操作并把用量结算�
 cargo test --offline --manifest-path core/Cargo.toml --test v2_invariants
 ```
 
-- **穷举**：长度 ≤ 2 的命令序列，每条从全新数据库开始（30 种命令 ⇒ 930 条序列），含被拒绝的组合；
+- **穷举**：长度 ≤ 2 的命令序列，每条从全新数据库开始（33 种命令 ⇒ 1,122 条序列），含被拒绝的组合；
 - **随机游走**：60 条固定种子的 24 步游走，每步只在"当前可用"的命令里挑（否则大部分步会被前置条件浪费），
   种子固定 ⇒ 轨迹可复现；
 - **每步之后重查**：`TypeOK`、`SettledIsFinal`、`ReturnPathOnlyWhileOpen`、`DependenciesPointBackwards`、
-  `NoOpenTaskOnDeadAssignee`、`NoStaleActiveGoal`、`ReservationReleased`、`OneActiveRequest`、
-  `SelectionIsComplete`、`ResolvedWaitIsAnswered`、`NoEffectBeforeApproval`、`LiveIsPersisted`、
-  上下文 epoch 一致性；
+  `NoOpenTaskOnDeadAssignee`、`NoStaleActiveGoal`、`ReservationReleased`、`OneActiveRequest`（只对 turn
+  请求计数：压缩请求并发且不动相位）、`SelectionIsComplete`、`ResolvedWaitIsAnswered`、
+  `NoEffectBeforeApproval`、`LiveIsPersisted`、`TailAppend`、`NoEntryIsEverLost`、
+  `CoveragePointsForward`、`CoverageNeverLifted`、`NewestSummaryIsVisible`、上下文 epoch 一致性；
 - **覆盖率断言**：游走必须真的走到"等被解决 / 目标结清 / 任务结清 / 操作终态 / epoch 重置 / 实例终止 /
-  制品 LIVE"，否则测试失败（防止"空转通过"）；
+  制品 LIVE / 压缩提交"，否则测试失败（防止"空转通过"）；
 - **反向验证**（`the_invariant_checker_detects_broken_states`）：人为破坏状态（未知状态值、终态被改写、
   悬挂目标指针）时检查器必须报出来，否则"全部通过"没有意义。
 
