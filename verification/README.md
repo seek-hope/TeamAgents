@@ -27,6 +27,7 @@ make verify-model-wide      # 控制面宽配置（2 实例 / 2 操作；约 11 
 | `tla/V2Artifact.tla` + `tla/MC_artifact.cfg` | 制品与 GC：写字节 → STAGING 行 → 引用与 LIVE 同事务 → GC 认领 → 删除/放弃 |
 | `tla/V2Wait.tla` + `tla/MC_wait.cfg` | 等待/唤醒/计时器/取代：注册即求值 → 停放 drain 扫描 → 满足即答同事务 → 取消/取代/重挂 |
 | `tla/V2Task.tla` + `tla/MC_task.cfg` | 任务生命周期与目标结清：委派（前置任务必须先存在、目标必须 ACTIVE）→ 启动 → 结清/取消 → 系统停放 → 终止级联；目标创建/请求准入/开放操作/结清与摘除 |
+| `tla/V2Compress.tla` + `tla/MC_compress.cfg` | 上下文压缩（A20）：开门/提交/失败/被 epoch 关闭取消；总结追加在尾部、覆盖只增不减、原文永不删除 |
 
 环境（工具结果、批准时机、崩溃时点）在模型里是**非确定性**的；这正是要穷举的部分。
 
@@ -187,6 +188,21 @@ ACTIVE 时被准入，之后目标结清，它仍会开操作并把用量结算�
 5. **引用计数不能用无界整数**：`refs++` 会让状态空间发散（实测 1.8 亿状态仍未收敛）；改成
    **有限持有者集合**（`Owners` 常量）后同一配置只有 64 个可达状态。这条对后续模块同样适用。
 
+### 上下文压缩（A20）
+
+| 性质（规格） | 含义 | 代码锚点 |
+|---|---|---|
+| `TailAppend` | 条目占据槽位前缀：新条目只追加在尾部，不插入中间 | `append_entry` 的 `MAX(idx)+1` |
+| `NoEntryIsEverLost` | 原文永不删除（覆盖只是视图事实，监测变量 `lost` 保持空） | `compress_context` 只写 `compressed_by`，从不 DELETE |
+| `CoveragePointsForward` | 总结永远比它覆盖的条目新 | 先追加总结（尾部）再标记覆盖 |
+| `CoverageNeverLifted` | 覆盖只增不减、不会被改指到另一个总结（监测变量 `uncovered` 保持空） | 覆盖语句带 `compressed_by IS NULL` 守卫 |
+| `NewestSummaryIsVisible` | 最新总结自身不会被覆盖（更早的总结可以被更晚的总结覆盖） | 提交顺序 |
+| `CoveredStaysCoveredByItsSummary` | 被覆盖的条目一定指向一个更晚的真实总结 | 同上 |
+| `ClosedCompressionReleasesReservation` | 压缩请求关闭（完成 / 失败 / 被 epoch 关闭取消）都释放预留 | `compress_context`/`fail_compression`/`close_epoch_execution` 里的 `release_reservation` |
+
+压缩请求的**准入**（生命周期、目标截止时间、预算闸门）与 turn 请求同一条代码路径，由 `V2Control`
+的 `AdmissionGate` 覆盖，此处不再重复建模。
+
 ## 规格↔代码的可执行对应（`core/tests/v2_invariants.rs`）
 
 规格检查的是抽象状态机。`core/tests/v2_invariants.rs`（随 `make check` 自动运行）把**同一组不变量**在真实
@@ -227,11 +243,10 @@ cargo test --offline --manifest-path core/Cargo.toml --test v2_invariants
 - 已验证的是**模型**性质：TLC 穷举的是抽象状态机，不是 Rust 实现。除非做精化证明（后续阶段的可选工作），
   不能据此声称"Rust 代码已被证明"。
 - 已建模：控制面状态机、制品与 GC（A30）、等待/唤醒/计时器/取代（A22/A23、RT-06 的去重语义）、
-  任务/委派/目标结清（A02/A09/A16）。
-- 尚未建模：压缩提交与原文追溯（A20）、daemon 协议重放与水位（A28）、审批有效期与 RT-06 的过期语义
-  （等待侧已含取代/取消，批准侧未建模）、必需检查（A16 的检查轮次与修复）；多实例共享预算的跨实例
-  结算（A18 的 worker 归属）已在 `V2Task` 里按 `budget_goal` 的解析规则建模（含"只看最旧开放任务"
-  的取序细节）。
+  任务/委派/目标结清（A02/A09/A16）、上下文压缩（A20）。
+- 尚未建模：daemon 协议重放与水位（A28）、审批有效期与 RT-06 的过期语义（等待侧已含取代/取消，
+  批准侧未建模）、必需检查（A16 的检查轮次与修复）；多实例共享预算的跨实例结算（A18 的 worker 归属）
+  已在 `V2Task` 里按 `budget_goal` 的解析规则建模（含"只看最旧开放任务"的取序细节）。
 - 弱公平假设：`V2Wait` 的活性依赖"停放 drain 弱公平"，即 driver 的轮询循环在 `WAITING` 下持续尝试
   （`engine/src/v2/driver.rs`）；这是实现事实，不是被证明的结论。
 - 状态空间前沿（`MC_task`）：1 任务 / 2 实例 / 2 目标 = 5.7M 状态 / 约 20 秒；把任务加到 2 个会发散

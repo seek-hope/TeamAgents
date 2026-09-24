@@ -63,10 +63,10 @@ verify-model: verify-tools
 
 # 全部模块的小配置穷举（秒级；宽配置另跑 verify-model-wide）
 verify-model-all: verify-tools
-	@cd verification/tla && for cfg in MC.cfg MC_artifact.cfg MC_wait.cfg MC_task.cfg; do \
+	@cd verification/tla && for cfg in MC.cfg MC_artifact.cfg MC_wait.cfg MC_task.cfg MC_compress.cfg; do \
 		echo "== $$cfg =="; \
 		java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
-			tlc2.TLC -config $$cfg -fp 64 -workers 4 $$(case $$cfg in MC.cfg) echo V2Control.tla;; MC_wait.cfg) echo V2Wait.tla;; MC_task.cfg) echo V2Task.tla;; *) echo V2Artifact.tla;; esac) \
+			tlc2.TLC -config $$cfg -fp 64 -workers 4 $$(case $$cfg in MC.cfg) echo V2Control.tla;; MC_wait.cfg) echo V2Wait.tla;; MC_task.cfg) echo V2Task.tla;; MC_compress.cfg) echo V2Compress.tla;; *) echo V2Artifact.tla;; esac) \
 			| grep -E "No error|violation|violated|states generated"; \
 	done
 
