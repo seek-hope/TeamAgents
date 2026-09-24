@@ -137,6 +137,7 @@ fn main() {
         session_id: "s-p2".into(),
         instance_id: "i-main".into(),
         state_root: state.clone(),
+        instances_dir: state.clone().join("instances"),
         workspace: workspace.clone(),
         permissions: if full_auto { "full_auto".into() } else { "approved_scope".into() },
         profile: KernelProfile {

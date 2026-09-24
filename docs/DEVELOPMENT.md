@@ -119,7 +119,8 @@ cargo test --offline --locked --manifest-path core/Cargo.toml --test v2_invarian
 | 多实例协作面 | `engine/src/v2/supervisor.rs`：每个 ACTIVE 实例一个相位机；`spawn`/`delegate`/`send`/`wait` 的授权与派发线性化点在 `core/src/v2/control.rs` | `engine/tests/v2_supervisor.rs`、`core/tests/v2_invariants.rs` |
 | 会话 daemon 与客户端 | `engine/src/v2/daemon.rs`（每状态根一个 Unix socket JSON-lines 服务）、`engine/src/v2/exec.rs`（无头客户端）、`tui/src/daemon_client.rs`（断线按事件水位续读） | `engine/tests/v2_daemon.rs`、`engine/tests/cli.rs`、`make pty` |
 | 信息权限与共享空间 | `core/src/v2/control.rs` 的可见性/投递判定与 `core/src/kernel/*` 的上下文视图；`audience` 可见不等于 `push` 注入 | `core` 库单测（可见性/投递/引用）、`core/tests/v2_invariants.rs` |
-| MCP、Skills 与工具绑定 | `engine/src/bound.rs`（绑定即授权）、`engine/src/mcp.rs`（stdio + streamable HTTP）；工作区策略在 `engine/src/workspace.rs` | `engine/tests/v2_mcp.rs`、`engine/tests/v2_spawn_failure.rs` |
+| MCP、Skills 与工具绑定 | `engine/src/bound.rs`（绑定即授权）、`engine/src/mcp.rs`（stdio + streamable HTTP） | `engine/tests/v2_mcp.rs`、`engine/tests/v2_spawn_failure.rs` |
+| 工作区策略（§12.3） | `engine/src/workspace.rs`：共享/隔离/git worktree；`spawn` 的 `workspace` 参数解析在 `driver::prepare_spawn_workspace`，策略记录写在 `<instances_dir>/<id>/workspace.json`，回收在 supervisor 的终止路径 | `engine/src/workspace.rs` 单测、`engine/tests/v2_driver.rs::spawn_resolves_the_requested_workspace_policy`、`engine/tests/v2_supervisor.rs::terminating_an_instance_retires_its_workspace` |
 | 供应商适配 | `engine/src/providers/*`：一次传输尝试、只做失败分类，重试归运行时；配置与目录在 `engine/src/config.rs`（用户目录的解析、`[hooks]`/`[retention]` 校验） | `engine/tests/providers_fake.rs`、`engine/tests/providers_stall.rs`、`engine/src/config.rs` 单测 |
 | 模型调用与内核 | `core/src/kernel/*`（无 I/O 的请求/响应/观察转换）、`engine/src/reference.rs`（评测组 A 直驱参考循环） | `core/tests/kernel_properties.rs`、`engine/tests/rebuild_p1.rs` |
 | 会话界面与真终端 | `tui/src/v2app.rs`（状态与按键）、`tui/src/v2ui.rs`（渲染，`geometry()` 同时供鼠标命中）、`tui/src/wrap.rs` | `tui/tests/v2app_tests.rs`、`make pty` |

@@ -30,7 +30,7 @@ make verify-kani                         # Kani 证明（分页算术）
 python3 review/eval/r2-p6/run.py --phase pilot --out <新的日期目录>   # 真实模型 A/B/C 对照（需凭据）
 ```
 
-- 基线（2026-09-25）：`make check` 全绿——core 91 / engine 133 / tui 29；core 计数下降是因为 v1 控制面
+- 基线（2026-09-25）：`make check` 全绿——core 91 / engine 136 / tui 29；core 计数下降是因为 v1 控制面
   与其测试已整体删除（见 D-45），不是覆盖回退。真实评测原始 JSONL 在 `review/eval/runs/`。
 
 - 当前基线与跳过项统一见 `docs/ACCEPTANCE.md`；Cargo 的通过数不等于真实服务验收通过数。
@@ -57,8 +57,9 @@ python3 review/eval/r2-p6/run.py --phase pilot --out <新的日期目录>   # �
 - 产品层：`engine/src/v2/daemon.rs`（每状态根一个 Unix socket JSON-lines 服务）、`engine/src/v2/exec.rs`
   （无头客户端）、`engine/src/cli.rs`、`tui/src/daemon_client.rs`；渲染与鼠标命中共用
   `tui/src/v2ui.rs::geometry`
-- 未接线：`engine/src/workspace.rs` 的共享/隔离/worktree 策略只有自身单测调用，v2 的实例目前只带
-  `workspace_ref` 路径；接线或删除需单独立项并记录决策。
+- 工作区策略：`engine/src/workspace.rs`（共享/隔离/git worktree，§12.3）由 `spawn` 工具的 `workspace`
+  参数选择；`driver::prepare_spawn_workspace` 在启动子实例前解析策略并写 `<instances_dir>/<id>/workspace.json`，
+  supervisor 在实例 `TERMINATED` 时据此回收（有未提交/未合并结果时拒绝删除并报告）。
 
 ## 代码审查与证据（review/*）
 

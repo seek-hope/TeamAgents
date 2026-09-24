@@ -17,33 +17,9 @@ macro_rules! str_enum {
     };
 }
 
-str_enum!(RuntimeKind, "snake_case", Deepagents, Codex);
-
 str_enum!(WorkspacePolicy, "snake_case", Shared, Isolated, GitWorktree);
 
 pub type Json = serde_json::Value;
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AgentSpec {
-    pub id: String,
-    pub name: String,
-    pub role: String,
-    pub runtime_kind: RuntimeKind,
-    #[serde(default)]
-    pub instructions: String,
-    pub model_profile: String,
-    #[serde(default)]
-    pub tool_bindings: Vec<String>,
-    #[serde(default)]
-    pub skills: Vec<String>,
-    #[serde(default = "default_workspace_policy")]
-    pub workspace_policy: WorkspacePolicy,
-}
-
-fn default_workspace_policy() -> WorkspacePolicy {
-    WorkspacePolicy::Shared
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

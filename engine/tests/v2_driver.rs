@@ -113,6 +113,7 @@ impl Root {
             session_id: "s-test".into(),
             instance_id: "i-main".into(),
             state_root: self.dir.join("state"),
+            instances_dir: self.dir.join("state").join("instances"),
             workspace: self.dir.join("ws"),
             permissions: "full_auto".into(),
             profile: KernelProfile {
@@ -1239,5 +1240,83 @@ async fn notify_hooks_receive_tool_call_and_run_completed() {
     assert!(text.contains("run_completed"), "the completed run was reported: {text}");
     assert!(text.contains("\"instance_id\":\"i-main\""), "the payload carries the instance: {text}");
     assert!(text.contains("echo notified"), "the tool arguments travel on stdin: {text}");
+    handle.shutdown().await.expect("shutdown");
+}
+
+fn init_git_repo(dir: &std::path::Path) {
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git").arg("-C").arg(dir).args(args).output().expect("git");
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["config", "user.email", "t@example.com"]);
+    git(&["config", "user.name", "T"]);
+    std::fs::write(dir.join("README.md"), "hi").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "init"]);
+}
+
+/// §12.3: the spawn tool resolves the requested workspace policy, records it and
+/// points the instance row at the resolved directory.
+#[tokio::test]
+async fn spawn_resolves_the_requested_workspace_policy() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let root = root("spawn-workspace");
+    let project = root.dir.join("ws");
+    std::fs::create_dir_all(&project).unwrap();
+    init_git_repo(&project);
+    let spawn = |id: &str, workspace: &str| {
+        json!({"role": "assistant", "content": "", "tool_calls": [{"id": format!("c-{id}"), "type": "function",
+            "function": {"name": "spawn", "arguments": json!({"instance_id": id, "instructions": "helper",
+                                                              "workspace": workspace}).to_string()}}]})
+    };
+    let script = vec![
+        Step::Message(spawn("i-iso", "isolated")),
+        Step::Message(spawn("i-git", "git_worktree")),
+        Step::Message(spawn("i-bad", "teleport")),
+        Step::Message(finish_call("three spawn attempts")),
+    ];
+    let (provider, seen) = recording(script);
+    let handle = start(root.config_with(provider)).await.expect("start");
+    let mut control = second_control(&root);
+    control
+        .submit(
+            cmd(
+                "g-manage",
+                "issue_grant",
+                json!({"subject": "i-main", "action": "manage", "resource_scope": "session"}),
+            ),
+            teamagents_core::v2::Identity::User,
+        )
+        .expect("manage grant");
+    handle.input("spawn helpers with different workspaces").await.expect("input");
+    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+
+    let instances = root.dir.join("state/instances");
+    let iso = instances.join("i-iso/work");
+    assert!(iso.join("INPUTS.md").exists(), "isolated workspace was created: {}", iso.display());
+    let git_ws = instances.join("i-git/work");
+    assert!(git_ws.join(".git").is_file(), "worktree was created: {}", git_ws.display());
+    assert!(instances.join("i-iso/workspace.json").exists(), "the policy is recorded");
+    assert!(instances.join("i-git/worktree.json").exists(), "the worktree records its origin");
+
+    let control = second_control(&root);
+    let iso_ref: String = control
+        .connection()
+        .query_row("SELECT workspace_ref FROM instances WHERE id = 'i-iso'", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(iso_ref, iso.to_string_lossy(), "the instance row points at its own directory");
+    let git_ref: String = control
+        .connection()
+        .query_row("SELECT workspace_ref FROM instances WHERE id = 'i-git'", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(git_ref, git_ws.to_string_lossy());
+
+    // the model is told what it got, and an unknown policy fails honestly
+    let requests = wait_for_requests(&seen, 2, 10_000).await;
+    let last = request_text(requests.last().unwrap());
+    assert!(last.contains("isolated directory"), "the isolated note reaches the model: {last}");
+    assert!(last.contains("unknown workspace"), "an unknown policy is refused: {last}");
+    assert!(!root.dir.join("state/instances/i-bad").exists(), "nothing was prepared for the refused spawn");
     handle.shutdown().await.expect("shutdown");
 }

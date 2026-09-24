@@ -18,6 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use teamagents_core::kernel::*;
+use teamagents_core::models::WorkspacePolicy;
 use teamagents_core::v2::{Command, Identity};
 
 /// Output cap mirrored from the synchronous shell path (tools.rs MAX_OUTPUT).
@@ -58,6 +59,9 @@ pub struct DriverConfig<P> {
     pub instance_id: String,
     /// Jobs, artifacts and the coordinator lock live here (one lock per root, §6.1).
     pub state_root: PathBuf,
+    /// Per-instance directories (`<session root>/instances`, §12.3): a spawn
+    /// resolves its workspace policy against this directory.
+    pub instances_dir: PathBuf,
     pub workspace: PathBuf,
     /// Trusted session permission mode ("approved_scope" | "full_auto"), D-41.
     pub permissions: String,
@@ -1853,9 +1857,32 @@ impl<P: Provider> Driver<P> {
     /// commands under the instance identity — the grant check inside the
     /// command is the second line behind the dispatch re-check (§6.1). The
     /// command result becomes the tool receipt the model observes.
+    /// §12.3: resolve the workspace policy of one `spawn` call. shared (the
+    /// project directory) is the default; a worktree request on a dirty or
+    /// unversioned project falls back to shared and says why. The policy is
+    /// recorded before the instance can boot, so retirement cleans up exactly
+    /// what was created. Errors are tool-call failures, not driver failures.
+    fn prepare_spawn_workspace(&self, args: &Json) -> Result<(String, Json), String> {
+        let instance_id = args["instance_id"].as_str().unwrap_or("");
+        let policy = match args.get("workspace").and_then(|value| value.as_str()) {
+            None => WorkspacePolicy::Shared,
+            Some(name) => serde_json::from_value::<WorkspacePolicy>(json!(name))
+                .map_err(|_| format!("unknown workspace {name:?}: expected shared, isolated or git_worktree"))?,
+        };
+        let member_dir = self.config.instances_dir.join(instance_id);
+        let prepared = crate::workspace::prepare(instance_id, policy, &self.config.workspace, &member_dir)?;
+        crate::workspace::save(&prepared, &member_dir)?;
+        let info = json!({"path": prepared.path.to_string_lossy(),
+                          "policy": serde_json::to_value(prepared.policy).unwrap_or(Json::Null),
+                          "note": prepared.note});
+        Ok((prepared.path.to_string_lossy().into_owned(), info))
+    }
+
     async fn execute_collaboration(&mut self, operation_id: &str, intent: &Json) -> Result<(), String> {
         let name = intent["name"].as_str().unwrap_or("");
         let args = &intent["args"];
+        let mut prepared_path: Option<String> = None;
+        let mut workspace_info: Option<Json> = None;
         let (method, params) = match name {
             teamagents_core::kernel::SEND_TOOL => {
                 ("send_message", json!({"recipient": args["recipient"], "text": args["text"]}))
@@ -1872,13 +1899,22 @@ impl<P: Provider> Driver<P> {
                 ("delegate_task", params)
             }
             teamagents_core::kernel::SPAWN_TOOL => {
+                let instance_id = args["instance_id"].as_str().unwrap_or("").to_string();
+                // a bad workspace request is this tool call's failure, not the
+                // driver's: the model gets the error and carries on
+                let (workspace_path, info) = match self.prepare_spawn_workspace(args) {
+                    Ok(pair) => pair,
+                    Err(error) => return self.complete_with_error(operation_id, intent, "collaboration", &error).await,
+                };
+                prepared_path = Some(workspace_path.clone());
+                workspace_info = Some(info);
                 let mut profile = self.config.profile.clone();
                 profile.instructions = args["instructions"].as_str().unwrap_or("").to_string();
-                let mut params = json!({"instance_id": args["instance_id"], "instructions": args["instructions"],
+                let mut params = json!({"instance_id": instance_id, "instructions": args["instructions"],
                                         "profile": {"model": profile.model, "instructions": profile.instructions,
                                                     "tools": profile.tools, "options": profile.options,
                                                     "context_window": profile.context_window},
-                                        "workspace_ref": self.config.workspace.to_string_lossy(),
+                                        "workspace_ref": workspace_path,
                                         "goal_id": format!("goal-{}", self.config.session_id)});
                 if let Some(task) = args.get("task") {
                     params["task"] = task.clone();
@@ -1907,7 +1943,11 @@ impl<P: Provider> Driver<P> {
         }
         match result {
             Ok(value) => {
-                let receipt = self.receipt_skeleton(operation_id, intent, true, value.to_string());
+                let mut content = value.clone();
+                if let Some(info) = &workspace_info {
+                    content["workspace"] = info.clone();
+                }
+                let receipt = self.receipt_skeleton(operation_id, intent, true, content.to_string());
                 let receipt = teamagents_core::kernel::ToolReceipt { ok: true, ..receipt };
                 self.complete_op(
                     operation_id,
@@ -1917,7 +1957,14 @@ impl<P: Provider> Driver<P> {
                 )
                 .await
             }
-            Err(error) => self.complete_with_error(operation_id, intent, "collaboration", &error).await,
+            Err(error) => {
+                if let Some(path) = &prepared_path {
+                    // never delete on a guess: a rejected spawn keeps whatever it
+                    // prepared, and a retry with the same instance id reuses it
+                    eprintln!("spawn kept its prepared workspace at {path}: {error}");
+                }
+                self.complete_with_error(operation_id, intent, "collaboration", &error).await
+            }
         }
     }
 

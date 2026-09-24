@@ -9,9 +9,9 @@ use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use teamagents_core::models::{AgentSpec, WorkspacePolicy};
+use teamagents_core::models::WorkspacePolicy;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Workspace {
     pub path: PathBuf,
     pub policy: WorkspacePolicy,
@@ -141,9 +141,49 @@ pub(crate) fn repair_worktree(project_cwd: &Path, path: &Path) -> Result<(), Str
     Ok(())
 }
 
-/// Resolve where this member works, applying its configured policy.
-pub fn prepare(agent: &AgentSpec, project_cwd: &Path, member_dir: &Path) -> Result<Workspace, String> {
-    match agent.workspace_policy {
+/// Where one instance's workspace record lives, next to its work directory.
+fn record_path(member_dir: &Path) -> PathBuf {
+    member_dir.join("workspace.json")
+}
+
+/// Persist the resolved policy before the instance boots, so a later retirement
+/// can clean up exactly what was created (and a rerun can reuse it).
+pub fn save(workspace: &Workspace, member_dir: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(member_dir).map_err(|e| format!("{}: {e}", member_dir.display()))?;
+    let path = record_path(member_dir);
+    let staged = path.with_extension("json.tmp");
+    let body = serde_json::to_vec(workspace).map_err(|e| e.to_string())?;
+    std::fs::write(&staged, body)
+        .and_then(|()| std::fs::rename(&staged, &path))
+        .map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// The policy originally resolved for this instance, if it is still recorded.
+pub fn load(member_dir: &Path) -> Option<Workspace> {
+    serde_json::from_slice(&std::fs::read(record_path(member_dir)).ok()?).ok()
+}
+
+/// Clean up one instance's workspace once the instance is gone. Shared records
+/// are simply dropped (the project directory is never touched); isolated and
+/// worktree directories go through [`cleanup`], which refuses to delete
+/// anything with uncommitted or unmerged work. None = nothing was recorded.
+pub fn retire(member_dir: &Path, project_cwd: &Path) -> Option<(bool, String)> {
+    let workspace = load(member_dir)?;
+    let outcome = match workspace.policy {
+        WorkspacePolicy::Shared => (true, "shared workspace is never removed".to_string()),
+        _ => cleanup(&workspace, project_cwd, false),
+    };
+    if outcome.0 {
+        let _ = std::fs::remove_file(record_path(member_dir));
+    }
+    Some(outcome)
+}
+
+/// Resolve where this instance works, applying its requested policy. An already
+/// existing member directory wins over the project's current state, so a
+/// resumed instance keeps working in its own directory.
+pub fn prepare(id: &str, policy: WorkspacePolicy, project_cwd: &Path, member_dir: &Path) -> Result<Workspace, String> {
+    match policy {
         WorkspacePolicy::Shared => Ok(Workspace {
             path: project_cwd.to_path_buf(),
             policy: WorkspacePolicy::Shared,
@@ -187,7 +227,7 @@ pub fn prepare(agent: &AgentSpec, project_cwd: &Path, member_dir: &Path) -> Resu
                 return Ok(fallback(project_cwd, "git_worktree requested but the project has uncommitted changes; using shared mode so those inputs are not ignored"));
             }
             let base = head_commit(project_cwd).ok_or("项目没有可用于建立 worktree 的 HEAD 提交")?;
-            let branch = format!("teamagents/{}-{}", agent.id, uuid::Uuid::new_v4().simple());
+            let branch = format!("teamagents/{id}-{}", uuid::Uuid::new_v4().simple());
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
@@ -299,7 +339,11 @@ pub fn cleanup(workspace: &Workspace, project_cwd: &Path, force: bool) -> (bool,
             let entries: Vec<PathBuf> = std::fs::read_dir(&workspace.path)
                 .map(|it| it.flatten().map(|e| e.path()).collect())
                 .unwrap_or_default();
-            if !entries.is_empty() && !force {
+            // the INPUTS.md marker is ours, not a result: an untouched isolated
+            // directory can be retired, one with anything else cannot
+            let results: Vec<&PathBuf> =
+                entries.iter().filter(|path| path.file_name() != Some(OsStr::new("INPUTS.md"))).collect();
+            if !results.is_empty() && !force {
                 return (false, "isolated directory still holds results; archive them first".into());
             }
             match std::fs::remove_dir_all(&workspace.path) {
@@ -360,14 +404,6 @@ mod tests {
         dir
     }
 
-    fn agent(id: &str, policy: WorkspacePolicy) -> AgentSpec {
-        serde_json::from_value(serde_json::json!({
-            "id": id, "name": id, "role": "worker", "runtime_kind": "deepagents",
-            "model_profile": "m", "workspace_policy": policy,
-        }))
-        .unwrap()
-    }
-
     fn init_repo(dir: &Path) {
         git(dir, ["init", "-q", "-b", "main"]);
         git(dir, ["config", "user.email", "t@example.com"]);
@@ -384,11 +420,11 @@ mod tests {
         std::fs::create_dir_all(&project).unwrap();
         let member = root.join("sessions/s1/members/iso");
 
-        let shared = prepare(&agent("a", WorkspacePolicy::Shared), &project, &member).unwrap();
+        let shared = prepare("a", WorkspacePolicy::Shared, &project, &member).unwrap();
         assert_eq!(shared.path, project);
         assert!(shared.note.is_none());
 
-        let isolated = prepare(&agent("a", WorkspacePolicy::Isolated), &project, &member).unwrap();
+        let isolated = prepare("a", WorkspacePolicy::Isolated, &project, &member).unwrap();
         assert_eq!(isolated.path, member.join("work"));
         assert!(isolated.path.join("INPUTS.md").exists());
         assert!(isolated.note.unwrap().contains("isolated directory"));
@@ -402,14 +438,14 @@ mod tests {
         init_repo(&project);
         let member = root.join("sessions/s1/members/dev");
 
-        let ws = prepare(&agent("dev", WorkspacePolicy::GitWorktree), &project, &member).unwrap();
+        let ws = prepare("dev", WorkspacePolicy::GitWorktree, &project, &member).unwrap();
         assert_eq!(ws.policy, WorkspacePolicy::GitWorktree);
         assert!(ws.path.join(".git").is_file(), "a real worktree was created");
         let branch = ws.branch.clone().unwrap();
         assert!(branch.starts_with("teamagents/dev-"));
 
         // reopening reuses the same worktree instead of failing
-        let again = prepare(&agent("dev", WorkspacePolicy::GitWorktree), &project, &member).unwrap();
+        let again = prepare("dev", WorkspacePolicy::GitWorktree, &project, &member).unwrap();
         assert_eq!(again.path, ws.path);
         assert_eq!(again.branch.as_deref(), Some(branch.as_str()));
 
@@ -432,19 +468,63 @@ mod tests {
     }
 
     #[test]
+    fn the_record_survives_and_retirement_cleans_up_the_right_thing() {
+        let root = temp("record");
+        let project = root.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let iso_dir = root.join("instances/i-iso");
+        let shared_dir = root.join("instances/i-lead");
+
+        // shared: nothing is created, and retirement only drops the record
+        let shared = prepare("i-lead", WorkspacePolicy::Shared, &project, &shared_dir).unwrap();
+        save(&shared, &shared_dir).unwrap();
+        assert!(!shared_dir.join("work").exists());
+        let loaded = load(&shared_dir).expect("record");
+        assert_eq!(loaded.policy, WorkspacePolicy::Shared);
+        assert_eq!(loaded.path, project);
+        let (ok, note) = retire(&shared_dir, &project).unwrap();
+        assert!(ok && note.contains("never removed"), "{note}");
+        assert!(project.exists() && load(&shared_dir).is_none());
+
+        // isolated: the directory is created, then retired
+        let isolated = prepare("i-iso", WorkspacePolicy::Isolated, &project, &iso_dir).unwrap();
+        save(&isolated, &iso_dir).unwrap();
+        assert!(iso_dir.join("work/INPUTS.md").exists());
+        let reloaded = load(&iso_dir).expect("record");
+        assert_eq!(reloaded.policy, WorkspacePolicy::Isolated);
+        assert_eq!(reloaded.note.as_deref(), isolated.note.as_deref());
+        let (ok, _) = retire(&iso_dir, &project).unwrap();
+        assert!(ok);
+        assert!(!iso_dir.join("work").exists(), "the isolated directory is gone");
+        assert!(load(&iso_dir).is_none(), "and so is its record");
+        assert!(retire(&iso_dir, &project).is_none(), "retirement is idempotent");
+
+        // a worktree with uncommitted work is never removed by retirement
+        init_repo(&project);
+        let dev_dir = root.join("instances/i-dev");
+        let dev = prepare("i-dev", WorkspacePolicy::GitWorktree, &project, &dev_dir).unwrap();
+        save(&dev, &dev_dir).unwrap();
+        std::fs::write(dev.path.join("wip.txt"), "wip").unwrap();
+        let (ok, reason) = retire(&dev_dir, &project).unwrap();
+        assert!(!ok, "{reason}");
+        assert!(dev.path.join("wip.txt").exists(), "uncommitted work is kept");
+        assert!(load(&dev_dir).is_some(), "and so is its record, for a later retry");
+    }
+
+    #[test]
     fn dirty_or_unversioned_projects_fall_back_to_shared() {
         let root = temp("fallback");
         let project = root.join("project");
         std::fs::create_dir_all(&project).unwrap();
         let member = root.join("sessions/s1/members/dev");
 
-        let ws = prepare(&agent("dev", WorkspacePolicy::GitWorktree), &project, &member).unwrap();
+        let ws = prepare("dev", WorkspacePolicy::GitWorktree, &project, &member).unwrap();
         assert_eq!(ws.policy, WorkspacePolicy::Shared);
         assert!(ws.note.unwrap().contains("not a git repository"));
 
         init_repo(&project);
         std::fs::write(project.join("README.md"), "changed").unwrap();
-        let ws = prepare(&agent("dev", WorkspacePolicy::GitWorktree), &project, &member).unwrap();
+        let ws = prepare("dev", WorkspacePolicy::GitWorktree, &project, &member).unwrap();
         assert_eq!(ws.policy, WorkspacePolicy::Shared);
         assert!(ws.note.unwrap().contains("uncommitted changes"));
     }

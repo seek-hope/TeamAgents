@@ -319,6 +319,7 @@ async fn run_driver_trial(
             session_id: session_id.into(),
             instance_id: instance.into(),
             state_root: state.to_path_buf(),
+            instances_dir: state.to_path_buf().join("instances"),
             workspace: workspace.to_path_buf(),
             permissions: "full_auto".into(),
             profile: profile.clone(),

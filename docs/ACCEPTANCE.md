@@ -372,3 +372,10 @@ Chat Completions 任一格式，配置保存和选择不依赖在线模型目录
   `spawn/delegate/send/wait` 建立，会话由 daemon 拥有。
 - 唯一权威状态是每会话单 SQLite（`core/src/v2`）；旧 `sessions/` 布局不迁移、按 §14 清理（已执行）。
 - 默认入口：`teamagents`（自动拉起 daemon 的 v2 TUI）与 `teamagents exec`（同一 daemon 的无头客户端）。
+- 用户钩子 `[hooks]`（`notify` 事件通知、`pre_tool` 工具前拦截）在 v2 运行路径生效；doctor 不再探测
+  本机 Codex CLI（v2 无 Codex 成员类型）；v1 控制面（`core/src/{control,storage,views,server}.rs`、
+  `teamagents-core` stdio 二进制与其测试）已删除，core 用例 243 → 91。见 D-45。
+- 工作区策略（§12.3/Q14）已接线：`spawn` 的 `workspace` 参数为 `shared`/`isolated`/`git_worktree`，
+  策略在实例启动前记录、实例终止时按其回收（有未提交或未合并成果时拒绝删除并报告）。
+  证据：`engine/tests/v2_driver.rs::spawn_resolves_the_requested_workspace_policy`、
+  `engine/tests/v2_supervisor.rs::terminating_an_instance_retires_its_workspace`。见 D-46。

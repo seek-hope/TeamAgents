@@ -5,6 +5,30 @@
 **任何偏离已确认方案的做法，先与用户确认再实现。** 本文件只记录已确认的决策；
 待验证的工程候选在方案和设计复核中标明，不把它们记作用户已逐项确认。
 
+## D-46 工作区策略接入 v2 spawn（2026-09-25）
+
+D-45 发现 `engine/src/workspace.rs` 的共享/隔离/git worktree 策略（方案 Q14/§12.3）只有自身单测调用，
+用户确认"接线"后落地：
+
+- **模型可见入口**：`spawn` 工具新增可选参数 `workspace`：`shared`（默认，项目目录）/`isolated`
+  （会话状态根下 `<state root>/instances/<id>/work` 的私有目录）/`git_worktree`（该实例自己的分支与
+  worktree）。未知取值是该次工具调用的失败（回执 `collaboration` 类错误），**不会**终止 driver。
+- **解析与记录**：`driver::prepare_spawn_workspace` 在实例启动前解析策略、创建目录/worktree，并把结果
+  写进 `<instances_dir>/<id>/workspace.json`（原子替换）；`workspace_ref` 指向解析后的目录，工具回执
+  带上 `path/policy/note`，模型能知道"共享还是隔离、为什么回退"。
+- **回退语义（沿用 v1）**：请求 worktree 但项目不是 Git 仓库或有未提交改动时，按共享模式执行并在
+  `note` 里说明原因，不静默忽略未提交的输入。
+- **回收**：supervisor 在实例 `TERMINATED` 时按记录回收：共享记录只删记录；隔离目录若除自建
+  `INPUTS.md` 外已有内容、或 worktree 有未提交/未合并成果，则**拒绝删除并打印原因**（保留现场），
+  其余情况删除目录与记录。回收失败不影响终止本身。
+- **失败不留垃圾**：spawn 被控制面拒绝时保留已准备的目录（不按猜测删除），同 id 重试会复用同一目录。
+- 证据：`engine/src/workspace.rs` 单测（策略/回退/记录/回收，含"未提交成果不删"）、
+  `engine/tests/v2_driver.rs::spawn_resolves_the_requested_workspace_policy`（隔离/worktree 行与回执，
+  未知策略被拒且不建目录）、`engine/tests/v2_supervisor.rs::terminating_an_instance_retires_its_workspace`
+  （终止后目录与记录被回收，共享项目不动）。文档同步见 `docs/USER-GUIDE.md` §3、README 特性表。
+- 附带清理：`core/src/models.rs` 的 `AgentSpec`/`RuntimeKind` 只被旧签名使用，随 `prepare` 改签名为
+  `(id, policy, project_cwd, member_dir)` 一并删除。
+
 ## D-45 清理 v1 残留并恢复 `[hooks]`（2026-09-25）
 
 用户逐项确认后的落地：①执行历史重写；②清理 v1 代码；③移除 doctor 的 Codex 探测；④删除两个
@@ -32,8 +56,7 @@
   重写前后 `HEAD^{tree}` 与 `git ls-files` 完全一致（内容未变），历史里已无该路径对象，
   仓库 pack 从 6.18 GiB 降到约 27 MiB；重写前的 `.git` 备份留在仓库同级目录，确认无误后可删。
   `verification/REPORT.md` 里引用的旧提交号 `bc536bb5` 同步更新为重写后的 `d37e1b4`。
-- **未接线（本次未动，另行立项）**：`engine/src/workspace.rs` 的共享/隔离/worktree 策略当前只有自身
-  单测调用，v2 实例只带 `workspace_ref` 路径；接线或删除都需要单独决策。
+- **工作区策略**：本次未动，用户随后选择"接线"，见 D-46。
 
 ## D-44 形式化验证发现的两处修复（2026-09-24）
 

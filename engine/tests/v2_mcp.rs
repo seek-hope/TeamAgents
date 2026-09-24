@@ -93,6 +93,7 @@ impl Root {
             session_id: "s-test".into(),
             instance_id: "i-main".into(),
             state_root: self.dir.join("state"),
+            instances_dir: self.dir.join("state").join("instances"),
             workspace: self.dir.join("ws"),
             permissions: "full_auto".into(),
             profile: KernelProfile {

@@ -468,3 +468,61 @@ async fn heterogeneous_instances_run_different_protocols_in_one_session() {
     chat_server.task.await.unwrap();
     responses_server.task.await.unwrap();
 }
+
+/// §12.3 wiring: a terminated instance's isolated workspace is retired by the
+/// supervisor (and its record dropped), so nothing accumulates silently.
+#[tokio::test]
+async fn terminating_an_instance_retires_its_workspace() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let root = root("retire-workspace");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let leader = vec![
+        Step::Message(json!({"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function",
+            "function": {"name": "spawn", "arguments": json!({"instance_id": "i-iso", "instructions": "helper",
+                                                              "workspace": "isolated"}).to_string()}}]})),
+        Step::Message(finish_call("spawned an isolated helper")),
+    ];
+    let worker = vec![Step::Message(reply("idle"))];
+    let handle = start(config(
+        &root,
+        factory(HashMap::from([("i-leader".to_string(), leader), ("i-worker".to_string(), worker)])),
+    ))
+    .await
+    .expect("start");
+    let mut control = second_control(&root);
+    control
+        .submit(
+            cmd(
+                "g-manage",
+                "issue_grant",
+                json!({"subject": "i-leader", "action": "manage", "resource_scope": "session"}),
+            ),
+            teamagents_core::v2::Identity::User,
+        )
+        .expect("manage grant");
+    handle.input("i-leader", "spawn an isolated helper").await.expect("input");
+
+    let workspace = root.dir.join("state/instances/i-iso/work");
+    let record = root.dir.join("state/instances/i-iso/workspace.json");
+    for _ in 0..(10_000 / 25) {
+        if workspace.join("INPUTS.md").exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(workspace.join("INPUTS.md").exists(), "the isolated workspace was created");
+    assert!(record.exists(), "and its policy was recorded");
+
+    handle.set_lifecycle("i-iso", "TERMINATED").await.expect("terminate");
+    let mut retired = false;
+    for _ in 0..(10_000 / 25) {
+        if !workspace.exists() && !record.exists() {
+            retired = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(retired, "the supervisor retired the isolated workspace and its record");
+    assert!(root.dir.join("ws").exists(), "the shared project directory is untouched");
+    handle.shutdown().await.expect("shutdown");
+}

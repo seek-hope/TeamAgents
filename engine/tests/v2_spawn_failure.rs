@@ -73,6 +73,7 @@ async fn runner_spawn_failure_fails_the_op_and_the_driver_survives() {
         session_id: "s-spawn".into(),
         instance_id: "i-main".into(),
         state_root: dir.join("state"),
+        instances_dir: dir.join("state").join("instances"),
         workspace: dir.join("ws"),
         permissions: "full_auto".into(),
         profile: KernelProfile {

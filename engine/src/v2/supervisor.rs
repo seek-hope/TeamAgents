@@ -267,6 +267,7 @@ where
     F: Fn(&str, &KernelProfile) -> P + Send + Sync + 'static,
 {
     async fn run(self) -> Result<(), String> {
+        let instances_dir = self.config.state_root.join("instances");
         while !self.shutdown.load(std::sync::atomic::Ordering::SeqCst) {
             let instances: Vec<(String, String, String, String)> = self
                 .storage
@@ -282,6 +283,20 @@ where
                 })
                 .await??;
             {
+                // §12.3: once an instance is gone, clean up what its workspace
+                // policy created. Refusals (uncommitted or unmerged work) keep
+                // the directory and are reported instead of being forced.
+                for (id, lifecycle, _, _) in &instances {
+                    if lifecycle == "TERMINATED" {
+                        if let Some((ok, note)) =
+                            crate::workspace::retire(&instances_dir.join(id), &self.config.workspace)
+                        {
+                            if !ok {
+                                eprintln!("workspace of {id} kept: {note}");
+                            }
+                        }
+                    }
+                }
                 let mut drivers = self.drivers.lock().unwrap();
                 // retire finished or terminated drivers (§5.4)
                 drivers.retain(|id, driver| {
@@ -309,6 +324,7 @@ where
                         session_id: self.config.session_id.clone(),
                         instance_id: id.clone(),
                         state_root: instance_root,
+                        instances_dir: instances_dir.clone(),
                         workspace,
                         permissions: self.config.permissions.clone(),
                         // the kernel gets the wire-effective profile while
