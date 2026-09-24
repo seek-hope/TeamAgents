@@ -1,16 +1,21 @@
 # TeamAgents 形式化验证（R2 控制面）
 
-目标：把重构方案里**已确认的协议性质**变成机器可查的规格，而不是只靠样本测试。当前阶段验证的是
-**控制面协议模型**（`core/src/v2/control.rs` + `engine/src/v2/driver.rs` 的抽象），不是 Rust 代码本身——
-"规格↔代码"的对应关系在下面的映射表里逐条给出，代码级验证（真实引擎上的不变量随机测试、
-必要时的 Lean/Kani）是后续阶段。
+目标：把重构方案里**已确认的协议性质**变成机器可查的规格，而不是只靠样本测试。
+
+验证分三层，材料都在本目录：①**协议模型**：TLA+/TLC 规格（`tla/V2*.tla` + `MC*.cfg`）抽象
+`core/src/v2/control.rs` 与 `engine/src/v2/driver.rs` 的协议行为；②**规格↔代码的可执行对应**：
+`core/tests/v2_invariants.rs` 把不变量与命令序列搬到真实引擎上跑；③**纯函数层的有界穷举与 Kani 证明**：
+`core/tests/kernel_properties.rs` 与 `kani/`。TLA+ 模型**不是精化证明**——模型上的结论不自动成立在代码上，
+代码侧结论来自有界探索；边界见文末「边界」与 [REPORT.md](REPORT.md)。
 
 ## 运行
 
 ```bash
-make verify-model           # 控制面小配置（秒级；13 不变量 + 4 性质）
-make verify-model-all       # 控制面 + 制品/GC + 等待/唤醒三个模块的小配置
-make verify-model-wide      # 控制面宽配置（2 实例 / 2 操作；约 11 分钟 / 275M 状态）
+make verify-model           # 控制面小配置（秒级）
+make verify-model-all       # 七个模块的小配置穷举（控制面/制品/等待/任务/压缩/daemon/必需检查）
+make verify-model-wide      # 控制面宽配置（2 实例 / 2 操作；数亿状态，耗时较长）
+make verify-kani            # 分页算术（需 Kani 工具链，见文末）
+cargo test --offline --manifest-path core/Cargo.toml --test v2_invariants   # 规格↔代码对应
 ```
 
 首次运行会把固定版本（TLC v1.7.1，SHA-256 见 Makefile）的 `tla2tools.jar` 下载到
@@ -136,9 +141,10 @@ make verify-model-wide      # 控制面宽配置（2 实例 / 2 操作；约 11 
 
 证据：
 
-- 规格反例（可复跑）：`make verify-model-contract` → `Error: Invariant ResolvedWaitAnswersItsCall is violated`，
+- 规格反例（修复前，触发它的临时配置未入库）：TLC 报该不变量被违反（修复后名为 `ResolvedWaitIsAnswered`），
   轨迹为 `ArmWait(PENDING)` → `Supersede` → `CANCELLED` 且 `answers = 0`；
   注册即满足那条由 `ArmWait` 的 satisfied 分支同样触发（`answers` 保持 0）。
+  修复后 `V2Wait.tla` 把回答写进这两条路径，`make verify-model-all` 全绿。
 - 代码探针（`cargo test --offline --manifest-path core/Cargo.toml --lib wait_call_answer_gap_outside_the_drain_path -- --nocapture`）：
 
   ```text
@@ -146,9 +152,9 @@ make verify-model-wide      # 控制面宽配置（2 实例 / 2 操作；约 11 
   PROBE B: phase_after_import="WAITING" wait_state=CANCELLED phase_after_input="READY" answers_for_wait_2=0  # 取代，无回答
   ```
 
-影响与修复方向（待用户确认后落码）：严格端点下这两条路径的下一次请求会被拒；宽松端点（本机评测用的
+影响（修复前）：严格端点下这两条路径的下一次请求会被拒；宽松端点（本机评测用的
 DeepSeek chat-completions）容忍，所以真实评测没暴露。修复即把"回答"从 drain 路径推广到这两条路径
-（注册即满足时追加同一格式的答案；取代/关闭 epoch 时给被取消的等待追加上下文回答）。
+（注册即满足时追加同一格式的答案；取代/关闭 epoch 时给被取消的等待追加上下文回答），已按用户确认的「全部修复」落地。
 
 ### 发现 V-G1（已修复，2026-09-24）
 
@@ -158,7 +164,7 @@ DeepSeek chat-completions）容忍，所以真实评测没暴露。修复即把"
 - `import_response` 开操作时 `goal_id` 来自 `request_goal(active_goal_id)`，同样不看目标状态；
 - `reserve_budget`/`settle_usage` 也不看目标状态（这条即上面"发现 2"）。
 
-规格反例（可复跑，两条契约都在 `MC_task_contract.cfg` 里，TLC 先报第一条）：
+规格反例（修复前；这两条性质现由 `MC_task.cfg` 守着，修复后 TLC 全绿）：
 
 ```text
 Error: Invariant RegisteredWorkNeedsAnActiveGoal is violated.     # 目标还没建就委派了任务
