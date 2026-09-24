@@ -62,6 +62,7 @@ struct Coverage {
     artifact_live: bool,
     compressed: bool,
     approval_decided: bool,
+    replay_checked: bool,
 }
 
 impl Coverage {
@@ -75,6 +76,7 @@ impl Coverage {
         self.artifact_live |= other.artifact_live;
         self.compressed |= other.compressed;
         self.approval_decided |= other.approval_decided;
+        self.replay_checked |= other.replay_checked;
     }
 }
 
@@ -99,6 +101,17 @@ struct Harness {
     covered_seen: HashSet<String>,
     /// 批准 id -> 已见过的决定（`ApprovalDecisionIsFinal` 的跨步记忆）
     approvals_seen: HashMap<String, String>,
+    /// 命令 id -> 已存回执（`ReceiptsAreStable` 的跨步记忆）
+    receipts_seen: HashMap<String, String>,
+    /// 上一次成功提交的命令与其身份（用于重放步骤）
+    last_command: Option<(Command, Identity)>,
+    /// 上一步之后的三张表规模（命令 / 事件 / 上下文条目），重放必须不动它们
+    sizes: (usize, usize, usize),
+    /// 上一步的标签（判断它是不是重放步骤）
+    last_label: String,
+    /// 重放覆盖：同 id 同 payload 成功过、同 id 异 payload 被拒过
+    replayed: bool,
+    divergent_refused: bool,
 }
 
 impl Drop for Harness {
@@ -124,6 +137,12 @@ impl Harness {
             entries_seen: HashSet::new(),
             covered_seen: HashSet::new(),
             approvals_seen: HashMap::new(),
+            receipts_seen: HashMap::new(),
+            last_command: None,
+            sizes: (0, 0, 0),
+            last_label: String::new(),
+            replayed: false,
+            divergent_refused: false,
         }
     }
 
@@ -167,8 +186,11 @@ impl Harness {
     /// 执行一步并把结果记进轨迹；标签以 `!` 开头表示规格要求这一步被拒。
     fn run_step(&mut self, step: Step) -> Result<Json, String> {
         let Step { label, command, identity } = step;
-        let command = Command { command_id: self.id(), ..command };
-        let result = self.ctl.submit(command, identity);
+        // 重放步骤自带命令 id（客户端在断连重连后重发同一个 id）；其余步骤分配新 id
+        let command =
+            if command.command_id.is_empty() { Command { command_id: self.id(), ..command } } else { command };
+        self.last_label = label.split('(').next().unwrap_or("").to_string();
+        let result = self.ctl.submit(command.clone(), identity.clone());
         let outcome = match &result {
             Ok(_) => "ok".to_string(),
             Err(error) => format!("err({})", error.chars().take(48).collect::<String>()),
@@ -179,6 +201,16 @@ impl Harness {
         }
         if label.starts_with('!') {
             assert!(result.is_err(), "规格要求被拒但代码接受了：{label}");
+        }
+        if self.last_label == "replay_same" && result.is_ok() {
+            self.replayed = true;
+        }
+        if self.last_label == "!replay_divergent" && result.is_err() {
+            self.divergent_refused = true;
+        }
+        if result.is_ok() {
+            // 重放也要记住（同一个 id 可以再被重放）
+            self.last_command = Some((command, identity));
         }
         result
     }
@@ -248,6 +280,7 @@ impl Harness {
             artifact_live: exists("SELECT id FROM artifacts WHERE completeness = 'LIVE'"),
             compressed: exists("SELECT id FROM context_entries WHERE compressed_by IS NOT NULL"),
             approval_decided: exists("SELECT id FROM approvals WHERE status IN ('APPROVED', 'DENIED', 'EXPIRED')"),
+            replay_checked: self.replayed && self.divergent_refused,
         }
     }
 
@@ -502,6 +535,36 @@ impl Harness {
             }
         }
 
+        // A28：命令回执稳定（同一个 command id 的存量回执不再改写），且重放步骤必须
+        // 完全不动状态（命令/事件/上下文三张表的规模不变）
+        let commands = self.rows("SELECT command_id, result_json FROM commands ORDER BY command_id", &[]);
+        for row in &commands {
+            match self.receipts_seen.get(&row[0]) {
+                Some(previous) if previous != &row[1] => {
+                    reports.push(format!("ReceiptsAreStable: command {} returned a different receipt", row[0]))
+                }
+                Some(_) => {}
+                None => {
+                    self.receipts_seen.insert(row[0].clone(), row[1].clone());
+                }
+            }
+        }
+        if self.receipts_seen.len() > commands.len() {
+            reports.push("LogMonotone: the command receipt log shrank".to_string());
+        }
+        let count =
+            |sql: &str| -> usize { self.rows(sql, &[]).first().and_then(|row| row[0].parse().ok()).unwrap_or(0) };
+        let sizes =
+            (commands.len(), count("SELECT COUNT(*) FROM events"), count("SELECT COUNT(*) FROM context_entries"));
+        let previous = self.sizes;
+        if self.last_label.starts_with("replay") && sizes != previous {
+            reports.push(format!("ReplayedCommandIsInert: a replay moved the state {previous:?} -> {sizes:?}"));
+        }
+        if sizes.1 < previous.1 {
+            reports.push("LogMonotone: the event log shrank".to_string());
+        }
+        self.sizes = sizes;
+
         // A25/RT-06：待批只属于未开动的操作（操作一旦终结，它的批准必须已过期）；
         // 被拒绝/过期的批准不会有已经发生的效果；批准决定一旦落下不再改写
         let approvals = self.rows("SELECT id, operation_id, status FROM approvals ORDER BY id", &[]);
@@ -634,7 +697,7 @@ impl Harness {
 }
 
 // ------------------------------------------------------------- step kinds --
-const STEPS: usize = 34;
+const STEPS: usize = 36;
 
 /// 按当前状态生成第 `kind` 种命令；前置不成立时返回 None（该步跳过）。
 fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
@@ -1218,6 +1281,28 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity: Identity::System,
             })
         }
+        // 34: 重放上一条命令（同 id 同 payload）：返回存量回执，状态不动
+        34 => {
+            let (last, identity) = harness.last_command.clone()?;
+            Some(Step {
+                label: format!("replay_same({})", last.command_id),
+                command: Command { command_id: last.command_id.clone(), ..last },
+                identity,
+            })
+        }
+        // 35: 反例探针——同一个 command id 换了 payload（规格要求拒绝）
+        35 => {
+            let (last, identity) = harness.last_command.clone()?;
+            let mut params = last.params.clone();
+            if let Some(map) = params.as_object_mut() {
+                map.insert("__divergent".into(), json!(true));
+            }
+            Some(Step {
+                label: format!("!replay_divergent({})", last.command_id),
+                command: Command { command_id: last.command_id.clone(), method: last.method.clone(), params },
+                identity,
+            })
+        }
         // 26: 反例探针——委派到已结清的目标（规格要求被拒）
         26 => {
             let goal = settled_goals.first()?.clone();
@@ -1333,6 +1418,7 @@ fn spec_invariants_hold_over_random_walks() {
         ("制品 LIVE", reached.artifact_live),
         ("压缩提交（有条目被覆盖）", reached.compressed),
         ("批准已决定（批准/拒绝/过期）", reached.approval_decided),
+        ("命令重放（同 id 同 payload 返回存量回执、异 payload 被拒）", reached.replay_checked),
     ] {
         assert!(seen, "随机游走没有覆盖到：{name}");
     }

@@ -28,6 +28,7 @@ make verify-model-wide      # 控制面宽配置（2 实例 / 2 操作；约 11 
 | `tla/V2Wait.tla` + `tla/MC_wait.cfg` | 等待/唤醒/计时器/取代：注册即求值 → 停放 drain 扫描 → 满足即答同事务 → 取消/取代/重挂 |
 | `tla/V2Task.tla` + `tla/MC_task.cfg` | 任务生命周期与目标结清：委派（前置任务必须先存在、目标必须 ACTIVE）→ 启动 → 结清/取消 → 系统停放 → 终止级联；目标创建/请求准入/开放操作/结清与摘除 |
 | `tla/V2Compress.tla` + `tla/MC_compress.cfg` | 上下文压缩（A20）：开门/提交/失败/被 epoch 关闭取消；总结追加在尾部、覆盖只增不减、原文永不删除 |
+| `tla/V2Daemon.tla` + `tla/MC_daemon.cfg` | 会话 daemon 协议（A28）：稳定命令 id 的去重与回放、checkpoint 的快照+水位原子对、events(since) 无缺口、慢客户端不阻塞写者 |
 
 环境（工具结果、批准时机、崩溃时点）在模型里是**非确定性**的；这正是要穷举的部分。
 
@@ -203,6 +204,23 @@ ACTIVE 时被准入，之后目标结清，它仍会开操作并把用量结算�
 压缩请求的**准入**（生命周期、目标截止时间、预算闸门）与 turn 请求同一条代码路径，由 `V2Control`
 的 `AdmissionGate` 覆盖，此处不再重复建模。
 
+### 会话 daemon 协议（A28）
+
+| 性质（规格） | 含义 | 代码锚点 |
+|---|---|---|
+| `LogMonotone` | 事件日志只增不减：版本不重用、不回滚（监测变量 `shrank` 保持 FALSE） | `events.sequence` 自增；`read_events(since)` |
+| `AppliedAtMostOnce` | 一个 command id 至多生效一次 | `submit_inner` 的 `commands` 表去重 |
+| `ReceiptsAreStable` | 已存回执不再改写；同 payload 的重放返回**存的**那份回执（监测变量 `drift` 保持空） | `submit_inner` 命中已有 command_id 时原样返回 `result_json` |
+| `ReceiptNamesARealVersion` | 回执指向的版本真实存在 | 同上 |
+| `AppliedCommandsUsedTheWireVersion` | 只有握手通过的协议版本能提交命令 | `PROTOCOL_VERSION` 检查 |
+| `SnapshotNeverLeadsCursor` | 快照声明的版本绝不领先于客户端持有的水位——这正是"快照+水位同一读事务"买到的东西 | `daemon.rs` 的 `checkpoint`（`unchecked_transaction` 里同时读快照与 `MAX(sequence)`） |
+| `ViewMatchesCursor` / `CursorNeverBeyondLog` | 断连重连后视图与游标一致、没有缺口 | `events` 返回 `sequence > since` 的全部事件 |
+| `NoResyncInThisVersion` | 这一版事件永不回收，`resync_required` 恒为 false（`pruned` 从不置真） | 头注："Events are never reclaimed in this first version" |
+
+`SnapshotNeverLeadsCursor` 是**非空性质**：把 `checkpoint` 拆成"先写快照、再写水位"两步（即不是同一读事务），
+TLC 立刻反证（实测 `Error: Invariant SnapshotNeverLeadsCursor is violated`）。慢客户端不阻塞写者的部分是
+结构性的：`RuntimeEvent` 不依赖任何客户端游标，因此这里不写活性性质。
+
 ## 规格↔代码的可执行对应（`core/tests/v2_invariants.rs`）
 
 规格检查的是抽象状态机。`core/tests/v2_invariants.rs`（随 `make check` 自动运行）把**同一组不变量**在真实
@@ -212,7 +230,7 @@ ACTIVE 时被准入，之后目标结清，它仍会开操作并把用量结算�
 cargo test --offline --manifest-path core/Cargo.toml --test v2_invariants
 ```
 
-- **穷举**：长度 ≤ 2 的命令序列，每条从全新数据库开始（34 种命令 ⇒ 1,190 条序列），含被拒绝的组合；
+- **穷举**：长度 ≤ 2 的命令序列，每条从全新数据库开始（36 种命令 ⇒ 1,332 条序列），含被拒绝的组合；
 - **随机游走**：60 条固定种子的 24 步游走，每步只在"当前可用"的命令里挑，并优先挑本次游走用得最少的
   命令种类（覆盖驱动，否则会反复做同一件安全的事而走不到深层链路）；种子固定 ⇒ 轨迹可复现；
 - **每步之后重查**：`TypeOK`、`SettledIsFinal`、`ReturnPathOnlyWhileOpen`、`DependenciesPointBackwards`、
@@ -221,9 +239,12 @@ cargo test --offline --manifest-path core/Cargo.toml --test v2_invariants
   `NoEffectBeforeApproval`、`LiveIsPersisted`、`TailAppend`、`NoEntryIsEverLost`、
   `CoveragePointsForward`、`CoverageNeverLifted`、`NewestSummaryIsVisible`、`ApprovalDecisionIsFinal`
   （决定落下后不再改写，PENDING → 过期合法）、`PendingApprovalOnlyForPreparedOperation`（RT-06：
-  操作终结后不得留下待批）、`NoEffectAfterDenial`、上下文 epoch 一致性；
+  操作终结后不得留下待批）、`NoEffectAfterDenial`、`ReceiptsAreStable`（同一 command id 的存量回执
+  不再改写）、`ReplayedCommandIsInert`（重放步骤必须不动命令/事件/上下文三张表）、
+  `LogMonotone`（事件日志只增不减）、上下文 epoch 一致性；
 - **覆盖率断言**：游走必须真的走到"等被解决 / 目标结清 / 任务结清 / 操作终态 / epoch 重置 / 实例终止 /
-  制品 LIVE / 压缩提交 / 批准已决定"，否则测试失败（防止"空转通过"）；
+  制品 LIVE / 压缩提交 / 批准已决定 / 命令重放（同 id 返回存量回执、异 payload 被拒）"，否则测试失败
+  （防止"空转通过"）；
 - **反向验证**（`the_invariant_checker_detects_broken_states`）：人为破坏状态（未知状态值、终态被改写、
   悬挂目标指针）时检查器必须报出来，否则"全部通过"没有意义。
 
@@ -254,10 +275,10 @@ cargo test --offline --manifest-path core/Cargo.toml --test v2_invariants
 - 已验证的是**模型**性质：TLC 穷举的是抽象状态机，不是 Rust 实现。除非做精化证明（后续阶段的可选工作），
   不能据此声称"Rust 代码已被证明"。
 - 已建模：控制面状态机、制品与 GC（A30）、等待/唤醒/计时器/取代（A22/A23、RT-06 的去重语义）、
-  任务/委派/目标结清（A02/A09/A16）、上下文压缩（A20）。
-- 尚未建模：daemon 协议重放与水位（A28）、审批有效期与 RT-06 的过期语义（等待侧已含取代/取消，
-  批准侧未建模）、必需检查（A16 的检查轮次与修复）；多实例共享预算的跨实例结算（A18 的 worker 归属）
-  已在 `V2Task` 里按 `budget_goal` 的解析规则建模（含"只看最旧开放任务"的取序细节）。
+  任务/委派/目标结清（A02/A09/A16）、上下文压缩（A20）、daemon 协议的命令去重与快照水位（A28）。
+- 尚未建模：必需检查的轮次与修复（A16）；审批有效期（`expires_at` 的到时判断）在代码级不变量测试里
+  覆盖（决定终态、操作终结后不得留下待批），但未单独建 TLA 模块。多实例共享预算的跨实例结算（A18 的
+  worker 归属）已在 `V2Task` 里按 `budget_goal` 的解析规则建模（含"只看最旧开放任务"的取序细节）。
 - 弱公平假设：`V2Wait` 的活性依赖"停放 drain 弱公平"，即 driver 的轮询循环在 `WAITING` 下持续尝试
   （`engine/src/v2/driver.rs`）；这是实现事实，不是被证明的结论。
 - 状态空间前沿（`MC_task`）：1 任务 / 2 实例 / 2 目标 = 5.7M 状态 / 约 20 秒；把任务加到 2 个会发散
