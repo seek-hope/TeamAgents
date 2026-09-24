@@ -1,5 +1,5 @@
-//! teamagents: single Rust entry point — CLI, TUI launcher, and the headless
-//! session worker the TUI talks to (`serve`).
+//! teamagents: single Rust entry point — CLI, TUI launcher, session daemon and
+//! the headless client (`exec`) that shares the daemon with the TUI.
 
 use std::path::{Path, PathBuf};
 use teamagents_engine::{cli, tools, VERSION};

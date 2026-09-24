@@ -1,9 +1,9 @@
 //! teamagents engine: everything the product needs beyond the authoritative
-//! core (runtime loop, member backends, tools, sessions, CLI, worker protocol).
+//! core (v2 runtime loop, providers, tools, jobs, daemon, CLI).
 //!
-//! Architecture (D-15/D-17): the Rust core owns every authoritative state
-//! change; this crate drives it in-process through `teamagents_core::server`,
-//! so the former TypeScript orchestration layer and its stdio hop are gone.
+//! Architecture (D-15/D-17, R2): the Rust core owns every authoritative state
+//! change; this crate drives `teamagents_core::v2::Control` in-process, so both
+//! the former TypeScript orchestration layer and the v1 stdio core hop are gone.
 
 /// Default v2 session state root (plan §14: a separate `v2/` root while the
 /// legacy layout is still identifiable, §4.4).

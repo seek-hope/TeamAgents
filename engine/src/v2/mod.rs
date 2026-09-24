@@ -1,7 +1,7 @@
-//! R2 v2 runtime (plan §3/§6): the persistent single-instance driver over the
-//! v2 control plane, with the bounded storage worker between async I/O and
-//! SQLite. Multi-instance scheduling arrives with P3; the phase machine,
-//! recovery matrix and job protocol here are the ones P3 reuses.
+//! R2 v2 runtime (plan §3/§6/§9): the persistent phase machine over the v2
+//! control plane (`driver`), the multi-instance coordinator (`supervisor`), the
+//! bounded storage worker between async I/O and SQLite (`storage`), and the
+//! session daemon plus its headless client (`daemon`/`exec`).
 
 pub mod daemon;
 pub mod driver;
