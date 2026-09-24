@@ -9,6 +9,7 @@
 | `R2-P0-CONTRACTS.zh-CN.md` | R2-P0 探针期的执行合约（历史快照） |
 | `TUI-CODEX-REFERENCE.md` | v1 TUI 与 Codex 后端对照（v1 后端已退役） |
 | `ACCEPTANCE-legacy-T1-T24.md` | 旧产品验收表 T1–T24 与旧基线 |
+| `team.yaml` | 旧 TeamSpec 团队样例（`--team`/`validate` 入口随 R29 退役） |
 
 当前口径：`../ACCEPTANCE.md`（A01–A36）、`../USER-GUIDE.md`、`../DEVELOPMENT.md`、
 `../DECISIONS.md`（决策史与证据保留）、`../../review/`（审查与评测证据）。

@@ -63,7 +63,7 @@ fn version_validate_and_sessions_smoke() {
     let sessions = teamagents(&["sessions"], &home, &config);
     assert!(sessions.contains("会话"), "{sessions}");
 
-    // YAML TeamSpec (the format examples/team.yaml uses) validates too
+    // YAML TeamSpec (sample kept at docs/archive/team.yaml) validates too
     let yaml_path = home.join("team.yaml");
     std::fs::write(
         &yaml_path,

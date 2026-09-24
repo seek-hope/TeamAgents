@@ -36,44 +36,39 @@ teamagents exec --json "用一句话自我介绍"    # 同一后端的无头输�
 ## 怎么工作
 
 ```
-你 ──目标（自然语言）──▶ Leader ──assign_task──▶ 成员 A / B / C（可并行）
-                          │  ▲                        │
-                          │  └────── send_message ─────┘  成员之间不能私聊，
-                          │                             协作只走共享空间（Leader 可读全部条目）
-                          ├── 观察者规则 / 批准请求 ──▶ 你（只在需要你决策时打扰你）
-                          └── signal_done：Leader 声明目标达成，才算完成
+你 ──目标（自然语言）──▶ Leader ──spawn / delegate──▶ 工作实例 A / B / C（可并行）
+                          │  ▲                            │
+                          │  └────────── send ────────────┘  实例之间不私聊，
+                          │                    协作只走控制平面授权的消息与共享空间
+                          ├── 权限 / 批准请求 ──▶ 你（只在越权或外网访问时打扰你）
+                          └── finish：Leader 声明目标达成并通过完成检查，才算完成
 ```
 
 - 你**总是**和 Leader 对话，不直接指挥成员；组不组队、组几个人由 Leader 按需求决定（一人成队合法）。
-- 每个成员有自己的工作目录、工具绑定、模型与技能；越权操作变成**批准请求**，其他成员继续干活。
-- 运行时事实（谁在做什么、任务卡在哪、回合为什么结束）都记在事件与任务状态里：可查、可恢复、可审计。
+- 每个实例有自己的模型、工具绑定、工作区策略与预算；越权操作变成**批准请求**，其他实例继续干活。
+- 运行时事实（谁在做什么、任务卡在哪、回合为什么结束）都落在会话库里：可查、可恢复、可审计。
 
 ## 主要特性
 
-- **自动组队与动态拓扑**：Leader 按自然语言目标组队；成员可 `propose_team_change`，
-  改动经版本与权限校验后生效，无需用户逐步确认。
-- **多模型混合**：同一团队里可以同时有 DeepSeek / Kimi / GLM / Anthropic / OpenAI 系模型与 Codex 执行成员。
-- **共享空间与信息隔离**：`publish_shared` / `read_shared` 按读写权限；观察者只看被授权的对象与载荷；
-  成员私有上下文不进 Leader 上下文，也不因此获得回信通道。
-- **Chat 私有辅助**：Chat 成员可用 `run_subagent` 在本回合内运行一个不具团队身份的私有辅助；辅助只继承
-  成员已绑定的执行工具和权限，模型步骤计入父回合预算，团队动作与父历史保持隔离。
-- **权限门**：`approved_scope`（默认，越界请求批准）与 `full_auto`（仅用户可开，TUI `Ctrl+F`）。
-  批准绑定具体操作与参数：`once` 用后即失效，参数变了要重新批准。
-- **执行前策略钩子**：`[hooks] pre_tool` 能在任何原生工具执行前拦下（exit 2 = 拒绝，stderr 作原因）；
-  `[hooks] notify` 做异步事件通知。
-- **断点恢复**：会话、任务、消息投递位置、成员线程、批准队列全部持久化；中断留下的
-  "结果不明回合"可在界面里按 `c` 结清。
-- **成员记录（只读）**：`/history` 或团队/日志页签按 `h`，可查看当前及已移除成员已经落盘的
-  对话树、线性快照、回合检查点和相关团队事件；不会启动后端、注入 Leader 或修改执行状态。
-  Codex 的完整外部历史、工具详情和内部推理仍由 Codex 自身保存，不由 TeamAgents 冒充展示。
-- **工具面**：文件读写/搜索/原子多文件编辑、持久 shell（`cd`/`export` 跨命令保留）、网页搜索与抓取、
-  MCP（stdio 与 streamable HTTP）、Skills。
-- **隔离**：成员 shell 走 `bubblewrap`；缺失时明确报错，不会静默退化成不隔离执行。
+- **受控协作**：`spawn` / `delegate` / `send` / `wait` 都经控制平面授权，并在派发时重查权限版本；
+  有限下授、父级撤销级联、超时与未知结果都有恢复分类。
+- **多模型混合**：同一会话可混用三种线上协议（responses / anthropic / chat-completions）的真实实例，
+  各自的模型、档位与原生上下文窗口独立配置。
+- **唯一权威状态**：每会话单 SQLite（WAL + `synchronous=FULL`）。崩溃恢复按持久化位置分类——
+  已知结果复用、在途丢失诚实记账（`OUTCOME_UNKNOWN`）、**不猜测重放**。
+- **权限门**：`approved_scope`（默认，bubblewrap 隔离，越权需批准）与 `full_auto`（仅用户可开，D-41
+  主机 Shell）；批准绑定具体操作与参数散列，`once` 用后即失效。
+- **完成检查闸门**：`finish` 只接受诚实结论；用户或项目预定义的必要检查必须真实通过。
+- **长上下文压缩**：按实际窗口占用触发，摘要保留原始要求、用户修订、验收与未决问题；
+  原文经 `read_history` 仍可检索，压缩调用计入目标预算。
+- **工具面**：文件读写/搜索/原子多文件编辑、会话内持久 shell（`cd`/`export` 跨命令保留）、
+  网页搜索与抓取、MCP（stdio 与 streamable HTTP）、Skills（`~/.agents/skills`）。
+- **隔离**：`approved_scope` 下实例 shell 走 `bubblewrap`；缺失时明确报错，不会静默退化成不隔离执行。
 
 ## 安装
 
-要求：Linux（x86_64）+ `bubblewrap`；`codex` CLI 只有使用 Codex 执行成员时才需要；
-模型密钥从环境变量读，不写进配置。
+要求：Linux（x86_64）+ `bubblewrap`；模型密钥从环境变量读，不写进配置。
+`teamagents doctor` 还会探测本机 `codex` CLI（v1 的 Codex 执行成员才需要），未安装只报 WARN。
 
 ### 安装最新版（推荐）
 
@@ -130,33 +125,30 @@ teamagents --cwd /path/to/project     # 换成实际项目目录；省略 --cwd 
 ```
 
 Leader 会自己决定要不要组队、组几个人、谁干什么；需要你拍板时（越权限的命令、外网访问）
-才会弹出批准请求。想看细节按 `Tab` 进面板。
+才会弹出批准请求。想看细节按 `Tab` 切实例、`F3` 实例面板、`F4` 任务面板、`F5` 拓扑。
 
-行模式（哑终端 / 脚本；`-` 表示提示词从 stdin 读）：
+脚本 / CI 用无头入口（提示词可用 `-` 从 stdin 读；`exec` 与 TUI 共用同一个 daemon）：
 
 ```bash
-printf '1+1 等于几？直接回答，然后 signal_done。\n' | teamagents --plain --cwd /tmp/demo
-teamagents exec --json [--timeout SEC] [--check CMD] PROMPT|-    # 机器可读结果，脚本/CI 用
+teamagents exec "1+1 等于几？直接回答"                           # 提交一次输入，打印回复
+teamagents exec --json --timeout 180 "把 /tmp/proj 的测试修绿"    # 机器可读摘要
+teamagents exec --check "cargo test --offline" "改到测试全绿"     # 同一权限模式下追加产物检查
 ```
 
 ## 常用参数与键位
 
 | 用法 | 含义 |
 |---|---|
-| `--cwd DIR` | 以 DIR 为工作目录（默认当前目录；默认会话 id 由它派生） |
-| `--resume <会话 id>` | 恢复会话（团队版本、待办、消息位置、成员线程、批准队列） |
-| `--team SPEC` | 新会话使用指定 TeamSpec（JSON/YAML）；已有会话仍加载保存的团队定义 |
-| `--full-auto` | 用户显式开启全自动（等价 TUI `Ctrl+F`） |
-| `--plain` | 行模式 REPL（不发 TUI） |
-| `init` / `--help` / `doctor` / `validate SPEC` / `sessions [-v]` / `version` | 初始化配置 / 帮助 / 自检 / 校验 TeamSpec / 会话清单 / 版本 |
+| `--cwd DIR` | 以 DIR 为工作目录（默认当前目录） |
+| `--state-root PATH` | 指定 v2 状态根（默认 `$XDG_STATE_HOME/teamagents/v2`） |
+| `--model KEY` | 选择模型目录键（默认 `leader_main`） |
+| `--full-auto` | 用户显式开启全自动（仅用户可开；默认越权时请求批准） |
+| `init` / `doctor` / `daemon` / `exec` / `version` / `--help` | 准备配置与状态根 / 自检 / 单独运行 daemon / 无头输入 / 版本 / 用法 |
 
-TUI：`Enter` 发送、`Shift+Enter`/`Ctrl+J` 换行、`Esc` 停止 Leader、`Ctrl+Q` 退出；
-`Tab` 进管理面板（`Ctrl+T` 切页签，面板内 `Esc`/`Tab` 回输入框）、`Ctrl+G` 批准队列、
-`Ctrl+F` 全自动、`Ctrl+P` 暂停；
-团队页签 `p` 看计划、`v` 审查实际工作区，日志页签 `v` 看当前成员工作区，`/review` 看 Leader 工作区；
-对比首次观察快照，支持多批次改动、恢复和分页，共享目录不归因单个成员；团队/日志页签 `h` 浏览成员记录，
-`/history` 浏览全部成员。任务页签 `c` 结清无活动回合的任务。
-完整键位与面板说明见 [用户指南](docs/USER-GUIDE.md)。
+TUI 键位（与屏幕底部提示一致）：`Enter` 发送、`Shift+Enter`/`Ctrl+J` 换行、`Tab` 切输入焦点与实例、
+`F1` 对话、`F3` 实例、`F4` 任务、`F5` 拓扑、`F2` 批准队列、`Esc` 返回、`Ctrl+C`/`Ctrl+D` 退出；
+实例面板 `Enter` 切换对话目标、`p` 暂停、`r` 恢复、`t` 终止（需确认）；
+任务面板 `c` 取消任务；批准面板 `a` 批准本次、`d` 拒绝。
 
 ## 配置与团队
 
@@ -165,9 +157,8 @@ TUI：`Enter` 发送、`Shift+Enter`/`Ctrl+J` 换行、`Esc` 停止 Leader、`Ct
   `[permissions] trust_project_tools = true`）。
 - 模型 profile 用 `protocol = "responses" | "anthropic" | "openai" | "deepseek"` 选线上格式，
   `base_url` + `model` 决定实际接哪家；密钥只写环境变量名。
-- `examples/team.yaml` 是一个混合团队样例，可先 `teamagents validate examples/team.yaml`。
-  其中的 `codex_dev` 只是占位（当前指向 DeepSeek profile，**不能**据此保证 Codex 成员能跑）：
-  请改成你本机 Codex 真能用的 provider/模型，端点须支持 Responses API。
+- 组队由 Leader 在运行时按目标决定（`spawn`/`delegate`/`send`/`wait`），没有 TeamSpec 文件入口；
+  v1 的 TeamSpec 样例已随该入口退役，放入 [`docs/archive/team.yaml`](docs/archive/team.yaml) 供追溯。
 - 工具绑定即授权、批准语义、Skills/MCP、会话保留策略、故障处理：见
   [用户指南](docs/USER-GUIDE.md)。
 
@@ -179,17 +170,8 @@ TUI：`Enter` 发送、`Shift+Enter`/`Ctrl+J` 换行、`Esc` 停止 Leader、`Ct
   **五家真实模型服务的兼容性验收仍待具备相应凭据的环境**。
 - 验收边界与证据见 [验收对照表](docs/ACCEPTANCE.md)，未做项与已知天花板在那里逐条列明。
 
-## 文档与开发
+## 开发
 
-| 文档 | 内容 |
-|---|---|
-| [docs/INSTALL.md](docs/INSTALL.md) | 下载、安装、首次配置、升级与卸载 |
-| [docs/USER-GUIDE.md](docs/USER-GUIDE.md) | 配置、权限、团队定义、恢复、故障处理、TUI 布局与键位 |
-| [docs/DECISIONS.md](docs/DECISIONS.md) | 全部已确认决策（D-1..）与架构取舍 |
-| [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) | T1–T24 验收对照与证据 |
-| [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | 统一检查入口、模块边界、测试隔离与依赖升级 |
-| [AGENTS.md](AGENTS.md) | 开发约定：架构速览、构建/测试命令、代码风格、审查规则 |
-| [TeamAgents-Implementation-Plan.zh-CN.md](docs/archive/TeamAgents-Implementation-Plan.zh-CN.md) | 产品与实现基准 |
-
-开发先运行 `make check`；完整流程见 [开发与维护](docs/DEVELOPMENT.md) 和 [AGENTS.md](AGENTS.md)。缺陷与修复记录在 `review/`。
+开发先运行 `make check`；完整流程见 [开发与维护](docs/DEVELOPMENT.md)，仓库约定见 [AGENTS.md](AGENTS.md)。
+缺陷、审查与评测证据记录在 `review/`，形式化验证证据在 `verification/`。
 打 `v*` tag 会触发 `.github/workflows/release.yml` 自动构建并发布发行包（含 `SHA256SUMS`）。

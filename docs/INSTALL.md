@@ -73,7 +73,7 @@ teamagents --cwd /path/to/project
 ```
 
 将 `/path/to/project` 换成实际项目目录；省略 `--cwd` 即使用当前目录。进入后直接输入目标。
-完整参数可运行 `teamagents --help` 查看。无交互终端可使用 `teamagents --plain`。
+完整参数可运行 `teamagents --help` 查看。无交互终端或脚本用 `teamagents exec "…"`（`--json` 输出机器可读摘要）。
 
 `doctor` 验证本机条件，不发送模型请求。`FAIL` 需要修复；`WARN` 表示可选能力有问题，
 例如缺少 Codex CLI 不影响内置成员，但 Codex 成员需要相关检查通过。

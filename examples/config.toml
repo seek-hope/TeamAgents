@@ -8,9 +8,8 @@
 #   protocol = "deepseek"    → 同 chat/completions，另外把 xhigh 档位映射成 max
 # 具体用哪个模型由 base_url + model 决定；官方订阅的模型名写进 model 即可。
 
-# 归档会话保留：设置后，打开会话时会顺手清理"最后更新超过 N 天"的归档会话
-# （走与 UI 删除相同的保护：运行中的会话、有未合并 worktree 成果的会话都会跳过）。
-# 不配这段就是什么都不删。手动清理：teamagents sessions prune --days 30 [--dry-run]
+# 归档会话保留：v2 目前只在 `teamagents doctor` 里报告这段配置，自动清理尚未落地；
+# 不配就是什么都不删。需要时才填写，别指望它现在就自动清理历史。
 # [retention]
 # archived_days = 30     # 归档会话超过 N 天在打开会话时删除
 # history_days = 30      # 会话库里的已受理投递与旧事件超过 N 天清理（未受理的投递一定保留）
