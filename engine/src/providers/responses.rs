@@ -22,6 +22,8 @@ pub struct Responses {
     api_key: String,
     timeout: Duration,
     context_window: Option<u64>,
+    /// Test knob: overrides the derived stream-stall bound.
+    stall: Option<Duration>,
 }
 
 impl Responses {
@@ -31,7 +33,7 @@ impl Responses {
     /// touches the environment itself.
     pub fn new(base: impl Into<String>, api_key: impl Into<String>, timeout: Duration) -> Result<Self, String> {
         let client = super::http_client()?;
-        Ok(Responses { client, base: base.into(), api_key: api_key.into(), timeout, context_window: None })
+        Ok(Responses { client, base: base.into(), api_key: api_key.into(), timeout, context_window: None, stall: None })
     }
 
     /// Attach the catalog-declared context window: max_output_tokens clamps
@@ -39,6 +41,16 @@ impl Responses {
     pub fn with_context_window(mut self, window: Option<u64>) -> Self {
         self.context_window = window;
         self
+    }
+
+    /// Override the stream-stall bound (see ChatCompletions::with_stream_stall).
+    pub fn with_stream_stall(mut self, stall: Duration) -> Self {
+        self.stall = Some(stall);
+        self
+    }
+
+    fn stall_bound(&self) -> Duration {
+        self.stall.unwrap_or_else(|| super::stream_stall_bound(self.timeout))
     }
 
     pub fn openai(api_key: impl Into<String>, timeout: Duration) -> Result<Self, String> {
@@ -205,7 +217,7 @@ impl Provider for Responses {
                 }
                 Ok(ControlFlow::Continue(()))
             };
-            match pump_sse(response, cancel, super::stream_stall_bound(self.timeout), &mut on_frame).await? {
+            match pump_sse(response, cancel, self.stall_bound(), &mut on_frame).await? {
                 SseEnd::Closed => {}
                 SseEnd::Cancelled => return Err(ProviderError::interrupted("turn interrupted")),
                 SseEnd::Transport(message) => return Err(stream_failure_msg(&message, emitted)),

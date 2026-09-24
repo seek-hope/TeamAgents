@@ -440,14 +440,19 @@ pub(crate) async fn pump_sse(
     use std::ops::ControlFlow;
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
+    // Inactivity is measured in *frames*, not bytes: a connection that only
+    // trickles keep-alive comments is dead for our purposes, while any real
+    // event (a delta, a reasoning step) proves the model is working. §8.
+    let mut deadline = tokio::time::Instant::now() + stall;
     loop {
         let chunk = tokio::select! {
             chunk = futures_next(&mut stream) => chunk,
             _ = cancel.cancelled() => return Ok(SseEnd::Cancelled),
-            // no data for the stall bound: fail honestly instead of holding the
-            // turn open until the process dies (§8)
-            _ = tokio::time::sleep(stall) => {
-                return Ok(SseEnd::Transport(format!("model stream stalled: no data for {}s", stall.as_secs())))
+            _ = tokio::time::sleep_until(deadline) => {
+                return Ok(SseEnd::Transport(format!(
+                    "model stream stalled: no event for {}s",
+                    stall.as_secs()
+                )))
             }
         };
         let Some(chunk) = chunk else { return Ok(SseEnd::Closed) };
@@ -460,11 +465,16 @@ pub(crate) async fn pump_sse(
         while let Some(pos) = buffer.find("\n\n") {
             let frame = buffer[..pos].to_string();
             buffer = buffer[pos + 2..].to_string();
+            let mut delivered = false;
             for line in frame.lines() {
                 let Some(data) = line.strip_prefix("data:").map(str::trim) else { continue };
+                delivered = true;
                 if let ControlFlow::Break(()) = on_frame(data)? {
                     return Ok(SseEnd::Closed);
                 }
+            }
+            if delivered {
+                deadline = tokio::time::Instant::now() + stall;
             }
         }
     }

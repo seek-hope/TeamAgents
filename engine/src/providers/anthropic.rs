@@ -23,6 +23,8 @@ pub struct Anthropic {
     api_key: String,
     timeout: Duration,
     context_window: Option<u64>,
+    /// Test knob: overrides the derived stream-stall bound.
+    stall: Option<Duration>,
 }
 
 impl Anthropic {
@@ -33,7 +35,7 @@ impl Anthropic {
     pub fn new(base: impl Into<String>, api_key: impl Into<String>, timeout: Duration) -> Result<Self, String> {
         let client = super::http_client()?;
         let base = base.into().trim_end_matches('/').trim_end_matches("/v1").to_string();
-        Ok(Anthropic { client, base, api_key: api_key.into(), timeout, context_window: None })
+        Ok(Anthropic { client, base, api_key: api_key.into(), timeout, context_window: None, stall: None })
     }
 
     /// Attach the catalog-declared context window: max_tokens clamps to the
@@ -41,6 +43,16 @@ impl Anthropic {
     pub fn with_context_window(mut self, window: Option<u64>) -> Self {
         self.context_window = window;
         self
+    }
+
+    /// Override the stream-stall bound (see ChatCompletions::with_stream_stall).
+    pub fn with_stream_stall(mut self, stall: Duration) -> Self {
+        self.stall = Some(stall);
+        self
+    }
+
+    fn stall_bound(&self) -> Duration {
+        self.stall.unwrap_or_else(|| super::stream_stall_bound(self.timeout))
     }
 
     pub fn official(api_key: impl Into<String>, timeout: Duration) -> Result<Self, String> {
@@ -209,7 +221,7 @@ impl Provider for Anthropic {
                 }
                 Ok(ControlFlow::Continue(()))
             };
-            match pump_sse(response, cancel, super::stream_stall_bound(self.timeout), &mut on_frame).await? {
+            match pump_sse(response, cancel, self.stall_bound(), &mut on_frame).await? {
                 SseEnd::Closed => {}
                 SseEnd::Cancelled => return Err(ProviderError::interrupted("turn interrupted")),
                 SseEnd::Transport(message) => return Err(stream_failure_msg(&message, emitted)),
