@@ -63,6 +63,7 @@ struct Coverage {
     compressed: bool,
     approval_decided: bool,
     replay_checked: bool,
+    revocation_checked: bool,
 }
 
 impl Coverage {
@@ -77,6 +78,7 @@ impl Coverage {
         self.compressed |= other.compressed;
         self.approval_decided |= other.approval_decided;
         self.replay_checked |= other.replay_checked;
+        self.revocation_checked |= other.revocation_checked;
     }
 }
 
@@ -112,6 +114,9 @@ struct Harness {
     /// 重放覆盖：同 id 同 payload 成功过、同 id 异 payload 被拒过
     replayed: bool,
     divergent_refused: bool,
+    /// 撤权覆盖：撤过一条有效授权、并且撤权后的派发被拒过
+    revoked: bool,
+    dispatch_refused_after_revoke: bool,
 }
 
 impl Drop for Harness {
@@ -143,6 +148,8 @@ impl Harness {
             last_label: String::new(),
             replayed: false,
             divergent_refused: false,
+            revoked: false,
+            dispatch_refused_after_revoke: false,
         }
     }
 
@@ -207,6 +214,12 @@ impl Harness {
         }
         if self.last_label == "!replay_divergent" && result.is_err() {
             self.divergent_refused = true;
+        }
+        if self.last_label == "revoke_grant" && result.is_ok() {
+            self.revoked = true;
+        }
+        if self.last_label == "!dispatch_without_grant" && result.is_err() {
+            self.dispatch_refused_after_revoke = true;
         }
         if result.is_ok() {
             // 重放也要记住（同一个 id 可以再被重放）
@@ -281,6 +294,7 @@ impl Harness {
             compressed: exists("SELECT id FROM context_entries WHERE compressed_by IS NOT NULL"),
             approval_decided: exists("SELECT id FROM approvals WHERE status IN ('APPROVED', 'DENIED', 'EXPIRED')"),
             replay_checked: self.replayed && self.divergent_refused,
+            revocation_checked: self.revoked && self.dispatch_refused_after_revoke,
         }
     }
 
@@ -697,7 +711,7 @@ impl Harness {
 }
 
 // ------------------------------------------------------------- step kinds --
-const STEPS: usize = 36;
+const STEPS: usize = 38;
 
 /// 按当前状态生成第 `kind` 种命令；前置不成立时返回 None（该步跳过）。
 fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
@@ -1026,14 +1040,15 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
             }
             let subject = harness.pick(&ids)?.clone();
             let target = harness.pick(&ids)?.clone();
-            let action = if harness.next_rand().is_multiple_of(2) { "message" } else { "delegate" };
+            let action = ["message", "delegate", "shell"][(harness.next_rand() % 3) as usize];
+            // shell 授权用与 create_instance 相同的范围，撤销之后还能重新授予
+            let scope = if action == "shell" { "workspace".to_string() } else { format!("instance:{target}") };
             Some(Step {
-                label: format!("issue_grant({subject} {action} instance:{target})"),
+                label: format!("issue_grant({subject} {action} {scope})"),
                 command: Command {
                     command_id: String::new(),
                     method: "issue_grant".into(),
-                    params: json!({"subject": subject, "action": action,
-                                   "resource_scope": format!("instance:{target}")}),
+                    params: json!({"subject": subject, "action": action, "resource_scope": scope}),
                 },
                 identity: Identity::User,
             })
@@ -1058,10 +1073,11 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity: Identity::Instance(sender),
             })
         }
-        // 19: 派发操作（一半要求批准：走批准闸门而不是直接派发）
+        // 19: 派发操作。始终要求批准：先走批准闸门（A25），批准后再派发成功；
+        // 不要求批准的直派路径由 core 的单元测试覆盖，这里让游走稳定走到批准链路
         19 => {
             let operation = harness.pick(&prepared_ops)?.clone();
-            let approval = harness.next_rand().is_multiple_of(2);
+            let approval = true;
             Some(Step {
                 label: format!("dispatch_operation({operation}, approval={approval})"),
                 command: Command {
@@ -1303,6 +1319,61 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity,
             })
         }
+        // 36: 撤销一条仍然有效的 shell 授权（A03/A04 的撤权面）
+        36 => {
+            let live: Vec<String> = harness
+                .rows("SELECT id FROM grants WHERE action = 'shell' AND revoked_at IS NULL", &[])
+                .into_iter()
+                .map(|row| row[0].clone())
+                .collect();
+            let grant = harness.pick(&live)?.clone();
+            Some(Step {
+                label: format!("revoke_grant({grant})"),
+                command: Command {
+                    command_id: String::new(),
+                    method: "revoke_grant".into(),
+                    params: json!({"grant_id": grant}),
+                },
+                identity: Identity::User,
+            })
+        }
+        // 37: 反例探针——授权已被撤销的实例不得再派发（规格要求被拒）
+        37 => {
+            let instance = prepared_ops.first().and_then(|operation| {
+                harness
+                    .rows(
+                        "SELECT i.id FROM operations o
+                         JOIN decisions d ON o.decision_id = d.decision_id
+                         JOIN model_requests r ON d.request_id = r.request_id
+                         JOIN instances i ON r.instance_id = i.id
+                         WHERE o.operation_id = ?1",
+                        &[operation],
+                    )
+                    .first()
+                    .map(|row| row[0].clone())
+            })?;
+            let live_shell: i64 = harness
+                .rows(
+                    "SELECT COUNT(*) FROM grants WHERE subject = ?1 AND action = 'shell' AND revoked_at IS NULL",
+                    &[&instance],
+                )
+                .first()
+                .and_then(|row| row[0].parse().ok())
+                .unwrap_or(1);
+            if live_shell > 0 {
+                return None; // 还有有效授权时这条探针不成立
+            }
+            let operation = prepared_ops.first()?.clone();
+            Some(Step {
+                label: format!("!dispatch_without_grant({operation})"),
+                command: Command {
+                    command_id: String::new(),
+                    method: "dispatch_operation".into(),
+                    params: json!({"operation_id": operation, "approval_required": false, "permission_revision": 0}),
+                },
+                identity: Identity::System,
+            })
+        }
         // 26: 反例探针——委派到已结清的目标（规格要求被拒）
         26 => {
             let goal = settled_goals.first()?.clone();
@@ -1419,6 +1490,7 @@ fn spec_invariants_hold_over_random_walks() {
         ("压缩提交（有条目被覆盖）", reached.compressed),
         ("批准已决定（批准/拒绝/过期）", reached.approval_decided),
         ("命令重放（同 id 同 payload 返回存量回执、异 payload 被拒）", reached.replay_checked),
+        ("撤权后派发被拒（A03/A04）", reached.revocation_checked),
     ] {
         assert!(seen, "随机游走没有覆盖到：{name}");
     }
