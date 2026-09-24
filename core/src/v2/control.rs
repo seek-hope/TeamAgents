@@ -1969,6 +1969,69 @@ fn wake_satisfied(tx: &Connection, session_id: &str) -> Result<Vec<String>, Stri
     wake_satisfied_at(tx, session_id, crate::models::now())
 }
 
+/// Answer the newest assistant tool_call that has no tool response yet.
+/// Control calls (wait, finish) are answered by the runtime itself, and a
+/// strict wire endpoint rejects a request whose assistant `tool_calls` have no
+/// matching tool messages — so closing a turn must close its call too. Returns
+/// the answered call id, or None when nothing dangles.
+fn answer_dangling_calls(
+    tx: &Connection,
+    instance_id: &str,
+    epoch: i64,
+    content: &str,
+) -> Result<Option<String>, String> {
+    let answered: std::collections::HashSet<String> = {
+        let mut stmt = tx
+            .prepare(
+                "SELECT message_json FROM context_entries
+                 WHERE instance_id = ?1 AND epoch = ?2 AND kind = 'tool_result'",
+            )
+            .map_err(|e| format!("answer scan: {e}"))?;
+        let rows = stmt
+            .query_map(rusqlite::params![instance_id, epoch], |row| row.get::<_, String>(0))
+            .map_err(|e| format!("answer query: {e}"))?;
+        rows.filter_map(|row| row.ok())
+            .filter_map(|raw| serde_json::from_str::<Json>(&raw).ok())
+            .filter_map(|message| message["tool_call_id"].as_str().map(str::to_string))
+            .collect()
+    };
+    let assistants: Vec<(String, String)> = {
+        let mut stmt = tx
+            .prepare(
+                "SELECT id, message_json FROM context_entries
+                 WHERE instance_id = ?1 AND epoch = ?2 AND kind = 'assistant' ORDER BY idx DESC",
+            )
+            .map_err(|e| format!("answer assistants: {e}"))?;
+        let rows = stmt
+            .query_map(rusqlite::params![instance_id, epoch], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| format!("answer assistants query: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("answer assistants collect: {e}"))?
+    };
+    for (entry_id, raw) in assistants {
+        let message: Json = serde_json::from_str(&raw).unwrap_or(Json::Null);
+        let Some(calls) = message["tool_calls"].as_array() else { continue };
+        for call in calls {
+            let Some(call_id) = call["id"].as_str() else { continue };
+            if answered.contains(call_id) {
+                continue;
+            }
+            append_context(
+                tx,
+                instance_id,
+                epoch,
+                "tool_result",
+                &json!({"role": "tool", "tool_call_id": call_id, "content": content}),
+                Some(&format!("answer-{entry_id}-{call_id}")),
+                &json!([call_id]),
+            )?;
+            return Ok(Some(call_id.to_string()));
+        }
+    }
+    Ok(None)
+}
+
 /// The tool_call id of the assistant entry that registered this wait
 /// (`w-<decision_id>`), or None when the entry carried no tool_call.
 fn wait_call_id(tx: &Connection, instance_id: &str, epoch: i64, wait_id: &str) -> Result<Option<String>, String> {
@@ -2993,6 +3056,7 @@ fn block_goal(tx: &Connection, session_id: &str, params: &Json, identity: &Ident
     let epoch: i64 = tx
         .query_row("SELECT context_epoch FROM instances WHERE id = ?1", [instance_id], |row| row.get(0))
         .map_err(|e| format!("block epoch: {e}"))?;
+    answer_dangling_calls(tx, instance_id, epoch, &format!("[finish rejected: goal {goal_id} blocked]"))?;
     append_context(
         tx,
         instance_id,
@@ -3034,6 +3098,19 @@ fn close_completion(tx: &Connection, session_id: &str, params: &Json) -> Result<
         [instance_id],
     )
     .map_err(|e| format!("close completion: {e}"))?;
+    let epoch: i64 = tx
+        .query_row("SELECT context_epoch FROM instances WHERE id = ?1", [instance_id], |row| row.get(0))
+        .map_err(|e| format!("close epoch: {e}"))?;
+    answer_dangling_calls(tx, instance_id, epoch, "[finish accepted: this turn has nothing left to settle]")?;
+    append_context(
+        tx,
+        instance_id,
+        epoch,
+        "assistant",
+        &json!({"role": "assistant", "content": "runtime: turn closed"}),
+        Some(&format!("turn-close-{instance_id}")),
+        &json!([]),
+    )?;
     event(tx, session_id, "completion_closed", instance_id, &json!({"instance_id": instance_id}))?;
     Ok(json!({"instance_id": instance_id, "phase": "READY"}))
 }
@@ -3091,12 +3168,16 @@ fn complete_goal(tx: &Connection, session_id: &str, params: &Json) -> Result<Jso
     };
     tx.execute("UPDATE goals SET status = ?1 WHERE id = ?2", rusqlite::params![status, goal_id])
         .map_err(|e| format!("goal close: {e}"))?;
-    // the runtime's own closing statement: without it the verification
-    // receipts left at the tail would look like pending model work and the
-    // driver would ask for one more turn (§8 completes once, not per round)
     let epoch: i64 = tx
         .query_row("SELECT context_epoch FROM instances WHERE id = ?1", [instance_id], |row| row.get(0))
         .map_err(|e| format!("close epoch: {e}"))?;
+    // the finish call is answered by the runtime (§8: the completion is
+    // accepted once) — a dangling control call would break strict wire
+    // endpoints on the next request
+    answer_dangling_calls(tx, instance_id, epoch, &format!("[finish accepted: goal {goal_id} closed as {status}]"))?;
+    // the runtime's own closing statement: without it the verification
+    // receipts left at the tail would look like pending model work and the
+    // driver would ask for one more turn (§8 completes once, not per round)
     append_context(
         tx,
         instance_id,
@@ -6335,6 +6416,46 @@ mod tests {
         let status: String =
             ctl.connection().query_row("SELECT status FROM goals WHERE id = 'g1'", [], |row| row.get(0)).unwrap();
         assert_eq!(status, "SUCCEEDED");
+        cleanup(&path);
+    }
+
+    /// A closed turn answers its own control call: a strict wire endpoint
+    /// rejects a request whose assistant tool_calls have no tool response.
+    #[test]
+    fn closing_a_turn_answers_its_finish_call() {
+        let (mut ctl, path) = control("turn-close-call");
+        create_instance(&mut ctl, "i1");
+        let request = begin_and_complete(&mut ctl, "fin", "i1", 0);
+        ctl.submit(
+            cmd(
+                "imp-fin",
+                "import_response",
+                json!({"request_id": request, "decision_id": "d-fin",
+                       "entry": {"role": "assistant", "content": "",
+                                 "tool_calls": [{"id": "finish-1", "type": "function",
+                                                 "function": {"name": "finish", "arguments": "{}"}}]},
+                       "completion": {"outcome": "success", "summary": "nothing to settle"}}),
+            ),
+            Identity::System,
+        )
+        .expect("import");
+        ctl.submit(cmd("cc-fin", "close_completion", json!({"instance_id": "i1"})), Identity::System).expect("close");
+        assert_eq!(phase_of(&ctl, "i1"), "READY");
+        let tail: Vec<(String, String)> = {
+            let mut stmt = ctl
+                .connection()
+                .prepare(
+                    "SELECT kind, message_json FROM context_entries
+                     WHERE instance_id = 'i1' ORDER BY idx DESC LIMIT 2",
+                )
+                .unwrap();
+            let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+            rows.collect::<Result<Vec<_>, _>>().unwrap()
+        };
+        assert_eq!(tail[0].0, "assistant", "the close marker keeps the instance idle");
+        assert!(tail[0].1.contains("runtime: turn closed"), "{}", tail[0].1);
+        assert_eq!(tail[1].0, "tool_result");
+        assert!(tail[1].1.contains("finish-1"), "{}", tail[1].1);
         cleanup(&path);
     }
 

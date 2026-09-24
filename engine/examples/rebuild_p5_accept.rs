@@ -19,7 +19,7 @@ use serde_json::{json, Value as Json};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use teamagents_core::kernel::KernelProfile;
-use teamagents_core::v2::{Command, Control};
+use teamagents_core::v2::Command;
 use teamagents_engine::providers::build_for_model;
 use teamagents_engine::v2::supervisor::{start, SupervisorConfig, SupervisorHandle};
 
@@ -191,9 +191,22 @@ async fn run_acceptance(
     let mut approvals: Vec<Json> = Vec::new();
     let mut approved_at: Option<Instant> = None;
     let mut file_seen_before_approval = false;
+    let file = workspace.join(ACCEPT_FILE);
+    let delivered = |events: &[Json], sender: &str, recipient: &str| {
+        events.iter().any(|event| {
+            event["kind"] == json!("message_sent")
+                && event["scope"] == json!(sender)
+                && event["payload"]["recipient"] == json!(recipient)
+        })
+    };
+    // the acceptance waits on *facts*, not on one instance's phase: both
+    // directions delivered, the worker's approved shell effect in place, and
+    // the leader's goal closed
     let goal_status = loop {
         // user-side approval of every pending shell request (§6.2): this is
-        // the real approved_scope path, not a fake gateway
+        // the real approved_scope path, not a fake gateway. The pending list
+        // comes from the daemon's own read surface (a separate read-only
+        // connection); the decision goes through the single writer.
         for approval in pending_approvals(state_root)? {
             let id = approval["id"].as_str().unwrap_or("").to_string();
             eprintln!("[accept] approving {id}: {}", approval["preview"]);
@@ -201,15 +214,21 @@ async fn run_acceptance(
             handle.submit_user(cmd(format!("approve-{id}"), "approve", json!({"approval_id": id}))).await?;
             approvals.push(approval);
         }
-        if approved_at.is_none() && workspace.join(ACCEPT_FILE).exists() {
+        if approved_at.is_none() && file.exists() {
             // nothing may run before the user decided (A14/§6.2)
-            file_seen_before_approval = workspace.join(ACCEPT_FILE).exists();
+            file_seen_before_approval = true;
         }
+        let events = handle.events(0).await?;
         let snapshot = handle.snapshot().await?;
-        if let Some(status) = snapshot["goal"]["status"].as_str() {
-            if matches!(status, "SUCCEEDED" | "FAILED" | "BLOCKED" | "CANCELLED") {
-                break status.to_string();
-            }
+        let closed = snapshot["goal"]["status"]
+            .as_str()
+            .is_some_and(|status| matches!(status, "SUCCEEDED" | "FAILED" | "BLOCKED" | "CANCELLED"));
+        if closed
+            && delivered(&events, "i-leader", "i-worker")
+            && delivered(&events, "i-worker", "i-leader")
+            && file.exists()
+        {
+            break snapshot["goal"]["status"].as_str().unwrap_or("UNKNOWN").to_string();
         }
         if started.elapsed() > Duration::from_secs(timeout_s) {
             break "TIMEOUT".to_string();
@@ -228,21 +247,13 @@ async fn run_acceptance(
             .await?;
         std::fs::write(evidence.join(format!("history-{instance}.json")), serde_json::to_vec_pretty(&history)?)?;
     }
-    let file = workspace.join(ACCEPT_FILE);
     let file_text = std::fs::read_to_string(&file).unwrap_or_default();
-    let delivered = |direction: (&str, &str)| {
-        events.iter().any(|event| {
-            event["kind"] == json!("message_sent")
-                && event["payload"]["recipient"] == json!(direction.1)
-                && event["scope"] == json!(direction.0)
-        })
-    };
     let report = json!({
         "goal_status": goal_status,
         "elapsed_s": started.elapsed().as_secs(),
         "codeword_delivered": events.iter().any(|event| event.to_string().contains(CODEWORD)),
-        "leader_to_worker": delivered(("i-leader", "i-worker")),
-        "worker_to_leader": delivered(("i-worker", "i-leader")),
+        "leader_to_worker": delivered(&events, "i-leader", "i-worker"),
+        "worker_to_leader": delivered(&events, "i-worker", "i-leader"),
         "approvals": approvals.len(),
         "file_written": file.exists(),
         "file_text": file_text,
@@ -270,18 +281,17 @@ async fn run_acceptance(
 fn leader_task() -> String {
     String::from(
         "Team exercise: ask instance i-worker for the codeword by sending it a message \
-(use the send tool with recipient i-worker). Wait for its reply, then finish with status success \
-and put the codeword from the reply into your summary.",
+(use the send tool with recipient i-worker), then finish with status success and say that you asked.",
     )
 }
 
 fn worker_task(workspace: &Path) -> String {
     format!(
-        "Wait for a message from i-leader. When it arrives, first write the file {} containing the \
-codeword {CODEWORD} with one shell command, then reply to i-leader (send tool, recipient i-leader) \
-with the codeword, and finish with status success. Your workspace is {}.",
-        workspace.join(ACCEPT_FILE).display(),
-        workspace.display()
+        "Do exactly this, in order. (1) Run this shell command: printf '{CODEWORD}' > {}. \
+The command needs your shell tool; if it is waiting for approval, just call it and wait. \
+(2) After it ran, send instance i-leader a message containing only the codeword {CODEWORD} \
+(send tool, recipient i-leader). (3) Finish with status success and mention the file you wrote.",
+        workspace.join(ACCEPT_FILE).display()
     )
 }
 
@@ -301,10 +311,15 @@ async fn wait_ready(handle: &SupervisorHandle, instance: &str, timeout_ms: u64) 
 }
 
 /// Pending approvals with their operation's fixed intent — the same read the
-/// daemon exposes (§9), on its own WAL connection.
+/// daemon exposes (§9). It opens a plain read-only connection: a full
+/// `Control::open` runs the schema/pragma setup on every poll and contends
+/// with the single writer while the acceptance waits on real model calls.
 fn pending_approvals(state_root: &Path) -> Fallible<Vec<Json>> {
-    let control = Control::open(&state_root.join("session.sqlite"), "s-accept", false)?;
-    let mut stmt = control.connection().prepare(
+    let conn = rusqlite::Connection::open_with_flags(
+        state_root.join("session.sqlite"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )?;
+    let mut stmt = conn.prepare(
         "SELECT a.id, a.operation_id, o.intent_json FROM approvals a
          JOIN operations o ON a.operation_id = o.operation_id
          WHERE a.status = 'PENDING' ORDER BY a.rowid",
