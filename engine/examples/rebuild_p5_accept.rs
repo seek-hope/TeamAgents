@@ -74,6 +74,18 @@ async fn main() -> Fallible<()> {
     }
     std::fs::create_dir_all(&evidence)?;
     let state_root = evidence.join("state");
+    // shell jobs run in the production runner, which is the `teamagents`
+    // binary next to this example (`jobs-runner` subcommand, §6.2); tests
+    // override the runner image explicitly
+    if std::env::var_os("TEAMAGENTS_RUNNER_BIN").is_none() {
+        let runner = std::env::current_exe()?
+            .parent()
+            .and_then(|dir| dir.parent())
+            .map(|dir| dir.join("teamagents"))
+            .filter(|path| path.is_file())
+            .ok_or("cannot locate the teamagents runner binary; set TEAMAGENTS_RUNNER_BIN")?;
+        std::env::set_var("TEAMAGENTS_RUNNER_BIN", runner);
+    }
     let catalog = teamagents_engine::config::load_user_config(&teamagents_engine::config::user_config_path())?;
     for key in [&lead, &worker] {
         if !catalog.models.contains_key(key) {

@@ -179,11 +179,47 @@ fn parse_completion(call: &Json) -> CompletionCandidate {
     }
 }
 
+/// Strict wire endpoints (OpenAI-style Responses servers, Anthropic) require
+/// every assistant entry's `tool_calls` to be answered by the tool messages
+/// that immediately follow it. The runtime appends facts in storage order, so
+/// an arriving message or a note can land between a call and its answer; the
+/// wire copy moves each answer up next to its call. Stored order is untouched
+/// — only what the model reads is reordered.
+fn pair_tool_results(messages: &[Json]) -> Vec<Json> {
+    let mut out: Vec<Json> = Vec::with_capacity(messages.len());
+    let mut placed = vec![false; messages.len()];
+    for (index, message) in messages.iter().enumerate() {
+        if placed[index] {
+            continue;
+        }
+        out.push(message.clone());
+        placed[index] = true;
+        let Some(calls) = message["tool_calls"].as_array() else { continue };
+        let ids: Vec<&str> = calls.iter().filter_map(|call| call["id"].as_str()).collect();
+        if ids.is_empty() {
+            continue;
+        }
+        for (later, candidate) in messages.iter().enumerate().skip(index + 1) {
+            if placed[later] || candidate["role"] != json!("tool") {
+                continue;
+            }
+            if let Some(id) = candidate["tool_call_id"].as_str() {
+                if ids.contains(&id) {
+                    out.push(candidate.clone());
+                    placed[later] = true;
+                }
+            }
+        }
+    }
+    out
+}
+
 /// L1 view-only masking of old tool outputs (ported contract): originals stay
 /// in the context store; only the wire copy is masked, with a readback recipe
 /// that preserves page coordinates.
 fn materialize(entries: &[ContextEntry], context_window: Option<u64>) -> Vec<Json> {
-    let messages: Vec<Json> = entries.iter().map(|entry| entry.message.clone()).collect();
+    let stored: Vec<Json> = entries.iter().map(|entry| entry.message.clone()).collect();
+    let messages = pair_tool_results(&stored);
     let last_assistant = messages.iter().rposition(|m| m["role"] == "assistant").unwrap_or(0);
     let readbacks: HashMap<&str, Json> = messages
         .iter()

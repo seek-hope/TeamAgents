@@ -190,6 +190,47 @@ pub(crate) fn clamp_max_tokens(configured: u64, est_prompt_tokens: u64, context_
     }
 }
 
+/// TLS trust anchors come from the OS bundle when the runtime can read one.
+/// The webpki roots bundled with rustls are frozen at build time, so an
+/// endpoint whose chain terminates in a newer CA (e.g. Let's Encrypt's newer
+/// roots) fails the handshake here while curl and browsers — which use the OS
+/// store — succeed. Trust decisions belong to the operator's store, not to the
+/// compiler's.
+/// ponytail: Linux bundle paths; move to rustls-native-certs (a new
+/// dependency) if another target or a non-standard store must be supported.
+pub(crate) fn os_trust_anchors() -> Vec<reqwest::Certificate> {
+    const BUNDLES: [&str; 3] = [
+        "/etc/ssl/certs/ca-certificates.crt", // Debian/Ubuntu
+        "/etc/pki/tls/certs/ca-bundle.crt",   // Fedora/RHEL
+        "/etc/ssl/ca-bundle.pem",             // openSUSE
+    ];
+    let mut anchors = Vec::new();
+    for path in BUNDLES {
+        let Ok(pem) = std::fs::read(path) else { continue };
+        match reqwest::Certificate::from_pem_bundle(&pem) {
+            Ok(bundle) if !bundle.is_empty() => {
+                anchors.extend(bundle);
+                break;
+            }
+            Ok(_) => {}
+            Err(error) => eprintln!("tls: ignoring unreadable CA bundle {path}: {error}"),
+        }
+    }
+    anchors
+}
+
+/// One HTTP client policy for every protocol adapter (§7 keeps a single
+/// production stack): 30s connect timeout plus the OS trust anchors.
+pub(crate) fn http_client() -> Result<reqwest::Client, String> {
+    // http1_only keeps the protocol explicit and makes ALPN advertise
+    // http/1.1 (edges that require ALPN otherwise drop the handshake)
+    let mut builder = reqwest::Client::builder().connect_timeout(Duration::from_secs(30)).http1_only();
+    for anchor in os_trust_anchors() {
+        builder = builder.add_root_certificate(anchor);
+    }
+    builder.build().map_err(|e| format!("http client: {e}"))
+}
+
 /// Streaming preview events. Previews are never authoritative facts (§9):
 /// slow clients may drop them; only the complete AttemptOutcome matters.
 #[derive(Debug, Clone, PartialEq, Eq)]

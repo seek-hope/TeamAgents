@@ -1969,6 +1969,24 @@ fn wake_satisfied(tx: &Connection, session_id: &str) -> Result<Vec<String>, Stri
     wake_satisfied_at(tx, session_id, crate::models::now())
 }
 
+/// The tool_call id of the assistant entry that registered this wait
+/// (`w-<decision_id>`), or None when the entry carried no tool_call.
+fn wait_call_id(tx: &Connection, instance_id: &str, epoch: i64, wait_id: &str) -> Result<Option<String>, String> {
+    let decision = wait_id.strip_prefix("w-").unwrap_or(wait_id);
+    let entry: Option<String> = tx
+        .query_row(
+            "SELECT message_json FROM context_entries WHERE instance_id = ?1 AND epoch = ?2 AND envelope_id = ?3",
+            rusqlite::params![instance_id, epoch, decision],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("wait entry read: {e}"))?;
+    Ok(entry
+        .and_then(|raw| serde_json::from_str::<Json>(&raw).ok())
+        .and_then(|message| message["tool_calls"].as_array().and_then(|calls| calls.first().cloned()))
+        .and_then(|call| call["id"].as_str().map(str::to_string)))
+}
+
 fn wake_satisfied_at(tx: &Connection, session_id: &str, now: f64) -> Result<Vec<String>, String> {
     let pending: Vec<(String, String, i64, String, String, Option<f64>)> = {
         let mut stmt = tx
@@ -1994,19 +2012,44 @@ fn wake_satisfied_at(tx: &Connection, session_id: &str, now: f64) -> Result<Vec<
         }
         tx.execute("UPDATE waits SET status = 'SATISFIED' WHERE id = ?1", [&wait_id])
             .map_err(|e| format!("wake {wait_id}: {e}"))?;
-        // the wake reason joins the context: without it the last entry would
-        // be the instance's own assistant turn and the loop would park idle
-        // instead of letting the model continue (§5.3). Dedup key = wait id;
-        // the PENDING → SATISFIED guard above fires once.
-        append_context(
-            tx,
-            &instance_id,
-            epoch,
-            "note",
-            &json!({"role": "user", "content": format!("[wait {wait_id} satisfied] mode={mode} conditions={conditions_json} timer_at={timer_at:?}")}),
-            Some(&wait_id),
-            &json!([]),
-        )?;
+        // the wake reason joins the context as the *answer to the wait call*:
+        // without it the last entry would be the instance's own assistant turn
+        // and the loop would park idle instead of letting the model continue
+        // (§5.3), and a bare user-role note would leave the model's `wait`
+        // tool_call without a response — strict wire endpoints (OpenAI-style
+        // Responses servers) reject a request whose assistant tool_calls have
+        // no matching tool message. Dedup key = wait id; the PENDING →
+        // SATISFIED guard above fires once.
+        let reason =
+            format!("[wait {wait_id} satisfied] mode={mode} conditions={conditions_json} timer_at={timer_at:?}");
+        match wait_call_id(tx, &instance_id, epoch, &wait_id)? {
+            // answer the wait call itself: the wire then keeps the assistant
+            // tool_calls and their responses paired
+            Some(call_id) => {
+                append_context(
+                    tx,
+                    &instance_id,
+                    epoch,
+                    "tool_result",
+                    &json!({"role": "tool", "tool_call_id": call_id, "content": reason}),
+                    Some(&wait_id),
+                    &json!([wait_id]),
+                )?;
+            }
+            // no call to answer (an entry stored without tool_calls): a plain
+            // note, never a tool message with an id nothing references
+            None => {
+                append_context(
+                    tx,
+                    &instance_id,
+                    epoch,
+                    "note",
+                    &json!({"role": "user", "content": reason}),
+                    Some(&wait_id),
+                    &json!([wait_id]),
+                )?;
+            }
+        }
         // WAITING → READY is the ready-intent registration of §3; a phase
         // that already advanced (user input, reset) is not rewritten
         tx.execute(
@@ -5071,7 +5114,8 @@ mod tests {
         .expect("send");
         drain(&mut ctl, "i1");
         assert_eq!(wait_state(&ctl, &wait_id), "SATISFIED");
-        // the model sees why it woke; the note lands after the message
+        // the model sees why it woke; this entry carried no tool_call, so the
+        // wake lands as a plain note
         let note: String = ctl
             .connection()
             .query_row(
@@ -5089,6 +5133,48 @@ mod tests {
             })
             .unwrap();
         assert_eq!(notes, 1);
+        cleanup(&path);
+    }
+
+    /// A wait answers the tool_call it came from: strict wire endpoints reject
+    /// an assistant `tool_calls` entry whose ids have no tool response.
+    #[test]
+    fn the_wake_answers_the_wait_tool_call() {
+        let (mut ctl, path) = control("wake-call");
+        create_instance(&mut ctl, "i1");
+        create_instance(&mut ctl, "i2");
+        grant_message(&mut ctl, "i2", "i1", "a");
+        let request = begin_and_complete(&mut ctl, "wc", "i1", 0);
+        ctl.submit(
+            cmd(
+                "imp-wc",
+                "import_response",
+                json!({"request_id": request, "decision_id": "d-wc",
+                       "entry": {"role": "assistant", "content": "",
+                                 "tool_calls": [{"id": "wait-1", "type": "function",
+                                                 "function": {"name": "wait", "arguments": "{}"}}]},
+                       "intents": [],
+                       "wait": {"mode": "ANY", "conditions": [{"kind": "message", "from": "i2"}]}}),
+            ),
+            Identity::System,
+        )
+        .expect("import wait with a call id");
+        ctl.submit(
+            cmd("sm-wc", "send_message", json!({"recipient": "i1", "text": "ping"})),
+            Identity::Instance("i2".into()),
+        )
+        .expect("send");
+        drain(&mut ctl, "i1");
+        let answer: String = ctl
+            .connection()
+            .query_row(
+                "SELECT message_json FROM context_entries WHERE instance_id = 'i1' AND kind = 'tool_result' ORDER BY idx DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let answer: Json = serde_json::from_str(&answer).unwrap();
+        assert_eq!(answer["tool_call_id"], json!("wait-1"));
         cleanup(&path);
     }
 

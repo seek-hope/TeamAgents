@@ -198,6 +198,39 @@ mod tests {
         assert_eq!(entries[0].message["content"].as_str().unwrap().len(), 40_000);
     }
 
+    /// A message (or note) landing between a call and its answer must not
+    /// leave the wire with an unanswered tool call: strict endpoints reject
+    /// that. The stored order is untouched; only the wire copy pairs them.
+    #[test]
+    fn wire_view_pairs_an_answer_that_landed_after_other_entries() {
+        let kernel = kernel();
+        let entries = vec![
+            kernel.user_entry("ask the peer", "e1"),
+            ContextEntry::new(
+                "e2",
+                EntryKind::Assistant,
+                json!({"role": "assistant", "content": "",
+                       "tool_calls": [{"id": "wait-1", "type": "function",
+                                       "function": {"name": WAIT_TOOL, "arguments": "{}"}}]}),
+            ),
+            ContextEntry::new("e3", EntryKind::Note, json!({"role": "user", "content": "[message from the peer]"})),
+            ContextEntry::new(
+                "e4",
+                EntryKind::ToolResult,
+                json!({"role": "tool", "tool_call_id": "wait-1", "content": "[wait satisfied]"}),
+            ),
+            ContextEntry::new("e5", EntryKind::Assistant, json!({"role": "assistant", "content": "done"})),
+        ];
+        let request = kernel.prepare_request(&entries, "req-pair");
+        let roles: Vec<&str> = request.messages.iter().map(|message| message["role"].as_str().unwrap_or("")).collect();
+        // system, user, assistant(wait), tool(answer), user(message), assistant
+        assert_eq!(roles, vec!["system", "user", "assistant", "tool", "user", "assistant"]);
+        assert_eq!(request.messages[3]["tool_call_id"], json!("wait-1"));
+        // a view with no dangling call is left in stored order
+        let already_paired = kernel.prepare_request(&entries[..4], "req-pair-2");
+        assert_eq!(already_paired.messages[3]["tool_call_id"], json!("wait-1"));
+    }
+
     #[test]
     fn a_sole_wait_call_is_the_wait_output() {
         let kernel = kernel();

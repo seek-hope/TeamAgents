@@ -29,10 +29,7 @@ impl ChatCompletions {
     /// the config layer reads env/local credentials, this adapter never
     /// touches the environment itself.
     pub fn new(base: impl Into<String>, api_key: impl Into<String>, timeout: Duration) -> Result<Self, String> {
-        let client = reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(30))
-            .build()
-            .map_err(|e| format!("chat client: {e}"))?;
+        let client = super::http_client()?;
         Ok(ChatCompletions { client, base: base.into(), api_key: api_key.into(), timeout, context_window: None })
     }
 
