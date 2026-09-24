@@ -322,8 +322,12 @@ pub struct Driver<P: Provider> {
 /// Start the driver over its state root. Bootstrap commands use fixed command
 /// ids, so restarting over an existing session replays receipts instead of
 /// duplicating instances, goals or input (§6.3 row 1).
-pub async fn start<P: Provider + 'static>(config: DriverConfig<P>) -> Result<DriverHandle, String> {
+pub async fn start<P: Provider + 'static>(mut config: DriverConfig<P>) -> Result<DriverHandle, String> {
     std::fs::create_dir_all(&config.state_root).map_err(|e| format!("state root: {e}"))?;
+    // the isolated shell binds absolute source paths: a relative state root
+    // would reach bwrap as a relative bind and fail with a confusing error
+    config.state_root = std::fs::canonicalize(&config.state_root)
+        .map_err(|e| format!("state root {}: {e}", config.state_root.display()))?;
     let lock = crate::jobs::state_lock(&config.state_root.join("coordinator.lock"))?;
     let storage = Storage::open(&config.session_db, &config.session_id, true, config.storage_queue)?;
     let session_id = config.session_id.clone();
@@ -401,11 +405,15 @@ fn storage_full(error: &str) -> bool {
 }
 
 pub(crate) fn spawn_driver<P: Provider + 'static>(
-    config: DriverConfig<P>,
+    mut config: DriverConfig<P>,
     storage: &Storage,
 ) -> Result<SpawnedDriver, String> {
     std::fs::create_dir_all(config.state_root.join("jobs")).map_err(|e| format!("jobs dir: {e}"))?;
     std::fs::create_dir_all(config.state_root.join("artifacts")).map_err(|e| format!("artifacts dir: {e}"))?;
+    // one coordinator per state root: the supervisor hands its own (possibly
+    // relative) root down, and isolated shell binds need an absolute path
+    config.state_root = std::fs::canonicalize(&config.state_root)
+        .map_err(|e| format!("state root {}: {e}", config.state_root.display()))?;
     let shared = Arc::new(Shared {
         wake: tokio::sync::Notify::new(),
         shutdown: AtomicBool::new(false),

@@ -216,12 +216,16 @@ fn stored_profile(json: &Json, fallback: &KernelProfile) -> KernelProfile {
 
 /// Start the supervisor: one coordinator lock, one storage worker, then a
 /// discovery loop that spawns and retires per-instance drivers (§5/§7).
-pub async fn start<P, F>(config: SupervisorConfig<P, F>) -> Result<SupervisorHandle, String>
+pub async fn start<P, F>(mut config: SupervisorConfig<P, F>) -> Result<SupervisorHandle, String>
 where
     P: Provider + 'static,
     F: Fn(&str, &KernelProfile) -> P + Send + Sync + 'static,
 {
+    // every instance driver inherits this root; isolated shell binds need it
+    // absolute even when the caller passed a relative path
     std::fs::create_dir_all(&config.state_root).map_err(|e| format!("state root: {e}"))?;
+    config.state_root = std::fs::canonicalize(&config.state_root)
+        .map_err(|e| format!("state root {}: {e}", config.state_root.display()))?;
     let lock = crate::jobs::state_lock(&config.state_root.join("coordinator.lock"))?;
     let storage = Storage::open(&config.session_db, &config.session_id, true, config.storage_queue)?;
     bootstrap(&storage, &config.leader_id, &config.workspace.to_string_lossy(), &config.goal_limits).await?;

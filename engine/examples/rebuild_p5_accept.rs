@@ -35,7 +35,7 @@ fn cmd(id: impl Into<String>, method: &str, params: Json) -> Command {
 fn usage() -> ! {
     eprintln!(
         "usage: rebuild_p5_accept --evidence DIR --workspace DIR --lead KEY --worker KEY \\
-[--permissions approved_scope|full_auto] [--timeout S] [--dry-run] [--require-file]"
+[--permissions approved_scope|full_auto] [--timeout S] [--dry-run] [--require-file] [--shell-only]"
     );
     std::process::exit(2);
 }
@@ -48,6 +48,7 @@ async fn main() -> Fallible<()> {
     let mut timeout_s = 600u64;
     let mut dry_run = false;
     let mut require_file = false;
+    let mut shell_only = false;
     while let Some(flag) = args.next() {
         let value = |args: &mut std::iter::Skip<std::env::Args>| args.next().unwrap_or_else(|| usage());
         match flag.as_str() {
@@ -59,6 +60,7 @@ async fn main() -> Fallible<()> {
             "--timeout" => timeout_s = value(&mut args).parse().unwrap_or_else(|_| usage()),
             "--dry-run" => dry_run = true,
             "--require-file" => require_file = true,
+            "--shell-only" => shell_only = true,
             _ => usage(),
         }
     }
@@ -125,7 +127,14 @@ async fn main() -> Fallible<()> {
         leader_profile: KernelProfile {
             model: lead.clone(),
             instructions: teamagents_engine::v2::daemon::LEADER_INSTRUCTIONS.into(),
-            tools: teamagents_engine::reference::basic_tool_schemas(true, true),
+            tools: {
+                let all = teamagents_engine::reference::basic_tool_schemas(true, true);
+                if shell_only {
+                    all.into_iter().filter(|tool| tool["function"]["name"] == json!("shell")).collect()
+                } else {
+                    all
+                }
+            },
             options: json!({}),
             context_window: None, // resolved from the catalog profile (native)
         },
