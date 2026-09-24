@@ -63,6 +63,17 @@
 - **同时新增**：`core/tests/v2_invariants.rs`（穷举长度 ≤ 2 的命令序列 + 60 条固定种子游走，每步重查
   13 组不变量；带覆盖率断言与"检查器灵敏度"反向验证）。
 
+## 4. V-P2：压缩请求可以被当成回合导入（代码级不变量测试发现）
+
+- **发现方式**：`core/tests/v2_invariants.rs` 的随机游走（覆盖驱动后）走到 `record_attempt` →
+  `import_response` 作用在**压缩请求**上并成功。
+- **根因**：`import_response` 只校验请求存在且为 `PENDING`，不校验 `kind = 'turn'`，于是压缩请求也能
+  走回合导入路径（追加 assistant 条目、开操作、按回合收尾）。压缩请求本该由 `compress_context` 用一段
+  总结提交（§7/A20）；driver 不会这么调，但控制面没有拒绝。
+- **修复**：`core/src/v2/control.rs` 的 `import_response` 在读请求时一并取 `kind`，非 `turn` 直接拒绝并
+  提示改用 `compress_context`。
+- **回归**：`core::v2::control::tests::import_response_refuses_a_compression_request`。
+
 ## 附带修正
 
 - `verification/tla/V2Wait.tla`：取代语义按代码修正为"整批置 CANCELLED 并回答"，并补

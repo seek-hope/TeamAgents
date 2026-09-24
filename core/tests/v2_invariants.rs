@@ -61,6 +61,7 @@ struct Coverage {
     terminated: bool,
     artifact_live: bool,
     compressed: bool,
+    approval_decided: bool,
 }
 
 impl Coverage {
@@ -73,6 +74,7 @@ impl Coverage {
         self.terminated |= other.terminated;
         self.artifact_live |= other.artifact_live;
         self.compressed |= other.compressed;
+        self.approval_decided |= other.approval_decided;
     }
 }
 
@@ -95,6 +97,8 @@ struct Harness {
     entries_seen: HashSet<String>,
     /// 见过被覆盖的条目（`CoverageNeverLifted` 的跨步记忆）
     covered_seen: HashSet<String>,
+    /// 批准 id -> 已见过的决定（`ApprovalDecisionIsFinal` 的跨步记忆）
+    approvals_seen: HashMap<String, String>,
 }
 
 impl Drop for Harness {
@@ -119,6 +123,7 @@ impl Harness {
             settled: HashMap::new(),
             entries_seen: HashSet::new(),
             covered_seen: HashSet::new(),
+            approvals_seen: HashMap::new(),
         }
     }
 
@@ -218,7 +223,13 @@ impl Harness {
         self.rows("SELECT request_id, instance_id, status, COALESCE(selected_attempt_id,''), kind FROM model_requests ORDER BY rowid", &[])
     }
     fn operations(&self) -> Vec<Vec<String>> {
-        self.rows("SELECT operation_id, status, CASE WHEN receipt_json IS NULL THEN '' ELSE 'receipt' END, decision_id FROM operations ORDER BY operation_id", &[])
+        self.rows(
+            "SELECT operation_id, status, CASE WHEN receipt_json IS NULL THEN '' ELSE 'receipt' END, decision_id,
+                    CASE WHEN receipt_json IS NOT NULL
+                              AND json_extract(receipt_json, '$.started') = 1 THEN 'started' ELSE '' END
+             FROM operations ORDER BY operation_id",
+            &[],
+        )
     }
     // ------------------------------------------------------------ invariants --
     /// 这次游走是否走到了值得检查的状态（用来证明游走不是空转）
@@ -236,6 +247,7 @@ impl Harness {
             terminated: exists("SELECT id FROM instances WHERE lifecycle = 'TERMINATED'"),
             artifact_live: exists("SELECT id FROM artifacts WHERE completeness = 'LIVE'"),
             compressed: exists("SELECT id FROM context_entries WHERE compressed_by IS NOT NULL"),
+            approval_decided: exists("SELECT id FROM approvals WHERE status IN ('APPROVED', 'DENIED', 'EXPIRED')"),
         }
     }
 
@@ -490,6 +502,49 @@ impl Harness {
             }
         }
 
+        // A25/RT-06：待批只属于未开动的操作（操作一旦终结，它的批准必须已过期）；
+        // 被拒绝/过期的批准不会有已经发生的效果；批准决定一旦落下不再改写
+        let approvals = self.rows("SELECT id, operation_id, status FROM approvals ORDER BY id", &[]);
+        for row in &approvals {
+            let (approval_id, operation_id, status) = (row[0].clone(), row[1].clone(), row[2].clone());
+            // PENDING → 任何决定都合法（RT-06 的过期就是这一条）；决定落下之后不再改写
+            let decided = |value: &str| matches!(value, "APPROVED" | "DENIED" | "EXPIRED");
+            match self.approvals_seen.get(&approval_id) {
+                Some(previous) if decided(previous) && previous != &status => {
+                    reports.push(format!("ApprovalDecisionIsFinal: approval {approval_id} went {previous} -> {status}"))
+                }
+                Some(_) => {}
+                None => {
+                    self.approvals_seen.insert(approval_id.clone(), status.clone());
+                }
+            }
+            if status != "PENDING" {
+                continue;
+            }
+            if let Some(operation) = operations.iter().find(|op| op[0] == operation_id) {
+                if operation[1] != "PREPARED" {
+                    reports.push(format!(
+                        "PendingApprovalOnlyForPreparedOperation: operation {operation_id} is {} with a pending approval",
+                        operation[1]
+                    ));
+                }
+            }
+        }
+        let denial: HashMap<&str, &str> = approvals.iter().map(|row| (row[1].as_str(), row[2].as_str())).collect();
+        for row in &operations {
+            let started = row[4] == "started" || matches!(row[1].as_str(), "DISPATCH_COMMITTED" | "RUNNING");
+            if !started {
+                continue;
+            }
+            let decision = denial.get(row[0].as_str()).copied().unwrap_or("");
+            if matches!(decision, "DENIED" | "EXPIRED") {
+                reports.push(format!(
+                    "NoEffectAfterDenial: operation {} started while its approval is {decision}",
+                    row[0]
+                ));
+            }
+        }
+
         // 上下文条目：只增不减、槽位连续（TailAppend）、覆盖不许回抬、覆盖指向更晚的总结
         let entries = self.rows(
             "SELECT instance_id, epoch, id, idx, kind, COALESCE(compressed_by, '') FROM context_entries
@@ -579,7 +634,7 @@ impl Harness {
 }
 
 // ------------------------------------------------------------- step kinds --
-const STEPS: usize = 33;
+const STEPS: usize = 34;
 
 /// 按当前状态生成第 `kind` 种命令；前置不成立时返回 None（该步跳过）。
 fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
@@ -599,9 +654,25 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
     let open_tasks: Vec<Vec<String>> =
         tasks.iter().filter(|row| OPEN_TASKS.contains(&row[4].as_str())).cloned().collect();
     let pending_tasks: Vec<Vec<String>> = tasks.iter().filter(|row| row[4] == "PENDING").cloned().collect();
-    let pending_requests: Vec<Vec<String>> = requests.iter().filter(|row| row[2] == "PENDING").cloned().collect();
-    let prepared_ops: Vec<String> =
-        operations.iter().filter(|row| row[1] == "PREPARED").map(|row| row[0].clone()).collect();
+    // turn 请求：import_response 只接受它们（压缩请求由 compress_context 提交）
+    let pending_requests: Vec<Vec<String>> =
+        requests.iter().filter(|row| row[2] == "PENDING" && row[4] == "turn").cloned().collect();
+    // 任何未关闭请求：record_attempt 对两种请求都适用
+    let pending_any: Vec<Vec<String>> = requests.iter().filter(|row| row[2] == "PENDING").cloned().collect();
+    // 可以导入的 turn 请求：已选中一个完整尝试（driver 就是在选中之后导入的）
+    let ready_requests: Vec<Vec<String>> = pending_requests.iter().filter(|row| !row[3].is_empty()).cloned().collect();
+    let prepared_ops: Vec<String> = harness
+        .rows(
+            "SELECT o.operation_id FROM operations o
+             JOIN decisions d ON o.decision_id = d.decision_id
+             JOIN model_requests r ON d.request_id = r.request_id
+             JOIN instances i ON r.instance_id = i.id
+             WHERE o.status = 'PREPARED' AND i.lifecycle = 'ACTIVE'",
+            &[],
+        )
+        .into_iter()
+        .map(|row| row[0].clone())
+        .collect();
     let live_ops: Vec<String> = operations
         .iter()
         .filter(|row| matches!(row[1].as_str(), "DISPATCH_COMMITTED" | "RUNNING"))
@@ -611,7 +682,7 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
     let live_artifacts: Vec<String> =
         artifacts.iter().filter(|row| row[1] == "LIVE").map(|row| row[0].clone()).collect();
     let pending_approvals: Vec<String> =
-        approvals.iter().filter(|row| row[2] == "PENDING").map(|row| row[1].clone()).collect();
+        approvals.iter().filter(|row| row[2] == "PENDING").map(|row| row[0].clone()).collect();
     let compression: Vec<Vec<String>> = harness.rows(
         "SELECT request_id, instance_id FROM model_requests WHERE kind = 'compression' AND status = 'PENDING'",
         &[],
@@ -674,9 +745,9 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity: Identity::Instance(row[0].clone()),
             })
         }
-        // 3: 记录完整尝试
+        // 3: 记录完整尝试（turn 与 compression 请求都有尝试）
         3 => {
-            let row = harness.pick_rows(&pending_requests)?;
+            let row = harness.pick_rows(&pending_any)?;
             Some(Step {
                 label: format!("record_attempt({})", row[0]),
                 command: Command {
@@ -691,7 +762,7 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
         }
         // 4: 导入普通回复
         4 => {
-            let row = harness.pick_rows(&pending_requests)?;
+            let row = harness.pick_rows(&ready_requests)?;
             Some(Step {
                 label: format!("import_reply({})", row[0]),
                 command: Command {
@@ -706,7 +777,7 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
         // 5: 导入等待（未满足 ⇒ 停放）。有未结清任务时等它（可被结清唤醒），
         // 否则等一条永远不会来的用户消息（永久停放也是要检查的状态）
         5 => {
-            let row = harness.pick_rows(&pending_requests)?;
+            let row = harness.pick_rows(&ready_requests)?;
             let condition = match harness.pick_rows(&open_tasks) {
                 Some(task) => json!({"kind": "task", "task_id": task[0]}),
                 None => json!({"kind": "message", "from": "user"}),
@@ -728,7 +799,7 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
         }
         // 6: 导入等待 + 计时器（可被 fire_timer 关闭）
         6 => {
-            let row = harness.pick_rows(&pending_requests)?;
+            let row = harness.pick_rows(&ready_requests)?;
             Some(Step {
                 label: format!("import_wait_timer({})", row[0]),
                 command: Command {
@@ -747,7 +818,7 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
         }
         // 7: 导入完成候选（进 COMPLETION_PENDING）
         7 => {
-            let row = harness.pick_rows(&pending_requests)?;
+            let row = harness.pick_rows(&ready_requests)?;
             Some(Step {
                 label: format!("import_completion({})", row[0]),
                 command: Command {
@@ -967,9 +1038,14 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity: Identity::User,
             })
         }
-        // 22: 重置 epoch
+        // 22: 重置 epoch（安全边界：实例不再有在途回合时才重置，与 driver 一致）
         22 => {
-            let instance = harness.pick(&ids)?.clone();
+            let ready: Vec<String> = instances
+                .iter()
+                .filter(|row| row[2] == "READY" && row[4].is_empty())
+                .map(|row| row[0].clone())
+                .collect();
+            let instance = harness.pick(&ready)?.clone();
             Some(Step {
                 label: format!("reset_instance({instance})"),
                 command: Command {
@@ -980,10 +1056,17 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity: Identity::User,
             })
         }
-        // 23: 生命周期（暂停 / 恢复 / 终止）
+        // 23: 生命周期（暂停 / 恢复 / 终止）。终止同样落在安全边界上：实例处于 READY
         23 => {
-            let instance = harness.pick(&ids)?.clone();
             let lifecycle = ["PAUSED", "ACTIVE", "TERMINATED"][(harness.next_rand() % 3) as usize];
+            let pool: Vec<String> = instances
+                .iter()
+                .filter(|row| {
+                    row[1] != "TERMINATED" && (lifecycle != "TERMINATED" || (row[2] == "READY" && row[4].is_empty()))
+                })
+                .map(|row| row[0].clone())
+                .collect();
+            let instance = harness.pick(&pool)?.clone();
             Some(Step {
                 label: format!("set_lifecycle({instance}, {lifecycle})"),
                 command: Command {
@@ -1034,7 +1117,7 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
             if operations.len() >= 3 {
                 return None;
             }
-            let row = harness.pick_rows(&pending_requests)?;
+            let row = harness.pick_rows(&ready_requests)?;
             Some(Step {
                 label: format!("import_tools({})", row[0]),
                 command: Command {
@@ -1118,6 +1201,19 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                     command_id: String::new(),
                     method: "fail_compression".into(),
                     params: json!({"request_id": row[0], "reason": "summary unavailable"}),
+                },
+                identity: Identity::System,
+            })
+        }
+        // 33: 取消一个 PREPARED 操作（待批批准随之过期，RT-06 的过期路径）
+        33 => {
+            let operation = harness.pick(&prepared_ops)?.clone();
+            Some(Step {
+                label: format!("cancel_operation({operation})"),
+                command: Command {
+                    command_id: String::new(),
+                    method: "cancel_operation".into(),
+                    params: json!({"operation_id": operation}),
                 },
                 identity: Identity::System,
             })
@@ -1206,14 +1302,20 @@ fn spec_invariants_hold_over_random_walks() {
         let mut harness = Harness::new("walk");
         harness.rng = 0x9E3779B97F4A7C15 ^ (walk.wrapping_mul(0xD1B54A32D192ED03) | 1);
         harness.check("init");
+        let mut taken: HashMap<String, usize> = HashMap::new();
         for _ in 0..24 {
-            // 只在"当前能用"的命令里挑：否则游走大部分步会被前置条件浪费掉
+            // 只在"当前能用"的命令里挑，并优先挑本游走里用得最少的种类（覆盖驱动）：
+            // 否则游走会反复做同一件安全的事，永远走不到深层链路
             let mut options: Vec<Step> = (0..STEPS).filter_map(|kind| make_step(&mut harness, kind)).collect();
             if options.is_empty() {
                 break;
             }
+            let key = |step: &Step| step.label.split('(').next().unwrap_or("").to_string();
+            let least = options.iter().map(|step| *taken.get(&key(step)).unwrap_or(&0)).min().unwrap_or(0);
+            options.retain(|step| *taken.get(&key(step)).unwrap_or(&0) == least);
             let index = (harness.next_rand() % options.len() as u64) as usize;
             let step = options.swap_remove(index);
+            *taken.entry(key(&step)).or_insert(0) += 1;
             let label = step.label.clone();
             let _ = harness.run_step(step);
             harness.check(&label);
@@ -1230,6 +1332,7 @@ fn spec_invariants_hold_over_random_walks() {
         ("实例终止", reached.terminated),
         ("制品 LIVE", reached.artifact_live),
         ("压缩提交（有条目被覆盖）", reached.compressed),
+        ("批准已决定（批准/拒绝/过期）", reached.approval_decided),
     ] {
         assert!(seen, "随机游走没有覆盖到：{name}");
     }

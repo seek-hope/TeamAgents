@@ -212,24 +212,34 @@ ACTIVE 时被准入，之后目标结清，它仍会开操作并把用量结算�
 cargo test --offline --manifest-path core/Cargo.toml --test v2_invariants
 ```
 
-- **穷举**：长度 ≤ 2 的命令序列，每条从全新数据库开始（33 种命令 ⇒ 1,122 条序列），含被拒绝的组合；
-- **随机游走**：60 条固定种子的 24 步游走，每步只在"当前可用"的命令里挑（否则大部分步会被前置条件浪费），
-  种子固定 ⇒ 轨迹可复现；
+- **穷举**：长度 ≤ 2 的命令序列，每条从全新数据库开始（34 种命令 ⇒ 1,190 条序列），含被拒绝的组合；
+- **随机游走**：60 条固定种子的 24 步游走，每步只在"当前可用"的命令里挑，并优先挑本次游走用得最少的
+  命令种类（覆盖驱动，否则会反复做同一件安全的事而走不到深层链路）；种子固定 ⇒ 轨迹可复现；
 - **每步之后重查**：`TypeOK`、`SettledIsFinal`、`ReturnPathOnlyWhileOpen`、`DependenciesPointBackwards`、
   `NoOpenTaskOnDeadAssignee`、`NoStaleActiveGoal`、`ReservationReleased`、`OneActiveRequest`（只对 turn
   请求计数：压缩请求并发且不动相位）、`SelectionIsComplete`、`ResolvedWaitIsAnswered`、
   `NoEffectBeforeApproval`、`LiveIsPersisted`、`TailAppend`、`NoEntryIsEverLost`、
-  `CoveragePointsForward`、`CoverageNeverLifted`、`NewestSummaryIsVisible`、上下文 epoch 一致性；
+  `CoveragePointsForward`、`CoverageNeverLifted`、`NewestSummaryIsVisible`、`ApprovalDecisionIsFinal`
+  （决定落下后不再改写，PENDING → 过期合法）、`PendingApprovalOnlyForPreparedOperation`（RT-06：
+  操作终结后不得留下待批）、`NoEffectAfterDenial`、上下文 epoch 一致性；
 - **覆盖率断言**：游走必须真的走到"等被解决 / 目标结清 / 任务结清 / 操作终态 / epoch 重置 / 实例终止 /
-  制品 LIVE / 压缩提交"，否则测试失败（防止"空转通过"）；
+  制品 LIVE / 压缩提交 / 批准已决定"，否则测试失败（防止"空转通过"）；
 - **反向验证**（`the_invariant_checker_detects_broken_states`）：人为破坏状态（未知状态值、终态被改写、
   悬挂目标指针）时检查器必须报出来，否则"全部通过"没有意义。
 
-这条可执行对应已经抓到一处代码问题（V-P1，见下），并已被两个反例探针覆盖（委派到已结清目标、
-非承接者结清任务在代码里都必须被拒绝）。
+这条可执行对应已经抓到两处代码问题（V-P1 与 V-P2，见下），并覆盖多个"必须被拒绝"的反例探针
+（委派到已结清目标、非承接者结清任务在代码里都必须被拒绝）。
 
 边界：这是**有界穷举 + 采样**，不是证明；它检查"实现状态是否满足不变量"，不检查活性，也不覆盖并发交错
 （`Control::submit` 在单个连接上串行，交错属于 driver 层）。
+
+### 发现 V-P2（代码级不变量测试发现，已修复）
+
+随机游走走出了"把压缩请求当回合导入"的路径：`import_response` 只检查请求是否 `PENDING`，不检查
+`kind`，于是一个压缩请求可以被当成回合导进上下文——追加 assistant 条目、开操作、按回合收尾，而压缩
+请求本来只该由 `compress_context` 用一段总结提交（§7/A20）。驱动不会这么做，但控制面没有拒绝。
+修复：`import_response` 拒绝 `kind != 'turn'` 的请求并提示用 `compress_context`；回归
+`import_response_refuses_a_compression_request`。
 
 ### 发现 V-P1（代码级不变量测试发现，已修复）
 

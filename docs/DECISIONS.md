@@ -28,7 +28,10 @@
   发现终止实例后 phase 停在 `MODEL_PENDING` 而 `active_request_id` 指向一个已取消的请求；修复为终止分支
   与 `reset_instance`/`fail_request` 一样归一化执行指针。回归
   `terminating_an_instance_normalizes_its_execution_pointer`。
-- 证据：`make verify-model-all`（控制面/制品/等待/任务四个模块穷举全绿）、`make check`（含
+- **V-P2 压缩请求可被当作回合导入**：同一套可执行对应测试走到 `import_response` 作用在压缩请求上
+  并成功；修复为控制面拒绝 `kind != 'turn'` 的导入（压缩请求由 `compress_context` 提交），回归
+  `import_response_refuses_a_compression_request`。
+- 证据：`make verify-model-all`（控制面/制品/等待/任务/压缩五个模块穷举全绿）、`make check`（含
   `core/tests/v2_invariants.rs`：穷举长度 ≤ 2 命令序列 + 60 条固定种子游走 + 覆盖率断言 + 检查器灵敏度
   反向验证）；性质↔代码↔验收编号映射见 [verification/README.md](../verification/README.md)。
 

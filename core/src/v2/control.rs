@@ -2311,11 +2311,20 @@ fn import_response(tx: &Connection, session_id: &str, params: &Json, identity: &
     if wait.is_some() && (!intents.is_empty() || completion.is_some()) {
         return Err("import_response: a wait excludes tool intents and completion".into());
     }
-    let (request_instance, epoch, request_status): (String, i64, String) = tx
-        .query_row("SELECT instance_id, epoch, status FROM model_requests WHERE request_id = ?1", [request_id], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-        })
+    let (request_instance, epoch, request_status, request_kind): (String, i64, String, String) = tx
+        .query_row(
+            "SELECT instance_id, epoch, status, kind FROM model_requests WHERE request_id = ?1",
+            [request_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
         .map_err(|e| format!("import_response request {request_id}: {e}"))?;
+    if request_kind != "turn" {
+        // a compression request is answered by a summary, committed through
+        // compress_context; importing it as a turn would append an assistant
+        // entry and open operations on a request that only exists to shrink
+        // the context (§7/A20)
+        return Err(format!("request {request_id} is a {request_kind} request; commit it with compress_context"));
+    }
     if request_status != "PENDING" {
         return Err(format!("request {request_id} is {request_status}, already imported or failed"));
     }
@@ -6747,6 +6756,43 @@ mod tests {
             .expect("replay");
         assert_eq!(again["already_closed"], json!(true));
         assert_eq!(context_count(&ctl, "i1"), 2);
+        cleanup(&path);
+    }
+
+    /// 压缩请求的响应只能由 compress_context 提交：import_response 拒绝把它当成回合导进
+    /// 上下文（不变量测试 v2_invariants 的随机游走走出了这条路径）。
+    #[test]
+    fn import_response_refuses_a_compression_request() {
+        let (mut ctl, path) = control("import-compression");
+        create_instance(&mut ctl, "i1");
+        ctl.submit(
+            cmd("bc-1", "begin_compression", json!({"instance_id": "i1", "request_id": "cr-1"})),
+            Identity::Instance("i1".into()),
+        )
+        .expect("begin compression");
+        ctl.submit(
+            cmd("at-1", "record_attempt", json!({"attempt_id": "at-cr", "request_id": "cr-1", "status": "COMPLETE"})),
+            Identity::System,
+        )
+        .expect("attempt");
+        let err = ctl
+            .submit(
+                cmd(
+                    "imp-cr",
+                    "import_response",
+                    json!({"request_id": "cr-1", "decision_id": "d-cr",
+                           "entry": {"role": "assistant", "content": "summary?"}, "intents": []}),
+                ),
+                Identity::System,
+            )
+            .unwrap_err();
+        assert!(err.contains("compress_context"), "{err}");
+        // the compression request is still open and untouched
+        let status: String = ctl
+            .connection()
+            .query_row("SELECT status FROM model_requests WHERE request_id = 'cr-1'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(status, "PENDING");
         cleanup(&path);
     }
 
