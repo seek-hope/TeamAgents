@@ -12,28 +12,15 @@ pub fn v2_root() -> std::path::PathBuf {
 }
 
 pub mod bound;
-pub mod chat;
 pub mod cli;
-pub mod codex;
 pub mod config;
-pub mod core_client;
-pub mod gateway;
-pub mod history;
-pub mod hooks;
 pub mod jobs;
 pub mod mcp;
 pub mod observability;
 pub mod providers;
 pub mod reference;
-pub mod review;
-pub mod runtime;
-pub mod scripted;
-pub mod session;
-pub mod sessions;
-mod stream;
 pub mod tools;
 pub mod v2;
-pub mod worker;
 pub mod workspace;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

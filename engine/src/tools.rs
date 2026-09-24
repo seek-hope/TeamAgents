@@ -84,10 +84,6 @@ impl ArtifactPaths {
         Self { shared, private_output: None }
     }
 
-    pub(crate) fn for_member(shared: PathBuf, member_dir: &Path) -> Self {
-        Self { shared: Some(shared), private_output: Some(member_dir.join("tool-output")) }
-    }
-
     fn shared_path(&self, key: &str) -> Result<PathBuf, String> {
         let path = resolve_artifact(self.shared.as_ref(), key)?;
         // Older releases mixed unowned automatic logs with shared deliverables.
