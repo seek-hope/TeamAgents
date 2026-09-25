@@ -295,6 +295,41 @@ pub fn doctor(state_root: Option<PathBuf>) -> i32 {
                 ),
             }
         }
+        // The web half of the same section (D-78): the executor resolves these lazily
+        // at the first call, so a typo or an unset credential otherwise shows up only
+        // in a tool receipt. Name each declared binding and whether its credential is
+        // there; a binding the session could never offer is a FAIL.
+        for (name, binding) in &catalog.tools {
+            if !matches!(binding.kind.as_str(), "web_search" | "web_fetch") {
+                continue;
+            }
+            let provider = binding.provider.as_deref().unwrap_or("anysearch");
+            let credential = binding.api_key_env.as_deref();
+            let present = credential.map(|key| std::env::var(key).is_ok());
+            // the search provider is chosen by name; a name this build does not speak
+            // is reported on the binding's own row as well as in the verdict below
+            let supported = binding.kind != "web_search" || provider == "anysearch";
+            optional_check(
+                &mut results,
+                &format!("tools.{name}"),
+                present.unwrap_or(true) && supported,
+                match (credential, present) {
+                    _ if !supported => format!(
+                        "{} provider {provider:?} is not one this build speaks (anysearch)",
+                        binding.kind
+                    ),
+                    (Some(key), Some(false)) => format!(
+                        "{} via {provider:?} needs {key}, which is unset: the tool reports a capability state instead of failing the session",
+                        binding.kind
+                    ),
+                    (Some(key), _) => format!("{} via {provider:?}, credential {key} is set", binding.kind),
+                    (None, _) => format!("{} via {provider:?}, no api_key_env configured", binding.kind),
+                },
+            );
+        }
+        if let Err(error) = crate::tools::web_tools(catalog, &default_bindings()) {
+            check(&mut results, "web tools", false, error);
+        }
         // a session with neither ceiling runs until the user stops it, so the
         // user should see what (if anything) bounds their goals
         let tokens = catalog.limits.max_total_tokens;
@@ -386,6 +421,12 @@ pub fn daemon(state_root: Option<String>, cwd: Option<String>, model: Option<Str
     daemon_run(state_root, cwd, model, full_auto)
 }
 
+/// The capabilities a session binds (D-78): the daemon boots with this list and
+/// `doctor` reports the surface through the same one.
+fn default_bindings() -> Vec<String> {
+    crate::bound::DEFAULT_BINDINGS.iter().map(|name| (*name).to_string()).collect()
+}
+
 fn daemon_run(state_root: Option<String>, cwd: Option<String>, model: Option<String>, full_auto: bool) -> i32 {
     match daemon_boot(state_root, cwd, model, full_auto) {
         Ok(()) => 0,
@@ -460,7 +501,7 @@ fn daemon_boot(
             // `mode = "full_auto"` silently ran in approved_scope.
             permissions: if full_auto { "full_auto".into() } else { crate::config::permission_mode_from_config()? },
             catalog,
-            bindings: vec!["files".into(), "shell".into(), "web".into(), "skills".into()],
+            bindings: default_bindings(),
             max_retries: 2,
             storage_queue: 256,
             poll: Duration::from_millis(100),

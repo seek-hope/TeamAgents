@@ -167,6 +167,15 @@ impl DriverHandle {
 
     /// Cancel the in-flight model request: the local read is abandoned and
     /// the request closes; a late provider answer is archived, never applied.
+    /// Cancel this instance's in-flight turn: abort the attempt a provider is
+    /// streaming and close the request at the control plane.
+    ///
+    /// ponytail: no surface calls this. Cancelling *one turn* without pausing or
+    /// terminating the instance is the open question of D-63 ("should the runtime
+    /// interrupt a running turn instead of holding the input to the boundary?"), so
+    /// the substrate is kept rather than deleted — with this note, so it is not
+    /// mistaken for a live lever (`teamagents instances pause --id` is the lever that
+    /// exists today, and it stops the instance, not one turn).
     pub async fn cancel_turn(&self) -> Result<Json, String> {
         if let Some(cancel) = self.shared.cancel_attempt.lock().unwrap().as_ref() {
             cancel.cancel();

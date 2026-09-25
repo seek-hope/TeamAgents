@@ -1142,7 +1142,6 @@ dependencies = [
  "teamagents-core",
  "tokio",
  "toml",
- "toml_edit",
  "ureq",
  "url",
  "uuid",

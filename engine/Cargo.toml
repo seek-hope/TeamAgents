@@ -12,7 +12,6 @@ rusqlite = { version = "0.40.2", features = ["bundled"] }
 ureq = { version = "2", features = ["json"] }
 url = "2"
 toml = "0.8"
-toml_edit = "0.22"
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
 # Async transport. Keep exactly one production HTTP stack: do not add a second

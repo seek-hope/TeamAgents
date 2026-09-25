@@ -115,66 +115,6 @@ impl CustomProvider {
     }
 }
 
-/// Preserve comments and unrelated settings; serialize concurrent UI writers.
-pub fn save_custom_provider(name: &str, profile: &ModelProfile) -> Result<(), String> {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    let path = user_config_path();
-    let parent = path.parent().ok_or("the config path has no parent directory")?;
-    std::fs::create_dir_all(parent).map_err(|e| format!("cannot create the config directory: {e}"))?;
-    let lock = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .mode(0o600)
-        .open(parent.join("config.lock"))
-        .map_err(|e| format!("cannot lock the config: {e}"))?;
-    lock.try_lock().map_err(|_| "another process is editing the config; retry in a moment")?;
-    // Do not replace a symlink's target or silently recover an unreadable config.
-    let original = match std::fs::symlink_metadata(&path) {
-        Ok(meta) if !meta.is_file() => {
-            return Err("the user config must be a regular file; resolve the symlink or directory first".into())
-        }
-        Ok(_) => std::fs::read_to_string(&path).map_err(|e| format!("cannot read the config: {e}"))?,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => return Err(format!("cannot read the config: {e}")),
-    };
-    let existing = parse_user_config(&original)?;
-    if existing.models.contains_key(name) || existing.models.values().any(|p| p.provider == profile.provider) {
-        return Err("a provider or model with this name already exists; pick another name".into());
-    }
-    let mut doc = original.parse::<toml_edit::DocumentMut>().map_err(|e| format!("invalid TOML config: {e}"))?;
-    let serialized = toml::to_string(&std::collections::BTreeMap::from([(
-        "models",
-        std::collections::BTreeMap::from([(name, profile)]),
-    )]))
-    .map_err(|e| format!("cannot encode the provider: {e}"))?;
-    let addition = serialized.parse::<toml_edit::DocumentMut>().map_err(|e| e.to_string())?;
-    if !doc.contains_key("models") {
-        doc["models"] = toml_edit::Item::Table(toml_edit::Table::new());
-    }
-    let models = doc["models"].as_table_like_mut().ok_or("the models key must be a table")?;
-    models.insert(name, addition["models"][name].clone());
-    let updated = doc.to_string();
-    parse_user_config(&updated)?;
-    let tmp = parent.join(format!(".config-{}.tmp", uuid::Uuid::new_v4()));
-    let result = (|| {
-        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp)?;
-        file.write_all(updated.as_bytes())?;
-        file.sync_all()?;
-        // An editor need not take our lock. Refuse a detected concurrent edit.
-        if std::fs::read_to_string(&path).unwrap_or_default() != original {
-            return Err(std::io::Error::other("another program changed the config; retry"));
-        }
-        std::fs::rename(&tmp, &path)
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    result.map_err(|e| format!("saving the provider failed: {e}"))
-}
-
 pub fn state_dir() -> PathBuf {
     xdg_state_home().join(APP)
 }

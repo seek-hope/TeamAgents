@@ -949,12 +949,6 @@ pub(crate) fn web_tools(
     Ok(tools)
 }
 
-/// Load-time check for the web half of a member's bindings (session.rs calls
-/// this while building the member's runner).
-pub fn validate_web_bindings(catalog: &teamagents_core::models::UserConfig, bindings: &[String]) -> Result<(), String> {
-    web_tools(catalog, bindings).map(|_| ())
-}
-
 /// Skills registry roots: user-configured `skills_paths` only (project and
 /// member skill dirs live inside the workspace and are readable with `files`).
 /// Read-only by construction (plan §12.2: selected skills are pre-authorized reads).
@@ -1632,28 +1626,6 @@ pub fn shell_run_stateful(
         shell_state,
         control,
         ShellMode::Sandbox,
-    )
-}
-
-/// Explicit host execution for trusted full-auto callers. A successful command
-/// may leave services running; timeout/cancellation kills its process group.
-pub fn shell_run_host(
-    command: &str,
-    workdir: &Path,
-    timeout_s: u64,
-    artifacts: Option<&Path>,
-    shell_state: Option<&Path>,
-    control: &TurnControl,
-) -> Result<String, String> {
-    shell_run_at(
-        command,
-        workdir,
-        timeout_s,
-        true,
-        OutputLocation { root: artifacts, prefix: ARTIFACTS_PREFIX },
-        shell_state,
-        control,
-        ShellMode::Host,
     )
 }
 
@@ -2576,6 +2548,12 @@ impl TurnControl {
         self.cancelled.store(true, Ordering::SeqCst);
     }
 
+    /// Wait until the current turn's execution lock is free (bounded by `timeout`).
+    ///
+    /// ponytail: no surface calls this either — it is the "let the turn stop
+    /// cleanly after a cancel" half of the same open question as
+    /// `driver::cancel_turn` (D-63's interrupt-or-boundary decision), kept with this
+    /// note so it is not read as a live lever.
     pub fn wait_idle(&self, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         loop {

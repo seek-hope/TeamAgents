@@ -231,6 +231,33 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-78 The declared tool surface is reported, and removed surfaces leave nothing behind (2026-09-26)
+
+The `pub fn`-with-no-caller sweep (D-74 ... D-77) came back to `engine` and found four things, one of which was
+a reporting gap rather than dead code:
+
+| Finding | What it was | What happened |
+|---|---|---|
+| `tools::validate_web_bindings` | a load-time check whose doc said "session.rs calls this while building the member's runner" - a module that no longer exists, so nothing did. The executor resolves `[tools.web]` **lazily**, so a typo'd provider or an unset credential surfaced only in a tool receipt, and `doctor` had no row for web bindings at all (it reports the MCP ones since D-74) | the gap is closed the other way: `doctor` now reports each declared web binding (kind, provider, whether its credential is set, whether the provider is one this build speaks) and a **FAIL** verdict naming the resolution the executor will perform when that fails; the function itself is gone |
+| `config::save_custom_provider` | 59 careful lines (lock file, symlink refusal, `toml_edit` merge) that wrote a provider into the user config - the writer of the `/model` wizard D-40 removed | deleted, together with the now-unused `toml_edit` dependency; a "add a provider" surface would be new product surface and is not what the user asked for |
+| `tools::shell_run_host` | a duplicate wrapper; the live shell path calls `shell_run_at` directly | deleted |
+| `driver::cancel_turn` + `tools::TurnControl::wait_idle` | cancelling one turn (abort the stream, close the request) and waiting for the execution lock to free - the substrate of D-63's **open** question, "should the runtime interrupt a running turn instead of holding the input to the boundary?" | **kept**, each with a `ponytail:` note saying that no surface calls it, which live lever exists (`teamagents instances pause --id` stops the instance, not one turn) and that answering the question is what would wire them |
+
+One list, one surface: `bound::DEFAULT_BINDINGS` is now the single place naming what a session binds
+(`files`, `shell`, `web`, `skills`), and both the daemon boot and `doctor` use it - before, that literal lived
+in `cli::daemon_boot` only, so a report had no way to describe the surface the session actually runs with.
+
+Evidence: `cli::doctor_probes_isolation_and_config_errors` now drives three shapes through the real binary -
+`[WARN] tools.search` with `api_key_env` unset ("reports a capability state instead of failing the session"),
+`[ok  ] tools.search` once the variable is set, and `[WARN] tools.bad` ("provider \"nosuch\" is not one this
+build speaks (anysearch)") next to `[FAIL] web tools` naming the same resolution failure for a `required`
+binding. `make check` is green.
+
+Ceiling: `doctor` *reports*; it does not fail the boot for an optional web binding, because the design says a
+missing credential is a capability state at tool time (a `required` one still fails the member's start). And
+the deleted writers are gone from the tree, not from history: `git log -S` finds them if a provider-editing
+surface is ever wanted.
+
 ## D-77 The composer's history and word editing are wired (2026-09-26)
 
 The dead-code sweep that produced D-74/D-75/D-76 looked at every `pub fn` with no caller, and

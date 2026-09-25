@@ -26,9 +26,13 @@ pub struct BoundTools {
 }
 
 /// Bindings the product implements natively: binding one of these *is* the
-/// authorization for the capability, so they are never looked up in the
-/// user catalog as MCP services (plan §12.1).
-const BUILTIN_TOOL_BINDINGS: &[&str] = &["files", "shell", "web", "skills"];
+/// authorization for the capability, so they are never looked up in the user
+/// catalog as MCP services (plan §12.1) — and they are exactly what a session
+/// binds by default (D-78): the daemon boots with this list, `doctor` reports the
+/// surface through the same one, and `web` expands to the configured web bindings.
+/// One list means a report can never describe a surface other than the one the
+/// session runs with.
+pub const DEFAULT_BINDINGS: &[&str] = &["files", "shell", "web", "skills"];
 
 impl BoundTools {
     pub fn load(catalog: &UserConfig, bindings: &[String]) -> Result<BoundTools, String> {
@@ -40,7 +44,7 @@ impl BoundTools {
         let mut tools: Vec<BoundTool> = vec![];
         let mut selected: Vec<(String, ToolBinding)> = vec![];
         for name in bindings {
-            if BUILTIN_TOOL_BINDINGS.contains(&name.as_str()) {
+            if DEFAULT_BINDINGS.contains(&name.as_str()) {
                 continue; // built-in capabilities, not catalog services
             }
             let Some(binding) = catalog.tools.get(name) else {

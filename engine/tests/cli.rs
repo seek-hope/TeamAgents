@@ -125,6 +125,30 @@ fn doctor_probes_isolation_and_config_errors() {
     assert!(with_tools.contains("not runnable"), "{with_tools}");
     assert!(with_tools.contains("[ok  ] tools.remote"), "{with_tools}");
 
+    // D-78: the web half of the same section is reported too — each declared binding
+    // and whether its credential is there (the executor resolves these lazily, so a
+    // missing key otherwise shows up only in a tool receipt)
+    std::fs::write(
+        config.join("config.toml"),
+        "[models.m]\nprovider=\"openai\"\nmodel=\"x\"\n\n\
+         [tools.search]\nkind = \"web_search\"\nprovider = \"anysearch\"\n\
+         url = \"https://api.anysearch.com/v1/search\"\napi_key_env = \"TA_DOCTOR_WEB_KEY\"\n",
+    )
+    .unwrap();
+    let without_key = run(&home.join("state"));
+    assert!(without_key.contains("[WARN] tools.search"), "{without_key}");
+    assert!(without_key.contains("TA_DOCTOR_WEB_KEY, which is unset"), "{without_key}");
+    let with_key = Command::new(env!("CARGO_BIN_EXE_teamagents"))
+        .arg("doctor")
+        .env("XDG_STATE_HOME", home.join("state"))
+        .env("XDG_CONFIG_HOME", home.join("config"))
+        .env("TA_DOCTOR_WEB_KEY", "test-value")
+        .output()
+        .expect("run doctor");
+    let with_key = String::from_utf8_lossy(&with_key.stdout).into_owned();
+    assert!(with_key.contains("[ok  ] tools.search"), "{with_key}");
+    assert!(with_key.contains("credential TA_DOCTOR_WEB_KEY is set"), "{with_key}");
+
     // a wrong type in [permissions] is an error, not a silent default
     std::fs::write(config.join("config.toml"), "[permissions]\ntrust_project_tools = \"yes\"\n").unwrap();
     let broken = run(&home.join("state"));
