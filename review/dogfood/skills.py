@@ -18,6 +18,7 @@ It is a real-model check: it needs `DEEPSEEK_API_KEY` (and `KIMI_API_KEY` for ki
 model's native window (D-36), writes only under `--state-dir`, and is not part of `make check`.
 """
 import argparse
+import atexit
 import json
 import os
 import pathlib
@@ -87,6 +88,16 @@ def entries_of(state_root: pathlib.Path) -> list[str]:
         "SELECT message_json FROM context_entries WHERE instance_id = 'i-leader' ORDER BY idx")]
 
 
+
+def stop_daemon(state_root: pathlib.Path) -> None:
+    """Stop the daemon this probe started.
+
+    `exec` autostarts one and it is detached on purpose (background work survives a client exit, §9), so
+    without this a probe would leave a live session behind on the user's machine. Registered with `atexit`,
+    which also covers the early returns above.
+    """
+    subprocess.run(["pkill", "-f", f"daemon --state-root {state_root}"], capture_output=True)
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--provider", default="deepseek", choices=sorted(MODELS))
@@ -114,6 +125,7 @@ def main() -> int:
         f'skills_paths = ["{skills}"]\n\n' + MODELS[args.provider]
     )
     state_root = root / "root"
+    atexit.register(stop_daemon, root)
     env = {**os.environ, "XDG_CONFIG_HOME": str(root / "config"), "XDG_STATE_HOME": str(root / "state")}
     failures: list[str] = []
 

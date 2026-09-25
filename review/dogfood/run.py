@@ -18,6 +18,7 @@ Everything lands under --state-dir (default: a fresh /tmp directory); nothing ou
 touched, and the repository's frozen fixtures are only read.
 """
 import argparse
+import atexit
 import json
 import pathlib
 import shutil
@@ -79,6 +80,16 @@ def session_summary(state_root: pathlib.Path) -> tuple[int, str, list[str]]:
     return requests, workspace, calls
 
 
+
+def stop_daemon(state_root: pathlib.Path) -> None:
+    """Stop the daemon this probe started.
+
+    `exec` autostarts one and it is detached on purpose (background work survives a client exit, §9), so
+    without this a probe would leave a live session behind on the user's machine. Registered with `atexit`,
+    which also covers the early returns above.
+    """
+    subprocess.run(["pkill", "-f", f"daemon --state-root {state_root}"], capture_output=True)
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task", required=True, help="a directory name under review/eval/r2-p6/tasks")
@@ -95,6 +106,7 @@ def main() -> int:
 
     fixture, prompt, check = task_files(args.task)
     root = pathlib.Path(args.state_dir or f"/tmp/ta-dogfood-{args.task}")
+    atexit.register(stop_daemon, root)
     workspace = root / "ws"
     shutil.rmtree(root, ignore_errors=True)
     workspace.mkdir(parents=True)

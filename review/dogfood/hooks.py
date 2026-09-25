@@ -16,6 +16,7 @@ one file write and one shell command and checks: the write happened, the shell c
 told the reason, the hook saw the real payloads, and the notify stream carries real events with real ids.
 """
 import argparse
+import atexit
 import json
 import os
 import pathlib
@@ -83,6 +84,16 @@ def write_script(path: pathlib.Path, body: str) -> None:
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
+
+def stop_daemon(state_root: pathlib.Path) -> None:
+    """Stop the daemon this probe started.
+
+    `exec` autostarts one and it is detached on purpose (background work survives a client exit, §9), so
+    without this a probe would leave a live session behind on the user's machine. Registered with `atexit`,
+    which also covers the early returns above.
+    """
+    subprocess.run(["pkill", "-f", f"daemon --state-root {state_root}"], capture_output=True)
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", default="veto", choices=["veto", "broken"])
@@ -109,6 +120,7 @@ def main() -> int:
         "# Hooks dogfood (D-92): the user's own policy and notification programs.\n"
         "skills_paths = []\n\n" + MODEL + f'\n[hooks]\nnotify = ["{notify}"]\npre_tool = ["{veto}"]\n')
     state_root = root / "root"
+    atexit.register(stop_daemon, root)
     env = {**os.environ, "XDG_CONFIG_HOME": str(root / "config"), "XDG_STATE_HOME": str(root / "state")}
     failures: list[str] = []
 

@@ -18,6 +18,7 @@ It is a real-model check: it needs `DEEPSEEK_API_KEY` (or `KIMI_API_KEY` for `--
 model's native window (D-36), and writes only under `--state-dir`.
 """
 import argparse
+import atexit
 import json
 import os
 import pathlib
@@ -84,6 +85,16 @@ def session_facts(state_root: pathlib.Path) -> dict:
     return {"goals": goals, "events": events, "requests": requests, "entries": entries}
 
 
+
+def stop_daemon(state_root: pathlib.Path) -> None:
+    """Stop the daemon this probe started.
+
+    `exec` autostarts one and it is detached on purpose (background work survives a client exit, §9), so
+    without this a probe would leave a live session behind on the user's machine. Registered with `atexit`,
+    which also covers the early returns above.
+    """
+    subprocess.run(["pkill", "-f", f"daemon --state-root {state_root}"], capture_output=True)
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state-dir", help="scratch root (default: a fresh /tmp/ta-checks)")
@@ -104,6 +115,7 @@ def main() -> int:
     (root / "config/teamagents").mkdir(parents=True)
     (root / "config/teamagents/config.toml").write_text(config_text(args.provider))
     state_root = root / "root"
+    atexit.register(stop_daemon, root)
     env = {**os.environ, "XDG_CONFIG_HOME": str(root / "config"), "XDG_STATE_HOME": str(root / "state")}
     failures: list[str] = []
 

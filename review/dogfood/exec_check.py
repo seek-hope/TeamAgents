@@ -26,6 +26,7 @@ It needs `DEEPSEEK_API_KEY`, uses the native window (D-36), runs the sessions in
 fourth scenario (whose shell runs inside bubblewrap) and writes only under `--state-dir`.
 """
 import argparse
+import atexit
 import json
 import os
 import pathlib
@@ -76,6 +77,16 @@ def ledger(state_root: pathlib.Path) -> list[dict]:
     return json.loads(path.read_text()).get("verification", [])
 
 
+
+def stop_daemon(state_root: pathlib.Path) -> None:
+    """Stop the daemon this probe started.
+
+    `exec` autostarts one and it is detached on purpose (background work survives a client exit, §9), so
+    without this a probe would leave a live session behind on the user's machine. Registered with `atexit`,
+    which also covers the early returns above.
+    """
+    subprocess.run(["pkill", "-f", f"daemon --state-root {state_root}"], capture_output=True)
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state-dir", help="scratch root (default: a fresh /tmp/ta-execcheck)")
@@ -92,6 +103,7 @@ def main() -> int:
     (root / "config/teamagents").mkdir(parents=True)
     (root / "config/teamagents/config.toml").write_text(CONFIG)
     state_root = root / "root"
+    atexit.register(stop_daemon, root)
     env = {**os.environ, "XDG_CONFIG_HOME": str(root / "config"), "XDG_STATE_HOME": str(root / "state")}
     failures: list[str] = []
 

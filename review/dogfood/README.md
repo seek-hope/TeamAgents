@@ -13,7 +13,13 @@ python3 review/dogfood/run.py --task rust-fix --state-dir /tmp/ta-dogfood
 ```
 
 It is a real-model check: it needs the credential named by the profile's `api_key_env` (`DEEPSEEK_API_KEY` by
-default) and always runs the model at its native context window (D-36). It is not part of `make check`.
+default) and always runs the model at its native context window (D-36).
+
+**Every probe stops the daemon it started.** `exec` autostarts one and the daemon is detached on purpose
+(background work survives a client exit, §9), so a probe that just ran would otherwise leave a live session
+behind on the user's machine; `atexit` runs `pkill -f "daemon --state-root <scratch root>"` for every probe
+here. The scratch tree is kept for inspection, and the socket file it leaves is harmless: the next `exec`
+checks liveness by connecting, not by looking at the file. It is not part of `make check`.
 Everything it writes stays under `--state-dir`; the repository's fixtures are only read, and the frozen
 evaluation material is untouched (its Chinese prompts are *input data*, which is why the exception in
 AGENTS.md exists).

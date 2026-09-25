@@ -16,6 +16,7 @@ uses each model's native window (D-36), writes only under `--state-dir`, and is 
 part of `make check`.
 """
 import argparse
+import atexit
 import json
 import os
 import pathlib
@@ -89,6 +90,16 @@ def wait_for_a_turn_in_flight(state_root: pathlib.Path, timeout_s: float = 60.0)
     return f"never busy ({last})"
 
 
+
+def stop_daemon(state_root: pathlib.Path) -> None:
+    """Stop the daemon this probe started.
+
+    `exec` autostarts one and it is detached on purpose (background work survives a client exit, §9), so
+    without this a probe would leave a live session behind on the user's machine. Registered with `atexit`,
+    which also covers the early returns above.
+    """
+    subprocess.run(["pkill", "-f", f"daemon --state-root {state_root}"], capture_output=True)
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--provider", default="deepseek", choices=sorted(MODELS))
@@ -108,6 +119,7 @@ def main() -> int:
     (root / "config/teamagents").mkdir(parents=True)
     (root / "config/teamagents/config.toml").write_text("skills_paths = []\n\n" + MODELS[args.provider])
     state_root = root / "root"
+    atexit.register(stop_daemon, root)
     env = {**os.environ, "XDG_CONFIG_HOME": str(root / "config"), "XDG_STATE_HOME": str(root / "state")}
     failures: list[str] = []
 

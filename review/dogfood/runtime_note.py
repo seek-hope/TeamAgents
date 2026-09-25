@@ -24,6 +24,7 @@ each model's native window (D-36), writes only under `--state-dir`-derived roots
 not part of `make check`.
 """
 import argparse
+import atexit
 import json
 import os
 import pathlib
@@ -83,6 +84,7 @@ def check(provider: str, root: pathlib.Path, timeout: int, failures: list[str]) 
     workspace.mkdir(parents=True)
     (config / "config.toml").write_text("skills_paths = []\n\n" + MODELS[provider])
     state_root = root / "root"
+    atexit.register(stop_daemon, root)
     env = {**os.environ, "XDG_CONFIG_HOME": str(root / "config"), "XDG_STATE_HOME": str(root / "state")}
 
     run, report, elapsed = exec_turn(state_root, workspace, env, SETTLE, timeout)
@@ -109,6 +111,16 @@ def check(provider: str, root: pathlib.Path, timeout: int, failures: list[str]) 
         if '"role":"user"' not in notes[0][2]:
             failures.append(f"{provider}: the runtime's note is not in the user's voice: {notes[0][2][:120]}")
 
+
+
+def stop_daemon(state_root: pathlib.Path) -> None:
+    """Stop the daemon this probe started.
+
+    `exec` autostarts one and it is detached on purpose (background work survives a client exit, §9), so
+    without this a probe would leave a live session behind on the user's machine. Registered with `atexit`,
+    which also covers the early returns above.
+    """
+    subprocess.run(["pkill", "-f", f"daemon --state-root {state_root}"], capture_output=True)
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)

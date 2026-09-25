@@ -22,6 +22,7 @@ It is a real-model check: it needs `DEEPSEEK_API_KEY` and uses the model's nativ
 (D-36). It is not part of `make check`; everything it writes stays under `--state-dir`.
 """
 import argparse
+import atexit
 import json
 import os
 import pathlib
@@ -113,6 +114,16 @@ def park(socket: pathlib.Path, instance: str, reason: str) -> str:
         return f"could not park {instance}: {error}"
 
 
+
+def stop_daemon(state_root: pathlib.Path) -> None:
+    """Stop the daemon this probe started.
+
+    `exec` autostarts one and it is detached on purpose (background work survives a client exit, §9), so
+    without this a probe would leave a live session behind on the user's machine. Registered with `atexit`,
+    which also covers the early returns above.
+    """
+    subprocess.run(["pkill", "-f", f"daemon --state-root {state_root}"], capture_output=True)
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state-dir", help="scratch root (default: a fresh /tmp/ta-authority)")
@@ -132,6 +143,7 @@ def main() -> int:
     (root / "config/teamagents").mkdir(parents=True)
     (root / "config/teamagents/config.toml").write_text(CONFIG)
     state_root = root / "root"
+    atexit.register(stop_daemon, root)
     env = {**os.environ, "XDG_CONFIG_HOME": str(root / "config"), "XDG_STATE_HOME": str(root / "state")}
     common = ["--state-root", str(state_root), "--full-auto"]
     failures: list[str] = []
