@@ -231,6 +231,40 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-67 Approvals are reachable headlessly (2026-09-25)
+
+Dogfooding the documented first run (`init → doctor → exec`) in a clean `HOME` with a real model ended at a
+dead end: the leader's first out-of-scope call parked the session on an approval, `exec` reported
+`end: approval_required` and exited **3** — and its message said the only ways on were the TUI or
+`--full-auto`. For a *headless* user (the reason `exec` exists, and what a CI job can actually run) that is a
+wall: the session is parked, the TUI is not available, and `--full-auto` changes the permission mode of the
+whole session.
+
+The mechanism was never missing — this is D-61's shape once more. The daemon's `approvals` read already
+carries the **id**, the operation, the tool and a bounded preview (so a client could always have decided,
+unlike the grants view D-61 had to extend); `approve`/`deny` are ordinary user commands; and the decision is
+bound to the operation and its argument hash, so a modified call needs a new decision (§6.2). The gate itself
+is verified: `V2Control::NoEffectBeforeApproval` (± `A25`'s tests) — what was missing was a client.
+
+**`teamagents approvals [list] [--json]`, `approvals approve --id ID`, `approvals deny --id ID`**
+(`engine/src/v2/approvals.rs`): a client of the same socket, taking the full id or an unambiguous prefix
+(the resolution rule now lives once, in `exec::resolve_prefix`, shared with `authority`), with the same exit
+codes as `authority` (0 done, 1 the session refused it, 2 usage/no session). The listing names the exact call
+being approved; a deny prints that the operation fails closed.
+
+Real-model evidence (one shell, clean `HOME`, the shipped config, DeepSeek Flash): `exec` parked on
+`printf hi > shellproof.txt; echo "exit=$?"; …` → `teamagents approvals` listed
+`ap-d-req-4caeb0c6-…:0  shell  printf hi > shellproof.txt; …` → `approvals approve --id ap-d-req-4caeb0c6`
+→ the session dispatched the approved call, the **goal reached `SUCCEEDED`**, `shellproof.txt` contained
+`hi`, and the list was empty afterwards. Deterministic evidence:
+`v2_daemon::the_approvals_cli_lists_and_decides_a_parked_operation` drives the real binary against a real
+daemon socket (listing, prefix decision, a typo refused as a client error, the goal completing after the
+decision).
+
+Ceiling: the decision is still one *visible* call at a time — there is no "approve everything like this" rule
+and no interactive prompt, because the design binds a decision to one operation and its arguments (§6.2); a
+user who wants unattended runs still chooses `--full-auto` deliberately.
+
 ## D-66 The doctor reports the skills registry, so a bad path is not silent (2026-09-25)
 
 Auditing the documented configuration surface against the code found a silent trap: `skills_paths` and

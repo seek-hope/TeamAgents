@@ -41,7 +41,7 @@ happened. Diagnostics go to stderr, the outcome to stdout (`--json` prints one J
 |---|---|
 | `0` | settled: the goal completed as `SUCCEEDED`, or the leader answered directly |
 | `1` | not delivered: the goal settled otherwise, the turn failed permanently, or a `--check` command failed |
-| `3` | an approval is pending — a headless run has nobody to answer it, so it reports instead of waiting for the deadline |
+| `3` | an approval is pending — a headless run does not wait for the deadline; decide it with `teamagents approvals` (§4) |
 | `124` | the `--timeout` deadline passed with the instance still running |
 | `2` | usage or infrastructure: no daemon, no model profile, a leader that is parked or paused |
 
@@ -57,6 +57,10 @@ happened. Diagnostics go to stderr, the outcome to stdout (`--json` prints one J
   gets a turn of its own. A headless run reports `input_queued` (and prints
   `queued: a turn was already running, so this input enters after it ends`) instead of pretending it landed;
   the message is never dropped. The TUI says the same in its note line.
+- **An approval in a headless run** exits `3` and names the exact call. Decide it with
+  `teamagents approvals` / `approvals approve --id …` (D-67, §4.1) and the session goes on — the decision is
+  bound to that operation and its arguments, so the run needs no second prompt; the TUI's approvals box shows
+  the same call.
 - **A parked or paused leader refuses new input** (`2`) instead of queueing work nobody drains: resume it in
   the TUI instances panel (`r`) or use a fresh state root.
 - When `exec` starts the daemon itself, the daemon's output goes to `<state root>/daemon.log`; if the daemon
@@ -272,6 +276,23 @@ modes, stop that daemon (Ctrl-C in its terminal) or use another `--state-root`.
 When bubblewrap is unavailable this is a **classified failure** (`started=false`); the command never falls
 back silently to host execution.
 
+### 4.1 Approving a call from the CLI (D-67)
+
+In `approved_scope` (the default) an out-of-scope call parks on **your** decision, and the operation is bound
+to it — the hash of the exact command or arguments is part of it, so a modified call needs a new decision
+(§6.2).
+
+```bash
+teamagents approvals                                   # id, tool and the exact call, per pending approval
+teamagents approvals approve --id ap-d-req-4caeb0c6    # once: the parked turn continues with the result
+teamagents approvals deny --id ap-d-req-4caeb0c6       # fails closed; the model is told you denied it
+```
+
+An id must name a *pending* approval (a typo is refused before anything is decided), the full id or an
+unambiguous prefix is enough, and `--json` prints the raw report. Exit codes match `teamagents authority`:
+`0` done, `1` the session refused it, `2` usage or no session. This is also what makes `teamagents exec` usable
+in a script: a run that exits `3` is not a failure, it is a question — answer it and the session continues.
+
 ## 5. Skills and MCP
 
 - Skills live under the registration root `~/.agents/skills` (searched and read on demand with
@@ -308,5 +329,5 @@ back silently to host execution.
 | `doctor` reports the state root as FAIL | That path does not hold a current session database (the stamp does not match); use another `--state-root` or follow the message, and never edit the database by hand |
 | The agent worked in the wrong directory | Its session was started with another workspace (or without `--cwd`): the client prints the live one. Stop that daemon (Ctrl-C in its terminal) or start a fresh `--state-root` with `--cwd DIR` |
 | The model returns 401/402 | Check the environment variable named by the profile's `api_key_env`; `doctor` lists the credential resolution result per profile |
-| A command under `approved_scope` waits for approval | Handle it in the TUI approvals panel, or run with `--full-auto` (host execution, D-41) |
+| A command under `approved_scope` waits for approval | Decide it with `teamagents approvals` (§4.1) or in the TUI approvals panel; `--full-auto` (host execution, D-41) skips the gate |
 | Start completely fresh | Stop the daemon and run `teamagents --state-root <new directory>` for a clean session; the old database stays where it is |

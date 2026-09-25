@@ -194,29 +194,10 @@ fn revoke(client: &mut Client, session: &Json, wanted: &str) -> Result<Json, (i3
     }))
 }
 
-/// The grant a user named: the full id, or an unambiguous prefix of one (the TUI
-/// and `list` show the full id, but a short form is what a human types).
+/// The grant a user named, through the shared resolver (D-67 moved it next to the
+/// other client surfaces).
 fn resolve(grants: &[Json], wanted: &str) -> Result<Json, (i32, String)> {
-    if wanted.trim().is_empty() {
-        return Err((2, "authority: --grant must name the grant to revoke (see `teamagents authority`)".into()));
-    }
-    let matching: Vec<&Json> =
-        grants.iter().filter(|grant| grant["id"].as_str().is_some_and(|id| id.starts_with(wanted))).collect();
-    match matching.as_slice() {
-        [one] => Ok((*one).clone()),
-        [] => Err((
-            2,
-            format!("authority: no grant id starts with {wanted:?}; run `teamagents authority` to list the ids"),
-        )),
-        many => Err((
-            2,
-            format!(
-                "authority: {wanted:?} matches {} grants ({}); give more characters",
-                many.len(),
-                many.iter().filter_map(|grant| grant["id"].as_str()).collect::<Vec<_>>().join(", ")
-            ),
-        )),
-    }
+    super::exec::resolve_prefix(grants, "id", wanted, "grant", "teamagents authority")
 }
 
 // ------------------------------------------------------------------ rendering --
@@ -364,7 +345,9 @@ mod tests {
         assert!(resolve(&grants, "g-1111").unwrap_err().1.contains("g-11111111-2222"));
         assert_eq!(resolve(&grants, "g-9999").unwrap_err().0, 2);
         assert!(resolve(&grants, "g-9999").unwrap_err().1.contains("no grant id starts with"));
-        assert!(resolve(&grants, "  ").unwrap_err().1.contains("--grant must name"));
+        let empty = resolve(&grants, "  ").unwrap_err();
+        assert_eq!(empty.0, 2);
+        assert!(empty.1.contains("needs an id"), "{}", empty.1);
     }
 
     #[test]

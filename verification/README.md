@@ -60,7 +60,7 @@ the model; that is exactly what is enumerated.
 | Property (spec) | Meaning | Code anchor | Acceptance |
 |---|---|---|---|
 | `TypeOK` | phase/lifecycle/operation status/effect counters hold legal values | the `models.rs` enums, `OpStatuses` | §4.1 |
-| `NoEffectBeforeApproval` | an operation needing approval has no effect before it is approved | the approval gate in `dispatch_operation`; `approve`/`deny` | A25/A12 |
+| `NoEffectBeforeApproval` | an operation needing approval has no effect before it is approved | the approval gate in `dispatch_operation`; `approve`/`deny` (reachable headlessly through `teamagents approvals`, D-67) | A25/A12 |
 | `RecordBeforeEffect` | a persisted dispatch record exists before any effect | `dispatch_operation` writes `DISPATCH_COMMITTED` first | A08/A11 |
 | `EffectAtMostOnce` | an operation has at most one external effect (recovery never replays) | the recovery path only sets `OUTCOME_UNKNOWN` | A08/A10/A13 |
 | `ReservationsAdmitted` | live reservations never exceed the ceiling (a consequence of the admission gate) | `known+reserved+est ≤ max` in `reserve_budget` | A18/§8 |

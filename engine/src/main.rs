@@ -11,6 +11,9 @@ usage: teamagents [--cwd DIR] [--state-root PATH] [--model KEY] [--full-auto]\n\
   teamagents authority [list] [--json]          the session's grants, with the ids revoke needs\n\
   teamagents authority grant --subject ID --action A --scope S [--parent G]\n\
   teamagents authority revoke --grant ID        revoke that grant and everything derived from it\n\
+  teamagents approvals [list] [--json]          the approvals a session is waiting on\n\
+  teamagents approvals approve --id ID          approve that call, once (bound to its arguments)\n\
+  teamagents approvals deny --id ID             deny it; the operation fails closed\n\
   teamagents daemon [--state-root PATH] [--cwd DIR] [--model KEY] [--full-auto]\n\
   teamagents init [--state-root PATH]   write config and prepare the state root\n\
   teamagents doctor [--state-root PATH] check config, credentials, state root and host\n\
@@ -19,9 +22,10 @@ usage: teamagents [--cwd DIR] [--state-root PATH] [--model KEY] [--full-auto]\n\
 exec reads the prompt from stdin when it is \"-\", runs each --check acceptance command\n\
 in the workspace after the turn ends, and exits 0 completed, 1 failed or unfinished,\n\
 3 approval required, 124 timeout, 2 usage.\n\
-authority talks to the running session (start it with teamagents or exec) and exits 0 done,\n\
-1 the session refused it, 2 usage. It is how a spawned worker gets shell@workspace (§5.1),\n\
-and how a capability is taken back again.\n\
+authority and approvals talk to the running session (start it with teamagents or exec) and\n\
+exit 0 done, 1 the session refused it, 2 usage. authority is how a spawned worker gets\n\
+shell@workspace (§5.1) and how a capability is taken back; approvals is how a headless run\n\
+answers the decision that made exec exit 3, without starting the TUI.\n\
 The Leader builds the team through spawn/delegate/send/wait; entry points from older\n\
 releases (TeamSpec files, line mode, session resume) are not supported.\n\
 First run: teamagents init -> set the credential env var -> teamagents doctor -> teamagents.";
@@ -52,6 +56,7 @@ pub struct Args {
     pub scope: Option<String>,
     pub parent_grant: Option<String>,
     pub grant: Option<String>,
+    pub approval_id: Option<String>,
 }
 
 fn parse_args() -> Args {
@@ -87,6 +92,7 @@ fn parse_args() -> Args {
         scope: None,
         parent_grant: None,
         grant: None,
+        approval_id: None,
     };
     let mut i = 0;
     while i < argv.len() {
@@ -168,7 +174,7 @@ fn parse_args() -> Args {
                 args.command = Some(argv[i].clone());
                 i += 1;
             }
-            "serve" | "init" | "doctor" | "validate" | "sessions" | "version" | "exec" | "authority" => {
+            "serve" | "init" | "doctor" | "validate" | "sessions" | "version" | "exec" | "authority" | "approvals" => {
                 if args.command.is_some() {
                     usage();
                 }
@@ -178,12 +184,20 @@ fn parse_args() -> Args {
                 }
                 i += 1;
             }
-            "--json" if matches!(args.command.as_deref(), Some("exec" | "authority")) => {
+            "--json" if matches!(args.command.as_deref(), Some("exec" | "authority" | "approvals")) => {
                 if args.exec_json {
                     usage();
                 }
                 args.exec_json = true;
                 i += 1;
+            }
+            "--id" if args.command.as_deref() == Some("approvals") => {
+                if args.approval_id.is_some() {
+                    usage();
+                }
+                args.approval_id =
+                    Some(argv.get(i + 1).cloned().filter(|v| !v.starts_with('-')).unwrap_or_else(|| usage()));
+                i += 2;
             }
             "--subject" if args.command.as_deref() == Some("authority") => {
                 if args.subject.is_some() {
@@ -469,6 +483,47 @@ fn run_authority(args: &Args) -> i32 {
     teamagents_engine::v2::authority::run(AuthorityOptions { socket, command, json_out: args.exec_json })
 }
 
+/// `teamagents approvals`: the user's approval surface (D-67). A headless session
+/// parks an out-of-scope operation on this decision, and `exec` reports it (exit 3);
+/// this is how that decision is made without starting the TUI.
+fn run_approvals(args: &Args) -> i32 {
+    use teamagents_engine::v2::approvals::{ApprovalCommand, ApprovalOptions};
+    let state_root = args.state_root.clone().map(PathBuf::from).unwrap_or_else(teamagents_engine::v2_root);
+    let verb =
+        args.positional.as_deref().unwrap_or_else(|| if args.approval_id.is_some() { "approve" } else { "list" });
+    let command = match verb {
+        "list" => {
+            if args.approval_id.is_some() {
+                eprintln!("approvals list takes no --id; use `approvals approve --id ID` or `approvals deny --id ID`");
+                return 2;
+            }
+            ApprovalCommand::List
+        }
+        "approve" | "deny" => {
+            let Some(id) = args.approval_id.clone() else {
+                eprintln!("approvals {verb} needs --id ID (see `teamagents approvals` for the ids)");
+                return 2;
+            };
+            if verb == "approve" {
+                ApprovalCommand::Approve { id }
+            } else {
+                ApprovalCommand::Deny { id }
+            }
+        }
+        other => {
+            eprintln!(
+                "approvals: unknown command {other:?}; use `teamagents approvals [list]`,                  `approvals approve --id ID` or `approvals deny --id ID`"
+            );
+            return 2;
+        }
+    };
+    teamagents_engine::v2::approvals::run(ApprovalOptions {
+        socket: state_root.join("daemon.sock"),
+        command,
+        json_out: args.exec_json,
+    })
+}
+
 /// Say it out loud when `--full-auto` could not apply: the mode belongs to the
 /// session, which was started earlier (D-41). Silence here was how a documented
 /// flag became a no-op that nobody noticed.
@@ -674,6 +729,7 @@ fn main() {
         Some("version") => cli::version(),
         Some("exec") => run_exec(&args),
         Some("authority") => run_authority(&args),
+        Some("approvals") => run_approvals(&args),
         // entries that no longer exist: refuse them with a pointer to the current ones
         Some("validate") | Some("sessions") | Some("serve") | Some("repl") => {
             eprintln!(

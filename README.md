@@ -193,7 +193,7 @@ instead. Details, the full action vocabulary and the exit codes are in
 | `--state-root PATH` | use a specific state root (default `$XDG_STATE_HOME/teamagents/v2`) |
 | `--model KEY` | pick a model catalog entry (default `leader_main`) |
 | `--full-auto` | user-only full-auto mode (out-of-scope work is approved instead of requested); it applies to the session this command starts — a session that is already running keeps the mode it booted with, and the client prints that mode instead of pretending |
-| `init` / `doctor` / `daemon` / `exec` / `authority` / `version` / `--help` | config and state root / self-check (config, credentials, state root, skills, goal limits, checks, hooks, bubblewrap) / run the daemon alone (its output goes to `<state root>/daemon.log`) / headless input / list, grant and revoke capabilities / version / usage |
+| `init` / `doctor` / `daemon` / `exec` / `authority` / `approvals` / `version` / `--help` | config and state root / self-check (config, credentials, state root, skills, goal limits, checks, hooks, bubblewrap) / run the daemon alone (its output goes to `<state root>/daemon.log`) / headless input / list, grant and revoke capabilities / list and decide approvals / version / usage |
 
 TUI keys (they match the hint line at the bottom; deliberately no function keys, since some keyboards lack
 them): `Enter` send, `Ctrl+J` newline (and `Shift+Enter` where the terminal reports modifiers), `Tab` switch the conversation target, `Ctrl+N` cycle the

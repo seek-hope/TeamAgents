@@ -6,7 +6,7 @@ Baseline: [the design and acceptance baseline](DESIGN.md) §12/§16. Current imp
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 97 / engine 178 / tui 26 test targets) and `make pty` passes; both are
+`make check` is green (core 97 / engine 180 / tui 26 test targets) and `make pty` passes; both are
 preconditions for every item below. `make check` includes `make language-check`, which fails on non-English
 characters outside the two documented exceptions (`README.zh-CN.md` and the frozen material under
 `review/eval`).
@@ -39,7 +39,7 @@ characters outside the two documented exceptions (`README.zh-CN.md` and the froz
 | A22 | ALL/ANY wait cycles and timers | `control::blocked_report_flags_dead_waits_not_cycles`, `a_due_timer_closes_the_wait` |
 | A23 | A result arrives before the wait is registered | `control::wait_for_an_arrived_result_is_satisfied_at_registration` |
 | A24 | A late result after a reset | `control::late_receipt_after_reset_lands_on_the_old_epoch_only` |
-| A25 | MCP approval / cancellation / unknown outcome | the six `v2_mcp` tests |
+| A25 | MCP approval / cancellation / unknown outcome | the six `v2_mcp` tests; the approval *decision* is reachable headlessly (D-67): `v2_daemon::the_approvals_cli_lists_and_decides_a_parked_operation` drives the real `teamagents approvals` binary against a real daemon (list, prefix decision, typo refused, the goal completes after the decision), and the same flow with a real model is recorded in D-67. Formally the gate is `V2Control::NoEffectBeforeApproval` ("an operation needing approval has no effect before it is approved") |
 | A26 | Skills permissions | `v2_mcp::skill_call_without_the_binding_fails_honestly`; the registry is *visible* (D-66): `cli::doctor_reports_the_skills_registry_and_missing_configured_paths` reports how many skills a configured root yields and warns, naming the path, when a configured root or instruction file is missing (a clean first run shows the shipped `~/.agents/skills` as one WARN instead of a silently empty skill list) |
 | A27 | Heterogeneous providers cooperating | real: DeepSeek and Kimi exchanging messages both ways in one session (local probe evidence under `review/tmp/`, not part of the tree); fake services: `v2_supervisor::heterogeneous_*` |
 | A28 | Disconnect, slow client, reconnect | `v2_daemon::handshake_checkpoint_command_and_goal_completion`, `reconnect_backfills_events_after_the_watermark` |

@@ -323,6 +323,88 @@ async fn approvals_surface_lists_and_decides_pending_operations() {
     handle.shutdown().await.expect("shutdown");
 }
 
+/// The same decision through the **real binary** (D-67): `exec` reports a parked
+/// approval and exits 3, and a headless user previously had to start the TUI or use
+/// `--full-auto`. `teamagents approvals` lists it and decides it; the session then
+/// dispatches the call the decision was bound to and the goal completes.
+#[tokio::test]
+async fn the_approvals_cli_lists_and_decides_a_parked_operation() {
+    use std::process::Command;
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let scripts =
+        HashMap::from([("i-leader".to_string(), vec![shell_call("c1", "true"), finish_call("approved from the cli")])]);
+    let root = root("approvals-cli");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let mut cfg = config(&root, scripts);
+    cfg.supervisor.require_shell_approval = true;
+    let handle = serve(cfg).await.expect("daemon");
+    let state_root = root.dir.join("state");
+    let mut client = Client::connect(&state_root.join("daemon.sock")).await;
+    let since = client.call("checkpoint", json!({})).await["result"]["watermark"].as_i64().unwrap();
+    client.command("cli-approval-input", "submit_input", input_params("run it")).await;
+    let mut approval_id = String::new();
+    for _ in 0..400 {
+        let events = client.call("events", json!({"since": since})).await;
+        if let Some(event) =
+            events["result"]["events"].as_array().unwrap().iter().find(|e| e["kind"] == json!("approval_requested"))
+        {
+            approval_id = event["payload"]["approval_id"].as_str().unwrap_or("").to_string();
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(!approval_id.is_empty(), "approval was never requested");
+    // The client is a child process: run it on a blocking thread, or the test's
+    // current-thread runtime (which is also serving the daemon) would be blocked
+    // while the daemon must answer the child's handshake.
+    let approvals = |args: Vec<String>, state: PathBuf| async move {
+        tokio::task::spawn_blocking(move || {
+            let output = Command::new(env!("CARGO_BIN_EXE_teamagents"))
+                .args(&args)
+                .arg("--state-root")
+                .arg(&state)
+                .output()
+                .expect("run the approvals client");
+            (
+                output.status.code().unwrap_or(-1),
+                String::from_utf8_lossy(&output.stdout).into_owned(),
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            )
+        })
+        .await
+        .expect("join the approvals client")
+    };
+    // listing shows the id, the tool and the exact call
+    let (code, out, err) = approvals(vec!["approvals".into(), "--json".into()], state_root.clone()).await;
+    assert_eq!(code, 0, "{err}");
+    let listed: Json = serde_json::from_str(&out).expect("JSON report");
+    assert_eq!(listed["approvals"][0]["id"], json!(approval_id), "{listed}");
+    assert_eq!(listed["approvals"][0]["preview"], json!("true"), "{listed}");
+    let (code, out, _) = approvals(vec!["approvals".into()], state_root.clone()).await;
+    assert_eq!(code, 0);
+    assert!(out.contains(&approval_id) && out.contains("shell") && out.contains("true"), "{out}");
+    // a typo is a client error, not a decision about something else
+    let (code, _, err) =
+        approvals(vec!["approvals".into(), "approve".into(), "--id".into(), "ap-nope".into()], state_root.clone())
+            .await;
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("no approval id starts with"), "{err}");
+    // and the decision goes through the same write surface the TUI uses
+    let (code, out, err) = approvals(
+        vec!["approvals".into(), "approve".into(), "--id".into(), approval_id.clone(), "--json".into()],
+        state_root.clone(),
+    )
+    .await;
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(serde_json::from_str::<Json>(&out).expect("JSON")["decision"], json!("approve"), "{out}");
+    let (status, _) = wait_goal(&mut client, since).await;
+    assert_eq!(status, "SUCCEEDED", "the approved call was dispatched and the turn continued");
+    let (code, out, _) = approvals(vec!["approvals".into()], state_root.clone()).await;
+    assert_eq!(code, 0);
+    assert!(out.contains("0 pending approval(s)"), "{out}");
+    handle.shutdown().await.expect("shutdown");
+}
+
 /// A33: one coordinator per state root (jobs::state_lock) — a second daemon
 /// is refused while the first runs; after shutdown and client disconnect
 /// the kernel releases the lock and a new coordinator recovers the session.

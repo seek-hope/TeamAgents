@@ -452,6 +452,36 @@ fn capped(text: &str, limit: usize) -> String {
     out
 }
 
+/// The row a user named by id: the full id, or an unambiguous prefix of one (the
+/// TUI and `--json` print the full id; a human types a short form). Shared by the
+/// client surfaces that take an id, so they refuse an unknown or ambiguous name
+/// with the same words.
+pub(crate) fn resolve_prefix(
+    rows: &[Json],
+    key: &str,
+    wanted: &str,
+    what: &str,
+    list_with: &str,
+) -> Result<Json, (i32, String)> {
+    if wanted.trim().is_empty() {
+        return Err((2, format!("{what} needs an id; list them with `{list_with}`")));
+    }
+    let matching: Vec<&Json> =
+        rows.iter().filter(|row| row[key].as_str().is_some_and(|id| id.starts_with(wanted))).collect();
+    match matching.as_slice() {
+        [one] => Ok((*one).clone()),
+        [] => Err((2, format!("no {what} id starts with {wanted:?}; `{list_with}` shows the ids"))),
+        many => Err((
+            2,
+            format!(
+                "{wanted:?} matches {} {what} ids ({}); give more characters",
+                many.len(),
+                many.iter().filter_map(|row| row[key].as_str()).collect::<Vec<_>>().join(", ")
+            ),
+        )),
+    }
+}
+
 /// Persist the verification ledger next to the session database (the evidence
 /// a CI job can archive) and report its path.
 fn write_verification(state_root: &str, verification: &[Json]) -> Option<String> {
