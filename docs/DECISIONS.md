@@ -231,6 +231,23 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-81 Two more test-only second writers went through the product path (2026-09-26)
+
+D-79's side note recorded one flake ("command receipt: database is locked") where a test wrote through its own
+`Control` connection while the driver it had started was writing. A scan for the same shape — direct
+`control.submit(...)` calls in tests that also run a driver or daemon — found the pattern at two more sites in
+`engine/tests/v2_supervisor.rs` (`create_instance` while the supervisor runs in
+`a_settled_goal_leaves_a_later_delegation_without_an_active_goal`, and `cancel_task` in
+`a_prose_reply_leaves_one_turn_and_the_delegator_resolves_the_task`). Both now call
+`SupervisorHandle::submit_user`, i.e. the same path the daemon and `teamagents tasks cancel` use, which removes
+the second writer *and* tests the product's own client path instead of a side door. The rest of the flagged
+sites are reads (`connection().query_row`, which never takes the write lock in WAL) or writes that happen
+before their driver starts (the fixture pattern in the worker tests), so they stay as they are.
+
+Ceiling: this is a test-side hygiene rule, not a product change — the product serializes its writers through
+the daemon's single-writer worker (§4.1) and one coordinator per state root (A33) is what makes that
+authoritative. A future test that needs a *second* writer can still do it; it should expect the busy error and
+retry, or go through the supervisor.
 ## D-80 The address guard was cross-checked against its reference (2026-09-26)
 
 `tools::guard_url`/`is_private_addr` are a hand-written port of Python's `ipaddress` policy (its own comment

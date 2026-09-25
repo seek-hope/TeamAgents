@@ -886,12 +886,17 @@ async fn a_settled_goal_leaves_a_later_delegation_without_an_active_goal() {
     let closed = wait_event(&handle, "goal_completed", 20_000).await;
     assert_eq!(closed["payload"]["status"], json!("SUCCEEDED"), "{closed}");
     // the worker the second turn delegates to must exist, or the refusal would be
-    // about the assignee instead of the goal (the question under test)
-    second_control(&root)
-        .submit(
-            cmd("late-worker", "create_instance", json!({"id": "i-worker", "workspace_ref": root.dir.join("ws")})),
-            teamagents_core::v2::Identity::User,
-        )
+    // about the assignee instead of the goal (the question under test). The write goes
+    // through the supervisor (the daemon's own path) rather than a second `Control`
+    // connection: two writers on one SQLite file can lose the writer race under a
+    // loaded suite, and the product serializes its writers through this one.
+    handle
+        .submit_user(cmd(
+            "late-worker",
+            "create_instance",
+            json!({"id": "i-worker", "workspace_ref": root.dir.join("ws")}),
+        ))
+        .await
         .expect("create the worker");
     // a second instruction: the runtime opens no goal for it
     handle.input("i-leader", "now delegate some work").await.expect("input");
@@ -1011,12 +1016,11 @@ async fn a_prose_reply_leaves_one_turn_and_the_delegator_resolves_the_task() {
     };
     assert_eq!(phases("i-leader").as_deref(), Some("WAITING"), "the delegator waits on its task");
     assert_eq!(phases(worker).as_deref(), Some("READY"), "and the worker is idle, not spinning");
-    // the user resolves it the way the operating notes describe: cancel the task
-    second_control(&root)
-        .submit(
-            cmd("cancel-late", "cancel_task", json!({"task_id": "t-prose", "reason": "the assignee stopped"})),
-            teamagents_core::v2::Identity::User,
-        )
+    // the user resolves it the way the operating notes describe: cancel the task — through
+    // the supervisor's user path, the same one `teamagents tasks cancel` uses
+    handle
+        .submit_user(cmd("cancel-late", "cancel_task", json!({"task_id": "t-prose", "reason": "the assignee stopped"})))
+        .await
         .expect("cancel the task");
     assert_eq!(status("t-prose").as_deref(), Some("CANCELLED"));
     // the delegator's wait is satisfied by the cancellation and it finishes honestly
