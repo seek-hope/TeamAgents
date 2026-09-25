@@ -530,6 +530,14 @@ impl V2App {
         self.note_error(format!("send failed: {error}"));
     }
 
+    /// The input is accepted but waits for the running turn's boundary (D-63): it
+    /// cannot be part of a request that is already fixed, so it enters the
+    /// conversation after that turn's own answer. Say so instead of leaving the
+    /// user wondering whether the message was sent at all.
+    pub fn input_queued(&mut self, instance: &str) {
+        self.note(format!("queued for {instance}: it enters when the running turn ends"));
+    }
+
     pub fn decide_failed(&mut self, error: &str) {
         self.note_error(format!("the approval decision failed: {error}"));
     }

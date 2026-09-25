@@ -52,6 +52,11 @@ happened. Diagnostics go to stderr, the outcome to stdout (`--json` prints one J
   first failure stops the list; the verdicts are printed, written to `<state root>/verification.json` and
   included in the `--json` report. A failed check makes the run fail (`1`) even when the goal itself settled.
   Checks are skipped when the run stopped for an approval, because that turn is not finished.
+- **An input sent while a turn is running waits for that turn** (D-63): a model request is fixed once it is
+  registered, so the input enters the conversation at the next boundary — after that turn's own answer — and
+  gets a turn of its own. A headless run reports `input_queued` (and prints
+  `queued: a turn was already running, so this input enters after it ends`) instead of pretending it landed;
+  the message is never dropped. The TUI says the same in its note line.
 - **A parked or paused leader refuses new input** (`2`) instead of queueing work nobody drains: resume it in
   the TUI instances panel (`r`) or use a fresh state root.
 - When `exec` starts the daemon itself, the daemon's output goes to `<state root>/daemon.log`; if the daemon

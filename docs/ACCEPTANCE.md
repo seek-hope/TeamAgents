@@ -6,7 +6,7 @@ Baseline: [the design and acceptance baseline](DESIGN.md) §12/§16. Current imp
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 96 / engine 171 / tui 25 test targets) and `make pty` passes; both are
+`make check` is green (core 97 / engine 172 / tui 26 test targets) and `make pty` passes; both are
 preconditions for every item below. `make check` includes `make language-check`, which fails on non-English
 characters outside the two documented exceptions (`README.zh-CN.md` and the frozen material under
 `review/eval`).
@@ -20,7 +20,7 @@ characters outside the two documented exceptions (`README.zh-CN.md` and the froz
 | A03 | Limited delegation and parent revocation | `control::grants_narrow_only_and_parent_revocation_cascades`; the Leader's default authority is exactly these session-scoped grants, and revocation still removes the tool and fails the call closed. **The user can exercise it** (D-61): `cli::the_authority_surface_grants_and_revokes_through_the_daemon` drives the real binary against a real daemon — the list carries the ids, a grant to a spawned worker makes the dispatch question `holds_covering_grant(worker, "shell", "workspace")` true, a grant derived with `--parent` dies with its parent (cascade of exactly 2), the question is false again afterwards, and a pair no check asks about is refused with a reason instead of written (`core/src/v2/capability.rs`'s table test pins that pair table); `v2_supervisor::a_users_grant_reaches_the_workers_surface_at_the_next_request` shows the granted tool appears on the worker's next request and leaves it again after the revocation; formally, `V2Authority` (`make verify-model-all`) proves the view carries what a revoke needs, the cascade takes exactly the subtree, and its three negative controls (`make verify-model-counterexamples`) are refuted. **Real model** (`review/dogfood/authority.py`, 2026-09-25, isolated state root `/tmp/ta-authority-run`): a worker reported it could not run shell commands, the grant (revision 8) was issued, the same worker then ran the command (turn 2, 14.0 s, exit code 0, `proof.txt` present) and the revocation (revision 11) left no live shell grant — 13 model requests, both tasks `SUCCEEDED`, no failed request The two questions left open are in `docs/DECISIONS.md` D-61 ("Left open") |
 | A04 | A queued action meets a revocation | `revocation_blocks_queued_dispatch_until_reauthorized`, `dispatch_rechecks_permission_revision` |
 | A05 | Reading another instance's history | `control::read_history_is_user_or_self_only`; the daemon's history surface |
-| A06 | A message applied across a restart | `submit_input_applies_context_once_per_envelope`, `command_replay_returns_stored_receipt_and_rejects_conflict` |
+| A06 | A message applied across a restart | `submit_input_applies_context_once_per_envelope`, `command_replay_returns_stored_receipt_and_rejects_conflict`; an input that arrives during a turn is queued and applied at the next boundary instead of being stored behind that turn's reply (D-63): `an_input_inside_a_turn_waits_for_the_boundary`, `v2_supervisor::an_input_arriving_during_a_turn_enters_at_the_next_boundary`, and formally `V2Control::InputLandsAtTheBoundary` / `QueuedInputEntersTheContext` with the refuted control `MC_control_midturninput.cfg` |
 | A07 | Permanent start failure | `fail_request_closes_and_parks_without_losing_input`, `v2_spawn_failure::*` |
 | A08 | Crash after a tool succeeded, before consumption | `v2_driver::tool_result_is_reused_after_crash_not_reexecuted` |
 | A09 | Unknown external outcome | `control::unknown_outcome_parks_running_tasks_and_notifies` |
@@ -35,7 +35,7 @@ characters outside the two documented exceptions (`README.zh-CN.md` and the froz
 | A18 | Multi-instance usage budget | `control::a_worker_shares_the_budget_of_the_goal_its_queue_serves` and related |
 | A19 | Truncated stream and connection loss | `providers_fake::truncated_stream_before_output_is_transient`, `providers_stall::*` |
 | A20 | Restart after long-context compaction | `control::compression_*`, `v2_driver::long_context_compacts_before_the_turn_and_survives_a_restart` |
-| A21 | The user adjusts an instance directly | single-writer `submit_input` context plus the TUI conversation target switch |
+| A21 | The user adjusts an instance directly | single-writer `submit_input` context plus the TUI conversation target switch; a message sent while the instance is mid-turn is queued with a visible note (`tui::a_queued_input_is_visible_in_the_conversation`, `exec`'s `input_queued` report) and never silently dropped (D-63) |
 | A22 | ALL/ANY wait cycles and timers | `control::blocked_report_flags_dead_waits_not_cycles`, `a_due_timer_closes_the_wait` |
 | A23 | A result arrives before the wait is registered | `control::wait_for_an_arrived_result_is_satisfied_at_registration` |
 | A24 | A late result after a reset | `control::late_receipt_after_reset_lands_on_the_old_epoch_only` |
@@ -95,7 +95,9 @@ amended (D-49/D-50).
   after a prose reply, or park with a reason after a bounded number of no-progress turns — so it needs the
   user's decision and its own verification before it lands. Reproduce with the probe's first prompt shape
   (delegate a task the worker cannot do) against an isolated state root; the numbers above are from
-  `/tmp/ta-authority-probe3` (2026-09-25 18:22–18:40).
+  `/tmp/ta-authority-probe3` (2026-09-25 18:22–18:40). Related and also open: whether the runtime should
+  *interrupt* a running turn when the user sends something, instead of holding the input to the boundary as
+  D-63 now does.
 - **A worker needs the user's grant for the shared-workspace shell** (D-61): a spawned worker holds no
   `shell@workspace` (§5.1), so until the user runs `teamagents authority grant --subject <id> --action shell
   --scope workspace` it works with the file, web and skill tools only. The surface exists and is verified, but

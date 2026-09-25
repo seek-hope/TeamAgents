@@ -307,6 +307,17 @@ fn grants_json() -> Json {
     ]})
 }
 
+/// An input sent while a turn is running is real but queued (D-63): the composer
+/// clears and the chat says where it will enter, so "did it send?" has an answer.
+#[test]
+fn a_queued_input_is_visible_in_the_conversation() {
+    let mut app = app();
+    app.input_queued("i-leader");
+    let all = app.entries.iter().map(|entry| entry.text.clone()).collect::<Vec<_>>().join("\n");
+    assert!(all.contains("queued for i-leader"), "{all}");
+    assert!(all.contains("when the running turn ends"), "{all}");
+}
+
 #[test]
 fn view_switching_cycles_with_ctrl_n_and_esc_returns() {
     let mut app = app();

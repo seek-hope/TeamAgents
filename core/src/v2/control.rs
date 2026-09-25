@@ -1301,7 +1301,7 @@ fn submit_input(tx: &Connection, session_id: &str, params: &Json, identity: &Ide
     let instance_id = params["instance_id"].as_str().ok_or("submit_input.instance_id required")?;
     let envelope_id = params["envelope_id"].as_str().ok_or("submit_input.envelope_id required")?;
     let text = params["text"].as_str().ok_or("submit_input.text required")?;
-    let (session, epoch, lifecycle, _phase, revision) = load_instance(tx, instance_id)?;
+    let (session, epoch, lifecycle, phase, revision) = load_instance(tx, instance_id)?;
     if session != session_id {
         return Err(format!("instance {instance_id} does not belong to this session"));
     }
@@ -1329,6 +1329,19 @@ fn submit_input(tx: &Connection, session_id: &str, params: &Json, identity: &Ide
         ],
     )
     .map_err(|e| format!("envelope {envelope_id}: {e}"))?;
+    // A turn in flight has a *fixed* request that cannot include this input, so
+    // applying it now would store it behind that request's own reply: the model
+    // would read its answer as the answer to an input it never saw, and the idle
+    // rule would then leave the input with no turn at all — the message silently
+    // did nothing (measured; D-63). The input therefore waits for the next READY
+    // boundary, where `drain_inbox` applies it in sequence order (§5.3/§5.4, and
+    // the model's own `Input` action: user input lands at READY).
+    if matches!(phase.as_str(), "MODEL_PENDING" | "TOOLS_PENDING" | "COMPLETION_PENDING") {
+        publish_list(tx, session_id, params)?;
+        event(tx, session_id, "input_queued", instance_id, &json!({"envelope_id": envelope_id, "phase": phase}))?;
+        return Ok(json!({"envelope_id": envelope_id, "applied": false, "queued": true,
+                         "phase": phase, "instance_revision": revision}));
+    }
     let applied = append_context(
         tx,
         instance_id,
@@ -3599,6 +3612,67 @@ mod tests {
         assert!(error.starts_with("StorageFull: "), "{error}");
         // nothing half-applied: the rolled-back transaction leaves no input
         assert_eq!(context_count(&ctl, "i1"), 0);
+        drop(ctl);
+        cleanup(&path);
+    }
+
+    /// An input that arrives while a turn is in flight waits for the READY
+    /// boundary instead of being stored behind that turn's own reply (D-63): a
+    /// fixed request cannot include it, and applying it anyway left the message
+    /// without a turn of its own (the model's answer looked like the answer to it).
+    #[test]
+    fn an_input_inside_a_turn_waits_for_the_boundary() {
+        let (mut ctl, path) = control("mid-turn-input");
+        create_instance(&mut ctl, "i1");
+        // READY: the input lands immediately, as before
+        let applied = ctl
+            .submit(
+                cmd("in-1", "submit_input", json!({"instance_id": "i1", "envelope_id": "e1", "text": "ready input"})),
+                Identity::User,
+            )
+            .expect("input");
+        assert_eq!(applied["applied"], json!(true), "{applied}");
+        assert_eq!(context_count(&ctl, "i1"), 1);
+        // a turn in flight: the input is queued, the context does not move
+        ctl.submit(
+            cmd("b-1", "begin_request", json!({"instance_id": "i1", "request_id": "r1", "revision": 0})),
+            Identity::Instance("i1".into()),
+        )
+        .expect("begin");
+        let queued = ctl
+            .submit(
+                cmd("in-2", "submit_input", json!({"instance_id": "i1", "envelope_id": "e2", "text": "during"})),
+                Identity::User,
+            )
+            .expect("queued input");
+        assert_eq!(queued["applied"], json!(false), "{queued}");
+        assert_eq!(queued["queued"], json!(true), "{queued}");
+        assert_eq!(queued["phase"], json!("MODEL_PENDING"), "{queued}");
+        assert_eq!(context_count(&ctl, "i1"), 1, "a queued input does not enter the context yet");
+        assert_eq!(phase_of(&ctl, "i1"), "MODEL_PENDING", "and the turn in flight is not disturbed");
+        let state: String =
+            ctl.connection().query_row("SELECT state FROM envelopes WHERE id = 'e2'", [], |row| row.get(0)).unwrap();
+        assert_eq!(state, "ACCEPTED", "the queued input is still in the inbox");
+        // the boundary applies it, in sequence order, exactly once
+        let drained = ctl
+            .submit(cmd("d-1", "drain_inbox", json!({"instance_id": "i1"})), Identity::Instance("i1".into()))
+            .expect("drain");
+        assert_eq!(drained["applied"], json!(1), "{drained}");
+        assert_eq!(context_count(&ctl, "i1"), 2);
+        let entries = view_ids(&ctl, "i1");
+        let last = entries.last().cloned().unwrap_or_default();
+        assert!(last.ends_with(":2"), "the input is the newest entry: {entries:?}");
+        // a strict endpoint must still see it paired: the queued input is a real
+        // user entry after the turn's own answer, not behind it
+        let queued_text: String = ctl
+            .connection()
+            .query_row(
+                "SELECT message_json FROM context_entries WHERE instance_id = 'i1' ORDER BY idx DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(queued_text.contains("during"), "{queued_text}");
         drop(ctl);
         cleanup(&path);
     }

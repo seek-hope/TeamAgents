@@ -25,6 +25,8 @@ CONSTANTS Instances,       \* {"L"} or {"L","W"}
           AttIds,          \* attempt slots, e.g. 1..2
           ApprovalOps,     \* subset of Ops needing user approval
           TokenLimit,      \* goal budget limit
+          AllowMidTurnInput, \* counterfactual: apply input while a request is in flight (pre-D-63)
+          PerInstanceFairness, \* counterfactual: fairness as one disjunction over instances (pre-D-63)
           MaxEpoch,        \* bound on ResetInstance (keeps the state graph finite)
           MaxUnknown       \* bound on lost-attempt accounting
 
@@ -44,7 +46,9 @@ SumSet(S) == IF S = {} THEN 0 ELSE LET x == CHOOSE y \in S : TRUE IN x + SumSet(
 
 VARIABLES
   inst,      \* instance -> [lifecycle, phase, revision, expectRev, epoch,
-             \*               activeReq, ctxEpoch, tail]
+             \*               activeReq, ctxEpoch, tail, queue, inputMidTurn]
+             \*               inputMidTurn: a user input landed while a turn was in
+             \*               flight (monitor for `InputLandsAtTheBoundary`, D-63)
   goal,      \* [status, known, unknown, reserved]  reserved: Set of <<req, est>>
   requests,  \* request slot -> [status, instance, epoch, est, selected, result]
   attempts,  \* attempt slot -> [req, status]
@@ -67,10 +71,38 @@ NonTerminalOps(i) == { o \in Ops : ops[o].instance = i /\ ops[o].status \in OpNo
 DoneOps(i) == { o \in Ops : ops[o].instance = i /\ ops[o].status \in OpTerminal }
 
 \* ------------------------------------------------------------------- actions --
-\* user input lands at the READY boundary (§5.4)
+\* user input lands at the READY boundary (§5.4, and the model of the driver's
+\* drain): an input that arrives while a request is in flight cannot be part of
+\* that fixed request, so it waits in the inbox (D-63)
 Input(i) ==
   /\ Alive(i) /\ inst[i].phase = "READY" /\ inst[i].lifecycle = "ACTIVE"
-  /\ inst' = [inst EXCEPT ![i].tail = "user"]
+  /\ inst' = [inst EXCEPT ![i].tail = "user", ![i].queue = FALSE]
+  /\ UNCHANGED <<goal, requests, attempts, ops, approvals, dead>>
+
+\* the driver's boundary: apply the queued input once the turn in flight ended.
+\* Weak fairness on this action is the liveness assumption behind
+\* `QueuedInputEntersTheContext` below (the drain runs at every boundary).
+ApplyQueued(i) ==
+  /\ Alive(i) /\ inst[i].queue /\ inst[i].phase = "READY" /\ inst[i].lifecycle = "ACTIVE"
+  /\ inst' = [inst EXCEPT ![i].tail = "user", ![i].queue = FALSE]
+  /\ UNCHANGED <<goal, requests, attempts, ops, approvals, dead>>
+
+\* the user submits while a walk is in flight: the input waits for the boundary
+QueueInput(i) ==
+  /\ Alive(i) /\ inst[i].lifecycle = "ACTIVE"
+  /\ inst[i].phase \in {"MODEL_PENDING", "TOOLS_PENDING", "COMPLETION_PENDING"}
+  /\ inst' = [inst EXCEPT ![i].queue = TRUE]
+  /\ UNCHANGED <<goal, requests, attempts, ops, approvals, dead>>
+
+\* Counterfactual (AllowMidTurnInput = TRUE): the pre-D-63 code stored the input
+\* in the running turn's context. The turn's own reply then lands *after* it, so
+\* the model sees its answer as the answer to an input it never saw and the idle
+\* rule gives the input no turn — the input is lost. The negative control config
+\* must refute `InputLandsAtTheBoundary` with this enabled.
+MidTurnInput(i) ==
+  /\ AllowMidTurnInput
+  /\ Alive(i) /\ inst[i].lifecycle = "ACTIVE" /\ inst[i].phase # "READY"
+  /\ inst' = [inst EXCEPT ![i].tail = "user", ![i].inputMidTurn = TRUE]
   /\ UNCHANGED <<goal, requests, attempts, ops, approvals, dead>>
 
 \* READY -> MODEL_PENDING: revision guard, idle rule, budget reservation
@@ -78,6 +110,7 @@ BeginRequest(i) ==
   /\ Alive(i) /\ inst[i].phase = "READY" /\ inst[i].lifecycle = "ACTIVE"
   /\ Fresh(i)
   /\ inst[i].tail # "assistant"          \* the idle rule: no turn without work
+  /\ ~inst[i].queue                      \* the boundary applies the queued input first
   /\ BudgetFits(1)
   /\ \E r \in FreeReqs :
        /\ requests' = [requests EXCEPT ![r] = [status |-> "PENDING", instance |-> i,
@@ -235,8 +268,10 @@ ResetInstance(i) ==
   /\ Alive(i)
   /\ inst[i].epoch < MaxEpoch
   /\ LET newEpoch == inst[i].epoch + 1 IN
+       \* a reset seals the old epoch's inbox (A24) and with it a queued input
        /\ inst' = [inst EXCEPT ![i].epoch = newEpoch, ![i].phase = "READY",
                               ![i].ctxEpoch = newEpoch, ![i].activeReq = nil,
+                              ![i].queue = FALSE,
                               ![i].revision = @ + 1, ![i].expectRev = @ + 1]
        /\ requests' = [ r \in ReqIds |->
                           IF requests[r].instance = i /\ requests[r].status = "PENDING"
@@ -250,7 +285,9 @@ ResetInstance(i) ==
 SetLifecycle(i, l) ==
   /\ Alive(i) /\ l \in {"ACTIVE", "PAUSED", "PARKED", "TERMINATED"}
   /\ l # inst[i].lifecycle
-  /\ inst' = [inst EXCEPT ![i].lifecycle = l]
+  \* a terminated instance takes no input: a queued one is not deliverable any more
+  /\ inst' = [inst EXCEPT ![i].lifecycle = l,
+                           ![i].queue = IF l = "TERMINATED" THEN FALSE ELSE inst[i].queue]
   /\ UNCHANGED <<goal, requests, attempts, ops, approvals, dead>>
 
 \* ---------------------------------------------------------------------- spec --
@@ -259,6 +296,9 @@ Stutter == UNCHANGED vars
 
 Next ==
   \/ \E i \in Instances : Input(i)
+  \/ \E i \in Instances : QueueInput(i)
+  \/ \E i \in Instances : ApplyQueued(i)
+  \/ \E i \in Instances : MidTurnInput(i)
   \/ \E i \in Instances : BeginRequest(i)
   \/ \E i \in Instances : RecordAttempt(i)
   \/ \E i \in Instances : LostAttempt(i)
@@ -282,7 +322,8 @@ Next ==
 Init ==
   /\ inst = [ i \in Instances |->
                 [lifecycle |-> "ACTIVE", phase |-> "READY", revision |-> 0, expectRev |-> 0,
-                 epoch |-> 0, ctxEpoch |-> 0, activeReq |-> nil, tail |-> "user"] ]
+                 epoch |-> 0, ctxEpoch |-> 0, activeReq |-> nil, tail |-> "user",
+                 queue |-> FALSE, inputMidTurn |-> FALSE] ]
   /\ goal = [status |-> "ACTIVE", known |-> 0, unknown |-> 0, reserved |-> {}]
   /\ requests = [ r \in ReqIds |->
                     [status |-> "none", instance |-> "", epoch |-> 0, est |-> 1,
@@ -293,13 +334,47 @@ Init ==
   /\ approvals = [ o \in Ops |-> "none" ]
   /\ dead = {}
 
-Spec == Init /\ [][Next]_vars /\ WF_vars(\E i \in Instances : Recover(i))
+\* The turn advances: at least one step an instance's in-flight turn can take next.
+\* Weak fairness on it is the assumption behind `QueuedInputEntersTheContext` — the
+\* driver keeps driving, and the provider eventually answers or the transport times
+\* out into `FailRequest` — so a turn in flight does not stay in flight forever.
+\* (Approval waits are covered too: `FailRequest` is one of the steps.)
+TurnStep(i) ==
+  \/ RecordAttempt(i) \/ LostAttempt(i) \/ ImportResponse(i) \/ ConsumeDecision(i)
+  \/ FailRequest(i) \/ CancelRequest(i)
+  \/ \E o \in Ops : ops[o].instance = i /\
+        (RequestApproval(o) \/ Dispatch(o) \/ StartEffect(o) \/ \E x \in OpTerminal : Complete(o, x))
+
+\* Fairness is per instance, because each instance has its own driver: one
+\* instance's progress must not be carried by another's (a single disjunction over
+\* instances would let a two-instance configuration starve one of them, which the
+\* two-instance run demonstrates).
+\* Recovery, the boundary drain and turn progress are *per instance* (the supervisor
+\* drives and restarts drivers instance by instance), so one instance cannot be
+\* starved by another's progress. Stated as a switch because the older disjunction
+\* form looks equivalent and is not: with two instances it lets one of them stay
+\* dead while the other recovers, which the two-instance configuration refutes.
+\* The drain is *strongly* fair: a driver that keeps running drains its inbox even if
+\* the environment crashes it again and again (weak fairness alone lets a crash loop
+\* starve it).
+Spec == Init /\ [][Next]_vars
+       /\ (IF PerInstanceFairness
+             THEN (\A i \in Instances : WF_vars(Recover(i)))
+             ELSE WF_vars(\E i \in Instances : Recover(i)))
+       /\ (IF PerInstanceFairness
+             THEN (\A i \in Instances : SF_vars(ApplyQueued(i)))
+             ELSE SF_vars(\E i \in Instances : ApplyQueued(i)))
+       /\ (IF PerInstanceFairness
+             THEN (\A i \in Instances : WF_vars(TurnStep(i)))
+             ELSE WF_vars(\E i \in Instances : TurnStep(i)))
 
 \* ---------------------------------------------------------------- invariants --
 TypeOK ==
   /\ \A i \in Instances : inst[i].phase \in
         {"READY", "MODEL_PENDING", "TOOLS_PENDING", "WAITING", "COMPLETION_PENDING"}
   /\ \A i \in Instances : inst[i].lifecycle \in {"ACTIVE", "PAUSED", "PARKED", "TERMINATED"}
+  /\ \A i \in Instances : inst[i].queue \in BOOLEAN
+  /\ \A i \in Instances : inst[i].inputMidTurn \in BOOLEAN
   /\ \A o \in Ops : ops[o].status \in OpNonTerminal \cup OpTerminal
   /\ \A o \in Ops : ops[o].effect \in {0, 1}
   /\ goal.status \in {"ACTIVE", "SUCCEEDED", "FAILED", "BLOCKED", "CANCELLED"}
@@ -340,6 +415,23 @@ SelectionIsComplete ==
 NoTurnWithoutWork ==
   \A i \in Instances : inst[i].phase \in {"MODEL_PENDING", "TOOLS_PENDING"} =>
       inst[i].tail # "assistant"
+
+\* D-63: user input only ever enters the context at a READY boundary. The monitor
+\* records the phase each landing happened at; the counterfactual where the driver
+\* applied it inside the running turn (AllowMidTurnInput) refutes this — and loses
+\* the input, because that turn's own reply is appended after it.
+InputLandsAtTheBoundary ==
+  \A i \in Instances : ~inst[i].inputMidTurn
+
+\* D-63: an input that waited for the boundary enters the context, or the instance
+\* stops being active (parked/terminated: the user resumes it) or a reset seals it
+\* with its epoch (A24). It is never dropped while the instance keeps running.
+\* Proved under the two fairness assumptions above (the drain runs at a boundary,
+\* and a turn in flight eventually ends).
+QueuedInputEntersTheContext ==
+  \A i \in Instances :
+    []( (inst[i].queue /\ inst[i].lifecycle = "ACTIVE")
+        => <>(inst[i].tail = "user" \/ ~inst[i].queue \/ inst[i].lifecycle # "ACTIVE") )
 
 \* §6.1: an advancing executor always holds the current revision
 StaleExecutorRejected ==

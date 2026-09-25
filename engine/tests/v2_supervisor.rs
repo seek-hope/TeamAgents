@@ -15,6 +15,9 @@ use teamagents_engine::v2::supervisor::{start, SupervisorConfig, SupervisorHandl
 
 enum Step {
     Message(Json),
+    /// Reply after a delay, so a test can act *while* the request is in flight
+    /// (the harness logs the request before the delay).
+    Slow(u64, Json),
 }
 
 type Seen = Arc<Mutex<HashMap<String, Vec<Vec<String>>>>>;
@@ -39,7 +42,14 @@ impl Provider for ScriptedProvider {
             request.tools.iter().filter_map(|tool| tool["function"]["name"].as_str().map(str::to_string)).collect(),
         );
         let next = self.script.lock().unwrap().pop_front().unwrap_or(Step::Message(reply("script exhausted")));
-        match next {
+        let (message, delay) = match next {
+            Step::Message(message) => (message, 0),
+            Step::Slow(ms, message) => (message, ms),
+        };
+        if delay > 0 {
+            tokio::time::sleep(Duration::from_millis(delay)).await;
+        }
+        match Step::Message(message) {
             Step::Message(message) => Ok(AttemptOutcome {
                 response: ModelResponse {
                     message,
@@ -49,6 +59,7 @@ impl Provider for ScriptedProvider {
                 raw: json!({"scripted": true}),
                 elapsed_ms: 1,
             }),
+            Step::Slow(..) => unreachable!("the delay was already applied"),
         }
     }
 }
@@ -598,6 +609,77 @@ async fn the_offered_surface_follows_the_grants() {
     assert!(
         child.contains(&"finish".to_string()) && child.contains(&"wait".to_string()),
         "the child keeps the tools that need no grant (the kernel builtins and wait): {child:?}"
+    );
+}
+
+/// An input that arrives while a turn is in flight enters at the **next boundary**
+/// (§5.4 and the model's own `Input` action: user input lands at READY). It is
+/// queued, the turn in flight is not disturbed, and the model sees it *after* its
+/// own reply — so its reply is never read as the answer to an input it never saw,
+/// and the input always gets a turn of its own.
+#[tokio::test]
+async fn an_input_arriving_during_a_turn_enters_at_the_next_boundary() {
+    let leader = vec![Step::Slow(1500, reply("first answer")), Step::Message(reply("second answer"))];
+    let seen: Seen = Arc::new(Mutex::new(HashMap::new()));
+    let root = root("mid-turn-input");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let handle =
+        start(config(&root, factory_with_log(HashMap::from([("i-leader".to_string(), leader)]), seen.clone())))
+            .await
+            .expect("start");
+    handle.input("i-leader", "first question").await.expect("input");
+    // the request is logged before the provider's delay, so this is inside the turn
+    for _ in 0..400 {
+        if seen.lock().unwrap().get("i-leader").map(Vec::len).unwrap_or(0) >= 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(seen.lock().unwrap().get("i-leader").map(Vec::len), Some(1), "the first turn is in flight");
+    let queued = handle
+        .submit_user(cmd(
+            "mid-turn-input",
+            "submit_input",
+            json!({"instance_id": "i-leader", "envelope_id": "env-mid-turn", "text": "second question"}),
+        ))
+        .await
+        .expect("input");
+    assert_eq!(queued["applied"], json!(false), "an input inside a turn waits for the boundary: {queued}");
+    assert_eq!(queued["queued"], json!(true), "{queued}");
+    // the turn ends, the boundary applies the input and a new turn answers it
+    for _ in 0..600 {
+        if seen.lock().unwrap().get("i-leader").map(Vec::len).unwrap_or(0) >= 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(
+        seen.lock().unwrap().get("i-leader").map(Vec::len),
+        Some(2),
+        "the queued input must open a turn of its own"
+    );
+    handle.shutdown().await.expect("shutdown");
+    // and it entered the conversation *after* the reply it was not part of
+    let control = second_control(&root);
+    let rows: Vec<(i64, String, String)> = control
+        .connection()
+        .prepare("SELECT idx, kind, message_json FROM context_entries WHERE instance_id = 'i-leader' ORDER BY idx")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+        .map(|row| row.unwrap())
+        .collect();
+    let index_of = |needle: &str| {
+        rows.iter()
+            .find(|(_, _, message)| message.contains(needle))
+            .map(|(idx, _, _)| *idx)
+            .unwrap_or_else(|| panic!("{needle:?} is missing from the conversation: {rows:?}"))
+    };
+    let reply_index = index_of("first answer");
+    let input_index = index_of("second question");
+    assert!(
+        input_index > reply_index,
+        "the input entered behind the reply it was not part of (input {input_index}, reply {reply_index})"
     );
 }
 

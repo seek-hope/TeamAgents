@@ -202,13 +202,17 @@ pub fn execute(options: &ExecOptions) -> Result<ExecRun, (i32, String)> {
         ));
     }
     let envelope = format!("env-{}", uuid::Uuid::new_v4());
-    client
+    let submitted = client
         .command(
             &format!("input-{envelope}"),
             "submit_input",
             json!({"instance_id": instance, "envelope_id": envelope, "text": options.prompt}),
         )
         .map_err(|error| (2, format!("exec: submitting the input failed: {error}")))?;
+    // A turn that was already in flight when this run started cannot include the
+    // input: it waits for the boundary and enters the conversation after that
+    // turn's own reply (D-63). Report it instead of pretending it landed.
+    let queued = submitted["queued"] == json!(true);
     let deadline = Instant::now() + Duration::from_secs(options.timeout_s);
     let mut goal_status: Option<String> = None;
     let mut turn_failure: Option<String> = None;
@@ -311,6 +315,7 @@ pub fn execute(options: &ExecOptions) -> Result<ExecRun, (i32, String)> {
         "reply": reply.as_ref().map(|text| text.chars().take(2000).collect::<String>()),
         "failure": turn_failure,
         "approval": pending_approval,
+        "input_queued": queued,
         "workspace": options.workspace.to_string_lossy(),
         "verification": verification,
         "verification_path": verification_path,
@@ -351,6 +356,9 @@ fn print_human(report: &Json, options: &ExecOptions) {
             options.timeout_s
         ),
         _ => {
+            if report["input_queued"] == json!(true) {
+                println!("queued: a turn was already running, so this input enters after it ends");
+            }
             if let Some(reason) = report["failure"].as_str() {
                 println!("turn failed: {reason}");
             } else if let Some(status) = report["goal_status"].as_str() {

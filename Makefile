@@ -64,10 +64,10 @@ verify-model: verify-tools
 
 # small exhaustive configurations for every module (seconds; the wide config is verify-model-wide)
 verify-model-all: verify-tools
-	@cd verification/tla && for cfg in MC.cfg MC_artifact.cfg MC_wait.cfg MC_task.cfg MC_compress.cfg MC_daemon.cfg MC_checks.cfg MC_grants.cfg MC_authority.cfg; do \
+	@cd verification/tla && for cfg in MC.cfg MC_control_two.cfg MC_artifact.cfg MC_wait.cfg MC_task.cfg MC_compress.cfg MC_daemon.cfg MC_checks.cfg MC_grants.cfg MC_authority.cfg; do \
 		echo "== $$cfg =="; \
 		java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
-			tlc2.TLC -config $$cfg -fp 64 -workers 4 $$(case $$cfg in MC.cfg) echo V2Control.tla;; MC_wait.cfg) echo V2Wait.tla;; MC_task.cfg) echo V2Task.tla;; MC_compress.cfg) echo V2Compress.tla;; MC_daemon.cfg) echo V2Daemon.tla;; MC_checks.cfg) echo V2Checks.tla;; MC_grants.cfg) echo V2Grants.tla;; MC_authority.cfg) echo V2Authority.tla;; *) echo V2Artifact.tla;; esac) \
+			tlc2.TLC -config $$cfg -fp 64 -workers 4 $$(case $$cfg in MC.cfg|MC_control_two.cfg) echo V2Control.tla;; MC_wait.cfg) echo V2Wait.tla;; MC_task.cfg) echo V2Task.tla;; MC_compress.cfg) echo V2Compress.tla;; MC_daemon.cfg) echo V2Daemon.tla;; MC_checks.cfg) echo V2Checks.tla;; MC_grants.cfg) echo V2Grants.tla;; MC_authority.cfg) echo V2Authority.tla;; *) echo V2Artifact.tla;; esac) \
 			| grep -E "No error|violation|violated|states generated"; \
 	done
 
@@ -75,10 +75,14 @@ verify-model-all: verify-tools
 # below states a plausible mistake and must make TLC refute the named property. A
 # control that verifies means the property says nothing, so it fails the target.
 verify-model-counterexamples: verify-tools
-	@cd verification/tla && for cfg in MC_authority_badview.cfg MC_authority_trustsurface.cfg MC_authority_stalesurface.cfg; do \
+	@cd verification/tla && for pair in \
+		MC_authority_badview.cfg:V2Authority.tla MC_authority_trustsurface.cfg:V2Authority.tla \
+		MC_authority_stalesurface.cfg:V2Authority.tla MC_control_midturninput.cfg:V2Control.tla \
+		MC_control_two_disjunction.cfg:V2Control.tla; do \
+		cfg=$${pair%%:*}; spec=$${pair##*:}; \
 		echo "== $$cfg (must be refuted) =="; \
 		out=$$(java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
-			tlc2.TLC -config $$cfg -fp 64 -workers 4 V2Authority.tla 2>&1); \
+			tlc2.TLC -config $$cfg -fp 64 -workers 4 $$spec 2>&1); \
 		echo "$$out" | grep -E "is violated|properties were violated" || { \
 			echo "$$cfg verified instead of refuting: the property it should break may be vacuous" >&2; \
 			echo "$$out" | tail -5 >&2; exit 1; }; \

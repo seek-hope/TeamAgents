@@ -231,6 +231,64 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-63 An input that arrives during a turn enters at the next boundary (2026-09-25)
+
+The audit of the user-facing surfaces turned up a defect in the *inbound* direction: `submit_input` appended
+the input to the instance's context immediately, even while a turn was in flight. A model request is fixed
+once it is registered (§3/§6.1), so the input could not be part of it — and the turn's own reply then landed
+*after* the input, which left the runtime's idle rule (`step_ready`: the last entry is the model's own text
+and no open tasks) satisfied. The message was stored, was never acted on, and the model's answer looked like
+the answer to it. The user's message silently did nothing, with no error anywhere — the exact class the design
+rules out ("user input enters the target instance at a safe boundary", §5.4).
+
+Reproduced deterministically before the fix (`engine/tests/v2_supervisor.rs`, a scripted provider that holds
+its first request open): the reply to the mid-turn input was `{"applied": true}` and the instance made
+**one** request where two were owed.
+
+**The fix** keeps the input out of a fixed request: while the instance is `MODEL_PENDING`, `TOOLS_PENDING` or
+`COMPLETION_PENDING`, `submit_input` inserts the envelope and returns
+`{"applied": false, "queued": true, "phase": …}` (plus an `input_queued` event) instead of appending the
+entry. The driver's boundary drains the inbox before it fixes a request (§5.3), so the queued input enters the
+conversation in sequence order — after the turn's own answer — and gets a turn of its own. `exec` reports
+`input_queued` (and says so on stdout instead of pretending the input landed), and the TUI prints
+`queued for <id>: it enters when the running turn ends` so the composer's message is visibly on its way. A
+reset seals a queued input with its epoch (A24) and a terminated instance cannot take one; a parked instance
+keeps it until it is resumed.
+
+**Verification.** `core/src/v2/control.rs::an_input_inside_a_turn_waits_for_the_boundary` pins the three
+paths (READY applies, a turn in flight queues and leaves the phase alone, the drain applies it exactly once
+and last); `engine/tests/v2_supervisor.rs::an_input_arriving_during_a_turn_enters_at_the_next_boundary` walks
+the real driver: the queued reply, the second turn, and the entry order (the input's index is greater than
+the first reply's).
+
+Formally, `V2Control` gained the queue (an instance field, set by `QueueInput` while a turn is in flight, and
+cleared by the boundary's `ApplyQueued` / `Input`), a monitor for the landing phase, and two properties:
+`InputLandsAtTheBoundary` (an invariant — a user input never lands while a turn is in flight) and
+`QueuedInputEntersTheContext` (temporal — a queued input enters the context, unless the instance stops being
+active or a reset seals it). `make verify-model-counterexamples` now also runs
+`MC_control_midturninput.cfg`, the counterfactual in which the driver applies input mid-turn (the pre-D-63
+behaviour): it must refute `InputLandsAtTheBoundary`, and it does
+(`Invariant InputLandsAtTheBoundary is violated`).
+
+**A spec correction the two-instance run forced**: `Spec`'s fairness used to be
+`WF_vars(\E i \in Instances : Recover(i))`, a *disjunction* over instances. With two instances that lets one
+instance be starved forever while the other recovers repeatedly, which is not the system (each instance has
+its own driver, and the supervisor drives and restarts them one by one). The new liveness property exposed
+it, and the fairness is now per instance: `\A i : WF_vars(Recover(i))`, `\A i : SF_vars(ApplyQueued(i))`
+(strong, because a crash loop must not starve the drain) and `\A i : WF_vars(TurnStep(i))` (a turn in flight
+eventually ends; `FailRequest` is one of its steps, so an approval wait is covered too). Because the wide
+configuration cannot finish in a reasonable time, the fairness check got its own small two-instance
+configuration, `MC_control_two.cfg` (same domains as `MC.cfg`, two instances; 591,145 states / 82,896
+distinct / 37 s, green, now in `make verify-model-all`), and the older disjunction form is kept as a
+counterfactual switch (`PerInstanceFairness = FALSE`) whose configuration
+`MC_control_two_disjunction.cfg` **must** refute `QueuedInputEntersTheContext` — it does, in
+`make verify-model-counterexamples`.
+
+Ceiling: the queued input waits for the boundary, so a client that sends into a running turn sees its message
+acted on only after that turn ends (the TUI and `exec` both say so). Whether the *runtime* should instead
+interrupt the turn is the same open question as the re-asking loop (see ACCEPTANCE's known gaps) and is not
+decided here.
+
 ## D-62 Every request answers every tool call it carries (2026-09-25)
 
 D-61's real-model probe (`review/dogfood/authority.py`) turned up a second defect, in the wire protocol

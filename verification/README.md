@@ -17,10 +17,11 @@ exploration. The boundaries are in "Boundaries" below and in [REPORT.md](REPORT.
 make verify-model           # small control-plane configuration (seconds)
 make verify-model-all       # small configurations for all nine modules (control plane, artifacts, waits,
                             # tasks, compression, daemon, required checks, authority, the user's surface)
-make verify-model-counterexamples   # the authority module's negative controls: each must be *refuted*,
-                            # or the property it targets proves nothing (D-61)
-make verify-model-wide      # wide control-plane configuration (2 instances / 2 operations; hundreds of millions
-                            # of states, slow)
+make verify-model-counterexamples   # the negative controls (authority surface D-61, inbound boundary D-63):
+                            # each must be *refuted*, or the property it targets proves nothing
+make verify-model-wide      # wide control-plane configuration (2 instances / 2 operations; tens to hundreds of
+                            # millions of states, slow — the 2-instance run is what catches per-instance
+                            # fairness regressions)
 make verify-kani            # paging arithmetic (needs the Kani toolchain, see below)
 cargo test --offline --manifest-path core/Cargo.toml --test v2_invariants   # spec-to-code correspondence
 ```
@@ -33,8 +34,9 @@ repository and never enters `make check`. Java is required (this machine uses Op
 
 | File | Contents |
 |---|---|
-| `tla/V2Control.tla` | control-plane abstraction: instance phase machine, requests/attempts, decisions and operations, approvals, the dispatch linearization point, cancel/timeout, epoch resets, goal budget reservations and settlement, crash/recovery |
+| `tla/V2Control.tla` | control-plane abstraction: instance phase machine, requests/attempts, decisions and operations, approvals, the dispatch linearization point, cancel/timeout, epoch resets, goal budget reservations and settlement, crash/recovery, and the inbound boundary (an input that arrives during a turn waits for it, D-63) |
 | `tla/MC.cfg` | small configuration (1 instance / 1 operation / 2 request slots / 1 attempt slot / 1 epoch reset / 1 unknown usage) |
+| `tla/MC_control_midturninput.cfg` | negative control for D-63: the driver applies input *inside* the running turn (the pre-D-63 behaviour). `make verify-model-counterexamples` requires TLC to refute `InputLandsAtTheBoundary` here |
 | `tla/MC_wide.cfg` | wide control-plane configuration (2 instances / 2 operations with one requiring approval / 3 request slots / 2 attempt slots) |
 | `tla/V2Artifact.tla` + `tla/MC_artifact.cfg` | artifacts and GC: write bytes → STAGING row → reference and LIVE in one transaction → GC claim → delete/abandon |
 | `tla/V2Wait.tla` + `tla/MC_wait.cfg` | waits/wakeups/timers/supersede: evaluate at registration → parked drain scan → answer in the same transaction when satisfied → cancel/supersede/re-arm |
@@ -45,8 +47,11 @@ repository and never enters `make check`. Java is required (this machine uses Op
 | `tla/V2Grants.tla` + `tla/MC_grants.cfg` | authority (§5.1/§6.1, A03/A04; D-58/D-59/D-60): the session's bootstrap grants, narrowing by an instance (manage covers message/delegate), the spawn-derived delegate grant, revocation with the parent tree cascade and the revision bump, the dispatch re-check, and the rule that the model-visible tool surface only offers what the instance's grants back |
 | `tla/V2Authority.tla` + `tla/MC_authority.cfg` | the user's authority surface (D-61): the view a client reads (and the id a revoke must name), the pair table the surface refuses against, a grant the user writes (optionally derived from one it holds), revocation by a nameable id with the subtree cascade, the surface as a *cached* per-request variable, and the dispatch re-check with a surface that may lag. Its three negative-control configurations (`MC_authority_badview.cfg`, `MC_authority_trustsurface.cfg`, `MC_authority_stalesurface.cfg`) are run by `make verify-model-counterexamples` and must each be refuted |
 
-The environment (tool results, approval timing, crash points) is **non-deterministic** in the model; that is
-exactly what is enumerated.
+Two control-plane configurations exist: `MC.cfg` (one instance, the default in `make verify-model-all`) and
+`MC_control_two.cfg` (two instances, the same domains — the small check that makes a *per-instance* fairness or
+liveness assumption testable, which the slower wide configuration cannot). The environment (tool results,
+approval timing, crash points, and whether a turn is in flight when input arrives) is **non-deterministic** in
+the model; that is exactly what is enumerated.
 
 ## Verified properties and their code anchors
 
@@ -62,6 +67,8 @@ exactly what is enumerated.
 | `OneActiveRequest` | an instance has a single active request at a time | the phase/revision guard in `begin_request` | §3/§6.1 |
 | `SelectionIsComplete` | only an atomically selected complete attempt exists | the `selected_attempt_id IS NULL` update in `record_attempt` | A19 |
 | `NoTurnWithoutWork` | no new turn opens when the last entry is the model's own text | the closing entry plus the idle test in `step_ready` | §5.4 |
+| `InputLandsAtTheBoundary` | user input only ever enters the context at a READY boundary — never inside a turn whose request is already fixed | `submit_input` queueing while `MODEL_PENDING`/`TOOLS_PENDING`/`COMPLETION_PENDING`, and the boundary drain in `step_ready` (D-63) | §5.4/A21 |
+| `QueuedInputEntersTheContext` (temporal) | an input that waited for the boundary enters the context; it is never dropped while the instance keeps running (a park keeps it, a reset seals it with its epoch, termination ends it) | the `envelopes` state machine (`ACCEPTED` → `APPLIED`, sealed at a reset) plus the drain | A06/A21 |
 | `StaleExecutorRejected` | an executing instance holds the current revision | `revision == expected` in `begin_request` | §6.1 |
 | `NoEffectOnTerminated` | a terminated instance produces no effect | TERMINATED in `set_lifecycle` plus the dispatch guard | §6.4 |
 | `PreparedIsNotTerminal` | a `PREPARED` operation has no effect yet | the operation state machine | §6.1 |

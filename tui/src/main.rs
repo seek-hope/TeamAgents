@@ -258,8 +258,10 @@ fn run_v2_effect(effect: V2Effect, client: &mut DaemonClient, app: &mut V2App) {
                 "submit_input",
                 json!({"instance_id": instance, "envelope_id": envelope, "text": text}),
             );
-            if let Err(e) = result {
-                app.submit_failed(&e);
+            match result {
+                Ok(reply) if reply["queued"] == json!(true) => app.input_queued(&instance),
+                Ok(_) => {}
+                Err(e) => app.submit_failed(&e),
             }
         }
         V2Effect::Decide { approval_id, decision } => {
