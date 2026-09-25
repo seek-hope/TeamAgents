@@ -2,6 +2,7 @@
 
 pub mod daemon_client;
 pub mod text;
+pub mod theme;
 pub mod v2app;
 pub mod v2ui;
 pub mod wrap;

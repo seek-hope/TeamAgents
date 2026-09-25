@@ -18,6 +18,28 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-47 TUI colour scheme: the v1 palette (2026-09-25)
+
+The user preferred the v1 TUI's colours over the ones the current conversation UI used. The palette is restored
+as `tui/src/theme.rs` (the Codex palette: `BG` 0x0d0d0d, `PANEL_BG` 0x181818, white foreground, `GREY` 0x5d5d5d,
+`ACCENT` 0x3b82f6, green success, `NOTICE` 0xafafaf, red error, yellow warning plus `SELECT_BG`/`ZEBRA_BG`/
+`HOVER_BG`) and applied to the current UI:
+
+- the whole screen sits on `BG`;
+- every bordered panel uses an `ACCENT` border, a `PANEL_BG` surface and an accent title;
+- the selected list row is the accent surface with panel-dark text (v1's selection look);
+- the status line sits on `PANEL_BG`, and turns dark-on-red while disconnected;
+- chat labels follow the v1 convention: grey bold labels, white body text, accent for the assistant, notice
+  grey for machine-generated text and red for errors; the footer is grey.
+
+The v1 TUI itself (its layout, tabs, forms and slash commands) is **not** restored: it drove the retired
+backend. Only the colour scheme was ported, which is what was asked; further v1 interface elements can be
+ported one by one on request (the source stays in Git history, `git log -- tui/src/ui.rs`).
+
+Evidence: `tui/tests/v2app_tests.rs::the_palette_drives_panels_selection_and_status` asserts the screen
+background, the accent panel border, the accent-surface selection and the panel-surface status line on a
+TestBackend frame; `make check` and `make pty` are green.
+
 ## D-46 Workspace policies wired into spawn (2026-09-25)
 
 D-45 found that the shared/isolated/git-worktree policies in `engine/src/workspace.rs` ([design](DESIGN.md)

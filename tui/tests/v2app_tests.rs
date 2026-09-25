@@ -424,3 +424,23 @@ fn frame_shows_the_panels_and_panel_hit_testing() {
     assert!(all.contains("task delegation"), "{all}");
     assert!(all.contains("t-1 ─→ i-worker  [RUNNING]"), "{all}");
 }
+
+/// The v1 palette stays applied: screen background, accent panel borders, the
+/// accent-surface selection and the panel-surface status line.
+#[test]
+fn the_palette_drives_panels_selection_and_status() {
+    use teamagents_tui::theme::{ACCENT, BG, PANEL_BG};
+
+    let mut app = app();
+    app.handle_key(key(KeyCode::F(3))); // instances panel
+    let mut terminal = Terminal::new(TestBackend::new(72, 18)).unwrap();
+    terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
+    let buffer = terminal.backend().buffer();
+    let cell = |x: u16, y: u16| buffer.cell((x, y)).expect("cell").clone();
+    let geo = v2ui::geometry(&app, ratatui::layout::Rect::new(0, 0, 72, 18));
+
+    assert_eq!(cell(71, 17).bg, BG, "the screen sits on the palette background");
+    assert_eq!(cell(geo.body.x, geo.body.y).fg, ACCENT, "panel borders carry the accent");
+    assert_eq!(cell(geo.body.x + 1, geo.body.y + 1).bg, ACCENT, "the selected row is the accent surface");
+    assert_eq!(cell(geo.status.x + 1, geo.status.y).bg, PANEL_BG, "the status line sits on the panel surface");
+}

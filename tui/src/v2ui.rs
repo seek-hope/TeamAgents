@@ -3,14 +3,30 @@
 //! the same discipline as ui::geometry for the v1 interface.
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
+use crate::theme::*;
 use crate::v2app::{ChatKind, Focus, V2App, View};
 use crate::wrap::wrap_lines;
+
+/// Panel chrome shared by every bordered box: accent border, panel surface and
+/// an accent title, the v1 palette's look.
+fn panel(title: impl Into<String>) -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .title(Span::styled(title.into(), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)))
+        .border_style(Style::default().fg(ACCENT))
+        .style(Style::default().bg(PANEL_BG).fg(FG))
+}
+
+/// A selected list row: dark text on the accent surface (v1's selection look).
+fn selection() -> Style {
+    Style::default().fg(PANEL_BG).bg(ACCENT).add_modifier(Modifier::BOLD)
+}
 
 /// Screen regions shared by rendering and hit-testing.
 pub struct V2Geometry {
@@ -75,6 +91,8 @@ pub fn render(frame: &mut Frame, app: &mut V2App) {
         return;
     }
     let geo = geometry(app, area);
+    // the palette's screen background, drawn first so every widget sits on it
+    frame.render_widget(Block::default().style(Style::default().bg(BG).fg(FG)), area);
     render_status(frame, app, geo.status);
     match app.view {
         View::Chat => {
@@ -90,7 +108,7 @@ pub fn render(frame: &mut Frame, app: &mut V2App) {
 }
 
 fn render_instances(frame: &mut Frame, app: &V2App, area: Rect) {
-    let block = Block::default().borders(Borders::ALL).title("instances (● conversation target)");
+    let block = panel("instances (● conversation target)");
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let lines: Vec<Line<'static>> = app
@@ -101,22 +119,18 @@ fn render_instances(frame: &mut Frame, app: &V2App, area: Rect) {
             let selected = i == app.instance_sel;
             let marker = if selected { "▶" } else { " " };
             let target = if i == app.active { "●" } else { " " };
-            let style = if selected {
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
+            let style = if selected { selection() } else { Style::default().fg(FG) };
             let lifecycle_style = match instance.lifecycle.as_str() {
-                "ACTIVE" => Style::default().fg(Color::Green),
-                "PAUSED" | "PARKED" => Style::default().fg(Color::Yellow),
-                _ => Style::default().fg(Color::Red),
+                "ACTIVE" => Style::default().fg(SUCCESS),
+                "PAUSED" | "PARKED" => Style::default().fg(WARNING),
+                _ => Style::default().fg(ERROR),
             };
             Line::from(vec![
                 Span::styled(format!("{marker}{target} "), style),
                 Span::styled(instance.id.clone(), style),
-                Span::raw(" · "),
+                Span::styled(" · ", Style::default().fg(GREY)),
                 Span::styled(instance.lifecycle.clone(), lifecycle_style),
-                Span::raw(format!(" · {}", instance.phase)),
+                Span::styled(format!(" · {}", instance.phase), Style::default().fg(NOTICE)),
             ])
         })
         .collect();
@@ -124,7 +138,7 @@ fn render_instances(frame: &mut Frame, app: &V2App, area: Rect) {
 }
 
 fn render_tasks(frame: &mut Frame, app: &V2App, area: Rect) {
-    let block = Block::default().borders(Borders::ALL).title("tasks");
+    let block = panel("tasks");
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let lines: Vec<Line<'static>> = app
@@ -134,24 +148,23 @@ fn render_tasks(frame: &mut Frame, app: &V2App, area: Rect) {
         .map(|(i, task)| {
             let selected = i == app.task_sel;
             let marker = if selected { "▶" } else { " " };
-            let style = if selected {
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
+            let style = if selected { selection() } else { Style::default().fg(FG) };
             let status_style = match task.status.as_str() {
-                "RUNNING" => Style::default().fg(Color::Cyan),
-                "PENDING" => Style::default().fg(Color::Yellow),
-                "SUCCEEDED" => Style::default().fg(Color::Green),
-                "FAILED" | "BLOCKED" => Style::default().fg(Color::Red),
-                _ => Style::default().fg(Color::DarkGray),
+                "RUNNING" => Style::default().fg(ACCENT),
+                "PENDING" => Style::default().fg(WARNING),
+                "SUCCEEDED" => Style::default().fg(SUCCESS),
+                "FAILED" | "BLOCKED" => Style::default().fg(ERROR),
+                _ => Style::default().fg(NOTICE),
             };
             Line::from(vec![
                 Span::styled(format!("{marker} "), style),
                 Span::styled(task.id.clone(), style),
-                Span::raw(" · "),
+                Span::styled(" · ", Style::default().fg(GREY)),
                 Span::styled(task.status.clone(), status_style),
-                Span::raw(format!(" · assignee {} · goal {}", task.assignee, task.goal_id)),
+                Span::styled(
+                    format!(" · assignee {} · goal {}", task.assignee, task.goal_id),
+                    Style::default().fg(NOTICE),
+                ),
             ])
         })
         .collect();
@@ -162,13 +175,11 @@ fn render_tasks(frame: &mut Frame, app: &V2App, area: Rect) {
 /// for execution correctness): active grant/channel edges, then task-delegation edges.
 fn render_topology(frame: &mut Frame, app: &mut V2App, area: Rect) {
     let active_grants = app.grants.iter().filter(|g| !g.revoked).count();
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(format!("topology · active grants {active_grants} · tasks {}", app.tasks.len()));
+    let block = panel(format!("topology · active grants {active_grants} · tasks {}", app.tasks.len()));
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let dim = Style::default().fg(Color::DarkGray);
-    let bold = Style::default().add_modifier(Modifier::BOLD);
+    let dim = Style::default().fg(GREY);
+    let bold = Style::default().fg(FG).add_modifier(Modifier::BOLD);
     let mut lines: Vec<Line<'static>> = vec![Line::from(Span::styled("grants and channels", bold))];
     if active_grants == 0 {
         lines.push(Line::from(Span::styled("  (no active grants)", dim)));
@@ -177,9 +188,9 @@ fn render_topology(frame: &mut Frame, app: &mut V2App, area: Rect) {
         let kind = if grant.action == "message" { "channel" } else { "grant" };
         lines.push(Line::from(vec![
             Span::raw("  "),
-            Span::styled(grant.subject.clone(), Style::default().fg(Color::Cyan)),
-            Span::styled(format!(" ─{}→ ", grant.action), dim),
-            Span::styled(grant.scope.clone(), Style::default().fg(Color::Cyan)),
+            Span::styled(grant.subject.clone(), Style::default().fg(FG)),
+            Span::styled(format!(" ─{}→ ", grant.action), Style::default().fg(ACCENT)),
+            Span::styled(grant.scope.clone(), Style::default().fg(NOTICE)),
             Span::styled(format!("  {kind}"), dim),
         ]));
     }
@@ -191,9 +202,9 @@ fn render_topology(frame: &mut Frame, app: &mut V2App, area: Rect) {
     for task in &app.tasks {
         lines.push(Line::from(vec![
             Span::raw("  "),
-            Span::styled(task.id.clone(), Style::default().fg(Color::Yellow)),
-            Span::styled(" ─→ ", dim),
-            Span::styled(task.assignee.clone(), Style::default().fg(Color::Cyan)),
+            Span::styled(task.id.clone(), Style::default().fg(FG)),
+            Span::styled(" ─→ ", Style::default().fg(ACCENT)),
+            Span::styled(task.assignee.clone(), Style::default().fg(NOTICE)),
             Span::styled(format!("  [{}]", task.status), dim),
         ]));
     }
@@ -209,9 +220,9 @@ fn render_topology(frame: &mut Frame, app: &mut V2App, area: Rect) {
 
 fn render_status(frame: &mut Frame, app: &V2App, area: Rect) {
     let style = if app.disconnected {
-        Style::default().fg(Color::Black).bg(Color::Red)
+        Style::default().fg(BG).bg(ERROR).add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::Black).bg(Color::Cyan)
+        Style::default().fg(FG).bg(PANEL_BG)
     };
     frame.render_widget(Paragraph::new(format!(" {} ", app.status_line())).style(style), area);
 }
@@ -220,21 +231,23 @@ fn render_chat(frame: &mut Frame, app: &mut V2App, area: Rect) {
     let width = area.width as usize;
     let mut lines: Vec<Line<'static>> = Vec::new();
     for entry in &app.entries {
+        // v1 palette convention: grey bold labels, white body text, accent for
+        // the assistant, notice grey for everything machine-generated
         let (prefix, style) = match entry.kind {
-            ChatKind::User => (entry.who.to_string(), Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-            ChatKind::Assistant => (entry.who.clone(), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            ChatKind::Tool => (entry.who.clone(), Style::default().fg(Color::Yellow)),
-            ChatKind::Summary => (entry.who.clone(), Style::default().fg(Color::Magenta)),
-            ChatKind::System => (entry.who.clone(), Style::default().fg(Color::DarkGray)),
-            ChatKind::Error => (entry.who.clone(), Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+            ChatKind::User => (entry.who.to_string(), Style::default().fg(GREY).add_modifier(Modifier::BOLD)),
+            ChatKind::Assistant => (entry.who.clone(), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+            ChatKind::Tool => (entry.who.clone(), Style::default().fg(GREY).add_modifier(Modifier::BOLD)),
+            ChatKind::Summary => (entry.who.clone(), Style::default().fg(ACCENT)),
+            ChatKind::System => (entry.who.clone(), Style::default().fg(GREY)),
+            ChatKind::Error => (entry.who.clone(), Style::default().fg(ERROR).add_modifier(Modifier::BOLD)),
         };
-        let head = Line::from(vec![Span::styled(prefix, style), Span::raw(" ")]);
+        let head = Line::from(vec![Span::styled(prefix, style), Span::styled(" ", Style::default().fg(GREY))]);
         let body_style = match entry.kind {
-            ChatKind::System => Style::default().fg(Color::DarkGray),
-            ChatKind::Error => Style::default().fg(Color::Red),
-            ChatKind::Tool => Style::default().fg(Color::Gray),
-            ChatKind::Summary => Style::default().fg(Color::Magenta),
-            _ => Style::default(),
+            ChatKind::System => Style::default().fg(NOTICE),
+            ChatKind::Error => Style::default().fg(ERROR),
+            ChatKind::Tool => Style::default().fg(NOTICE),
+            ChatKind::Summary => Style::default().fg(NOTICE),
+            _ => Style::default().fg(FG),
         };
         let mut first = true;
         for text_line in entry.text.lines() {
@@ -270,11 +283,7 @@ fn render_approvals(frame: &mut Frame, app: &V2App, area: Rect) {
     }
     let focused = app.focus == Focus::Approvals;
     let title = if focused { "approvals (focused)" } else { "approvals" };
-    let block = Block::default().borders(Borders::ALL).title(title).border_style(if focused {
-        Style::default().fg(Color::Yellow)
-    } else {
-        Style::default()
-    });
+    let block = panel(title).border_style(Style::default().fg(if focused { WARNING } else { ACCENT }));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let lines: Vec<Line<'static>> = app
@@ -284,11 +293,7 @@ fn render_approvals(frame: &mut Frame, app: &V2App, area: Rect) {
         .take(inner.height as usize)
         .map(|(i, a)| {
             let marker = if focused && i == app.approval_sel { "▶" } else { " " };
-            let style = if focused && i == app.approval_sel {
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
+            let style = if focused && i == app.approval_sel { selection() } else { Style::default().fg(FG) };
             Line::from(Span::styled(format!("{marker} {} · {} · {}", a.id, a.tool, a.preview), style))
         })
         .collect();
@@ -297,7 +302,11 @@ fn render_approvals(frame: &mut Frame, app: &V2App, area: Rect) {
 
 fn render_composer(frame: &mut Frame, app: &V2App, area: Rect) {
     let target = app.active_instance().map(|i| i.id.clone()).unwrap_or_else(|| "…".into());
-    let block = Block::default().borders(Borders::ALL).title(format!("to {target}"));
+    let block = panel(format!("to {target}")).border_style(Style::default().fg(if app.focus == Focus::Composer {
+        ACCENT
+    } else {
+        GREY
+    }));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let text = app.composer.text();
@@ -315,5 +324,5 @@ fn render_composer(frame: &mut Frame, app: &V2App, area: Rect) {
 }
 
 fn render_footer(frame: &mut Frame, app: &V2App, area: Rect) {
-    frame.render_widget(Paragraph::new(app.footer_hint()).style(Style::default().fg(Color::DarkGray)), area);
+    frame.render_widget(Paragraph::new(app.footer_hint()).style(Style::default().fg(GREY)), area);
 }
