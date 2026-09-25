@@ -50,7 +50,7 @@ characters outside the two documented exceptions (`README.zh-CN.md` and the froz
 | A33 | Two daemons / stale lock | `v2_daemon::second_daemon_is_refused_and_shutdown_releases_the_lock` |
 | A34 | Incompatible schema | `core::v2::store::open_refuses_unstamped_foreign_and_wrong_version`, `open_migrates_the_previous_schema_version` (a `1`-stamped store still reaches the current version: the chain walks one step at a time in one transaction), `migrate_rewrites_the_runtimes_closing_notes` (D-71: schema 2 → 3 moves the runtime's closing notes out of the member's voice, leaving the member's own answers and the tool receipts untouched); probed on a real pre-fix state root (`/tmp/ta-providers-run`, written by the previous build) — `schema_version` 2 → 3 and `i-leader:0:13` `assistant`/`role: assistant` → `runtime`/`role: user` on one daemon boot |
 | A35 | Goal deadline | `control::goal_deadline_refuses_new_requests_and_dispatches`, `v2_driver::goal_deadline_parks_the_instance`; the deadline is *reachable* by the user (D-64): `config::user_limits_bound_every_goal` and `cli::configured_limits_reach_the_goal_and_really_bound_the_session` (the goal's `deadline` is ~15 minutes out for `deadline_minutes = 15`, and the duration key is not stored on the goal); formally `V2Control::NoRequestAfterDeadline` with the refuted control `MC_control_deadline.cfg` |
-| A36 | Install / init / doctor / cleanup / reopen | `cli::init_prepares_the_v2_root_and_doctor_verifies_it`; the one-off cleanup plus a real re-verification (local probe evidence under `review/tmp/`) |
+| A36 | Install / init / doctor / cleanup / reopen | `cli::init_prepares_the_v2_root_and_doctor_verifies_it`; the one-off cleanup plus a real re-verification (local probe evidence under `review/tmp/`). The **published install path** is verified live (`python3 review/install_check.py`, 2026-09-26): the release archive downloads, its SHA-256 matches the published manifest, `install.sh --archive … --bin-dir …` installs both binaries and they run (`version` exit 0, a usage line, the TUI refusing a session-less start); and the failure mode is verified with a corrupted archive, which the installer refuses with `SHA-256 verification failed; installed binaries were left untouched` (nothing written into the bin directory) — the artifact's *vintage* is a separate, open gap below |
 
 ## Headless client contract (`teamagents exec`, D-49)
 
@@ -95,6 +95,16 @@ amended (D-49/D-50).
   created, so a refused argument has no side effect).
 
 ## Known gaps (found while auditing the documented surface, 2026-09-25)
+
+- **The published release is the earlier implementation, and shares the tree's version.** `review/install_check.py` verifies the
+  documented install path end to end (mechanics and the refusal above), and the published `v0.1.2` artifact it installs is the
+  *pre-v2* product: its `--help` is not in English and still offers `validate`, `sessions prune`, `--plain`, `--resume` and
+  `--team`, none of which the documented surface has (D-52/D-73 removed them), so "install the latest release" does not install
+  what the README and `docs/USER-GUIDE.md` describe. `engine/Cargo.toml` (and `core`/`tui`) still say `0.1.2`, the version the
+  existing tag already names, and the release workflow refuses a tag that does not equal `v<version>` — so a new release needs a
+  version bump first. The machinery itself is sound and re-runnable (`.github/workflows/release.yml` builds musl-static binaries,
+  packages the docs and `install.sh`, SHA256SUMS them, smoke-installs the exact archive and publishes the assets); cutting the
+  release is the user's decision. Until then `docs/INSTALL.md` says the install docs describe the tree, not the artifact.
 
 - **A worktree member's branch has no merge surface.** The `git_worktree` policy (§12.3/D-46) gives a
   member its own branch and checkout, retirement refuses to delete an unmerged one, and the real-model
