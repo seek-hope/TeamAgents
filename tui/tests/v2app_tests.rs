@@ -121,6 +121,24 @@ fn word_wise_editing_is_wired() {
     assert!(app.footer_hint().contains("↑ history"), "the hint advertises it: {}", app.footer_hint());
 }
 
+/// A terminated instance takes no lifecycle command (the control plane refuses them:
+/// "instance i-leader is terminated"), so the panel must not advertise keys that would
+/// answer with a refusal — reading its conversation stays available.
+#[test]
+fn the_instances_hint_stops_offering_lifecycle_keys_for_a_terminated_member() {
+    let mut app = app();
+    cycle_to(&mut app, View::Instances);
+    // the fixture's members are ACTIVE: the keys are advertised
+    assert!(app.footer_hint().contains("r resume"), "{}", app.footer_hint());
+    let mut checkpoint = checkpoint();
+    checkpoint["instances"][0]["lifecycle"] = Json::String("TERMINATED".into());
+    app.apply_checkpoint(checkpoint, 6);
+    let hint = app.footer_hint();
+    assert_eq!(app.instances[0].lifecycle, "TERMINATED");
+    assert!(!hint.contains("r resume") && !hint.contains("t terminate"), "{hint}");
+    assert!(hint.contains("Enter set conversation target") && hint.contains("up/down select"), "{hint}");
+}
+
 #[test]
 fn checkpoint_defaults_to_the_leader_and_tracks_budget() {
     let app = app();

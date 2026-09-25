@@ -6,7 +6,7 @@ Baseline: [the design and acceptance baseline](DESIGN.md) §12/§16. Current imp
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 98 / engine 197 / tui 31 test targets) and `make pty` passes; both are
+`make check` is green (core 98 / engine 198 / tui 32 test targets) and `make pty` passes; both are
 preconditions for every item below. `make check` includes `make language-check`, which fails on non-English
 characters outside the two documented exceptions (`README.zh-CN.md` and the frozen material under
 `review/eval`).
@@ -67,7 +67,7 @@ A-matrix (which describes runtime scenarios):
 | The runtime's closing note stays in the conversation and a later turn still rides the wire | `core::v2::control::closing_a_turn_answers_its_finish_call` (the note is a `runtime` entry in the user's voice, next to the answered `finish`); real model on both protocols: `python3 review/dogfood/runtime_note.py --providers deepseek,kimi` (2026-09-25: turn 1 settles `SUCCEEDED`, turn 2 is an ordinary `reply` with exit 0 — the thinking-mode chat wire and Kimi's `responses` wire both accept the following request) |
 | A settlement recorded by an earlier run is not this run's outcome | `v2_daemon::headless_runs_report_their_own_outcome_not_an_earlier_settlement` (second run after a settled goal must report the reply, not `SUCCEEDED`) |
 | `--check COMMAND` runs after the turn in the isolated shell in the client's workspace, stops at the first failure, gates the exit code and writes `<state root>/verification.json` | `v2::exec::tests::acceptance_commands_run_in_order_and_stop_at_the_first_failure`, `the_check_verdict_reads_the_wrapper_marker`; `v2_daemon::headless_runs_verify_the_acceptance_commands_and_gate_the_exit_code`, `a_failing_acceptance_command_fails_the_run`; `cli::exec_takes_the_prompt_from_stdin_and_runs_the_acceptance_check` (the real binary writes the ledger) |
-| A parked or paused leader refuses new input (`2`) instead of queueing it | `v2_daemon::a_failed_turn_ends_the_headless_run_instead_of_timing_out` (the failed turn parks the leader; the next run refuses with "nothing was submitted") |
+| A parked or paused leader refuses new input (`2`) instead of queueing it | `v2_daemon::a_failed_turn_ends_the_headless_run_instead_of_timing_out` (the failed turn parks the leader; the next run refuses with "nothing was submitted") A **terminated** leader is final, and the advice says so (D-82): the session refuses the resume (`set_lifecycle` on a terminated instance), `exec` exits 2 with "termination is final … start a fresh state root" and no resume hint (`v2_daemon::a_terminated_leader_is_reported_as_final_not_resumable`), and the TUI's instances panel stops advertising `p`/`r`/`t` for a retired member (`tui::the_instances_hint_stops_offering_lifecycle_keys_for_a_terminated_member`). |
 
 `--check` is a **client-side** acceptance command: it decides `exec`'s exit code after the turn. The goal's
 runtime `required_checks` are the stronger contract and come from the user config's `[[checks]]` (D-50,

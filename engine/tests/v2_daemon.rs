@@ -750,6 +750,45 @@ async fn a_turn_closed_by_the_runtime_without_a_settlement_is_not_a_reply() {
     handle.shutdown().await.expect("shutdown");
 }
 
+/// Termination is final: a terminated leader cannot be resumed (the control plane
+/// refuses `set_lifecycle` on it, and the CLI's own `instances resume` says so), so
+/// `exec` must not send the user to the resume key it used to name for every
+/// non-ACTIVE lifecycle.
+#[tokio::test]
+async fn a_terminated_leader_is_reported_as_final_not_resumable() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let (root, handle) = boot("exec-terminated-leader", HashMap::new()).await;
+    let socket = root.dir.join("state/daemon.sock");
+    let mut client = Client::connect(&socket).await;
+    let terminated = client
+        .command(
+            "term-1",
+            "set_lifecycle",
+            json!({"instance_id": "i-leader", "lifecycle": "TERMINATED", "reason": "test"}),
+        )
+        .await;
+    assert_eq!(terminated["ok"], json!(true), "{terminated}");
+    // the resume the old message pointed at is exactly what the session refuses
+    let refused = client
+        .command(
+            "resume-1",
+            "set_lifecycle",
+            json!({"instance_id": "i-leader", "lifecycle": "ACTIVE", "reason": "test"}),
+        )
+        .await;
+    assert_eq!(refused["ok"], json!(false), "{refused}");
+    assert!(refused["error"].as_str().unwrap_or("").contains("terminated"), "{refused}");
+
+    let error = headless_result(exec_options(&socket, &root.dir.join("ws"), "say hi", Vec::new()))
+        .await
+        .err()
+        .expect("a terminated leader refuses input");
+    assert_eq!(error.0, 2, "{error:?}");
+    assert!(error.1.contains("TERMINATED") && error.1.contains("fresh state root"), "{error:?}");
+    assert!(!error.1.contains("Resume"), "termination is final, so no resume advice: {error:?}");
+    handle.shutdown().await.expect("shutdown");
+}
+
 /// A permanently failed leader request ends the headless run at once with exit
 /// 1 and the classified reason: a broken endpoint must not look like a hung
 /// session that the caller discovers when its own deadline expires.

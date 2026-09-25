@@ -272,15 +272,24 @@ pub fn execute(options: &ExecOptions) -> Result<ExecRun, (i32, String)> {
         .ok_or_else(|| (2, format!("exec: the session has no usable leader instance: {checkpoint}")))?;
     // A parked or paused leader will not run the input: saying so beats
     // submitting work that sits in a queue nobody is draining until the caller's
-    // own deadline expires (the user resumes it in the TUI, §5.4).
+    // own deadline expires (the user resumes it in the TUI, §5.4). A *terminated*
+    // leader is different advice: termination is final — the instance is retired and
+    // the control plane refuses `set_lifecycle` on it ("instance … is terminated"), so
+    // pointing at the resume key would send the user to a refusal.
     if lifecycle != "ACTIVE" {
-        return Err((
-            2,
+        let advice = if lifecycle == "TERMINATED" {
+            format!(
+                "exec: the leader instance {instance} is TERMINATED; termination is final (the instance is \
+                 retired), so this session cannot take new input. Start a fresh state root instead \
+                 (--state-root <new directory>); nothing was submitted."
+            )
+        } else {
             format!(
                 "exec: the leader instance {instance} is {lifecycle}; new input would not run. \
                  Resume it in the TUI instances panel (r) or use a fresh state root; nothing was submitted."
-            ),
-        ));
+            )
+        };
+        return Err((2, advice));
     }
     let envelope = format!("env-{}", uuid::Uuid::new_v4());
     let submitted = client

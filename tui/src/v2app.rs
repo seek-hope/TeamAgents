@@ -974,8 +974,17 @@ impl V2App {
                 Focus::Approvals => "a approve once · d deny · up/down select · Esc back".to_string(),
             },
             View::Instances => {
-                "Enter set conversation target · p pause · r resume · t terminate · up/down select · Ctrl+N next · Esc back"
-                    .to_string()
+                // A terminated instance takes no lifecycle command (the control plane
+                // refuses them), so the hint stops advertising keys that would answer
+                // with a refusal; reading its conversation stays available.
+                let terminated =
+                    self.instances.get(self.instance_sel).is_some_and(|info| info.lifecycle == "TERMINATED");
+                if terminated {
+                    "Enter set conversation target · up/down select · Ctrl+N next · Esc back".to_string()
+                } else {
+                    "Enter set conversation target · p pause · r resume · t terminate · up/down select · Ctrl+N next · Esc back"
+                        .to_string()
+                }
             }
             View::Tasks => "c cancel task · up/down select · Ctrl+N next · Esc back".to_string(),
             View::Topology => "up/down scroll · Ctrl+N next · Esc back".to_string(),

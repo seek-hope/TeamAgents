@@ -231,6 +231,32 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-82 Termination is final, and the surfaces say so (2026-09-26)
+
+Walking the recovery path a user actually takes when a session has gone wrong turned up advice that cannot
+work: `exec` refused a non-ACTIVE leader with one sentence for every lifecycle —
+
+    the leader instance i-leader is TERMINATED; new input would not run.
+    Resume it in the TUI instances panel (r) or use a fresh state root; nothing was submitted.
+
+— but termination is **final**: the control plane refuses `set_lifecycle` on a terminated instance
+(`daemon refused set_lifecycle: "instance i-leader is terminated"`, which is exactly what the CLI's own
+`teamagents instances resume --id i-leader` prints), and the instance's workspace record has already been
+retired (D-46/D-76). So "resume it" sent the user to a refusal; only the second half of the sentence was true.
+
+**Two surfaces fixed**: `exec` now says the truth for a terminated leader ("termination is final (the instance
+is retired), so this session cannot take new input. Start a fresh state root instead (--state-root <new
+directory)") while parked/paused keep the resume advice they deserve; and the TUI's instances-panel hint stops
+advertising `p`/`r`/`t` when the selected member is terminated (the keys would answer with a refusal), keeping
+`Enter`/`↑↓`/`Ctrl+N`/`Esc` — reading a retired member's conversation stays available.
+
+Evidence: `v2_daemon::a_terminated_leader_is_reported_as_final_not_resumable` (the session refuses the resume
+first, then `exec` exits 2 with the terminated wording and no "Resume") and
+`tui::the_instances_hint_stops_offering_lifecycle_keys_for_a_terminated_member`.
+
+Ceiling: a terminated instance is still *listed* (with its history readable) and nothing offers to revive it —
+reviving a retired member (a new instance reusing the id, or a documented "un-retire") is a design decision
+this entry does not make.
 ## D-81 Two more test-only second writers went through the product path (2026-09-26)
 
 D-79's side note recorded one flake ("command receipt: database is locked") where a test wrote through its own
