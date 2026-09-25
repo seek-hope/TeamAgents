@@ -244,6 +244,7 @@ a real model (`--full-auto`, so the checks run on the host):
 | a passing check after a turn that really wrote `hello.txt` | exit 0, `end=completed`, goal `SUCCEEDED`, ledger `ok: true / exit_code: 0` |
 | a failing check, with a second check after it | exit 1, and the ledger holds **one** row — the list stopped at the first failure — while `hello.txt` from the first turn is still there |
 | a command that prints `(exit 0)` and exits 7 | exit 1, ledger `exit_code: 7 / ok: false`, and the command's own text stays in `output` |
+| a second session **without** `--full-auto`, where the turn parks on an approval | exit 3, `verification: []`, `verification_path: null`, and the ledger the earlier passing run in that same session wrote is **untouched** (an approval stop verifies nothing, §8) |
 
 Two things this pins down that the unit tests could not: the checks run *after* a turn that is itself a plain
 reply (scenarios 2 and 3 report `end=reply`, because the goal settled in scenario 1), and the artifact — the
@@ -256,10 +257,14 @@ Evidence: `python3 review/dogfood/exec_check.py` (two runs), plus the offline la
 `v2_daemon::headless_runs_verify_the_acceptance_commands_and_gate_the_exit_code`,
 `a_failing_acceptance_command_fails_the_run`, and `cli::exec_takes_the_prompt_from_stdin_and_runs_the_acceptance_check`.
 
-Ceiling: the probe covers the three outcomes a CI job sees; the documented rule that a run stopped for an
-*approval* never runs the checks (exit 3) stays with the daemon test above, because the ledger file is only
-rewritten when checks run — asserting "the checks did not run" through a file that a previous run wrote would
-be the D-84 class of assertion.
+That fourth scenario also settles what the ledger is: `write_verification` returns `None` for an empty
+verdict list, so a run without verdicts writes **no** file and reports `verification_path: null` — the earlier
+run's ledger stays exactly as it was. The reliable signal for a CI job is therefore the path in *its own*
+report, not the presence of `<state root>/verification.json` (which may belong to an earlier run).
+
+Ceiling: one passing check, one failing list, one forged marker and one approval stop per run; the remaining
+contract points (checks in order across several *passing* commands, the timeout of a hanging check, a check
+whose shell cannot start) stay with `v2::exec`'s unit tests and the daemon tests above.
 
 ## D-92 The user's policy hook, driven with a real model and real tool calls (2026-09-26)
 

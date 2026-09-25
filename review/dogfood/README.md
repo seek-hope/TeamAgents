@@ -422,6 +422,10 @@ python3 review/dogfood/exec_check.py
 3. a command that prints `(exit 0)` and exits **7**: the verdict is 7 (`ok: false`), exit 1, and the forged
    text stays in `output`.
 
-Measured 2026-09-26, two runs (D-93). The rule that a run stopped for an approval never runs the checks stays
-with the daemon test: the ledger file is only rewritten when checks run, so "the checks did not run" cannot be
-asserted through it.
+4. a second session **without** `--full-auto`: a turn that parks on an approval exits 3 with
+   `verification: []` and `verification_path: null`, and the ledger an earlier passing run in that session
+   wrote is untouched — an approval stop verifies nothing (§8).
+
+Measured 2026-09-26, three runs (D-93). That fourth scenario also fixes what the ledger is: a run without
+verdicts writes no file and reports a null path, so the reliable signal is the path in the run's own report,
+not the presence of `<state root>/verification.json`.
