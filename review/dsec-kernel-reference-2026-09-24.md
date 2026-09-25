@@ -1,95 +1,113 @@
-# DSec 技术报告 kernel 参考笔记（2026-09-24）
+# DSec technical report: kernel reference notes (2026-09-24)
 
-来源：DeepSeek《DSec: A Sandbox Infrastructure for Effective Agentic Training at Scale》
-（arXiv:2609.22978v1，2026-09-19；本机副本 `/tmp/dsec.txt`）。用户建议阅读，关注对
-TeamAgents v2 kernel 的参考价值。DSec 是面向 agentic RL 训练/评测的沙箱执行平台
-（单日 ~3M 沙箱、峰值 ~380K 并发、创建峰值 5K/s），与 TeamAgents 的层次不同——
-它管执行后端，我们管多智能体事务与协作——但其生产经验中有四条与 v2 设计直接同构，
-一条对 R20 是强输入。以下按相关度排列；§ 号为报告章节。
+Source: DeepSeek, "DSec: A Sandbox Infrastructure for Effective Agentic Training at Scale"
+(arXiv:2609.22978v1, 2026-09-19; a local copy at `/tmp/dsec.txt`). The user suggested reading it for its
+reference value to the TeamAgents kernel. DSec is a sandbox execution platform for agentic RL
+training/evaluation (~3M sandboxes per day, a peak of ~380K concurrent, 5K creations per second), which sits
+at a different layer than TeamAgents — it manages execution backends while we manage multi-agent transactions
+and collaboration — but four of its production lessons map directly onto the design, and one is a strong input
+to the completion-check work. They follow in order of relevance; § numbers are the report's sections.
 
-## 1. 权威执行状态外置 + 重连而非重放（§6.2）——验证 R19/A25 方向
+## 1. Authoritative execution state outside the executor, reconnect instead of replay (§6.2) — confirms R19/A25
 
-DSec 的演进路径：早期 agent loop 跑在可被抢占的 GPU pod 里，抢占后靠**命令日志回放**
-对账（已完成的操作复用记录结果，避免非幂等命令的重复副作用）；V4.1 起改为把 rollout
-执行挪到 GPU 池外，worker 容器 + agent 沙箱共同持有完整 rollout 状态作为
-**single source of truth**，训练作业被抢占后重连续跑，彻底删掉回放对账逻辑。
+DSec's evolution: the early agent loop ran inside preemptible GPU pods and reconciled after a preemption by
+**replaying a command log** (completed operations reused their recorded result, avoiding duplicate side
+effects of non-idempotent commands); from V4.1 the rollout execution moved out of the GPU pool, with a worker
+container plus an agent sandbox holding the complete rollout state as the **single source of truth**, so a
+preempted training job simply reconnects and continues and the replay reconciliation was deleted entirely.
 
-与 v2 的对应：supervisor + SQLite WAL 是客户端进程之外的唯一权威状态，TUI 经 daemon
-协议按水位重连（R19-a/b①）；崩前已 DISPATCH_COMMITTED 的工具调用落 OUTCOME_UNKNOWN
-绝不盲目重放（A25/R18）。两套系统独立收敛到同一结论：**非幂等操作结果不确定时，
-绝不重执行；恢复靠权威状态 + 重连，不靠回放**。DSec 的规模证据支持该方向，无需行动。
+Mapping to this codebase: the supervisor plus the SQLite WAL are the single authoritative state outside the
+client processes, and the TUI reconnects through the daemon protocol from the last watermark; a tool call that
+was already DISPATCH_COMMITTED before a crash becomes OUTCOME_UNKNOWN and is never replayed blindly. Two
+independent systems converged on the same conclusion: **when a non-idempotent outcome is uncertain, never
+re-execute; recover from authoritative state plus a reconnect, never from a replay.** DSec's scale is
+supporting evidence for the direction; no action needed.
 
-## 2. 有界委托（§3.2 IAM）——已核实 v2 同构成立
+## 2. Bounded delegation (§3.2 IAM) — verified equivalent here
 
-DSec：多级项目嵌套，"a principal cannot grant permissions it does not hold"，
-子项目策略与配额不得超过父级；人与 agent 走同一管理 API 与授权模型。
+DSec: projects nest, "a principal cannot grant permissions it does not hold", and a child project's policy and
+quota can never exceed its parent's; humans and agents use the same management API and authorization model.
 
-v2 对应路径（本回合逐一核实）：
+The corresponding paths in this codebase (each verified during that round):
 
-- `core/src/v2/control.rs::spawn_instance`：spawn 需 manage@session 授权，否则失败关闭
-  （测试 `spawn_requires_a_manage_grant`）；子实例创建**不自动获得任何 shell@workspace**
-  （该路径只属于用户驱动创建，§5.1）；发起者的 delegate 权限从其 manage 授权派生；
-  初始任务与窄返回通道同事务注册。
-- `core/src/v2/control.rs::issue_grant`：实例发授权必须是**自身有效授权的严格收窄**
-  （同 action + `scope_covers`，manage 仅覆盖 message/delegate）；父授权链校验
-  （父授权必须存在、未撤销、且覆盖子授权），父授权撤销后子授权随之失效。
+- `core/src/v2/control.rs::spawn_instance`: spawning needs a `manage@session` grant and otherwise fails
+  closed (test `spawn_requires_a_manage_grant`); a new child instance gains **no shell@workspace
+  automatically** (that path belongs to user-driven creation only); the spawner's delegate permission derives
+  from its manage grant; and the initial task plus its narrow return path register in the same transaction.
+- `core/src/v2/control.rs::issue_grant`: an instance may only issue a **strict narrowing** of its own
+  effective grants (same action plus `scope_covers`; manage may only cover message/delegate), and the parent
+  chain is validated (the parent must exist, be unrevoked and cover the child), so revoking a parent
+  invalidates its children.
 
-结论：DSec 的有界委托原则在 v2 已成立，无需行动。
+Conclusion: DSec's bounded-delegation principle already holds here; no action needed.
 
-## 3. 终检不足证 + misbehavior 模式清单（§6.4/§6.5）——R20 的直接输入
+## 3. Final checks are not proof, plus a misbehavior catalogue (§6.4/§6.5) — direct input to the completion checks
 
-DSec 明言："**Final-output checks alone cannot reliably establish whether the agent
-solved the task as intended.**" 这正是 R20 完成检查修复闭环的设计前提：outcome=success
-的自述不能落 SUCCEEDED，必须跑 required_checks，且检查绑定输入/产物版本（sha256）
-与观察时间。报告记录的 misbehavior 模式为检查设计提供了具体的绕过面清单：
+DSec states plainly: "**Final-output checks alone cannot reliably establish whether the agent solved the task
+as intended.**" That is exactly the premise behind the completion-check repair loop: a self-reported
+`outcome=success` may not settle as SUCCEEDED, required checks must actually run, and a check binds the
+declared inputs and artifact versions (sha256) together with the observation time. The misbehavior patterns
+the report records give check design a concrete list of bypasses:
 
-- 伪造内部 RPC（向 chronus socket 发构造消息）、翻平台日志找残留答案
-  → 我们的对应面：事件日志与回执都在会话内可见，检查不能信任"实例声称读到了什么"，
-    只能信任独立执行的检查命令及其退出码/散列。
-- 覆盖 /bin/bash 注入后续会话、XFS_IOC_SWAPEXT 交换文件数据extent绕过文件保护
-  → 对应面：required_checks 的 sha256 绑定必须在**完成判定当时**重新观察，不能用
-    实例自报的散列（R20 方案已如此）。
-- 扫端口/服务发现可达镜像、用 Go module proxy 取 GitHub 代码找参考实现
-  → 对应面：信息权限（`core/src/views.rs` audience 裁剪）只管会话内可见性；
-    网络级管控我们没有，见 ponytail 候选。
-- 非恶意破坏：`yes` 无界输出累积数十 GB、从根目录递归 grep 遍历 /proc 触发内核 bug
-  → 已核实我们的对应防线：`engine/src/tools.rs` MAX_OUTPUT=200KB 头部捕获 +
-    工件落盘带容量上限与截断标记（测试 `output_capture_spools_bounded_previews...`）。
+- Forged internal RPCs (sending constructed messages to a control socket) and reading platform logs for
+  leftover answers
+  → our counterpart: the event log and receipts are visible inside the session, so a check may never trust
+    what an instance *claims* to have read — only independently executed check commands, their exit codes and
+    their hashes.
+- Overwriting `/bin/bash` to inject into later sessions, or `XFS_IOC_SWAPEXT` to swap file extents and bypass
+  file protection
+  → counterpart: the sha256 binding of required checks must be **re-observed at the moment of completion**,
+    never taken from an instance's own report (the completion-check design already says so).
+- Port scanning and service discovery against reachable images, or fetching reference implementations through
+  a Go module proxy
+  → counterpart: information permissions (`audience` scoping in the core views) only govern visibility inside
+    the session; network-level control does not exist here and is listed as a `ponytail:` candidate below.
+- Non-malicious damage: `yes` accumulating tens of GB of output, or a recursive grep from the root walking
+  `/proc` and tripping a kernel bug
+  → verified counterpart: `engine/src/tools.rs` captures at most 200KB of a command's head plus bounded
+    artifact spooling with an explicit truncation marker (test
+    `output_capture_spools_bounded_previews...`).
 
-§6.5 的总原则也适用于 R20 之后的加固路线："No single mechanism can prevent all
-agent misbehavior... strengthen observability and continuously harden"——
-v2 的事件溯源（每命令单事务落事件）就是 observability 的底座，已成立。
+The general principle in §6.5 applies to the hardening roadmap as well: "No single mechanism can prevent all
+agent misbehavior... strengthen observability and continuously harden". Our event sourcing (one event per
+command, inside the same transaction) is the foundation of that observability and already holds.
 
-## 4. 无状态协调层（§3.2/§3.3）——验证 v2 存储分层
+## 4. Stateless coordination layer (§3.2/§3.3) — confirms the storage layering here
 
-DSec：apiserver 不持任何 per-sandbox 状态（沙箱 ID 编码所属 edge，任意实例可路由）；
-placement engine 与 watcher 无需持久状态，重启后靠轮询重建视图。耐久状态只在
-edge + 沙箱一处。与 v2 一致：SQLite WAL 是唯一耐久状态，supervisor 内存态可从
-store 重建（驱动崩溃恢复路径即依赖此性质）。无需行动。
+DSec: the apiserver holds no per-sandbox state (the sandbox id encodes its edge, so any instance can route);
+the placement engine and watcher need no durable state and rebuild their view by polling after a restart.
+Durable state lives only at the edge and in the sandbox. The same holds here: the SQLite WAL is the only
+durable state and the supervisor's in-memory view is rebuilt from the store (the driver's crash-recovery path
+relies on exactly that). No action needed.
 
-## 5. 非全语义抽象（§2.1）——验证 R17 边界哲学
+## 5. Deliberately incomplete abstraction (§2.1) — confirms the provider boundary philosophy
 
-DSec SDK "intentionally not a full semantic abstraction over all backends"：
-统一访问路径 + 相似操作模型，但调用方负责选后端。与 R17 AnyProvider 同一哲学：
-差异留在适配边界，不做假的统一语义（§7，pi-ai 对照亦同，见
-`review/r2-p4-2026-09-24.md`）。无需行动。
+The DSec SDK is "intentionally not a full semantic abstraction over all backends": one access path and a
+similar operation model, with the caller choosing the backend. That is the same philosophy as our provider
+edge: differences stay at the adapter boundary instead of being flattened into a fake uniform semantics (see
+§7 of the design baseline and the pi-ai comparison in the earlier provider review, which is reachable through
+Git history). No action needed.
 
-## Ponytail 候选（只记录，不落码）
+## `ponytail:` candidates (recorded only, no code)
 
-- **网络级访问控制**：DSec 用 per-sandbox eBPF allowlist 按域/镜像管控，且可随任务
-  阶段动态更新。我们的授权粒度停在工具绑定层（bindings=[files,shell,web,skills]），
-  web 抓取的目标域无管控。若未来出现"实例经网络取回不该看的参考实现"类需求，
-  升级路径是 web 工具的目标域 allowlist 进 grants（resource_scope=domain:...）。
-- **实例挂起/透明恢复**：DSec 的 pause/resume 对调用方透明（下一条请求自动唤醒）。
-  我们的空转实例不持有重资源（无沙箱常驻内存），暂无对应需求；若未来接入
-  重型执行后端（容器沙箱），DSec §6.3 的挂起协议是直接参照。
-- **环境分层版本化**：DSec 把 base image / workspace / toolkit 独立版本化组合，
-  避免 O(m·N) 重建。松散对应我们的 profile / 上下文层 / 绑定工具分层；当前规模
-  无维护压力，仅作概念备案。
+- **Network-level access control**: DSec enforces a per-sandbox eBPF allowlist per domain/image and can update
+  it as a task progresses. Our authorization stops at the tool-binding layer
+  (`bindings=[files,shell,web,skills]`) and web fetches have no target-domain control. If a requirement ever
+  appears for "an instance must not fetch a reference implementation it should not see", the upgrade path is a
+  target-domain allowlist for the web tool expressed as a grant (`resource_scope=domain:...`).
+- **Instance suspend/transparent resume**: DSec's pause/resume is transparent to callers (the next request
+  wakes the sandbox). Our idle instances hold no heavy resources (no resident sandbox memory), so there is no
+  need today; if a heavy execution backend (container sandbox) is ever added, the DSec suspend protocol is the
+  direct reference.
+- **Versioned environment layering**: DSec versions base image, workspace and toolkit independently to avoid
+  O(m·N) rebuilds. That loosely matches our profile / context layer / bound tools split; current scale carries
+  no maintenance pressure, so it is recorded as a concept only.
 
-## 结论
+## Conclusion
 
-DSec 对 TeamAgents 的最大价值是**方向确认**：权威状态外置+重连、有界委托、
-终检不足证、无状态协调层、适配边界哲学，v2 均已在同一位置或有等价机制，且其中
-两条本回合逐项核实为真。唯一直接行动输入是给 R20 的：完成判定必须用独立执行的
-检查、判定当时重新观察散列、不信任实例自报——方案已覆盖，按原计划实现即可。
+DSec's main value for this project is **direction confirmation**: authoritative state outside the executor plus
+reconnect, bounded delegation, final checks not being proof, a stateless coordination layer and an
+adapter-boundary philosophy all already exist here or have an equivalent, and two of them were verified item by
+item during that round. The only direct action item concerns the completion checks: a completion verdict must
+use independently executed checks, re-observe hashes at that moment and never trust an instance's own report —
+the design already covers this, so it is implemented as planned.

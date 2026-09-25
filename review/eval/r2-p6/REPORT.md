@@ -1,41 +1,49 @@
-# R2-P6 性能实验报告（R24–R26）
-> 说明（2026-09-25）：本记录写作时驱动入口名为 `engine/examples/rebuild_p6.rs`，现已随命名清理改名为 `engine/examples/eval_groups_abc.rs`（其余命令不变）。
+# R2-P6 performance experiment report
 
-日期：2026-09-24。预登记：`review/eval/r2-p6/design.md`、`manifest.json`（第一轮 8 题）、
-`manifest-r2.json`（第二轮 3 题）、`manifest-r3.json`（第三轮 2 题，含 150 s 硬截止）；分析脚本
-`analyze.py`（sha256 记入各 manifest，冻结于跑前）。模型：DeepSeek Flash（目录键 `leader_main`），
-**原生上下文 1,000,000**（D-36），`reasoning_effort = high`（显式覆盖目录默认 max，见 design.md §3），
-`full_auto` 权限、每 trial 全新工作目录、验收脚本在 trial 结束后于同一目录执行。
+> Note (2026-09-25): the driver entry was called `engine/examples/rebuild_p6.rs` when this record was
+> written; it was renamed to `engine/examples/eval_groups_abc.rs` during the naming cleanup (every other
+> command is unchanged).
 
-## 结论（按预登记口径）
+Date: 2026-09-24. Pre-registration: `review/eval/r2-p6/design.md`, `manifest.json` (first round, 8 tasks),
+`manifest-r2.json` (second round, 3 tasks) and `manifest-r3.json` (third round, 2 tasks with a 150 s hard
+deadline); analysis script `analyze.py` (its sha256 is recorded in each manifest and was frozen before the
+run). Model: DeepSeek Flash (catalog key `leader_main`), **native context 1,000,000** (D-36),
+`reasoning_effort = high` (explicitly overriding the catalog default max, see design.md §3), `full_auto`
+permissions, a fresh working directory per trial and the acceptance script executed in that same directory
+after the trial.
 
-| 假设 | 结论 | 证据 |
+## Conclusions (per the pre-registered criteria)
+
+| Hypothesis | Conclusion | Evidence |
 |---|---|---|
-| H1：B（持久化单实例）相对 A（直驱参考）**未观察到退化** | ✅ 通过 | 四个批次共 135 trial，**A/B/C 三组在每个任务的每次重复都通过验收（135/135）**；逐任务配对成功差恒为 0，95% bootstrap 区间 [0, 0]（区间不含负值） |
-| H2：C（可见协作能力）相对 B 有**跨独立运行可复现的收益** | ❌ **未证实** | 同样 135/135，逐任务配对差恒 0；且**三轮 99 个 C 组 trial 中零次 spawn/delegate**（逐个 SQLite 事件核验：`instance_created` 等于 trial 数、`tasks` 表恒空）——协作能力可用、指令可见，但模型每次选择单人成队。方案对 C 的定义本就"允许始终单人成队" |
+| H1: B (persistent single instance) shows **no observable regression** against A (direct reference loop) | ✅ passed | 135 trials across four batches, **A/B/C all passed acceptance in every repeat of every task (135/135)**; the per-task paired success difference is always 0 and the 95% bootstrap interval is [0, 0] (no negative values) |
+| H2: C (visible collaboration) delivers a **reproducible gain across independent runs** over B | ❌ **not confirmed** | also 135/135, with a per-task paired difference of always 0; and **zero spawn/delegate in the 99 group C trials of three rounds** (verified trial by trial in SQLite: `instance_created` equals the trial count and the `tasks` table stays empty) — the collaboration surface was available and its instructions visible, but the model chose a team of one every time. The design's definition of C explicitly "allows staying a team of one" |
 
-即：**持久化运行时（B）没有损害任务成功率**（这是 P6 要回答的第一个问题，已有 135 次真实运行的证据），
-而**"系统自主选择协作的净收益"在本次任务集上未得到证实**——原因不是协作失败，而是这些任务对单实例
-而言都在能力与注意力预算之内，模型没有理由分工。结论符合 §13.2/§16 要求的预登记口径（"样本不足即标未证实"），
-但**不能据此宣称协作带来了收益**。
+In other words: **the persistent runtime (B) did not harm task success** (the first question P6 had to answer,
+with 135 real runs as evidence), while **"a net gain from the system choosing to collaborate on its own" was
+not confirmed on this task set** — not because collaboration failed, but because these tasks fit a single
+instance's capability and attention budget, so the model had no reason to split work. This matches the
+pre-registered criteria of §13.2/§16 ("too few samples means not confirmed"), but **it does not permit
+claiming that collaboration paid off**.
 
-## 成本（真实 tokens，DeepSeek 计费口径）
+## Cost (real tokens, DeepSeek billing)
 
-| 批次 | A | B | C |
+| Batch | A | B | C |
 |---|---|---|---|
-| 试跑 18 trial | 326,062（合计） | — | — |
-| 正式第一轮 72 trial | 534,021 | 613,075（+14.8%） | 641,274（+4.6% vs B） |
-| 第二轮 27 trial | 217,276 | 238,293（+9.7%） | 266,190（+11.7% vs B） |
-| 第三轮 18 trial | 278,166 | 252,483 | 230,923 |
+| pilot, 18 trials | 326,062 (total) | — | — |
+| formal round 1, 72 trials | 534,021 | 613,075 (+14.8%) | 641,274 (+4.6% vs B) |
+| round 2, 27 trials | 217,276 | 238,293 (+9.7%) | 266,190 (+11.7% vs B) |
+| round 3, 18 trials | 278,166 | 252,483 | 230,923 |
 
-四批合计 ≈ 3.60M tokens、约 55 分钟机器时间（每 trial 6–40 s，第三轮最慢 40 s）。持久化运行时相对
-参考循环的 token 开销约 +10%～+15%，协作面（C）在此任务集上只增加开销（因为它没被使用）。
+The four batches total ≈ 3.60M tokens and about 55 minutes of machine time (6–40 s per trial, the slowest
+being 40 s in round 3). The persistent runtime costs about +10% to +15% tokens over the reference loop, and on
+this task set the collaboration surface (C) only added cost, because it was never used.
 
-### 试跑 R25（6 题 × 3 组 × 1 次）
+### Pilot R25 (6 tasks × 3 groups × 1 repeat)
 
-trial 数 18，全部通过 18/18；真实 tokens 合计 326,062
+18 trials, 18/18 passed; 326,062 real tokens in total.
 
-| 任务 | A（成功/次数，tokens） | B | C |
+| Task | A (passed/runs, tokens) | B | C |
 |---|---|---|---|
 | edit-integrity | 1/1, 14,037t | 1/1, 11,577t | 1/1, 13,602t |
 | long-output | 1/1, 14,567t | 1/1, 17,794t | 1/1, 19,629t |
@@ -44,11 +52,11 @@ trial 数 18，全部通过 18/18；真实 tokens 合计 326,062
 | service-check | 1/1, 31,717t | 1/1, 26,126t | 1/1, 26,960t |
 | split-deliverable | 1/1, 18,812t | 1/1, 14,102t | 1/1, 15,792t |
 
-### 正式 R26 第一轮（8 题 × 3 组 × 3 次）
+### Formal R26 round 1 (8 tasks × 3 groups × 3 repeats)
 
-trial 数 72，全部通过 72/72；真实 tokens 合计 1,788,370
+72 trials, 72/72 passed; 1,788,370 real tokens in total.
 
-| 任务 | A（成功/次数，tokens） | B | C |
+| Task | A (passed/runs, tokens) | B | C |
 |---|---|---|---|
 | edit-integrity | 3/3, 40,508t | 3/3, 41,333t | 3/3, 47,964t |
 | long-horizon | 3/3, 82,254t | 3/3, 108,856t | 3/3, 131,059t |
@@ -59,46 +67,50 @@ trial 数 72，全部通过 72/72；真实 tokens 合计 1,788,370
 | service-check | 3/3, 140,719t | 3/3, 122,991t | 3/3, 112,214t |
 | split-deliverable | 3/3, 43,651t | 3/3, 54,877t | 3/3, 56,112t |
 
-### R26 第二轮（3 个更重任务 × 3 组 × 3 次）
+### R26 round 2 (3 heavier tasks × 3 groups × 3 repeats)
 
-trial 数 27，全部通过 27/27；真实 tokens 合计 721,759
+27 trials, 27/27 passed; 721,759 real tokens in total.
 
-| 任务 | A（成功/次数，tokens） | B | C |
+| Task | A (passed/runs, tokens) | B | C |
 |---|---|---|---|
 | bulk-modules | 3/3, 74,438t | 3/3, 81,338t | 3/3, 95,554t |
 | long-chain | 3/3, 106,970t | 3/3, 99,795t | 3/3, 119,220t |
 | wide-audit | 3/3, 35,868t | 3/3, 57,160t | 3/3, 51,416t |
 
-### R26 第三轮（带 150s 硬截止的可分工任务 × 3 组 × 3 次）
+### R26 round 3 (splittable tasks with a 150 s hard deadline × 3 groups × 3 repeats)
 
-trial 数 18，全部通过 18/18；真实 tokens 合计 761,572
+18 trials, 18/18 passed; 761,572 real tokens in total.
 
-| 任务 | A（成功/次数，tokens） | B | C |
+| Task | A (passed/runs, tokens) | B | C |
 |---|---|---|---|
 | timebox-audit | 3/3, 219,905t | 3/3, 168,597t | 3/3, 114,301t |
 | timebox-two-modules | 3/3, 58,261t | 3/3, 83,886t | 3/3, 116,622t |
 
-## 局限与后续（如实记录，不并入结论）
+## Limits and follow-up (recorded honestly, never merged into the conclusions)
 
-- **任务集处于单实例能力的上限之内**：三个轮次逐级加重（6 题 → 8 题 → 更长/更多文件 → 硬截止可分工），
-  单实例仍然全部按时通过；要把"协作净收益"跑出来，需要的任务规模明显超出本轮预算（例如单次任务
-  数百次工具调用、或必须并行才能赶上外部截止的真实工作量），本轮**未做**，故 H2 只能记"未证实"。
-- **硬截止维度第三轮无效**：150 s 截止在实测中最慢 trial 也只用了 40 s，截止未起约束作用 → 该维度
-  未产生区分度。
-- 本轮没有 Codex 执行成员参与（当前实现没有该成员类型），也未测异构模型的性能（§13.1 另列）。
+- **The task set stays inside a single instance's capability ceiling**: each round got heavier (6 tasks → 8
+  tasks → longer/more files → a hard deadline with splittable work) and a single instance still passed every
+  task in time. Measuring a net collaboration gain would need tasks clearly beyond this round's budget (for
+  example hundreds of tool calls per task, or real work that only parallel execution can finish before an
+  external deadline). That was **not done** here, so H2 can only be recorded as "not confirmed".
+- **The hard-deadline dimension produced no signal in round 3**: the slowest measured trial took 40 s against
+  the 150 s deadline, so the deadline never bound.
+- No Codex execution member took part (the current implementation has no such member type) and heterogeneous
+  model performance was not measured (§13.1 lists that separately).
 
-## 复跑
+## Re-running
 
 ```bash
 cargo build --offline --manifest-path engine/Cargo.toml --example eval_groups_abc
-python3 review/eval/r2-p6/freeze.py manifest.json            # 重算任务摘要（跑前冻结）
-python3 review/eval/r2-p6/run.py --phase pilot  --out review/eval/r2-p6/runs/<新目录>
-python3 review/eval/r2-p6/run.py --phase formal --out review/eval/r2-p6/runs/<新目录>
-python3 review/eval/r2-p6/run.py --phase formal --manifest manifest-r2.json --out <新目录>
-python3 review/eval/r2-p6/run.py --phase formal --manifest manifest-r3.json --out <新目录>
-python3 review/eval/r2-p6/analyze.py <目录>/results.jsonl
+python3 review/eval/r2-p6/freeze.py manifest.json            # recompute the task summaries (frozen before a run)
+python3 review/eval/r2-p6/run.py --phase pilot  --out review/eval/r2-p6/runs/<new directory>
+python3 review/eval/r2-p6/run.py --phase formal --out review/eval/r2-p6/runs/<new directory>
+python3 review/eval/r2-p6/run.py --phase formal --manifest manifest-r2.json --out <new directory>
+python3 review/eval/r2-p6/run.py --phase formal --manifest manifest-r3.json --out <new directory>
+python3 review/eval/r2-p6/analyze.py <directory>/results.jsonl
 ```
 
-原始数据：`review/eval/r2-p6/runs/<批次>/results.jsonl`（每 trial 一行，含状态、真实 tokens、墙钟、
-逐条验收输出、runner stderr）与同目录 `run-header.json`（冻结的 analysis/harness/git 摘要）。
-沙箱内运行会被资源限制静默终止（两批出现过）；正式批次在沙箱外执行，`--resume` 支持断点续跑。
+Raw data: `review/eval/r2-p6/runs/<batch>/results.jsonl` (one line per trial with status, real tokens, wall
+clock, per-check output and runner stderr) plus `run-header.json` in the same directory (the frozen
+analysis/harness/git summary). Running inside the sandbox gets killed silently by resource limits (it happened
+in two batches); the formal batches ran outside the sandbox, and `--resume` continues an interrupted batch.

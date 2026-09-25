@@ -1,388 +1,442 @@
-# TeamAgents 形式化验证（R2 控制面）
+# Formal verification (control plane and beyond)
 
-目标：把[设计](../docs/DESIGN.md)里**已确认的协议性质**变成机器可查的规格，而不是只靠样本测试。
+Goal: turn the **confirmed protocol properties** of the [design](../docs/DESIGN.md) into machine-checkable
+specs instead of relying on sample tests alone.
 
-验证分三层，材料都在本目录：①**协议模型**：TLA+/TLC 规格（`tla/V2*.tla` + `MC*.cfg`）抽象
-`core/src/v2/control.rs` 与 `engine/src/v2/driver.rs` 的协议行为；②**规格↔代码的可执行对应**：
-`core/tests/v2_invariants.rs` 把不变量与命令序列搬到真实引擎上跑；③**纯函数层的有界穷举与 Kani 证明**：
-`core/tests/kernel_properties.rs` 与 `kani/`。TLA+ 模型**不是精化证明**——模型上的结论不自动成立在代码上，
-代码侧结论来自有界探索；边界见文末「边界」与 [REPORT.md](REPORT.md)。
+Verification has three layers, all material sitting in this directory: (1) **protocol models** — TLA+/TLC
+specs (`tla/V2*.tla` plus `MC*.cfg`) abstracting the protocol behaviour of `core/src/v2/control.rs` and
+`engine/src/v2/driver.rs`; (2) the **executable spec-to-code correspondence** — `core/tests/v2_invariants.rs`
+recomputes the invariants over real command sequences; (3) the **pure-function layer** — bounded enumeration in
+`core/tests/kernel_properties.rs` plus Kani proofs in `kani/`. The TLA+ model is **not a refinement proof**:
+results on the model do not automatically hold for the code, and code-side results come from bounded
+exploration. The boundaries are in "Boundaries" below and in [REPORT.md](REPORT.md).
 
-## 运行
+## Running
 
 ```bash
-make verify-model           # 控制面小配置（秒级）
-make verify-model-all       # 七个模块的小配置穷举（控制面/制品/等待/任务/压缩/daemon/必需检查）
-make verify-model-wide      # 控制面宽配置（2 实例 / 2 操作；数亿状态，耗时较长）
-make verify-kani            # 分页算术（需 Kani 工具链，见文末）
-cargo test --offline --manifest-path core/Cargo.toml --test v2_invariants   # 规格↔代码对应
+make verify-model           # small control-plane configuration (seconds)
+make verify-model-all       # small configurations for all seven modules (control plane, artifacts, waits,
+                            # tasks, compression, daemon, required checks)
+make verify-model-wide      # wide control-plane configuration (2 instances / 2 operations; hundreds of millions
+                            # of states, slow)
+make verify-kani            # paging arithmetic (needs the Kani toolchain, see below)
+cargo test --offline --manifest-path core/Cargo.toml --test v2_invariants   # spec-to-code correspondence
 ```
 
-首次运行会把固定版本（TLC v1.7.1，SHA-256 见 Makefile）的 `tla2tools.jar` 下载到
-`$TLA_TOOLS_DIR`（默认 `~/.local/share/teamagents-verify`）并校验；工具链不进仓库、不进 `make check`。
-需要 Java（本机 OpenJDK 27）。
+The first run downloads the pinned `tla2tools.jar` (TLC v1.7.1, SHA-256 in the Makefile) into
+`$TLA_TOOLS_DIR` (default `~/.local/share/teamagents-verify`) and verifies it; the toolchain never enters the
+repository and never enters `make check`. Java is required (this machine uses OpenJDK 27).
 
-## 规格与配置
+## Specs and configurations
 
-| 文件 | 内容 |
+| File | Contents |
 |---|---|
-| `tla/V2Control.tla` | 控制面抽象模型：实例相位机、请求/尝试、决策与操作、批准、派发线性化点、取消/超时、epoch 重置、目标预算预留与结算、崩溃/恢复 |
-| `tla/MC.cfg` | 小配置（1 实例 / 1 操作 / 2 请求槽 / 1 尝试槽 / 1 次 epoch 重置 / 1 次未知用量） |
-| `tla/MC_wide.cfg` | 控制面宽配置（2 实例 / 2 操作且其一需批准 / 3 请求槽 / 2 尝试槽） |
-| `tla/V2Artifact.tla` + `tla/MC_artifact.cfg` | 制品与 GC：写字节 → STAGING 行 → 引用与 LIVE 同事务 → GC 认领 → 删除/放弃 |
-| `tla/V2Wait.tla` + `tla/MC_wait.cfg` | 等待/唤醒/计时器/取代：注册即求值 → 停放 drain 扫描 → 满足即答同事务 → 取消/取代/重挂 |
-| `tla/V2Task.tla` + `tla/MC_task.cfg` | 任务生命周期与目标结清：委派（前置任务必须先存在、目标必须 ACTIVE）→ 启动 → 结清/取消 → 系统停放 → 终止级联；目标创建/请求准入/开放操作/结清与摘除 |
-| `tla/V2Compress.tla` + `tla/MC_compress.cfg` | 上下文压缩（A20）：开门/提交/失败/被 epoch 关闭取消；总结追加在尾部、覆盖只增不减、原文永不删除 |
-| `tla/V2Daemon.tla` + `tla/MC_daemon.cfg` | 会话 daemon 协议（A28）：稳定命令 id 的去重与回放、checkpoint 的快照+水位原子对、events(since) 无缺口、慢客户端不阻塞写者 |
-| `tla/V2Checks.tla` + `tla/MC_checks.cfg` | 必需检查（A16/§8）：只对"自称成功"的候选做校验、失败进有界修复轮、轮次耗尽或校验路径不可用（陈旧观察/派发被拒）落 BLOCKED，绝不升级候选 |
+| `tla/V2Control.tla` | control-plane abstraction: instance phase machine, requests/attempts, decisions and operations, approvals, the dispatch linearization point, cancel/timeout, epoch resets, goal budget reservations and settlement, crash/recovery |
+| `tla/MC.cfg` | small configuration (1 instance / 1 operation / 2 request slots / 1 attempt slot / 1 epoch reset / 1 unknown usage) |
+| `tla/MC_wide.cfg` | wide control-plane configuration (2 instances / 2 operations with one requiring approval / 3 request slots / 2 attempt slots) |
+| `tla/V2Artifact.tla` + `tla/MC_artifact.cfg` | artifacts and GC: write bytes → STAGING row → reference and LIVE in one transaction → GC claim → delete/abandon |
+| `tla/V2Wait.tla` + `tla/MC_wait.cfg` | waits/wakeups/timers/supersede: evaluate at registration → parked drain scan → answer in the same transaction when satisfied → cancel/supersede/re-arm |
+| `tla/V2Task.tla` + `tla/MC_task.cfg` | task lifecycle and goal settlement: delegation (dependencies must exist first, the goal must be ACTIVE) → start → settle/cancel → system parking → termination cascade; goal creation, request admission, open operations, settlement and detach |
+| `tla/V2Compress.tla` + `tla/MC_compress.cfg` | context compression (A20): open/submit/fail/cancelled by a closed epoch; summaries append at the tail, coverage only grows and originals are never deleted |
+| `tla/V2Daemon.tla` + `tla/MC_daemon.cfg` | session daemon protocol (A28): deduplication and replay of stable command ids, the atomic snapshot+watermark pair of `checkpoint`, gap-free `events(since)`, a slow client never blocking the writer |
+| `tla/V2Checks.tla` + `tla/MC_checks.cfg` | required checks (A16/§8): only self-reported successes are verified, failures enter a bounded repair round, an exhausted budget or an unusable verification path (stale observation, refused dispatch) parks the goal BLOCKED, and a candidate is never upgraded |
 
-环境（工具结果、批准时机、崩溃时点）在模型里是**非确定性**的；这正是要穷举的部分。
+The environment (tool results, approval timing, crash points) is **non-deterministic** in the model; that is
+exactly what is enumerated.
 
-## 已验证的性质与代码映射
+## Verified properties and their code anchors
 
-| 性质（规格） | 含义 | 代码锚点 | 验收场景 |
+| Property (spec) | Meaning | Code anchor | Acceptance |
 |---|---|---|---|
-| `TypeOK` | 相位/生命周期/操作状态/效果计数取值合法 | `models.rs` 枚举、`OpStatuses` | §4.1 |
-| `NoEffectBeforeApproval` | 需要批准的操作，未批准前效果为 0 | `dispatch_operation` 的批准闸；`approve`/`deny` | A25/A12 |
-| `RecordBeforeEffect` | 效果发生前必有持久化派发记录 | `dispatch_operation` 先落 `DISPATCH_COMMITTED` 再执行 | A08/A11 |
-| `EffectAtMostOnce` | 同一操作的外部效果至多一次（恢复不重放） | 恢复路径只置 `OUTCOME_UNKNOWN` | A08/A10/A13 |
-| `ReservationsAdmitted` | 活跃预留总量不超上限（准入闸门的推论） | `reserve_budget` 的 `known+reserved+est ≤ max` | A18/§8 |
-| `AdmissionGate`（时序） | 每次进入 `MODEL_PENDING` 都通过准入闸门 | 同上 | A18/§8 |
-| `ReservationReleased` | 请求关闭（完成/失败/取消）必释放预留 | `release_reservation` 的调用点 | §8 |
-| `OneActiveRequest` | 单实例同时只有一个活跃请求 | `begin_request` 的 phase/revision 守卫 | §3/§6.1 |
-| `SelectionIsComplete` | 只有被原子选中的完整尝试存在 | `record_attempt` 的 `selected_attempt_id IS NULL` 更新 | A19 |
-| `NoTurnWithoutWork` | 最后一条是模型自己的话时不开新回合 | 收尾条目 + `step_ready` 闲置判据（R22 修复） | §5.4 |
-| `StaleExecutorRejected` | 推进中的执行者必然持有当前 revision | `begin_request` 的 `revision == expected` | §6.1 |
-| `NoEffectOnTerminated` | 已终止实例不产生效果 | `set_lifecycle` TERMINATED 与派发守卫 | §6.4 |
-| `PreparedIsNotTerminal` | `PREPARED` 操作尚未产生任何效果 | 操作状态机 | §6.1 |
-| `CancelledBeforeStartHasNoEffect` | "开始前取消"= 效果未发生（可已有派发记录） | `cancel_operation` 对 `DISPATCH_COMMITTED` 的处理 | A13 |
-| `TerminalOpStable`（时序） | 操作终态不可改写 | `complete_operation` 的 "already terminal" 拒绝 | A13 |
-| `TerminalGoalStatusStable`（时序） | 目标终态不可改写 | `complete_goal`/`block_goal` 的 `already_closed` 分支 | §8 |
-| `NoReceiptAcrossEpochs`（时序） | 回执不跨 epoch 落地 | `reset_instance` 关闭旧 epoch + 取消在途操作 | A24 |
+| `TypeOK` | phase/lifecycle/operation status/effect counters hold legal values | the `models.rs` enums, `OpStatuses` | §4.1 |
+| `NoEffectBeforeApproval` | an operation needing approval has no effect before it is approved | the approval gate in `dispatch_operation`; `approve`/`deny` | A25/A12 |
+| `RecordBeforeEffect` | a persisted dispatch record exists before any effect | `dispatch_operation` writes `DISPATCH_COMMITTED` first | A08/A11 |
+| `EffectAtMostOnce` | an operation has at most one external effect (recovery never replays) | the recovery path only sets `OUTCOME_UNKNOWN` | A08/A10/A13 |
+| `ReservationsAdmitted` | live reservations never exceed the ceiling (a consequence of the admission gate) | `known+reserved+est ≤ max` in `reserve_budget` | A18/§8 |
+| `AdmissionGate` (temporal) | every entry into `MODEL_PENDING` passed the admission gate | as above | A18/§8 |
+| `ReservationReleased` | closing a request (complete/fail/cancel) always releases its reservation | the `release_reservation` call sites | §8 |
+| `OneActiveRequest` | an instance has a single active request at a time | the phase/revision guard in `begin_request` | §3/§6.1 |
+| `SelectionIsComplete` | only an atomically selected complete attempt exists | the `selected_attempt_id IS NULL` update in `record_attempt` | A19 |
+| `NoTurnWithoutWork` | no new turn opens when the last entry is the model's own text | the closing entry plus the idle test in `step_ready` | §5.4 |
+| `StaleExecutorRejected` | an executing instance holds the current revision | `revision == expected` in `begin_request` | §6.1 |
+| `NoEffectOnTerminated` | a terminated instance produces no effect | TERMINATED in `set_lifecycle` plus the dispatch guard | §6.4 |
+| `PreparedIsNotTerminal` | a `PREPARED` operation has no effect yet | the operation state machine | §6.1 |
+| `CancelledBeforeStartHasNoEffect` | "cancelled before start" means no effect (a dispatch record may exist) | `cancel_operation` on `DISPATCH_COMMITTED` | A13 |
+| `TerminalOpStable` (temporal) | a terminal operation is never rewritten | the "already terminal" refusal in `complete_operation` | A13 |
+| `TerminalGoalStatusStable` (temporal) | a terminal goal is never rewritten | the `already_closed` branch of `complete_goal`/`block_goal` | §8 |
+| `NoReceiptAcrossEpochs` (temporal) | a receipt never lands across epochs | `reset_instance` closes the old epoch and cancels in-flight operations | A24 |
 
-### 制品与 GC（A30）
+### Artifacts and GC (A30)
 
-| 性质（规格） | 含义 | 代码锚点 |
+| Property (spec) | Meaning | Code anchor |
 |---|---|---|
-| `NoReferenceToUnpersisted` | 有引用的制品其字节必已持久化 | `store_response_artifact`（tmp→fsync→rename 后 `artifact_stage`） |
-| `LiveIsPersisted` | LIVE 制品必有字节 | `artifact_publish` 与引用同事务 |
-| `GcClaimsOnlyUnreferencedLive` | 被认领（DELETING）的制品无任何引用 | `artifact_gc_claim` 的候选条件 |
-| `CollectorSkipsIncomplete` | 磁盘上没有半成品残留（STAGING/ABANDONED 不被删除器动） | GC 只认领 LIVE；`artifact_abandon` 只标记 |
-| `ReferencesOnlyLive`（时序） | 引用只能附着到 LIVE 制品，或在同一步随 LIVE 翻转附着，且字节已在 | `publish_one` + 引用同事务 |
-| `BytesOnlyDeletedWhileDeleting`（时序） | 文件消失只发生在 DELETING | GC 删除顺序 |
-| `ClaimOnlyFromLive`（时序） | GC 只从 LIVE 认领 | 同上 |
-| `LiveFlipCarriesReference`（时序） | STAGING→LIVE 必伴随首次引用（不会有"活着但无人引用"的窗口被回收） | `publish_list` 同一命令内提交 |
+| `NoReferenceToUnpersisted` | a referenced artifact has its bytes persisted | `store_response_artifact` (tmp → fsync → rename, then `artifact_stage`) |
+| `LiveIsPersisted` | a LIVE artifact has bytes | `artifact_publish` in the same transaction as the reference |
+| `GcClaimsOnlyUnreferencedLive` | a claimed (DELETING) artifact has no references | the candidate condition in `artifact_gc_claim` |
+| `CollectorSkipsIncomplete` | no half-written files are left to be collected (STAGING/ABANDONED are untouched by the deleter) | GC claims LIVE only; `artifact_abandon` only marks |
+| `ReferencesOnlyLive` (temporal) | a reference attaches to a LIVE artifact, or attaches in the same step as the LIVE flip, and the bytes already exist | `publish_one` plus the reference in one transaction |
+| `BytesOnlyDeletedWhileDeleting` (temporal) | a file disappears only while DELETING | the GC deletion order |
+| `ClaimOnlyFromLive` (temporal) | GC claims from LIVE only | as above |
+| `LiveFlipCarriesReference` (temporal) | STAGING → LIVE always carries the first reference (no "alive but unreferenced" window can be collected) | `publish_list` commits it in the same command |
 
-### 等待 / 唤醒 / 计时器（A22/A23、RT-06）
+### Waits, wakeups and timers (A22/A23, RT-06)
 
-| 性质（规格） | 含义 | 代码锚点 |
+| Property (spec) | Meaning | Code anchor |
 |---|---|---|
-| `TypeOK` | 相位/等待状态/回答计数取值合法 | `waits.status`、`instances.phase` |
-| `WakeAnswerAtMostOnce` | 唤醒回答每个 wait 至多追加一次 | `wake_satisfied_at` 的 `PENDING → SATISFIED` 守卫 + `append_context` 去重 |
-| `AnswerImpliesConditions` | 没有虚假唤醒：回答只在条件真的成立时追加 | `evaluate_wait` 先判 `satisfied` 再追加 |
-| `AnswerImpliesSatisfied` | 回答永远与 `SATISFIED` 同一步出现 | 同上（同一事务） |
-| `WakeAnswersItsCall` | 回答落在等待自己的 tool_call 上（R22 配对修复） | `wait_call_id` + `Observation::ToolResult` |
-| `WaitingHasPendingWait` | 停放实例必有属于自己的 PENDING 等待 | `import_response` 仅在未满足时置 `WAITING` |
-| `PendingImpliesParked` | PENDING 等待的属主一定处于 `WAITING`（drain 恒可用） | `submit_input`/`close_epoch_execution` 取消等待后才置 `READY` |
-| `UnusedSlotHasNoAnswer` | 未使用的等待槽没有回答 | 等待行按决策创建 |
-| `NoStrandedPending`（时序） | 条件成立且未终结的 PENDING 等待终会被关闭（drain 满足或被取代取消），不会永久悬挂 | 停放 drain（弱公平：driver 轮询）+ 取代路径 |
+| `TypeOK` | phase/wait status/answer counts hold legal values | `waits.status`, `instances.phase` |
+| `WakeAnswerAtMostOnce` | a wakeup appends at most one answer per wait | the `PENDING → SATISFIED` guard in `wake_satisfied_at` plus `append_context` deduplication |
+| `AnswerImpliesConditions` | no spurious wakeups: an answer is appended only when the conditions really hold | `evaluate_wait` tests `satisfied` before appending |
+| `AnswerImpliesSatisfied` | an answer always appears in the same step as `SATISFIED` | as above (one transaction) |
+| `WakeAnswersItsCall` | the answer lands on the wait's own tool_call | `wait_call_id` plus `Observation::ToolResult` |
+| `WaitingHasPendingWait` | a parked instance has a PENDING wait of its own | `import_response` sets `WAITING` only when unsatisfied |
+| `PendingImpliesParked` | the owner of a PENDING wait is `WAITING` (so the drain is always available) | `submit_input`/`close_epoch_execution` set `READY` only after cancelling the wait |
+| `UnusedSlotHasNoAnswer` | an unused wait slot has no answer | wait rows are created per decision |
+| `NoStrandedPending` (temporal) | a PENDING wait whose conditions hold and that was not terminated is eventually closed (satisfied by the drain or cancelled by a supersede); it never hangs forever | the parked drain (weak fairness: the driver's poll) plus the supersede path |
 
-### 任务、委派与目标结清（A02/A09/A16）
+### Tasks, delegation and goal settlement (A02/A09/A16)
 
-| 性质（规格） | 含义 | 代码锚点 |
+| Property (spec) | Meaning | Code anchor |
 |---|---|---|
-| `TypeOK` | 任务/目标/操作/生命周期取值合法 | `tasks.status`、`goals.status`、操作状态集 |
-| `SystemOnlyParksTasks` | 系统自己不结清也不取消任务，唯一的任务写是"停放为 BLOCKED" | `complete_task`/`cancel_task` 拒绝 System；`park_tasks_for_unknown` |
-| `OnlyPartiesWriteTasks` | 只有承接者、委派者、用户或系统（停放）能改任务 | 四个动作的身份守卫；委派者即 requester |
-| `SettledIsFinal` | 终态任务不可改写（`SUCCEEDED/FAILED/CANCELLED` 一步到位且不再变） | `complete_task`/`cancel_task` 的终态分支 |
-| `ReturnPathOnlyWhileOpen` | 窄返回能力只在任务未结清时存在；`SUCCEEDED/FAILED` 与取消都会撤销，`BLOCKED` 保留 | `revoke_grant_tree` 的调用点；`terminal = SUCCEEDED\|FAILED` |
-| `DependenciesPointBackwards` | 依赖边只指向更早创建的任务 ⇒ 依赖图**按构造无环** | `delegate_task` 要求 `dependency` 已存在 |
-| `NoSelfDependency` | 任务不依赖自己 | `delegate_task` 的自依赖检查 |
-| `NoOpenTaskOnDeadAssignee` | 已终止实例名下没有未结清任务 | `set_lifecycle` TERMINATED 的级联取消 |
-| `NoStaleActiveGoal` | 没有任何实例指向已结清的目标（结清即摘除指针 + 记账只认 ACTIVE） | `detach_goal`、`budget_goal` 的 `goal_is_active` 过滤（V-G1 修复） |
-| `RegisteredWorkNeedsAnActiveGoal` | 委派只落在 ACTIVE 目标上（监测变量 `lateTask`） | `delegate_task` 的 `goal_is_active` 守卫（V-G1 修复） |
-| `RequestsResolveToActiveGoals` | 请求解析到的目标必定 ACTIVE（监测变量 `lateRequest`） | `budget_goal` 的 `goal_is_active` 过滤（V-G1 修复） |
+| `TypeOK` | task/goal/operation/lifecycle values are legal | `tasks.status`, `goals.status`, the operation status set |
+| `SystemOnlyParksTasks` | the system never settles or cancels a task; its only task write is parking as BLOCKED | `complete_task`/`cancel_task` refuse `Identity::System`; `park_tasks_for_unknown` |
+| `OnlyPartiesWriteTasks` | only the assignee, the delegator, the user or the system (parking) may change a task | the identity guards of the four actions; the delegator is the requester |
+| `SettledIsFinal` | a terminal task is never rewritten (`SUCCEEDED/FAILED/CANCELLED` land once) | the terminal branches of `complete_task`/`cancel_task` |
+| `ReturnPathOnlyWhileOpen` | the narrow return path exists only while the task is unsettled; `SUCCEEDED/FAILED` and cancellation revoke it, `BLOCKED` keeps it | the `revoke_grant_tree` call sites; `terminal = SUCCEEDED|FAILED` |
+| `DependenciesPointBackwards` | dependency edges point only at earlier tasks, so the dependency graph is **acyclic by construction** | `delegate_task` requires the dependency to exist |
+| `NoSelfDependency` | a task never depends on itself | the self-dependency check in `delegate_task` |
+| `NoOpenTaskOnDeadAssignee` | a terminated instance holds no open task | the termination cascade in `set_lifecycle` |
+| `NoStaleActiveGoal` | no instance points at a settled goal (settlement detaches the pointer and billing accepts ACTIVE goals only) | `detach_goal` and the `goal_is_active` filter in `budget_goal` (V-G1 fix) |
+| `RegisteredWorkNeedsAnActiveGoal` | delegation lands on ACTIVE goals only (monitoring variable `lateTask`) | the `goal_is_active` guard in `delegate_task` (V-G1 fix) |
+| `RequestsResolveToActiveGoals` | a request resolves to an ACTIVE goal (monitoring variable `lateRequest`) | the `goal_is_active` filter in `budget_goal` (V-G1 fix) |
 
-任务模块只断言安全性：任务能否推进取决于环境（成员的回合），方案不要求系统替用户结清，故不写活性。
+The task module asserts safety only: whether a task advances depends on the environment (member turns), and the
+design does not require the system to settle tasks on the user's behalf, so no liveness property is written.
 
-## 建模过程中的三项发现
+## Three findings from the modelling work
 
-1. **预算性质必须写成"准入闸门 + 预留上限"**，不能写成"实际用量绝不超限"：模型里 `known` 由供应商标注的用量结算、
-   不经闸门，`BeginRequest` 才是闸门。这与方案 §8 的说法一致（"供应商计费不完整时不给'绝不超额'的虚假保证"）；
-   朴素写法会被 TLC 立刻反证。
-2. **结算后的目标仍会被继续记账**：TLC 先反证了"结算后目标记录不再变化"，核对代码确认
-   `reserve_budget`/`settle_usage` 都没有目标状态检查，而 `begin_request` 用 `active_goal_id` 解析目标——
-   即同一会话里目标完成后的新回合仍会记到那个已 `SUCCEEDED` 的目标上。预算闸门仍有效（不会超发），
-   但"目标状态"与"后续用量"不再一致。**这是一条需要产品决策的边界**（是否要求新回合另建目标），因此模型
-   如实保留该行为，只断言"终态状态不可改写"。
-3. **`CANCELLED_BEFORE_START` 的语义**是"效果未发生"而不是"未派发"：代码对一个已派发但未启动的操作取消时
-   正是这个状态，因此不变量必须约束 `effect = 0`。
+1. **The budget property must be written as an admission gate plus a reservation ceiling**, never as "actual
+   usage never exceeds the limit": in the model `known` is settled from provider-reported usage and bypasses
+   the gate, while `BeginRequest` is the gate. This matches §8 of the design ("no false promise of never
+   exceeding when provider billing is incomplete"); a naive formulation is refuted by TLC immediately.
+2. **A settled goal keeps receiving billing**: TLC refuted "a goal's records stop changing after settlement",
+   and reading the code confirmed that neither `reserve_budget` nor `settle_usage` looks at the goal status
+   while `begin_request` resolves the goal through `active_goal_id` — so a new turn after a goal completed
+   still billed that `SUCCEEDED` goal. The budget gate still worked (nothing over-reserved), but "goal status"
+   and "later usage" disagreed. **That is a product decision** (whether new turns must create a new goal), so
+   the model keeps the behaviour and asserts only "terminal status is never rewritten".
+3. **`CANCELLED_BEFORE_START` means "no effect happened"**, not "never dispatched": cancelling an operation
+   that was dispatched but not started produces exactly that status, so the invariant must constrain
+   `effect = 0`.
 
-### 发现 V-W1（已修复，2026-09-24）
+### Finding V-W1 (fixed, 2026-09-24)
 
-**等被解决后必须回答它自己的 `wait` tool_call——修复前有两条路径不回答。**
+**A resolved wait must answer its own `wait` tool_call — two paths did not.**
 
-修复：新增 `answer_closed_waits`，把答案推广到两条非 drain 出口——注册即满足（`import_response` 内、
-`wait_reason` 与 drain 同格式）与被取代/关闭 epoch（`submit_input`、`close_epoch_execution`）。
-去重键仍是 wait id，重放不会追加第二条。规格侧由不变量 `ResolvedWaitIsAnswered` 守着；
-回归测试 `wait_call_answered_outside_the_drain_path`（注册即满足、被取代两条路径断言回答存在且
-只追加一次，取代回答含 `superseded`）。
+Fix: `answer_closed_waits` extends the answer to the two non-drain exits — satisfied at registration (inside
+`import_response`, sharing `wait_reason` with the drain) and superseded/closed epoch (`submit_input`,
+`close_epoch_execution`). The deduplication key stays the wait id, so a replay never appends a second answer.
+The spec side is guarded by `ResolvedWaitIsAnswered` and the regression is
+`wait_call_answered_outside_the_drain_path` (both paths assert the answer exists, is appended once and carries
+`superseded` for the supersede case).
 
-以下为修复前记录的反例与探针证据。
+The counterexamples and probes recorded before the fix:
 
-严格线协议端点（OpenAI 风格 Responses、Anthropic）拒绝"assistant `tool_calls` 没有对应 tool 响应"的请求，
-仓库自己的注释也这么写（`core/src/kernel/mod.rs`、`wake_satisfied_at` 的说明）。代码只在 **drain 路径**
-（`wake_satisfied_at` 扫 `PENDING` 并追加回答）上配对，另外两条路径没有回答：
+Strict wire endpoints (OpenAI-style Responses, Anthropic) reject an assistant `tool_calls` message without
+matching tool responses, as the repository's own comments state (`core/src/kernel/mod.rs` and the
+`wake_satisfied_at` comment). Only the **drain path** (`wake_satisfied_at` scanning `PENDING` waits and
+appending an answer) paired them; the other two paths did not answer:
 
-1. **注册即满足**（`import_response` 里注册时 `evaluate_wait` 直接判为 satisfied 的那条，正是 A23 用来
-   "不丢唤醒"的分支）：wait 直接落 `SATISFIED`、实例不 park，之后没有任何地方为它追加 tool_result；
-2. **被取代**（`submit_input` 把该实例的 `PENDING` 等待整批置 `CANCELLED`，`close_epoch_execution` 同理）：
-   回答也不追加，实例带着一条未回答的 `wait` 调用进入下一回合。
+1. **satisfied at registration** (the branch in `import_response` where `evaluate_wait` judges the wait
+   satisfied immediately — the very branch A23 uses so a wakeup is not lost): the wait lands as `SATISFIED`
+   and the instance never parks, and nothing later appends a tool_result for it;
+2. **superseded** (`submit_input` cancels the instance's whole `PENDING` batch, `close_epoch_execution`
+   likewise): no answer is appended either, so the instance starts its next turn carrying an unanswered `wait`
+   call.
 
-证据：
+Evidence:
 
-- 规格反例（修复前，触发它的临时配置未入库）：TLC 报该不变量被违反（修复后名为 `ResolvedWaitIsAnswered`），
-  轨迹为 `ArmWait(PENDING)` → `Supersede` → `CANCELLED` 且 `answers = 0`；
-  注册即满足那条由 `ArmWait` 的 satisfied 分支同样触发（`answers` 保持 0）。
-  修复后 `V2Wait.tla` 把回答写进这两条路径，`make verify-model-all` 全绿。
-- 代码探针（`cargo test --offline --manifest-path core/Cargo.toml --lib wait_call_answer_gap_outside_the_drain_path -- --nocapture`）：
+- Spec counterexample (before the fix; the temporary configuration that triggered it was never committed):
+  TLC reported the invariant violation (now named `ResolvedWaitIsAnswered`) with the trace `ArmWait(PENDING)`
+  → `Supersede` → `CANCELLED` and `answers = 0`; the satisfied-at-registration case was triggered by the
+  satisfied branch of `ArmWait` in the same way (`answers` stayed 0). After the fix `V2Wait.tla` writes the
+  answer on both paths and `make verify-model-all` is green.
+- Code probe (`cargo test --offline --manifest-path core/Cargo.toml --lib
+  wait_call_answer_gap_outside_the_drain_path -- --nocapture`):
 
   ```text
-  PROBE A: satisfied=true phase="READY" answers_for_wait_1=0   # 注册即满足，无回答
-  PROBE B: phase_after_import="WAITING" wait_state=CANCELLED phase_after_input="READY" answers_for_wait_2=0  # 取代，无回答
+  PROBE A: satisfied=true phase="READY" answers_for_wait_1=0   # satisfied at registration, no answer
+  PROBE B: phase_after_import="WAITING" wait_state=CANCELLED phase_after_input="READY" answers_for_wait_2=0  # superseded, no answer
   ```
 
-影响（修复前）：严格端点下这两条路径的下一次请求会被拒；宽松端点（本机评测用的
-DeepSeek chat-completions）容忍，所以真实评测没暴露。修复即把"回答"从 drain 路径推广到这两条路径
-（注册即满足时追加同一格式的答案；取代/关闭 epoch 时给被取消的等待追加上下文回答），已按用户确认的「全部修复」落地。
+Impact before the fix: on a strict endpoint the next request on those two paths would be rejected; a tolerant
+endpoint (the DeepSeek chat-completions used for local evaluation) accepts it, which is why real runs never
+exposed it. The fix extends the answer from the drain path to both, as the user's "fix everything" confirmed.
 
-### 发现 V-G1（已修复，2026-09-24）
+### Finding V-G1 (fixed, 2026-09-24)
 
-**目标进入终态后不再接受新工作。** 修复前，委派任务、开新操作、继续记账三条路径都不看目标状态：
+**A goal in a terminal state no longer accepts new work.** Before the fix, three paths ignored the goal
+status:
 
-- `delegate_task` 只校验承接者与（实例委派时的）委派者活跃、`goal_id` 存在，没有"目标必须 ACTIVE"；
-- `import_response` 开操作时 `goal_id` 来自 `request_goal(active_goal_id)`，同样不看目标状态；
-- `reserve_budget`/`settle_usage` 也不看目标状态（这条即上面"发现 2"）。
+- `delegate_task` checked only that the assignee and (for instance delegation) the delegator were live and
+  that `goal_id` existed — never that the goal was ACTIVE;
+- when `import_response` opened an operation, `goal_id` came from `request_goal(active_goal_id)` and likewise
+  ignored the goal status;
+- `reserve_budget`/`settle_usage` ignored it as well (this is finding 2 above).
 
-规格反例（修复前；这两条性质现由 `MC_task.cfg` 守着，修复后 TLC 全绿）：
+Spec counterexamples (before the fix; both properties are now guarded by `MC_task.cfg` and TLC is green):
 
 ```text
-Error: Invariant RegisteredWorkNeedsAnActiveGoal is violated.     # 目标还没建就委派了任务
-Error: Invariant ClosedGoalTakesNoNewOperation is violated.       # 终态目标仍开新操作
+Error: Invariant RegisteredWorkNeedsAnActiveGoal is violated.     # a task was delegated before its goal existed
+Error: Invariant ClosedGoalTakesNoNewOperation is violated.       # a settled goal still opened an operation
 ```
 
-修复（用户确认"全部修复"后落码）：
+Fix (landed after the user confirmed "fix everything"):
 
-- `budget_goal` 只把 **ACTIVE** 目标作为记账目标（实例的 `active_goal_id` 与其最旧开放任务的目标两条路径）；
-  解析不到就按"无目标"运行（与无目标会话同一模式）；
-- `complete_goal`/`block_goal` 结清时摘除所有指向该目标的实例指针（`detach_goal`，返回 `detached` 计数）；
-- `delegate_task` 要求目标 ACTIVE，否则明确报错并提示先 `create_goal`；
-- 规格侧由 `NoStaleActiveGoal`、`RegisteredWorkNeedsAnActiveGoal`、`RequestsResolveToActiveGoals` 守着；
-  回归测试 `a_settled_goal_takes_no_new_work`（摘除指针、委派被拒、新请求不记账、新目标恢复记账与委派、
-  已结清记录不再变化）。
+- `budget_goal` accepts only **ACTIVE** goals as billing targets (both the instance's `active_goal_id` and the
+  goal of its oldest open task); when neither resolves it runs as "no goal", exactly like a session without
+  one;
+- `complete_goal`/`block_goal` detach every instance pointer to the goal when they settle it (`detach_goal`,
+  returning a `detached` count);
+- `delegate_task` requires an ACTIVE goal and otherwise fails with a pointer to `create_goal` first;
+- the spec side is guarded by `NoStaleActiveGoal`, `RegisteredWorkNeedsAnActiveGoal` and
+  `RequestsResolveToActiveGoals`, with the regression `a_settled_goal_takes_no_new_work` (pointer detached,
+  delegation refused, new requests not billed, a fresh goal restoring both, and settled records frozen).
 
-建模结论（写进 `V2Task.tla` 头注）：**"新工作"的线性化点是请求（`begin_request`），不是操作**。请求在目标
-ACTIVE 时被准入，之后目标结清，它仍会开操作并把用量结算到那个目标——这是诚实记账，不是新工作；因此
-性质写成请求级（`RequestsResolveToActiveGoals`）而不是操作级。
+Modelling conclusion (recorded in the `V2Task.tla` header): the linearization point for **new work is the
+request (`begin_request`), not the operation**. A request admitted while the goal was ACTIVE may still open
+operations and settle usage against that goal after settlement — that is honest accounting, not new work —
+which is why the property is written at the request level (`RequestsResolveToActiveGoals`) rather than the
+operation level.
 
-已知边界（未强制，见 `V2Task.tla` 头注）：`complete_goal` 只检查开放操作、不检查任务，所以目标可以在
-自己名下的任务仍开放时结清；那些任务继续运行，其后续请求没有记账目标。要收紧（结清前必须结清任务）
-需要先给 driver 一个"拒绝完成"的已提交结果，属于后续工作。
+Known boundary (not enforced, see the `V2Task.tla` header): `complete_goal` checks open operations but not
+tasks, so a goal can settle while its own tasks are still open; those tasks keep running and their later
+requests have no billing goal. Tightening that (tasks must settle first) needs a committed "completion
+refused" result for the driver and is future work.
 
-### 建模过程中另外两条（性质表述本身的修正）
+### Two more findings about the properties themselves
 
-4. **同事务翻转必须写进性质**：制品首次引用是在 `STAGING → LIVE` 的同一步里附上的，因此
-   "引用只能附着到 LIVE 制品"这种朴素写法会被 TLC 立刻反证——正确表述要允许 `row' = LIVE`。
-5. **引用计数不能用无界整数**：`refs++` 会让状态空间发散（实测 1.8 亿状态仍未收敛）；改成
-   **有限持有者集合**（`Owners` 常量）后同一配置只有 64 个可达状态。这条对后续模块同样适用。
+4. **An in-transaction flip must be written into the property**: an artifact's first reference attaches in the
+   same step as `STAGING → LIVE`, so the naive "a reference attaches only to a LIVE artifact" is refuted by
+   TLC immediately; the correct formulation allows `row' = LIVE`.
+5. **Reference counting cannot use unbounded integers**: `refs++` makes the state space diverge (measured: not
+   converged at 180M states), while a **finite owner set** (an `Owners` constant) leaves the same
+   configuration with 64 reachable states. The same applies to the later modules.
 
-### 上下文压缩（A20）
+### Context compression (A20)
 
-| 性质（规格） | 含义 | 代码锚点 |
+| Property (spec) | Meaning | Code anchor |
 |---|---|---|
-| `TailAppend` | 条目占据槽位前缀：新条目只追加在尾部，不插入中间 | `append_entry` 的 `MAX(idx)+1` |
-| `NoEntryIsEverLost` | 原文永不删除（覆盖只是视图事实，监测变量 `lost` 保持空） | `compress_context` 只写 `compressed_by`，从不 DELETE |
-| `CoveragePointsForward` | 总结永远比它覆盖的条目新 | 先追加总结（尾部）再标记覆盖 |
-| `CoverageNeverLifted` | 覆盖只增不减、不会被改指到另一个总结（监测变量 `uncovered` 保持空） | 覆盖语句带 `compressed_by IS NULL` 守卫 |
-| `NewestSummaryIsVisible` | 最新总结自身不会被覆盖（更早的总结可以被更晚的总结覆盖） | 提交顺序 |
-| `CoveredStaysCoveredByItsSummary` | 被覆盖的条目一定指向一个更晚的真实总结 | 同上 |
-| `ClosedCompressionReleasesReservation` | 压缩请求关闭（完成 / 失败 / 被 epoch 关闭取消）都释放预留 | `compress_context`/`fail_compression`/`close_epoch_execution` 里的 `release_reservation` |
+| `TailAppend` | entries occupy a slot prefix: a new entry appends at the tail and is never inserted in the middle | `MAX(idx)+1` in `append_entry` |
+| `NoEntryIsEverLost` | originals are never deleted (coverage is a view fact; the monitoring variable `lost` stays empty) | `compress_context` only writes `compressed_by` and never deletes |
+| `CoveragePointsForward` | a summary is always newer than the entries it covers | the summary is appended (at the tail) before coverage is marked |
+| `CoverageNeverLifted` | coverage only grows and is never re-pointed at another summary (monitoring variable `uncovered` stays empty) | the coverage statement carries a `compressed_by IS NULL` guard |
+| `NewestSummaryIsVisible` | the newest summary is never covered itself (earlier summaries may be covered by later ones) | the commit order |
+| `CoveredStaysCoveredByItsSummary` | a covered entry points at a later, real summary | as above |
+| `ClosedCompressionReleasesReservation` | closing a compression request (complete/fail/cancelled by a closed epoch) releases its reservation | `release_reservation` in `compress_context`/`fail_compression`/`close_epoch_execution` |
 
-压缩请求的**准入**（生命周期、目标截止时间、预算闸门）与 turn 请求同一条代码路径，由 `V2Control`
-的 `AdmissionGate` 覆盖，此处不再重复建模。
+The admission of a compression request (lifecycle, goal deadline, budget gate) uses the same code path as a
+turn request and is covered by `V2Control`'s `AdmissionGate`, so it is not modelled again here.
 
-### 会话 daemon 协议（A28）
+### Session daemon protocol (A28)
 
-| 性质（规格） | 含义 | 代码锚点 |
+| Property (spec) | Meaning | Code anchor |
 |---|---|---|
-| `LogMonotone` | 事件日志只增不减：版本不重用、不回滚（监测变量 `shrank` 保持 FALSE） | `events.sequence` 自增；`read_events(since)` |
-| `AppliedAtMostOnce` | 一个 command id 至多生效一次 | `submit_inner` 的 `commands` 表去重 |
-| `ReceiptsAreStable` | 已存回执不再改写；同 payload 的重放返回**存的**那份回执（监测变量 `drift` 保持空） | `submit_inner` 命中已有 command_id 时原样返回 `result_json` |
-| `ReceiptNamesARealVersion` | 回执指向的版本真实存在 | 同上 |
-| `AppliedCommandsUsedTheWireVersion` | 只有握手通过的协议版本能提交命令 | `PROTOCOL_VERSION` 检查 |
-| `SnapshotNeverLeadsCursor` | 快照声明的版本绝不领先于客户端持有的水位——这正是"快照+水位同一读事务"买到的东西 | `daemon.rs` 的 `checkpoint`（`unchecked_transaction` 里同时读快照与 `MAX(sequence)`） |
-| `ViewMatchesCursor` / `CursorNeverBeyondLog` | 断连重连后视图与游标一致、没有缺口 | `events` 返回 `sequence > since` 的全部事件 |
-| `NoResyncInThisVersion` | 这一版事件永不回收，`resync_required` 恒为 false（`pruned` 从不置真） | 头注："Events are never reclaimed in this first version" |
+| `LogMonotone` | the event log only grows: versions are never reused or rolled back (monitoring variable `shrank` stays FALSE) | the auto-incrementing `events.sequence`; `read_events(since)` |
+| `AppliedAtMostOnce` | a command id takes effect at most once | the `commands` table deduplication in `submit_inner` |
+| `ReceiptsAreStable` | a stored receipt is never rewritten; a replay with the same payload returns the **stored** receipt (monitoring variable `drift` stays empty) | `submit_inner` returns `result_json` unchanged when the command id exists |
+| `ReceiptNamesARealVersion` | the version a receipt names really exists | as above |
+| `AppliedCommandsUsedTheWireVersion` | only handshake-compatible protocol versions may submit commands | the `PROTOCOL_VERSION` check |
+| `SnapshotNeverLeadsCursor` | a snapshot never claims a version ahead of the client's watermark — exactly what "snapshot plus watermark in one read transaction" buys | `checkpoint` in `daemon.rs` (reads the snapshot and `MAX(sequence)` inside one `unchecked_transaction`) |
+| `ViewMatchesCursor` / `CursorNeverBeyondLog` | after a reconnect the view and cursor agree with no gaps | `events` returns every event with `sequence > since` |
+| `NoResyncInThisVersion` | this version never reclaims events, so `resync_required` is always false (`pruned` is never set) | the header note "Events are never reclaimed in this first version" |
 
-`SnapshotNeverLeadsCursor` 是**非空性质**：把 `checkpoint` 拆成"先写快照、再写水位"两步（即不是同一读事务），
-TLC 立刻反证（实测 `Error: Invariant SnapshotNeverLeadsCursor is violated`）。慢客户端不阻塞写者的部分是
-结构性的：`RuntimeEvent` 不依赖任何客户端游标，因此这里不写活性性质。
+`SnapshotNeverLeadsCursor` is a **non-vacuous** property: splitting `checkpoint` into "write the snapshot, then
+the watermark" (i.e. not one read transaction) is refuted by TLC immediately (measured:
+`Error: Invariant SnapshotNeverLeadsCursor is violated`). The "a slow client never blocks the writer" part is
+structural: `RuntimeEvent` does not depend on any client cursor, so no liveness property is written here.
 
-### 必需检查（A16/§8）
+### Required checks (A16/§8)
 
-| 性质（规格） | 含义 | 代码锚点 |
+| Property (spec) | Meaning | Code anchor |
 |---|---|---|
-| `SuccessRequiresAllChecksPassed` | 只有**每个必需检查都真的通过**的轮次才能把目标收成 SUCCEEDED（性质写在**观察到的结果**上，不是写在"结论"变量上） | `step_completion_checks`：`failures.is_empty()` 才 `complete_goal` |
-| `NoUpgradeOfTheCandidate` | 运行时不升级模型候选：承认未交付的候选永不会 SUCCEEDED（监测变量 `nonSuccessSuccess`） | 只有候选自称 success 才进校验；`complete_goal` 用**存储的**候选结清 |
-| `ChecksOnlyVerifyAClaimedSuccess` | 不跑检查的候选直接按自身结果结清（监测变量 `lateRound`） | `step_completion_checks` 只在 `outcome == "success"` 时进入 |
-| `RoundsAreMonotone` / `RoundsAreBounded` | 轮次只增、且不超过预算（监测变量 `rewound`） | `rounds >= max_rounds` 分支 |
-| `BlockedAfterTheBudgetOrStale` | 自称成功的候选落 BLOCKED，只可能是"预算耗尽"或"校验路径不可用（陈旧观察）" | `infra`（`dispatch_refused`/`spawn`）与 `stale_inputs` 分类；`block_goal` |
-| `NoUnverifiedSuccess` | 没有未经校验的成功（监测变量 `upgrades`） | 同上 |
+| `SuccessRequiresAllChecksPassed` | a goal becomes SUCCEEDED only in a round where **every required check really passed** (the property is written on the **observed result**, not on a "verdict" variable) | `step_completion_checks`: `complete_goal` only when `failures.is_empty()` |
+| `NoUpgradeOfTheCandidate` | the runtime never upgrades a model candidate: an admitted non-delivery is never SUCCEEDED (monitoring variable `nonSuccessSuccess`) | only self-reported successes are verified, and `complete_goal` settles the **stored** candidate |
+| `ChecksOnlyVerifyAClaimedSuccess` | a candidate that does not run the checks settles by its own outcome (monitoring variable `lateRound`) | `step_completion_checks` only runs when `outcome == "success"` |
+| `RoundsAreMonotone` / `RoundsAreBounded` | rounds only grow and stay within budget (monitoring variable `rewound`) | the `rounds >= max_rounds` branch |
+| `BlockedAfterTheBudgetOrStale` | a self-reported success lands BLOCKED only for "budget exhausted" or "verification path unusable (stale observation)" | the `infra` (`dispatch_refused`/`spawn`) and `stale_inputs` classifications; `block_goal` |
+| `NoUnverifiedSuccess` | no success is unverified (monitoring variable `upgrades`) | as above |
 
-非空证据：把 `Accept` 放宽成"有一个 pass 就接受（哪怕同时有 fail）"，TLC 立刻反证
-`SuccessRequiresAllChecksPassed is violated`；把这条性质写成"SUCCEEDED ⇒ 记录的结论是 pass"则是**空性质**
-（动作自己就能写 pass），所以最终断言绑在观察到的结果上。
+Non-vacuity evidence: relaxing `Accept` to "one pass is enough (even with a failure)" is refuted by TLC
+immediately (`SuccessRequiresAllChecksPassed is violated`); writing the property as "SUCCEEDED implies the
+recorded verdict is pass" would be **vacuous** (the action writes that variable itself), which is why the final
+assertion binds the observed result.
 
-## 规格↔代码的可执行对应（`core/tests/v2_invariants.rs`）
+## Executable spec-to-code correspondence (`core/tests/v2_invariants.rs`)
 
-规格检查的是抽象状态机。`core/tests/v2_invariants.rs`（随 `make check` 自动运行）把**同一组不变量**在真实
-`core::v2::Control` 上重算一遍：
+The specs check an abstract state machine. `core/tests/v2_invariants.rs` (part of `make check`) recomputes the
+same invariants against the real `core::v2::Control`:
 
 ```bash
 cargo test --offline --manifest-path core/Cargo.toml --test v2_invariants
 ```
 
-- **穷举**：长度 ≤ 2 的命令序列，每条从全新数据库开始（36 种命令 ⇒ 1,332 条序列），含被拒绝的组合；
-- **随机游走**：60 条固定种子的 24 步游走，每步只在"当前可用"的命令里挑，并优先挑本次游走用得最少的
-  命令种类（覆盖驱动，否则会反复做同一件安全的事而走不到深层链路）；种子固定 ⇒ 轨迹可复现；
-- **每步之后重查**：`TypeOK`、`SettledIsFinal`、`ReturnPathOnlyWhileOpen`、`DependenciesPointBackwards`、
-  `NoOpenTaskOnDeadAssignee`、`NoStaleActiveGoal`、`ReservationReleased`、`OneActiveRequest`（只对 turn
-  请求计数：压缩请求并发且不动相位）、`SelectionIsComplete`、`ResolvedWaitIsAnswered`、
-  `NoEffectBeforeApproval`、`LiveIsPersisted`、`TailAppend`、`NoEntryIsEverLost`、
-  `CoveragePointsForward`、`CoverageNeverLifted`、`NewestSummaryIsVisible`、`ApprovalDecisionIsFinal`
-  （决定落下后不再改写，PENDING → 过期合法）、`PendingApprovalOnlyForPreparedOperation`（RT-06：
-  操作终结后不得留下待批）、`NoEffectAfterDenial`、`ReceiptsAreStable`（同一 command id 的存量回执
-  不再改写）、`ReplayedCommandIsInert`（重放步骤必须不动命令/事件/上下文三张表）、
-  `LogMonotone`（事件日志只增不减）、上下文 epoch 一致性；
-- **覆盖率断言**：游走必须真的走到"等被解决 / 目标结清 / 任务结清 / 操作终态 / epoch 重置 / 实例终止 /
-  制品 LIVE / 压缩提交 / 批准已决定 / 命令重放（同 id 返回存量回执、异 payload 被拒）"，否则测试失败
-  （防止"空转通过"）；
-- **反向验证**（`the_invariant_checker_detects_broken_states`）：人为破坏状态（未知状态值、终态被改写、
-  悬挂目标指针）时检查器必须报出来，否则"全部通过"没有意义。
+- **Enumeration**: every command sequence of length ≤ 2 starts from a fresh database (38 command kinds, so
+  1,482 sequences), including refused combinations;
+- **Random walks**: 60 fixed-seed walks of 24 steps, each step choosing only among commands usable right now
+  and preferring the kind used least in this walk (coverage driven; otherwise the walk repeats one safe action
+  and never reaches deep paths). Fixed seeds make every trace reproducible;
+- **Re-checked after every step**: `TypeOK`, `SettledIsFinal`, `ReturnPathOnlyWhileOpen`,
+  `DependenciesPointBackwards`, `NoOpenTaskOnDeadAssignee`, `NoStaleActiveGoal`, `ReservationReleased`,
+  `OneActiveRequest` (counting turn requests only: compression runs alongside and does not move the phase),
+  `SelectionIsComplete`, `ResolvedWaitIsAnswered`, `NoEffectBeforeApproval`, `LiveIsPersisted`, `TailAppend`,
+  `NoEntryIsEverLost`, `CoveragePointsForward`, `CoverageNeverLifted`, `NewestSummaryIsVisible`,
+  `ApprovalDecisionIsFinal` (a decided approval is never rewritten; PENDING → expired is legal),
+  `PendingApprovalOnlyForPreparedOperation` (RT-06: no pending approval survives a terminal operation),
+  `NoEffectAfterDenial`, `ReceiptsAreStable` (a stored receipt for a command id is never rewritten),
+  `ReplayedCommandIsInert` (a replay step must not move the command, event or context tables), `LogMonotone`
+  (the event log only grows) and context-epoch consistency;
+- **Coverage assertions**: the walk must really reach "a wait resolved / a settled goal / a settled task / a
+  terminal operation / an epoch reset / a terminated instance / a LIVE artifact / a submitted compression / a
+  decided approval / a command replay (same id returns the stored receipt, a different payload is refused)",
+  otherwise the test fails (this prevents a vacuous pass);
+- **Negative control** (`the_invariant_checker_detects_broken_states`): when state is broken on purpose
+  (unknown status values, a rewritten terminal state, a stale goal pointer) the checker must report it,
+  otherwise "everything passed" means nothing.
 
-这条可执行对应已经抓到两处代码问题（V-P1 与 V-P2，见下），并覆盖多个"必须被拒绝"的反例探针
-（委派到已结清目标、非承接者结清任务在代码里都必须被拒绝）。
+This correspondence has already caught two code issues (V-P1 and V-P2 below) and covers several
+"must be refused" counterexample probes (delegating into a settled goal, settling a task as a non-assignee).
 
-边界：这是**有界穷举 + 采样**，不是证明；它检查"实现状态是否满足不变量"，不检查活性，也不覆盖并发交错
-（`Control::submit` 在单个连接上串行，交错属于 driver 层）。
+Boundary: this is **bounded enumeration plus sampling**, not a proof. It checks whether implementation states
+satisfy the invariants; it does not check liveness and does not cover concurrent interleavings
+(`Control::submit` is serialized on one connection; interleavings belong to the driver layer).
 
-### 发现 V-P2（代码级不变量测试发现，已修复）
+### Finding V-P2 (found by the code-level invariants, fixed)
 
-随机游走走出了"把压缩请求当回合导入"的路径：`import_response` 只检查请求是否 `PENDING`，不检查
-`kind`，于是一个压缩请求可以被当成回合导进上下文——追加 assistant 条目、开操作、按回合收尾，而压缩
-请求本来只该由 `compress_context` 用一段总结提交（§7/A20）。驱动不会这么做，但控制面没有拒绝。
-修复：`import_response` 拒绝 `kind != 'turn'` 的请求并提示用 `compress_context`；回归
-`import_response_refuses_a_compression_request`。
+The random walk reached "import a compression request as a turn": `import_response` checked only that the
+request was `PENDING`, never its `kind`, so a compression request could be imported into the context as a turn
+(append an assistant entry, open operations, close out as a turn) although a compression request may only be
+submitted by `compress_context` as a summary (§7/A20). The driver never calls it that way, but the control
+plane did not refuse it. Fix: `import_response` refuses requests whose `kind != 'turn'` and points at
+`compress_context`; regression `import_response_refuses_a_compression_request`.
 
-### 发现 V-P1（代码级不变量测试发现，已修复）
+### Finding V-P1 (found by the code-level invariants, fixed)
 
-终止实例时 `close_epoch_execution` 取消了在途请求，但 `set_lifecycle` 的 TERMINATED 分支没有像
-`reset_instance`/`fail_request` 那样把执行指针归零：实例停在 `phase = MODEL_PENDING`，
-`active_request_id` 指向一个已 `CANCELLED` 的请求，于是"phase 为 `MODEL_PENDING` ⇒ 存在 PENDING 请求"
-在已终止实例上不再成立。修复：终止分支补上与 reset/fail 相同的归一化（phase → READY、指针清空），
-回归测试 `terminating_an_instance_normalizes_its_execution_pointer`。
+Terminating an instance cancelled the in-flight request through `close_epoch_execution`, but the TERMINATED
+branch of `set_lifecycle` did not reset the execution pointer the way `reset_instance`/`fail_request` do: the
+instance stayed at `phase = MODEL_PENDING` with `active_request_id` pointing at a `CANCELLED` request, so
+"phase is `MODEL_PENDING` implies a PENDING request exists" stopped holding for a terminated instance. Fix:
+the termination branch applies the same normalization (phase → READY, pointer cleared); regression
+`terminating_an_instance_normalizes_its_execution_pointer`.
 
-## 纯函数层的有界穷举（`core/tests/kernel_properties.rs`）
+## Bounded enumeration of the pure functions (`core/tests/kernel_properties.rs`)
 
-内核里不碰数据库的那部分（线协议视图、输出裁剪、分页、响应分类）用有界穷举/枚举直接检查，同样随
-`make check` 运行：
+The part of the kernel that never touches the database (wire view, output capping, paging, response
+classification) is checked by bounded enumeration, also as part of `make check`:
 
 ```bash
 cargo test --offline --manifest-path core/Cargo.toml --test kernel_properties
 ```
 
-| 检查 | 性质 |
+| Check | Property |
 |---|---|
-| `wire_view_is_a_paired_permutation` | `prepare_request` 的输出：系统提示在最前、其余是输入条目的**置换**（不丢不重）、有回答的调用后面**紧跟**它的回答（R22 配对）、assistant 之间保持原序。穷举长度 ≤ 3 的全部 258 种条目组合 + 两个长用例，并断言"真的搬动过 ≥ 10 次"（否则这条性质是空转） |
-| `tool_output_cap_keeps_head_and_tail_within_bounds` | 不超上限不改写；超上限后长度有界（≤ 上限 + 64 的截断标记）、保留首尾、明确标记截断 |
-| `paging_reconstructs_the_original_without_gaps` | `page_output` 逐页取回能**无缝重建原文**（长度 0..12 × limit 1..5 全枚举）；坐标自洽（`next_offset` = 已消费长度、`eof` 时无下一页坐标）；非法参数与越界明确报错，不静默截断 |
-| `response_classification_is_exhaustive` | `interpret_response`：单独 finish → 完成候选；单独 wait → 等待；与别的调用混用 → 忽略并记协议注释、其余照常成为意图；空响应 → 普通回复 |
-| `args_hash_is_deterministic` | 同样参数永远得到同样的 `args_hash`（收据、去重与重放都依赖它） |
+| `wire_view_is_a_paired_permutation` | the output of `prepare_request`: the system prompt first, the rest a **permutation** of the input entries (nothing lost, nothing duplicated), every answered call immediately followed by its answer, and assistants keeping their relative order. It enumerates all 258 entry combinations of length ≤ 3 plus two longer cases, and asserts the pairing really moved something at least 10 times (otherwise the property would be vacuous) |
+| `tool_output_cap_keeps_head_and_tail_within_bounds` | content within the cap is not rewritten; beyond it the length stays bounded (≤ the cap plus 64 for the truncation marker), head and tail are kept and truncation is marked |
+| `paging_reconstructs_the_original_without_gaps` | page-by-page retrieval through `page_output` rebuilds the original **seamlessly** (every length 0..12 × limit 1..5); coordinates agree (`next_offset` equals the consumed length, eof has no further offset); invalid arguments and out-of-range requests fail loudly instead of truncating silently |
+| `response_classification_is_exhaustive` | `interpret_response`: a lone finish → completion candidate; a lone wait → a wait; mixed with other calls → dropped with a protocol note while the rest still become intents; an empty response → an ordinary reply |
+| `args_hash_is_deterministic` | equal arguments always produce the same `args_hash` (receipts, deduplication and replays rely on it) |
 
-两处边界（如实记录，不是缺陷）：
+Two boundaries, recorded honestly rather than as defects:
 
-- 裁剪对"刚超过上限一点点"的输入会**变长**（首尾 + 截断标记，最多 +64 字符）；真正的收缩发生在远超上限时。
-- `pair_tool_results` 只把回答**上移**到调用之后，不会下移：回答先于调用的顺序在真实日志里不可能出现
-  （运行时先追加调用），所以那条路径只用"置换"性质覆盖。
+- capping can **lengthen** input that barely exceeds the cap (head + tail + marker, at most +64 characters);
+  real shrinking happens far beyond the cap;
+- `pair_tool_results` only moves an answer **up** to behind its call, never down: an answer before its call
+  cannot occur in a real log (the runtime appends the call first), so that path is covered by the permutation
+  property alone.
 
-## Kani 证明：分页算术（`make verify-kani`）
+## Kani proofs: paging arithmetic (`make verify-kani`)
 
-`verification/kani/` 是一个只用于 Kani 的 crate：它用 `#[path]` **直接编译仓库里的
-`core/src/kernel/types.rs`**（只补一个 `models::now` 垫片，被证明的函数不读它），因此证明的是**发布的那份代码**。
-需要本机的 Kani 工具链（`cargo install --locked kani-verifier && cargo kani setup`），与 TLA+ 目标一样
-**不进 `make check`**。
+`verification/kani/` is a crate used only by Kani: it compiles **the repository's own
+`core/src/kernel/types.rs`** through `#[path]` (adding only a `models::now` shim that none of the proven
+functions reads), so it proves the **published code**. It needs a local Kani toolchain
+(`cargo install --locked kani-verifier && cargo kani setup`) and, like the TLA+ targets, **never runs inside
+`make check`**.
 
-| 证明目标 | 覆盖 |
+| Proof target | Coverage |
 |---|---|
-| `page_span_never_overflows_or_overruns` | 对**任意 `usize`**（除 `offset <= total`、`limit >= 1` 外无假设）：页长 ≤ limit、`offset + page` 不溢出且不越过末尾、未到末尾必取满、到末尾取完剩余、`eof` 判据等价于"剩余不超过 limit" |
-| `empty_page_moves_nothing` | 对任意 `usize`：`offset == total` 时页长为 0 且不动游标 |
-| `paging_covers_the_whole_output_exactly_once` | 展开界内的小长度：逐页取回无重叠、无遗漏、页数有限 |
+| `page_span_never_overflows_or_overruns` | for **every `usize`** (no assumptions beyond `offset <= total` and `limit >= 1`): a page is at most `limit` long, `offset + page` neither overflows nor runs past the end, a full page is taken unless the tail is reached, the tail consumes exactly the remainder, and the eof test is equivalent to "the remainder fits in limit" |
+| `empty_page_moves_nothing` | for every `usize`: at `offset == total` the page is empty and the cursor does not move |
+| `paging_covers_the_whole_output_exactly_once` | small lengths within the unwinding bound: page-by-page retrieval has no overlap, no gaps and a bounded page count |
 
-被证明的 `page_span(total, offset, limit) = min(limit, total - offset)` 是**发布函数**：
-`page_output` 的取页长度正是它（`take(page_span(...))`），所以"单页不越界/不溢出"这条算术性质
-覆盖到线上代码，而不是抄出来的副本。实测 `make verify-kani` 约 7 秒、3 个 harness 全绿。
+The proven `page_span(total, offset, limit) = min(limit, total - offset)` is the **published function**:
+`page_output` takes exactly that many characters per page (`take(page_span(...))`), so the arithmetic property
+"a page neither overruns nor overflows" covers the shipped code rather than a copied stand-in. A measured
+`make verify-kani` run takes about 7 seconds and all three harnesses pass.
 
-**诚实的边界**（实测结论，不是推测）：
+**Honest boundaries** (measured, not guessed):
 
-- `page_output` 的**参数解析**（走 serde_json）没有被 Kani 覆盖：坐标一旦符号化，数字比较会退化成
-  符号化 `memcmp`（实测展开 2200+ 次仍未收敛），`chars().count()` 的展开同样膨胀。参数合法性因此
-  仍由具体值穷举覆盖（`core/tests/kernel_properties.rs` 的越界/非法参数用例）。
-- `cap_tool_output` 的 24000 字符阈值要展开 24000 层，Kani 不可行；它由边界长度的具体值测试覆盖。
-- 工具链：Kani 0.68.0 + 配套 CBMC 6.11.0，Kani 会安装它 pin 的 nightly（本机 `nightly-2026-08-21`）。
+- `page_output`'s **argument parsing** (through serde_json) is not covered by Kani: once coordinates are
+  symbolic, numeric comparison degrades into a symbolic `memcmp` (measured: not converged after 2200+
+  expansions) and expanding `chars().count()` bloats similarly. Argument validity therefore stays covered by
+  concrete-value enumeration (the out-of-range and invalid-argument cases in
+  `core/tests/kernel_properties.rs`).
+- `cap_tool_output`'s 24000-character threshold would need 24000 levels of unwinding, which Kani cannot do; it
+  is covered by concrete tests at boundary lengths.
+- Toolchain: Kani 0.68.0 with CBMC 6.11.0; Kani installs the nightly it pins (this machine uses
+  `nightly-2026-08-21`).
 
-## 边界（诚实说明）
+## Boundaries (stated honestly)
 
-- 已验证的是**模型**性质：TLC 穷举的是抽象状态机，不是 Rust 实现。除非做精化证明（后续阶段的可选工作），
-  不能据此声称"Rust 代码已被证明"。
-- 已建模：控制面状态机、制品与 GC（A30）、等待/唤醒/计时器/取代（A22/A23、RT-06 的去重语义）、
-  任务/委派/目标结清（A02/A09）、上下文压缩（A20）、daemon 协议的命令去重与快照水位（A28）、
-  必需检查轮次与修复/阻断（A16）。
-- 尚未建模：审批 `expires_at` 的到时判断（决定终态与"操作终结后不得留下待批"已在代码级不变量测试里
-  覆盖，但未单独建 TLA 模块）；`execute_check_ops` 的检查命令执行细节（派发/超时/重连）只按"轮次与结论"
-  抽象。多实例共享预算的跨实例结算（A18 的 worker 归属）已在 `V2Task` 里按 `budget_goal` 的解析规则
-  建模（含"只看最旧开放任务"的取序细节）。
-- 弱公平假设：`V2Wait` 的活性依赖"停放 drain 弱公平"，即 driver 的轮询循环在 `WAITING` 下持续尝试
-  （`engine/src/v2/driver.rs`）；这是实现事实，不是被证明的结论。
-- 状态空间前沿（`MC_task`）：1 任务 / 2 实例 / 2 目标 = 5.7M 状态 / 约 20 秒；把任务加到 2 个会发散
-  （实测 43M 状态、4 分钟未收敛），需要对称性或更强的抽象。
-- 代码级对应（`core/tests/v2_invariants.rs`）是采样 + 有界穷举，不是证明；它给不出"所有执行都满足"，
-  只给"这些执行都满足"+ 检查器灵敏度（反向验证）。
-- 状态空间前沿：宽配置 275M 状态 / 11 分钟；继续加实例或操作数需要对称性/约束或改为随机模拟
-  （`-simulate`）作为补充。
+- What is verified are **model** properties: TLC enumerates an abstract state machine, not the Rust
+  implementation. Without a refinement proof (an optional later phase) this cannot be turned into "the Rust
+  code is proven".
+- Modelled: the control-plane state machine, artifacts and GC (A30), waits/wakeups/timers/supersede
+  (A22/A23 and the RT-06 deduplication semantics), tasks/delegation/goal settlement (A02/A09), context
+  compression (A20), the daemon protocol's command deduplication and snapshot watermark (A28), and the
+  required-check rounds with repair/blocking (A16).
+- Not modelled: the `expires_at` check of an approval (the resulting terminal state and "no pending approval
+  after a terminal operation" are covered by the code-level invariants, but there is no separate TLA module);
+  the execution details of `execute_check_ops` (dispatch/timeout/reconnect) are abstracted to "rounds and
+  verdict". Cross-instance settlement of a shared goal budget (the worker attribution of A18) is modelled in
+  `V2Task` through `budget_goal`'s resolution rules, including the "oldest open task only" ordering detail.
+- Weak fairness: `V2Wait`'s liveness depends on weak fairness of the parked drain, i.e. the driver's poll loop
+  continuing to try while `WAITING` (`engine/src/v2/driver.rs`); that is an implementation fact, not a proven
+  conclusion.
+- State-space frontier (`MC_task`): 1 task / 2 instances / 2 goals = 5.7M states in about 20 seconds; a second
+  task diverges (measured: 43M states without convergence after four minutes) and needs symmetry or a stronger
+  abstraction.
+- The code-level correspondence (`core/tests/v2_invariants.rs`) is sampling plus bounded enumeration, not a
+  proof: it gives "these executions satisfy the invariants" plus checker sensitivity (the negative control),
+  never "all executions do".
+- State-space frontier: the wide configuration is 275M states in 11 minutes; more instances or operations need
+  symmetry, constraints or random simulation (`-simulate`) as a supplement.
 
-## 结论与台账
+## Conclusions and ledger
 
-- [REPORT.md](REPORT.md)：形式化验证的结论（能声称什么 / 不能声称什么）、证据清单、A01–A36 逐项台账、
-  未证明清单与可推翻条件。
+- [REPORT.md](REPORT.md): the conclusions of the formal verification (what can and cannot be claimed), the
+  evidence list, the per-item A01–A36 ledger, the unproven list and the conditions that would overturn it.
 
-## 阶段状态与后续升级
+## Phase status and optional upgrades
 
-原定的四个阶段都已完成，结论与台账见 [REPORT.md](REPORT.md)：
+All four planned phases are complete; conclusions and the ledger are in [REPORT.md](REPORT.md):
 
-1. ~~扩充规格覆盖~~：7 个协议面已建模（控制面/制品/等待/任务/压缩/daemon/必需检查），逐条映射到
-   代码锚点与验收编号。
-2. ~~代码级不变量测试~~：以 `core/tests/v2_invariants.rs` 落地（有界穷举 + 覆盖驱动随机游走 +
-   覆盖率断言 + 检查器灵敏度反向验证）；未引入 proptest，因为穷举 + 固定种子游走已给出可复现的等价
-   证据，且符合 Lazy-first。
-3. ~~纯函数层~~：`core/tests/kernel_properties.rs`（有界穷举）+
-   `verification/kani`（发布函数 `page_span` 的 Kani 证明）。
-4. ~~验证报告~~：[REPORT.md](REPORT.md)。
+1. ~~Extend spec coverage~~: seven protocol surfaces are modelled (control plane, artifacts, waits, tasks,
+   compression, daemon, required checks), each mapped to code anchors and acceptance items.
+2. ~~Code-level invariant tests~~: landed as `core/tests/v2_invariants.rs` (bounded enumeration plus
+   coverage-driven random walks, coverage assertions and the checker-sensitivity negative control). proptest
+   was not introduced, because enumeration plus fixed-seed walks already give reproducible equivalent evidence
+   and stay lazy-first.
+3. ~~Pure-function layer~~: `core/tests/kernel_properties.rs` (bounded enumeration) plus `verification/kani`
+   (the Kani proof of the published `page_span`).
+4. ~~Verification report~~: [REPORT.md](REPORT.md).
 
-仍然开放的**升级**（都不是"未完成的需求"，而是可选加深）：
+Still open as **upgrades** (not unfinished requirements, but optional depth):
 
-- Lean 4：交互式定理证明，需 elan 工具链与人工证明脚本；能让纯函数层从"有界穷举 + Kani 有界证明"
-  变成无界定理，但覆盖面比"多一个协议面的穷举"窄。
-- `MC_task` 加第二个任务：需要对称性或更强抽象才能收敛（现状 1 任务 / 2 实例 / 2 目标 = 5.7M 状态）。
-- 审批 `expires_at` 的到时判断、`execute_check_ops` 的执行细节：目前只有代码级不变量与样本测试覆盖。
-- 精化证明（模型 → 实现）：需要把每个不变量映射到代码并可执行断言（已做）+ 证明实现的每一步都在
-  模型步集内（未做，见 REPORT.md §5）。
+- Lean 4: an interactive prover that needs the elan toolchain and hand-written scripts; it would turn the
+  pure-function layer from "bounded enumeration plus bounded Kani proofs" into unbounded theorems, at the cost
+  of a narrower surface than "one more enumerated protocol surface".
+- A second task in `MC_task`: needs symmetry or a stronger abstraction to converge (today 1 task / 2
+  instances / 2 goals = 5.7M states).
+- The `expires_at` check of approvals and the execution details of `execute_check_ops`: currently covered only
+  by the code-level invariants and sample tests.
+- A refinement proof (model → implementation): needs every invariant mapped to an executable code assertion
+  (done) plus a proof that each implementation step lies in the model's step set (not done, see REPORT.md §5).

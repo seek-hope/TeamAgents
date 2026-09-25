@@ -3,8 +3,9 @@
 
     python3 review/eval/r2-p6/analyze.py review/eval/r2-p6/runs/<date>/results.jsonl
 
-口径完全按 design.md/manifest.json：成功=checks_ok；配对取同一次重复；跨任务聚合为均值；
-区间=10,000 次对任务层面配对差的 bootstrap（seed=20260924）；区间含 0 或样本不足 → 「未证实」。
+The criteria follow design.md/manifest.json exactly: success = checks_ok; pairs are taken from the same
+repeat; cross-task aggregation is the mean; the interval is a 10,000-sample bootstrap over the per-task paired
+differences (seed=20260924); an interval containing 0 or too few samples means "not confirmed".
 """
 import json, random, sys, pathlib
 from collections import defaultdict
@@ -73,27 +74,27 @@ def main() -> int:
     for left, right in (("B", "A"), ("C", "B")):
         diffs, detail = paired(left, right)
         if not diffs:
-            print(f"{left}-{right}: 样本不足 → 未证实")
+            print(f"{left}-{right}: too few samples -> not confirmed")
             continue
         mean = sum(diffs) / len(diffs)
         low, high = bootstrap_ci(diffs)
         positive = sum(1 for value in detail.values() if value > 0)
-        print(f"{left}-{right}: 配对成功差均值 {mean:+.3f}（逐任务 {detail}），"
-              f"95% bootstrap 区间 [{low:+.3f}, {high:+.3f}]，正向任务 {positive}/{len(detail)}")
+        print(f"{left}-{right}: mean paired success difference {mean:+.3f} (per task {detail}), "
+              f"95% bootstrap interval [{low:+.3f}, {high:+.3f}], positive tasks {positive}/{len(detail)}")
         if left == "B" and right == "A":
             if low < 0:
-                print("  H1：区间下界为负 → 观察到退化，按设计报告")
+                print("  H1: the interval is negative -> a regression was observed, reported as designed")
             else:
-                print("  H1：未观察到退化 ✅")
+                print("  H1: no regression observed")
         if left == "C" and right == "B":
             if low > 0 and positive >= 2:
-                print("  H2：跨任务可复现收益 ✅")
+                print("  H2: reproducible cross-task gain")
             else:
-                print("  H2：未证实（区间含 0 或正向任务不足）")
+                print("  H2: not confirmed (interval contains 0 or too few positive tasks)")
     token_summary = defaultdict(int)
     for t in trials:
         token_summary[t["group"]] += t.get("total_tokens") or 0
-    print("真实 tokens 合计:", dict(token_summary))
+    print("total real tokens:", dict(token_summary))
     return 0
 
 

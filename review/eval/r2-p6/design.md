@@ -1,83 +1,98 @@
-# R2-P6 预登记（实验设计，冻结于 2026-09-24，先于任何结果）
-依据：方案 §13（13.1 本地开销/模型实验分离、13.2 样本与完整性、13.3 不使用无依据的数值门槛）。
-本文件在跑任何 trial **之前**写定；结果只按这里冻结的口径分析，禁止事后调整。
+# R2-P6 pre-registration (frozen experiment design, written before any result)
 
-## 1. 问题与假设
+Basis: §13 of the design baseline (13.1 local cost and model experiments stay separate, 13.2 samples and
+integrity, 13.3 no unfounded numeric thresholds). This file was written **before** any trial ran; results are
+analysed strictly against the criteria frozen here and never adjusted afterwards.
 
-| 编号 | 假设 | 判定口径（预登记） |
+## 1. Question and hypotheses
+
+| # | Hypothesis | Decision rule (pre-registered) |
 |---|---|---|
-| H1 | B（持久化单实例）相对 A（同 kernel 直驱参考循环，无团队管理）**未观察到退化** | 逐任务配对（B−A）成功差；跨任务聚合的配对 95% bootstrap 区间不显著为负，且逐任务无「B 失败而 A 成功」的系统性模式；否则如实报告退化 |
-| H2 | C（B + 可见协作能力）相对 B 有**跨独立运行可复现的收益** | 逐任务配对（C−B）成功差在 ≥2 个任务上为正且方向一致，且跨任务聚合配对 95% bootstrap 区间下界 > 0；不满足则如实报「未证实」 |
-| H3 | 成本与耗时随组变化 | 逐任务/跨任务汇总真实 tokens 与墙钟，报告但**不作成功门槛** |
+| H1 | B (persistent single instance) shows **no observable regression** against A (the same kernel driven by a direct reference loop, without team management) | Per-task paired (B−A) success difference; the 95% bootstrap interval over the cross-task aggregate must not be significantly negative, and no systematic pattern of "B fails while A succeeds" may appear per task; otherwise the regression is reported as measured |
+| H2 | C (B plus the visible collaboration surface) delivers a **reproducible gain across independent runs** over B | The per-task (C−B) paired success difference must be positive and consistent in ≥2 tasks, and the lower bound of the cross-task 95% bootstrap interval must be > 0; failing that, the report says "not confirmed" |
+| H3 | Cost and duration vary by group | Per-task and cross-task real tokens and wall clock are reported but are **not** success thresholds |
 
-- A/B 的模型可见内容等价（同指令、同工具 schema、同生成选项、同原生窗口）；C 只增加协作段落与
-  spawn/delegate/message 授权，属实验处理并同样计入用量（§13.1）。
-- 样本不足、区间含 0、或方差过大导致无法分辨时：结论写「未证实」，不写等效也不写收益。
+- What A and B expose to the model is equivalent (same instructions, tool schemas, generation options, native
+  window); C only adds the collaboration section and the spawn/delegate/message grants, which is the
+  experimental treatment and is billed the same way (13.1).
+- Too few samples, an interval containing 0 or excessive variance means "not confirmed" — never "equivalent"
+  and never a claimed gain.
 
-## 2. 三组定义（与 `engine/examples/eval_groups_abc.rs` 一一对应）
+## 2. The three groups (mirrored by `engine/examples/eval_groups_abc.rs`)
 
-| 组 | 运行时 | 协作面 |
+| Group | Runtime | Collaboration surface |
 |---|---|---|
-| A | `reference::run_reference` 直驱循环（无持久化承诺，评测专用参考） | 无 |
-| B | `v2::driver` 持久化单实例（单库、相位机、runner 执行 shell） | 无 |
-| C | `v2::supervisor`（单实例起步）+ manage/delegate/message 授权 + 协作指令 | 有 |
+| A | `reference::run_reference`, a direct loop with no persistence promise (evaluation-only) | none |
+| B | the persistent single instance (`v2::driver`: one database, phase machine, runner-executed shell) | none |
+| C | the supervisor (`v2::supervisor`, starting from a single instance) plus manage/delegate/message grants and collaboration instructions | yes |
 
-三组统一：`permissions = full_auto`（D-41 主机 shell，评测环境一致）、`max_retries = 2`、
-每 trial 全新工作目录与状态目录、任务提示词与验收脚本完全相同、shell 由同一 `teamagents jobs-runner` 执行。
+All three share: `permissions = full_auto` (host shell, consistent with the evaluation environment, D-41),
+`max_retries = 2`, a fresh working and state directory per trial, identical task prompts and acceptance
+scripts, and the same `teamagents jobs-runner` behind the shell.
 
-## 3. 冻结参数
+## 3. Frozen parameters
 
-| 项 | 值 | 来源 |
+| Item | Value | Source |
 |---|---|---|
-| 模型目录键 | `leader_main`（wire `deepseek-flash`） | `~/.config/teamagents/config.toml` |
-| 原生上下文窗口 | 1,000,000 | D-36（用户确认；不得缩小） |
-| 生成选项 | `reasoning_effort = high`（显式覆盖目录默认 max） | 本预登记；max 简单回合≈240s，试跑期用 high 控制成本/时长 |
-| per-trial 超时 | 900 s | 本预登记 |
-| A 组步数上限 | `max_steps = 40` | 本预登记 |
-| 重复数 | 试跑 1 次/（任务×组）；正式 **3** 次/（任务×组） | §13.2：正式重复数按试跑方差与可分辨性定；本预登记采用 3，并在报告中说明其局限 |
-| 工作目录 | 每 trial 新建，fixture 复制进去 | §13.2 |
-| 验收 | trial 结束后在**同一工作目录**按 `checks.txt` 逐条 `sh -c` 执行，全部退出 0 记为成功 | §13.1「同一真实目标环境」 |
+| Catalog key | `leader_main` (wire `deepseek-flash`) | `~/.config/teamagents/config.toml` |
+| Native context window | 1,000,000 | D-36 (user-confirmed; never shrunk) |
+| Generation options | `reasoning_effort = high` (explicit override of the catalog default max) | this pre-registration; max takes ~240s on a simple turn, so high bounds cost and duration during the pilot |
+| Per-trial timeout | 900 s | this pre-registration |
+| Group A step limit | `max_steps = 40` | this pre-registration |
+| Repeats | pilot: 1 per (task × group); formal: **3** per (task × group) | 13.2: the formal repeat count follows pilot variance and resolvability; this pre-registration uses 3 and states that limit in the report |
+| Working directory | new per trial, fixture copied in | 13.2 |
+| Acceptance | after the trial, each line of `checks.txt` runs in the **same** working directory; all exit codes 0 means success | 13.1 "the same real target environment" |
 
-## 3b. 试跑结果与正式集冻结（2026-09-24，先于正式运行）
+## 3b. Pilot outcome and the frozen formal set (2026-09-24, before the formal runs)
 
-试跑（6 题 × 3 组 × 1 次 = 18 trial）全部按预登记口径完成、**18/18 验收通过**：合计 326,062 真实 tokens、
-约 15 分钟（每 trial 6–25 s）。结论：① 成本与时长完全可负担（正式 3 次重复 ≈ 1.0M tokens 量级）；
-② 该 6 题在 1 次下**无成功方差**（天花板效应），按预登记口径不可能分辨 H2 的收益。
-因此**在跑正式批次之前**把正式集扩展为 8 题（新增下面两项更长的任务，属 §13.2 允许的「按试跑确定正式集」
-而非事后挑题），重复数固定 3；原 6 题不变，H1/H2 口径不变。正式批次 = 8 题 × 3 组 × 3 次 = 72 trial。
+The pilot (6 tasks × 3 groups × 1 repeat = 18 trials) finished under the pre-registered criteria with
+**18/18 acceptances**: 326,062 real tokens in about 15 minutes (6–25 s per trial). Conclusion: (1) cost and
+duration are comfortably affordable (the formal three repeats are on the order of 1.0M tokens); (2) those 6
+tasks show **no success variance** at one repeat (a ceiling effect), so H2's gain cannot be resolved under the
+pre-registered criteria. Therefore **before running the formal batches** the formal set was extended to 8
+tasks (two longer tasks added), which 13.2 allows as "fixing the formal set from the pilot", keeping the
+repeat count at 3 and the original 6 tasks unchanged with H1/H2 criteria unchanged. The formal batch is
+8 tasks × 3 groups × 3 repeats = 72 trials.
 
-## 4. 任务集（试跑 6 项 + 正式扩展 2 项，冻结）
+## 4. Task set (6 pilot tasks plus 2 formal additions, frozen)
 
-| ID | 覆盖属性 | 说明 |
+| ID | Property covered | Description |
 |---|---|---|
-| `edit-integrity` | 精确编辑、语义验收 | 只改 `[staging]` 段的 retries，其他段保持不变 |
-| `long-output` | 长命令输出、诚实性 | 在巨大输出里找 TOKEN 并写 `answer.txt` |
-| `multi-step` | 多步独立修复 | `alpha`/`beta` 两个独立 bug，各自 check 通过 |
-| `service-check` | 环境/服务、后台进程 | 起 HTTP 服务→真实 curl 验证→写响应体→停止服务 |
-| `split-deliverable` | 可分工（C 的处理） | 两个互不依赖的交付物 + 一行说明 |
-| `rust-fix` | 语义验收（真实测试套件） | 失败 `cargo test` 的实现修复，不许改测试 |
-| `long-horizon` | 长程、多文件、语义验收 | 实现 `tools/` 包使冻结的 `tests/run_tests.py` 通过（测试文件哈希受校验） |
-| `parallel-deliverables` | 可分工（重）、两个独立验收 | 修 `csvfix/` 实现 + 实现 `rules/` 引擎，各自 pytest 通过、测试文件哈希受校验 |
+| `edit-integrity` | precise editing, semantic acceptance | change `retries` in the `[staging]` section only, leave every other section untouched |
+| `long-output` | long command output, honesty | find a TOKEN inside a huge output and write `answer.txt` |
+| `multi-step` | independent multi-step repair | two independent bugs in `alpha`/`beta`, each with its own check |
+| `service-check` | environment/services, background processes | start an HTTP service, verify it with real curl, write the response body, stop the service |
+| `split-deliverable` | splittable work (the C treatment) | two independent deliverables plus a one-line note |
+| `rust-fix` | semantic acceptance (a real test suite) | fix the implementation behind a failing `cargo test` without touching the tests |
+| `long-horizon` | long-horizon, multi-file, semantic acceptance | implement the `tools/` package so the frozen `tests/run_tests.py` passes (test hashes are verified) |
+| `parallel-deliverables` | splittable (heavy), two independent acceptances | fix the `csvfix/` implementation and implement the `rules/` engine, each with pytest passing and test hashes verified |
 
-任务属性、prompt/checks/fixture 的 sha256 记入 `manifest.json`，跑前冻结。
+Task properties and the sha256 of prompt/checks/fixture are recorded in `manifest.json` and frozen before the
+run.
 
-## 5. 分析（冻结）
+## 5. Analysis (frozen)
 
-1. 逐 trial 记录：组、任务、重复序号、状态（A：completed/reply/failed；B/C：goal 状态/idle reply/timeout）、
-   `checks_ok`、真实 tokens、墙钟、失败分类。
-2. 逐任务 × 组：成功数/重复数；真实 tokens 均值。
-3. 配对：对每个任务取同一次重复的两组配对，计算成功差与 tokens 差；跨任务聚合取均值。
-4. 区间：**10,000 次 bootstrap 重采样**（对任务层面配对差重采样，seed = 20260924），报告 95% 区间。
-5. 判定：按第 1 节口径给出 H1/H2 结论；任何区间含 0 或样本不足 → 「未证实」。
-6. 失败必须分类报告（超时/模型错误/验收失败/基础设施），不挑拣、不择优重跑；探索性额外运行
-   单独列出，不并入正式结果。
+1. Record per trial: group, task, repeat index, status (A: completed/reply/failed; B/C: goal status/idle
+   reply/timeout), `checks_ok`, real tokens, wall clock, failure class.
+2. Per task × group: successes/repeats and the mean real tokens.
+3. Pairs: for every task take the two groups' results at the same repeat and compute the success and token
+   differences; aggregate across tasks by the mean.
+4. Interval: **10,000 bootstrap resamples** over the per-task paired differences (seed = 20260924), reported
+   as a 95% interval.
+5. Decision: apply the criteria from section 1 for H1/H2; any interval containing 0 or too few samples means
+   "not confirmed".
+6. Failures are always classified (timeout / model error / acceptance failure / infrastructure); nothing is
+   cherry-picked or re-run to look better, and exploratory extra runs are listed separately, never merged
+   into the formal result.
 
-## 6. 预算
+## 6. Budget
 
-先跑试跑（6×3×1 = 18 trial），据实测 tokens/耗时外推正式（54 trial）的成本与时长并记录在案；
-超预算或超时按 trial 记录失败，不跳过、不改口径。
+Run the pilot first (6×3×1 = 18 trials), extrapolate the formal cost and duration from the measured tokens
+and wall clock, and record both; over budget or over time is recorded as a failed trial — the criteria are
+never adjusted to fit.
 
-## 7. 报告
+## 7. Report
 
-`review/eval/r2-p6/runs/<日期>/`（原始 JSONL + 每 trial 结果）、`REPORT.md`（表 + 配对分析 + 结论 +
-复跑命令）、并同步 `docs/ACCEPTANCE.md` 的 P6 段。真实与假服务结果分列；未运行的项目不得写入结论。
+`review/eval/r2-p6/runs/<date>/` (raw JSONL plus per-trial results) and `REPORT.md` (tables, paired analysis,
+conclusions, re-run commands), mirrored into the P6 section of `docs/ACCEPTANCE.md`. Real and fake-service
+results are kept apart, and nothing that was not run goes into the conclusions.

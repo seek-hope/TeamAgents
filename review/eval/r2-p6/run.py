@@ -4,8 +4,9 @@
     python3 review/eval/r2-p6/run.py --phase pilot  --out review/eval/r2-p6/runs/2026-09-24-pilot
     python3 review/eval/r2-p6/run.py --phase formal --out review/eval/r2-p6/runs/2026-09-24-formal
 
-每个 trial：全新 workdir（复制 fixture）→ `eval_groups_abc --group G ...` → 在同一 workdir 按 checks.txt
-逐条 `sh -c` 验收 → 结果追加到 `results.jsonl`。失败分类记录，不重试、不择优。
+Per trial: a fresh workdir (fixture copied in) -> `eval_groups_abc --group G ...` -> each line of
+checks.txt run with `sh -c` in that same workdir -> the result appended to `results.jsonl`. Failures are
+classified and recorded; nothing is retried and nothing is cherry-picked.
 """
 import argparse, hashlib, json, os, pathlib, shutil, subprocess, sys, time
 
@@ -58,7 +59,7 @@ def main() -> int:
                 completed.add((record["task"], record["group"], record["repeat"]))
         print(f"resume: {len(completed)} trial(s) already recorded", flush=True)
     if results_path.exists() and args.phase == "formal" and not args.resume:
-        print("formal 结果已存在；换一个新目录，或用 --resume 续跑同一批次", file=sys.stderr)
+        print("formal results already exist; use a new directory, or --resume to continue this batch", file=sys.stderr)
         return 2
     header = {
         "phase": args.phase, "repeats": repeats, "groups": groups,

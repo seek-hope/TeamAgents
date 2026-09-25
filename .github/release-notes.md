@@ -1,16 +1,26 @@
-### 本版变化
+### What is in this release
 
-- 自动下载、SHA-256 校验及成对安装；支持指定版本、自定义目录、离线安装与失败回滚。
-- 新增 `teamagents init`，内置最小配置模板，保留已有配置，密钥仍从环境变量读取。
-- 修复 `doctor` 对缺配置、不可读配置、空密钥的漏报；缺少可选 Codex 不再使自检失败。
-- Worker 在任务前收到固定的 TeamAgents 环境说明；Codex 成员通过 developerInstructions 获得对应规则与成员指令。
-- 补齐安装文档、发行包安装冒烟，以及初始化失败回收测试的时序修复。
+- The single authoritative state: one SQLite database per session (WAL with `synchronous=FULL`); instances,
+  tasks, grants, budgets, approvals, receipts and events commit in one transaction, and crash recovery is
+  classified by persisted location instead of replaying side effects on a guess.
+- One daemon owns the session; the TUI and `teamagents exec` are thin clients of its Unix-socket JSON
+  protocol and reconnect from the last event watermark.
+- Governed collaboration: `spawn` / `delegate` / `send` / `wait` are authorized by the control plane and
+  re-checked at dispatch, with workspace policies (shared, isolated, own Git worktree) and retirement when an
+  instance terminates.
+- Mixed providers: instances speaking chat-completions, Responses or Anthropic can share one session, each
+  with its own model, effort and native context window.
+- User hooks: `[hooks] notify` forwards events to your own program and `pre_tool` can veto a tool call before
+  it runs.
+- Installer, `teamagents init`, `doctor` and `exec` as documented in the [install guide](https://github.com/seek-hope/TeamAgents/blob/main/docs/INSTALL.md).
 
-本轮本地回归：core 63、engine 222、TUI 91 项通过；真实模型兼容性验收范围未扩大。
+Local regression for this release: `make check` green (core 91 / engine 136 / tui 29) plus `make pty`;
+real-model acceptance is reported separately in [docs/ACCEPTANCE.md](https://github.com/seek-hope/TeamAgents/blob/main/docs/ACCEPTANCE.md).
 
-### 安装与开始使用
+### Install and first run
 
-仓库和发行包已公开，无需 GitHub 登录。推荐使用自动安装程序：
+The repository and its release archives are public, so no GitHub login is needed. The installer is the
+recommended path:
 
 ```bash
 (
@@ -22,23 +32,25 @@
 )
 export PATH="$HOME/.local/bin:$PATH"
 teamagents init
-export DEEPSEEK_API_KEY='你的模型密钥'
+export DEEPSEEK_API_KEY='your key'
 teamagents doctor
 teamagents
 ```
 
-安装器自动下载最新版、校验 SHA-256，并安装两个程序；重复执行可升级，已有配置与会话保留。
-将 `export PATH="$HOME/.local/bin:$PATH"` 加入 `~/.bashrc` 或 `~/.zshrc`，以后打开终端也能直接使用。
+It downloads the latest release, verifies SHA-256 and installs both programs; running it again upgrades them
+and keeps the existing config and sessions. Add `export PATH="$HOME/.local/bin:$PATH"` to `~/.bashrc` or
+`~/.zshrc` so later terminals find them.
 
-也可从本页 Assets 下载 `install.sh`、发行包和 `SHA256SUMS`，在同一目录执行
-`sh install.sh --archive ./teamagents-VERSION-x86_64-unknown-linux-musl.tar.gz`（VERSION 换成本页版本）。
-指定版本或目录使用 `--version VERSION` / `--bin-dir DIR`。
+You can also download `install.sh`, the archive and `SHA256SUMS` from the Assets section of this page and run
+`sh install.sh --archive ./teamagents-VERSION-x86_64-unknown-linux-musl.tar.gz` (replace VERSION). Use
+`--version VERSION` or `--bin-dir DIR` to pin a version or a directory.
 
-### 运行要求
+### Requirements
 
-- Linux x86_64；发行包为 musl 静态链接，无需 Rust 工具链。
-- Shell 隔离需要 `bubblewrap`：Debian/Ubuntu 用 `sudo apt install bubblewrap`。
-- `init` 创建内置最小配置，不写入密钥、不覆盖已有文件；默认使用 DeepSeek Flash，其他服务可编辑 TOML。
-- Codex CLI 仅在使用 Codex 执行成员时需要；`doctor` 将可选能力问题标为 WARN。
+- Linux x86_64; the archives are statically linked against musl, so no Rust toolchain is needed.
+- Shell isolation needs `bubblewrap`: on Debian/Ubuntu use `sudo apt install bubblewrap`.
+- `init` writes a minimal config, never a credential and never over an existing file; the default model is
+  DeepSeek Flash and other services are configured by editing the TOML.
 
-完整安装、升级与故障处理见 [安装指南](https://github.com/seek-hope/TeamAgents/blob/main/docs/INSTALL.md)。
+Full install, upgrade and troubleshooting notes are in the
+[install guide](https://github.com/seek-hope/TeamAgents/blob/main/docs/INSTALL.md).
