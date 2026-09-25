@@ -366,3 +366,20 @@ the model's write is in the conversation, and no goal is ever reported `SUCCEEDE
 with the goal `BLOCKED` and the reason `required checks failed (bound:stale_inputs) after 3 round(s)`.
 Measured 2026-09-26: deepseek exit 1 / 19.7 s / 3 rounds / 12 requests; kimi exit 1 / 56.6 s / 3 rounds /
 9 requests (D-90).
+
+
+## `job_identity.py`: the running job's identity, and its one-start rule
+
+Two claims live in the runner's journal and neither had a live witness:
+
+```bash
+python3 review/dogfood/job_identity.py
+```
+
+While the member's command runs, the probe reads
+`<state root>/instances/<id>/jobs/<operation>/journal.json` and **re-derives** the recorded identity itself —
+`start_ticks` is field 22 of `/proc/<pid>/stat`, `boot_id` is `/proc/sys/kernel/random/boot_id` — so the check
+compares the runner's record with the machine (A15). It then asks the runner over the socket name the *token*
+derives (§6.2) and requires agreement, sends a **duplicate GO** and requires `starts` to stay at 1 with the
+same pid (A10), and connects with a *guessed* token, which must be refused. Measured 2026-09-26, two runs: all
+four hold, and a guessed token gets `ConnectionRefusedError`.

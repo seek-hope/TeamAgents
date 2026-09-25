@@ -231,6 +231,40 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-91 The running job's identity, and its one-start rule, checked against the machine (2026-09-26)
+
+A15 and A10 both rested on offline tests (`jobs_runner`) plus code reading: the runner persists the child's
+pid, its `/proc/<pid>/stat` start ticks and the machine's boot id "because pid alone never proves identity"
+(§6.2), and GO is idempotent "so a duplicate GO starts exactly one command" (A10). Neither had been checked
+against a real running command on a real machine. `review/dogfood/job_identity.py` does that: the Leader
+hires a worker, the user grants it `shell@workspace` and sends it a command that loops forever, and while the
+job is `RUNNING` the probe
+
+- reads `<state root>/instances/<id>/jobs/<operation>/journal.json` and **re-derives** `start_ticks` (field 22
+  of `/proc/<pid>/stat`) and `boot_id` (`/proc/sys/kernel/random/boot_id`) itself, so the comparison is
+  between the runner's record and the machine rather than the record with itself;
+- asks the runner over the socket name the *token* derives (§6.2) and requires its own view of the identity
+  to agree with the journal;
+- sends a **duplicate GO** over the same socket and requires the reply to carry `starts: 1` and the same pid;
+- connects with a *guessed* token-derived name and requires the connection to be refused.
+
+Measured 2026-09-26 (DeepSeek Flash, `--full-auto`, two runs): the journal's `start_ticks` matched
+`/proc/<pid>/stat` exactly, the recorded boot id matched the machine, the runner agreed with its own journal
+over the token socket, the duplicate GO left `starts` at 1 with the pid unchanged, and a guessed token got
+`ConnectionRefusedError` (the abstract socket name is a hash of the secret, so a guess cannot even reach the
+listener).
+
+Evidence: `python3 review/dogfood/job_identity.py` (two runs), plus the offline layers it does not repeat —
+`jobs_runner::duplicate_go_starts_exactly_one_command`, `cancel_before_start_persists_and_rejects_late_go`,
+`cancel_running_stops_the_process_group`, and the identity re-check in `jobs::signal_group` (which refuses to
+signal when `boot_id` or `start_ticks` no longer match).
+
+Ceiling: the probe finds the job by walking the state root, so it observes identity while the command is
+still running; a job that ends before the probe looks (a model that passes its own `timeout` to the shell
+tool, which one run did before the instruction forbade it) is reported as such instead of being skipped. The
+recycled-pid case — a *different* process holding the recorded pid — is the one the identity check exists
+for, and it is not producible on demand; the offline suite covers the refusal path.
+
 ## D-90 The completion gate is not the check's exit code, measured live (2026-09-26)
 
 A17's evidence was one driver test with a scripted provider plus a config test. The claim is subtler than
