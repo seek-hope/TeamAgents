@@ -194,6 +194,24 @@ observed live rather than only in `guard_url_blocks_private_targets`). Measured 
 (turn 1); kimi 7.9 s with the same refusal. `web_search` still needs a provider credential this machine does
 not have, so its evidence stays the unit tests.
 
+## `crash.py`: a daemon crash replays nothing
+
+`crash.py` kills the daemon while a shell command is in flight and then starts the session again:
+
+```bash
+python3 review/dogfood/crash.py                    # DeepSeek
+python3 review/dogfood/crash.py --provider kimi    # over `responses`
+```
+
+The prompt asks for a command whose only trace is a counter (`echo run >> runs.log; sleep 20`), then for a
+file, then for a finish. The probe waits for the instance to reach `TOOLS_PENDING` (the command really in
+flight), kills the daemon (the client exits 2, which is expected), lets the *runner* — a separate process,
+A12 — finish the job, and resumes the session. It asserts the core claim with a model in the loop: the
+command ran **exactly once** across the crash (`runs.log` holds one line, so the receipt was consumed, not
+replayed), the file exists, and the resumed session settles coherently instead of timing out. Measured
+(2026-09-26): deepseek and kimi both `end=completed`, goal `SUCCEEDED`, `input_queued=true` (the resume waited
+behind the recovered turn), one line in `runs.log`.
+
 ## `checks.py`: the completion gate with a real model
 
 `checks.py` configures one `[[checks]]` entry that can never pass (`test -f never-written`), asks a real
