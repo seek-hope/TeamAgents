@@ -299,6 +299,20 @@ pub fn doctor(state_root: Option<PathBuf>) -> i32 {
         // at the first call, so a typo or an unset credential otherwise shows up only
         // in a tool receipt. Name each declared binding and whether its credential is
         // there; a binding the session could never offer is a FAIL.
+        // A config that declares none is worth a row of its own: the README advertises
+        // "web search and fetch", and without a `[tools.*]` entry the model is offered
+        // neither, which a fresh session would otherwise never say (D-79).
+        if !catalog.tools.values().any(|binding| matches!(binding.kind.as_str(), "web_search" | "web_fetch")) {
+            optional_check(
+                &mut results,
+                "web tools",
+                false,
+                "none configured: the model is offered neither web_search nor web_fetch. Fetching needs no \
+                 credential ([tools.fetch] with kind = \"web_fetch\"); web_search also wants \
+                 provider/url/api_key_env"
+                    .into(),
+            );
+        }
         for (name, binding) in &catalog.tools {
             if !matches!(binding.kind.as_str(), "web_search" | "web_fetch") {
                 continue;

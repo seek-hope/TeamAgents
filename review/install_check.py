@@ -144,11 +144,11 @@ def main() -> int:
         help_text = help_out.stdout + help_out.stderr
         # a usage line, on whichever stream the release chose (the current tree prints
         # `--help` to stdout and a *usage error* to stderr)
-        # the release of the day used a full-width colon; accept either usage marker
-        if help_out.returncode != 0 or not any(
-            line.startswith(("usage:", "用法")) for line in help_text.splitlines()
-        ):
-            failures.append("the installed binary does not print its usage")
+        # A usage/help screen either way: the current tree prints an English `usage:` line,
+        # while the published release's help is not in English at all (see the gap below), so
+        # this looks for the entry-point list a help screen must carry instead of the word.
+        if help_out.returncode != 0 or "teamagents" not in help_text or "--help" not in help_text:
+            failures.append("the installed binary does not print its help")
         # the TUI must refuse a session-less start instead of pretending
         tui = subprocess.run([str(bin_dir / "teamagents-tui")], capture_output=True, text=True)
         if tui.returncode == 0:

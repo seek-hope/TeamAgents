@@ -149,6 +149,14 @@ fn doctor_probes_isolation_and_config_errors() {
     assert!(with_key.contains("[ok  ] tools.search"), "{with_key}");
     assert!(with_key.contains("credential TA_DOCTOR_WEB_KEY is set"), "{with_key}");
 
+    // D-79: a config that declares no web binding at all says so too — the model is then
+    // offered neither web_search nor web_fetch, which the README's feature list would
+    // otherwise imply is there by default
+    std::fs::write(config.join("config.toml"), "[models.m]\nprovider=\"openai\"\nmodel=\"x\"\n").unwrap();
+    let without_web = run(&home.join("state"));
+    assert!(without_web.contains("[WARN] web tools"), "{without_web}");
+    assert!(without_web.contains("offered neither web_search nor web_fetch"), "{without_web}");
+
     // a wrong type in [permissions] is an error, not a silent default
     std::fs::write(config.join("config.toml"), "[permissions]\ntrust_project_tools = \"yes\"\n").unwrap();
     let broken = run(&home.join("state"));

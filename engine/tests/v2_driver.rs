@@ -1360,7 +1360,13 @@ async fn long_context_compacts_before_the_turn_and_survives_a_restart() {
         )
         .expect("readback result");
     assert!(text.contains("stored-evidence"), "{text}");
-    // and the originals stay in the epoch for the user-facing history (A05)
+    handle.shutdown().await.expect("shutdown");
+    // and the originals stay in the epoch for the user-facing history (A05). This
+    // direct `Control` write happens *after* the driver stopped: it is a test-only
+    // second writer, and two writers racing one SQLite file can lose the writer race
+    // under a loaded suite ("database is locked") — the product's own writers
+    // serialize through the daemon's single-writer worker (§4.1), which is what the
+    // live-session reads elsewhere in this suite exercise.
     let history = control
         .submit(cmd("rh", "read_history", json!({"instance_id": "i-main"})), teamagents_core::v2::Identity::User)
         .expect("history");
@@ -1371,7 +1377,6 @@ async fn long_context_compacts_before_the_turn_and_survives_a_restart() {
             .any(|entry| entry["message"]["content"].as_str().unwrap_or("").contains("the long specification")),
         "the covered original must remain readable"
     );
-    handle.shutdown().await.expect("shutdown");
 
     // restart over the same session: the compacted view is the persisted state
     let (restarted, restarted_log) = recording(vec![Step::Message(reply("third answer"))]);

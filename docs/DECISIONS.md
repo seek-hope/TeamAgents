@@ -231,6 +231,42 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-79 The web tools say when they are absent, and their guard holds live (2026-09-26)
+
+Verifying the last "basic tool" without live evidence turned up a small reporting gap of a familiar shape.
+`web_fetch` and `web_search` are offered only when the config *declares* a binding — that part is the design
+(§12.1: binding is the authorization, and D-74/D-78 kept to it) — but a config that declares none produced no
+`doctor` row at all, so a fresh session gave the model neither tool while the README's feature list says "web
+search and fetch". The user had no surface that said the capability was missing.
+
+**The fix is one row**: `doctor` now warns when no web binding is declared, names the credential-free half
+(`[tools.fetch]` with `kind = "web_fetch"` needs no API key) and what `web_search` additionally wants
+(`provider`/`url`/`api_key_env`).
+
+**And the tools now have live evidence**, which is what the check was for: `review/dogfood/web.py` runs two
+turns in one session with a `[tools.fetch]` binding —
+
+- the model fetches `https://example.com` and the page's **body** (not a snippet) reaches the conversation
+  (`web_fetch` receipt carrying `Example Domain`), ending `completed`/`reply` with exit 0;
+- the model is then asked to fetch `http://127.0.0.1:9/` and to report the tool's answer verbatim: the
+  runtime refuses it (`{"error":"refusing private address for 127.0.0.1"}`), which is the SSRF guard
+  (`tools::guard_url`) doing its job live — before, only `guard_url_blocks_private_targets` said so.
+
+Measured 2026-09-26: deepseek 3.6 s (turn 1) with the guard refusing in turn 2; kimi 7.9 s (`reply="The
+page's title is: **Example Domain**"`) with the same refusal.
+
+Ceiling: `web_search` still has no live evidence here — it needs a search provider credential this machine
+does not have, so its coverage remains the unit tests (`web_shapes_are_stable_and_bindings_are_required`, the
+provider check in `web_tools`) plus `doctor`'s new rows. The fetch caps (2 MB, HTML only, readable text) are
+documented and unit-tested, not verified against a hostile page.
+
+**Side note from the same gate run**: `make check` failed once with
+`v2_driver::long_context_compacts_before_the_turn_and_survives_a_restart` → `history: "command receipt:
+database is locked"`. The test's own `Control` connection *wrote* (a command receipt) while the driver it had
+started was writing — a test-only second writer. The product serializes its writers through the daemon's
+single-writer worker (§4.1), and a second process cannot boot a second coordinator at all (A33). The direct
+read now happens after that driver stops, with the reason in a comment; the same run is green.
+
 ## D-78 The declared tool surface is reported, and removed surfaces leave nothing behind (2026-09-26)
 
 The `pub fn`-with-no-caller sweep (D-74 ... D-77) came back to `engine` and found four things, one of which was

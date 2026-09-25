@@ -177,6 +177,23 @@ token), and the instructions are followed (the file the skill asks for exists wi
 (2026-09-25/26): deepseek 5.9 s, kimi 17.4 s, both goals `SUCCEEDED` — and in the deepseek run the model
 verified its own work with a shell `cat`, which is the skill's third step.
 
+## `web.py`: the bound web tools work and their guard holds
+
+`web.py` runs two turns in one session with a `[tools.fetch]` binding (the credential-free half of the web
+tools): the model fetches `https://example.com` and reports the page's title, then it is asked to fetch a
+private address and to report the tool's answer verbatim.
+
+```bash
+python3 review/dogfood/web.py
+```
+
+It needs `DEEPSEEK_API_KEY` (or `--provider kimi`), network access for `example.com`, and asserts: the fetched
+page's **body** reaches the conversation (a `web_fetch` receipt carrying `Example Domain`), and the private
+address is refused by the runtime (`{"error":"refusing private address for 127.0.0.1"}` — the SSRF guard,
+observed live rather than only in `guard_url_blocks_private_targets`). Measured (2026-09-26): deepseek 3.6 s
+(turn 1); kimi 7.9 s with the same refusal. `web_search` still needs a provider credential this machine does
+not have, so its evidence stays the unit tests.
+
 ## `checks.py`: the completion gate with a real model
 
 `checks.py` configures one `[[checks]]` entry that can never pass (`test -f never-written`), asks a real
