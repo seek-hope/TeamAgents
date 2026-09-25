@@ -293,6 +293,10 @@ agent worked in the wrong tree.
 - The greeting's fields live in one `SessionFacts` struct threaded through the accept loop, instead of a
   parameter list that had already grown once (D-55).
 
+The pre-fix run also left the edited fixture (`app.ini` with `retries = 5`) in the **repository root**: the
+file it was asked to edit, written into the tree the session had actually been given. (The stray file was
+removed once recorded.)
+
 Evidence: `cli::cwd_reaches_a_started_daemon_and_is_reported_against_a_live_one` — the daemon reports the
 requested directory, the instance's `workspace_ref` (the root the tools use) is exactly that directory, and a
 second client with another `--cwd` is told the live one; without the forwarding the test fails showing the
