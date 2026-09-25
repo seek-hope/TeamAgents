@@ -37,6 +37,9 @@ evaluation drivers and the real-terminal driver. None of them is part of `make c
 pick a **fresh evidence directory** and record results and limits in a dated report:
 
 ```bash
+# dogfooding: the built CLI on this repository's own fixtures, with each fixture's
+# checks.txt as a user-defined completion check, and the artifact verified by hand
+python3 review/dogfood/run.py --task edit-integrity   # needs the model credential
 # failure probes: SQLite/artifact atomic boundaries, runner and daemon crash recovery, storage-full stop, I/O cancel
 cargo build --offline --locked --manifest-path engine/Cargo.toml --example probe
 cargo build --offline --locked --manifest-path tui/Cargo.toml --example probe

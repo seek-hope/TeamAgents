@@ -9,6 +9,7 @@ tests are recorded separately from evidence.
 | `eval/r2-p6/runs/` | the raw JSONL, grading logs and per-trial state left by each run (the **only** source of the conclusions) |
 | [`dsec-kernel-reference-2026-09-24.md`](dsec-kernel-reference-2026-09-24.md) | notes comparing an external sandbox platform with this kernel design |
 | [`fix-notes-verification-2026-09-24.md`](fix-notes-verification-2026-09-24.md) | ledger of the issues formal verification found and their fixes (see `verification/REPORT.md`) |
+| [`dogfood/`](dogfood/README.md) | run the built CLI on this repository's own fixtures with their acceptance commands as completion checks (real model, not part of `make check`) |
 | `tmp/` | ignored probe and scratch area (never committed) |
 
 Reviews from earlier implementations and their migration are no longer in the tree; they stay reachable
