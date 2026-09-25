@@ -162,7 +162,7 @@ the `--json` report as `verification`.
 
 | Usage | Meaning |
 |---|---|
-| `--cwd DIR` | work in DIR (default: the current directory) |
+| `--cwd DIR` | work in DIR (default: the current directory); it applies to the session this command starts — a running session keeps its own workspace, and the client prints that one instead of working somewhere else |
 | `--state-root PATH` | use a specific state root (default `$XDG_STATE_HOME/teamagents/v2`) |
 | `--model KEY` | pick a model catalog entry (default `leader_main`) |
 | `--full-auto` | user-only full-auto mode (out-of-scope work is approved instead of requested); it applies to the session this command starts — a session that is already running keeps the mode it booted with, and the client prints that mode instead of pretending |

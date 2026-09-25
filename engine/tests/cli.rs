@@ -439,3 +439,97 @@ fn full_auto_reaches_a_started_daemon_and_is_reported_against_a_live_one() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// `--cwd` used to be dropped when a client started the daemon, so the session
+/// (and every instance in it) worked in whatever directory the client happened
+/// to be started from — a dogfooding run spent sixty turns exploring the wrong
+/// tree before it found the intended one (D-57). The flag now reaches the
+/// daemon, and the instance's recorded workspace proves where the tools work.
+#[test]
+fn cwd_reaches_a_started_daemon_and_is_reported_against_a_live_one() {
+    fn greeting(socket: &std::path::Path) -> serde_json::Value {
+        use std::io::{BufRead, BufReader};
+        let stream = std::os::unix::net::UnixStream::connect(socket).expect("connect");
+        let mut line = String::new();
+        BufReader::new(stream).read_line(&mut line).expect("greeting");
+        serde_json::from_str(&line).expect("greeting JSON")
+    }
+    let root = std::env::temp_dir().join(format!("ta-cwd-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let (config_home, state, first, second) =
+        (root.join("config"), root.join("root"), root.join("one"), root.join("two"));
+    std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
+    for dir in [&first, &second] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    std::fs::write(
+        config_home.join("teamagents/config.toml"),
+        "[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\n\
+         api_key_env = \"TA_CWD_KEY\"\nbase_url = \"http://127.0.0.1:1/v1\"\n",
+    )
+    .unwrap();
+    let env = |command: &mut Command| {
+        command
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("XDG_STATE_HOME", root.join("state"))
+            .env("TA_CWD_KEY", "test-value");
+    };
+
+    let mut exec = Command::new(env!("CARGO_BIN_EXE_teamagents"));
+    env(&mut exec);
+    exec.args(["exec", "--state-root"])
+        .arg(&state)
+        .args(["--cwd"])
+        .arg(&first)
+        .args(["--timeout", "5", "hello"])
+        .output()
+        .expect("run exec");
+    let socket = state.join("daemon.sock");
+    let live = greeting(&socket);
+    assert_eq!(live["workspace"], first.canonicalize().unwrap().to_string_lossy().as_ref(), "{live}");
+    // the instance the daemon drives works in exactly that directory
+    let db = state.join("session.sqlite");
+    let mut stored = String::new();
+    for _ in 0..200 {
+        if let Ok(control) = teamagents_core::v2::Control::open(&db, "test", false) {
+            if let Ok(value) =
+                control
+                    .connection()
+                    .query_row("SELECT workspace_ref FROM instances LIMIT 1", [], |row| row.get::<_, String>(0))
+            {
+                stored = value;
+                break;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert_eq!(stored, first.to_string_lossy(), "the tools' workspace is the requested one");
+
+    // a running session keeps its workspace: the client says so instead of
+    // silently working somewhere else
+    let mut again = Command::new(env!("CARGO_BIN_EXE_teamagents"));
+    env(&mut again);
+    let output = again
+        .args(["exec", "--state-root"])
+        .arg(&state)
+        .args(["--cwd"])
+        .arg(&second)
+        .args(["--timeout", "5", "hello"])
+        .output()
+        .expect("run exec again");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("works in") && stderr.contains("--cwd") && stderr.contains(second.to_str().unwrap()),
+        "the note names the live workspace and the ignored flag: {stderr}"
+    );
+
+    let _ = Command::new("pkill").args(["-f", &format!("daemon --state-root {}", state.display())]).status();
+    for _ in 0..100 {
+        if std::os::unix::net::UnixStream::connect(&socket).is_err() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(std::os::unix::net::UnixStream::connect(&socket).is_err(), "the daemon must stop");
+    let _ = std::fs::remove_dir_all(&root);
+}

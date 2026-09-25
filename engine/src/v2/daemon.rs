@@ -56,7 +56,12 @@ where
     let session_db = config.supervisor.session_db.clone();
     let session_id = config.supervisor.session_id.clone();
     let state_root = config.supervisor.state_root.clone();
-    let permissions = config.supervisor.permissions.clone();
+    let facts = Arc::new(SessionFacts {
+        session_id: session_id.clone(),
+        state_root: state_root.to_string_lossy().into_owned(),
+        workspace: config.supervisor.workspace.to_string_lossy().into_owned(),
+        permissions: config.supervisor.permissions.clone(),
+    });
     let supervisor = Arc::new(super::supervisor::start(config.supervisor).await?);
     if let Some(parent) = config.socket.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("socket dir: {e}"))?;
@@ -81,8 +86,7 @@ where
         let supervisor = supervisor.clone();
         let socket = config.socket.clone();
         tokio::spawn(async move {
-            let result =
-                accept_loop(listener, supervisor, session_db, session_id, state_root, permissions, shutdown).await;
+            let result = accept_loop(listener, supervisor, session_db, facts, shutdown).await;
             let _ = std::fs::remove_file(&socket);
             result
         })
@@ -90,13 +94,24 @@ where
     Ok(DaemonHandle { shutdown, supervisor, task })
 }
 
+/// Facts every client is told in the greeting: the session id, its state root,
+/// and the two settings that are fixed for the session's lifetime (the
+/// workspace it runs in and the permission mode it booted with, D-41/D-57). A
+/// client that joins a running session learns the truth here instead of
+/// assuming the settings it asked for took effect.
+#[derive(Clone)]
+struct SessionFacts {
+    session_id: String,
+    state_root: String,
+    workspace: String,
+    permissions: String,
+}
+
 async fn accept_loop(
     listener: tokio::net::UnixListener,
     supervisor: Arc<SupervisorHandle>,
     session_db: PathBuf,
-    session_id: String,
-    state_root: PathBuf,
-    permissions: String,
+    facts: Arc<SessionFacts>,
     shutdown: Arc<AtomicBool>,
 ) -> Result<(), String> {
     loop {
@@ -111,12 +126,9 @@ async fn accept_loop(
             Ok(pair) => pair,
             Err(e) => return Err(format!("accept: {e}")),
         };
-        let (supervisor, session_db, session_id, state_root, permissions) =
-            (supervisor.clone(), session_db.clone(), session_id.clone(), state_root.clone(), permissions.clone());
+        let (supervisor, session_db, facts) = (supervisor.clone(), session_db.clone(), facts.clone());
         tokio::spawn(async move {
-            if let Err(error) =
-                serve_client(stream, supervisor, &session_db, &session_id, &state_root, &permissions).await
-            {
+            if let Err(error) = serve_client(stream, supervisor, &session_db, &facts).await {
                 eprintln!("daemon client: {error}");
             }
         });
@@ -127,21 +139,15 @@ async fn serve_client(
     stream: tokio::net::UnixStream,
     supervisor: Arc<SupervisorHandle>,
     session_db: &Path,
-    session_id: &str,
-    state_root: &Path,
-    permission_mode: &str,
+    facts: &SessionFacts,
 ) -> Result<(), String> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
     let (read, mut write) = stream.into_split();
     // greeting first: version, session and state root let the client refuse
     // an old server, a different root or an incompatible build (§9)
-    // `permissions` is the mode this session was started with (D-41): the
-    // clients report it instead of guessing, because the mode is fixed when the
-    // daemon starts — a later `--full-auto` on the same state root cannot change
-    // a running session.
     let greeting = json!({"server": "teamagents-daemon", "protocol_version": PROTOCOL_VERSION,
-                          "session_id": session_id, "state_root": state_root.to_string_lossy(),
-                          "permissions": permission_mode});
+                          "session_id": facts.session_id, "state_root": facts.state_root,
+                          "permissions": facts.permissions, "workspace": facts.workspace});
     write.write_all(format!("{greeting}\n").as_bytes()).await.map_err(|e| format!("greeting: {e}"))?;
     let mut lines = tokio::io::BufReader::new(read).lines();
     while let Ok(Some(line)) = lines.next_line().await {
@@ -149,7 +155,7 @@ async fn serve_client(
             continue;
         }
         let reply = match serde_json::from_str::<Json>(&line) {
-            Ok(request) => handle(&request, &supervisor, session_db, session_id).await,
+            Ok(request) => handle(&request, &supervisor, session_db, &facts.session_id).await,
             Err(e) => json!({"request_id": Json::Null, "ok": false, "error": format!("bad request JSON: {e}")}),
         };
         if write.write_all(format!("{reply}\n").as_bytes()).await.is_err() {

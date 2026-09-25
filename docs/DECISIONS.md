@@ -268,6 +268,39 @@ Evidence: `core::kernel::tests::a_finish_without_a_usable_status_is_not_a_comple
 run, and the post-fix re-runs). The scripted tests in this repository accept any transcript, so this is exactly
 the class of defect the real-service rule exists for.
 
+## D-57 `--cwd` reaches the session, so the agent works where it was asked (2026-09-25)
+
+The first dogfooding run — this repository's own `edit-integrity` evaluation fixture, copied to a scratch
+directory, with the fixture's `checks.txt` configured as a `[[checks]]` entry — reported `SUCCEEDED` and the
+artifact verified independently, but it took **60 model turns and 291 seconds** for a one-line INI edit, and
+the transcript showed why: almost every turn was spent exploring the *TeamAgents repository* (`review/eval/**`,
+`docs/DECISIONS.md`, `engine/src/v2/driver.rs`, the probe's own `session.sqlite`, even `ps` for the harness
+processes). It only found the intended file by inferring the probe layout and wrote it by absolute path. Its
+workspace was the repository, not the `--cwd` it had been given.
+
+Root cause: `ensure_daemon` passed `--state-root`, `--model` and (since D-55) `--full-auto` to the daemon it
+starts, but never `--cwd`, so the daemon — and therefore every instance and tool in the session — inherited
+the *client's* process directory. `teamagents --cwd DIR` and `teamagents exec --cwd DIR` silently worked
+elsewhere; only `teamagents daemon --cwd DIR` ever honoured the flag. The D-49 `--check` commands were correct
+because that workspace is resolved client-side, which is exactly why the acceptance gate passed while the
+agent worked in the wrong tree.
+
+- `ensure_daemon` now takes a `DaemonRequest` (state root, model, `full_auto`, `cwd`) and forwards `--cwd`.
+- The greeting carries `workspace` next to `permissions`, and the client's note reports any requested setting
+  that could not apply to a session that is already running, naming the session's real workspace.
+- `exec --json` reports `session_workspace` next to `workspace`: the former is where the session works, the
+  latter where its own `--check` commands run, and the two differ when the client joins a live session.
+- The greeting's fields live in one `SessionFacts` struct threaded through the accept loop, instead of a
+  parameter list that had already grown once (D-55).
+
+Evidence: `cli::cwd_reaches_a_started_daemon_and_is_reported_against_a_live_one` — the daemon reports the
+requested directory, the instance's `workspace_ref` (the root the tools use) is exactly that directory, and a
+second client with another `--cwd` is told the live one; without the forwarding the test fails showing the
+daemon on the client's own directory. The dogfooding run was repeated after the fix with the same fixture and
+configuration: **6 turns and 9.1 s** (from 60 and 291 s), instance workspace correct, artifact verified, and a
+second fixture (`rust-fix`, `cargo test` as the check) ran in 8 turns and 8.4 s with its acceptance command
+passing both in the runtime's check round and independently (evidence under `review/tmp/dogfood/`).
+
 ## D-56 Kernel protocol notes reach the model (2026-09-25)
 
 `interpret_response` produces protocol notes when a response mixes calls that exclude each other — a `finish`

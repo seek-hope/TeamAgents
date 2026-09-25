@@ -18,6 +18,11 @@ teamagents                           # open the TUI (starts the per-user daemon 
 - **Headless use**: `teamagents exec [--json] [--timeout SEC] [--check CMD] "prompt"` goes through the same
   daemon and reports the goal's terminal state, the assistant reply or a timeout; the prompt may come from
   stdin (`-`). The full contract is in §1.1.
+- **A session owns its workspace and permission mode**: both are fixed when the daemon boots (`--cwd DIR`,
+  `--full-auto`), so a client that joins a session already running keeps that session's settings and prints
+  them (`note: a session is already running for this state root in … mode` / `that session works in …`).
+  Starting a client with a different `--cwd` against a live session therefore does not move it — stop that
+  daemon or use another `--state-root`.
 - **State root**: `$XDG_STATE_HOME/teamagents/v2/` (default `~/.local/state/teamagents/v2`), where
   `session.sqlite` is the **single source of truth** (WAL with `synchronous=FULL`, carrying a format and
   version stamp).
@@ -204,6 +209,7 @@ back silently to host execution.
 | `exec` reports `check 1: FAILED` | Your own `--check` command failed; its output is on stderr and in `<state root>/verification.json` |
 | `exec` exits 3 | A tool call needs approval and a headless run cannot answer it. Approve it in the TUI and run `exec` again, or start the daemon with `--full-auto` |
 | `doctor` reports the state root as FAIL | That path does not hold a current session database (the stamp does not match); use another `--state-root` or follow the message, and never edit the database by hand |
+| The agent worked in the wrong directory | Its session was started with another workspace (or without `--cwd`): the client prints the live one. Stop that daemon (Ctrl-C in its terminal) or start a fresh `--state-root` with `--cwd DIR` |
 | The model returns 401/402 | Check the environment variable named by the profile's `api_key_env`; `doctor` lists the credential resolution result per profile |
 | A command under `approved_scope` waits for approval | Handle it in the TUI approvals panel, or run with `--full-auto` (host execution, D-41) |
 | Start completely fresh | Stop the daemon and run `teamagents --state-root <new directory>` for a clean session; the old database stays where it is |

@@ -273,9 +273,14 @@ fn run_tui(args: &Args) -> i32 {
         return 1;
     };
     let state_root = args.state_root.clone().map(PathBuf::from).unwrap_or_else(teamagents_engine::v2_root);
-    let socket = match ensure_daemon(&state_root, args.model.clone(), args.full_auto) {
+    let socket = match ensure_daemon(DaemonRequest {
+        state_root: &state_root,
+        model: args.model.clone(),
+        full_auto: args.full_auto,
+        cwd: args.cwd.as_deref().map(Path::new),
+    }) {
         Ok((socket, started)) => {
-            note_ignored_full_auto(&socket, args.full_auto, started);
+            note_session_settings(&socket, args.full_auto, args.cwd.as_deref(), started);
             socket
         }
         Err(error) => {
@@ -310,9 +315,14 @@ fn run_exec(args: &Args) -> i32 {
         }
     };
     let state_root = args.state_root.clone().map(PathBuf::from).unwrap_or_else(teamagents_engine::v2_root);
-    let socket = match ensure_daemon(&state_root, args.model.clone(), args.full_auto) {
+    let socket = match ensure_daemon(DaemonRequest {
+        state_root: &state_root,
+        model: args.model.clone(),
+        full_auto: args.full_auto,
+        cwd: args.cwd.as_deref().map(Path::new),
+    }) {
         Ok((socket, started)) => {
-            note_ignored_full_auto(&socket, args.full_auto, started);
+            note_session_settings(&socket, args.full_auto, args.cwd.as_deref(), started);
             socket
         }
         Err(error) => {
@@ -341,24 +351,37 @@ fn run_exec(args: &Args) -> i32 {
 /// Say it out loud when `--full-auto` could not apply: the mode belongs to the
 /// session, which was started earlier (D-41). Silence here was how a documented
 /// flag became a no-op that nobody noticed.
-fn note_ignored_full_auto(socket: &Path, requested: bool, started: bool) {
-    if !requested || started {
+fn note_session_settings(socket: &Path, full_auto: bool, cwd: Option<&str>, started: bool) {
+    if started || (!full_auto && cwd.is_none()) {
         return;
     }
-    let mode = std::os::unix::net::UnixStream::connect(socket)
+    let greeting = std::os::unix::net::UnixStream::connect(socket)
         .ok()
         .and_then(|stream| {
             use std::io::{BufRead, BufReader};
             let mut line = String::new();
             BufReader::new(stream).read_line(&mut line).ok()?;
-            let greeting: serde_json::Value = serde_json::from_str(&line).ok()?;
-            greeting["permissions"].as_str().map(str::to_string)
+            serde_json::from_str::<serde_json::Value>(&line).ok()
         })
-        .unwrap_or_else(|| "unknown".into());
-    eprintln!(
-        "note: a session is already running for this state root in {mode} mode, so --full-auto did not apply. \
-         Stop that daemon (Ctrl-C in its terminal) or use another --state-root to start in full_auto."
-    );
+        .unwrap_or(serde_json::Value::Null);
+    let described = |key: &str| greeting[key].as_str().unwrap_or("unknown").to_string();
+    if full_auto {
+        eprintln!(
+            "note: a session is already running for this state root in {} mode, so --full-auto did not apply. \
+             Stop that daemon (Ctrl-C in its terminal) or use another --state-root to start in full_auto.",
+            described("permissions")
+        );
+    }
+    if let Some(requested) = cwd {
+        let live = described("workspace");
+        let same = std::fs::canonicalize(requested).ok() == std::fs::canonicalize(&live).ok();
+        if !same {
+            eprintln!(
+                "note: that session works in {live}, so --cwd {requested} did not apply. \
+                 Stop that daemon or use another --state-root to work in {requested}."
+            );
+        }
+    }
 }
 
 /// The prompt for `exec`: the positional argument, or everything piped into
@@ -380,13 +403,21 @@ fn resolve_prompt(positional: Option<String>, mut stdin: impl std::io::Read) -> 
     Ok(text)
 }
 
-/// Start the session daemon when the socket is not live, then return the socket
-/// path. Detached on purpose: the session must outlive this client (§9).
-///
-/// `full_auto` only reaches a daemon this call starts: the permission mode is
-/// fixed when a session boots (D-41), so a running daemon keeps its own mode.
-/// Returns whether a daemon had to be started, so the caller can say so.
-fn ensure_daemon(state_root: &Path, model: Option<String>, full_auto: bool) -> Result<(PathBuf, bool), String> {
+/// What a client asks the daemon it may start to boot with. Workspace and
+/// permission mode are session settings: they are fixed when the daemon starts,
+/// so a client that joins a running session can only report what it finds
+/// (D-41/D-55/D-57). Returns whether a daemon had to be started, so the caller
+/// can tell the difference between "started with your settings" and "joined a
+/// session that already has its own".
+struct DaemonRequest<'a> {
+    state_root: &'a Path,
+    model: Option<String>,
+    full_auto: bool,
+    cwd: Option<&'a Path>,
+}
+
+fn ensure_daemon(request: DaemonRequest<'_>) -> Result<(PathBuf, bool), String> {
+    let DaemonRequest { state_root, model, full_auto, cwd } = request;
     let socket = state_root.join("daemon.sock");
     // liveness is a *connection*, not the presence of a socket file: a crashed
     // daemon leaves a stale file that would make bind fail if we kept it
@@ -411,6 +442,11 @@ fn ensure_daemon(state_root: &Path, model: Option<String>, full_auto: bool) -> R
     }
     if full_auto {
         command.arg("--full-auto");
+    }
+    // without this the daemon (and every instance it drives) works in whatever
+    // directory this client was started from, silently ignoring --cwd
+    if let Some(cwd) = cwd {
+        command.arg("--cwd").arg(cwd);
     }
     // A detached daemon has no terminal to complain on: its banner, its startup
     // failure and anything it logs later land in <state root>/daemon.log.
