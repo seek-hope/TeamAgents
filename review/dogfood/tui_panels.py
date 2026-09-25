@@ -9,7 +9,8 @@ keys a user presses:
 1. `Ctrl+N` opens the instances view, which shows the session's rows;
 2. `p` pauses the selected instance, `r` resumes it — each must be visible in `teamagents instances --json`
    *and* on screen (the panel refreshes from the daemon's own events);
-3. `t` only *asks* ("terminate this instance? y confirm / n cancel"): the instance must still be `ACTIVE`
+3. the tasks view's `c` cancels the task the user selected (the probe delegates one itself, as the user);
+4. `t` only *asks* ("terminate this instance? y confirm / n cancel"): the instance must still be `ACTIVE`
    after `t`, still `ACTIVE` after `n`, and only `y` may retire it (D-82's finality, D-68's `--yes`).
 
 No model is involved: the session is started, one extra instance is created through the documented protocol
@@ -31,6 +32,7 @@ import pathlib
 import pty
 import shutil
 import socket as socket_module
+import sqlite3
 import struct
 import subprocess
 import sys
@@ -54,6 +56,7 @@ context_window = 1000000
 """
 
 WORKER = "i-worker"
+TASK = "t-panel"
 
 
 def call(bin_args: list[str], env: dict, timeout: int = 60) -> subprocess.CompletedProcess:
@@ -82,6 +85,20 @@ def lifecycle(state_root: pathlib.Path, env: dict, instance: str) -> str:
         return "?"
     rows = json.loads(listed.stdout)["instances"]
     return next((row["lifecycle"] for row in rows if row["id"] == instance), "missing")
+
+
+def active_goal(state_root: pathlib.Path) -> str | None:
+    db = sqlite3.connect(f"file:{state_root}/session.sqlite?mode=ro", uri=True)
+    row = db.execute("SELECT id FROM goals WHERE status = 'ACTIVE' ORDER BY rowid LIMIT 1").fetchone()
+    return row[0] if row else None
+
+
+def task_status(state_root: pathlib.Path, env: dict, task_id: str) -> str:
+    listed = call(["tasks", "--state-root", str(state_root), "--json"], env)
+    if not listed.stdout.strip().startswith("{"):
+        return "?"
+    rows = json.loads(listed.stdout)["tasks"]
+    return next((row["status"] for row in rows if row["id"] == task_id), "missing")
 
 
 def wait_until(predicate, timeout: float, step: float = 0.25) -> bool:
@@ -203,6 +220,43 @@ def main() -> int:
             print(painted()[-400:])
         else:
             print("  `r` resumed it and the panel shows ACTIVE")
+
+        # --- the tasks view: `c` cancels the selected row ------------------------
+        goal = active_goal(state_root)
+        if goal is None:
+            failures.append("the session has no ACTIVE goal to charge a task to")
+            return 1
+        delegated = protocol(socket_path, "delegate_task",
+                             {"task_id": TASK, "assignee": WORKER, "goal_id": goal,
+                              "description": "panel probe: a task to cancel"}, "panel-delegate")
+        if not delegated.get("ok"):
+            failures.append(f"delegate_task was refused: {delegated.get('error')}")
+            return 1
+        os.write(fd, b"\x0e")  # Ctrl+N: instances -> tasks
+        if not wait_for("▶ " + TASK, 20, "the tasks view selecting the new task"):
+            print(painted()[-800:])
+            return 1
+        status = task_status(state_root, env, TASK)
+        if status not in ("PENDING", "RUNNING"):
+            failures.append(f"the delegated task is {status}, so there is nothing to cancel")
+            return 1
+        print(f"  the tasks panel shows {TASK} · {status} (selected)")
+        os.write(fd, b"c")
+        if not wait_until(lambda: task_status(state_root, env, TASK) == "CANCELLED", 15):
+            failures.append(f"the `c` key did not cancel the task: {task_status(state_root, env, TASK)}")
+        if not wait_for(f"{TASK} · CANCELLED", 15, "the panel follows the cancellation"):
+            print(painted()[-400:])
+        else:
+            print("  `c` cancelled it in the daemon and the panel shows CANCELLED")
+        os.write(fd, b"\x1b")  # Esc: back to the conversation
+        if not wait_for("to i-leader", 15, "the conversation view after Esc"):
+            return 1
+        os.write(fd, b"\x0e")  # and back into the instances view for the termination stage
+        if not wait_for("instances (", 15, "the instances view again"):
+            return 1
+        os.write(fd, b"\x1b[B")  # Down: the selection starts on the conversation target again
+        if not wait_for(f"▶  {WORKER}", 15, "the worker's row selected again"):
+            return 1
 
         # --- t only asks; n cancels the prompt ----------------------------------
         os.write(fd, b"t")

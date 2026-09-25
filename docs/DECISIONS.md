@@ -255,6 +255,13 @@ Measured 2026-09-26 (three runs, ~9 s each, no credential needed):
 | `n` | the prompt disappears and the instance is still `ACTIVE` |
 | `t`, `y` | the instance is `TERMINATED` and the panel shows `TERMINATED` |
 
+The probe also drives the *tasks* view, with a task it delegates itself as the user (`delegate_task` accepts
+`Identity::User` when the goal is named): `Ctrl+N` opens the view with the new row selected (`▶ t-panel`),
+the row is `RUNNING` (the assignee picked it up), `c` cancels it in `teamagents tasks --json` **and** the
+panel repaints `t-panel · CANCELLED`. `Esc` returns to the conversation and `Ctrl+N` re-enters the instances
+view, where the selection starts on the conversation target again — the probe moves it back to the worker
+before the termination stage, so the two stages cannot silently act on each other's row.
+
 The two assertions that matter most are the last four rows: termination is irreversible for the session, so
 the panel's `t` must be a question rather than an action, and a cancelled question must leave the row exactly
 as it was. Both are observable only against a daemon that keeps the state (D-82).
@@ -264,10 +271,10 @@ smoke's frames against the scripted daemon (D-68's key map), `v2_daemon::the_int
 (the same transitions through the CLI) and `tui::the_instances_hint_stops_offering_lifecycle_keys_for_a_terminated_member`
 (the hint after retirement).
 
-Ceiling: the probe covers the instances panel; the tasks view's `c` (cancel a task) and the topology view
-still rest on the scripted smoke, and the *task* lever's live behaviour is `cancel.py`'s subject (D-88). The
-probe also does not exercise a multi-row selection beyond one `Down`; a session with several members would
-need the same key sequence per row.
+Ceiling: the topology view still rests on the scripted smoke (it renders edges, it has no action of its own),
+and the *delegation-level* consequence of a cancelled task — the delegator waking — is `cancel.py`'s subject
+(D-88) and the D-68 daemon test's. The probe does not exercise a selection beyond one `Down`; a session with
+several members would need the same key sequence per row.
 
 ## D-94 A gate flake with a precise cause: a receipt read once after a fixed sleep (2026-09-26)
 

@@ -447,8 +447,10 @@ they selected and that the daemon really changes state:
 python3 review/dogfood/tui_panels.py
 ```
 
-No model, no credential, ~9 s: the session starts, the probe creates one extra instance through the
+No model, no credential, ~10 s: the session starts, the probe creates one extra instance through the
 documented protocol, and then `Ctrl+N` (instances view) → `Down` (the selection marker `▶  i-worker` moves) →
-`p` (paused in `instances --json` **and** repainted as `i-worker · PAUSED`) → `r` (ACTIVE again) → `t` (only
-asks: the footer wants `y`, the instance stays ACTIVE) → `n` (cancelled, still ACTIVE) → `t`,`y`
-(TERMINATED, and the panel shows it). Measured 2026-09-26, three runs (D-95).
+`p` (paused in `instances --json` **and** repainted as `i-worker · PAUSED`) → `r` (ACTIVE again) → `Ctrl+N`
+(tasks view) with a task the probe delegated itself → `c` (cancelled in `tasks --json` **and** repainted
+`t-panel · CANCELLED`) → `Esc`, `Ctrl+N`, `Down` (back on the worker's row) → `t` (only asks: the footer
+wants `y`, the instance stays ACTIVE) → `n` (cancelled, still ACTIVE) → `t`,`y` (TERMINATED, and the panel
+shows it). Measured 2026-09-26, five runs (D-95).
