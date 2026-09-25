@@ -628,6 +628,56 @@ async fn headless_runs_report_their_own_outcome_not_an_earlier_settlement() {
     handle.shutdown().await.expect("shutdown");
 }
 
+/// A goal the *runtime* blocks (its required checks never pass) is not a success
+/// either: `exec` must report it and exit non-zero. The runtime's own block note is
+/// what the instance stops on — an assistant-shaped one was exactly what a naive
+/// "the last assistant entry is the reply" reading mistook for the model's answer —
+/// and the block emitted no settlement event at all (D-71).
+#[tokio::test]
+async fn a_runtime_blocked_goal_is_not_reported_as_a_reply() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    // three finishes: each one runs the check round, the round never passes, the
+    // third exhausts the driver's default repair budget and the runtime blocks the
+    // goal (a fourth step would mean the runtime asked again — the storm, not this)
+    let scripts = HashMap::from([(
+        "i-leader".to_string(),
+        vec![finish_call("done once"), finish_call("done twice"), finish_call("done thrice")],
+    )]);
+    let root = root("exec-runtime-blocked");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let mut cfg = config(&root, scripts);
+    cfg.supervisor.goal_limits = json!({"required_checks": [{"id": "never", "command": "false", "timeout": 30}]});
+    let handle = serve(cfg).await.expect("daemon");
+    let (socket, workspace) = (root.dir.join("state/daemon.sock"), root.dir.join("ws"));
+    let run = headless(exec_options(&socket, &workspace, "finish it", Vec::new())).await;
+    assert_eq!(run.end, End::Failed, "{}", run.report);
+    assert_eq!(run.report["goal_status"], json!("BLOCKED"), "{}", run.report);
+    assert_eq!(run.report["reply"], Json::Null, "the runtime's own note is not a reply: {}", run.report);
+    assert_eq!(run.end.exit_code(run.checks_ok), 1);
+    // and the settlement is visible to any client, not only to the one that was polling
+    let mut client = Client::connect(&socket).await;
+    let events = client.call("events", json!({"since": 0})).await;
+    let kinds: Vec<&str> =
+        events["result"]["events"].as_array().unwrap().iter().filter_map(|event| event["kind"].as_str()).collect();
+    assert!(kinds.contains(&"goal_completed"), "the block must be an event too: {kinds:?}");
+    let completed = events["result"]["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["kind"] == json!("goal_completed"))
+        .unwrap();
+    assert_eq!(completed["payload"]["status"], json!("BLOCKED"), "{completed}");
+    assert_eq!(completed["payload"]["blocked_by"], json!("runtime"), "{completed}");
+    // what the instance stopped on is the runtime's word, by kind: any reader of
+    // the conversation can tell it apart from the member's answer
+    let history = client.call("history", json!({"instance_id": "i-leader", "limit": 200})).await;
+    let entries = history["result"]["entries"].as_array().cloned().unwrap_or_default();
+    let tail = entries.last().expect("a closing entry");
+    assert_eq!(tail["kind"], json!("runtime"), "{tail}");
+    assert_eq!(tail["message"]["role"], json!("user"), "{tail}");
+    handle.shutdown().await.expect("shutdown");
+}
+
 /// A goal that settles as BLOCKED is not a success: the run reports it and
 /// exits 1, so a CI job cannot read a blocked goal as delivered work.
 #[tokio::test]
@@ -644,6 +694,39 @@ async fn a_blocked_goal_is_not_reported_as_a_success() {
     assert_eq!(run.end, End::Failed, "{}", run.report);
     assert_eq!(run.report["goal_status"], json!("BLOCKED"));
     assert_eq!(run.end.exit_code(run.checks_ok), 1);
+    handle.shutdown().await.expect("shutdown");
+}
+
+/// A turn the runtime closes with nothing to settle is not the member's reply:
+/// the goal settled in an earlier run, so this run's `finish` only ends the turn
+/// (`close_completion`) and the runtime says so. Reporting that closing word as a
+/// reply would be a success the run never had; waiting for the deadline would
+/// call a finished turn a timeout (D-71).
+#[tokio::test]
+async fn a_turn_closed_by_the_runtime_without_a_settlement_is_not_a_reply() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let scripts = HashMap::from([(
+        "i-leader".to_string(),
+        vec![finish_call("done over the wire"), finish_call("finished again, nothing left to settle")],
+    )]);
+    let (root, handle) = boot("exec-runtime-closed", scripts).await;
+    let (socket, workspace) = (root.dir.join("state/daemon.sock"), root.dir.join("ws"));
+    let first = headless(exec_options(&socket, &workspace, "finish it", Vec::new())).await;
+    assert_eq!(first.end, End::Completed, "{}", first.report);
+    // the second run's goal is already terminal: its finish closes the turn
+    let options = ExecOptions { timeout_s: 30, ..exec_options(&socket, &workspace, "finish again", Vec::new()) };
+    let started = std::time::Instant::now();
+    let second = headless(options).await;
+    assert_eq!(second.end, End::Unsettled, "{}", second.report);
+    assert_eq!(second.report["end"], json!("unsettled"));
+    assert_eq!(second.report["goal_status"], Json::Null, "{}", second.report);
+    assert_eq!(second.report["reply"], Json::Null, "the runtime's note is not a reply: {}", second.report);
+    assert_eq!(second.end.exit_code(second.checks_ok), 1);
+    assert!(
+        started.elapsed() < Duration::from_secs(30),
+        "a closed turn must be reported, not waited out ({}s)",
+        started.elapsed().as_secs()
+    );
     handle.shutdown().await.expect("shutdown");
 }
 

@@ -8,7 +8,10 @@ use serde_json::Value as Json;
 pub const V2_FORMAT_ID: &str = "teamagents-v2";
 /// 1 → 2 (R22/A20): `context_entries.compressed_by` and `model_requests.kind`
 /// (compression calls are billed requests that never advance an instance).
-pub const V2_SCHEMA_VERSION: i64 = 2;
+/// 2 → 3 (D-71): the runtime's own closing notes (`goal-close-`, `goal-block-`,
+/// `turn-close-`) move from the member's `assistant` kind to `runtime`, so no
+/// reader can mistake the runtime's word for the model's answer.
+pub const V2_SCHEMA_VERSION: i64 = 3;
 
 /// Request kinds (§4.1 ModelRequest): an ordinary turn request advances the
 /// instance phase; a compression request only produces a summary (§7, A20).

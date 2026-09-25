@@ -1202,7 +1202,16 @@ async fn required_checks_exhausted_parks_the_goal_blocked() {
     let snapshot = handle.snapshot().await.unwrap();
     assert_eq!(snapshot["goal"]["status"], json!("BLOCKED"));
     assert_eq!(snapshot["instance"]["phase"], json!("READY"));
-    assert!(no_event(&handle, "goal_completed").await);
+    // A block *is* a settlement (D-71): a client that keys on the goal's ending
+    // must learn about it, or it reports the runtime's own block note as the
+    // member's answer. The distinct `goal_blocked` event still carries the reason
+    // and keeps who decided auditable.
+    let completed =
+        wait_event_where("goal_completed", &handle, 5_000, |event| event["payload"]["goal_id"] == json!("goal-s-test"))
+            .await;
+    assert_eq!(completed["payload"]["status"], json!("BLOCKED"));
+    assert_eq!(completed["payload"]["blocked_by"], json!("runtime"));
+    assert!(completed["payload"]["reason"].as_str().unwrap_or("").contains("never:exit"), "{completed}");
     handle.shutdown().await.expect("shutdown");
 }
 

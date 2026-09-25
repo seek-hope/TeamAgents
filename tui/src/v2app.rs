@@ -42,6 +42,9 @@ pub enum ChatKind {
     User,
     Assistant,
     Tool,
+    /// The runtime's own closing word (a settlement note, D-71): the instance
+    /// did not say it, so it is never rendered as the member's message.
+    Runtime,
     /// A runtime compaction summary (R22/A20): the model's view is covered by
     /// it, so the user must see where the conversation was compacted.
     Summary,
@@ -319,6 +322,13 @@ impl V2App {
                         text: truncate(content, PREVIEW_CHARS),
                     });
                 }
+                // the runtime's own closing word for a turn (§8/D-71): it ends
+                // the turn, it is not something the member said
+                "runtime" => rebuilt.push(ChatEntry {
+                    kind: ChatKind::Runtime,
+                    who: "runtime".into(),
+                    text: message["content"].as_str().unwrap_or("").to_string(),
+                }),
                 // covered entries stay visible here: the user sees the whole
                 // conversation, the model sees the summary (R22/A20)
                 "summary" => rebuilt.push(ChatEntry {
@@ -355,7 +365,12 @@ impl V2App {
                 "goal_completed" => {
                     refresh.history = true;
                     refresh.checkpoint = true;
-                    self.note(format!("goal finished: {}", payload["status"].as_str().unwrap_or("?")));
+                    // a runtime block announces itself twice (settlement + block
+                    // reason); the `goal_blocked` note below carries the reason,
+                    // so this one stays quiet for it (D-71)
+                    if payload["blocked_by"].as_str() != Some("runtime") {
+                        self.note(format!("goal finished: {}", payload["status"].as_str().unwrap_or("?")));
+                    }
                 }
                 "goal_blocked" => {
                     refresh.checkpoint = true;

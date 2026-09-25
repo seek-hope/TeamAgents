@@ -132,6 +132,12 @@ pub enum End {
     Completed,
     /// The leader ended its turn with a plain reply and no goal settlement.
     Reply,
+    /// The turn ended on the runtime's own closing word with nothing settled
+    /// this run can claim: the model's `finish` had nothing to settle, or the
+    /// goal it addressed had already settled earlier. Not a `Reply` (that text
+    /// is the runtime's, not the member's) and not a settlement, so the run is
+    /// unfinished — exit 1 (D-71).
+    Unsettled,
     /// The goal settled as something other than SUCCEEDED.
     Failed,
     /// The turn is parked on a user approval: a non-interactive run has nobody
@@ -146,6 +152,7 @@ impl End {
         match self {
             End::Completed => "completed",
             End::Reply => "reply",
+            End::Unsettled => "unsettled",
             End::Failed => "failed",
             End::ApprovalRequired => "approval_required",
             End::Timeout => "timeout",
@@ -157,8 +164,7 @@ impl End {
     pub fn exit_code(self, checks_ok: bool) -> i32 {
         match self {
             End::Completed | End::Reply if checks_ok => 0,
-            End::Completed | End::Reply => 1,
-            End::Failed => 1,
+            End::Completed | End::Reply | End::Unsettled | End::Failed => 1,
             End::ApprovalRequired => 3,
             End::Timeout => 124,
         }
@@ -222,6 +228,13 @@ pub fn execute(options: &ExecOptions) -> Result<ExecRun, (i32, String)> {
     // state always overwrites it
     let mut end = End::Timeout;
     loop {
+        // The checkpoint is read *before* the events on purpose. A settlement
+        // commits its event and the instance's phases in one transaction, so a
+        // phase read that missed the settlement is always followed by an event
+        // read that missed it too — and the loop takes another pass. The other
+        // order could see an idle instance whose settlement event was still
+        // unread and report a finished run as `unsettled` (D-71).
+        let snapshot = client.call("checkpoint", json!({})).unwrap_or(Json::Null);
         match client.events() {
             Ok(events) => {
                 for event in &events {
@@ -240,13 +253,17 @@ pub fn execute(options: &ExecOptions) -> Result<ExecRun, (i32, String)> {
             }
             Err(error) => return Err((2, format!("exec: the event stream broke: {error}"))),
         }
-        let snapshot = client.call("checkpoint", json!({})).unwrap_or(Json::Null);
         let instances = snapshot["snapshot"]["instances"]
             .as_array()
             .or_else(|| snapshot["instances"].as_array())
             .cloned()
             .unwrap_or_default();
         let settled = instances.iter().any(|entry| entry["id"] == json!(instance) && entry["phase"] == json!("READY"));
+        // The runtime's own closing word, if it is what the instance stopped on
+        // (§8: a settled goal, an accepted `finish` with nothing left to settle).
+        // It is never the member's reply, which is exactly the confusion that made
+        // a runtime-blocked goal exit 0 (D-71).
+        let mut runtime_closed = false;
         if settled {
             if let Ok(entries) = client.history(&instance) {
                 if let Some(last) = entries.last() {
@@ -257,6 +274,8 @@ pub fn execute(options: &ExecOptions) -> Result<ExecRun, (i32, String)> {
                             .as_str()
                             .filter(|text| !text.trim().is_empty())
                             .map(str::to_string);
+                    } else if last["kind"] == json!("runtime") {
+                        runtime_closed = true;
                     }
                 }
             }
@@ -280,6 +299,10 @@ pub fn execute(options: &ExecOptions) -> Result<ExecRun, (i32, String)> {
             None if turn_failure.is_some() => Some(End::Failed),
             None if pending_approval.is_some() => Some(End::ApprovalRequired),
             None if settled && reply.is_some() => Some(End::Reply),
+            // The turn is over and this client has nothing to report as its
+            // outcome: waiting for the deadline would mislabel a closed turn as
+            // a timeout (D-71).
+            None if runtime_closed => Some(End::Unsettled),
             None => None,
         };
         if let Some(terminal) = terminal {
@@ -354,6 +377,12 @@ fn print_human(report: &Json, options: &ExecOptions) {
             "timed out: {} is still running ({}s)",
             report["instance_id"].as_str().unwrap_or("the leader"),
             options.timeout_s
+        ),
+        // the instance stopped on the runtime's own closing word and no goal
+        // settled in this run: say so instead of leaving the caller to guess
+        // from a missing reply (D-71)
+        "unsettled" => println!(
+            "the turn closed without settling anything: no goal ended in this run and the last word was the runtime's"
         ),
         _ => {
             if report["input_queued"] == json!(true) {

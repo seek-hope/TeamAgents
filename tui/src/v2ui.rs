@@ -248,6 +248,7 @@ fn render_chat(frame: &mut Frame, app: &mut V2App, area: Rect) {
             ChatKind::User => (entry.who.to_string(), Style::default().fg(GREY).add_modifier(Modifier::BOLD)),
             ChatKind::Assistant => (entry.who.clone(), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
             ChatKind::Tool => (entry.who.clone(), Style::default().fg(GREY).add_modifier(Modifier::BOLD)),
+            ChatKind::Runtime => (entry.who.clone(), Style::default().fg(GREY)),
             ChatKind::Summary => (entry.who.clone(), Style::default().fg(ACCENT)),
             ChatKind::System => (entry.who.clone(), Style::default().fg(GREY)),
             ChatKind::Error => (entry.who.clone(), Style::default().fg(ERROR).add_modifier(Modifier::BOLD)),
@@ -257,6 +258,7 @@ fn render_chat(frame: &mut Frame, app: &mut V2App, area: Rect) {
             ChatKind::System => Style::default().fg(NOTICE),
             ChatKind::Error => Style::default().fg(ERROR),
             ChatKind::Tool => Style::default().fg(NOTICE),
+            ChatKind::Runtime => Style::default().fg(NOTICE),
             ChatKind::Summary => Style::default().fg(NOTICE),
             _ => Style::default().fg(FG),
         };

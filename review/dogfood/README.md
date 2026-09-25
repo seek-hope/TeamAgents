@@ -78,24 +78,58 @@ It needs `DEEPSEEK_API_KEY` and `KIMI_API_KEY`, then asserts the three facts the
 session really spanned two models (each member's resolved model is recorded, D-69), the delegation exchanged a
 task assignment and a task result, and `answer.txt` holds exactly the line the task asked for. Measured
 (2026-09-25): 7 model requests, 14.0 s, goal `SUCCEEDED`, `i-leader` on `deepseek-flash`, `worker1` on
-`k3-256k`, `task t1 SUCCEEDED`.
+`k3-256k`, `task t1 SUCCEEDED`; re-measured after D-71 on the same shape: 8 requests, 23.1 s, all four
+assertions green.
+
+**This harness is intermittent, and the reason is worth knowing** (measured 2026-09-25): a run whose Kimi
+worker answered with *prose* ("Confirmed: answer.txt written…") instead of calling `finish` left
+`task_completed` missing — the task stayed `RUNNING` (D-65's ceiling: the runtime does not re-ask a model that
+stopped settling), the Leader read the artifact itself, and the goal still settled `SUCCEEDED` with that task
+open, because `complete_goal` checks open **operations**, not open **tasks**. The run is honest about it (the
+harness fails on the missing event, and `docs/ACCEPTANCE.md` records both the ceiling and the question), and
+the goal's own claim rests on the artifact the Leader verified.
+
+## `runtime_note.py`: the runtime's own closing note rides the next turn
+
+`runtime_note.py` runs two turns against one state root: the first ends with
+`finish(status = success)` (the goal settles `SUCCEEDED` and the runtime's closing note joins the
+conversation), the second is an ordinary prompt whose request therefore carries that note.
+
+```bash
+python3 review/dogfood/runtime_note.py                      # DeepSeek
+python3 review/dogfood/runtime_note.py --provider kimi      # over `responses`
+python3 review/dogfood/runtime_note.py --providers deepseek,kimi
+```
+
+It needs `DEEPSEEK_API_KEY` (and `KIMI_API_KEY` for kimi) and asserts what D-71 claims: after a settlement
+the context carries an entry of kind `runtime` in the *user's* voice, and the next turn is accepted by the
+provider (`end=reply`, exit 0) instead of being rejected for its shape. Measured (2026-09-25): deepseek
+turn 1 1.6 s / turn 2 0.9 s, kimi 8.9 s / 11.8 s, both sessions' note at `i-leader:0:4` as
+`runtime`/`role: user` — the shape is safe on the thinking-mode chat wire and on Kimi's `responses` wire.
 
 ## `checks.py`: the completion gate with a real model
 
 `checks.py` configures one `[[checks]]` entry that can never pass (`test -f never-written`), asks a real
-model for a small file, and then watches the gate do its job:
+model for a small file, and then watches the gate do its job. The gate is protocol-agnostic in the design, so
+the same scenario runs on either catalog entry — the wire for the check round's synthetic entry differs per
+protocol, and that difference is where D-70 lived:
 
 ```bash
-python3 review/dogfood/checks.py                  # fresh /tmp state root
-python3 review/dogfood/checks.py --state-dir /tmp/ta-checks
+python3 review/dogfood/checks.py                  # fresh /tmp state root, DeepSeek
+python3 review/dogfood/checks.py --provider kimi  # the same scenario over `responses`
+python3 review/dogfood/checks.py --state-dir /tmp/ta-checks --timeout 420
 ```
 
-It needs `DEEPSEEK_API_KEY`. The assertions are the acceptance row's claims: the work really happened (the
-file exists with the asked content), no success was reported (`exec` exits 1, `end=failed`, the goal ends
-`BLOCKED`), and the repair ledger names the failing check (`check_id: impossible`, `class: exit`) while the
-model sees its output in the conversation.
+It needs `DEEPSEEK_API_KEY` (or `KIMI_API_KEY` with `--provider kimi`). The assertions are the acceptance
+row's claims: the work really happened (the file exists with the asked content), no success was reported
+(`exec` exits 1, `end=failed`, the goal ends `BLOCKED`), the settlement is a `goal_completed` event, and the
+repair ledger names the failing check (`check_id: impossible`, `class: exit`) while the model sees its output
+in the conversation.
 
-Measured (2026-09-25): 8 model requests, 12.7 s, goal `BLOCKED`, the artifact exact — and the model
-explicitly reported that creating `never-written` to satisfy the gate would be bypassing it. The first run of
-this harness failed with `chat API 400: The reasoning_content in the thinking mode must be passed back to the
-API`, which is D-70 (the repair turn after a failed check died on the wire).
+Measured (2026-09-25): on **deepseek** 11 model requests / 9.7 s, on **kimi** 8 requests / 37.8 s — both exit
+1, goal `BLOCKED`, the artifact exact, and the model explicitly reporting that creating `never-written` to
+satisfy the gate would be bypassing it. Two defects came out of this harness: the first deepseek run failed
+with `chat API 400: The reasoning_content in the thinking mode must be passed back to the API` (D-70: the
+repair turn after a failed check died on the wire), and the first kimi run reported
+`exit 0 / end=reply / goal=None` although the goal was `BLOCKED` (D-71: the runtime's own block note was
+stored in the member's voice and read back as the reply).

@@ -10,11 +10,12 @@ success — which is the whole point of the completion gate (§8/A16).
 The artifact decides the other half: the file the model was asked to write must really exist, so the run shows
 "the work happened, the goal was not reported done" rather than "nothing happened".
 
-    python3 review/dogfood/checks.py                  # fresh /tmp state root
+    python3 review/dogfood/checks.py                  # fresh /tmp state root, DeepSeek
+    python3 review/dogfood/checks.py --provider kimi  # the same scenario over `responses`
     python3 review/dogfood/checks.py --state-dir /tmp/ta-checks --timeout 420
 
-It is a real-model check: it needs `DEEPSEEK_API_KEY`, uses the model's native window (D-36), and writes only
-under `--state-dir`.
+It is a real-model check: it needs `DEEPSEEK_API_KEY` (or `KIMI_API_KEY` for `--provider kimi`), uses each
+model's native window (D-36), and writes only under `--state-dir`.
 """
 import argparse
 import json
@@ -29,11 +30,11 @@ import time
 REPO = pathlib.Path(__file__).resolve().parents[2]
 BIN = REPO / "engine/target/debug/teamagents"
 
-CONFIG = """# Completion-gate dogfood (A16): the check below can never pass, so no run that
-# reaches the completion boundary may report success.
-skills_paths = []
-
-[models.leader_main]
+# The completion gate is protocol-agnostic in the design, so the harness can run the
+# same scenario on a second provider: the wire for the *synthetic check entry* differs
+# between protocols, and D-70 was exactly such a difference (DEEPSEEK).
+MODELS = {
+    "deepseek": """[models.leader_main]
 provider = "deepseek"
 protocol = "deepseek"
 model = "deepseek-flash"
@@ -42,12 +43,33 @@ context_window = 1000000
 timeout = 180
 max_retries = 2
 generation_options = { reasoning_effort = "high" }
+""",
+    "kimi": """[models.leader_main]
+provider = "kimi"
+protocol = "responses"
+model = "k3-256k"
+base_url = "https://api.kimi.com/coding/v1"
+api_key_env = "KIMI_API_KEY"
+timeout = 300
+max_retries = 1
+generation_options = { reasoning_effort = "low" }
+context_window = 262144
+""",
+}
 
-[[checks]]
+CHECK = """[[checks]]
 id = "impossible"
 command = "test -f never-written"
 timeout = 60
 """
+
+
+def config_text(provider: str) -> str:
+    return (
+        "# Completion-gate dogfood (A16): the check below can never pass, so no run that\n"
+        "# reaches the completion boundary may report success.\n"
+        "skills_paths = []\n\n" + MODELS[provider] + "\n" + CHECK
+    )
 
 PROMPT = """Create the file hello.txt in this workspace whose content is exactly the line `hello from the model`.
 Then report the task as finished."""
@@ -66,18 +88,21 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state-dir", help="scratch root (default: a fresh /tmp/ta-checks)")
     parser.add_argument("--timeout", type=int, default=420, help="exec --timeout in seconds")
+    parser.add_argument("--provider", default="deepseek", choices=sorted(MODELS),
+                        help="which catalog entry the session runs on (the check round's wire differs per protocol)")
     args = parser.parse_args()
     if not BIN.is_file():
         raise SystemExit(f"{BIN} is missing; build it first (make build)")
-    if not os.environ.get("DEEPSEEK_API_KEY", "").strip():
-        raise SystemExit("DEEPSEEK_API_KEY is not set in this environment")
+    key_env = "KIMI_API_KEY" if args.provider == "kimi" else "DEEPSEEK_API_KEY"
+    if not os.environ.get(key_env, "").strip():
+        raise SystemExit(f"{key_env} is not set in this environment")
 
-    root = pathlib.Path(args.state_dir or "/tmp/ta-checks")
+    root = pathlib.Path(args.state_dir or f"/tmp/ta-checks-{args.provider}")
     workspace = root / "ws"
     shutil.rmtree(root, ignore_errors=True)
     workspace.mkdir(parents=True)
     (root / "config/teamagents").mkdir(parents=True)
-    (root / "config/teamagents/config.toml").write_text(CONFIG)
+    (root / "config/teamagents/config.toml").write_text(config_text(args.provider))
     state_root = root / "root"
     env = {**os.environ, "XDG_CONFIG_HOME": str(root / "config"), "XDG_STATE_HOME": str(root / "state")}
     failures: list[str] = []
@@ -90,7 +115,8 @@ def main() -> int:
     )
     elapsed = round(time.time() - started, 1)
     report = json.loads(run.stdout) if run.stdout.strip().startswith("{") else {}
-    print(f"exec exit={run.returncode} elapsed={elapsed}s end={report.get('end')} goal={report.get('goal_status')}")
+    print(f"provider={args.provider} exec exit={run.returncode} elapsed={elapsed}s end={report.get('end')} "
+          f"goal={report.get('goal_status')}")
     if run.stderr.strip():
         print("stderr:", run.stderr.strip()[:300])
 

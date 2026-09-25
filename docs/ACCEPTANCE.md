@@ -6,7 +6,7 @@ Baseline: [the design and acceptance baseline](DESIGN.md) §12/§16. Current imp
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 97 / engine 184 / tui 26 test targets) and `make pty` passes; both are
+`make check` is green (core 98 / engine 186 / tui 27 test targets) and `make pty` passes; both are
 preconditions for every item below. `make check` includes `make language-check`, which fails on non-English
 characters outside the two documented exceptions (`README.zh-CN.md` and the frozen material under
 `review/eval`).
@@ -21,7 +21,7 @@ characters outside the two documented exceptions (`README.zh-CN.md` and the froz
 | A04 | A queued action meets a revocation | `revocation_blocks_queued_dispatch_until_reauthorized`, `dispatch_rechecks_permission_revision` |
 | A05 | Reading another instance's history | `control::read_history_is_user_or_self_only`; the daemon's history surface |
 | A06 | A message applied across a restart | `submit_input_applies_context_once_per_envelope`, `command_replay_returns_stored_receipt_and_rejects_conflict`; an input that arrives during a turn is queued and applied at the next boundary instead of being stored behind that turn's reply (D-63): `an_input_inside_a_turn_waits_for_the_boundary`, `v2_supervisor::an_input_arriving_during_a_turn_enters_at_the_next_boundary`, and formally `V2Control::InputLandsAtTheBoundary` / `QueuedInputEntersTheContext` with the refuted control `MC_control_midturninput.cfg` |
-| A07 | Permanent start failure | `fail_request_closes_and_parks_without_losing_input`, `v2_spawn_failure::*`; **no turn storm** also covers the *model* stopping rather than failing (D-65): a plain reply opens no further turn (`v2_supervisor::a_prose_reply_leaves_one_turn_and_the_delegator_resolves_the_task`, which fails with the pre-fix rule), the task stays `RUNNING` for the delegator or the user, and formally `V2Control::NoTurnWithoutWork` refutes the counterfactual `MC_control_reask.cfg` |
+| A07 | Permanent start failure | `fail_request_closes_and_parks_without_losing_input`, `v2_spawn_failure::*`; **no turn storm** also covers the *model* stopping rather than failing (D-65): a plain reply opens no further turn (`v2_supervisor::a_prose_reply_leaves_one_turn_and_the_delegator_resolves_the_task`, which fails with the pre-fix rule), the task stays `RUNNING` for the delegator or the user, and formally `V2Control::NoTurnWithoutWork` refutes the counterfactual `MC_control_reask.cfg`. The same invariant covers the other direction (D-71): the runtime's own closing word is a committed tail, so a settlement is never answered with a fresh turn — the refuted control `MC_control_runtimeTail.cfg` shows the violating state (`tail = "runtime"`, `phase = "MODEL_PENDING"`). And a turn the runtime closed with nothing settled is reported as such, never as a reply (the runtime's own sentence) or a timeout: `v2_daemon::a_turn_closed_by_the_runtime_without_a_settlement_is_not_a_reply` |
 | A08 | Crash after a tool succeeded, before consumption | `v2_driver::tool_result_is_reused_after_crash_not_reexecuted` |
 | A09 | Unknown external outcome | `control::unknown_outcome_parks_running_tasks_and_notifies` |
 | A10 | Duplicate dispatch / GO | `jobs_runner::duplicate_go_starts_exactly_one_command` |
@@ -30,7 +30,7 @@ characters outside the two documented exceptions (`README.zh-CN.md` and the froz
 | A13 | Cancel / timeout / completion races | `jobs_runner::cancel_*`, `v2_driver::user_cancel_stops_a_running_job` |
 | A14 | bubblewrap unavailable | `tools.rs` `IsolationUnavailable`; measured classified failure inside the sandbox (no host fallback) |
 | A15 | Environment identity | the runner persists and verifies pid + boot_id + start_ticks (`jobs_runner`) |
-| A16 | A required check fails | `v2_driver::required_checks_failure_repairs_then_passes`, `required_checks_exhausted_parks_the_goal_blocked`, `v2_driver::configured_checks_gate_the_goal_through_the_config_edge` (`[[checks]]` → goal limits → repair → success); `cli::the_daemon_carries_configured_checks_into_the_goal`. **Real model, now re-runnable**: `python3 review/dogfood/checks.py` — a configured check that can never pass, a task the model completes, and the whole gate exercised end to end: round 1 → repair → round 2 → goal **BLOCKED** with the ledger naming `check_id: impossible` / `class: exit`, `exec` exiting 1 and no success reported (measured 2026-09-25: 8 model requests, 12.7 s, the artifact exact, the model explicitly refusing to bypass the gate). This run also found and closed D-70 (the check round's synthetic assistant call needed `reasoning_content` on DeepSeek's thinking wire, or the repair turn itself died with HTTP 400) |
+| A16 | A required check fails | `v2_driver::required_checks_failure_repairs_then_passes`, `required_checks_exhausted_parks_the_goal_blocked`, `v2_driver::configured_checks_gate_the_goal_through_the_config_edge` (`[[checks]]` → goal limits → repair → success); `cli::the_daemon_carries_configured_checks_into_the_goal`. **Real model, re-runnable on both protocols**: `python3 review/dogfood/checks.py [--provider deepseek\|kimi]` — a configured check that can never pass, a task the model completes, and the whole gate exercised end to end: round 1 → repair → round 2 → round 3 → goal **BLOCKED** with the ledger naming `check_id: impossible` / `class: exit`, `exec` exiting **1** and no success reported — measured 2026-09-25 on **deepseek** (11 model requests, 9.7 s) and on **kimi** (the `responses` protocol, 8 requests, 37.8 s), the artifact exact in both, the model refusing to bypass the gate. This harness found and closed two defects: D-70 (the check round's synthetic assistant call needed `reasoning_content` on DeepSeek's thinking wire, or the repair turn itself died with HTTP 400) and D-71 (the Kimi run reported the runtime's own block note as the *reply* with exit 0 — a false success; the block was not even an event). The headless half is pinned by `v2_daemon::a_runtime_blocked_goal_is_not_reported_as_a_reply` (exit 1, `goal_status: BLOCKED`, `reply: null`, the settlement event carrying `blocked_by: runtime`, and the instance's tail entry of kind `runtime`) |
 | A17 | Artifacts change after a check | `v2_driver::check_inputs_must_still_hold_at_completion`; a configured check's `inputs` reach the goal unchanged (`config::tests::user_checks_become_goal_limits`) |
 | A18 | Multi-instance usage budget | `control::a_worker_shares_the_budget_of_the_goal_its_queue_serves` and related; the ceiling is *reachable* by the user (D-64): `config::user_limits_bound_every_goal`, `cli::configured_limits_reach_the_goal_and_really_bound_the_session` (the goal carries `max_total_tokens`, an unset ceiling stays `{}`) and `cli::a_tiny_configured_ceiling_parks_the_session_instead_of_running_it` (a 4-token ceiling parks the leader with the budget as the reason); the TUI renders the limits it is given (`checkpoint_defaults_to_the_leader_and_tracks_budget`: `usage 10/1000 · ends in 30m`); formally `V2Control::ReservationsAdmitted` / `AdmissionGate` |
 | A19 | Truncated stream and connection loss | `providers_fake::truncated_stream_before_output_is_transient`, `providers_stall::*` |
@@ -48,7 +48,7 @@ characters outside the two documented exceptions (`README.zh-CN.md` and the froz
 | A31 | Write failure / disk full | `control::disk_full_is_classified_at_the_submit_boundary`, `v2_driver::disk_full_stops_dispatch_reports_and_resumes_after_parking` |
 | A32 | Very large history measurement | `cargo run --offline --manifest-path engine/Cargo.toml --example load_probe -- review/tmp/<fresh dir> --steps 250 --payload 20000` (in-tree; raw `report.json` stays in the ignored evidence directory). Measured 2026-09-25: a ~1.26M-token synthetic history built through the production `Control` entry — append p50 6.1 ms / p95 9.5 ms, turn step p50 11.1 ms, a 501-message request built in p50 279 ms, daemon history page (200 entries) p50 23.8 ms, multi-instance reads 1/4/16 readers p50 22.5/87.3/505.8 ms, peak RSS 102 MiB, 10.7 MB of database growth (42.6 KB per step), reopen verification 1.7 ms, WAL + `synchronous=FULL` (synthetic text is not a tokenizer input: the numbers describe local overhead, never model capability) |
 | A33 | Two daemons / stale lock | `v2_daemon::second_daemon_is_refused_and_shutdown_releases_the_lock` |
-| A34 | Incompatible schema | `core::v2::store::open_refuses_unstamped_foreign_and_wrong_version`, `open_migrates_the_previous_schema_version` |
+| A34 | Incompatible schema | `core::v2::store::open_refuses_unstamped_foreign_and_wrong_version`, `open_migrates_the_previous_schema_version` (a `1`-stamped store still reaches the current version: the chain walks one step at a time in one transaction), `migrate_rewrites_the_runtimes_closing_notes` (D-71: schema 2 → 3 moves the runtime's closing notes out of the member's voice, leaving the member's own answers and the tool receipts untouched); probed on a real pre-fix state root (`/tmp/ta-providers-run`, written by the previous build) — `schema_version` 2 → 3 and `i-leader:0:13` `assistant`/`role: assistant` → `runtime`/`role: user` on one daemon boot |
 | A35 | Goal deadline | `control::goal_deadline_refuses_new_requests_and_dispatches`, `v2_driver::goal_deadline_parks_the_instance`; the deadline is *reachable* by the user (D-64): `config::user_limits_bound_every_goal` and `cli::configured_limits_reach_the_goal_and_really_bound_the_session` (the goal's `deadline` is ~15 minutes out for `deadline_minutes = 15`, and the duration key is not stored on the goal); formally `V2Control::NoRequestAfterDeadline` with the refuted control `MC_control_deadline.cfg` |
 | A36 | Install / init / doctor / cleanup / reopen | `cli::init_prepares_the_v2_root_and_doctor_verifies_it`; the one-off cleanup plus a real re-verification (local probe evidence under `review/tmp/`) |
 
@@ -61,6 +61,8 @@ A-matrix (which describes runtime scenarios):
 |---|---|
 | Plain output, `--json` report, `-` reads the prompt from stdin, an empty prompt is a usage error | `main::tests::exec_takes_the_prompt_from_the_argument_or_from_stdin`, `exec_refuses_a_missing_or_empty_prompt`; `cli::exec_takes_the_prompt_from_stdin_and_runs_the_acceptance_check` drives the real binary with a pipe and reads the submitted text back out of the leader's context |
 | Exit codes `0` settled / `1` failed or unfinished / `3` approval pending / `124` deadline / `2` usage or infrastructure | `v2::exec::tests::exit_codes_follow_the_documented_contract`; against a real daemon: `v2_daemon::a_blocked_goal_is_not_reported_as_a_success` (a `BLOCKED` goal is not exit 0), `a_failed_turn_ends_the_headless_run_instead_of_timing_out`, `a_parked_approval_ends_the_headless_run_at_once` |
+| A turn the runtime closed with nothing settled is `unsettled` (exit 1) — never a reply made of the runtime's own words, never a timeout | `v2_daemon::a_turn_closed_by_the_runtime_without_a_settlement_is_not_a_reply` (reported in <30 s), `a_runtime_blocked_goal_is_not_reported_as_a_reply`; `tui::the_runtimes_closing_note_is_not_the_members_message` (the same entries are never rendered as the member's message) |
+| The runtime's closing note stays in the conversation and a later turn still rides the wire | `core::v2::control::closing_a_turn_answers_its_finish_call` (the note is a `runtime` entry in the user's voice, next to the answered `finish`); real model on both protocols: `python3 review/dogfood/runtime_note.py --providers deepseek,kimi` (2026-09-25: turn 1 settles `SUCCEEDED`, turn 2 is an ordinary `reply` with exit 0 — the thinking-mode chat wire and Kimi's `responses` wire both accept the following request) |
 | A settlement recorded by an earlier run is not this run's outcome | `v2_daemon::headless_runs_report_their_own_outcome_not_an_earlier_settlement` (second run after a settled goal must report the reply, not `SUCCEEDED`) |
 | `--check COMMAND` runs after the turn in the isolated shell in the client's workspace, stops at the first failure, gates the exit code and writes `<state root>/verification.json` | `v2::exec::tests::acceptance_commands_run_in_order_and_stop_at_the_first_failure`, `the_check_verdict_reads_the_wrapper_marker`; `v2_daemon::headless_runs_verify_the_acceptance_commands_and_gate_the_exit_code`, `a_failing_acceptance_command_fails_the_run`; `cli::exec_takes_the_prompt_from_stdin_and_runs_the_acceptance_check` (the real binary writes the ledger) |
 | A parked or paused leader refuses new input (`2`) instead of queueing it | `v2_daemon::a_failed_turn_ends_the_headless_run_instead_of_timing_out` (the failed turn parks the leader; the next run refuses with "nothing was submitted") |
@@ -91,32 +93,27 @@ amended (D-49/D-50).
   second input leaves exactly one goal, `SUCCEEDED`, the delegation receipt names the closed goal, and the
   worker never runs. Whether the runtime should open a goal per user input, or the Leader should be given a
   tool to open one, is a design decision (D-42/D-56 touch it) that needs the user's word.
-- **A settled goal has no product surface to open a new one** (found while auditing the authority surface,
-  2026-09-25; verified by `engine/tests/v2_supervisor.rs::a_settled_goal_leaves_a_later_delegation_without_an_active_goal`):
-  `delegate_task` requires an ACTIVE goal, the kernel offers no create-goal tool, and the runtime creates no
-  goal when a later user input arrives — so the *second* instruction of a session cannot build a team, and the
-  model is told to "create a new goal (create_goal) before delegating" without a way to do it (the command
-  exists in the protocol; only a hand-written client can send it). The test pins the current behaviour: the
-  second input leaves exactly one goal, `SUCCEEDED`, the delegation receipt names the closed goal, and the
-  worker never runs. Whether the runtime should open a goal per user input, or the Leader should be given a
-  tool to open one, is a design decision (D-42/D-56 touch it) that needs the user's word.
-- **A worker whose model answers with prose and never calls `finish` keeps being asked** (found by
-  `review/dogfood/authority.py`, 2026-09-25, not fixed): with an open task, the driver's idle test
-  (`step_ready`: "the last entry is the model's own text **and** no open tasks") re-opens a turn right after a
-  plain reply, so a model that answers `BLOCKED.` instead of settling the task is asked again, and again.
-  Measured on a real DeepSeek Flash session whose delegated task was unachievable (it was asked to run a shell
-  command before the grant existed): **169 model requests / 1,226,717 prompt tokens / 181 context entries in
-  ~15 minutes**, all of it repeating the same reply, with no task progress — bounded only by a goal budget,
-  and that goal had none. D-64 now lets the user configure such a ceiling, which turns this class into a
-  parked, visible goal instead of a silent spend (the re-asking itself is unchanged). The probe was stopped by parking the instance (no CLI verb exists for that; the
-  probe now does it through the daemon protocol when it sees the loop). Two readings are possible (an instance
-  with open work should keep going vs. a plain reply ends its turn), and either fix is behavioural — idle
-  after a prose reply, or park with a reason after a bounded number of no-progress turns — so it needs the
-  user's decision and its own verification before it lands. Reproduce with the probe's first prompt shape
-  (delegate a task the worker cannot do) against an isolated state root; the numbers above are from
-  `/tmp/ta-authority-probe3` (2026-09-25 18:22–18:40). Related and also open: whether the runtime should
-  *interrupt* a running turn when the user sends something, instead of holding the input to the boundary as
-  D-63 now does.
+- **A model that stops settling its task leaves a visible wait, and the runtime does not resolve it** (the
+  remaining ceiling of D-65, measured again 2026-09-25): a plain reply ends the instance's turn (that is the
+  fix — the pre-fix clause asked **169 model requests / 1,226,717 prompt tokens / 181 context entries in ~15
+  minutes** on a real DeepSeek Flash session, `/tmp/ta-authority-probe3`), so the delegated task stays
+  `RUNNING` and the delegator's `wait` stays pending. The levers are the user's: cancel the task (`c` in the
+  tasks panel, `teamagents tasks cancel`, which satisfies the wait — a `BLOCKED` task would not) or re-dispatch
+  the work as a new task. Whether the *runtime* should also offer a bounded "no progress" path (cancel or park
+  the task after N unsettled turns) is a design decision that needs the user's word and its own verification.
+  Measured consequence, from `review/dogfood/providers.py` (2026-09-25): when the *worker* answers with prose
+  instead of calling `finish`, its task never settles, and a leader that verifies the artifact itself can
+  settle the goal `SUCCEEDED` with that task still open — `complete_goal` checks open **operations**, not open
+  **tasks** (that run: 17 requests, 252 s, `answer.txt` exact, no `task_completed` event; a re-run on the same
+  build had the worker call `finish` and passed in 23.1 s, 8 requests — the harness is intermittent because the
+  model is). This is not an implementation slip: §4.2's word for the completion transaction is "the acceptance
+  references, the open-operation check and the goal/task outcome", and the delegator's own `wait` is the
+  design's mechanism for holding a leader until its delegated work resolves (here the leader used a timer wait
+  and verified the artifact itself, which is a defensible leader's call, not a runtime one). Whether the
+  runtime should *additionally* refuse a settlement while the goal's delegated tasks are open is therefore a
+  design question about team semantics, not a bug — it needs the user's word. Related and also open: whether
+  the runtime should *interrupt* a running turn when the user sends something, instead of holding the input to
+  the boundary as D-63 now does.
 - **A worker needs the user's grant for the shared-workspace shell** (D-61): a spawned worker holds no
   `shell@workspace` (§5.1), so until the user runs `teamagents authority grant --subject <id> --action shell
   --scope workspace` it works with the file, web and skill tools only. The surface exists and is verified, but

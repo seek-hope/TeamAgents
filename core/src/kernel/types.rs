@@ -24,6 +24,15 @@ pub enum EntryKind {
     Assistant,
     ToolResult,
     Note,
+    /// The runtime's own closing word for a turn: the settlement note a goal
+    /// close/block or a turn close appends so the turn has an ending the model
+    /// did not have to produce (§8, D-71). It rides as user-role text like a
+    /// note, but unlike one it is *not* awaiting an answer: the last word is
+    /// already spoken, so the idle rule treats it as committed. Keeping it
+    /// distinct from `Assistant` is what stops a client reading "the last
+    /// assistant entry is the reply" from reporting the runtime's own note as
+    /// the member's answer.
+    Runtime,
 }
 
 impl EntryKind {
@@ -34,6 +43,7 @@ impl EntryKind {
             EntryKind::Assistant => "assistant",
             EntryKind::ToolResult => "tool_result",
             EntryKind::Note => "note",
+            EntryKind::Runtime => "runtime",
         }
     }
 }

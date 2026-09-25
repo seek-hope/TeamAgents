@@ -29,6 +29,7 @@ CONSTANTS Instances,       \* {"L"} or {"L","W"}
           PerInstanceFairness, \* counterfactual: fairness as one disjunction over instances (pre-D-63)
           IgnoreDeadline,  \* counterfactual: a runtime that ignores the goal deadline (A35)
           ReaskAfterReply, \* counterfactual: re-open a turn when the last word is the model's own (D-65)
+          RuntimeTailIsWork, \* counterfactual: treat the runtime's own closing note as unaddressed (D-71)
           MaxEpoch,        \* bound on ResetInstance (keeps the state graph finite)
           MaxUnknown       \* bound on lost-attempt accounting
 
@@ -73,6 +74,13 @@ Alive(i) == i \notin dead
 ApprovalSatisfied(o) == o \notin ApprovalOps \/ approvals[o] = "APPROVED"
 NonTerminalOps(i) == { o \in Ops : ops[o].instance = i /\ ops[o].status \in OpNonTerminal }
 DoneOps(i) == { o \in Ops : ops[o].instance = i /\ ops[o].status \in OpTerminal }
+
+\* The instance's last committed word: the model's own text ("assistant") or the
+\* runtime's own closing note ("runtime", §8/D-71 — a settlement or a closed turn
+\* the runtime states in its own voice). Neither awaits an answer; a tail in
+\* UnaddressedTails is work the model has not seen yet.
+CommittedTails   == {"assistant", "runtime"}
+UnaddressedTails == {"user", "tool"} \cup (IF RuntimeTailIsWork THEN {"runtime"} ELSE {})
 
 \* ------------------------------------------------------------------- actions --
 \* user input lands at the READY boundary (§5.4, and the model of the driver's
@@ -123,8 +131,11 @@ BeginRequest(i) ==
   \* The idle rule: a turn opens for *unaddressed* work only. The counterfactual
   \* re-opens one while the last word is the model's own text — what the code did
   \* whenever an instance still had an open task (D-65), which is a turn storm on a
-  \* model that answers with prose. `NoTurnWithoutWork` must refute it.
-  /\ (ReaskAfterReply \/ inst[i].tail # "assistant")
+  \* model that answers with prose. The runtime's own closing note is the other
+  \* committed tail: a runtime that asked the model to answer it would be inventing
+  \* work out of its own settlement (D-71), which `RuntimeTailIsWork` states and
+  \* `NoTurnWithoutWork` must refute.
+  /\ (ReaskAfterReply \/ inst[i].tail \in UnaddressedTails)
   /\ ~inst[i].queue                      \* the boundary applies the queued input first
   /\ BudgetFits(1)
   \* A35: past the goal's deadline no new request begins. The counterfactual drops
@@ -271,14 +282,17 @@ FailRequest(i) ==
                                   ![i].phase = "READY"]
   /\ UNCHANGED <<attempts, ops, approvals, dead>>
 
-\* goal settlement happens once and only from ACTIVE (§8)
+\* goal settlement happens once and only from ACTIVE (§8). The settlement leaves
+\* the runtime's own closing note as the instance's last word: the runtime states
+\* the ending, the model does not have to answer for it, and the idle rule
+\* therefore leaves the instance alone (D-71).
 SettleGoal(i, status) ==
   /\ Alive(i) /\ status \in {"SUCCEEDED", "FAILED", "BLOCKED", "CANCELLED"}
   /\ goal.status = "ACTIVE"
   /\ NonTerminalOps(i) = {}                       \* no open operation survives a close
   /\ ~(\E r \in UsedReqs : requests[r].instance = i /\ requests[r].status = "PENDING")
   /\ goal' = [goal EXCEPT !.status = status]
-  /\ inst' = [inst EXCEPT ![i].phase = "READY", ![i].tail = "assistant"]
+  /\ inst' = [inst EXCEPT ![i].phase = "READY", ![i].tail = "runtime"]
   /\ UNCHANGED <<requests, attempts, ops, approvals, dead>>
 
 \* reset: new epoch closes the old execution, reservations released (A24)
@@ -431,10 +445,11 @@ SelectionIsComplete ==
   \A r \in ReqIds : requests[r].selected =>
      \E a \in AttIds : attempts[a].req = r /\ attempts[a].status = "COMPLETE"
 
-\* the idle rule: a turn only starts when the last word is not the assistant's own
+\* the idle rule: a turn only starts when the last word is not already committed —
+\* neither the model's own text nor the runtime's own closing note (§8, D-71)
 NoTurnWithoutWork ==
   \A i \in Instances : inst[i].phase \in {"MODEL_PENDING", "TOOLS_PENDING"} =>
-      inst[i].tail # "assistant"
+      inst[i].tail \notin CommittedTails
 
 \* D-63: user input only ever enters the context at a READY boundary. The monitor
 \* records the phase each landing happened at; the counterfactual where the driver

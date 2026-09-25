@@ -129,6 +129,37 @@ fn a_compaction_summary_is_shown_and_does_not_duplicate_notes() {
     assert_eq!(summaries, 1);
 }
 
+/// D-71: the runtime's own closing note is not the member's message. Rendering it
+/// as one would show the user words the instance never said — and its old
+/// assistant shape is exactly what a client reading "the last assistant entry is
+/// the reply" reported as the model's answer.
+#[test]
+fn the_runtimes_closing_note_is_not_the_members_message() {
+    let mut app = app();
+    app.apply_history(json!({"entries": [
+        {"idx": 1, "kind": "assistant", "message": {"role": "assistant", "content": "done"}},
+        {"idx": 2, "kind": "runtime", "message": {"role": "user",
+             "content": "runtime: goal g1 closed as SUCCEEDED"}}
+    ]}));
+    let kinds: Vec<_> = app.entries.iter().map(|e| e.kind.clone()).collect();
+    assert_eq!(kinds, vec![ChatKind::Assistant, ChatKind::Runtime]);
+    assert_eq!(app.entries[1].who, "runtime");
+    assert!(app.entries[1].text.contains("closed as SUCCEEDED"), "{:?}", app.entries[1]);
+    // a runtime block announces itself through `goal_blocked` (which carries the
+    // reason); the settlement event does not add a second, reason-less note
+    app.apply_events(&[json!({"sequence": 7, "kind": "goal_completed", "scope": "g1",
+                              "payload": {"status": "BLOCKED", "blocked_by": "runtime",
+                                          "reason": "required checks failed"}})]);
+    assert!(app.entries.iter().all(|e| !e.text.contains("goal finished")), "{:?}", app.entries);
+    app.apply_events(&[json!({"sequence": 8, "kind": "goal_blocked", "scope": "g1",
+                              "payload": {"status": "BLOCKED", "reason": "required checks failed (never:exit)"}})]);
+    assert!(
+        app.entries.iter().any(|e| e.kind == ChatKind::System && e.text.contains("never:exit")),
+        "{:?}",
+        app.entries
+    );
+}
+
 #[test]
 fn events_drive_refreshes_and_notes() {
     let mut app = app();

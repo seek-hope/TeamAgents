@@ -40,7 +40,7 @@ happened. Diagnostics go to stderr, the outcome to stdout (`--json` prints one J
 | Exit code | Meaning |
 |---|---|
 | `0` | settled: the goal completed as `SUCCEEDED`, or the leader answered directly |
-| `1` | not delivered: the goal settled otherwise, the turn failed permanently, or a `--check` command failed |
+| `1` | not delivered: the goal settled otherwise, the turn failed permanently, a `--check` command failed, or the run ended `unsettled` (the turn closed with nothing settled — the runtime's own closing word, never a reply) |
 | `3` | an approval is pending — a headless run does not wait for the deadline; decide it with `teamagents approvals` (§4) |
 | `124` | the `--timeout` deadline passed with the instance still running |
 | `2` | usage or infrastructure: no daemon, no model profile, a leader that is parked or paused |

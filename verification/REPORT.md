@@ -45,7 +45,7 @@ in [README.md](README.md); the fix ledger is in
 
 | Layer | Evidence | Scale | Re-run |
 |---|---|---|---|
-| Protocol model | `tla/V2Control.tla` (15 invariants + 6 properties, incl. the deadline gate) | 132,193 states | `make verify-model` |
+| Protocol model | `tla/V2Control.tla` (15 invariants + 6 properties, incl. the deadline gate and the committed-tail rule) | 137,401 states | `make verify-model` |
 | Protocol model | `tla/V2Artifact.tla` (4 + 4) | 241 states | `make verify-model-all` |
 | Protocol model | `tla/V2Wait.tla` (8 + 1 liveness) | 505,905 states | as above |
 | Protocol model | `tla/V2Task.tla` (11) | 5,721,401 states | as above |
@@ -115,6 +115,28 @@ carries `deadlinePassed` (an environment action moves the clock past the deadlin
 | `make verify-model-all` (MC_control_two.cfg) | **No error found** — 1,263,649 states / 165,792 distinct / ~45 s (two instances, the deadline flag included) |
 | Negative control `MC_control_deadline.cfg` | a runtime that ignores the deadline (switch `IgnoreDeadline`) makes TLC report **`Action property NoRequestAfterDeadline is violated`**; `make verify-model-counterexamples` requires exactly that |
 | Correspondence (`core/src/v2/control.rs`, `engine/tests/cli.rs`) | `goal_deadline_refuses_new_requests_and_dispatches` (the gate) and the daemon test that the configured `deadline_minutes` becomes an absolute deadline ~15 minutes out on the real goal, with the duration key never stored |
+
+### The runtime's own word (added 2026-09-25, D-71)
+
+`NoTurnWithoutWork` (D-65) said "no turn while the last word is the model's own", and the code's idle rule
+matched that clause literally: a turn opened unless the last context entry was the model's (`assistant`). The
+runtime's own closing notes were stored *as* assistant entries to keep an instance idle, so the model had one
+tail value for two speakers — and the headless client, reading "the last assistant entry is the reply",
+reported the runtime's block note as the member's answer with exit 0 (a real Kimi run; D-71). The model now
+distinguishes the two speakers: the tail is committed when it is the model's own text (`"assistant"`) **or**
+the runtime's closing note (`"runtime"`, which `SettleGoal` now leaves), and a turn opens only for the
+unaddressed tails (`UnaddressedTails == {"user", "tool"}`). `CommittedTails` is the shared statement, so the
+invariant and the guard cannot drift apart.
+
+| Run | Result |
+|---|---|
+| `make verify-model-all` (MC.cfg) | **No error found** — 137,401 states generated / 28,688 distinct / 0 left / depth 15 (the guard change makes the state graph slightly smaller; `NoTurnWithoutWork` reads `tail \notin CommittedTails`) |
+| `make verify-model-all` (MC_control_two.cfg) | **No error found** — 1,316,137 states generated / 173,184 distinct / 0 left |
+| Negative control `MC_control_runtimeTail.cfg` | treating the runtime's own closing note as unaddressed work (switch `RuntimeTailIsWork`, exactly the clause the old rule implied) makes TLC report **`Invariant NoTurnWithoutWork is violated`**, with the violating state showing `tail = "runtime"` and `phase = "MODEL_PENDING"` — i.e. the runtime re-opening a turn against its own settlement. `make verify-model-counterexamples` requires exactly that, so the new clause is not vacuous |
+| Correspondence (`engine/tests/v2_daemon.rs`) | `a_runtime_blocked_goal_is_not_reported_as_a_reply`: a real daemon, a socket, three repair rounds against a check that never passes — the run reports `failed` / `BLOCKED` / `reply: null` / exit 1, the settlement is an event (`blocked_by: runtime`), and the instance's tail entry is of kind `runtime` with the user's role |
+| Correspondence (`engine/tests/v2_daemon.rs`) | `a_turn_closed_by_the_runtime_without_a_settlement_is_not_a_reply`: the second run on an already-settled goal reports `unsettled` (exit 1) in under a second of work instead of reading the closing note as a reply or waiting out the deadline |
+| Correspondence (`core`, `tui`) | `closing_a_turn_answers_its_finish_call` (the marker is a `runtime` entry in the user's voice; the finish call is still answered next to it), `migrate_rewrites_the_runtimes_closing_notes` (a schema-2 store is rewritten: the runtime's notes only, the member's answer and the tool receipt untouched), `the_runtimes_closing_note_is_not_the_members_message` (the TUI renders it as the runtime's, never as the instance's) |
+| Real model, both protocols (`review/dogfood/checks.py`) | deepseek: exit 1, `end=failed`, goal `BLOCKED`, 11 requests, 9.7 s — kimi (`responses`): exit 1, `end=failed`, goal `BLOCKED`, 8 requests, 37.8 s. The Kimi run reported `exit 0 / end=reply / goal=None` before the fix |
 
 ### The inbound boundary (added 2026-09-25, D-63)
 

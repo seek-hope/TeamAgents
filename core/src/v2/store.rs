@@ -6,6 +6,7 @@
 
 use super::models::{V2_FORMAT_ID, V2_SCHEMA_VERSION};
 use rusqlite::{Connection, OptionalExtension};
+use serde_json::{json, Value as Json};
 use std::path::Path;
 
 const SCHEMA: &str = r#"
@@ -254,25 +255,76 @@ pub fn open(path: &Path, create: bool) -> Result<Connection, String> {
     Ok(conn)
 }
 
-/// One-step-v1 chains are migrated in a single transaction; anything else is
-/// refused. Each step must be self-contained (DDL + stamp together), so a
-/// crash can only leave the database at its previous version.
+/// A store older than the current version is walked up one step at a time in a
+/// single transaction; a version from the future (or from before the first
+/// step) is refused. Each step is self-contained, so a crash can only leave the
+/// database at a version this chain knows how to continue from.
 fn migrate(conn: &Connection, from: i64) -> Result<(), String> {
-    if from != V2_SCHEMA_VERSION - 1 {
+    if from > V2_SCHEMA_VERSION {
         return Err(format!(
-            "v2 schema version {from} != supported {V2_SCHEMA_VERSION}; explicit migration or refusal required"
+            "v2 schema version {from} is newer than this build ({V2_SCHEMA_VERSION}); refusing to reinterpret state"
         ));
     }
+    if from < 1 {
+        return Err(format!("v2 schema version {from} is not a known version; explicit migration or refusal required"));
+    }
     let tx = conn.unchecked_transaction().map_err(|e| format!("migrate tx: {e}"))?;
-    // 1 → 2 (R22/A20): compression provenance needs no table of its own.
-    tx.execute_batch(
-        "ALTER TABLE context_entries ADD COLUMN compressed_by TEXT;
-         ALTER TABLE model_requests ADD COLUMN kind TEXT NOT NULL DEFAULT 'turn';",
-    )
-    .map_err(|e| format!("migrate 1 -> 2: {e}"))?;
-    tx.execute("UPDATE meta SET value = ?1 WHERE key = 'schema_version'", [V2_SCHEMA_VERSION.to_string()])
-        .map_err(|e| format!("migrate stamp: {e}"))?;
+    let mut version = from;
+    while version < V2_SCHEMA_VERSION {
+        match version {
+            // 1 → 2 (R22/A20): compression provenance needs no table of its own.
+            1 => tx
+                .execute_batch(
+                    "ALTER TABLE context_entries ADD COLUMN compressed_by TEXT;
+                     ALTER TABLE model_requests ADD COLUMN kind TEXT NOT NULL DEFAULT 'turn';",
+                )
+                .map_err(|e| format!("migrate 1 -> 2: {e}"))?,
+            // 2 → 3 (D-71): the runtime's own closing notes were stored as the
+            // member's assistant text — the shape a client reading "the last
+            // assistant entry is the reply" reported as the model's answer. The
+            // writer is fixed and so is the past: rewrite them where they are,
+            // identified by the envelope the runtime itself generated (a model
+            // entry carries its decision id there, never one of these).
+            2 => rewrite_closing_notes(&tx)?,
+            other => return Err(format!("no migration step from v2 schema version {other}")),
+        }
+        version += 1;
+        tx.execute("UPDATE meta SET value = ?1 WHERE key = 'schema_version'", [version.to_string()])
+            .map_err(|e| format!("migrate stamp: {e}"))?;
+    }
     tx.commit().map_err(|e| format!("migrate commit: {e}"))?;
+    Ok(())
+}
+
+/// 2 → 3: `assistant` → `runtime` for the runtime's own three closing notes,
+/// with their message role turned from `assistant` to `user` — they were never
+/// the member speaking (§8, D-71).
+fn rewrite_closing_notes(tx: &rusqlite::Transaction) -> Result<(), String> {
+    let rows: Vec<(String, String)> = {
+        let mut stmt = tx
+            .prepare(
+                "SELECT id, message_json FROM context_entries
+                 WHERE kind = 'assistant'
+                   AND (envelope_id LIKE 'goal-close-%' OR envelope_id LIKE 'goal-block-%'
+                        OR envelope_id LIKE 'turn-close-%')",
+            )
+            .map_err(|e| format!("migrate 2 -> 3 scan: {e}"))?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+            .map_err(|e| format!("migrate 2 -> 3 query: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("migrate 2 -> 3 collect: {e}"))?
+    };
+    for (id, raw) in rows {
+        let mut message: Json = serde_json::from_str(&raw).map_err(|e| format!("migrate {id}: {e}"))?;
+        if message["role"] == json!("assistant") {
+            message["role"] = json!("user");
+        }
+        tx.execute(
+            "UPDATE context_entries SET kind = 'runtime', message_json = ?1 WHERE id = ?2",
+            rusqlite::params![message.to_string(), id],
+        )
+        .map_err(|e| format!("migrate {id}: {e}"))?;
+    }
     Ok(())
 }
 
@@ -381,6 +433,55 @@ mod tests {
             .query_row("SELECT compressed_by FROM context_entries WHERE id = 'i1:0:1'", [], |row| row.get(0))
             .unwrap();
         assert_eq!(covered, None);
+        drop(conn);
+        cleanup(&p);
+    }
+
+    /// D-71: a session written before the fix carries the runtime's own closing
+    /// notes as the member's assistant text. The migration recognises them by the
+    /// envelope the runtime generated (a model entry carries its decision id
+    /// there) and moves them to the runtime kind in the user's voice, so no
+    /// reader can take the runtime's word for the model's answer.
+    #[test]
+    fn migrate_rewrites_the_runtimes_closing_notes() {
+        let p = path("notes");
+        {
+            let conn = open(&p, true).unwrap();
+            conn.execute_batch(
+                "INSERT INTO context_entries (instance_id, epoch, idx, id, kind, message_json, envelope_id, created)
+                 VALUES ('i1', 0, 1, 'i1:0:1', 'assistant',
+                         '{\"role\":\"assistant\",\"content\":\"runtime: goal g1 closed as SUCCEEDED\"}',
+                         'goal-close-g1', 0),
+                        ('i1', 0, 2, 'i1:0:2', 'assistant',
+                         '{\"role\":\"assistant\",\"content\":\"the real answer\"}', 'dec-1', 0),
+                        ('i1', 0, 3, 'i1:0:3', 'tool_result',
+                         '{\"role\":\"tool\",\"tool_call_id\":\"c1\",\"content\":\"out\"}', 'op-1', 0);
+                 UPDATE meta SET value = '2' WHERE key = 'schema_version';",
+            )
+            .unwrap();
+        }
+        let conn = open(&p, false).expect("migrate");
+        let version: String =
+            conn.query_row("SELECT value FROM meta WHERE key = 'schema_version'", [], |row| row.get(0)).unwrap();
+        assert_eq!(version, V2_SCHEMA_VERSION.to_string());
+        let note: (String, String) = conn
+            .query_row("SELECT kind, message_json FROM context_entries WHERE id = 'i1:0:1'", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(note.0, "runtime");
+        assert!(note.1.contains(r#""role":"user""#), "{}", note.1);
+        // the member's own answer and the tool result are untouched
+        let answer: (String, String) = conn
+            .query_row("SELECT kind, message_json FROM context_entries WHERE id = 'i1:0:2'", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(answer.0, "assistant");
+        assert!(answer.1.contains(r#""role":"assistant""#), "{}", answer.1);
+        let receipt: String =
+            conn.query_row("SELECT kind FROM context_entries WHERE id = 'i1:0:3'", [], |row| row.get(0)).unwrap();
+        assert_eq!(receipt, "tool_result");
         drop(conn);
         cleanup(&p);
     }

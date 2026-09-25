@@ -231,6 +231,101 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-71 A runtime-blocked goal is not a reply: the runtime's own word is never the member's (2026-09-25)
+
+A16's harness says a required check that can never pass must end the run **failed with the goal BLOCKED**.
+Against DeepSeek that is what happened (D-70). Against the second catalog entry, Kimi over the `responses`
+protocol, the same scenario ended
+
+```
+provider=kimi exec exit=0 end=reply goal=None | goal BLOCKED | check rounds 3 | repairs 2
+```
+
+— the goal *had* been blocked, and the headless run reported a **success with no goal status**: a false
+success in the exact place the gate exists to prevent one. Two defects compounded:
+
+1. **The block was not a settlement.** `complete_goal` announces its outcome with a `goal_completed` event;
+   `block_goal` wrote the goal status and emitted only `goal_blocked`. A client that follows a goal's ending
+   through the event log — the headless run, the TUI — never learned that the goal ended, so `exec` fell
+   through to "the last entry is the reply".
+2. **The runtime's own closing note was stored as the member's.** All three runtime notes
+   (`runtime: goal … blocked: …`, `runtime: turn closed`, `runtime: goal … closed as …`) were context
+   entries of kind **`assistant`** with an assistant-role message. The client's last resort — read the last
+   assistant entry as the model's answer — therefore returned the runtime's *own* sentence
+   (`runtime: goal goal-s-main blocked: required checks failed (impossible:exit) after 3 round(s)`) as the
+   reply, and `exit 0`. The note was written that way on purpose (a note that looks like model text keeps
+   the driver idle), which is exactly why the confusion was invisible: the code had one word for two
+   speakers.
+
+**The fix, in three places, each with the reason it is the right level:**
+
+- `block_goal` emits the same `goal_completed` event as `complete_goal`, with `status: "BLOCKED"` and
+  `blocked_by: "runtime"` (the distinct `goal_blocked` event stays: it carries the check names and reason,
+  and keeps "who decided" auditable). A settlement is a fact of the event log, not only of a snapshot a
+  polling client happens to read at the right moment.
+- The runtime's closing notes get their **own entry kind** (`EntryKind::Runtime`, `kind = 'runtime'`) in the
+  **user's voice** (`role: "user"`, the same voice the existing `note` kind uses for runtime-authored
+  facts). The kind is the discriminator every reader already uses (`exec` reads entry kinds, the TUI switches
+  on them), so no client has to pattern-match `"runtime: "` text to tell the runtime apart from the model.
+  The idle rule counts the committed tails — the model's own text **or** the runtime's closing word — as
+  answered, which is what the assistant-shaped note was for: a runtime that re-opened a turn against its own
+  settlement would be inventing work out of its own ending (formally: `RuntimeTailIsWork`).
+- `exec` reports what actually happened. A turn the runtime closed with **no settlement this run can claim**
+  (the goal settled in an earlier run, or the `finish` had nothing left to settle) is the new terminal
+  `end: "unsettled"`, exit 1 — not a `reply` whose text the member never said, and not a timeout that would
+  mislabel a finished turn. The loop reads the checkpoint **before** the events for this: a settlement
+  commits its event and the phase change in one transaction, so that order cannot see an idle instance whose
+  settlement is still unread.
+
+**Sessions written before the fix are migrated, not left behind.** Schema 2 → 3 rewrites exactly the three
+runtime envelopes (`goal-close-*`, `goal-block-*`, `turn-close-*`; a model entry carries its decision id
+there, never one of these) from `assistant` to `runtime` with `role: "user"`. The migration walks any older
+store up step by step in one transaction (a `1`-stamped store still reaches the current version), which the
+previous one-step rule did not allow. Probe on a real pre-fix root (`/tmp/ta-providers-run`, written by the
+previous build): before `schema_version = 2`, `i-leader:0:13 kind=assistant {"role":"assistant", …}`; after
+one daemon boot on the new build, `schema_version = 3`,
+`i-leader:0:13 kind=runtime {"role":"user","content":"runtime: goal goal-s-main closed as SUCCEEDED"}`.
+
+**Evidence** (all re-runnable):
+
+- `v2_daemon::a_runtime_blocked_goal_is_not_reported_as_a_reply` — the whole scenario through a real socket
+  (a check that always fails, three repair rounds): `end: failed`, `goal_status: BLOCKED`, `reply: null`,
+  exit 1, the `goal_completed` event present with `blocked_by: runtime`, and the instance's tail entry of
+  kind `runtime`.
+- `v2_daemon::a_turn_closed_by_the_runtime_without_a_settlement_is_not_a_reply` — the second run on a settled
+  goal: `end: "unsettled"`, exit 1, returned at once instead of waiting out its 30 s deadline.
+- `v2_driver::required_checks_exhausted_parks_the_goal_blocked` (updated: the block *is* a `goal_completed`
+  settlement now), `core::v2::control::closing_a_turn_answers_its_finish_call` (the close marker is a
+  `runtime` entry in the user's voice), `v2::store::migrate_rewrites_the_runtimes_closing_notes`,
+  `tui::the_runtimes_closing_note_is_not_the_members_message`.
+- Real models, same harness, both protocols: `python3 review/dogfood/checks.py --provider deepseek`
+  (exit 1, `end=failed`, goal BLOCKED, 11 requests, 9.7 s) and `--provider kimi` (exit 1, `end=failed`, goal
+  BLOCKED, 8 requests, 37.8 s) — where the Kimi run had reported `exit 0 / end=reply / goal=None` before.
+- `python3 review/dogfood/providers.py` (A27, two providers) still completes: exit 0, goal SUCCEEDED, the
+  delegated task SUCCEEDED, both members on their own model, 8 requests, 23.1 s.
+- `python3 review/dogfood/runtime_note.py --providers deepseek,kimi` — the note is not only *stored* under
+  its own kind, the transcript still works: two turns in one state root, the first settling `SUCCEEDED` and
+  the second (whose request carries the runtime's user-role note) answering normally with exit 0. deepseek
+  1.6 s then 0.9 s, kimi 8.9 s then 11.8 s, the note at `i-leader:0:4` as `runtime`/`role: user` in both.
+  This is the check the shape needed: `materialize` sends `entry.message` verbatim, so the change had to be
+  safe on the DeepSeek thinking wire and on Kimi's `responses` wire, and it is.
+- Formally: `NoTurnWithoutWork` now says *no turn while the tail is committed* (the model's text or the
+  runtime's closing note), `SettleGoal` leaves `tail = "runtime"`, and the new negative control
+  `MC_control_runtimeTail.cfg` (`RuntimeTailIsWork = TRUE`) is **refuted** by that invariant with
+  `tail = "runtime"` and `phase = "MODEL_PENDING"` in the counterexample state. `make verify-model-all`
+  (10 configurations), `make verify-model-counterexamples` (8 controls, each refuted) and
+  `make verify-kani` are green.
+
+Ceiling, stated honestly: the kind and the voice are the fix for *new* sessions and the migration covers the
+old ones, but a client that keys on text rather than kinds would still be reading a convention. The Kimi
+harness also showed the D-65 ceiling from the other side, unchanged by this decision and worth knowing: when
+the *worker* answers with prose instead of calling `finish`, the delegated task stays RUNNING, and a leader
+that verifies the artifact itself (as it did here — it read the worker's response and the file) can settle
+the goal SUCCEEDED with that task still open, because `complete_goal` checks open **operations**, not open
+**tasks** — which is what §4.2's completion transaction names, with the delegator's own `wait` as the
+mechanism that should hold a leader until its delegated work resolves. Whether the runtime should refuse such
+a settlement anyway is a design question about team semantics for the user, not a defect this entry fixes.
+
 ## D-70 The completion gate works on a thinking-mode provider (2026-09-25)
 
 Closing A16's last gap — a *real-model* run whose required check fails — found a defect that no deterministic

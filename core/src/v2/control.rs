@@ -3288,8 +3288,8 @@ fn block_goal(tx: &Connection, session_id: &str, params: &Json, identity: &Ident
         tx,
         instance_id,
         epoch,
-        "assistant",
-        &json!({"role": "assistant", "content": format!("runtime: goal {goal_id} blocked: {reason}")}),
+        "runtime",
+        &json!({"role": "user", "content": format!("runtime: goal {goal_id} blocked: {reason}")}),
         Some(&format!("goal-block-{goal_id}")),
         &json!([]),
     )?;
@@ -3298,6 +3298,18 @@ fn block_goal(tx: &Connection, session_id: &str, params: &Json, identity: &Ident
         [instance_id],
     )
     .map_err(|e| format!("block instance: {e}"))?;
+    // A block is a *settlement*: `complete_goal` announces one, and without the same
+    // event here a client that keys on the goal's settlement (the headless run, the
+    // TUI) never learns the goal ended — the block was invisible and `exec` read the
+    // runtime's own note as an answer, reporting a false success (D-71).
+    event(
+        tx,
+        session_id,
+        "goal_completed",
+        goal_id,
+        &json!({"goal_id": goal_id, "status": "BLOCKED", "reason": reason, "detached": detached,
+                "blocked_by": "runtime"}),
+    )?;
     event(
         tx,
         session_id,
@@ -3333,8 +3345,8 @@ fn close_completion(tx: &Connection, session_id: &str, params: &Json) -> Result<
         tx,
         instance_id,
         epoch,
-        "assistant",
-        &json!({"role": "assistant", "content": "runtime: turn closed"}),
+        "runtime",
+        &json!({"role": "user", "content": "runtime: turn closed"}),
         Some(&format!("turn-close-{instance_id}")),
         &json!([]),
     )?;
@@ -3406,13 +3418,16 @@ fn complete_goal(tx: &Connection, session_id: &str, params: &Json) -> Result<Jso
     answer_dangling_calls(tx, instance_id, epoch, &format!("[finish accepted: goal {goal_id} closed as {status}]"))?;
     // the runtime's own closing statement: without it the verification
     // receipts left at the tail would look like pending model work and the
-    // driver would ask for one more turn (§8 completes once, not per round)
+    // driver would ask for one more turn (§8 completes once, not per round).
+    // It is the runtime's *own* word, stored under the runtime kind and in the
+    // user's voice: an assistant-shaped note is what a client reading "the last
+    // assistant entry is the reply" mistakes for the member's answer (D-71).
     append_context(
         tx,
         instance_id,
         epoch,
-        "assistant",
-        &json!({"role": "assistant", "content": format!("runtime: goal {goal_id} closed as {status}")}),
+        "runtime",
+        &json!({"role": "user", "content": format!("runtime: goal {goal_id} closed as {status}")}),
         Some(&format!("goal-close-{goal_id}")),
         &json!([]),
     )?;
@@ -6839,8 +6854,11 @@ mod tests {
             let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
             rows.collect::<Result<Vec<_>, _>>().unwrap()
         };
-        assert_eq!(tail[0].0, "assistant", "the close marker keeps the instance idle");
+        // the close marker keeps the instance idle, and it is the runtime's own
+        // word: never an assistant entry a client could read as the reply (D-71)
+        assert_eq!(tail[0].0, "runtime", "the close marker keeps the instance idle");
         assert!(tail[0].1.contains("runtime: turn closed"), "{}", tail[0].1);
+        assert!(tail[0].1.contains(r#""role":"user""#), "{}", tail[0].1);
         assert_eq!(tail[1].0, "tool_result");
         assert!(tail[1].1.contains("finish-1"), "{}", tail[1].1);
         cleanup(&path);

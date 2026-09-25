@@ -726,6 +726,7 @@ impl<P: Provider> Driver<P> {
                         "user" => EntryKind::User,
                         "assistant" => EntryKind::Assistant,
                         "tool_result" => EntryKind::ToolResult,
+                        "runtime" => EntryKind::Runtime,
                         // notes and compaction summaries both ride as user-role
                         // text; neither is a user turn
                         "note" | "summary" => EntryKind::Note,
@@ -1188,7 +1189,11 @@ impl<P: Provider> Driver<P> {
         // state outright. The instance therefore goes idle with the task still
         // RUNNING, and the delegator or the user resolves it: cancelling the task
         // satisfies the delegator's wait (a BLOCKED one would not; §5.3).
-        if entries.last().is_none_or(|entry| entry.kind == EntryKind::Assistant)
+        // The runtime's own closing word (a settlement note, D-71) is the other
+        // committed tail: the runtime has just said everything there is to say
+        // about that turn, and asking the model to answer it would be the runtime
+        // inventing work — the same mistake in a new place.
+        if entries.last().is_none_or(|entry| matches!(entry.kind, EntryKind::Assistant | EntryKind::Runtime))
             && self.oldest_task("PENDING").await?.is_none()
         {
             return Ok(false);
