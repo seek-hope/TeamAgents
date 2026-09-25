@@ -268,6 +268,78 @@ Evidence: `core::kernel::tests::a_finish_without_a_usable_status_is_not_a_comple
 run, and the post-fix re-runs). The scripted tests in this repository accept any transcript, so this is exactly
 the class of defect the real-service rule exists for.
 
+## D-59 A spawned team runs: model resolution, spawn-time validation, and a supervisor that survives (2026-09-25)
+
+With D-58 in place the Leader finally *spawned* — and the session stalled instead: two workers sat `READY` with
+`PENDING` tasks while the Leader waited, until the headless client's 900-second deadline expired. The daemon log
+had the reason: `panicked at src/cli.rs:333: provider for deepseek-flash: model deepseek-flash is not in the user
+catalog`.
+
+The chain: the supervisor hands each driver the *wire-effective* profile (its `model` field is the model name the
+provider speaks) while the provider factory receives the catalog *key*. For the leader that separation works,
+because the supervisor passes the unresolved profile to the factory. A spawned child, though, stores the
+parent's **resolved** profile, so its `model` field holds `deepseek-flash` while the factory looks it up as a
+catalog key — and the daemon's factory turned that into a `panic!`. The panic happened inside the supervisor's
+discovery loop, so the loop died: no further instance was ever given a driver, the workers never ran, and every
+delegating Leader waited for work that could not start. The evaluation harness had never seen it because it does
+not spawn through the daemon.
+
+Three changes close this, each with its own test:
+
+- `providers::resolve_model` resolves a catalog reference by **key or by the model name the entry declares**, and
+  `build_for_model` uses it (its error now lists the available keys). A child's stored profile is therefore
+  bootable, which is what the supervisor's own comment already promised for the leader.
+- `spawn` gained an optional `model` (a key or a name). The driver resolves it through the catalog *at spawn
+  time*, so an unknown reference is that tool call's error — with the available keys in the receipt — instead of
+  a provider the supervisor cannot build. This also makes mixed teams reachable: the README has always promised
+  that every instance carries its own model, and until now the Leader could not name one.
+- The daemon's provider factory no longer panics. An instance whose model cannot be built gets a provider whose
+  every attempt fails permanently with the reason (`AnyProvider::Unavailable`), so the instance parks through the
+  ordinary classified path (A07: the request closes, the input stays, the instance parks with the reason) and
+  every other instance keeps being driven. Ceiling, stated honestly: that parked worker's task stays open, so its
+  delegating Leader still waits for it — only the user can cancel the task or terminate the instance (the
+  blocked-task flow in AGENTS.md). With spawn-time validation the path is nearly unreachable, and it now fails
+  loudly and locally instead of silently and globally.
+
+Evidence: `providers::tests::a_catalog_entry_resolves_by_key_or_by_model_name`;
+`cli::an_unbootable_instance_parks_itself_and_the_session_survives` (an instance created with an unknown model,
+given work, parks itself with the reason while the leader stays `ACTIVE`); and a real-model delegation run — three instances, both
+delegated tasks `SUCCEEDED`, both `[[checks]]` commands passing in the runtime's check round, the whole flow
+`instance_spawned → task_delegated → task_started → wait_satisfied → check_round_registered → goal_completed`
+in **16.3 seconds** where the same prompt had stalled for 900 (recorded under `review/tmp/dogfood/`).
+
+## D-58 The session authorizes its Leader, so the team feature exists (2026-09-25)
+
+While preparing a multi-instance dogfooding run, reading the grants of a session the CLI had just started showed
+exactly one row: `i-leader` / `shell` / `workspace`. Nothing grants `manage`, `delegate` or `message` anywhere in
+the product — `issue_grant` had no caller outside tests and the evaluation harness.
+
+That is not a cosmetic gap, because the model-visible tool surface is *derived* from those grants
+(`Driver::team_kernel`: `wait` always, then `send`/`delegate`/`spawn` iff the instance holds
+`message`/`delegate`/`manage`). So in every real session:
+
+- the Leader was never offered `spawn`, `delegate` or `send` — the model could not even know it might build a
+  team, although its instructions tell it to do exactly that, and the README's promise ("you talk to the Leader,
+  and the Leader builds the team on the spot") had no mechanism behind it;
+- and every collaboration intent would have been refused by `capability_gap` anyway, because the spawner needs
+  `manage@session` (the child's `delegate` grant is derived from it).
+
+Why it stayed invisible: the repo's own acceptance evidence came from tests and the A/B/C evaluation harness,
+both of which issue these grants by hand before exercising collaboration (`v2_driver`'s spawn tests do it in
+their setup). The fixtures therefore passed while the product could not start a single worker.
+
+`bootstrap` (the user's session bootstrap, which already creates the instance and the goal) now also issues
+`manage`, `delegate` and `message` over the session for the leader instance — the authority Q5 and D-42 give the
+Leader by default. The grants are issued with fixed command ids and *outside* the "instance already exists"
+guard, so the call is idempotent (the command-replay path returns the stored receipt) and a session created by
+an earlier build repairs itself on the next start instead of keeping its Leader powerless.
+
+Evidence: `cli::the_daemon_grants_the_leader_the_team_authority` reads the grant table through the daemon's own
+protocol after starting it the way a user does; `v2_driver::the_leader_is_authorized_to_build_the_team_by_default`
+asserts the *first request's* tool list contains `spawn`/`delegate`/`send`/`wait`, that a scripted `spawn` with a
+task really produces `instance_spawned` (`task: true`) without any hand-issued grant, and that the three grants
+are session-scoped. Both fail against the previous code (the tool list came back without `spawn`).
+
 ## D-57 `--cwd` reaches the session, so the agent works where it was asked (2026-09-25)
 
 The first dogfooding run — this repository's own `edit-integrity` evaluation fixture, copied to a scratch

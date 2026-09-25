@@ -328,9 +328,19 @@ fn daemon_boot(
             // the user's acceptance checks gate every goal this session runs
             goal_limits: crate::config::goal_limits(&catalog_for_factory)?,
             require_shell_approval: !full_auto,
-            provider_factory: move |_id: &str, profile: &KernelProfile| {
-                crate::providers::build_for_model(&catalog_for_factory, &profile.model)
-                    .unwrap_or_else(|e| panic!("provider for {}: {e}", profile.model))
+            provider_factory: move |id: &str, profile: &KernelProfile| {
+                // Never panic here: this runs inside the supervisor's discovery
+                // loop, where a panic stops every instance from being driven
+                // (D-59). An instance whose model cannot be built gets a provider
+                // that fails its own requests permanently, so it parks through
+                // the ordinary classified path and the session lives on.
+                match crate::providers::build_for_model(&catalog_for_factory, &profile.model) {
+                    Ok(provider) => provider,
+                    Err(reason) => {
+                        eprintln!("daemon: instance {id} cannot be driven: {reason}");
+                        crate::providers::AnyProvider::Unavailable { reason }
+                    }
+                }
             },
         },
         socket: socket.clone(),

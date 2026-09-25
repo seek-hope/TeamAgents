@@ -141,7 +141,12 @@ pre_tool = ["/home/you/bin/policy.sh"]            # policy hook before tool call
   `command_id`.
 - **The Leader builds the team**: it uses `spawn` to create working instances, `delegate` to hand out tasks,
   `send` for messages and `wait` for results. These appear in the model-visible tool surface according to
-  its grants (`manage`/`delegate`/`message`), and the permission revision is re-checked at dispatch.
+  its grants (`manage`/`delegate`/`message`), and the permission revision is re-checked at dispatch. The
+  session's bootstrap grants the Leader those three capabilities over the session, so the team tools are there
+  without further setup; revoking a grant removes the tool from the surface and makes every call fail closed.
+  `spawn` also takes `model` (a catalog key or the model name it declares) so a team can mix entries: an unknown
+  entry fails that call with the available keys, and an instance that cannot boot at all is parked with the
+  reason (its task stays open for you to cancel).
 - **Workspace policies**: the `workspace` argument of `spawn` decides where a new instance works — `shared`
   (default: the project directory), `isolated` (a private directory under the session state root) or
   `git_worktree` (its own branch and worktree). Asking for a worktree in a project that is not a Git

@@ -280,6 +280,14 @@ pub enum AnyProvider {
     ChatCompletions(chat_completions::ChatCompletions),
     Responses(responses::Responses),
     Anthropic(anthropic::Anthropic),
+    /// The catalog could not build a provider for this instance's model. Every
+    /// attempt fails permanently with the reason, so the instance parks through
+    /// the ordinary classified path (A07) instead of the daemon's factory
+    /// panicking inside the supervisor's loop and stopping the whole session
+    /// (D-59).
+    Unavailable {
+        reason: String,
+    },
 }
 
 impl Provider for AnyProvider {
@@ -288,6 +296,7 @@ impl Provider for AnyProvider {
             AnyProvider::ChatCompletions(provider) => provider.protocol(),
             AnyProvider::Responses(provider) => provider.protocol(),
             AnyProvider::Anthropic(provider) => provider.protocol(),
+            AnyProvider::Unavailable { .. } => "unavailable",
         }
     }
 
@@ -301,6 +310,7 @@ impl Provider for AnyProvider {
             AnyProvider::ChatCompletions(provider) => provider.complete(request, cancel, on_event).await,
             AnyProvider::Responses(provider) => provider.complete(request, cancel, on_event).await,
             AnyProvider::Anthropic(provider) => provider.complete(request, cancel, on_event).await,
+            AnyProvider::Unavailable { reason } => Err(ProviderError::permanent(reason.clone())),
         }
     }
 }
@@ -360,8 +370,25 @@ pub fn resolve_profile(profile: KernelProfile, catalog: &UserConfig) -> KernelPr
 /// ponytail: pi-ai style compat auto-detection is deliberately not ported —
 /// the catalog declares the protocol explicitly and only contract-verified
 /// wire behaviors ship. Effort values normalize in resolve_profile above.
+/// Resolve a catalog reference to its entry: the key, or the wire model name the
+/// entry declares. A spawned child stores the parent's *resolved* profile (the
+/// kernel needs the wire name in `model`), so the factory — the only place that
+/// knows the catalog — has to map that name back (D-59). Returns the key too, so
+/// callers can resolve the entry's options and window.
+pub fn resolve_model<'a>(catalog: &'a UserConfig, model: &str) -> Option<(&'a String, &'a ModelProfile)> {
+    if let Some(entry) = catalog.models.get_key_value(model) {
+        return Some(entry);
+    }
+    catalog.models.iter().find(|(_, profile)| profile.model == model)
+}
+
 pub fn build_for_model(catalog: &UserConfig, model: &str) -> Result<AnyProvider, String> {
-    let profile = catalog.models.get(model).ok_or_else(|| format!("model {model} is not in the user catalog"))?;
+    let (key, profile) = resolve_model(catalog, model).ok_or_else(|| {
+        let mut available: Vec<&str> = catalog.models.keys().map(String::as_str).collect();
+        available.sort();
+        format!("model {model:?} is not in the user catalog (keys: {})", available.join(", "))
+    })?;
+    let _ = key;
     build_for_profile(profile)
 }
 
@@ -508,8 +535,33 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::stream_stall_bound;
+    use super::{resolve_model, stream_stall_bound};
     use std::time::Duration;
+    use teamagents_core::models::{ModelProfile, UserConfig};
+
+    /// A spawned child stores the parent's *resolved* profile, so its `model`
+    /// field holds the wire model name, not the catalog key the daemon's factory
+    /// looks up. Resolving either way is what keeps such an instance bootable
+    /// (D-59); an unknown reference must stay unknown instead of matching by
+    /// accident.
+    #[test]
+    fn a_catalog_entry_resolves_by_key_or_by_model_name() {
+        let mut catalog = UserConfig::default();
+        catalog.models.insert(
+            "leader_main".into(),
+            serde_json::from_value::<ModelProfile>(serde_json::json!({
+                "provider": "deepseek", "protocol": "deepseek", "model": "deepseek-flash"
+            }))
+            .unwrap(),
+        );
+        assert_eq!(resolve_model(&catalog, "leader_main").map(|(key, _)| key.clone()), Some("leader_main".into()));
+        assert_eq!(
+            resolve_model(&catalog, "deepseek-flash").map(|(key, _)| key.clone()),
+            Some("leader_main".into()),
+            "the declared model name resolves too"
+        );
+        assert!(resolve_model(&catalog, "gpt-9").is_none(), "an unknown reference stays unknown");
+    }
 
     #[test]
     fn the_stream_stall_bound_clamps_between_floor_and_ceiling() {

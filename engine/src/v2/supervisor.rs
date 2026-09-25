@@ -297,52 +297,56 @@ where
                         }
                     }
                 }
-                let mut drivers = self.drivers.lock().unwrap();
-                // retire finished or terminated drivers (§5.4)
-                drivers.retain(|id, driver| {
-                    let alive = instances.iter().any(|(iid, lifecycle, _, _)| iid == id && lifecycle != "TERMINATED");
-                    alive && !driver.task.is_finished()
-                });
-                for (id, lifecycle, workspace_ref, profile_json) in &instances {
-                    if lifecycle != "ACTIVE" || drivers.contains_key(id) {
-                        continue;
+                let no_drivers = {
+                    let mut drivers = self.drivers.lock().unwrap();
+                    // retire finished or terminated drivers (§5.4)
+                    drivers.retain(|id, driver| {
+                        let alive =
+                            instances.iter().any(|(iid, lifecycle, _, _)| iid == id && lifecycle != "TERMINATED");
+                        alive && !driver.task.is_finished()
+                    });
+                    for (id, lifecycle, workspace_ref, profile_json) in &instances {
+                        if lifecycle != "ACTIVE" || drivers.contains_key(id) {
+                            continue;
+                        }
+                        let profile = if *id == self.config.leader_id {
+                            self.config.leader_profile.clone()
+                        } else {
+                            let stored: Json = serde_json::from_str(profile_json).unwrap_or(json!({}));
+                            stored_profile(&stored, &self.config.leader_profile)
+                        };
+                        let instance_root = self.config.state_root.join("instances").join(id);
+                        let workspace = if workspace_ref.is_empty() {
+                            self.config.workspace.clone()
+                        } else {
+                            PathBuf::from(workspace_ref)
+                        };
+                        let driver_config = DriverConfig {
+                            session_db: self.config.session_db.clone(),
+                            session_id: self.config.session_id.clone(),
+                            instance_id: id.clone(),
+                            state_root: instance_root,
+                            instances_dir: instances_dir.clone(),
+                            workspace,
+                            permissions: self.config.permissions.clone(),
+                            // the kernel gets the wire-effective profile while
+                            // the factory still sees the catalog key (R17)
+                            profile: crate::providers::resolve_profile(profile.clone(), &self.config.catalog),
+                            provider: (self.config.provider_factory)(id, &profile),
+                            catalog: self.config.catalog.clone(),
+                            bindings: self.config.bindings.clone(),
+                            max_retries: self.config.max_retries,
+                            storage_queue: self.config.storage_queue,
+                            poll: self.config.poll,
+                            goal_limits: self.config.goal_limits.clone(),
+                            require_shell_approval: self.config.require_shell_approval,
+                        };
+                        let (shared, task) = spawn_driver(driver_config, &self.storage)?;
+                        drivers.insert(id.clone(), InstanceDriver { shared, task });
                     }
-                    let profile = if *id == self.config.leader_id {
-                        self.config.leader_profile.clone()
-                    } else {
-                        let stored: Json = serde_json::from_str(profile_json).unwrap_or(json!({}));
-                        stored_profile(&stored, &self.config.leader_profile)
-                    };
-                    let instance_root = self.config.state_root.join("instances").join(id);
-                    let workspace = if workspace_ref.is_empty() {
-                        self.config.workspace.clone()
-                    } else {
-                        PathBuf::from(workspace_ref)
-                    };
-                    let driver_config = DriverConfig {
-                        session_db: self.config.session_db.clone(),
-                        session_id: self.config.session_id.clone(),
-                        instance_id: id.clone(),
-                        state_root: instance_root,
-                        instances_dir: instances_dir.clone(),
-                        workspace,
-                        permissions: self.config.permissions.clone(),
-                        // the kernel gets the wire-effective profile while
-                        // the factory still sees the catalog key (R17)
-                        profile: crate::providers::resolve_profile(profile.clone(), &self.config.catalog),
-                        provider: (self.config.provider_factory)(id, &profile),
-                        catalog: self.config.catalog.clone(),
-                        bindings: self.config.bindings.clone(),
-                        max_retries: self.config.max_retries,
-                        storage_queue: self.config.storage_queue,
-                        poll: self.config.poll,
-                        goal_limits: self.config.goal_limits.clone(),
-                        require_shell_approval: self.config.require_shell_approval,
-                    };
-                    let (shared, task) = spawn_driver(driver_config, &self.storage)?;
-                    drivers.insert(id.clone(), InstanceDriver { shared, task });
-                }
-                if drivers.is_empty() && instances.iter().all(|(_, lifecycle, _, _)| lifecycle == "TERMINATED") {
+                    drivers.is_empty()
+                };
+                if no_drivers && instances.iter().all(|(_, lifecycle, _, _)| lifecycle == "TERMINATED") {
                     break; // every instance retired: the session is done (§5.4)
                 }
             }

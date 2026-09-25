@@ -291,6 +291,7 @@ pub fn collaboration_tool_schemas(actions: &[&str]) -> Vec<Json> {
                         "properties": {
                             "instance_id": {"type": "string"},
                             "instructions": {"type": "string", "description": "System instructions for the new instance."},
+                            "model": {"type": "string", "description": "Catalog entry for the new instance (a key such as leader_main, or the model name it declares). Omit to inherit this instance's model; a mixed team comes from naming a different entry."},
                             "task": {"type": "string", "description": "Initial task description; registered with its narrow return path when present."},
                             "workspace": {"type": "string", "enum": ["shared", "isolated", "git_worktree"],
                                 "description": "Where the instance works. shared (default) uses the project directory; isolated gets a private directory under the session state root; git_worktree gets its own branch and worktree, and falls back to shared (saying why) when the project is not a clean git repository."}

@@ -50,13 +50,17 @@ you ──goal (natural language)──▶ Leader ──spawn / delegate──�
 ## Highlights
 
 - **Governed collaboration**: `spawn` / `delegate` / `send` / `wait` are authorized by the control plane and
-  re-checked at dispatch; limited delegation, cascading revocation, timeouts and unknown outcomes all have
-  recovery classifications.
+  re-checked at dispatch; the session grants the Leader its team authority by default (`manage` / `delegate` /
+  `message` over the session), and a grant can be revoked at any time — revocation cascades, and limited
+  delegation, timeouts and unknown outcomes all have recovery classifications.
 - **Workspace policies**: `spawn` can give an instance the shared project directory, a private isolated
   directory or its own Git worktree and branch. Termination retires the workspace from its record; a
   directory with uncommitted or unmerged work is never deleted automatically, only reported.
 - **Mixed models**: real instances speaking the three wire protocols (responses / anthropic /
-  chat-completions) can share one session, each with its own model, effort and native context window.
+  chat-completions) can share one session, each with its own model, effort and native context window; `spawn`
+  takes the catalog entry for a worker (key or model name), so one team can mix entries. An instance whose
+  entry is unknown is refused as that tool call's error, and one that can never boot is parked with the reason
+  instead of stopping the session.
 - **Single source of truth**: one SQLite database per session (WAL with `synchronous=FULL`). Crash recovery
   is classified by persisted location — known results are reused, in-flight losses are recorded honestly
   (`OUTCOME_UNKNOWN`), and nothing is **replayed on a guess**.

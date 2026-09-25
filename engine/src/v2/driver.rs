@@ -373,23 +373,45 @@ pub(crate) async fn bootstrap(
                     .query_row("SELECT COUNT(*) FROM instances WHERE id = ?1", [&instance], |row| row.get::<_, i64>(0))
                     .map(|n| n > 0)
                     .unwrap_or(false);
-                if exists {
-                    return Ok::<(), String>(());
+                if !exists {
+                    control.submit(
+                        command(
+                            "boot-instance",
+                            "create_instance",
+                            json!({"id": instance, "workspace_ref": workspace}),
+                        ),
+                        Identity::User,
+                    )?;
+                    control.submit(
+                        command(
+                            "boot-goal",
+                            "create_goal",
+                            json!({"id": format!("goal-{}", control.session_id),
+                                "instance_id": instance, "limits": goal_limits}),
+                        ),
+                        Identity::User,
+                    )?;
                 }
-                control.submit(
-                    command("boot-instance", "create_instance", json!({"id": instance, "workspace_ref": workspace})),
-                    Identity::User,
-                )?;
-                control.submit(
-                    command(
-                        "boot-goal",
-                        "create_goal",
-                        json!({"id": format!("goal-{}", control.session_id),
-                            "instance_id": instance, "limits": goal_limits}),
-                    ),
-                    Identity::User,
-                )?;
-                Ok(())
+                // The session bootstrap speaks for the user: the Leader manages
+                // the team by default (Q5, D-42), so it holds the authority the
+                // collaboration tools are derived from. Until this existed a real
+                // session granted the leader only shell@workspace, so the model
+                // was never offered spawn/delegate/send (the tool surface follows
+                // the grants, §5.2) and an attempt would have been refused — the
+                // evaluation harness issued these grants by hand, which is why the
+                // fixtures passed while the product could not build a team. Fixed
+                // command ids keep a restart (or an older session) idempotent.
+                for action in ["manage", "delegate", "message"] {
+                    control.submit(
+                        command(
+                            format!("boot-grant-{action}"),
+                            "issue_grant",
+                            json!({"subject": instance, "action": action, "resource_scope": "session"}),
+                        ),
+                        Identity::User,
+                    )?;
+                }
+                Ok::<(), String>(())
             }
         })
         .await??;
@@ -1931,6 +1953,30 @@ impl<P: Provider> Driver<P> {
                 workspace_info = Some(info);
                 let mut profile = self.config.profile.clone();
                 profile.instructions = args["instructions"].as_str().unwrap_or("").to_string();
+                // A named model is resolved through the catalog *here*, so an
+                // unknown name is this tool call's error (the model can correct
+                // it) instead of a provider the supervisor cannot build (D-59).
+                if let Some(requested) = args["model"].as_str().map(str::trim).filter(|name| !name.is_empty()) {
+                    let Some((key, _)) = crate::providers::resolve_model(&self.config.catalog, requested) else {
+                        let mut keys: Vec<&str> = self.config.catalog.models.keys().map(String::as_str).collect();
+                        keys.sort();
+                        let error = format!("unknown model {requested:?} (catalog keys: {})", keys.join(", "));
+                        return self.complete_with_error(operation_id, intent, "collaboration", &error).await;
+                    };
+                    let skeleton = KernelProfile {
+                        model: key.clone(),
+                        instructions: profile.instructions.clone(),
+                        tools: profile.tools.clone(),
+                        options: json!({}),
+                        context_window: None,
+                    };
+                    // the child gets the entry's wire-effective profile: its model
+                    // name, merged generation options and native window
+                    let resolved = crate::providers::resolve_profile(skeleton, &self.config.catalog);
+                    profile.model = resolved.model;
+                    profile.options = resolved.options;
+                    profile.context_window = resolved.context_window;
+                }
                 let mut params = json!({"instance_id": instance_id, "instructions": args["instructions"],
                                         "profile": {"model": profile.model, "instructions": profile.instructions,
                                                     "tools": profile.tools, "options": profile.options,

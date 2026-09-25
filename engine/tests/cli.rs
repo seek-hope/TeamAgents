@@ -533,3 +533,204 @@ fn cwd_reaches_a_started_daemon_and_is_reported_against_a_live_one() {
     assert!(std::os::unix::net::UnixStream::connect(&socket).is_err(), "the daemon must stop");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// The daemon a user actually starts must authorize its Leader: before D-58 the
+/// only grant in a real session was `shell@workspace`, so the model was never
+/// offered spawn/delegate/send and the team feature was unreachable from
+/// `teamagents`, `exec` and `daemon` alike.
+#[test]
+fn the_daemon_grants_the_leader_the_team_authority() {
+    let root = std::env::temp_dir().join(format!("ta-grants-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let (config_home, state) = (root.join("config"), root.join("root"));
+    std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
+    std::fs::write(
+        config_home.join("teamagents/config.toml"),
+        "[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\n\
+         api_key_env = \"TA_GRANTS_KEY\"\nbase_url = \"http://127.0.0.1:1/v1\"\n",
+    )
+    .unwrap();
+    let env = |command: &mut Command| {
+        command
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("XDG_STATE_HOME", root.join("state"))
+            .env("TA_GRANTS_KEY", "test-value");
+    };
+    let mut daemon = Command::new(env!("CARGO_BIN_EXE_teamagents"));
+    env(&mut daemon);
+    let daemon = daemon
+        .args(["daemon", "--state-root"])
+        .arg(&state)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("start the daemon");
+    let _daemon = Daemon(daemon);
+    let socket = state.join("daemon.sock");
+    for _ in 0..200 {
+        if socket.exists() && std::os::unix::net::UnixStream::connect(&socket).is_ok() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+
+    // read the grant table through the daemon's own protocol
+    use std::io::{BufRead, BufReader, Write};
+    let stream = std::os::unix::net::UnixStream::connect(&socket).expect("connect");
+    let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+    let mut writer = stream;
+    let mut greeting = String::new();
+    reader.read_line(&mut greeting).expect("greeting");
+    let mut grants = serde_json::Value::Null;
+    for _ in 0..200 {
+        writer
+            .write_all(
+                format!(
+                    "{}\n",
+                    serde_json::json!({"protocol_version": 1, "request_id": "g1", "method": "grants", "params": {}})
+                )
+                .as_bytes(),
+            )
+            .expect("write");
+        let mut line = String::new();
+        reader.read_line(&mut line).expect("reply");
+        let reply: serde_json::Value = serde_json::from_str(&line).expect("reply JSON");
+        let held = reply["result"]["grants"].as_array().cloned().unwrap_or_default();
+        if held.iter().any(|grant| grant["action"] == "manage") {
+            grants = reply["result"]["grants"].clone();
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let granted = |action: &str| {
+        grants
+            .as_array()
+            .map(|all| {
+                all.iter().any(|grant| {
+                    grant["subject"] == "i-leader" && grant["action"] == action && grant["resource_scope"] == "session"
+                })
+            })
+            .unwrap_or(false)
+    };
+    for action in ["manage", "delegate", "message"] {
+        assert!(granted(action), "the session must grant the leader {action}@session: {grants}");
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// One instance whose model cannot be built must not take the session with it.
+/// The daemon's provider factory used to panic for such an instance — inside the
+/// supervisor's discovery loop, so no further instance was ever driven and every
+/// delegating Leader waited forever (D-59). It now returns a provider that fails
+/// that instance's own requests permanently: the instance parks through the
+/// ordinary classified path (A07) with the reason, and the session lives on.
+#[test]
+fn an_unbootable_instance_parks_itself_and_the_session_survives() {
+    use std::io::{BufRead, BufReader, Write};
+    let root = std::env::temp_dir().join(format!("ta-unbootable-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let (config_home, state, ws) = (root.join("config"), root.join("root"), root.join("ws"));
+    std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
+    std::fs::create_dir_all(&ws).unwrap();
+    std::fs::write(
+        config_home.join("teamagents/config.toml"),
+        "[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\n\
+         api_key_env = \"TA_UNBOOTABLE_KEY\"\nbase_url = \"http://127.0.0.1:1/v1\"\n",
+    )
+    .unwrap();
+    let env = |command: &mut Command| {
+        command
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("XDG_STATE_HOME", root.join("state"))
+            .env("TA_UNBOOTABLE_KEY", "test-value");
+    };
+    let mut daemon = Command::new(env!("CARGO_BIN_EXE_teamagents"));
+    env(&mut daemon);
+    let daemon = daemon
+        .args(["daemon", "--state-root"])
+        .arg(&state)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("start the daemon");
+    let _daemon = Daemon(daemon);
+    let socket = state.join("daemon.sock");
+    for _ in 0..200 {
+        if socket.exists() && std::os::unix::net::UnixStream::connect(&socket).is_ok() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let stream = std::os::unix::net::UnixStream::connect(&socket).expect("connect");
+    let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+    let mut writer = stream;
+    let mut greeting = String::new();
+    reader.read_line(&mut greeting).expect("greeting");
+    let mut command = |id: &str, method: &str, params: serde_json::Value| {
+        writer
+            .write_all(
+                format!(
+                    "{}\n",
+                    serde_json::json!({"protocol_version": 1, "request_id": id, "command_id": id,
+                                       "method": method, "params": params})
+                )
+                .as_bytes(),
+            )
+            .expect("write");
+        let mut line = String::new();
+        reader.read_line(&mut line).expect("reply");
+        serde_json::from_str::<serde_json::Value>(&line).expect("reply JSON")
+    };
+
+    // an instance whose model is not in the catalog, given work to do
+    let broken = command(
+        "c-bad",
+        "create_instance",
+        serde_json::json!({"id": "i-broken", "workspace_ref": ws.to_string_lossy(),
+                           "profile": {"model": "gpt-9", "instructions": "never boots"}}),
+    );
+    assert_eq!(broken["ok"], true, "{broken}");
+    command("c-goal", "create_goal", serde_json::json!({"id": "g-broken", "instance_id": "i-broken"}));
+    command(
+        "c-input",
+        "submit_input",
+        serde_json::json!({"instance_id": "i-broken", "envelope_id": "env-broken", "text": "do the work"}),
+    );
+
+    // it parks with the reason, and the leader's session keeps running
+    let mut parked = false;
+    let mut reason = String::new();
+    for _ in 0..400 {
+        let reply = command("c-check", "checkpoint", serde_json::json!({}));
+        let instances = reply["result"]["snapshot"]["instances"].as_array().cloned().unwrap_or_default();
+        let leader = instances.iter().find(|entry| entry["id"] == serde_json::json!("i-leader"));
+        assert_eq!(
+            leader.map(|entry| entry["lifecycle"].clone()),
+            Some(serde_json::json!("ACTIVE")),
+            "the session must live on: {reply}"
+        );
+        if let Some(broken) = instances.iter().find(|entry| entry["id"] == serde_json::json!("i-broken")) {
+            if broken["lifecycle"] == serde_json::json!("PARKED") {
+                parked = true;
+                // the reason travels with the classified failure the instance
+                // parked on, not in the snapshot
+                let events = command("c-events", "events", serde_json::json!({"since": 0}));
+                reason = events["result"]["events"]
+                    .as_array()
+                    .map(|events| {
+                        events
+                            .iter()
+                            .filter_map(|event| event["payload"]["reason"].as_str())
+                            .collect::<Vec<&str>>()
+                            .join(" | ")
+                    })
+                    .unwrap_or_default();
+                break;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(parked, "the unbootable instance parks itself through the classified path");
+    assert!(reason.contains("gpt-9"), "the reason names the model: {reason:?}");
+    let _ = std::fs::remove_dir_all(&root);
+}
