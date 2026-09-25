@@ -130,13 +130,20 @@ teamagents --cwd /path/to/project     # 换成实际项目目录；省略 --cwd 
 Leader 会自己决定要不要组队、组几个人、谁干什么；需要你拍板时（越权限的命令、外网访问）
 才会弹出批准请求。想看细节按 `Ctrl+N` 依次切换面板（实例 → 任务 → 拓扑），`Tab` 切换对话目标，`Ctrl+A` 看待批准。
 
-脚本 / CI 用无头入口（提示词可用 `-` 从 stdin 读；`exec` 与 TUI 共用同一个 daemon）：
+脚本 / CI 用无头入口（`exec` 与 TUI 共用同一个 daemon；提示词写 `-` 就从 stdin 读，长指令可直接管道进来）：
 
 ```bash
 teamagents exec "1+1 等于几？直接回答"                           # 提交一次输入，打印回复
 teamagents exec --json --timeout 180 "把 /tmp/proj 的测试修绿"    # 机器可读摘要
-teamagents exec --check "cargo test --offline" "改到测试全绿"     # 同一权限模式下追加产物检查
+teamagents exec --check "cargo test --offline" "改到测试全绿"     # 追加你自己的验收命令
+git diff | teamagents exec -                                    # 提示词从 stdin 读
 ```
+
+退出码：`0` 已结算，`1` 失败或未完成，`3` 有操作在等批准（无头运行没人能批，因此立刻返回而不是干等），
+`124` 超过 `--timeout`，`2` 用法或环境错误（没有 daemon、没有模型 profile）。每个 `--check COMMAND`
+在回合结束后按顺序在隔离 shell 里、在你的工作目录（`--cwd` 或当前目录）执行；第一条失败即停止，整个运行
+判为失败。判定结果会打印出来、写入 `<state root>/verification.json`，并作为 `verification` 出现在
+`--json` 报告里。
 
 ## 常用参数与键位
 
@@ -146,7 +153,7 @@ teamagents exec --check "cargo test --offline" "改到测试全绿"     # 同一
 | `--state-root PATH` | 指定状态根（默认 `$XDG_STATE_HOME/teamagents/v2`） |
 | `--model KEY` | 选择模型目录键（默认 `leader_main`） |
 | `--full-auto` | 用户显式开启全自动（仅用户可开；默认越权时请求批准） |
-| `init` / `doctor` / `daemon` / `exec` / `version` / `--help` | 准备配置与状态根 / 自检 / 单独运行 daemon / 无头输入 / 版本 / 用法 |
+| `init` / `doctor` / `daemon` / `exec` / `version` / `--help` | 准备配置与状态根 / 自检 / 单独运行 daemon（输出写入 `<state root>/daemon.log`）/ 无头输入 / 版本 / 用法 |
 
 TUI 键位（与屏幕底部提示一致；**刻意不使用 F 键**，因为部分键盘没有）：
 `Enter` 发送、`Shift+Enter`/`Ctrl+J` 换行、`Tab` 切换对话目标、

@@ -140,14 +140,22 @@ The Leader decides whether to split the work and who does what. It only interrup
 (out-of-scope commands, network access). Press `Ctrl+N` to cycle the panels (instances, tasks, topology),
 `Tab` to switch the conversation target and `Ctrl+A` for pending approvals.
 
-For scripts and CI, use the headless entry point (the prompt may come from stdin with `-`; `exec` shares the
-daemon with the TUI):
+For scripts and CI, use the headless entry point (`exec` shares the daemon with the TUI; `-` reads the
+prompt from stdin, so a long instruction can be piped in):
 
 ```bash
 teamagents exec "What is 1+1? Answer directly."                  # one input, print the reply
 teamagents exec --json --timeout 180 "Make /tmp/proj tests pass"  # machine-readable summary
-teamagents exec --check "cargo test --offline" "Get the tests green"  # extra artifact check, same permissions
+teamagents exec --check "cargo test --offline" "Get the tests green"  # plus your own acceptance check
+git diff | teamagents exec -                                      # the prompt comes from stdin
 ```
+
+Exit codes: `0` settled, `1` failed or unfinished, `3` an approval is pending (a headless run has nobody to
+answer it, so it reports instead of waiting), `124` the `--timeout` deadline passed, `2` usage or
+infrastructure (no daemon, no model profile). Each `--check COMMAND` runs after the turn ends, in order, in
+the isolated shell inside your workspace (`--cwd` or the current directory); the first failure stops the list
+and makes the run fail. The verdicts are printed, written to `<state root>/verification.json` and included in
+the `--json` report as `verification`.
 
 ## Common arguments and keys
 
@@ -157,7 +165,7 @@ teamagents exec --check "cargo test --offline" "Get the tests green"  # extra ar
 | `--state-root PATH` | use a specific state root (default `$XDG_STATE_HOME/teamagents/v2`) |
 | `--model KEY` | pick a model catalog entry (default `leader_main`) |
 | `--full-auto` | user-only full-auto mode (out-of-scope work is approved instead of requested) |
-| `init` / `doctor` / `daemon` / `exec` / `version` / `--help` | config and state root / self-check / run the daemon alone / headless input / version / usage |
+| `init` / `doctor` / `daemon` / `exec` / `version` / `--help` | config and state root / self-check / run the daemon alone (its output goes to `<state root>/daemon.log`) / headless input / version / usage |
 
 TUI keys (they match the hint line at the bottom; deliberately no function keys, since some keyboards lack
 them): `Enter` send, `Shift+Enter`/`Ctrl+J` newline, `Tab` switch the conversation target, `Ctrl+N` cycle the

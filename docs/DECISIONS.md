@@ -231,3 +231,52 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-49 The headless `exec` contract is real again (2026-09-25)
+
+While comparing the product surface with the code, the headless entry point turned out to be documented but
+partly not implemented. `teamagents exec "prompt"` (the plain form in both READMEs) was rejected as a usage
+error because the argument parser demanded `--json`; `exec -` accepted stdin according to the README but
+submitted the literal string `-`; `--check COMMAND` was parsed and then silently dropped. Three further
+defects came out of the same review: a settlement recorded by an **earlier** run was replayed as the current
+run's outcome (the client started at watermark 0), a goal that settled `FAILED`/`BLOCKED` still exited `0`,
+and a leader parked by a permanent failure or a click-through approval let `exec` wait for its whole
+deadline.
+
+The restored contract is the v1/D-32 one, which is what both READMEs already promised:
+
+- **Prompt**: the positional argument, or everything on stdin when it is `-`; an empty prompt is a usage
+  error. Both READMEs document the marker.
+- **Exit codes**: `0` settled (goal `SUCCEEDED`, or a direct reply), `1` failed or unfinished (including a
+  failed `--check`), `3` an approval is pending (a headless run has nobody to answer it, so it reports
+  immediately instead of burning the deadline), `124` the deadline passed, `2` usage or infrastructure.
+- **`--check COMMAND`** (repeatable): the user's own acceptance command, run after the turn ends, in order,
+  in the isolated shell inside the client's workspace; the first failure stops the list and makes the run
+  fail. The verdicts are printed, written to `<state root>/verification.json` and carried in the `--json`
+  report. The client reads each command's status from a random marker the wrapper prints, so a command that
+  prints its own `(exit 0)` cannot fake a pass. It never runs when the run stopped for an approval.
+- **Own outcome only**: the client drains the event log before submitting (a stored `goal_completed` is
+  history, not this run's result), reports a permanently failed leader request as the run's failure at once,
+  and refuses to submit to a leader whose lifecycle is not `ACTIVE` (parked/paused) instead of queueing work
+  nobody drains.
+- **Daemon startup**: the daemon's output goes to `<state root>/daemon.log`; when it exits during startup the
+  caller reports its own words (and that path) in under a second instead of waiting the full 30-second
+  socket window.
+
+**Not landed, and needing a confirmation first**: `--check` is a *client-side* acceptance command, so it does
+not become the goal's runtime `required_checks` (`limits.required_checks`, executed by the driver at the
+completion boundary, D-42/§8). There is still no user surface that predefines those runtime checks, and
+amending a running session's goal limits would be new protocol surface — that stays a question for the user
+rather than a silent invention.
+
+Evidence: `v2::exec::tests::exit_codes_follow_the_documented_contract`,
+`the_check_verdict_reads_the_wrapper_marker`,
+`acceptance_commands_run_in_order_and_stop_at_the_first_failure`; `main::tests::exec_takes_the_prompt_from_the_argument_or_from_stdin`,
+`exec_refuses_a_missing_or_empty_prompt`; and against a real socket with a scripted leader:
+`v2_daemon::headless_runs_report_their_own_outcome_not_an_earlier_settlement`,
+`headless_runs_verify_the_acceptance_commands_and_gate_the_exit_code`,
+`a_failing_acceptance_command_fails_the_run`, `a_blocked_goal_is_not_reported_as_a_success`,
+`a_failed_turn_ends_the_headless_run_instead_of_timing_out`,
+`a_parked_approval_ends_the_headless_run_at_once`; and through the real binary:
+`cli::exec_takes_the_prompt_from_stdin_and_runs_the_acceptance_check`.
+
+## D-48 TUI shortcuts without function keys (2026-09-25)

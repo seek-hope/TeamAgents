@@ -15,11 +15,38 @@ teamagents                           # open the TUI (starts the per-user daemon 
 - **One daemon per user**: `teamagents` probes `$XDG_STATE_HOME/teamagents/v2/daemon.sock` and, when it is
   missing or refuses the connection, starts `teamagents daemon` detached and hands the socket to the TUI.
   Quitting the TUI does not stop the session.
-- **Headless use**: `teamagents exec [--json] [--timeout SEC] "prompt"` goes through the same daemon and
-  reports the goal's terminal state, the assistant reply or a timeout; exit code 0 means it settled.
+- **Headless use**: `teamagents exec [--json] [--timeout SEC] [--check CMD] "prompt"` goes through the same
+  daemon and reports the goal's terminal state, the assistant reply or a timeout; the prompt may come from
+  stdin (`-`). The full contract is in §1.1.
 - **State root**: `$XDG_STATE_HOME/teamagents/v2/` (default `~/.local/state/teamagents/v2`), where
   `session.sqlite` is the **single source of truth** (WAL with `synchronous=FULL`, carrying a format and
   version stamp).
+
+### 1.1 Headless runs (`teamagents exec`)
+
+`exec` is a thin client of the same daemon the TUI uses; it submits one input to the leader and reports what
+happened. Diagnostics go to stderr, the outcome to stdout (`--json` prints one JSON object with `end`,
+`goal_status`/`reply`, `verification` and the event `watermark`).
+
+| Exit code | Meaning |
+|---|---|
+| `0` | settled: the goal completed as `SUCCEEDED`, or the leader answered directly |
+| `1` | not delivered: the goal settled otherwise, the turn failed permanently, or a `--check` command failed |
+| `3` | an approval is pending — a headless run has nobody to answer it, so it reports instead of waiting for the deadline |
+| `124` | the `--timeout` deadline passed with the instance still running |
+| `2` | usage or infrastructure: no daemon, no model profile, a leader that is parked or paused |
+
+- **Prompt**: the positional argument, or everything piped into stdin when it is `-`. An empty prompt is a
+  usage error.
+- **`--check COMMAND`** (repeatable): your own acceptance command. After the turn ends, the commands run in
+  order in the isolated shell (bubblewrap) inside your workspace (`--cwd`, else the current directory). The
+  first failure stops the list; the verdicts are printed, written to `<state root>/verification.json` and
+  included in the `--json` report. A failed check makes the run fail (`1`) even when the goal itself settled.
+  Checks are skipped when the run stopped for an approval, because that turn is not finished.
+- **A parked or paused leader refuses new input** (`2`) instead of queueing work nobody drains: resume it in
+  the TUI instances panel (`r`) or use a fresh state root.
+- When `exec` starts the daemon itself, the daemon's output goes to `<state root>/daemon.log`; if the daemon
+  exits while starting, the reason is reported immediately together with that path.
 
 ## 2. Configuration
 
@@ -67,7 +94,7 @@ pre_tool = ["/home/you/bin/policy.sh"]            # policy hook before tool call
   allows it; **exit code 2 denies it** and the first stderr line becomes the reason handed to the model;
   any other exit code, a spawn failure or a timeout allows the call and logs to stderr — a broken hook never
   stalls the team. Replays after crash recovery are not asked again (the decision was made at first
-  dispatch), and the required checks in `[checks]` are your own acceptance commands, so they skip `pre_tool`.
+  dispatch), and a goal's required checks are your own acceptance commands, so they skip `pre_tool`.
 
 ## 3. Sessions and teams
 
@@ -86,7 +113,12 @@ pre_tool = ["/home/you/bin/policy.sh"]            # policy hook before tool call
 - User-side intervention: switch instances, pause/resume/cancel and approve or deny tool requests in the
   TUI. Budget, task and grant panels all read the same facts.
 - Goal and task completion goes through the runtime's completion gate: `finish` only accepts honest
-  outcomes, and the required checks defined by the user or project must really pass.
+  outcomes, and the required checks defined by the user or project must really pass. A goal's required
+  checks are machine contracts carried on the goal itself (`create_goal` `limits.required_checks`, which only
+  the user or the project bootstrap may predefine); the runtime executes them in the isolated shell at the
+  completion boundary, and a failure sends the work into a bounded repair loop before parking it. There is
+  **no config section and no CLI flag that predefines them yet** — the headless client's `--check` (§1.1) is
+  the user-facing acceptance command today.
 
 ## 4. Permissions and isolation
 
@@ -124,6 +156,10 @@ back silently to host execution.
 | Symptom | What to do |
 |---|---|
 | `exec: connect ... Connection refused` | Run `teamagents doctor` to inspect the state root; the next `teamagents`/`exec` starts the daemon automatically |
+| `the daemon exited while starting (exit status: 1): …` | The reason is the daemon's own first words; the full log is `<state root>/daemon.log` (usually a missing/broken config or an unset credential) |
+| `exec: the leader instance i-leader is PARKED` | The leader stopped after a permanent failure (`error` in `daemon.log` or the receipt says why). Resume it in the TUI instances panel (`r`), or start a fresh state root; nothing was submitted |
+| `exec` reports `check 1: FAILED` | Your own `--check` command failed; its output is on stderr and in `<state root>/verification.json` |
+| `exec` exits 3 | A tool call needs approval and a headless run cannot answer it. Approve it in the TUI and run `exec` again, or start the daemon with `--full-auto` |
 | `doctor` reports the state root as FAIL | That path does not hold a current session database (the stamp does not match); use another `--state-root` or follow the message, and never edit the database by hand |
 | The model returns 401/402 | Check the environment variable named by the profile's `api_key_env`; `doctor` lists the credential resolution result per profile |
 | A command under `approved_scope` waits for approval | Handle it in the TUI approvals panel, or run with `--full-auto` (host execution, D-41) |

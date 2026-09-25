@@ -6,14 +6,16 @@ Baseline: [the design and acceptance baseline](DESIGN.md) §12/§16. Current imp
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 91 / engine 136 / tui 29) and `make pty` passes; both are preconditions for every
-item below.
+`make check` is green (core 91 / engine 149 / tui 24 test targets) and `make pty` passes; both are
+preconditions for every item below. `make check` includes `make language-check`, which fails on non-English
+characters outside the two documented exceptions (`README.zh-CN.md` and the frozen material under
+`review/eval`).
 
 ## Matrix A01–A36 (per-item evidence)
 
 | Item | Scenario | Evidence |
 |---|---|---|
-| A01 | A single Leader completes a goal | `v2_driver::end_to_end_shell_then_finish`; three real DeepSeek tasks (2026-09-23) |
+| A01 | A single Leader completes a goal | `v2_driver::end_to_end_shell_then_finish`; three real DeepSeek tasks (2026-09-23); the headless entry is driven end to end by `v2_daemon::headless_runs_report_their_own_outcome_not_an_earlier_settlement` and `cli::exec_takes_the_prompt_from_stdin_and_runs_the_acceptance_check` |
 | A02 | A→B→C→A communication | `control::messages_flow_across_an_authorized_ring` |
 | A03 | Limited delegation and parent revocation | `control::grants_narrow_only_and_parent_revocation_cascades` |
 | A04 | A queued action meets a revocation | `revocation_blocks_queued_dispatch_until_reauthorized`, `dispatch_rechecks_permission_revision` |
@@ -49,6 +51,22 @@ item below.
 | A34 | Incompatible schema | `core::v2::store::open_refuses_unstamped_foreign_and_wrong_version`, `open_migrates_the_previous_schema_version` |
 | A35 | Goal deadline | `control::goal_deadline_refuses_new_requests_and_dispatches`, `v2_driver::goal_deadline_parks_the_instance` |
 | A36 | Install / init / doctor / cleanup / reopen | `cli::init_prepares_the_v2_root_and_doctor_verifies_it`; the one-off cleanup plus a real re-verification (local probe evidence under `review/tmp/`) |
+
+## Headless client contract (`teamagents exec`, D-49)
+
+The headless entry point is a product surface of its own, so its contract is listed separately from the
+A-matrix (which describes runtime scenarios):
+
+| Contract | Evidence |
+|---|---|
+| Plain output, `--json` report, `-` reads the prompt from stdin, an empty prompt is a usage error | `main::tests::exec_takes_the_prompt_from_the_argument_or_from_stdin`, `exec_refuses_a_missing_or_empty_prompt`; `cli::exec_takes_the_prompt_from_stdin_and_runs_the_acceptance_check` drives the real binary with a pipe and reads the submitted text back out of the leader's context |
+| Exit codes `0` settled / `1` failed or unfinished / `3` approval pending / `124` deadline / `2` usage or infrastructure | `v2::exec::tests::exit_codes_follow_the_documented_contract`; against a real daemon: `v2_daemon::a_blocked_goal_is_not_reported_as_a_success` (a `BLOCKED` goal is not exit 0), `a_failed_turn_ends_the_headless_run_instead_of_timing_out`, `a_parked_approval_ends_the_headless_run_at_once` |
+| A settlement recorded by an earlier run is not this run's outcome | `v2_daemon::headless_runs_report_their_own_outcome_not_an_earlier_settlement` (second run after a settled goal must report the reply, not `SUCCEEDED`) |
+| `--check COMMAND` runs after the turn in the isolated shell in the client's workspace, stops at the first failure, gates the exit code and writes `<state root>/verification.json` | `v2::exec::tests::acceptance_commands_run_in_order_and_stop_at_the_first_failure`, `the_check_verdict_reads_the_wrapper_marker`; `v2_daemon::headless_runs_verify_the_acceptance_commands_and_gate_the_exit_code`, `a_failing_acceptance_command_fails_the_run`; `cli::exec_takes_the_prompt_from_stdin_and_runs_the_acceptance_check` (the real binary writes the ledger) |
+| A parked or paused leader refuses new input (`2`) instead of queueing it | `v2_daemon::a_failed_turn_ends_the_headless_run_instead_of_timing_out` (the failed turn parks the leader; the next run refuses with "nothing was submitted") |
+
+Known ceiling: `--check` is a **client-side** acceptance command; it does not become the goal's runtime
+`required_checks`, and no user surface predefines those yet (see D-49 and `docs/USER-GUIDE.md` §3).
 
 ## Upgrade notes (differences from earlier releases)
 
