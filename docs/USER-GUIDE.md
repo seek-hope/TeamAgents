@@ -186,6 +186,9 @@ pre_tool = ["/home/you/bin/policy.sh"]            # policy hook before tool call
   reason (its task stays open for you to cancel). A tool the instance cannot dispatch is not offered at all: a
   worker the Leader spawned holds `shell` only after you grant it `shell@workspace` (§5.1's boundary, D-60), so
   it works with the file/web/skill tools (they need their binding, not a grant) until then.
+- **Who runs on what**: every member's model is recorded when it is created and shown in the instances panel
+  and in `teamagents instances` (`i-worker · ACTIVE · READY · k3-256k`), which is what makes a team spanning
+  two providers (`spawn` with `model = "…"`) readable instead of guesswork (D-69).
 - **Workspace policies**: the `workspace` argument of `spawn` decides where a new instance works — `shared`
   (default: the project directory), `isolated` (a private directory under the session state root) or
   `git_worktree` (its own branch and worktree). Asking for a worktree in a project that is not a Git

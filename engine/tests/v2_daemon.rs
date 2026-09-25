@@ -502,6 +502,51 @@ async fn the_intervention_cli_cancels_a_task_and_pauses_and_resumes_an_instance(
     handle.shutdown().await.expect("shutdown");
 }
 
+/// Every instance's row describes the model it runs on (D-69), and the snapshot
+/// reports it: a team can span providers (`spawn(model = …)`, D-59), and without this
+/// no client — the TUI included — could say which member runs on what. The stored
+/// name is the *resolved* one (a catalog key becomes the wire model), matching what a
+/// spawned child stores.
+#[tokio::test]
+async fn the_snapshot_reports_each_members_model() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let root = root("member-model");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let mut cfg = config(&root, HashMap::new());
+    // the session boots on a catalog entry: the key is "leader_main", the wire model
+    // is "deepseek-flash", and the row must carry the latter
+    cfg.supervisor.leader_profile = KernelProfile {
+        model: "leader_main".into(),
+        instructions: "team leader".into(),
+        tools: vec![],
+        options: json!({}),
+        context_window: Some(128_000),
+    };
+    let mut catalog = UserConfig::default();
+    catalog.models.insert(
+        "leader_main".into(),
+        serde_json::from_value(json!({"provider": "deepseek", "protocol": "deepseek",
+                                      "model": "deepseek-flash", "context_window": 1000000}))
+        .expect("a model profile"),
+    );
+    cfg.supervisor.catalog = catalog;
+    let handle = serve(cfg).await.expect("daemon");
+    let mut client = Client::connect(&root.dir.join("state/daemon.sock")).await;
+    let checkpoint = client.call("checkpoint", json!({})).await;
+    let instances = checkpoint["result"]["snapshot"]["instances"].as_array().cloned().unwrap_or_default();
+    assert_eq!(instances.len(), 1, "{checkpoint}");
+    assert_eq!(instances[0]["id"], json!("i-leader"));
+    assert_eq!(instances[0]["model"], json!("deepseek-flash"), "the resolved model, not the catalog key: {checkpoint}");
+    // and it is persisted, so any reader (not only a snapshot) sees it
+    let stored: String = teamagents_core::v2::Control::open(&root.dir.join("session.sqlite"), "s-test", false)
+        .expect("control")
+        .connection()
+        .query_row("SELECT profile_json FROM instances WHERE id = 'i-leader'", [], |row| row.get(0))
+        .expect("profile row");
+    assert!(stored.contains("deepseek-flash"), "{stored}");
+    handle.shutdown().await.expect("shutdown");
+}
+
 /// A33: one coordinator per state root (jobs::state_lock) — a second daemon
 /// is refused while the first runs; after shutdown and client disconnect
 /// the kernel releases the lock and a new coordinator recovers the session.

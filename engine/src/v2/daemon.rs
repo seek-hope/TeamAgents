@@ -215,13 +215,16 @@ fn read_only<T>(
 /// Snapshot query shared by `checkpoint` (same read transaction as the
 /// watermark) — instances with lifecycle/phase plus the single-goal view.
 fn read_snapshot(conn: &rusqlite::Connection) -> Result<Json, String> {
+    // `model` rides along (D-69): a team can span providers (`spawn(model = …)`),
+    // and without it no client can say which member runs on what.
     let mut stmt = conn
-        .prepare("SELECT id, lifecycle, phase FROM instances ORDER BY id")
+        .prepare("SELECT id, lifecycle, phase, profile_json FROM instances ORDER BY id")
         .map_err(|e| format!("snapshot prepare: {e}"))?;
     let rows = stmt
         .query_map([], |row| {
+            let profile: Json = serde_json::from_str(&row.get::<_, String>(3)?).unwrap_or(Json::Null);
             Ok(json!({"id": row.get::<_, String>(0)?, "lifecycle": row.get::<_, String>(1)?,
-                      "phase": row.get::<_, String>(2)?}))
+                      "phase": row.get::<_, String>(2)?, "model": profile["model"]}))
         })
         .map_err(|e| format!("snapshot query: {e}"))?;
     let mut instances = Vec::new();

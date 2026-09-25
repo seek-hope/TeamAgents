@@ -61,6 +61,10 @@ pub struct InstanceInfo {
     pub id: String,
     pub lifecycle: String,
     pub phase: String,
+    /// The model this member runs on (D-69): a team can span providers
+    /// (`spawn(model = …)`), so the panel says which one each member uses. Empty
+    /// for an older daemon that does not report it.
+    pub model: String,
 }
 
 #[derive(Clone, Debug)]
@@ -252,6 +256,7 @@ impl V2App {
                 id: i["id"].as_str().unwrap_or("").to_string(),
                 lifecycle: i["lifecycle"].as_str().unwrap_or("").to_string(),
                 phase: i["phase"].as_str().unwrap_or("").to_string(),
+                model: i["model"].as_str().unwrap_or("").to_string(),
             })
             .collect();
         self.active = previous

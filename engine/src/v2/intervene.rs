@@ -166,10 +166,15 @@ fn print_report(options: &InterventionOptions, report: &Json) {
             println!("session {}: {} instance(s)", report["session_id"].as_str().unwrap_or(""), instances.len());
             for instance in &instances {
                 println!(
-                    "  {}  {} / {}",
+                    "  {}  {} / {}{}",
                     instance["id"].as_str().unwrap_or(""),
                     instance["lifecycle"].as_str().unwrap_or(""),
-                    instance["phase"].as_str().unwrap_or("")
+                    instance["phase"].as_str().unwrap_or(""),
+                    // which model a member runs on (D-69): a team can span providers
+                    match instance["model"].as_str().filter(|model| !model.is_empty()) {
+                        Some(model) => format!("  · {model}"),
+                        None => String::new(),
+                    }
                 );
             }
         }

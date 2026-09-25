@@ -62,3 +62,20 @@ Two things it guards against, because both were observed while developing it:
 
 It is a real-model check (same credential and native-window rules as `run.py`), and everything it writes stays
 under `--state-dir`.
+
+## `providers.py`: a team that spans two providers
+
+`providers.py` runs one session with the Leader on DeepSeek Flash (native 1M window, D-36) and a worker
+spawned with `model = "worker_kimi"` — the Kimi entry of the user's own catalog shape (262,144 tokens) — and
+delegates a file write to it:
+
+```bash
+python3 review/dogfood/providers.py                  # fresh /tmp state root
+python3 review/dogfood/providers.py --state-dir /tmp/ta-providers
+```
+
+It needs `DEEPSEEK_API_KEY` and `KIMI_API_KEY`, then asserts the three facts the acceptance row claims: the
+session really spanned two models (each member's resolved model is recorded, D-69), the delegation exchanged a
+task assignment and a task result, and `answer.txt` holds exactly the line the task asked for. Measured
+(2026-09-25): 7 model requests, 14.0 s, goal `SUCCEEDED`, `i-leader` on `deepseek-flash`, `worker1` on
+`k3-256k`, `task t1 SUCCEEDED`.

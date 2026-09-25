@@ -231,6 +231,37 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-69 Which model a member runs on is written down and visible (2026-09-25)
+
+Making the two-provider acceptance row (A27) re-runnable in the tree — a real DeepSeek + Kimi session, below —
+surfaced a visibility hole. A spawned child stores its profile when it is created (D-59 made that the
+*resolved* model name, so the factory can map it back to a catalog key), but the **leader's** row was created
+by the bootstrap with no profile at all: `instances.profile_json` was `{}`, and no surface reported a model
+anyway. For a team that deliberately spans providers (`spawn(model = …)`) that means the user cannot see who
+runs on what — in the TUI, in the daemon's snapshot, or in the CLI listing.
+
+**The fix** (three small pieces, no new mechanism):
+
+- `driver::bootstrap` stores the leader's resolved profile (`model`, `instructions`, `options`,
+  `context_window`) on the instance row, so *every* instance row describes its model. The leader's driver
+  still takes its profile from the session configuration — the row is what a reader has. The bootstrap's
+  idempotence is unaffected: it only creates the row when the instance does not exist yet, so a fixed
+  `boot-instance` command id never replays with a different payload (the check happens before the submit).
+- The daemon's `checkpoint` snapshot carries `model` per instance (a read-view extension, like D-61's grant
+  view), so **every** client sees it.
+- The TUI instances panel and `teamagents instances` print it (`i-worker · ACTIVE · READY · k3-256k`).
+
+**Evidence**: `v2_daemon::the_snapshot_reports_each_members_model` (the row and the snapshot carry the
+*resolved* name `deepseek-flash`, not the catalog key `leader_main` — consistent with what a spawned child
+stores) and `tui::frame_shows_the_panels_and_panel_hit_testing` (the panel renders each member's model).
+
+**The re-runnable A27 harness** is `review/dogfood/providers.py`: one session, the Leader on DeepSeek Flash
+(native 1M window, D-36) and a worker spawned with `model = "worker_kimi"` (the user's Kimi entry, 262,144
+tokens), delegating a file write and waiting for it. Measured (2026-09-25, isolated state root): 7 model
+requests, 14.0 s, `end=completed`, goal `SUCCEEDED`, members `i-leader` on `deepseek-flash` and `worker1` on
+`k3-256k`, `task t1 SUCCEEDED`, and `answer.txt` exactly as asked. A27's row now cites this script instead of
+an out-of-tree probe.
+
 ## D-68 The user-side interventions are reachable headlessly (2026-09-25)
 
 D-65's honest ending for a model that stops talking — the delegator waits, and **cancelling the task** releases

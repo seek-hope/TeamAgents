@@ -125,13 +125,18 @@ fn render_instances(frame: &mut Frame, app: &V2App, area: Rect) {
                 "PAUSED" | "PARKED" => Style::default().fg(WARNING),
                 _ => Style::default().fg(ERROR),
             };
-            Line::from(vec![
+            let mut spans = vec![
                 Span::styled(format!("{marker}{target} "), style),
                 Span::styled(instance.id.clone(), style),
                 Span::styled(" · ", Style::default().fg(GREY)),
                 Span::styled(instance.lifecycle.clone(), lifecycle_style),
                 Span::styled(format!(" · {}", instance.phase), Style::default().fg(NOTICE)),
-            ])
+            ];
+            // which model a member runs on (D-69): a team can span providers
+            if !instance.model.is_empty() {
+                spans.push(Span::styled(format!(" · {}", instance.model), Style::default().fg(GREY)));
+            }
+            Line::from(spans)
         })
         .collect();
     frame.render_widget(Paragraph::new(lines), inner);

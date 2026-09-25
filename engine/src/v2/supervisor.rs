@@ -228,7 +228,9 @@ where
         .map_err(|e| format!("state root {}: {e}", config.state_root.display()))?;
     let lock = crate::jobs::state_lock(&config.state_root.join("coordinator.lock"))?;
     let storage = Storage::open(&config.session_db, &config.session_id, true, config.storage_queue)?;
-    bootstrap(&storage, &config.leader_id, &config.workspace.to_string_lossy(), &config.goal_limits).await?;
+    let leader_profile = crate::providers::resolve_profile(config.leader_profile.clone(), &config.catalog);
+    bootstrap(&storage, &config.leader_id, &config.workspace.to_string_lossy(), &config.goal_limits, &leader_profile)
+        .await?;
     let session_id = config.session_id.clone();
     let drivers: Arc<std::sync::Mutex<HashMap<String, InstanceDriver>>> =
         Arc::new(std::sync::Mutex::new(HashMap::new()));

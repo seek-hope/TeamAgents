@@ -30,8 +30,8 @@ fn cycle_to(app: &mut V2App, view: View) {
 
 fn checkpoint() -> Json {
     json!({"instances": [
-               {"id": "i-leader", "lifecycle": "ACTIVE", "phase": "READY"},
-               {"id": "i-worker", "lifecycle": "ACTIVE", "phase": "MODEL_PENDING"}
+               {"id": "i-leader", "lifecycle": "ACTIVE", "phase": "READY", "model": "deepseek-flash"},
+               {"id": "i-worker", "lifecycle": "ACTIVE", "phase": "MODEL_PENDING", "model": "k3-256k"}
            ],
            "goal": {"status": "ACTIVE", "known_usage": {"prompt": 7, "completion": 3, "total": 10},
                     "unknown_usage": 0, "limits": {"max_total_tokens": 1000},
@@ -442,8 +442,10 @@ fn frame_shows_the_panels_and_panel_hit_testing() {
     terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
     let all = frame_lines(&terminal).join("\n");
     assert!(all.contains("instances (● conversation target)"), "{all}");
-    assert!(all.contains("i-leader · ACTIVE · READY"), "{all}");
+    assert!(all.contains("i-leader · ACTIVE · READY · deepseek-flash"), "{all}");
     assert!(all.contains("i-worker"), "{all}");
+    // a team can span providers: the panel says which model each member runs on (D-69)
+    assert!(all.contains("· k3-256k"), "{all}");
     assert!(all.contains("t terminate"), "{all}");
     let geo = v2ui::geometry(&app, ratatui::layout::Rect::new(0, 0, 72, 18));
     assert_eq!(geo.approvals.height, 0); // panels hide the chat-only boxes

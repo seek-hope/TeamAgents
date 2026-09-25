@@ -349,7 +349,9 @@ pub async fn start<P: Provider + 'static>(mut config: DriverConfig<P>) -> Result
     let session_id = config.session_id.clone();
     let instance_id = config.instance_id.clone();
     let goal_id = format!("goal-{session_id}");
-    bootstrap(&storage, &instance_id, &config.workspace.to_string_lossy(), &config.goal_limits).await?;
+    let leader_profile = crate::providers::resolve_profile(config.profile.clone(), &config.catalog);
+    bootstrap(&storage, &instance_id, &config.workspace.to_string_lossy(), &config.goal_limits, &leader_profile)
+        .await?;
     let (shared, task) = spawn_driver(config, &storage)?;
     Ok(DriverHandle { storage, shared, session_id, instance_id, goal_id, task, _lock: lock })
 }
@@ -362,17 +364,25 @@ pub async fn start<P: Provider + 'static>(mut config: DriverConfig<P>) -> Result
 /// bootstrap converts the duration here, at the moment the goal is created, and
 /// passes the rest of the limits through unchanged — what is stored on the goal is
 /// exactly what the runtime enforces.
+/// `leader_profile` is stored on the instance row (D-69): the leader's own driver
+/// takes its profile from the session configuration, but a *reader* — the TUI, a
+/// script, the daemon's snapshot — has only the database, and a team that spans
+/// providers (D-59's `spawn(model = …)`) is unreadable when the members' models are
+/// not written down. Children already store theirs at spawn time.
 pub(crate) async fn bootstrap(
     storage: &Storage,
     instance_id: &str,
     workspace: &str,
     goal_limits: &Json,
+    leader_profile: &teamagents_core::kernel::KernelProfile,
 ) -> Result<(), String> {
     storage
         .call({
             let instance = instance_id.to_string();
             let workspace = workspace.to_string();
             let mut goal_limits = goal_limits.clone();
+            let profile = json!({"model": leader_profile.model, "instructions": leader_profile.instructions,
+                                 "options": leader_profile.options, "context_window": leader_profile.context_window});
             let deadline_minutes = goal_limits
                 .as_object_mut()
                 .and_then(|limits| limits.remove("deadline_minutes"))
@@ -388,7 +398,7 @@ pub(crate) async fn bootstrap(
                         command(
                             "boot-instance",
                             "create_instance",
-                            json!({"id": instance, "workspace_ref": workspace}),
+                            json!({"id": instance, "workspace_ref": workspace, "profile": profile}),
                         ),
                         Identity::User,
                     )?;
