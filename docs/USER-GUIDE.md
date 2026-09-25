@@ -374,7 +374,7 @@ teamagents tasks cancel --id t-prose    # releases a delegator waiting on a task
 |---|---|
 | `exec: connect ... Connection refused` | Run `teamagents doctor` to inspect the state root; the next `teamagents`/`exec` starts the daemon automatically |
 | `the daemon exited while starting (exit status: 1): …` | The reason is the daemon's own first words; the full log is `<state root>/daemon.log` (usually a missing/broken config or an unset credential) |
-| `exec: the leader instance i-leader is PARKED` | The leader stopped after a permanent failure (`error` in `daemon.log` or the receipt says why). Resume it in the TUI instances panel (`r`), or start a fresh state root; nothing was submitted |
+| `exec: the leader instance i-leader is PARKED` | The leader stopped after a permanent failure (`error` in `daemon.log` or the receipt says why). Resume it with `teamagents instances resume --id i-leader` (or `r` in the TUI instances panel), or start a fresh state root; nothing was submitted. A **TERMINATED** leader is different: termination is final, so `exec` says so and the only way on is a fresh state root (D-82) |
 | `exec` reports `check 1: FAILED` | Your own `--check` command failed; its output is on stderr and in `<state root>/verification.json` |
 | `exec` exits 3 | A tool call needs approval and a headless run cannot answer it. Approve it in the TUI and run `exec` again, or start the daemon with `--full-auto` |
 | `doctor` reports the state root as FAIL | That path does not hold a current session database (the stamp does not match); use another `--state-root` or follow the message, and never edit the database by hand |
