@@ -231,6 +231,31 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-94 A gate flake with a precise cause: a receipt read once after a fixed sleep (2026-09-26)
+
+`make check` failed once in `v2_supervisor::a_settled_goal_leaves_a_later_delegation_without_an_active_goal`
+— the test that pins the known gap "a settled goal leaves no surface to open a new one". The panic said
+exactly where:
+
+    panicked at tests/v2_supervisor.rs:943:
+    no delegation refusal in the receipts: ["…[finish accepted: goal goal-s-test closed as SUCCEEDED]"]
+
+The fixture drove the second instruction, waited for the leader's second *model answer* to appear, then slept
+a fixed 300 ms and read the conversation once. The receipt for the delegation the model attempted lands after
+that answer, so under a loaded suite the read saw only the first turn's `finish` receipt. Reproduced on
+demand by running the whole `v2_supervisor` binary with sixteen copies of the single test in parallel: one
+failure in three or four attempts, always at the same line.
+
+The fix is the same class as D-83's: wait for the *condition* instead of for a duration. The test now polls
+its own read of the leader's tool results (every 50 ms, 20 s bound — the same bound its other waits use) until
+the refusal is there, and only then asserts the goal set and the refusal's wording. After the change: six
+consecutive full-binary runs under the same sixteen-way load, all green, and `make check` green twice.
+
+Ceiling: the flake was load-dependent and is now rare rather than impossible — a 20 s bound is still a
+bound; the real fix for a suite like this is a deterministic "wait for the runtime to be idle" helper, which
+this repository does not have (each test drives its own supervisor and observes events instead). Recorded
+here so the next reader of that fixture knows why it polls.
+
 ## D-93 `exec --check` driven the way a CI job uses it (2026-09-26)
 
 `teamagents exec --check COMMAND` is the contract a CI job depends on: the turn runs, then the user's own

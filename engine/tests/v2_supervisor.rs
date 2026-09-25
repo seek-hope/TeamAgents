@@ -911,8 +911,32 @@ async fn a_settled_goal_leaves_a_later_delegation_without_an_active_goal() {
         "the second instruction really opens a turn: {:?}",
         seen.lock().unwrap().get("i-leader")
     );
-    tokio::time::sleep(Duration::from_millis(300)).await;
     let control = second_control(&root);
+    // The delegation the model attempted must report the missing goal instead of spawning a
+    // member for work that has nowhere to be charged. The receipt lands *after* the model's
+    // answer, so wait for it rather than reading once after a fixed sleep: under a loaded
+    // suite (every test binary in parallel) the receipt had not arrived and the read saw only
+    // the first turn's `finish` receipt — the same class of race the deadline fixture had
+    // (D-83). 20 s is the same bound the waits above use.
+    let read_results = |control: &teamagents_core::v2::Control| -> Vec<String> {
+        control
+            .connection()
+            .prepare(
+                "SELECT message_json FROM context_entries
+                 WHERE instance_id = 'i-leader' AND kind = 'tool_result' ORDER BY idx",
+            )
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(|row| row.unwrap())
+            .collect()
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let mut results = read_results(&control);
+    while !results.iter().any(|entry| entry.contains("not active")) && std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        results = read_results(&control);
+    }
     let goals: Vec<(String, String)> = control
         .connection()
         .prepare("SELECT id, status FROM goals ORDER BY id")
@@ -923,19 +947,6 @@ async fn a_settled_goal_leaves_a_later_delegation_without_an_active_goal() {
         .collect();
     assert_eq!(goals.len(), 1, "no new goal is created for the second input: {goals:?}");
     assert_eq!(goals[0].1, "SUCCEEDED", "{goals:?}");
-    // and the delegation the model attempted reports the missing goal instead of
-    // spawning a member for work that has nowhere to be charged
-    let results: Vec<String> = control
-        .connection()
-        .prepare(
-            "SELECT message_json FROM context_entries
-             WHERE instance_id = 'i-leader' AND kind = 'tool_result' ORDER BY idx",
-        )
-        .unwrap()
-        .query_map([], |row| row.get::<_, String>(0))
-        .unwrap()
-        .map(|row| row.unwrap())
-        .collect();
     let refusal = results
         .iter()
         .find(|entry| entry.contains("not active"))
