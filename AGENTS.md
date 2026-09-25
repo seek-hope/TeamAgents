@@ -92,6 +92,10 @@ This describes the current code.
 
 ## Operating notes for team runs (measured)
 
+- **Cancelling a task is not stopping its work.** `tasks cancel` lands the task `CANCELLED` and releases
+  the delegator, but the assignee's running command keeps going until its own tool timeout; the lever that
+  stops the process group is `instances terminate --id … --yes` (measured: the effect stops 1.5–5.5 s after
+  the lever, receipt `class: cancelled` — D-88, `python3 review/dogfood/cancel.py`).
 - **A task can park in `BLOCKED`** when required checks are exhausted, a member fails or work is cancelled;
   a blocked task prevents the goal from completing. Select it in the TUI tasks panel and press `c` to cancel
   it (without a live turn it goes straight to `CANCELLED`; headlessly: `teamagents tasks cancel --id`);

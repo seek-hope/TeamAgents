@@ -335,6 +335,15 @@ teamagents tasks cancel --id t-prose    # releases a delegator waiting on a task
   (a `BLOCKED` task would not), so the delegator wakes and can re-delegate or settle honestly.
 - `terminate` needs `--yes`: it retires the instance, its open work is dealt with explicitly, and a workspace
   holding uncommitted or unmerged work is never deleted — the reason is reported instead.
+- **Stopping a command that is already running**: `tasks cancel` is *delegation-level* — the task lands
+  `CANCELLED` and the delegator is released, but the assignee's command keeps running until its own tool
+  timeout, because the process-group stop (§6.4) is a request against an *operation* and the assignee learns
+  about the cancel at its next boundary. The lever that stops the process group is
+  **`instances terminate --id … --yes`**: it closes the instance's open execution, the running operation is
+  flagged, the runner kills the process group, and the operation lands `CANCELLED` with a receipt whose
+  `class` is `cancelled`. Measured with a real model and a real command (`python3
+  review/dogfood/cancel.py`, D-88): the effect stops 1.5–5.5 s after the lever. There is no lighter lever for
+  one command today.
 - Ids must name a listed instance or task (full id or an unambiguous prefix); `--json` prints the raw report
   for scripts. Exit codes: `0` done, `1` the session refused it, `2` usage or no session.
 
@@ -381,6 +390,7 @@ teamagents tasks cancel --id t-prose    # releases a delegator waiting on a task
 | The agent worked in the wrong directory | Its session was started with another workspace (or without `--cwd`): the client prints the live one. Stop that daemon (Ctrl-C in its terminal) or start a fresh `--state-root` with `--cwd DIR` |
 | The model returns 401/402 | Check the environment variable named by the profile's `api_key_env`; `doctor` lists the credential resolution result per profile |
 | A task stays `RUNNING` while its assignee is idle | The assignee's model ended its turn without settling it (D-65): cancel the task — `c` in the tasks panel or `teamagents tasks cancel --id` — which releases the delegator's wait |
+| A member is stuck in a long or endless command and cancelling its task changed nothing | `tasks cancel` is delegation-level and does not touch the assignee's operation (D-88). Stop the work with `teamagents instances terminate --id … --yes` (the process group dies within seconds, and the receipt says `class: cancelled`) or wait for the command's own tool timeout |
 | An instance is parked | `teamagents instances` shows which; resume it with `instances resume --id` (or `r` in the TUI) when the reason is gone |
 | A command under `approved_scope` waits for approval | Decide it with `teamagents approvals` (§4.1) or in the TUI approvals panel; `--full-auto` (host execution, D-41) skips the gate |
 | Start completely fresh | Stop the daemon and run `teamagents --state-root <new directory>` for a clean session; the old database stays where it is |

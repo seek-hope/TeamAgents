@@ -300,3 +300,26 @@ python3 review/dogfood/boundary.py
 
 Measured (2026-09-26): all four assertions hold; `sha256` of the foreign file unchanged
 (`4242ca5de3fc…`), refusal latency 0.2 s, second daemon exit 1, restart after SIGKILL in under a second.
+
+
+## `cancel.py`: does a running command really stop?
+
+`cancel.py` answers A13's product question with a real model and a real command, and it needs no Leader in
+the loop beyond hiring the worker:
+
+```bash
+python3 review/dogfood/cancel.py
+python3 review/dogfood/cancel.py --state-dir /tmp/ta-cancel --stop-window 30
+```
+
+The Leader spawns one worker (a spawned worker holds no `shell@workspace`, §5.1), the probe grants it through
+`teamagents authority grant`, sends the instruction to that member directly (the same `submit_input` the TUI
+sends), and then pulls `teamagents instances terminate --id … --yes`. Two things are asserted, and both can
+fail: the **artifact** — `heartbeat.txt`, written five times a second by the command the runner spawned —
+must stop growing (1.5–5.5 s after the lever in five runs on 2026-09-26), and the operation's **receipt
+class** must be `cancelled`, which is how the probe tells the user's lever apart from the command simply
+running into its own 120 s tool timeout.
+
+The probe also documents the level the lever lives at: `tasks cancel` is delegation-level (it lands the task
+`CANCELLED` and releases the delegator, while the assignee's operation keeps running), which is why the D-68
+CLI test and this probe cover different halves of A13 (D-88).

@@ -231,6 +231,61 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-88 How a user stops a command that is already running (2026-09-26)
+
+A13 ("cancel, timeout and completion races") had only offline evidence — `jobs_runner` and `v2_driver` with
+scripted providers — and while building the live probe the question turned out to have a surprising shape:
+**there are two levels, and only one of them stops work.**
+
+- `teamagents tasks cancel --id …` is **delegation-level**. It marks the task `CANCELLED`, revokes the
+  return path, wakes the delegator and queues a `task_cancelled` envelope to the assignee — which the
+  assignee applies at *its* next boundary. The assignee's running command keeps running: §6.4 makes
+  cancellation a "process-group stop request to a controlled job", and a job belongs to an **operation**,
+  which a task cancel does not touch. Measured (2026-09-26, DeepSeek Flash, native window): the delegated
+  command kept ticking after the task cancel while the delegating turn ended normally, and the operation
+  stayed `RUNNING`.
+- `teamagents instances terminate --id … --yes` is the lever that stops work. It closes the instance's open
+  execution (`close_epoch_execution`): a `PREPARED` operation is cancelled outright, an operation that
+  already crossed its start boundary is *flagged* (`cancel_requested = 1`), and the driver that is waiting on
+  that job turns the flag into a runner `CANCEL` — the runner kills the process group and the operation lands
+  `CANCELLED` with a receipt whose error `class` is `cancelled`.
+
+Measured end to end (`python3 review/dogfood/cancel.py`, five runs on 2026-09-26): the Leader's spawn turn
+~5 s; the worker — which holds no `shell@workspace` until the user grants it (§5.1) — ran
+`while true; do echo tick >> heartbeat.txt; sleep 0.2; done` under a real model; the user's direct input to
+that member started it; `instances terminate --id … --yes` then stopped the effect **1.5–5.5 s after the
+lever** (the heartbeat file is the witness: the process group is gone, not just a row), the operation ended
+`CANCELLED` with `class: cancelled` — not the command's own `class: timeout` — and no operation was left in a
+running state.
+
+The probe's design rules, because each of them was needed to make the claims mean something:
+
+- **the artifact decides.** The heartbeat file growing five times a second is the only thing the probe
+  trusts; a database row would only show bookkeeping.
+- **the receipt class distinguishes the levers.** `cancelled` means the user's lever reached the runner;
+  `timeout` would mean the command simply ran into its own 120 s tool deadline. Without the class the two are
+  indistinguishable from outside, and the probe would pass for the wrong reason.
+- **the tick cadence must be faster than the sampling window.** With one tick per second a one-second quiet
+  window can miss a tick and report a live process as stopped (D-84's rule); the command ticks every 0.2 s
+  and three consecutive quiet half-second samples are required.
+- **the model's part stays minimal.** The Leader only hires the worker (the one product path that creates a
+  member with a real profile); the grant, the instruction and the stop all go through user surfaces
+  (`authority grant`, the direct input the TUI sends, `instances terminate`).
+
+Ceiling, and the open item this sharpens: there is **no light lever**. A user who wants to stop one running
+command must retire the instance (and with it the member's future use); `cancel_operation` exists in the
+control plane and is reachable over the documented socket protocol, but no CLI or TUI verb calls it. That is
+new surface in the family of D-63's parked `cancel_turn`, so it stays a discussion item with the user rather
+than something this probe implements. Two smaller observations from the same runs: `spawn_instance` never
+grants `shell@workspace`, not even when the *user* issues it (by design — §5.1's automatic grant belongs to
+`create_instance`), and a `spawn_instance` without a `profile` produces a member whose surface is a minimal
+`wait`/`finish`/`read_history` (the Leader's `spawn` tool always passes a resolved profile, so the product
+path is unaffected; a protocol client that omits it gets a member that can do nothing).
+
+Evidence: `python3 review/dogfood/cancel.py` (five runs), and the offline layers it does not repeat —
+`jobs_runner::cancel_running_stops_the_process_group`, `v2_driver::user_cancel_stops_a_running_job`,
+`v2_daemon::the_intervention_cli_cancels_a_task_and_pauses_and_resumes_an_instance`.
+
 ## D-87 `create = true` adopted a database that was not ours (2026-09-26)
 
 `store::open(path, create)` is what the daemon passes, and its unstamped branch initialized the schema
