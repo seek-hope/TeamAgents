@@ -3,13 +3,14 @@
 CRATES := core engine tui
 CARGO_FLAGS ?= --offline --locked
 
-.PHONY: help check fmt fmt-check lint test build pty hygiene
+.PHONY: help check fmt fmt-check lint test build pty hygiene language-check
 
 help:
 	@echo 'make check     format, Clippy, regression tests and repository hygiene (offline by default)'
 	@echo 'make fmt       format the three crates'
 	@echo 'make build     build the CLI and the TUI'
 	@echo 'make pty       real-terminal smoke check with an isolated config (needs Python 3)'
+	@echo 'make language-check  reject non-English characters in code and docs (AGENTS.md rule)'
 	@echo 'first run with downloads: make check CARGO_FLAGS=--locked'
 
 check: fmt-check lint test hygiene
@@ -83,7 +84,20 @@ verify-model-wide: verify-tools
 	@cd verification/tla && java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
 		tlc2.TLC -config MC_wide.cfg -fp 64 -workers 8 V2Control.tla
 
-hygiene:
+# Repository language rule (AGENTS.md): code and documentation are English only.
+# The two exceptions are README.zh-CN.md (the Chinese README) and the frozen
+# evaluation material under review/eval (task prompts, fixtures and recorded
+# trial output keep their original bytes and are pinned by the run manifests).
+# The pattern needs `grep -P` (GNU grep, true on the CI image and dev machines).
+LANGUAGE_EXCLUDES := ':(exclude)README.zh-CN.md' ':(exclude)review/eval/**' ':(exclude)review/tmp/**'
+language-check:
+	@if git grep -n -I -P '[\x{3000}-\x{303f}\x{3400}-\x{4dbf}\x{4e00}-\x{9fff}\x{f900}-\x{faff}\x{ff01}-\x{ff60}\x{ffe0}-\x{ffe6}]' \
+		-- . $(LANGUAGE_EXCLUDES); then \
+		echo 'non-English characters above: translate them (AGENTS.md) or add a documented exception'; \
+		exit 1; \
+	fi
+
+hygiene: language-check
 	git diff --check
 	git submodule status
 	@test -z "$$(git ls-files '*.pyc' '*/__pycache__/*' '*/.pytest_cache/*' '*/target/*' \

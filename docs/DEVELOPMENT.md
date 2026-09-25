@@ -20,9 +20,13 @@ make pty                          # real-terminal check with an isolated config 
 ```
 
 `make check` runs, in order: formatting, Clippy on all targets, the three crates' tests, the Git submodule
-configuration and repository hygiene (it rejects tracked compile caches, Python caches and SQLite
-temporaries, and checks the syntax of `install.sh`). Clippy warnings are errors. CI uses the same make
-targets and may only download the locked dependencies; the release workflow uses the same Rust version.
+configuration and repository hygiene (it rejects non-English characters in code and docs, tracked compile
+caches, Python caches and SQLite temporaries, and checks the syntax of `install.sh`). `make language-check`
+runs the language rule on its own: it scans the tracked tree for CJK characters and excludes exactly the two
+documented exceptions (`README.zh-CN.md` and the frozen evaluation material under `review/eval`), so a
+stray Chinese comment fails the gate instead of being noticed in review. Clippy warnings are errors. CI uses
+the same make targets and may only download the locked dependencies; the release workflow uses the same Rust
+version.
 A green Cargo run can include tests that returned early for a missing dependency, so it never substitutes for
 real isolation or real-model acceptance.
 

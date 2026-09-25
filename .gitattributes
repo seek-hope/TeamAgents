@@ -1,3 +1,5 @@
-# 评测证据文件保留模型产出的原始字节（patch 上下文空行、评分日志），
-# 行尾空白属证据内容，不参与行尾空格检查。
-review/eval/runs/** whitespace=-trailing-space
+# Frozen evaluation evidence keeps the model's raw output bytes (patch-context
+# blank lines, grading logs); trailing whitespace there is evidence content and
+# is exempt from the patch-whitespace check.
+review/eval/**/tasks/** whitespace=-trailing-space
+review/eval/**/runs/** whitespace=-trailing-space

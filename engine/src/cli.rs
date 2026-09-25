@@ -154,7 +154,7 @@ pub fn doctor(state_root: Option<PathBuf>) -> i32 {
                     &mut results,
                     "v2 state root",
                     journal.eq_ignore_ascii_case("wal") && probe.is_ok(),
-                    format!("{}（journal_mode={journal}, synchronous={sync}）", v2_root.display()),
+                    format!("{} (journal_mode={journal}, synchronous={sync})", v2_root.display()),
                 );
             }
             Err(error) => check(&mut results, "v2 state root", false, error),

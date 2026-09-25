@@ -19,7 +19,7 @@
 #   notify   event notification: asynchronous, never blocks a turn, killed after 10s; the event
 #            name is argv[1] and the event JSON arrives on stdin. Events: tool_call (with
 #            tool/arguments/ok/error) / team_action / run_completed /
-#            run_failed / run_cancelled / run_paused。
+#            run_failed / run_cancelled / run_paused.
 #   pre_tool runs before every native tool call: exit 0 allows, exit 2 denies (the first
 #            stderr line is the reason handed to the model); other exit codes, spawn failures
 #            and timeouts allow and only log to stderr. Replays after recovery are not re-asked.

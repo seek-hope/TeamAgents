@@ -11,9 +11,10 @@
 (* + stored result: a replay returns the stored receipt, a divergent replay is *)
 (* refused).                                                                  *)
 (*                                                                          *)
-(* 这一版事件从不回收（daemon.rs 头注："Events are never reclaimed in this     *)
-(* first version"），所以 resync_required 恒为 false——模型用一个从不置真的   *)
-(* `pruned` 变量如实表达，并把"水位不会越过日志"写成不变量。                  *)
+(* This version never reclaims events (daemon.rs header: "Events are never     *)
+(* reclaimed in this first version"), so resync_required is always false - the *)
+(* model expresses that faithfully with a `pruned` variable that is never set  *)
+(* true, and states "the watermark never moves past the log" as an invariant.  *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets
 
@@ -148,7 +149,7 @@ TypeOK ==
 \* the event log only grows: versions are never reused or rolled back
 LogMonotone == shrank = FALSE
 
-\* A28 "命令去重": a command id is applied at most once, and its stored receipt
+\* A28 "command dedup": a command id is applied at most once, and its stored receipt
 \* is stable — replays (same payload) return that receipt, divergent replays are
 \* refused rather than applied again
 AppliedAtMostOnce == \A cmd \in Commands : applied[cmd] => receipt[cmd] # noreceipt
@@ -163,13 +164,13 @@ ReceiptNamesARealVersion ==
 AppliedCommandsUsedTheWireVersion ==
   \A cmd \in Commands : applied[cmd] => versionOf[cmd] = Wire
 
-\* A28 "快照水位正确": the snapshot never claims to be newer than the watermark
+\* A28 "snapshot watermark correctness": the snapshot never claims to be newer than the watermark
 \* the client holds for it — that is what "snapshot + watermark from one read
 \* transaction" buys, and a state where the snapshot leads the cursor is
 \* unreachable
 SnapshotNeverLeadsCursor == \A c \in Clients : snapshot[c] <= cursor[c]
 
-\* A28 "无缺口": the client's view is exactly the version its cursor claims,
+\* A28 "no gaps": the client's view is exactly the version its cursor claims,
 \* and neither runs past the log (this version never reclaims events, so a
 \* resync is never needed)
 ViewMatchesCursor == \A c \in Clients : view[c] = cursor[c]

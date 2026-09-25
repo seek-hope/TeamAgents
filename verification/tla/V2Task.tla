@@ -344,7 +344,7 @@ NoOpenTaskOnDeadAssignee ==
   \A t \in Tasks : assignee[t] \in Instances => (live[assignee[t]] \/ taskStatus[t] \notin OpenTask)
 
 \* ------------------------------------------------------------------ properties --
-\* §5.2/§5.3: a settled task is never rewritten ("终态不可改写"), checked over
+\* §5.2/§5.3: a settled task is never rewritten ("a terminal state is final"), checked over
 \* transitions through the `rewritten` monitor
 SettledIsFinal ==
   rewritten = {}

@@ -371,7 +371,7 @@ impl Harness {
             }
         }
 
-        // NoStaleActiveGoal（V-G1）
+        // NoStaleActiveGoal (V-G1)
         let goal_status: HashMap<&str, &str> = goals.iter().map(|row| (row[0].as_str(), row[1].as_str())).collect();
         for row in &instances {
             let pointer = &row[3];
