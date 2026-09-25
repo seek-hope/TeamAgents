@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 """A real-model check of the user's authority surface (D-61) end to end.
 
-One session, two turns: the Leader spawns a worker and delegates a shell command to it, and
-the worker *cannot* run it — a spawned worker holds no `shell@workspace` (§5.1), so the tool is
-not even offered to it (D-60). The user then grants the worker the capability through
-`teamagents authority grant`, sends a second instruction, and the same worker runs the command.
+One session, two turns: the Leader spawns a worker and asks it whether it can run shell commands
+in the shared workspace (it cannot: a spawned worker holds no `shell@workspace`, §5.1/D-60, so the
+tool is not even offered to it). The user then grants the worker the capability through
+`teamagents authority grant`, sends a second instruction, and the same worker runs a shell command.
 
-The artifact decides: the command writes `proof.txt` into the shared workspace, so the file must
-be absent after the first turn and present after the second. The probe also records the worker
-id the grant was addressed to, the grant's revocation (`authority revoke`), and that the
-capability disappears again.
+The artifact decides: that command writes `proof.txt` into the shared workspace, so the file must be
+absent after the first turn and present after the second. The probe also records the worker id the
+grant was addressed to, the revocation (`authority revoke`) and that the capability disappears again.
+
+Two things it guards against, because both were observed here: a model that answers with prose while
+its task stays open is re-asked by the runtime (unbounded without a goal budget), so the probe parks
+such a worker and reports it; and the same session shape (a turn that ends on an accepted `finish`,
+then a new task) is what produced D-62's wire error, which the first run of this probe found.
 
     python3 review/dogfood/authority.py                    # fresh /tmp state root
     python3 review/dogfood/authority.py --state-dir /tmp/ta-authority
@@ -44,13 +48,12 @@ max_retries = 2
 generation_options = { reasoning_effort = "high" }
 """
 
-FIRST = """Spawn one worker, and delegate this task to it: run the shell command
-`printf granted > {proof}` in the shared workspace, read the command's output back, and report
-whether the command ran. Then tell me what the worker said and wait for my next message — do not
-finish or settle the goal yet."""
+FIRST = """Spawn one worker, and delegate this task to it: say in one sentence whether you can run shell
+commands in the shared workspace right now, and which tools you have for that. Report the worker's answer
+to me, then wait for my next message — do not finish or settle the goal yet."""
 
-SECOND = """I have granted that worker shell access to the shared workspace. Ask the same worker to run
-the same command again (`printf granted > {proof}`) and report the output."""
+SECOND = """I have granted that worker shell access to the shared workspace. Ask the same worker to run the
+shell command `printf granted > {proof}` in that workspace and report the command's output."""
 
 
 def call(bin_args: list[str], env: dict, cwd: pathlib.Path | None = None) -> subprocess.CompletedProcess:
@@ -62,10 +65,59 @@ def turns(state_root: pathlib.Path) -> int:
     return list(db.execute("SELECT COUNT(*) FROM model_requests"))[0][0]
 
 
+def session_state(state_root: pathlib.Path, worker: str) -> tuple[int, str]:
+    """(model requests so far, the worker's open task or "none").
+
+    A turn whose model answers with prose while its task stays open is re-asked by the runtime (see the
+    known gap in docs/ACCEPTANCE.md), which is unbounded without a goal budget. A probe must notice that
+    instead of letting it run, so the caller parks the instance and reports the finding.
+    """
+    db = sqlite3.connect(f"file:{state_root}/session.sqlite?mode=ro", uri=True)
+    handled = list(db.execute("SELECT COUNT(*) FROM model_requests"))[0][0]
+    open_tasks = list(
+        db.execute("SELECT status FROM tasks WHERE assignee = ?1 AND status IN ('PENDING', 'RUNNING')", [worker])
+    )
+    return handled, (open_tasks[0][0] if open_tasks else "none")
+
+
+def park(socket: pathlib.Path, instance: str, reason: str) -> str:
+    """Park an instance through the daemon protocol, the way the TUI does.
+
+    There is no CLI verb for it (user-side pause/resume is a TUI action), so the probe speaks the
+    documented socket protocol (`protocol_version` 1) directly.
+    """
+    import socket as socket_module
+
+    try:
+        connection = socket_module.socket(socket_module.AF_UNIX, socket_module.SOCK_STREAM)
+        connection.settimeout(10)
+        connection.connect(str(socket))
+        stream = connection.makefile("rw")
+        stream.readline()  # greeting
+        stream.write(
+            json.dumps(
+                {
+                    "protocol_version": 1,
+                    "request_id": "probe-park",
+                    "command_id": "probe-park",
+                    "method": "set_lifecycle",
+                    "params": {"instance_id": instance, "lifecycle": "PARKED", "reason": reason},
+                }
+            )
+            + "\n"
+        )
+        stream.flush()
+        reply = json.loads(stream.readline())
+        return "parked" if reply.get("ok") else f"refused: {reply.get('error')}"
+    except OSError as error:  # the daemon may already be gone
+        return f"could not park {instance}: {error}"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state-dir", help="scratch root (default: a fresh /tmp/ta-authority)")
     parser.add_argument("--timeout", type=int, default=600, help="exec --timeout in seconds")
+    parser.add_argument("--budget", type=int, default=24, help="model requests one phase may spend before the probe stops the loop")
     args = parser.parse_args()
     if not BIN.is_file():
         raise SystemExit(f"{BIN} is missing; build it first (make build)")
@@ -94,7 +146,7 @@ def main() -> int:
     if proof.exists():
         failures.append("the worker wrote the file before any grant: the boundary is not real")
     else:
-        print("  proof.txt absent (as expected without a grant)")
+        print("  proof.txt absent before the grant (as expected)")
 
     # --- the user grants the worker the shared-workspace shell -------------------
     listed = call(["authority", *common, "--json"], env)
@@ -105,7 +157,17 @@ def main() -> int:
         print("FAIL:", failures[-1])
         return 1
     worker = workers[0]
-    print(f"authority: subject={worker} revision={view['revision']}")
+    handled, open_task = session_state(state_root, worker)
+    if open_task != "none" and handled > args.budget:
+        print(
+            f"note: the worker still owes task {open_task} after {handled} model requests — the runtime "
+            "keeps asking a model that answers with prose (docs/ACCEPTANCE.md, known gap). "
+            f"{park(root / 'root/daemon.sock', worker, 'probe stopped a re-asking loop')}. "
+            "The authority commands still run below; the worker's turn does not."
+        )
+        failures.append(
+            f"the worker spun: {handled} model requests with task {open_task} open (see the known gap)"
+        )
     granted = call(["authority", *common, "grant", "--subject", worker, "--action", "shell",
                     "--scope", "workspace", "--json"], env)
     print(f"grant: exit={granted.returncode} {granted.stdout.strip() or granted.stderr.strip()}")

@@ -106,6 +106,7 @@ spawn derives), two instances, one operation, two scopes.
 | Correspondence (`engine/tests/v2_supervisor.rs`) | `a_users_grant_reaches_the_workers_surface_at_the_next_request`: a spawned worker's first request has no `shell`, the user's grant (through the same `submit_user` path the daemon client uses) puts it on the next request, and revoking it takes the tool away again |
 | Correspondence (`engine/tests/cli.rs`) | `the_authority_surface_grants_and_revokes_through_the_daemon`: the real binary against a real daemon — list carries the ids and the instances, the granted worker answers the dispatch question `holds_covering_grant(worker, "shell", "workspace")` with *true*, a derived grant dies with its parent, and after the revocation the question is *false* again |
 | Falsification check (the defect this closed) | the standalone rusqlite probe recorded in D-61 shows the old view failing with `Invalid column type Real at index: 1, name: revoked_at` as soon as one grant was revoked |
+| Real model (`review/dogfood/authority.py`) | DeepSeek Flash, native window, 2026-09-25: the worker reports it cannot run shell commands; the grant goes in (revision 8); the same worker then runs the command (exit 0, `proof.txt` present); the revocation goes in (revision 11) and no live shell grant is left — 13 model requests, no failed request |
 
 **A property the model corrected.** The first formulation of the freshness claim was
 `GrantReachesTheSurface == \A i : [](Entitled(i, "shell") => <>("shell" \in offered[i]))` — "once entitled,

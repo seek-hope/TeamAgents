@@ -332,7 +332,12 @@ plane's refusal, a derived grant dies with its parent and the dispatch question 
 the worker's next request and a revocation takes it away again — the spec-to-code correspondence of
 `StaleSurfaceCatchesUp`); `core/src/v2/capability.rs`'s table test (the pairs the surface accepts are exactly
 the ones some check asks); `tui/tests/v2app_tests.rs::frame_shows_the_panels_and_panel_hit_testing` (the
-topology line names the id). Real model: `review/dogfood/authority.py` (see its README entry).
+topology line names the id). **Real model** (`review/dogfood/authority.py`, DeepSeek Flash on its native
+window, 2026-09-25, isolated state root `/tmp/ta-authority-run`): turn 1 the worker answered *"No — I cannot
+run shell commands in the shared workspace. My runtime exposes no bash/exec/terminal tool"* (the §5.1 boundary,
+said by the worker itself); the grant went into revision 8; turn 2 the same worker ran the command, reported
+exit code 0 and `proof.txt` appeared; the revocation went into revision 11 and left no live shell grant. 13
+model requests, both delegated tasks `SUCCEEDED`, no failed request.
 
 **Left open (needs the user's word)**: giving a spawned worker `shell@workspace` *by default* would change
 §5.1's spawn contract, and letting the Leader hand out its own shell authority (it holds
