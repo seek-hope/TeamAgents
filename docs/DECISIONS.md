@@ -231,6 +231,39 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-97 A refused request is not a slow one: `exec` waited out its deadline (2026-09-26)
+
+The runtime refuses a request *before it begins* in two cases, both as committed outcomes with an auditable
+event: the goal's budget ceiling cannot pay for it (`budget_refused`, A18) and the goal's deadline has passed
+(`goal_deadline_refused`, A35). The headless client knew only about `request_failed`, so a run whose request
+was refused waited for its own deadline and then reported `end: "timeout"` — the exit code that means "the
+instance is still running" — while the session had already parked the leader with the real reason.
+
+Measured 2026-09-26, `[limits] max_total_tokens = 1000` and a real model (the ceiling is below one request's
+estimate, so no model is ever called):
+
+| | before | after |
+|---|---|---|
+| report | `end: "timeout"`, `failure: null` | `end: "failed"`, `failure: "goal goal-s-main budget exceeded: known 0 + reserved 0 + est 2235 > max 1000"` |
+| exit code | `124` | `1` |
+| wall clock | 60 s (the caller's deadline) | 1 s |
+
+The session was never wrong; the client was. The fix makes both refusal events part of the run's own outcome:
+the client composes the runtime's sentence from the event payload (`startup_refusal`) and reports the run as
+failed, exactly as it already did for a permanent model failure (D-49's "a failed turn ends the headless run
+instead of timing out"). `124` keeps its documented meaning, and a refusal now tells the user what to change —
+the ceiling or the deadline — in the first second instead of the last.
+
+Evidence: `v2_daemon::a_budget_refusal_ends_the_headless_run_instead_of_timing_out` (a 1-token ceiling; the run
+must end `Failed`, exit 1, with `budget exceeded` and `max 1` in `failure`, well inside a 30 s deadline). The
+pre-fix control: with the new branch disabled the same test reports `end: "timeout"` — the client really did
+wait out the deadline. Live: the run above against the real binary, both before and after.
+
+Ceiling: the two refusal events are the only "request never began" outcomes the control plane commits; a
+refusal that arrives *after* an attempt started is a different case and still ends as its own failure class.
+The `--json` report's `failure` field is where the reason lives; `verification` stays empty because the turn
+never finished (D-96 covers the same rule for a deadline).
+
 ## D-96 `--timeout` did not bound a run that had checks (2026-09-26)
 
 D-49's contract says the user's acceptance commands "run after the turn ends", and the code's own comment

@@ -1026,6 +1026,35 @@ async fn a_queued_input_a_reset_sealed_is_reported_undelivered() {
 /// operation immediately (exit 3) instead of burning the deadline, and it does
 /// not run the acceptance commands for a turn that never finished.
 #[tokio::test]
+async fn a_budget_refusal_ends_the_headless_run_instead_of_timing_out() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let scripts = HashMap::from([("i-leader".to_string(), vec![finish_call("never asked")])]);
+    let root = root("exec-budget-refused");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    // a ceiling below one request's estimate: the runtime refuses before any model call (A18)
+    let mut cfg = config(&root, scripts);
+    cfg.supervisor.goal_limits = json!({"max_total_tokens": 1});
+    let handle = serve(cfg).await.expect("daemon");
+    let (socket, workspace) = (root.dir.join("state/daemon.sock"), root.dir.join("ws"));
+    let mut options = exec_options(&socket, &workspace, "do something", Vec::new());
+    options.timeout_s = 30;
+    let started = std::time::Instant::now();
+    let run = headless(options).await;
+    // the refusal is this run's outcome: exit 1 with the runtime's reason, not "still running" (D-49's table)
+    assert_eq!(run.end, End::Failed, "{}", run.report);
+    assert_eq!(run.end.exit_code(run.checks_ok), 1);
+    let failure = run.report["failure"].as_str().unwrap_or("");
+    assert!(failure.contains("budget exceeded"), "{}", run.report);
+    assert!(failure.contains("max 1"), "the reason carries the ceiling: {failure}");
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "a refused request ends the run at once, not at the deadline ({}s)",
+        started.elapsed().as_secs()
+    );
+    handle.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
 async fn a_run_that_times_out_verifies_nothing() {
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
     // the provider answers just past the run's own deadline, so the turn is still in flight when the

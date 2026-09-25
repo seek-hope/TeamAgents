@@ -257,6 +257,29 @@ pub struct ExecRun {
     pub checks_ok: bool,
 }
 
+/// The runtime's own words for a request it refused before it began, from the committed event that records
+/// the refusal (a goal budget ceiling, A18, or a passed goal deadline, A35). `None` for every other kind, so
+/// the caller can use it as one branch among the run's event handling.
+fn startup_refusal(event: &Json) -> Option<String> {
+    let payload = &event["payload"];
+    match event["kind"].as_str()? {
+        "budget_refused" => Some(format!(
+            "goal {} budget exceeded: known {} + reserved {} + est {} > max {}",
+            payload["goal_id"].as_str().unwrap_or("?"),
+            payload["known"].as_i64().unwrap_or(0),
+            payload["reserved"].as_i64().unwrap_or(0),
+            payload["est"].as_i64().unwrap_or(0),
+            payload["max"].as_i64().unwrap_or(0),
+        )),
+        "goal_deadline_refused" => Some(format!(
+            "goal {} deadline passed before request {} could start",
+            payload["goal_id"].as_str().unwrap_or("?"),
+            payload["request_id"].as_str().unwrap_or("?"),
+        )),
+        _ => None,
+    }
+}
+
 /// One headless run with no printing at all: submit the prompt to the leader,
 /// follow the run to its terminal state, then run the user's acceptance
 /// commands. Errors are (exit code, message).
@@ -332,6 +355,14 @@ pub fn execute(options: &ExecOptions) -> Result<ExecRun, (i32, String)> {
                     if event["kind"] == json!("request_failed") && event["scope"] == json!(instance) {
                         turn_failure =
                             Some(event["payload"]["reason"].as_str().unwrap_or("the model request failed").to_string());
+                    }
+                    // A request the runtime refused *before it began* is a committed outcome, not a slow turn
+                    // (A18's ceiling, A35's deadline): reporting it as `124` would tell the caller "still
+                    // running" about work that never started, and burn its deadline waiting for it.
+                    if event["scope"] == json!(instance) {
+                        if let Some(reason) = startup_refusal(event) {
+                            turn_failure.get_or_insert(reason);
+                        }
                     }
                     // A queued input is sealed, not delivered, when a context reset
                     // moves the epoch before the boundary reaches it (§5.3/A24): the
