@@ -6,7 +6,7 @@ Baseline: [the design and acceptance baseline](DESIGN.md) §12/§16. Current imp
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 98 / engine 193 / tui 28 test targets) and `make pty` passes; both are
+`make check` is green (core 98 / engine 194 / tui 28 test targets) and `make pty` passes; both are
 preconditions for every item below. `make check` includes `make language-check`, which fails on non-English
 characters outside the two documented exceptions (`README.zh-CN.md` and the frozen material under
 `review/eval`).
@@ -80,6 +80,9 @@ amended (D-49/D-50).
   prepares the current state root (default `$XDG_STATE_HOME/teamagents/v2`), `doctor` only reports the old
   directory, and the old sessions, preferences and caches were removed against an explicit inventory
   (already done; see [DECISIONS](DECISIONS.md)).
+- The session's permission mode can also come from the user config (D-75): `[permissions] mode = "full_auto"`
+  makes host execution the default for the sessions you start, `--full-auto` still asks for it for one boot,
+  and a project file can never set it (only the user config is read for the mode).
 - The old entry points `--team` / `--resume` / `--plain` / `validate` / `sessions prune` no longer exist: the
   Leader forms the team at runtime and the daemon reconnects by event watermark, with `teamagents exec` as
   the headless entry point. Passing those arguments fails with a clear message instead of being ignored — and
@@ -92,6 +95,14 @@ amended (D-49/D-50).
   created, so a refused argument has no side effect).
 
 ## Known gaps (found while auditing the documented surface, 2026-09-25)
+
+- **`[retention]` is accepted but nothing is archived or pruned.** DESIGN §9 promises ordinary history is
+  "archived or cleaned per user configuration" while live references and evaluation evidence are never
+  evicted; `Retention.archived_days`/`history_days` are parsed, kept user-config-only (like hooks and
+  checks) and read by nothing — `doctor` used to print them as `[ok ]`, and since D-75 it prints a WARN
+  saying they are not applied and nothing is deleted. Implementing it means deleting data under
+  conditions that need their own verification (never evict a live reference or evaluation evidence),
+  so it needs the user's word before it lands.
 
 - **A settled goal has no product surface to open a new one** (found while auditing the authority surface,
   2026-09-25; verified by `engine/tests/v2_supervisor.rs::a_settled_goal_leaves_a_later_delegation_without_an_active_goal`):

@@ -215,7 +215,25 @@ pub fn parse_user_config(text: &str) -> Result<UserConfig, String> {
     }
     let catalog: UserConfig = toml::Value::Table(filtered).try_into().map_err(|e| format!("bad config: {e}"))?;
     validate_checks(&catalog)?;
+    validate_profiles(&catalog)?;
     Ok(catalog)
+}
+
+/// A model-profile key this release does not serve must not be ignored silently
+/// (D-75): `codex_profile` describes an external Codex app-server member, which the
+/// confirmed scope excludes (DESIGN Q12: "no external Codex adaptation"), and no
+/// code path reads it — a config carrying it would quietly run the shipped provider
+/// instead of the profile the user named.
+fn validate_profiles(catalog: &UserConfig) -> Result<(), String> {
+    for (key, profile) in &catalog.models {
+        if let Some(codex) = &profile.codex_profile {
+            return Err(format!(
+                "models.{key}.codex_profile = {codex:?}: an external Codex profile is not part of this release; \
+                 configure the member directly with provider/protocol/base_url/api_key_env"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The goal limits the runtime boots with (`create_goal limits`): the user's
@@ -338,6 +356,29 @@ mod tests {
         // unattended at every completion boundary.
         let ids: Vec<&str> = catalog.checks.iter().map(|check| check.id.as_str()).collect();
         assert_eq!(ids, vec!["mine"], "only the user's own checks load");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// D-75: a model-profile key the release does not serve is refused, not ignored.
+    /// `codex_profile` names an external Codex app-server member that the confirmed
+    /// scope excludes (DESIGN Q12) and that no code path reads; a config carrying it
+    /// used to run the shipped provider while the user believed Codex owned the
+    /// profile.
+    #[test]
+    fn a_codex_profile_is_refused_instead_of_ignored() {
+        let _env = crate::env_lock();
+        let root = std::env::temp_dir().join(format!("ta-config-codex-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::env::set_var("XDG_CONFIG_HOME", root.join("config"));
+        std::fs::create_dir_all(root.join("config/teamagents")).unwrap();
+        std::fs::write(
+            root.join("config/teamagents/config.toml"),
+            "[models.m]\nprovider = \"openai\"\nmodel = \"x\"\ncodex_profile = \"deepseek\"\n",
+        )
+        .unwrap();
+        let error = load_user_config_for(&root).expect_err("a codex profile is not served");
+        assert!(error.contains("codex_profile") && error.contains("not part of this release"), "{error}");
+        assert!(error.contains("models.m"), "the message names the profile: {error}");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -596,6 +637,7 @@ pub fn load_user_config_for(cwd: &Path) -> Result<UserConfig, String> {
     let catalog: UserConfig = toml::Value::Table(merged).try_into().map_err(|e| format!("bad config: {e}"))?;
     validate_configured_paths(&catalog)?;
     validate_checks(&catalog)?;
+    validate_profiles(&catalog)?;
     Ok(catalog)
 }
 

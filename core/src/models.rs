@@ -43,9 +43,11 @@ pub struct ModelProfile {
     #[serde(default)]
     pub context_window: Option<u64>,
     /// Codex members only: layer `$CODEX_HOME/<name>.config.toml` by running
-    /// `codex --profile <name> app-server`. The Codex profile then owns the
-    /// provider, model and credentials (e.g. a `deepseek` profile instead of the
-    /// official subscription).
+    /// `codex --profile <name> app-server`. **Not implemented in this release**
+    /// (DESIGN Q12 excludes an external Codex adaptation): no code path reads it,
+    /// and a config that sets it is refused at load instead of being ignored
+    /// (D-75) — configure the member directly with
+    /// `provider`/`protocol`/`base_url`/`api_key_env`.
     #[serde(default)]
     pub codex_profile: Option<String>,
 }

@@ -323,13 +323,19 @@ pub fn doctor(state_root: Option<PathBuf>) -> i32 {
                 format!("{} configured and run at the completion boundary: {}", catalog.checks.len(), ids.join(", "))
             },
         );
+        // D-75: `[retention]` is accepted (it stays user-config-only, like hooks and
+        // checks) but nothing in this release archives or prunes a session, so the row
+        // says that instead of reporting the numbers as if they were in effect —
+        // deleting history is a destructive feature that needs the user's word.
         if catalog.retention.archived_days > 0 || catalog.retention.history_days > 0 {
-            check(
+            optional_check(
                 &mut results,
                 "retention",
-                true,
+                false,
                 format!(
-                    "archived_days={} history_days={}",
+                    "archived_days={} history_days={} are not applied: this release never archives or prunes a \
+                     session, so nothing is deleted (the keys are accepted, and kept user-config-only, for the \
+                     session layout of earlier releases)",
                     catalog.retention.archived_days, catalog.retention.history_days
                 ),
             );
@@ -446,7 +452,13 @@ fn daemon_boot(
             },
             state_root: state_root.clone(),
             workspace,
-            permissions: if full_auto { "full_auto".into() } else { "approved_scope".into() },
+            // The mode is the user's decision and there are two places to make it:
+            // the flag asks for host execution *now*, and `[permissions] mode` in the
+            // user's own config sets the session default (a project file never can —
+            // `permission_mode_from_config` reads the user config only). D-75: the
+            // config key was parsed, validated and then ignored, so a user who wrote
+            // `mode = "full_auto"` silently ran in approved_scope.
+            permissions: if full_auto { "full_auto".into() } else { crate::config::permission_mode_from_config()? },
             catalog,
             bindings: vec!["files".into(), "shell".into(), "web".into(), "skills".into()],
             max_retries: 2,

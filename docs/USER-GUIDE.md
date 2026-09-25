@@ -274,8 +274,18 @@ scope and the short id); issuing and revoking grants is the CLI's job.
 | `approved_scope` (default) | Shell runs under bubblewrap; network access and out-of-scope writes need user approval, bound to the concrete operation and its argument hash |
 | `full_auto` | Host shell (D-41): long commands and background services survive across calls, and `exec` exiting does not stop an already started service |
 
-The mode belongs to the **session**, not to the client: it is fixed when the daemon boots
-(`teamagents --full-auto`, `teamagents --full-auto --state-root …` or `teamagents daemon --full-auto`). A client that
+The mode belongs to the **session**, not to the client, and you choose it in two places: the flag
+(`teamagents --full-auto`, `teamagents --full-auto --state-root …`, `teamagents daemon --full-auto`) asks for host
+execution for that boot, and `mode` in `[permissions]` of **your own** config makes it the default for the
+sessions you start:
+
+```toml
+[permissions]
+mode = "full_auto"            # or "approved_scope" (the default); the flag still wins
+```
+
+A project file can never set the mode (only your user config is read for it), and nothing a model says changes
+it. A client that
 finds a session already running keeps that session's mode and prints which one it is, so
 `teamagents exec --full-auto` against a live `approved_scope` session reports
 `the session is already running in approved_scope mode` instead of silently ignoring the flag. To switch

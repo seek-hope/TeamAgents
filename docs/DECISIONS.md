@@ -231,6 +231,44 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-75 Config keys that did nothing now either work or say so (2026-09-25)
+
+After D-74 the sweep continued over the config surface itself: every field of `UserConfig`, `ModelProfile` and
+`ToolBinding` was checked against its read sites. Three keys had none beyond the `doctor` row and their own
+parsing tests — accepted by the loader (`deny_unknown_fields` makes them *known*, so nothing complains) and
+invisible to the runtime.
+
+| Key | What it promised | What it did |
+|---|---|---|
+| `[permissions] mode` | "Full-auto must be user-chosen in config or CLI" (the code's own comment); `permission_mode_from_config()` exists with a dedicated error for a bad value | `cli::daemon_boot` built the mode from the flag alone, so a user who wrote `mode = "full_auto"` silently ran in `approved_scope` — the safe direction, and still a lie: their out-of-scope calls parked on approvals they had switched off. The helper had **no caller** anywhere |
+| `[retention] archived_days` / `history_days` | "Delete archived sessions untouched for this many days when a session is opened" / "Drop applied deliveries and events older than this many days" (the struct's own comments; DESIGN §9 promises ordinary history is "archived or cleaned per user configuration", while live references and evaluation evidence are never evicted) | nothing: no code path archives, prunes or deletes, and `doctor` printed `[ok ] retention archived_days=30 history_days=7`, which reads as "in effect" |
+| `models.*.codex_profile` | layer `$CODEX_HOME/<name>.config.toml` through `codex --profile <name> app-server`, so the Codex profile owns provider, model and credentials | nothing, and DESIGN Q12 excludes an external Codex adaptation from this release; a config carrying it ran the shipped provider while the user believed Codex owned the credentials |
+
+**What each one gets, and why it differs:**
+
+- **`mode` now works.** The user's config is the session default and `--full-auto` still asks for host
+  execution for one boot; a project file can never set it (`permission_mode_from_config` reads the user config
+  only), so D-41's "user-only" rule is intact and the surface matches the sibling CLIs the user pointed at
+  (their sandbox/approval policy lives in the config file). Evidence:
+  `cli::full_auto_reaches_a_started_daemon_and_is_reported_against_a_live_one` now boots three sessions —
+  config `full_auto` → the greeting says `full_auto`, config `approved_scope` → `approved_scope`, flag over
+  config → `full_auto`. With the pre-fix line restored the same test fails (`left: "approved_scope",
+  right: "full_auto"`).
+- **`retention` is reported, not implemented.** Deleting history is destructive and the design ties it to
+  conditions that need their own verification (ordinary history may be cleaned; live references and
+  evaluation evidence may never be evicted), so the honest step now is that `doctor` stops implying it works:
+  the row is a WARN saying the numbers "are not applied: this release never archives or prunes a session, so
+  nothing is deleted". Implementing it is the user's call and is recorded in ACCEPTANCE's known gaps.
+- **`codex_profile` is refused.** A key that changes which provider and credentials a member uses must not be
+  ignored; the loader now fails with `models.<key>.codex_profile = …: an external Codex profile is not part of
+  this release; configure the member directly with provider/protocol/base_url/api_key_env`
+  (`config::a_codex_profile_is_refused_instead_of_ignored`). The field stays declared — with its comment
+  corrected — so a future release can implement it deliberately.
+
+Ceiling: this closes the three keys that existed, not the class. The rule it restates (and the reason each
+case is handled differently) is: **a config key this build does not serve is either made to work, refused
+with a pointer, or reported as not in effect — never accepted in silence.**
+
 ## D-74 A configured MCP service is bound by declaring it (2026-09-25)
 
 The audit of A25 ("MCP approval / cancellation / unknown outcome", D-25) asked a question the tests could not

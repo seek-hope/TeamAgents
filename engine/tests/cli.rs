@@ -103,7 +103,11 @@ fn doctor_probes_isolation_and_config_errors() {
     let with_hooks = run(&home.join("state"));
     assert!(with_hooks.contains("[FAIL] hooks.notify"), "{with_hooks}");
     assert!(with_hooks.contains("[ok  ] hooks.pre_tool"), "{with_hooks}");
-    assert!(with_hooks.contains("[ok  ] retention"), "the policy is reported: {with_hooks}");
+    // D-75: retention is accepted (and stays user-config-only) but nothing in this
+    // release archives or prunes, so the row says that instead of reporting the
+    // numbers as if they were in effect
+    assert!(with_hooks.contains("[WARN] retention"), "the policy is reported honestly: {with_hooks}");
+    assert!(with_hooks.contains("are not applied"), "{with_hooks}");
 
     // D-74: a declared MCP service is bound at session start, so doctor names each
     // one and says whether it can run (a mistyped command would stop the boot)
@@ -542,6 +546,39 @@ fn full_auto_reaches_a_started_daemon_and_is_reported_against_a_live_one() {
     assert!(
         std::os::unix::net::UnixStream::connect(&socket).is_err(),
         "the daemon must stop so the test leaks nothing"
+    );
+
+    // D-75: the mode is also a config decision — `[permissions] mode` in the user's
+    // own file is the session default, and the flag still wins over it. The key used
+    // to be parsed, validated and ignored, so a user who wrote `full_auto` silently
+    // ran in approved_scope.
+    let write_config = |mode: &str| {
+        std::fs::write(
+            config_home.join("teamagents/config.toml"),
+            format!(
+                "[permissions]\nmode = \"{mode}\"\n\n[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\n\
+                 api_key_env = \"TA_FULL_AUTO_KEY\"\nbase_url = \"http://127.0.0.1:1/v1\"\n"
+            ),
+        )
+        .unwrap();
+    };
+    let boot_with = |args: &[&str], state: &std::path::Path| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_teamagents"));
+        env(&mut command);
+        command.args(["exec", "--state-root"]).arg(state).args(args).args(["--timeout", "5", "hello"]);
+        let _ = command.output().expect("run exec");
+        let greeting = greeting(&state.join("daemon.sock"));
+        let _ = Command::new("pkill").args(["-f", &format!("daemon --state-root {}", state.display())]).status();
+        greeting["permissions"].as_str().unwrap_or("").to_string()
+    };
+    write_config("full_auto");
+    assert_eq!(boot_with(&[], &root.join("configured")), "full_auto", "the config sets the session's mode");
+    write_config("approved_scope");
+    assert_eq!(boot_with(&[], &root.join("default")), "approved_scope", "the documented default stays");
+    assert_eq!(
+        boot_with(&["--full-auto"], &root.join("flagged")),
+        "full_auto",
+        "and the flag still asks for host execution for one boot"
     );
     let _ = std::fs::remove_dir_all(&root);
 }
