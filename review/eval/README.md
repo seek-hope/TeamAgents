@@ -27,5 +27,10 @@ python3 review/eval/r2-p6/run.py --phase formal --out review/eval/r2-p6/runs/<ne
 - Existing evidence is never cleaned automatically; during a run the inputs, grading and candidates stay
   untouched, and a historical failure is never re-recorded as a success because storage moved.
 
-Earlier fixed-task runners, their task sets, graders and hidden-test fixtures left the tree with the rest of
-the previous material; their raw results are reachable through Git history (`git log -- review/eval`).
+The task prompts, fixtures and recorded trial output under `tasks/` and `runs/` keep their original language
+and bytes on purpose: the manifests pin their hashes, and they are evidence of runs that already happened.
+Re-translating them would require re-freezing the manifests and re-running the experiments. Everything else in
+the repository is English, except `README.zh-CN.md`.
+
+Earlier fixed-task runners, their task sets, graders and hidden-test fixtures left the tree with the rest of the
+previous material; their raw results are reachable through Git history (`git log -- review/eval`).

@@ -20,6 +20,11 @@
   strings, scripts, workflows. No Chinese anywhere in code.
 - **Documentation is English only**, with exactly one exception: `README.zh-CN.md`, the Chinese README.
   Commit messages are English too.
+- One deliberate exception inside the code scan: the frozen evaluation material under
+  `review/eval/r2-p6/tasks/**` (task prompts and fixtures) and the recorded trial output under
+  `review/eval/r2-p6/runs/**` keep their original bytes, because the manifests pin their hashes and they are
+  evidence of runs that already happened. Changing them would require re-freezing the manifests and re-running
+  the experiments.
 
 ## Quick commands
 

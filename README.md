@@ -196,4 +196,4 @@ the repository conventions in [AGENTS.md](AGENTS.md). Defects, reviews and evalu
 `review/`, formal-verification evidence in `verification/`. Pushing a `v*` tag makes
 `.github/workflows/release.yml` build and publish the release archives (with `SHA256SUMS`).
 
-中文文档：[README.zh-CN.md](README.zh-CN.md)
+Chinese documentation: [README.zh-CN.md](README.zh-CN.md)

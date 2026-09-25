@@ -1,392 +1,679 @@
-# TeamAgents 设计与验收基线
+# TeamAgents design and acceptance baseline
 
-本文件是当前实现的设计依据：已确认的产品需求、架构与协议约束、可选工程决定、验收矩阵（A01–A36）
-与完成定义。用户确认的方向与范围见 [DECISIONS](DECISIONS.md)，逐项验收证据与已知缺口见
-[ACCEPTANCE](ACCEPTANCE.md)，约定与命令见 [DEVELOPMENT](DEVELOPMENT.md) 与 [AGENTS](../AGENTS.md)。
+This file is the design basis of the current implementation: the confirmed product requirements, the
+architecture and protocol constraints, the engineering choices, the A01–A36 acceptance matrix and the
+definition of done. The confirmed direction and scope are in [DECISIONS](DECISIONS.md), per-item evidence and
+known gaps in [ACCEPTANCE](ACCEPTANCE.md), and the conventions and commands in [DEVELOPMENT](DEVELOPMENT.md)
+and [AGENTS](../AGENTS.md).
 
-本文件区分三类内容：用户已确认的要求；有理由支持的工程选择；必须通过探针或真实评测才能成立的假设。
-逐项理由、备选与反证条件见 45 项设计复核（已随归档清理移出仓库，可用 `git log -- review/archive` 取回）。
-语言、框架或代码量均不能直接证明模型性能提升。
+It separates three kinds of statement: requirements the user confirmed; engineering choices with reasons; and
+assumptions that only probes or real evaluation can settle. The item-by-item reasoning, alternatives and
+falsification conditions were argued in the 45-item design review (removed from the tree with the archive
+cleanup; reachable through `git log -- review/archive`). Language, framework or line count never prove a model
+performance gain.
 
-## 1. 已确认需求与交付范围
+## 1. Confirmed requirements and delivery scope
 
-| 编号 | 用户确认 | 实施约束 |
+| # | User-confirmed | Implementation constraint |
 |---|---|---|
-| Q1 | 同模型、同预算下的任务成功率与长任务可靠性并重 | 成功率、错误完成、恢复正确性、费用和耗时共同纳入验收 |
-| Q2 | 允许调整语言与组件边界，由设计方论证选型 | 当时允许自由选型；随后用户明确选定 Rust 原生架构 |
-| Q3 | 产品范围可重新取舍，先交付 kernel 与运行时 | 后续明确纳入首版的能力见 Q6、Q12、Q13 |
-| Q4 | 默认隔离上下文、消息与工具访问权限；接受 full_auto Shell 绕过逻辑边界 | 权限在运行时实施；不把上下文隔离宣传为同用户主机进程间的安全隔离 |
-| Q5 | Leader 默认管理实例与连接，可授予其他实例部分管理权 | 授权后的成员可直接通信；成员之间不私聊，协作经控制平面授权的消息与共享空间 |
-| Q6 | 首个可用版本提供 TUI，含对话、状态与任务控制 | 内部开发可先有无头入口；对外首版必须包含 TUI |
-| Q7 | 关闭界面后任务继续，可重新接回并干预 | 后台运行时独立于前端生命周期 |
-| Q8 | 默认与 Leader 对话，可查看其他实例历史、直接对话、暂停或取消 | 用户有全局操作视图；Agent 之间仍按权限隔离 |
-| Q9 | 会话内按需保留、复用实例，可终止或重置；跨会话默认隔离 | 实例、任务和对话回合具有不同生命周期 |
-| Q10 | 默认允许持续工作；用户可设目标级预算；永久故障和重复失败有界处理 | 不设置短的隐含目标超时；重试、并发与资源使用仍有约束 |
-| Q11 | 必需检查通过；其他要求提供证据与未验证项；按需独立审查 | 验收失败进入修复循环；不强制每个任务额外创建审查实例 |
-| Q12 | 首版提供基础工具、MCP、Skills；无需外部 Codex 适配 | 基础工具含文件、终端、网页搜索与抓取；新执行核心不保留外部 Codex 后端 |
-| Q13 | 多供应商、实例间混用模型；DeepSeek 为主验收基线 | DeepSeek V4.1 Flash 使用原生 1,000,000 上下文；其他模型使用其原生长度 |
-| Q14 | 默认共享项目工作区，按需独立目录或 Git worktree | 共享项目是显式授权资源；私有对话不随项目共享 |
-| Q15 | 重启后自动续跑已授权任务；未知结果先核验，仍不明则停放并通知 | 不盲目重放可能已有副作用的操作 |
-| Q16 | 单实例能力不退化，协作在预先确定的任务集上有可复现增益；官方分数作参照 | 采用受控消融和完整新跑分，不拼接历史最佳结果 |
-| Q17 | 先小规模估算用量费用，再确定全量、多轮预算 | 首轮试跑用于诊断和成本估计，不据此宣布统计显著的性能提升 |
-| Q18 | 无需兼容旧配置或续跑旧会话，并清理旧数据 | 新格式、新目录布局直接设计，不承担旧存储迁移续跑 |
-| Q19 | 清理旧会话、状态、缓存、旧配置；保留凭据、评测原始记录、审查证据和 Git 历史 | 按明确清单清理 TeamAgents 专属数据，见第 14 节 |
+| Q1 | Task success rate and long-horizon reliability at the same model and budget matter equally | Success rate, wrong completions, recovery correctness, cost and duration all count |
+| Q2 | Language and component boundaries may change if the design argues the choice | Free choice at the time; the user then selected the Rust-native architecture |
+| Q3 | Scope may be re-cut; deliver the kernel and the runtime first | Capabilities added to the first release are listed in Q6, Q12 and Q13 |
+| Q4 | Context, message and tool access are isolated by default; full_auto shell may bypass the logical boundary | Permissions are enforced at runtime; context isolation is never advertised as a security boundary between host processes of the same user |
+| Q5 | The Leader manages instances and connections by default and may delegate part of that authority | Authorized instances may communicate directly; instances never chat privately, collaboration goes through control-plane-granted messages and shared space |
+| Q6 | The first usable release ships a TUI with conversation, status and task control | Headless entry points may come first internally; the first public release includes the TUI |
+| Q7 | Closing the UI keeps work running, and the user can reconnect and intervene | The background runtime is independent of the front-end lifetime |
+| Q8 | The user talks to the Leader by default and may read other instances' history, talk to them directly, pause or cancel | The user has a global view; agents stay isolated from each other by permissions |
+| Q9 | Instances are reused and retained within a session; they can be terminated or reset; sessions are isolated by default | Instances, tasks and turns have separate lifetimes |
+| Q10 | Work continues by default; the user may set a goal budget; permanent failures and repeated failures are handled in a bounded way | No short implicit goal timeout; retries, concurrency and resource use are still bounded |
+| Q11 | Required checks must pass; other claims carry evidence and unverified items; independent review happens on demand | A failed acceptance enters a repair loop; no extra review instance is forced per task |
+| Q12 | The first release ships basic tools, MCP and Skills; no external Codex adaptation | Basic tools mean files, terminal, web search and fetch; the new execution core keeps no external Codex backend |
+| Q13 | Multiple providers, mixed models inside one team; DeepSeek is the main acceptance baseline | DeepSeek V4.1 Flash uses its native 1,000,000 context; other models use theirs |
+| Q14 | The project workspace is shared by default; isolated directories or Git worktrees on demand | The shared project is an explicitly granted resource; private conversations are not shared with it |
+| Q15 | Authorized work resumes after a restart; an unknown outcome is verified first and parked with a notification if it stays unknown | Operations that may already have had an effect are never replayed blindly |
+| Q16 | Single-instance behaviour must not regress and collaboration must show a reproducible gain on a pre-defined task set; official scores are a reference | Controlled ablations and complete new runs, never a splice of historical bests |
+| Q17 | Estimate usage cost on a small scale before setting the full multi-round budget | The pilot diagnoses and estimates cost; it never justifies a statistically significant claim |
+| Q18 | No compatibility with old configs or sessions is required, and old data may be cleaned up | The new format and directory layout are designed directly, with no migration duty |
+| Q19 | Clean up old sessions, state, caches and configs; keep credentials, raw evaluation records, review evidence and Git history | Cleanup follows an explicit inventory of TeamAgents-owned data (see §14 of the archived plan) |
 
+The user then selected the Rust-native architecture explicitly, replacing the earlier idea of LangGraph owning
+persistence. A team of one, governed communication, arbitrary connection topologies, a small model loop and
+long-horizon stability remain in force. D-41's semantics stay: full_auto uses the host shell, a service started
+by a successful command survives, timeout/cancellation stops the command's process group, and model credentials
+never enter the tool environment automatically; `approved_scope` keeps using bubblewrap.
 
-用户后续明确选定 Rust 原生架构，取代“LangGraph 承担持久化”的早期设想。单人成队、受控通信、任意通信拓扑、简洁模型闭环和长任务稳定性继续有效。D-41 的 full_auto 主机 Shell、成功命令所启动服务存活、超时/取消终止本次命令进程组、模型密钥不自动进入工具环境等语义保留；approved_scope 继续采用 bwrap。
+The first release targets a single machine and a single system user; the TUI, basic tools, MCP, Skills,
+multiple providers and on-demand multi-instance behaviour are all part of it. Distributed execution,
+multi-tenancy, cross-session automatic memory, an external Codex backend and a plugin marketplace are out of
+scope. The user may read any instance's history; that grants no equivalent permission to other agents.
 
-首版限定本机 Linux、单系统用户；TUI、基础工具、MCP、Skills、多供应商、按需多实例全部属于首版。分布式、多租户、跨会话自动记忆、外部 Codex 后端、插件市场不在范围内。用户可查看任意实例历史，这不赋予其他 Agent 相同权限。
+## 2. Overall design after the decision review
 
-## 2. 决策复核后的总体设计
-
-| 项目 | R2 选择 | 理由与边界 |
+| Item | Choice | Reason and boundary |
 |---|---|---|
-| 语言与框架 | 产品实现使用 Rust；不引入 LangGraph 或另一个 Agent harness | 已获用户确认；避免为框架再维持一套执行和存储语义，性能收益仍须测量 |
-| kernel | 无 I/O 的小型状态转换模块 | 模型看到的工具和指令保持直接；网络、持久化、权限不进入模型决策逻辑 |
-| 执行 | 自研有限状态机；逻辑实例与实际线程分离 | 执行闭环有限，不需要通用图解释器；自研必须承担恢复正确性 |
-| 并发 I/O | 推荐 Tokio 与异步 HTTP 传输；阻塞工作有界隔离 | 服务连接、模型流、定时与取消统一；Tokio 是 I/O 执行器，不管理业务状态 |
-| 持久化 | 每会话一个 SQLite 数据库，统一任务、执行位置、消息消费和操作回执 | 删除原双库协调；会话是默认隔离和清理单位，首版不提供跨会话事务 |
-| 大内容 | 追加式历史索引 + 不可变制品引用 | 避免每一步复制/保存完整 1M 历史；不设计全量事件溯源框架 |
-| 进程 | 一个用户级 daemon、前端客户端、按需 Shell runner | daemon 独立于 TUI；实例不是一个 OS 进程；普通短工具不必全部进程化 |
-| TUI/协议 | 复用 Rust/ratatui；Unix socket 上版本化 JSON | 已有界面和本机部署适合此边界；不用网络 RPC、微服务或每实例 socket |
-| 项目结构 | core/engine/tui 三 crate，边界按职责划分 | 分模块足够表达职责，暂不为每个概念新建 crate 或通用插件接口 |
+| Language and framework | Rust for the product; no LangGraph or another agent harness | Confirmed by the user; avoids maintaining a second execution and storage semantics, and any performance gain still has to be measured |
+| Kernel | a small, I/O-free state-transition module | Models see tools and instructions directly; network, persistence and permissions never enter model decision logic |
+| Execution | a purpose-built finite state machine; the logical instance is separate from any thread | The execution loop is finite, so a general graph interpreter is unnecessary; the price is owning recovery correctness |
+| Concurrent I/O | Tokio with an async HTTP transport; blocking work isolated with a bound | Service connections, model streams, timers and cancellation share one model; Tokio is the I/O executor and never owns business state |
+| Persistence | one SQLite database per session owning tasks, execution position, message consumption and operation receipts | Removes the old two-database coordination; a session is the default isolation and cleanup unit, with no cross-session transactions in the first release |
+| Large content | an append-only history index plus immutable artifact references | Avoids copying the whole 1M history per step and avoids building a full event-sourcing framework |
+| Processes | one user-level daemon, front-end clients, on-demand shell runners | The daemon is independent of the TUI; an instance is not an OS process; short ordinary tools need no process of their own |
+| TUI and protocol | Rust/ratatui plus versioned JSON over a Unix socket | The existing interface and single-machine deployment fit this boundary; no network RPC, microservices or per-instance sockets |
+| Project structure | three crates (`core`, `engine`, `tui`) with responsibility-based boundaries | Modules express responsibility well enough; no crate or generic plugin interface per concept yet |
 
-TUI 通过 daemon socket 访问引擎（[daemon_client.rs](../tui/src/daemon_client.rs)），连接传输与会话生命周期由 daemon 拥有：退出 TUI 不停会话，重连按事件水位续读。Shell 合约、UI 几何与协议解析测试沿用同一约定。
+The TUI reaches the engine through the daemon socket ([daemon_client.rs](../tui/src/daemon_client.rs)); the
+daemon owns the connection transport and the session lifetime, so quitting the TUI does not stop the session
+and a reconnect resumes events from the watermark. The shell contract, the UI geometry and the protocol-parsing
+tests all follow that same convention.
 
-异步 I/O 的代价是新增依赖与传输层适配，因此必须给出可测的取消与停机表现：Tokio 已开始的 `spawn_blocking` 工作不能靠 abort 中止，Shell 取消必须走真实进程管理（`engine/src/jobs` 的 runner 进程组）。[Tokio 文档](https://docs.rs/tokio/latest/tokio/task/fn.spawn_blocking.html)
+Async I/O costs extra dependencies and a transport layer, so it must show measurable cancellation and
+shutdown behaviour: Tokio's already-started `spawn_blocking` work cannot be aborted, and cancelling a shell
+command must go through real process management (the runner process group in `engine/src/jobs`).
+[Tokio docs](https://docs.rs/tokio/latest/tokio/task/fn.spawn_blocking.html)
 
-## 3. Kernel、实例与执行合约
+## 3. Kernel, instances and the execution contract
 
 ```mermaid
 flowchart TB
-    UI["Rust TUI / 无头 CLI"] <-->|"本机协议"| D["Rust daemon"]
-    D --> E["有界调度 / 实例执行驱动"]
-    E --> K["同一 kernel 实现：实例 A / B / N"]
-    K --> I["类型化执行意图"]
-    I --> C["控制事务：权限 / 任务 / 消息 / 预算"]
-    C --> DB[("每会话一个 SQLite")]
-    E --> P["模型协议适配器"]
-    C --> X["工具执行入口"]
-    X --> J["Shell runner / 文件 / 网页 / MCP"]
+    UI["Rust TUI / headless CLI"] <-->|"local protocol"| D["Rust daemon"]
+    D --> E["bounded scheduling / instance execution driver"]
+    E --> K["one kernel implementation: instances A / B / N"]
+    K --> I["typed execution intents"]
+    I --> C["control transaction: permissions / tasks / messages / budget"]
+    C --> DB[("one SQLite per session")]
+    E --> P["model protocol adapters"]
+    C --> X["tool execution entry"]
+    X --> J["shell runner / files / web / MCP"]
     J --> E
 ```
 
-kernel 是实现，KernelInstance 是身份和私有上下文的载体。Leader、工作实例、短期助手共用一个 kernel；角色通过指令与能力表示。短期助手可以只向创建者回报，但仍使用同一执行、回执和预算机制。
+The kernel is an implementation; `KernelInstance` carries identity and private context. The Leader, working
+instances and short-lived helpers share one kernel, and a role is expressed through instructions and
+capabilities. A short-lived helper may report only to its creator but still uses the same execution, receipt
+and budget machinery.
 
-通信拓扑是经校验的数据，可含有向环；它不决定实例的执行控制流。实例之间没有统一完成屏障。保留实例无需占用线程或模型调用槽位。同一实例可顺序承接不同目标，每次调用固定归属一个 goal；跨目标消息有显式关联，不能因收到另一条消息就改写在途请求的预算归属。
+The communication topology is validated data and may contain directed cycles; it does not determine the
+execution control flow of any instance. There is no single completion barrier across instances, and a retained
+instance occupies no thread or model slot. One instance may take on several goals in sequence, with every call
+belonging to exactly one goal; cross-goal messages are explicitly correlated and a later message never
+reassigns the budget attribution of an in-flight request.
 
-kernel 的建议接口：`prepare_request(ContextView)`、`interpret_response(ModelResponse)`、`apply_observation(Observation)`，输出 `ModelRequest / ToolIntents / Reply / Wait / CompletionCandidate`。这些是接口边界，不预设必须拆成五个 trait 或五个服务。所有身份、操作 ID、权限版本、投递序号均由运行时填入。
+The kernel's suggested interface: `prepare_request(ContextView)`, `interpret_response(ModelResponse)` and
+`apply_observation(Observation)`, producing `ModelRequest / ToolIntents / Reply / Wait / CompletionCandidate`.
+These are interface boundaries, not a demand for five traits or five services. Every identity, operation id,
+permission revision and delivery sequence is filled in by the runtime.
 
-| 持久化执行位置 | 下一步 | 正常转换 |
+| Persisted execution position | Next step | Normal transition |
 |---|---|---|
-| `READY` | 消费获准输入或上次工具结果，构造请求 | 固定请求与预算预留后进入 `MODEL_PENDING` |
-| `MODEL_PENDING` | 发起/核对某次模型尝试 | 完整响应进入上下文，并原子登记工具意图、等待或完成申请 |
-| `TOOLS_PENDING` | 按已固定意图派发/收集工具结果 | 所需回执齐备后回到 `READY` |
-| `WAITING` | 等待任务、job、批准、用户输入或计时器 | 条件已满足时原子登记就绪意图 |
-| `COMPLETION_PENDING` | 核对完成申请与必需检查 | 通过则完成目标/任务，否则带原因回到 `READY` 或受阻 |
+| `READY` | consume admitted input or the last tool result and build the request | after fixing the request and reserving budget, enter `MODEL_PENDING` |
+| `MODEL_PENDING` | issue or verify one model attempt | a complete response enters the context and atomically registers tool intents, a wait or a completion request |
+| `TOOLS_PENDING` | dispatch or collect tool results for the fixed intents | back to `READY` once the required receipts are in |
+| `WAITING` | wait for a task, job, approval, user input or timer | when the condition holds, atomically register a ready intent |
+| `COMPLETION_PENDING` | verify the completion request and the required checks | pass → finish the goal/task, otherwise return to `READY` with a reason or park |
 
-`PAUSED / PARKED / TERMINATED` 是实例可运行性状态，不再复制一套包含所有执行位置的状态枚举。任务结果另用 `PENDING / RUNNING / BLOCKED / SUCCEEDED / FAILED / CANCELLED`；操作另有真实执行结果。实例暂停、任务取消、操作已成功可以同时成立，不能用一个 status 覆盖全部事实。
+`PAUSED / PARKED / TERMINATED` describe instance runnability and no longer duplicate every execution position
+in one state enum. Task results use their own `PENDING / RUNNING / BLOCKED / SUCCEEDED / FAILED / CANCELLED`,
+and operations have their own real execution outcome. An instance may be paused while a task is cancelled and
+an operation already succeeded; one status field never has to cover all of it.
 
-只在有未完成目标或新获准输入时推进。模型调用前、工具派发前和结果消费后是控制安全边界。执行器按有界批次让出调度权，不给用户目标引入隐藏的图步数/回合寿命上限。普通聊天 Reply 不自动结清任务；CompletionCandidate 才触发完成检查。
+Work only advances with an unfinished goal or newly admitted input. Before a model call, before a tool
+dispatch and after consuming a result are the control-safe boundaries. The driver yields on bounded batches and
+introduces no hidden graph-step or turn-lifetime cap on a user goal. An ordinary chat reply never settles a
+task; only a `CompletionCandidate` starts the completion checks.
 
-## 4. 存储、权威状态与原子边界
+## 4. Storage, authoritative state and atomic boundaries
 
-### 4.1 每会话单库
+### 4.1 One database per session
 
-每个会话使用 `session.sqlite` 保存实例、任务、执行位置、对话索引、消息投递、能力、批准、预算、模型尝试、工具操作及事件 outbox。取消独立 `checkpoints.sqlite`。配置文件只保存部署设置与凭据引用；内存队列和 TUI 缓存都可以由持久化事实重建。
+Each session stores instances, tasks, execution positions, the conversation index, message deliveries,
+capabilities, approvals, budgets, model attempts, tool operations and the event outbox in `session.sqlite`; the
+separate `checkpoints.sqlite` is gone. Configuration files hold deployment settings and credential references
+only, and both in-memory queues and TUI caches can be rebuilt from persisted facts.
 
-控制入口 `submit(command, trusted_identity)` 执行短事务。网络、模型请求、Shell、内容散列及大文件写入都在事务外；事务内检查对象 revision 和当前权限。后台只允许一个实例驱动者写同一上下文。每个会话的写请求串行化，读取采用有界快照；数据库连接不跨模型/工具等待持有事务。
+The control entry `submit(command, trusted_identity)` runs a short transaction. Network calls, model requests,
+shell commands, content hashing and large file writes all happen outside it, while object revisions and current
+permissions are checked inside. Only one instance driver may write a given context at a time. Write requests
+for one session are serialized and reads use bounded snapshots; no database connection holds a transaction
+across a model or tool wait.
 
-同步 SQLite 调用放入有界存储工作队列，不能阻塞异步 I/O 执行线程；队列满时明确背压。取消等待某个事务的 future 不撤销已提交命令，调用方按 command_id 查询同一结果。模型控制入口和事务结果传递不占模型并发槽。
+Synchronous SQLite calls go into a bounded storage work queue and never block async I/O threads; a full queue
+applies explicit backpressure. Cancelling a future that waits for a transaction does not undo a committed
+command, and the caller re-queries by `command_id`. Neither control entry nor transaction results consume a
+model concurrency slot.
 
-SQLite WAL 允许读写并行，但同一数据库仍只有一个写者，也不能把多个库视为一个原子事务。[SQLite WAL](https://sqlite.org/wal.html) 首版维持单写入口与同库原子边界，避免先拆库再补协调协议。
+SQLite WAL allows concurrent readers and one writer, but several databases are still never one atomic
+transaction. [SQLite WAL](https://sqlite.org/wal.html) The first release keeps the single writer and the
+same-database atomic boundary instead of splitting databases and adding a coordination protocol later.
 
-以下是每会话单库的最小数据契约；表名可调整，身份、归属、版本与去重约束不能省略。每类事实只有一个权威表示，不要求“一对象一服务”。
+The minimal data contract per session follows; table names may change, but identity, ownership, version and
+deduplication constraints may not. Every fact has exactly one authoritative representation, without an
+"object, one service" requirement.
 
-| 对象 | 关键字段 / 约束 |
+| Object | Key fields and constraints |
 |---|---|
 | Session | `id, project_root, leader_id, format_id, schema_version, status` |
-| Instance / Execution | `id, profile_revision, workspace_ref, context_epoch, lifecycle, phase, revision, active_goal_id, active_request_id, context_head`；同实例单执行者 |
-| Goal / Budget | `id, original_request_ref, requirement_revision, status, deadline, limits, known_usage, reservations, unknown_usage`；所有子任务引用同一 goal |
+| Instance / Execution | `id, profile_revision, workspace_ref, context_epoch, lifecycle, phase, revision, active_goal_id, active_request_id, context_head`; one executor per instance |
+| Goal / Budget | `id, original_request_ref, requirement_revision, status, deadline, limits, known_usage, reservations, unknown_usage`; every child task references the same goal |
 | Task | `id, goal_id, requester, assignee, dependencies, acceptance_refs, status, result_refs, revision` |
-| CapabilityGrant | `id, issuer, subject, action, resource_scope, parent_grant_id, revision, revoked_at`；Channel 仅引用授权 |
-| Envelope / ContextEntry | 消息含 `id, sender, recipient, epoch, kind, correlation_id, payload_ref, sequence, state`；上下文唯一 `(instance, epoch, index)`，应用去重唯一 `(instance, epoch, envelope_id)` |
-| ModelRequest / Attempt | `request_id, instance, epoch, goal_id, request_ref, selected_attempt_id`；尝试含 `attempt_id, request_id, status, response_ref, usage`；一个请求最多选择一个响应 |
-| Decision / Operation | `decision_id, request_id`；操作含 `operation_id, decision_id, tool_index, goal_id, epoch, args_hash, grant_revision, status, receipt_ref`；唯一 `(decision_id, tool_index)` |
-| Approval / Wait | 批准绑定具体操作与参数散列、权限版本和有效期；等待绑定实例 epoch、ALL/ANY 条件与可选计时器，均有终态 |
-| ToolReceipt / Verification | 回执绑定操作及环境、输出和真实结果；检查绑定要求来源/版本、checker、输入产物版本、观察时间与证据 |
-| CommandReceipt / Event | 命令按 `command_id` 去重并校验载荷散列；事件按 session 内递增 sequence，含权限范围和 payload 引用 |
-| Artifact | `id, digest, size, kind, owner_scope, storage_ref, completeness`；文件先持久化再发布数据库引用 |
+| CapabilityGrant | `id, issuer, subject, action, resource_scope, parent_grant_id, revision, revoked_at`; a channel only references grants |
+| Envelope / ContextEntry | a message carries `id, sender, recipient, epoch, kind, correlation_id, payload_ref, sequence, state`; context is unique by `(instance, epoch, index)` and application is deduplicated by `(instance, epoch, envelope_id)` |
+| ModelRequest / Attempt | `request_id, instance, epoch, goal_id, request_ref, selected_attempt_id`; an attempt carries `attempt_id, request_id, status, response_ref, usage`; a request selects at most one response |
+| Decision / Operation | `decision_id, request_id`; an operation carries `operation_id, decision_id, tool_index, goal_id, epoch, args_hash, grant_revision, status, receipt_ref`; unique by `(decision_id, tool_index)` |
+| Approval / Wait | an approval binds a concrete operation, its argument hash, the permission revision and a validity window; a wait binds an instance epoch, ALL/ANY conditions and an optional timer, and both have terminal states |
+| ToolReceipt / Verification | a receipt binds the operation to its environment, output and real outcome; a check binds its declared sources/versions, the checker, the input artifact versions, the observation time and the evidence |
+| CommandReceipt / Event | commands deduplicate by `command_id` and validate the payload hash; events carry a per-session increasing sequence plus permission scope and a payload reference |
+| Artifact | `id, digest, size, kind, owner_scope, storage_ref, completeness`; file bytes are persisted before the database reference |
 
-模型配置每次尝试保存有效配置快照或不可变版本引用，凭据只保存引用名。不能在重启时用已经修改的全局 profile 悄悄改变原请求参数。
+Each model attempt stores the effective configuration snapshot or an immutable version reference, and
+credentials are stored as references only: a restart never silently changes the original request parameters
+through an edited global profile.
 
-### 4.2 必须同事务提交的事实
+### 4.2 Facts that must commit in one transaction
 
-| 提交点 | 原子更新 |
+| Commit point | Atomic update |
 |---|---|
-| 接收输入 | 上下文追加引用、`(instance, epoch, envelope_id)` 去重记录、消息应用确认、执行位置 |
-| 接收模型完整响应 | 唯一响应引用、对话追加、decision_id、工具意图或完成申请、已知用量结算 |
-| 接收工具终态 | 唯一操作回执、供实例消费的事件、相关任务事实；稍后消费回执与推进上下文也在同一库原子提交 |
-| 发消息/委派 | 业务变更、消息/任务、接收者就绪意图、发送方动作回执 |
-| 注册等待 | 等待条件、当前完成状态检查、必要的立即唤醒意图 |
-| 完成目标 | 验收引用、未结操作检查、目标/任务结果和对外事件 |
+| Admit input | the context append reference, the `(instance, epoch, envelope_id)` deduplication record, the message application acknowledgement and the execution position |
+| Admit a complete model response | the unique response reference, the conversation append, the `decision_id`, the tool intents or completion request, and the settlement of known usage |
+| Admit a tool terminal state | the unique operation receipt, the event for the instance to consume and the related task facts; the later consumption of the receipt and the context advance commit in the same database |
+| Send a message / delegate | the business change, the message/task, the recipient's ready intent and the sender's action receipt |
+| Register a wait | the wait conditions, the current completion check and any immediate wakeup intent |
+| Complete a goal | the acceptance references, the open-operation check and the goal/task outcome plus external events |
 
-这样删除 R1 中“检查点已前进、业务库未确认”的跨库恢复分支。工具结果可以先入账再供模型消费，但消费本身必须原子去重。
+That removes the earlier cross-database recovery branch of "the checkpoint advanced but the business database
+did not confirm". A tool result may be recorded before it is consumed by the model, but the consumption itself
+must deduplicate atomically.
 
-### 4.3 大上下文与落盘顺序
+### 4.3 Large context and write ordering
 
-对话按序追加，执行检查点保存当前 phase、活跃请求、未结操作和上下文头引用，不每步复制完整历史。旧文本按需读取，压缩结果带原文引用；按实际窗口构造本次模型请求，缓存稳定前缀，避免为审计重复复制同一大字符串。
+The conversation appends in order and an execution checkpoint stores the current phase, active request, open
+operations and context head reference instead of copying the whole history every step. Old text is read on
+demand and a compaction result carries a reference to its originals; each model request is built from the real
+window with a stable cached prefix, so the same large string is not copied again for auditing.
 
-大输出与完整响应存不可变制品，小型结构化回执留在库中。制品先写临时文件、校验、同步、原子发布，再提交数据库引用；失败时允许留下可清理的孤儿文件，禁止数据库引用尚未持久化的文件。流式未完成输出有独立 partial 状态，不伪装成完整响应。哈希用于完整性与去重，不充当访问权限；跨实例读取仍需查资源 ACL。
+Large outputs and complete responses become immutable artifacts, while small structured receipts stay in the
+database. An artifact is written to a temporary file, verified, synced and atomically published before the
+database reference commits; a failure may leave a collectable orphan file, and a database reference to
+unpersisted bytes is forbidden. A streaming partial response has its own partial state and is never disguised
+as complete. Hashes serve integrity and deduplication, never access control: reading across instances still
+consults the resource ACL.
 
-发布前先持久化制品身份、摘要与所有者，置为 STAGING；提交引用与转为 LIVE 在同一事务内完成。GC 先在事务内取得无所有者对象的 DELETING 状态，之后拒绝新增引用，再删除文件；删除失败可重试。STAGING 不因暂时没有引用或超出固定时间而回收，重启先核验发布结果与所属请求/job，再决定导入或标记 ABANDONED。runner 结果目录由对应未导入 job 保护。这些状态仅是制品生命周期，不是第二套业务事实库。
+Publication first persists the artifact's identity, digest and owner as STAGING; the reference and the flip to
+LIVE commit in the same transaction. GC first claims an unreferenced object as DELETING inside a transaction,
+then refuses new references and only afterwards deletes the file, and a failed deletion can be retried. STAGING
+is not collected for being temporarily unreferenced or for exceeding a fixed age: a restart verifies the
+publication result and its owning request/job before importing or marking it ABANDONED, and an unimported job's
+result directory is protected by that job. These are artifact lifecycle states, not a second business fact
+store.
 
-### 4.4 持久化强度与版本
+### 4.4 Durability strength and versions
 
-可靠状态使用 WAL + 显式 `synchronous=FULL`，在验证过的本地文件系统上运行。FULL/NORMAL 的区别涉及系统崩溃后的持久性；不能靠减弱同步策略宣称提速。[SQLite 同步语义](https://sqlite.org/pragma.html#pragma_synchronous) UI token 分片可以批量发送，重要操作的执行前/执行后记录不能被这种批量策略省略。
+Reliable state uses WAL with explicit `synchronous=FULL` on a verified local filesystem. The FULL/NORMAL
+difference concerns durability across a system crash, so claiming a speed-up by weakening the sync strategy is
+not allowed. [SQLite synchronous](https://sqlite.org/pragma.html#pragma_synchronous) UI token fragments may be
+batched, but the before/after records of an important operation may not be dropped by such batching.
 
-所选 SQLite 必须包含官方 WAL-reset 修复（3.51.3 及特定回补版本），并以锁文件实际链接的版本核对，而不是只看 crate 声明版本。[SQLite 修复记录](https://sqlite.org/wal.html)
+The selected SQLite must include the official WAL-reset fix (3.51.3 and the specific backports), verified
+against the version the lock file actually links rather than the crate's declared version.
+[SQLite fix notes](https://sqlite.org/wal.html)
 
-Schema 与持久化状态都有版本印记：外来或错版库直接拒绝打开（A34），本实现自身的后续升级需要显式迁移或拒绝策略。WAL 回收、制品回收和历史保留单独调度，保护活动引用与评测证据。磁盘满时停止新的副作用派发，并明确报告未成功持久化的在途结果。
+Both schema and persisted state carry a version stamp: a foreign or wrong-version database is refused outright
+(A34), and a later upgrade of this implementation needs an explicit migrate-or-refuse policy. WAL reclamation,
+artifact collection and history retention are scheduled separately and protect live references and evaluation
+evidence. A full disk stops new side-effect dispatch and reports honestly which in-flight results were not
+persisted.
 
-## 5. 身份、能力、通信与协作
+## 5. Identity, capability, communication and collaboration
 
-### 5.1 单一授权依据
+### 5.1 A single authorization basis
 
-系统维护范围受限的 `CapabilityGrant(subject, action, resource, parent_grant, revision)`。授予只能缩小已有范围；父授权撤销使派生授权失效。Leader 默认具备管理能力，可以下授；创建实例不自动授予任意连接或全部文件权限。用户可管理和查看所有实例，Leader 不能读取其他实例私有历史。
+The system keeps scoped `CapabilityGrant(subject, action, resource, parent_grant, revision)` records. A grant
+can only narrow an existing scope, and revoking a parent invalidates its children. The Leader has management
+capability by default and may delegate part of it; creating an instance grants neither arbitrary connections
+nor blanket file permissions. The user manages and reads every instance, while the Leader cannot read another
+instance's private history.
 
-通信边是能力数据的投影，不再同时维护一张可独立修改的 channel ACL 和一张 grant ACL。若需要 channel_id，用它引用授权，不产生第二个权限来源。消息、任务返回路径和共享资源是三类显式通信机制；“可以观察”不等于“要注入模型”。
+Communication edges are a projection of capability data, so there is no separately editable channel ACL beside
+a grant ACL. A `channel_id`, when needed, references a grant and creates no second source of permission.
+Messages, task return paths and shared resources are the three explicit communication mechanisms, and "may
+observe" never means "must inject into the model".
 
-默认共享项目目录视为明确授予的资源；独立目录/worktree 按需创建。共享项目文件本来就可被获准实例读取，不能宣称只允许通过消息交换全部信息。full_auto 的主机 Shell 保持用户已接受的逻辑隔离边界。
+The shared project directory counts as an explicitly granted resource, while isolated directories and
+worktrees are created on demand. Files in the shared project are readable by authorized instances anyway, so
+the design never claims that all information must pass through messages. full_auto's host shell keeps the
+logical isolation boundary the user accepted.
 
-### 5.2 模型可见面
+### 5.2 The model-visible surface
 
-基础文件、终端、网页工具直接可用。协作保持 `spawn / delegate / send / wait / finish` 等少量直观动作；普通 `spawn` 可以原子创建实例、登记初始任务和其必要返回路径，减少“先建 profile、再建实例、再连边、再派发”的机械步骤。高级管理按权限提供，MCP 大目录与 Skills 按需发现。
+Basic file, terminal and web tools are directly available. Collaboration keeps a small set of intuitive actions
+(`spawn / delegate / send / wait / finish`); an ordinary `spawn` can atomically create an instance, register its
+initial task and its required return path, avoiding the mechanical "create profile, create instance, connect
+edges, dispatch". Advanced management appears per permission, and large MCP catalogs and Skills are discovered
+on demand.
 
-不设固定工具数量作为 KPI，也不把所有工具强塞入一个巨型 JSON 路由器。评测记录初始 Schema token、无效调用和多余管理回合，据此判断简化是否真实减少模型负担。实例数和是否使用协作不进入成功评分。
+No fixed tool count is treated as a KPI and no giant JSON router swallows every tool. Evaluation records the
+initial schema tokens, invalid calls and redundant management turns, and uses them to judge whether a
+simplification really lightens the model's load. Neither instance count nor using collaboration enters a
+success score.
 
-### 5.3 投递、唤醒与撤权
+### 5.3 Delivery, wakeups and revocation
 
-消息持久化后再报告已接受；接收者按唯一 envelope_id 应用一次上下文变更。恢复可重新读取待办，不能重复应用。收件箱设容量和背压，不静默丢弃；状态通知可合并，任务结果和用户消息不可被无声覆盖。消息回执默认不唤起一次模型回复。
+A message is reported accepted only after it is persisted, and a recipient applies a context change exactly
+once per envelope id. Recovery may re-read pending work but never re-applies it. Inboxes are bounded and apply
+backpressure instead of dropping silently; status notifications may coalesce, but task results and user
+messages are never silently overwritten. A message receipt does not, by itself, trigger a model reply.
 
-授权在发送与实际应用边界核验；撤权可拦截尚未应用的消息，无法撤回已读内容。任务结果具有窄返回能力，足以结清既有任务，但不增加通用反向通道；返回内容只投递到仍可用且获准的接收身份。
+Authorization is re-checked at both the send and the actual application boundary; revocation can block a
+message that has not been applied but cannot unread content already seen. A task result has a narrow return
+capability, enough to settle the existing task without adding a general reverse channel, and the return content
+is delivered only to a still-valid, authorized recipient identity.
 
-通信图允许环，显式任务前置依赖不允许环。等待检测考虑 ALL/ANY 条件、计时器和外部 job；发现一个图环不足以证明死锁。只对没有可运行或外部履约路径的闭合集合报告受阻，不自动取消任务。注册等待与检查“结果是否已到”在同一事务内，避免丢失唤醒。
+The communication graph may contain cycles while explicit task dependencies may not. Wait detection considers
+ALL/ANY conditions, timers and external jobs, and finding a cycle in the graph is not by itself proof of a
+deadlock. Only a closed set with no runnable or externally-fulfillable path is reported as blocked, and tasks
+are never cancelled automatically. Registering a wait and checking "has the result already arrived" happen in
+one transaction, so a wakeup is never lost.
 
-### 5.4 生命周期与用户干预
+### 5.4 Lifecycle and user intervention
 
-实例 ID 不复用；重置增加 context_epoch 并使旧执行输入失效。终止前明确处理其未完成任务和派生授权，不能仅删除成员行。已终止实例的迟到回执仍计入原操作和原预算，不注入新实例上下文。
+Instance ids are never reused; a reset bumps the context epoch and invalidates old execution input. Termination
+explicitly deals with the instance's open tasks and derived grants instead of deleting a member row. A late
+receipt of a terminated instance still counts against the original operation and budget and is never injected
+into a new instance's context.
 
-用户输入在安全边界进入目标实例；直接修改 Worker 任务时通知相关委派者状态变化，私有对话不自动转发。角色、模型、工作区变更按受影响实例边界应用；撤权阻止后续派发，不承诺追回已经开始的副作用。
+User input enters the target instance at a safe boundary; directly adjusting a worker's task notifies the
+relevant delegator of the state change, and a private conversation is never forwarded automatically. Role,
+model and workspace changes apply at the boundary of the affected instance. Revocation blocks later dispatch
+and makes no promise to undo a side effect that already started.
 
-## 6. 副作用、工具进程与恢复
+## 6. Side effects, tool processes and recovery
 
-### 6.1 执行前协议
+### 6.1 Pre-execution protocol
 
-所有外部工具使用稳定 `operation_id`，绑定 `decision_id + tool_index`、参数散列、实例 epoch 和权限版本。状态区分 PREPARED、DISPATCH_COMMITTED、RUNNING、终态与 OUTCOME_UNKNOWN。提交派发是授权检查的线性化点：之后的撤权发出取消请求，不把已授权在途操作改写为从未开始。
+Every external tool uses a stable `operation_id` bound to `decision_id + tool_index`, the argument hash, the
+instance epoch and the permission revision. States distinguish PREPARED, DISPATCH_COMMITTED, RUNNING, terminal
+states and OUTCOME_UNKNOWN. Committing the dispatch is the linearization point of the authorization check:
+revocation afterwards issues a cancellation request and never rewrites an authorized in-flight operation into
+one that never started.
 
-后台以 OS 文件锁保证同一状态根只有一个协调者；锁描述符不能被工具子进程继承。实例在内存中有单执行槽，库内用 revision 校验迟到结果。首版不增加分布式租约、按时钟超时抢主或任意时刻强制 takeover。
+An OS file lock guarantees one coordinator per state root, and the lock descriptor is never inherited by tool
+child processes. An instance has one in-memory execution slot, and revisions in the database detect late
+results. The first release adds no distributed lease, no clock-based takeover and no forced takeover at an
+arbitrary moment.
 
-### 6.2 Shell runner 的必要范围
+### 6.2 The necessary scope of the shell runner
 
-Shell 采用同一 Rust 二进制的内部 runner 子命令，每个活动命令一个受控 runner。它独立于 daemon 的生命周期，持有 job_id 的执行锁，记录启动握手、进程身份、输出和终态。普通读文件、短事务不需要 runner；MCP 外部请求不因在本机套进程就获得可恢复的远端语义。
+Shell commands use an internal runner subcommand of the same Rust binary, one controlled runner per active
+command. It is independent of the daemon's lifetime, holds the execution lock for its job id, and records the
+start handshake, process identity, output and terminal state. Ordinary file reads and short transactions need
+no runner, and an external MCP request gains no recoverable remote semantics merely because it passes through a
+local process.
 
-启动顺序：登记意图 → runner 获得唯一 job 锁并报告 READY → daemon 提交派发授权 → 发送带 operation_id 的 GO → runner 持久化已接受标记并启动命令。重复 GO 不启动第二份命令。若 runner 接受 GO 后在启动/记录之间崩溃，不能把“没有 PID”当作未执行证据，按未知结果核验。
+Start order: register the intent → the runner takes the unique job lock and reports READY → the daemon commits
+the dispatch authorization → a GO carrying the operation id is sent → the runner persists the accepted marker
+and starts the command. A duplicate GO never starts a second command. If the runner crashes between accepting
+GO and recording the start, "no PID" is not evidence of non-execution: it is verified as an unknown outcome.
 
-runner 串行处理同一 job 的 GO/CANCEL。命令未启动时接受取消，先持久化 CANCELLED_BEFORE_START，再确认取消；该终态永久拒绝迟到或恢复重发的 GO。GO 已跨启动边界时，取消转为停止请求，真实副作用与停止确认分别保存。恢复读取最新目标/任务/操作的控制状态，已取消的操作发送 CANCEL，不仅凭 DISPATCH_COMMITTED 重发 GO。
+The runner serializes GO/CANCEL for one job. A cancellation before the command started is accepted by
+persisting CANCELLED_BEFORE_START first and confirming the cancel afterwards; that terminal state permanently
+refuses a late or replayed GO. Once GO crossed the start boundary, cancellation becomes a stop request, and the
+real side effect and the stop confirmation are recorded separately. Recovery reads the latest control state for
+the goal/task/operation, sends CANCEL for a cancelled operation, and never re-sends GO merely because the state
+is DISPATCH_COMMITTED.
 
-runner 保存 job 令牌、PID、启动时间和系统启动身份；存活时可利用可用的 Linux 进程句柄辅助管理，恢复后仍须重新核验。只有 PID 不足以证明身份。先原子保存终态回执，再由 daemon 导入 SQLite；runner 不并发修改全部团队数据库。
+The runner stores the job token, PID, start time and system boot identity; while alive it may use Linux process
+handles as an aid, but after a restart everything is re-verified, because a PID alone does not prove identity.
+The terminal receipt is saved atomically first and imported into SQLite by the daemon afterwards; the runner
+never concurrently edits the whole team database.
 
-runner 脱离前端/daemon 的终端生命周期，关闭不应继承的描述符，输出写自己的受控日志；成功命令启动服务的标准流按 D-41 处理，不能因为管道仍打开就永远等不到命令结束。cwd/exports 按实例和权限模式保存，恢复前从已核验回执取得状态，不能混用其他实例的 Shell 环境。
+The runner is detached from the front-end/daemon terminal lifetime, closes descriptors it should not inherit
+and writes to its own controlled log. How a service started by a successful command is treated follows D-41,
+and a still-open pipe must never delay the recognition of a finished command. cwd/exports are stored per
+instance and permission mode, and recovery takes the state from verified receipts instead of mixing another
+instance's shell environment.
 
-同一模型响应中的工具调用默认按顺序执行；只有已知互不依赖的只读调用或明确隔离操作才并行。共享文件的受控写入检查预期版本，冲突返回结构化错误；不能仅凭 Shell 命令文本推断其完整读写集合。跨实例并发由显式委派和资源约束控制，不承诺共享工作区的所有外部写入自动串行化。
+Tool calls inside one model response run in order by default; only known-independent read-only calls or
+explicitly isolated operations run in parallel. A controlled write to a shared file checks the expected version
+and returns a structured conflict error, because a shell command's full read/write set cannot be inferred from
+its text. Cross-instance concurrency is governed by explicit delegation and resource constraints, and the
+design never promises that every external write to a shared workspace is serialized.
 
-### 6.3 恢复矩阵
+### 6.3 Recovery matrix
 
-| 发现的持久化事实 | 恢复动作 |
+| Persisted fact found | Recovery action |
 |---|---|
-| 用户命令已入账，客户端没收到回复 | 以 command_id 返回同一回执，不重复提交 |
-| 模型请求登记但缺完整响应 | 记录可能重复计费和未知 usage；在统一重试策略下重新请求 |
-| 完整模型响应已发布为制品但未导入 | 按 request_id 核验并导入一次，固定同一 decision_id |
-| 工具 PREPARED，尚无派发提交 | 重查当前权限/预算，允许首次派发 |
-| 派发已提交，runner 等待或运行中 | 重连同一 job，重复 GO 去重或继续等待；不新开 job |
-| 操作已跨执行边界而无法核实 | OUTCOME_UNKNOWN，停放相关任务并通知；不盲目重做 |
-| 结果已入库，实例尚未消费 | 原子追加回执引用并推进执行位置，不再调用工具 |
-| 缺执行器等永久错误 | 保留输入，停放并去重通知；修复或显式重试才恢复 |
-| 系统重启导致原进程消失 | 核对回执和外部状态；进程消失不证明副作用未发生 |
+| A user command was recorded but the client saw no reply | return the same receipt by `command_id`; do not resubmit |
+| A model request was registered without a complete response | record that double billing and unknown usage are possible; re-request under the unified retry policy |
+| A complete model response was published as an artifact but not imported | verify by `request_id` and import once with the same `decision_id` |
+| A tool is PREPARED with no dispatch commit | re-check the current permission/budget and allow the first dispatch |
+| The dispatch is committed and the runner is waiting or running | reconnect to the same job, deduplicate a repeated GO or keep waiting; never open a new job |
+| An operation crossed the execution boundary and cannot be verified | OUTCOME_UNKNOWN: park the related tasks and notify; never redo blindly |
+| A result is in the database but the instance has not consumed it | atomically append the receipt reference and advance the execution position without calling the tool again |
+| A permanent error such as a missing executor | keep the input, park and deduplicate the notification; resume only on a fix or an explicit retry |
+| A system restart made the original process disappear | verify receipts and external state; a vanished process does not prove that no side effect happened |
 
-同库事务解决内部一致性，不能把 Shell/MCP/外部 API 纳入 SQLite 原子提交。承诺的是已知结果复用、内部应用去重、未知结果诚实停放；不承诺任意外部操作 exactly-once。
+Same-database transactions settle internal consistency and cannot pull shell commands, MCP or external APIs
+into one SQLite commit. What is promised is reuse of known results, deduplicated internal application and
+honest parking of unknown outcomes; exactly-once semantics for arbitrary external operations are not promised.
 
-### 6.4 暂停、取消、停机
+### 6.4 Pause, cancellation and shutdown
 
-退出界面只断开连接。暂停停止派发新动作，在途动作按状态等待或明确取消；界面区分“请求暂停”和“已停在安全边界”。取消先落盘，再向受控 job 发送终止进程组请求；调用超时或不可取消的外部请求保留取消未确认/未知状态。
+Quitting the UI only drops the connection. Pausing stops new dispatch while in-flight actions either wait or
+are explicitly cancelled, and the UI distinguishes "pause requested" from "stopped at a safe boundary".
+Cancellation is persisted first and only then sends a process-group stop request to a controlled job; a call
+that times out or an external request that cannot be cancelled keeps its unconfirmed or unknown state.
 
-上述先落盘规则适用于正常存储。写入失败时冻结相关执行的新派发，仍通过经身份核验的独立控制路径尽力停止受控 job；分别报告取消是否已保存、进程是否停止。输出限额和控制资源预留降低存储耗尽风险，但不能保证任意 I/O 故障下仍能保存取消。重启优先核对可恢复的取消标记和 runner 回执；全部持久存储失效时明确说明未保存的取消不能保证跨重启恢复，不把停止进程伪报为持久化取消成功。
+The persisted-first rule applies to a healthy store. When a write fails, new dispatch for the affected
+execution freezes while a separately identity-verified control path still tries to stop controlled jobs, and
+the report separates "was the cancellation saved" from "did the process stop". Output limits and control
+resource reservations reduce the risk of running out of storage but cannot guarantee that a cancellation can
+still be saved under arbitrary I/O failures. A restart re-verifies recoverable cancellation markers and runner
+receipts, and when all persistent storage is gone it states plainly that unsaved cancellations cannot be
+guaranteed across a restart instead of reporting a stopped process as a persisted cancellation.
 
-daemon 正常停止先冻结新派发、持久化待办，再结束自身；已派发 runner 保持可核验，目标重启后继续。需要终止在途 job 时使用明确的取消选项。D-41 下成功命令留下的服务不会因界面或 daemon 停止被隐式清理；服务停止按任务要求显式执行。不能靠丢弃 Rust future 声称外部程序已停止。
+A normal daemon shutdown freezes new dispatch, persists pending work and then stops itself; already dispatched
+runners stay verifiable and continue after the target restarts. Stopping an in-flight job requires an explicit
+cancel option. Under D-41 a service left behind by a successful command is not implicitly cleaned up when the
+UI or daemon stops; stopping it is done explicitly as the task requires, and dropping a Rust future never
+counts as having stopped an external program.
 
-## 7. 模型、工具与上下文
+## 7. Models, tools and context
 
-模型协议层与供应商名称分离；保留既有 Chat Completions、DeepSeek 特性、Anthropic、Responses 的可复用解析和契约样本，逐个完成真实服务验收。认证从环境/本机凭据读取，部署设置只存引用。opaque 供应商字段带来源/版本保存，不能经最低公分母转换丢失必要的推理或工具关联信息。
+The protocol layer is separate from the vendor name: the reusable parsing and contract samples of Chat
+Completions, DeepSeek extensions, Anthropic and Responses are kept, and each is accepted with a real service
+separately. Authentication reads environment or machine credentials, and deployment settings store references
+only. Opaque provider fields are stored with their origin and version, and never flattened through a lowest
+common denominator that loses reasoning or tool-correlation information.
 
-完整模型响应才能生成可执行工具意图，半条流只作未完成尝试。只给一个组件重试权；模型传输重试与模型主动修复命令失败分别计数。跨供应商切换在安全边界应用，不兼容字段以自身交接摘要续接到新 epoch，不把旧原生块直接转发。
+Only a complete model response yields executable tool intents, and half a stream remains an unfinished attempt.
+Exactly one component owns retries: transport retries and the model's own repair commands are counted
+separately. A provider switch applies at a safe boundary, and incompatible fields continue through their own
+handover summary into the new epoch instead of forwarding old native blocks.
 
-逻辑 request_id 与每次传输 attempt_id 分开记录。重试后旧尝试迟到时，以原子选定的唯一响应推进该请求；其他完整/部分响应只归档和记账，不再生成工具意图。不能把同一请求的两个随机采样结果都应用到上下文。
+The logical `request_id` and each transport `attempt_id` are recorded separately. When an old attempt returns
+late after a retry, the atomically selected response advances the request, while other complete or partial
+responses are archived and billed without producing tool intents. Two random samples of one request are never
+both applied to the context.
 
-请求窗口使用模型原生长度，DeepSeek V4.1 Flash 为 1,000,000。容量核算含系统指令、工具 Schema、历史、输出和协议预留；窗口未知时要求可靠配置，不能默认为 16K/64K。压缩依据实际占用而非武断小窗口，保留原始要求、用户修订、验收、未决问题和回执引用。压缩算法的收益需要单独对照；不得把降低真实窗口包装成优化。
+The request window uses the model's native length, 1,000,000 for DeepSeek V4.1 Flash. Capacity accounting
+includes system instructions, tool schemas, history, output and protocol reserves; an unknown window requires a
+reliable configuration and never defaults to 16K or 64K. Compaction follows real occupancy rather than an
+arbitrary small window and keeps the original request, user revisions, acceptance criteria, open questions and
+receipt references. The gain of a compaction algorithm is measured separately, and reducing the real window is
+never dressed up as an optimisation.
 
-Shell 回执包含实际启动与否、执行模式、cwd、退出码/信号、耗时、输出引用、取消/超时原因。隔离启动失败不同于命令非零退出；full_auto 与 approved_scope 的工作目录/环境状态分开。验证使用同一真实目标环境。仅在当前身份具备执行权限时开放对应工具，环境故障不通过创建相同能力实例反复试探。
+A shell receipt carries whether the command actually started, the execution mode, cwd, exit code or signal,
+duration, output reference and the cancel/timeout reason. A failed isolation start is not a non-zero exit, and
+full_auto and approved_scope keep separate working directories and environments. Verification runs in the same
+real target environment. A tool is available only when the current identity is allowed to execute it, and an
+environment failure is never probed by creating another instance with the same capability.
 
-MCP 经统一权限、批准、预算、取消和回执入口执行；server 的幂等注解只是提示，不足以授权自动重放，参照 [MCP 注解信任边界](https://modelcontextprotocol.io/specification/2025-06-18/server/tools)。Skills 以 `~/.agents/skills` 为注册根，按需搜索/读取正文；技能指令不能扩大执行权限。网页搜索凭据缺失、工具不可用时明确暴露能力状态，不虚构可执行绑定。
+MCP executes through the same permission, approval, budget, cancellation and receipt entry points; a server's
+idempotence annotation is a hint and never authorizes an automatic replay
+([MCP annotation trust boundary](https://modelcontextprotocol.io/specification/2025-06-18/server/tools)).
+Skills register under `~/.agents/skills` and their bodies are searched and read on demand; a skill's
+instructions can never widen execution permissions. A missing web-search credential or an unavailable tool is
+reported as a capability state, and no executable binding is invented.
 
-## 8. 预算、进展与完成检查
+## 8. Budget, progress and completion checks
 
-目标预算覆盖全部实例、模型尝试、重试、压缩和验证，委派不复制预算。无显式目标预算时可持续推进；每次网络请求仍有停滞检测，永久错误仍会停放。保留请求前额度预留、实际 usage 结算和未知用量；并行预留不能超过已知剩余额度，供应商计费不完整时不给“绝不超额”的虚假保证。
+The goal budget covers every instance, model attempt, retry, compaction and verification, and delegation never
+duplicates it. Without an explicit budget work continues; every network request still has stall detection and a
+permanent error still parks. Reservation before a request, settlement from real usage and unknown usage are all
+kept, parallel reservations never exceed the known remaining budget, and incomplete provider billing is never
+turned into a false promise that the ceiling can never be exceeded.
 
-并发数、job 数、排队容量和日志容量属于资源配置。发布默认值前，至少用 1/4/16 活跃请求的负载点在基准机器上测量。用户控制与结果处理不等待模型额度；交互就绪队列优先并带公平性，任何保留额度都记录其吞吐代价。
+Concurrency, job count, queue capacity and log capacity are resource configuration. Before publishing a
+default, measure at least the 1/4/16 active-request load points on the reference machine. User control and
+result handling never wait for a model slot, the interactive ready queue has priority with fairness, and any
+reserved capacity records its throughput cost.
 
-系统可识别重复投递、永久启动错误、相同基础设施故障的高频重试，并有界处理。语义上的“没有进展”通常只是判断线索：重复运行测试可能是正常修复，不凭相同命令或固定轮数判失败。向模型提供真实剩余时间与错误摘要，让其调整路线；用户预算与明确终止条件保持权威。
+The system recognises duplicate deliveries, permanent start errors and high-frequency retries of the same
+infrastructure failure, and handles them within bounds. A semantic "no progress" is usually only a hint:
+re-running a test may be a legitimate repair, so no failure is declared from identical commands or a fixed
+round count. The model is given the real remaining time and error summaries so it can change course, while the
+user's budget and explicit stop conditions stay authoritative.
 
-完成时仅一次提出明确的 `outcome + summary + evidence/unverified`，运行时自动关联已有检查回执，避免要求模型填写大量账本字段。普通问答无需创建制品或审查实例。用户/项目预定义的必要检查必须通过；模型从自然语言提炼的条件带来源，不能冒充用户已逐项确认的机器契约。
+At completion the model states once, clearly, an `outcome + summary + evidence/unverified`; the runtime
+automatically links the existing check receipts instead of demanding a large ledger from the model. An ordinary
+question needs neither an artifact nor a review instance. Required checks defined by the user or project must
+pass; conditions the model extracts from natural language carry their source and never masquerade as a
+machine-checked contract the user confirmed item by item.
 
-取消某个实现子任务不删除原目标的必要要求。检查失败进入修复或 BLOCKED；总结中承认未交付不能落成功。检查绑定声明的输入、产物版本和观察时间；完成前核对相关散列，时效性服务重新探测。共享目录和外部系统没有全局锁，不声称能检测所有未声明依赖或提供原子世界快照。
+Cancelling an implementation subtask never deletes the original goal's requirements. A failed check enters
+repair or BLOCKED, and a summary admitting non-delivery can never land as success. A check binds its declared
+inputs, artifact versions and observation time, related hashes are re-verified before completion, and a
+time-sensitive service is re-probed. Shared directories and external systems have no global lock, so the design
+never claims to detect every undeclared dependency or to offer an atomic snapshot of the world.
 
-独立审查按需获得原始需求和产物，允许推翻实现者假设；同一模型重复肯定不等于客观验证。没有可执行 oracle 的正确性如实标注证据强度，不靠多一轮模型给出“系统已证明正确”的结论。
+Independent review receives the original request and artifacts on demand and may overturn the implementer's
+assumptions; repeated agreement from the same model is not objective verification. Correctness without an
+executable oracle is labelled with its real evidence strength instead of being blessed by one more model round
+declaring the system proven.
 
+## 9. Background protocol, interface and observability
 
-## 9. 后台协议、界面与观测
+`teamagents` opens the Rust TUI and attaches to the current user's daemon; `exec` is a headless client of the
+same backend. The directory holding the Unix socket is restricted to the current user, and the startup lock and
+protocol handshake distinguish an old service, a different state root and an incompatible version. No second
+execution engine is opened inside the TUI.
 
-`teamagents` 打开 Rust TUI 并连接当前用户的 daemon；`exec` 是同一后端的无头客户端。Unix socket 所在目录限制为当前用户访问；启动锁和协议握手区分旧服务、不同状态根与不兼容版本。不会在 TUI 内另开一套执行引擎。
+Requests carry `protocol_version, request_id, method, params`, and business commands additionally carry a
+`command_id` that is stable across reconnects. Events carry a session, a sequence, a type and a visible payload
+reference. A reconnect first reads state and its event watermark in one read snapshot and then reads events
+above that watermark; an already reclaimed watermark asks for a fresh snapshot. A streaming preview is not an
+authoritative fact: a slow client may drop previews and re-read, and it never blocks database writes or loses a
+business result.
 
-请求含 `protocol_version, request_id, method, params`；业务命令另有跨重连稳定的 `command_id`。事件含 session、sequence、类型和可见载荷引用。重连先在同一读快照取得状态及其事件水位，再读取大于该水位的事件；已回收的水位返回重新取快照要求。流式预览不是权威事实，慢客户端可丢预览并重取，不能阻塞数据库写入或丢业务结果。
+The first release's methods are organised around sessions/goals, instances, task and permission views,
+approvals and unknown outcomes, model configuration and trace export. Rust DTOs are the single source of the
+protocol structure and export schemas/samples for client contract tests; the TUI stays a thin client over the
+daemon socket JSON protocol rather than duplicating two large domain models, and whether to extract a shared
+lightweight protocol crate follows real sharing needs.
 
-首版方法按会话/目标、实例、任务/权限视图、批准/未知结果处理、模型配置和轨迹导出组织。Rust DTO 是协议结构的单一来源，导出 Schema/样例供客户端契约测试；TUI 保持薄客户端（daemon socket JSON 协议），不同时手写两套大型领域模型；是否抽出共享的轻量 protocol crate 由实际共享需求决定。
+The TUI keeps the existing input, rendering and geometry hit-testing implementation and completes instance
+switching and history, tasks/grants/channels, approvals and unknown outcomes, budget usage, pause/resume/cancel
+and disconnect/reconnect. The topology is expressed as an edge list first, so no graphical canvas is a
+dependency of execution correctness.
 
-TUI 保留现有输入、渲染和几何命中实现，补齐：实例切换及历史；任务、授权与通道；批准和未知结果处理；预算用量；暂停/恢复/取消；断开重连。拓扑先用边列表表达，不把图形画布作为执行正确性的依赖。
+Traces are complete but organised by reference and increment: every request/response, tool argument/receipt,
+retry, compaction, control action and usage record carries a stable identifier and a timestamp, and the
+interface only renders previews. Credentials and authentication headers never enter logs; provider-native
+responses and complete visible content are stored per instance permission and exported in redacted form. A
+truncated UI log never truncates model input, and raw confidential traces are never shared with every instance.
 
-轨迹记录完整但按引用和增量组织：每次请求/响应、工具参数/回执、重试、压缩、控制和用量都有稳定标识及时间。界面只取预览。凭据、认证请求头不进日志；可记录的供应商原生响应与完整可见内容按实例权限保存，脱敏导出 ATIF。不能因界面日志截断就截断模型输入，也不能把原始机密轨迹直接共享给所有实例。
+Retention treats active recovery data, ordinary history and evaluation evidence separately. Ordinary history is
+archived or cleaned per user configuration and never copied in full at every step, while live references and
+evaluation evidence are never evicted automatically. Unknown costs, missing stream fragments and unavailable
+provider reasoning fields are all labelled honestly.
 
-保留策略分开处理活动恢复数据、普通历史、评测证据。普通历史按用户配置归档/清理，不能无限逐步复制全状态；活动引用和评测证据不可被自动淘汰。未知费用、缺失流片段和未取得的供应商推理字段均如实标记。
-
-## 10. 模块组织与依赖选择
+## 10. Module organisation and dependencies
 
 ```text
 core/src/
-  kernel/         # 无 I/O 的请求构造与响应/观察转换
-  models.rs       # 身份、目标、任务、操作、验收与资源类型
-  control.rs      # 唯一受信事务入口
-  storage.rs      # 每会话单库、追加索引、schema 与恢复查询
-  views.rs        # Agent 与用户视图
+  kernel/        # I/O-free request construction and response/observation conversion
+  models.rs      # shared identity, config and catalog types
+  v2/            # per-session single store, the trusted control transaction, v2 command models
 engine/src/
-  runtime.rs      # 实例驱动、调度、控制与恢复
-  providers/     # 协议适配和流式传输
-  tools.rs        # 内建工具与统一操作入口
-  jobs/           # runner、启动握手、输出与回执核验
-  daemon/         # socket、生命周期、客户端协议
-  config.rs       # 配置、能力目录与凭据引用
-  cli.rs          # 交互入口、exec、doctor、daemon、清理
-  observability/ # 完整轨迹、用量与评测导出
-tui/src/          # 界面与薄客户端
-review/eval/      # 保留旧证据；新版适配器及实验单独标识
+  v2/            # driver (phase machine), supervisor (multi-instance), storage worker, daemon, exec client
+  jobs/          # shell runner, start handshake, output and receipt verification
+  tools.rs       # built-in tools and the unified operation entry point
+  hooks.rs       # [hooks] notify and pre_tool
+  bound.rs       # member tool bindings (binding is the authorization)
+  mcp.rs         # MCP client (stdio and streamable HTTP)
+  providers/     # protocol adapters and streaming transport
+  workspace.rs   # workspace policies (shared / isolated / git worktree)
+  config.rs      # configuration, capability catalog and credential references
+  cli.rs         # init, doctor, daemon, exec, version
+  reference.rs   # direct reference loop used by evaluation group A
+  observability/ # traces, usage and evaluation export
+tui/src/         # v2app (state and keys), v2ui (rendering), daemon_client, text, wrap
+verification/    # TLA+ specs and the Kani proof crate
+review/eval/     # fixed-task runner and its raw evidence
 ```
 
-这是职责映射，文件可按实际规模合并；不机械地把每个名词实现成一个 trait。core/kernel 的接口不暴露数据库连接、全局注册表和网络句柄。存储、协议和工具实现替换遵循行为契约，不承诺与旧状态格式兼容。
+This is a responsibility map; files may be merged where the real size allows and no noun is mechanically
+turned into a trait. The `core/src/kernel` interface exposes no database connection, global registry or network
+handle. Storage, protocol and tool implementations follow behaviour contracts and make no promise of
+compatibility with an older state format.
 
-继续使用现有 serde、rusqlite、UUID、SHA、ratatui 基础。异步 HTTP 与 Unix 进程接口使用最小依赖集并写锁文件；不同时保留两套生产 HTTP 栈维护相同行为。测试与性能探针允许 Python，产品 kernel/runtime 不依赖 Python。Make 统一检查入口保持。
+The existing foundations stay: serde, rusqlite, UUID, SHA and ratatui. Async HTTP and the Unix process
+interface use a minimal dependency set recorded in the lock files, and two production HTTP stacks are never
+kept for the same behaviour. Tests and performance probes may use Python, but the product kernel/runtime does
+not depend on Python, and the single `make` entry point stays.
 
-模块按契约边界划分，复用经过验证的解析器、权限规则与 Shell 语义；被替代的实现与其测试一并删除，不保留兼容字面量，也不通过删除失败用例制造全绿。
+Modules are divided along contract boundaries, reusing proven parsers, permission rules and shell semantics;
+replaced implementations and their tests are deleted together, no compatibility literal survives, and a green
+suite is never manufactured by deleting failing cases.
 
-## 12. 验收矩阵
+## 12. Acceptance matrix
 
-| 编号 | 场景 | 验收结果 |
+| # | Scenario | Acceptance result |
 |---|---|---|
-| A01 | 单 Leader 完成目标 | 全部基础工具有效，无强制组队或额外审查实例 |
-| A02 | A→B→C→A 通信 | 获准通道送达，执行彼此独立 |
-| A03 | 管理权有限下授与父授权撤销 | 无法扩大范围，派生授权正确失效 |
-| A04 | 已排队动作遭遇撤权 | 线性化点前重查并拒绝；在途动作明确取消语义 |
-| A05 | Agent 读取其他实例历史 | 受控入口拒绝，用户可查看；full_auto 不声称强隔离 |
-| A06 | 消息应用事务前后重启 | 消息与上下文无丢失、无重复应用 |
-| A07 | 永久启动错误 | 输入保留、一次通知、停放，无新回合风暴 |
-| A08 | 工具成功后、模型消费前崩溃 | 复用同一结果，不重复副作用 |
-| A09 | 未知外部结果 | 停放相关任务并通知，独立任务继续 |
-| A10 | 同 job 的重复派发/GO | 最多一个获准执行者；无法核实启动时不猜测未执行 |
-| A11 | daemon 与 runner 分别崩溃 | 能核实则接回；否则记录未知，不因缺 PID 重新启动 |
-| A12 | Shell 服务跨 CLI/TUI 退出 | 保持 D-41 成功命令的服务存活语义 |
-| A13 | 取消、超时与完成竞态 | 操作终态唯一，取消不覆盖真实已发生效果 |
-| A14 | bwrap 不可用 | started=false 的分类错误，无主机静默回退 |
-| A15 | 环境不一致 | 验证在实际目标环境执行，环境身份可追踪 |
-| A16 | 必需检查失败/交付物缺失 | 不落成功，反馈修复或 BLOCKED |
-| A17 | 检查后产物变化 | 已声明依赖失效；报告实际受检版本与局限 |
-| A18 | 多实例+重试+压缩用量 | 共用目标预算，预留与未知费用可见 |
-| A19 | 半条模型流与失联 | 不执行不完整工具参数，重试和费用如实记账 |
-| A20 | 长上下文压缩后重启 | 需求修订、验收和未决事项保留，原文可追溯 |
-| A21 | 用户直接调整 Worker | 单写上下文，任务关联不混淆，相关方收到状态变化 |
-| A22 | ALL/ANY 等待环与外部计时器 | 不将普通环误判死锁；真实封闭等待受阻可诊断 |
-| A23 | 结果先到、后注册等待 | 不丢唤醒、不忙轮询 |
-| A24 | 重置实例后旧结果迟到 | 计入旧操作/预算，不进入新 epoch |
-| A25 | MCP 批准/取消/未知结果 | 与基础工具同一合约，不靠注解保证远端幂等 |
-| A26 | Skills 要求扩大权限 | 权限不变，按需加载生效 |
-| A27 | 不同供应商实例合作 | 必要原生字段保留，仅分享获准内容 |
-| A28 | 界面断连/慢客户端/重连 | 任务继续，快照水位正确，命令去重 |
-| A29 | 新会话与共享项目 | 会话历史隔离，项目资源共享范围明确 |
-| A30 | 制品与 DB 写入断点 | 无引用未持久化制品，孤儿文件可回收 |
-| A31 | 写入失败/磁盘满 | 停止新副作用派发，保留不确定性，不假报成功 |
-| A32 | 超大历史、多实例读取 | 无每步全量复制，RSS/磁盘/延迟有测量记录 |
-| A33 | 双 daemon 启动、旧锁继承 | 单一协调者；工具不继承协调锁阻止恢复 |
-| A34 | 新版本 schema 不兼容 | 明确迁移或拒绝，不能解释错状态继续执行 |
-| A35 | 评测客户端到期或被杀 | daemon 遵守目标截止时间；评分期间不继续改答案 |
-| A36 | 安装、init、doctor、清理与重开 | 新旧目录识别正确，凭据与证据保留，新任务正常 |
+| A01 | one Leader completes a goal | every basic tool works, with no forced team or extra review instance |
+| A02 | A→B→C→A communication | delivery on a granted channel, executions independent |
+| A03 | limited delegation and parent revocation | scope cannot widen and derived grants expire correctly |
+| A04 | a queued action meets a revocation | re-checked and refused before the linearization point; in-flight actions have explicit cancellation semantics |
+| A05 | an agent reads another instance's history | the controlled entry refuses it while the user may look; full_auto claims no strong isolation |
+| A06 | a message applied across a restart | no message or context lost and no duplicate application |
+| A07 | permanent start failure | input kept, one notification, parked, no turn storm |
+| A08 | crash after a tool succeeded but before model consumption | the same result is reused and no side effect repeats |
+| A09 | unknown external outcome | related tasks park and notify while independent tasks continue |
+| A10 | duplicate dispatch/GO for one job | at most one authorized executor; an unverifiable start is never guessed as "not executed" |
+| A11 | daemon and runner crash separately | reconnect when verifiable, otherwise record unknown; never restart just because a PID is missing |
+| A12 | a shell service outlives a CLI/TUI exit | keeps D-41's semantics for services started by a successful command |
+| A13 | cancel, timeout and completion races | one operation terminal state; cancellation never overwrites a real effect that happened |
+| A14 | bubblewrap unavailable | a classified `started=false` failure with no silent host fallback |
+| A15 | inconsistent environment | verification runs in the real target environment and environment identity is traceable |
+| A16 | a required check fails or a deliverable is missing | no success; feedback into repair or BLOCKED |
+| A17 | artifacts change after a check | declared dependencies are invalidated; the actually verified version and the limits are reported |
+| A18 | multi-instance usage with retries and compaction | one shared goal budget with visible reservations and unknown cost |
+| A19 | half a model stream and connection loss | incomplete tool arguments never execute; retries and cost are recorded honestly |
+| A20 | restart after long-context compaction | requirement revisions, acceptance criteria and open items survive, originals stay addressable |
+| A21 | the user adjusts a worker directly | single-writer context, task affiliation preserved, the parties involved notified |
+| A22 | ALL/ANY wait cycles and external timers | an ordinary cycle is not mistaken for a deadlock; a genuinely closed wait is diagnosable |
+| A23 | a result arrives before the wait is registered | no lost wakeup and no busy polling |
+| A24 | a late result after an instance reset | it counts against the old operation/budget and never enters the new epoch |
+| A25 | MCP approval, cancellation and unknown outcome | the same contract as basic tools, with no reliance on annotations for remote idempotence |
+| A26 | a Skill asks for wider permissions | permissions are unchanged and on-demand loading works |
+| A27 | instances on different providers cooperate | required native fields survive and only granted content is shared |
+| A28 | UI disconnect, slow client, reconnect | work continues, the snapshot watermark is correct and commands deduplicate |
+| A29 | a new session with a shared project | session history is isolated and project resource sharing is explicit |
+| A30 | artifact and DB write boundaries | no reference to unpersisted artifacts and orphan files stay collectable |
+| A31 | write failure / disk full | new side-effect dispatch stops, uncertainty is preserved and success is never faked |
+| A32 | very large history with multi-instance reads | no full copy per step and measured RSS/disk/latency records |
+| A33 | two daemons and an inherited stale lock | one coordinator only, and tools never inherit the coordinator lock in a way that blocks recovery |
+| A34 | an incompatible schema in a new version | migrate explicitly or refuse; never keep executing on a misinterpreted state |
+| A35 | the evaluation client expires or is killed | the daemon honours the goal deadline and the answer is not extended during grading |
+| A36 | install, init, doctor, cleanup and reopen | old and new directories are identified correctly, credentials and evidence are kept, new work runs normally |
 
-A19 还覆盖旧 attempt 在新 attempt 之后返回，只有一个响应生成执行意图。A17/A29 覆盖受控文件写入版本冲突；Shell 并发效果按实际回执报告。A28 覆盖已提交命令在客户端取消等待后回查，以及事件水位被回收后的快照重建。
+A19 also covers an old attempt returning after a newer one: only one response produces execution intents.
+A17/A29 cover controlled file-write version conflicts, and concurrent shell effects are reported from real
+receipts. A28 covers re-querying a committed command after the client's wait was cancelled, and rebuilding a
+snapshot once the event watermark was reclaimed.
 
-A10/A11/A13 增加 CANCEL→GO、GO→CANCEL、重复控制与重启后的终态禁止启动。A30 增加发布/GC 交错、GC 认领后新增引用、未导入 runner 结果保护；A31 增加取消保存失败但仍可尽力停止，以及进程停止与持久化状态分别报告。
+A10/A11/A13 add CANCEL→GO, GO→CANCEL, repeated control and a refusing start after a restart. A30 adds
+publication/GC interleavings, a new reference after a GC claim and protecting unimported runner results; A31
+adds a failed cancellation save that still stops the process best-effort and reports the process stop and the
+persisted state separately.
 
-确定性内核/协议用样本测试，SQLite/进程恢复用真实进程，Shell/bwrap 用真实环境，TUI 用逻辑测试和 PTY。至少验证 DeepSeek 与另一供应商的真实混用路径；其他供应商缺凭据时列为未验收，不能用假服务代替真实结论。`make check` 保持统一开发入口，完整交付另跑 PTY、故障与获准的真实模型验收。
+Deterministic kernel/protocol behaviour is covered by sample tests, SQLite and process recovery by real
+processes, shell/bubblewrap by the real environment, and the TUI by logic tests plus PTY. At least one real
+mixed-provider path (DeepSeek plus another provider) is verified; providers without credentials are listed as
+unverified, and fake services never stand in for real conclusions. `make check` stays the single development
+entry point, while a full delivery additionally runs PTY, fault and authorized real-model acceptance.
 
-## 13. 性能实验与成功判据
+## 13. Performance experiments and success criteria
 
-### 13.1 分开验证本地开销与模型成功率
+### 13.1 Local cost and model success rate are verified separately
 
-本地开销实验使用固定响应/工具回执，并保留等价持久化与恢复保障，测 CPU、RSS、请求构造、数据库写入、控制响应及重启时间。它回答系统效率，不给模型能力打分。
+Local cost experiments use fixed responses/tool receipts with equivalent persistence and recovery guarantees
+and measure CPU, RSS, request construction, database writes, control response and restart time. They answer
+system-efficiency questions and never score model capability.
 
-| 模型实验组 | 组成 | 要回答的问题 |
+| Model group | Composition | Question it answers |
 |---|---|---|
-| A 精简单实例参考 | 同 Rust kernel、模型协议、工具、上下文及验收策略；直驱循环，无团队管理 | 可靠工具上的个体能力基准 |
-| B 持久化单实例 | 同 kernel + 新持久化运行时，单实例 | 系统机制是否改变请求/工具行为、损害成功率 |
-| C 按需协作 | B + 可见协作能力，允许始终单人成队 | 系统自主选择协作的净收益 |
+| A: lean single-instance reference | the same Rust kernel, model protocol, tools, context and acceptance policy; a direct loop with no team management | individual capability on a reliable toolchain |
+| B: persistent single instance | the same kernel plus the persistent runtime, one instance | whether the machinery changes request/tool behaviour or harms success |
+| C: collaboration on demand | B plus the visible collaboration surface, allowed to stay a team of one | the net gain of the system choosing to collaborate |
 
-A/B 保持模型可见内容等价，动态 ID 可规范化比较；C 的协作指令与 Schema 属于实验处理并计入用量。A 不承担生产恢复承诺，因此 A/B 模型消融不能替代“同可靠性条件”的本地性能比较。参考循环只在评测中存在，不维护第二套生产 kernel。
+A and B keep what the model sees equivalent, with dynamic ids normalised for comparison; C's collaboration
+instructions and schema are the experimental treatment and are billed. A carries no production recovery
+promise, so an A/B model ablation cannot replace a same-reliability local cost comparison. The reference loop
+exists for evaluation only and never becomes a second production kernel.
 
-这三组回答本系统的单实例与协作效果；若要声称超过某个既有基线，需在同一预算下增加对照运行并记录无法对齐的因素，不能把不同来源的分数拼接成因果结论。
+These three groups answer single-instance and collaboration questions for this system. Claiming to beat an
+existing baseline requires a comparison run under the same budget with the non-alignable factors recorded;
+scores from different sources are never spliced into a causal conclusion.
 
-主实验统一 DeepSeek V4.1 Flash、原生 1M，所有实例共享同一目标预算。固定模型有效参数、任务 digest、镜像、实际工作目录、时限、资源、网络政策和采样。报告实际费用/耗时，不能把相同上限说成实际花费完全相同。异构模型的性能实验另列。
+The main experiment uses DeepSeek V4.1 Flash at its native 1M with every instance sharing one goal budget. The
+effective model parameters, task digests, image, actual working directory, time limits, resources, network
+policy and sampling are frozen. Actual cost and duration are reported, and identical ceilings are never
+presented as identical spending. Heterogeneous-model performance is reported separately.
 
-### 13.2 样本、预算与完整性
+### 13.2 Samples, budget and integrity
 
-先建立开发子集和正式集合，任务属性、分组、重复数与分析脚本提前登记。旧 89 题已用于诊断，不能把它们称为从未见过的留出集。正式全量成绩按完整新运行给出，协作子集按预先规定属性选取，不能按 C 成功与否挑题。
+A development subset and the formal set are established first, with task properties, grouping, repeat count and
+the analysis script registered in advance. The earlier 89 tasks were used for diagnosis and can never be called
+an unseen holdout set. A formal full score comes from a complete new run, and a collaboration subset is chosen
+by pre-declared properties rather than by whether C succeeded.
 
-建议先 6 题 × A/B/C 各一次估算费用（18 trial，属于计划规模而非本轮执行授权）；选择覆盖环境/服务、长命令、语义验收与可分工任务。再按实测 token、缓存计价、重试和耗时确定预算。不能把少量均值当作尾部成本上界。89 题、三组、三轮的 801 trial 只是一种完整设计的算式，不是未经费用核算的必跑规模。
+The plan estimates cost with 6 tasks × A/B/C once (18 trials) to cover environment/service, long-command,
+semantic-acceptance and splittable tasks, and then sets the budget from measured tokens, cache pricing, retries
+and duration; a small mean is never treated as the tail bound. The 801-trial figure (89 tasks × 3 groups × 3
+rounds) is an arithmetic example of a complete design, not a size this plan will run without a cost estimate.
 
-旧 59/89 是机械合并分数且有答案暴露记录，不能作为干净基线。保留原分析（已随归档清理移出仓库）；禁止向执行 Agent 提供隐藏测试或上游解答。网络限制由外层评测环境实现，不改日常 full_auto 产品语义。基础设施重试规则提前固定，原始失败记录保留，不择优重跑后覆盖。
+The old 59/89 was a mechanical merge with answer exposure and is not a clean baseline. Its original analysis is
+kept in Git history (removed from the tree with the archive cleanup). No hidden test or upstream solution is
+ever handed to the executing agent. Network limits belong to the outer evaluation environment and never change
+the everyday full_auto product semantics. Infrastructure retry rules are fixed in advance, and original
+failures are kept instead of being overwritten by a favourable re-run.
 
-后台模式尤其要传递评测硬截止时间：到期停止新模型/工具派发并取消在途受控 job，客户端被杀也不能继续解题。正式评分前确认任务写入已停止，D-41 下任务交付所需的已启动服务按要求保留。启动失败、模型错误、超时、verifier 环境错误与断言失败分别报告。
+Background mode especially must convey an evaluation's hard deadline: at expiry it stops new model/tool
+dispatch and cancels in-flight controlled jobs, and a killed client cannot keep working on the answer. Before
+formal grading, task writes are confirmed stopped; under D-41 the services a task needs stay up as its
+requirements ask. Start failures, model errors, timeouts, verifier-environment errors and assertion failures
+are reported separately.
 
-截止时间持久化到目标并传给 runner，由 runner 独立执行本次命令的超时，不能只依赖存活的 CLI 或 daemon 定时器。外层评测适配器核验解题进程已停止；若 runner 故障、脱离组进程等导致无法确认，记录评测基础设施失败，不在仍可能写答案的环境里继续计有效成绩。该规则不增加日常任务的隐含目标时限。
+The deadline is persisted on the goal and passed to the runner, which independently enforces the per-command
+timeout; it never depends only on a surviving CLI or a daemon timer. The outer adapter verifies that the solver
+process stopped; if a runner failure or a process that escaped its group makes that impossible, the run is
+recorded as an infrastructure failure and no valid score is claimed from an environment that might still be
+writing an answer. This rule adds no implicit goal deadline to ordinary tasks.
 
-### 13.3 不再使用缺乏依据的数值门槛
+### 13.3 No more thresholds without evidence
 
-撤回 R1 中未经数据支持的“-2 个百分点”区间下界、至少三轮中两轮为正等固定规则。R1 的 -2pp 原本用于区间精度，同时要求点估计不下降，并非允许实际下降 2pp；但该精度尚无方差、样本量与费用依据，因此不能直接成为验收门槛。
+The unsupported fixed rules are withdrawn: the "-2 percentage points" interval bound and "positive in at least
+two of three rounds" from the earlier design. The −2pp value was about interval precision while the point
+estimate also had to stay non-negative; without variance, sample size or cost evidence it cannot be an
+acceptance threshold.
 
-正式实验前据试跑方差、任务数量与费用确定重复数、配对分析方式和所需统计精度，输出冻结的 manifest 与分析脚本。按任务聚合重复运行，报告逐轮分数、配对差异及区间；同一任务重复运行不能当作完全独立样本。95% 区间可作为预登记分析选择，但不能看到结果后调整置信水平。
+Before a formal experiment, the repeat count, paired analysis and required statistical precision are fixed from
+pilot variance, task count and cost, producing a frozen manifest and analysis script. Repeats are aggregated
+per task and the report shows per-round scores, paired differences and intervals; repeated runs of one task are
+never treated as independent samples. A 95% interval may be the pre-registered analysis choice, but the
+confidence level is never adjusted after seeing results.
 
-验收原则：B 对 A 未观察到退化且证据足以支持结论；C 在预定任务集相对 B 有跨独立运行可复现的收益，同时检查全量任务的退化、成本与耗时。差异不显著不等于已经证明等效；样本不足就标为未证实。若需要一个非零容差，必须在正式实验前明确它与产品“不退化”要求的关系，不能暗中加入。
+Acceptance principle: B shows no observed regression against A with evidence strong enough to support the
+conclusion, and C shows a reproducible cross-run gain over B on the pre-defined task set, while the full task
+set is also checked for regressions, cost and duration. A non-significant difference is not proof of
+equivalence; too few samples means "not confirmed". Any non-zero tolerance must be related to the "no
+regression" requirement before the experiment and never slipped in afterwards.
 
-功能完成、恢复正确性通过、性能收益成立是三类独立结论：功能候选可以先供内部验证，性能目标未满足时不能宣布完成。官方 90.6% 作为配置需对齐的参照，不作由架构选择保证的分数。
+Feature completeness, recovery correctness and performance gain are three independent conclusions: a feature
+candidate may go to internal verification first, and an unmet performance target blocks declaring completion.
+The official 90.6% is a configuration reference, never a score an architecture choice guarantees.
 
-## 16. 仍需实证的事项与完成定义
+## 16. What still needs evidence, and the definition of done
 
-有充分需求依据的是 Rust 原生方向、统一 kernel、受控通信、可靠状态与工具回执、后台独立运行和同预算评测。尚需实证的是 I/O 方案的取消/资源表现、SQLite 具体版本和吞吐、runner 握手故障覆盖、模型协议真实兼容、压缩策略与协作收益、并发与费用默认值。
+Well-supported by requirements: the Rust-native direction, one unified kernel, governed communication, reliable
+state and tool receipts, independent background operation and same-budget evaluation. Still needing evidence:
+the cancellation/resource behaviour of the I/O approach, the exact SQLite version and throughput, the runner
+handshake's fault coverage, real model-protocol compatibility, compaction strategy and collaboration gains, and
+concurrency and cost defaults.
 
-决策复核表（已随归档清理移出仓库）为每项给出备选及改变选择的条件，不是“所有设计都已证明最优”。
+The decision review (removed from the tree with the archive cleanup) gave alternatives and change conditions per
+item; it never claimed every design choice was proven optimal.
 
-完成定义：A01–A36 有自动化证据（未覆盖项在 [ACCEPTANCE](ACCEPTANCE.md) 逐条列出）、性能结论符合预登记口径、安装与真终端可用、文档与代码一致，且 `make check` 全绿。
+Definition of done: A01–A36 have automated evidence (uncovered items are listed in
+[ACCEPTANCE](ACCEPTANCE.md)), performance conclusions follow the pre-registered criteria, installation and the
+real terminal work, documentation matches the code, and `make check` is green.
