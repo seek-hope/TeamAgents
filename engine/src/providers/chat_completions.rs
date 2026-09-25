@@ -21,6 +21,14 @@ pub struct ChatCompletions {
     api_key: String,
     timeout: Duration,
     context_window: Option<u64>,
+    /// DeepSeek's thinking mode requires every assistant message that carries
+    /// `tool_calls` to include a `reasoning_content`: the runtime authors some of
+    /// them itself (the required-check round, D-70), and the API rejects the *next*
+    /// request without the field — "The `reasoning_content` in the thinking mode must
+    /// be passed back to the API" (a real run's repair turn died there). An empty
+    /// string satisfies it (verified against deepseek-flash, deepseek-reasoner and
+    /// deepseek-chat) and invents nothing.
+    reasoning_echo: bool,
     /// Test knob: overrides the derived stream-stall bound.
     stall: Option<Duration>,
 }
@@ -38,8 +46,15 @@ impl ChatCompletions {
             api_key: api_key.into(),
             timeout,
             context_window: None,
+            reasoning_echo: false,
             stall: None,
         })
+    }
+
+    /// Declare that this wire is DeepSeek's thinking mode (see `reasoning_echo`).
+    pub fn with_reasoning_echo(mut self, enabled: bool) -> Self {
+        self.reasoning_echo = enabled;
+        self
     }
 
     /// Attach the catalog-declared context window: max_tokens clamps to the
@@ -76,6 +91,15 @@ impl ChatCompletions {
                 if let Some(fields) = message.as_object_mut() {
                     fields.remove("responses_output");
                     fields.remove("anthropic_blocks");
+                    // the thinking-mode requirement above: an assistant tool call
+                    // without a recorded reasoning gets an empty one
+                    if self.reasoning_echo
+                        && fields.get("role") == Some(&json!("assistant"))
+                        && fields.get("tool_calls").and_then(Json::as_array).is_some_and(|calls| !calls.is_empty())
+                        && !fields.contains_key("reasoning_content")
+                    {
+                        fields.insert("reasoning_content".into(), json!(""));
+                    }
                 }
                 message
             })

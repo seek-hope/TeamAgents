@@ -79,3 +79,23 @@ session really spanned two models (each member's resolved model is recorded, D-6
 task assignment and a task result, and `answer.txt` holds exactly the line the task asked for. Measured
 (2026-09-25): 7 model requests, 14.0 s, goal `SUCCEEDED`, `i-leader` on `deepseek-flash`, `worker1` on
 `k3-256k`, `task t1 SUCCEEDED`.
+
+## `checks.py`: the completion gate with a real model
+
+`checks.py` configures one `[[checks]]` entry that can never pass (`test -f never-written`), asks a real
+model for a small file, and then watches the gate do its job:
+
+```bash
+python3 review/dogfood/checks.py                  # fresh /tmp state root
+python3 review/dogfood/checks.py --state-dir /tmp/ta-checks
+```
+
+It needs `DEEPSEEK_API_KEY`. The assertions are the acceptance row's claims: the work really happened (the
+file exists with the asked content), no success was reported (`exec` exits 1, `end=failed`, the goal ends
+`BLOCKED`), and the repair ledger names the failing check (`check_id: impossible`, `class: exit`) while the
+model sees its output in the conversation.
+
+Measured (2026-09-25): 8 model requests, 12.7 s, goal `BLOCKED`, the artifact exact — and the model
+explicitly reported that creating `never-written` to satisfy the gate would be bypassing it. The first run of
+this harness failed with `chat API 400: The reasoning_content in the thinking mode must be passed back to the
+API`, which is D-70 (the repair turn after a failed check died on the wire).

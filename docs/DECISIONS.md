@@ -231,6 +231,48 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-70 The completion gate works on a thinking-mode provider (2026-09-25)
+
+Closing A16's last gap — a *real-model* run whose required check fails — found a defect that no deterministic
+test could: the check round's own conversation entry is a **runtime-authored assistant message with tool
+calls** (`register_check_runs` appends `"runtime required-check round N for goal …"` plus the shell calls,
+because the check outputs must answer a tool call to be wire-valid), and DeepSeek's thinking mode requires
+such a message to carry `reasoning_content`. It did not, so the *next* request — the repair turn that the
+completion gate opens after a check fails — was rejected outright:
+
+```
+chat API 400: The `reasoning_content` in the thinking mode must be passed back to the API.
+```
+
+In other words: on the default provider, **any goal whose required check failed died on the wire instead of
+being repaired or blocked** — the gate was unverifiable in exactly the case it exists for. A16's row had
+recorded an earlier wire error there (D-54 fixed the unanswered `finish`); this was the second half.
+
+**Pinning the rule with a replay probe** before touching code (same session, same messages, four variants
+sent to the API): as the failed run had it → `400 reasoning_content …`; with a labelled filler on the
+synthetic entry → `200`; without the synthetic assistant message (orphan tool result) → `400 Messages with
+role 'tool' must be a response to a preceding message with 'tool_calls'`; with no reasoning anywhere →
+`400`. So the transcript shape is forced by the wire (the synthetic call must exist), and the missing field
+is the defect.
+
+**The fix lives in the adapter, not in the stored context**: `ChatCompletions::with_reasoning_echo` (set for
+the `deepseek` protocol in `build_for_model`) fills an **empty** `reasoning_content` on assistant messages
+that carry tool calls and have no recorded reasoning. An empty value satisfies the requirement and invents
+nothing; the probe also verified it is accepted by `deepseek-flash`, `deepseek-reasoner` and `deepseek-chat`,
+so the scope is safe for every model on that protocol, and a *recorded* reasoning is never overwritten.
+Keeping the field out of the context preserves the design's protocol-neutral kernel (native continuation
+fields stay per-protocol, as the existing `responses_output`/`anthropic_blocks` stripping already does).
+
+**Verification**: `providers_fake::the_thinking_wire_echoes_reasoning_for_assistant_tool_calls` (the filler
+appears only when the flag is on, and a recorded reasoning is untouched), and the real-model harness
+`review/dogfood/checks.py` that found the defect now completes: 8 model requests, 12.7 s, `end=failed`,
+goal **BLOCKED**, the artifact written, the repair ledger naming `check_id: impossible` / `class: exit`, and
+the model itself reporting that it would not bypass the gate.
+
+Ceiling: the *protocol* decides the echo (`deepseek`), not the model name; a non-thinking DeepSeek model on
+that protocol receives an empty field it ignores (verified), and a thinking model served over the plain
+`openai` protocol would need the same treatment — the swap is the flag.
+
 ## D-69 Which model a member runs on is written down and visible (2026-09-25)
 
 Making the two-provider acceptance row (A27) re-runnable in the tree — a real DeepSeek + Kimi session, below —

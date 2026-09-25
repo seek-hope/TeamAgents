@@ -418,7 +418,10 @@ pub fn build_for_profile(profile: &ModelProfile) -> Result<AnyProvider, String> 
             };
             Ok(AnyProvider::ChatCompletions(
                 chat_completions::ChatCompletions::new(configured.unwrap_or(default), api_key, timeout)?
-                    .with_context_window(profile.context_window),
+                    .with_context_window(profile.context_window)
+                    // DeepSeek's wire is the thinking mode: assistant tool calls must
+                    // echo reasoning_content, including the runtime's own entries (D-70)
+                    .with_reasoning_echo(profile.protocol == "deepseek" || profile.provider == "deepseek"),
             ))
         }
     }

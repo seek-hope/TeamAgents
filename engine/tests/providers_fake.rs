@@ -152,6 +152,45 @@ fn sse_assembles_reasoning_tool_calls_and_usage() {
     rt.block_on(server.task).unwrap();
 }
 
+/// DeepSeek's thinking mode requires an assistant message that carries tool calls to
+/// include `reasoning_content`; the runtime authors such messages itself (the
+/// required-check round), and without the field the *next* request is rejected with
+/// "The `reasoning_content` in the thinking mode must be passed back to the API" — a
+/// real run's repair turn died there (D-70). The adapter fills an *empty* one (no
+/// invented reasoning) for that protocol only, and never overwrites recorded reasoning.
+#[test]
+fn the_thinking_wire_echoes_reasoning_for_assistant_tool_calls() {
+    let rt = runtime();
+    let reply = json_response(
+        "200 OK",
+        &json!({"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],
+                "usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}),
+    );
+    // one response per connection: the test sends the same request twice
+    let server = rt.block_on(FakeServer::start(vec![reply.clone(), reply]));
+    // a synthetic runtime entry (tool call, no reasoning) next to a model message that
+    // has one: only the first needs the filler, and the second keeps its own
+    let mut request = request();
+    request.messages = vec![
+        json!({"role": "assistant", "content": "runtime required-check round 1 for goal g",
+               "tool_calls": [{"id": "check-1-0", "type": "function", "function": {"name": "shell", "arguments": "{}"}}]}),
+        json!({"role": "assistant", "content": "thinking out loud", "reasoning_content": "real reasoning",
+               "tool_calls": [{"id": "c2", "type": "function", "function": {"name": "shell", "arguments": "{}"}}]}),
+    ];
+    let plain = ChatCompletions::new(&server.base, "k", Duration::from_secs(5)).unwrap();
+    let _ = run(&rt, &plain, &request).unwrap();
+    let sent = request_body(&server);
+    let messages = sent["messages"].as_array().unwrap();
+    assert!(messages[0].get("reasoning_content").is_none(), "a non-DeepSeek wire is not rewritten: {messages:?}");
+    let thinking = ChatCompletions::new(&server.base, "k", Duration::from_secs(5)).unwrap().with_reasoning_echo(true);
+    let _ = run(&rt, &thinking, &request).unwrap();
+    let sent = request_body(&server);
+    let messages = sent["messages"].as_array().unwrap();
+    assert_eq!(messages[0]["reasoning_content"], json!(""), "the synthetic call gets an empty one: {messages:?}");
+    assert_eq!(messages[1]["reasoning_content"], json!("real reasoning"), "recorded reasoning is untouched");
+    rt.block_on(server.task).unwrap();
+}
+
 #[test]
 fn non_sse_json_body_is_accepted() {
     let rt = runtime();
