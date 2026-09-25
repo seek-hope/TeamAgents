@@ -346,3 +346,23 @@ Two probe lessons are recorded with it (D-89): an absence check must be the abse
 thing (the first version waited for UI text that never exists, and the fix asserts the decoded id's
 disappearance instead of an empty list), and a model may ask for a *second* decision in the same turn, so the
 assertion names the decided id rather than the whole list.
+
+
+## `stale_check.py`: a verified input that changed blocks the goal
+
+A16 (`checks.py`) is a check that can never pass; A17 is the subtler half — the check *passes*, and then the
+thing it verified is not what would be delivered. `stale_check.py` makes that deterministic: the check's own
+command rewrites the file it declares as its input.
+
+```bash
+python3 review/dogfood/stale_check.py                  # DeepSeek
+python3 review/dogfood/stale_check.py --provider kimi  # over `responses`
+```
+
+The `[[checks]]` entry is `id = "bound"`, `command = "printf changed > out.txt"`, `inputs = ["out.txt"]`, and
+the model is asked to write `out.txt` with `original` and finish. The artifact decides both halves: the file
+ends up holding *the check's* content (so the check really ran and the gate really saw a different value),
+the model's write is in the conversation, and no goal is ever reported `SUCCEEDED` — the run ends `failed`
+with the goal `BLOCKED` and the reason `required checks failed (bound:stale_inputs) after 3 round(s)`.
+Measured 2026-09-26: deepseek exit 1 / 19.7 s / 3 rounds / 12 requests; kimi exit 1 / 56.6 s / 3 rounds /
+9 requests (D-90).

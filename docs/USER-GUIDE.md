@@ -122,7 +122,9 @@ network = false                  # optional: the sandbox is offline by default
   check fails. A failure returns the work for repair (bounded rounds) and then blocks the goal with the
   failing ids; the check's output lands in the conversation as a tool result.
 - `inputs` are workspace-relative paths without `..` escapes. Their hashes are taken when the check runs and
-  re-verified before completion, so a check that passed against files that then changed does not count.
+  re-verified before completion, so a check that passed against files that then changed does not count — and a
+  check whose own command rewrites its declared input blocks the goal (`bound:stale_inputs`) instead of
+  passing. Both halves are measured live (`python3 review/dogfood/stale_check.py`, D-90).
 - Checks are not asked through `pre_tool` (you already pre-authorized exactly these commands) and they skip
   the approval gate for the same reason.
 - The TUI reports each round by name (`completion check round 1 started: tests, docs`), the failure

@@ -231,6 +231,40 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-90 The completion gate is not the check's exit code, measured live (2026-09-26)
+
+A17's evidence was one driver test with a scripted provider plus a config test. The claim is subtler than
+A16's ("a failing check blocks"), so it deserved a live run: *a check that passed does not count if the thing
+it verified changed*, and the gate's unit is the (result, declared inputs) pair, not the exit status. The
+deterministic way to make the two disagree is a check that rewrites the very file it declares as its input —
+which is also the shape the offline test uses.
+
+`review/dogfood/stale_check.py`: one `[[checks]]` entry, `id = "bound"`, `command = "printf changed > out.txt"`,
+`inputs = ["out.txt"]`; the model is asked to write `out.txt` with the content `original` and to finish.
+
+Measured 2026-09-26 (native windows, `--full-auto`):
+
+| Provider | `exec` | wall clock | check rounds | model requests | goal | reason |
+|---|---|---|---|---|---|---|
+| `deepseek` | exit 1, `end=failed` | 19.7 s | 3 | 12 | `BLOCKED` | `required checks failed (bound:stale_inputs) after 3 round(s)` |
+| `kimi` | exit 1, `end=failed` | 56.6 s | 3 | 9 | `BLOCKED` | same |
+
+Both runs also show the two halves the probe insists on: the model really did the work (its write of `out.txt`
+is in the conversation) and the check really ran (the file ends up holding *the check's* content, which is how
+the probe knows the gate saw a different value from the one it observed), while no goal was ever reported
+`SUCCEEDED` and the verdict reached the model as a tool result — it got two bounded repair rounds before the
+goal was blocked with the failing id.
+
+Evidence: `python3 review/dogfood/stale_check.py` and `--provider kimi` (2026-09-26), plus the offline layers
+it does not repeat — `v2_driver::check_inputs_must_still_hold_at_completion` (the same shape with a scripted
+provider), `config::user_checks_become_goal_limits` and `v2_driver::configured_checks_gate_the_goal_through_the_config_edge`.
+
+Ceiling: the probe makes the input change *inside* the check, which is deterministic but narrower than "some
+other process changed a build artifact between the check and completion" — that path is the same code
+(`observe_check_inputs` per round, re-verified at completion) but is not what this run drives. The wall clock
+is provider-dependent (kimi took three times as long for the same three rounds), which is why the probe
+records it instead of asserting a bound.
+
 ## D-89 The dangerous call, decided in the TUI with a real model (2026-09-26)
 
 The one place where the product stops and asks the user is a gated call, and that decision had two half
