@@ -6,7 +6,7 @@ Baseline: [the design and acceptance baseline](DESIGN.md) §12/§16. Current imp
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 97 / engine 180 / tui 26 test targets) and `make pty` passes; both are
+`make check` is green (core 97 / engine 182 / tui 26 test targets) and `make pty` passes; both are
 preconditions for every item below. `make check` includes `make language-check`, which fails on non-English
 characters outside the two documented exceptions (`README.zh-CN.md` and the frozen material under
 `review/eval`).
@@ -35,7 +35,7 @@ characters outside the two documented exceptions (`README.zh-CN.md` and the froz
 | A18 | Multi-instance usage budget | `control::a_worker_shares_the_budget_of_the_goal_its_queue_serves` and related; the ceiling is *reachable* by the user (D-64): `config::user_limits_bound_every_goal`, `cli::configured_limits_reach_the_goal_and_really_bound_the_session` (the goal carries `max_total_tokens`, an unset ceiling stays `{}`) and `cli::a_tiny_configured_ceiling_parks_the_session_instead_of_running_it` (a 4-token ceiling parks the leader with the budget as the reason); the TUI renders the limits it is given (`checkpoint_defaults_to_the_leader_and_tracks_budget`: `usage 10/1000 · ends in 30m`); formally `V2Control::ReservationsAdmitted` / `AdmissionGate` |
 | A19 | Truncated stream and connection loss | `providers_fake::truncated_stream_before_output_is_transient`, `providers_stall::*` |
 | A20 | Restart after long-context compaction | `control::compression_*`, `v2_driver::long_context_compacts_before_the_turn_and_survives_a_restart` |
-| A21 | The user adjusts an instance directly | single-writer `submit_input` context plus the TUI conversation target switch; a message sent while the instance is mid-turn is queued with a visible note (`tui::a_queued_input_is_visible_in_the_conversation`, `exec`'s `input_queued` report) and never silently dropped (D-63) |
+| A21 | The user adjusts an instance directly | single-writer `submit_input` context plus the TUI conversation target switch; a message sent while the instance is mid-turn is queued with a visible note (`tui::a_queued_input_is_visible_in_the_conversation`, `exec`'s `input_queued` report) and never silently dropped (D-63). The interventions are reachable headlessly too (D-68): `v2_daemon::the_intervention_cli_cancels_a_task_and_pauses_and_resumes_an_instance` drives the real binary through the D-65 flow (task `RUNNING` with an idle assignee, pause/resume, `terminate` refused without `--yes`, cancel → the delegator wakes and the goal settles) |
 | A22 | ALL/ANY wait cycles and timers | `control::blocked_report_flags_dead_waits_not_cycles`, `a_due_timer_closes_the_wait` |
 | A23 | A result arrives before the wait is registered | `control::wait_for_an_arrived_result_is_satisfied_at_registration` |
 | A24 | A late result after a reset | `control::late_receipt_after_reset_lands_on_the_old_epoch_only` |

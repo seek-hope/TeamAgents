@@ -129,7 +129,7 @@ questions that only exist once the user can. Each claim is paired with the contr
 |---|---|---|
 | `TypeOK` | phase/wait status/answer counts hold legal values | `waits.status`, `instances.phase` |
 | `WakeAnswerAtMostOnce` | a wakeup appends at most one answer per wait | the `PENDING → SATISFIED` guard in `wake_satisfied_at` plus `append_context` deduplication |
-| `AnswerImpliesConditions` | no spurious wakeups: an answer is appended only when the conditions really hold | `evaluate_wait` tests `satisfied` before appending |
+| `AnswerImpliesConditions` | no spurious wakeups: an answer is appended only when the conditions really hold | `evaluate_wait` tests `satisfied` before appending; a task condition accepts `SUCCEEDED|FAILED|CANCELLED`, so cancelling a task releases its delegator (`v2_daemon::the_intervention_cli_cancels_a_task_and_pauses_and_resumes_an_instance`, D-65/D-68) |
 | `AnswerImpliesSatisfied` | an answer always appears in the same step as `SATISFIED` | as above (one transaction) |
 | `WakeAnswersItsCall` | the answer lands on the wait's own tool_call | `wait_call_id` plus `Observation::ToolResult` |
 | `WaitingHasPendingWait` | a parked instance has a PENDING wait of its own | `import_response` sets `WAITING` only when unsatisfied |

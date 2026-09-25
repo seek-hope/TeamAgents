@@ -405,6 +405,103 @@ async fn the_approvals_cli_lists_and_decides_a_parked_operation() {
     handle.shutdown().await.expect("shutdown");
 }
 
+/// The §5.4 levers through the real binary (D-68): a delegator parked on a task whose
+/// assignee stopped without settling it (D-65) is released by `teamagents tasks
+/// cancel`, and the instance levers really change the lifecycle. This is the workflow
+/// the operating notes describe ("cancel it in the tasks panel"), reachable without a
+/// TUI.
+#[tokio::test]
+async fn the_intervention_cli_cancels_a_task_and_pauses_and_resumes_an_instance() {
+    use std::process::Command;
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    // the leader delegates and waits; the worker answers with prose and never settles
+    let leader = vec![
+        json!({"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "spawn",
+             "arguments": json!({"instance_id": "i-worker", "instructions": "do it"}).to_string()}},
+            {"id": "c2", "type": "function", "function": {"name": "delegate",
+             "arguments": json!({"assignee": "i-worker", "task_id": "t-prose", "description": "write it"}).to_string()}}
+        ]}),
+        json!({"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c3", "type": "function", "function": {"name": "wait",
+             "arguments": json!({"mode": "ANY", "conditions": [{"kind": "task", "task_id": "t-prose"}]}).to_string()}}]}),
+        finish_call("the task was cancelled"),
+    ];
+    let worker = vec![reply("I have not finished; see my notes above.")];
+    let scripts = HashMap::from([("i-leader".to_string(), leader), ("i-worker".to_string(), worker)]);
+    let root = root("intervention-cli");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let handle = serve(config(&root, scripts)).await.expect("daemon");
+    let state_root = root.dir.join("state");
+    let mut client = Client::connect(&state_root.join("daemon.sock")).await;
+    let since = client.call("checkpoint", json!({})).await["result"]["watermark"].as_i64().unwrap();
+    client.command("intervention-input", "submit_input", input_params("delegate it")).await;
+    // the worker replies with prose: its turn ends, the task stays RUNNING, the leader waits
+    let mut running = false;
+    for _ in 0..800 {
+        let tasks = client.call("tasks", json!({})).await;
+        if tasks["result"]["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|task| task["id"] == json!("t-prose") && task["status"] == json!("RUNNING"))
+        {
+            running = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(running, "the delegated task is RUNNING while its assignee stopped");
+    let cli = |args: Vec<String>, state: PathBuf| async move {
+        tokio::task::spawn_blocking(move || {
+            let output = Command::new(env!("CARGO_BIN_EXE_teamagents"))
+                .args(&args)
+                .arg("--state-root")
+                .arg(&state)
+                .output()
+                .expect("run the client");
+            (
+                output.status.code().unwrap_or(-1),
+                String::from_utf8_lossy(&output.stdout).into_owned(),
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            )
+        })
+        .await
+        .expect("join the client")
+    };
+    // listing shows the task and the instance states
+    let (code, out, err) = cli(vec!["tasks".into()], state_root.clone()).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("t-prose") && out.contains("RUNNING"), "{out}");
+    let (code, out, _) = cli(vec!["instances".into()], state_root.clone()).await;
+    assert_eq!(code, 0);
+    assert!(out.contains("i-worker") && out.contains("ACTIVE"), "{out}");
+    // termination is deliberate: it needs --yes
+    let (code, _, err) =
+        cli(vec!["instances".into(), "terminate".into(), "--id".into(), "i-worker".into()], state_root.clone()).await;
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("--yes"), "{err}");
+    // pausing and resuming really move the lifecycle
+    let (code, out, err) =
+        cli(vec!["instances".into(), "pause".into(), "--id".into(), "i-worker".into()], state_root.clone()).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("PAUSED"), "{out}");
+    let (code, out, err) =
+        cli(vec!["instances".into(), "resume".into(), "--id".into(), "i-worker".into()], state_root.clone()).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("ACTIVE"), "{out}");
+    // cancelling the task releases the delegator: the goal settles
+    let (code, out, err) =
+        cli(vec!["tasks".into(), "cancel".into(), "--id".into(), "t-prose".into()], state_root.clone()).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("cancelled t-prose"), "{out}");
+    let (status, _) = wait_goal(&mut client, since).await;
+    assert_eq!(status, "SUCCEEDED", "the delegator woke on the cancellation and settled");
+    let tasks = client.call("tasks", json!({})).await;
+    assert_eq!(tasks["result"]["tasks"][0]["status"], json!("CANCELLED"), "{tasks}");
+    handle.shutdown().await.expect("shutdown");
+}
+
 /// A33: one coordinator per state root (jobs::state_lock) — a second daemon
 /// is refused while the first runs; after shutdown and client disconnect
 /// the kernel releases the lock and a new coordinator recovers the session.

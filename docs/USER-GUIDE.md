@@ -61,8 +61,9 @@ happened. Diagnostics go to stderr, the outcome to stdout (`--json` prints one J
   `teamagents approvals` / `approvals approve --id …` (D-67, §4.1) and the session goes on — the decision is
   bound to that operation and its arguments, so the run needs no second prompt; the TUI's approvals box shows
   the same call.
-- **A parked or paused leader refuses new input** (`2`) instead of queueing work nobody drains: resume it in
-  the TUI instances panel (`r`) or use a fresh state root.
+- **A parked or paused leader refuses new input** (`2`) instead of queueing work nobody drains: resume it with
+  `teamagents instances resume --id i-leader` (§4.2) or in the TUI instances panel (`r`), or use a fresh state
+  root.
 - When `exec` starts the daemon itself, the daemon's output goes to `<state root>/daemon.log`; if the daemon
   exits while starting, the reason is reported immediately together with that path.
 
@@ -197,7 +198,8 @@ pre_tool = ["/home/you/bin/policy.sh"]            # policy hook before tool call
   cancelling the task (`c` in the tasks panel) is what releases it: a cancelled task satisfies the wait and
   the delegator wakes to re-delegate or settle honestly. A `BLOCKED` task does *not* satisfy it.
 - User-side intervention: switch instances, pause/resume/cancel and approve or deny tool requests in the
-  TUI. Budget, task and grant panels all read the same facts.
+  TUI — or headlessly with `teamagents instances` / `teamagents tasks` (§4.2), which is what a script or a CI
+  job can use. Budget, task and grant panels all read the same facts.
 - Goal and task completion goes through the runtime's completion gate: `finish` only accepts honest
   outcomes, and the required checks you define must really pass.
 - **Required checks** come from `[[checks]]` in your config (§2.1) and are carried on the goal itself
@@ -293,6 +295,28 @@ unambiguous prefix is enough, and `--json` prints the raw report. Exit codes mat
 `0` done, `1` the session refused it, `2` usage or no session. This is also what makes `teamagents exec` usable
 in a script: a run that exits `3` is not a failure, it is a question — answer it and the session continues.
 
+### 4.2 Pausing, resuming and cancelling from the CLI (D-68)
+
+The TUI's instance and task actions have headless equivalents, so the recovery paths in the operating notes
+work without a terminal UI:
+
+```bash
+teamagents instances                    # id, lifecycle, phase — the same rows the TUI panel shows
+teamagents instances resume --id i-leader      # a parked instance runs again (budget, an unusable model, …)
+teamagents instances pause  --id i-worker-1    # stop driving it at the next safe boundary
+teamagents instances terminate --id i-worker-1 --yes   # deliberate: retires it and its workspace
+teamagents tasks                        # id, status, assignee, goal
+teamagents tasks cancel --id t-prose    # releases a delegator waiting on a task that can only wait
+```
+
+- **`tasks cancel` is the lever for a stuck delegation**: if a member's model ends its turn without settling
+  its task (D-65), the task stays `RUNNING` and the delegator waits; cancelling it **satisfies** that wait
+  (a `BLOCKED` task would not), so the delegator wakes and can re-delegate or settle honestly.
+- `terminate` needs `--yes`: it retires the instance, its open work is dealt with explicitly, and a workspace
+  holding uncommitted or unmerged work is never deleted — the reason is reported instead.
+- Ids must name a listed instance or task (full id or an unambiguous prefix); `--json` prints the raw report
+  for scripts. Exit codes: `0` done, `1` the session refused it, `2` usage or no session.
+
 ## 5. Skills and MCP
 
 - Skills live under the registration root `~/.agents/skills` (searched and read on demand with
@@ -329,5 +353,7 @@ in a script: a run that exits `3` is not a failure, it is a question — answer 
 | `doctor` reports the state root as FAIL | That path does not hold a current session database (the stamp does not match); use another `--state-root` or follow the message, and never edit the database by hand |
 | The agent worked in the wrong directory | Its session was started with another workspace (or without `--cwd`): the client prints the live one. Stop that daemon (Ctrl-C in its terminal) or start a fresh `--state-root` with `--cwd DIR` |
 | The model returns 401/402 | Check the environment variable named by the profile's `api_key_env`; `doctor` lists the credential resolution result per profile |
+| A task stays `RUNNING` while its assignee is idle | The assignee's model ended its turn without settling it (D-65): cancel the task — `c` in the tasks panel or `teamagents tasks cancel --id` — which releases the delegator's wait |
+| An instance is parked | `teamagents instances` shows which; resume it with `instances resume --id` (or `r` in the TUI) when the reason is gone |
 | A command under `approved_scope` waits for approval | Decide it with `teamagents approvals` (§4.1) or in the TUI approvals panel; `--full-auto` (host execution, D-41) skips the gate |
 | Start completely fresh | Stop the daemon and run `teamagents --state-root <new directory>` for a clean session; the old database stays where it is |

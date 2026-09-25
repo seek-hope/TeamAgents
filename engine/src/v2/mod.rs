@@ -8,5 +8,6 @@ pub mod authority;
 pub mod daemon;
 pub mod driver;
 pub mod exec;
+pub mod intervene;
 pub mod storage;
 pub mod supervisor;

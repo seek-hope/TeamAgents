@@ -14,6 +14,11 @@ usage: teamagents [--cwd DIR] [--state-root PATH] [--model KEY] [--full-auto]\n\
   teamagents approvals [list] [--json]          the approvals a session is waiting on\n\
   teamagents approvals approve --id ID          approve that call, once (bound to its arguments)\n\
   teamagents approvals deny --id ID             deny it; the operation fails closed\n\
+  teamagents instances [list] [--json]          the session's instances\n\
+  teamagents instances resume|pause --id ID     let a parked instance run again, or stop one\n\
+  teamagents instances terminate --id ID --yes  retire it (workspace and open work handled)\n\
+  teamagents tasks [list] [--json]              the session's tasks\n\
+  teamagents tasks cancel --id ID               cancel one; a delegator waiting on it is released\n\
   teamagents daemon [--state-root PATH] [--cwd DIR] [--model KEY] [--full-auto]\n\
   teamagents init [--state-root PATH]   write config and prepare the state root\n\
   teamagents doctor [--state-root PATH] check config, credentials, state root and host\n\
@@ -22,10 +27,11 @@ usage: teamagents [--cwd DIR] [--state-root PATH] [--model KEY] [--full-auto]\n\
 exec reads the prompt from stdin when it is \"-\", runs each --check acceptance command\n\
 in the workspace after the turn ends, and exits 0 completed, 1 failed or unfinished,\n\
 3 approval required, 124 timeout, 2 usage.\n\
-authority and approvals talk to the running session (start it with teamagents or exec) and\n\
-exit 0 done, 1 the session refused it, 2 usage. authority is how a spawned worker gets\n\
-shell@workspace (§5.1) and how a capability is taken back; approvals is how a headless run\n\
-answers the decision that made exec exit 3, without starting the TUI.\n\
+authority, approvals, instances and tasks talk to the running session (start it with\n\
+teamagents or exec) and exit 0 done, 1 the session refused it, 2 usage. authority is how a\n\
+spawned worker gets shell@workspace (§5.1) and how a capability is taken back; approvals\n\
+answers the decision that made exec exit 3; instances and tasks are the user-side\n\
+interventions of §5.4 (pause/resume/terminate, cancel a task) without starting the TUI.\n\
 The Leader builds the team through spawn/delegate/send/wait; entry points from older\n\
 releases (TeamSpec files, line mode, session resume) are not supported.\n\
 First run: teamagents init -> set the credential env var -> teamagents doctor -> teamagents.";
@@ -57,6 +63,7 @@ pub struct Args {
     pub parent_grant: Option<String>,
     pub grant: Option<String>,
     pub approval_id: Option<String>,
+    pub confirmed: bool,
 }
 
 fn parse_args() -> Args {
@@ -93,6 +100,7 @@ fn parse_args() -> Args {
         parent_grant: None,
         grant: None,
         approval_id: None,
+        confirmed: false,
     };
     let mut i = 0;
     while i < argv.len() {
@@ -174,7 +182,8 @@ fn parse_args() -> Args {
                 args.command = Some(argv[i].clone());
                 i += 1;
             }
-            "serve" | "init" | "doctor" | "validate" | "sessions" | "version" | "exec" | "authority" | "approvals" => {
+            "serve" | "init" | "doctor" | "validate" | "sessions" | "version" | "exec" | "authority" | "approvals"
+            | "instances" | "tasks" => {
                 if args.command.is_some() {
                     usage();
                 }
@@ -184,14 +193,26 @@ fn parse_args() -> Args {
                 }
                 i += 1;
             }
-            "--json" if matches!(args.command.as_deref(), Some("exec" | "authority" | "approvals")) => {
+            "--json"
+                if matches!(
+                    args.command.as_deref(),
+                    Some("exec" | "authority" | "approvals" | "instances" | "tasks")
+                ) =>
+            {
                 if args.exec_json {
                     usage();
                 }
                 args.exec_json = true;
                 i += 1;
             }
-            "--id" if args.command.as_deref() == Some("approvals") => {
+            "--yes" if matches!(args.command.as_deref(), Some("instances" | "tasks")) => {
+                if args.confirmed {
+                    usage();
+                }
+                args.confirmed = true;
+                i += 1;
+            }
+            "--id" if matches!(args.command.as_deref(), Some("approvals" | "instances" | "tasks")) => {
                 if args.approval_id.is_some() {
                     usage();
                 }
@@ -524,6 +545,67 @@ fn run_approvals(args: &Args) -> i32 {
     })
 }
 
+/// `teamagents instances`: the §5.4 instance levers, headless (D-68).
+fn run_instances(args: &Args) -> i32 {
+    use teamagents_engine::v2::intervene::{InterventionCommand, InterventionOptions};
+    let state_root = args.state_root.clone().map(PathBuf::from).unwrap_or_else(teamagents_engine::v2_root);
+    let command = match (args.positional.as_deref().unwrap_or("list"), args.approval_id.clone()) {
+        ("list", None) => InterventionCommand::ListInstances,
+        ("pause", Some(id)) => InterventionCommand::Pause { id },
+        ("resume", Some(id)) => InterventionCommand::Resume { id },
+        ("terminate", Some(id)) => InterventionCommand::Terminate { id },
+        ("list", Some(_)) => {
+            eprintln!("instances list takes no --id; use `instances pause|resume|terminate --id ID`");
+            return 2;
+        }
+        (verb @ ("pause" | "resume" | "terminate"), None) => {
+            eprintln!("instances {verb} needs --id ID (see `teamagents instances` for the ids)");
+            return 2;
+        }
+        (other, _) => {
+            eprintln!(
+                "instances: unknown command {other:?}; use `teamagents instances [list]`,                  `instances pause|resume|terminate --id ID [--yes]`"
+            );
+            return 2;
+        }
+    };
+    teamagents_engine::v2::intervene::run(InterventionOptions {
+        socket: state_root.join("daemon.sock"),
+        command,
+        confirmed: args.confirmed,
+        json_out: args.exec_json,
+    })
+}
+
+/// `teamagents tasks`: the session's tasks and the cancel lever (D-68), which is how
+/// a delegator waiting on an assignee that stopped is released (D-65).
+fn run_tasks(args: &Args) -> i32 {
+    use teamagents_engine::v2::intervene::{InterventionCommand, InterventionOptions};
+    let state_root = args.state_root.clone().map(PathBuf::from).unwrap_or_else(teamagents_engine::v2_root);
+    let command = match (args.positional.as_deref().unwrap_or("list"), args.approval_id.clone()) {
+        ("list", None) => InterventionCommand::ListTasks,
+        ("cancel", Some(id)) => InterventionCommand::CancelTask { id },
+        ("list", Some(_)) => {
+            eprintln!("tasks list takes no --id; use `tasks cancel --id ID`");
+            return 2;
+        }
+        ("cancel", None) => {
+            eprintln!("tasks cancel needs --id ID (see `teamagents tasks` for the ids)");
+            return 2;
+        }
+        (other, _) => {
+            eprintln!("tasks: unknown command {other:?}; use `teamagents tasks [list]` or `tasks cancel --id ID`");
+            return 2;
+        }
+    };
+    teamagents_engine::v2::intervene::run(InterventionOptions {
+        socket: state_root.join("daemon.sock"),
+        command,
+        confirmed: args.confirmed,
+        json_out: args.exec_json,
+    })
+}
+
 /// Say it out loud when `--full-auto` could not apply: the mode belongs to the
 /// session, which was started earlier (D-41). Silence here was how a documented
 /// flag became a no-op that nobody noticed.
@@ -730,6 +812,8 @@ fn main() {
         Some("exec") => run_exec(&args),
         Some("authority") => run_authority(&args),
         Some("approvals") => run_approvals(&args),
+        Some("instances") => run_instances(&args),
+        Some("tasks") => run_tasks(&args),
         // entries that no longer exist: refuse them with a pointer to the current ones
         Some("validate") | Some("sessions") | Some("serve") | Some("repl") => {
             eprintln!(

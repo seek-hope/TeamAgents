@@ -46,7 +46,7 @@ make verify-kani                         # Kani proofs (paging arithmetic)
 python3 review/eval/r2-p6/run.py --phase pilot --out <new date directory>  # real-model A/B/C comparison (needs credentials)
 ```
 
-- Baseline (2026-09-25): `make check` is green — core 97 / engine 180 / tui 26. Raw evaluation JSONL lives
+- Baseline (2026-09-25): `make check` is green — core 97 / engine 182 / tui 26. Raw evaluation JSONL lives
   in `review/eval/r2-p6/runs/`, per-item evidence in `docs/ACCEPTANCE.md`.
 - Skipped checks and the current baseline are collected in `docs/ACCEPTANCE.md`. A green Cargo run is not a
   real-service acceptance result.
@@ -94,12 +94,13 @@ This describes the current code.
 
 - **A task can park in `BLOCKED`** when required checks are exhausted, a member fails or work is cancelled;
   a blocked task prevents the goal from completing. Select it in the TUI tasks panel and press `c` to cancel
-  it (without a live turn it goes straight to `CANCELLED`); re-dispatch blocked work as a new task.
+  it (without a live turn it goes straight to `CANCELLED`; headlessly: `teamagents tasks cancel --id`);
+  re-dispatch blocked work as a new task.
 - **A member that stops talking**: a turn whose model replies with plain text (no tool call) and does not
   settle its task now ends the member's activity with the task still `RUNNING` (D-65), instead of the runtime
-  asking again forever. The delegator's wait stays pending — cancel the task (tasks panel, `c`) to satisfy it,
-  or send the member another instruction. A `BLOCKED` task does not satisfy a delegator's wait; `CANCELLED`
-  does.
+  asking again forever. The delegator's wait stays pending — cancel the task to satisfy it (`c` in the tasks
+  panel, or `teamagents tasks cancel --id` headlessly, D-68), or send the member another instruction. A
+  `BLOCKED` task does not satisfy a delegator's wait; `CANCELLED` does.
 - **Avoid interrupting a member turn**: keep tasks small and acceptance criteria explicit. After an
   interruption recovery is driven by persisted location — known results are reused, in-flight losses are
   recorded as `OUTCOME_UNKNOWN`, and side effects are never replayed on a guess.

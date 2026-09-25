@@ -231,6 +231,36 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-68 The user-side interventions are reachable headlessly (2026-09-25)
+
+D-65's honest ending for a model that stops talking — the delegator waits, and **cancelling the task** releases
+it — was reachable only from the TUI, and the same is true of the other §5.4 levers: `exec` tells a stuck user
+to "resume it in the TUI instances panel (r)", and the operating notes send the user to the tasks panel to
+cancel a task that can only wait. A headless or CI user has no panel, so the documented recovery paths were
+unreachable for exactly the users `exec` exists for.
+
+**`teamagents tasks [list] [--json]`, `tasks cancel --id ID`** and
+**`teamagents instances [list] [--json]`, `instances pause|resume|terminate --id ID [--yes]`**
+(`engine/src/v2/intervene.rs`) close that: they are clients of the ordinary user commands
+(`cancel_task`, `set_lifecycle`) whose identity rules the control plane already enforces — *the user controls
+every transition; the system may only park* (§5.4) — with the same exit codes and prefix resolution as
+`authority`/`approvals`.
+
+Two deliberate choices: `terminate` requires **`--yes`**, because termination retires the instance's
+workspace (a directory with uncommitted or unmerged work is never deleted — only reported) and the TUI asks
+for a confirmation for the same reason; and the ids must name a *listed* instance or task, so a typo is a
+client-side refusal instead of a guess about something else.
+
+Evidence: `v2_daemon::the_intervention_cli_cancels_a_task_and_pauses_and_resumes_an_instance` drives the real
+binary against a real daemon through the whole D-65 flow — the worker's prose leaves the task `RUNNING` and
+the leader `WAITING`, `tasks` lists it, `instances pause`/`resume` move the lifecycle, `terminate` is refused
+without `--yes`, `tasks cancel` cancels it, and the delegator wakes and settles the goal `SUCCEEDED`. That
+test is also the correspondence for a wait fact D-65 depends on: a `CANCELLED` task *satisfies* a delegator's
+task wait (the code's task condition accepts `SUCCEEDED|FAILED|CANCELLED`; a `BLOCKED` task does not).
+
+Ceiling: no bulk levers (`cancel --all`, `pause --all`) and no "send a message to a worker" verb — each
+action stays one named subject, and the TUI remains the surface for browsing a large team.
+
 ## D-67 Approvals are reachable headlessly (2026-09-25)
 
 Dogfooding the documented first run (`init → doctor → exec`) in a clean `HOME` with a real model ended at a
