@@ -231,6 +231,44 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-95 The instances panel's keys, against a real daemon (2026-09-26)
+
+The panels had exactly one kind of coverage: the PTY smoke drives them against a *scripted* daemon and asserts
+the frames the keys produce. That is a real check of the key map, but it cannot answer the question a user
+asks of a panel — does the key act on the row I selected, does the daemon change state, and does the panel
+show me the new state?
+
+`review/dogfood/tui_panels.py` answers it with a real daemon and the real TUI, and without a model: the
+session starts, the probe creates one extra instance through the documented protocol (no user surface creates
+one without a Leader, and the panel's subject is the row, not the model), attaches the TUI to a PTY, and then
+presses what a user presses.
+
+Measured 2026-09-26 (three runs, ~9 s each, no credential needed):
+
+| Step | Result |
+|---|---|
+| `Ctrl+N` | the instances view opens and lists both rows (`i-leader · ACTIVE`, `i-worker · ACTIVE`) |
+| `Down` | the selection marker moves to the worker's row (`▶  i-worker`) — the row the keys below act on is the one the user picked |
+| `p` | `teamagents instances --json` reports `PAUSED` **and** the panel repaints `i-worker · PAUSED` (the refresh comes from the daemon's own `instance_lifecycle` event) |
+| `r` | `ACTIVE` again, on both sides |
+| `t` | the footer asks `terminate this instance? y confirm / n cancel` and the instance **stays** `ACTIVE` |
+| `n` | the prompt disappears and the instance is still `ACTIVE` |
+| `t`, `y` | the instance is `TERMINATED` and the panel shows `TERMINATED` |
+
+The two assertions that matter most are the last four rows: termination is irreversible for the session, so
+the panel's `t` must be a question rather than an action, and a cancelled question must leave the row exactly
+as it was. Both are observable only against a daemon that keeps the state (D-82).
+
+Evidence: `python3 review/dogfood/tui_panels.py` (three runs), plus the layers it does not repeat — the PTY
+smoke's frames against the scripted daemon (D-68's key map), `v2_daemon::the_intervention_cli_cancels_a_task_and_pauses_and_resumes_an_instance`
+(the same transitions through the CLI) and `tui::the_instances_hint_stops_offering_lifecycle_keys_for_a_terminated_member`
+(the hint after retirement).
+
+Ceiling: the probe covers the instances panel; the tasks view's `c` (cancel a task) and the topology view
+still rest on the scripted smoke, and the *task* lever's live behaviour is `cancel.py`'s subject (D-88). The
+probe also does not exercise a multi-row selection beyond one `Down`; a session with several members would
+need the same key sequence per row.
+
 ## D-94 A gate flake with a precise cause: a receipt read once after a fixed sleep (2026-09-26)
 
 `make check` failed once in `v2_supervisor::a_settled_goal_leaves_a_later_delegation_without_an_active_goal`

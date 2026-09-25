@@ -435,3 +435,20 @@ python3 review/dogfood/exec_check.py
 Measured 2026-09-26, three runs (D-93). That fourth scenario also fixes what the ledger is: a run without
 verdicts writes no file and reports a null path, so the reliable signal is the path in the run's own report,
 not the presence of `<state root>/verification.json`.
+
+
+## `tui_panels.py`: the instances panel's keys against a real daemon
+
+The PTY smoke drives the panels against a scripted daemon (asserting the frames each key produces). This probe
+attaches the real TUI to a real daemon to check the thing a user cares about — that the key acts on the row
+they selected and that the daemon really changes state:
+
+```bash
+python3 review/dogfood/tui_panels.py
+```
+
+No model, no credential, ~9 s: the session starts, the probe creates one extra instance through the
+documented protocol, and then `Ctrl+N` (instances view) → `Down` (the selection marker `▶  i-worker` moves) →
+`p` (paused in `instances --json` **and** repainted as `i-worker · PAUSED`) → `r` (ACTIVE again) → `t` (only
+asks: the footer wants `y`, the instance stays ACTIVE) → `n` (cancelled, still ACTIVE) → `t`,`y`
+(TERMINATED, and the panel shows it). Measured 2026-09-26, three runs (D-95).
