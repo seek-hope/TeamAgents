@@ -2,7 +2,7 @@
 //! the headless client (`exec`) that shares the daemon with the TUI.
 
 use std::path::{Path, PathBuf};
-use teamagents_engine::{cli, tools, VERSION};
+use teamagents_engine::{cli, tools};
 
 const HELP: &str = "TeamAgents: work with a Leader in your terminal\n\n\
 usage: teamagents [--cwd DIR] [--state-root PATH] [--model KEY] [--full-auto]\n\
@@ -41,13 +41,20 @@ fn usage() -> ! {
     std::process::exit(2);
 }
 
+/// A flag or entry point that exists in no release this binary serves: say so
+/// and stop, rather than accepting it and doing nothing (D-73, the rule the
+/// removed entry points `--plain`/`--resume`/`--team` already follow).
+fn refuse(message: &str) -> ! {
+    eprintln!("{message}");
+    std::process::exit(2);
+}
+
 pub struct Args {
     pub cwd: Option<String>,
     pub resume: Option<String>,
     pub full_auto: bool,
     pub team: Option<String>,
     pub plain: bool,
-    pub verbose: bool,
     pub command: Option<String>,
     pub positional: Option<String>,
     pub state_root: Option<String>,
@@ -84,7 +91,6 @@ fn parse_args() -> Args {
         full_auto: false,
         team: None,
         plain: false,
-        verbose: false,
         command: None,
         positional: None,
         state_root: None,
@@ -143,13 +149,13 @@ fn parse_args() -> Args {
                 args.plain = true;
                 i += 1;
             }
-            "-v" | "--verbose" => {
-                if args.verbose {
-                    usage();
-                }
-                args.verbose = true;
-                i += 1;
-            }
+            // `-v` was verbose logging in an earlier release and is not a flag
+            // this binary honours; a silent accept would leave the user believing
+            // they turned something on (D-73). `-V`/`--version` is the version.
+            "-v" | "--verbose" => refuse(
+                "-v/--verbose is not supported: the daemon writes its log to <state root>/daemon.log \
+                 (the path `teamagents daemon` prints). Use --version for the version.",
+            ),
             // internal: the controlled shell job runner (§6.2), never user-facing
             "jobs-runner" => {
                 if args.command.is_some() {
@@ -312,8 +318,7 @@ fn parse_args() -> Args {
             || args.resume.is_some()
             || args.team.is_some()
             || args.plain
-            || args.full_auto
-            || args.verbose)
+            || args.full_auto)
     {
         usage();
     }
@@ -379,9 +384,9 @@ fn run_tui(args: &Args) -> i32 {
     let mut command = std::process::Command::new(binary);
     command.arg("--daemon").arg(&socket);
     command.arg("--state-root").arg(&state_root);
-    if let Some(cwd) = &args.cwd {
-        command.args(["--cwd", cwd]);
-    }
+    // No --cwd here: the workspace belongs to the session the daemon owns, and
+    // the client already says so (`note_session_settings`, D-57). Passing a flag
+    // the TUI cannot honour was the one thing left of that path (D-73).
     let engine = std::env::current_exe().unwrap_or_default();
     command.env("TEAMAGENTS_ENGINE", engine);
     match command.status() {
@@ -826,12 +831,21 @@ fn main() {
             eprintln!("--plain/--resume/--team are no longer supported; use teamagents (TUI) or teamagents exec.");
             2
         }
+        // A bare word is not a TUI option: `teamagents` opens the TUI and
+        // `teamagents exec "…"` runs one headless input. Starting a session and
+        // dropping the word would lose exactly what the user typed — and a typo
+        // (`teamagents exex "…"`) with it (D-73).
+        _ if args.positional.is_some() => {
+            eprintln!(
+                "teamagents: {:?} is not an entry point, and the TUI takes no prompt.\n\
+                 Run `teamagents` for the TUI, or `teamagents exec \"…\"` for one headless input.\n\
+                 `teamagents --help` lists every entry point.",
+                args.positional.as_deref().unwrap_or("")
+            );
+            2
+        }
         _ => run_tui(&args),
     };
-    if args.command.is_none() && std::env::var("TEAMAGENTS_ENGINE").is_err() && !args.plain {
-        // only reachable for a direct CLI run; nothing to do
-    }
-    let _ = VERSION;
     std::process::exit(code);
 }
 

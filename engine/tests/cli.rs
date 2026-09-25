@@ -26,6 +26,48 @@ fn teamagents(args: &[&str], state_home: &std::path::Path, config_home: &std::pa
     text
 }
 
+/// D-73: the entry point refuses what it does not honour, and refuses it
+/// *before* starting anything. A bare word used to fall through to the TUI — a
+/// typo'd verb or a pasted prompt silently booted a session and was dropped —
+/// and `-v` was accepted with nothing behind it.
+#[test]
+fn a_bare_word_and_verbose_are_refused_without_starting_a_session() {
+    let home = std::env::temp_dir().join(format!("ta-refuse-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let (config_home, state_home, state_root) = (home.join("config"), home.join("state"), home.join("root"));
+    std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
+    std::fs::write(
+        config_home.join("teamagents/config.toml"),
+        "[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\napi_key_env = \"TA_REFUSE_KEY\"\n\
+         base_url = \"http://127.0.0.1:1/v1\"\n",
+    )
+    .unwrap();
+    let run = |args: &[&str]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_teamagents"))
+            .args(args)
+            .arg("--state-root")
+            .arg(&state_root)
+            .env("XDG_STATE_HOME", &state_home)
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("TA_REFUSE_KEY", "test-value")
+            .output()
+            .expect("run cli");
+        (output.status.code(), String::from_utf8_lossy(&output.stderr).into_owned())
+    };
+    for word in ["hello", "frobnicate"] {
+        let (code, stderr) = run(&[word]);
+        assert_eq!(code, Some(2), "{word}: {stderr}");
+        assert!(stderr.contains(word) && stderr.contains("is not an entry point"), "{word}: {stderr}");
+        assert!(stderr.contains("teamagents exec"), "the message points at the headless entry: {stderr}");
+    }
+    let (code, stderr) = run(&["-v"]);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(stderr.contains("-v/--verbose is not supported") && stderr.contains("--version"), "{stderr}");
+    // refusing happens before the session: no socket, no daemon, nothing written
+    assert!(!state_root.join("daemon.sock").exists(), "a refused argument must not start a session");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
 /// finding 10/11: doctor runs real probes (bwrap isolation, hook programs)
 /// and reports a malformed config instead of silently defaulting it.
 #[test]

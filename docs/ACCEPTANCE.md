@@ -6,7 +6,7 @@ Baseline: [the design and acceptance baseline](DESIGN.md) §12/§16. Current imp
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 98 / engine 190 / tui 27 test targets) and `make pty` passes; both are
+`make check` is green (core 98 / engine 191 / tui 28 test targets) and `make pty` passes; both are
 preconditions for every item below. `make check` includes `make language-check`, which fails on non-English
 characters outside the two documented exceptions (`README.zh-CN.md` and the frozen material under
 `review/eval`).
@@ -82,7 +82,14 @@ amended (D-49/D-50).
   (already done; see [DECISIONS](DECISIONS.md)).
 - The old entry points `--team` / `--resume` / `--plain` / `validate` / `sessions prune` no longer exist: the
   Leader forms the team at runtime and the daemon reconnects by event watermark, with `teamagents exec` as
-  the headless entry point. Passing those arguments fails with a clear message instead of being ignored.
+  the headless entry point. Passing those arguments fails with a clear message instead of being ignored — and
+  since D-73 that rule holds for *every* unserved argument, not only the removed ones: a bare word
+  (`teamagents hello`, a typo'd verb, a pasted prompt) is a usage error naming the word (it used to boot a
+  session and drop it), `-v`/`--verbose` is refused with a pointer (it was accepted and never honoured), and
+  the front-end refuses the flags the daemon owns (`--cwd`/`--full-auto`) with the pointer to the engine's own
+  (`cli::a_bare_word_and_verbose_are_refused_without_starting_a_session`,
+  `tui::cli_flags::the_tui_refuses_the_flags_the_daemon_owns`; the first also asserts that no daemon socket was
+  created, so a refused argument has no side effect).
 
 ## Known gaps (found while auditing the documented surface, 2026-09-25)
 

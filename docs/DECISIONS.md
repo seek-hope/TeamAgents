@@ -231,6 +231,37 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-73 The CLI refuses what it does not honour (2026-09-25)
+
+The documented-surface audit that produced D-71/D-72 turned to the entry points themselves, and found the same
+class of defect in the argument parser: **arguments accepted with nothing behind them**.
+
+| Input | What happened | What happens now |
+|---|---|---|
+| `teamagents hello` | `hello` was parsed as a positional, the top-level dispatch fell through to `run_tui`, and a session was booted with the word silently dropped — a typo'd verb (`teamagents exex "…"`) or a pasted prompt lost exactly what the user meant | exit 2, the message names the word, says the TUI takes no prompt, and points at `teamagents` / `teamagents exec "…"`; nothing is started |
+| `teamagents frobnicate` | same fall-through (a stray word is not a verb) | same refusal |
+| `teamagents -v` / `--verbose` | the flag was parsed into a field no code ever read: verbose logging exists in no release this binary serves | exit 2, pointing at `<state root>/daemon.log` and naming `--version` (the plausible `-V` typo) |
+| `teamagents-tui --cwd DIR` | the TUI accepted `--cwd`, `--full-auto`, `--resume` and `--team` and honoured none of them (the engine passes the socket and the state root; the session's workspace and mode belong to the daemon) | exit 2 with the flag named and the pointer to `teamagents --cwd DIR` / `teamagents --full-auto`; the engine no longer passes `--cwd` through |
+| `teamagents` on a machine with no config | the daemon refused with `use --model to name a catalog profile (available: )` — a first run misreported as a missing flag | the message names the step that creates a catalog (`teamagents init`, then `doctor`) |
+
+The rule this restores is the one the upgrade notes already state for the *removed* entry points
+(`--plain`/`--resume`/`--team`, `validate`/`sessions`/`serve`/`repl`): an argument this binary does not serve
+fails with a clear message instead of being ignored. It matters more here than it looks: the TUI path has a
+**side effect** (it boots a daemon and opens a session), so silently dropping an argument also wasted the
+user's session on the wrong work.
+
+Evidence: `cli::a_bare_word_and_verbose_are_refused_without_starting_a_session` drives the real binary for
+`hello`, `frobnicate` and `-v` (exit 2, the message names the input, and — the part that matters —
+`<state root>/daemon.sock` was never created); `tui::cli_flags::the_tui_refuses_the_flags_the_daemon_owns`
+drives the real front-end for `--cwd`/`--full-auto`/`--resume`/`--team` and shows a supported invocation still
+parses. `make pty` keeps driving the real terminal through the engine (which no longer passes `--cwd`), and
+`make check` is green.
+
+Ceiling: `--help` after a *known* verb still prints the global help rather than per-verb help (the usage
+lines are in it, so nothing is misleading); and the two flags of the removed `sessions` verb (`--dry-run`,
+`--history-days`) are still parsed so that `teamagents sessions prune --dry-run` reaches the "no longer
+supported" pointer instead of a bare usage error.
+
 ## D-72 A run reports its own input's outcome, also when that input waited (2026-09-25)
 
 D-71 taught the client to stop reading the runtime's word as the member's answer. The next audit of the same

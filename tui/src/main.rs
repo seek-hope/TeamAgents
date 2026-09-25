@@ -18,10 +18,6 @@ use teamagents_tui::v2app::{Focus as V2Focus, V2App, V2Effect, View as V2View};
 use teamagents_tui::v2ui;
 
 struct Args {
-    cwd: Option<String>,
-    resume: Option<String>,
-    full_auto: bool,
-    team: Option<String>,
     engine_bin: String,
     /// v2 session daemon socket (R19): --daemon SOCK or --state-root DIR.
     daemon: Option<String>,
@@ -41,8 +37,16 @@ impl Args {
 
 fn usage() -> ! {
     eprintln!("teamagents-tui --daemon SOCK | --state-root DIR   # session daemon (required)");
-    eprintln!("              [--cwd DIR]");
     eprintln!("  env: TEAMAGENTS_ENGINE (teamagents binary), --engine PATH");
+    std::process::exit(2);
+}
+
+/// A flag this front-end cannot honour: the session (its workspace, its mode)
+/// belongs to the daemon the engine boots, so the client must say so instead of
+/// accepting the flag and ignoring it (D-73).
+fn refuse(message: &str) -> ! {
+    eprintln!("{message}");
+    eprintln!("usage: teamagents-tui --daemon SOCK | --state-root DIR [--engine PATH]");
     std::process::exit(2);
 }
 
@@ -85,18 +89,9 @@ fn find_engine_binary(explicit: Option<String>) -> String {
 }
 
 fn parse_args() -> Args {
-    let mut a = Args {
-        cwd: None,
-        resume: None,
-        full_auto: false,
-        team: None,
-        engine_bin: String::new(),
-        daemon: None,
-        state_root: None,
-    };
-    let takes_value = |a: &mut Args, i: usize, argv: &[String]| -> usize {
+    let mut a = Args { engine_bin: String::new(), daemon: None, state_root: None };
+    let takes_value = |i: usize, argv: &[String]| -> usize {
         // value flags consume the next argument
-        let _ = a;
         if i + 1 < argv.len() {
             2
         } else {
@@ -108,33 +103,33 @@ fn parse_args() -> Args {
     let mut i = 0;
     while i < argv.len() {
         let step = match argv[i].as_str() {
-            "--cwd" => {
-                a.cwd = argv.get(i + 1).cloned();
-                takes_value(&mut a, i, &argv)
-            }
-            "--resume" => {
-                a.resume = argv.get(i + 1).cloned();
-                takes_value(&mut a, i, &argv)
-            }
-            "--full-auto" => {
-                a.full_auto = true;
-                1
-            }
-            "--team" => {
-                a.team = argv.get(i + 1).cloned();
-                takes_value(&mut a, i, &argv)
-            }
+            // the session's workspace and mode belong to the daemon: the engine
+            // boots it (`teamagents --cwd DIR --full-auto`) and prints what the
+            // live session uses, so a flag here would be accepted and ignored
+            "--cwd" => refuse(
+                "--cwd is not a TUI flag: the session's workspace belongs to the daemon. \
+                 Start it with `teamagents --cwd DIR`; a running session keeps its own.",
+            ),
+            "--full-auto" => refuse(
+                "--full-auto is not a TUI flag: the session's mode belongs to the daemon. \
+                 Start it with `teamagents --full-auto`; a running session keeps the mode it booted with.",
+            ),
+            "--resume" | "--team" => refuse(&format!(
+                "{} is no longer supported: the daemon owns the session. Run `teamagents` (TUI) or \
+                 `teamagents exec \"…\"`.",
+                argv[i]
+            )),
             "--engine" => {
                 engine_flag = argv.get(i + 1).cloned();
-                takes_value(&mut a, i, &argv)
+                takes_value(i, &argv)
             }
             "--daemon" => {
                 a.daemon = argv.get(i + 1).cloned();
-                takes_value(&mut a, i, &argv)
+                takes_value(i, &argv)
             }
             "--state-root" => {
                 a.state_root = argv.get(i + 1).cloned();
-                takes_value(&mut a, i, &argv)
+                takes_value(i, &argv)
             }
             _ => usage(),
         };

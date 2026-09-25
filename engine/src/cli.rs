@@ -347,10 +347,22 @@ fn daemon_boot(
     let model_key = match model {
         Some(key) => key,
         None if available.len() == 1 => available[0].clone(),
+        // an empty catalog is a first run, not a missing flag: name the step that
+        // creates one instead of leaving the user with "(available: )" (D-73)
+        None if available.is_empty() => {
+            return Err(format!(
+                "the user config has no model profile: run `teamagents init` to write {} (then `teamagents doctor`)",
+                user_config_path().display()
+            ))
+        }
         None => return Err(format!("use --model to name a catalog profile (available: {})", available.join(", "))),
     };
     if !available.contains(&model_key) {
-        return Err(format!("model {model_key:?} is not in the user catalog (available: {})", available.join(", ")));
+        return Err(format!(
+            "model {model_key:?} is not in the user catalog (available: {}); `teamagents doctor` reports what {} resolves to",
+            available.join(", "),
+            user_config_path().display()
+        ));
     }
     // preflight: credentials/protocol resolve at boot, not mid-session (§7)
     crate::providers::build_for_model(&catalog, &model_key)?;
