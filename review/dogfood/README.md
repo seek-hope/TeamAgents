@@ -323,3 +323,26 @@ running into its own 120 s tool timeout.
 The probe also documents the level the lever lives at: `tasks cancel` is delegation-level (it lands the task
 `CANCELLED` and releases the delegator, while the assignee's operation keeps running), which is why the D-68
 CLI test and this probe cover different halves of A13 (D-88).
+
+
+## `approval.py`: the user's decision, taken in the TUI
+
+The gated call is the one moment the product asks the user, and this probe is the only one that decides it in
+the real TUI with a real model:
+
+```bash
+python3 review/dogfood/approval.py                  # Ctrl+A then 'a': approve
+python3 review/dogfood/approval.py --decision deny  # Ctrl+A then 'd': deny
+```
+
+The daemon runs **without** `--full-auto`, so every `shell` call parks (`require_shell_approval = !full_auto`)
+and the approved command executes inside bubblewrap — this is the only probe that exercises that path. The
+pending id has to be on screen before the key is pressed (the panel is a surface, not decoration), and the
+artifact decides afterwards: on approve `proof.txt` holds the content, the approval is `APPROVED`, the box
+drops the id and nothing stays pending; on deny the file never exists, the approval is `DENIED`, and the
+operation lands `CANCELLED` with receipt class `denied` (the model is told). Measured 2026-09-26, five runs.
+
+Two probe lessons are recorded with it (D-89): an absence check must be the absence of a *proven present*
+thing (the first version waited for UI text that never exists, and the fix asserts the decoded id's
+disappearance instead of an empty list), and a model may ask for a *second* decision in the same turn, so the
+assertion names the decided id rather than the whole list.

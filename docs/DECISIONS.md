@@ -231,6 +231,46 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-89 The dangerous call, decided in the TUI with a real model (2026-09-26)
+
+The one place where the product stops and asks the user is a gated call, and that decision had two half
+coverages: `v2_daemon::the_approvals_cli_lists_and_decides_a_parked_operation` drives the *CLI* against a
+real daemon with a scripted provider, and the PTY smoke paints and clicks the TUI's approvals box against a
+*scripted* daemon. Neither put the two together, so "the user reads a real call's arguments and decides in
+the TUI" was unproven. `review/dogfood/approval.py` does: the daemon starts **without** `--full-auto`
+(`require_shell_approval = !full_auto`, so every `shell` call parks), the real TUI attaches, the probe types
+a prompt asking for `echo approved-live > proof.txt`, and then presses the TUI's own keys — `Ctrl+A` into the
+box, `a` or `d` — while the pending id has to be on screen first.
+
+Measured 2026-09-26 (DeepSeek Flash, native window, `approved_scope` so the approved command runs inside
+bubblewrap):
+
+| Decision | Result |
+|---|---|
+| `a` (approve) | the pending id and the exact call (`ap-…:0 · shell · echo approved-live > …/proof.txt`) were both on screen and in `teamagents approvals --json`; after the key the session recorded `APPROVED`, the file appeared with the content, the box dropped the id and the session had nothing pending |
+| `d` (deny) | the session recorded `DENIED`, `proof.txt` never appeared, and the operation landed `CANCELLED` with a receipt whose `class` is `denied` — the call failed closed and the model was told (the receipt is in its context) |
+
+Two probe lessons, the same family as D-84's "an assertion must be able to fail for the reason it names":
+
+- **an absence check must be the absence of a proven present thing.** The first version waited for the text
+  `0 pending approval`, which the UI never prints (the status line shows `· N pending approvals` only while
+  something is pending, and the footer counts it). The fix is not a different string but a pair: assert the
+  *decided id* is on screen, then wait for that id to leave — and assert the decided id is gone from the
+  session's pending list, not that the list is empty, because a model may legitimately ask for a *second*
+  decision in the same turn (observed: it did, which is what made the weaker assertion fail).
+- this is the only probe of the set that runs the shell **inside bubblewrap**: every other one passes
+  `--full-auto` (host shell, no approval), so the isolated path picks up a live witness here for free.
+
+Evidence: `python3 review/dogfood/approval.py` and `--decision deny` (five runs on 2026-09-26), plus the
+offline layers it does not repeat — `the_approvals_cli_lists_and_decides_a_parked_operation`,
+`approval_flow_blocks_then_allows_dispatch`, `pending_approvals_expire_when_the_operation_closes`,
+`shell_approval_blocks_then_allows_and_denial_cancels` (the denial path, driven: it parks, the second
+approval is taken, and the denied call cancels), and the PTY smoke's frames.
+
+Ceiling: one decision per run — the `once` binding's reuse and expiry are offline tests, not re-measured
+here; the probe focuses the box with `Ctrl+A` on a single-row list, so the `↑`/`↓` selection over several
+pending approvals stays with the scripted smoke.
+
 ## D-88 How a user stops a command that is already running (2026-09-26)
 
 A13 ("cancel, timeout and completion races") had only offline evidence — `jobs_runner` and `v2_driver` with

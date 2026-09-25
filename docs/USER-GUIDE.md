@@ -311,6 +311,13 @@ teamagents approvals approve --id ap-d-req-4caeb0c6    # once: the parked turn c
 teamagents approvals deny --id ap-d-req-4caeb0c6       # fails closed; the model is told you denied it
 ```
 
+In the TUI the same decision is one key: a pending approval appears in the approvals box (the status
+line and the footer count it), **`Ctrl+A`** focuses that box, `↑`/`↓` pick an entry, **`a`** approves and
+**`d`** denies, `Esc` returns to the composer. Measured with a real model (`python3 review/dogfood/approval.py`,
+D-89): approving runs the call (its artifact appears), the box drops the id and nothing stays pending;
+denying never runs it, the operation lands `CANCELLED` with a receipt whose class is `denied`, and the model
+is told.
+
 An id must name a *pending* approval (a typo is refused before anything is decided), the full id or an
 unambiguous prefix is enough, and `--json` prints the raw report. Exit codes match `teamagents authority`:
 `0` done, `1` the session refused it, `2` usage or no session. This is also what makes `teamagents exec` usable
