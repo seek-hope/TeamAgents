@@ -142,8 +142,9 @@ deadline_minutes = 45        # optional: wall clock, counted from the moment the
 - With neither configured a goal — and therefore the session — runs until you stop it, which is why `doctor`
   says so out loud (`goal limits: none: …`). A zero is a config error at load time.
 - Both come from **your** config: like `[[checks]]`, a cloned project cannot set them. They are fixed when
-  the goal is created; the TUI shows the same limits the session booted with, and changing them means
-  starting a new session (or a new state root).
+  the goal is created; changing them means starting a new session (or a new state root).
+- The TUI's status line shows what is in force (`goal ACTIVE · usage 12000/2000000 · ends in 30m`), so a
+  configured ceiling is visible and not just enforced.
 
 ### 2.3 Hooks (`[hooks]`)
 

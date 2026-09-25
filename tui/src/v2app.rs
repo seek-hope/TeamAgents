@@ -115,6 +115,9 @@ pub struct GoalInfo {
     pub known_total: i64,
     pub unknown: bool,
     pub limit_total: Option<i64>,
+    /// The goal's absolute deadline in epoch seconds (`[limits] deadline_minutes`,
+    /// D-64): shown as the time left, so a configured ceiling is visible.
+    pub deadline: Option<f64>,
 }
 
 /// Side effects for the main loop to execute through the daemon client.
@@ -266,6 +269,7 @@ impl V2App {
                 known_total: known["total"].as_i64().unwrap_or(0),
                 unknown: g["unknown_usage"].as_i64().unwrap_or(0) != 0,
                 limit_total: g["limits"]["max_total_tokens"].as_i64(),
+                deadline: g["deadline"].as_f64(),
             })
         });
         if self.instance_sel >= self.instances.len() {
@@ -879,6 +883,14 @@ impl V2App {
                 }
                 if g.unknown {
                     text.push_str(" (includes unknown)");
+                }
+                if let Some(deadline) = g.deadline {
+                    let left = deadline - crate::now_epoch();
+                    text.push_str(&if left > 0.0 {
+                        format!(" · ends in {}m", (left / 60.0) as i64)
+                    } else {
+                        " · past its deadline".to_string()
+                    });
                 }
                 text
             })

@@ -34,7 +34,10 @@ fn checkpoint() -> Json {
                {"id": "i-worker", "lifecycle": "ACTIVE", "phase": "MODEL_PENDING"}
            ],
            "goal": {"status": "ACTIVE", "known_usage": {"prompt": 7, "completion": 3, "total": 10},
-                    "unknown_usage": 0, "limits": {"max_total_tokens": 1000}}})
+                    "unknown_usage": 0, "limits": {"max_total_tokens": 1000},
+                    // 30m+59s out: the floor is 30 minutes for the next 59 seconds,
+                    // so the rendered "ends in 30m" is stable for this test
+                    "deadline": teamagents_tui::now_epoch() + 30.0 * 60.0 + 59.0}})
 }
 
 fn app() -> V2App {
@@ -52,9 +55,18 @@ fn checkpoint_defaults_to_the_leader_and_tracks_budget() {
     assert_eq!(goal.known_total, 10);
     assert_eq!(goal.limit_total, Some(1000));
     assert!(!goal.unknown);
+    assert_eq!(goal.deadline.map(|deadline| deadline > 0.0), Some(true), "the goal carries its deadline");
     let status = app.status_line();
     assert!(status.contains("i-leader [READY]"), "{status}");
     assert!(status.contains("usage 10/1000"), "{status}");
+    // the configured deadline is visible, not just enforced (D-64)
+    assert!(status.contains("ends in 30m"), "{status}");
+    // a goal without a deadline says nothing about one
+    let mut plain = V2App::new("s-test");
+    let mut checkpoint = checkpoint();
+    checkpoint["goal"]["deadline"] = Json::Null;
+    plain.apply_checkpoint(checkpoint, 5);
+    assert!(!plain.status_line().contains("ends in"), "{}", plain.status_line());
 }
 
 #[test]

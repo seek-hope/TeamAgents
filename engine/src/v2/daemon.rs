@@ -228,15 +228,20 @@ fn read_snapshot(conn: &rusqlite::Connection) -> Result<Json, String> {
     for row in rows {
         instances.push(row.map_err(|e| format!("snapshot row: {e}"))?);
     }
-    let goal: Option<(String, String, i64, String)> = conn
-        .query_row("SELECT status, known_usage_json, unknown_usage, limits_json FROM goals LIMIT 1", [], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-        })
+    let goal: Option<(String, String, i64, String, Option<f64>)> = conn
+        .query_row(
+            "SELECT status, known_usage_json, unknown_usage, limits_json, deadline FROM goals LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        )
         .ok();
-    Ok(json!({"instances": instances, "goal": goal.map(|(status, usage, unknown, limits)|
+    Ok(json!({"instances": instances, "goal": goal.map(|(status, usage, unknown, limits, deadline)|
         json!({"status": status, "known_usage": serde_json::from_str::<Json>(&usage).unwrap_or(Json::Null),
                "unknown_usage": unknown,
-               "limits": serde_json::from_str::<Json>(&limits).unwrap_or(Json::Null)}))}))
+               "limits": serde_json::from_str::<Json>(&limits).unwrap_or(Json::Null),
+               // the absolute deadline (D-64): a client that shows limits must be able
+               // to say when the goal stops accepting new requests
+               "deadline": deadline}))}))
 }
 
 fn read_events(conn: &rusqlite::Connection, since: i64) -> Result<Vec<Json>, String> {
