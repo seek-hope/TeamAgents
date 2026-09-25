@@ -165,7 +165,7 @@ the `--json` report as `verification`.
 | `--cwd DIR` | work in DIR (default: the current directory) |
 | `--state-root PATH` | use a specific state root (default `$XDG_STATE_HOME/teamagents/v2`) |
 | `--model KEY` | pick a model catalog entry (default `leader_main`) |
-| `--full-auto` | user-only full-auto mode (out-of-scope work is approved instead of requested) |
+| `--full-auto` | user-only full-auto mode (out-of-scope work is approved instead of requested); it applies to the session this command starts — a session that is already running keeps the mode it booted with, and the client prints that mode instead of pretending |
 | `init` / `doctor` / `daemon` / `exec` / `version` / `--help` | config and state root / self-check / run the daemon alone (its output goes to `<state root>/daemon.log`) / headless input / version / usage |
 
 TUI keys (they match the hint line at the bottom; deliberately no function keys, since some keyboards lack

@@ -153,7 +153,7 @@ git diff | teamagents exec -                                    # 提示词从 s
 | `--cwd DIR` | 以 DIR 为工作目录（默认当前目录） |
 | `--state-root PATH` | 指定状态根（默认 `$XDG_STATE_HOME/teamagents/v2`） |
 | `--model KEY` | 选择模型目录键（默认 `leader_main`） |
-| `--full-auto` | 用户显式开启全自动（仅用户可开；默认越权时请求批准） |
+| `--full-auto` | 用户显式开启全自动（仅用户可开；默认越权时请求批准）；只对这条命令启动的会话生效——已在运行的会话保留它启动时的模式，客户端会把这个模式打印出来而不是假装生效 |
 | `init` / `doctor` / `daemon` / `exec` / `version` / `--help` | 准备配置与状态根 / 自检 / 单独运行 daemon（输出写入 `<state root>/daemon.log`）/ 无头输入 / 版本 / 用法 |
 
 TUI 键位（与屏幕底部提示一致；**刻意不使用 F 键**，因为部分键盘没有）：

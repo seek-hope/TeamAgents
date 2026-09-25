@@ -9,7 +9,7 @@
 pub mod instance;
 pub mod types;
 
-pub use instance::{Interpretation, KernelInstance, KernelProfile, COMPACT_AT};
+pub use instance::{finish_status_problem, Interpretation, KernelInstance, KernelProfile, COMPACT_AT};
 pub use types::*;
 
 #[cfg(test)]
@@ -95,6 +95,53 @@ mod tests {
         };
         let out = kernel.interpret_response(&response, "e9");
         assert_eq!(out.output, KernelOutput::Reply("done already".into()));
+    }
+
+    /// A `finish` without a usable status states no outcome, so it must never
+    /// become a completion: the runtime reads it as a protocol problem, hands
+    /// it back as an ordinary call (so the model can correct it and the turn
+    /// continues) and keeps the goal open. Reading it as "failed" would report
+    /// a failure the model never claimed and skip the required checks.
+    #[test]
+    fn a_finish_without_a_usable_status_is_not_a_completion() {
+        let kernel = kernel();
+        for arguments in [
+            r#"{"summary":"did the work","evidence":["x"]}"#, // status missing
+            r#"{"status":"done","summary":"did the work"}"#,  // not a documented outcome
+        ] {
+            let response = ModelResponse {
+                message: json!({"role":"assistant","tool_calls":[
+                    {"id":"c1","function":{"name":"finish","arguments": arguments}}
+                ]}),
+                usage: None,
+                native: json!({}),
+            };
+            let out = kernel.interpret_response(&response, "e9");
+            match out.output {
+                KernelOutput::ToolIntents(intents) => {
+                    assert_eq!(intents.len(), 1, "the refused call rides as an intent: {intents:?}");
+                    assert_eq!(intents[0].name, FINISH_TOOL);
+                    assert_eq!(intents[0].call_id, "c1");
+                }
+                other => panic!("{arguments} must not be read as a completion, got {other:?}"),
+            }
+            assert_eq!(out.notes.len(), 1, "{arguments}");
+            assert!(out.notes[0].contains("status"), "the problem names the field: {:?}", out.notes[0]);
+        }
+        // the documented outcomes stay completions
+        let response = ModelResponse {
+            message: json!({"role":"assistant","tool_calls":[
+                {"id":"c2","function":{"name":"finish","arguments":r#"{"status":"failed","summary":"no"}"#}}
+            ]}),
+            usage: None,
+            native: json!({}),
+        };
+        let out = kernel.interpret_response(&response, "e10");
+        match out.output {
+            KernelOutput::Completion(candidate) => assert_eq!(candidate.outcome, Outcome::Failed),
+            other => panic!("a documented status is a completion, got {other:?}"),
+        }
+        assert!(out.notes.is_empty());
     }
 
     #[test]

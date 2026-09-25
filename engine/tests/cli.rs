@@ -365,3 +365,77 @@ fn the_daemon_carries_configured_checks_into_the_goal() {
     assert_eq!(checks[1]["id"], "docs");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// `--full-auto` used to be parsed and thrown away by both entry points, so a
+/// documented flag did nothing. It now reaches the daemon this client starts,
+/// and against a session that is already running (whose mode is fixed, D-41)
+/// the client says so with the mode the daemon reports.
+#[test]
+fn full_auto_reaches_a_started_daemon_and_is_reported_against_a_live_one() {
+    fn greeting(socket: &std::path::Path) -> serde_json::Value {
+        use std::io::{BufRead, BufReader};
+        let stream = std::os::unix::net::UnixStream::connect(socket).expect("connect");
+        let mut line = String::new();
+        BufReader::new(stream).read_line(&mut line).expect("greeting");
+        serde_json::from_str(&line).expect("greeting JSON")
+    }
+    let root = std::env::temp_dir().join(format!("ta-full-auto-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let (config_home, state) = (root.join("config"), root.join("root"));
+    std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
+    std::fs::write(
+        config_home.join("teamagents/config.toml"),
+        "[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\n\
+         api_key_env = \"TA_FULL_AUTO_KEY\"\nbase_url = \"http://127.0.0.1:1/v1\"\n",
+    )
+    .unwrap();
+    let env = |command: &mut Command| {
+        command
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("XDG_STATE_HOME", root.join("state"))
+            .env("TA_FULL_AUTO_KEY", "test-value");
+    };
+
+    // full-auto on a fresh state root: the daemon this run starts boots in it
+    let mut exec = Command::new(env!("CARGO_BIN_EXE_teamagents"));
+    env(&mut exec);
+    let output = exec
+        .args(["exec", "--state-root"])
+        .arg(&state)
+        .args(["--full-auto", "--timeout", "5", "hello"])
+        .output()
+        .expect("run exec");
+    let socket = state.join("daemon.sock");
+    assert!(socket.exists(), "exec started the daemon");
+    assert_eq!(greeting(&socket)["permissions"], "full_auto", "the flag reached the daemon");
+    let _ = output;
+
+    // the session keeps its mode: asking again cannot change a running daemon
+    let mut again = Command::new(env!("CARGO_BIN_EXE_teamagents"));
+    env(&mut again);
+    let output = again
+        .args(["exec", "--state-root"])
+        .arg(&state)
+        .args(["--full-auto", "--timeout", "5", "hello"])
+        .output()
+        .expect("run exec again");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("already running for this state root in full_auto mode"),
+        "the client reports the real mode instead of pretending: {stderr}"
+    );
+    // Stop that daemon (exec detaches it on purpose) and prove it is gone: a
+    // leaked session would keep this state root alive after the test.
+    let _ = Command::new("pkill").args(["-f", &format!("daemon --state-root {}", state.display())]).status();
+    for _ in 0..100 {
+        if std::os::unix::net::UnixStream::connect(&socket).is_err() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(
+        std::os::unix::net::UnixStream::connect(&socket).is_err(),
+        "the daemon must stop so the test leaks nothing"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

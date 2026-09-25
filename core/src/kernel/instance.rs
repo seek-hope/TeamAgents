@@ -83,17 +83,34 @@ impl KernelInstance {
         let calls = response.message["tool_calls"].as_array().cloned().unwrap_or_default();
         let mut notes = vec![];
         let finish = calls.iter().position(|call| call["function"]["name"] == FINISH_TOOL);
+        // A sole `finish` whose status is missing or unknown states no outcome,
+        // so it is *not* a completion candidate: the runtime cannot verify an
+        // outcome the model never gave (§8), and reading it as "failed" would
+        // report a false failure and skip the required checks. It rides as an
+        // ordinary intent instead, so the runtime answers it with the problem
+        // and the same turn continues with the model able to correct it.
+        let mut refused_finish = false;
         if let Some(pos) = finish {
             if calls.len() == 1 {
-                return Interpretation {
-                    entry,
-                    output: KernelOutput::Completion(parse_completion(&calls[pos])),
-                    notes,
-                };
+                let args = call_args(&calls[pos]);
+                match finish_status_problem(&args) {
+                    None => {
+                        return Interpretation {
+                            entry,
+                            output: KernelOutput::Completion(parse_completion(&calls[pos])),
+                            notes,
+                        };
+                    }
+                    Some(problem) => {
+                        notes.push(format!("refused {FINISH_TOOL}: {problem}"));
+                        refused_finish = true;
+                    }
+                }
+            } else {
+                notes.push(format!(
+                    "ignored {FINISH_TOOL}: it must be the only tool call in its response; the other calls ran normally"
+                ));
             }
-            notes.push(format!(
-                "ignored {FINISH_TOOL}: it must be the only tool call in its response; the other calls ran normally"
-            ));
         }
         // a sole wait call is the Wait output (§5.3): it excludes every
         // other action in the same response, exactly like finish
@@ -115,10 +132,9 @@ impl KernelInstance {
         let intents = calls
             .iter()
             .enumerate()
-            .filter(|(i, _)| Some(*i) != finish && Some(*i) != wait)
+            .filter(|(i, _)| if Some(*i) == finish { refused_finish } else { Some(*i) != wait })
             .map(|(index, call)| {
-                let args: Json = serde_json::from_str(call["function"]["arguments"].as_str().unwrap_or("{}"))
-                    .unwrap_or_else(|_| json!({"_invalid_arguments": call["function"]["arguments"].as_str()}));
+                let args = call_args(call);
                 ToolIntent {
                     index,
                     call_id: call["id"].as_str().unwrap_or("").to_string(),
@@ -163,7 +179,7 @@ impl KernelInstance {
 }
 
 fn parse_completion(call: &Json) -> CompletionCandidate {
-    let args: Json = serde_json::from_str(call["function"]["arguments"].as_str().unwrap_or("{}")).unwrap_or(json!({}));
+    let args = call_args(call);
     let outcome = match args["status"].as_str().unwrap_or("failed") {
         "success" => Outcome::Success,
         "blocked" => Outcome::Blocked,
@@ -176,6 +192,32 @@ fn parse_completion(call: &Json) -> CompletionCandidate {
         summary: args["summary"].as_str().unwrap_or("").to_string(),
         evidence: strings("evidence"),
         unverified: strings("unverified"),
+    }
+}
+
+/// A tool call's arguments as an object; invalid JSON is preserved under
+/// `_invalid_arguments` so the runtime can answer the call instead of dropping
+/// it. Shared by completion parsing and ordinary intents, so both see the same
+/// arguments.
+fn call_args(call: &Json) -> Json {
+    serde_json::from_str(call["function"]["arguments"].as_str().unwrap_or("{}"))
+        .unwrap_or_else(|_| json!({"_invalid_arguments": call["function"]["arguments"].as_str()}))
+}
+
+/// Why a `finish` call cannot state an outcome, or `None` when it can (§8). The
+/// status is the one field the runtime must be able to verify; a missing or
+/// unknown value is a protocol problem handed back to the model, never a
+/// terminal outcome invented by the runtime.
+pub fn finish_status_problem(args: &Json) -> Option<String> {
+    match args["status"].as_str() {
+        Some("success" | "blocked" | "failed") => None,
+        None => Some(
+            "status is required and must be one of success, blocked, failed; call finish again with the real outcome"
+                .to_string(),
+        ),
+        Some(other) => Some(format!(
+            "status {other:?} is not one of success, blocked, failed; call finish again with the real outcome"
+        )),
     }
 }
 

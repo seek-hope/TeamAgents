@@ -56,6 +56,7 @@ where
     let session_db = config.supervisor.session_db.clone();
     let session_id = config.supervisor.session_id.clone();
     let state_root = config.supervisor.state_root.clone();
+    let permissions = config.supervisor.permissions.clone();
     let supervisor = Arc::new(super::supervisor::start(config.supervisor).await?);
     if let Some(parent) = config.socket.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("socket dir: {e}"))?;
@@ -80,7 +81,8 @@ where
         let supervisor = supervisor.clone();
         let socket = config.socket.clone();
         tokio::spawn(async move {
-            let result = accept_loop(listener, supervisor, session_db, session_id, state_root, shutdown).await;
+            let result =
+                accept_loop(listener, supervisor, session_db, session_id, state_root, permissions, shutdown).await;
             let _ = std::fs::remove_file(&socket);
             result
         })
@@ -94,6 +96,7 @@ async fn accept_loop(
     session_db: PathBuf,
     session_id: String,
     state_root: PathBuf,
+    permissions: String,
     shutdown: Arc<AtomicBool>,
 ) -> Result<(), String> {
     loop {
@@ -108,10 +111,12 @@ async fn accept_loop(
             Ok(pair) => pair,
             Err(e) => return Err(format!("accept: {e}")),
         };
-        let (supervisor, session_db, session_id, state_root) =
-            (supervisor.clone(), session_db.clone(), session_id.clone(), state_root.clone());
+        let (supervisor, session_db, session_id, state_root, permissions) =
+            (supervisor.clone(), session_db.clone(), session_id.clone(), state_root.clone(), permissions.clone());
         tokio::spawn(async move {
-            if let Err(error) = serve_client(stream, supervisor, &session_db, &session_id, &state_root).await {
+            if let Err(error) =
+                serve_client(stream, supervisor, &session_db, &session_id, &state_root, &permissions).await
+            {
                 eprintln!("daemon client: {error}");
             }
         });
@@ -124,13 +129,19 @@ async fn serve_client(
     session_db: &Path,
     session_id: &str,
     state_root: &Path,
+    permission_mode: &str,
 ) -> Result<(), String> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
     let (read, mut write) = stream.into_split();
     // greeting first: version, session and state root let the client refuse
     // an old server, a different root or an incompatible build (§9)
+    // `permissions` is the mode this session was started with (D-41): the
+    // clients report it instead of guessing, because the mode is fixed when the
+    // daemon starts — a later `--full-auto` on the same state root cannot change
+    // a running session.
     let greeting = json!({"server": "teamagents-daemon", "protocol_version": PROTOCOL_VERSION,
-                          "session_id": session_id, "state_root": state_root.to_string_lossy()});
+                          "session_id": session_id, "state_root": state_root.to_string_lossy(),
+                          "permissions": permission_mode});
     write.write_all(format!("{greeting}\n").as_bytes()).await.map_err(|e| format!("greeting: {e}"))?;
     let mut lines = tokio::io::BufReader::new(read).lines();
     while let Ok(Some(line)) = lines.next_line().await {

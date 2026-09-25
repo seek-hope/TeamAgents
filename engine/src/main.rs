@@ -273,8 +273,11 @@ fn run_tui(args: &Args) -> i32 {
         return 1;
     };
     let state_root = args.state_root.clone().map(PathBuf::from).unwrap_or_else(teamagents_engine::v2_root);
-    let socket = match ensure_daemon(&state_root, args.model.clone()) {
-        Ok(socket) => socket,
+    let socket = match ensure_daemon(&state_root, args.model.clone(), args.full_auto) {
+        Ok((socket, started)) => {
+            note_ignored_full_auto(&socket, args.full_auto, started);
+            socket
+        }
         Err(error) => {
             eprintln!("{error}");
             return 1;
@@ -307,8 +310,11 @@ fn run_exec(args: &Args) -> i32 {
         }
     };
     let state_root = args.state_root.clone().map(PathBuf::from).unwrap_or_else(teamagents_engine::v2_root);
-    let socket = match ensure_daemon(&state_root, args.model.clone()) {
-        Ok(socket) => socket,
+    let socket = match ensure_daemon(&state_root, args.model.clone(), args.full_auto) {
+        Ok((socket, started)) => {
+            note_ignored_full_auto(&socket, args.full_auto, started);
+            socket
+        }
         Err(error) => {
             eprintln!("{error}");
             return 2;
@@ -332,6 +338,29 @@ fn run_exec(args: &Args) -> i32 {
     })
 }
 
+/// Say it out loud when `--full-auto` could not apply: the mode belongs to the
+/// session, which was started earlier (D-41). Silence here was how a documented
+/// flag became a no-op that nobody noticed.
+fn note_ignored_full_auto(socket: &Path, requested: bool, started: bool) {
+    if !requested || started {
+        return;
+    }
+    let mode = std::os::unix::net::UnixStream::connect(socket)
+        .ok()
+        .and_then(|stream| {
+            use std::io::{BufRead, BufReader};
+            let mut line = String::new();
+            BufReader::new(stream).read_line(&mut line).ok()?;
+            let greeting: serde_json::Value = serde_json::from_str(&line).ok()?;
+            greeting["permissions"].as_str().map(str::to_string)
+        })
+        .unwrap_or_else(|| "unknown".into());
+    eprintln!(
+        "note: a session is already running for this state root in {mode} mode, so --full-auto did not apply. \
+         Stop that daemon (Ctrl-C in its terminal) or use another --state-root to start in full_auto."
+    );
+}
+
 /// The prompt for `exec`: the positional argument, or everything piped into
 /// stdin when that argument is `-` (so scripts can feed a long instruction).
 fn resolve_prompt(positional: Option<String>, mut stdin: impl std::io::Read) -> Result<String, String> {
@@ -353,13 +382,17 @@ fn resolve_prompt(positional: Option<String>, mut stdin: impl std::io::Read) -> 
 
 /// Start the session daemon when the socket is not live, then return the socket
 /// path. Detached on purpose: the session must outlive this client (§9).
-fn ensure_daemon(state_root: &Path, model: Option<String>) -> Result<PathBuf, String> {
+///
+/// `full_auto` only reaches a daemon this call starts: the permission mode is
+/// fixed when a session boots (D-41), so a running daemon keeps its own mode.
+/// Returns whether a daemon had to be started, so the caller can say so.
+fn ensure_daemon(state_root: &Path, model: Option<String>, full_auto: bool) -> Result<(PathBuf, bool), String> {
     let socket = state_root.join("daemon.sock");
     // liveness is a *connection*, not the presence of a socket file: a crashed
     // daemon leaves a stale file that would make bind fail if we kept it
     if socket.exists() {
         if std::os::unix::net::UnixStream::connect(&socket).is_ok() {
-            return Ok(socket);
+            return Ok((socket, false));
         }
         let _ = std::fs::remove_file(&socket);
     }
@@ -376,6 +409,9 @@ fn ensure_daemon(state_root: &Path, model: Option<String>) -> Result<PathBuf, St
     if let Some(model) = model {
         command.arg("--model").arg(model);
     }
+    if full_auto {
+        command.arg("--full-auto");
+    }
     // A detached daemon has no terminal to complain on: its banner, its startup
     // failure and anything it logs later land in <state root>/daemon.log.
     std::fs::create_dir_all(state_root).map_err(|e| format!("cannot create {}: {e}", state_root.display()))?;
@@ -390,7 +426,7 @@ fn ensure_daemon(state_root: &Path, model: Option<String>) -> Result<PathBuf, St
     let mut child = command.spawn().map_err(|e| format!("cannot start the daemon: {e}"))?;
     for _ in 0..150 {
         if socket.exists() {
-            return Ok(socket);
+            return Ok((socket, true));
         }
         // The daemon reports a startup failure by exiting non-zero: report that
         // now, with its own words, instead of waiting out the whole window.

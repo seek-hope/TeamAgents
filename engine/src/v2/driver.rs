@@ -1594,6 +1594,18 @@ impl<P: Provider> Driver<P> {
             match name {
                 "shell" => self.execute_shell(&operation_id, &intent, !recovered).await?,
                 "read_history" => self.execute_readback(&operation_id, &intent, snapshot).await?,
+                // A `finish` that stated no usable outcome arrives here as an
+                // ordinary intent (the kernel refuses to read an outcome it
+                // cannot verify). Answer it with the problem so the model can
+                // correct it in the same turn — never close the goal as a
+                // failure the model never claimed, and never skip the required
+                // checks because the status went missing (§8, A16).
+                teamagents_core::kernel::FINISH_TOOL => {
+                    let problem = teamagents_core::kernel::finish_status_problem(&intent["args"])
+                        .unwrap_or_else(|| "call finish again with a usable status".to_string());
+                    let message = format!("finish refused: {problem}");
+                    self.complete_with_error(&operation_id, &intent, "invalid_finish", &message).await?
+                }
                 teamagents_core::kernel::SEND_TOOL
                 | teamagents_core::kernel::DELEGATE_TOOL
                 | teamagents_core::kernel::SPAWN_TOOL => self.execute_collaboration(&operation_id, &intent).await?,

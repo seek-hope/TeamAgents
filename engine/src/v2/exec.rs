@@ -21,6 +21,9 @@ pub struct Client {
     conn: Conn,
     pub session_id: String,
     pub state_root: String,
+    /// The mode the session booted with (D-41); the daemon reports it in the
+    /// greeting because it is fixed for the whole session.
+    pub permissions: String,
     next_request: u64,
     watermark: i64,
 }
@@ -33,6 +36,7 @@ impl Client {
             conn,
             session_id: greeting["session_id"].as_str().unwrap_or("").to_string(),
             state_root: greeting["state_root"].as_str().unwrap_or("").to_string(),
+            permissions: greeting["permissions"].as_str().unwrap_or("unknown").to_string(),
             next_request: 0,
             watermark: 0,
         })
@@ -293,6 +297,7 @@ pub fn execute(options: &ExecOptions) -> Result<ExecRun, (i32, String)> {
     let report = json!({
         "session_id": client.session_id,
         "state_root": client.state_root,
+        "permissions": client.permissions,
         "instance_id": instance,
         "end": end.name(),
         "goal_status": goal_status,

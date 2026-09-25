@@ -163,6 +163,13 @@ pre_tool = ["/home/you/bin/policy.sh"]            # policy hook before tool call
 | `approved_scope` (default) | Shell runs under bubblewrap; network access and out-of-scope writes need user approval, bound to the concrete operation and its argument hash |
 | `full_auto` | Host shell (D-41): long commands and background services survive across calls, and `exec` exiting does not stop an already started service |
 
+The mode belongs to the **session**, not to the client: it is fixed when the daemon boots
+(`teamagents --full-auto`, `teamagents --full-auto --state-root …` or `teamagents daemon --full-auto`). A client that
+finds a session already running keeps that session's mode and prints which one it is, so
+`teamagents exec --full-auto` against a live `approved_scope` session reports
+`the session is already running in approved_scope mode` instead of silently ignoring the flag. To switch
+modes, stop that daemon (Ctrl-C in its terminal) or use another `--state-root`.
+
 When bubblewrap is unavailable this is a **classified failure** (`started=false`); the command never falls
 back silently to host execution.
 

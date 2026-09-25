@@ -3128,6 +3128,20 @@ fn register_check_runs(tx: &Connection, session_id: &str, params: &Json, identit
         tool_calls.push(json!({"id": call_id, "type": "function",
                                "function": {"name": "shell", "arguments": json!({"command": command_text}).to_string()}}));
     }
+    // The completion candidate's own `finish` call has no operation, so without
+    // an answer here it would stay unanswered — and a strict wire endpoint
+    // rejects an assistant message whose `tool_calls` are not followed by
+    // matching tool messages, which broke the repair turn of a real run (A16).
+    // Answer it before the synthetic check entry, so the transcript is valid
+    // whichever way the round ends.
+    while answer_dangling_calls(
+        tx,
+        instance_id,
+        epoch,
+        &format!("[finish received: required checks round {round} must pass before the goal can settle]"),
+    )?
+    .is_some()
+    {}
     append_context(
         tx,
         instance_id,

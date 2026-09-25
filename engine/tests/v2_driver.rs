@@ -72,9 +72,12 @@ fn shell_call(id: &str, command: &str) -> Json {
                            "function": {"name": "shell", "arguments": json!({"command": command}).to_string()}}]})
 }
 
+/// A finish call with a fresh call id, as a real provider emits: the runtime
+/// pairs tool messages to calls by id, and wire protocols require the ids to be
+/// unique within a conversation.
 fn finish_call(summary: &str) -> Json {
     json!({"role": "assistant", "content": "",
-           "tool_calls": [{"id": "finish-1", "type": "function",
+           "tool_calls": [{"id": format!("finish-{}", uuid::Uuid::new_v4()), "type": "function",
                            "function": {"name": "finish",
                                         "arguments": json!({"status": "success", "summary": summary}).to_string()}}]})
 }
@@ -851,7 +854,7 @@ async fn worker_finish_with_an_empty_queue_just_closes_the_turn() {
 
 fn finish_call_blocked(summary: &str) -> Json {
     json!({"role": "assistant", "content": "",
-           "tool_calls": [{"id": "finish-1", "type": "function",
+           "tool_calls": [{"id": format!("finish-{}", uuid::Uuid::new_v4()), "type": "function",
                            "function": {"name": "finish",
                                         "arguments": json!({"status": "blocked", "summary": summary}).to_string()}}]})
 }
@@ -936,6 +939,113 @@ async fn configured_checks_gate_the_goal_through_the_config_edge() {
     let rounds: Vec<_> = events.iter().filter(|e| e["kind"] == json!("check_round_registered")).collect();
     assert_eq!(rounds.len(), 2, "the check ran once per finish: {rounds:?}");
     assert!(root.dir.join("ws").join("done-marker").exists());
+    handle.shutdown().await.expect("shutdown");
+}
+
+/// Every assistant message with `tool_calls` must be followed by one tool
+/// message per call before any later assistant message: OpenAI-compatible and
+/// Anthropic endpoints reject the request otherwise, and the scripted provider
+/// used by these tests accepts anything — so this is asserted structurally.
+fn assert_wire_valid(entries: &[Json]) {
+    let mut pending: Vec<String> = Vec::new();
+    for entry in entries {
+        match entry["role"].as_str().unwrap_or("") {
+            "assistant" => {
+                assert!(pending.is_empty(), "an assistant message followed unanswered tool_calls: {pending:?}");
+                pending = entry["tool_calls"]
+                    .as_array()
+                    .map(|calls| calls.iter().filter_map(|call| call["id"].as_str().map(str::to_string)).collect())
+                    .unwrap_or_default();
+            }
+            "tool" => {
+                if let Some(id) = entry["tool_call_id"].as_str() {
+                    let at = pending.iter().position(|call| call == id);
+                    assert!(at.is_some(), "a tool message answered an unknown call: {id:?} in {pending:?}");
+                    pending.remove(at.unwrap());
+                }
+            }
+            "user" => assert!(pending.is_empty(), "a user message arrived with unanswered tool_calls: {pending:?}"),
+            _ => {}
+        }
+    }
+    assert!(pending.is_empty(), "the transcript ends with unanswered tool_calls: {pending:?}");
+}
+
+/// The leader's context entries in order (the transcript the wire view is built
+/// from), for structural assertions the scripted provider cannot make.
+async fn read_transcript(handle: &DriverHandle, instance: &str) -> Vec<Json> {
+    let instance = instance.to_string();
+    handle
+        .with_control(move |control| {
+            let mut stmt = control
+                .connection()
+                .prepare("SELECT message_json FROM context_entries WHERE instance_id = ?1 ORDER BY idx")
+                .expect("prepare");
+            let rows = stmt.query_map([&instance], |row| row.get::<_, String>(0)).expect("query");
+            rows.filter_map(|row| row.ok())
+                .filter_map(|raw| serde_json::from_str::<Json>(&raw).ok())
+                .collect::<Vec<Json>>()
+        })
+        .await
+        .expect("storage")
+}
+
+/// The repair path after a failing required check must keep the transcript
+/// wire-valid: the model's `finish` call is an assistant `tool_calls` entry with
+/// no operation of its own, so the runtime has to answer it before the repair
+/// turn asks again. A real DeepSeek run returned HTTP 400 here until this was
+/// fixed; the scripted provider cannot see it.
+#[tokio::test]
+async fn the_check_repair_path_keeps_the_transcript_wire_valid() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let root = root("checks-wire");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let script = vec![
+        Step::Message(finish_call("claimed done")),
+        Step::Message(shell_call("fix-1", "touch done-marker")),
+        Step::Message(finish_call("actually done now")),
+    ];
+    let mut config = root.config(ScriptedProvider { script: Mutex::new(script.into()) });
+    config.goal_limits = json!({"required_checks": [{"id": "marker", "command": "test -f done-marker"}]});
+    let handle = start(config).await.expect("start");
+    handle.input("do the work").await.expect("input");
+    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    let entries = read_transcript(&handle, "i-main").await;
+    assert_wire_valid(&entries);
+    handle.shutdown().await.expect("shutdown");
+}
+
+/// A model that forgets the `status` field used to close the goal as FAILED
+/// (a failure it never claimed) and skip the required checks entirely — a real
+/// DeepSeek run did exactly that. The runtime now hands the problem back, the
+/// turn continues, and the corrected finish goes through the checks.
+#[tokio::test]
+async fn a_finish_without_a_status_is_corrected_in_the_same_turn() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let root = root("finish-no-status");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let no_status = json!({"role": "assistant", "content": "",
+        "tool_calls": [{"id": format!("finish-{}", uuid::Uuid::new_v4()), "type": "function",
+                        "function": {"name": "finish", "arguments": json!({"summary": "did the work"}).to_string()}}]});
+    let script = vec![Step::Message(no_status), Step::Message(finish_call("did the work"))];
+    let mut config = root.config(ScriptedProvider { script: Mutex::new(script.into()) });
+    config.goal_limits = json!({"required_checks": [{"id": "always", "command": "true"}]});
+    let handle = start(config).await.expect("start");
+    handle.input("do the work").await.expect("input");
+    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED", "the corrected finish settles the goal");
+    let events = handle.events(0).await.unwrap();
+    assert!(
+        events.iter().any(|event| event["kind"] == json!("check_round_registered")),
+        "the required check must still run: {events:?}"
+    );
+    let entries = read_transcript(&handle, "i-main").await;
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry["role"] == "tool" && entry["content"].as_str().unwrap_or("").contains("finish refused")),
+        "the model is told what was wrong: {entries:?}"
+    );
+    assert_wire_valid(&entries);
     handle.shutdown().await.expect("shutdown");
 }
 

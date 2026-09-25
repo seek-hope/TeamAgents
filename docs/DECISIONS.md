@@ -231,6 +231,65 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-54 The completion path survives a real model (2026-09-25)
+
+Several things fixed earlier were verified again against a real DeepSeek Flash session (isolated state root, native
+1,000,000 context window per D-36, effort `high`). Two of those runs failed in ways the scripted providers
+cannot express, because they emulate neither a strict wire endpoint nor a model that forgets a field:
+
+- **The repair turn after a failing check was wire-invalid.** The model's `finish` call is an assistant
+  `tool_calls` entry with no operation of its own; on the check path nothing answered it, so the transcript
+  sent to the repair turn contained an assistant message whose call had no tool answer following it. DeepSeek
+  answered `HTTP 400 … An assistant message with 'tool_calls' must be followed by tool messages responding to
+  each 'tool_call_id'` and the run died as a permanent model error. `register_check_runs` now answers the
+  dangling call (with `[finish received: required checks round N must pass before the goal can settle]`)
+  before it appends the synthetic check entry, so the transcript stays valid on both the repair and the
+  blocked path.
+- **A `finish` without a usable status produced a false failure.** The kernel mapped a missing or unknown
+  `status` to `failed`, the goal closed as `FAILED` although the work was done, and the required checks never
+  ran (they only run for a claimed success). The kernel now refuses such a call: it produces no completion,
+  reports the problem, and hands the call to the runtime as an ordinary intent, which answers it with
+  `finish refused: status is required and must be one of success, blocked, failed …` and continues the same
+  turn — the uniform "invalid call → error receipt → model retries" path. A stated outcome (`success`,
+  `blocked`, `failed`) is unchanged, and the goal can no longer be settled by a call that states nothing.
+
+The structural rule both fixes protect is now asserted where the scripted providers cannot fake it:
+`v2_driver::assert_wire_valid` walks the real transcript and requires every assistant `tool_calls` entry to be
+answered before the next assistant message (this is what strict endpoints check), and
+`a_finish_without_a_status_is_corrected_in_the_same_turn` requires the correction, the continued turn and the
+required check. Both tests fail against the pre-fix code (`assert_wire_valid` reported
+`an assistant message followed unanswered tool_calls: ["finish-…"]`; the status test reported the goal as
+`FAILED`), which is how they were checked.
+
+Evidence: `core::kernel::tests::a_finish_without_a_usable_status_is_not_a_completion`,
+`v2_driver::the_check_repair_path_keeps_the_transcript_wire_valid`,
+`v2_driver::a_finish_without_a_status_is_corrected_in_the_same_turn`, plus five real runs recorded under
+`review/tmp/d50-live/` (one positive gate run, one 400-error run, one false-`FAILED` run, one approval exit-3
+run, and the post-fix re-runs). The scripted tests in this repository accept any transcript, so this is exactly
+the class of defect the real-service rule exists for.
+
+## D-55 `--full-auto` reaches the session it starts, and the mode is visible (2026-09-25)
+
+A probe run parked on an approval although it had been started with `--full-auto`: both entry points parsed
+the flag and dropped it. `ensure_daemon` took only a model key, so `teamagents --full-auto` and
+`teamagents exec --full-auto` started a plain `approved_scope` daemon — the documented flag (README argument
+table, user guide §4) was a no-op, and the user guide's troubleshooting advice ("or run with `--full-auto`")
+did not work either. Only `teamagents daemon --full-auto` ever took effect.
+
+- `ensure_daemon` takes the flag and forwards `--full-auto` to the daemon it starts, and reports whether it
+  had to start one.
+- The daemon greeting now carries `permissions` (the mode the session booted with). It is additive: clients
+  that do not know the field ignore it, and the mode is fixed for the session's lifetime (D-41), so the
+  greeting is the honest place to state it.
+- Calling `exec`/`teamagents` with `--full-auto` against a session that is already running prints
+  `note: a session is already running for this state root in <mode> mode, so --full-auto did not apply …`
+  instead of silently pretending. `exec`'s JSON report carries `permissions` as well, so a CI log records
+  which mode the run happened in.
+
+Evidence: `cli::full_auto_reaches_a_started_daemon_and_is_reported_against_a_live_one` starts a session
+through `exec --full-auto`, asserts the daemon greeting reports `full_auto`, then runs against that live
+session and asserts the note names the real mode (and that the daemon it started is stopped again).
+
 ## D-53 Documentation claims corrected to the code (2026-09-25)
 
 Continuing the documented-surface audit (D-49 … D-52), three prose claims did not match the implementation. All
