@@ -286,7 +286,7 @@ for line in sys.stdin:
     handle.input("echo once").await.expect("input");
     // crash right after the dispatch is committed (§6.3 crash window)
     wait_event(&handle, "operation_dispatched", 10_000).await;
-    handle.crash();
+    handle.crash().await;
     let recovering = ScriptedProvider::new(vec![finish_call("recovered without guessing")]);
     let mut config = root.config(recovering);
     config.catalog = catalog;

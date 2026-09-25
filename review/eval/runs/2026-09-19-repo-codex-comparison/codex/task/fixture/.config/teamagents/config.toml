@@ -1,4 +1,0 @@
-[models.leader_main]
-provider = "openai"
-protocol = "openai"
-model = "test"

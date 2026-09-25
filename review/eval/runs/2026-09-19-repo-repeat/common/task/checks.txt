@@ -1,1 +1,0 @@
-XDG_CONFIG_HOME="$PWD/.config" cargo test --offline --manifest-path engine/Cargo.toml --test fork_rewind --test model_override --test session_boot --test worker_protocol -- --test-threads=1

@@ -273,16 +273,14 @@ impl DriverHandle {
 
     /// Simulate a hard driver crash (tests only): the task is aborted
     /// mid-await, committed state stays, runners survive independently (A11).
-    /// Simulate a crash: abort the driver task and wait until it has finished
-    /// unwinding. The aborted task releases the coordinator lock while it unwinds, so
-    /// a replacement driver started too early would fail with "state root already has
-    /// a coordinator" (tests crash and restart in the same process).
-    pub fn crash(self) {
+    /// Simulate a crash: abort the driver task and await its unwind. The coordinator
+    /// lock lives in this handle, and the aborted task must stop before a replacement
+    /// driver can take it (tests crash and restart inside one process, on a
+    /// current-thread runtime where a blocking wait would stall the very task it is
+    /// waiting for).
+    pub async fn crash(self) {
         self.task.abort();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while !self.task.is_finished() && std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
+        let _ = self.task.await; // JoinError::Cancelled once the abort lands
     }
 
     /// Stop driving; submitted commands stay committed (§4.1).

@@ -1,1 +1,0 @@
-grep -q started run.txt && ! grep -q done run.txt

@@ -1,9 +1,0 @@
-{
-  "engine/src/codex.rs": "928701141af57ac2e0dbaab6a7ef19054bb84ab01893e8baf4fddafaea5dd901",
-  "engine/src/codex/history.rs": "1cd85a4971184c351e201006f63e1d9a28a1435d5efbd9650c473c13bd6c50c6",
-  "engine/src/history.rs": "5db4f1eb9eccef976d2228b91a2a8f7b25165d721733af9d13b56558cb5d4a1c",
-  "engine/tests/history_protocol.rs": "107e9a536aa1196d2e6c92c6d4f11d2a7ffc989972fd5b1d6bb0461d791dacb0",
-  "tui/src/history.rs": "326fc5022deedde679e841691a96d026c50f750be202a8d4484a65d72eeab84a",
-  "tui/src/i18n.rs": "4924096782c8e24cdb527faca5c13af8fe530807c2466f86a9ba946beb504350",
-  "tui/tests/history_tests.rs": "a77a8d6624ff3ea45096faa407c6d520117b03a5a04cb6ac6e7359058e30e180"
-}

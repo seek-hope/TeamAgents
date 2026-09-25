@@ -1,5 +1,0 @@
-src/amount.rs
-src/csv.rs
-src/ledger.rs
-src/lib.rs
-src/main.rs

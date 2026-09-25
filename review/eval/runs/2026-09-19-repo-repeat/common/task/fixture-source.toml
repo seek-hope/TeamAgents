@@ -1,5 +1,0 @@
-revision = "046a43e32a73794e057ae0331ee3247ee3c42179"
-paths = [
-  ".gitignore", "AGENTS.md", "README.md", "TeamAgents-Implementation-Plan.zh-CN.md",
-  "core", "engine", "tui", "docs", "examples",
-]

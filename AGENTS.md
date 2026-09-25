@@ -11,8 +11,8 @@
   `docs/DECISIONS.md`; unconfirmed ones stay in discussion.
 - This repository is a standalone Rust project: all implementation code is Rust (the `core`, `engine` and
   `tui` crates). `tui/scripts/*.py` and the Python fake servers inside some Rust tests are test-only.
-- Material from earlier implementations and their migration lives in `docs/archive/` and `review/archive/`.
-  It is kept for traceability only and is not the current reference.
+- The repository carries only the current implementation: material from earlier implementations and their
+  migration was removed from the tree (it stays reachable through Git history, see `git log -- docs/archive`).
 
 ## Language (repository-wide)
 
@@ -41,7 +41,7 @@ python3 review/eval/r2-p6/run.py --phase pilot --out <new date directory>  # rea
 ```
 
 - Baseline (2026-09-25): `make check` is green — core 91 / engine 136 / tui 29. Raw evaluation JSONL lives
-  in `review/eval/runs/`, per-item evidence in `docs/ACCEPTANCE.md`.
+  in `review/eval/r2-p6/runs/`, per-item evidence in `docs/ACCEPTANCE.md`.
 - Skipped checks and the current baseline are collected in `docs/ACCEPTANCE.md`. A green Cargo run is not a
   real-service acceptance result.
 - Real-model evaluation always uses the model's native context window and records the value and its source;
@@ -79,8 +79,8 @@ This describes the current code.
 
 - Current evidence: `docs/ACCEPTANCE.md` (per item A01–A36), `verification/REPORT.md` (formal-verification
   results, evidence, unproven list) and whatever `review/README.md` lists as current.
-- Dated historical batches (review findings, fix notes, migration stages, evaluations of earlier
-  implementations) live in `review/archive/`: they are traceable records, not a description of current code.
+- Older review and evaluation batches from earlier implementations are no longer in the tree; they are
+  reachable through Git history (`git log -- review/archive`) and do not describe the current code.
 - Read-only reviews must not modify the reviewed files, and every conclusion needs a re-runnable command or
   probe (probes go to /tmp or `review/tmp/`). Before claiming a falsification, rule out probe error.
 

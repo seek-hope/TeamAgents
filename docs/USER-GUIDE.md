@@ -1,7 +1,7 @@
 # TeamAgents user guide
 
-This guide describes the current implementation. Notes from earlier releases and the migration material are
-archived in [docs/archive/](archive/README.md) and are not the current reference.
+This guide describes the current implementation. Notes from earlier releases and the migration material
+were removed from the tree and stay reachable through Git history (`git log -- docs/archive`).
 
 ## 1. Quick start
 
@@ -115,10 +115,9 @@ back silently to host execution.
 - Long-context compaction triggers on **real window usage**: the summary keeps the original request, user
   revisions, acceptance criteria and open questions, while the full text stays retrievable through
   `read_history`. Compaction calls count against the goal budget.
-- Data cleanup: the session state of earlier releases has been removed against an explicit inventory (the
-  script and the inventory-based approach are kept in `review/archive/r28-legacy-cleanup.py`; it lists first
-  and only deletes with `--apply`). Credentials, `~/.agents/skills`, `~/.codex` and the evidence under
-  `review/` are always kept.
+- Data cleanup: the session state of earlier releases was removed against an explicit inventory (list
+  first, delete only with an explicit `--apply`). Credentials, `~/.agents/skills`, `~/.codex` and the
+  evidence under `review/` are always kept.
 
 ## 7. Troubleshooting
 

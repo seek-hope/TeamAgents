@@ -1,8 +1,0 @@
-rust-ledger      rc=0    268s /tmp/teamagents-shell-cwd-20260919/live/run/rust-ledger.jsonl [rc=0 ok]
-rust-ledger      隐藏评分通过：/tmp/teamagents-shell-cwd-20260919/live/run/rust-ledger.grade.json
-
-| 任务 | status | exit | 秒 | tokens(prompt/completion) | 验收 |
-|---|---|---|---|---|---|
-| rust-ledger | completed | 0 | 267.3 | 725633/65312 | 全部通过 |
-
-原始 JSONL 与 stderr：/tmp/teamagents-shell-cwd-20260919/live/run

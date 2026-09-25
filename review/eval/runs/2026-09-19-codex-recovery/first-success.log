@@ -1,9 +1,0 @@
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
-     Running tests/live_codex.rs (engine/target/debug/deps/live_codex-ce920cc0afbe66ab)
-
-running 1 test
-live codex recovery evidence: {"model":"deepseek-flash","provider":"deepseek","context_window":1000000,"duration_ms":7712,"run_status":"COMPLETED","task_status":"SUCCEEDED","same_thread":true,"proof_lines":1,"external_turn_id":"01a0b85a-ced7-7b50-9446-3a4a71cafc00","thread_id":"01a0b85a-cead-7042-a10d-f7b030b4fda9"}
-test live_codex_turn_and_cold_recovery_through_app_server ... ok
-
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.73s
-

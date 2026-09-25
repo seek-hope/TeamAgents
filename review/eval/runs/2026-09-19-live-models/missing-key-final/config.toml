@@ -1,7 +1,0 @@
-[models.leader_main]
-provider = "deepseek"
-protocol = "deepseek"
-model = "deepseek-flash"
-context_window = 1000000
-base_url = "http://127.0.0.1:1"
-api_key_env = "TEAMAGENTS_LIVE_MISSING_KEY"

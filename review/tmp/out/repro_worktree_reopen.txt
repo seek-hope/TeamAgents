@@ -1,9 +1,0 @@
-1st prepare -> git_worktree /tmp/ta-repro-wt/members/b/work teamagents/b-1789183000
-git worktree list:
-/tmp/ta-repro-wt/project        d0a30c5 [master]
-/tmp/ta-repro-wt/members/b/work d0a30c5 [teamagents/b-1789183000]
-2nd prepare RAISED WorkspaceError: git worktree add failed: Preparing worktree (new branch 'teamagents/b-1789183000')
-fatal: a branch named 'teamagents/b-1789183000' already exists
-branches after: ['*', 'master', '+', 'teamagents/b-1789183000']
-3rd prepare (1s later) RAISED WorkspaceError: git worktree add failed: Preparing worktree (new branch 'teamagents/b-1789183001')
-fatal: '/tmp/ta-repro-wt/members/b/work' already exists

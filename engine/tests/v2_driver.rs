@@ -416,7 +416,7 @@ async fn crash_before_model_response_recovers_with_honest_billing() {
     handle.input("do work").await.expect("input");
     wait_phase(&handle, "MODEL_PENDING", 5_000).await;
     tokio::time::sleep(Duration::from_millis(100)).await;
-    handle.crash();
+    handle.crash().await;
     // recovery: the lost attempt is recorded with unknown usage, then the
     // request retries under the same request and completes (§6.3)
     let recovering = ScriptedProvider { script: Mutex::new(vec![Step::Message(finish_call("recovered"))].into()) };
@@ -444,7 +444,7 @@ async fn tool_result_is_reused_after_crash_not_reexecuted() {
     // wait until the terminal receipt is committed (A08 crash window)
     wait_event(&handle, "operation_completed", 10_000).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
-    handle.crash();
+    handle.crash().await;
     let recovering = ScriptedProvider { script: Mutex::new(vec![Step::Message(finish_call("consumed"))].into()) };
     let handle = start(root.config(recovering)).await.expect("restart");
     assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");

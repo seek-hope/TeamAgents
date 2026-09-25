@@ -1,9 +1,0 @@
--rw-r--r-- 1 rimuru rimuru 49 Sep 23 21:39 buggy.py
--rw-r--r-- 1 rimuru rimuru 49 Sep 23 21:39 fixed.py
-e03c0ac69f1fd48bfa8f0bc850867f8627872fffef3475ffd807309e58296acd  buggy.py
-e03c0ac69f1fd48bfa8f0bc850867f8627872fffef3475ffd807309e58296acd  fixed.py
-== buggy.py output ==
-5
-== fixed.py output ==
-5
-PASS: buggy.py prints exactly 5

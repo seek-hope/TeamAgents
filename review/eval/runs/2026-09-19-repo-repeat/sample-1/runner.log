@@ -1,8 +1,0 @@
-repo-session-fork rc=0    939s /home/rimuru/Projects/Code/for_fun/TeamAgents/review/tmp/repo-repeat-20260919/sample-1/run/repo-session-fork.jsonl [rc=0 ok]
-repo-session-fork 隐藏评分通过：/home/rimuru/Projects/Code/for_fun/TeamAgents/review/tmp/repo-repeat-20260919/sample-1/run/repo-session-fork.grade.json
-
-| 任务 | status | exit | 秒 | tokens(prompt/completion) | 验收 |
-|---|---|---|---|---|---|
-| repo-session-fork | completed | 0 | 938.8 | 12893910/143529 | 全部通过 |
-
-原始 JSONL 与 stderr：/home/rimuru/Projects/Code/for_fun/TeamAgents/review/tmp/repo-repeat-20260919/sample-1/run

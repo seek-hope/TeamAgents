@@ -1,6 +1,0 @@
-default id for this dir: proj_5f6e98b6c554
-new_session_id (nothing exists): proj_5f6e98b6c554
-archived: ['proj_5f6e98b6c554']
-new_session_id after archiving: proj_5f6e98b6c554 -> collides: True
-list_sessions ids+archived: [('proj_5f6e98b6c554', False), ('proj_5f6e98b6c554', True)]
-duplicate session ids visible to the UI: True

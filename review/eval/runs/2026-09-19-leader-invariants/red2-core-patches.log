@@ -1,9 +1,0 @@
-   Compiling teamagents-core v0.1.2 (/home/rimuru/Projects/Code/for_fun/TeamAgents/core)
-error[E0609]: no field `kind` on type `&Value`
-   --> tests/engine.rs:426:46
-    |
-426 |             assert!(!events.iter().any(|e| e.kind == EventKind::TopologyApplied));
-    |                                              ^^^^ unknown field
-
-For more information about this error, try `rustc --explain E0609`.
-error: could not compile `teamagents-core` (test "engine") due to 1 previous error
