@@ -231,6 +231,48 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-98 A run whose instance is stopped mid-flight (2026-09-26)
+
+The user's two lifecycle levers behave differently while a run is waiting, and the headless client treated
+both as "still running".
+
+**Terminated.** `instances terminate --id … --yes` closes the instance's open execution: nothing will ever
+answer that run. Measured 2026-09-26 with a real model, `exec` waiting on a long turn and the leader retired
+through the CLI:
+
+| | before | after |
+|---|---|---|
+| report | `end: "timeout"`, `failure: null` | `end: "failed"`, `failure: "instance i-leader is terminated; this run cannot finish (termination is final — start a fresh state root for new work)"` |
+| exit code | `124` | `1` |
+| wall clock after the lever | 118.8 s (the caller's deadline) | 0.2 s |
+
+The client now watches `instance_lifecycle` for the instance it submitted to. The exit code differs on purpose
+from D-82's at-submit case (`2`, "nothing was submitted"): here a turn really ran and is unfinished, which is
+what `1` means.
+
+**Paused.** My first fix treated `PAUSED` the same way — and the pre-fix control of the scripted test refuted
+it (`left: Reply, right: Failed`): a pause stops the instance at a *boundary*, and the attempt in flight can
+still land and close the turn, so a run must keep following its own turn. The shipped rule is therefore:
+
+- `terminate` ends the run at once with the truth;
+- `pause` does **not**: the run keeps waiting, and a resumed instance continues the work — measured live,
+  pause mid-run → resume five seconds later → the *same* run ends `exit 0 / end=completed / goal
+  SUCCEEDED`, with the file the turn was asked for on disk (`review/dogfood/lifecycle_run.py --lever pause`);
+- if the caller's deadline wins instead, the report says **what the instance was doing** rather than the
+  wrong "still running": the report now carries `instance_lifecycle`, and the one-line verdict distinguishes
+  `ACTIVE` / a stopped lifecycle (name the `instances resume --id …` lever) / `TERMINATED` (termination is
+  final). `timeout_line` is a pure function with its own unit test.
+
+Evidence: `v2_daemon::terminating_the_leader_mid_run_ends_the_headless_run_at_once` (pre-fix control:
+`Timeout`), `v2_daemon::pausing_the_leader_mid_run_lets_the_turn_finish` (the pause arrives while the request
+is in flight; the reply still closes the turn, the run reports `Reply` and the instance really is `PAUSED` —
+this test is what stopped the wrong fix), `v2::exec::tests::a_deadline_says_what_the_instance_was_doing`, and
+the live probe `review/dogfood/lifecycle_run.py` in both modes (2026-09-26, three runs).
+
+Ceiling: the client watches the lifecycle of the instance it submitted to; another instance being paused or
+retired is not this run's subject and stays ignored. A pause whose resume happens after the caller's deadline
+still ends as `timeout` — truthfully the caller stopped waiting — and the message now names the lifecycle.
+
 ## D-97 A refused request is not a slow one: `exec` waited out its deadline (2026-09-26)
 
 The runtime refuses a request *before it begins* in two cases, both as committed outcomes with an auditable

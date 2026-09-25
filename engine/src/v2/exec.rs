@@ -334,6 +334,9 @@ pub fn execute(options: &ExecOptions) -> Result<ExecRun, (i32, String)> {
     let mut pending_approval: Option<String> = None;
     // set when the runtime refused a request before it began (budget ceiling, passed goal deadline)
     let mut refused: Option<String> = None;
+    // the lifecycle as the loop last saw it: a run that ends on its deadline has to say *what* the instance
+    // was doing, because "still running" is wrong for a paused or retired one (D-98)
+    let mut lifecycle_now = String::new();
     // set when the runtime names *this* envelope among the ones it sealed
     let mut undelivered = false;
     // the deadline is the default outcome: a loop that breaks on a terminal
@@ -368,6 +371,24 @@ pub fn execute(options: &ExecOptions) -> Result<ExecRun, (i32, String)> {
                             refused.get_or_insert_with(|| reason.clone());
                             turn_failure.get_or_insert(reason);
                         }
+                        // The user retired this instance: the control plane closes the epoch's execution, so
+                        // nothing will ever answer this run. Waiting out the deadline and calling it a timeout
+                        // would tell the caller "still running" about an instance that is gone — the
+                        // misreporting D-97 fixed for a refused request. A *pause* is deliberately **not**
+                        // handled here: it stops the instance at a safe boundary, the turn may still finish (a
+                        // reply closes it), and a run that is resumed before its deadline reports the turn's own
+                        // outcome; if the deadline wins instead, the report says which lifecycle the instance is
+                        // in (D-98).
+                        if event["kind"] == json!("instance_lifecycle")
+                            && event["payload"]["lifecycle"] == json!("TERMINATED")
+                        {
+                            let note = format!(
+                                "instance {instance} is terminated; this run cannot finish (termination is final \
+                                 — start a fresh state root for new work)"
+                            );
+                            refused.get_or_insert_with(|| note.clone());
+                            turn_failure.get_or_insert(note);
+                        }
                     }
                     // A queued input is sealed, not delivered, when a context reset
                     // moves the epoch before the boundary reaches it (§5.3/A24): the
@@ -388,6 +409,11 @@ pub fn execute(options: &ExecOptions) -> Result<ExecRun, (i32, String)> {
             .or_else(|| snapshot["instances"].as_array())
             .cloned()
             .unwrap_or_default();
+        if let Some(lifecycle) =
+            instances.iter().find(|row| row["id"] == json!(instance)).and_then(|row| row["lifecycle"].as_str())
+        {
+            lifecycle_now = lifecycle.to_string();
+        }
         let settled = instances.iter().any(|entry| entry["id"] == json!(instance) && entry["phase"] == json!("READY"));
         // What *this* run's input produced (D-72): its own entry, and the first
         // turn-ending entry after it. A settlement or a reply that happened before
@@ -464,6 +490,7 @@ pub fn execute(options: &ExecOptions) -> Result<ExecRun, (i32, String)> {
         // work somewhere else (its own --cwd), so both are reported
         "session_workspace": client.session_workspace,
         "instance_id": instance,
+        "instance_lifecycle": if lifecycle_now.is_empty() { "ACTIVE" } else { lifecycle_now.as_str() },
         "end": end.name(),
         "goal_status": goal_status,
         "reply": reply.as_ref().map(|text| text.chars().take(2000).collect::<String>()),
@@ -505,9 +532,12 @@ fn print_human(report: &Json, options: &ExecOptions) {
             eprintln!("[exec] approve or deny it in the TUI; or start the daemon with --full-auto to skip the gate");
         }
         "timeout" => println!(
-            "timed out: {} is still running ({}s)",
-            report["instance_id"].as_str().unwrap_or("the leader"),
-            options.timeout_s
+            "{}",
+            timeout_line(
+                report["instance_id"].as_str().unwrap_or("the leader"),
+                report["instance_lifecycle"].as_str().unwrap_or("ACTIVE"),
+                options.timeout_s
+            )
         ),
         // the instance stopped on the runtime's own closing word and no goal
         // settled in this run: say so instead of leaving the caller to guess
@@ -645,6 +675,23 @@ pub(crate) fn resolve_prefix(
     }
 }
 
+/// The one-line verdict for a run that ended on its deadline. "Still running" is only true for an ACTIVE
+/// instance: a paused one is stopped at a boundary (its turn continues when it is resumed), and a retired one
+/// cannot continue at all — the caller should be told which of the three it is (D-98).
+fn timeout_line(instance: &str, lifecycle: &str, seconds: u64) -> String {
+    match lifecycle {
+        "ACTIVE" => format!("timed out: {instance} is still running ({seconds}s)"),
+        "TERMINATED" => format!(
+            "timed out: {instance} is TERMINATED; this run cannot finish (termination is final — start a fresh \
+             state root for new work)"
+        ),
+        other => format!(
+            "timed out: {instance} is {other}, so its turn cannot finish ({seconds}s); resume it with \
+             `teamagents instances resume --id {instance}`"
+        ),
+    }
+}
+
 /// Persist the verification ledger next to the session database (the evidence
 /// a CI job can archive) and report its path.
 fn write_verification(state_root: &str, verification: &[Json]) -> Option<String> {
@@ -680,9 +727,20 @@ fn leader_instance(checkpoint: &Json) -> Option<(String, String)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{capped, leader_instance, parse_check_result, run_checks, startup_refusal, Attribution, End};
+    use super::{
+        capped, leader_instance, parse_check_result, run_checks, startup_refusal, timeout_line, Attribution, End,
+    };
     use serde_json::json;
     use std::path::Path;
+
+    #[test]
+    fn a_deadline_says_what_the_instance_was_doing() {
+        assert_eq!(timeout_line("i-leader", "ACTIVE", 60), "timed out: i-leader is still running (60s)");
+        let paused = timeout_line("i-leader", "PAUSED", 60);
+        assert!(paused.contains("is PAUSED") && paused.contains("instances resume --id i-leader"), "{paused}");
+        let retired = timeout_line("i-leader", "TERMINATED", 60);
+        assert!(retired.contains("TERMINATED") && retired.contains("termination is final"), "{retired}");
+    }
 
     #[test]
     fn a_refused_request_becomes_the_runs_failure_in_the_runtimes_words() {

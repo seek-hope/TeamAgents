@@ -40,7 +40,7 @@ happened. Diagnostics go to stderr, the outcome to stdout (`--json` prints one J
 | Exit code | Meaning |
 |---|---|
 | `0` | settled: the goal completed as `SUCCEEDED`, or the leader answered directly |
-| `1` | not delivered: the goal settled otherwise, the turn failed permanently, the runtime **refused the request before it began** (a goal budget ceiling, a passed goal deadline — it says so in `failure`), a `--check` command failed, or the run ended `unsettled` (the turn closed with nothing settled — the runtime's own closing word, never a reply) or `undelivered` (the input waited for a boundary and a context reset sealed it before it landed) |
+| `1` | not delivered: the goal settled otherwise, the turn failed permanently, the runtime **refused the request before it began** (a goal budget ceiling, a passed goal deadline — it says so in `failure`), the leader was **terminated while the run was in flight** (it says so in `failure` too),, a `--check` command failed, or the run ended `unsettled` (the turn closed with nothing settled — the runtime's own closing word, never a reply) or `undelivered` (the input waited for a boundary and a context reset sealed it before it landed) |
 | `3` | an approval is pending — a headless run does not wait for the deadline; decide it with `teamagents approvals` (§4) |
 | `124` | the `--timeout` deadline passed with the instance still running (a refusal is not a timeout: it ends the run at once with `1`) |
 | `2` | usage or infrastructure: no daemon, no model profile, a leader that is parked or paused |
@@ -348,7 +348,11 @@ teamagents tasks cancel --id t-prose    # releases a delegator waiting on a task
   its task (D-65), the task stays `RUNNING` and the delegator waits; cancelling it **satisfies** that wait
   (a `BLOCKED` task would not), so the delegator wakes and can re-delegate or settle honestly.
 - `terminate` needs `--yes`: it retires the instance, its open work is dealt with explicitly, and a workspace
-  holding uncommitted or unmerged work is never deleted — the reason is reported instead.
+  holding uncommitted or unmerged work is never deleted — the reason is reported instead. Retiring an instance
+  while a run is waiting ends that run at once (`1`, with the reason); **pausing** it does not: a pause stops
+  the instance at a boundary, the run keeps following its turn, and resuming lets it finish (§4.2, D-98).
+  If a run does hit its deadline on a stopped instance, the report names the lifecycle instead of claiming the
+  instance is still running.
 - **Stopping a command that is already running**: `tasks cancel` is *delegation-level* — the task lands
   `CANCELLED` and the delegator is released, but the assignee's command keeps running until its own tool
   timeout, because the process-group stop (§6.4) is a request against an *operation* and the assignee learns

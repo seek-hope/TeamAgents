@@ -471,3 +471,20 @@ session), the probe waits until it has passed, and the next run exits **1 in 0.1
 one model request (the refused turn never reached a model), a `goal_deadline_refused` event, the leader
 `PARKED` with the same reason — and the `--check` the probe attaches never runs (no marker file,
 `verification: []`, `verification_path: null`), which the first run of this probe found still happening.
+
+
+## `lifecycle_run.py`: the user's levers against a run in flight
+
+Two levers, two different truths, and the harness that measured both:
+
+```bash
+python3 review/dogfood/lifecycle_run.py                     # terminate: the run ends at once with the reason
+python3 review/dogfood/lifecycle_run.py --lever pause       # pause + resume: the run still finishes
+```
+
+`terminate` closes the instance's open execution, so the waiting run ends 0.2 s later with exit `1`,
+`end=failed` and `failure: "instance i-leader is terminated; this run cannot finish (termination is final —
+start a fresh state root for new work)"` (before D-98 it waited out its deadline and said `timeout`). `pause`
+is a boundary: the run keeps following its turn, and after `instances resume` the *same* run finishes —
+measured `exit 0 / end=completed / goal SUCCEEDED` with the file on disk. Measured 2026-09-26, three runs
+(D-98).
