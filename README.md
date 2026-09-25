@@ -61,14 +61,15 @@ you ──goal (natural language)──▶ Leader ──spawn / delegate──�
   is classified by persisted location — known results are reused, in-flight losses are recorded honestly
   (`OUTCOME_UNKNOWN`), and nothing is **replayed on a guess**.
 - **Permission gate**: `approved_scope` (default: bubblewrap isolation, approvals for out-of-scope work) and
-  `full_auto` (user-only, host shell); approvals bind a concrete operation and its argument hash, and `once`
-  expires after use.
+  `full_auto` (user-only, host shell); an approval binds one concrete operation, its argument hash and its
+  permission revision, so it is used up by that single dispatch.
 - **Completion gate**: `finish` only accepts honest outcomes; required checks defined by the user or project
   must actually pass.
 - **Long-context compaction**: triggered by real window usage; the summary keeps the original request, user
   revisions, acceptance criteria and open questions, while the full text stays retrievable through
   `read_history`. Compaction calls count against the goal budget.
-- **Tools**: file read/write/search with atomic multi-file edits, a persistent in-session shell (`cd` and
+- **Tools**: file read/write/search with exact-match edits, SHA-256 version checks and atomic writes (a
+  process-wide write lock serializes mutations), a persistent in-session shell (`cd` and
   `export` survive across commands), web search and fetch, MCP (stdio and streamable HTTP) and Skills
   (`~/.agents/skills`).
 - **User hooks (`[hooks]`)**: `notify` forwards events (`tool_call` / `team_action` / `run_*`) to your own
@@ -168,7 +169,7 @@ the `--json` report as `verification`.
 | `init` / `doctor` / `daemon` / `exec` / `version` / `--help` | config and state root / self-check / run the daemon alone (its output goes to `<state root>/daemon.log`) / headless input / version / usage |
 
 TUI keys (they match the hint line at the bottom; deliberately no function keys, since some keyboards lack
-them): `Enter` send, `Shift+Enter`/`Ctrl+J` newline, `Tab` switch the conversation target, `Ctrl+N` cycle the
+them): `Enter` send, `Ctrl+J` newline (and `Shift+Enter` where the terminal reports modifiers), `Tab` switch the conversation target, `Ctrl+N` cycle the
 views (conversation → instances → tasks → topology → back), `Ctrl+A` pending approvals, `Esc` back,
 `Ctrl+C`/`Ctrl+D` quit. In the instances panel `Enter` sets the conversation target, `p` pauses, `r` resumes
 and `t` terminates (with confirmation); in the tasks panel `c` cancels a task; in the approvals panel

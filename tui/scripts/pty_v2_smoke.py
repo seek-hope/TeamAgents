@@ -175,6 +175,27 @@ def main():
     expect("10/1000", "status budget")
     expect("i-leader", "composer target")
     expect("Enter", "footer")
+    expect("Ctrl+J newline", "footer newline hint")
+
+    # Ctrl+J inserts a newline in the composer (0x0A in raw mode), the composer
+    # box grows, and the whole two-line text is what gets submitted
+    os.write(fd, "first-line".encode())
+    time.sleep(0.2)
+    os.write(fd, b"\x0a")
+    time.sleep(0.2)
+    os.write(fd, "second-line".encode())
+    time.sleep(0.3)
+    scr.feed(read_all(fd, 3.0).decode("utf-8", "replace"))
+    expect("first-line", "composer first line")
+    expect("second-line", "composer second line")
+    os.write(fd, b"\r")
+    time.sleep(0.4)
+    scr.feed(read_all(fd, 3.0).decode("utf-8", "replace"))
+    multiline = [f for f in daemon.frames
+                 if f.get("method") == "submit_input" and f.get("params", {}).get("text") == "first-line\nsecond-line"]
+    if not multiline:
+        sent = [f.get("params", {}).get("text") for f in daemon.frames if f.get("method") == "submit_input"]
+        failures.append(f"Ctrl+J did not submit one two-line prompt; submitted: {sent!r}")
 
     # typing + Enter submits one submit_input business frame whose command id
     # carries the envelope (§9), and the input event drives a history refresh

@@ -59,11 +59,12 @@ teamagents exec --json "用一句话自我介绍"    # 同一后端的无头输�
 - **唯一权威状态**：每会话单 SQLite（WAL + `synchronous=FULL`）。崩溃恢复按持久化位置分类——
   已知结果复用、在途丢失诚实记账（`OUTCOME_UNKNOWN`）、**不猜测重放**。
 - **权限门**：`approved_scope`（默认，bubblewrap 隔离，越权需批准）与 `full_auto`（仅用户可开，D-41
-  主机 Shell）；批准绑定具体操作与参数散列，`once` 用后即失效。
+  主机 Shell）；一条批准绑定一个具体操作、其参数散列与权限 revision，只对那一次派发生效。
 - **完成检查闸门**：`finish` 只接受诚实结论；用户或项目预定义的必要检查必须真实通过。
 - **长上下文压缩**：按实际窗口占用触发，摘要保留原始要求、用户修订、验收与未决问题；
   原文经 `read_history` 仍可检索，压缩调用计入目标预算。
-- **工具面**：文件读写/搜索/原子多文件编辑、会话内持久 shell（`cd`/`export` 跨命令保留）、
+- **工具面**：文件读写/搜索（精确匹配编辑、SHA-256 版本校验、原子写入，进程内写锁串行化）、
+  会话内持久 shell（`cd`/`export` 跨命令保留）、
   网页搜索与抓取、MCP（stdio 与 streamable HTTP）、Skills（`~/.agents/skills`）。
 - **用户钩子（`[hooks]`）**：`notify` 把事件（`tool_call`/`team_action`/`run_*`）通知给你自己的程序；
   `pre_tool` 能在任何原生工具执行前拦截（exit 2 拒绝，stderr 作原因），坏钩子只记日志不卡团队。
@@ -156,7 +157,7 @@ git diff | teamagents exec -                                    # 提示词从 s
 | `init` / `doctor` / `daemon` / `exec` / `version` / `--help` | 准备配置与状态根 / 自检 / 单独运行 daemon（输出写入 `<state root>/daemon.log`）/ 无头输入 / 版本 / 用法 |
 
 TUI 键位（与屏幕底部提示一致；**刻意不使用 F 键**，因为部分键盘没有）：
-`Enter` 发送、`Shift+Enter`/`Ctrl+J` 换行、`Tab` 切换对话目标、
+`Enter` 发送、`Ctrl+J` 换行（终端会上报修饰键时 `Shift+Enter` 同样换行）、`Tab` 切换对话目标、
 `Ctrl+N` 依次切换视图（对话 → 实例 → 任务 → 拓扑 → 回到对话）、`Ctrl+A` 跳到待批准、
 `Esc` 返回、`Ctrl+C`/`Ctrl+D` 退出；
 实例面板 `Enter` 设为对话目标、`p` 暂停、`r` 恢复、`t` 终止（需确认）；

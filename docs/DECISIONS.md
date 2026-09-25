@@ -231,6 +231,46 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-53 Documentation claims corrected to the code (2026-09-25)
+
+Continuing the documented-surface audit (D-49 … D-52), three prose claims did not match the implementation. All
+three are now written as the code behaves, in both READMEs and in `AGENTS.md`:
+
+- **"an approval … `once` expires after use"** implied an approval *mode* that no longer exists. There is one
+  approval action, and the dispatch re-check requires the approval row to be `APPROVED` with exactly the
+  operation's `args_hash` and `grant_revision` (plus an optional `expires_at`), so an approval covers one
+  dispatch of one operation. The text now says that. (The neighbouring claim — a pending approval of an
+  operation that settles, or of a terminating instance, expires automatically — is real:
+  `expire_pending_approvals` is called on those transitions.)
+- **"file read/write/search with atomic multi-file edits"** overstated `edit_file`, which replaces exactly one
+  occurrence in one file (`old_string` must be unique, optional `expected_sha256`); a process-wide write lock
+  serializes mutations and writes are atomic per file. The text now describes that instead of promising one
+  atomic multi-file edit.
+- **"`Enter` send, `Shift+Enter`/`Ctrl+J` newline"** in the key list was aspirational until D-52 made it true,
+  so the wording there was fixed together with the implementation (and now names `Ctrl+J` as the chord that
+  works in every terminal).
+
+## D-52 The composer really is multi-line (2026-09-25)
+
+Both READMEs (and `tui/src/text.rs`'s own module comment) promised "`Enter` send, `Shift+Enter`/`Ctrl+J`
+newline", and `Composer::insert_newline` existed — but nothing called it for *typed* keys: `Enter` submitted
+unconditionally, so `Shift+Enter` sent the message, and `Ctrl+J` was swallowed by the "control chords never
+insert text" rule. Only pasted text could carry a newline. A coding agent's main input is often a multi-line
+instruction, so this was a real gap between the documented interface and the code.
+
+`composer_key` now inserts a newline for `Ctrl+J` and for `Shift+Enter` before the submit arm. `Ctrl+J` is the
+universal one: in raw mode the terminal's `0x0A` reaches crossterm's parser as `Char('j') + CONTROL`
+(crossterm documents exactly that for `\n`, which is why the chord works in any terminal), while
+`Shift+Enter` needs a terminal that reports modifiers — the TUI already pushes the keyboard-enhancement flags,
+so modern terminals do. The footer hint now advertises `Ctrl+J newline`, reordered so that a narrow terminal
+truncates the least important chord instead of the pending-approvals hint (78 characters with one approval
+pending, so it fits an 80-column terminal as well).
+
+Evidence: `v2app_tests::composer_inserts_newlines_and_submits_the_whole_text` (both chords, and a plain
+`Enter` still submits the whole text) and — in a real terminal, through the real binary —
+`make pty`'s `pty_v2_smoke.py`, which types two lines with `Ctrl+J` in between and asserts that the submitted
+input is exactly `"first-line\nsecond-line"`.
+
 ## D-51 The coordinator lock absorbs the fork/exec window (2026-09-25)
 
 `make check` failed intermittently (roughly every second run on a loaded machine) with

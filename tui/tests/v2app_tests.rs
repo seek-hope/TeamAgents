@@ -469,3 +469,30 @@ fn the_palette_drives_panels_selection_and_status() {
     assert_eq!(cell(geo.body.x + 1, geo.body.y + 1).bg, ACCENT, "the selected row is the accent surface");
     assert_eq!(cell(geo.status.x + 1, geo.status.y).bg, PANEL_BG, "the status line sits on the panel surface");
 }
+
+/// The composer is multi-line, as the footer and the README promise: Ctrl+J
+/// inserts a newline (raw mode delivers the terminal's 0x0A as Ctrl+J) and
+/// Shift+Enter does too where the terminal reports modifiers, while a plain
+/// Enter still submits the whole text.
+#[test]
+fn composer_inserts_newlines_and_submits_the_whole_text() {
+    let mut app = app();
+    for c in "line one".chars() {
+        app.handle_key(key(KeyCode::Char(c)));
+    }
+    assert!(app.handle_key(ctrl('j')).is_none(), "Ctrl+J only edits the composer");
+    for c in "line two".chars() {
+        app.handle_key(key(KeyCode::Char(c)));
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+    for c in "line three".chars() {
+        app.handle_key(key(KeyCode::Char(c)));
+    }
+    assert_eq!(app.composer.text(), "line one\nline two\nline three");
+    let effect = app.handle_key(key(KeyCode::Enter)).expect("submit effect");
+    let V2Effect::SubmitInput { text, .. } = effect else { panic!("wrong effect") };
+    assert_eq!(text, "line one\nline two\nline three");
+    assert!(app.composer.text().is_empty(), "the composer clears after sending");
+    // the footer advertises the newline chord
+    assert!(app.footer_hint().contains("Ctrl+J newline"), "{}", app.footer_hint());
+}

@@ -721,6 +721,19 @@ impl V2App {
     fn composer_key(&mut self, key: crossterm::event::KeyEvent) -> Option<V2Effect> {
         use crossterm::event::{KeyCode, KeyModifiers};
         match key.code {
+            // A newline in the composer, as the footer and `text.rs` promise.
+            // Ctrl+J is the universal one: in raw mode the terminal's 0x0A
+            // arrives as Ctrl+J (crossterm parses it that way), so it works
+            // everywhere, while Shift+Enter needs a terminal that reports
+            // modifiers (the TUI pushes the keyboard-enhancement flags).
+            KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.composer.insert_newline();
+                None
+            }
+            KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.composer.insert_newline();
+                None
+            }
             KeyCode::Enter => {
                 let text = self.composer.submit()?;
                 let instance = self.active_instance()?.id.clone();
@@ -867,7 +880,11 @@ impl V2App {
                     } else {
                         format!(" · Ctrl+A approvals({})", self.approvals.len())
                     };
-                    format!("Enter send · Tab switch instance · Ctrl+N panels{approvals} · Ctrl+C quit")
+                    // Order is priority: a narrow terminal truncates the tail,
+                    // so what a user needs while composing (send, newline, the
+                    // pending approvals) comes first; at 80 columns the whole
+                    // hint is visible.
+                    format!("Enter send · Ctrl+J newline{approvals} · Ctrl+N panels · Tab target")
                 }
                 Focus::Approvals => "a approve once · d deny · up/down select · Esc back".to_string(),
             },

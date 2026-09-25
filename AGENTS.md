@@ -98,9 +98,9 @@ This describes the current code.
 - **Avoid interrupting a member turn**: keep tasks small and acceptance criteria explicit. After an
   interruption recovery is driven by persisted location — known results are reused, in-flight losses are
   recorded as `OUTCOME_UNKNOWN`, and side effects are never replayed on a guess.
-- **Approvals** bind a concrete operation and its argument hash; `once` expires after use. The PENDING
-  approval of an operation that settles or an instance that terminates is expired automatically; a leftover
-  can be denied with `d` in the approvals panel.
+- **Approvals** bind one concrete operation, its argument hash and its permission revision, so an approval is
+  used up by that single dispatch. The PENDING approval of an operation that settles or an instance that
+  terminates is expired automatically; a leftover can be denied with `d` in the approvals panel.
 - **Transport failures**: a read timeout or truncated stream after the response headers is retried inside
   the turn up to `max_retries` as long as no visible text was emitted; once text went out (or the protocol
   itself failed) the attempt fails immediately and the reason lands in the receipt
