@@ -210,20 +210,41 @@ pub fn open(path: &Path, create: bool) -> Result<Connection, String> {
         std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
     }
     let conn = Connection::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
-    conn.pragma_update(None, "journal_mode", "WAL").map_err(|e| format!("journal_mode: {e}"))?;
-    conn.pragma_update(None, "synchronous", "FULL").map_err(|e| format!("synchronous: {e}"))?;
-    conn.busy_timeout(std::time::Duration::from_secs(5)).map_err(|e| format!("busy_timeout: {e}"))?;
-    conn.pragma_update(None, "foreign_keys", "ON").map_err(|e| format!("foreign_keys: {e}"))?;
-    // the stamp table must exist before the stamp can be read; everything
-    // else is created only after the format check accepts the database
-    conn.execute_batch("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);")
-        .map_err(|e| format!("meta table: {e}"))?;
-    let format: Option<String> = conn
-        .query_row("SELECT value FROM meta WHERE key = 'format_id'", [], |row| row.get(0))
-        .optional()
-        .map_err(|e| format!("read meta: {e}"))?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))
+        .map_err(|e| format!("{}: busy_timeout: {e}", path.display()))?;
+    // Identity first, and read-only: the stamp is never created, and no file is
+    // asked to switch journal mode, until the format check has accepted it. A
+    // database that turns out to belong to someone else is therefore not
+    // written to at all — not one table, not one header byte (A34).
+    let has_meta = conn
+        .query_row("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'meta'", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .map_err(|e| format!("inspect {}: {e}", path.display()))?
+        > 0;
+    let format: Option<String> = if has_meta {
+        conn.query_row("SELECT value FROM meta WHERE key = 'format_id'", [], |row| row.get(0))
+            .optional()
+            .map_err(|e| format!("read meta: {e}"))?
+    } else {
+        None
+    };
     match format {
         None if create => {
+            // An existing unstamped file may be someone else's database: never
+            // adopt it. The v2 schema's own tables are allowed through, so a
+            // database interrupted between its schema and its stamp (a crash in
+            // this very function) is still completed instead of refused.
+            let foreign = foreign_tables(&conn)?;
+            if !foreign.is_empty() {
+                return Err(format!(
+                    "{} is not a v2 session database (no format stamp) and holds tables this session does \
+                     not own ({}); move it aside or use another state root",
+                    path.display(),
+                    foreign.join(", ")
+                ));
+            }
+            apply_store_pragmas(&conn, path)?;
             conn.execute_batch(SCHEMA).map_err(|e| format!("create schema: {e}"))?;
             conn.execute(
                 "INSERT INTO meta (key, value) VALUES ('format_id', ?1), ('schema_version', ?2)",
@@ -242,6 +263,7 @@ pub fn open(path: &Path, create: bool) -> Result<Connection, String> {
             let version: String = conn
                 .query_row("SELECT value FROM meta WHERE key = 'schema_version'", [], |row| row.get(0))
                 .map_err(|e| format!("read schema_version: {e}"))?;
+            apply_store_pragmas(&conn, path)?;
             let parsed = version.parse::<i64>().unwrap_or(-1);
             if parsed != V2_SCHEMA_VERSION {
                 // v2's own upgrades migrate explicitly, in one transaction, or
@@ -253,6 +275,46 @@ pub fn open(path: &Path, create: bool) -> Result<Connection, String> {
         }
     }
     Ok(conn)
+}
+
+/// The store's own durability settings. Applied only to a database this session
+/// owns: they are the settings a *write* needs, and switching a foreign file to
+/// WAL is a write (A34).
+fn apply_store_pragmas(conn: &Connection, path: &Path) -> Result<(), String> {
+    conn.pragma_update(None, "journal_mode", "WAL").map_err(|e| format!("{}: journal_mode: {e}", path.display()))?;
+    conn.pragma_update(None, "synchronous", "FULL").map_err(|e| format!("{}: synchronous: {e}", path.display()))?;
+    conn.pragma_update(None, "foreign_keys", "ON").map_err(|e| format!("{}: foreign_keys: {e}", path.display()))?;
+    Ok(())
+}
+
+/// Table names `SCHEMA` itself creates, read from the schema text so the list
+/// cannot drift from it (an index or trigger does not count as a table).
+fn schema_tables() -> std::collections::HashSet<String> {
+    SCHEMA
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("CREATE TABLE IF NOT EXISTS "))
+        .filter_map(|rest| rest.split([' ', '(']).next().filter(|name| !name.is_empty()).map(str::to_string))
+        .collect()
+}
+
+/// Tables in an existing file that the v2 schema did not create. An unstamped
+/// database containing any of them belongs to someone else (§4.4, A34); the
+/// `meta` stamp table is created before this check and is never foreign.
+fn foreign_tables(conn: &Connection) -> Result<Vec<String>, String> {
+    let own = schema_tables();
+    let mut stmt = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+        .map_err(|e| format!("inspect tables: {e}"))?;
+    let names = stmt.query_map([], |row| row.get::<_, String>(0)).map_err(|e| format!("inspect tables: {e}"))?;
+    let mut foreign = vec![];
+    for name in names {
+        let name = name.map_err(|e| format!("inspect tables: {e}"))?;
+        if name != "meta" && !own.contains(&name) {
+            foreign.push(name);
+        }
+    }
+    foreign.sort();
+    Ok(foreign)
 }
 
 /// A store older than the current version is walked up one step at a time in a
@@ -340,6 +402,67 @@ mod tests {
         let _ = std::fs::remove_file(p);
         let _ = std::fs::remove_file(format!("{}-wal", p.display()));
         let _ = std::fs::remove_file(format!("{}-shm", p.display()));
+    }
+
+    #[test]
+    fn open_never_adopts_an_unstamped_file_that_holds_foreign_tables() {
+        // create = true is what the daemon passes; it must not turn someone
+        // else's database into a session store by adding tables to it (A34).
+        let foreign = path("adopt");
+        let before = {
+            {
+                let conn = Connection::open(&foreign).unwrap();
+                conn.execute_batch("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);").unwrap();
+                conn.execute("INSERT INTO users (name) VALUES ('alice')", []).unwrap();
+            }
+            std::fs::read(&foreign).unwrap()
+        };
+        let err = open(&foreign, true).unwrap_err();
+        assert!(err.contains("not a v2 session database"), "{err}");
+        assert!(err.contains("users"), "the refusal names the foreign tables: {err}");
+        assert_eq!(std::fs::read(&foreign).unwrap(), before, "the refusal wrote nothing to the file");
+        {
+            let conn = Connection::open(&foreign).unwrap();
+            let names: Vec<String> = conn
+                .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+                .unwrap()
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<Result<Vec<String>, _>>()
+                .unwrap();
+            assert_eq!(names, vec!["users"], "the foreign file is not written to at all, meta included");
+            let rows: i64 = conn.query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0)).unwrap();
+            assert_eq!(rows, 1, "and its rows are untouched");
+        }
+        cleanup(&foreign);
+
+        // the same file opened for reads was already refused (the message is
+        // identical), so the two entry points now agree
+        let again = path("adopt-read");
+        {
+            let conn = Connection::open(&again).unwrap();
+            conn.execute_batch("CREATE TABLE users (id INTEGER PRIMARY KEY);").unwrap();
+        }
+        assert!(open(&again, false).unwrap_err().contains("not a v2 session database"));
+        cleanup(&again);
+    }
+
+    #[test]
+    fn open_completes_a_session_database_that_lost_its_stamp_to_a_crash() {
+        // A crash between the schema batch and the stamp insert leaves v2's own
+        // tables without a stamp; that file is ours to finish, and refusing it
+        // would strand the session.
+        let p = path("half");
+        {
+            let conn = Connection::open(&p).unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+        }
+        let conn = open(&p, true).expect("a half-initialized v2 database is completed");
+        let format: String =
+            conn.query_row("SELECT value FROM meta WHERE key = 'format_id'", [], |row| row.get(0)).unwrap();
+        assert_eq!(format, V2_FORMAT_ID);
+        drop(conn);
+        cleanup(&p);
     }
 
     #[test]

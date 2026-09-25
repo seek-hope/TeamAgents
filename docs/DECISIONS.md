@@ -231,6 +231,50 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-87 `create = true` adopted a database that was not ours (2026-09-26)
+
+`store::open(path, create)` is what the daemon passes, and its unstamped branch initialized the schema
+wherever it ran. So a state root whose `session.sqlite` was **someone else's database** got the whole v2
+schema written into it and was stamped `teamagents-v2`, while `doctor` refused the same file with "not a
+v2 session database (no format stamp)". The claim in AGENTS.md and DESIGN's A34 — "a format stamp refuses
+foreign or wrong-version databases" — held for the read path and failed on the path that actually runs a
+session.
+
+Measured before the fix (2026-09-26, a root holding a `users` table): `exec --state-root … "hi"` answered a
+real model turn with exit 0, and the file afterwards carried `approvals … users … waits` plus
+`meta.format_id = teamagents-v2`. Two things were wrong with that: another program's file was modified, and
+the session then ran on a state root nobody had chosen.
+
+The rule now is that identity is decided **read-only, before anything is written**:
+
+- the stamp table is *read* (through `sqlite_master`), never created, and no pragma that writes (WAL,
+  `synchronous`) is applied until the format check has accepted the file — so a refusal leaves the bytes
+  exactly as they were;
+- an unstamped file that holds tables the v2 schema does not create is refused by name, listing them:
+  `… is not a v2 session database (no format stamp) and holds tables this session does not own (users);
+  move it aside or use another state root`;
+- the schema's *own* table names are still allowed through, because a crash between the schema batch and the
+  stamp insert leaves exactly that state and it must be completed rather than stranded. The table list is
+  derived from the `SCHEMA` text, so it cannot drift from it;
+- a path that is not a SQLite database at all now says which file it is (`…: journal_mode: file is not a
+  database` instead of a bare pragma error).
+
+That makes the three entry points agree: `doctor` exits 1 with the FAIL line, `exec` refuses in 0.2 s with
+exit 2 (infrastructure), and `init` refuses to prepare the root — all naming the file.
+
+Evidence: `open_never_adopts_an_unstamped_file_that_holds_foreign_tables` (the refusal names the foreign
+tables, and the file is compared **byte for byte** with what it held before),
+`open_completes_a_session_database_that_lost_its_stamp_to_a_crash` (the deliberate crash-recovery
+exception), and the live probe `python3 review/dogfood/boundary.py`, which also drives A33's second-daemon
+refusal and the restart after a SIGKILL. Pre-fix control: with the foreign-table guard reduced to an empty
+list the new test fails at its first assertion (checked 2026-09-26), and before the read-only reordering the
+probe failed with `the foreign database was written to: tables are ['meta', 'users']`.
+
+Ceiling: this refuses on *table names*, so a foreign file whose tables happen to be named exactly like the
+v2 ones and which carries no stamp is still completed (it is then indistinguishable from our own
+half-initialized database). The unstamped-but-v2 case is deliberate; a stamped foreign file is already
+refused by format id.
+
 ## D-86 The public surface nothing calls, and the detector that names it (2026-09-26)
 
 `clippy -D warnings` cannot see this class of defect: Rust's `dead_code` lint fires for private items only,

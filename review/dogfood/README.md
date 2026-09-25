@@ -281,3 +281,22 @@ latency, and ten characters written as one burst render in 0.05 s. This is why `
 prompt at once: what appears late in that case is a burst being rendered, not a user's keystroke lagging.
 The guards are deliberately loose (1 s per keystroke, 0.3 s median, 2 s per burst) so a loaded machine
 reports numbers instead of a red gate.
+
+## `boundary.py`: the state roots the CLI refuses
+
+`boundary.py` is the model-free half of this directory: it drives the three entry points against state
+roots they must **not** open, and needs neither a credential nor a network.
+
+```bash
+python3 review/dogfood/boundary.py
+```
+
+1. **Someone else's database** (A34): a root holding a `session.sqlite` with a `users` table. `doctor` exits
+   1 with the FAIL line, `exec` refuses in 0.2 s with exit 2 naming the file and the foreign table, and the
+   probe re-hashes the file: the bytes are identical afterwards. Before D-87 the daemon's `create = true`
+   path adopted the file, wrote the whole v2 schema into it and ran a real model turn.
+2. **A second daemon** (A33): the first owns the root, the second exits 1 naming the coordinator, and after
+   the first is killed with `SIGKILL` a new daemon binds the same root again instead of inheriting a lock.
+
+Measured (2026-09-26): all four assertions hold; `sha256` of the foreign file unchanged
+(`4242ca5de3fc…`), refusal latency 0.2 s, second daemon exit 1, restart after SIGKILL in under a second.
