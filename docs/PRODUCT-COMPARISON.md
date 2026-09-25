@@ -1,0 +1,88 @@
+# How this product compares with Codex CLI, Pi and Hermes
+
+Snapshot taken **2026-09-26** for the product direction the user set ("reference Codex CLI, pi and hermes").
+It exists to make the *decisions* explicit, not to declare parity: every row says where its fact comes from,
+and the last section lists what follows for this repository.
+
+**Sources, and how strong they are**
+
+| Reference | Source | Strength |
+|---|---|---|
+| Codex CLI | the installed binary here (`codex --help`, `codex exec --help`, `codex resume --help`, `codex mcp --help`, `codex sandbox --help`) | verified locally on 2026-09-26 |
+| Pi | the upstream project's own README (`earendil-works/pi`, "Pi Agent Harness", `pi.dev`) | upstream documentation, fetched 2026-09-26 |
+| Hermes | the upstream project's own README (`NousResearch/hermes-agent`) | upstream documentation, fetched 2026-09-26 |
+| TeamAgents | this repository: `docs/USER-GUIDE.md`, `docs/DECISIONS.md`, `docs/ACCEPTANCE.md`, `review/dogfood/*` | the evidence in this tree |
+
+Pi and Hermes are documented here from their READMEs — they were **not** run, so their rows describe what
+their projects claim. Codex was run (its help output is the evidence above).
+
+## 1. By dimension
+
+| Dimension | Codex CLI | Pi | Hermes | TeamAgents (2026-09-26) |
+|---|---|---|---|---|
+| Session / resume | `resume` (picker / `--last`), `fork`, `archive`, `delete`, `migrate-rollouts`, and `agents` to browse sessions on a *shared local app-server daemon* | resumable sessions, session history | conversation continuity across platforms, platform gateway | one session per state root, owned by one daemon (A33); the TUI and `exec` attach to it. No picker, no fork, no archive: a second instruction after a settled goal is a known gap |
+| Permissions | config + `-c` overrides, `sandbox` subcommand | **none built in** ("runs with the permissions of the user and process that launched it"; containerize it for boundaries) | platform/sandbox backends | `approved_scope` (bubblewrap, approvals bound to the operation and its argument hash, D-67) or `full_auto` (host shell, D-41); capability grants with a user-facing surface (`teamagents authority`, D-61); the mode now also comes from the user config (D-75) |
+| Sandbox backends | Linux sandbox + config | micro-VM / Docker / OpenShell patterns | seven terminal backends (local, Docker, SSH, Singularity, Modal, Daytona, Vercel Sandbox) | bubblewrap only, and only for shell (`tools::bwrap_argv`); a missing bubblewrap is a classified failure, never a silent host fallback (A14) |
+| Tools | files, shell, apply (`codex apply`), review | files, shell, `!` commands, extensions | files, shell, scripts calling tools over RPC | files, shell (isolated or host), web (fetch/search), MCP, skills; every tool call is an operation with a durable receipt (A08/A30) |
+| Extensions | `mcp add/remove/login`, `plugin`, `features` | MCP, skills (extensions with local paths or source specs) | MCP, skills (agentskills.io compatible), memory providers | MCP over stdio + streamable HTTP, declared in `[tools.*]` (D-74); skills from `~/.agents/skills` and configured roots (A26, D-34/D-66); user hooks `pre_tool`/`notify` (D-53/D-79) |
+| Teams / subagents | (single agent per session; `fork` for branches) | subagents via extensions, worktree isolation for parallel tasks | subagents for parallel workstreams | the product's centre: one Leader per session, `spawn`/`delegate`/`send`/`wait`, per-member models (D-69), workspace policies shared/isolated/git worktree (D-46/D-76) |
+| Headless / CI | `exec` (resume/fork/review), `review`, `cloud` | (interactive CLI) | (gateway + CLI) | `teamagents exec` with `--json`, `--timeout`, `--check` (client-side acceptance) and documented exit codes (D-32/D-49); one JSON report at the end — **no streaming event output** |
+| Config | `~/.codex/config.toml`, `-c key=value` overrides | provider keys/`/login` | `hermes model` picker, per-platform integration config | `~/.config/teamagents/config.toml`: models, tools, skills, hooks, checks, limits, permissions; a project file is *not* read yet (known gap) |
+| TUI | interactive CLI | pi-tui (differential rendering) | full TUI: multiline editing, slash autocomplete, history, **interrupt-and-redirect**, streaming tool output | ratatui TUI: conversation, panels (instances/tasks/topology), approvals box, composer history and word editing (D-77); no slash commands; no interrupt of a running turn (the open D-63 question) |
+| Durability | local sessions, app-server daemon | `pi-durable` (durable conversation/task/document runtime) | serverless persistence for hibernating environments | SQLite per session (WAL + `synchronous=FULL`), one coordinator per state root, receipts consumed rather than replayed — verified live by killing the daemon mid-tool (`review/dogfood/crash.py`, A08/A11) |
+| Automations | — | cron/triggers and a triage inbox (`docs/loops.md`) | built-in cron scheduler with platform delivery | none (a goal runs when the user asks) |
+| Observability | `doctor`, `debug`, traces | telemetry package (vendor-neutral contracts) | session search, trajectory export for research | `doctor` (config/credentials/state/skills/isolation/tools rows), `daemon.log`, per-session artifacts, events + receipts in SQLite; evaluation evidence under `review/` |
+
+## 2. What this comparison suggests, in decision order
+
+1. **Sessions beyond one-per-state-root** (Codex: `resume`/`fork`/`archive`; Hermes: continuity across
+   surfaces). Today the state root *is* the session (A33), which keeps recovery and the coordinator lock
+   simple. A picker/fork/archive surface would be new protocol and new product surface, and it interacts with
+   the settled-goal gap already recorded in `docs/ACCEPTANCE.md` (a second instruction cannot build a team).
+   **Needs the user's word.**
+2. **Interrupt-and-redirect** (Hermes documents it; Codex has queueing). This is exactly the open question of
+   D-63 ("should the runtime interrupt a running turn instead of holding the input to the boundary?"). The
+   substrate exists and is parked with a note (`driver::cancel_turn`, `TurnControl::wait_idle`). **Needs the
+   user's word.**
+3. **Streaming output for headless runs** (Codex `exec --json` streams events; Hermes streams tool output in
+   the TUI). `teamagents exec` prints one report at the end; the TUI already consumes streamed *previews* that
+   are explicitly not authoritative (§9). A `--stream-json`-style mode is additive surface, no design change.
+   **Needs the user's word** only because it adds protocol-visible output.
+4. **Sandbox backends** (Pi: micro-VM/Docker/OpenShell; Hermes: seven backends). This product ships
+   bubblewrap for the shell tool and says so (A14). Anything else (container/micro-VM/remote sandbox) is a new
+   execution boundary with its own verification. **Needs the user's word.**
+5. **Automations** (Pi: cron + inbox; Hermes: cron + delivery). Nothing here runs unattended on a schedule;
+   a scheduled trigger would need its own admission rules (who may start a turn, with which budget).
+   **Needs the user's word.**
+6. **Memory/learning loop** (Hermes: self-created skills, session search, user modeling). This product has no
+   cross-session memory beyond the session database and the skills registry. That is a deliberate
+   information-flow question here (`audience` vs `push`, §5.1), not a missing feature. **Needs the user's
+   word.**
+7. **MCP management surface** (Codex: `mcp add/remove/login/list`). Here MCP servers are declared in the
+   config file and `doctor` reports them (D-74/D-78); a CLI verb would be convenience, not capability.
+   **Low value; the user's call.**
+8. **Config overrides** (Codex: `-c key=value`). This product's flags cover the session-shaping keys
+   (`--cwd`, `--state-root`, `--model`, `--full-auto`); everything else is the config file. **Low value.**
+9. **Project config** is a gap of this repository's own making (the loader exists, no entry point calls it,
+   `docs/ACCEPTANCE.md`). Codex and Pi both read repository-local configuration. **Needs the user's word**
+   (it changes what a cloned repository can influence).
+
+## 3. What this product already does that the comparators do not (or state they do not)
+
+- **A permission model with approvals bound to the operation and its argument hash** (D-67). Pi states it has
+  none built in; Hermes' README does not describe one.
+- **Verified durability**: the site's exactly-once behaviour across a daemon crash is a test-and-probe-backed
+  claim here (`review/dogfood/crash.py`), not a marketing line.
+- **Machine-checked acceptance**: a goal cannot be reported done while a user-defined `[[checks]]` command
+  fails (D-50/A16), and a runtime block is not a success (D-71).
+- **Teams as the default**: a persistent Leader with delegated tasks, per-member models and workspace
+  policies, with the delegation contract (waits, task settlement) in the protocol rather than in prompts.
+- **Formal verification of the protocol surfaces** (`verification/`, `make verify-model-all`,
+  `make verify-model-counterexamples`), which none of the three READMEs claims.
+
+## 4. Honest limits of this snapshot
+
+- Pi and Hermes rows come from their READMEs fetched on the date above; both projects evolve, and their
+  deeper documentation (pi.dev/docs, hermes-agent docs site) was not read.
+- Codex rows come from the installed binary's help output, not from its documentation site.
+- No comparator was benchmarked: this is a surface comparison, not a capability or quality comparison.
