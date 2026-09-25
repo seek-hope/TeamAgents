@@ -1026,6 +1026,34 @@ async fn a_queued_input_a_reset_sealed_is_reported_undelivered() {
 /// operation immediately (exit 3) instead of burning the deadline, and it does
 /// not run the acceptance commands for a turn that never finished.
 #[tokio::test]
+async fn a_run_that_times_out_verifies_nothing() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    // the provider answers just past the run's own deadline, so the turn is still in flight when the
+    // caller gives up — and the daemon's own shutdown only waits for the attempt to land (1.5 s)
+    let slow = json!({"role": "assistant", "content": "late", "__slow_ms__": 1_500});
+    let scripts = HashMap::from([("i-leader".to_string(), vec![slow])]);
+    let (root, handle) = boot("exec-timeout", scripts).await;
+    let (socket, workspace) = (root.dir.join("state/daemon.sock"), root.dir.join("ws"));
+    let marker = workspace.join("check-ran");
+    let mut options = exec_options(&socket, &workspace, "never answered", vec![format!("touch {}", marker.display())]);
+    options.timeout_s = 1;
+    let started = std::time::Instant::now();
+    let run = headless(options).await;
+    assert_eq!(run.end, End::Timeout, "{}", run.report);
+    assert_eq!(run.end.exit_code(run.checks_ok), 124);
+    // an unfinished turn has no acceptance to verify, and a check must not stretch the deadline
+    assert_eq!(run.report["verification"].as_array().unwrap().len(), 0, "{}", run.report);
+    assert!(run.report["verification_path"].is_null(), "{}", run.report);
+    assert!(!marker.exists(), "an unfinished run must not run the acceptance commands");
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "the caller's deadline bounds the run ({}s)",
+        started.elapsed().as_secs()
+    );
+    handle.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
 async fn a_parked_approval_ends_the_headless_run_at_once() {
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
     let scripts = HashMap::from([("i-leader".to_string(), vec![shell_call("c1", "true")])]);

@@ -403,14 +403,18 @@ pub fn execute(options: &ExecOptions) -> Result<ExecRun, (i32, String)> {
     }
     // The user's own acceptance commands are the last word on a finished turn:
     // they run in this workspace through the same isolated shell the tools use.
-    // Nothing runs when the run stopped for an approval — that turn is not
-    // finished, so there is no acceptance to verify (§8) — or when the input
-    // never landed, where there is no turn to accept at all (D-72).
-    let verification = if options.checks.is_empty() || matches!(end, End::ApprovalRequired | End::Undelivered) {
-        Vec::new()
-    } else {
-        run_checks(&options.checks, &options.workspace, options.timeout_s)
-    };
+    // Nothing runs when the turn is not finished — an approval no headless caller can give, or the caller's
+    // own deadline passing — because there is no acceptance to verify yet (§8), or when the input never
+    // landed, where there is no turn to accept at all (D-72). The deadline belongs here for a second reason:
+    // a check inherits `timeout_s`, so running one *after* the deadline would stretch the run's wall clock
+    // past the bound the caller set (measured 2026-09-26: `--timeout 3` plus a check took 7 s and wrote a
+    // ledger of verdicts for a turn that never finished).
+    let verification =
+        if options.checks.is_empty() || matches!(end, End::ApprovalRequired | End::Undelivered | End::Timeout) {
+            Vec::new()
+        } else {
+            run_checks(&options.checks, &options.workspace, options.timeout_s)
+        };
     let verification_path = write_verification(&client.state_root, &verification);
     let checks_ok = verification.iter().all(|entry| entry["ok"] == json!(true));
     let report = json!({

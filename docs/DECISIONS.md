@@ -231,6 +231,39 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-96 `--timeout` did not bound a run that had checks (2026-09-26)
+
+D-49's contract says the user's acceptance commands "run after the turn ends", and the code's own comment
+enumerated the cases where nothing runs: an approval stop (the turn is not finished) and an input that never
+landed (there is no turn to accept). A caller's deadline passing was missing from that list, so `exec
+--timeout 3 --check "…"` on a turn that never finished ran the checks *after* the deadline had already
+passed.
+
+Measured 2026-09-26 (the same command, before the fix): `--timeout 3` with `--check "sleep 5; test -f
+nothing.txt"` exited 124 after **7 s** of wall clock, and the check — which inherits `timeout_s`, 3 s here —
+was recorded as failed with `command timed out after 3s`, written to `<state root>/verification.json` and
+reported as `verification_path`. Two things are wrong with that: a run can outlive the deadline its caller
+set (with a real `cargo test` check the overshoot is the check's whole duration), and the ledger then holds
+verdicts for a turn that never finished, which is exactly what the "not finished → nothing to verify" rule
+exists to prevent.
+
+The fix adds `End::Timeout` to that rule, so a run past its deadline verifies nothing: `verification: []`,
+`verification_path: null`, no ledger, no check process, and the exit code stays `124`. Nothing else changes —
+checks still run after a *finished* turn, including a failed or blocked one, and still return exit `1` when
+they fail.
+
+Evidence: `v2_daemon::a_run_that_times_out_verifies_nothing` (a scripted provider that answers 1.5 s after a
+1 s deadline; the run must exit 124 with an empty verdict list, a null path and no marker file from the
+check, and must finish well inside the bound). The pre-fix control is in the same test's history: with
+`End::Timeout` removed the assertion fails with `verification: [{"command":"touch …/check-ran","ok":true,…}]`
+and a non-null `verification_path` — the check really ran and really wrote a ledger. `docs/USER-GUIDE.md` sets
+the same expectation in the user's words ("checks are skipped when the turn is not finished — an approval, or
+your own `--timeout` deadline").
+
+Ceiling: the check's own timeout still inherits `--timeout` (`ExecOptions.timeout_s`); a CI job that wants a
+long check under a short turn deadline has no separate knob today, and `[[checks]]` in the config (D-50) is
+the surface that does have one. Recorded rather than invented here.
+
 ## D-95 The instances panel's keys, against a real daemon (2026-09-26)
 
 The panels had exactly one kind of coverage: the PTY smoke drives them against a *scripted* daemon and asserts
