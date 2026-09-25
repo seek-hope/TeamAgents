@@ -6,7 +6,7 @@ Baseline: [the design and acceptance baseline](DESIGN.md) §12/§16. Current imp
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 93 / engine 167 / tui 25 test targets) and `make pty` passes; both are
+`make check` is green (core 96 / engine 171 / tui 25 test targets) and `make pty` passes; both are
 preconditions for every item below. `make check` includes `make language-check`, which fails on non-English
 characters outside the two documented exceptions (`README.zh-CN.md` and the frozen material under
 `review/eval`).
@@ -16,8 +16,8 @@ characters outside the two documented exceptions (`README.zh-CN.md` and the froz
 | Item | Scenario | Evidence |
 |---|---|---|
 | A01 | A single Leader completes a goal (and the team it builds runs) | `v2_driver::end_to_end_shell_then_finish`; three real DeepSeek tasks (2026-09-23); a real delegation run: 3 instances, both delegated tasks `SUCCEEDED`, both `[[checks]]` commands passing, 16.3 s (`review/tmp/dogfood/`); the headless entry is driven end to end by `v2_daemon::headless_runs_report_their_own_outcome_not_an_earlier_settlement` and `cli::exec_takes_the_prompt_from_stdin_and_runs_the_acceptance_check` |
-| A02 | A→B→C→A communication | `control::messages_flow_across_an_authorized_ring`; the session grants the Leader `message`@session at bootstrap, so `send` is offered and authorized without extra setup (`cli::the_daemon_grants_the_leader_the_team_authority`, `v2_driver::the_leader_is_authorized_to_build_the_team_by_default`); the offered surface never promises what the instance cannot dispatch (`V2Grants::OfferedToolsAreAuthorized`, correspondence `v2_supervisor::the_offered_surface_follows_the_grants`) |
-| A03 | Limited delegation and parent revocation | `control::grants_narrow_only_and_parent_revocation_cascades`; the Leader's default authority is exactly these session-scoped grants, and revocation still removes the tool and fails the call closed |
+| A02 | A→B→C→A communication | `control::messages_flow_across_an_authorized_ring`; the session grants the Leader `message`@session at bootstrap, so `send` is offered and authorized without extra setup (`cli::the_daemon_grants_the_leader_the_team_authority`, `v2_driver::the_leader_is_authorized_to_build_the_team_by_default`); the offered surface never promises what the instance cannot dispatch (`V2Grants::OfferedToolsAreAuthorized`, correspondence `v2_supervisor::the_offered_surface_follows_the_grants`); the user can grant and revoke those connections through `teamagents authority` (D-61, see A03) |
+| A03 | Limited delegation and parent revocation | `control::grants_narrow_only_and_parent_revocation_cascades`; the Leader's default authority is exactly these session-scoped grants, and revocation still removes the tool and fails the call closed. **The user can exercise it** (D-61): `cli::the_authority_surface_grants_and_revokes_through_the_daemon` drives the real binary against a real daemon — the list carries the ids, a grant to a spawned worker makes the dispatch question `holds_covering_grant(worker, "shell", "workspace")` true, a grant derived with `--parent` dies with its parent (cascade of exactly 2), the question is false again afterwards, and a pair no check asks about is refused with a reason instead of written (`core/src/v2/capability.rs`'s table test pins that pair table); `v2_supervisor::a_users_grant_reaches_the_workers_surface_at_the_next_request` shows the granted tool appears on the worker's next request and leaves it again after the revocation; formally, `V2Authority` (`make verify-model-all`) proves the view carries what a revoke needs, the cascade takes exactly the subtree, and its three negative controls (`make verify-model-counterexamples`) are refuted. The two questions left open are in `docs/DECISIONS.md` D-61 ("Left open") |
 | A04 | A queued action meets a revocation | `revocation_blocks_queued_dispatch_until_reauthorized`, `dispatch_rechecks_permission_revision` |
 | A05 | Reading another instance's history | `control::read_history_is_user_or_self_only`; the daemon's history surface |
 | A06 | A message applied across a restart | `submit_input_applies_context_once_per_envelope`, `command_replay_returns_stored_receipt_and_rejects_conflict` |
@@ -82,6 +82,24 @@ amended (D-49/D-50).
 
 ## Known gaps (found while auditing the documented surface, 2026-09-25)
 
+- **A worker whose model answers with prose keeps being asked** (found by `review/dogfood/authority.py`,
+  2026-09-25, not fixed): when an instance has an open task, the driver's idle test
+  (`step_ready`: "the last entry is the model's own text **and** no open tasks") re-opens a turn immediately
+  after a plain reply, so a model that answers `BLOCKED.` instead of calling `finish` is asked again, and
+  again. Measured on a real DeepSeek Flash session: **169 model requests / 1,226,717 prompt tokens / 181
+  context entries** in ~15 minutes, all of it repeating the same reply, with no task progress — the loop is
+  bounded only by a goal budget, and the goal had none. The probe was stopped by parking the instance. Two
+  readings are possible (an instance with open work should keep going vs. a plain reply ends its turn), and
+  the fix is behavioural — either idle after a prose reply, or park with a reason after a bounded number of
+  no-progress turns — so it needs the user's decision and its own verification before it lands. The evidence
+  (session database and events) is regenerated by re-running the probe; the numbers are from
+  `/tmp/ta-authority-probe3` (2026-09-25 18:22–18:40, isolated state root).
+- **A worker needs the user's grant for the shared-workspace shell** (D-61): a spawned worker holds no
+  `shell@workspace` (§5.1), so until the user runs `teamagents authority grant --subject <id> --action shell
+  --scope workspace` it works with the file, web and skill tools only. The surface exists and is verified, but
+  whether the *default* should be different — workers getting the shell, or the Leader being allowed to hand
+  out the authority it holds — is a design decision that changes §5.1's spawn contract and needs the user's
+  call; both options are recorded in `docs/DECISIONS.md` D-61 ("Left open").
 - **The project config is not read.** `config::load_user_config_for` merges `<cwd>/.teamagents/config.toml`
   with the documented trust rules (project models are allowed, project tools/skills/instructions need
   `[permissions] trust_project_tools = true`, and hooks/retention/checks may only come from the user config),

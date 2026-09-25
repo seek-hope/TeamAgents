@@ -186,13 +186,19 @@ fn render_topology(frame: &mut Frame, app: &mut V2App, area: Rect) {
     }
     for grant in app.grants.iter().filter(|g| !g.revoked) {
         let kind = if grant.action == "message" { "channel" } else { "grant" };
-        lines.push(Line::from(vec![
+        let mut spans = vec![
             Span::raw("  "),
             Span::styled(grant.subject.clone(), Style::default().fg(FG)),
             Span::styled(format!(" ─{}→ ", grant.action), Style::default().fg(ACCENT)),
             Span::styled(grant.scope.clone(), Style::default().fg(NOTICE)),
             Span::styled(format!("  {kind}"), dim),
-        ]));
+        ];
+        // the id is what `teamagents authority revoke --grant …` takes (D-61):
+        // show its short form so the user does not have to look it up first
+        if !grant.id.is_empty() {
+            spans.push(Span::styled(format!("  {}", grant.short_id()), dim));
+        }
+        lines.push(Line::from(spans));
     }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled("task delegation", bold)));

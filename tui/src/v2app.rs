@@ -81,10 +81,25 @@ pub struct TaskInfo {
 
 #[derive(Clone, Debug)]
 pub struct GrantInfo {
+    /// The grant's id as the daemon reports it (D-61): the topology panel shows
+    /// its short form, and it is what `teamagents authority revoke` takes.
+    pub id: String,
+    /// Who issued it: `user` for a grant the user issued, otherwise the instance
+    /// that narrowed its own authority.
+    pub issuer: String,
     pub subject: String,
     pub action: String,
     pub scope: String,
     pub revoked: bool,
+}
+
+impl GrantInfo {
+    /// The short form shown in the topology panel: enough to be recognisable and
+    /// to type into `authority revoke` (which takes any unambiguous prefix).
+    pub fn short_id(&self) -> &str {
+        let end = self.id.char_indices().nth(10).map(|(at, _)| at).unwrap_or(self.id.len());
+        &self.id[..end]
+    }
 }
 
 /// Pending destructive confirmation (termination stays deliberate, §5.4):
@@ -480,6 +495,8 @@ impl V2App {
             .unwrap_or_default()
             .iter()
             .map(|g| GrantInfo {
+                id: g["id"].as_str().unwrap_or("").to_string(),
+                issuer: g["issuer"].as_str().unwrap_or("").to_string(),
                 subject: g["subject"].as_str().unwrap_or("").to_string(),
                 action: g["action"].as_str().unwrap_or("").to_string(),
                 scope: g["resource_scope"].as_str().unwrap_or("").to_string(),

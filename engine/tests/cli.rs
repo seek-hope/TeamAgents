@@ -734,3 +734,243 @@ fn an_unbootable_instance_parks_itself_and_the_session_survives() {
     assert!(reason.contains("gpt-9"), "the reason names the model: {reason:?}");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// A socket client for the daemon's JSON-lines protocol, as a test would write it:
+/// `authority` is the product's client, and these tests use the same wire shape to
+/// set a session up and to read back what the surface did.
+struct Rpc {
+    reader: std::io::BufReader<std::os::unix::net::UnixStream>,
+    writer: std::os::unix::net::UnixStream,
+    counter: u64,
+}
+
+impl Rpc {
+    fn connect(socket: &std::path::Path) -> Rpc {
+        use std::io::{BufRead, BufReader};
+        let stream = std::os::unix::net::UnixStream::connect(socket).expect("connect");
+        let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+        let mut greeting = String::new();
+        reader.read_line(&mut greeting).expect("greeting");
+        Rpc { reader, writer: stream, counter: 0 }
+    }
+
+    fn roundtrip(&mut self, method: &str, params: serde_json::Value, command_id: Option<&str>) -> serde_json::Value {
+        use std::io::{BufRead, Write};
+        self.counter += 1;
+        let mut frame = serde_json::json!({"protocol_version": 1, "request_id": format!("r{}", self.counter),
+                                           "method": method, "params": params});
+        if let Some(command_id) = command_id {
+            frame["command_id"] = serde_json::json!(command_id);
+        }
+        self.writer.write_all(format!("{frame}\n").as_bytes()).expect("write");
+        let mut line = String::new();
+        self.reader.read_line(&mut line).expect("reply");
+        serde_json::from_str(&line).expect("reply JSON")
+    }
+
+    fn call(&mut self, method: &str, params: serde_json::Value) -> serde_json::Value {
+        self.roundtrip(method, params, None)
+    }
+
+    fn command(&mut self, id: &str, method: &str, params: serde_json::Value) -> serde_json::Value {
+        self.roundtrip(method, params, Some(id))
+    }
+
+    fn grants(&mut self) -> Vec<serde_json::Value> {
+        self.call("grants", serde_json::json!({}))["result"]["grants"].as_array().cloned().unwrap_or_default()
+    }
+}
+
+/// The user's authority surface (D-61), end to end: the real binary, the real
+/// daemon socket, the real control plane. Before it existed the capability
+/// boundary was real but unreachable for a user — `issue_grant`/`revoke_grant` had
+/// no caller outside tests, and the daemon's grant view did not even carry the id
+/// a revoke must name, so no client could have revoked anything.
+#[test]
+fn the_authority_surface_grants_and_revokes_through_the_daemon() {
+    let root = std::env::temp_dir().join(format!("ta-authority-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let (config_home, state, ws) = (root.join("config"), root.join("root"), root.join("ws"));
+    std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
+    std::fs::create_dir_all(&ws).unwrap();
+    std::fs::write(
+        config_home.join("teamagents/config.toml"),
+        "[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\n\
+         api_key_env = \"TA_AUTHORITY_KEY\"\nbase_url = \"http://127.0.0.1:1/v1\"\n",
+    )
+    .unwrap();
+    let env = |command: &mut Command| {
+        command
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("XDG_STATE_HOME", root.join("state"))
+            .env("TA_AUTHORITY_KEY", "test-value");
+    };
+    // `teamagents authority …` with the state root this session lives in
+    let authority = |args: &[&str]| -> (i32, String, String) {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_teamagents"));
+        env(&mut command);
+        let output = command.args(args).arg("--state-root").arg(&state).output().expect("run authority");
+        (
+            output.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    };
+    let json = |text: &str| -> serde_json::Value { serde_json::from_str(text).expect("JSON report") };
+
+    // no session yet: the surface says so instead of writing into the void
+    let (code, _, stderr) = authority(&["authority"]);
+    assert_eq!(code, 2, "{stderr}");
+    assert!(stderr.contains("start one with"), "the error points at a session: {stderr}");
+
+    let mut daemon = Command::new(env!("CARGO_BIN_EXE_teamagents"));
+    env(&mut daemon);
+    let daemon = daemon
+        .args(["daemon", "--state-root"])
+        .arg(&state)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("start the daemon");
+    let _daemon = Daemon(daemon);
+    let socket = state.join("daemon.sock");
+    for _ in 0..400 {
+        if socket.exists() && std::os::unix::net::UnixStream::connect(&socket).is_ok() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let mut rpc = Rpc::connect(&socket);
+    // wait for the bootstrap (the leader's own grants)
+    for _ in 0..400 {
+        if rpc.grants().iter().any(|grant| grant["action"] == serde_json::json!("manage")) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+
+    // 1. the list carries what a revoke needs: an id, its issuer and the revision
+    let (code, out, stderr) = authority(&["authority", "--json"]);
+    assert_eq!(code, 0, "{stderr}");
+    let listed = json(&out);
+    assert!(listed["revision"].as_i64().unwrap_or(0) > 0, "{listed}");
+    let leader_shell = listed["grants"]
+        .as_array()
+        .expect("grants")
+        .iter()
+        .find(|grant| {
+            grant["subject"] == serde_json::json!("i-leader") && grant["action"] == serde_json::json!("shell")
+        })
+        .expect("the leader's workspace shell");
+    assert!(leader_shell["id"].as_str().is_some_and(|id| !id.is_empty()), "the view carries the id: {listed}");
+    assert_eq!(leader_shell["issuer"], serde_json::json!("user"), "{listed}");
+    assert_eq!(leader_shell["revoked"], serde_json::json!(false), "{listed}");
+
+    // human output is a table a user can read, and it names the id
+    let (code, out, _) = authority(&["authority"]);
+    assert_eq!(code, 0);
+    assert!(
+        out.contains("SUBJECT") && out.contains("i-leader") && out.contains(leader_shell["id"].as_str().unwrap()),
+        "{out}"
+    );
+
+    // 2. a worker the leader spawned holds no shell grant (§5.1)
+    let spawned = rpc.command(
+        "a-spawn",
+        "spawn_instance",
+        serde_json::json!({"instance_id": "i-worker-1", "workspace_ref": ws.to_string_lossy(),
+                           "profile": {"model": "leader_main", "instructions": "helper"}}),
+    );
+    assert_eq!(spawned["ok"], true, "{spawned}");
+    let holds_shell = |rpc: &mut Rpc| {
+        rpc.grants().iter().any(|grant| {
+            grant["subject"] == serde_json::json!("i-worker-1")
+                && grant["action"] == serde_json::json!("shell")
+                && !grant["revoked"].as_bool().unwrap_or(false)
+        })
+    };
+    assert!(!holds_shell(&mut rpc), "a spawned worker holds no shell grant");
+
+    // 3. a parent the session does not know is the control plane's refusal
+    let (code, _, stderr) = authority(&[
+        "authority",
+        "grant",
+        "--subject",
+        "i-worker-1",
+        "--action",
+        "shell",
+        "--scope",
+        "workspace",
+        "--parent",
+        "g-does-not-exist",
+    ]);
+    assert_eq!(code, 1, "{stderr}");
+    assert!(stderr.contains("parent grant g-does-not-exist"), "{stderr}");
+
+    // 4. the user grants the shared-workspace shell, derived from the leader's own
+    //    grant: the user's authority is the root, and the derived grant goes with
+    //    the parent (A03)
+    let (code, out, stderr) = authority(&[
+        "authority",
+        "grant",
+        "--subject",
+        "i-worker-1",
+        "--action",
+        "shell",
+        "--scope",
+        "workspace",
+        "--parent",
+        leader_shell["id"].as_str().unwrap(),
+        "--json",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let granted = json(&out);
+    let worker_grant = granted["grant_id"].as_str().expect("the new grant id").to_string();
+    assert_eq!(granted["subject"], serde_json::json!("i-worker-1"), "{granted}");
+    assert_eq!(granted["parent_grant_id"], leader_shell["id"], "the derived grant names its parent");
+    assert!(holds_shell(&mut rpc), "the grant is live in the session");
+    // the dispatch question A03/A04 re-checks at the linearization point
+    let holds_now = |action: &str| {
+        teamagents_core::v2::Control::open(&state.join("session.sqlite"), "test", false)
+            .expect("control")
+            .holds_covering_grant("i-worker-1", action, "workspace")
+            .expect("grant read")
+    };
+    assert!(holds_now("shell"), "the worker may now dispatch the workspace shell");
+
+    // 5. a pair no check consults is refused instead of written
+    for (action, scope, expected) in [
+        ("shell", "instance:i-worker-1", "no check asks about shell@instance:i-worker-1"),
+        ("shel", "workspace", "is not an action the runtime checks"),
+    ] {
+        let (code, _, stderr) =
+            authority(&["authority", "grant", "--subject", "i-worker-1", "--action", action, "--scope", scope]);
+        assert_eq!(code, 2, "{stderr}");
+        assert!(stderr.contains(expected), "{stderr}");
+    }
+    // and a subject that does not exist is a warning, not a refusal: instance ids
+    // belong to the spawner, so a grant may legitimately come first
+    let (code, _, stderr) =
+        authority(&["authority", "grant", "--subject", "i-typo", "--action", "message", "--scope", "session"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(stderr.contains("no instance \"i-typo\""), "{stderr}");
+    assert!(stderr.contains("i-worker-1"), "the warning names the known instances: {stderr}");
+
+    // 6. revoking the parent takes the derived grant with it, and the dispatch
+    //    question is false again: revocation is final (A03)
+    let (code, out, stderr) =
+        authority(&["authority", "revoke", "--grant", &leader_shell["id"].as_str().unwrap()[..12], "--json"]);
+    assert_eq!(code, 0, "{stderr}");
+    let revocation = json(&out);
+    let cascade: Vec<&str> = revocation["revoked"].as_array().unwrap().iter().filter_map(|id| id.as_str()).collect();
+    assert!(cascade.contains(&worker_grant.as_str()), "the derived grant goes with its parent: {revocation}");
+    assert_eq!(cascade.len(), 2, "{revocation}");
+    assert!(!holds_shell(&mut rpc), "no live shell grant for the worker is left");
+    assert!(!holds_now("shell"), "a revocation is final: the dispatch question is false again");
+
+    // 7. an id no grant matches is refused before anything is written
+    let (code, _, stderr) = authority(&["authority", "revoke", "--grant", "g-nope"]);
+    assert_eq!(code, 2, "{stderr}");
+    assert!(stderr.contains("no grant id starts with"), "{stderr}");
+    let _ = std::fs::remove_dir_all(&root);
+}

@@ -226,6 +226,17 @@ pub fn finish_status_problem(args: &Json) -> Option<String> {
 /// an arriving message or a note can land between a call and its answer; the
 /// wire copy moves each answer up next to its call. Stored order is untouched
 /// — only what the model reads is reordered.
+///
+/// A call the runtime answers *outside* the tool channel stays unanswered in the
+/// log by design: an accepted `finish` is answered by the settlement, an ignored
+/// one by a protocol note. Those calls still need an answer on the wire, or the
+/// instance's next request is rejected by the provider — a real model rejected
+/// one with `HTTP 400: An assistant message with 'tool_calls' must be followed by
+/// tool messages responding to each 'tool_call_id'` (D-62). The wire copy
+/// therefore synthesizes one honest, tool-role answer per unanswered call; the
+/// stored context is not modified. Ceiling: this also covers a call whose receipt
+/// was lost for another reason, where the model reads that no result follows
+/// instead of the turn dying on a rejected request.
 fn pair_tool_results(messages: &[Json]) -> Vec<Json> {
     let mut out: Vec<Json> = Vec::with_capacity(messages.len());
     let mut placed = vec![false; messages.len()];
@@ -240,6 +251,7 @@ fn pair_tool_results(messages: &[Json]) -> Vec<Json> {
         if ids.is_empty() {
             continue;
         }
+        let mut answered: Vec<&str> = Vec::with_capacity(ids.len());
         for (later, candidate) in messages.iter().enumerate().skip(index + 1) {
             if placed[later] || candidate["role"] != json!("tool") {
                 continue;
@@ -248,12 +260,22 @@ fn pair_tool_results(messages: &[Json]) -> Vec<Json> {
                 if ids.contains(&id) {
                     out.push(candidate.clone());
                     placed[later] = true;
+                    answered.push(id);
                 }
             }
+        }
+        for id in ids.iter().filter(|id| !answered.contains(id)) {
+            out.push(json!({"role": "tool", "tool_call_id": id,
+                            "content": NO_TOOL_RESULT}));
         }
     }
     out
 }
+
+/// The answer the wire gives a call the runtime answered outside the tool channel
+/// (an accepted `finish`, an ignored one). Kept short and factual: it is a wire
+/// repair, not a runtime fact.
+const NO_TOOL_RESULT: &str = "[no tool result follows: the runtime answered this call outside the tool channel]";
 
 /// L1 view-only masking of old tool outputs (ported contract): originals stay
 /// in the context store; only the wire copy is masked, with a readback recipe

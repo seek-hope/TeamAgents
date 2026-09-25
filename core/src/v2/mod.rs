@@ -2,6 +2,7 @@
 //! transaction entry, and the §4.1 data contract. Replaces the dual-store
 //! coordination of the legacy implementation once the runtime lands (P2).
 
+pub mod capability;
 pub mod control;
 pub mod models;
 pub mod store;

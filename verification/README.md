@@ -15,8 +15,10 @@ exploration. The boundaries are in "Boundaries" below and in [REPORT.md](REPORT.
 
 ```bash
 make verify-model           # small control-plane configuration (seconds)
-make verify-model-all       # small configurations for all eight modules (control plane, artifacts, waits,
-                            # tasks, compression, daemon, required checks, authority)
+make verify-model-all       # small configurations for all nine modules (control plane, artifacts, waits,
+                            # tasks, compression, daemon, required checks, authority, the user's surface)
+make verify-model-counterexamples   # the authority module's negative controls: each must be *refuted*,
+                            # or the property it targets proves nothing (D-61)
 make verify-model-wide      # wide control-plane configuration (2 instances / 2 operations; hundreds of millions
                             # of states, slow)
 make verify-kani            # paging arithmetic (needs the Kani toolchain, see below)
@@ -41,6 +43,7 @@ repository and never enters `make check`. Java is required (this machine uses Op
 | `tla/V2Daemon.tla` + `tla/MC_daemon.cfg` | session daemon protocol (A28): deduplication and replay of stable command ids, the atomic snapshot+watermark pair of `checkpoint`, gap-free `events(since)`, a slow client never blocking the writer |
 | `tla/V2Checks.tla` + `tla/MC_checks.cfg` | required checks (A16/§8): only self-reported successes are verified, failures enter a bounded repair round, an exhausted budget or an unusable verification path (stale observation, refused dispatch) parks the goal BLOCKED, and a candidate is never upgraded |
 | `tla/V2Grants.tla` + `tla/MC_grants.cfg` | authority (§5.1/§6.1, A03/A04; D-58/D-59/D-60): the session's bootstrap grants, narrowing by an instance (manage covers message/delegate), the spawn-derived delegate grant, revocation with the parent tree cascade and the revision bump, the dispatch re-check, and the rule that the model-visible tool surface only offers what the instance's grants back |
+| `tla/V2Authority.tla` + `tla/MC_authority.cfg` | the user's authority surface (D-61): the view a client reads (and the id a revoke must name), the pair table the surface refuses against, a grant the user writes (optionally derived from one it holds), revocation by a nameable id with the subtree cascade, the surface as a *cached* per-request variable, and the dispatch re-check with a surface that may lag. Its three negative-control configurations (`MC_authority_badview.cfg`, `MC_authority_trustsurface.cfg`, `MC_authority_stalesurface.cfg`) are run by `make verify-model-counterexamples` and must each be refuted |
 
 The environment (tool results, approval timing, crash points) is **non-deterministic** in the model; that is
 exactly what is enumerated.
@@ -79,6 +82,23 @@ exactly what is enumerated.
 | `RevokedStaysRevoked` / `CascadeTakesTheSubtree` | revocation is final and takes the whole subtree | `revoke_grant` + `revoke_grant_tree`, `revoked_at IS NULL` in every check | A03 |
 | `OfferedToolsAreAuthorized` | the model-visible surface never offers a tool the instance cannot dispatch | `driver::team_kernel` derives the collaboration tools and the shell tool from the instance's grants | §5.2/D-60 |
 | `BootstrappedAuthority` | the session boots with exactly the documented authority (leader: shell@workspace + manage/delegate/message@session; a spawned child holds none of it) | `driver::bootstrap` (D-58) and `create_instance`'s workspace grant | A01/A02 |
+
+### The user's authority surface (`V2Authority`, A02/A03, D-61)
+
+`V2Grants` models where authority comes from; this module models the surface a user drives it with — the
+questions that only exist once the user can. Each claim is paired with the control that must refute it
+(`make verify-model-counterexamples`), because a property that cannot fail proves nothing.
+
+| Property (spec) | Meaning | Code anchor | Control that refutes it | Acceptance |
+|---|---|---|---|---|
+| `NoDeadGrantPair` | the pairs the surface accepts are exactly the pairs some check asks about: a grant nothing consults is refused with a reason instead of written | `core/src/v2/capability.rs` (`ACTIONS`, `asks_about`, `authorizes_something`) and `authority.rs`'s guards | — (a constant table equality) | A03 |
+| `EveryLiveGrantBecomesRevocable` (temporal) | every live grant eventually appears in the view, so it can be named and revoked | `daemon.rs` `read_method("grants")` carrying `id`; `authority.rs` revoking by id or unambiguous prefix | `MC_authority_badview.cfg`: the view without the `id` field — the daemon before D-61 | A03 |
+| `CascadeOnlyTakesTheSubtree` (temporal) | revoking one grant takes exactly its subtree: the worker's grant dies with its parent, and the leader's authority does not | `revoke_grant_tree` and the `--parent` check in `issue_grant` | — | A03 |
+| `AuthorizedEffectsOnly` (temporal) | every effect comes from a dispatch that re-read the live grants at that step, even though the cached model-visible surface may lag | the `capability_gap`/grant-revision guard in `dispatch_operation` (§6.1/A04) | `MC_authority_trustsurface.cfg`: dispatch trusts the cached surface | A04 |
+| `StaleSurfaceCatchesUp` (temporal) | a surface that lags the entitlement catches up at the instance's next request — the grant really becomes visible | `driver::team_kernel` recomputing the tool list per request; `v2_supervisor::a_users_grant_reaches_the_workers_surface_at_the_next_request` | `MC_authority_stalesurface.cfg`: the surface computed once and never recomputed | §5.2/D-61 |
+| `SurfaceChangesOnlyToTheCurrentEntitlement` (temporal) | a surface change is always the entitlement of that moment: recomputed, never invented, never carried over | as above | — | §5.2 |
+| `ListedIdsAreUsed` | the view never invents an id | the `grants` SELECT | — | A03 |
+| `AuthorityTracesToTheUser`, `RevokedStaysRevoked`, `ChildGrantsAreCoveredByTheirParent`, `CascadeTakesTheSubtree`, `EffectAtMostOnce`, `OnceStaleNeverExecutes`, `BootstrappedAuthority` | as in `V2Grants`, in the presence of the surface's own grants | see the authority table above | — | A02/A03 |
 
 ### Artifacts and GC (A30)
 

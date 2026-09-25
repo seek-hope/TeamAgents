@@ -18,6 +18,10 @@ teamagents                           # open the TUI (starts the per-user daemon 
 - **Headless use**: `teamagents exec [--json] [--timeout SEC] [--check CMD] "prompt"` goes through the same
   daemon and reports the goal's terminal state, the assistant reply or a timeout; the prompt may come from
   stdin (`-`). The full contract is in §1.1.
+- **Authority** (D-61): `teamagents authority` lists the session's instances and grants, `teamagents authority
+  grant --subject ID --action shell --scope workspace` hands one out and `teamagents authority revoke --grant
+  ID` takes it back. This is how a worker the Leader spawned gets the shared-workspace shell (§3); the full
+  contract is in §3.1.
 - **A session owns its workspace and permission mode**: both are fixed when the daemon boots (`--cwd DIR`,
   `--full-auto`), so a client that joins a session already running keeps that session's settings and prints
   them (`note: a session is already running for this state root in … mode` / `that session works in …`).
@@ -167,6 +171,56 @@ pre_tool = ["/home/you/bin/policy.sh"]            # policy hook before tool call
 - The headless client's `--check` (§1.1) is a *different* thing: it is your own acceptance command, executed
   by the client after the turn ends, and it only decides that `exec` exits non-zero. A runtime check (above)
   is the stronger contract, because the goal itself cannot settle until it passes.
+
+### 3.1 Authority: who may do what (`teamagents authority`, D-61)
+
+A team is a set of agents with different capabilities, and **you** decide which ones they have. The unit is a
+grant: a subject (an instance), an action and the resource it applies to. The session's bootstrap gives the
+Leader the three capabilities its own team tools need (`manage`, `delegate`, `message`, D-58) and the
+workspace shell; a worker the Leader spawns holds **none** of them (§5.1), which is deliberate — an agent the
+team created does not inherit the user's reach. A worker therefore cannot run shell commands until you grant
+it `shell@workspace`; it uses the file, web and skill tools (they need their binding, not a grant) until then.
+
+```bash
+teamagents authority                                                  # instances + grants, with the ids
+teamagents authority grant --subject i-worker-1 --action shell --scope workspace
+teamagents authority revoke --grant g-1a2b3c4d        # the full id or an unambiguous prefix
+```
+
+The action vocabulary is exactly what some check consults — nothing else can authorize anything:
+
+| Action | Asked over | Meaning |
+|---|---|---|
+| `shell` | `workspace` | run commands in the shared project directory |
+| `manage` | `session` or `instance:<id>` | spawn, and reset/park an instance |
+| `message` | `instance:<id>` | send a message to that instance |
+| `delegate` | `instance:<id>` | hand a task to that instance |
+| `task_result` | `task:<id>` | settle that delegated task back |
+
+`session` is the widest scope: it covers every resource below it, so `--scope session` grants the capability
+everywhere in this session, while `--scope instance:i-worker-1` grants it for that peer only. `--parent G`
+makes the new grant *derived*: it is then covered by `G` and is revoked with it (a snapshot of the grant tree
+rather than a second, independent authority).
+
+What the surface refuses and why:
+
+- **an action outside the table** (`--action shel`) — a typo would create a row nothing reads;
+- **a pair no check asks about** (`shell@instance:i-worker-1`): it would be dispatched never, offered never and
+  refused never, so the surface says what `shell` *is* asked over instead of writing a grant that looks like
+  power and does nothing;
+- **a subject that does not exist** is only a *warning*: instance ids are chosen by the spawner, so granting
+  ahead of a spawn is legitimate — and a typo is caught the same way, by the note on stderr.
+
+Revocation is final and takes the derived subtree with it. Because every dispatch re-checks the live grants at
+its own linearization point (§6.1), a revocation also stops an operation that was authorized when it was
+queued, and it is never rewritten into a silent success: the model sees the refusal, and the tool leaves its
+surface at its next request.
+
+Exit codes are `0` done, `1` the session refused the command (for example a `--parent` it does not know) and
+`2` usage or no session to talk to; `--json` prints the raw report. `authority` is a client of the running
+session — it never opens the database — so start the session first (`teamagents`, or any `exec` run) and use
+`--state-root PATH` to point at another one. The TUI topology panel shows the same facts (subject, action,
+scope and the short id); issuing and revoking grants is the CLI's job.
 
 ## 4. Permissions and isolation
 

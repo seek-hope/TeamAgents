@@ -9,10 +9,10 @@ in [README.md](README.md); the fix ledger is in
 
 **What can be claimed**:
 
-- The safety properties of seven protocol surfaces (control plane, artifacts/GC, waits/wakeups,
-  tasks/delegation/goal settlement, compression, the daemon protocol and the required checks) hold under
-  exhaustive TLC checking of the **abstract model**; liveness holds only under the explicitly stated weak
-  fairness assumptions.
+- The safety properties of nine protocol surfaces (control plane, artifacts/GC, waits/wakeups,
+  tasks/delegation/goal settlement, compression, the daemon protocol, the required checks, the authority layer
+  and the user's authority surface) hold under exhaustive TLC checking of the **abstract model**; liveness
+  holds only under the explicitly stated weak fairness assumptions.
 - The same invariants are recomputed against the **real `core::v2::Control`** by the executable
   correspondence test: every command sequence up to length 2 (38 commands, including refused combinations)
   plus 60 fixed-seed coverage-driven walks, re-checking 23 invariant groups after every step, with coverage
@@ -52,6 +52,7 @@ in [README.md](README.md); the fix ledger is in
 | Protocol model | `tla/V2Compress.tla` (8) | 8,467 states | as above |
 | Protocol model | `tla/V2Daemon.tla` (10) | 51,713 states | as above |
 | Protocol model | `tla/V2Checks.tla` (8) | 469 states | as above |
+| Protocol model | `tla/V2Authority.tla` (11 invariants + 5 properties, three negative controls) | 270,288 states generated / 35,950 distinct | as above; controls via `make verify-model-counterexamples` |
 | Protocol model (wide) | `MC_wide.cfg` (2 instances / 2 operations) | 275,004,673 states / 11 min 25 s (historical run; the files are unchanged: `git log -1 -- verification/tla/V2Control.tla MC_wide.cfg` = `d37e1b4`, the new hash after the 2026-09-25 history rewrite; two re-runs in this round reached about 170M / 250M states before the machine killed them, with no violation) | `make verify-model-wide` |
 | Code-level correspondence | `core/tests/v2_invariants.rs` | 38 commands; 1,482 short sequences plus a 60×24-step walk | `cargo test --offline --manifest-path core/Cargo.toml --test v2_invariants` |
 | Pure functions | `core/tests/kernel_properties.rs` | 258 entry combinations plus a full paging enumeration | `cargo test --offline --manifest-path core/Cargo.toml --test kernel_properties` |
@@ -85,6 +86,34 @@ operations that matter (the leader's delegation, a spawned child's shell call).
 | `make verify-model-all` (MC_grants) | **No error found** — 1,292,517 states generated / 178,024 distinct / 0 left / depth 11 / ~1 minute (all nine invariants plus the temporal `AuthorizedEffectsOnly`) |
 | Falsification check (kept out of the tree) | Offering `shell` unconditionally — what the code did before D-60 — makes TLC report `Invariant OfferedToolsAreAuthorized is violated by the initial state`, so the property is sensitive to exactly that defect |
 | Correspondence (`engine/tests/v2_supervisor.rs`) | `the_offered_surface_follows_the_grants` asserts the leader is offered `shell`/`spawn` and its spawned child is offered neither; it fails when the code stops filtering the surface by the grant |
+
+### The user's authority surface (added 2026-09-25, D-61)
+
+`V2Authority.tla` + `MC_authority.cfg` model the surface a user drives the authority layer with: the view a
+client reads (`id`, `issuer`, parent, revoked and the session revision), the pair table the surface refuses
+against, a grant the user writes (optionally derived from one it already holds), revocation by a nameable id
+with the subtree cascade, and the model-visible surface as a **cached** variable that only the instance's next
+request refreshes. Configuration: three bootstrap grants plus one free slot (the user's grant, or the one a
+spawn derives), two instances, one operation, two scopes.
+
+| Run | Result |
+|---|---|
+| `make verify-model-all` (MC_authority) | **No error found** — 270,288 states generated / 35,950 distinct / 0 left / depth 12 / ~35 s (11 invariants plus five temporal properties) |
+| Negative control `MC_authority_badview.cfg` | the view without the `id` field (the daemon before D-61) makes TLC report **`Temporal properties were violated`** — `EveryLiveGrantBecomesRevocable`: a user can list grants and still not name one |
+| Negative control `MC_authority_trustsurface.cfg` | dispatch trusting the cached surface (the mistake §6.1/A04 forbids) makes TLC report **`Action property AuthorizedEffectsOnly is violated`** |
+| Negative control `MC_authority_stalesurface.cfg` | a surface computed once and never recomputed makes TLC report **`Temporal properties were violated`** — `StaleSurfaceCatchesUp` |
+| `make verify-model-counterexamples` | runs the three controls and **fails** if any of them verifies instead of being refuted, so none of the three claims can become vacuous unnoticed |
+| Correspondence (`engine/tests/v2_supervisor.rs`) | `a_users_grant_reaches_the_workers_surface_at_the_next_request`: a spawned worker's first request has no `shell`, the user's grant (through the same `submit_user` path the daemon client uses) puts it on the next request, and revoking it takes the tool away again |
+| Correspondence (`engine/tests/cli.rs`) | `the_authority_surface_grants_and_revokes_through_the_daemon`: the real binary against a real daemon — list carries the ids and the instances, the granted worker answers the dispatch question `holds_covering_grant(worker, "shell", "workspace")` with *true*, a derived grant dies with its parent, and after the revocation the question is *false* again |
+| Falsification check (the defect this closed) | the standalone rusqlite probe recorded in D-61 shows the old view failing with `Invalid column type Real at index: 1, name: revoked_at` as soon as one grant was revoked |
+
+**A property the model corrected.** The first formulation of the freshness claim was
+`GrantReachesTheSurface == \A i : [](Entitled(i, "shell") => <>("shell" \in offered[i]))` — "once entitled,
+always eventually offered". TLC refuted it, and the counterexample is a real behaviour: the user grants, then
+*revokes before the instance takes its next turn*, so the correct surface at that next turn has no shell. The
+property as stated would have demanded a tool the instance may no longer use. It is now `StaleSurfaceCatchesUp`
+("a surface that lags the entitlement catches up at the next request"), which is what the code actually
+guarantees, and the negative control above shows it still fails when the surface is never recomputed.
 
 ## 3. Issues found by verification (all fixed)
 

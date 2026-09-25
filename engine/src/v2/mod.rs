@@ -3,6 +3,7 @@
 //! bounded storage worker between async I/O and SQLite (`storage`), and the
 //! session daemon plus its headless client (`daemon`/`exec`).
 
+pub mod authority;
 pub mod daemon;
 pub mod driver;
 pub mod exec;

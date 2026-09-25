@@ -164,6 +164,22 @@ the isolated shell inside your workspace (`--cwd` or the current directory); the
 and makes the run fail. The verdicts are printed, written to `<state root>/verification.json` and included in
 the `--json` report as `verification`.
 
+**Capabilities are yours to hand out.** The Leader gets the authority its own team tools need; a worker it
+spawns gets none of it, so it works with the file, web and skill tools until you grant it more — for example
+the shared-workspace shell a coding task usually needs:
+
+```bash
+teamagents authority                                    # instances and grants, with the ids
+teamagents authority grant --subject i-worker-1 --action shell --scope workspace
+teamagents authority revoke --grant g-1a2b3c4d          # final; takes derived grants with it
+```
+
+Grants are checked again at every dispatch, so a revocation stops work that was already queued, and the tool
+leaves the model's surface at its next request. The surface refuses what could never do anything (an unknown
+action, or a pair such as `shell@instance:i-worker-1` that no check asks about) and tells you what to use
+instead. Details, the full action vocabulary and the exit codes are in
+[docs/USER-GUIDE.md](docs/USER-GUIDE.md) §3.1.
+
 ## Common arguments and keys
 
 | Usage | Meaning |
@@ -172,7 +188,7 @@ the `--json` report as `verification`.
 | `--state-root PATH` | use a specific state root (default `$XDG_STATE_HOME/teamagents/v2`) |
 | `--model KEY` | pick a model catalog entry (default `leader_main`) |
 | `--full-auto` | user-only full-auto mode (out-of-scope work is approved instead of requested); it applies to the session this command starts — a session that is already running keeps the mode it booted with, and the client prints that mode instead of pretending |
-| `init` / `doctor` / `daemon` / `exec` / `version` / `--help` | config and state root / self-check / run the daemon alone (its output goes to `<state root>/daemon.log`) / headless input / version / usage |
+| `init` / `doctor` / `daemon` / `exec` / `authority` / `version` / `--help` | config and state root / self-check / run the daemon alone (its output goes to `<state root>/daemon.log`) / headless input / list, grant and revoke capabilities / version / usage |
 
 TUI keys (they match the hint line at the bottom; deliberately no function keys, since some keyboards lack
 them): `Enter` send, `Ctrl+J` newline (and `Shift+Enter` where the terminal reports modifiers), `Tab` switch the conversation target, `Ctrl+N` cycle the

@@ -338,19 +338,35 @@ fn read_method(method: &str, params: &Json, conn: &rusqlite::Connection) -> Resu
             }
             Ok(json!({"approvals": approvals}))
         }
+        // The grant view is what the user's authority surface reads and the
+        // only thing a revoke can name (D-61): the id, who issued it and where
+        // it derives from ride along with the visible subject/action/scope, and
+        // the session's grant revision is reported once. Without the id no
+        // client could revoke a single grant — the surface was read-only in
+        // practice while `revoke_grant` had no user-facing caller.
         "grants" => {
             let mut stmt = conn
-                .prepare("SELECT subject, action, resource_scope, revoked_at FROM grants ORDER BY subject, action")
+                .prepare(
+                    "SELECT id, issuer, subject, action, resource_scope, parent_grant_id, revoked_at
+                     FROM grants ORDER BY subject, action, id",
+                )
                 .map_err(|e| format!("grants prepare: {e}"))?;
             let rows = stmt
                 .query_map([], |row| {
-                    Ok(json!({"subject": row.get::<_, String>(0)?, "action": row.get::<_, String>(1)?,
-                              "resource_scope": row.get::<_, String>(2)?,
-                              "revoked": row.get::<_, Option<String>>(3)?.is_some()}))
+                    Ok(json!({"id": row.get::<_, String>(0)?, "issuer": row.get::<_, String>(1)?,
+                              "subject": row.get::<_, String>(2)?, "action": row.get::<_, String>(3)?,
+                              "resource_scope": row.get::<_, String>(4)?,
+                              "parent_grant_id": row.get::<_, Option<String>>(5)?,
+                              "revoked": row.get::<_, Option<f64>>(6)?.is_some()}))
                 })
                 .map_err(|e| format!("grants query: {e}"))?;
             let grants: Vec<Json> = rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("grants: {e}"))?;
-            Ok(json!({"grants": grants}))
+            let revision: i64 = conn
+                .query_row("SELECT value FROM meta WHERE key = 'grant_revision'", [], |row| row.get::<_, String>(0))
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0);
+            Ok(json!({"grants": grants, "revision": revision}))
         }
         other => Err(format!("unknown read method {other:?}")),
     }

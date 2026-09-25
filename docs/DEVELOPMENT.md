@@ -40,6 +40,9 @@ pick a **fresh evidence directory** and record results and limits in a dated rep
 # dogfooding: the built CLI on this repository's own fixtures, with each fixture's
 # checks.txt as a user-defined completion check, and the artifact verified by hand
 python3 review/dogfood/run.py --task edit-integrity   # needs the model credential
+# the authority surface end to end (spawn a worker, fail without the grant, `authority grant`,
+# retry, `authority revoke`) — the probe that found D-62
+python3 review/dogfood/authority.py
 # failure probes: SQLite/artifact atomic boundaries, runner and daemon crash recovery, storage-full stop, I/O cancel
 cargo build --offline --locked --manifest-path engine/Cargo.toml --example probe
 cargo build --offline --locked --manifest-path tui/Cargo.toml --example probe
@@ -90,15 +93,17 @@ cargo test --offline --locked --manifest-path tui/Cargo.toml --test v2app_tests
 ## Formal verification (TLA+ / Kani)
 
 `verification/` holds formal material that is tied to the implementation: `tla/V2*.tla` with `MC*.cfg` are the
-TLA+ specs of the control plane, artifacts, waits, tasks, compression, the daemon protocol and the required
-check rounds; `kani/` is a proof crate that compiles `core/src/kernel/types.rs` directly. The results,
-evidence and the **unproven list** are in the [verification report](../verification/REPORT.md); the mapping
-from property to code to acceptance item is in the [verification guide](../verification/README.md).
+TLA+ specs of the control plane, artifacts, waits, tasks, compression, the daemon protocol, the required
+check rounds, the authority layer and the user's authority surface; `kani/` is a proof crate that compiles
+`core/src/kernel/types.rs` directly. The results, evidence and the **unproven list** are in the
+[verification report](../verification/REPORT.md); the mapping from property to code to acceptance item is in
+the [verification guide](../verification/README.md).
 
 ```bash
 make verify-tools       # download and verify the pinned tla2tools.jar (TLC v1.7.1, fixed SHA-256)
 make verify-model       # small control-plane configuration
-make verify-model-all   # small configurations for all seven modules (seconds)
+make verify-model-all   # small configurations for all nine modules (~2 minutes)
+make verify-model-counterexamples  # the authority surface's negative controls: each must be *refuted*
 make verify-model-wide  # wide control-plane configuration (hundreds of millions of states, slow)
 make verify-kani        # Kani proofs for the paging arithmetic (needs the Kani toolchain)
 cargo test --offline --locked --manifest-path core/Cargo.toml --test v2_invariants

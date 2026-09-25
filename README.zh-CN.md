@@ -147,6 +147,20 @@ git diff | teamagents exec -                                    # 提示词从 s
 判为失败。判定结果会打印出来、写入 `<state root>/verification.json`，并作为 `verification` 出现在
 `--json` 报告里。
 
+**能力由你来发。** Leader 拿到它自己团队工具需要的那几项权限；它 spawn 出来的 worker 一项都没有，因此在
+你授权之前，worker 只能用文件、网页和 skill 工具——编码任务通常需要的是共享工作目录的 shell：
+
+```bash
+teamagents authority                                    # 列出实例与授权（含撤销需要的 id）
+teamagents authority grant --subject i-worker-1 --action shell --scope workspace
+teamagents authority revoke --grant g-1a2b3c4d          # 撤销是终局的，派生授权一并撤销
+```
+
+每次派发都会重新校验授权，所以撤销也能拦住已经排队的工作，工具会在该实例下一次请求时从模型可见的工具面
+消失。表面会拒绝那些「永远做不了任何事」的授权（动作不在词表内，或像 `shell@instance:i-worker-1` 这样没有
+任何检查会问到的组合），并告诉你该用哪个资源范围。完整动作词表、退出码见
+[docs/USER-GUIDE.md](docs/USER-GUIDE.md) §3.1。
+
 ## 常用参数与键位
 
 | 用法 | 含义 |
@@ -155,7 +169,7 @@ git diff | teamagents exec -                                    # 提示词从 s
 | `--state-root PATH` | 指定状态根（默认 `$XDG_STATE_HOME/teamagents/v2`） |
 | `--model KEY` | 选择模型目录键（默认 `leader_main`） |
 | `--full-auto` | 用户显式开启全自动（仅用户可开；默认越权时请求批准）；只对这条命令启动的会话生效——已在运行的会话保留它启动时的模式，客户端会把这个模式打印出来而不是假装生效 |
-| `init` / `doctor` / `daemon` / `exec` / `version` / `--help` | 准备配置与状态根 / 自检 / 单独运行 daemon（输出写入 `<state root>/daemon.log`）/ 无头输入 / 版本 / 用法 |
+| `init` / `doctor` / `daemon` / `exec` / `authority` / `version` / `--help` | 准备配置与状态根 / 自检 / 单独运行 daemon（输出写入 `<state root>/daemon.log`）/ 无头输入 / 列出、发放与撤销能力 / 版本 / 用法 |
 
 TUI 键位（与屏幕底部提示一致；**刻意不使用 F 键**，因为部分键盘没有）：
 `Enter` 发送、`Ctrl+J` 换行（终端会上报修饰键时 `Shift+Enter` 同样换行）、`Tab` 切换对话目标、

@@ -600,3 +600,117 @@ async fn the_offered_surface_follows_the_grants() {
         "the child keeps the tools that need no grant (the kernel builtins and wait): {child:?}"
     );
 }
+
+/// The other direction of D-60's check: a grant the *user* issues reaches the
+/// worker's model-visible surface at its next request, and revoking it takes the
+/// tool away again (D-61; V2Authority's `GrantReachesTheSurface` /
+/// `RevokedToolLeavesTheSurface`). A spawned worker holds no `shell@workspace`
+/// (§5.1) and nothing in the product could hand it one before the authority
+/// surface existed. The grant goes through `SupervisorHandle::submit_user`, the
+/// same single-writer path the daemon's `authority` client uses, and the surface
+/// is recomputed per request (`driver::team_kernel`) — exactly the freshness the
+/// model's `Observe` action assumes.
+#[tokio::test]
+async fn a_users_grant_reaches_the_workers_surface_at_the_next_request() {
+    /// Wait until `instance` has made at least `count` requests.
+    async fn wait_requests(seen: &Seen, instance: &str, count: usize, timeout_ms: u64) {
+        for _ in 0..(timeout_ms / 25) {
+            if seen.lock().unwrap().get(instance).map(Vec::len).unwrap_or(0) >= count {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("instance {instance} did not make {count} requests within {timeout_ms}ms");
+    }
+    /// Wait until the instance's turn is over (its own text is the last context
+    /// entry). A request appears in `Seen` before its response is imported, and an
+    /// input submitted while the turn is still in flight is stored *behind* that
+    /// text — it then gets no turn of its own, because the driver opens no new
+    /// turn when the last entry is the model's own text (§5.4,
+    /// `NoTurnWithoutWork`). So a test that feeds two inputs must wait here.
+    async fn wait_turn_end(root: &Root, instance: &str, timeout_ms: u64) {
+        for _ in 0..(timeout_ms / 25) {
+            let kind = second_control(root).connection().query_row(
+                "SELECT kind FROM context_entries WHERE instance_id = ?1 ORDER BY idx DESC LIMIT 1",
+                [instance],
+                |row| row.get::<_, String>(0),
+            );
+            if kind.as_deref() == Ok("assistant") {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("instance {instance} did not finish its turn within {timeout_ms}ms");
+    }
+    let leader = vec![
+        Step::Message(json!({"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "spawn",
+             "arguments": json!({"instance_id": "i-worker", "instructions": "wait for a message"}).to_string()}},
+            {"id": "c2", "type": "function", "function": {"name": "send",
+             "arguments": json!({"recipient": "i-worker", "text": "introduce yourself"}).to_string()}}
+        ]})),
+        Step::Message(reply("worker ready")),
+    ];
+    // The worker only ever answers plainly: this test is about what it is
+    // *offered*. A spawn alone opens no turn (§5.4, `NoTurnWithoutWork`), so the
+    // leader's message is what produces its first request; a delegated task would
+    // keep it busy (an open task is always work) and its extra requests would make
+    // the "next request" assertions ambiguous.
+    let worker = vec![Step::Message(reply("idle")), Step::Message(reply("idle")), Step::Message(reply("idle"))];
+    let seen: Seen = Arc::new(Mutex::new(HashMap::new()));
+    let root = root("user-grant-surface");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let handle = start(config(
+        &root,
+        factory_with_log(
+            HashMap::from([("i-leader".to_string(), leader), ("i-worker".to_string(), worker)]),
+            seen.clone(),
+        ),
+    ))
+    .await
+    .expect("start");
+    let requests = || seen.lock().unwrap().get("i-worker").cloned().unwrap_or_default();
+    handle.input("i-leader", "spawn a worker and greet it").await.expect("input");
+    wait_requests(&seen, "i-worker", 1, 20_000).await;
+    assert!(!requests()[0].contains(&"shell".to_string()), "the spawned worker starts without shell: {:?}", requests());
+    wait_turn_end(&root, "i-worker", 20_000).await;
+
+    // the user grants the shared-workspace shell through the authority surface
+    // (the same `submit_user` path the daemon's `authority` client uses)
+    let granted = handle
+        .submit_user(cmd(
+            "user-grant-shell",
+            "issue_grant",
+            json!({"subject": "i-worker", "action": "shell", "resource_scope": "workspace"}),
+        ))
+        .await
+        .expect("grant");
+    let grant_id = granted["grant_id"].as_str().expect("a grant id").to_string();
+    let after_first = requests().len();
+    handle.input("i-worker", "run the project tests").await.expect("input");
+    wait_requests(&seen, "i-worker", after_first + 1, 20_000).await;
+    let offered = requests()[after_first].clone();
+    assert!(
+        offered.contains(&"shell".to_string()),
+        "the grant must reach the worker's next request: {offered:?} (all: {:?})",
+        requests()
+    );
+    wait_turn_end(&root, "i-worker", 20_000).await;
+
+    // and taking it back removes the tool from every request prepared after it
+    let revoked = handle
+        .submit_user(cmd("user-revoke-shell", "revoke_grant", json!({"grant_id": grant_id})))
+        .await
+        .expect("revoke");
+    assert_eq!(revoked["revoked"].as_array().map(Vec::len), Some(1), "{revoked}");
+    let before_revoke_turn = requests().len();
+    handle.input("i-worker", "carry on").await.expect("input");
+    wait_requests(&seen, "i-worker", before_revoke_turn + 1, 20_000).await;
+    let after_revoke = requests()[before_revoke_turn..].to_vec();
+    assert!(
+        after_revoke.iter().all(|offered| !offered.contains(&"shell".to_string())),
+        "a revoked grant must leave the surface again: {after_revoke:?} (all: {:?})",
+        requests()
+    );
+    handle.shutdown().await.expect("shutdown");
+}

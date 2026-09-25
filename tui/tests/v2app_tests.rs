@@ -294,11 +294,16 @@ fn tasks_json() -> Json {
     ]})
 }
 
+/// The daemon's grant view as the authority surface reads it (D-61): the id and
+/// its issuer ride along with the visible pair.
 fn grants_json() -> Json {
-    json!({"grants": [
-        {"subject": "i-leader", "action": "manage", "resource_scope": "session", "revoked": false},
-        {"subject": "i-worker", "action": "message", "resource_scope": "instance:i-leader", "revoked": false},
-        {"subject": "i-old", "action": "manage", "resource_scope": "session", "revoked": true}
+    json!({"revision": 7, "grants": [
+        {"id": "g-11111111-2222-3333-4444-555555555555", "issuer": "user", "subject": "i-leader",
+         "action": "manage", "resource_scope": "session", "parent_grant_id": null, "revoked": false},
+        {"id": "g-22222222-3333-4444-5555-666666666666", "issuer": "user", "subject": "i-worker",
+         "action": "message", "resource_scope": "instance:i-leader", "parent_grant_id": null, "revoked": false},
+        {"id": "g-33333333-4444-5555-6666-777777777777", "issuer": "user", "subject": "i-old",
+         "action": "manage", "resource_scope": "session", "parent_grant_id": null, "revoked": true}
     ]})
 }
 
@@ -445,6 +450,8 @@ fn frame_shows_the_panels_and_panel_hit_testing() {
     assert!(all.contains("grants and channels"), "{all}");
     assert!(all.contains("i-leader ─manage→ session"), "{all}");
     assert!(all.contains("i-worker ─message→ instance:i-leader"), "{all}");
+    // the short id is what `teamagents authority revoke --grant …` takes
+    assert!(all.contains("g-11111111"), "the topology names the grant id: {all}");
     assert!(!all.contains("i-old"), "{all}"); // revoked grants are not topology
     assert!(all.contains("task delegation"), "{all}");
     assert!(all.contains("t-1 ─→ i-worker  [RUNNING]"), "{all}");

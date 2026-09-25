@@ -231,6 +231,114 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-62 Every request answers every tool call it carries (2026-09-25)
+
+D-61's real-model probe (`review/dogfood/authority.py`) turned up a second defect, in the wire protocol
+itself. The worker's first turn ended on an **accepted** `finish`; the runtime answers that call by settling
+the turn (or the task) instead of by appending a tool result, so the persisted context keeps an assistant
+message whose `tool_calls` are never answered. When that worker was given a new task in the same epoch, its
+next request was rejected outright:
+
+```
+chat API 400: An assistant message with 'tool_calls' must be followed by tool messages responding to each
+'tool_call_id'. (insufficient tool messages following tool_calls message)
+```
+
+D-54 fixed the *refused* finish (the runtime now answers it with a receipt); the accepted one, and the
+finish that is ignored because it shares a response with other calls (answered by a note, not a tool
+message), were still unanswered on the wire — and every later request of that instance failed, which is
+exactly the "send a follow-up message" flow.
+
+**The fix** is in the wire projection, not in the stored context: `pair_tool_results`
+(`core/src/kernel/instance.rs`) moves an existing answer up next to its call, and now also synthesizes
+**one tool-role answer per call the log left unanswered**, naming what it is
+(`[no tool result follows: the runtime answered this call outside the tool channel]`). The stored entries are
+untouched, no extra model turn is spent, and a call that does have an answer keeps it (the D-54 receipt path
+is unchanged).
+
+Evidence: `core/tests/kernel_properties.rs::the_wire_answers_every_call_it_carries` covers the five shapes
+(a lone `finish`; two unanswered calls; one answered and one not; a fully answered call — where nothing is
+added; an answer that landed behind other entries — moved up), and the exhaustive
+`wire_view_is_a_paired_permutation` now asserts that every call in the wire view is answered immediately and
+that the only added messages are synthesized answers naming a call the instance really made. Real-model check
+(`review/dogfood/authority.py`, second run, isolated state root `/tmp/ta-authority-probe3`): the worker's
+first turn ended on an accepted `finish` (entry 18, its task settled `BLOCKED`) and **169 following requests
+all imported**, with zero `request_failed` events — the same shape that produced the HTTP 400 in the first run
+(which had exactly one, on the worker's first request after the new task).
+
+Ceiling: the synthesized answer also covers a call whose receipt was lost for some other reason — the model
+then reads that no result follows instead of the turn dying on a rejected request. The trade-off is stated
+in the function's doc comment.
+
+## D-61 The user's authority surface (2026-09-25)
+
+§5.1 makes the user the root of authority, and D-58/D-60 made the *model-visible tool surface* follow the
+grants. But no user could exercise that authority: `issue_grant`/`revoke_grant` had no caller outside tests
+and the evaluation harness, and the daemon's `grants` view did not even carry the grant's `id` — so no
+client could have revoked anything. The visible consequence was that a worker the Leader spawns holds no
+`shell@workspace` (§5.1) and nothing in the product could give it one.
+
+**What was added**
+
+- `teamagents authority [list] | grant --subject ID --action A --scope S [--parent G] | revoke --grant ID`,
+  a client of the running session's socket (`engine/src/v2/authority.rs`): grants and revocations go through
+  `SupervisorHandle::submit_user` like every other business command, so they linearize with driver dispatch
+  on the single writer (§9) and the client never opens the database itself. `--json` prints the raw report;
+  exit codes are 0 done, 1 the session refused it, 2 usage or no session.
+- The guards a human needs and a machine caller does not: the action vocabulary and the pair table live in
+  `core/src/v2/capability.rs` (`ACTIONS`, `asks_about`, `authorizes_something`), and the surface **refuses**
+  a pair no check asks about (`shell@instance:i-worker` would authorize nothing: never dispatched, never
+  offered, never refused) with the scope that action is asked over. A subject that does not exist yet is a
+  *warning*, not a refusal — instance ids are chosen by the spawner, so granting ahead of a spawn is
+  legitimate and a typo is merely likelier. `revoke` takes the full id or an unambiguous prefix, and `list`
+  also prints the session's instances, because a grant's subject is an instance id and there was no other
+  headless way to read them.
+- The read view gained the fields the surface needs: `daemon.rs`'s `grants` reply now carries `id`, `issuer`,
+  `parent_grant_id` and the session's grant revision, and the TUI's topology panel shows the short id next
+  to each grant (the TUI already reads the same reply).
+
+**A defect found while wiring it**: the old view read `revoked_at` (a `REAL` column) as an
+`Option<String>`, so **one revoked grant made the whole `grants` read fail** with
+`Invalid column type Real at index: 1, name: revoked_at`. Reproduced with a standalone rusqlite probe before
+the fix. The failure reached the TUI as a lost connection (`DaemonClient::call` clears the connection on any
+error), so the grants/topology panel went dead and the client flapped — a documented capability
+(`docs/USER-GUIDE.md`'s "revoking a grant removes the tool from the surface") that nobody could have used.
+
+**Verification**: a new TLA+ module, `verification/tla/V2Authority.tla` (+`MC_authority.cfg`, wired into
+`make verify-model-all`), models the surface: the user reads the view, writes a grant that the pair table
+allows, revokes a grant it can *name*, and the instance's model-visible surface is a **cached** variable that
+only its next request refreshes (the code recomputes it per request, `driver::team_kernel`). Properties:
+`NoDeadGrantPair` (the surface's table equals the derived table of pairs some check asks about),
+`ListedIdsAreUsed`, `EveryLiveGrantBecomesRevocable` (temporal), `AuthorityTracesToTheUser`,
+`RevokedStaysRevoked`, `ChildGrantsAreCoveredByTheirParent`, `CascadeTakesTheSubtree`,
+`CascadeOnlyTakesTheSubtree` (temporal — the half V2Grants does not state: revoking one grant takes *exactly*
+its subtree, never the leader's authority with it), `EffectAtMostOnce`, `OnceStaleNeverExecutes`,
+`AuthorizedEffectsOnly` (temporal, with the cached surface), `SurfaceChangesOnlyToTheCurrentEntitlement`,
+`StaleSurfaceCatchesUp` (temporal) and `BootstrappedAuthority`. 35,950 distinct states, no error.
+
+Because a property that cannot fail proves nothing, `make verify-model-counterexamples` runs three
+configurations that model the plausible mistake and **must** be refuted: `MC_authority_badview.cfg` (the view
+without the `id` field — the state of the daemon before this decision) refutes
+`EveryLiveGrantBecomesRevocable`; `MC_authority_trustsurface.cfg` (dispatch trusts the cached surface, the
+mistake §6.1/A04 forbids) refutes `AuthorizedEffectsOnly`; `MC_authority_stalesurface.cfg` (the surface is
+never recomputed) refutes `StaleSurfaceCatchesUp`. The target fails if a control verifies instead.
+
+**Evidence**: `v2::authority::tests::a_revocation_takes_the_full_id_or_an_unambiguous_prefix`;
+`cli::the_authority_surface_grants_and_revokes_through_the_daemon` (the real binary against a real daemon:
+list carries ids and instances, grant to a spawned worker makes the dispatch question true, dead pairs and
+unknown actions are refused, an unknown subject warns, a parent the session does not know is the control
+plane's refusal, a derived grant dies with its parent and the dispatch question is false again);
+`v2_supervisor::a_users_grant_reaches_the_workers_surface_at_the_next_request` (the granted tool appears on
+the worker's next request and a revocation takes it away again — the spec-to-code correspondence of
+`StaleSurfaceCatchesUp`); `core/src/v2/capability.rs`'s table test (the pairs the surface accepts are exactly
+the ones some check asks); `tui/tests/v2app_tests.rs::frame_shows_the_panels_and_panel_hit_testing` (the
+topology line names the id). Real model: `review/dogfood/authority.py` (see its README entry).
+
+**Left open (needs the user's word)**: giving a spawned worker `shell@workspace` *by default* would change
+§5.1's spawn contract, and letting the Leader hand out its own shell authority (it holds
+`shell@workspace`, and `issue_grant` would accept the narrowing) would turn a boundary the user owns into one
+the team manages. Neither is implemented; the surface is the user's.
+
 ## D-54 The completion path survives a real model (2026-09-25)
 
 Several things fixed earlier were verified again against a real DeepSeek Flash session (isolated state root, native

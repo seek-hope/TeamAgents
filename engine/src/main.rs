@@ -8,6 +8,9 @@ const HELP: &str = "TeamAgents: work with a Leader in your terminal\n\n\
 usage: teamagents [--cwd DIR] [--state-root PATH] [--model KEY] [--full-auto]\n\
   teamagents                          TUI attached to your daemon (starts one if needed)\n\
   teamagents exec [--json] [--timeout SEC] [--check CMD] \"…\"   one headless input\n\
+  teamagents authority [list] [--json]          the session's grants, with the ids revoke needs\n\
+  teamagents authority grant --subject ID --action A --scope S [--parent G]\n\
+  teamagents authority revoke --grant ID        revoke that grant and everything derived from it\n\
   teamagents daemon [--state-root PATH] [--cwd DIR] [--model KEY] [--full-auto]\n\
   teamagents init [--state-root PATH]   write config and prepare the state root\n\
   teamagents doctor [--state-root PATH] check config, credentials, state root and host\n\
@@ -16,6 +19,9 @@ usage: teamagents [--cwd DIR] [--state-root PATH] [--model KEY] [--full-auto]\n\
 exec reads the prompt from stdin when it is \"-\", runs each --check acceptance command\n\
 in the workspace after the turn ends, and exits 0 completed, 1 failed or unfinished,\n\
 3 approval required, 124 timeout, 2 usage.\n\
+authority talks to the running session (start it with teamagents or exec) and exits 0 done,\n\
+1 the session refused it, 2 usage. It is how a spawned worker gets shell@workspace (§5.1),\n\
+and how a capability is taken back again.\n\
 The Leader builds the team through spawn/delegate/send/wait; entry points from older\n\
 releases (TeamSpec files, line mode, session resume) are not supported.\n\
 First run: teamagents init -> set the credential env var -> teamagents doctor -> teamagents.";
@@ -41,6 +47,11 @@ pub struct Args {
     pub exec_json: bool,
     pub dry_run: bool,
     pub history_days: Option<u64>,
+    pub subject: Option<String>,
+    pub action: Option<String>,
+    pub scope: Option<String>,
+    pub parent_grant: Option<String>,
+    pub grant: Option<String>,
 }
 
 fn parse_args() -> Args {
@@ -71,6 +82,11 @@ fn parse_args() -> Args {
         exec_json: false,
         dry_run: false,
         history_days: None,
+        subject: None,
+        action: None,
+        scope: None,
+        parent_grant: None,
+        grant: None,
     };
     let mut i = 0;
     while i < argv.len() {
@@ -152,7 +168,7 @@ fn parse_args() -> Args {
                 args.command = Some(argv[i].clone());
                 i += 1;
             }
-            "serve" | "init" | "doctor" | "validate" | "sessions" | "version" | "exec" => {
+            "serve" | "init" | "doctor" | "validate" | "sessions" | "version" | "exec" | "authority" => {
                 if args.command.is_some() {
                     usage();
                 }
@@ -162,12 +178,49 @@ fn parse_args() -> Args {
                 }
                 i += 1;
             }
-            "--json" if args.command.as_deref() == Some("exec") => {
+            "--json" if matches!(args.command.as_deref(), Some("exec" | "authority")) => {
                 if args.exec_json {
                     usage();
                 }
                 args.exec_json = true;
                 i += 1;
+            }
+            "--subject" if args.command.as_deref() == Some("authority") => {
+                if args.subject.is_some() {
+                    usage();
+                }
+                args.subject =
+                    Some(argv.get(i + 1).cloned().filter(|v| !v.starts_with('-')).unwrap_or_else(|| usage()));
+                i += 2;
+            }
+            "--action" if args.command.as_deref() == Some("authority") => {
+                if args.action.is_some() {
+                    usage();
+                }
+                args.action = Some(argv.get(i + 1).cloned().filter(|v| !v.starts_with('-')).unwrap_or_else(|| usage()));
+                i += 2;
+            }
+            "--scope" if args.command.as_deref() == Some("authority") => {
+                if args.scope.is_some() {
+                    usage();
+                }
+                args.scope = Some(argv.get(i + 1).cloned().filter(|v| !v.starts_with('-')).unwrap_or_else(|| usage()));
+                i += 2;
+            }
+            "--parent" if args.command.as_deref() == Some("authority") => {
+                if args.parent_grant.is_some() {
+                    usage();
+                }
+                args.parent_grant =
+                    Some(argv.get(i + 1).cloned().filter(|v| !v.starts_with('-')).unwrap_or_else(|| usage()));
+                i += 2;
+            }
+            "--grant" if args.command.as_deref() == Some("authority") => {
+                if args.grant.is_some() {
+                    usage();
+                }
+                args.grant = Some(argv.get(i + 1).cloned().filter(|v| !v.starts_with('-')).unwrap_or_else(|| usage()));
+                i += 2;
             }
             "--timeout" if args.command.as_deref() == Some("exec") => {
                 if args.timeout.is_some() {
@@ -346,6 +399,74 @@ fn run_exec(args: &Args) -> i32 {
         checks: args.checks.clone(),
         workspace,
     })
+}
+
+/// `teamagents authority`: the user's authority surface (§5.1, D-61). It talks
+/// to the running session's socket — it never opens the database, so a grant or
+/// a revocation linearizes with driver dispatch like every other command (§9).
+fn run_authority(args: &Args) -> i32 {
+    use teamagents_engine::v2::authority::{AuthorityCommand, AuthorityOptions};
+    let state_root = args.state_root.clone().map(PathBuf::from).unwrap_or_else(teamagents_engine::v2_root);
+    let socket = state_root.join("daemon.sock");
+    // the verb may be inferred from the flags, so `teamagents authority --grant g-1`
+    // and `authority --action shell --subject i-w --scope workspace` both work
+    let verb = args.positional.as_deref().unwrap_or_else(|| {
+        if args.grant.is_some() {
+            "revoke"
+        } else if args.subject.is_some() || args.action.is_some() || args.scope.is_some() {
+            "grant"
+        } else {
+            "list"
+        }
+    });
+    let command = match verb {
+        "list" => {
+            if args.grant.is_some() || args.subject.is_some() || args.action.is_some() || args.scope.is_some() {
+                eprintln!(
+                    "authority list takes no --grant/--subject/--action/--scope; did you mean `authority grant`?"
+                );
+                return 2;
+            }
+            AuthorityCommand::List
+        }
+        "grant" => {
+            let required = [
+                ("--subject ID (the instance receiving the grant)", &args.subject),
+                ("--action A (one of shell, message, delegate, manage, task_result)", &args.action),
+                ("--scope S (session, workspace, instance:<id> or task:<id>)", &args.scope),
+            ];
+            for (flag, present) in required {
+                if present.is_none() {
+                    eprintln!(
+                        "authority grant needs {flag}\n\
+                         usage: teamagents authority grant --subject ID --action A --scope S [--parent G]"
+                    );
+                    return 2;
+                }
+            }
+            AuthorityCommand::Grant {
+                subject: args.subject.clone().unwrap_or_default(),
+                action: args.action.clone().unwrap_or_default(),
+                scope: args.scope.clone().unwrap_or_default(),
+                parent: args.parent_grant.clone(),
+            }
+        }
+        "revoke" => {
+            let Some(grant) = args.grant.clone() else {
+                eprintln!("authority revoke needs --grant ID (see `teamagents authority` for the ids)");
+                return 2;
+            };
+            AuthorityCommand::Revoke { grant }
+        }
+        other => {
+            eprintln!(
+                "authority: unknown command {other:?}; use `teamagents authority [list]`, \
+                 `authority grant --subject ID --action A --scope S` or `authority revoke --grant ID`"
+            );
+            return 2;
+        }
+    };
+    teamagents_engine::v2::authority::run(AuthorityOptions { socket, command, json_out: args.exec_json })
 }
 
 /// Say it out loud when `--full-auto` could not apply: the mode belongs to the
@@ -552,6 +673,7 @@ fn main() {
         Some("doctor") => cli::doctor(args.state_root.clone().map(PathBuf::from)),
         Some("version") => cli::version(),
         Some("exec") => run_exec(&args),
+        Some("authority") => run_authority(&args),
         // entries that no longer exist: refuse them with a pointer to the current ones
         Some("validate") | Some("sessions") | Some("serve") | Some("repl") => {
             eprintln!(
