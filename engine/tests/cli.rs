@@ -508,6 +508,59 @@ fn the_daemon_carries_configured_checks_into_the_goal() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// A14: with no bubblewrap the shell must refuse to run **anything**, and the client's
+/// own acceptance commands are no exception — a `--check` command that quietly ran on
+/// the host would defeat the isolation the user asked for. The test drives the real
+/// binary in a child process whose `PATH` holds no `bwrap` (a child's environment,
+/// never the test process's own: other tests resolve tools through `PATH`), with a
+/// dead model endpoint, so the turn fails first and the verdict is where the refusal
+/// shows up — the same shape a user meets it in.
+#[test]
+fn an_unisolated_shell_refuses_instead_of_running_on_the_host() {
+    if !teamagents_engine::tools::bwrap_available() {
+        eprintln!("skipped: this machine has no bwrap, so the sandbox path is unavailable either way");
+        return;
+    }
+    let root = std::env::temp_dir().join(format!("ta-isolation-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let (config_home, state, workspace, empty_bin) =
+        (root.join("config"), root.join("root"), root.join("ws"), root.join("empty-bin"));
+    std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::create_dir_all(&empty_bin).unwrap();
+    std::fs::write(
+        config_home.join("teamagents/config.toml"),
+        "[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\n\
+         api_key_env = \"TA_ISOLATION_KEY\"\nbase_url = \"http://127.0.0.1:1/v1\"\n",
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_teamagents"))
+        .args(["exec", "--state-root"])
+        .arg(&state)
+        .args(["--full-auto", "--json", "--timeout", "20", "--cwd"])
+        .arg(&workspace)
+        .args(["--check", "echo ran-unisolated", "say hi"])
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env("XDG_STATE_HOME", root.join("xdg-state"))
+        .env("TA_ISOLATION_KEY", "test-value")
+        // no bwrap anywhere: `which("bwrap")` must fail inside the client
+        .env("PATH", &empty_bin)
+        .output()
+        .expect("run exec");
+    let printed = String::from_utf8_lossy(&output.stdout);
+    let report: serde_json::Value = serde_json::from_str(printed.trim())
+        .unwrap_or_else(|e| panic!("the run must print its JSON report ({e}): {printed:?}"));
+    let verdict = &report["verification"][0];
+    assert_eq!(verdict["ok"], serde_json::json!(false), "{report}");
+    let error = verdict["error"].as_str().unwrap_or("");
+    assert!(error.contains("IsolationUnavailable"), "the refusal names the isolation failure: {report}");
+    let text = verdict["output"].as_str().unwrap_or("");
+    assert!(!text.contains("ran-unisolated"), "the check must not have run anywhere: {report}");
+    assert!(std::fs::read_dir(&workspace).unwrap().next().is_none(), "and it must have left nothing behind");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// `--full-auto` used to be parsed and thrown away by both entry points, so a
 /// documented flag did nothing. It now reaches the daemon this client starts,
 /// and against a session that is already running (whose mode is fixed, D-41)
