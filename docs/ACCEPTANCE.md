@@ -6,7 +6,7 @@ Baseline: [the design and acceptance baseline](DESIGN.md) §12/§16. Current imp
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 97 / engine 175 / tui 26 test targets) and `make pty` passes; both are
+`make check` is green (core 97 / engine 176 / tui 26 test targets) and `make pty` passes; both are
 preconditions for every item below. `make check` includes `make language-check`, which fails on non-English
 characters outside the two documented exceptions (`README.zh-CN.md` and the frozen material under
 `review/eval`).
@@ -82,6 +82,15 @@ amended (D-49/D-50).
 
 ## Known gaps (found while auditing the documented surface, 2026-09-25)
 
+- **A settled goal has no product surface to open a new one** (found while auditing the authority surface,
+  2026-09-25; verified by `engine/tests/v2_supervisor.rs::a_settled_goal_leaves_a_later_delegation_without_an_active_goal`):
+  `delegate_task` requires an ACTIVE goal, the kernel offers no create-goal tool, and the runtime creates no
+  goal when a later user input arrives — so the *second* instruction of a session cannot build a team, and the
+  model is told to "create a new goal (create_goal) before delegating" without a way to do it (the command
+  exists in the protocol; only a hand-written client can send it). The test pins the current behaviour: the
+  second input leaves exactly one goal, `SUCCEEDED`, the delegation receipt names the closed goal, and the
+  worker never runs. Whether the runtime should open a goal per user input, or the Leader should be given a
+  tool to open one, is a design decision (D-42/D-56 touch it) that needs the user's word.
 - **A worker whose model answers with prose and never calls `finish` keeps being asked** (found by
   `review/dogfood/authority.py`, 2026-09-25, not fixed): with an open task, the driver's idle test
   (`step_ready`: "the last entry is the model's own text **and** no open tasks") re-opens a turn right after a

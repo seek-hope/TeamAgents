@@ -176,12 +176,17 @@ fn event(tx: &Connection, session_id: &str, kind: &str, scope: &str, payload: &J
 }
 
 fn load_instance(tx: &Connection, id: &str) -> Result<(String, i64, String, String, i64), String> {
+    // A missing instance is a fact the *model* reads in a tool receipt, so it is
+    // named as such instead of leaking the storage layer's "Query returned no rows"
+    // (the assignee of a delegation is the common case).
     tx.query_row(
         "SELECT session_id, context_epoch, lifecycle, phase, revision FROM instances WHERE id = ?1",
         [id],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
     )
-    .map_err(|e| format!("instance {id}: {e}"))
+    .optional()
+    .map_err(|e| format!("instance {id}: {e}"))?
+    .ok_or_else(|| format!("instance {id} does not exist in this session"))
 }
 
 /// Session grant revision (§5.1): every issue/revoke bumps it; dispatch

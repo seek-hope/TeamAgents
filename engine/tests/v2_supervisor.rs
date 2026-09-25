@@ -796,3 +796,95 @@ async fn a_users_grant_reaches_the_workers_surface_at_the_next_request() {
     );
     handle.shutdown().await.expect("shutdown");
 }
+
+/// A settled goal leaves no product surface to open a new one (known gap, D-64's
+/// audit): the kernel offers no create-goal tool, `delegate_task` requires an ACTIVE
+/// goal, and the runtime creates no goal when a later input arrives — so the second
+/// instruction of a session cannot build a team, and the model is told (in its own
+/// protocol note) to "create a new goal first" without a way to do it.
+///
+/// This pins the *current* behaviour so that changing it is deliberate. Whether the
+/// runtime should open a goal per user input, or the Leader should be given a way to
+/// open one, is a design decision for the user (recorded in docs/ACCEPTANCE.md).
+#[tokio::test]
+async fn a_settled_goal_leaves_a_later_delegation_without_an_active_goal() {
+    let leader = vec![
+        Step::Message(finish_call("first goal done")),
+        Step::Message(json!({"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "delegate",
+             "arguments": json!({"assignee": "i-worker", "task_id": "t-late", "description": "later work"}).to_string()}}]})),
+    ];
+    let worker = vec![Step::Message(reply("should never run"))];
+    let seen: Seen = Arc::new(Mutex::new(HashMap::new()));
+    let root = root("settled-goal-delegation");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let handle = start(config(
+        &root,
+        factory_with_log(
+            HashMap::from([("i-leader".to_string(), leader), ("i-worker".to_string(), worker)]),
+            seen.clone(),
+        ),
+    ))
+    .await
+    .expect("start");
+    handle.input("i-leader", "do the first thing").await.expect("input");
+    let closed = wait_event(&handle, "goal_completed", 20_000).await;
+    assert_eq!(closed["payload"]["status"], json!("SUCCEEDED"), "{closed}");
+    // the worker the second turn delegates to must exist, or the refusal would be
+    // about the assignee instead of the goal (the question under test)
+    second_control(&root)
+        .submit(
+            cmd("late-worker", "create_instance", json!({"id": "i-worker", "workspace_ref": root.dir.join("ws")})),
+            teamagents_core::v2::Identity::User,
+        )
+        .expect("create the worker");
+    // a second instruction: the runtime opens no goal for it
+    handle.input("i-leader", "now delegate some work").await.expect("input");
+    for _ in 0..800 {
+        if seen.lock().unwrap().get("i-leader").map(Vec::len).unwrap_or(0) >= 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(
+        seen.lock().unwrap().get("i-leader").map(Vec::len).unwrap_or(0) >= 2,
+        "the second instruction really opens a turn: {:?}",
+        seen.lock().unwrap().get("i-leader")
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let control = second_control(&root);
+    let goals: Vec<(String, String)> = control
+        .connection()
+        .prepare("SELECT id, status FROM goals ORDER BY id")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .map(|row| row.unwrap())
+        .collect();
+    assert_eq!(goals.len(), 1, "no new goal is created for the second input: {goals:?}");
+    assert_eq!(goals[0].1, "SUCCEEDED", "{goals:?}");
+    // and the delegation the model attempted reports the missing goal instead of
+    // spawning a member for work that has nowhere to be charged
+    let results: Vec<String> = control
+        .connection()
+        .prepare(
+            "SELECT message_json FROM context_entries
+             WHERE instance_id = 'i-leader' AND kind = 'tool_result' ORDER BY idx",
+        )
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .map(|row| row.unwrap())
+        .collect();
+    let refusal = results
+        .iter()
+        .find(|entry| entry.contains("not active"))
+        .cloned()
+        .unwrap_or_else(|| panic!("no delegation refusal in the receipts: {results:?}"));
+    assert!(
+        refusal.contains("is not active") && refusal.contains("create_goal"),
+        "the refusal says the goal is closed and names the missing step: {refusal}"
+    );
+    assert_eq!(seen.lock().unwrap().get("i-worker").map(Vec::len), None, "the worker never runs: no task reached it");
+    handle.shutdown().await.expect("shutdown");
+}
