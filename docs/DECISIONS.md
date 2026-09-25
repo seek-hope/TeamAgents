@@ -231,6 +231,31 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-84 Two of my own tests asserted traces that could not fail (2026-09-26)
+
+The audits in this series keep finding "evidence" that proves less than it looks like, so I turned the same eye
+on the tests added in the last weeks — the ones whose job is to pin A14, D-82 and D-83 — and found two
+assertions that could not fail:
+
+- `cli::an_unisolated_shell_refuses_instead_of_running_on_the_host` asserted that the workspace was empty after
+  the refused `--check`. The command was `echo ran-unisolated`, which leaves nothing behind **even when it
+  runs**, so the assertion held for the wrong reason. It now uses `touch ran-unisolated`, and the test carries
+  its own control: the *same* command with the machine's `PATH` runs inside the sandbox (verdict `ok`, file
+  present), and only then does the bwrap-less run assert the file's absence. Measured 2026-09-26: the control
+  leaves `ran-unisolated` in its workspace, the refusal leaves nothing.
+- `jobs_runner::go_past_the_deadline_is_refused_and_runs_nothing` asserted that a *relative* path
+  (`late-go-ran`) did not exist, while the command's cwd is `/tmp` — the file would have landed in `/tmp`, and
+  the assertion checked the test process's own directory. It now writes an absolute path inside the test's
+  directory and asserts that file's absence.
+
+Neither finding changes a product behaviour; both change what the evidence means. Stated as a rule for this
+repository: **an assertion must be able to fail for the reason it names** — for a side effect, check a trace
+the effect really produces (and, where cheap, run the positive control in the same test).
+
+Ceiling: this was a manual pass over the newest tests, not a mechanical guard. A vacuous assertion is not
+detectable by running the suite (that is the point) — the closest mechanical proxies are the ones this series
+already uses: a counterfactual config for every model property (D-71/D-72's refuted controls) and a
+pre-fix build for every regression claim.
 ## D-83 A gate flake with a precise cause: the fixture's own deadline (2026-09-26)
 
 `make check` failed once in `jobs_runner::deadline_cancels_a_stuck_command` with

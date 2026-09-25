@@ -147,13 +147,16 @@ async fn go_past_the_deadline_is_refused_and_runs_nothing() {
     runner_bin();
     let dir = root("late-go");
     let past = teamagents_engine::jobs::now_ms().saturating_sub(1_000);
-    client::spawn(&dir, &spec("op-late", "printf ran > late-go-ran", past)).await.expect("spawn");
+    // the trace lands inside this test's own directory (an absolute path), so its
+    // absence really means the command did not run
+    let trace = dir.join("late-go-ran");
+    client::spawn(&dir, &spec("op-late", &format!("printf ran > {}", trace.display()), past)).await.expect("spawn");
     let refused = client::go(&dir).await.expect_err("a late go must be refused");
     assert!(refused.contains("past its deadline"), "{refused}");
     // the job never ran: the journal stays READY and the command left no trace
     let journal = client::status(&dir).await.expect("status");
     assert_eq!(journal.state, "READY", "the command must not have started");
-    assert!(!Path::new("late-go-ran").exists(), "the command must not have run");
+    assert!(!trace.exists(), "the command must not have run: {}", trace.display());
     client::shutdown(&dir).await.expect("shutdown");
 }
 

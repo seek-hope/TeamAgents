@@ -535,28 +535,42 @@ fn an_unisolated_shell_refuses_instead_of_running_on_the_host() {
     )
     .unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_teamagents"))
-        .args(["exec", "--state-root"])
-        .arg(&state)
-        .args(["--full-auto", "--json", "--timeout", "20", "--cwd"])
-        .arg(&workspace)
-        .args(["--check", "echo ran-unisolated", "say hi"])
-        .env("XDG_CONFIG_HOME", &config_home)
-        .env("XDG_STATE_HOME", root.join("xdg-state"))
-        .env("TA_ISOLATION_KEY", "test-value")
-        // no bwrap anywhere: `which("bwrap")` must fail inside the client
-        .env("PATH", &empty_bin)
-        .output()
-        .expect("run exec");
-    let printed = String::from_utf8_lossy(&output.stdout);
-    let report: serde_json::Value = serde_json::from_str(printed.trim())
-        .unwrap_or_else(|e| panic!("the run must print its JSON report ({e}): {printed:?}"));
+    let run = |workspace: &std::path::Path, state: &std::path::Path, path: &std::path::Path| {
+        let output = Command::new(env!("CARGO_BIN_EXE_teamagents"))
+            .args(["exec", "--state-root"])
+            .arg(state)
+            .args(["--full-auto", "--json", "--timeout", "20", "--cwd"])
+            .arg(workspace)
+            // the check leaves a file in its cwd when it runs anywhere at all
+            .args(["--check", "touch ran-unisolated", "say hi"])
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("XDG_STATE_HOME", root.join("xdg-state"))
+            .env("TA_ISOLATION_KEY", "test-value")
+            .env("PATH", path)
+            .output()
+            .expect("run exec");
+        let printed = String::from_utf8_lossy(&output.stdout).into_owned();
+        serde_json::from_str::<serde_json::Value>(printed.trim())
+            .unwrap_or_else(|e| panic!("the run must print its JSON report ({e}): {printed:?}"))
+    };
+
+    // Control first: the same command with the machine's own PATH runs inside the
+    // sandbox and really does leave the file — without this, the absence below would
+    // prove nothing (a check whose assertion cannot fail is not a check).
+    let control_workspace = root.join("ws-control");
+    std::fs::create_dir_all(&control_workspace).unwrap();
+    let host_path = std::env::var("PATH").unwrap_or_default();
+    let control = run(&control_workspace, &root.join("root-control"), std::path::Path::new(&host_path));
+    assert_eq!(control["verification"][0]["ok"], serde_json::json!(true), "the control check runs: {control}");
+    assert!(control_workspace.join("ran-unisolated").is_file(), "and leaves its trace: {control}");
+
+    // Then the refusal: no bwrap anywhere, so `which("bwrap")` fails inside the client
+    let report = run(&workspace, &state, &empty_bin);
     let verdict = &report["verification"][0];
     assert_eq!(verdict["ok"], serde_json::json!(false), "{report}");
     let error = verdict["error"].as_str().unwrap_or("");
     assert!(error.contains("IsolationUnavailable"), "the refusal names the isolation failure: {report}");
-    let text = verdict["output"].as_str().unwrap_or("");
-    assert!(!text.contains("ran-unisolated"), "the check must not have run anywhere: {report}");
+    assert!(!workspace.join("ran-unisolated").exists(), "the check ran somewhere: {report}");
     assert!(std::fs::read_dir(&workspace).unwrap().next().is_none(), "and it must have left nothing behind");
     let _ = std::fs::remove_dir_all(&root);
 }
