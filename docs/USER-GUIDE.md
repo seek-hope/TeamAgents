@@ -351,7 +351,7 @@ teamagents tasks cancel --id t-prose    # releases a delegator waiting on a task
   **`instances terminate --id … --yes`**: it closes the instance's open execution, the running operation is
   flagged, the runner kills the process group, and the operation lands `CANCELLED` with a receipt whose
   `class` is `cancelled`. Measured with a real model and a real command (`python3
-  review/dogfood/cancel.py`, D-88): the effect stops 1.5–5.5 s after the lever. There is no lighter lever for
+  review/dogfood/cancel.py`, D-88): the effect stops 1.5–6 s after the lever. There is no lighter lever for
   one command today.
 - Ids must name a listed instance or task (full id or an unambiguous prefix); `--json` prints the raw report
   for scripts. Exit codes: `0` done, `1` the session refused it, `2` usage or no session.

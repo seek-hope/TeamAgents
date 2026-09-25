@@ -327,7 +327,7 @@ scripted providers — and while building the live probe the question turned out
 Measured end to end (`python3 review/dogfood/cancel.py`, five runs on 2026-09-26): the Leader's spawn turn
 ~5 s; the worker — which holds no `shell@workspace` until the user grants it (§5.1) — ran
 `while true; do echo tick >> heartbeat.txt; sleep 0.2; done` under a real model; the user's direct input to
-that member started it; `instances terminate --id … --yes` then stopped the effect **1.5–5.5 s after the
+that member started it; `instances terminate --id … --yes` then stopped the effect **1.5–6 s after the
 lever** (the heartbeat file is the witness: the process group is gone, not just a row), the operation ended
 `CANCELLED` with `class: cancelled` — not the command's own `class: timeout` — and no operation was left in a
 running state.

@@ -14,6 +14,11 @@ model, a real shell command and the real runner process:
   are indistinguishable from the outside unless the probe reads the class, and only the first one is the
   user's lever working.
 
+The probe also exercises A05's *user* half on the same member: the user reads its history through the daemon
+(`history` with that instance id) and the instruction the user sent is in it. A *member* reading another
+instance's history is refused in the control plane, but no member-facing surface issues that command today,
+so that half stays with the in-process test.
+
 The flow keeps the model's part minimal and puts the rest on user surfaces: the Leader hires the worker
 (one small turn — the only product path that creates a member with a real profile), the probe grants it
 `shell@workspace` with `teamagents authority grant` (§5.1: a spawned worker holds none), submits the
@@ -202,6 +207,19 @@ def main() -> int:
             return 1
         print(f"  the member's command is running ({heartbeat_lines(heartbeat)} ticks after "
               f"{round(time.time() - started, 1)}s)")
+
+        # --- the user may look into that member's history (A05's user half) --------
+        viewed = protocol(socket_path, "history", {"instance_id": worker, "limit": 50})
+        if not viewed.get("ok"):
+            failures.append(f"the user could not read the member's history: {viewed.get('error')}")
+        else:
+            entries = viewed["result"]["entries"]
+            carried = [e for e in entries if e["kind"] == "user" and "shell command" in json.dumps(e["message"])]
+            if not carried:
+                failures.append(f"the member's history does not carry the user's input ({len(entries)} entries)")
+            else:
+                print(f"  the user reads the member's history ({len(entries)} entries, the input among them);"
+                      " a member reading anyone else's is refused in the control plane")
 
         # --- the user's lever ----------------------------------------------------
         ended = call(["instances", *common, "terminate", "--id", worker, "--yes", "--json"], env, timeout=60)

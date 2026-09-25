@@ -316,7 +316,7 @@ The Leader spawns one worker (a spawned worker holds no `shell@workspace`, §5.1
 `teamagents authority grant`, sends the instruction to that member directly (the same `submit_input` the TUI
 sends), and then pulls `teamagents instances terminate --id … --yes`. Two things are asserted, and both can
 fail: the **artifact** — `heartbeat.txt`, written five times a second by the command the runner spawned —
-must stop growing (1.5–5.5 s after the lever in five runs on 2026-09-26), and the operation's **receipt
+must stop growing (1.5–6 s after the lever across the runs of 2026-09-26), and the operation's **receipt
 class** must be `cancelled`, which is how the probe tells the user's lever apart from the command simply
 running into its own 120 s tool timeout.
 
