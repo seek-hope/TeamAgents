@@ -162,9 +162,10 @@ running session retires the checkout by itself, record included. Measured (2026-
 
 ## `skills.py`: the configured Skills registry reaches the model
 
-`skills.py` writes a skills root with one skill whose *body* carries a token generated for the run (the token
-is deliberately absent from the YAML description, so a model that only searched cannot know it), points
-`skills_paths` at that root, and asks the model to read the skill and follow it:
+`skills.py` writes a skills root with two skills and drives both halves of the tool. The first skill's *body*
+carries a token generated for the run (deliberately absent from the YAML description, so a model that only
+searched cannot know it); the second is findable only through `search`, because its keyword (`frobnication`)
+lives in its description and nowhere else:
 
 ```bash
 python3 review/dogfood/skills.py                    # DeepSeek
@@ -172,10 +173,13 @@ python3 review/dogfood/skills.py --provider kimi    # over `responses`
 ```
 
 It needs `DEEPSEEK_API_KEY` (and `KIMI_API_KEY` for kimi) and asserts: `doctor` reports the same registry the
-session uses, the model calls `skill` with action `read` and the receipt carries the **body** (with the run's
-token), and the instructions are followed (the file the skill asks for exists with the token). Measured
-(2026-09-25/26): deepseek 5.9 s, kimi 17.4 s, both goals `SUCCEEDED` — and in the deepseek run the model
-verified its own work with a shell `cat`, which is the skill's third step.
+session uses (`2 skill(s) under 1 configured root(s)`), the model calls `skill {action: read}` and the receipt
+carries the **body** (with the run's token), the instructions are followed (the file exists with the token),
+and then — in a second turn — the keyword search finds the second skill by its description and the model
+follows that one too. Measured 2026-09-26: deepseek 6.3 s (turn 1) with the action sequence
+`read canary → search frobnication → read inbox-triage`, kimi 63.9 s with the same sequence; both goals
+`SUCCEEDED`, and in the deepseek run the model verified its own work with a shell `cat` (the skill's third
+step).
 
 ## `web.py`: the bound web tools work and their guard holds
 

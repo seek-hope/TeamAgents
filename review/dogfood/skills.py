@@ -68,6 +68,25 @@ When you follow this skill, do exactly this:
 """
 
 
+SEARCHABLE = """---
+name: inbox-triage
+description: Triages the frobnication queue when the keyword appears here and nowhere else.
+---
+
+When you follow this skill, do exactly this:
+
+1. Create the file `triaged.txt` in your workspace whose content is exactly the line `{token}`.
+2. Then report the task as finished, mentioning the token in your summary.
+"""
+
+
+def entries_of(state_root: pathlib.Path) -> list[str]:
+    """The leader's context entries, chronologically - what the model actually saw."""
+    db = sqlite3.connect(state_root / "session.sqlite")
+    return [row[0] for row in db.execute(
+        "SELECT message_json FROM context_entries WHERE instance_id = 'i-leader' ORDER BY idx")]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--provider", default="deepseek", choices=sorted(MODELS))
@@ -86,8 +105,10 @@ def main() -> int:
     token = "skill-" + uuid.uuid4().hex[:8]
     shutil.rmtree(root, ignore_errors=True)
     (skills / "canary").mkdir(parents=True)
+    (skills / "inbox-triage").mkdir(parents=True)
     workspace.mkdir(parents=True)
     (skills / "canary" / "SKILL.md").write_text(SKILL.format(token=token))
+    (skills / "inbox-triage" / "SKILL.md").write_text(SEARCHABLE.format(token=token))
     (root / "config/teamagents").mkdir(parents=True)
     (root / "config/teamagents/config.toml").write_text(
         f'skills_paths = ["{skills}"]\n\n' + MODELS[args.provider]
@@ -106,7 +127,7 @@ def main() -> int:
         "(no skills row)",
     )
     print(f"  doctor: {registry_row}")
-    if token in registry_row or "1 skill(s) under 1 configured root(s)" not in registry_row:
+    if token in registry_row or "2 skill(s) under 1 configured root(s)" not in registry_row:
         failures.append(f"the configured registry is not what doctor reports: {registry_row}")
 
     prompt = (
@@ -127,9 +148,7 @@ def main() -> int:
         print("stderr:", run.stderr.strip()[:300])
 
     # 1. the skill was read on demand, and the *body* (with the run's token) is what came back
-    db = sqlite3.connect(state_root / "session.sqlite")
-    entries = [row[0] for row in db.execute(
-        "SELECT message_json FROM context_entries WHERE instance_id = 'i-leader' ORDER BY idx")]
+    entries = entries_of(state_root)
     calls = [entry for entry in entries if '"skill"' in entry and "canary" in entry]
     if not calls:
         failures.append("no `skill` call for canary is in the conversation: the registry never reached the model")
@@ -157,6 +176,50 @@ def main() -> int:
                         f"{report.get('failure')!r})")
     if token not in json.dumps(report) and not any(token in entry for entry in entries[-4:]):
         failures.append("the model never mentioned the token it was told to report")
+
+    search_prompt = (
+        "There is a skill registered for this session that handles the frobnication queue. "
+        "Find it with the `skill` tool's `search` action (query: frobnication), read what it tells you and "
+        "follow it exactly, then report the task as finished."
+    )
+    done = subprocess.run(
+        [str(BIN), "exec", "--state-root", str(state_root), "--full-auto", "--json",
+         "--timeout", str(args.timeout), "--cwd", str(workspace), search_prompt],
+        capture_output=True, text=True, env=env,
+    )
+    report = json.loads(done.stdout) if done.stdout.strip().startswith("{") else {}
+    print(f"  search turn: exit={done.returncode} end={report.get('end')}")
+    entries = entries_of(state_root)
+    def skill_actions() -> list[tuple[str, str]]:
+        """Every `skill` tool call in the conversation as (action, argument)."""
+        found: list[tuple[str, str]] = []
+        for entry in entries_of(state_root):
+            message = json.loads(entry)
+            for call in message.get("tool_calls") or []:
+                if call.get("function", {}).get("name") != "skill":
+                    continue
+                try:
+                    args = json.loads(call["function"]["arguments"])
+                except ValueError:
+                    continue
+                found.append((args.get("action", ""), args.get("name") or args.get("query", "")))
+        return found
+
+    actions = skill_actions()
+    if not any(action == "search" for action, _ in actions):
+        failures.append(f"the model never used the `skill` search action: {actions}")
+    else:
+        print(f"  the model searched the registry: {[a for a in actions]}")
+    hits = [entry for entry in entries if "inbox-triage —" in entry]
+    if not hits:
+        failures.append("the search result did not name the skill (name - description line missing)")
+    else:
+        print("  the search hit names the skill and its description")
+    triaged = workspace / "triaged.txt"
+    if not triaged.is_file() or triaged.read_text().strip() != token:
+        failures.append(f"the searched-for skill was not followed: {triaged} missing or wrong")
+    else:
+        print("  the model followed the skill it had to search for")
 
     for failure in failures:
         print("FAIL:", failure)
