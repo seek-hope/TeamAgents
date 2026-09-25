@@ -231,6 +231,29 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-80 The address guard was cross-checked against its reference (2026-09-26)
+
+`tools::guard_url`/`is_private_addr` are a hand-written port of Python's `ipaddress` policy (its own comment
+says so), and a hand-written prefix table is exactly where one digit silently opens a whole block. The guard
+now has a reference comparison to catch that: the block edges of both tables.
+
+**The probe** (2026-09-26) generated cases with Python's `ipaddress` — every block edge in the guard's own
+tables (`±2` around first and last address) plus 500 random IPv4 and 500 random IPv6 addresses — and compared
+its verdicts with `is_private_addr`: **1224 cases, 1224 agreements, no disagreement**. The boundary half is now
+a committed check, `tools::tests::the_address_guard_matches_the_reference_at_every_block_edge` (63 addresses the
+guard must treat as non-public, 50 it must keep reachable), so a changed prefix fails there instead of in
+production; the recipe is in the test's doc comment.
+
+**Ceiling, stated honestly.** Two things this does not cover:
+
+- the reference is Python's *policy* (what the guard claims to mirror), not a network-level truth: a block
+  Python calls public and the local network calls private would still be allowed;
+- resolution and connection are two separate lookups: `guard_url` resolves the host to decide, and the HTTP
+  client resolves it again when it connects, so a name that changes between them (DNS rebinding) can still
+  reach a private address. Pinning the checked address into the connection would need transport support the
+  HTTP client here does not expose; a binding can opt into private targets deliberately with
+  `env = { allow_private = "1" }`.
+
 ## D-79 The web tools say when they are absent, and their guard holds live (2026-09-26)
 
 Verifying the last "basic tool" without live evidence turned up a small reporting gap of a familiar shape.

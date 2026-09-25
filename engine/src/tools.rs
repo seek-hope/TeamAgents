@@ -3003,6 +3003,149 @@ mod tests {
         assert!(guard_url("http://user:pass@127.0.0.1/x").is_err());
     }
 
+    const REFERENCE_PRIVATE: &[&str] = &[
+        "0.0.0.0",
+        "0.255.255.255",
+        "10.0.0.0",
+        "10.255.255.255",
+        "127.0.0.0",
+        "127.255.255.255",
+        "169.254.0.0",
+        "169.254.255.255",
+        "172.16.0.0",
+        "172.31.255.255",
+        "192.0.0.0",
+        "192.0.0.255",
+        "192.0.2.0",
+        "192.0.2.255",
+        "192.168.0.0",
+        "192.168.255.255",
+        "198.18.0.0",
+        "198.19.255.255",
+        "198.51.100.0",
+        "198.51.100.255",
+        "203.0.113.0",
+        "203.0.113.255",
+        "224.0.0.0",
+        "239.255.255.255",
+        "240.0.0.0",
+        "255.255.255.255",
+        "0.0.0.1",
+        "0.0.0.2",
+        "::fffe:ffff:ffff",
+        "::ffff:0.0.0.0",
+        "::ffff:255.255.255.255",
+        "::1:0:0:0",
+        "64:ff9a:ffff:ffff:ffff:ffff:ffff:ffff",
+        "64:ff9b::",
+        "64:ff9b::ffff:ffff",
+        "64:ff9b::1:0:0",
+        "64:ff9b:0:ffff:ffff:ffff:ffff:ffff",
+        "64:ff9b:1::",
+        "64:ff9b:1:ffff:ffff:ffff:ffff:ffff",
+        "64:ff9b:2::",
+        "ff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+        "100::",
+        "100::ffff:ffff:ffff:ffff",
+        "100:0:0:1::",
+        "2001::",
+        "2001:1ff:ffff:ffff:ffff:ffff:ffff:ffff",
+        "2001:db8::",
+        "2001:db8:ffff:ffff:ffff:ffff:ffff:ffff",
+        "2002::",
+        "2002:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+        "3fff::",
+        "3fff:fff:ffff:ffff:ffff:ffff:ffff:ffff",
+        "fbff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+        "fc00::",
+        "fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+        "fe00::",
+        "fe7f:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+        "fe80::",
+        "febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+        "ff00::",
+        "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+        "2001:1f:ffff:ffff:ffff:ffff:ffff:ffff",
+        "1fff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+    ];
+
+    const REFERENCE_PUBLIC: &[&str] = &[
+        "1.0.0.0",
+        "9.255.255.255",
+        "11.0.0.0",
+        "100.63.255.255",
+        "100.64.0.0",
+        "100.127.255.255",
+        "100.128.0.0",
+        "126.255.255.255",
+        "128.0.0.0",
+        "169.253.255.255",
+        "169.255.0.0",
+        "172.15.255.255",
+        "172.32.0.0",
+        "191.255.255.255",
+        "192.0.1.0",
+        "192.0.1.255",
+        "192.0.3.0",
+        "192.88.98.255",
+        "192.88.99.0",
+        "192.88.99.255",
+        "192.88.100.0",
+        "192.167.255.255",
+        "192.169.0.0",
+        "198.17.255.255",
+        "198.20.0.0",
+        "198.51.99.255",
+        "198.51.101.0",
+        "203.0.112.255",
+        "203.0.114.0",
+        "223.255.255.255",
+        "2000:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+        "2001:200::",
+        "2001:db7:ffff:ffff:ffff:ffff:ffff:ffff",
+        "2001:db9::",
+        "2001:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+        "2003::",
+        "3ffe:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+        "3fff:1000::",
+        "fec0::",
+        "feff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+        "2001:20::",
+        "2001:2f:ffff:ffff:ffff:ffff:ffff:ffff",
+        "2001:30::",
+        "2000::",
+        "2fff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+        "3000::",
+        "25ff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+        "2600::",
+        "26ff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+        "2700::",
+    ];
+
+    /// The address guard's tables were ported from Python's `ipaddress` semantics
+    /// (the comment on `is_private_addr` says so), so the risk is a hand-written
+    /// prefix that is off by one — a prefix typo would silently allow a whole block.
+    /// This is the reference comparison at every block edge: for each block of the
+    /// two tables, its first and last address belong to the guard and its immediate
+    /// neighbours do not (where the neighbours are public; both directions are listed
+    /// explicitly, so a change to a prefix fails here).
+    ///
+    /// Generated with Python's `ipaddress` (the same reference the code names) and
+    /// checked against `is_private_addr` over 1224 cases — every block edge ±2 plus
+    /// 1000 random addresses, all agreeing. The two arrays below are those boundary
+    /// cases (63 private, 50 public).
+    #[test]
+    fn the_address_guard_matches_the_reference_at_every_block_edge() {
+        for addr in REFERENCE_PRIVATE {
+            let ip: std::net::IpAddr = addr.parse().unwrap();
+            assert!(is_private_addr(ip), "{addr} must be treated as non-public");
+        }
+        for addr in REFERENCE_PUBLIC {
+            let ip: std::net::IpAddr = addr.parse().unwrap();
+            assert!(!is_private_addr(ip), "{addr} must stay reachable");
+        }
+    }
+
     #[test]
     fn bwrap_argv_is_stable_and_runs_isolated() {
         let dir = std::env::temp_dir();
