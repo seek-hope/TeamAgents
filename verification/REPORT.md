@@ -87,6 +87,21 @@ operations that matter (the leader's delegation, a spawned child's shell call).
 | Falsification check (kept out of the tree) | Offering `shell` unconditionally — what the code did before D-60 — makes TLC report `Invariant OfferedToolsAreAuthorized is violated by the initial state`, so the property is sensitive to exactly that defect |
 | Correspondence (`engine/tests/v2_supervisor.rs`) | `the_offered_surface_follows_the_grants` asserts the leader is offered `shell`/`spawn` and its spawned child is offered neither; it fails when the code stops filtering the surface by the grant |
 
+### The turn storm (added 2026-09-25, D-65)
+
+The probe's runaway turned out to be a deviation from an **already-verified property**: `V2Control`'s
+`NoTurnWithoutWork` forbids `MODEL_PENDING`/`TOOLS_PENDING` while the last word is the model's own, and the
+code's idle rule (""no open tasks"") re-opened a turn in exactly that state whenever an instance owed a task.
+The model needed almost nothing new — the counterfactual switch `ReaskAfterReply` — because the property was
+already there and simply never enforced against this path.
+
+| Run | Result |
+|---|---|
+| `make verify-model` (MC.cfg) | **No error found** — 6 s, unchanged |
+| Negative control `MC_control_reask.cfg` | re-opening a turn while the last word is the model's own (the pre-D-65 code) makes TLC report **`Invariant NoTurnWithoutWork is violated`**; `make verify-model-counterexamples` requires exactly that |
+| Correspondence (`engine/tests/v2_supervisor.rs`) | `a_prose_reply_leaves_one_turn_and_the_delegator_resolves_the_task`: one request, the task `RUNNING`, the leader `WAITING`, the user cancels, the leader wakes, the goal settles. With the pre-fix clause restored the same test fails (`4` requests in 1.5 s instead of `1`) |
+| Real model (measured before the fix) | 169 requests / 1,226,717 prompt tokens / 181 context entries in ~15 minutes answering `BLOCKED.` as prose, no progress (`review/dogfood/authority.py`, first prompt shape; ACCEPTANCE's known gaps held the numbers and now points at A07) |
+
 ### The goal's ceilings (added 2026-09-25, D-64)
 
 The usage ceiling was already modelled (`BudgetFits`, `ReservationsAdmitted`, `AdmissionGate`, A18); the

@@ -231,6 +231,52 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-65 A plain reply opens no further turn: the turn storm is over (2026-09-25)
+
+The probe's runaway had a root that is not a policy question after all. The driver's idle rule was
+"the last entry is the model's own text **and** no open tasks" — so an instance that still owed a task was
+asked again after every reply. A model that answers with prose instead of settling the task (the probe's
+worker said `BLOCKED.`) was therefore asked forever: **169 model requests / 1,226,717 prompt tokens / 181
+context entries in ~15 minutes**, no progress, bounded only by a goal budget that the session did not have
+(D-64 now lets the user configure one, which is a ceiling, not a fix).
+
+Two things say this was a defect rather than a design choice:
+
+- §3 states that a **plain reply settles no task and no goal** — a turn without tool calls is the model
+  saying it is done for now. Re-opening a turn against that is the runtime inventing work.
+- `V2Control`'s `NoTurnWithoutWork` — *the already-verified model property* — forbids exactly the state the
+  clause produced: `MODEL_PENDING`/`TOOLS_PENDING` while the last word is the model's own. The code
+  deviated from the verified model, and the model's counterfactual switch (`ReaskAfterReply`) now proves it:
+  with the old clause enabled, TLC reports **`Invariant NoTurnWithoutWork is violated`**.
+
+**The fix**: the idle rule counts only *unaddressed* work — content that arrived since the last request (the
+boundary drain applied it, D-63) or a task this instance has **not started yet** (`PENDING`). A turn whose
+model replied with prose now ends the instance's activity with the task still `RUNNING`. Nothing is invented
+about the outcome (§8: the runtime never reads an outcome out of prose) and the loop stops.
+
+**Who resolves it, and why that is the honest ending**: the delegator's `wait` on the task stays pending
+(the TUI shows the instance `WAITING` and the task `RUNNING`), and the user has the documented lever: cancel
+the task (`c` in the tasks panel, `cancel_task` in the protocol), which **satisfies** the delegator's wait —
+a `BLOCKED` task would not, because the wait's task condition accepts `SUCCEEDED|FAILED|CANCELLED` only. So
+cancelling wakes the delegator, which can re-delegate or settle honestly; the session is never stuck on a
+model that stopped talking, and it never burns a budget doing it. Parking the *task* `BLOCKED` on the
+runtime's own initiative was rejected for exactly that reason and because §5.3 reserves `BLOCKED` for a
+closed set with no runnable path (the assignee is still runnable — the user can send it work).
+
+Evidence: `v2_supervisor::a_prose_reply_leaves_one_turn_and_the_delegator_resolves_the_task` walks the whole
+flow — the worker runs **one** turn and stays `READY`, the task stays `RUNNING`, the leader is `WAITING`, the
+user cancels the task, the leader wakes and the goal settles `SUCCEEDED`. With the pre-fix clause restored the
+same test fails (`left: Some(4), right: Some(1)`: four requests in 1.5 s). Formally,
+`MC_control_reask.cfg` (switch `ReaskAfterReply`) is refuted by `NoTurnWithoutWork` and is part of
+`make verify-model-counterexamples`; `make verify-model-all` stays green (7 configurations + the two
+two-instance ones).
+
+Ceiling: a session whose model stops settling tasks now *waits* where it used to spin — the delegator's wait
+is visible but not self-resolving, so a user who never looks will see a parked turn (and, with `[limits]`
+configured, a parked goal). That is the deliberate trade: a visible wait costs nothing, and the alternative
+is an unbounded spend. Whether the *runtime* should also offer a bounded "no progress" path (cancel or park
+the task after N unsettled turns) remains the user's decision; it is not implemented.
+
 ## D-64 The user can bound a goal's cost and time (2026-09-25)
 
 The same audit that produced D-61 and D-63 found the third "designed but unreachable" surface: §8/A18/A35

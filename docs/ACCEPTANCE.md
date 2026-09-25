@@ -21,7 +21,7 @@ characters outside the two documented exceptions (`README.zh-CN.md` and the froz
 | A04 | A queued action meets a revocation | `revocation_blocks_queued_dispatch_until_reauthorized`, `dispatch_rechecks_permission_revision` |
 | A05 | Reading another instance's history | `control::read_history_is_user_or_self_only`; the daemon's history surface |
 | A06 | A message applied across a restart | `submit_input_applies_context_once_per_envelope`, `command_replay_returns_stored_receipt_and_rejects_conflict`; an input that arrives during a turn is queued and applied at the next boundary instead of being stored behind that turn's reply (D-63): `an_input_inside_a_turn_waits_for_the_boundary`, `v2_supervisor::an_input_arriving_during_a_turn_enters_at_the_next_boundary`, and formally `V2Control::InputLandsAtTheBoundary` / `QueuedInputEntersTheContext` with the refuted control `MC_control_midturninput.cfg` |
-| A07 | Permanent start failure | `fail_request_closes_and_parks_without_losing_input`, `v2_spawn_failure::*` |
+| A07 | Permanent start failure | `fail_request_closes_and_parks_without_losing_input`, `v2_spawn_failure::*`; **no turn storm** also covers the *model* stopping rather than failing (D-65): a plain reply opens no further turn (`v2_supervisor::a_prose_reply_leaves_one_turn_and_the_delegator_resolves_the_task`, which fails with the pre-fix rule), the task stays `RUNNING` for the delegator or the user, and formally `V2Control::NoTurnWithoutWork` refutes the counterfactual `MC_control_reask.cfg` |
 | A08 | Crash after a tool succeeded, before consumption | `v2_driver::tool_result_is_reused_after_crash_not_reexecuted` |
 | A09 | Unknown external outcome | `control::unknown_outcome_parks_running_tasks_and_notifies` |
 | A10 | Duplicate dispatch / GO | `jobs_runner::duplicate_go_starts_exactly_one_command` |
@@ -82,6 +82,15 @@ amended (D-49/D-50).
 
 ## Known gaps (found while auditing the documented surface, 2026-09-25)
 
+- **A settled goal has no product surface to open a new one** (found while auditing the authority surface,
+  2026-09-25; verified by `engine/tests/v2_supervisor.rs::a_settled_goal_leaves_a_later_delegation_without_an_active_goal`):
+  `delegate_task` requires an ACTIVE goal, the kernel offers no create-goal tool, and the runtime creates no
+  goal when a later user input arrives — so the *second* instruction of a session cannot build a team, and the
+  model is told to "create a new goal (create_goal) before delegating" without a way to do it (the command
+  exists in the protocol; only a hand-written client can send it). The test pins the current behaviour: the
+  second input leaves exactly one goal, `SUCCEEDED`, the delegation receipt names the closed goal, and the
+  worker never runs. Whether the runtime should open a goal per user input, or the Leader should be given a
+  tool to open one, is a design decision (D-42/D-56 touch it) that needs the user's word.
 - **A settled goal has no product surface to open a new one** (found while auditing the authority surface,
   2026-09-25; verified by `engine/tests/v2_supervisor.rs::a_settled_goal_leaves_a_later_delegation_without_an_active_goal`):
   `delegate_task` requires an ACTIVE goal, the kernel offers no create-goal tool, and the runtime creates no

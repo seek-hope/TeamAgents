@@ -187,6 +187,11 @@ pre_tool = ["/home/you/bin/policy.sh"]            # policy hook before tool call
   repository or has uncommitted changes falls back to shared mode and says why in the tool receipt.
   Terminating an instance retires its workspace from the record, and **a directory with uncommitted or
   unmerged work is never deleted automatically** — only the reason is reported.
+- A member whose model ends its turn with plain text (no tool call) and does not settle its task goes
+  **idle with the task still `RUNNING`** (D-65: the runtime never reads an outcome out of prose, §8, and it
+  never asks the same question twice — that was a turn storm). The delegator's wait stays pending, so
+  cancelling the task (`c` in the tasks panel) is what releases it: a cancelled task satisfies the wait and
+  the delegator wakes to re-delegate or settle honestly. A `BLOCKED` task does *not* satisfy it.
 - User-side intervention: switch instances, pause/resume/cancel and approve or deny tool requests in the
   TUI. Budget, task and grant panels all read the same facts.
 - Goal and task completion goes through the runtime's completion gate: `finish` only accepts honest

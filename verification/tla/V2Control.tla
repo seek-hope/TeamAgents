@@ -28,6 +28,7 @@ CONSTANTS Instances,       \* {"L"} or {"L","W"}
           AllowMidTurnInput, \* counterfactual: apply input while a request is in flight (pre-D-63)
           PerInstanceFairness, \* counterfactual: fairness as one disjunction over instances (pre-D-63)
           IgnoreDeadline,  \* counterfactual: a runtime that ignores the goal deadline (A35)
+          ReaskAfterReply, \* counterfactual: re-open a turn when the last word is the model's own (D-65)
           MaxEpoch,        \* bound on ResetInstance (keeps the state graph finite)
           MaxUnknown       \* bound on lost-attempt accounting
 
@@ -119,7 +120,11 @@ DeadlinePasses ==
 BeginRequest(i) ==
   /\ Alive(i) /\ inst[i].phase = "READY" /\ inst[i].lifecycle = "ACTIVE"
   /\ Fresh(i)
-  /\ inst[i].tail # "assistant"          \* the idle rule: no turn without work
+  \* The idle rule: a turn opens for *unaddressed* work only. The counterfactual
+  \* re-opens one while the last word is the model's own text — what the code did
+  \* whenever an instance still had an open task (D-65), which is a turn storm on a
+  \* model that answers with prose. `NoTurnWithoutWork` must refute it.
+  /\ (ReaskAfterReply \/ inst[i].tail # "assistant")
   /\ ~inst[i].queue                      \* the boundary applies the queued input first
   /\ BudgetFits(1)
   \* A35: past the goal's deadline no new request begins. The counterfactual drops

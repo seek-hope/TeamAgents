@@ -888,3 +888,85 @@ async fn a_settled_goal_leaves_a_later_delegation_without_an_active_goal() {
     assert_eq!(seen.lock().unwrap().get("i-worker").map(Vec::len), None, "the worker never runs: no task reached it");
     handle.shutdown().await.expect("shutdown");
 }
+
+/// A worker whose model ends its turn with prose instead of settling its task goes
+/// **idle** with the task still RUNNING — the runtime does not ask the same question
+/// again (D-65; V2Control's `NoTurnWithoutWork` forbids the state the old clause
+/// produced: a new request while the last entry is the model's own text).
+///
+/// The delegator is then the one who resolves it: cancelling the task satisfies its
+/// wait (a BLOCKED task would not), so the leader wakes, reports, and the goal
+/// settles honestly instead of the session burning a budget on a loop.
+#[tokio::test]
+async fn a_prose_reply_leaves_one_turn_and_the_delegator_resolves_the_task() {
+    let leader = vec![
+        Step::Message(json!({"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "spawn",
+             "arguments": json!({"instance_id": "i-worker", "instructions": "do the task"}).to_string()}},
+            {"id": "c2", "type": "function", "function": {"name": "delegate",
+             "arguments": json!({"assignee": "i-worker", "task_id": "t-prose", "description": "write the file"}).to_string()}}
+        ]})),
+        Step::Message(wait_call("c3", json!({"mode": "ANY", "conditions": [{"kind": "task", "task_id": "t-prose"}]}))),
+        Step::Message(finish_call("the worker stopped; the task was cancelled")),
+    ];
+    // the worker answers with prose and never calls finish: its turn ends unsettled
+    let worker = vec![Step::Message(reply("I have not finished; see my notes above."))];
+    let seen: Seen = Arc::new(Mutex::new(HashMap::new()));
+    let root = root("prose-reply-idle");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let handle = start(config(
+        &root,
+        factory_with_log(
+            HashMap::from([("i-leader".to_string(), leader), ("i-worker".to_string(), worker)]),
+            seen.clone(),
+        ),
+    ))
+    .await
+    .expect("start");
+    handle.input("i-leader", "delegate the file to a worker").await.expect("input");
+    // the worker makes exactly one request, and stays idle afterwards
+    for _ in 0..800 {
+        if seen.lock().unwrap().get("i-worker").map(Vec::len).unwrap_or(0) >= 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(seen.lock().unwrap().get("i-worker").map(Vec::len), Some(1), "the worker runs one turn");
+    let worker = "i-worker";
+    // a long moment: the old rule re-asked the model here (169 times in the real run)
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(
+        seen.lock().unwrap().get("i-worker").map(Vec::len),
+        Some(1),
+        "a prose reply does not open another turn: {:?}",
+        seen.lock().unwrap().get("i-worker")
+    );
+    let status = |task: &str| -> Option<String> {
+        second_control(&root)
+            .connection()
+            .query_row("SELECT status FROM tasks WHERE id = ?1", [task], |row| row.get(0))
+            .ok()
+    };
+    assert_eq!(status("t-prose").as_deref(), Some("RUNNING"), "the task stays open for the delegator to resolve");
+    let phases = |instance: &str| -> Option<String> {
+        second_control(&root)
+            .connection()
+            .query_row("SELECT phase FROM instances WHERE id = ?1", [instance], |row| row.get(0))
+            .ok()
+    };
+    assert_eq!(phases("i-leader").as_deref(), Some("WAITING"), "the delegator waits on its task");
+    assert_eq!(phases(worker).as_deref(), Some("READY"), "and the worker is idle, not spinning");
+    // the user resolves it the way the operating notes describe: cancel the task
+    second_control(&root)
+        .submit(
+            cmd("cancel-late", "cancel_task", json!({"task_id": "t-prose", "reason": "the assignee stopped"})),
+            teamagents_core::v2::Identity::User,
+        )
+        .expect("cancel the task");
+    assert_eq!(status("t-prose").as_deref(), Some("CANCELLED"));
+    // the delegator's wait is satisfied by the cancellation and it finishes honestly
+    let closed = wait_event(&handle, "goal_completed", 20_000).await;
+    assert_eq!(closed["payload"]["status"], json!("SUCCEEDED"), "{closed}");
+    assert_eq!(seen.lock().unwrap().get("i-leader").map(Vec::len), Some(3), "the leader ran its three turns");
+    handle.shutdown().await.expect("shutdown");
+}

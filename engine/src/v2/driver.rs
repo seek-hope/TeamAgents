@@ -1168,10 +1168,19 @@ impl<P: Provider> Driver<P> {
             .await?;
         let revision = drained["revision"].as_i64().unwrap_or(snapshot.revision);
         let mut entries = self.context_entries(snapshot).await?;
-        // nothing unconsumed: the last word was the assistant's — idle,
-        // unless assigned work still waits in the queue (§5.3): a settled
-        // task's finish message must not park a worker with open tasks
-        if entries.last().is_none_or(|entry| entry.kind == EntryKind::Assistant) && self.open_tasks().await? == 0 {
+        // A turn opens for *unaddressed* work only: content that arrived since the
+        // last request (the drain above applied it) or a task this instance has not
+        // started yet. A task it already addressed is not a reason to ask again —
+        // the model's plain reply ended its turn (§3: a plain reply settles no task
+        // and no goal) — and re-asking it was a turn storm: a real model answered
+        // "BLOCKED." as prose and the runtime asked 169 times / 1.2M prompt tokens
+        // without any progress (D-65). V2Control's `NoTurnWithoutWork` forbids that
+        // state outright. The instance therefore goes idle with the task still
+        // RUNNING, and the delegator or the user resolves it: cancelling the task
+        // satisfies the delegator's wait (a BLOCKED one would not; §5.3).
+        if entries.last().is_none_or(|entry| entry.kind == EntryKind::Assistant)
+            && self.oldest_task("PENDING").await?.is_none()
+        {
             return Ok(false);
         }
         // adopt assigned work: the turn that addresses a PENDING task also
@@ -2140,25 +2149,6 @@ impl<P: Provider> Driver<P> {
             Err(error) if error.contains("already terminal") => Ok(()),
             Err(error) => Err(error),
         }
-    }
-
-    /// COMPLETION_PENDING: close the goal against the stored candidate (§8).
-    /// Open assigned tasks (PENDING + RUNNING) — the queue depth that keeps
-    /// a worker from parking on its own assistant tail (§5.3).
-    async fn open_tasks(&self) -> Result<i64, String> {
-        let instance = self.config.instance_id.clone();
-        self.storage
-            .call(move |control| {
-                control
-                    .connection()
-                    .query_row(
-                        "SELECT COUNT(*) FROM tasks WHERE assignee = ?1 AND status IN ('PENDING', 'RUNNING')",
-                        [&instance],
-                        |row| row.get(0),
-                    )
-                    .map_err(|e| format!("open tasks: {e}"))
-            })
-            .await?
     }
 
     /// Oldest assigned task in the given status — FIFO queue order.
