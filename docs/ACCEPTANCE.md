@@ -6,7 +6,7 @@ Baseline: [the design and acceptance baseline](DESIGN.md) §12/§16. Current imp
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 98 / engine 194 / tui 28 test targets) and `make pty` passes; both are
+`make check` is green (core 98 / engine 195 / tui 28 test targets) and `make pty` passes; both are
 preconditions for every item below. `make check` includes `make language-check`, which fails on non-English
 characters outside the two documented exceptions (`README.zh-CN.md` and the frozen material under
 `review/eval`).
@@ -95,6 +95,15 @@ amended (D-49/D-50).
   created, so a refused argument has no side effect).
 
 ## Known gaps (found while auditing the documented surface, 2026-09-25)
+
+- **A worktree member's branch has no merge surface.** The `git_worktree` policy (§12.3/D-46) gives a
+  member its own branch and checkout, retirement refuses to delete an unmerged one, and the real-model
+  harness `review/dogfood/workspace.py` walks the whole lifecycle (D-76) — but nothing merges the
+  branch: `workspace::merge_branch` and `workspace::member_worktrees` have no caller anywhere in the
+  tree, and the name lives only in `<state root>/instances/<id>/worktree.json` (or `git worktree
+  list`). Today the user merges with git, or a Leader with `shell@workspace` does; a
+  `teamagents instances merge --id` verb (or a Leader-side merge tool) is new surface and needs the
+  user's word first.
 
 - **`[retention]` is accepted but nothing is archived or pruned.** DESIGN §9 promises ordinary history is
   "archived or cleaned per user configuration" while live references and evaluation evidence are never

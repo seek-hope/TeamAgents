@@ -144,6 +144,22 @@ kimi 9.6 s, both `end=reply` with the token, the server's log showing `initializ
 Before D-74 no surface could bind a configured service: the same config started the session, never spawned
 the server and never offered the tool.
 
+## `workspace.py`: the git-worktree lifecycle end to end
+
+`workspace.py` makes a real git repository and has the model spawn a `git_worktree` worker, delegate a file
+write to it, and wait for the result. It then walks the documented lifecycle:
+
+```bash
+python3 review/dogfood/workspace.py                    # DeepSeek
+python3 review/dogfood/workspace.py --provider kimi    # over `responses`
+```
+
+It needs `DEEPSEEK_API_KEY` (and `KIMI_API_KEY` for kimi) and asserts: the member's file is in its own
+worktree and **not** in the shared project (the wrong-tree class D-57 found); terminating it with uncommitted
+work keeps the checkout and reports why in `daemon.log`; and after the probe commits and merges the branch, the
+running session retires the checkout by itself, record included. Measured (2026-09-25): deepseek 16.4 s, kimi
+41.8 s, both goals `SUCCEEDED`, one refusal line per reason after the D-76 fix.
+
 ## `checks.py`: the completion gate with a real model
 
 `checks.py` configures one `[[checks]]` entry that can never pass (`test -f never-written`), asks a real

@@ -46,7 +46,7 @@ make verify-kani                         # Kani proofs (paging arithmetic)
 python3 review/eval/r2-p6/run.py --phase pilot --out <new date directory>  # real-model A/B/C comparison (needs credentials)
 ```
 
-- Baseline (2026-09-25): `make check` is green — core 98 / engine 194 / tui 28. Raw evaluation JSONL lives
+- Baseline (2026-09-25): `make check` is green — core 98 / engine 195 / tui 28. Raw evaluation JSONL lives
   in `review/eval/r2-p6/runs/`, per-item evidence in `docs/ACCEPTANCE.md`.
 - Skipped checks and the current baseline are collected in `docs/ACCEPTANCE.md`. A green Cargo run is not a
   real-service acceptance result.

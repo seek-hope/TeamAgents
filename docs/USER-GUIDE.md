@@ -198,6 +198,11 @@ pre_tool = ["/home/you/bin/policy.sh"]            # policy hook before tool call
   repository or has uncommitted changes falls back to shared mode and says why in the tool receipt.
   Terminating an instance retires its workspace from the record, and **a directory with uncommitted or
   unmerged work is never deleted automatically** — only the reason is reported.
+  A worktree member's branch is **not merged for you**: the branch name and base commit are recorded in
+  `<state root>/instances/<id>/worktree.json` (and `git worktree list` shows the checkout), so the merge is
+  yours — or the Leader's, if it holds `shell@workspace` and runs `git merge` in the project. Once the branch
+  is merged, the running session retires the worktree by itself on its next pass (the record goes with it);
+  until then the refusal is reported **once per reason** in `daemon.log`, and the checkout is kept.
 - A member whose model ends its turn with plain text (no tool call) and does not settle its task goes
   **idle with the task still `RUNNING`** (D-65: the runtime never reads an outcome out of prose, §8, and it
   never asks the same question twice — that was a turn storm). The delegator's wait stays pending, so

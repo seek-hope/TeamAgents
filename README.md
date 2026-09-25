@@ -57,7 +57,9 @@ you ──goal (natural language)──▶ Leader ──spawn / delegate──�
   you grant it `shell@workspace` (D-60).
 - **Workspace policies**: `spawn` can give an instance the shared project directory, a private isolated
   directory or its own Git worktree and branch. Termination retires the workspace from its record; a
-  directory with uncommitted or unmerged work is never deleted automatically, only reported.
+  directory with uncommitted or unmerged work is never deleted automatically, only reported. A worktree's
+  branch is yours to merge (name and base commit in `<state root>/instances/<id>/worktree.json`); once it is
+  merged, the running session retires the checkout by itself.
 - **Mixed models**: real instances speaking the three wire protocols (responses / anthropic /
   chat-completions) can share one session, each with its own model, effort and native context window; `spawn`
   takes the catalog entry for a worker (key or model name), so one team can mix entries. An instance whose

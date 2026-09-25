@@ -65,6 +65,25 @@ fn command(id: impl Into<String>, method: &str, params: Json) -> Command {
     Command { command_id: id.into(), method: method.into(), params }
 }
 
+/// The line to log for one workspace retirement attempt, or `None` when it says
+/// nothing new. The retirement runs on every discovery pass, so an unmerged
+/// worktree (a normal state a user may leave for hours) used to fill the daemon
+/// log at the poll rate; the same reason is now reported once, and a *different*
+/// reason — or a successful retirement followed by a new refusal — is reported
+/// again (D-76). Nothing is hidden: the refusal still reaches the user.
+fn report_refusal(reported: &mut HashMap<String, String>, instance: &str, retired: bool, note: &str) -> Option<String> {
+    if retired {
+        reported.remove(instance);
+        return None;
+    }
+    let line = format!("workspace of {instance} kept: {note}");
+    if reported.get(instance).map(String::as_str) == Some(line.as_str()) {
+        return None;
+    }
+    reported.insert(instance.to_string(), line.clone());
+    Some(line)
+}
+
 impl SupervisorHandle {
     async fn submit(&self, cmd: Command, identity: Identity) -> Result<Json, String> {
         self.storage.call(move |control| control.submit(cmd, identity)).await?
@@ -242,6 +261,7 @@ where
         wake: wake.clone(),
         shutdown: shutdown.clone(),
         config,
+        reported_refusals: HashMap::new(),
     };
     let task = tokio::spawn(supervisor.run());
     Ok(SupervisorHandle {
@@ -261,6 +281,13 @@ struct Supervisor<P, F> {
     wake: Arc<tokio::sync::Notify>,
     shutdown: Arc<std::sync::atomic::AtomicBool>,
     config: SupervisorConfig<P, F>,
+    /// The last workspace retirement refusal reported per instance: the retirement
+    /// runs on every discovery pass, and an unmerged worktree is a *normal* state a
+    /// user may leave for hours — reporting it ten times a second filled the daemon
+    /// log (D-76). The oldest entry is reported when the reason changes or after a
+    /// successful retirement, and nothing is hidden: the refusal still reaches the
+    /// user, once per distinct reason.
+    reported_refusals: HashMap<String, String>,
 }
 
 impl<P, F> Supervisor<P, F>
@@ -268,7 +295,7 @@ where
     P: Provider + 'static,
     F: Fn(&str, &KernelProfile) -> P + Send + Sync + 'static,
 {
-    async fn run(self) -> Result<(), String> {
+    async fn run(mut self) -> Result<(), String> {
         let instances_dir = self.config.state_root.join("instances");
         while !self.shutdown.load(std::sync::atomic::Ordering::SeqCst) {
             let instances: Vec<(String, String, String, String)> = self
@@ -293,8 +320,8 @@ where
                         if let Some((ok, note)) =
                             crate::workspace::retire(&instances_dir.join(id), &self.config.workspace)
                         {
-                            if !ok {
-                                eprintln!("workspace of {id} kept: {note}");
+                            if let Some(fresh) = report_refusal(&mut self.reported_refusals, id, ok, &note) {
+                                eprintln!("{fresh}");
                             }
                         }
                     }
@@ -368,5 +395,36 @@ where
             let _ = driver.task.await;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::report_refusal;
+    use std::collections::HashMap;
+
+    /// D-76: the retirement runs on every discovery pass, so the same refusal is
+    /// reported once; a different reason (or a fresh refusal after a successful
+    /// retirement) is reported again, and nothing about the refusal is hidden.
+    #[test]
+    fn a_workspace_refusal_is_reported_once_per_reason() {
+        let mut reported = HashMap::new();
+        let first = report_refusal(&mut reported, "i-w", false, "the worktree has uncommitted files");
+        assert_eq!(
+            first.as_deref(),
+            Some("workspace of i-w kept: the worktree has uncommitted files"),
+            "the first refusal is reported"
+        );
+        let _ = &reported;
+        for _ in 0..50 {
+            assert_eq!(report_refusal(&mut reported, "i-w", false, "the worktree has uncommitted files"), None);
+        }
+        let changed = report_refusal(&mut reported, "i-w", false, "worktree results are unmerged");
+        assert!(changed.clone().is_some_and(|line| line.contains("unmerged")), "a new reason is reported: {changed:?}");
+        // a successful retirement clears the memory: a later refusal is news again
+        assert_eq!(report_refusal(&mut reported, "i-w", true, "worktree removed"), None);
+        assert!(report_refusal(&mut reported, "i-w", false, "the worktree has uncommitted files").is_some());
+        // …and another instance has its own state
+        assert!(report_refusal(&mut reported, "i-other", false, "the worktree has uncommitted files").is_some());
     }
 }

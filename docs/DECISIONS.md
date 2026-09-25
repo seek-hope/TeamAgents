@@ -231,6 +231,42 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-76 The workspace lifecycle, observed end to end (2026-09-25)
+
+D-46 wired the §12.3 policies and promised, in the docs, that a terminated instance retires its workspace and
+that uncommitted or unmerged work is never deleted — with unit tests and one driver test as evidence. Nothing
+had observed the *whole* lifecycle with a real model, which is where the two interesting questions live: does
+a member's tools really work inside its own worktree (the D-57 class: a dogfooding run once spent sixty turns
+in the wrong tree), and what does the user actually do with a worktree's branch?
+
+**The harness** `review/dogfood/workspace.py` builds a real git repository, has the model spawn a
+`git_worktree` worker and delegate a file write to it, and then walks the lifecycle. Measured 2026-09-25:
+deepseek 16.4 s / kimi 41.8 s, both `goal_status: SUCCEEDED`, the member's record showing
+`policy: git_worktree`, and:
+
+- the file the member wrote is **in its worktree and not in the shared project** (`git worktree list` names
+  the checkout), so the isolation claim holds with a model in the loop;
+- `teamagents instances terminate --id <id> --yes` succeeds while the work is uncommitted, the checkout is
+  **kept**, and the daemon reports
+  `workspace of <id> kept: the worktree has uncommitted, ignored or conflicting files; keep the results before cleaning up`;
+- after the probe commits and merges the branch, the **running** session retires the checkout on its own next
+  pass, record included (the retirement loop visits every TERMINATED instance, so a merge performed later is
+  still picked up — a behaviour nothing tested before).
+
+**One defect came out of it**: the retirement runs on *every* discovery pass, so that refusal was printed at
+the poll rate (the harness produced five identical `daemon.log` lines in 1.5 s; a user who leaves an unmerged
+worktree overnight would write ~50 MB). The supervisor now remembers the last reported refusal per instance
+and reports the same reason once — a *different* reason, or a refusal after a successful retirement, is news
+again (`supervisor::tests::a_workspace_refusal_is_reported_once_per_reason`). Re-measured: exactly one line
+per reason, in the same scenarios, on both providers.
+
+**Ceiling, and a gap this exposes**: the merge is the *user's* (or a Leader's, through `shell@workspace`),
+because no surface merges a member branch: `workspace::merge_branch` and `workspace::member_worktrees` have no
+caller anywhere in the tree (their doc comment calls the first one a "Leader-side merge helper"), and the
+branch name is discoverable only from `<state root>/instances/<id>/worktree.json` or `git worktree list`.
+That is recorded in ACCEPTANCE's known gaps: a `teamagents instances merge --id` verb (or a Leader-side merge
+tool) is new product surface and needs the user's word before it lands.
+
 ## D-75 Config keys that did nothing now either work or say so (2026-09-25)
 
 After D-74 the sweep continued over the config surface itself: every field of `UserConfig`, `ModelProfile` and
