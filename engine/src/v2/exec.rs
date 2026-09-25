@@ -286,7 +286,8 @@ pub fn execute(options: &ExecOptions) -> Result<ExecRun, (i32, String)> {
         } else {
             format!(
                 "exec: the leader instance {instance} is {lifecycle}; new input would not run. \
-                 Resume it in the TUI instances panel (r) or use a fresh state root; nothing was submitted."
+                 Resume it (`teamagents instances resume --id {instance}`, or `r` in the TUI instances panel) \
+                 or use a fresh state root; nothing was submitted."
             )
         };
         return Err((2, advice));

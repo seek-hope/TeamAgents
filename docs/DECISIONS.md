@@ -244,14 +244,18 @@ work: `exec` refused a non-ACTIVE leader with one sentence for every lifecycle �
 `teamagents instances resume --id i-leader` prints), and the instance's workspace record has already been
 retired (D-46/D-76). So "resume it" sent the user to a refusal; only the second half of the sentence was true.
 
-**Two surfaces fixed**: `exec` now says the truth for a terminated leader ("termination is final (the instance
-is retired), so this session cannot take new input. Start a fresh state root instead (--state-root <new
-directory)") while parked/paused keep the resume advice they deserve; and the TUI's instances-panel hint stops
+**Three surfaces fixed**: `exec` now says the truth for a terminated leader ("termination is final (the
+instance is retired), so this session cannot take new input. Start a fresh state root instead (--state-root
+<new directory>)") while parked/paused keep the resume advice they deserve — and that advice now names a lever
+the *caller* can pull, `teamagents instances resume --id i-leader` (D-68 added the verb; the message still
+only offered the TUI key, which a headless run cannot use); and the TUI's instances-panel hint stops
 advertising `p`/`r`/`t` when the selected member is terminated (the keys would answer with a refusal), keeping
 `Enter`/`↑↓`/`Ctrl+N`/`Esc` — reading a retired member's conversation stays available.
 
 Evidence: `v2_daemon::a_terminated_leader_is_reported_as_final_not_resumable` (the session refuses the resume
-first, then `exec` exits 2 with the terminated wording and no "Resume") and
+first, then `exec` exits 2 with the terminated wording and no "Resume"),
+`v2_daemon::a_paused_leader_refusal_names_the_cli_lever` (a pause is not final, and the message names
+`instances resume --id i-leader`) and
 `tui::the_instances_hint_stops_offering_lifecycle_keys_for_a_terminated_member`.
 
 Ceiling: a terminated instance is still *listed* (with its history readable) and nothing offers to revive it —

@@ -789,6 +789,36 @@ async fn a_terminated_leader_is_reported_as_final_not_resumable() {
     handle.shutdown().await.expect("shutdown");
 }
 
+/// A paused (or parked) leader can be resumed, and a headless client must name a lever
+/// the caller can actually pull: the CLI verb D-68 added, not only a TUI key (D-82).
+#[tokio::test]
+async fn a_paused_leader_refusal_names_the_cli_lever() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let (root, handle) = boot("exec-paused-leader", HashMap::new()).await;
+    let socket = root.dir.join("state/daemon.sock");
+    let mut client = Client::connect(&socket).await;
+    let paused = client
+        .command(
+            "pause-1",
+            "set_lifecycle",
+            json!({"instance_id": "i-leader", "lifecycle": "PAUSED", "reason": "test"}),
+        )
+        .await;
+    assert_eq!(paused["ok"], json!(true), "{paused}");
+    let error = headless_result(exec_options(&socket, &root.dir.join("ws"), "say hi", Vec::new()))
+        .await
+        .err()
+        .expect("a paused leader refuses input");
+    assert_eq!(error.0, 2, "{error:?}");
+    assert!(error.1.contains("PAUSED"), "{error:?}");
+    assert!(
+        error.1.contains("instances resume --id i-leader"),
+        "the caller is told the lever that works headlessly: {error:?}"
+    );
+    assert!(!error.1.contains("termination is final"), "a pause is not final: {error:?}");
+    handle.shutdown().await.expect("shutdown");
+}
+
 /// A permanently failed leader request ends the headless run at once with exit
 /// 1 and the classified reason: a broken endpoint must not look like a hung
 /// session that the caller discovers when its own deadline expires.
