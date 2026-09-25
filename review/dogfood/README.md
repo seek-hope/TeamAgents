@@ -160,6 +160,23 @@ work keeps the checkout and reports why in `daemon.log`; and after the probe com
 running session retires the checkout by itself, record included. Measured (2026-09-25): deepseek 16.4 s, kimi
 41.8 s, both goals `SUCCEEDED`, one refusal line per reason after the D-76 fix.
 
+## `skills.py`: the configured Skills registry reaches the model
+
+`skills.py` writes a skills root with one skill whose *body* carries a token generated for the run (the token
+is deliberately absent from the YAML description, so a model that only searched cannot know it), points
+`skills_paths` at that root, and asks the model to read the skill and follow it:
+
+```bash
+python3 review/dogfood/skills.py                    # DeepSeek
+python3 review/dogfood/skills.py --provider kimi    # over `responses`
+```
+
+It needs `DEEPSEEK_API_KEY` (and `KIMI_API_KEY` for kimi) and asserts: `doctor` reports the same registry the
+session uses, the model calls `skill` with action `read` and the receipt carries the **body** (with the run's
+token), and the instructions are followed (the file the skill asks for exists with the token). Measured
+(2026-09-25/26): deepseek 5.9 s, kimi 17.4 s, both goals `SUCCEEDED` — and in the deepseek run the model
+verified its own work with a shell `cat`, which is the skill's third step.
+
 ## `checks.py`: the completion gate with a real model
 
 `checks.py` configures one `[[checks]]` entry that can never pass (`test -f never-written`), asks a real
