@@ -15,11 +15,12 @@ exploration. The boundaries are in "Boundaries" below and in [REPORT.md](REPORT.
 
 ```bash
 make verify-model           # small control-plane configuration (seconds)
-make verify-model-all       # small configurations for all nine modules (control plane, artifacts, waits,
-                            # tasks, compression, daemon, required checks, authority, the user's surface)
+make verify-model-all       # small configurations for all ten modules (control plane, artifacts, waits,
+                            # tasks, compression, daemon, required checks, authority, the user's surface,
+                            # session-store identity)
 make verify-model-counterexamples   # the negative controls (authority surface D-61, inbound boundary D-63,
-                            # the retry boundary D-64/D-65, the runtime's own closing word D-71 and the
-                            # landing-attribution rule D-72):
+                            # the retry boundary D-64/D-65, the runtime's own closing word D-71, the
+                            # landing-attribution rule D-72 and the store-identity guard D-87):
                             # each must be *refuted*, or the property it targets proves nothing
 make verify-model-wide      # wide control-plane configuration (2 instances / 2 operations; tens to hundreds of
                             # millions of states, slow — the 2-instance run is what catches per-instance
@@ -49,6 +50,7 @@ repository and never enters `make check`. Java is required (this machine uses Op
 | `tla/V2Daemon.tla` + `tla/MC_daemon.cfg` | session daemon protocol (A28): deduplication and replay of stable command ids, the atomic snapshot+watermark pair of `checkpoint`, gap-free `events(since)`, a slow client never blocking the writer |
 | `tla/V2Checks.tla` + `tla/MC_checks.cfg` | required checks (A16/§8): only self-reported successes are verified, failures enter a bounded repair round, an exhausted budget or an unusable verification path (stale observation, refused dispatch) parks the goal BLOCKED, and a candidate is never upgraded |
 | `tla/V2Grants.tla` + `tla/MC_grants.cfg` | authority (§5.1/§6.1, A03/A04; D-58/D-59/D-60): the session's bootstrap grants, narrowing by an instance (manage covers message/delegate), the spawn-derived delegate grant, revocation with the parent tree cascade and the revision bump, the dispatch re-check, and the rule that the model-visible tool surface only offers what the instance's grants back |
+| `tla/V2Store.tla` + `tla/MC_store.cfg` | session-store identity (A34; D-87): opening a state root either owns the file or refuses it — a foreign program's tables are never stamped as ours, a refusal writes nothing, and a database interrupted between its schema batch and its stamp is completed rather than stranded. `tla/MC_store_adopt.cfg` is its negative control |
 | `tla/V2Authority.tla` + `tla/MC_authority.cfg` | the user's authority surface (D-61): the view a client reads (and the id a revoke must name), the pair table the surface refuses against, a grant the user writes (optionally derived from one it holds), revocation by a nameable id with the subtree cascade, the surface as a *cached* per-request variable, and the dispatch re-check with a surface that may lag. Its three negative-control configurations (`MC_authority_badview.cfg`, `MC_authority_trustsurface.cfg`, `MC_authority_stalesurface.cfg`) are run by `make verify-model-counterexamples` and must each be refuted |
 
 Two control-plane configurations exist: `MC.cfg` (one instance, the default in `make verify-model-all`) and
@@ -317,6 +319,24 @@ Non-vacuity evidence: relaxing `Accept` to "one pass is enough (even with a fail
 immediately (`SuccessRequiresAllChecksPassed is violated`); writing the property as "SUCCEEDED implies the
 recorded verdict is pass" would be **vacuous** (the action writes that variable itself), which is why the final
 assertion binds the observed result.
+
+### Session-store identity (A34, D-87)
+
+| Property (spec) | Meaning | Code anchor |
+|---|---|---|
+| `NoForeignAdoption` | a file that holds another program's tables is never stamped as a session store, however often it is opened (monitor `adoptedForeign`) | `store::open`'s unstamped branch consults `foreign_tables` before writing anything |
+| `NoForeignStamp` | the same claim over the file itself: a v2 stamp never sits on a file with foreign tables | as above |
+| `RefusalsWriteNothing` | a refusal is silent — it never writes to the file it refused | the stamp is *read* through `sqlite_master`, and the writing pragmas (WAL, `synchronous`) are applied only after the format check accepts the file |
+| `InterruptedWroteOursOnly` | the crash path leaves our own tables and no foreign ones | the schema batch and the stamp insert are separate writes; the next open completes what it finds |
+| `AcceptedMeansStamped` | an accepted or initialized open ends on a v2 file | the format check precedes every acceptance |
+| `HalfInitializedIsCompleted` (leads-to) | a database interrupted between its schema and its stamp is completed rather than stranded, given weak fairness of the initializer | `create = true` on an unstamped file whose tables are all the schema's own |
+| `NoForeignStampAlways`, `EveryRefusalIsSilent` (temporal) | the two safety claims in `[][…]` form | as above |
+
+Non-vacuity evidence: `tla/MC_store_adopt.cfg` is the D-87 defect (`create = true` initializing whenever there
+is no stamp) and `make verify-model-counterexamples` requires TLC to report
+`Invariant NoForeignAdoption is violated` — it does. The byte-level side of "refusals write nothing" is checked
+where a model cannot see it: `open_never_adopts_an_unstamped_file_that_holds_foreign_tables` compares the file
+with what it held before, and `review/dogfood/boundary.py` hashes it across a real `exec`.
 
 ## Executable spec-to-code correspondence (`core/tests/v2_invariants.rs`)
 

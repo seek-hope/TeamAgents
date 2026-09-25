@@ -9,10 +9,10 @@ in [README.md](README.md); the fix ledger is in
 
 **What can be claimed**:
 
-- The safety properties of nine protocol surfaces (control plane, artifacts/GC, waits/wakeups,
-  tasks/delegation/goal settlement, compression, the daemon protocol, the required checks, the authority layer
-  and the user's authority surface) hold under exhaustive TLC checking of the **abstract model**; liveness
-  holds only under the explicitly stated weak fairness assumptions.
+- The safety properties of ten protocol surfaces (control plane, artifacts/GC, waits/wakeups,
+  tasks/delegation/goal settlement, compression, the daemon protocol, the required checks, the authority layer,
+  the user's authority surface and session-store identity) hold under exhaustive TLC checking of the
+  **abstract model**; liveness holds only under the explicitly stated weak fairness assumptions.
 - The same invariants are recomputed against the **real `core::v2::Control`** by the executable
   correspondence test: every command sequence up to length 2 (38 commands, including refused combinations)
   plus 60 fixed-seed coverage-driven walks, re-checking 23 invariant groups after every step, with coverage
@@ -53,6 +53,7 @@ in [README.md](README.md); the fix ledger is in
 | Protocol model | `tla/V2Daemon.tla` (10) | 51,713 states | as above |
 | Protocol model | `tla/V2Checks.tla` (8) | 469 states | as above |
 | Protocol model | `tla/V2Authority.tla` (11 invariants + 5 properties, three negative controls) | 270,288 states generated / 35,950 distinct | as above; controls via `make verify-model-counterexamples` |
+| Protocol model | `tla/V2Store.tla` (6 invariants + 3 properties, one negative control) | 48 states generated / 13 distinct | as above; control via `make verify-model-counterexamples` |
 | Protocol model (wide) | `MC_wide.cfg` (2 instances / 2 operations) | 275,004,673 states / 11 min 25 s (historical run of `d37e1b4`, before the 2026-09-25 history rewrite). The spec has changed since (D-63/D-64/D-65/D-71 add instance fields, the deadline flag and the committed-tail rule), so that number is history: re-runs in this round reached about 170M / 250M states, and the D-71 re-run reached **36.5M states generated / 7.6M distinct / 29 min, 4.6M still queued, no violation** before it was stopped under the turn's time bound. The wide configuration stays the slow, best-effort target; the small two-instance configurations carry the per-instance checks in `make verify-model-all` | `make verify-model-wide` |
 | Code-level correspondence | `core/tests/v2_invariants.rs` | 38 commands; 1,482 short sequences plus a 60×24-step walk | `cargo test --offline --manifest-path core/Cargo.toml --test v2_invariants` |
 | Pure functions | `core/tests/kernel_properties.rs` | 258 entry combinations plus a full paging enumeration | `cargo test --offline --manifest-path core/Cargo.toml --test kernel_properties` |
@@ -204,6 +205,22 @@ property as stated would have demanded a tool the instance may no longer use. It
 ("a surface that lags the entitlement catches up at the next request"), which is what the code actually
 guarantees, and the negative control above shows it still fails when the surface is never recomputed.
 
+### Session-store identity (added 2026-09-26, D-87)
+
+`V2Store.tla` + `MC_store.cfg` model what a session finds when it opens a state root: an empty path, a path
+already holding another program's database (with and without a format id of its own), our own file with a
+valid stamp, our own file with the schema written and the stamp missing (the crash between the two writes),
+and the read-only open. The environment can write a foreign database into an empty path, so the guard is
+exercised against a real foreign file rather than an assumption, and the counterfactual `IgnoreForeign` is the
+D-87 defect itself.
+
+| Run | Result |
+|---|---|
+| `make verify-model-all` (MC_store) | **No error found** — 48 states generated / 13 distinct / depth 3 (6 invariants plus three temporal properties, one of them the leads-to claim that a half-initialized database is completed rather than stranded) |
+| Negative control `MC_store_adopt.cfg` | `create = true` initializing whenever there is no stamp (the store before D-87) makes TLC report **`Invariant NoForeignAdoption is violated`** |
+| Correspondence (`core/src/v2/store.rs`) | `open_never_adopts_an_unstamped_file_that_holds_foreign_tables` (the refusal names the foreign tables, and the file is compared byte for byte with what it held before) and `open_completes_a_session_database_that_lost_its_stamp_to_a_crash` |
+| Correspondence (`review/dogfood/boundary.py`) | the real binary on such a root: `doctor` exits 1, `exec` refuses in 0.2 s with exit 2 naming the file and the foreign table, and the file's SHA-256 is unchanged |
+
 ## 3. Issues found by verification (all fixed)
 
 | ID | Issue | Spec counterexample | Fix and regression |
@@ -256,12 +273,12 @@ The "formal layer" column lists only what the model, the code-level corresponden
 | A31 | write failure / disk full | — | `StorageFull` classification and real SQLite FULL injection |
 | A32 | very large history measurement | pure-function seamless paging reconstruction (the coordinate semantics of readback) | the performance numbers themselves |
 | A33 | two daemons / stale lock | — | real lock and second-daemon evidence |
-| A34 | incompatible schema | — | stamp/migration sample tests |
+| A34 | incompatible schema | `V2Store` (a foreign database is never stamped as ours, a refusal writes nothing, a half-initialized database is completed rather than stranded) plus the refuted control `MC_store_adopt.cfg` | byte-level evidence in `review/dogfood/boundary.py` and migration sample tests |
 | A35 | goal deadline | the deadline gates in `V2Control` (`AdmissionGate` plus a hard dispatch refusal) | real clock boundaries |
 | A36 | install / init / doctor / cleanup | — | CLI and cleanup evidence |
 
-Subtotal: **25 items** have a non-empty "formal coverage" entry (A01–A04, A06–A11, A13, A16–A20, A22–A25,
-A28–A30, A32, A35) and the remaining **11** (A05, A12, A14, A15, A21, A26, A27, A31, A33, A34, A36) have
+Subtotal: **26 items** have a non-empty "formal coverage" entry (A01–A04, A06–A11, A13, A16–A20, A22–A25,
+A28–A30, A32, A34, A35) and the remaining **10** (A05, A12, A14, A15, A21, A26, A27, A31, A33, A36) have
 **only** sample tests and real-environment evidence today. **No item claims to be finished by formal means
 alone**, and conversely formal coverage does not excuse an item from sample or real-environment acceptance.
 
@@ -305,9 +322,10 @@ alone**, and conversely formal coverage does not excuse an item from sample or r
 ## 6. Re-running and what would invalidate this
 
 ```bash
-make verify-model-all     # exhaustive configurations for the seven protocol surfaces (seconds to ~20 s)
+make verify-model-all     # exhaustive configurations for the ten protocol surfaces (seconds to ~2 min;
+                          # the task, grants and authority models are the slow ones)
+make verify-model-counterexamples  # the ten negative controls, each must be refuted
 make verify-model-wide    # wide control-plane configuration (~11 minutes / 275M states)
-make verify-model-all     # all eight small modules (~80 s, of which the authority model is ~60 s)
 make check                # fmt + clippy -D warnings + 23 suites (including the two code-level layers)
 make verify-kani          # Kani proofs for the paging arithmetic (needs the Kani toolchain; ~1 s)
 ```

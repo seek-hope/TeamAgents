@@ -262,6 +262,20 @@ The rule now is that identity is decided **read-only, before anything is written
 That makes the three entry points agree: `doctor` exits 1 with the FAIL line, `exec` refuses in 0.2 s with
 exit 2 (infrastructure), and `init` refuses to prepare the root — all naming the file.
 
+**New formal work.** A34's "migrate explicitly or refuse" claim was the last one in the acceptance matrix
+with no model behind it (`verification/REPORT.md` recorded it as `—`), and this change is exactly the rule
+that claim is about, so the identity decision is now a spec: `verification/tla/V2Store.tla` +
+`MC_store.cfg` model an empty path, another program's database (with and without a format id of its own), our
+own stamped file, our own file with the schema written and the stamp missing (the crash between the two
+writes, reachable in the model through `WriteSchemaThenCrash`), and the read-only open. The claims are
+`NoForeignAdoption`/`NoForeignStamp` (a foreign file is never stamped), `RefusalsWriteNothing` (a refusal is
+silent, in `[][…]` form as `EveryRefusalIsSilent`), `InterruptedWroteOursOnly`, `AcceptedMeansStamped` and
+the leads-to `HalfInitializedIsCompleted` (with the initializer weakly fair, an interrupted database is
+completed rather than stranded). The counterfactual `MC_store_adopt.cfg` is this defect — `create = true`
+initializing whenever there is no stamp — and `make verify-model-counterexamples` requires TLC to report
+`Invariant NoForeignAdoption is violated`, which it does (2026-09-26). `make verify-model-all` covers
+`MC_store.cfg` (48 states, 13 distinct, no error).
+
 Evidence: `open_never_adopts_an_unstamped_file_that_holds_foreign_tables` (the refusal names the foreign
 tables, and the file is compared **byte for byte** with what it held before),
 `open_completes_a_session_database_that_lost_its_stamp_to_a_crash` (the deliberate crash-recovery
