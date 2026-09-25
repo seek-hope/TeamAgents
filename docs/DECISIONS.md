@@ -231,6 +231,49 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-92 The user's policy hook, driven with a real model and real tool calls (2026-09-26)
+
+`[hooks]` is the one surface where the *user's own programs* wrap the runtime's work: `notify` on events,
+`pre_tool` in front of every native tool call. Its contract (exit 0 allows, **exit 2 denies** with the first
+stderr line as the reason, anything else — other exit codes, a spawn failure, a 10 s timeout — allows, and a
+hanging `notify` never blocks a turn) was covered by unit tests in `engine/src/hooks.rs`, all in-process:
+generated scripts, no daemon, no model, no real tool call. A user's policy that silently denies everything, or
+a "broken hook" rule that brick the agent, would have looked identical to a passing test.
+
+`review/dogfood/hooks.py` drives it end to end. It generates two scripts in the scratch root — `notify.sh`
+(appends `argv[1]` and the JSON payload it reads on stdin) and `veto.sh` (appends the payload it is asked
+about, then denies the `shell` tool by exit code) — and asks a real model for two things in one turn: write
+`kept.txt`, then run `echo veto-me > vetoed.txt`.
+
+Measured 2026-09-26 (DeepSeek Flash, native window, `--full-auto`):
+
+| Mode | Result |
+|---|---|
+| `veto` (exit 2) | the hook was consulted 4 times, once about `shell`; `kept.txt` holds `kept` (the *file* tool was allowed), `vetoed.txt` never exists, and the model's conversation carries `{"error":"denied by pre_tool hook: probe rule: shell commands are not allowed in this project"}` — the reason reached it verbatim. The model then verified the state and finished **`blocked`** of its own accord (step 2 impossible): exit 1, goal `BLOCKED` |
+| `broken` (exit 1) | the same hook exiting 1 **allowed** the call: `vetoed.txt` holds `veto-me`, no denial appears anywhere, exit 0, goal `SUCCEEDED` |
+
+The `notify` stream in those runs carried 8–11 events per turn — 4–6 `tool_call` (with `tool`, `arguments` and
+`ok`, **including `ok: false` for the denied call**) and 4–5 `run_completed` — every payload valid JSON with
+the `session_id` and the instance id. That last count also corrected a document: `run_completed` fires per
+**model request** (its payload names the `request_id`), not per turn, and `docs/USER-GUIDE.md` §2.3 said only
+"`run_completed`". It now says what the granularity is.
+
+The negative control is what makes the first run mean anything: "the veto worked" is also consistent with an
+implementation that denies every call, and "anything else allows" is exactly the branch a policy hook is
+easiest to get wrong.
+
+Evidence: `python3 review/dogfood/hooks.py` and `--mode broken` (2026-09-26, three runs), plus the offline
+layers it does not repeat — `hooks::tests::pre_tool_policy_decides_by_exit_code` (exit 0 allows, exit 2
+denies, a broken hook allows, a hanging hook is bounded and allows), `hooks_receive_the_event_name_and_json_on_stdin`,
+`v2_driver::a_pre_tool_hook_vetoes_a_tool_call_and_the_turn_continues`,
+`v2_driver::notify_hooks_receive_tool_call_and_run_completed`, and `cli`'s doctor reporting both configured
+argv vectors (`hooks.notify` / `hooks.pre_tool`).
+
+Ceiling: one turn per mode, so the 10 s timeout, the "a chatty hook cannot fill the pipe" case and the
+"replays after crash recovery are not asked again" rule stay with the unit tests; the probe's scripts are
+POSIX `sh` using `grep`, which the host provides (hooks run on the host by design, never inside an instance
+sandbox).
+
 ## D-91 The running job's identity, and its one-start rule, checked against the machine (2026-09-26)
 
 A15 and A10 both rested on offline tests (`jobs_runner`) plus code reading: the runner persists the child's

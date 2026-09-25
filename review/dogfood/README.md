@@ -383,3 +383,25 @@ compares the runner's record with the machine (A15). It then asks the runner ove
 derives (§6.2) and requires agreement, sends a **duplicate GO** and requires `starts` to stay at 1 with the
 same pid (A10), and connects with a *guessed* token, which must be refused. Measured 2026-09-26, two runs: all
 four hold, and a guessed token gets `ConnectionRefusedError`.
+
+
+## `hooks.py`: the user's own policy hook, live
+
+`[hooks]` is where the user's programs wrap the runtime: `notify` on events, `pre_tool` in front of every
+native tool call (exit 0 allows, exit 2 denies with the first stderr line as the reason, anything else
+allows). Its unit tests are all in-process; this probe drives it with a real daemon, a real model and real
+tool calls:
+
+```bash
+python3 review/dogfood/hooks.py                 # the veto must deny the shell call
+python3 review/dogfood/hooks.py --mode broken   # negative control: exit 1 must NOT deny
+```
+
+It generates `notify.sh` (records `argv[1]` plus the JSON payload from stdin) and `veto.sh` (records what it
+is asked about, denies the `shell` tool by exit code) in the scratch root, then asks for one file write and
+one shell command in one turn. Veto mode: the file write happens, the shell command never does, the model's
+conversation carries the hook's reason verbatim, and the model finishes `blocked` of its own accord. Broken
+mode: the same hook exiting 1 allows the call — without that run, "the veto worked" would also be consistent
+with a hook that denies everything. The `notify` stream in those runs carried 4–6 `tool_call` events
+(including `ok: false` for the denial) and 4–5 `run_completed`, all valid JSON with the session and instance
+ids; that count also corrected the guide, which now says `run_completed` fires per model request (D-92).

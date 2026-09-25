@@ -168,8 +168,10 @@ pre_tool = ["/home/you/bin/policy.sh"]            # policy hook before tool call
 ```
 
 - `notify` runs asynchronously and never blocks a turn; it is killed after 10 seconds and failures only reach
-  the engine's stderr. The events are `tool_call` (with `tool`/`arguments`/`ok`/`error`), `team_action`,
-  `run_completed`, `run_failed`, `run_cancelled` and `run_paused` (the instance entered PAUSED).
+  the engine's stderr. The events are `tool_call` (with `tool`/`arguments`/`ok`/`error` — a call your policy
+  denied arrives with `ok: false`), `team_action`, `run_completed` and `run_failed`/`run_cancelled` (each
+  names its `request_id`, so they fire per **model request**, not per turn), and `run_paused` (the instance
+  entered PAUSED).
 - `pre_tool` runs synchronously before every native tool call (files/Shell/web/Skills/MCP). Exit code 0
   allows it; **exit code 2 denies it** and the first stderr line becomes the reason handed to the model;
   any other exit code, a spawn failure or a timeout allows the call and logs to stderr — a broken hook never
