@@ -231,6 +231,36 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-66 The doctor reports the skills registry, so a bad path is not silent (2026-09-25)
+
+Auditing the documented configuration surface against the code found a silent trap: `skills_paths` and
+`instruction_files` are read from the user config, `expand_home` resolves `~/…`, and
+`tools::skill_roots` *filters out* a configured path that is not a directory — but the only validator
+(`config::validate_configured_paths`) is called from `load_user_config_for`, the **project** config loader
+that no product entry point uses yet (the known gap recorded in `docs/ACCEPTANCE.md`). So a typo'd path, or a
+`~/.agents/skills` that does not exist yet, meant: skills silently absent (`skill` answers "no skills
+configured" only when the model happens to ask) and instruction files silently missing from every prompt,
+with nothing anywhere telling the user.
+
+`teamagents doctor` now reports both: `[ok  ] skills  1 skill(s) under 1 configured root(s)`,
+`[WARN] skills  a configured root does not exist and is ignored, so those skills never load: ~/.agents/skills`,
+`[WARN] skills  none configured: skills_paths in the user config registers a root …`, and an
+`instruction files` row for the same reason. Verified on a clean first run
+(`HOME=/tmp/fresh-home XDG_CONFIG_HOME=… teamagents init && … doctor`): the shipped config registers
+`~/.agents/skills`, which does not exist on a fresh machine, and that is now visible as one WARN instead of a
+skill list that is quietly empty.
+
+It is a **warning, not a load failure**, deliberately: the shipped `init` config points at the documented
+registration root (D-34), and refusing to start a session because a *feature's* root is missing would break
+the documented first-run flow (`init → set the key → doctor → teamagents`) on every machine that has not
+created it yet. Refusing a bad path stays the behaviour of the project-config loader once that loader is
+wired (a decision that needs the user's word).
+
+Evidence: `cli::doctor_reports_the_skills_registry_and_missing_configured_paths` (a root with one skill
+reports `1 skill(s) under 1 configured root(s)`; a missing root and a missing instruction file are named;
+no configured root says where to put one and adds no instruction-files row) plus the clean first-run probe
+above. `make check`, `make pty` and `make verify-model-all` are unaffected and green.
+
 ## D-65 A plain reply opens no further turn: the turn storm is over (2026-09-25)
 
 The probe's runaway had a root that is not a policy question after all. The driver's idle rule was

@@ -71,6 +71,54 @@ fn doctor_probes_isolation_and_config_errors() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
+/// Plant a skills directory the doctor can count, and check both the resolving
+/// and the missing case: a configured root that is not there is otherwise silent
+/// (`skill` answers "no skills configured" only when the model asks).
+#[test]
+fn doctor_reports_the_skills_registry_and_missing_configured_paths() {
+    let root = std::env::temp_dir().join(format!("ta-skills-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let (config, state, skills) = (root.join("config"), root.join("state"), root.join("skills"));
+    std::fs::create_dir_all(config.join("teamagents")).unwrap();
+    // one skill: a directory whose SKILL.md names it
+    std::fs::create_dir_all(skills.join("reviewer")).unwrap();
+    std::fs::write(skills.join("reviewer/SKILL.md"), "---\nname: reviewer\ndescription: reviews\n---\nbody\n").unwrap();
+    std::fs::write(root.join("house-rules.md"), "be careful\n").unwrap();
+    let run = |skills_path: &str, instructions: &str| -> String {
+        std::fs::write(
+            config.join("teamagents/config.toml"),
+            format!(
+                "skills_paths = [{skills_path}]\ninstruction_files = [{instructions}]\n\n\
+                 [models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\napi_key_env = \"TA_SKILLS_KEY\"\n"
+            ),
+        )
+        .unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_teamagents"))
+            .arg("doctor")
+            .env("XDG_CONFIG_HOME", &config)
+            .env("XDG_STATE_HOME", &state)
+            .env("TA_SKILLS_KEY", "test-value")
+            .output()
+            .expect("run doctor");
+        format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr))
+    };
+    let good = run(&format!("\"{}\"", skills.display()), &format!("\"{}\"", root.join("house-rules.md").display()));
+    assert!(good.contains("[ok  ] skills"), "a resolving root is reported ok: {good}");
+    assert!(good.contains("1 skill(s) under 1 configured root(s)"), "{good}");
+    assert!(good.contains("[ok  ] instruction files"), "{good}");
+    // a root that does not exist is a warning that names it, instead of a skill
+    // list that silently stays empty
+    let missing = run("\"/nonexistent/skills\"", "\"/nonexistent/rules.md\"");
+    assert!(missing.contains("[WARN] skills"), "{missing}");
+    assert!(missing.contains("/nonexistent/skills") && missing.contains("never load"), "{missing}");
+    assert!(missing.contains("[WARN] instruction files") && missing.contains("/nonexistent/rules.md"), "{missing}");
+    // and no configured root at all says where to put one
+    let none = run("", "");
+    assert!(none.contains("[WARN] skills") && none.contains("skills_paths"), "{none}");
+    assert!(!none.contains("instruction files"), "no row without configured files: {none}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// Keep diagnostics deterministic on machines without user namespaces.
 #[test]
 fn doctor_fresh_install_reports_the_missing_requirements() {

@@ -6,7 +6,7 @@ Baseline: [the design and acceptance baseline](DESIGN.md) §12/§16. Current imp
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 97 / engine 176 / tui 26 test targets) and `make pty` passes; both are
+`make check` is green (core 97 / engine 178 / tui 26 test targets) and `make pty` passes; both are
 preconditions for every item below. `make check` includes `make language-check`, which fails on non-English
 characters outside the two documented exceptions (`README.zh-CN.md` and the frozen material under
 `review/eval`).
@@ -40,7 +40,7 @@ characters outside the two documented exceptions (`README.zh-CN.md` and the froz
 | A23 | A result arrives before the wait is registered | `control::wait_for_an_arrived_result_is_satisfied_at_registration` |
 | A24 | A late result after a reset | `control::late_receipt_after_reset_lands_on_the_old_epoch_only` |
 | A25 | MCP approval / cancellation / unknown outcome | the six `v2_mcp` tests |
-| A26 | Skills permissions | `v2_mcp::skill_call_without_the_binding_fails_honestly` |
+| A26 | Skills permissions | `v2_mcp::skill_call_without_the_binding_fails_honestly`; the registry is *visible* (D-66): `cli::doctor_reports_the_skills_registry_and_missing_configured_paths` reports how many skills a configured root yields and warns, naming the path, when a configured root or instruction file is missing (a clean first run shows the shipped `~/.agents/skills` as one WARN instead of a silently empty skill list) |
 | A27 | Heterogeneous providers cooperating | real: DeepSeek and Kimi exchanging messages both ways in one session (local probe evidence under `review/tmp/`, not part of the tree); fake services: `v2_supervisor::heterogeneous_*` |
 | A28 | Disconnect, slow client, reconnect | `v2_daemon::handshake_checkpoint_command_and_goal_completion`, `reconnect_backfills_events_after_the_watermark` |
 | A29 | Session isolation and a shared project | `control::begin_request_rejects_instances_of_other_sessions`; `cli::cwd_reaches_a_started_daemon_and_is_reported_against_a_live_one` (the session's `--cwd` is what the instances and tools work in, and a client that joins a live session is told the real one) |
@@ -127,6 +127,9 @@ amended (D-49/D-50).
   with the documented trust rules (project models are allowed, project tools/skills/instructions need
   `[permissions] trust_project_tools = true`, and hooks/retention/checks may only come from the user config),
   and it has tests, but no entry point calls it: the daemon, TUI and `exec` load the user config only. The
-  README and the user guide now state this instead of promising the project file. Wiring it is a decision,
+  README and the user guide now state this instead of promising the project file. One consequence is already
+  closed: because that loader is the only caller of the path validator, a bad `skills_paths` /
+  `instruction_files` entry in the *user* config used to be silent — `doctor` now reports what they resolve to
+  and warns when a configured path is missing (D-66). Wiring it is a decision,
   because it changes what a cloned repository can influence (including a malformed project file failing the
   session start) — it needs the user's call before it lands.

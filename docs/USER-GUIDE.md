@@ -8,7 +8,7 @@ were removed from the tree and stay reachable through Git history (`git log -- d
 ```bash
 teamagents init                      # write the config (kept if it exists) and prepare the state root
 export DEEPSEEK_API_KEY=...          # the environment variable named by api_key_env
-teamagents doctor                    # config, credentials, state root, bubblewrap and host checks
+teamagents doctor                    # config, credentials, state root, skills, bubblewrap and host checks
 teamagents                           # open the TUI (starts the per-user daemon when needed)
 ```
 
@@ -275,7 +275,10 @@ back silently to host execution.
 ## 5. Skills and MCP
 
 - Skills live under the registration root `~/.agents/skills` (searched and read on demand with
-  `skill search/read`; a skill's instructions can never widen execution permissions).
+  `skill search/read`; a skill's instructions can never widen execution permissions). `skills_paths` and
+  `instruction_files` accept `~/…`, and **`doctor` reports what they resolve to** (`skills  3 skill(s) under
+  1 configured root(s)`, or a WARN naming a root that does not exist) — a path that is not there is ignored,
+  so without that row a typo would look like "no skills" (D-66).
 - MCP: bound services load at startup (a required service fails loudly, an optional one only drops its
   capability). Calls go through the same permission, approval, budget, cancellation and receipt entry
   points. A remote call dispatched before a crash is recorded as `OUTCOME_UNKNOWN` after recovery and is

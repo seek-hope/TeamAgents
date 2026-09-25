@@ -185,6 +185,50 @@ pub fn doctor(state_root: Option<PathBuf>) -> i32 {
     // hooks are easy to break silently: a wrong path only shows up as a stderr
     // line at event time, so doctor checks the programs exist and are executable
     if let Ok(catalog) = &catalog {
+        // Skills and instruction files come from configured paths, and a path that
+        // does not resolve is otherwise silent: `skill` answers "no skills
+        // configured" at tool time and a missing instruction file simply never
+        // reaches a prompt. The shipped config registers `~/.agents/skills` (D-34),
+        // so the row also tells a fresh install whether that root is really there.
+        let roots: Vec<(&String, PathBuf)> =
+            catalog.skills_paths.iter().map(|raw| (raw, crate::config::expand_home(raw))).collect();
+        let missing: Vec<&str> = roots.iter().filter(|(_, path)| !path.is_dir()).map(|(raw, _)| raw.as_str()).collect();
+        let skills: usize = roots
+            .iter()
+            .filter(|(_, path)| path.is_dir())
+            .map(|(_, path)| crate::tools::skill_candidates(path).len())
+            .sum();
+        optional_check(
+            &mut results,
+            "skills",
+            roots.iter().any(|(_, path)| path.is_dir()) && missing.is_empty(),
+            match (roots.len(), missing.len()) {
+                (0, _) => "none configured: skills_paths in the user config registers a root (the shipped config uses ~/.agents/skills)".into(),
+                (_, missing_count) if missing_count > 0 => format!(
+                    "a configured root does not exist and is ignored, so those skills never load: {}",
+                    missing.join(", ")
+                ),
+                (count, _) => format!("{skills} skill(s) under {count} configured root(s)"),
+            },
+        );
+        let missing_instructions: Vec<&str> = catalog
+            .instruction_files
+            .iter()
+            .filter(|raw| !crate::config::expand_home(raw).is_file())
+            .map(String::as_str)
+            .collect();
+        if !catalog.instruction_files.is_empty() {
+            optional_check(
+                &mut results,
+                "instruction files",
+                missing_instructions.is_empty(),
+                if missing_instructions.is_empty() {
+                    format!("{} file(s) reach every member's prompt", catalog.instruction_files.len())
+                } else {
+                    format!("missing (ignored): {}", missing_instructions.join(", "))
+                },
+            );
+        }
         for (label, argv) in [("hooks.notify", &catalog.hooks.notify), ("hooks.pre_tool", &catalog.hooks.pre_tool)] {
             let Some(program) = argv.first().filter(|p| !p.trim().is_empty()) else { continue };
             let path = Path::new(program);

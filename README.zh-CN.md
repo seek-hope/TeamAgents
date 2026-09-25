@@ -14,7 +14,7 @@
 ```bash
 teamagents init          # 写配置并准备状态根
 export DEEPSEEK_API_KEY=...
-teamagents doctor        # 配置 / 密钥 / 状态根 / 隔离探针
+teamagents doctor        # 配置 / 密钥 / 状态根 / 技能路径 / 隔离探针
 teamagents               # 打开 TUI（必要时自动拉起 daemon）
 teamagents exec --json "用一句话自我介绍"    # 同一后端的无头输入
 ```
@@ -116,7 +116,7 @@ export PATH="$HOME/.local/bin:$PATH"
 ```bash
 teamagents init                       # 创建内置最小配置；已有配置不会覆盖
 export DEEPSEEK_API_KEY='你的模型密钥'  # 默认配置使用 DeepSeek；其他服务按配置中的 api_key_env 设置
-teamagents doctor                    # 自检：配置 / 密钥 / 状态根 / 隔离探针
+teamagents doctor                    # 自检：配置 / 密钥 / 状态根 / 技能路径 / 隔离探针
 teamagents --cwd /path/to/project     # 换成实际项目目录；省略 --cwd 则使用当前目录
 ```
 
