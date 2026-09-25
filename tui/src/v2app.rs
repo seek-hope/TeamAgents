@@ -785,6 +785,10 @@ impl V2App {
             }
             KeyCode::Enter => {
                 let text = self.composer.submit()?;
+                // the arrows walk what was sent (D-77): `text.rs` has kept the
+                // history and the recall rules all along, and nothing ever recorded
+                // into it, so ↑ did nothing but scroll
+                self.composer.record_submission(&text);
                 let instance = self.active_instance()?.id.clone();
                 let envelope = format!("env-{}", uuid::Uuid::new_v4());
                 Some(V2Effect::SubmitInput { instance, envelope, text })
@@ -805,12 +809,23 @@ impl V2App {
                 self.scroll_chat_back(self.last_chat_height.max(1));
                 None
             }
+            // ↑↓ are the composer's: inside a multi-line draft they walk its rows,
+            // and at the first/last row they recall history — the contract `text.rs`
+            // documents. Scrolling keeps PageUp/PageDown and the mouse wheel.
             KeyCode::Up => {
-                self.scroll_chat(1);
+                if self.composer.row > 0 {
+                    self.composer.move_up();
+                } else {
+                    self.composer.recall(-1);
+                }
                 None
             }
             KeyCode::Down => {
-                self.scroll_chat_back(1);
+                if self.composer.row + 1 < self.composer.lines.len() {
+                    self.composer.move_down();
+                } else {
+                    self.composer.recall(1);
+                }
                 None
             }
             KeyCode::Backspace => {
@@ -819,6 +834,19 @@ impl V2App {
             }
             KeyCode::Delete => {
                 self.composer.delete();
+                None
+            }
+            // word-wise editing, the other half of `text.rs` that nothing called
+            KeyCode::Left if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.composer.move_word_left();
+                None
+            }
+            KeyCode::Right if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.composer.move_word_right();
+                None
+            }
+            KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.composer.delete_word();
                 None
             }
             KeyCode::Left => {
@@ -941,7 +969,7 @@ impl V2App {
                     // so what a user needs while composing (send, newline, the
                     // pending approvals) comes first; at 80 columns the whole
                     // hint is visible.
-                    format!("Enter send · Ctrl+J newline{approvals} · Ctrl+N panels · Tab target")
+                    format!("Enter send · ↑ history · Ctrl+J newline{approvals} · Ctrl+N panels · Tab target")
                 }
                 Focus::Approvals => "a approve once · d deny · up/down select · Esc back".to_string(),
             },

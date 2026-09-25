@@ -231,6 +231,39 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-77 The composer's history and word editing are wired (2026-09-26)
+
+The dead-code sweep that produced D-74/D-75/D-76 looked at every `pub fn` with no caller, and
+`tui/src/text.rs` stood out: its module header says "↑↓ recall history at the first/last row", the composer
+keeps a 500-deep history with `record_submission`/`recall` (draft preserved, adjacent duplicates skipped) and
+**has a unit test for exactly that** — and `v2app` called none of it. Nothing ever recorded a submission, so
+the history was always empty; `↑`/`↓` scrolled the conversation instead (PageUp/PageDown and the mouse wheel
+have always done that too); `Ctrl+←`/`Ctrl+→`/`Ctrl+W` (`move_word_left`/`move_word_right`/`delete_word`) and
+`clear_composer` were unreachable. A first-class coding CLI whose composer cannot recall the prompt you just
+sent is missing a basic affordance, and the module *documented* it.
+
+**What is wired now** (nothing new was invented — the behaviour is the one `text.rs` already defined):
+
+- a submitted prompt is recorded (`record_submission`) before the turn is sent;
+- `↑`/`↓` walk a multi-line draft row by row and recall history at its first/last row, with the draft restored
+  when you walk past the newest entry (the rule in the module header, now also in the footer hint: `↑ history`);
+- `Ctrl+W` deletes the word before the caret, `Ctrl+←`/`Ctrl+→` jump by word;
+- scrolling stays on `PageUp`/`PageDown` and the wheel (this is the one user-visible change: the arrows are the
+  composer's now, which is also what the sibling CLIs do);
+- `clear_composer` had no caller and no plausible binding, so it is gone rather than left as a dead affordance.
+
+Evidence: `tui::the_arrows_recall_what_was_submitted` (two sends, then ↑↑↑ clamps at the oldest entry, ↓↓
+restores the draft), `tui::the_arrows_walk_a_multi_line_draft_before_recalling` (the caret walks
+`alpha\nbeta` first and the draft comes back with its newline), `tui::word_wise_editing_is_wired`
+(`Ctrl+W` twice leaves `"alpha "`, `Ctrl+←`/`→` land on the word boundaries); and — the part a unit test
+cannot reach — `make pty` now sends the terminal's own `↑`/`↓` escape sequences: the recalled prompt is
+submitted a second time as a real `submit_input` frame, and `↓` back to the empty draft sends nothing (that
+check fails with the recording removed). README's TUI key list and the footer hint describe the new keys.
+
+Ceiling: the history is per composer (one session, in memory — it does not survive a TUI restart), and the
+recall is textual: there is no search, no cross-instance history and no persistence. Whether the history
+should live in the session state (so a restarted TUI still recalls) is a design question for the user.
+
 ## D-76 The workspace lifecycle, observed end to end (2026-09-25)
 
 D-46 wired the §12.3 policies and promised, in the docs, that a terminated instance retires its workspace and

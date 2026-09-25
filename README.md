@@ -198,7 +198,11 @@ instead. Details, the full action vocabulary and the exit codes are in
 | `init` / `doctor` / `daemon` / `exec` / `authority` / `approvals` / `instances` / `tasks` / `version` / `--help` | config and state root / self-check (config, credentials, state root, skills, goal limits, checks, hooks, bubblewrap) / run the daemon alone (its output goes to `<state root>/daemon.log`) / headless input / list, grant and revoke capabilities / list and decide approvals / pause, resume, terminate and list instances / list and cancel tasks / version / usage |
 
 TUI keys (they match the hint line at the bottom; deliberately no function keys, since some keyboards lack
-them): `Enter` send, `Ctrl+J` newline (and `Shift+Enter` where the terminal reports modifiers), `Tab` switch the conversation target, `Ctrl+N` cycle the
+them): `Enter` send, `Ctrl+J` newline (and `Shift+Enter` where the terminal reports modifiers), `↑`/`↓` walk a
+multi-line draft and recall the prompts you sent (500 deep, the draft comes back when you walk past the
+newest), `Ctrl+W` deletes the word before the caret and `Ctrl+←`/`Ctrl+→` jump by word, `PageUp`/`PageDown`
+(and the mouse wheel) scroll the conversation, `Tab` switch the
+conversation target, `Ctrl+N` cycle the
 views (conversation → instances → tasks → topology → back), `Ctrl+A` pending approvals, `Esc` back,
 `Ctrl+C`/`Ctrl+D` quit. In the instances panel `Enter` sets the conversation target, `p` pauses, `r` resumes
 and `t` terminates (with confirmation); in the tasks panel `c` cancels a task; in the approvals panel

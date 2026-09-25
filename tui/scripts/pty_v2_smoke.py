@@ -197,6 +197,27 @@ def main():
         sent = [f.get("params", {}).get("text") for f in daemon.frames if f.get("method") == "submit_input"]
         failures.append(f"Ctrl+J did not submit one two-line prompt; submitted: {sent!r}")
 
+    # D-77: the composer's history is real. Up (the terminal's own escape sequence)
+    # recalls what was just sent, and down brings the (empty) draft back — both
+    # through the composer's keys, which is what a user actually presses.
+    os.write(fd, b"\x1b[A")
+    time.sleep(0.3)
+    scr.feed(read_all(fd, 2.0).decode("utf-8", "replace"))
+    os.write(fd, b"\r")
+    time.sleep(0.4)
+    recalled = [f for f in daemon.frames
+                if f.get("method") == "submit_input" and f.get("params", {}).get("text") == "first-line\nsecond-line"]
+    if len(recalled) != 2:
+        failures.append(f"Up did not recall the submitted prompt: {len(recalled)} sends of it (want 2)")
+    os.write(fd, b"\x1b[B")
+    time.sleep(0.3)
+    sent_before = len([f for f in daemon.frames if f.get("method") == "submit_input"])
+    os.write(fd, b"\r")
+    time.sleep(0.4)
+    sent_after = len([f for f in daemon.frames if f.get("method") == "submit_input"])
+    if sent_after != sent_before:
+        failures.append("an empty composer (after Down) submitted something")
+
     # typing + Enter submits one submit_input business frame whose command id
     # carries the envelope (§9), and the input event drives a history refresh
     os.write(fd, "hello-v2".encode())

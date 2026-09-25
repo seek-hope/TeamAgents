@@ -46,6 +46,81 @@ fn app() -> V2App {
     app
 }
 
+/// Type `text` and send it through the composer's own keys.
+fn send(app: &mut V2App, text: &str) {
+    for c in text.chars() {
+        app.handle_key(key(KeyCode::Char(c)));
+    }
+    let effect = app.handle_key(key(KeyCode::Enter)).expect("submit effect");
+    let V2Effect::SubmitInput { text: sent, .. } = effect else { panic!("wrong effect") };
+    assert_eq!(sent, text);
+    assert!(app.composer.text().is_empty(), "the composer clears after sending");
+}
+
+/// D-77: the composer's history is real. `text.rs` documents "↑↓ recall history"
+/// and keeps the whole recall machinery (with its own unit test) while nothing wired
+/// it: no submission was ever recorded and the arrows only scrolled the chat.
+#[test]
+fn the_arrows_recall_what_was_submitted() {
+    let mut app = app();
+    send(&mut app, "first prompt");
+    send(&mut app, "second prompt");
+    // ↑ walks back through the sent prompts, and stays at the oldest one
+    app.handle_key(key(KeyCode::Up));
+    assert_eq!(app.composer.text(), "second prompt");
+    app.handle_key(key(KeyCode::Up));
+    assert_eq!(app.composer.text(), "first prompt");
+    app.handle_key(key(KeyCode::Up));
+    assert_eq!(app.composer.text(), "first prompt", "the oldest entry ends the history");
+    // ↓ walks forward again and restores the draft
+    app.handle_key(key(KeyCode::Down));
+    assert_eq!(app.composer.text(), "second prompt");
+    app.handle_key(key(KeyCode::Down));
+    assert!(app.composer.text().is_empty(), "past the newest entry the draft comes back");
+}
+
+/// Inside a multi-line draft the arrows are the caret's; they recall history only at
+/// the first/last row, which is the rule `text.rs` states.
+#[test]
+fn the_arrows_walk_a_multi_line_draft_before_recalling() {
+    let mut app = app();
+    send(&mut app, "sent prompt");
+    for c in "alpha".chars() {
+        app.handle_key(key(KeyCode::Char(c)));
+    }
+    app.handle_key(ctrl('j'));
+    for c in "beta".chars() {
+        app.handle_key(key(KeyCode::Char(c)));
+    }
+    assert_eq!(app.composer.text(), "alpha\nbeta");
+    app.handle_key(key(KeyCode::Up));
+    assert_eq!(app.composer.text(), "alpha\nbeta", "the draft is walked, not replaced");
+    assert_eq!(app.composer.row, 0, "the caret moved to the first row");
+    app.handle_key(key(KeyCode::Up));
+    assert_eq!(app.composer.text(), "sent prompt", "at the first row ↑ recalls history");
+    app.handle_key(key(KeyCode::Down));
+    assert_eq!(app.composer.text(), "alpha\nbeta", "the draft is restored, multi-line included");
+}
+
+/// The other half of `text.rs` nothing called: Ctrl+←/→ move by word and Ctrl+W
+/// deletes the word before the caret.
+#[test]
+fn word_wise_editing_is_wired() {
+    let mut app = app();
+    for c in "alpha beta gamma".chars() {
+        app.handle_key(key(KeyCode::Char(c)));
+    }
+    app.handle_key(ctrl('w'));
+    assert_eq!(app.composer.text(), "alpha beta ");
+    app.handle_key(ctrl('w'));
+    assert_eq!(app.composer.text(), "alpha ");
+    app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
+    assert_eq!(app.composer.col, 0, "Ctrl+← jumps over the word to the left");
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
+    assert_eq!(app.composer.col, 5, "Ctrl+→ lands after the word to the right");
+    assert!(app.footer_hint().contains("↑ history"), "the hint advertises it: {}", app.footer_hint());
+}
+
 #[test]
 fn checkpoint_defaults_to_the_leader_and_tracks_budget() {
     let app = app();

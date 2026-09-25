@@ -190,12 +190,6 @@ impl Composer {
         self.hist_idx = self.history.len();
     }
 
-    pub fn clear_composer(&mut self) {
-        self.draft.clear();
-        self.clear();
-        self.hist_idx = self.history.len();
-    }
-
     /// recall(direction): -1 older, +1 newer; draft restored past the newest.
     pub fn recall(&mut self, direction: i64) {
         if self.history.is_empty() {
