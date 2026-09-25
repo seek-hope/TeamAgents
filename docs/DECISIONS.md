@@ -259,10 +259,17 @@ must end `Failed`, exit 1, with `budget exceeded` and `max 1` in `failure`, well
 pre-fix control: with the new branch disabled the same test reports `end: "timeout"` — the client really did
 wait out the deadline. Live: the run above against the real binary, both before and after.
 
+**The deadline probe then caught a gap in this very fix.** D-96 taught `exec` that a turn which never finished
+has nothing to verify, but it keyed that on `End::Timeout` — and a refusal ends as `End::Failed`, which *is* in
+the "checks run" set. So `--check` still ran for a request that never began: measured in
+`review/dogfood/deadline.py`'s first run, the refused turn executed `touch …/check-ran`, reported
+`verification: [{… "ok": true …}]` and wrote a ledger. A run whose request was refused now skips the checks
+too (the refusal is remembered separately from `turn_failure`), and the same daemon test asserts it: no marker
+file, an empty verdict list, a null `verification_path`.
+
 Ceiling: the two refusal events are the only "request never began" outcomes the control plane commits; a
-refusal that arrives *after* an attempt started is a different case and still ends as its own failure class.
-The `--json` report's `failure` field is where the reason lives; `verification` stays empty because the turn
-never finished (D-96 covers the same rule for a deadline).
+refusal that arrives *after* an attempt started is a different case and still ends as its own failure class
+and does run the checks. `docs/USER-GUIDE.md` states the rule for the user.
 
 ## D-96 `--timeout` did not bound a run that had checks (2026-09-26)
 

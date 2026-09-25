@@ -1036,7 +1036,8 @@ async fn a_budget_refusal_ends_the_headless_run_instead_of_timing_out() {
     cfg.supervisor.goal_limits = json!({"max_total_tokens": 1});
     let handle = serve(cfg).await.expect("daemon");
     let (socket, workspace) = (root.dir.join("state/daemon.sock"), root.dir.join("ws"));
-    let mut options = exec_options(&socket, &workspace, "do something", Vec::new());
+    let marker = workspace.join("check-ran");
+    let mut options = exec_options(&socket, &workspace, "do something", vec![format!("touch {}", marker.display())]);
     options.timeout_s = 30;
     let started = std::time::Instant::now();
     let run = headless(options).await;
@@ -1051,6 +1052,10 @@ async fn a_budget_refusal_ends_the_headless_run_instead_of_timing_out() {
         "a refused request ends the run at once, not at the deadline ({}s)",
         started.elapsed().as_secs()
     );
+    // ...and a turn that never started has no acceptance to verify (D-96's rule, for a refusal)
+    assert_eq!(run.report["verification"].as_array().unwrap().len(), 0, "{}", run.report);
+    assert!(run.report["verification_path"].is_null(), "{}", run.report);
+    assert!(!marker.exists(), "an acceptance command ran for a turn that never started");
     handle.shutdown().await.expect("shutdown");
 }
 

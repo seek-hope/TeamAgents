@@ -51,9 +51,10 @@ happened. Diagnostics go to stderr, the outcome to stdout (`--json` prints one J
   order in the isolated shell (bubblewrap) inside your workspace (`--cwd`, else the current directory). The
   first failure stops the list; the verdicts are printed, written to `<state root>/verification.json` and
   included in the `--json` report. A failed check makes the run fail (`1`) even when the goal itself settled.
-  Checks are skipped when the turn is not finished — the run stopped for an approval, or your own `--timeout`
-  deadline passed (nothing to verify yet, and a check must not stretch the deadline you set: with no verdicts
-  the report's `verification_path` is `null` and no ledger is written).
+  Checks are skipped when the turn is not finished — the run stopped for an approval, your own `--timeout`
+  deadline passed, or the runtime refused the request before it began (a goal budget ceiling or a passed goal
+  deadline, reported as exit `1`). There is nothing to verify yet, and a check must not stretch the deadline
+  you set: with no verdicts the report's `verification_path` is `null` and no ledger is written.
 - **An input sent while a turn is running waits for that turn** (D-63): a model request is fixed once it is
   registered, so the input enters the conversation at the next boundary — after that turn's own answer — and
   gets a turn of its own. A headless run reports `input_queued` (and prints

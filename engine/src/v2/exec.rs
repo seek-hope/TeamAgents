@@ -332,6 +332,8 @@ pub fn execute(options: &ExecOptions) -> Result<ExecRun, (i32, String)> {
     let mut turn_failure: Option<String> = None;
     let mut reply: Option<String> = None;
     let mut pending_approval: Option<String> = None;
+    // set when the runtime refused a request before it began (budget ceiling, passed goal deadline)
+    let mut refused: Option<String> = None;
     // set when the runtime names *this* envelope among the ones it sealed
     let mut undelivered = false;
     // the deadline is the default outcome: a loop that breaks on a terminal
@@ -361,6 +363,9 @@ pub fn execute(options: &ExecOptions) -> Result<ExecRun, (i32, String)> {
                     // running" about work that never started, and burn its deadline waiting for it.
                     if event["scope"] == json!(instance) {
                         if let Some(reason) = startup_refusal(event) {
+                            // remembered separately from `turn_failure`: a refused request never *started*,
+                            // so there is no turn whose acceptance could be verified either
+                            refused.get_or_insert_with(|| reason.clone());
                             turn_failure.get_or_insert(reason);
                         }
                     }
@@ -434,18 +439,21 @@ pub fn execute(options: &ExecOptions) -> Result<ExecRun, (i32, String)> {
     }
     // The user's own acceptance commands are the last word on a finished turn:
     // they run in this workspace through the same isolated shell the tools use.
-    // Nothing runs when the turn is not finished — an approval no headless caller can give, or the caller's
-    // own deadline passing — because there is no acceptance to verify yet (§8), or when the input never
-    // landed, where there is no turn to accept at all (D-72). The deadline belongs here for a second reason:
-    // a check inherits `timeout_s`, so running one *after* the deadline would stretch the run's wall clock
-    // past the bound the caller set (measured 2026-09-26: `--timeout 3` plus a check took 7 s and wrote a
-    // ledger of verdicts for a turn that never finished).
-    let verification =
-        if options.checks.is_empty() || matches!(end, End::ApprovalRequired | End::Undelivered | End::Timeout) {
-            Vec::new()
-        } else {
-            run_checks(&options.checks, &options.workspace, options.timeout_s)
-        };
+    // Nothing runs when the turn is not finished — an approval no headless caller can give, the caller's own
+    // deadline passing, or a request the runtime *refused before it began* (a budget ceiling, a passed goal
+    // deadline: `refused`) — because there is no acceptance to verify (§8), or when the input never landed,
+    // where there is no turn to accept at all (D-72). The deadline belongs here for a second reason: a check
+    // inherits `timeout_s`, so running one *after* the deadline would stretch the run's wall clock past the
+    // bound the caller set (measured 2026-09-26: `--timeout 3` plus a check took 7 s and wrote a ledger of
+    // verdicts for a turn that never finished).
+    let verification = if options.checks.is_empty()
+        || refused.is_some()
+        || matches!(end, End::ApprovalRequired | End::Undelivered | End::Timeout)
+    {
+        Vec::new()
+    } else {
+        run_checks(&options.checks, &options.workspace, options.timeout_s)
+    };
     let verification_path = write_verification(&client.state_root, &verification);
     let checks_ok = verification.iter().all(|entry| entry["ok"] == json!(true));
     let report = json!({
@@ -672,9 +680,30 @@ fn leader_instance(checkpoint: &Json) -> Option<(String, String)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{capped, leader_instance, parse_check_result, run_checks, Attribution, End};
+    use super::{capped, leader_instance, parse_check_result, run_checks, startup_refusal, Attribution, End};
     use serde_json::json;
     use std::path::Path;
+
+    #[test]
+    fn a_refused_request_becomes_the_runs_failure_in_the_runtimes_words() {
+        // the budget gate's committed event: the sentence matches what the runtime parks the instance with
+        let budget = json!({"kind": "budget_refused", "scope": "i-leader", "payload": {
+            "goal_id": "goal-s-main", "request_id": "req-1", "known": 0, "reserved": 0, "est": 2235, "max": 1000}});
+        assert_eq!(
+            startup_refusal(&budget).unwrap(),
+            "goal goal-s-main budget exceeded: known 0 + reserved 0 + est 2235 > max 1000"
+        );
+        // the deadline gate's event
+        let deadline = json!({"kind": "goal_deadline_refused", "scope": "i-leader",
+                              "payload": {"goal_id": "goal-s-main", "request_id": "req-2"}});
+        assert_eq!(
+            startup_refusal(&deadline).unwrap(),
+            "goal goal-s-main deadline passed before request req-2 could start"
+        );
+        // every other event is not a refusal, and a malformed payload never panics
+        assert!(startup_refusal(&json!({"kind": "request_failed", "payload": {}})).is_none());
+        assert!(startup_refusal(&json!({"kind": "budget_refused"})).is_some());
+    }
 
     #[test]
     fn the_leader_instance_prefers_the_conventional_id() {

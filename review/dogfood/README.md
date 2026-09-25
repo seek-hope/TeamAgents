@@ -454,3 +454,20 @@ documented protocol, and then `Ctrl+N` (instances view) → `Down` (the selectio
 `t-panel · CANCELLED`) → `Esc`, `Ctrl+N`, `Down` (back on the worker's row) → `t` (only asks: the footer
 wants `y`, the instance stays ACTIVE) → `n` (cancelled, still ACTIVE) → `t`,`y` (TERMINATED, and the panel
 shows it). Measured 2026-09-26, five runs (D-95).
+
+
+## `deadline.py`: the goal deadline, end to end
+
+A35's formal coverage says the daemon refuses past the goal deadline; this probe shows what a user meets, and
+it is the probe that caught a gap in D-97's own fix:
+
+```bash
+python3 review/dogfood/deadline.py     # ~70 s: one minute of waiting is the point
+```
+
+`[limits] deadline_minutes = 1`, one short turn creates the goal with its absolute deadline (printed from the
+session), the probe waits until it has passed, and the next run exits **1 in 0.1 s** with
+`failure: "goal goal-s-main deadline passed before request … could start"`. The session is the witness: exactly
+one model request (the refused turn never reached a model), a `goal_deadline_refused` event, the leader
+`PARKED` with the same reason — and the `--check` the probe attaches never runs (no marker file,
+`verification: []`, `verification_path: null`), which the first run of this probe found still happening.
