@@ -107,6 +107,25 @@ provider (`end=reply`, exit 0) instead of being rejected for its shape. Measured
 turn 1 1.6 s / turn 2 0.9 s, kimi 8.9 s / 11.8 s, both sessions' note at `i-leader:0:4` as
 `runtime`/`role: user` — the shape is safe on the thinking-mode chat wire and on Kimi's `responses` wire.
 
+## `queued_input.py`: a queued input is answered by its own turn
+
+`queued_input.py` runs two sessions turns against one state root: the first settles its goal in its first
+response (no tool round in between), and the second is submitted *while* that request is in flight, so its
+input is queued at the boundary (D-63). The probe waits for the first turn to be in flight instead of sleeping
+through it, and reports whether the second run really was queued:
+
+```bash
+python3 review/dogfood/queued_input.py                    # DeepSeek
+python3 review/dogfood/queued_input.py --provider kimi    # over `responses`
+```
+
+It needs `DEEPSEEK_API_KEY` (and `KIMI_API_KEY` for kimi) and asserts what D-72 claims: the first run reports
+its own settlement, and the queued run reports `end=reply` with *its own* word and `goal_status: null` — not
+the settlement the first run left behind. Measured (2026-09-25): deepseek 2.8 s
+(run 1 `completed`/`SUCCEEDED`; run 2 `reply`/`BANANA`/`goal: null`), kimi 40.4 s with the same shape.
+Against the pre-fix build the same harness reports `end=completed / goal=SUCCEEDED / reply=null` for the queued
+run: the prompt was never answered, and the run claimed the earlier turn's goal as its own.
+
 ## `checks.py`: the completion gate with a real model
 
 `checks.py` configures one `[[checks]]` entry that can never pass (`test -f never-written`), asks a real

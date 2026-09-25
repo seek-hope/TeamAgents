@@ -88,7 +88,8 @@ UnaddressedTails == {"user", "tool"} \cup (IF RuntimeTailIsWork THEN {"runtime"}
 \* that fixed request, so it waits in the inbox (D-63)
 Input(i) ==
   /\ Alive(i) /\ inst[i].phase = "READY" /\ inst[i].lifecycle = "ACTIVE"
-  /\ inst' = [inst EXCEPT ![i].tail = "user", ![i].queue = FALSE]
+  /\ inst' = [inst EXCEPT ![i].tail = "user", ![i].queue = FALSE,
+                              ![i].afterLanding = FALSE]
   /\ UNCHANGED <<goal, requests, attempts, ops, approvals, dead>>
 
 \* the driver's boundary: apply the queued input once the turn in flight ended.
@@ -96,7 +97,8 @@ Input(i) ==
 \* `QueuedInputEntersTheContext` below (the drain runs at every boundary).
 ApplyQueued(i) ==
   /\ Alive(i) /\ inst[i].queue /\ inst[i].phase = "READY" /\ inst[i].lifecycle = "ACTIVE"
-  /\ inst' = [inst EXCEPT ![i].tail = "user", ![i].queue = FALSE]
+  /\ inst' = [inst EXCEPT ![i].tail = "user", ![i].queue = FALSE,
+                              ![i].afterLanding = FALSE]
   /\ UNCHANGED <<goal, requests, attempts, ops, approvals, dead>>
 
 \* the user submits while a walk is in flight: the input waits for the boundary
@@ -114,7 +116,8 @@ QueueInput(i) ==
 MidTurnInput(i) ==
   /\ AllowMidTurnInput
   /\ Alive(i) /\ inst[i].lifecycle = "ACTIVE" /\ inst[i].phase # "READY"
-  /\ inst' = [inst EXCEPT ![i].tail = "user", ![i].inputMidTurn = TRUE]
+  /\ inst' = [inst EXCEPT ![i].tail = "user", ![i].inputMidTurn = TRUE,
+                              ![i].afterLanding = FALSE]
   /\ UNCHANGED <<goal, requests, attempts, ops, approvals, dead>>
 
 \* the wall clock passes the goal's deadline (a fixed timestamp in the code; the
@@ -147,7 +150,11 @@ BeginRequest(i) ==
                                               selected |-> FALSE, result |-> "reply"]]
        /\ goal' = [goal EXCEPT !.reserved = @ \cup {<<r, 1>>}]
        /\ inst' = [inst EXCEPT ![i].phase = "MODEL_PENDING", ![i].activeReq = r,
-                                  ![i].revision = @ + 1, ![i].expectRev = @ + 1]
+                                  ![i].revision = @ + 1, ![i].expectRev = @ + 1,
+                                  \* a request of i's own is now addressing whatever
+                                  \* landed last (a boundary drained the queue first:
+                                  \* `~inst[i].queue` above)
+                                  ![i].afterLanding = TRUE]
   /\ UNCHANGED <<attempts, ops, approvals, dead>>
 
 \* the atomic response selection bills the goal; late completes only archive
@@ -285,14 +292,22 @@ FailRequest(i) ==
 \* goal settlement happens once and only from ACTIVE (§8). The settlement leaves
 \* the runtime's own closing note as the instance's last word: the runtime states
 \* the ending, the model does not have to answer for it, and the idle rule
-\* therefore leaves the instance alone (D-71).
+\* therefore leaves the instance alone (D-71). It also *records* whether the turn
+\* that produced the completion followed the instance's last input landing — the
+\* fact a client's outcome attribution rests on (D-72).
+\* `tail = "assistant"` is the model's abstraction for "the model's own response is
+\* what this settlement is about": in the code both settlement paths read a
+\* completion decision of a request (`complete_goal`'s candidate, the check round's
+\* finish), so a settlement cannot be produced out of thin air or by an input alone.
 SettleGoal(i, status) ==
   /\ Alive(i) /\ status \in {"SUCCEEDED", "FAILED", "BLOCKED", "CANCELLED"}
   /\ goal.status = "ACTIVE"
+  /\ inst[i].tail = "assistant"
   /\ NonTerminalOps(i) = {}                       \* no open operation survives a close
   /\ ~(\E r \in UsedReqs : requests[r].instance = i /\ requests[r].status = "PENDING")
   /\ goal' = [goal EXCEPT !.status = status]
-  /\ inst' = [inst EXCEPT ![i].phase = "READY", ![i].tail = "runtime"]
+  /\ inst' = [inst EXCEPT ![i].phase = "READY", ![i].tail = "runtime",
+                              ![i].settledAfterTurn = inst[i].afterLanding]
   /\ UNCHANGED <<requests, attempts, ops, approvals, dead>>
 
 \* reset: new epoch closes the old execution, reservations released (A24)
@@ -356,7 +371,13 @@ Init ==
   /\ inst = [ i \in Instances |->
                 [lifecycle |-> "ACTIVE", phase |-> "READY", revision |-> 0, expectRev |-> 0,
                  epoch |-> 0, ctxEpoch |-> 0, activeReq |-> nil, tail |-> "user",
-                 queue |-> FALSE, inputMidTurn |-> FALSE] ]
+                 queue |-> FALSE, inputMidTurn |-> FALSE,
+                 \* D-72 monitors: whether a request has begun since the last input
+                 \* landing (a landing means the instance must address it with a
+                 \* request of its own — the state begins with the boot input
+                 \* already addressed, so this starts TRUE), and what that was
+                 \* worth at settlement time (the invariant below reads it).
+                 afterLanding |-> TRUE, settledAfterTurn |-> TRUE] ]
   /\ goal = [status |-> "ACTIVE", known |-> 0, unknown |-> 0, reserved |-> {}, deadlinePassed |-> FALSE]
   /\ requests = [ r \in ReqIds |->
                     [status |-> "none", instance |-> "", epoch |-> 0, est |-> 1,
@@ -408,6 +429,8 @@ TypeOK ==
   /\ \A i \in Instances : inst[i].lifecycle \in {"ACTIVE", "PAUSED", "PARKED", "TERMINATED"}
   /\ \A i \in Instances : inst[i].queue \in BOOLEAN
   /\ \A i \in Instances : inst[i].inputMidTurn \in BOOLEAN
+  /\ \A i \in Instances : inst[i].afterLanding \in BOOLEAN
+  /\ \A i \in Instances : inst[i].settledAfterTurn \in BOOLEAN
   /\ \A o \in Ops : ops[o].status \in OpNonTerminal \cup OpTerminal
   /\ \A o \in Ops : ops[o].effect \in {0, 1}
   /\ goal.status \in {"ACTIVE", "SUCCEEDED", "FAILED", "BLOCKED", "CANCELLED"}
@@ -450,6 +473,19 @@ SelectionIsComplete ==
 NoTurnWithoutWork ==
   \A i \in Instances : inst[i].phase \in {"MODEL_PENDING", "TOOLS_PENDING"} =>
       inst[i].tail \notin CommittedTails
+
+\* D-72: an outcome belongs to the turn that produced it. A settlement must follow
+\* a request that began *after* the instance's last input landing — because a
+\* landing puts the input in the context the next request is fixed from, the
+\* session-level outcome a client sees after its own input landed is its input's
+\* outcome, and one recorded before that belongs to another turn.
+\*
+\* The counterfactual `AllowMidTurnInput` (the pre-D-63 code, refuted by D-63's own
+\* property) refutes this too: an input stored *inside* a running turn is not in
+\* that turn's fixed request, yet the turn's completion still settles the goal — an
+\* outcome a waiting client would attribute to an input the model never saw.
+SettlementFollowsATurnAfterTheLanding ==
+  \A i \in Instances : inst[i].settledAfterTurn
 
 \* D-63: user input only ever enters the context at a READY boundary. The monitor
 \* records the phase each landing happened at; the counterfactual where the driver

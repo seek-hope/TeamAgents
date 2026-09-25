@@ -231,6 +231,83 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-72 A run reports its own input's outcome, also when that input waited (2026-09-25)
+
+D-71 taught the client to stop reading the runtime's word as the member's answer. The next audit of the same
+surface — the D-63 path where `exec` arrives while the leader is already in a turn — found the same defect one
+step earlier, and this time in the *primary* outcome:
+
+```
+$ teamagents exec "second question"      # submitted 1 s into the first run's slow turn
+exit=0 end=completed goal=SUCCEEDED reply=null input_queued=true
+```
+
+The prompt was queued (D-63 reported that honestly), the *first* run's turn then settled the goal, and `exec`
+reported **that settlement as its own outcome**: exit 0, "completed", no answer to the question it was given.
+The same shape applies to a plain reply: while the queued input waited, the earlier turn's reply was the
+newest assistant entry, and a poll that landed in the boundary between that reply and the drain reported it
+as this run's answer. D-49's contract says "own outcome only"; it was written for a settlement left by an
+earlier *run*, and the D-63 queueing path had no equivalent rule at all.
+
+**The rule.** A turn-ending entry is this run's outcome only if it comes *after* this run's own input entry in
+the conversation. `exec` knows that entry exactly, because it generated the envelope id, and the daemon's
+history view now names it (`envelope_id`, D-72 also fixes the page's order to (epoch, idx), which is the order
+the conversation actually has across a reset). From one history snapshot the client takes its own position and
+then reads the **first** turn-ending entry after it — the member's text (no pending tool calls) or the
+runtime's closing word: that is its answer, and a later turn's entries are not. A settlement is recognised by
+the runtime's own note (`goal-close-*`, `goal-block-*`), whose position after this run's entry is exactly the
+fact "it happened after my input landed" because the note is appended in the settlement's transaction.
+
+**What the rule is allowed to assume, and why it is verified.** A queued input is applied at a READY boundary
+and the next request is fixed from that context (§5.3), so a turn begun after the landing *contains* the
+input, and an outcome recorded before the landing cannot belong to it. That premise is a model property, not a
+hope: `InputLandsAtTheBoundary` (D-63) plus the boundary's own rule that a request may not begin while the
+inbox holds something (`~inst[i].queue`, whose counterfactual `MC_control_midturninput.cfg` is refuted). D-72
+adds the property that names the consequence: **`SettlementFollowsATurnAfterTheLanding`** — at settlement time
+a request must have begun since the instance's last input landing. It is refuted by the same
+pre-D-63 counterfactual in its own control (`MC_control_landing.cfg`, `AllowMidTurnInput = TRUE`), whose
+counterexample walks `BeginRequest → MidTurnInput → RecordAttempt → ImportResponse → SettleGoal` and shows the
+settlement of a turn that never saw the input — precisely the outcome a waiting client would have attributed
+to it. The model also gained the abstraction it was missing for this: `SettleGoal` now requires
+`tail = "assistant"`, i.e. a settlement is about the model's own completion, which is what both code paths do
+(`complete_goal` reads a decision's candidate; a runtime block follows the check round of one).
+
+**An input that will never land says so.** A queued envelope whose epoch closes before the boundary reaches it
+is sealed as `SUPERSEDED` (§5.3/A24) — a reset sealed the one in this audit's probe. The runtime names what it
+seals (`envelopes_sealed`, from both places that seal: the drain dropping a stale-epoch leftover, and
+`close_epoch_execution` closing an epoch), and `exec` ends at once with the new terminal
+`end: "undelivered"` (exit 1) instead of letting the caller wait out its own deadline and then call a dropped
+input a timeout.
+
+**Evidence** (all re-runnable):
+
+- `v2_daemon::a_queued_input_is_not_answered_by_the_previous_turns_settlement` — a real socket, a slow
+  settling turn, the second input queued behind it: the run reports `end: reply` with **its own** answer,
+  `goal_status: null`, `input_queued: true`, exit 0, while the session's goal really is `SUCCEEDED`. With the
+  pre-fix decision restored the same test fails (`left: Completed, right: Reply`).
+- `v2_daemon::a_queued_input_is_not_answered_by_the_previous_turns_reply` — the positional half of the rule.
+- `v2_daemon::a_queued_input_a_reset_sealed_is_reported_undelivered` — a reset while the input waits: exit 1
+  with nothing claimed as its outcome, instead of a 30 s wait for a timeout.
+- `v2::exec::tests::an_outcome_before_the_runs_own_input_is_not_its_outcome` — the rule as a pure function
+  over the shapes a conversation can have (unlanded input, earlier settlement, tool traffic, a later turn,
+  the run's own settlement, a closed turn, a bare tool call).
+- Real models, both protocols: `python3 review/dogfood/queued_input.py [--provider kimi]` — run 1 settles its
+  own goal, run 2 is queued inside it and reports `end=reply` with its own word (`BANANA`) and
+  `goal_status: null` (deepseek 2.8 s, kimi 40.4 s). Against the pre-fix build the same harness fails with
+  `end=completed / goal=SUCCEEDED / reply=null` for the queued run.
+- Formally: `SettlementFollowsATurnAfterTheLanding`, listed in `MC.cfg` and `MC_control_two.cfg`
+  (`make verify-model-all` green: MC.cfg 84,877 states, MC_control_two 958,777), and refuted by
+  `MC_control_landing.cfg` in `make verify-model-counterexamples` (now 9 controls, each refuted).
+
+Ceiling, stated honestly: the client's rule is positional over the conversation, so it inherits the history
+page's bound (`exec` reads 400 entries) — a run whose input entry has already fallen out of the page cannot
+be attributed, and `exec` then reports a timeout rather than inventing an outcome. The queue is still
+per-instance and per-epoch: an input sealed by a reset is *reported*, never re-delivered, and re-sending it is
+the caller's decision. And the *session-level* facts stay ungated on purpose: a permanently failed leader
+request and a pending approval are reported even when they belong to the turn the input waited behind, because
+they are why this run cannot deliver anything — the report carries the reason and the exit code is non-zero
+(1/3), so nothing is claimed as this input's own outcome.
+
 ## D-71 A runtime-blocked goal is not a reply: the runtime's own word is never the member's (2026-09-25)
 
 A16's harness says a required check that can never pass must end the run **failed with the goal BLOCKED**.

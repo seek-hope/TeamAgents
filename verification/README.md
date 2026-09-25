@@ -18,7 +18,8 @@ make verify-model           # small control-plane configuration (seconds)
 make verify-model-all       # small configurations for all nine modules (control plane, artifacts, waits,
                             # tasks, compression, daemon, required checks, authority, the user's surface)
 make verify-model-counterexamples   # the negative controls (authority surface D-61, inbound boundary D-63,
-                            # the retry boundary D-64/D-65 and the runtime's own closing word D-71):
+                            # the retry boundary D-64/D-65, the runtime's own closing word D-71 and the
+                            # landing-attribution rule D-72):
                             # each must be *refuted*, or the property it targets proves nothing
 make verify-model-wide      # wide control-plane configuration (2 instances / 2 operations; tens to hundreds of
                             # millions of states, slow — the 2-instance run is what catches per-instance
@@ -39,7 +40,7 @@ repository and never enters `make check`. Java is required (this machine uses Op
 | `tla/MC.cfg` | small configuration (1 instance / 1 operation / 2 request slots / 1 attempt slot / 1 epoch reset / 1 unknown usage) |
 | `tla/MC_control_midturninput.cfg` | negative control for D-63: the driver applies input *inside* the running turn (the pre-D-63 behaviour). `make verify-model-counterexamples` requires TLC to refute `InputLandsAtTheBoundary` here |
 | `tla/MC_control_two.cfg` | two-instance control-plane configuration (same domains as `MC.cfg`): the small check that tells a *per-instance* fairness or liveness assumption apart from one that lets one instance be starved by the other's progress |
-| `tla/MC_control_two_disjunction.cfg`, `tla/MC_control_deadline.cfg`, `tla/MC_control_reask.cfg`, `tla/MC_control_runtimeTail.cfg` | negative controls (D-63/D-64/D-65/D-71): fairness as one disjunction over instances, a runtime that ignores the goal's deadline, a runtime that re-opens a turn while the last word is the model's own (the pre-D-65 code), and one that treats the runtime's own closing note as unaddressed work (the shape the pre-D-71 idle rule implied). All four must be refuted by `make verify-model-counterexamples` |
+| `tla/MC_control_two_disjunction.cfg`, `tla/MC_control_deadline.cfg`, `tla/MC_control_reask.cfg`, `tla/MC_control_runtimeTail.cfg`, `tla/MC_control_landing.cfg` | negative controls (D-63/D-64/D-65/D-71/D-72): fairness as one disjunction over instances, a runtime that ignores the goal's deadline, a runtime that re-opens a turn while the last word is the model's own (the pre-D-65 code), one that treats the runtime's own closing note as unaddressed work (the shape the pre-D-71 idle rule implied), and one that stores an input *inside* the running turn so its settlement belongs to a turn that never saw it (the pre-D-63 shape, and the premise the D-72 attribution rule rests on). All five must be refuted by `make verify-model-counterexamples` |
 | `tla/MC_wide.cfg` | wide control-plane configuration (2 instances / 2 operations with one requiring approval / 3 request slots / 2 attempt slots) |
 | `tla/V2Artifact.tla` + `tla/MC_artifact.cfg` | artifacts and GC: write bytes → STAGING row → reference and LIVE in one transaction → GC claim → delete/abandon |
 | `tla/V2Wait.tla` + `tla/MC_wait.cfg` | waits/wakeups/timers/supersede: evaluate at registration → parked drain scan → answer in the same transaction when satisfied → cancel/supersede/re-arm |
@@ -72,6 +73,7 @@ the model; that is exactly what is enumerated.
 | `NoTurnWithoutWork` | no new turn opens while the last word is already committed — the model's own text **or** the runtime's own closing note | the closing entry plus the idle test in `step_ready` (D-65: it counts only *unaddressed* work, so an open task no longer re-asks the model; D-71: a settlement is a committed tail, `EntryKind::Runtime`) | §5.4/§3/§8 |
 | `NoRequestAfterDeadline` (temporal) | a goal past its deadline begins no new request | the `goal_deadline_passed` gate in `begin_request`/`begin_compression` plus the driver's park (D-64/A35) | A35 |
 | `InputLandsAtTheBoundary` | user input only ever enters the context at a READY boundary — never inside a turn whose request is already fixed | `submit_input` queueing while `MODEL_PENDING`/`TOOLS_PENDING`/`COMPLETION_PENDING`, and the boundary drain in `step_ready` (D-63) | §5.4/A21 |
+| `SettlementFollowsATurnAfterTheLanding` | an outcome belongs to the turn that produced it: the goal can only settle after a request begun since the instance's last input landing | the boundary drain before `BeginRequest`, `complete_goal` reading a decision's candidate, and the client's positional attribution in `exec` (D-72) | §5.3/§5.4/§8 |
 | `QueuedInputEntersTheContext` (temporal) | an input that waited for the boundary enters the context; it is never dropped while the instance keeps running (a park keeps it, a reset seals it with its epoch, termination ends it) | the `envelopes` state machine (`ACCEPTED` → `APPLIED`, sealed at a reset) plus the drain | A06/A21 |
 | `StaleExecutorRejected` | an executing instance holds the current revision | `revision == expected` in `begin_request` | §6.1 |
 | `NoEffectOnTerminated` | a terminated instance produces no effect | TERMINATED in `set_lifecycle` plus the dispatch guard | §6.4 |

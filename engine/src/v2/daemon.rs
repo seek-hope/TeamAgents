@@ -292,13 +292,22 @@ fn read_method(method: &str, params: &Json, conn: &rusqlite::Connection) -> Resu
                 return Err("history.instance_id required".into());
             }
             let limit = params.get("limit").and_then(|v| v.as_i64()).unwrap_or(200).clamp(1, 1000);
+            // Newest first, then reversed: the page is the newest `limit`
+            // entries, in chronological (epoch, idx) order. The envelope id rides
+            // along (D-72) because it is the only exact name for "the entry this
+            // run's input landed as" — a client that must not mistake another
+            // turn's outcome for its own cannot do that by matching text.
             let mut stmt = conn
-                .prepare("SELECT idx, kind, message_json FROM context_entries WHERE instance_id = ?1 ORDER BY idx DESC LIMIT ?2")
+                .prepare(
+                    "SELECT epoch, idx, kind, message_json, envelope_id FROM context_entries
+                     WHERE instance_id = ?1 ORDER BY epoch DESC, idx DESC LIMIT ?2",
+                )
                 .map_err(|e| format!("history prepare: {e}"))?;
             let rows = stmt
                 .query_map(rusqlite::params![instance, limit], |row| {
-                    Ok(json!({"idx": row.get::<_, i64>(0)?, "kind": row.get::<_, String>(1)?,
-                              "message": serde_json::from_str::<Json>(&row.get::<_, String>(2)?).unwrap_or(Json::Null)}))
+                    Ok(json!({"epoch": row.get::<_, i64>(0)?, "idx": row.get::<_, i64>(1)?,
+                              "kind": row.get::<_, String>(2)?, "envelope_id": row.get::<_, Option<String>>(4)?,
+                              "message": serde_json::from_str::<Json>(&row.get::<_, String>(3)?).unwrap_or(Json::Null)}))
                 })
                 .map_err(|e| format!("history query: {e}"))?;
             let mut entries: Vec<Json> = rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("history: {e}"))?;

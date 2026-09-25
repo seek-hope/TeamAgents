@@ -138,6 +138,11 @@ pub enum End {
     /// is the runtime's, not the member's) and not a settlement, so the run is
     /// unfinished — exit 1 (D-71).
     Unsettled,
+    /// The input never landed: it waited for a boundary and a context reset
+    /// sealed it with its epoch before the instance got to it. Nothing of this
+    /// run happened, so there is nothing to report as its outcome — exit 1
+    /// (D-72).
+    Undelivered,
     /// The goal settled as something other than SUCCEEDED.
     Failed,
     /// The turn is parked on a user approval: a non-interactive run has nobody
@@ -153,6 +158,7 @@ impl End {
             End::Completed => "completed",
             End::Reply => "reply",
             End::Unsettled => "unsettled",
+            End::Undelivered => "undelivered",
             End::Failed => "failed",
             End::ApprovalRequired => "approval_required",
             End::Timeout => "timeout",
@@ -164,7 +170,7 @@ impl End {
     pub fn exit_code(self, checks_ok: bool) -> i32 {
         match self {
             End::Completed | End::Reply if checks_ok => 0,
-            End::Completed | End::Reply | End::Unsettled | End::Failed => 1,
+            End::Completed | End::Reply | End::Unsettled | End::Undelivered | End::Failed => 1,
             End::ApprovalRequired => 3,
             End::Timeout => 124,
         }
@@ -173,6 +179,75 @@ impl End {
 
 /// Output kept per acceptance command, in the report and on stderr.
 const CHECK_OUTPUT_CAP: usize = 8000;
+
+/// What this run's **own** input produced, read from one snapshot of the
+/// conversation (D-72). A client may only report an outcome that belongs to its
+/// input: the session can be busy with an earlier turn when `exec` submits, so a
+/// settlement or a reply recorded *before* this input landed belongs to that
+/// other turn. `exec` therefore finds its own entry (by the envelope id it
+/// generated) and reads the first turn-ending entry after it: that entry is its
+/// answer, and everything else is somebody else's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Attribution {
+    /// The entry that ends the turn which started at this input: the goal settled.
+    Settled(String),
+    /// The entry that ends that turn: the member's own text.
+    Reply(String),
+    /// The entry that ends that turn: the runtime's closing word, nothing settled.
+    Closed,
+    /// No turn has ended at this input yet.
+    Pending,
+}
+
+impl Attribution {
+    /// A turn ends at the member's own text (a message with no pending tool
+    /// calls) or at the runtime's closing word. Tool traffic does not end it.
+    fn ends_a_turn(entry: &Json) -> bool {
+        match entry["kind"].as_str().unwrap_or("") {
+            "assistant" => {
+                let text = entry["message"]["content"].as_str().unwrap_or("");
+                let calls = entry["message"]["tool_calls"].as_array().map(Vec::len).unwrap_or(0);
+                !text.trim().is_empty() && calls == 0
+            }
+            "runtime" => true,
+            _ => false,
+        }
+    }
+
+    /// The runtime's own word for a settlement, told apart from a closed turn by
+    /// the envelope the runtime generated for it (`goal-close-*`, `goal-block-*`).
+    fn settles_a_goal(entry: &Json) -> bool {
+        entry["kind"] == json!("runtime")
+            && entry["envelope_id"]
+                .as_str()
+                .is_some_and(|id| id.starts_with("goal-close-") || id.starts_with("goal-block-"))
+    }
+
+    fn read(envelope: &str, goal_status: Option<&str>, history: &[Json]) -> Attribution {
+        let Some(mine) = history.iter().position(|entry| entry["envelope_id"].as_str() == Some(envelope)) else {
+            // the input has not landed yet (a turn was in flight when it arrived):
+            // nothing the session did in the meantime is its outcome
+            return Attribution::Pending;
+        };
+        let Some(end) = history[mine + 1..].iter().find(|entry| Attribution::ends_a_turn(entry)) else {
+            return Attribution::Pending;
+        };
+        if Attribution::settles_a_goal(end) {
+            // the settlement's own word was written in the same transaction as the
+            // goal's status, so a checkpoint that still says ACTIVE has simply not
+            // caught up: decide on the next pass instead of guessing a status
+            return match goal_status {
+                Some(status) if status != "ACTIVE" => Attribution::Settled(status.to_string()),
+                _ => Attribution::Pending,
+            };
+        }
+        match end["kind"].as_str().unwrap_or("") {
+            "assistant" => Attribution::Reply(end["message"]["content"].as_str().unwrap_or("").trim().to_string()),
+            "runtime" => Attribution::Closed,
+            _ => Attribution::Pending,
+        }
+    }
+}
 
 /// The outcome of one headless run: the JSON report the `--json` mode prints,
 /// the terminal state that decides the exit code, and the acceptance verdict.
@@ -224,6 +299,8 @@ pub fn execute(options: &ExecOptions) -> Result<ExecRun, (i32, String)> {
     let mut turn_failure: Option<String> = None;
     let mut reply: Option<String> = None;
     let mut pending_approval: Option<String> = None;
+    // set when the runtime names *this* envelope among the ones it sealed
+    let mut undelivered = false;
     // the deadline is the default outcome: a loop that breaks on a terminal
     // state always overwrites it
     let mut end = End::Timeout;
@@ -238,9 +315,6 @@ pub fn execute(options: &ExecOptions) -> Result<ExecRun, (i32, String)> {
         match client.events() {
             Ok(events) => {
                 for event in &events {
-                    if event["kind"] == json!("goal_completed") {
-                        goal_status = Some(event["payload"]["status"].as_str().unwrap_or("unknown").to_string());
-                    }
                     // A permanently failed leader request is a terminal outcome
                     // of this run: report it instead of waiting out the deadline.
                     // Failures of *other* instances belong to the leader's turn,
@@ -248,6 +322,16 @@ pub fn execute(options: &ExecOptions) -> Result<ExecRun, (i32, String)> {
                     if event["kind"] == json!("request_failed") && event["scope"] == json!(instance) {
                         turn_failure =
                             Some(event["payload"]["reason"].as_str().unwrap_or("the model request failed").to_string());
+                    }
+                    // A queued input is sealed, not delivered, when a context reset
+                    // moves the epoch before the boundary reaches it (§5.3/A24): the
+                    // run has nothing to wait for and must not call its own deadline
+                    // a timeout (D-72). The runtime names every envelope it seals.
+                    if event["kind"] == json!("envelopes_sealed") && event["scope"] == json!(instance) {
+                        let sealed = event["payload"]["envelope_ids"].as_array();
+                        if sealed.is_some_and(|ids| ids.iter().any(|id| id == &json!(envelope))) {
+                            undelivered = true;
+                        }
                     }
                 }
             }
@@ -259,26 +343,20 @@ pub fn execute(options: &ExecOptions) -> Result<ExecRun, (i32, String)> {
             .cloned()
             .unwrap_or_default();
         let settled = instances.iter().any(|entry| entry["id"] == json!(instance) && entry["phase"] == json!("READY"));
-        // The runtime's own closing word, if it is what the instance stopped on
-        // (§8: a settled goal, an accepted `finish` with nothing left to settle).
-        // It is never the member's reply, which is exactly the confusion that made
-        // a runtime-blocked goal exit 0 (D-71).
-        let mut runtime_closed = false;
+        // What *this* run's input produced (D-72): its own entry, and the first
+        // turn-ending entry after it. A settlement or a reply that happened before
+        // this input landed belongs to another turn, however the instance looks now.
+        let goal_now = snapshot["snapshot"]["goal"]["status"].as_str().or_else(|| snapshot["goal"]["status"].as_str());
+        let mut attribution = Attribution::Pending;
         if settled {
             if let Ok(entries) = client.history(&instance) {
-                if let Some(last) = entries.last() {
-                    if last["kind"] == json!("assistant") {
-                        // an empty assistant tail (a bare tool call) is not a
-                        // reply the user can read
-                        reply = last["message"]["content"]
-                            .as_str()
-                            .filter(|text| !text.trim().is_empty())
-                            .map(str::to_string);
-                    } else if last["kind"] == json!("runtime") {
-                        runtime_closed = true;
-                    }
-                }
+                attribution = Attribution::read(&envelope, goal_now, &entries);
             }
+        }
+        match &attribution {
+            Attribution::Settled(status) => goal_status = Some(status.clone()),
+            Attribution::Reply(text) => reply = Some(text.clone()),
+            _ => {}
         }
         // A pending approval blocks the turn on the user, and a headless run
         // has nobody to answer it: report it immediately instead of waiting for
@@ -291,19 +369,18 @@ pub fn execute(options: &ExecOptions) -> Result<ExecRun, (i32, String)> {
                 }
             }
         }
-        // A settlement recorded after this input was submitted is this run's
-        // outcome (history was drained before submitting); a plain reply only
-        // counts once the leader is back to READY.
-        let terminal = match &goal_status {
-            Some(status) => Some(if status == "SUCCEEDED" { End::Completed } else { End::Failed }),
-            None if turn_failure.is_some() => Some(End::Failed),
-            None if pending_approval.is_some() => Some(End::ApprovalRequired),
-            None if settled && reply.is_some() => Some(End::Reply),
-            // The turn is over and this client has nothing to report as its
-            // outcome: waiting for the deadline would mislabel a closed turn as
-            // a timeout (D-71).
-            None if runtime_closed => Some(End::Unsettled),
-            None => None,
+        // The run's own outcome first: what this input's turn produced. A
+        // session-level fact that makes the run impossible (a failed request, an
+        // approval no headless caller can give, an input a reset sealed) is
+        // reported only while nothing of the run's own has happened.
+        let terminal = match &attribution {
+            Attribution::Settled(status) => Some(if status == "SUCCEEDED" { End::Completed } else { End::Failed }),
+            Attribution::Reply(_) => Some(End::Reply),
+            Attribution::Closed => Some(End::Unsettled),
+            Attribution::Pending if turn_failure.is_some() => Some(End::Failed),
+            Attribution::Pending if pending_approval.is_some() => Some(End::ApprovalRequired),
+            Attribution::Pending if undelivered => Some(End::Undelivered),
+            Attribution::Pending => None,
         };
         if let Some(terminal) = terminal {
             end = terminal;
@@ -317,8 +394,9 @@ pub fn execute(options: &ExecOptions) -> Result<ExecRun, (i32, String)> {
     // The user's own acceptance commands are the last word on a finished turn:
     // they run in this workspace through the same isolated shell the tools use.
     // Nothing runs when the run stopped for an approval — that turn is not
-    // finished, so there is no acceptance to verify (§8).
-    let verification = if options.checks.is_empty() || end == End::ApprovalRequired {
+    // finished, so there is no acceptance to verify (§8) — or when the input
+    // never landed, where there is no turn to accept at all (D-72).
+    let verification = if options.checks.is_empty() || matches!(end, End::ApprovalRequired | End::Undelivered) {
         Vec::new()
     } else {
         run_checks(&options.checks, &options.workspace, options.timeout_s)
@@ -383,6 +461,9 @@ fn print_human(report: &Json, options: &ExecOptions) {
         // from a missing reply (D-71)
         "unsettled" => println!(
             "the turn closed without settling anything: no goal ended in this run and the last word was the runtime's"
+        ),
+        "undelivered" => println!(
+            "undelivered: the input waited behind a running turn and a context reset sealed it before it landed; nothing was answered"
         ),
         _ => {
             if report["input_queued"] == json!(true) {
@@ -546,7 +627,7 @@ fn leader_instance(checkpoint: &Json) -> Option<(String, String)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{capped, leader_instance, parse_check_result, run_checks, End};
+    use super::{capped, leader_instance, parse_check_result, run_checks, Attribution, End};
     use serde_json::json;
     use std::path::Path;
 
@@ -574,10 +655,76 @@ mod tests {
         assert_eq!(End::Completed.exit_code(false), 1);
         assert_eq!(End::Reply.exit_code(true), 0);
         assert_eq!(End::Reply.exit_code(false), 1);
+        assert_eq!(End::Unsettled.exit_code(true), 1, "a closed turn settled nothing");
+        assert_eq!(End::Undelivered.exit_code(true), 1, "an input that never landed delivered nothing");
         assert_eq!(End::Failed.exit_code(true), 1);
         assert_eq!(End::Failed.exit_code(false), 1);
         assert_eq!(End::ApprovalRequired.exit_code(true), 3);
         assert_eq!(End::Timeout.exit_code(true), 124);
+    }
+
+    /// D-72: the client reports what *its own* input produced. The conversation
+    /// is one snapshot, so the rule is positional: find this run's entry, then read
+    /// the first turn-ending entry after it — a settlement or a reply that happened
+    /// before this input landed belongs to the turn the input was not part of.
+    #[test]
+    fn an_outcome_before_the_runs_own_input_is_not_its_outcome() {
+        let user = |envelope: &str, text: &str| json!({"kind": "user", "envelope_id": envelope, "message": {"role": "user", "content": text}});
+        let reply = |text: &str| json!({"kind": "assistant", "message": {"role": "assistant", "content": text}});
+        let call = json!({"kind": "assistant", "message": {"role": "assistant", "content": "",
+            "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "read", "arguments": "{}"}}]}});
+        let result =
+            json!({"kind": "tool_result", "message": {"role": "tool", "tool_call_id": "c1", "content": "out"}});
+        let close = json!({"kind": "runtime", "envelope_id": "goal-close-g1",
+                           "message": {"role": "user", "content": "runtime: goal g1 closed as SUCCEEDED"}});
+        let turn_close = json!({"kind": "runtime", "envelope_id": "turn-close-i-leader",
+                                "message": {"role": "user", "content": "runtime: turn closed"}});
+
+        // the run's input never landed: nothing in the conversation is its outcome
+        let queued = vec![user("env-old", "first question"), reply("first answer")];
+        assert_eq!(Attribution::read("env-mine", Some("ACTIVE"), &queued), Attribution::Pending);
+        // …even when an earlier turn settled the goal on its way out
+        let settled_earlier = vec![reply("first answer"), close.clone(), user("env-mine", "second question")];
+        assert_eq!(Attribution::read("env-mine", Some("SUCCEEDED"), &settled_earlier), Attribution::Pending);
+
+        // this run's own turn: tool traffic does not end it, its reply does
+        let mine = vec![
+            reply("first answer"),
+            close.clone(),
+            user("env-mine", "second question"),
+            call.clone(),
+            result,
+            reply("the answer to the second question"),
+        ];
+        assert_eq!(
+            Attribution::read("env-mine", Some("SUCCEEDED"), &mine),
+            Attribution::Reply("the answer to the second question".to_string())
+        );
+        // a later turn's entries are not mine either: the first ending after my
+        // entry is the one that answers me
+        let mut later = mine.clone();
+        later.push(user("env-someone-else", "third question"));
+        later.push(reply("an answer to somebody else"));
+        assert_eq!(
+            Attribution::read("env-mine", Some("SUCCEEDED"), &later),
+            Attribution::Reply("the answer to the second question".to_string())
+        );
+
+        // the settlement this run caused: the note follows its own entry, and the
+        // status comes from the checkpoint (a checkpoint that has not caught up yet
+        // is not a licence to guess)
+        let settled = vec![user("env-old", "first"), reply("first answer"), user("env-mine", "second"), close.clone()];
+        assert_eq!(
+            Attribution::read("env-mine", Some("SUCCEEDED"), &settled),
+            Attribution::Settled("SUCCEEDED".into())
+        );
+        assert_eq!(Attribution::read("env-mine", Some("ACTIVE"), &settled), Attribution::Pending);
+        // a closed turn is the runtime's word too, but it settles nothing
+        let closed = vec![user("env-mine", "second"), turn_close];
+        assert_eq!(Attribution::read("env-mine", Some("SUCCEEDED"), &closed), Attribution::Closed);
+        // a bare tool call is not an answer (D-49)
+        let calling = vec![user("env-mine", "second"), call];
+        assert_eq!(Attribution::read("env-mine", Some("ACTIVE"), &calling), Attribution::Pending);
     }
 
     /// The exit code comes from the marker the wrapper prints, not from

@@ -501,6 +501,21 @@ fn close_epoch_execution(
             &format!("[wait {wait_id} cancelled: the epoch closed ({reason})]"),
         )?;
     }
+    // named before the bulk update: a client waiting on one of them learns that
+    // its input never landed instead of waiting out its own deadline (D-72)
+    let sealed_envelopes: Vec<String> = {
+        let mut stmt = tx
+            .prepare(
+                "SELECT id FROM envelopes
+                 WHERE recipient = ?1 AND epoch = ?2 AND session_id = ?3 AND state = 'ACCEPTED'
+                 ORDER BY sequence",
+            )
+            .map_err(|e| format!("seal envelopes scan: {e}"))?;
+        let rows = stmt
+            .query_map(rusqlite::params![instance_id, epoch, session_id], |row| row.get(0))
+            .map_err(|e| format!("seal envelopes query: {e}"))?;
+        rows.collect::<Result<Vec<String>, _>>().map_err(|e| format!("seal envelopes collect: {e}"))?
+    };
     let envelopes = tx
         .execute(
             "UPDATE envelopes SET state = 'SUPERSEDED'
@@ -508,8 +523,34 @@ fn close_epoch_execution(
             rusqlite::params![instance_id, epoch, session_id],
         )
         .map_err(|e| format!("seal envelopes: {e}"))?;
+    record_sealed_envelopes(tx, session_id, instance_id, epoch, &sealed_envelopes, reason)?;
     Ok(json!({"requests_closed": pending_requests.len(), "operations_cancelled": cancelled,
               "operations_cancel_requested": flagged, "waits_closed": waits, "envelopes_sealed": envelopes}))
+}
+
+/// One accepted input that will never be delivered is one client that would
+/// otherwise wait for an answer that cannot come: the runtime names them, and the
+/// two places it seals them (a boundary drain dropping a stale-epoch leftover, and
+/// a closed epoch) both say so through this event (D-72).
+fn record_sealed_envelopes(
+    tx: &Connection,
+    session_id: &str,
+    instance_id: &str,
+    epoch: i64,
+    envelope_ids: &[String],
+    reason: &str,
+) -> Result<(), String> {
+    if envelope_ids.is_empty() {
+        return Ok(());
+    }
+    event(
+        tx,
+        session_id,
+        "envelopes_sealed",
+        instance_id,
+        &json!({"instance_id": instance_id, "epoch": epoch, "reason": reason, "envelope_ids": envelope_ids}),
+    )?;
+    Ok(())
 }
 
 /// Reset (§5.4, Q9): the instance keeps its id, goal and tasks but starts a
@@ -835,10 +876,15 @@ fn drain_inbox(tx: &Connection, session_id: &str, params: &Json, identity: &Iden
     };
     let mut applied = 0i64;
     let mut sealed = 0i64;
+    // named, so a client waiting on one of them learns *its* outcome: an input the
+    // drain seals was never delivered, and saying so beats letting the caller wait
+    // out its own deadline (D-72)
+    let mut sealed_ids: Vec<String> = Vec::new();
     for (id, sender, envelope_epoch, kind, correlation, payload_json) in queued {
         if envelope_epoch != epoch {
             tx.execute("UPDATE envelopes SET state = 'SUPERSEDED' WHERE id = ?1", [&id])
                 .map_err(|e| format!("seal envelope {id}: {e}"))?;
+            sealed_ids.push(id);
             sealed += 1;
             continue;
         }
@@ -865,6 +911,14 @@ fn drain_inbox(tx: &Connection, session_id: &str, params: &Json, identity: &Iden
     }
     if applied > 0 || sealed > 0 {
         event(tx, session_id, "inbox_drained", instance_id, &json!({"applied": applied, "sealed": sealed}))?;
+        record_sealed_envelopes(
+            tx,
+            session_id,
+            instance_id,
+            epoch,
+            &sealed_ids,
+            "it waited for a boundary and its epoch had closed",
+        )?;
     }
     // applied envelopes are wait facts: satisfying a pending wait closes it
     // and wakes the instance in this same transaction (§5.3, A23)

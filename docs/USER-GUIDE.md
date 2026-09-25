@@ -40,7 +40,7 @@ happened. Diagnostics go to stderr, the outcome to stdout (`--json` prints one J
 | Exit code | Meaning |
 |---|---|
 | `0` | settled: the goal completed as `SUCCEEDED`, or the leader answered directly |
-| `1` | not delivered: the goal settled otherwise, the turn failed permanently, a `--check` command failed, or the run ended `unsettled` (the turn closed with nothing settled — the runtime's own closing word, never a reply) |
+| `1` | not delivered: the goal settled otherwise, the turn failed permanently, a `--check` command failed, or the run ended `unsettled` (the turn closed with nothing settled — the runtime's own closing word, never a reply) or `undelivered` (the input waited for a boundary and a context reset sealed it before it landed) |
 | `3` | an approval is pending — a headless run does not wait for the deadline; decide it with `teamagents approvals` (§4) |
 | `124` | the `--timeout` deadline passed with the instance still running |
 | `2` | usage or infrastructure: no daemon, no model profile, a leader that is parked or paused |
@@ -56,7 +56,10 @@ happened. Diagnostics go to stderr, the outcome to stdout (`--json` prints one J
   registered, so the input enters the conversation at the next boundary — after that turn's own answer — and
   gets a turn of its own. A headless run reports `input_queued` (and prints
   `queued: a turn was already running, so this input enters after it ends`) instead of pretending it landed;
-  the message is never dropped. The TUI says the same in its note line.
+  the message is never dropped. What such a run *reports* is its own outcome (D-72): the settlement or reply of
+  the turn that follows its input, never the earlier turn's — and if a context reset seals the waiting input,
+  the run ends `undelivered` (exit 1) instead of waiting out its deadline. The TUI says the same in its note
+  line.
 - **An approval in a headless run** exits `3` and names the exact call. Decide it with
   `teamagents approvals` / `approvals approve --id …` (D-67, §4.1) and the session goes on — the decision is
   bound to that operation and its arguments, so the run needs no second prompt; the TUI's approvals box shows

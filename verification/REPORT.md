@@ -45,7 +45,7 @@ in [README.md](README.md); the fix ledger is in
 
 | Layer | Evidence | Scale | Re-run |
 |---|---|---|---|
-| Protocol model | `tla/V2Control.tla` (15 invariants + 6 properties, incl. the deadline gate and the committed-tail rule) | 137,401 states | `make verify-model` |
+| Protocol model | `tla/V2Control.tla` (16 invariants + 6 properties, incl. the deadline gate, the committed-tail rule and the landing-attribution rule) | 84,877 states | `make verify-model` |
 | Protocol model | `tla/V2Artifact.tla` (4 + 4) | 241 states | `make verify-model-all` |
 | Protocol model | `tla/V2Wait.tla` (8 + 1 liveness) | 505,905 states | as above |
 | Protocol model | `tla/V2Task.tla` (11) | 5,721,401 states | as above |
@@ -115,6 +115,26 @@ carries `deadlinePassed` (an environment action moves the clock past the deadlin
 | `make verify-model-all` (MC_control_two.cfg) | **No error found** — 1,263,649 states / 165,792 distinct / ~45 s (two instances, the deadline flag included) |
 | Negative control `MC_control_deadline.cfg` | a runtime that ignores the deadline (switch `IgnoreDeadline`) makes TLC report **`Action property NoRequestAfterDeadline is violated`**; `make verify-model-counterexamples` requires exactly that |
 | Correspondence (`core/src/v2/control.rs`, `engine/tests/cli.rs`) | `goal_deadline_refuses_new_requests_and_dispatches` (the gate) and the daemon test that the configured `deadline_minutes` becomes an absolute deadline ~15 minutes out on the real goal, with the duration key never stored |
+
+### A run's outcome follows its own input (added 2026-09-25, D-72)
+
+`exec` may be asked while the leader is already in a turn; its input is then queued and lands at the next
+boundary (D-63). D-72 asks what that run's *outcome* may be, and the answer is a property rather than a
+convention: an outcome recorded before the input landed belongs to a turn the input was not part of, so the
+client reads its own entry and the first turn-ending entry after it. The premise is exact — a landing puts the
+input in the context the next request is fixed from — so D-72 states it as `SettlementFollowsATurnAfterTheLanding`
+(a settlement must follow a request begun since the instance's last landing) and records it in a monitor when
+the goal settles. `SettleGoal` also gained the abstraction it was missing: it now requires `tail = "assistant"`,
+i.e. the settlement is about the model's own completion, which is what both code paths do.
+
+| Run | Result |
+|---|---|
+| `make verify-model-all` (MC.cfg) | **No error has been found** — 84,877 states generated / 18,384 distinct / 0 left (the guard narrows the graph: a settlement now needs the model's own response) |
+| `make verify-model-all` (MC_control_two.cfg) | **No error has been found** — 958,777 states / 131,440 distinct / 0 left |
+| Negative control `MC_control_landing.cfg` | storing the input *inside* the running turn (the pre-D-63 switch `AllowMidTurnInput`) makes TLC report **`Invariant SettlementFollowsATurnAfterTheLanding is violated`**, and the counterexample is the story: `BeginRequest → MidTurnInput → RecordAttempt → ImportResponse → SettleGoal` with `settledAfterTurn = FALSE` — the settlement of a turn that never saw the input |
+| Correspondence (`engine/tests/v2_daemon.rs`) | `a_queued_input_is_not_answered_by_the_previous_turns_settlement` (real socket: the queued run reports `end: reply` + its own answer + `goal_status: null` while the session's goal is `SUCCEEDED`; **fails with the pre-fix decision restored**: `left: Completed, right: Reply`), `a_queued_input_is_not_answered_by_the_previous_turns_reply`, `a_queued_input_a_reset_sealed_is_reported_undelivered` |
+| Pure rule (`engine/src/v2/exec.rs`) | `v2::exec::tests::an_outcome_before_the_runs_own_input_is_not_its_outcome` enumerates the shapes: an input that never landed, an earlier settlement, tool traffic inside the run's own turn, a later turn's entries, the run's own settlement, a closed turn, and a bare tool call |
+| Real models (`review/dogfood/queued_input.py`) | deepseek: run 1 `completed`/`SUCCEEDED`, the queued run `reply`/`BANANA`/`goal_status: null` (2.8 s) — kimi: the same shape (40.4 s). Against the pre-fix build the harness fails on the queued run with `end=completed / goal=SUCCEEDED / reply=null` |
 
 ### The runtime's own word (added 2026-09-25, D-71)
 

@@ -32,6 +32,22 @@ impl Provider for ScriptedProvider {
         _on_event: &mut (dyn FnMut(ProviderEvent) + Send),
     ) -> Result<AttemptOutcome, ProviderError> {
         let message = self.script.lock().unwrap().pop_front().unwrap_or_else(|| reply("script exhausted"));
+        // {"__slow_ms__": N, …} answers after a delay so a test can act *while*
+        // the request is in flight (the same trick the supervisor harness uses)
+        if let Some(delay) = message["__slow_ms__"].as_u64() {
+            let mut message = message;
+            message.as_object_mut().unwrap().remove("__slow_ms__");
+            tokio::time::sleep(Duration::from_millis(delay)).await;
+            return Ok(AttemptOutcome {
+                response: ModelResponse {
+                    message,
+                    usage: Some(Usage { prompt: 3, completion: 2, total: 5 }),
+                    native: json!({}),
+                },
+                raw: json!({"scripted": true}),
+                elapsed_ms: delay,
+            });
+        }
         // {"__error__": "…"} scripts a permanent provider failure
         if let Some(reason) = message["__error__"].as_str() {
             return Err(ProviderError::permanent(reason));
@@ -214,6 +230,10 @@ async fn handshake_checkpoint_command_and_goal_completion() {
     let history = client.call("history", json!({"instance_id": "i-leader"})).await;
     let entries = history["result"]["entries"].as_array().unwrap();
     assert!(entries.iter().any(|e| e["kind"] == json!("user")), "{entries:?}");
+    // the envelope id rides along (D-72), and the page is chronological
+    let mine = entries.iter().find(|entry| entry["kind"] == json!("user")).expect("the input");
+    assert!(mine["envelope_id"].as_str().is_some_and(|id| id.starts_with("env-")), "{mine}");
+    assert!(entries.windows(2).all(|pair| pair[0]["idx"].as_i64() <= pair[1]["idx"].as_i64()), "{entries:?}");
     assert!(client.call("tasks", json!({})).await["ok"].as_bool().unwrap());
     assert!(client.call("grants", json!({})).await["ok"].as_bool().unwrap());
     // wrong protocol version is refused
@@ -817,6 +837,119 @@ async fn a_failing_acceptance_command_fails_the_run() {
     assert_eq!(verdicts.len(), 1, "the first failure stops the list: {}", run.report);
     assert_eq!(verdicts[0]["exit_code"], json!(7));
     assert!(verdicts[0]["output"].as_str().unwrap().contains("broken"), "{}", run.report);
+    handle.shutdown().await.expect("shutdown");
+}
+
+/// A settlement is not a tool call, so the fixture spells the slow one out.
+fn slow_finish(delay_ms: u64, summary: &str) -> Json {
+    json!({"__slow_ms__": delay_ms, "role": "assistant", "content": "",
+           "tool_calls": [{"id": "finish-slow", "type": "function", "function": {"name": "finish",
+                           "arguments": json!({"status": "success", "summary": summary}).to_string()}}]})
+}
+
+/// Start a turn (the first step is slow, so it stays in flight) and hand back the
+/// client, waited until the request is really in flight.
+async fn start_a_turn_in_flight(client: &mut Client, text: &str) {
+    let started = client.command("in-1", "submit_input", input_params(text)).await;
+    assert_eq!(started["result"]["applied"], json!(true), "{started}");
+    for _ in 0..200 {
+        let checkpoint = client.call("checkpoint", json!({})).await;
+        if checkpoint["result"]["snapshot"]["instances"][0]["phase"] == json!("MODEL_PENDING") {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the first turn never reached MODEL_PENDING");
+}
+
+/// An input that arrives while a turn is in flight is queued (D-63). Its run is
+/// *its own* (D-49's "own outcome only", applied to the queued case): the goal the
+/// earlier turn settled on its way out must not be reported as this input's
+/// outcome — the input was not part of that goal, and before D-72 `exec` reported
+/// `end: completed` with the earlier turn's settlement and exited 0.
+#[tokio::test]
+async fn a_queued_input_is_not_answered_by_the_previous_turns_settlement() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let scripts = HashMap::from([(
+        "i-leader".to_string(),
+        vec![slow_finish(1200, "the first task"), reply("answer to the queued question")],
+    )]);
+    let (root, handle) = boot("exec-queued-settle", scripts).await;
+    let socket = root.dir.join("state/daemon.sock");
+    let mut client = Client::connect(&socket).await;
+    start_a_turn_in_flight(&mut client, "first question").await;
+    // `exec` submits while that turn runs: its input queues behind it
+    let run = headless(exec_options(&socket, &root.dir.join("ws"), "second question", Vec::new())).await;
+    assert_eq!(run.report["input_queued"], json!(true), "{}", run.report);
+    assert_eq!(run.end, End::Reply, "the run's own turn answered it: {}", run.report);
+    assert_eq!(run.report["reply"], json!("answer to the queued question"), "{}", run.report);
+    assert_eq!(
+        run.report["goal_status"],
+        Json::Null,
+        "the earlier turn's settlement is not this run's outcome: {}",
+        run.report
+    );
+    assert_eq!(run.end.exit_code(run.checks_ok), 0);
+    // the session's goal really did settle — as the *first* turn's outcome
+    let settled = client.call("checkpoint", json!({})).await;
+    assert_eq!(settled["result"]["snapshot"]["goal"]["status"], json!("SUCCEEDED"), "{settled}");
+    handle.shutdown().await.expect("shutdown");
+}
+
+/// The same rule for a plain reply: the first turn's answer must not be reported
+/// as the answer to an input that was queued behind it. (Before D-72 the client
+/// could report it whenever its poll fell inside the boundary between that turn's
+/// reply and the drain that applies the queued input — a window of one driver
+/// pass, which is why this test asserts the honest expectation rather than
+/// reproducing the race.)
+#[tokio::test]
+async fn a_queued_input_is_not_answered_by_the_previous_turns_reply() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let first = json!({"__slow_ms__": 1200, "role": "assistant", "content": "answer to the first question"});
+    let scripts = HashMap::from([("i-leader".to_string(), vec![first, reply("answer to the queued question")])]);
+    let (root, handle) = boot("exec-queued-reply", scripts).await;
+    let socket = root.dir.join("state/daemon.sock");
+    let mut client = Client::connect(&socket).await;
+    start_a_turn_in_flight(&mut client, "first question").await;
+    let run = headless(exec_options(&socket, &root.dir.join("ws"), "second question", Vec::new())).await;
+    assert_eq!(run.end, End::Reply, "{}", run.report);
+    assert_eq!(run.report["reply"], json!("answer to the queued question"), "{}", run.report);
+    handle.shutdown().await.expect("shutdown");
+}
+
+/// A queued input that a context reset seals never lands (§5.3/A24): the run has
+/// nothing to wait for, so it says so at once instead of calling its own deadline
+/// a timeout (D-72).
+#[tokio::test]
+async fn a_queued_input_a_reset_sealed_is_reported_undelivered() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let scripts = HashMap::from([(
+        "i-leader".to_string(),
+        vec![json!({"__slow_ms__": 4000, "role": "assistant", "content": "answer to the first question"})],
+    )]);
+    let (root, handle) = boot("exec-queued-sealed", scripts).await;
+    let socket = root.dir.join("state/daemon.sock");
+    let mut client = Client::connect(&socket).await;
+    start_a_turn_in_flight(&mut client, "first question").await;
+    // exec's input queues behind the slow turn; the user resets the instance,
+    // which bumps the epoch, so the drain seals that envelope instead of applying it
+    let exec_handle = tokio::task::spawn_blocking({
+        let options =
+            ExecOptions { timeout_s: 30, ..exec_options(&socket, &root.dir.join("ws"), "second question", Vec::new()) };
+        move || execute(&options)
+    });
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let reset = client.command("reset-1", "reset_instance", json!({"instance_id": "i-leader", "reason": "test"})).await;
+    assert_eq!(reset["ok"], json!(true), "{reset}");
+    let run = exec_handle.await.expect("exec task").expect("headless run");
+    assert_eq!(run.end, End::Undelivered, "{}", run.report);
+    assert_eq!(run.end.exit_code(run.checks_ok), 1);
+    assert!(
+        run.report["reply"] == Json::Null && run.report["goal_status"] == Json::Null,
+        "an input that never landed answers nothing: {}",
+        run.report
+    );
+    assert_eq!(run.report["verification"].as_array().unwrap().len(), 0, "there is no turn to accept: {}", run.report);
     handle.shutdown().await.expect("shutdown");
 }
 
