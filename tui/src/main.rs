@@ -312,6 +312,10 @@ fn run_v2(
     let mut dirty = true;
     let mut active_id = app.active_instance().map(|i| i.id.clone());
     let mut last_view = app.view;
+    // The connection indicator is part of the status line, so a change in it must rebuild the frame even
+    // when nothing else happened: a reconnect that delivers no events used to leave a stale
+    // "disconnected, reconnecting..." on screen while the client was in fact connected again (D-99).
+    let mut last_disconnected = app.disconnected;
     loop {
         if dirty {
             let _ = terminal.draw(|f| v2ui::render(f, app));
@@ -399,6 +403,10 @@ fn run_v2(
                 }
                 V2View::Chat => {}
             }
+            dirty = true;
+        }
+        if app.disconnected != last_disconnected {
+            last_disconnected = app.disconnected;
             dirty = true;
         }
         if last_event_poll.elapsed() >= Duration::from_millis(150) {

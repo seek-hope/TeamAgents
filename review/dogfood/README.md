@@ -488,3 +488,20 @@ start a fresh state root for new work)"` (before D-98 it waited out its deadline
 is a boundary: the run keeps following its turn, and after `instances resume` the *same* run finishes —
 measured `exit 0 / end=completed / goal SUCCEEDED` with the file on disk. Measured 2026-09-26, three runs
 (D-98).
+
+
+## `tui_reconnect.py`: the TUI against a daemon that dies and comes back
+
+```bash
+python3 review/dogfood/tui_reconnect.py
+```
+
+No model, ~25 s: the TUI attaches and its panel lists an instance created through the protocol; the daemon is
+`SIGKILL`ed; the client says it is disconnected, and a key pressed meanwhile reports `command failed` in the
+conversation (a panel command that fails is not swallowed). A new daemon on the same state root then brings it
+back — measured 0.6 s until the status line clears, with an instance created *after* the restart appearing in
+the panel, which is the only non-vacuous proof that the client is live again (the pre-kill row is still painted
+either way).
+
+The first run found the defect D-99 fixed: the client really reconnected while the status line kept saying
+"disconnected" for 90 s, because clearing the flag did not rebuild the frame.

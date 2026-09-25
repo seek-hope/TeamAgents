@@ -231,6 +231,47 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-99 The TUI kept saying "disconnected" while it was connected again (2026-09-26)
+
+A28's client half had the pieces — `mark_disconnected`/`mark_connected`, a fresh checkpoint and a history
+reload on reconnect — and no live run of the transition. `review/dogfood/tui_reconnect.py` does it: attach the
+TUI, kill the daemon, watch the client notice, start a new daemon on the same state root.
+
+The first run found a stale indicator:
+
+    status line: … usage 0 · disconnected, reconnec      (90.3 s after the new daemon was up)
+    the panel shows an instance created after the restart: the client is live
+
+So the client *had* reconnected (it fetched a checkpoint and rendered an instance created after the restart)
+while the status line still claimed it was disconnected. The cause is a redraw, not a connection: the
+150 ms event branch calls `app.mark_connected()` and then only sets `dirty` when events arrived
+(`if !events.is_empty()`), and a reconnect that delivers no events is exactly the quiet case. The flag was
+cleared; the frame was never rebuilt, so the old text stayed on screen until something else forced a draw.
+
+The fix is one rule in the loop: the connection flag is compared every iteration and a change rebuilds the
+frame, whichever path cleared it. Measured after the fix (three runs): the status line clears **0.6 s** after
+the new daemon answers.
+
+Two things are worth keeping from this one:
+
+- **a stale indicator is worse than a missing one.** "disconnected, reconnecting…" is the only signal that
+  tells a user the panel data may be old; once it can be wrong in that direction, it stops being a signal.
+- **the probe's first version could not have found it.** It asserted that the *instance row* was back — but
+  the row was still painted from before the kill, so it passed on stale text (D-84's class again). The
+  shipped assertion creates a **second** instance *after* the restart and waits for *that* row: only a live
+  client can render it.
+
+Evidence: `python3 review/dogfood/tui_reconnect.py` (three runs, model-free, ~25 s: attach → panel live →
+SIGKILL the daemon → the client says disconnected → a key meanwhile reports `command failed` in the
+conversation → a new daemon → the status line clears in 0.6 s → an instance created after the restart appears
+in the panel) and the new client-level test `tui/tests/reconnect.rs` (a real socket that dies and rebinds:
+`call` fails and marks the client disconnected, then succeeds and clears the flag — written while isolating
+the client logic from the loop, and kept because the unit tests only ever scripted a healthy connection).
+
+Ceiling: the redraw rule itself has no unit test — the loop needs a terminal, so the probe is its evidence.
+The probe drives a *killed* daemon and a fresh one on the same state root; it does not exercise a daemon that
+is merely slow (the 2 s I/O timeout and the retry cadence stay with the scripted client tests).
+
 ## D-98 A run whose instance is stopped mid-flight (2026-09-26)
 
 The user's two lifecycle levers behave differently while a run is waiting, and the headless client treated
