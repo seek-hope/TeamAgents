@@ -19,7 +19,7 @@
 
 ## D-46 工作区策略接入 v2 spawn（2026-09-25）
 
-D-45 发现 `engine/src/workspace.rs` 的共享/隔离/git worktree 策略（[设计](DESIGN.zh-CN.md) §12.3、Q14）只有自身单测调用，
+D-45 发现 `engine/src/workspace.rs` 的共享/隔离/git worktree 策略（[设计](DESIGN.md) §12.3、Q14）只有自身单测调用，
 用户确认"接线"后落地：
 
 - **模型可见入口**：`spawn` 工具新增可选参数 `workspace`：`shared`（默认，项目目录）/`isolated`
@@ -139,7 +139,7 @@ D-45 发现 `engine/src/workspace.rs` 的共享/隔离/git worktree 策略（[�
 - 无需旧配置/会话兼容，允许清理旧会话、运行状态、缓存及旧配置；保留凭据、评测原始记录、
   审查证据、其他应用数据与 Git 历史。清理在切换阶段按归属清单执行，本轮没有删除数据。
 
-完整需求映射与验收见 [设计与验收基线](DESIGN.zh-CN.md)；
+完整需求映射与验收见 [设计与验收基线](DESIGN.md)；
 单库原子边界、runner 握手、I/O 候选、并发参数等工程论证见
 [45 项设计复核](../review/archive/agent-system-design-review-2026-09-23.md)。这些论证不是实测性能结论，
 也不代表用户逐项批准了尚待探针选定的库、参数和统计精度。与本条已确认范围冲突的旧要求由本条取代，

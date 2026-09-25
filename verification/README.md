@@ -1,6 +1,6 @@
 # TeamAgents 形式化验证（R2 控制面）
 
-目标：把[设计](../docs/DESIGN.zh-CN.md)里**已确认的协议性质**变成机器可查的规格，而不是只靠样本测试。
+目标：把[设计](../docs/DESIGN.md)里**已确认的协议性质**变成机器可查的规格，而不是只靠样本测试。
 
 验证分三层，材料都在本目录：①**协议模型**：TLA+/TLC 规格（`tla/V2*.tla` + `MC*.cfg`）抽象
 `core/src/v2/control.rs` 与 `engine/src/v2/driver.rs` 的协议行为；②**规格↔代码的可执行对应**：

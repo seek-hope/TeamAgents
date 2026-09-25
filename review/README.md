@@ -12,6 +12,6 @@
 | `tmp/` | 被忽略的探针与临时制品（不入库） |
 
 约定：日期化的 `review/archive/*.md` 是**当时**的结论，不描述当前实现；当前行为以
-[`docs/DESIGN.zh-CN.md`](../docs/DESIGN.zh-CN.md)、[`docs/USER-GUIDE.md`](../docs/USER-GUIDE.md) 与
+[`docs/DESIGN.md`](../docs/DESIGN.md)、[`docs/USER-GUIDE.md`](../docs/USER-GUIDE.md) 与
 [`docs/ACCEPTANCE.md`](../docs/ACCEPTANCE.md) 为准。只读审查不得修改被审文件；
 "证伪"结论要先排除探针自身误差。归档材料保留原文，其中的相对链接按当时路径书写，可能已失效（不追改）。

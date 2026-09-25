@@ -26,7 +26,7 @@ teamagents exec --json "用一句话自我介绍"    # 同一后端的无头输�
 | [使用指南](docs/USER-GUIDE.md) | 上手、配置、权限、Skills/MCP、恢复与清理 |
 | [验收对照表](docs/ACCEPTANCE.md) | R2 阶段证据与 A01–A36 验收矩阵 |
 | [开发与维护](docs/DEVELOPMENT.md) | 工具链、门禁、目录约定、复跑命令 |
-| [设计与验收基线](docs/DESIGN.zh-CN.md) | 已确认需求、架构与协议约束、验收矩阵 A01–A36、完成定义 |
+| [设计与验收基线](docs/DESIGN.md) | 已确认需求、架构与协议约束、验收矩阵 A01–A36、完成定义 |
 | [决策记录](docs/DECISIONS.md) | 用户确认的方向、边界与偏离记录 |
 | [安装指南](docs/INSTALL.md) | 下载安装与升级 |
 | [形式化验证](verification/README.md) | TLA+ 规格与 Kani 证明：性质 ↔ 代码 ↔ 验收编号、未证明清单 |
