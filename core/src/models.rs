@@ -126,6 +126,25 @@ pub struct UserConfig {
     /// user's own machine contracts, never conditions a model extracted.
     #[serde(default)]
     pub checks: Vec<CheckSpec>,
+    /// Usage and wall-clock ceilings every goal this session creates carries
+    /// (§8, A18/A35): the goal's `max_total_tokens` refuses a new request once
+    /// the settled usage would pass it, and its deadline refuses one past that
+    /// moment. Both are the user's own bounds; a session with neither runs until
+    /// the user stops it (see `docs/USER-GUIDE.md` §2.2).
+    #[serde(default)]
+    pub limits: GoalLimits,
+}
+
+/// User-config ceilings for every goal (`[limits]` in the config).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct GoalLimits {
+    /// Usage ceiling in tokens (provider-reported and unknown usage included).
+    #[serde(default)]
+    pub max_total_tokens: Option<u64>,
+    /// Wall-clock ceiling in minutes, counted from the moment the goal is created.
+    #[serde(default)]
+    pub deadline_minutes: Option<u64>,
 }
 
 /// One user-defined acceptance check (`[[checks]]` in the config).

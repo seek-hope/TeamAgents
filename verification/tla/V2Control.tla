@@ -27,6 +27,7 @@ CONSTANTS Instances,       \* {"L"} or {"L","W"}
           TokenLimit,      \* goal budget limit
           AllowMidTurnInput, \* counterfactual: apply input while a request is in flight (pre-D-63)
           PerInstanceFairness, \* counterfactual: fairness as one disjunction over instances (pre-D-63)
+          IgnoreDeadline,  \* counterfactual: a runtime that ignores the goal deadline (A35)
           MaxEpoch,        \* bound on ResetInstance (keeps the state graph finite)
           MaxUnknown       \* bound on lost-attempt accounting
 
@@ -49,7 +50,9 @@ VARIABLES
              \*               activeReq, ctxEpoch, tail, queue, inputMidTurn]
              \*               inputMidTurn: a user input landed while a turn was in
              \*               flight (monitor for `InputLandsAtTheBoundary`, D-63)
-  goal,      \* [status, known, unknown, reserved]  reserved: Set of <<req, est>>
+  goal,      \* [status, known, unknown, reserved, deadlinePassed]
+             \* deadlinePassed: the goal's wall-clock deadline has passed (a fixed
+             \* timestamp in the code; monotone here) — past it no new request begins
   requests,  \* request slot -> [status, instance, epoch, est, selected, result]
   attempts,  \* attempt slot -> [req, status]
   ops,       \* operation -> [status, instance, epoch, effect, dispatched]
@@ -105,6 +108,13 @@ MidTurnInput(i) ==
   /\ inst' = [inst EXCEPT ![i].tail = "user", ![i].inputMidTurn = TRUE]
   /\ UNCHANGED <<goal, requests, attempts, ops, approvals, dead>>
 
+\* the wall clock passes the goal's deadline (a fixed timestamp in the code; the
+\* model only needs the monotone fact that it has passed)
+DeadlinePasses ==
+  /\ ~goal.deadlinePassed
+  /\ goal' = [goal EXCEPT !.deadlinePassed = TRUE]
+  /\ UNCHANGED <<inst, requests, attempts, ops, approvals, dead>>
+
 \* READY -> MODEL_PENDING: revision guard, idle rule, budget reservation
 BeginRequest(i) ==
   /\ Alive(i) /\ inst[i].phase = "READY" /\ inst[i].lifecycle = "ACTIVE"
@@ -112,6 +122,9 @@ BeginRequest(i) ==
   /\ inst[i].tail # "assistant"          \* the idle rule: no turn without work
   /\ ~inst[i].queue                      \* the boundary applies the queued input first
   /\ BudgetFits(1)
+  \* A35: past the goal's deadline no new request begins. The counterfactual drops
+  \* only this clause, so `NoRequestAfterDeadline` is sensitive to exactly it.
+  /\ (IgnoreDeadline \/ ~goal.deadlinePassed)
   /\ \E r \in FreeReqs :
        /\ requests' = [requests EXCEPT ![r] = [status |-> "PENDING", instance |-> i,
                                               epoch |-> inst[i].epoch, est |-> 1,
@@ -295,6 +308,7 @@ SetLifecycle(i, l) ==
 Stutter == UNCHANGED vars
 
 Next ==
+  \/ DeadlinePasses
   \/ \E i \in Instances : Input(i)
   \/ \E i \in Instances : QueueInput(i)
   \/ \E i \in Instances : ApplyQueued(i)
@@ -324,7 +338,7 @@ Init ==
                 [lifecycle |-> "ACTIVE", phase |-> "READY", revision |-> 0, expectRev |-> 0,
                  epoch |-> 0, ctxEpoch |-> 0, activeReq |-> nil, tail |-> "user",
                  queue |-> FALSE, inputMidTurn |-> FALSE] ]
-  /\ goal = [status |-> "ACTIVE", known |-> 0, unknown |-> 0, reserved |-> {}]
+  /\ goal = [status |-> "ACTIVE", known |-> 0, unknown |-> 0, reserved |-> {}, deadlinePassed |-> FALSE]
   /\ requests = [ r \in ReqIds |->
                     [status |-> "none", instance |-> "", epoch |-> 0, est |-> 1,
                      selected |-> FALSE, result |-> "reply"] ]
@@ -378,6 +392,7 @@ TypeOK ==
   /\ \A o \in Ops : ops[o].status \in OpNonTerminal \cup OpTerminal
   /\ \A o \in Ops : ops[o].effect \in {0, 1}
   /\ goal.status \in {"ACTIVE", "SUCCEEDED", "FAILED", "BLOCKED", "CANCELLED"}
+  /\ goal.deadlinePassed \in BOOLEAN
 
 \* A25/A12: no side effect before an approval that was required
 NoEffectBeforeApproval ==
@@ -432,6 +447,14 @@ QueuedInputEntersTheContext ==
   \A i \in Instances :
     []( (inst[i].queue /\ inst[i].lifecycle = "ACTIVE")
         => <>(inst[i].tail = "user" \/ ~inst[i].queue \/ inst[i].lifecycle # "ACTIVE") )
+
+\* A35: a goal that is past its deadline begins no new request (the gate in
+\* `begin_request`/`begin_compression`). The refusal itself parks the instance
+\* through the same classified path `FailRequest` models; this property is the
+\* gate, which is what the configured ceiling promises.
+NoRequestAfterDeadline ==
+  [][ \A i \in Instances : (inst[i].phase # "MODEL_PENDING" /\ inst'[i].phase = "MODEL_PENDING") =>
+        ~goal.deadlinePassed ]_vars
 
 \* §6.1: an advancing executor always holds the current revision
 StaleExecutorRejected ==

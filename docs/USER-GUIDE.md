@@ -123,7 +123,29 @@ network = false                  # optional: the sandbox is offline by default
 - A broken entry (empty `command`, `timeout = 0`, an escaping `input`) is refused when the config loads, so
   `doctor` and every entry point report it instead of a goal silently never settling.
 
-### 2.2 Hooks (`[hooks]`)
+### 2.2 Goal limits (`[limits]`)
+
+Every goal this session creates can be bounded in cost and in time (D-64):
+
+```toml
+[limits]
+max_total_tokens = 2000000   # optional: usage ceiling (provider-reported + unknown usage)
+deadline_minutes = 45        # optional: wall clock, counted from the moment the goal is created
+```
+
+- `max_total_tokens` is the goal's own ceiling: a new request is refused when the settled usage plus the live
+  reservations plus the request's estimate would pass it (§8/A18), and the instance parks with the budget as
+  the reason instead of overspending. Usage is settled honestly, so a provider that reports later than it
+  bills can still overshoot the ceiling afterwards — that is the design's choice, not a bug.
+- `deadline_minutes` is turned into the goal's absolute deadline when the session creates it; past that
+  moment no new request starts and the instance parks with the deadline as the reason (A35).
+- With neither configured a goal — and therefore the session — runs until you stop it, which is why `doctor`
+  says so out loud (`goal limits: none: …`). A zero is a config error at load time.
+- Both come from **your** config: like `[[checks]]`, a cloned project cannot set them. They are fixed when
+  the goal is created; the TUI shows the same limits the session booted with, and changing them means
+  starting a new session (or a new state root).
+
+### 2.3 Hooks (`[hooks]`)
 
 Hooks are **your own programs** (their paths come only from the user config; a model cannot choose them) and
 run on the host with your permissions:

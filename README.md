@@ -164,6 +164,11 @@ the isolated shell inside your workspace (`--cwd` or the current directory); the
 and makes the run fail. The verdicts are printed, written to `<state root>/verification.json` and included in
 the `--json` report as `verification`.
 
+**Your session, your ceilings.** `[limits]` in the config bounds every goal — `max_total_tokens` refuses a
+request that would pass the usage ceiling and `deadline_minutes` refuses one past the deadline; without them a
+session runs until you stop it, which `doctor` says out loud. See
+[docs/USER-GUIDE.md](docs/USER-GUIDE.md) §2.2.
+
 **Capabilities are yours to hand out.** The Leader gets the authority its own team tools need; a worker it
 spawns gets none of it, so it works with the file, web and skill tools until you grant it more — for example
 the shared-workspace shell a coding task usually needs:

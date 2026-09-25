@@ -195,6 +195,21 @@ pub fn doctor(state_root: Option<PathBuf>) -> i32 {
             };
             check(&mut results, label, runnable, format!("{argv:?}"));
         }
+        // a session with neither ceiling runs until the user stops it, so the
+        // user should see what (if anything) bounds their goals
+        let tokens = catalog.limits.max_total_tokens;
+        let minutes = catalog.limits.deadline_minutes;
+        optional_check(
+            &mut results,
+            "goal limits",
+            tokens.is_some() || minutes.is_some(),
+            match (tokens, minutes) {
+                (Some(tokens), Some(minutes)) => format!("max_total_tokens={tokens}, deadline_minutes={minutes}"),
+                (Some(tokens), None) => format!("max_total_tokens={tokens} (no deadline)"),
+                (None, Some(minutes)) => format!("deadline_minutes={minutes} (no usage ceiling)"),
+                (None, None) => "none: a goal (and the session) runs until you stop it or the budget is reached; [limits] in the user config adds a ceiling".into(),
+            },
+        );
         // a configured check runs unattended at the completion boundary, so the
         // user should see exactly which commands will gate their goals
         optional_check(

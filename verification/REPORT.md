@@ -45,7 +45,7 @@ in [README.md](README.md); the fix ledger is in
 
 | Layer | Evidence | Scale | Re-run |
 |---|---|---|---|
-| Protocol model | `tla/V2Control.tla` (14 invariants + 5 properties) | 59,297 states | `make verify-model` |
+| Protocol model | `tla/V2Control.tla` (15 invariants + 6 properties, incl. the deadline gate) | 132,193 states | `make verify-model` |
 | Protocol model | `tla/V2Artifact.tla` (4 + 4) | 241 states | `make verify-model-all` |
 | Protocol model | `tla/V2Wait.tla` (8 + 1 liveness) | 505,905 states | as above |
 | Protocol model | `tla/V2Task.tla` (11) | 5,721,401 states | as above |
@@ -87,6 +87,20 @@ operations that matter (the leader's delegation, a spawned child's shell call).
 | Falsification check (kept out of the tree) | Offering `shell` unconditionally — what the code did before D-60 — makes TLC report `Invariant OfferedToolsAreAuthorized is violated by the initial state`, so the property is sensitive to exactly that defect |
 | Correspondence (`engine/tests/v2_supervisor.rs`) | `the_offered_surface_follows_the_grants` asserts the leader is offered `shell`/`spawn` and its spawned child is offered neither; it fails when the code stops filtering the surface by the grant |
 
+### The goal's ceilings (added 2026-09-25, D-64)
+
+The usage ceiling was already modelled (`BudgetFits`, `ReservationsAdmitted`, `AdmissionGate`, A18); the
+*deadline* was not, and exposing both to the user (D-64) made that the gap to close. `V2Control`'s goal now
+carries `deadlinePassed` (an environment action moves the clock past the deadline; the fact is monotone),
+`BeginRequest` requires `~goal.deadlinePassed`, and `NoRequestAfterDeadline` states the gate.
+
+| Run | Result |
+|---|---|
+| `make verify-model` (MC.cfg) | **No error found** — 6 s with the new invariant and property |
+| `make verify-model-all` (MC_control_two.cfg) | **No error found** — 1,263,649 states / 165,792 distinct / ~45 s (two instances, the deadline flag included) |
+| Negative control `MC_control_deadline.cfg` | a runtime that ignores the deadline (switch `IgnoreDeadline`) makes TLC report **`Action property NoRequestAfterDeadline is violated`**; `make verify-model-counterexamples` requires exactly that |
+| Correspondence (`core/src/v2/control.rs`, `engine/tests/cli.rs`) | `goal_deadline_refuses_new_requests_and_dispatches` (the gate) and the daemon test that the configured `deadline_minutes` becomes an absolute deadline ~15 minutes out on the real goal, with the duration key never stored |
+
 ### The inbound boundary (added 2026-09-25, D-63)
 
 `V2Control.tla` gained the inbound boundary: an instance field `queue` (set by `QueueInput` while a turn is in
@@ -97,9 +111,9 @@ it, a reset seals it with its epoch, termination ends it).
 
 | Run | Result |
 |---|---|
-| `make verify-model` (MC.cfg) | **No error found** — 59,297 states generated / 13,744 distinct / ~10 s (14 invariants incl. `InputLandsAtTheBoundary`, five properties incl. `QueuedInputEntersTheContext`) |
+| `make verify-model` (MC.cfg) | **No error found** — 132,193 states generated / 27,488 distinct / ~6 s (15 invariants incl. `InputLandsAtTheBoundary`, six properties incl. `QueuedInputEntersTheContext` and `NoRequestAfterDeadline`) |
 | Negative control `MC_control_midturninput.cfg` | the pre-D-63 behaviour (input applied inside the running turn) makes TLC report **`Invariant InputLandsAtTheBoundary is violated`**; `make verify-model-counterexamples` requires exactly that |
-| `make verify-model-all` (MC_control_two.cfg, 2 instances) | **No error found** — 591,145 states generated / 82,896 distinct / 37 s. This small two-instance configuration is what makes a *per-instance* liveness assumption testable: the wide configuration cannot finish in a reasonable time |
+| `make verify-model-all` (MC_control_two.cfg, 2 instances) | **No error found** — 1,263,649 states generated / 165,792 distinct / ~45 s. This small two-instance configuration is what makes a *per-instance* liveness assumption testable: the wide configuration cannot finish in a reasonable time |
 | Negative control `MC_control_two_disjunction.cfg` | the same two-instance configuration with the *older* fairness form (one disjunction over instances, as the model had before D-63) makes TLC report **`Temporal properties were violated`** — one instance stays dead while the other recovers, so its queued input never enters the context. Per-instance fairness (the code's one-driver-per-instance reality) removes it |
 | `make verify-model-wide` (MC_wide.cfg) | not re-run to completion in this round: the extra instance fields and the two new temporal properties make it explore far more states than the historical 275M/11m25s run. It stays the broad, slow target; the small two-instance configuration above carries the fairness check |
 | Correspondence (`core/src/v2/control.rs`, `engine/tests/v2_supervisor.rs`) | `an_input_inside_a_turn_waits_for_the_boundary` (READY applies; a turn in flight queues, reports `applied: false, queued: true` and leaves the phase alone; the drain applies it exactly once and last) and `an_input_arriving_during_a_turn_enters_at_the_next_boundary` (the real driver opens a second turn, and the input's index is greater than the first reply's) — the latter fails on the pre-fix code |

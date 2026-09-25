@@ -231,6 +231,55 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-64 The user can bound a goal's cost and time (2026-09-25)
+
+The same audit that produced D-61 and D-63 found the third "designed but unreachable" surface: §8/A18/A35
+give a goal a usage ceiling (`limits.max_total_tokens`) and an absolute `deadline`, the control plane really
+enforces both (`begin_request` refuses past either and the driver parks the instance with the reason), the
+properties are verified (`ReservationsAdmitted`, `AdmissionGate`, `NoRequestAfterDeadline`) — and **no user
+surface could set them**. `create_goal`'s limits come from the user config, which carried only `[[checks]]`,
+so by default a session ran until the user stopped it. The authority probe's runaway (169 model requests /
+1,226,717 prompt tokens, ACCEPTANCE's known gaps) is what made that concrete.
+
+**The surface** is a `[limits]` section in the user config:
+
+```toml
+[limits]
+max_total_tokens = 2000000   # optional: usage ceiling for every goal this session creates
+deadline_minutes = 45        # optional: wall-clock ceiling, counted from goal creation
+```
+
+- `max_total_tokens` travels inside `create_goal limits` verbatim, because the core enforces it from there
+  (A18). `deadline_minutes` cannot: the core takes an *absolute* timestamp, so `driver::bootstrap` converts
+  the duration when it creates the goal and never stores the key on the goal — what is stored is exactly what
+  the runtime enforces.
+- A zero for either is a config error at load time (it would mean "no request ever"), reported by `doctor`
+  and every entry point; like `[[checks]]` this section is **user config only**, never project config.
+- `doctor` reports both (`goal limits`), including the honest case "none: a goal (and the session) runs until
+  you stop it or the budget is reached".
+
+**Verification.** `config::tests::user_limits_bound_every_goal` (the shape, `{}` when unset, zero refused,
+unknown keys rejected), `cli::configured_limits_reach_the_goal_and_really_bound_the_session` (the real daemon:
+the goal carries the ceiling, its deadline is ~15 minutes out, the duration key is *not* stored, doctor
+reports all three cases) and
+`cli::a_tiny_configured_ceiling_parks_the_session_instead_of_running_it` (a 4-token ceiling parks the leader
+with `goal … budget exceeded: known 0 + reserved 0 + est 2228 > max 4`). The budget gate itself was already
+formal (`V2Control`'s `BudgetFits`/`ReservationsAdmitted`/`AdmissionGate`, A18).
+
+**New formal work**: the deadline was *not* modelled before — `begin_request`'s deadline gate (A35) had only
+code tests. `V2Control` now carries `goal.deadlinePassed` (an environment action moves the clock past the
+deadline; the fact is monotone), `BeginRequest` requires `~goal.deadlinePassed`, and
+`NoRequestAfterDeadline` states the gate. `MC_control_deadline.cfg` is the counterfactual (a runtime that
+ignores the deadline, switch `IgnoreDeadline`) and `make verify-model-counterexamples` requires TLC to refute
+the property there — it does (`Action property NoRequestAfterDeadline is violated`). The refusal's *park*
+shares the classified path `FailRequest` already models.
+
+Evidence: the tests above, `make verify-model-all` (green, `MC.cfg` 6 s / `MC_control_two.cfg` 46 s with the
+new invariant and property) and `make verify-model-counterexamples` (six controls, all refuted).
+
+Ceiling: the ceilings are per goal and fixed when the session creates it; amending a *running* session's
+limits is still not offered (it is new protocol surface, and the TUI shows the same limits it booted with).
+
 ## D-63 An input that arrives during a turn enters at the next boundary (2026-09-25)
 
 The audit of the user-facing surfaces turned up a defect in the *inbound* direction: `submit_input` appended
@@ -278,8 +327,8 @@ it, and the fairness is now per instance: `\A i : WF_vars(Recover(i))`, `\A i : 
 (strong, because a crash loop must not starve the drain) and `\A i : WF_vars(TurnStep(i))` (a turn in flight
 eventually ends; `FailRequest` is one of its steps, so an approval wait is covered too). Because the wide
 configuration cannot finish in a reasonable time, the fairness check got its own small two-instance
-configuration, `MC_control_two.cfg` (same domains as `MC.cfg`, two instances; 591,145 states / 82,896
-distinct / 37 s, green, now in `make verify-model-all`), and the older disjunction form is kept as a
+configuration, `MC_control_two.cfg` (same domains as `MC.cfg`, two instances; 1,263,649 states / 165,792
+distinct / ~45 s, green, now in `make verify-model-all`), and the older disjunction form is kept as a
 counterfactual switch (`PerInstanceFairness = FALSE`) whose configuration
 `MC_control_two_disjunction.cfg` **must** refute `QueuedInputEntersTheContext` — it does, in
 `make verify-model-counterexamples`.

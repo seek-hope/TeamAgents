@@ -24,3 +24,10 @@ generation_options = { reasoning_effort = "max" }
 # inputs = ["src", "Cargo.toml"]   # optional: hashes bind the result to these inputs
 # timeout = 600                    # optional seconds (default: the shell tool's)
 # network = false                  # optional: the sandbox is offline by default
+
+# Usage and wall-clock ceilings for every goal this session creates (optional;
+# without them a goal runs until you stop it). Both are yours alone: a cloned
+# project cannot set them. doctor reports what is in force.
+# [limits]
+# max_total_tokens = 2000000   # refuse a new request past this usage (A18)
+# deadline_minutes = 45        # refuse a new request past this deadline (A35)

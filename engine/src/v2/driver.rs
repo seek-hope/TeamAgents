@@ -356,6 +356,12 @@ pub async fn start<P: Provider + 'static>(mut config: DriverConfig<P>) -> Result
 
 /// Idempotent leader bootstrap (§6.3 row 1): fixed command ids replay
 /// receipts on restart instead of duplicating instances, goals or input.
+///
+/// `goal_limits` may carry the config's `deadline_minutes` (see
+/// `crate::config::goal_limits`): the core takes an *absolute* deadline, so the
+/// bootstrap converts the duration here, at the moment the goal is created, and
+/// passes the rest of the limits through unchanged — what is stored on the goal is
+/// exactly what the runtime enforces.
 pub(crate) async fn bootstrap(
     storage: &Storage,
     instance_id: &str,
@@ -366,7 +372,11 @@ pub(crate) async fn bootstrap(
         .call({
             let instance = instance_id.to_string();
             let workspace = workspace.to_string();
-            let goal_limits = goal_limits.clone();
+            let mut goal_limits = goal_limits.clone();
+            let deadline_minutes = goal_limits
+                .as_object_mut()
+                .and_then(|limits| limits.remove("deadline_minutes"))
+                .and_then(|minutes| minutes.as_u64());
             move |control| {
                 let exists: bool = control
                     .connection()
@@ -382,15 +392,12 @@ pub(crate) async fn bootstrap(
                         ),
                         Identity::User,
                     )?;
-                    control.submit(
-                        command(
-                            "boot-goal",
-                            "create_goal",
-                            json!({"id": format!("goal-{}", control.session_id),
-                                "instance_id": instance, "limits": goal_limits}),
-                        ),
-                        Identity::User,
-                    )?;
+                    let mut goal = json!({"id": format!("goal-{}", control.session_id),
+                                          "instance_id": instance, "limits": goal_limits});
+                    if let Some(minutes) = deadline_minutes {
+                        goal["deadline"] = json!(teamagents_core::models::now() + (minutes * 60) as f64);
+                    }
+                    control.submit(command("boot-goal", "create_goal", goal), Identity::User)?;
                 }
                 // The session bootstrap speaks for the user: the Leader manages
                 // the team by default (Q5, D-42), so it holds the authority the

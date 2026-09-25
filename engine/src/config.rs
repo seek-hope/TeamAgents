@@ -198,7 +198,8 @@ pub fn load_user_config(path: &Path) -> Result<UserConfig, String> {
 /// so `every_user_config_field_is_accepted` fails the moment a field is added and
 /// forgotten here — a silent drop would make the feature inert, which is exactly
 /// what happened to `[retention]` and `[hooks]` before that test existed.
-const CATALOG_KEYS: &[&str] = &["models", "tools", "skills_paths", "instruction_files", "retention", "hooks", "checks"];
+const CATALOG_KEYS: &[&str] =
+    &["models", "tools", "skills_paths", "instruction_files", "retention", "hooks", "checks", "limits"];
 
 pub fn parse_user_config(text: &str) -> Result<UserConfig, String> {
     let value: toml::Value = text.parse().map_err(|e| format!("bad TOML: {e}"))?;
@@ -218,17 +219,46 @@ pub fn parse_user_config(text: &str) -> Result<UserConfig, String> {
 }
 
 /// The goal limits the runtime boots with (`create_goal limits`): the user's
-/// acceptance checks, or `{}` when none are configured — the shape travels
-/// through the same validation the control plane applies, so the config edge
-/// and the `create_goal` gate can never disagree.
+/// acceptance checks and usage ceiling, or `{}` when neither is configured — the
+/// shape travels through the same validation the control plane applies, so the
+/// config edge and the `create_goal` gate can never disagree.
+///
+/// `max_total_tokens` is part of `limits` because the core enforces it from there
+/// (`begin_request`'s budget gate, A18). The *deadline* is not: the core takes an
+/// absolute timestamp at `create_goal`, so `goal_deadline_minutes` below gives the
+/// bootstrap the duration to convert.
 pub fn goal_limits(catalog: &UserConfig) -> Result<Json, String> {
-    if catalog.checks.is_empty() {
-        return Ok(json!({}));
+    let mut limits = serde_json::Map::new();
+    if !catalog.checks.is_empty() {
+        let checks = Json::Array(catalog.checks.iter().map(|check| check.to_json()).collect());
+        teamagents_core::v2::validate_required_checks(&checks)
+            .map_err(|e| format!("configured [[checks]] are not usable: {e}"))?;
+        limits.insert("required_checks".into(), checks);
     }
-    let checks = Json::Array(catalog.checks.iter().map(|check| check.to_json()).collect());
-    teamagents_core::v2::validate_required_checks(&checks)
-        .map_err(|e| format!("configured [[checks]] are not usable: {e}"))?;
-    Ok(json!({"required_checks": checks}))
+    match catalog.limits.max_total_tokens {
+        Some(0) => return Err("[limits] max_total_tokens must be a positive number of tokens".into()),
+        Some(max) => {
+            limits.insert("max_total_tokens".into(), json!(max));
+        }
+        None => {}
+    }
+    // The deadline travels the same way and is consumed by the bootstrap
+    // (`driver::bootstrap` removes it and sets the absolute `deadline` the core
+    // takes); a key the core does not enforce never reaches the stored goal.
+    if let Some(minutes) = goal_deadline_minutes(catalog)? {
+        limits.insert("deadline_minutes".into(), json!(minutes));
+    }
+    Ok(Json::Object(limits))
+}
+
+/// The wall-clock ceiling of every goal in minutes (DESIGN §8, A35): a static
+/// config cannot hold an absolute timestamp, so the bootstrap converts this into
+/// the goal's `deadline` when it creates it.
+pub fn goal_deadline_minutes(catalog: &UserConfig) -> Result<Option<u64>, String> {
+    match catalog.limits.deadline_minutes {
+        Some(0) => Err("[limits] deadline_minutes must be a positive number of minutes".into()),
+        other => Ok(other),
+    }
 }
 
 /// Reject a broken `[[checks]]` entry at load time (doctor and every entry
@@ -259,7 +289,8 @@ fn validate_checks(catalog: &UserConfig) -> Result<(), String> {
             }
         }
     }
-    goal_limits(catalog).map(|_| ())
+    goal_limits(catalog).map(|_| ())?;
+    goal_deadline_minutes(catalog).map(|_| ())
 }
 
 /// api_key_env -> present in the environment (doctor output).
@@ -348,6 +379,32 @@ notify = ["/bin/sh", "-c", "echo hi", "hook"]
     /// The user's acceptance checks (`[[checks]]`) reach the goal exactly in the
     /// shape the runtime's check boundary reads: absent fields stay absent,
     /// because a JSON `null` would be rejected by the `create_goal` gate.
+    /// `[limits]` gives every goal a usage ceiling and a wall-clock deadline
+    /// (§8/A18/A35, D-64): the ceiling travels inside `limits` because the core
+    /// enforces it from there, the deadline as the duration the bootstrap converts
+    /// at goal creation. A zero is a config error, never a silent default.
+    #[test]
+    fn user_limits_bound_every_goal() {
+        let cfg = parse_user_config("[models.m]\nprovider = \"openai\"\nmodel = \"x\"\n\n[limits]\nmax_total_tokens = 250000\ndeadline_minutes = 45\n")
+            .unwrap();
+        let limits = goal_limits(&cfg).unwrap();
+        assert_eq!(limits["max_total_tokens"], json!(250000));
+        assert_eq!(limits["deadline_minutes"], json!(45));
+        assert_eq!(goal_deadline_minutes(&cfg).unwrap(), Some(45));
+        // neither ceiling configured: `{}`, and no deadline
+        let plain = parse_user_config("[models.m]\nprovider = \"openai\"\nmodel = \"x\"\n").unwrap();
+        assert_eq!(goal_limits(&plain).unwrap(), json!({}));
+        assert_eq!(goal_deadline_minutes(&plain).unwrap(), None);
+        // zero is refused at load time (it would otherwise mean "no request ever")
+        for text in ["[limits]\nmax_total_tokens = 0\n", "[limits]\ndeadline_minutes = 0\n"] {
+            let error = parse_user_config(text).unwrap_err();
+            assert!(error.contains("[limits]"), "{error}");
+        }
+        // an unknown key in [limits] is rejected instead of ignored
+        let error = parse_user_config("[limits]\nmax_tokens = 5\n").unwrap_err();
+        assert!(error.contains("unknown field") || error.contains("max_tokens"), "{error}");
+    }
+
     #[test]
     fn user_checks_become_goal_limits() {
         let cfg = parse_user_config(

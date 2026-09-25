@@ -974,3 +974,186 @@ fn the_authority_surface_grants_and_revokes_through_the_daemon() {
     assert!(stderr.contains("no grant id starts with"), "{stderr}");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// `[limits]` in the user config bounds every goal the session creates (D-64): the
+/// usage ceiling travels on the goal's `limits` and the deadline is an absolute
+/// timestamp the bootstrap derives from the configured minutes. The daemon really
+/// applies them: a tiny ceiling parks the leader with the budget as the reason
+/// instead of letting the session run.
+#[test]
+fn configured_limits_reach_the_goal_and_really_bound_the_session() {
+    let root = std::env::temp_dir().join(format!("ta-limits-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let (config_home, state, ws) = (root.join("config"), root.join("root"), root.join("ws"));
+    std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
+    std::fs::create_dir_all(&ws).unwrap();
+    let config = |limits: &str| {
+        std::fs::write(
+            config_home.join("teamagents/config.toml"),
+            format!(
+                "[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\n\
+                 api_key_env = \"TA_LIMITS_KEY\"\nbase_url = \"http://127.0.0.1:1/v1\"\n\n{limits}"
+            ),
+        )
+        .unwrap();
+    };
+    let env = |command: &mut Command| {
+        command
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("XDG_STATE_HOME", root.join("state"))
+            .env("TA_LIMITS_KEY", "test-value");
+    };
+    // doctor says what bounds the goals (nothing, when nothing is configured)
+    config("");
+    let mut doctor = Command::new(env!("CARGO_BIN_EXE_teamagents"));
+    env(&mut doctor);
+    let doctor = doctor.arg("doctor").output().expect("run doctor");
+    let text = format!("{}{}", String::from_utf8_lossy(&doctor.stdout), String::from_utf8_lossy(&doctor.stderr));
+    assert!(text.contains("[WARN] goal limits"), "an unbounded session is reported: {text}");
+    assert!(text.contains("runs until you stop it"), "{text}");
+
+    // a ceiling and a deadline: doctor reports both and the goal carries both
+    config("[limits]\nmax_total_tokens = 400000\ndeadline_minutes = 15\n");
+    let mut doctor = Command::new(env!("CARGO_BIN_EXE_teamagents"));
+    env(&mut doctor);
+    let doctor = doctor.arg("doctor").output().expect("run doctor");
+    let text = format!("{}{}", String::from_utf8_lossy(&doctor.stdout), String::from_utf8_lossy(&doctor.stderr));
+    assert!(text.contains("max_total_tokens=400000, deadline_minutes=15"), "{text}");
+    // a zero is a config error, not a silent default
+    config("[limits]\nmax_total_tokens = 0\n");
+    let mut doctor = Command::new(env!("CARGO_BIN_EXE_teamagents"));
+    env(&mut doctor);
+    let doctor = doctor.arg("doctor").output().expect("run doctor");
+    let text = format!("{}{}", String::from_utf8_lossy(&doctor.stdout), String::from_utf8_lossy(&doctor.stderr));
+    assert!(text.contains("[FAIL] user config"), "{text}");
+    assert!(text.contains("max_total_tokens must be a positive"), "{text}");
+
+    config("[limits]\nmax_total_tokens = 400000\ndeadline_minutes = 15\n");
+    let before = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
+    let mut daemon = Command::new(env!("CARGO_BIN_EXE_teamagents"));
+    env(&mut daemon);
+    let daemon = daemon
+        .args(["daemon", "--state-root"])
+        .arg(&state)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("start the daemon");
+    let _daemon = Daemon(daemon);
+    let db = state.join("session.sqlite");
+    let mut row = None;
+    for _ in 0..400 {
+        if let Ok(control) = teamagents_core::v2::Control::open(&db, "test", false) {
+            row = control
+                .connection()
+                .query_row("SELECT limits_json, deadline FROM goals LIMIT 1", [], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<f64>>(1)?))
+                })
+                .ok();
+            if row.is_some() {
+                break;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let (limits, deadline) = row.expect("the bootstrap creates the goal");
+    let limits: serde_json::Value = serde_json::from_str(&limits).unwrap();
+    assert_eq!(limits["max_total_tokens"], serde_json::json!(400000), "{limits}");
+    assert!(
+        limits.get("deadline_minutes").is_none(),
+        "the duration is consumed by the bootstrap, never stored on the goal: {limits}"
+    );
+    let deadline = deadline.expect("a configured deadline lands on the goal");
+    let expected = before + 15.0 * 60.0;
+    assert!((deadline - expected).abs() < 120.0, "the deadline is ~15 minutes out: {deadline} vs {expected}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// The ceiling is not decoration: a goal whose budget cannot cover even one request
+/// parks the instance with the budget as the reason (A18) instead of running.
+#[test]
+fn a_tiny_configured_ceiling_parks_the_session_instead_of_running_it() {
+    let root = std::env::temp_dir().join(format!("ta-limit-tiny-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let (config_home, state, ws) = (root.join("config"), root.join("root"), root.join("ws"));
+    std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
+    std::fs::create_dir_all(&ws).unwrap();
+    std::fs::write(
+        config_home.join("teamagents/config.toml"),
+        "[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\n\
+         api_key_env = \"TA_TINY_KEY\"\nbase_url = \"http://127.0.0.1:1/v1\"\n\n\
+         [limits]\nmax_total_tokens = 4\n",
+    )
+    .unwrap();
+    let env = |command: &mut Command| {
+        command
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("XDG_STATE_HOME", root.join("state"))
+            .env("TA_TINY_KEY", "test-value");
+    };
+    let mut daemon = Command::new(env!("CARGO_BIN_EXE_teamagents"));
+    env(&mut daemon);
+    let daemon = daemon
+        .args(["daemon", "--state-root"])
+        .arg(&state)
+        .arg("--cwd")
+        .arg(&ws)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("start the daemon");
+    let _daemon = Daemon(daemon);
+    let socket = state.join("daemon.sock");
+    for _ in 0..400 {
+        if socket.exists() && std::os::unix::net::UnixStream::connect(&socket).is_ok() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let mut rpc = Rpc::connect(&socket);
+    // wait for the bootstrap: the socket exists before the leader does
+    for _ in 0..400 {
+        let checkpoint = rpc.call("checkpoint", serde_json::json!({}));
+        if checkpoint["snapshot"]["instances"].as_array().is_some_and(|instances| !instances.is_empty()) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    rpc.command(
+        "limits-input",
+        "submit_input",
+        serde_json::json!({"instance_id": "i-leader", "envelope_id": "env-limits", "text": "do something"}),
+    );
+    // Read the persisted state directly (as the other daemon tests do): the park and
+    // its reason are facts in the session database, not a client's view of them.
+    let db = state.join("session.sqlite");
+    let mut parked = false;
+    let mut reason = String::new();
+    for _ in 0..600 {
+        if let Ok(control) = teamagents_core::v2::Control::open(&db, "test", false) {
+            let lifecycle: Option<String> = control
+                .connection()
+                .query_row("SELECT lifecycle FROM instances WHERE id = 'i-leader'", [], |row| row.get(0))
+                .ok();
+            reason = control
+                .connection()
+                .query_row(
+                    "SELECT payload_json FROM events WHERE kind = 'instance_lifecycle' ORDER BY sequence DESC LIMIT 1",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .ok()
+                .and_then(|payload| serde_json::from_str::<serde_json::Value>(&payload).ok())
+                .and_then(|payload| payload["reason"].as_str().map(str::to_string))
+                .unwrap_or_default();
+            if lifecycle.as_deref() == Some("PARKED") && reason.contains("budget") {
+                parked = true;
+                break;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(parked, "a 4-token ceiling parks the leader instead of running it: {reason:?}");
+    assert!(reason.contains("budget"), "and the reason names the budget: {reason}");
+    let _ = std::fs::remove_dir_all(&root);
+}

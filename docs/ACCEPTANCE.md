@@ -6,7 +6,7 @@ Baseline: [the design and acceptance baseline](DESIGN.md) §12/§16. Current imp
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 97 / engine 172 / tui 26 test targets) and `make pty` passes; both are
+`make check` is green (core 97 / engine 175 / tui 26 test targets) and `make pty` passes; both are
 preconditions for every item below. `make check` includes `make language-check`, which fails on non-English
 characters outside the two documented exceptions (`README.zh-CN.md` and the frozen material under
 `review/eval`).
@@ -32,7 +32,7 @@ characters outside the two documented exceptions (`README.zh-CN.md` and the froz
 | A15 | Environment identity | the runner persists and verifies pid + boot_id + start_ticks (`jobs_runner`) |
 | A16 | A required check fails | `v2_driver::required_checks_failure_repairs_then_passes`, `required_checks_exhausted_parks_the_goal_blocked`, and the user-facing path `v2_driver::configured_checks_gate_the_goal_through_the_config_edge` (`[[checks]]` → goal limits → repair → success); `cli::the_daemon_carries_configured_checks_into_the_goal`. **Real model** (runs under `review/tmp/d50-live/`): a configured check really ran at the completion boundary before DeepSeek Flash settled a goal, and neither run that could not satisfy its checks reported success — but for the wrong reason in both (a wire error and a missing `status`, both fixed by D-54), so the *blocking* path with a real model is still only covered by the deterministic tests |
 | A17 | Artifacts change after a check | `v2_driver::check_inputs_must_still_hold_at_completion`; a configured check's `inputs` reach the goal unchanged (`config::tests::user_checks_become_goal_limits`) |
-| A18 | Multi-instance usage budget | `control::a_worker_shares_the_budget_of_the_goal_its_queue_serves` and related |
+| A18 | Multi-instance usage budget | `control::a_worker_shares_the_budget_of_the_goal_its_queue_serves` and related; the ceiling is *reachable* by the user (D-64): `config::user_limits_bound_every_goal`, `cli::configured_limits_reach_the_goal_and_really_bound_the_session` (the goal carries `max_total_tokens`, an unset ceiling stays `{}`) and `cli::a_tiny_configured_ceiling_parks_the_session_instead_of_running_it` (a 4-token ceiling parks the leader with the budget as the reason); formally `V2Control::ReservationsAdmitted` / `AdmissionGate` |
 | A19 | Truncated stream and connection loss | `providers_fake::truncated_stream_before_output_is_transient`, `providers_stall::*` |
 | A20 | Restart after long-context compaction | `control::compression_*`, `v2_driver::long_context_compacts_before_the_turn_and_survives_a_restart` |
 | A21 | The user adjusts an instance directly | single-writer `submit_input` context plus the TUI conversation target switch; a message sent while the instance is mid-turn is queued with a visible note (`tui::a_queued_input_is_visible_in_the_conversation`, `exec`'s `input_queued` report) and never silently dropped (D-63) |
@@ -49,7 +49,7 @@ characters outside the two documented exceptions (`README.zh-CN.md` and the froz
 | A32 | Very large history measurement | `engine/examples/load_probe.rs` plus the local probe report under `review/tmp/` (not part of the tree) |
 | A33 | Two daemons / stale lock | `v2_daemon::second_daemon_is_refused_and_shutdown_releases_the_lock` |
 | A34 | Incompatible schema | `core::v2::store::open_refuses_unstamped_foreign_and_wrong_version`, `open_migrates_the_previous_schema_version` |
-| A35 | Goal deadline | `control::goal_deadline_refuses_new_requests_and_dispatches`, `v2_driver::goal_deadline_parks_the_instance` |
+| A35 | Goal deadline | `control::goal_deadline_refuses_new_requests_and_dispatches`, `v2_driver::goal_deadline_parks_the_instance`; the deadline is *reachable* by the user (D-64): `config::user_limits_bound_every_goal` and `cli::configured_limits_reach_the_goal_and_really_bound_the_session` (the goal's `deadline` is ~15 minutes out for `deadline_minutes = 15`, and the duration key is not stored on the goal); formally `V2Control::NoRequestAfterDeadline` with the refuted control `MC_control_deadline.cfg` |
 | A36 | Install / init / doctor / cleanup / reopen | `cli::init_prepares_the_v2_root_and_doctor_verifies_it`; the one-off cleanup plus a real re-verification (local probe evidence under `review/tmp/`) |
 
 ## Headless client contract (`teamagents exec`, D-49)
@@ -89,7 +89,8 @@ amended (D-49/D-50).
   Measured on a real DeepSeek Flash session whose delegated task was unachievable (it was asked to run a shell
   command before the grant existed): **169 model requests / 1,226,717 prompt tokens / 181 context entries in
   ~15 minutes**, all of it repeating the same reply, with no task progress — bounded only by a goal budget,
-  and that goal had none. The probe was stopped by parking the instance (no CLI verb exists for that; the
+  and that goal had none. D-64 now lets the user configure such a ceiling, which turns this class into a
+  parked, visible goal instead of a silent spend (the re-asking itself is unchanged). The probe was stopped by parking the instance (no CLI verb exists for that; the
   probe now does it through the daemon protocol when it sees the loop). Two readings are possible (an instance
   with open work should keep going vs. a plain reply ends its turn), and either fix is behavioural — idle
   after a prose reply, or park with a reason after a bounded number of no-progress turns — so it needs the

@@ -37,6 +37,8 @@ repository and never enters `make check`. Java is required (this machine uses Op
 | `tla/V2Control.tla` | control-plane abstraction: instance phase machine, requests/attempts, decisions and operations, approvals, the dispatch linearization point, cancel/timeout, epoch resets, goal budget reservations and settlement, crash/recovery, and the inbound boundary (an input that arrives during a turn waits for it, D-63) |
 | `tla/MC.cfg` | small configuration (1 instance / 1 operation / 2 request slots / 1 attempt slot / 1 epoch reset / 1 unknown usage) |
 | `tla/MC_control_midturninput.cfg` | negative control for D-63: the driver applies input *inside* the running turn (the pre-D-63 behaviour). `make verify-model-counterexamples` requires TLC to refute `InputLandsAtTheBoundary` here |
+| `tla/MC_control_two.cfg` | two-instance control-plane configuration (same domains as `MC.cfg`): the small check that tells a *per-instance* fairness or liveness assumption apart from one that lets one instance be starved by the other's progress |
+| `tla/MC_control_two_disjunction.cfg`, `tla/MC_control_deadline.cfg` | negative controls (D-63/D-64): fairness as one disjunction over instances, and a runtime that ignores the goal's deadline. Both must be refuted by `make verify-model-counterexamples` |
 | `tla/MC_wide.cfg` | wide control-plane configuration (2 instances / 2 operations with one requiring approval / 3 request slots / 2 attempt slots) |
 | `tla/V2Artifact.tla` + `tla/MC_artifact.cfg` | artifacts and GC: write bytes → STAGING row → reference and LIVE in one transaction → GC claim → delete/abandon |
 | `tla/V2Wait.tla` + `tla/MC_wait.cfg` | waits/wakeups/timers/supersede: evaluate at registration → parked drain scan → answer in the same transaction when satisfied → cancel/supersede/re-arm |
@@ -67,6 +69,7 @@ the model; that is exactly what is enumerated.
 | `OneActiveRequest` | an instance has a single active request at a time | the phase/revision guard in `begin_request` | §3/§6.1 |
 | `SelectionIsComplete` | only an atomically selected complete attempt exists | the `selected_attempt_id IS NULL` update in `record_attempt` | A19 |
 | `NoTurnWithoutWork` | no new turn opens when the last entry is the model's own text | the closing entry plus the idle test in `step_ready` | §5.4 |
+| `NoRequestAfterDeadline` (temporal) | a goal past its deadline begins no new request | the `goal_deadline_passed` gate in `begin_request`/`begin_compression` plus the driver's park (D-64/A35) | A35 |
 | `InputLandsAtTheBoundary` | user input only ever enters the context at a READY boundary — never inside a turn whose request is already fixed | `submit_input` queueing while `MODEL_PENDING`/`TOOLS_PENDING`/`COMPLETION_PENDING`, and the boundary drain in `step_ready` (D-63) | §5.4/A21 |
 | `QueuedInputEntersTheContext` (temporal) | an input that waited for the boundary enters the context; it is never dropped while the instance keeps running (a park keeps it, a reset seals it with its epoch, termination ends it) | the `envelopes` state machine (`ACCEPTED` → `APPLIED`, sealed at a reset) plus the drain | A06/A21 |
 | `StaleExecutorRejected` | an executing instance holds the current revision | `revision == expected` in `begin_request` | §6.1 |

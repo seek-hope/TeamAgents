@@ -147,6 +147,10 @@ git diff | teamagents exec -                                    # 提示词从 s
 判为失败。判定结果会打印出来、写入 `<state root>/verification.json`，并作为 `verification` 出现在
 `--json` 报告里。
 
+**会话的上限由你定。** 配置里的 `[limits]` 给每个 goal 设上限：`max_total_tokens` 会在用量到达上限前拒绝
+新请求，`deadline_minutes` 会在超过截止时间后拒绝新请求；两者都不配置时，会话会一直跑到你手动停止为止（`doctor`
+会把这件事直接说出来）。见 [docs/USER-GUIDE.md](docs/USER-GUIDE.md) §2.2。
+
 **能力由你来发。** Leader 拿到它自己团队工具需要的那几项权限；它 spawn 出来的 worker 一项都没有，因此在
 你授权之前，worker 只能用文件、网页和 skill 工具——编码任务通常需要的是共享工作目录的 shell：
 
