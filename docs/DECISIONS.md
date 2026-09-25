@@ -231,6 +231,33 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-83 A gate flake with a precise cause: the fixture's own deadline (2026-09-26)
+
+`make check` failed once in `jobs_runner::deadline_cancels_a_stuck_command` with
+
+    thread '…' panicked at tests/jobs_runner.rs:130:28:
+    go: "command is past its deadline"
+
+and passed on the next run. The cause is in the fixture, not the product: `future(300)` is 300
+**milliseconds** (the helper takes milliseconds), so the test asked for a deadline that its own setup had to
+beat — two local-socket round-trips — and under a fully parallel suite those took longer once. The runner then
+refused the late `go` with exactly the message this behaviour has ("command is past its deadline"), the test
+read that as an unexpected error and failed.
+
+**Product behaviour is right**: a `go` past the deadline starts nothing (the same family as A13's races), so
+the fix belongs in the test — a 2-second deadline (≈7× the observed stall, and still cancels the fixture's
+300-second `sleep` promptly) — and the refusal path now has a *deliberate* test instead of being covered by
+accident: `jobs_runner::go_past_the_deadline_is_refused_and_runs_nothing` spawns a spec whose deadline is
+already in the past, asserts the `go` is refused for the deadline, that the journal stays `READY` and that the
+command left no trace.
+
+Gate after the fix: `make check` three times in a row, green (24 test-target summaries each; core 98 /
+engine 200 / tui 32).
+
+Ceiling: this is the third fixture-timing defect of the same shape (D-79's database writer race, D-81's two
+sites, this one) — a test that asserts a *timing* property ("it is cancelled by the deadline") must not race its
+own setup to do it. There is no automated guard for that class; the lesson is written down here and in the two
+other entries.
 ## D-82 Termination is final, and the surfaces say so (2026-09-26)
 
 Walking the recovery path a user actually takes when a session has gone wrong turned up advice that cannot

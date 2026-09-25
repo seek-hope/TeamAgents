@@ -126,9 +126,34 @@ async fn cancel_running_stops_the_process_group() {
 async fn deadline_cancels_a_stuck_command() {
     runner_bin();
     let dir = root("deadline");
-    client::spawn(&dir, &spec("op-deadline", "sleep 300", future(300))).await.expect("spawn");
+    // `future` takes milliseconds. The deadline must be short enough to cancel the
+    // 300-second sleep promptly and long enough that `go` cannot arrive after it: with
+    // 300 ms a loaded suite (every test binary in parallel) made the spawn+go
+    // round-trips exceed it once, and the runner then answered - correctly - "command
+    // is past its deadline" instead of running, which failed the test. The behaviour
+    // under test is the *runner's* deadline, not the test's own latency.
+    client::spawn(&dir, &spec("op-deadline", "sleep 300", future(2_000))).await.expect("spawn");
     client::go(&dir).await.expect("go");
     assert_eq!(wait_terminal(&dir, 10_000).await, "CANCELLED");
+    client::shutdown(&dir).await.expect("shutdown");
+}
+
+/// The deadline refuses a late GO (`go` after the deadline answers "command is past
+/// its deadline" and nothing runs). This was only ever observed by accident — a
+/// flaky sibling test whose 300 ms deadline passed before its own `go` arrived — so
+/// it gets a deliberate, deterministic test with a deadline that is already past.
+#[tokio::test]
+async fn go_past_the_deadline_is_refused_and_runs_nothing() {
+    runner_bin();
+    let dir = root("late-go");
+    let past = teamagents_engine::jobs::now_ms().saturating_sub(1_000);
+    client::spawn(&dir, &spec("op-late", "printf ran > late-go-ran", past)).await.expect("spawn");
+    let refused = client::go(&dir).await.expect_err("a late go must be refused");
+    assert!(refused.contains("past its deadline"), "{refused}");
+    // the job never ran: the journal stays READY and the command left no trace
+    let journal = client::status(&dir).await.expect("status");
+    assert_eq!(journal.state, "READY", "the command must not have started");
+    assert!(!Path::new("late-go-ran").exists(), "the command must not have run");
     client::shutdown(&dir).await.expect("shutdown");
 }
 
