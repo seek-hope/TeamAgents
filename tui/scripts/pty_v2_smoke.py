@@ -8,7 +8,7 @@ set_lifecycle frames), tasks (cancel_task), topology edge list.
 
 Requires: built tui binary (tui/target/debug/teamagents-tui).
 """
-import fcntl, json, os, pty, re, select, socket, struct, subprocess, sys, tempfile, termios, threading, time, unicodedata
+import fcntl, json, os, pty, re, socket, struct, subprocess, sys, tempfile, termios, threading, time, unicodedata
 
 BIN = os.path.join(os.path.dirname(__file__), "..", "target", "debug", "teamagents-tui")
 ENV = dict(os.environ, TERM="xterm-256color")
@@ -128,20 +128,7 @@ class FakeDaemon:
 
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from pty_screen import Screen  # virtual terminal for diff-rendered frames
-
-
-def read_all(fd, timeout=1.5):
-    out = b""
-    end = time.time() + timeout
-    while time.time() < end:
-        r, _, _ = select.select([fd], [], [], 0.1)
-        if r:
-            try:
-                out += os.read(fd, 65536)
-            except OSError:
-                break
-    return out
+from pty_screen import Screen, read_all  # virtual terminal + PTY reader for diff-rendered frames
 
 
 def main():

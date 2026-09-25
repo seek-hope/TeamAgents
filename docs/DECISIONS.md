@@ -231,6 +231,65 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-85 The headline path finally has a model in it, and the needle can fail (2026-09-26)
+
+Every real-model harness in this repository drove `exec`; the surface a user opens first — the TUI — had only
+a *fake* daemon (`make pty`) and TestBackend frames. So the client half of a turn (composer → `submit_input`
+frame → event-driven history refresh → rendering) had never met a real daemon and a real model in one run.
+`review/dogfood/tui.py` closes that gap: it forks the real binary in a real PTY, waits for the session and
+the leader on screen, types a prompt, presses Enter, and requires the answer to appear **on screen** before
+it checks the session database for the same two entries and quits with Ctrl+C.
+
+Design points worth keeping:
+
+- **A screen needle must be the form the renderer paints, not the word the probe typed.** The first version
+  looked for `TUIDONE`, which is *already* on screen before the turn: the word is part of the instruction
+  sitting in the composer. It "passed" the answer in 1.1 s and proved nothing. The needles are now
+  `i-leader TUIDONE` and `you Reply with the single word` — the labels `v2ui.rs` puts in front of an entry
+  (the assistant's instance id, the user's `you`), which the composer echo cannot produce. The probe also
+  carries a same-run positive control: the bare word must be on screen *before* Enter and the labelled one
+  must not, otherwise the run reports that its own screen check is meaningless.
+- **A fixed window is not a control; a measurement is.** The control's first version drained for a fixed
+  0.8 s and then looked, and it failed on one run in three. Both causes were in the probe: `read_all` returns
+  only when its own window closes, so the timings it printed were quantized to whole seconds, and the fixed
+  window was too tight for the worst case — typing immediately after attach, while the client is still
+  finishing its history/approvals/tasks/grants refreshes (measured 0.2–0.7 s for that first character). The
+  control now waits up to 20 s and prints what it saw, and the drain steps are 0.25 s for screen waits and
+  0.1 s inside the control. The separate, idle-machine measurement is the keystroke latency below.
+- **One PTY reader.** The crashed first run exposed a latent bug: `tui/scripts/pty_screen.py::read_all`
+  referenced `os` and `time` without importing them, and `pty_v2_smoke.py` carried its own copy of the same
+  function. There is now one reader in `pty_screen.py` (imports fixed) used by the smoke, the new probe and
+  this one; `make pty` stays green.
+
+Measured 2026-09-26 (native windows, isolated state roots, one turn, DeepSeek Flash and Kimi k3-256k):
+
+| Provider | TUI attached | Composer echo | Answer on screen | Total |
+|---|---|---|---|---|
+| `deepseek` | 2.4 s | 0.7 s | 2.7 s | 8.0 s |
+| `kimi` | 2.7 s | 0.2 s | 2.5 s | 7.5 s |
+
+The composer column is deliberately the worst case: the probe types as soon as the leader is on screen,
+which is while the client is still finishing its attach-time refreshes (history, approvals, tasks, grants),
+so the keystrokes wait behind them. Steady-state typing is the number below (0.03 s median).
+
+The session database of both runs holds exactly the expected pair
+(`{"role":"user",…}` and `{"role":"assistant","content":"TUIDONE"}` for `i-leader`), which is what the probe
+asserts: not "text appeared somewhere", but *the client and the session agree about the same turn*.
+
+The same investigation produced the client's own responsiveness, measured against the scripted daemon
+(`python3 review/dogfood/input_latency.py`, no credentials, 2026-09-26): a single keystroke reaches the
+composer with **min 0.01 s / median 0.03 s / max 0.11 s** latency, and ten characters written as one burst
+render in 0.05 s. That is a product property nothing else measured, and it is the reason `tui.py` types a
+whole prompt at once without reading "the last character took a while" as a defect. The instrumented probe's
+guards are deliberately loose (1 s per keystroke, 0.3 s median, 2 s per burst) so a loaded machine reports
+numbers instead of a red gate; `make pty` remains the deterministic interface check.
+
+Ceiling: the probe drives one turn of the leader and no other member; the TUI's panels, approvals and task
+cancellation against a real model still rest on the scripted smoke and TestBackend frames. It asserts on
+screen text and the session database, not on pixels, so a layout regression that keeps the text visible would
+pass. It is also not wired into any gate (it needs a credential and a network) — it is re-run by hand, and
+the commands above are the whole procedure.
+
 ## D-84 Two of my own tests asserted traces that could not fail (2026-09-26)
 
 The audits in this series keep finding "evidence" that proves less than it looks like, so I turned the same eye

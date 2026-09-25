@@ -242,3 +242,42 @@ with `chat API 400: The reasoning_content in the thinking mode must be passed ba
 repair turn after a failed check died on the wire), and the first kimi run reported
 `exit 0 / end=reply / goal=None` although the goal was `BLOCKED` (D-71: the runtime's own block note was
 stored in the member's voice and read back as the reply).
+
+## `tui.py`: the surface a user opens first, with a model in it
+
+Every other harness here drives `exec`, so the client half of a turn had never met a real daemon and a real
+model in one run. `tui.py` forks the real binary in a real PTY (the interface `make pty` covers against a
+*scripted* daemon), waits for the session and the leader on screen, types a prompt, presses Enter, and
+requires the answer on screen before checking the session's own database:
+
+```bash
+python3 review/dogfood/tui.py                    # DeepSeek
+python3 review/dogfood/tui.py --provider kimi    # over `responses`
+```
+
+It needs `DEEPSEEK_API_KEY` (or `KIMI_API_KEY` with `--provider kimi`) and writes only under `--state-dir`.
+Two design points are the whole value of this probe (D-85): the screen needles are the *rendered* form
+(`i-leader TUIDONE`, `you Reply with the single word`), because the bare answer word is part of the
+instruction and is already sitting in the composer before the turn — the first version "passed" the answer in
+1.1 s that way; and the run carries its positive control (bare word present, labelled one absent) so an
+insensitive needle is reported instead of passing quietly.
+
+Measured (2026-09-26, native windows): **deepseek** attached in 2.4 s, answer on screen 2.7 s after Enter,
+8.0 s total; **kimi** 2.7 s / 2.5 s / 7.5 s. Both runs end with exactly the two expected `context_entries`
+rows for `i-leader` (the user prompt and `"content":"TUIDONE"`), which is the assertion: the client and the
+session agree about the same turn.
+
+## `input_latency.py`: how fast the interface keeps up with typing
+
+`input_latency.py` measures the client's own responsiveness against the **scripted** daemon from
+`pty_v2_smoke.py`, so the number is the client's timer (no credentials, no model, no session state):
+
+```bash
+python3 review/dogfood/input_latency.py
+```
+
+Measured (2026-09-26): a single keystroke reaches the composer with min 0.01 s / median 0.03 s / max 0.11 s
+latency, and ten characters written as one burst render in 0.05 s. This is why `tui.py` types its whole
+prompt at once: what appears late in that case is a burst being rendered, not a user's keystroke lagging.
+The guards are deliberately loose (1 s per keystroke, 0.3 s median, 2 s per burst) so a loaded machine
+reports numbers instead of a red gate.

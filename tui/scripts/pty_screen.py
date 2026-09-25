@@ -2,10 +2,11 @@
 """Virtual terminal screen for the PTY smokes (R29): diff-rendered frames are
 replayed into a screen buffer so tests assert on what a user would see."""
 
-import re, select, sys, unicodedata
+import os, re, select, sys, time, unicodedata
 
 
 def read_all(fd, timeout=1.0):
+    """Drain a PTY for `timeout` seconds (the one reader both PTY smokes use)."""
     out = b""
     end = time.time() + timeout
     while time.time() < end:
