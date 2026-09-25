@@ -231,6 +231,36 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-93 `exec --check` driven the way a CI job uses it (2026-09-26)
+
+`teamagents exec --check COMMAND` is the contract a CI job depends on: the turn runs, then the user's own
+acceptance commands run in the client's workspace, in order, and decide the exit code. Its evidence was unit
+tests plus a real daemon with a *scripted* provider, and the rule that a command printing `(exit 0)` cannot
+fake a pass was unit-only. `review/dogfood/exec_check.py` runs three scenarios against one real session with
+a real model (`--full-auto`, so the checks run on the host):
+
+| Scenario | Result (2026-09-26, DeepSeek Flash) |
+|---|---|
+| a passing check after a turn that really wrote `hello.txt` | exit 0, `end=completed`, goal `SUCCEEDED`, ledger `ok: true / exit_code: 0` |
+| a failing check, with a second check after it | exit 1, and the ledger holds **one** row — the list stopped at the first failure — while `hello.txt` from the first turn is still there |
+| a command that prints `(exit 0)` and exits 7 | exit 1, ledger `exit_code: 7 / ok: false`, and the command's own text stays in `output` |
+
+Two things this pins down that the unit tests could not: the checks run *after* a turn that is itself a plain
+reply (scenarios 2 and 3 report `end=reply`, because the goal settled in scenario 1), and the artifact — the
+file the first turn wrote — survives, which is what makes "the checks gate the exit code, not the work" a
+statement about the product rather than about the checker.
+
+Evidence: `python3 review/dogfood/exec_check.py` (two runs), plus the offline layers it does not repeat —
+`v2::exec::tests::acceptance_commands_run_in_order_and_stop_at_the_first_failure`,
+`the_check_verdict_reads_the_wrapper_marker`, `exit_codes_follow_the_documented_contract`,
+`v2_daemon::headless_runs_verify_the_acceptance_commands_and_gate_the_exit_code`,
+`a_failing_acceptance_command_fails_the_run`, and `cli::exec_takes_the_prompt_from_stdin_and_runs_the_acceptance_check`.
+
+Ceiling: the probe covers the three outcomes a CI job sees; the documented rule that a run stopped for an
+*approval* never runs the checks (exit 3) stays with the daemon test above, because the ledger file is only
+rewritten when checks run — asserting "the checks did not run" through a file that a previous run wrote would
+be the D-84 class of assertion.
+
 ## D-92 The user's policy hook, driven with a real model and real tool calls (2026-09-26)
 
 `[hooks]` is the one surface where the *user's own programs* wrap the runtime's work: `notify` on events,

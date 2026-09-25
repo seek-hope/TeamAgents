@@ -405,3 +405,23 @@ mode: the same hook exiting 1 allows the call — without that run, "the veto wo
 with a hook that denies everything. The `notify` stream in those runs carried 4–6 `tool_call` events
 (including `ok: false` for the denial) and 4–5 `run_completed`, all valid JSON with the session and instance
 ids; that count also corrected the guide, which now says `run_completed` fires per model request (D-92).
+
+
+## `exec_check.py`: the CI contract of `exec --check`
+
+The headless entry point's acceptance commands are what a CI job hangs on, and this probe drives the three
+outcomes it can see, in one real session with a real model:
+
+```bash
+python3 review/dogfood/exec_check.py
+```
+
+1. a **passing** check after a turn that really wrote `hello.txt`: exit 0, ledger `ok: true / exit_code: 0`;
+2. a **failing** check followed by a second one: exit 1 and a ledger with one row — the list stops at the
+   first failure — with the first turn's file still in place;
+3. a command that prints `(exit 0)` and exits **7**: the verdict is 7 (`ok: false`), exit 1, and the forged
+   text stays in `output`.
+
+Measured 2026-09-26, two runs (D-93). The rule that a run stopped for an approval never runs the checks stays
+with the daemon test: the ledger file is only rewritten when checks run, so "the checks did not run" cannot be
+asserted through it.
