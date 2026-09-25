@@ -15,8 +15,8 @@ exploration. The boundaries are in "Boundaries" below and in [REPORT.md](REPORT.
 
 ```bash
 make verify-model           # small control-plane configuration (seconds)
-make verify-model-all       # small configurations for all seven modules (control plane, artifacts, waits,
-                            # tasks, compression, daemon, required checks)
+make verify-model-all       # small configurations for all eight modules (control plane, artifacts, waits,
+                            # tasks, compression, daemon, required checks, authority)
 make verify-model-wide      # wide control-plane configuration (2 instances / 2 operations; hundreds of millions
                             # of states, slow)
 make verify-kani            # paging arithmetic (needs the Kani toolchain, see below)
@@ -40,6 +40,7 @@ repository and never enters `make check`. Java is required (this machine uses Op
 | `tla/V2Compress.tla` + `tla/MC_compress.cfg` | context compression (A20): open/submit/fail/cancelled by a closed epoch; summaries append at the tail, coverage only grows and originals are never deleted |
 | `tla/V2Daemon.tla` + `tla/MC_daemon.cfg` | session daemon protocol (A28): deduplication and replay of stable command ids, the atomic snapshot+watermark pair of `checkpoint`, gap-free `events(since)`, a slow client never blocking the writer |
 | `tla/V2Checks.tla` + `tla/MC_checks.cfg` | required checks (A16/§8): only self-reported successes are verified, failures enter a bounded repair round, an exhausted budget or an unusable verification path (stale observation, refused dispatch) parks the goal BLOCKED, and a candidate is never upgraded |
+| `tla/V2Grants.tla` + `tla/MC_grants.cfg` | authority (§5.1/§6.1, A03/A04; D-58/D-59/D-60): the session's bootstrap grants, narrowing by an instance (manage covers message/delegate), the spawn-derived delegate grant, revocation with the parent tree cascade and the revision bump, the dispatch re-check, and the rule that the model-visible tool surface only offers what the instance's grants back |
 
 The environment (tool results, approval timing, crash points) is **non-deterministic** in the model; that is
 exactly what is enumerated.
@@ -65,6 +66,19 @@ exactly what is enumerated.
 | `TerminalOpStable` (temporal) | a terminal operation is never rewritten | the "already terminal" refusal in `complete_operation` | A13 |
 | `TerminalGoalStatusStable` (temporal) | a terminal goal is never rewritten | the `already_closed` branch of `complete_goal`/`block_goal` | §8 |
 | `NoReceiptAcrossEpochs` (temporal) | a receipt never lands across epochs | `reset_instance` closes the old epoch and cancels in-flight operations | A24 |
+
+### Authority (A02/A03/A04, §5.1/§6.1, D-58/D-59/D-60)
+
+| Property (spec) | Meaning | Code anchor | Acceptance |
+|---|---|---|---|
+| `AuthorizedEffectsOnly` (temporal) | every effect is produced by a dispatch that held the authority at that step: a live covering grant **and** a still-current stamped revision | the guard of `dispatch_operation` (`grant_revision == permission_revision` plus `capability_gap`) | A03/A04 |
+| `EffectAtMostOnce` | an operation has at most one effect | `complete_operation`'s terminal-state guard and the recovery path | A08/A10 |
+| `OnceStaleNeverExecutes` | an operation refused at an outdated revision can never take effect afterwards | the revision only grows; a refusal is terminal for that operation | A04 |
+| `ChildGrantsAreCoveredByTheirParent` | a derived grant never exceeds its parent (its action and scope are covered) | the parent check in `issue_grant` | A03 |
+| `AuthorityTracesToTheUser` | authority is never invented: every live grant traces back to one the user issued | `issue_grant`'s identity rules (`Identity::System` refuses; an instance must hold a covering grant) | A02/A03 |
+| `RevokedStaysRevoked` / `CascadeTakesTheSubtree` | revocation is final and takes the whole subtree | `revoke_grant` + `revoke_grant_tree`, `revoked_at IS NULL` in every check | A03 |
+| `OfferedToolsAreAuthorized` | the model-visible surface never offers a tool the instance cannot dispatch | `driver::team_kernel` derives the collaboration tools and the shell tool from the instance's grants | §5.2/D-60 |
+| `BootstrappedAuthority` | the session boots with exactly the documented authority (leader: shell@workspace + manage/delegate/message@session; a spawned child holds none of it) | `driver::bootstrap` (D-58) and `create_instance`'s workspace grant | A01/A02 |
 
 ### Artifacts and GC (A30)
 
@@ -393,6 +407,10 @@ The proven `page_span(total, offset, limit) = min(limit, total - offset)` is the
   (A22/A23 and the RT-06 deduplication semantics), tasks/delegation/goal settlement (A02/A09), context
   compression (A20), the daemon protocol's command deduplication and snapshot watermark (A28), and the
   required-check rounds with repair/blocking (A16).
+- The authority model abstracts the scope vocabulary to the three kinds the code uses ("session" covers everything
+  below it, "workspace", and one scope per instance), models the two operations that matter (the leader's
+  delegation and a spawned child's shell call) rather than every tool intent, and assumes the instance a spawn
+  creates exists (the instance-creation transaction is modelled in `V2Control`/`V2Task`).
 - Not modelled: the `expires_at` check of an approval (the resulting terminal state and "no pending approval
   after a terminal operation" are covered by the code-level invariants, but there is no separate TLA module);
   the execution details of `execute_check_ops` (dispatch/timeout/reconnect) are abstracted to "rounds and
@@ -401,6 +419,9 @@ The proven `page_span(total, offset, limit) = min(limit, total - offset)` is the
 - Weak fairness: `V2Wait`'s liveness depends on weak fairness of the parked drain, i.e. the driver's poll loop
   continuing to try while `WAITING` (`engine/src/v2/driver.rs`); that is an implementation fact, not a proven
   conclusion.
+- State-space frontier (`MC_grants`): the four bootstrap grants plus one free slot, two instances and two
+  operations = 1.29M states (178k distinct) in about one minute, with TLC's estimated chance that a fingerprint
+  collision hid a state at 1.2e-9. It is the slowest of the small configurations; the others are seconds.
 - State-space frontier (`MC_task`): 1 task / 2 instances / 2 goals = 5.7M states in about 20 seconds; a second
   task diverges (measured: 43M states without convergence after four minutes) and needs symmetry or a stronger
   abstraction.

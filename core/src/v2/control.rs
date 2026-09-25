@@ -238,6 +238,18 @@ fn authorized(tx: &Connection, subject: &str, action: &str, resource: &str) -> R
     Ok(active_grant(tx, subject, action, resource)?.is_some())
 }
 
+impl Control {
+    /// Whether `subject` holds a live grant of `action` covering `resource` —
+    /// exactly the question the dispatch re-check asks (A03/A04). The
+    /// model-visible tool surface asks it too, so an offered tool is one the
+    /// instance can actually dispatch: without that, a spawned child was offered
+    /// `shell` while holding no shell@workspace grant and every call was refused
+    /// (D-60, verified by V2Grants' `OfferedToolsAreAuthorized`).
+    pub fn holds_covering_grant(&self, subject: &str, action: &str, resource: &str) -> Result<bool, String> {
+        authorized(self.connection(), subject, action, resource)
+    }
+}
+
 /// The capability a tool intent needs (§5.1): shell touches the explicitly
 /// granted shared workspace; collaboration intents need their connection or
 /// management grant — re-checked at the dispatch linearization point (§6.1,

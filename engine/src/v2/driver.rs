@@ -1015,10 +1015,21 @@ impl<P: Provider> Driver<P> {
                 if holds("manage")? {
                     actions.push(teamagents_core::kernel::SPAWN_TOOL);
                 }
-                Ok::<Vec<&str>, String>(actions)
+                // the workspace shell needs the same covering grant the dispatch
+                // re-check demands; the surface asks the identical question
+                let shell = control.holds_covering_grant(&instance, "shell", "workspace")?;
+                Ok::<(Vec<&str>, bool), String>((actions, shell))
             })
             .await??;
+        let (actions, shell) = actions;
         let mut profile = self.config.profile.clone();
+        // The offered surface follows the grants, so a tool the instance cannot
+        // dispatch is not offered (§5.2): an instance the leader spawned holds no
+        // shell@workspace grant (§5.1), and offering `shell` only produced
+        // refusals (D-60).
+        if !shell {
+            profile.tools.retain(|tool| tool["function"]["name"] != json!("shell"));
+        }
         profile.tools.extend(teamagents_core::kernel::collaboration_tool_schemas(&actions));
         // Bound MCP tools advertise per request (§5.2). They merge here rather
         // than into the stored profile so a spawned child never inherits the

@@ -146,7 +146,9 @@ pre_tool = ["/home/you/bin/policy.sh"]            # policy hook before tool call
   without further setup; revoking a grant removes the tool from the surface and makes every call fail closed.
   `spawn` also takes `model` (a catalog key or the model name it declares) so a team can mix entries: an unknown
   entry fails that call with the available keys, and an instance that cannot boot at all is parked with the
-  reason (its task stays open for you to cancel).
+  reason (its task stays open for you to cancel). A tool the instance cannot dispatch is not offered at all: a
+  worker the Leader spawned holds `shell` only after you grant it `shell@workspace` (§5.1's boundary, D-60), so
+  it works with the file/web/skill tools (they need their binding, not a grant) until then.
 - **Workspace policies**: the `workspace` argument of `spawn` decides where a new instance works — `shared`
   (default: the project directory), `isolated` (a private directory under the session state root) or
   `git_worktree` (its own branch and worktree). Asking for a worktree in a project that is not a Git

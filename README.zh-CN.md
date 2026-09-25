@@ -50,7 +50,7 @@ teamagents exec --json "用一句话自我介绍"    # 同一后端的无头输�
 
 ## 主要特性
 
-- **受控协作**：`spawn` / `delegate` / `send` / `wait` 都经控制平面授权，并在派发时重查权限版本；会话启动时默认把团队权限（会话范围的 `manage` / `delegate` / `message`）授给 Leader，授权可随时撤销；
+- **受控协作**：`spawn` / `delegate` / `send` / `wait` 都经控制平面授权，并在派发时重查权限版本；会话启动时默认把团队权限（会话范围的 `manage` / `delegate` / `message`）授给 Leader，授权可随时撤销；工具面跟着授权走：实例只会看到自己真正能派发的工具（Leader spawn 的 worker 在拿到 `shell@workspace` 之前没有 shell）。
   有限下授、父级撤销级联、超时与未知结果都有恢复分类。
 - **工作区策略**：`spawn` 可按需给实例共享目录、私有隔离目录或独立 Git worktree（各自分支）；
   终止实例时按记录回收，有未提交/未合并成果的目录永不自动删除，只报告原因。

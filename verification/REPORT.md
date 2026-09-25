@@ -72,6 +72,20 @@ Evidence that the checks are neither vacuous nor insensitive ("passing" is not b
 - The coverage assertion for wire-protocol pairing once caught a **no-op**: the first version located indexes
   by substring, so the pairing check never actually ran.
 
+### Authority (added 2026-09-25, D-60)
+
+`V2Grants.tla` + `MC_grants.cfg` model where a capability comes from: the session's bootstrap grants, narrowing
+by an instance (manage covers message/delegate), the spawn-derived delegate grant, revocation with the parent
+tree cascade and the revision bump, the dispatch re-check, and the rule that the offered tool surface only
+contains what the grants back. Configuration: four bootstrap grants plus one free slot, two instances, the two
+operations that matter (the leader's delegation, a spawned child's shell call).
+
+| Run | Result |
+|---|---|
+| `make verify-model-all` (MC_grants) | **No error found** — 1,292,517 states generated / 178,024 distinct / 0 left / depth 11 / ~1 minute (all nine invariants plus the temporal `AuthorizedEffectsOnly`) |
+| Falsification check (kept out of the tree) | Offering `shell` unconditionally — what the code did before D-60 — makes TLC report `Invariant OfferedToolsAreAuthorized is violated by the initial state`, so the property is sensitive to exactly that defect |
+| Correspondence (`engine/tests/v2_supervisor.rs`) | `the_offered_surface_follows_the_grants` asserts the leader is offered `shell`/`spawn` and its spawned child is offered neither; it fails when the code stops filtering the surface by the grant |
+
 ## 3. Issues found by verification (all fixed)
 
 | ID | Issue | Spec counterexample | Fix and regression |
@@ -169,6 +183,7 @@ alone**, and conversely formal coverage does not excuse an item from sample or r
 ```bash
 make verify-model-all     # exhaustive configurations for the seven protocol surfaces (seconds to ~20 s)
 make verify-model-wide    # wide control-plane configuration (~11 minutes / 275M states)
+make verify-model-all     # all eight small modules (~80 s, of which the authority model is ~60 s)
 make check                # fmt + clippy -D warnings + 23 suites (including the two code-level layers)
 make verify-kani          # Kani proofs for the paging arithmetic (needs the Kani toolchain; ~1 s)
 ```

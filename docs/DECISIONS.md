@@ -268,6 +268,48 @@ Evidence: `core::kernel::tests::a_finish_without_a_usable_status_is_not_a_comple
 run, and the post-fix re-runs). The scripted tests in this repository accept any transcript, so this is exactly
 the class of defect the real-service rule exists for.
 
+## D-60 The tool surface follows the grants, and the authority layer is verified (2026-09-25)
+
+The user's rule — a design addition must be formally verified where it can be — had an obvious gap to close
+first: the TLA+ set covered the control plane, artifacts, waits, tasks, compression, the daemon and the
+required checks, but **authority had no model at all** (no specs mention grants), and D-58/D-59 had just changed
+authority semantics: the session's bootstrap grants and the spawn-derived delegate grant.
+
+**The model**: `verification/tla/V2Grants.tla` (+ `MC_grants.cfg`, wired into `make verify-model-all`) models
+where a capability comes from — the bootstrap's default grants, narrowing by an instance (manage covers
+message/delegate below it, anything else repeats the issuer's own covering grant), the spawn-derived
+`delegate@instance:<child>` and its parent link, revocation with the parent-tree cascade and the revision bump,
+the dispatch re-check (a live covering grant *and* a still-current stamp), and the offered surface. Properties:
+`AuthorizedEffectsOnly` (temporal), `EffectAtMostOnce`, `OnceStaleNeverExecutes`,
+`ChildGrantsAreCoveredByTheirParent`, `AuthorityTracesToTheUser`, `RevokedStaysRevoked`,
+`CascadeTakesTheSubtree`, `OfferedToolsAreAuthorized`, `BootstrappedAuthority`.
+
+**Result**: `make verify-model-all` is green for all eight modules; the authority model itself is 1,292,517
+states / 178,024 distinct / depth 11 / ~1 minute, with TLC's estimated chance that a fingerprint collision hid
+a state at 1.2e-9. `make verify-kani` stays green (3 harnesses). Writing the model also falsified its own first
+draft twice (an invariant that was really an initial-state fact; a property that ignored that an effect happens
+at a *step*, not in a state) — both recorded in `verification/REPORT.md`.
+
+**What the model exposed in the code**: `OfferedToolsAreAuthorized` — the model-visible surface only offers what
+the instance's grants back — is **violated by the runtime**: the profile handed `shell` to every instance, so a
+child the leader spawned was offered `shell` while holding no `shell@workspace` grant (§5.1's explicit boundary)
+and every shell call came back refused. Offering `shell` unconditionally in the model reproduces exactly that
+state (TLC: `Invariant OfferedToolsAreAuthorized is violated by the initial state`), so the property is
+sensitive to precisely this defect.
+
+The fix keeps the question in one place: `Control::holds_covering_grant(subject, action, resource)` is the
+authority question the dispatch re-check already asks, and `driver::team_kernel` now asks it too, dropping
+`shell` from the profile unless the instance holds a covering `shell@workspace` grant. The offered tool is
+therefore one the instance can dispatch. The spec-to-code correspondence is
+`v2_supervisor::the_offered_surface_follows_the_grants`: the leader is offered `shell`/`spawn` (bootstrap), its
+spawned child is offered neither, and the test fails when the filter is removed.
+
+User-visible consequence, stated honestly: a spawned worker works with the file/web/skill tools (they need their
+binding, not a grant) and has **no shell** until the user grants `shell@workspace` for it. That is the design's
+§5.1 boundary; the surface now says so instead of offering a tool that always failed. Opening that boundary by
+default (granting shell to a spawned child sharing the project directory) would change the documented spawn
+contract, so it stays a question for the user.
+
 ## D-59 A spawned team runs: model resolution, spawn-time validation, and a supervisor that survives (2026-09-25)
 
 With D-58 in place the Leader finally *spawned* — and the session stalled instead: two workers sat `READY` with

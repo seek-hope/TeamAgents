@@ -52,7 +52,9 @@ you ──goal (natural language)──▶ Leader ──spawn / delegate──�
 - **Governed collaboration**: `spawn` / `delegate` / `send` / `wait` are authorized by the control plane and
   re-checked at dispatch; the session grants the Leader its team authority by default (`manage` / `delegate` /
   `message` over the session), and a grant can be revoked at any time — revocation cascades, and limited
-  delegation, timeouts and unknown outcomes all have recovery classifications.
+  delegation, timeouts and unknown outcomes all have recovery classifications. The tool surface follows the
+  grants, so an instance is offered only what it can dispatch — a worker the Leader spawned holds no shell until
+  you grant it `shell@workspace` (D-60).
 - **Workspace policies**: `spawn` can give an instance the shared project directory, a private isolated
   directory or its own Git worktree and branch. Termination retires the workspace from its record; a
   directory with uncommitted or unmerged work is never deleted automatically, only reported.

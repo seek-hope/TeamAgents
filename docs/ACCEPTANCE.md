@@ -6,7 +6,7 @@ Baseline: [the design and acceptance baseline](DESIGN.md) §12/§16. Current imp
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 93 / engine 166 / tui 25 test targets) and `make pty` passes; both are
+`make check` is green (core 93 / engine 167 / tui 25 test targets) and `make pty` passes; both are
 preconditions for every item below. `make check` includes `make language-check`, which fails on non-English
 characters outside the two documented exceptions (`README.zh-CN.md` and the frozen material under
 `review/eval`).
@@ -16,7 +16,7 @@ characters outside the two documented exceptions (`README.zh-CN.md` and the froz
 | Item | Scenario | Evidence |
 |---|---|---|
 | A01 | A single Leader completes a goal (and the team it builds runs) | `v2_driver::end_to_end_shell_then_finish`; three real DeepSeek tasks (2026-09-23); a real delegation run: 3 instances, both delegated tasks `SUCCEEDED`, both `[[checks]]` commands passing, 16.3 s (`review/tmp/dogfood/`); the headless entry is driven end to end by `v2_daemon::headless_runs_report_their_own_outcome_not_an_earlier_settlement` and `cli::exec_takes_the_prompt_from_stdin_and_runs_the_acceptance_check` |
-| A02 | A→B→C→A communication | `control::messages_flow_across_an_authorized_ring`; the session grants the Leader `message`@session at bootstrap, so `send` is offered and authorized without extra setup (`cli::the_daemon_grants_the_leader_the_team_authority`, `v2_driver::the_leader_is_authorized_to_build_the_team_by_default`) |
+| A02 | A→B→C→A communication | `control::messages_flow_across_an_authorized_ring`; the session grants the Leader `message`@session at bootstrap, so `send` is offered and authorized without extra setup (`cli::the_daemon_grants_the_leader_the_team_authority`, `v2_driver::the_leader_is_authorized_to_build_the_team_by_default`); the offered surface never promises what the instance cannot dispatch (`V2Grants::OfferedToolsAreAuthorized`, correspondence `v2_supervisor::the_offered_surface_follows_the_grants`) |
 | A03 | Limited delegation and parent revocation | `control::grants_narrow_only_and_parent_revocation_cascades`; the Leader's default authority is exactly these session-scoped grants, and revocation still removes the tool and fails the call closed |
 | A04 | A queued action meets a revocation | `revocation_blocks_queued_dispatch_until_reauthorized`, `dispatch_rechecks_permission_revision` |
 | A05 | Reading another instance's history | `control::read_history_is_user_or_self_only`; the daemon's history surface |

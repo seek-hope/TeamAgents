@@ -6,7 +6,7 @@
 use serde_json::{json, Value as Json};
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use teamagents_core::kernel::{KernelProfile, ModelRequest, ModelResponse, Usage};
 use teamagents_core::models::{ModelProfile, UserConfig};
@@ -17,8 +17,12 @@ enum Step {
     Message(Json),
 }
 
+type Seen = Arc<Mutex<HashMap<String, Vec<Vec<String>>>>>;
+
 struct ScriptedProvider {
+    instance: String,
     script: Mutex<VecDeque<Step>>,
+    seen: Seen,
 }
 
 impl Provider for ScriptedProvider {
@@ -27,10 +31,13 @@ impl Provider for ScriptedProvider {
     }
     async fn complete(
         &self,
-        _request: &ModelRequest,
+        request: &ModelRequest,
         _cancel: &Cancel,
         _on_event: &mut (dyn FnMut(ProviderEvent) + Send),
     ) -> Result<AttemptOutcome, ProviderError> {
+        self.seen.lock().unwrap().entry(self.instance.clone()).or_default().push(
+            request.tools.iter().filter_map(|tool| tool["function"]["name"].as_str().map(str::to_string)).collect(),
+        );
         let next = self.script.lock().unwrap().pop_front().unwrap_or(Step::Message(reply("script exhausted")));
         match next {
             Step::Message(message) => Ok(AttemptOutcome {
@@ -82,10 +89,20 @@ fn root(tag: &str) -> Root {
 
 /// Scripts dispatched by instance id; an unscripted instance just replies.
 fn factory(scripts: HashMap<String, Vec<Step>>) -> impl Fn(&str, &KernelProfile) -> ScriptedProvider {
+    factory_with_log(scripts, Arc::new(Mutex::new(HashMap::new())))
+}
+
+/// The same factory, keeping every request's tool surface per instance so a test
+/// can assert what a model was *offered* (the spec-to-code correspondence of
+/// V2Grants' `OfferedToolsAreAuthorized`, D-60).
+fn factory_with_log(
+    scripts: HashMap<String, Vec<Step>>,
+    seen: Seen,
+) -> impl Fn(&str, &KernelProfile) -> ScriptedProvider {
     let scripts = Mutex::new(scripts);
     move |id: &str, _profile: &KernelProfile| {
         let script = scripts.lock().unwrap().remove(id).unwrap_or_default();
-        ScriptedProvider { script: Mutex::new(script.into()) }
+        ScriptedProvider { instance: id.to_string(), script: Mutex::new(script.into()), seen: seen.clone() }
     }
 }
 
@@ -525,4 +542,61 @@ async fn terminating_an_instance_retires_its_workspace() {
     assert!(retired, "the supervisor retired the isolated workspace and its record");
     assert!(root.dir.join("ws").exists(), "the shared project directory is untouched");
     handle.shutdown().await.expect("shutdown");
+}
+
+/// The spec-to-code correspondence of `V2Grants.tla`'s
+/// `OfferedToolsAreAuthorized`: the model-visible surface never offers a tool the
+/// instance cannot dispatch.
+///
+/// The leader holds `shell@workspace` from the session bootstrap, so it is offered
+/// `shell` (and its team authority). A child it spawns holds no shell grant
+/// (§5.1), so `shell` must not appear in the child's surface either — before D-60
+/// the profile handed it out and every call came back as "holds no
+/// shell@workspace grant".
+#[tokio::test]
+async fn the_offered_surface_follows_the_grants() {
+    let leader = vec![
+        Step::Message(json!({"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "spawn",
+             "arguments": json!({"instance_id": "i-worker", "instructions": "file helper"}).to_string()}},
+            {"id": "c2", "type": "function", "function": {"name": "delegate",
+             "arguments": json!({"assignee": "i-worker", "task_id": "t-1",
+                                 "description": "write out/answer.txt"}).to_string()}}
+        ]})),
+        Step::Message(wait_call("c3", json!({"mode": "ANY", "conditions": [{"kind": "task", "task_id": "t-1"}]}))),
+        Step::Message(finish_call("delegated")),
+    ];
+    let worker = vec![Step::Message(finish_call("written"))];
+    let seen: Seen = Arc::new(Mutex::new(HashMap::new()));
+    let root = root("offered-surface");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let handle = start(config(
+        &root,
+        factory_with_log(
+            HashMap::from([("i-leader".to_string(), leader), ("i-worker".to_string(), worker)]),
+            seen.clone(),
+        ),
+    ))
+    .await
+    .expect("start");
+    // no grant is issued by hand: the session bootstrap authorizes its leader (D-58)
+    handle.input("i-leader", "delegate the file to a worker").await.expect("input");
+    let closed = wait_event(&handle, "goal_completed", 20_000).await;
+    assert_eq!(closed["payload"]["status"], json!("SUCCEEDED"), "{closed}");
+    handle.shutdown().await.expect("shutdown");
+
+    let seen = seen.lock().unwrap().clone();
+    let offered = |id: &str| seen.get(id).and_then(|requests| requests.first()).cloned().unwrap_or_default();
+    let leader = offered("i-leader");
+    assert!(leader.contains(&"shell".to_string()), "the leader holds shell@workspace: {leader:?}");
+    assert!(leader.contains(&"spawn".to_string()), "and its team authority: {leader:?}");
+    let child = offered("i-worker");
+    assert!(
+        !child.contains(&"shell".to_string()),
+        "a spawned child holds no shell grant, so it must not be offered shell: {child:?}"
+    );
+    assert!(
+        child.contains(&"finish".to_string()) && child.contains(&"wait".to_string()),
+        "the child keeps the tools that need no grant (the kernel builtins and wait): {child:?}"
+    );
 }
