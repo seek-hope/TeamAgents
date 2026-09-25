@@ -260,7 +260,7 @@ The "formal layer" column lists only what the model, the code-level corresponden
 | A18 | multi-instance usage budget | `V2Control` (reservation ceiling, admission gate, release) plus `V2Task` (the `budget_goal` resolution rules) | real provider billing |
 | A19 | truncated stream and connection loss | `V2Control`: `SelectionIsComplete`; code-level "a selected attempt is complete" | provider retry details |
 | A20 | restart after compaction | all 8 `V2Compress` properties plus 5 code-level groups (monotone coverage, originals never lost, tail append) | — |
-| A21 | the user adjusts an instance directly | — | sample tests for the single-writer context |
+| A21 | the user adjusts an instance directly | — | sample tests for the single-writer context, plus the live TUI runs (`review/dogfood/tui.py` for the composer path, `cancel.py`/`job_identity.py` for a direct input to a member, `approval.py` for the approvals box) |
 | A22 | wait cycles and timers | `V2Wait` (including "a parked PENDING is eventually closed or superseded") | the graph algorithm of cycle detection itself |
 | A23 | a result arrives before the wait is registered | `V2Wait` evaluation at registration plus code-level `ResolvedWaitIsAnswered` | — |
 | A24 | a late result after a reset | `V2Control::NoReceiptAcrossEpochs` | — |
