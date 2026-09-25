@@ -12,6 +12,22 @@ fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
 }
 
+/// Control chord (the interface avoids function keys: some keyboards lack them).
+fn ctrl(c: char) -> KeyEvent {
+    KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+}
+
+/// `Ctrl+N` cycles chat -> instances -> tasks -> topology -> chat.
+fn cycle_to(app: &mut V2App, view: View) {
+    for _ in 0..4 {
+        if app.view == view {
+            return;
+        }
+        app.handle_key(ctrl('n'));
+    }
+    assert_eq!(app.view, view, "Ctrl+N must reach every view");
+}
+
 fn checkpoint() -> Json {
     json!({"instances": [
                {"id": "i-leader", "lifecycle": "ACTIVE", "phase": "READY"},
@@ -162,8 +178,8 @@ fn approvals_focus_decides_and_leaves() {
         {"id": "ap-1", "operation_id": "op-1", "tool": "shell", "preview": "rm -rf /tmp/x"},
         {"id": "ap-2", "operation_id": "op-2", "tool": "shell", "preview": "curl example.com"}
     ]}));
-    // F2 only enters with pending approvals
-    app.handle_key(key(KeyCode::F(2)));
+    // Ctrl+A only enters with pending approvals
+    app.handle_key(ctrl('a'));
     assert_eq!(app.focus, Focus::Approvals);
     app.handle_key(key(KeyCode::Down));
     let effect = app.handle_key(key(KeyCode::Char('a'))).expect("decide");
@@ -175,7 +191,7 @@ fn approvals_focus_decides_and_leaves() {
     app.apply_approvals(
         json!({"approvals": [{"id": "ap-3", "operation_id": "op-3", "tool": "shell", "preview": "p"}]}),
     );
-    app.handle_key(key(KeyCode::F(2)));
+    app.handle_key(ctrl('a'));
     let effect = app.handle_key(key(KeyCode::Char('d'))).expect("deny");
     assert_eq!(effect, V2Effect::Decide { approval_id: "ap-3".into(), decision: "deny" });
 }
@@ -254,7 +270,7 @@ fn frame_shows_status_chat_approvals_composer_and_footer() {
     assert!(all.contains("ap-1 · shell · make check"), "{all}");
     assert!(all.contains("to i-leader"), "{all}");
     assert!(all.contains("keep going"), "{all}");
-    assert!(all.contains("F2 approvals(1)"), "{all}");
+    assert!(all.contains("Ctrl+A approvals(1)"), "{all}");
     // the geometry shares one source with hit-testing: the approvals box sits
     // directly above the composer
     let geo = v2ui::geometry(&app, ratatui::layout::Rect::new(0, 0, 72, 18));
@@ -281,28 +297,31 @@ fn grants_json() -> Json {
 }
 
 #[test]
-fn view_switching_is_global_and_esc_returns() {
+fn view_switching_cycles_with_ctrl_n_and_esc_returns() {
     let mut app = app();
     assert_eq!(app.view, View::Chat);
-    app.handle_key(key(KeyCode::F(3)));
+    app.handle_key(ctrl('n'));
     assert_eq!(app.view, View::Instances);
     assert!(app.status_line().contains("view Instances"), "{}", app.status_line());
-    app.handle_key(key(KeyCode::F(4)));
+    app.handle_key(ctrl('n'));
     assert_eq!(app.view, View::Tasks);
-    app.handle_key(key(KeyCode::F(5)));
+    app.handle_key(ctrl('n'));
     assert_eq!(app.view, View::Topology);
+    app.handle_key(ctrl('n'));
+    assert_eq!(app.view, View::Chat, "the cycle wraps back to the conversation");
+    app.handle_key(ctrl('n'));
     app.handle_key(key(KeyCode::Esc));
     assert_eq!(app.view, View::Chat);
-    // F1 also returns from a panel
-    app.handle_key(key(KeyCode::F(4)));
-    app.handle_key(key(KeyCode::F(1)));
-    assert_eq!(app.view, View::Chat);
+    // function keys are deliberately not bound: keyboards without them must work
+    app.handle_key(key(KeyCode::F(3)));
+    assert_eq!(app.view, View::Chat, "no view is bound to a function key");
+    assert!(app.footer_hint().contains("Ctrl+N"), "{}", app.footer_hint());
 }
 
 #[test]
 fn instances_panel_pauses_resumes_and_switches_the_conversation() {
     let mut app = app();
-    app.handle_key(key(KeyCode::F(3)));
+    cycle_to(&mut app, View::Instances);
     assert_eq!(app.instance_sel, 0); // follows the conversation target
     app.handle_key(key(KeyCode::Down));
     assert_eq!(app.instance_sel, 1);
@@ -320,7 +339,7 @@ fn instances_panel_pauses_resumes_and_switches_the_conversation() {
 #[test]
 fn termination_requires_an_explicit_confirmation() {
     let mut app = app();
-    app.handle_key(key(KeyCode::F(3)));
+    cycle_to(&mut app, View::Instances);
     let effect = app.handle_key(key(KeyCode::Char('t')));
     assert!(effect.is_none());
     assert_eq!(app.confirm, Some(Confirm::TerminateInstance { instance: "i-leader".into() }));
@@ -341,7 +360,7 @@ fn termination_requires_an_explicit_confirmation() {
 fn tasks_panel_cancels_only_live_tasks() {
     let mut app = app();
     app.apply_tasks(tasks_json());
-    app.handle_key(key(KeyCode::F(4)));
+    cycle_to(&mut app, View::Tasks);
     let effect = app.handle_key(key(KeyCode::Char('c'))).expect("cancel effect");
     assert_eq!(effect, V2Effect::CancelTask { task_id: "t-1".into() });
     app.handle_key(key(KeyCode::Down));
@@ -384,7 +403,7 @@ fn frame_shows_the_panels_and_panel_hit_testing() {
     let backend = TestBackend::new(72, 18);
 
     // instances panel
-    app.handle_key(key(KeyCode::F(3)));
+    cycle_to(&mut app, View::Instances);
     let mut terminal = Terminal::new(TestBackend::new(72, 18)).unwrap();
     terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
     let all = frame_lines(&terminal).join("\n");
@@ -401,7 +420,7 @@ fn frame_shows_the_panels_and_panel_hit_testing() {
     drop(terminal);
 
     // tasks panel
-    app.handle_key(key(KeyCode::F(4)));
+    cycle_to(&mut app, View::Tasks);
     let mut terminal = Terminal::new(TestBackend::new(72, 18)).unwrap();
     terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
     let all = frame_lines(&terminal).join("\n");
@@ -412,7 +431,7 @@ fn frame_shows_the_panels_and_panel_hit_testing() {
     drop(terminal);
 
     // topology panel: grant/channel edges + task-delegation edges, revoked hidden
-    app.handle_key(key(KeyCode::F(5)));
+    cycle_to(&mut app, View::Topology);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
     let all = frame_lines(&terminal).join("\n");
@@ -432,7 +451,7 @@ fn the_palette_drives_panels_selection_and_status() {
     use teamagents_tui::theme::{ACCENT, BG, PANEL_BG};
 
     let mut app = app();
-    app.handle_key(key(KeyCode::F(3))); // instances panel
+    cycle_to(&mut app, View::Instances); // instances panel
     let mut terminal = Terminal::new(TestBackend::new(72, 18)).unwrap();
     terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
     let buffer = terminal.backend().buffer();

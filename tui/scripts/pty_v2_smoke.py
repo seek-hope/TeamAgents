@@ -193,9 +193,9 @@ def main():
         if frame.get("params", {}).get("instance_id") != "i-leader":
             failures.append(f"submit_input targeted {frame.get('params', {}).get('instance_id')!r}")
 
-    # R19-b③ panels: F3 opens the instances panel; p/r send real
+    # R19-b③ panels: Ctrl+N cycles to the instances panel; p/r send real
     # set_lifecycle business frames whose events refresh the checkpoint
-    os.write(fd, b"\x1bOR")  # F3 (xterm legacy)
+    os.write(fd, b"\x0e")  # Ctrl+N: chat -> instances
     scr.feed(read_all(fd, 3.0).decode("utf-8", "replace"))
     expect("instances (● conversation target)", "instances panel title")
     expect("i-leader · ACTIVE · READY", "instance row")
@@ -212,8 +212,9 @@ def main():
     scr.feed(read_all(fd, 3.0).decode("utf-8", "replace"))
     expect("i-leader · ACTIVE · READY", "instance resumed on screen")
 
-    # F4 tasks panel: c sends a cancel_task frame; the event refreshes the list
-    os.write(fd, b"\x1bOS")  # F4
+    # Ctrl+N again reaches the tasks panel: c sends a cancel_task frame; the event
+    # refreshes the list
+    os.write(fd, b"\x0e")  # Ctrl+N: instances -> tasks
     scr.feed(read_all(fd, 3.0).decode("utf-8", "replace"))
     expect("t-smoke · RUNNING · assignee i-worker · goal g1", "task row")
     os.write(fd, b"c")
@@ -223,8 +224,8 @@ def main():
     if not cancels:
         failures.append("no cancel_task frame reached the daemon")
 
-    # F5 topology panel: grant/channel edges plus task-delegation edges
-    os.write(fd, b"\x1b[15~")  # F5
+    # Ctrl+N again reaches the topology panel: grant/channel edges plus task-delegation edges
+    os.write(fd, b"\x0e")  # Ctrl+N: tasks -> topology
     scr.feed(read_all(fd, 3.0).decode("utf-8", "replace"))
     expect("topology · active grants 1 · tasks 1", "topology title")
     expect("i-leader ─manage→ session", "grant edge")

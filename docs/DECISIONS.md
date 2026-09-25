@@ -18,6 +18,31 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-48 TUI shortcuts without function keys (2026-09-25)
+
+The user pointed out that some keyboards have no function keys, so the interface no longer binds any. View
+switching is now:
+
+| Key | Effect |
+|---|---|
+| `Ctrl+N` | cycle the views: conversation → instances → tasks → topology → conversation (works while composing) |
+| `Ctrl+A` | jump into the approvals box (only when approvals are pending) |
+| `Esc` | back to the conversation from a panel (unchanged) |
+| `Tab` | switch the conversation target (unchanged) |
+| `Ctrl+C` / `Ctrl+D` | quit (unchanged) |
+
+The removed bindings were `F1` (conversation), `F2` (approvals), `F3` (instances), `F4` (tasks) and `F5`
+(topology). Panel-local keys (`Enter`, `p`, `r`, `t`, `c`, arrows) are unchanged, and the footer hint line now
+advertises `Ctrl+N` / `Ctrl+A` instead of the function keys. Control chords never insert text into the
+composer, so a `Ctrl+<letter>` press can no longer leave a stray character behind.
+
+Evidence: `tui/tests/v2app_tests.rs::view_switching_cycles_with_ctrl_n_and_esc_returns` walks the cycle,
+asserts that pressing `F3` leaves the view unchanged and that the hint mentions `Ctrl+N`;
+`instances_panel_pauses_resumes_and_switches_the_conversation`, `tasks_panel_cancels_only_live_tasks`,
+`termination_requires_an_explicit_confirmation` and `the_palette_drives_panels_selection_and_status` reach
+their panels through the cycle. `make pty` drives the real terminal with the `Ctrl+N` bytes, and `make check`
+is green.
+
 ## D-47 TUI colour scheme: the v1 palette (2026-09-25)
 
 The user preferred the v1 TUI's colours over the ones the current conversation UI used. The palette is restored

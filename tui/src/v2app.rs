@@ -15,7 +15,8 @@ pub enum Focus {
     Approvals,
 }
 
-/// Top-level views (§9: conversation, instances, tasks, topology edge list). F1/F3/F4/F5
+/// Top-level views (§9: conversation, instances, tasks, topology edge list).
+/// `Ctrl+N` cycles through them (no function keys: many keyboards lack them).
 /// switch globally; Esc from a panel returns to the conversation.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum View {
@@ -503,26 +504,34 @@ impl V2App {
         if self.confirm.is_some() {
             return self.confirm_key(key);
         }
-        // view switching is global (F1 returns to the conversation)
-        match key.code {
-            KeyCode::F(1) => {
-                self.view = View::Chat;
-                return None;
+        // View switching is global and uses no function keys (many keyboards lack
+        // them): Ctrl+N cycles chat -> instances -> tasks -> topology, Ctrl+A jumps
+        // into the approvals box and Esc returns to the chat.
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            match key.code {
+                KeyCode::Char('n') => {
+                    self.view = match self.view {
+                        View::Chat => View::Instances,
+                        View::Instances => View::Tasks,
+                        View::Tasks => View::Topology,
+                        View::Topology => View::Chat,
+                    };
+                    if self.view == View::Instances {
+                        self.instance_sel = self.active;
+                    }
+                    if self.view == View::Chat {
+                        self.chat_scroll = 0;
+                    }
+                    return None;
+                }
+                KeyCode::Char('a') => {
+                    if self.view == View::Chat && !self.approvals.is_empty() {
+                        self.focus = Focus::Approvals;
+                    }
+                    return None;
+                }
+                _ => {}
             }
-            KeyCode::F(3) => {
-                self.view = View::Instances;
-                self.instance_sel = self.active;
-                return None;
-            }
-            KeyCode::F(4) => {
-                self.view = View::Tasks;
-                return None;
-            }
-            KeyCode::F(5) => {
-                self.view = View::Topology;
-                return None;
-            }
-            _ => {}
         }
         match self.view {
             View::Chat => match self.focus {
@@ -684,7 +693,7 @@ impl V2App {
     }
 
     fn composer_key(&mut self, key: crossterm::event::KeyEvent) -> Option<V2Effect> {
-        use crossterm::event::KeyCode;
+        use crossterm::event::{KeyCode, KeyModifiers};
         match key.code {
             KeyCode::Enter => {
                 let text = self.composer.submit()?;
@@ -699,12 +708,7 @@ impl V2App {
                 }
                 None
             }
-            KeyCode::F(2) => {
-                if !self.approvals.is_empty() {
-                    self.focus = Focus::Approvals;
-                }
-                None
-            }
+
             KeyCode::PageUp => {
                 self.scroll_chat(self.last_chat_height.max(1));
                 None
@@ -745,7 +749,8 @@ impl V2App {
                 self.composer.move_end();
                 None
             }
-            KeyCode::Char(c) => {
+            // plain text only: control chords are commands handled above
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.composer.insert_char(c);
                 None
             }
@@ -834,18 +839,18 @@ impl V2App {
                     let approvals = if self.approvals.is_empty() {
                         String::new()
                     } else {
-                        format!(" · F2 approvals({})", self.approvals.len())
+                        format!(" · Ctrl+A approvals({})", self.approvals.len())
                     };
-                    format!("Enter send · Tab switch instance · F3/F4/F5 panels{approvals} · Ctrl+C quit")
+                    format!("Enter send · Tab switch instance · Ctrl+N panels{approvals} · Ctrl+C quit")
                 }
                 Focus::Approvals => "a approve once · d deny · up/down select · Esc back".to_string(),
             },
             View::Instances => {
-                "Enter set conversation target · p pause · r resume · t terminate · up/down select · Esc back"
+                "Enter set conversation target · p pause · r resume · t terminate · up/down select · Ctrl+N next · Esc back"
                     .to_string()
             }
-            View::Tasks => "c cancel task · up/down select · Esc back".to_string(),
-            View::Topology => "up/down scroll · Esc back".to_string(),
+            View::Tasks => "c cancel task · up/down select · Ctrl+N next · Esc back".to_string(),
+            View::Topology => "up/down scroll · Ctrl+N next · Esc back".to_string(),
         }
     }
 }

@@ -137,8 +137,8 @@ Make the tests under /tmp/proj pass and explain why each file changed.
 ```
 
 The Leader decides whether to split the work and who does what. It only interrupts you for approvals
-(out-of-scope commands, network access). Press `Tab` to switch instances, `F3` for the instances panel, `F4`
-for tasks and `F5` for the topology.
+(out-of-scope commands, network access). Press `Ctrl+N` to cycle the panels (instances, tasks, topology),
+`Tab` to switch the conversation target and `Ctrl+A` for pending approvals.
 
 For scripts and CI, use the headless entry point (the prompt may come from stdin with `-`; `exec` shares the
 daemon with the TUI):
@@ -159,11 +159,12 @@ teamagents exec --check "cargo test --offline" "Get the tests green"  # extra ar
 | `--full-auto` | user-only full-auto mode (out-of-scope work is approved instead of requested) |
 | `init` / `doctor` / `daemon` / `exec` / `version` / `--help` | config and state root / self-check / run the daemon alone / headless input / version / usage |
 
-TUI keys (they match the hint line at the bottom): `Enter` send, `Shift+Enter`/`Ctrl+J` newline, `Tab`
-switch the input focus and instance, `F1` conversation, `F3` instances, `F4` tasks, `F5` topology, `F2`
-approvals, `Esc` back, `Ctrl+C`/`Ctrl+D` quit. In the instances panel `Enter` sets the conversation target,
-`p` pauses, `r` resumes and `t` terminates (with confirmation); in the tasks panel `c` cancels a task; in the
-approvals panel `a` approves once and `d` denies.
+TUI keys (they match the hint line at the bottom; deliberately no function keys, since some keyboards lack
+them): `Enter` send, `Shift+Enter`/`Ctrl+J` newline, `Tab` switch the conversation target, `Ctrl+N` cycle the
+views (conversation → instances → tasks → topology → back), `Ctrl+A` pending approvals, `Esc` back,
+`Ctrl+C`/`Ctrl+D` quit. In the instances panel `Enter` sets the conversation target, `p` pauses, `r` resumes
+and `t` terminates (with confirmation); in the tasks panel `c` cancels a task; in the approvals panel
+`a` approves once and `d` denies.
 
 ## Configuration and team
 
