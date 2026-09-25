@@ -54,6 +54,11 @@ The user config is `$XDG_CONFIG_HOME/teamagents/config.toml` (default
 `~/.config/teamagents/config.toml`). Credentials are referenced by environment-variable name and never
 written into the file:
 
+A repository-local `<cwd>/.teamagents/config.toml` is **not read by the current entry points**: the merge
+loader (`load_user_config_for`) with its trust rules is implemented and unit-tested, but nothing wires it into
+the daemon yet, so cloning a repository cannot change a session today. Until that lands, everything below is
+the *user* config.
+
 ```toml
 [models.leader_main]
 provider = "deepseek"
@@ -73,10 +78,35 @@ api_key_env = "ANYSEARCH_API_KEY"
   window, and the value and its source are recorded (D-36 in `docs/DECISIONS.md`).
 - `teamagents doctor` checks the config item by item, that every model profile's credential resolves, the
   state root (stamp, WAL, read/write), the bubblewrap isolation probe and that the programs named in
-  `[hooks]` are executable. An `sessions/` layout from an earlier release is reported explicitly and is
-  never migrated.
+  `[hooks]` are executable; it also lists the `[[checks]]` that will gate every goal. An `sessions/` layout
+  from an earlier release is reported explicitly and is never migrated.
 
-### 2.1 Hooks (`[hooks]`)
+### 2.1 Acceptance checks (`[[checks]]`)
+
+These are the machine contracts a goal must satisfy before it can be reported as done (§8, Q11). They come
+**only from your own config** — never from a cloned project, because a check is a command that later runs
+without an approval prompt:
+
+```toml
+[[checks]]
+id = "tests"                     # stable id: appears in failures and repair feedback
+command = "cargo test --offline" # run through the same shell tool the model uses
+inputs = ["src", "Cargo.toml"]   # optional: hashes bind the result to these inputs (A17)
+timeout = 900                    # optional seconds (default: the shell tool's own)
+network = false                  # optional: the sandbox is offline by default
+```
+
+- The runtime runs them in the isolated shell at the completion boundary, so a goal cannot settle while a
+  check fails. A failure returns the work for repair (bounded rounds) and then blocks the goal with the
+  failing ids; the check's output lands in the conversation as a tool result.
+- `inputs` are workspace-relative paths without `..` escapes. Their hashes are taken when the check runs and
+  re-verified before completion, so a check that passed against files that then changed does not count.
+- Checks are not asked through `pre_tool` (you already pre-authorized exactly these commands) and they skip
+  the approval gate for the same reason.
+- A broken entry (empty `command`, `timeout = 0`, an escaping `input`) is refused when the config loads, so
+  `doctor` and every entry point report it instead of a goal silently never settling.
+
+### 2.2 Hooks (`[hooks]`)
 
 Hooks are **your own programs** (their paths come only from the user config; a model cannot choose them) and
 run on the host with your permissions:
@@ -94,7 +124,7 @@ pre_tool = ["/home/you/bin/policy.sh"]            # policy hook before tool call
   allows it; **exit code 2 denies it** and the first stderr line becomes the reason handed to the model;
   any other exit code, a spawn failure or a timeout allows the call and logs to stderr — a broken hook never
   stalls the team. Replays after crash recovery are not asked again (the decision was made at first
-  dispatch), and a goal's required checks are your own acceptance commands, so they skip `pre_tool`.
+  dispatch), and the required checks of §2.1 are your own acceptance commands, so they skip `pre_tool`.
 
 ## 3. Sessions and teams
 
@@ -113,12 +143,15 @@ pre_tool = ["/home/you/bin/policy.sh"]            # policy hook before tool call
 - User-side intervention: switch instances, pause/resume/cancel and approve or deny tool requests in the
   TUI. Budget, task and grant panels all read the same facts.
 - Goal and task completion goes through the runtime's completion gate: `finish` only accepts honest
-  outcomes, and the required checks defined by the user or project must really pass. A goal's required
-  checks are machine contracts carried on the goal itself (`create_goal` `limits.required_checks`, which only
-  the user or the project bootstrap may predefine); the runtime executes them in the isolated shell at the
-  completion boundary, and a failure sends the work into a bounded repair loop before parking it. There is
-  **no config section and no CLI flag that predefines them yet** — the headless client's `--check` (§1.1) is
-  the user-facing acceptance command today.
+  outcomes, and the required checks you define must really pass.
+- **Required checks** come from `[[checks]]` in your config (§2.1) and are carried on the goal itself
+  (`create_goal limits.required_checks`, which only the user or the project bootstrap may predefine). The
+  runtime runs them in the isolated shell at the completion boundary: a failure sends the work into a bounded
+  repair loop and then blocks the goal with the failing ids. Their output appears in the conversation like any
+  other tool result, so the reason is visible instead of reported as an unexplained "done".
+- The headless client's `--check` (§1.1) is a *different* thing: it is your own acceptance command, executed
+  by the client after the turn ends, and it only decides that `exec` exits non-zero. A runtime check (above)
+  is the stronger contract, because the goal itself cannot settle until it passes.
 
 ## 4. Permissions and isolation
 

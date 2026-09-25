@@ -162,6 +162,21 @@ async fn wait_phase(handle: &DriverHandle, phase: &str, timeout_ms: u64) {
     panic!("phase {phase} not reached within {timeout_ms}ms");
 }
 
+/// Wait for a lifecycle transition instead of reading it once: the park that
+/// follows a refusal is a separate committed step, so a snapshot taken the
+/// instant the refusal event lands can still see the previous lifecycle.
+async fn wait_lifecycle(handle: &DriverHandle, lifecycle: &str, timeout_ms: u64) {
+    for _ in 0..(timeout_ms / 25) {
+        if let Ok(snapshot) = handle.snapshot().await {
+            if snapshot["instance"]["lifecycle"] == json!(lifecycle) {
+                return;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("lifecycle {lifecycle} not reached within {timeout_ms}ms");
+}
+
 async fn run_to_goal_close(handle: &DriverHandle) -> String {
     let event = wait_event(handle, "goal_completed", 15_000).await;
     event["payload"]["status"].as_str().unwrap_or("").to_string()
@@ -534,8 +549,7 @@ async fn budget_exhaustion_parks_the_instance() {
     handle.input("impossible within budget").await.expect("input");
     wait_event(&handle, "budget_refused", 5_000).await;
     wait_phase(&handle, "READY", 5_000).await;
-    let snapshot = handle.snapshot().await.unwrap();
-    assert_eq!(snapshot["instance"]["lifecycle"], json!("PARKED"));
+    wait_lifecycle(&handle, "PARKED", 5_000).await;
     handle.shutdown().await.expect("shutdown");
 }
 
@@ -556,8 +570,7 @@ async fn goal_deadline_parks_the_instance() {
     }
     handle.input("answer after the deadline").await.expect("input");
     wait_event(&handle, "goal_deadline_refused", 5_000).await;
-    let snapshot = handle.snapshot().await.unwrap();
-    assert_eq!(snapshot["instance"]["lifecycle"], json!("PARKED"));
+    wait_lifecycle(&handle, "PARKED", 5_000).await;
     handle.shutdown().await.expect("shutdown");
 }
 
@@ -888,6 +901,41 @@ async fn required_checks_pass_settles_the_goal() {
         && e["scope"].as_str().unwrap_or("").starts_with("check:goal-s-test:1:")));
     let snapshot = handle.snapshot().await.unwrap();
     assert_eq!(snapshot["instance"]["phase"], json!("READY"));
+    handle.shutdown().await.expect("shutdown");
+}
+
+/// The completion gate is only real for users if their own config drives it:
+/// the `[[checks]]` block of a config file becomes the goal limits, and a
+/// failing check sends the turn into repair instead of letting "done" land.
+#[tokio::test]
+async fn configured_checks_gate_the_goal_through_the_config_edge() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let root = root("checks-config");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    // the limits below are built from config text, exactly as the daemon does —
+    // a hand-written JSON literal would not prove the config edge works
+    let catalog = teamagents_engine::config::parse_user_config(
+        "[models.m]\nprovider = \"openai\"\nmodel = \"x\"\n\n[[checks]]\nid = \"marker\"\ncommand = \"test -f done-marker\"\ntimeout = 60\n",
+    )
+    .unwrap();
+    let script = vec![
+        Step::Message(finish_call("claimed done")),
+        Step::Message(shell_call("fix-1", "touch done-marker")),
+        Step::Message(finish_call("actually done now")),
+    ];
+    let mut config = root.config(ScriptedProvider { script: Mutex::new(script.into()) });
+    config.goal_limits = teamagents_engine::config::goal_limits(&catalog).unwrap();
+    assert_eq!(config.goal_limits["required_checks"][0]["id"], json!("marker"));
+    let handle = start(config).await.expect("start");
+    handle.input("do the work").await.expect("input");
+    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    // the configured check is what gated the first finish: a repair round names it
+    let repair = wait_event_where("completion_repair", &handle, 5_000, |_| true).await;
+    assert_eq!(repair["payload"]["failures"][0]["check_id"], json!("marker"));
+    let events = handle.events(0).await.unwrap();
+    let rounds: Vec<_> = events.iter().filter(|e| e["kind"] == json!("check_round_registered")).collect();
+    assert_eq!(rounds.len(), 2, "the check ran once per finish: {rounds:?}");
+    assert!(root.dir.join("ws").join("done-marker").exists());
     handle.shutdown().await.expect("shutdown");
 }
 
@@ -1319,4 +1367,24 @@ async fn spawn_resolves_the_requested_workspace_policy() {
     assert!(last.contains("unknown workspace"), "an unknown policy is refused: {last}");
     assert!(!root.dir.join("state/instances/i-bad").exists(), "nothing was prepared for the refused spawn");
     handle.shutdown().await.expect("shutdown");
+}
+
+/// A crashed driver releases its coordinator lock: the next start on the same
+/// state root must acquire it (the fork/exec window that used to make this fail
+/// is absorbed by `jobs::state_lock`; see D-51).
+#[tokio::test]
+async fn a_crashed_driver_releases_its_coordinator_lock() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let root = root("crash-relock");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    for round in 0..3 {
+        let hanging = ScriptedProvider { script: Mutex::new(vec![Step::Hang].into()) };
+        let handle = start(root.config(hanging)).await.expect("start");
+        handle.input("do work").await.expect("input");
+        wait_phase(&handle, "MODEL_PENDING", 5_000).await;
+        handle.crash().await;
+        let recovering = ScriptedProvider { script: Mutex::new(vec![Step::Message(finish_call("ok"))].into()) };
+        let handle = start(root.config(recovering)).await.unwrap_or_else(|e| panic!("round {round}: {e}"));
+        handle.crash().await;
+    }
 }

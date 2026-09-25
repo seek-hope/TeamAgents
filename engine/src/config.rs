@@ -1,5 +1,6 @@
 //! User config and XDG paths.
 
+use serde_json::{json, Value as Json};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use teamagents_core::models::{ModelProfile, UserConfig};
@@ -197,7 +198,7 @@ pub fn load_user_config(path: &Path) -> Result<UserConfig, String> {
 /// so `every_user_config_field_is_accepted` fails the moment a field is added and
 /// forgotten here — a silent drop would make the feature inert, which is exactly
 /// what happened to `[retention]` and `[hooks]` before that test existed.
-const CATALOG_KEYS: &[&str] = &["models", "tools", "skills_paths", "instruction_files", "retention", "hooks"];
+const CATALOG_KEYS: &[&str] = &["models", "tools", "skills_paths", "instruction_files", "retention", "hooks", "checks"];
 
 pub fn parse_user_config(text: &str) -> Result<UserConfig, String> {
     let value: toml::Value = text.parse().map_err(|e| format!("bad TOML: {e}"))?;
@@ -211,7 +212,54 @@ pub fn parse_user_config(text: &str) -> Result<UserConfig, String> {
             filtered.insert(key.to_string(), v.clone());
         }
     }
-    toml::Value::Table(filtered).try_into().map_err(|e| format!("bad config: {e}"))
+    let catalog: UserConfig = toml::Value::Table(filtered).try_into().map_err(|e| format!("bad config: {e}"))?;
+    validate_checks(&catalog)?;
+    Ok(catalog)
+}
+
+/// The goal limits the runtime boots with (`create_goal limits`): the user's
+/// acceptance checks, or `{}` when none are configured — the shape travels
+/// through the same validation the control plane applies, so the config edge
+/// and the `create_goal` gate can never disagree.
+pub fn goal_limits(catalog: &UserConfig) -> Result<Json, String> {
+    if catalog.checks.is_empty() {
+        return Ok(json!({}));
+    }
+    let checks = Json::Array(catalog.checks.iter().map(|check| check.to_json()).collect());
+    teamagents_core::v2::validate_required_checks(&checks)
+        .map_err(|e| format!("configured [[checks]] are not usable: {e}"))?;
+    Ok(json!({"required_checks": checks}))
+}
+
+/// Reject a broken `[[checks]]` entry at load time (doctor and every entry
+/// point report it), never at the completion boundary where the goal would
+/// just fail to settle.
+fn validate_checks(catalog: &UserConfig) -> Result<(), String> {
+    for check in &catalog.checks {
+        if check.id.trim().is_empty() {
+            return Err("[[checks]] needs a non-empty id".into());
+        }
+        if check.command.trim().is_empty() {
+            return Err(format!("[[checks]] {}: command must not be empty", check.id));
+        }
+        if let Some(timeout) = check.timeout {
+            if timeout == 0 {
+                return Err(format!("[[checks]] {}: timeout must be a positive number of seconds", check.id));
+            }
+        }
+        for input in &check.inputs {
+            let relative = std::path::Path::new(input);
+            if relative.is_absolute()
+                || relative.components().any(|part| matches!(part, std::path::Component::ParentDir))
+            {
+                return Err(format!(
+                    "[[checks]] {}: input {input:?} must be a workspace-relative path without .. escapes",
+                    check.id
+                ));
+            }
+        }
+    }
+    goal_limits(catalog).map(|_| ())
 }
 
 /// api_key_env -> present in the environment (doctor output).
@@ -242,19 +290,23 @@ mod tests {
         std::fs::create_dir_all(root.join("config/teamagents")).unwrap();
         std::fs::write(
             root.join("config/teamagents/config.toml"),
-            "[models.m]\nprovider = \"openai\"\nmodel = \"x\"\n\n[hooks]\nnotify = [\"/bin/sh\", \"hook\"]\n\n[retention]\narchived_days = 30\n",
+            "[models.m]\nprovider = \"openai\"\nmodel = \"x\"\n\n[hooks]\nnotify = [\"/bin/sh\", \"hook\"]\n\n[retention]\narchived_days = 30\n\n[[checks]]\nid = \"mine\"\ncommand = \"true\"\n",
         )
         .unwrap();
         std::fs::create_dir_all(cwd.join(".teamagents")).unwrap();
         std::fs::write(
             cwd.join(".teamagents/config.toml"),
-            "[hooks]\nnotify = [\"/bin/echo\", \"evil\"]\n\n[retention]\narchived_days = 1\n",
+            "[hooks]\nnotify = [\"/bin/echo\", \"evil\"]\n\n[retention]\narchived_days = 1\n\n[[checks]]\nid = \"theirs\"\ncommand = \"rm -rf /\"\n",
         )
         .unwrap();
 
         let catalog = load_user_config_for(&cwd).unwrap();
         assert_eq!(catalog.hooks.notify, vec!["/bin/sh".to_string(), "hook".to_string()], "the user's hook is loaded");
         assert_eq!(catalog.retention.archived_days, 30, "and so is the user's retention policy");
+        // A project must not be able to install an acceptance command: it runs
+        // unattended at every completion boundary.
+        let ids: Vec<&str> = catalog.checks.iter().map(|check| check.id.as_str()).collect();
+        assert_eq!(ids, vec!["mine"], "only the user's own checks load");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -291,6 +343,60 @@ notify = ["/bin/sh", "-c", "echo hi", "hook"]
         assert_eq!(cfg.retention.archived_days, 30);
         assert_eq!(cfg.retention.history_days, 7);
         assert_eq!(cfg.hooks.notify.first().map(String::as_str), Some("/bin/sh"), "hooks configure a command");
+    }
+
+    /// The user's acceptance checks (`[[checks]]`) reach the goal exactly in the
+    /// shape the runtime's check boundary reads: absent fields stay absent,
+    /// because a JSON `null` would be rejected by the `create_goal` gate.
+    #[test]
+    fn user_checks_become_goal_limits() {
+        let cfg = parse_user_config(
+            r#"
+[models.m]
+provider = "openai"
+model = "x"
+
+[[checks]]
+id = "tests"
+command = "cargo test --offline"
+timeout = 600
+inputs = ["src", "Cargo.toml"]
+
+[[checks]]
+id = "docs"
+command = "test -s README.md"
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.checks.len(), 2);
+        let limits = goal_limits(&cfg).unwrap();
+        let checks = limits["required_checks"].as_array().unwrap();
+        assert_eq!(checks[0]["id"], json!("tests"));
+        assert_eq!(checks[0]["command"], json!("cargo test --offline"));
+        assert_eq!(checks[0]["timeout"], json!(600));
+        assert_eq!(checks[0]["inputs"], json!(["src", "Cargo.toml"]));
+        assert!(checks[0].get("network").is_none(), "an unset flag stays absent: {}", checks[0]);
+        assert_eq!(checks[1]["id"], json!("docs"));
+        assert!(checks[1].get("timeout").is_none(), "no `null` timeout may reach create_goal: {}", checks[1]);
+        // no configured check leaves the goal limits empty (the runtime then
+        // settles on the candidate alone)
+        assert_eq!(goal_limits(&UserConfig::default()).unwrap(), json!({}));
+    }
+
+    /// A broken check fails at load time with the check's own id, not at the
+    /// completion boundary where the goal would silently never settle.
+    #[test]
+    fn a_broken_check_is_rejected_when_the_config_loads() {
+        for (label, body) in [
+            ("empty command", "[[checks]]\nid = \"c\"\ncommand = \"\"\n"),
+            ("zero timeout", "[[checks]]\nid = \"c\"\ncommand = \"true\"\ntimeout = 0\n"),
+            ("escaping input", "[[checks]]\nid = \"c\"\ncommand = \"true\"\ninputs = [\"../outside\"]\n"),
+            ("absolute input", "[[checks]]\nid = \"c\"\ncommand = \"true\"\ninputs = [\"/etc/passwd\"]\n"),
+        ] {
+            let error = parse_user_config(&format!("[models.m]\nprovider = \"openai\"\nmodel = \"x\"\n\n{body}"))
+                .expect_err(&format!("{label} must be refused"));
+            assert!(error.contains("checks") || error.contains("id"), "{label}: the message names the check: {error}");
+        }
     }
 
     #[test]
@@ -417,9 +523,11 @@ pub fn load_user_config_for(cwd: &Path) -> Result<UserConfig, String> {
     }
     merged.insert("skills_paths".into(), toml::Value::Array(skills));
     merged.insert("instruction_files".into(), toml::Value::Array(instructions));
-    // hooks run commands and retention deletes data: both are the user's own
-    // policy, never a cloned project's (a repo must not be able to install one)
-    for key in ["retention", "hooks"] {
+    // hooks and checks run commands and retention deletes data: all three are
+    // the user's own policy, never a cloned project's (a repo must not be able
+    // to install one, and an acceptance check is a command that runs without an
+    // approval prompt at the completion boundary)
+    for key in ["retention", "hooks", "checks"] {
         if let Some(value) = user.get(key) {
             merged.insert(key.into(), value.clone());
         }
@@ -430,6 +538,7 @@ pub fn load_user_config_for(cwd: &Path) -> Result<UserConfig, String> {
     let _ = empty;
     let catalog: UserConfig = toml::Value::Table(merged).try_into().map_err(|e| format!("bad config: {e}"))?;
     validate_configured_paths(&catalog)?;
+    validate_checks(&catalog)?;
     Ok(catalog)
 }
 

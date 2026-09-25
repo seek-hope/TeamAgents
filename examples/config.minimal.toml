@@ -12,3 +12,15 @@ api_key_env = "DEEPSEEK_API_KEY"
 timeout = 120
 max_retries = 2
 generation_options = { reasoning_effort = "max" }
+
+# Acceptance checks (optional): machine contracts the runtime runs at the
+# completion boundary, in the isolated shell, before a goal may be reported as
+# done. A failing check sends the work back for repair and then blocks the goal
+# instead of letting a summary claim success. They can only come from this user
+# config, never from a cloned project.
+# [[checks]]
+# id = "tests"
+# command = "cargo test --offline"
+# inputs = ["src", "Cargo.toml"]   # optional: hashes bind the result to these inputs
+# timeout = 600                    # optional seconds (default: the shell tool's)
+# network = false                  # optional: the sandbox is offline by default

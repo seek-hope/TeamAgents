@@ -14,6 +14,7 @@ pub mod runner;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::time::Duration;
 
 /// The fixed dispatch input for one job (written by the driver as job.json).
 /// Built from the same `ShellCommandSpec` the synchronous shell path uses,
@@ -156,9 +157,23 @@ pub fn atomic_json<T: Serialize>(path: &std::path::Path, value: &T) -> Result<()
     Ok(())
 }
 
-/// One coordinator per state root (§6.1): an OS file lock whose descriptor
-/// is never inherited by tool children (std sets CLOEXEC).
+/// How long a coordinator waits for a lock that is momentarily busy. A
+/// `Command::spawn` (a shell-job runner, an MCP server, a hook) forks a child
+/// that inherits the whole file-descriptor table; `CLOEXEC` closes the lock in
+/// that child at exec, but until then the child's copy keeps the lock alive.
+/// A restart that lands in that window must wait a moment, not fail: the kernel
+/// still grants the lock to exactly one holder, so exclusivity is unchanged.
+const LOCK_WAIT: Duration = Duration::from_secs(2);
+const LOCK_STEP: Duration = Duration::from_millis(10);
+
+/// One coordinator per state root (§6.1): an OS file lock whose descriptor is
+/// never inherited by tool children (std sets CLOEXEC) beyond the instant
+/// between `fork` and `exec`.
 pub fn state_lock(path: &std::path::Path) -> Result<std::fs::File, String> {
+    state_lock_waiting(path, LOCK_WAIT)
+}
+
+fn state_lock_waiting(path: &std::path::Path, wait: Duration) -> Result<std::fs::File, String> {
     let lock = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -166,6 +181,67 @@ pub fn state_lock(path: &std::path::Path) -> Result<std::fs::File, String> {
         .write(true)
         .open(path)
         .map_err(|e| format!("open lock {}: {e}", path.display()))?;
-    lock.try_lock().map_err(|e| format!("state root already has a coordinator: {e}"))?;
-    Ok(lock)
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        match lock.try_lock() {
+            Ok(()) => return Ok(lock),
+            // a real holder (another coordinator) outlives the window
+            Err(error) if std::time::Instant::now() >= deadline => {
+                return Err(format!("state root already has a coordinator: {error}"));
+            }
+            Err(std::fs::TryLockError::WouldBlock) => std::thread::sleep(LOCK_STEP),
+            // a filesystem that cannot lock at all is a real error, not busy
+            Err(error) => return Err(format!("cannot lock {}: {error}", path.display())),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{state_lock, state_lock_waiting};
+    use std::time::{Duration, Instant};
+
+    fn temp_path(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("ta-state-lock-{tag}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("coordinator.lock")
+    }
+
+    /// The window between `fork` and `exec` keeps an inherited lock alive for an
+    /// instant: a restart that lands in it waits and then succeeds, instead of
+    /// reporting a coordinator that is not really there.
+    #[test]
+    fn a_momentarily_held_lock_is_absorbed() {
+        let path = temp_path("absorb");
+        let holder = state_lock(&path).unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(60));
+            drop(holder);
+        });
+        let started = Instant::now();
+        let taken = state_lock_waiting(&path, Duration::from_secs(2)).expect("the window closes");
+        assert!(started.elapsed() >= Duration::from_millis(40), "it must actually wait, not steal the lock");
+        drop(taken);
+        release.join().unwrap();
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// A real second coordinator keeps the lock: the wait is bounded and the
+    /// refusal still names the state-root rule (A33).
+    #[test]
+    fn a_live_holder_is_refused_after_the_wait() {
+        let path = temp_path("refuse");
+        let _holder = state_lock(&path).unwrap();
+        let error = state_lock_waiting(&path, Duration::from_millis(80)).expect_err("a live holder wins");
+        assert!(error.contains("state root already has a coordinator"), "{error}");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// The default wait is short enough not to stall a real refusal and long
+    /// enough to cover a fork/exec window.
+    #[test]
+    fn the_default_wait_is_bounded() {
+        assert!(super::LOCK_WAIT >= Duration::from_millis(500) && super::LOCK_WAIT <= Duration::from_secs(5));
+        assert!(super::LOCK_STEP < super::LOCK_WAIT);
+    }
 }

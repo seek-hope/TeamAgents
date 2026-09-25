@@ -176,12 +176,16 @@ and `t` terminates (with confirmation); in the tasks panel `c` cancels a task; i
 
 ## Configuration and team
 
-- The user config `$XDG_CONFIG_HOME/teamagents/config.toml` is read first, then the project config
-  `<cwd>/.teamagents/config.toml` (the user config wins on conflicts; project tool bindings need
-  `[permissions] trust_project_tools = true`).
+- The user config `$XDG_CONFIG_HOME/teamagents/config.toml` is what a session reads. A project config
+  `<cwd>/.teamagents/config.toml` is **not wired into the daemon yet**: the merge loader and its trust rules
+  (`[permissions] trust_project_tools = true` for project tools) exist and are unit-tested, but no entry
+  point calls them, so a repository cannot influence a session today (see `docs/ACCEPTANCE.md`).
 - A model profile selects its wire format with `protocol = "responses" | "anthropic" | "openai" |
   "deepseek"`; `base_url` plus `model` decide the actual service, and credentials are only referenced by
   environment-variable name.
+- `[[checks]]` in the user config (never in a project file) are the machine contracts a goal must satisfy:
+  the runtime runs them in the isolated shell at the completion boundary, so a failing check returns the work
+  for repair instead of letting a summary claim success.
 - The Leader forms the team at runtime (`spawn` / `delegate` / `send` / `wait`); there is no static team
   definition file.
 - Tool bindings as authorization, the approval semantics, Skills/MCP, retention and failure handling are in

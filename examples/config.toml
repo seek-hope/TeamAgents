@@ -60,6 +60,25 @@ generation_options = { reasoning_effort = "max" }    # default effort; tests use
 
 # --- tool bindings (instances reference them by name; binding is the authorization) ---
 
+# Acceptance checks (optional): when a goal claims "done", the runtime runs these
+# commands in the isolated shell inside the workspace and only then settles the
+# goal. A failing check returns the work for repair (bounded rounds) and finally
+# blocks the goal with the failing ids. `inputs` are workspace-relative paths
+# whose hashes are re-verified before completion (A17); `network = true` is
+# needed for a check that must reach the network. Only the user config may
+# define checks — a project file cannot install one.
+#
+# Example:
+# [[checks]]
+# id = "tests"
+# command = "cargo test --offline"
+# inputs = ["src", "Cargo.toml"]
+# timeout = 900
+#
+# [[checks]]
+# id = "cli-smoke"
+# command = "target/debug/teamagents --version"
+
 [tools.web]
 kind = "web_search"
 provider = "anysearch"

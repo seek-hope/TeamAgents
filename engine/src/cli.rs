@@ -195,6 +195,19 @@ pub fn doctor(state_root: Option<PathBuf>) -> i32 {
             };
             check(&mut results, label, runnable, format!("{argv:?}"));
         }
+        // a configured check runs unattended at the completion boundary, so the
+        // user should see exactly which commands will gate their goals
+        optional_check(
+            &mut results,
+            "completion checks",
+            !catalog.checks.is_empty(),
+            if catalog.checks.is_empty() {
+                "none configured: a goal settles on the model's own report ([[checks]] in the user config adds machine-checked acceptance)".into()
+            } else {
+                let ids: Vec<&str> = catalog.checks.iter().map(|check| check.id.as_str()).collect();
+                format!("{} configured and run at the completion boundary: {}", catalog.checks.len(), ids.join(", "))
+            },
+        );
         if catalog.retention.archived_days > 0 || catalog.retention.history_days > 0 {
             check(
                 &mut results,
@@ -312,7 +325,8 @@ fn daemon_boot(
             max_retries: 2,
             storage_queue: 256,
             poll: Duration::from_millis(100),
-            goal_limits: json!({}),
+            // the user's acceptance checks gate every goal this session runs
+            goal_limits: crate::config::goal_limits(&catalog_for_factory)?,
             require_shell_approval: !full_auto,
             provider_factory: move |_id: &str, profile: &KernelProfile| {
                 crate::providers::build_for_model(&catalog_for_factory, &profile.model)

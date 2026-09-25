@@ -288,3 +288,80 @@ fn exec_takes_the_prompt_from_stdin_and_runs_the_acceptance_check() {
     drop(client);
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// The acceptance checks a user writes in `[[checks]]` really reach the goal the
+/// runtime boots: the daemon stores them in the goal's `limits_json`, which is
+/// exactly what the completion boundary reads (the gate itself is covered by
+/// `v2_driver::configured_checks_gate_the_goal_through_the_config_edge`).
+#[test]
+fn the_daemon_carries_configured_checks_into_the_goal() {
+    let root = std::env::temp_dir().join(format!("ta-checks-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let (config_home, state) = (root.join("config"), root.join("root"));
+    std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
+    std::fs::write(
+        config_home.join("teamagents/config.toml"),
+        "[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\n\
+         api_key_env = \"TA_CHECKS_KEY\"\nbase_url = \"http://127.0.0.1:1/v1\"\n\n\
+         [[checks]]\nid = \"tests\"\ncommand = \"cargo test --offline\"\ntimeout = 600\ninputs = [\"src\"]\n\n\
+         [[checks]]\nid = \"docs\"\ncommand = \"test -s README.md\"\n",
+    )
+    .unwrap();
+    let env = |command: &mut Command| {
+        command
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("XDG_STATE_HOME", root.join("state"))
+            .env("TA_CHECKS_KEY", "test-value");
+    };
+
+    // doctor reports what will gate every goal in this session
+    let mut doctor = Command::new(env!("CARGO_BIN_EXE_teamagents"));
+    env(&mut doctor);
+    let doctor = doctor.arg("doctor").output().expect("run doctor");
+    let text = format!("{}{}", String::from_utf8_lossy(&doctor.stdout), String::from_utf8_lossy(&doctor.stderr));
+    assert!(text.contains("2 configured and run at the completion boundary: tests, docs"), "{text}");
+
+    let mut daemon = Command::new(env!("CARGO_BIN_EXE_teamagents"));
+    env(&mut daemon);
+    let daemon = daemon
+        .args(["daemon", "--state-root"])
+        .arg(&state)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("start the daemon");
+    let _daemon = Daemon(daemon);
+    let socket = state.join("daemon.sock");
+    for _ in 0..200 {
+        if socket.exists() && std::os::unix::net::UnixStream::connect(&socket).is_ok() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+
+    // the goal is created at bootstrap: read the stored limits until it lands
+    let db = state.join("session.sqlite");
+    let mut limits = String::new();
+    for _ in 0..200 {
+        if let Ok(control) = teamagents_core::v2::Control::open(&db, "test", false) {
+            if let Ok(stored) = control
+                .connection()
+                .query_row("SELECT limits_json FROM goals LIMIT 1", [], |row| row.get::<_, String>(0))
+            {
+                limits = stored;
+                break;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let limits: serde_json::Value = serde_json::from_str(&limits).expect("the goal carries limits");
+    let checks = limits["required_checks"].as_array().unwrap_or_else(|| panic!("no checks in {limits}"));
+    assert_eq!(checks.len(), 2, "{limits}");
+    assert_eq!(checks[0]["id"], "tests");
+    assert_eq!(checks[0]["command"], "cargo test --offline");
+    assert_eq!(checks[0]["timeout"], 600);
+    assert_eq!(checks[0]["inputs"], serde_json::json!(["src"]));
+    assert!(checks[0].get("network").is_none(), "an unset flag stays absent: {}", checks[0]);
+    assert_eq!(checks[1]["id"], "docs");
+    let _ = std::fs::remove_dir_all(&root);
+}

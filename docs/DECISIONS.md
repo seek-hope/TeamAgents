@@ -231,6 +231,79 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-51 The coordinator lock absorbs the fork/exec window (2026-09-25)
+
+`make check` failed intermittently (roughly every second run on a loaded machine) with
+`state root already has a coordinator: … the operation would block`, always in a test that restarts a
+coordinator after a simulated crash (`v2_driver`'s two crash tests, `v2_mcp`'s recovered-dispatch test). The
+failure reproduced on unmodified `HEAD` (a pristine `git archive` copy failed the same way), so it was not a
+regression from the work in D-49/D-50 — it was a real hazard the tests happened to trip.
+
+**Root cause.** `jobs::state_lock` holds the coordinator lock with `flock` on a `File` opened `CLOEXEC`, which
+is what the design means by "never inherited by tool children" (§6.1). But `CLOEXEC` only takes effect at
+`exec`: `Command::spawn` (a shell-job runner, an MCP server, a hook) forks a child that, until it execs,
+inherits the *entire* descriptor table of the process — including every coordinator lock any thread is
+holding. During that window the lock is genuinely alive, so a `try_lock` from another thread or process gets
+`EWOULDBLOCK` and the restart reports a coordinator that is about to disappear. Under load the window widens
+(the child is not scheduled promptly), which is exactly when the failures clustered; with the whole suite
+serialised or the tests run alone, the window never overlapped the restart.
+
+The probe evidence: on a failing run the lock file had exactly one descriptor in the panicking process (the
+fresh one) while a *different* process whose `cmdline` was still the test binary held an inherited descriptor
+to the same file — a pre-`exec` child. A 25-round sequential `start → crash → start` loop on one state root
+never failed, which ruled out a leaked handle; only the concurrent-spawn case did.
+
+**Fix.** `jobs::state_lock` now waits up to two seconds (10 ms steps) for a busy lock instead of failing
+immediately, and still fails with the same message once the wait is over. Exclusivity is unchanged — the
+kernel grants the lock to exactly one holder, and a genuine second coordinator keeps it for far longer than
+the window, so A33's "a second daemon is refused" still holds (it just takes the bounded wait to say so).
+A filesystem that cannot lock at all (any error other than `WouldBlock`) still fails immediately, because
+that is a hard error rather than a busy lock.
+
+While chasing it, a second, unrelated flake surfaced once in a five-run loop: `budget_exhaustion_parks_the_instance`
+and `goal_deadline_parks_the_instance` read the lifecycle once, immediately after the refusal event. The park is
+a separate committed step from the refusal, so under load the snapshot could still show `ACTIVE`. Both tests now
+wait for the lifecycle they assert on (`wait_lifecycle`, alongside the existing `wait_phase`), which is what they
+meant in the first place; the product behaviour was correct.
+
+Evidence: `jobs::tests::a_momentarily_held_lock_is_absorbed` (a short hold is absorbed and the winner waited),
+`a_live_holder_is_refused_after_the_wait` (a live holder still loses, with the A33 message),
+`the_default_wait_is_bounded`; `v2_driver::a_crashed_driver_releases_its_coordinator_lock` covers the release
+contract itself. After both fixes, `make check` ran green five times in a row under exactly the conditions that
+failed in roughly half of the earlier runs (four runs before the second fix: no lock failure remained, one
+lifecycle-race failure).
+
+## D-50 User-defined completion checks become reachable (2026-09-25)
+
+The design requires that "required checks defined by the user or project must pass" (§8, Q11) and the runtime
+implements the whole path — `create_goal limits.required_checks` → the driver registers the check operations
+at the completion boundary → a failing check enters repair and finally blocks the goal (A16/A17). What was
+missing was any way for a *user* to define them: the goal limits were hardcoded to `{}` in `cli::daemon`, so
+in practice every real session settled on the model's own report. D-49 recorded that as the ceiling; this item
+closes it with the smallest surface that fits the existing conventions.
+
+- **`[[checks]]` in the user config** (`id`, `command`, optional `timeout`, `network`, `inputs`) is now the
+  user's acceptance contract. `config::goal_limits` turns it into the goal limits the daemon boots with, and
+  the *same* core validator that guards `create_goal` runs at config load — so the config edge and the control
+  plane cannot disagree, and a broken entry (empty command, `timeout = 0`, an escaping input) fails `doctor`
+  and every entry point instead of a goal silently never settling.
+- **User config only**: `checks` joins `hooks` and `retention` in the list of sections a project file may not
+  define. A check runs unattended at the completion boundary without an approval prompt, so letting a cloned
+  repository install one would be remote code execution by config. (Wiring the project config into the daemon
+  at all is a separate, still-open question; today only the loader knows about it.)
+- `doctor` reports how many checks will gate the session and which ids they are, and `[[checks]]` is
+  documented in `examples/config.minimal.toml`, `examples/config.toml` and the user guide (§2.1).
+- The headless client's `--check` (D-49) keeps its v1 semantics and is documented as the *weaker*, client-side
+  acceptance command: it decides `exec`'s exit code after the turn, while a runtime check prevents the goal
+  from settling at all.
+
+Evidence: `config::tests::user_checks_become_goal_limits` (the exact JSON shape; no `null` field may reach
+`create_goal`) and `a_broken_check_is_rejected_when_the_config_loads`; the user-only rule in
+`config::tests::user_hooks_and_retention_survive_loading_and_project_ones_are_ignored`;
+`v2_driver::configured_checks_gate_the_goal_through_the_config_edge` drives config text → goal limits →
+a failing check → repair → `SUCCEEDED`; `cli::the_daemon_carries_configured_checks_into_the_goal` proves the
+running daemon stores them on the goal and that `doctor` reports them.
+
 ## D-49 The headless `exec` contract is real again (2026-09-25)
 
 While comparing the product surface with the code, the headless entry point turned out to be documented but
@@ -262,11 +335,11 @@ The restored contract is the v1/D-32 one, which is what both READMEs already pro
   caller reports its own words (and that path) in under a second instead of waiting the full 30-second
   socket window.
 
-**Not landed, and needing a confirmation first**: `--check` is a *client-side* acceptance command, so it does
-not become the goal's runtime `required_checks` (`limits.required_checks`, executed by the driver at the
-completion boundary, D-42/§8). There is still no user surface that predefines those runtime checks, and
-amending a running session's goal limits would be new protocol surface — that stays a question for the user
-rather than a silent invention.
+**Left open at the time**: `--check` is a *client-side* acceptance command, so it does not become the goal's
+runtime `required_checks` (`limits.required_checks`, executed by the driver at the completion boundary,
+D-42/§8), and no user surface predefined those. D-50 closes that gap with `[[checks]]` in the user config and
+keeps the two clearly distinguished; amending the goal limits of an *already running* session is still not
+offered (it would be new protocol surface, and it has no user request behind it).
 
 Evidence: `v2::exec::tests::exit_codes_follow_the_documented_contract`,
 `the_check_verdict_reads_the_wrapper_marker`,

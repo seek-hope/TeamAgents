@@ -6,7 +6,7 @@ Baseline: [the design and acceptance baseline](DESIGN.md) §12/§16. Current imp
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 91 / engine 149 / tui 24 test targets) and `make pty` passes; both are
+`make check` is green (core 91 / engine 157 / tui 24 test targets) and `make pty` passes; both are
 preconditions for every item below. `make check` includes `make language-check`, which fails on non-English
 characters outside the two documented exceptions (`README.zh-CN.md` and the frozen material under
 `review/eval`).
@@ -30,8 +30,8 @@ characters outside the two documented exceptions (`README.zh-CN.md` and the froz
 | A13 | Cancel / timeout / completion races | `jobs_runner::cancel_*`, `v2_driver::user_cancel_stops_a_running_job` |
 | A14 | bubblewrap unavailable | `tools.rs` `IsolationUnavailable`; measured classified failure inside the sandbox (no host fallback) |
 | A15 | Environment identity | the runner persists and verifies pid + boot_id + start_ticks (`jobs_runner`) |
-| A16 | A required check fails | `v2_driver::required_checks_failure_repairs_then_passes`, `required_checks_exhausted_parks_the_goal_blocked` |
-| A17 | Artifacts change after a check | `v2_driver::check_inputs_must_still_hold_at_completion` |
+| A16 | A required check fails | `v2_driver::required_checks_failure_repairs_then_passes`, `required_checks_exhausted_parks_the_goal_blocked`, and the user-facing path `v2_driver::configured_checks_gate_the_goal_through_the_config_edge` (`[[checks]]` → goal limits → repair → success); `cli::the_daemon_carries_configured_checks_into_the_goal` |
+| A17 | Artifacts change after a check | `v2_driver::check_inputs_must_still_hold_at_completion`; a configured check's `inputs` reach the goal unchanged (`config::tests::user_checks_become_goal_limits`) |
 | A18 | Multi-instance usage budget | `control::a_worker_shares_the_budget_of_the_goal_its_queue_serves` and related |
 | A19 | Truncated stream and connection loss | `providers_fake::truncated_stream_before_output_is_transient`, `providers_stall::*` |
 | A20 | Restart after long-context compaction | `control::compression_*`, `v2_driver::long_context_compacts_before_the_turn_and_survives_a_restart` |
@@ -65,8 +65,10 @@ A-matrix (which describes runtime scenarios):
 | `--check COMMAND` runs after the turn in the isolated shell in the client's workspace, stops at the first failure, gates the exit code and writes `<state root>/verification.json` | `v2::exec::tests::acceptance_commands_run_in_order_and_stop_at_the_first_failure`, `the_check_verdict_reads_the_wrapper_marker`; `v2_daemon::headless_runs_verify_the_acceptance_commands_and_gate_the_exit_code`, `a_failing_acceptance_command_fails_the_run`; `cli::exec_takes_the_prompt_from_stdin_and_runs_the_acceptance_check` (the real binary writes the ledger) |
 | A parked or paused leader refuses new input (`2`) instead of queueing it | `v2_daemon::a_failed_turn_ends_the_headless_run_instead_of_timing_out` (the failed turn parks the leader; the next run refuses with "nothing was submitted") |
 
-Known ceiling: `--check` is a **client-side** acceptance command; it does not become the goal's runtime
-`required_checks`, and no user surface predefines those yet (see D-49 and `docs/USER-GUIDE.md` §3).
+`--check` is a **client-side** acceptance command: it decides `exec`'s exit code after the turn. The goal's
+runtime `required_checks` are the stronger contract and come from the user config's `[[checks]]` (D-50,
+`docs/USER-GUIDE.md` §2.1); a project file may not define them, and a running session's goal limits cannot be
+amended (D-49/D-50).
 
 ## Upgrade notes (differences from earlier releases)
 
@@ -77,3 +79,13 @@ Known ceiling: `--check` is a **client-side** acceptance command; it does not be
 - The old entry points `--team` / `--resume` / `--plain` / `validate` / `sessions prune` no longer exist: the
   Leader forms the team at runtime and the daemon reconnects by event watermark, with `teamagents exec` as
   the headless entry point. Passing those arguments fails with a clear message instead of being ignored.
+
+## Known gaps (found while auditing the documented surface, 2026-09-25)
+
+- **The project config is not read.** `config::load_user_config_for` merges `<cwd>/.teamagents/config.toml`
+  with the documented trust rules (project models are allowed, project tools/skills/instructions need
+  `[permissions] trust_project_tools = true`, and hooks/retention/checks may only come from the user config),
+  and it has tests, but no entry point calls it: the daemon, TUI and `exec` load the user config only. The
+  README and the user guide now state this instead of promising the project file. Wiring it is a decision,
+  because it changes what a cloned repository can influence (including a malformed project file failing the
+  session start) — it needs the user's call before it lands.

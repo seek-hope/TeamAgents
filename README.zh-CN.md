@@ -164,11 +164,14 @@ TUI 键位（与屏幕底部提示一致；**刻意不使用 F 键**，因为部
 
 ## 配置与团队
 
-- 先读用户配置 `$XDG_CONFIG_HOME/teamagents/config.toml`，再合并项目配置
-  `<cwd>/.teamagents/config.toml`（同名条以用户配置优先；项目工具绑定需
-  `[permissions] trust_project_tools = true`）。
+- 会话只读用户配置 `$XDG_CONFIG_HOME/teamagents/config.toml`。项目配置
+  `<cwd>/.teamagents/config.toml` **还没有接进入口**：合并加载器及其信任规则
+  （项目工具需 `[permissions] trust_project_tools = true`）已经实现并有单测，但 daemon / TUI / `exec`
+  都没有调用它，所以克隆一个仓库目前影响不了会话（见 `docs/ACCEPTANCE.md`）。
 - 模型 profile 用 `protocol = "responses" | "anthropic" | "openai" | "deepseek"` 选线上格式，
   `base_url` + `model` 决定实际接哪家；密钥只写环境变量名。
+- 用户配置里的 `[[checks]]` 是"完成验收"的机器契约（只允许写在用户配置，项目文件不能定义）：
+  目标声称完成时运行时会在隔离 shell 里执行这些命令，检查不过就打回修复，而不是让总结直接算成功。
 - 组队由 Leader 在运行时按目标决定（`spawn`/`delegate`/`send`/`wait`），没有静态团队定义文件。
 - 工具绑定即授权、批准语义、Skills/MCP、会话保留策略、故障处理：见
   [用户指南](docs/USER-GUIDE.md)。

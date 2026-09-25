@@ -120,7 +120,57 @@ pub struct UserConfig {
     pub retention: Retention,
     #[serde(default)]
     pub hooks: Hooks,
+    /// Acceptance checks the user predefines for every goal (DESIGN §8, Q11):
+    /// the runtime runs them in the isolated shell at the completion boundary,
+    /// so a goal cannot be reported as done while a check fails. They are the
+    /// user's own machine contracts, never conditions a model extracted.
+    #[serde(default)]
+    pub checks: Vec<CheckSpec>,
 }
+
+/// One user-defined acceptance check (`[[checks]]` in the config).
+///
+/// The four fields mirror what the runtime's check boundary understands:
+/// `timeout`, `network` and `inputs` are optional, and `inputs` are
+/// workspace-relative paths whose hashes bind the result to the artifact
+/// versions observed when the check ran (A17).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct CheckSpec {
+    /// Stable id, used in failures, receipts and repair feedback.
+    pub id: String,
+    /// The command, executed through the same shell tool the model uses.
+    pub command: String,
+    /// Seconds; absent means the shell tool's own default.
+    #[serde(default)]
+    pub timeout: Option<u64>,
+    /// Run with network access (the sandbox is offline by default).
+    #[serde(default)]
+    pub network: bool,
+    /// Workspace-relative inputs the check reads.
+    #[serde(default)]
+    pub inputs: Vec<String>,
+}
+
+impl CheckSpec {
+    /// The check in the shape `create_goal limits.required_checks` stores and
+    /// the runtime reads: absent fields stay absent (a JSON `null` would not
+    /// survive the create_goal gate).
+    pub fn to_json(&self) -> serde_json::Value {
+        let mut value = serde_json::json!({"id": self.id, "command": self.command});
+        if let Some(timeout) = self.timeout {
+            value["timeout"] = serde_json::json!(timeout);
+        }
+        if self.network {
+            value["network"] = serde_json::json!(true);
+        }
+        if !self.inputs.is_empty() {
+            value["inputs"] = serde_json::json!(self.inputs);
+        }
+        value
+    }
+}
+
 /// Engine event hooks: a user-authored command, never a model-chosen one.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

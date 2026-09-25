@@ -6,4 +6,4 @@ pub mod control;
 pub mod models;
 pub mod store;
 
-pub use control::{Command, Control, Identity};
+pub use control::{validate_required_checks, Command, Control, Identity};

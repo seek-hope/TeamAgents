@@ -2984,7 +2984,10 @@ fn cancel_request(tx: &Connection, session_id: &str, params: &Json) -> Result<Js
 /// Shape check for goal-level required checks (§8): each check is a shell
 /// command the runtime executes at the completion boundary, with an optional
 /// timeout, network flag and declared inputs whose hashes bind the result.
-fn validate_required_checks(checks: &Json) -> Result<(), String> {
+/// Validation of the user-defined acceptance checks that `create_goal` stores
+/// (§8): the same gate the config edge uses, so a check that reaches the
+/// runtime is one the runtime can execute.
+pub fn validate_required_checks(checks: &Json) -> Result<(), String> {
     let list = checks.as_array().ok_or("limits.required_checks must be an array")?;
     for check in list {
         let id = check["id"].as_str().ok_or("limits.required_checks[].id required")?;
@@ -2995,6 +2998,11 @@ fn validate_required_checks(checks: &Json) -> Result<(), String> {
         if let Some(timeout) = check.get("timeout") {
             if timeout.as_u64().is_none_or(|t| t == 0) {
                 return Err("limits.required_checks[].timeout must be a positive number of seconds".into());
+            }
+        }
+        if let Some(network) = check.get("network") {
+            if network.as_bool().is_none() {
+                return Err("limits.required_checks[].network must be true/false".into());
             }
         }
         if let Some(inputs) = check.get("inputs") {
