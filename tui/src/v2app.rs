@@ -338,17 +338,43 @@ impl V2App {
                     self.note(format!("goal parked (BLOCKED): {}", payload["reason"].as_str().unwrap_or("")));
                 }
                 "check_round_registered" => {
-                    let count = payload["checks"].as_array().map(|c| c.len()).unwrap_or(0);
+                    // name the checks: a user waiting on a goal must see which
+                    // contracts are being verified, not just how many
+                    let ids: Vec<String> = payload["checks"]
+                        .as_array()
+                        .map(|checks| {
+                            checks.iter().filter_map(|check| check["id"].as_str().map(str::to_string)).collect()
+                        })
+                        .unwrap_or_default();
+                    let what = if ids.is_empty() { "no items".to_string() } else { ids.join(", ") };
                     self.note(format!(
-                        "completion check round {} started ({count} items)",
-                        payload["round"].as_i64().unwrap_or(0)
+                        "completion check round {} started: {what}",
+                        payload["round"].as_i64().unwrap_or(0),
                     ));
                 }
                 "completion_repair" => {
                     refresh.history = true;
+                    // say what failed: the failing check ids and their classes
+                    // are the actionable part of a repair round
+                    let failures: Vec<String> = payload["failures"]
+                        .as_array()
+                        .map(|failures| {
+                            failures
+                                .iter()
+                                .map(|failure| {
+                                    format!(
+                                        "{} ({})",
+                                        failure["check_id"].as_str().unwrap_or("?"),
+                                        failure["class"].as_str().unwrap_or("failed")
+                                    )
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let why = if failures.is_empty() { String::new() } else { format!(": {}", failures.join(", ")) };
                     self.note(format!(
-                        "completion check round {} failed, entering a repair turn",
-                        payload["round"].as_i64().unwrap_or(0)
+                        "completion check round {} failed{why}, entering a repair turn",
+                        payload["round"].as_i64().unwrap_or(0),
                     ));
                 }
                 "instance_spawned" => {

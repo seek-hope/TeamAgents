@@ -103,6 +103,9 @@ network = false                  # optional: the sandbox is offline by default
   re-verified before completion, so a check that passed against files that then changed does not count.
 - Checks are not asked through `pre_tool` (you already pre-authorized exactly these commands) and they skip
   the approval gate for the same reason.
+- The TUI reports each round by name (`completion check round 1 started: tests, docs`), the failure
+  (`completion check round 1 failed: tests (exit), entering a repair turn`) and the final block reason, so a
+  goal that is being repaired or parked explains itself instead of looking stuck.
 - A broken entry (empty `command`, `timeout = 0`, an escaping `input`) is refused when the config loads, so
   `doctor` and every entry point report it instead of a goal silently never settling.
 

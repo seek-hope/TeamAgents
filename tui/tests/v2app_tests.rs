@@ -123,9 +123,11 @@ fn events_drive_refreshes_and_notes() {
     let refresh = app.apply_events(&[
         json!({"sequence": 6, "kind": "input", "scope": "i-leader", "payload": {"envelope_id": "e1", "applied": true}}),
         json!({"sequence": 7, "kind": "check_round_registered", "scope": "g1",
-               "payload": {"goal_id": "g1", "round": 1, "checks": [{"id": "c1"}]}}),
+               "payload": {"goal_id": "g1", "round": 1,
+                           "checks": [{"id": "tests", "command": "cargo test"}, {"id": "docs"}]}}),
         json!({"sequence": 8, "kind": "completion_repair", "scope": "i-leader",
-               "payload": {"goal_id": "g1", "round": 1, "failures": []}}),
+               "payload": {"goal_id": "g1", "round": 1,
+                           "failures": [{"check_id": "tests", "class": "exit", "reason": "1 failed"}]}}),
         json!({"sequence": 9, "kind": "approval_requested", "scope": "op-1", "payload": {"approval_id": "ap-1"}}),
         json!({"sequence": 10, "kind": "operation_completed", "scope": "op-2", "payload": {"status": "OUTCOME_UNKNOWN"}}),
     ]);
@@ -134,8 +136,12 @@ fn events_drive_refreshes_and_notes() {
     assert!(!refresh.checkpoint);
     assert_eq!(app.watermark, 10);
     let notes: Vec<_> = app.entries.iter().filter(|e| e.kind == ChatKind::System).collect();
-    assert!(notes.iter().any(|n| n.text.contains("completion check round 1 started (1 items)")), "{notes:?}");
-    assert!(notes.iter().any(|n| n.text.contains("entering a repair turn")), "{notes:?}");
+    // the user sees which contracts are being verified and which one failed
+    assert!(notes.iter().any(|n| n.text.contains("completion check round 1 started: tests, docs")), "{notes:?}");
+    assert!(
+        notes.iter().any(|n| n.text.contains("completion check round 1 failed: tests (exit), entering a repair turn")),
+        "{notes:?}"
+    );
     assert!(notes.iter().any(|n| n.text.contains("unknown outcome")), "{notes:?}");
 }
 

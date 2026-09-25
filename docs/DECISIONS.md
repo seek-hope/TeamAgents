@@ -293,6 +293,8 @@ closes it with the smallest surface that fits the existing conventions.
   at all is a separate, still-open question; today only the loader knows about it.)
 - `doctor` reports how many checks will gate the session and which ids they are, and `[[checks]]` is
   documented in `examples/config.minimal.toml`, `examples/config.toml` and the user guide (§2.1).
+- The TUI names the checks of a round and the ids that failed (`v2app::apply_events`), so a goal being
+  repaired or parked explains itself while the check receipts show up in the conversation as tool results.
 - The headless client's `--check` (D-49) keeps its v1 semantics and is documented as the *weaker*, client-side
   acceptance command: it decides `exec`'s exit code after the turn, while a runtime check prevents the goal
   from settling at all.
@@ -302,7 +304,8 @@ Evidence: `config::tests::user_checks_become_goal_limits` (the exact JSON shape;
 `config::tests::user_hooks_and_retention_survive_loading_and_project_ones_are_ignored`;
 `v2_driver::configured_checks_gate_the_goal_through_the_config_edge` drives config text → goal limits →
 a failing check → repair → `SUCCEEDED`; `cli::the_daemon_carries_configured_checks_into_the_goal` proves the
-running daemon stores them on the goal and that `doctor` reports them.
+running daemon stores them on the goal and that `doctor` reports them;
+`tui::events_drive_refreshes_and_notes` checks that a round names its checks and a repair names the failing one.
 
 ## D-49 The headless `exec` contract is real again (2026-09-25)
 
