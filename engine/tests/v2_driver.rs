@@ -240,6 +240,13 @@ impl Provider for RecordingProvider {
         self.seen.lock().unwrap().push(json!({
             "messages": request.messages,
             "tools": request.tools.len(),
+            // the names too: what the model is *offered* is derived from the
+            // instance's grants, so a test can assert the team tools appear
+            "tool_names": request
+                .tools
+                .iter()
+                .filter_map(|tool| tool["function"]["name"].as_str().map(str::to_string))
+                .collect::<Vec<String>>(),
             "est_prompt_tokens": request.est_prompt_tokens,
         }));
         self.inner.complete(request, cancel, on_event).await
@@ -1078,6 +1085,75 @@ async fn an_ignored_finish_reaches_the_model_as_a_note() {
         .skip(1)
         .any(|request| request_text(request).contains("ignored finish: it must be the only tool call in its response"));
     assert!(saw_note, "the model must read the note: {:?}", requests.iter().map(request_text).collect::<Vec<_>>());
+    handle.shutdown().await.expect("shutdown");
+}
+
+/// A real session authorizes its Leader: the bootstrap grants manage/delegate/
+/// message over the session, so the *model* is offered the collaboration tools
+/// and can use them. Before this, a daemon session granted only shell@workspace:
+/// `team_kernel` derives the tool surface from the grants, so spawn/delegate/send
+/// never appeared and every attempt would have been refused — the team feature
+/// was unreachable from `teamagents`, `exec` and the daemon (D-58).
+#[tokio::test]
+async fn the_leader_is_authorized_to_build_the_team_by_default() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let root = root("team-authority");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    // the leader spawns a worker with a task, then finishes: no grant is issued
+    // by hand here, the session bootstrap has to provide the authority
+    let spawn = json!({"role": "assistant", "content": "",
+        "tool_calls": [{"id": "c-spawn", "type": "function",
+            "function": {"name": "spawn", "arguments": json!({"instance_id": "i-helper",
+                "instructions": "answer the question", "task": "compute 2+2 and settle it"}).to_string()}}]});
+    let script = vec![Step::Message(spawn), Step::Message(finish_call("delegated"))];
+    let (provider, seen) = recording(script);
+    let handle = start(root.config_with(provider)).await.expect("start");
+    handle.input("get 2+2 answered by a helper").await.expect("input");
+
+    // and the spawn really ran: the child instance exists with its task
+    let mut spawned = None;
+    for _ in 0..200 {
+        if let Ok(events) = handle.events(0).await {
+            if let Some(event) = events.iter().find(|event| event["kind"] == json!("instance_spawned")) {
+                spawned = Some(event.clone());
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let spawned = spawned.expect("the spawn must be authorized, not refused");
+    assert_eq!(spawned["scope"], json!("i-helper"));
+    assert_eq!(spawned["payload"]["spawner"], json!("i-main"));
+    assert_eq!(spawned["payload"]["task"], json!(true), "the spawn carried the task");
+
+    // the model sees the team tools on its very first request
+    let first = recorded(&seen).first().cloned().expect("a request");
+    let offered: Vec<String> = first["tool_names"]
+        .as_array()
+        .map(|names| names.iter().filter_map(|name| name.as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    for expected in ["spawn", "delegate", "send", "wait"] {
+        assert!(offered.contains(&expected.to_string()), "the leader must be offered {expected}: {offered:?}");
+    }
+
+    let grants = handle
+        .with_control(|control| {
+            let mut stmt = control
+                .connection()
+                .prepare("SELECT action, resource_scope FROM grants WHERE subject = 'i-main' AND revoked_at IS NULL")
+                .expect("prepare");
+            let rows =
+                stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))).expect("query");
+            rows.filter_map(|row| row.ok()).collect::<Vec<(String, String)>>()
+        })
+        .await
+        .expect("storage");
+    for action in ["manage", "delegate", "message"] {
+        assert!(
+            grants.iter().any(|(held, scope)| held == action && scope == "session"),
+            "the leader holds {action}@session: {grants:?}"
+        );
+    }
     handle.shutdown().await.expect("shutdown");
 }
 
