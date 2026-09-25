@@ -55,10 +55,6 @@ impl Anthropic {
         self.stall.unwrap_or_else(|| super::stream_stall_bound(self.timeout))
     }
 
-    pub fn official(api_key: impl Into<String>, timeout: Duration) -> Result<Self, String> {
-        Self::new("https://api.anthropic.com", api_key, timeout)
-    }
-
     fn body(&self, request: &ModelRequest) -> Json {
         // Cross-protocol continuation safety (pi-ai transform-messages): ids
         // minted under another protocol may violate this API's id rules.

@@ -2384,6 +2384,7 @@ fn blocked_report(tx: &Connection, session_id: &str, params: &Json, identity: &I
 }
 
 fn import_response(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
+    use super::models::REQUEST_KIND_TURN;
     let request_id = params["request_id"].as_str().ok_or("import_response.request_id required")?;
     let decision_id = params["decision_id"].as_str().ok_or("import_response.decision_id required")?;
     let entry_message = params.get("entry").ok_or("import_response.entry required")?;
@@ -2402,7 +2403,7 @@ fn import_response(tx: &Connection, session_id: &str, params: &Json, identity: &
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .map_err(|e| format!("import_response request {request_id}: {e}"))?;
-    if request_kind != "turn" {
+    if request_kind != REQUEST_KIND_TURN {
         // a compression request is answered by a summary, committed through
         // compress_context; importing it as a turn would append an assistant
         // entry and open operations on a request that only exists to shrink

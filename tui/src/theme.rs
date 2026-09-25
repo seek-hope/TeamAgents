@@ -18,7 +18,5 @@ pub const ERROR: Color = Color::Red;
 pub const WARNING: Color = Color::Yellow;
 /// Selected table row: a barely lighter block under the accent bar.
 pub const SELECT_BG: Color = Color::Rgb(0x1a, 0x1a, 0x1a);
-/// Alternating table rows, one step above the background.
-pub const ZEBRA_BG: Color = Color::Rgb(0x11, 0x11, 0x11);
 /// Hovered clickable thing: grey surface + white text (the tab/row hint).
 pub const HOVER_BG: Color = Color::Rgb(0x3a, 0x3a, 0x3a);

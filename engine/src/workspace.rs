@@ -49,10 +49,6 @@ pub fn is_git_repo(cwd: &Path) -> bool {
     git(cwd, ["rev-parse", "--git-dir"]).0 == 0
 }
 
-pub fn is_dirty(cwd: &Path) -> bool {
-    dirty_status(cwd, false).unwrap_or(true)
-}
-
 fn dirty_status(cwd: &Path, include_ignored: bool) -> Result<bool, String> {
     let (code, out, err) = git(
         cwd,

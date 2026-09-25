@@ -231,6 +231,59 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-86 The public surface nothing calls, and the detector that names it (2026-09-26)
+
+`clippy -D warnings` cannot see this class of defect: Rust's `dead_code` lint fires for private items only,
+so a `pub fn`, `pub struct` or `pub const` that no caller anywhere mentions compiles clean forever. Two
+earlier findings in this series came from hand passes (D-78's dead writers). The audit is now a command:
+
+    python3 review/dead_code.py [--list-known]
+
+It collects every public item definition in the three crates' `src`, their integration tests,
+`engine/examples` and `engine/benches`, counts every other mention of each name in Rust files and in the
+scripts and `Makefile` that drive the CLI, and reports the names whose only occurrences are their own
+definition lines. Prose under `docs/**` and `review/**/*.md` is deliberately **not** a use — a name that
+lives only in a document is documented, not called (the first version of this audit was fooled exactly
+that way: the word "official" in DESIGN masked `Anthropic::official`).
+
+First run over this tree: 409 public items, five of them uncalled. All five are gone:
+
+| Removed | Why it was dead |
+|---|---|
+| `workspace::is_dirty` | a one-line wrapper over `dirty_status(cwd, false)`; both real call sites call `dirty_status` directly |
+| `TaskStatus::is_terminal`, `OperationStatus::is_terminal` | no caller; the code matches the states where it needs them |
+| `Anthropic::official` | a convenience constructor duplicating the config layer's own base-URL default (`providers/mod.rs` builds the provider from the catalog entry) |
+| `theme::ZEBRA_BG` | a palette entry nothing paints; no table draws alternating rows |
+
+The sixth finding was not deleted but made live: `REQUEST_KIND_TURN` was a constant with no reader because
+its only comparison site compared against the bare literal `"turn"` (`import_response`, which refuses a
+compression request). It now reads `REQUEST_KIND_TURN` there, so the turn kind has one name in Rust code;
+the SQL keeps the literal, because a table default cannot reference a constant.
+
+Six items stay uncalled on purpose, and the script prints each with its reason (`--list-known`), so the
+allowlist cannot rot silently:
+
+- `Envelope`, `ModelRequestRecord`, `Attempt`, `Operation` — DESIGN §4.1 names these row shapes as the
+  minimal data contract. The running code reads them through SQL (`store.rs` owns the schema), so the typed
+  form is the contract's representation rather than a call target. Deleting them would leave the
+  `CREATE TABLE` text as the only statement of the contract.
+- `workspace::member_worktrees` — belongs to the member-branch merge surface, which is an open item
+  (D-76 and the gap recorded in `docs/ACCEPTANCE.md`); its sibling `merge_branch` looks used only because a
+  test drives it, which is the detector's documented blind spot (a test counts as a use).
+- `tools::wait_idle` — D-63's parked substrate for interrupt-and-redirect, carrying its own `ponytail:` note.
+
+One documentation defect came out of the same pass: the doc comment on `driver::with_control` began with
+"Stop driving; submitted commands stay committed (§4.1)", a sentence about the neighbouring method. It now
+documents `shutdown`, which is what it describes.
+
+Ceiling: this is a name-level detector, not a reachability proof. A Rust doc comment or a test counts as a
+use, an item reached only through a trait object counts as used (it is called by name), and it knows nothing
+about consumers outside the tree — this repository publishes no crate, so there are none today. It is
+deliberately **not** wired into `make check`: it is a starting point for a human read, and a false positive
+must not block a gate. Evidence: `python3 review/dead_code.py --list-known` reports 0 uncalled and 6 allowed
+with their reasons; `make check` is green with unchanged counts (core 98 / engine 200 / tui 32) and `make
+pty` passes after the deletions.
+
 ## D-85 The headline path finally has a model in it, and the needle can fail (2026-09-26)
 
 Every real-model harness in this repository drove `exec`; the surface a user opens first — the TUI — had only

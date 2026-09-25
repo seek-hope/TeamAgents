@@ -155,9 +155,6 @@ impl TaskStatus {
             TaskStatus::Cancelled => "CANCELLED",
         }
     }
-    pub fn is_terminal(self) -> bool {
-        matches!(self, TaskStatus::Succeeded | TaskStatus::Failed | TaskStatus::Cancelled)
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -254,9 +251,6 @@ impl OperationStatus {
             OperationStatus::CancelledBeforeStart => "CANCELLED_BEFORE_START",
             OperationStatus::OutcomeUnknown => "OUTCOME_UNKNOWN",
         }
-    }
-    pub fn is_terminal(self) -> bool {
-        !matches!(self, OperationStatus::Prepared | OperationStatus::DispatchCommitted | OperationStatus::Running)
     }
 }
 

@@ -292,7 +292,6 @@ impl DriverHandle {
         let _ = self.task.await; // JoinError::Cancelled once the abort lands
     }
 
-    /// Stop driving; submitted commands stay committed (§4.1).
     /// Run one diagnostics closure on the storage worker — the same single
     /// connection the driver submits through, so tests can inject real
     /// storage-level conditions (e.g. a page cap for A31).
@@ -304,6 +303,7 @@ impl DriverHandle {
         self.storage.call(f).await
     }
 
+    /// Stop driving; submitted commands stay committed (§4.1).
     pub async fn shutdown(self) -> Result<(), String> {
         self.shared.shutdown.store(true, Ordering::SeqCst);
         self.shared.wake.notify_one();
