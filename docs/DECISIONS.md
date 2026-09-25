@@ -268,6 +268,30 @@ Evidence: `core::kernel::tests::a_finish_without_a_usable_status_is_not_a_comple
 run, and the post-fix re-runs). The scripted tests in this repository accept any transcript, so this is exactly
 the class of defect the real-service rule exists for.
 
+## D-56 Kernel protocol notes reach the model (2026-09-25)
+
+`interpret_response` produces protocol notes when a response mixes calls that exclude each other — a `finish`
+that is not the only call, or a combined `wait` — and `import_interpretation`'s own comment said they "join the
+context as their own entry in a follow-up input". They did not: the driver only printed them to the daemon's
+stderr, so a model whose completion was ignored never learned why and could repeat the same mistake every turn
+(the same channel gap that made a refused `finish` unrecoverable before D-54).
+
+`import_response` now accepts the notes and appends them as one `note` entry (user-role text prefixed
+`[protocol note]`, deduplicated by `note-<decision_id>`, atomic with the import so a crash cannot lose them),
+and the driver passes `interpretation.notes` with the import. A refused `finish` deliberately carries no note
+any more: it rides as an ordinary intent, so the runtime answers that call with the same problem and a note
+would say it twice.
+
+The ordering is what makes this safe: `materialize`'s `pair_tool_results` moves every answer next to the call it
+answers, so a note written before the decision's receipts still reaches the model *after* them — the order
+strict wire endpoints require (D-54).
+
+Evidence: `v2::control::tests::protocol_notes_reach_the_model_after_the_receipts` (the note entry, its dedup
+envelope, and the wire order assistant → tool → note built by the real kernel),
+`kernel::tests::a_finish_without_a_usable_status_is_not_a_completion` (a refused finish carries no note),
+`v2_driver::an_ignored_finish_reaches_the_model_as_a_note` (the model's *next request* contains the note; it
+fails without the plumbing).
+
 ## D-55 `--full-auto` reaches the session it starts, and the mode is visible (2026-09-25)
 
 A probe run parked on an approval although it had been started with `--full-auto`: both entry points parsed

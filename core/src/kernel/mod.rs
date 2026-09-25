@@ -125,8 +125,10 @@ mod tests {
                 }
                 other => panic!("{arguments} must not be read as a completion, got {other:?}"),
             }
-            assert_eq!(out.notes.len(), 1, "{arguments}");
-            assert!(out.notes[0].contains("status"), "the problem names the field: {:?}", out.notes[0]);
+            // no note: the runtime answers this call with the same problem, so a
+            // note would say it twice (the driver builds that receipt from
+            // `finish_status_problem`)
+            assert!(out.notes.is_empty(), "{arguments}: {:?}", out.notes);
         }
         // the documented outcomes stay completions
         let response = ModelResponse {

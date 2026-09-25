@@ -2346,6 +2346,26 @@ fn import_response(tx: &Connection, session_id: &str, params: &Json, identity: &
         return Err(format!("decision {decision_id} not inserted"));
     }
     append_context(tx, &request_instance, epoch, "assistant", entry_message, Some(decision_id), &json!([]))?;
+    // Kernel protocol notes (§3) join the context as their own entry so the
+    // model reads them on its next request: an ignored `finish` or `wait` whose
+    // response carried other calls has no other way to learn why it was
+    // ignored. Appending here keeps them atomic with the import and idempotent
+    // on replay; the wire view pairs each answer with its call, so a note
+    // written before the receipts still reaches the model after them.
+    if let Some(notes) = params["notes"].as_array().filter(|notes| !notes.is_empty()) {
+        let text: Vec<&str> = notes.iter().filter_map(|note| note.as_str()).collect();
+        if !text.is_empty() {
+            append_context(
+                tx,
+                &request_instance,
+                epoch,
+                "note",
+                &json!({"role": "user", "content": format!("[protocol note] {}", text.join("; "))}),
+                Some(&format!("note-{decision_id}")),
+                &json!([]),
+            )?;
+        }
+    }
     let goal_id = request_goal(tx, request_id)?;
     let grant_revision = match params["grant_revision"].as_i64() {
         Some(revision) => revision,
@@ -6732,6 +6752,92 @@ mod tests {
         assert!(tail[0].1.contains("runtime: turn closed"), "{}", tail[0].1);
         assert_eq!(tail[1].0, "tool_result");
         assert!(tail[1].1.contains("finish-1"), "{}", tail[1].1);
+        cleanup(&path);
+    }
+
+    /// Kernel protocol notes (§3) become a context entry the model reads, and the
+    /// wire view still pairs each answer with its call — so a note written before
+    /// the receipts reaches the model *after* them, which is what strict wire
+    /// endpoints require (D-56).
+    #[test]
+    fn protocol_notes_reach_the_model_after_the_receipts() {
+        use crate::kernel::{ContextEntry, EntryKind, KernelInstance, KernelProfile};
+        let (mut ctl, path) = control("notes");
+        create_instance(&mut ctl, "i1");
+        let revision = revision_of(&ctl, "i1");
+        let request = begin_and_complete(&mut ctl, "note", "i1", revision);
+        ctl.submit(
+            cmd(
+                "imp-note",
+                "import_response",
+                json!({"request_id": request, "decision_id": "d-note",
+                       "entry": {"role": "assistant", "content": "", "tool_calls": [
+                           {"id": "c1", "type": "function",
+                            "function": {"name": "shell", "arguments": "{\"command\":\"true\"}"}}]},
+                       "intents": [{"index": 0, "call_id": "c1", "name": "shell", "args": {"command": "true"}}],
+                       "notes": ["ignored finish: it must be the only tool call in its response"]}),
+            ),
+            Identity::System,
+        )
+        .expect("import");
+        ctl.submit(
+            cmd(
+                "op-note",
+                "complete_operation",
+                json!({"operation_id": "d-note:0", "status": "SUCCEEDED",
+                       "receipt": {"ok": true, "started": true, "content": "ran true"}}),
+            ),
+            Identity::System,
+        )
+        .expect("complete");
+
+        let stored: Vec<(String, String, String)> = {
+            let mut stmt = ctl
+                .connection()
+                .prepare("SELECT kind, message_json, envelope_id FROM context_entries ORDER BY idx")
+                .unwrap();
+            let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
+            rows.filter_map(|row| row.ok()).collect()
+        };
+        let note = stored.iter().find(|(kind, _, _)| kind == "note").expect("a note entry");
+        assert!(note.1.contains("[protocol note] ignored finish"), "{}", note.1);
+        assert!(note.1.contains(r#""role":"user""#), "notes ride as user-role text: {}", note.1);
+        assert_eq!(note.2, "note-d-note", "a replayed import must not duplicate the note");
+
+        // what the model actually sees: the answer follows its call, the note follows it
+        let entries: Vec<ContextEntry> = stored
+            .iter()
+            .map(|(kind, message, _)| {
+                let kind = match kind.as_str() {
+                    "user" => EntryKind::User,
+                    "assistant" => EntryKind::Assistant,
+                    "tool_result" => EntryKind::ToolResult,
+                    _ => EntryKind::Note,
+                };
+                ContextEntry::new("e", kind, serde_json::from_str(message).unwrap())
+            })
+            .collect();
+        let kernel = KernelInstance::new(
+            "i1",
+            0,
+            KernelProfile {
+                model: "test".into(),
+                instructions: "i".into(),
+                tools: vec![],
+                options: json!({}),
+                context_window: Some(1_000_000),
+            },
+        );
+        let view = kernel.prepare_request(&entries, "r-next");
+        let roles: Vec<&str> = view.messages.iter().map(|m| m["role"].as_str().unwrap_or("?")).collect();
+        let assistant = roles.iter().position(|role| *role == "assistant").expect("assistant");
+        assert_eq!(roles[assistant + 1], "tool", "the answer must follow its call: {roles:?}");
+        assert_eq!(roles[assistant + 2], "user", "the note must follow the receipts: {roles:?}");
+        assert!(
+            view.messages[assistant + 2]["content"].as_str().unwrap_or("").contains("[protocol note]"),
+            "the note is what the model reads: {}",
+            view.messages[assistant + 2]
+        );
         cleanup(&path);
     }
 

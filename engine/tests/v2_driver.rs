@@ -1049,6 +1049,38 @@ async fn a_finish_without_a_status_is_corrected_in_the_same_turn() {
     handle.shutdown().await.expect("shutdown");
 }
 
+/// A response that carries `finish` together with other calls is ignored — and
+/// the model has to be *told*, or it never learns why its completion was not
+/// taken. The kernel note now rides with the import, so the next request the
+/// model receives contains it (D-56); before that it only reached the daemon's
+/// stderr and the model repeated the same mistake.
+#[tokio::test]
+async fn an_ignored_finish_reaches_the_model_as_a_note() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let root = root("notes-channel");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    // round one: finish plus a shell call in one response (finish is ignored);
+    // round two: a sole finish, which settles the goal
+    let both = json!({"role": "assistant", "content": "",
+        "tool_calls": [
+            {"id": format!("finish-{}", uuid::Uuid::new_v4()), "type": "function",
+             "function": {"name": "finish", "arguments": json!({"status": "success", "summary": "done"}).to_string()}},
+            {"id": "shell-1", "type": "function",
+             "function": {"name": "shell", "arguments": json!({"command": "true"}).to_string()}}]});
+    let script = vec![Step::Message(both), Step::Message(finish_call("done properly"))];
+    let (provider, log) = recording(script);
+    let handle = start(root.config_with(provider)).await.expect("start");
+    handle.input("do the work").await.expect("input");
+    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    let requests = recorded(&log);
+    let saw_note = requests
+        .iter()
+        .skip(1)
+        .any(|request| request_text(request).contains("ignored finish: it must be the only tool call in its response"));
+    assert!(saw_note, "the model must read the note: {:?}", requests.iter().map(request_text).collect::<Vec<_>>());
+    handle.shutdown().await.expect("shutdown");
+}
+
 #[tokio::test]
 async fn required_checks_failure_repairs_then_passes() {
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));

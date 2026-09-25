@@ -93,19 +93,18 @@ impl KernelInstance {
         if let Some(pos) = finish {
             if calls.len() == 1 {
                 let args = call_args(&calls[pos]);
-                match finish_status_problem(&args) {
-                    None => {
-                        return Interpretation {
-                            entry,
-                            output: KernelOutput::Completion(parse_completion(&calls[pos])),
-                            notes,
-                        };
-                    }
-                    Some(problem) => {
-                        notes.push(format!("refused {FINISH_TOOL}: {problem}"));
-                        refused_finish = true;
-                    }
+                // A refused finish gets no note: the call rides as an ordinary
+                // intent, so the runtime answers it with exactly this problem
+                // (the driver builds that receipt from `finish_status_problem`)
+                // and a note would say the same thing twice.
+                if finish_status_problem(&args).is_none() {
+                    return Interpretation {
+                        entry,
+                        output: KernelOutput::Completion(parse_completion(&calls[pos])),
+                        notes,
+                    };
                 }
+                refused_finish = true;
             } else {
                 notes.push(format!(
                     "ignored {FINISH_TOOL}: it must be the only tool call in its response; the other calls ran normally"

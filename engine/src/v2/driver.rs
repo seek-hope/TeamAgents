@@ -1458,10 +1458,13 @@ impl<P: Provider> Driver<P> {
         if !wait.is_null() {
             params["wait"] = wait;
         }
-        for note in &interpretation.notes {
-            // protocol notes join the context as their own entry in a follow-up
-            // input; they never block the import itself
-            eprintln!("driver: protocol note for {request_id}: {note}");
+        if !interpretation.notes.is_empty() {
+            // the notes ride with the import, so the model reads them on its
+            // next request (they never block the import itself)
+            params["notes"] = json!(interpretation.notes);
+            for note in &interpretation.notes {
+                eprintln!("driver: protocol note for {request_id}: {note}");
+            }
         }
         let imported = self
             .submit(self.command(format!("import-{decision_id}"), "import_response", params), Identity::System)

@@ -6,7 +6,7 @@ Baseline: [the design and acceptance baseline](DESIGN.md) §12/§16. Current imp
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 92 / engine 160 / tui 25 test targets) and `make pty` passes; both are
+`make check` is green (core 93 / engine 161 / tui 25 test targets) and `make pty` passes; both are
 preconditions for every item below. `make check` includes `make language-check`, which fails on non-English
 characters outside the two documented exceptions (`README.zh-CN.md` and the frozen material under
 `review/eval`).
@@ -81,12 +81,6 @@ amended (D-49/D-50).
   the headless entry point. Passing those arguments fails with a clear message instead of being ignored.
 
 ## Known gaps (found while auditing the documented surface, 2026-09-25)
-
-- **Kernel protocol notes still do not reach the model** in general. `interpret_response` produces notes for a
-  combined `wait` (and for a `finish` that is not the only call); `import_interpretation` only logs them to
-  the daemon's stderr, although its own comment says they join the context as a follow-up input. A refused
-  `finish` now gets an actionable receipt instead (D-54), so the missing path is a smaller surface, but the
-  general note channel needs the same treatment (append the note as its own entry the model reads).
 
 - **The project config is not read.** `config::load_user_config_for` merges `<cwd>/.teamagents/config.toml`
   with the documented trust rules (project models are allowed, project tools/skills/instructions need
