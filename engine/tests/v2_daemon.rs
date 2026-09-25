@@ -13,6 +13,7 @@ use teamagents_core::kernel::{KernelProfile, ModelRequest, ModelResponse, Usage}
 use teamagents_core::models::UserConfig;
 use teamagents_engine::providers::{AttemptOutcome, Cancel, Provider, ProviderError, ProviderEvent};
 use teamagents_engine::v2::daemon::{serve, DaemonConfig, DaemonHandle, PROTOCOL_VERSION};
+use teamagents_engine::v2::exec::{execute, End, ExecOptions, ExecRun};
 use teamagents_engine::v2::supervisor::SupervisorConfig;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
@@ -31,6 +32,10 @@ impl Provider for ScriptedProvider {
         _on_event: &mut (dyn FnMut(ProviderEvent) + Send),
     ) -> Result<AttemptOutcome, ProviderError> {
         let message = self.script.lock().unwrap().pop_front().unwrap_or_else(|| reply("script exhausted"));
+        // {"__error__": "…"} scripts a permanent provider failure
+        if let Some(reason) = message["__error__"].as_str() {
+            return Err(ProviderError::permanent(reason));
+        }
         Ok(AttemptOutcome {
             response: ModelResponse {
                 message,
@@ -347,4 +352,190 @@ async fn second_daemon_is_refused_and_shutdown_releases_the_lock() {
         }
     }
     recovered.expect("lock released for recovery").shutdown().await.expect("shutdown");
+}
+
+// ---------------------------------------------------------------------------
+// `teamagents exec`: the headless client contract (D-32/D-49) driven against a
+// real socket, a real session database and a scripted leader.
+// ---------------------------------------------------------------------------
+
+fn exec_options(socket: &Path, workspace: &Path, prompt: &str, checks: Vec<String>) -> ExecOptions {
+    ExecOptions {
+        socket: socket.to_path_buf(),
+        prompt: prompt.to_string(),
+        timeout_s: 60,
+        json_out: true,
+        checks,
+        workspace: workspace.to_path_buf(),
+    }
+}
+
+/// `execute` is a blocking client: run it off the runtime's async threads.
+async fn headless_result(options: ExecOptions) -> Result<ExecRun, (i32, String)> {
+    tokio::task::spawn_blocking(move || execute(&options)).await.expect("exec task")
+}
+
+async fn headless(options: ExecOptions) -> ExecRun {
+    headless_result(options).await.expect("headless run")
+}
+
+/// The run reports its own outcome: a settled goal carries the real goal status
+/// and exit code 0, and the settlement stored by an *earlier* run is history
+/// (the client drains the event log before submitting), never this run's result.
+#[tokio::test]
+async fn headless_runs_report_their_own_outcome_not_an_earlier_settlement() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let scripts =
+        HashMap::from([("i-leader".to_string(), vec![finish_call("done over the wire"), reply("a plain answer")])]);
+    let (root, handle) = boot("exec-outcome", scripts).await;
+    let (socket, workspace) = (root.dir.join("state/daemon.sock"), root.dir.join("ws"));
+    let first = headless(exec_options(&socket, &workspace, "finish it", Vec::new())).await;
+    assert_eq!(first.end, End::Completed, "{}", first.report);
+    assert_eq!(first.report["goal_status"], json!("SUCCEEDED"));
+    assert_eq!(first.report["end"], json!("completed"));
+    assert_eq!(first.end.exit_code(first.checks_ok), 0);
+    assert!(first.report["watermark"].as_i64().unwrap() > 0, "{}", first.report);
+    // the goal is settled for good: the next run ends on a plain reply, and the
+    // stored `goal_completed` event is not replayed as its outcome
+    let second = headless(exec_options(&socket, &workspace, "just answer", Vec::new())).await;
+    assert_eq!(second.end, End::Reply, "{}", second.report);
+    assert_eq!(second.report["reply"], json!("a plain answer"));
+    assert_eq!(second.end.exit_code(second.checks_ok), 0);
+    handle.shutdown().await.expect("shutdown");
+}
+
+/// A goal that settles as BLOCKED is not a success: the run reports it and
+/// exits 1, so a CI job cannot read a blocked goal as delivered work.
+#[tokio::test]
+async fn a_blocked_goal_is_not_reported_as_a_success() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let blocked = json!({"role": "assistant", "content": "",
+        "tool_calls": [{"id": "finish-1", "type": "function",
+                        "function": {"name": "finish",
+                                     "arguments": json!({"status": "blocked", "summary": "needs a decision"}).to_string()}}]});
+    let scripts = HashMap::from([("i-leader".to_string(), vec![blocked])]);
+    let (root, handle) = boot("exec-blocked", scripts).await;
+    let (socket, workspace) = (root.dir.join("state/daemon.sock"), root.dir.join("ws"));
+    let run = headless(exec_options(&socket, &workspace, "try it", Vec::new())).await;
+    assert_eq!(run.end, End::Failed, "{}", run.report);
+    assert_eq!(run.report["goal_status"], json!("BLOCKED"));
+    assert_eq!(run.end.exit_code(run.checks_ok), 1);
+    handle.shutdown().await.expect("shutdown");
+}
+
+/// A permanently failed leader request ends the headless run at once with exit
+/// 1 and the classified reason: a broken endpoint must not look like a hung
+/// session that the caller discovers when its own deadline expires.
+#[tokio::test]
+async fn a_failed_turn_ends_the_headless_run_instead_of_timing_out() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let scripts =
+        HashMap::from([("i-leader".to_string(), vec![json!({"__error__": "chat API 401: invalid api key"})])]);
+    let (root, handle) = boot("exec-turn-failure", scripts).await;
+    let (socket, workspace) = (root.dir.join("state/daemon.sock"), root.dir.join("ws"));
+    let options = ExecOptions { timeout_s: 120, ..exec_options(&socket, &workspace, "do it", Vec::new()) };
+    let started = std::time::Instant::now();
+    let run = headless(options).await;
+    assert_eq!(run.end, End::Failed, "{}", run.report);
+    assert_eq!(run.end.exit_code(run.checks_ok), 1);
+    assert!(
+        run.report["failure"].as_str().is_some_and(|reason| reason.contains("401")),
+        "the classified reason is reported: {}",
+        run.report
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(60),
+        "a permanent model error must not wait for the deadline ({}s)",
+        started.elapsed().as_secs()
+    );
+    // The failure parked the leader (§8 bounded handling). A parked leader will
+    // not run new input, so the next run says so at once instead of queueing
+    // work that nobody drains until the caller's deadline.
+    let parked = headless_result(exec_options(&socket, &workspace, "again", Vec::new()))
+        .await
+        .err()
+        .expect("a parked leader refuses new input");
+    assert_eq!(parked.0, 2, "{parked:?}");
+    assert!(parked.1.contains("PARKED") && parked.1.contains("nothing was submitted"), "{parked:?}");
+    handle.shutdown().await.expect("shutdown");
+}
+
+/// The user's `--check` acceptance commands run in the client's workspace
+/// through the isolated shell and gate the exit code; the ledger lands next to
+/// the session database as the artifact a CI job archives.
+#[tokio::test]
+async fn headless_runs_verify_the_acceptance_commands_and_gate_the_exit_code() {
+    if !teamagents_engine::tools::bwrap_available() {
+        eprintln!("skipped: bwrap is unavailable");
+        return;
+    }
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let scripts = HashMap::from([("i-leader".to_string(), vec![finish_call("done")])]);
+    let (root, handle) = boot("exec-checks", scripts).await;
+    let (socket, workspace) = (root.dir.join("state/daemon.sock"), root.dir.join("ws"));
+    let passed = headless(exec_options(&socket, &workspace, "finish it", vec!["echo checked".to_string()])).await;
+    assert_eq!(passed.end, End::Completed, "{}", passed.report);
+    assert!(passed.checks_ok, "{}", passed.report);
+    assert_eq!(passed.end.exit_code(passed.checks_ok), 0);
+    let verdicts = passed.report["verification"].as_array().unwrap();
+    assert_eq!(verdicts.len(), 1, "{}", passed.report);
+    assert_eq!(verdicts[0]["ok"], json!(true));
+    assert_eq!(verdicts[0]["exit_code"], json!(0));
+    assert!(verdicts[0]["output"].as_str().unwrap().contains("checked"), "{}", passed.report);
+    let ledger = passed.report["verification_path"].as_str().expect("ledger path");
+    assert_eq!(Path::new(ledger), root.dir.join("state/verification.json"));
+    let written: Json = serde_json::from_str(&std::fs::read_to_string(ledger).unwrap()).unwrap();
+    assert_eq!(written["verification"][0]["command"], json!("echo checked"));
+    handle.shutdown().await.expect("shutdown");
+}
+
+/// A failing acceptance command turns a nominal success into exit 1 and stops
+/// the remaining commands (later ones may depend on earlier ones).
+#[tokio::test]
+async fn a_failing_acceptance_command_fails_the_run() {
+    if !teamagents_engine::tools::bwrap_available() {
+        eprintln!("skipped: bwrap is unavailable");
+        return;
+    }
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let scripts = HashMap::from([("i-leader".to_string(), vec![finish_call("done")])]);
+    let (root, handle) = boot("exec-checks-fail", scripts).await;
+    let (socket, workspace) = (root.dir.join("state/daemon.sock"), root.dir.join("ws"));
+    let checks = vec!["echo broken; exit 7".to_string(), "echo never".to_string()];
+    let run = headless(exec_options(&socket, &workspace, "finish it", checks)).await;
+    assert_eq!(run.end, End::Completed, "the goal itself did settle: {}", run.report);
+    assert!(!run.checks_ok);
+    assert_eq!(run.end.exit_code(run.checks_ok), 1, "a failed acceptance is not a success");
+    let verdicts = run.report["verification"].as_array().unwrap();
+    assert_eq!(verdicts.len(), 1, "the first failure stops the list: {}", run.report);
+    assert_eq!(verdicts[0]["exit_code"], json!(7));
+    assert!(verdicts[0]["output"].as_str().unwrap().contains("broken"), "{}", run.report);
+    handle.shutdown().await.expect("shutdown");
+}
+
+/// Nobody can answer an approval in a headless run: exec reports the parked
+/// operation immediately (exit 3) instead of burning the deadline, and it does
+/// not run the acceptance commands for a turn that never finished.
+#[tokio::test]
+async fn a_parked_approval_ends_the_headless_run_at_once() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let scripts = HashMap::from([("i-leader".to_string(), vec![shell_call("c1", "true")])]);
+    let root = root("exec-approval");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let mut cfg = config(&root, scripts);
+    cfg.supervisor.require_shell_approval = true;
+    let handle = serve(cfg).await.expect("daemon");
+    let (socket, workspace) = (root.dir.join("state/daemon.sock"), root.dir.join("ws"));
+    let started = std::time::Instant::now();
+    let run = headless(exec_options(&socket, &workspace, "run it", vec!["true".to_string()])).await;
+    assert_eq!(run.end, End::ApprovalRequired, "{}", run.report);
+    assert_eq!(run.end.exit_code(run.checks_ok), 3);
+    assert!(run.report["approval"].as_str().is_some_and(|preview| !preview.is_empty()), "{}", run.report);
+    assert!(
+        started.elapsed() < Duration::from_secs(30),
+        "a parked approval must not wait for the deadline ({}s)",
+        started.elapsed().as_secs()
+    );
+    assert_eq!(run.report["verification"].as_array().unwrap().len(), 0, "{}", run.report);
+    handle.shutdown().await.expect("shutdown");
 }

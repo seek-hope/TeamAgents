@@ -7,12 +7,15 @@ use teamagents_engine::{cli, tools, VERSION};
 const HELP: &str = "TeamAgents: work with a Leader in your terminal\n\n\
 usage: teamagents [--cwd DIR] [--state-root PATH] [--model KEY] [--full-auto]\n\
   teamagents                          TUI attached to your daemon (starts one if needed)\n\
-  teamagents exec [--json] [--timeout SEC] \"…\"   one headless input, same backend\n\
+  teamagents exec [--json] [--timeout SEC] [--check CMD] \"…\"   one headless input\n\
   teamagents daemon [--state-root PATH] [--cwd DIR] [--model KEY] [--full-auto]\n\
   teamagents init [--state-root PATH]   write config and prepare the state root\n\
   teamagents doctor [--state-root PATH] check config, credentials, state root and host\n\
   teamagents version | --version      print the version\n\
   teamagents --help                   print this help\n\n\
+exec reads the prompt from stdin when it is \"-\", runs each --check acceptance command\n\
+in the workspace after the turn ends, and exits 0 completed, 1 failed or unfinished,\n\
+3 approval required, 124 timeout, 2 usage.\n\
 The Leader builds the team through spawn/delegate/send/wait; entry points from older\n\
 releases (TeamSpec files, line mode, session resume) are not supported.\n\
 First run: teamagents init -> set the credential env var -> teamagents doctor -> teamagents.";
@@ -215,9 +218,6 @@ fn parse_args() -> Args {
             _ => usage(),
         }
     }
-    if args.command.as_deref() == Some("exec") && !args.exec_json {
-        usage();
-    }
     if args.command.as_deref() == Some("init")
         && (args.positional.is_some()
             || args.cwd.is_some()
@@ -299,9 +299,12 @@ fn run_tui(args: &Args) -> i32 {
 
 /// `teamagents exec`: the same backend as the TUI, one headless input (§9).
 fn run_exec(args: &Args) -> i32 {
-    let Some(prompt) = args.positional.clone() else {
-        eprintln!("exec needs a prompt: teamagents exec [--json] [--timeout SEC] \"…\"");
-        return 2;
+    let prompt = match resolve_prompt(args.positional.clone(), std::io::stdin().lock()) {
+        Ok(prompt) => prompt,
+        Err(message) => {
+            eprintln!("{message}");
+            return 2;
+        }
     };
     let state_root = args.state_root.clone().map(PathBuf::from).unwrap_or_else(teamagents_engine::v2_root);
     let socket = match ensure_daemon(&state_root, args.model.clone()) {
@@ -311,12 +314,41 @@ fn run_exec(args: &Args) -> i32 {
             return 2;
         }
     };
+    // the acceptance checks are the user's own commands and run where the user
+    // is working: --cwd when given, otherwise this process's directory
+    let workspace = args
+        .cwd
+        .clone()
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."));
     teamagents_engine::v2::exec::run(teamagents_engine::v2::exec::ExecOptions {
         socket,
         prompt,
         timeout_s: args.timeout.unwrap_or(900),
         json_out: args.exec_json,
+        checks: args.checks.clone(),
+        workspace,
     })
+}
+
+/// The prompt for `exec`: the positional argument, or everything piped into
+/// stdin when that argument is `-` (so scripts can feed a long instruction).
+fn resolve_prompt(positional: Option<String>, mut stdin: impl std::io::Read) -> Result<String, String> {
+    let Some(prompt) = positional else {
+        return Err("exec needs a prompt: teamagents exec [--json] [--timeout SEC] [--check CMD] \"…\" (or - to read it from stdin)".into());
+    };
+    let text = if prompt == "-" {
+        let mut buffer = String::new();
+        stdin.read_to_string(&mut buffer).map_err(|e| format!("exec: cannot read stdin: {e}"))?;
+        buffer.trim_end_matches(['\r', '\n']).to_string()
+    } else {
+        prompt
+    };
+    if text.trim().is_empty() {
+        return Err("exec: the prompt is empty".into());
+    }
+    Ok(text)
 }
 
 /// Start the session daemon when the socket is not live, then return the socket
@@ -344,15 +376,61 @@ fn ensure_daemon(state_root: &Path, model: Option<String>) -> Result<PathBuf, St
     if let Some(model) = model {
         command.arg("--model").arg(model);
     }
-    command.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-    command.spawn().map_err(|e| format!("cannot start the daemon: {e}"))?;
+    // A detached daemon has no terminal to complain on: its banner, its startup
+    // failure and anything it logs later land in <state root>/daemon.log.
+    std::fs::create_dir_all(state_root).map_err(|e| format!("cannot create {}: {e}", state_root.display()))?;
+    let log_path = state_root.join("daemon.log");
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|e| format!("cannot open {}: {e}", log_path.display()))?;
+    let log_start = log.metadata().map(|meta| meta.len()).unwrap_or(0);
+    command.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(log);
+    let mut child = command.spawn().map_err(|e| format!("cannot start the daemon: {e}"))?;
     for _ in 0..150 {
         if socket.exists() {
             return Ok(socket);
         }
+        // The daemon reports a startup failure by exiting non-zero: report that
+        // now, with its own words, instead of waiting out the whole window.
+        // (setsid may fork, so a clean exit here is not a failure signal.)
+        match child.try_wait() {
+            Ok(Some(status)) if !status.success() => {
+                let detail = tail_from(&log_path, log_start, 600);
+                return Err(format!(
+                    "the daemon exited while starting ({status}): {detail}\nsee {} or run teamagents daemon --state-root {} by hand",
+                    log_path.display(),
+                    state_root.display()
+                ));
+            }
+            Ok(_) => {}
+            Err(error) => return Err(format!("cannot check the daemon process: {error}")),
+        }
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
-    Err(format!("the daemon is not ready at {}; run teamagents daemon by hand to see why", socket.display()))
+    Err(format!(
+        "the daemon is not ready at {} ({}); run teamagents daemon by hand to see why",
+        socket.display(),
+        tail_from(&log_path, log_start, 600)
+    ))
+}
+
+/// The daemon's own output since `from`, for a startup error message: capped so
+/// a long log never floods the caller's terminal.
+fn tail_from(path: &std::path::Path, from: u64, cap: usize) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return String::from("the daemon wrote nothing");
+    };
+    if file.seek(SeekFrom::Start(from)).is_err() {
+        return String::from("the daemon wrote nothing");
+    }
+    let mut text = String::new();
+    if file.take(cap as u64).read_to_string(&mut text).is_err() || text.trim().is_empty() {
+        return String::from("the daemon wrote nothing");
+    }
+    text.trim().to_string()
 }
 
 /// The leader's model key when the caller did not choose one: the documented
@@ -425,6 +503,26 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    use super::resolve_prompt;
+
+    #[test]
+    fn exec_takes_the_prompt_from_the_argument_or_from_stdin() {
+        assert_eq!(resolve_prompt(Some("do it".into()), &b""[..]).unwrap(), "do it");
+        // "-" is the documented stdin marker: the trailing newline an echo adds
+        // must not become part of the instruction
+        assert_eq!(resolve_prompt(Some("-".into()), &b"line one\nline two\n"[..]).unwrap(), "line one\nline two");
+        // a piped prompt may be several lines
+        assert_eq!(resolve_prompt(Some("-".into()), &b"a\r\nb\r\n"[..]).unwrap(), "a\r\nb");
+    }
+
+    #[test]
+    fn exec_refuses_a_missing_or_empty_prompt() {
+        let error = resolve_prompt(None, &b""[..]).expect_err("a missing prompt is a usage error");
+        assert!(error.contains("stdin"), "the message points at the stdin marker: {error}");
+        assert!(resolve_prompt(Some("-".into()), &b"\n\n"[..]).is_err(), "empty stdin has nothing to send");
+        assert!(resolve_prompt(Some("   ".into()), &b""[..]).is_err(), "a blank argument has nothing to send");
+    }
+
     #[test]
     fn tui_search_roots_exclude_cwd() {
         // P2-7: executing a binary found under the caller's cwd would be local

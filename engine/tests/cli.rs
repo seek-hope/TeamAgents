@@ -2,6 +2,18 @@
 
 use std::process::Command;
 
+/// A daemon the test started, stopped on every exit path including a panic:
+/// a leaked daemon would keep running (and hold a coordinator lock) for the
+/// rest of the suite.
+struct Daemon(std::process::Child);
+
+impl Drop for Daemon {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 fn teamagents(args: &[&str], state_home: &std::path::Path, config_home: &std::path::Path) -> String {
     let output = Command::new(env!("CARGO_BIN_EXE_teamagents"))
         .args(args)
@@ -194,4 +206,85 @@ provider = \"deepseek\"\nprotocol = \"deepseek\"\nmodel = \"deepseek-flash\"\nap
     let doctor = teamagents(&["doctor"], &home, &config);
     assert!(doctor.contains("an older release's sessions directory"), "{doctor}");
     std::fs::remove_dir_all(&home).unwrap();
+}
+
+/// The documented headless surface end to end through the real binary: plain
+/// mode is not a usage error, `-` takes the prompt from stdin, and `--check`
+/// really runs the user's acceptance command (it used to be parsed and then
+/// dropped) and leaves the verification ledger behind.
+#[test]
+fn exec_takes_the_prompt_from_stdin_and_runs_the_acceptance_check() {
+    use std::io::Write;
+    let root = std::env::temp_dir().join(format!("ta-exec-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let (config_home, state) = (root.join("config"), root.join("root"));
+    std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
+    // a profile that resolves without a network: the turn fails fast against a
+    // closed port, which is what makes this test cheap and offline
+    std::fs::write(
+        config_home.join("teamagents/config.toml"),
+        "[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\n\
+         api_key_env = \"TA_EXEC_TEST_KEY\"\nbase_url = \"http://127.0.0.1:1/v1\"\ntimeout = 5\n",
+    )
+    .unwrap();
+    let env = |command: &mut Command| {
+        command
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("XDG_STATE_HOME", root.join("state"))
+            .env("TA_EXEC_TEST_KEY", "test-value");
+    };
+    let mut daemon = Command::new(env!("CARGO_BIN_EXE_teamagents"));
+    env(&mut daemon);
+    let daemon = daemon
+        .args(["daemon", "--state-root"])
+        .arg(&state)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("start the daemon");
+    let _daemon = Daemon(daemon);
+    let socket = state.join("daemon.sock");
+    for _ in 0..200 {
+        if socket.exists() && std::os::unix::net::UnixStream::connect(&socket).is_ok() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(socket.exists(), "the daemon must listen before exec runs");
+
+    let mut exec = Command::new(env!("CARGO_BIN_EXE_teamagents"));
+    env(&mut exec);
+    let output = exec
+        .args(["exec", "--state-root"])
+        .arg(&state)
+        .args(["--timeout", "60", "--check", "echo accepted", "-"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            child.stdin.as_mut().unwrap().write_all(b"instruction from stdin\n")?;
+            child.wait_with_output()
+        })
+        .expect("run exec");
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(!stdout.contains("usage:") && !stderr.contains("usage:"), "plain mode is legal: {stdout}{stderr}");
+    // the endpoint is closed, so the turn fails and the run is an honest 1
+    assert_eq!(output.status.code(), Some(1), "{stdout}{stderr}");
+    assert!(stdout.contains("check 1: ok (exit 0)  echo accepted"), "{stdout}");
+    assert!(stdout.contains("verification:"), "{stdout}");
+    let ledger: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(state.join("verification.json")).unwrap()).unwrap();
+    assert_eq!(ledger["verification"][0]["command"], "echo accepted");
+    assert_eq!(ledger["verification"][0]["ok"], true);
+    // the piped prompt really reached the leader's context (§4.2 accept boundary)
+    let mut client = teamagents_engine::v2::exec::Client::connect(&socket).expect("client");
+    let history = client.history("i-leader").expect("history");
+    assert!(
+        history.iter().any(|entry| entry["message"]["content"] == "instruction from stdin"),
+        "the stdin prompt is what was submitted: {history:?}"
+    );
+    drop(client);
+    let _ = std::fs::remove_dir_all(&root);
 }

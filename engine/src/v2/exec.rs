@@ -106,44 +106,109 @@ pub struct ExecOptions {
     pub prompt: String,
     pub timeout_s: u64,
     pub json_out: bool,
+    /// Acceptance commands the user pre-authorized on the command line
+    /// (`--check`). They run in the client's workspace after the turn ends and
+    /// gate the exit code; an empty list means no client-side verification.
+    pub checks: Vec<String>,
+    /// The workspace the acceptance commands run in (the client's `--cwd` or
+    /// its current directory).
+    pub workspace: PathBuf,
 }
 
-/// One headless run: submit the prompt to the leader and report the outcome
-/// (goal settlement, a plain reply, or the deadline). Exit code: 0 settled,
-/// 1 failed/timeout, 2 usage/infrastructure.
-pub fn run(options: ExecOptions) -> i32 {
-    let mut client = match Client::connect(&options.socket) {
-        Ok(client) => client,
-        Err(error) => {
-            eprintln!("exec: {error}; start teamagents daemon first (or just run teamagents)");
-            return 2;
+/// Terminal state of one headless run. Documented exit codes (D-32/D-49):
+/// 0 completed, 1 failed or unfinished, 3 approval required, 124 timeout
+/// (2 is reserved for usage and infrastructure errors, raised before this).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum End {
+    /// The goal settled as SUCCEEDED.
+    Completed,
+    /// The leader ended its turn with a plain reply and no goal settlement.
+    Reply,
+    /// The goal settled as something other than SUCCEEDED.
+    Failed,
+    /// The turn is parked on a user approval: a non-interactive run has nobody
+    /// to answer it, so it reports immediately instead of burning the timeout.
+    ApprovalRequired,
+    /// The deadline passed with the instance still running.
+    Timeout,
+}
+
+impl End {
+    fn name(self) -> &'static str {
+        match self {
+            End::Completed => "completed",
+            End::Reply => "reply",
+            End::Failed => "failed",
+            End::ApprovalRequired => "approval_required",
+            End::Timeout => "timeout",
         }
-    };
-    let checkpoint = match client.call("checkpoint", json!({})) {
-        Ok(checkpoint) => checkpoint,
-        Err(error) => {
-            eprintln!("exec: checkpoint failed: {error}");
-            return 2;
-        }
-    };
-    let instance = leader_instance(&checkpoint);
-    let Some(instance) = instance else {
-        eprintln!("exec: the session has no usable leader instance: {checkpoint}");
-        return 2;
-    };
-    let envelope = format!("env-{}", uuid::Uuid::new_v4());
-    if let Err(error) = client.command(
-        &format!("input-{envelope}"),
-        "submit_input",
-        json!({"instance_id": instance, "envelope_id": envelope, "text": options.prompt}),
-    ) {
-        eprintln!("exec: submitting the input failed: {error}");
-        return 2;
     }
+
+    /// The `--check` verdict can only turn a success into a failure, never the
+    /// other way round, and it never masks approval-required or a timeout.
+    pub fn exit_code(self, checks_ok: bool) -> i32 {
+        match self {
+            End::Completed | End::Reply if checks_ok => 0,
+            End::Completed | End::Reply => 1,
+            End::Failed => 1,
+            End::ApprovalRequired => 3,
+            End::Timeout => 124,
+        }
+    }
+}
+
+/// Output kept per acceptance command, in the report and on stderr.
+const CHECK_OUTPUT_CAP: usize = 8000;
+
+/// The outcome of one headless run: the JSON report the `--json` mode prints,
+/// the terminal state that decides the exit code, and the acceptance verdict.
+pub struct ExecRun {
+    pub report: Json,
+    pub end: End,
+    pub checks_ok: bool,
+}
+
+/// One headless run with no printing at all: submit the prompt to the leader,
+/// follow the run to its terminal state, then run the user's acceptance
+/// commands. Errors are (exit code, message).
+pub fn execute(options: &ExecOptions) -> Result<ExecRun, (i32, String)> {
+    let mut client = Client::connect(&options.socket)
+        .map_err(|error| (2, format!("exec: {error}; start teamagents daemon first (or just run teamagents)")))?;
+    // Drain the events recorded before this input and keep the watermark: a
+    // goal settlement from an earlier run is history, not this run's outcome.
+    client.events().map_err(|error| (2, format!("exec: the event stream broke: {error}")))?;
+    let checkpoint =
+        client.call("checkpoint", json!({})).map_err(|error| (2, format!("exec: checkpoint failed: {error}")))?;
+    let (instance, lifecycle) = leader_instance(&checkpoint)
+        .ok_or_else(|| (2, format!("exec: the session has no usable leader instance: {checkpoint}")))?;
+    // A parked or paused leader will not run the input: saying so beats
+    // submitting work that sits in a queue nobody is draining until the caller's
+    // own deadline expires (the user resumes it in the TUI, §5.4).
+    if lifecycle != "ACTIVE" {
+        return Err((
+            2,
+            format!(
+                "exec: the leader instance {instance} is {lifecycle}; new input would not run. \
+                 Resume it in the TUI instances panel (r) or use a fresh state root; nothing was submitted."
+            ),
+        ));
+    }
+    let envelope = format!("env-{}", uuid::Uuid::new_v4());
+    client
+        .command(
+            &format!("input-{envelope}"),
+            "submit_input",
+            json!({"instance_id": instance, "envelope_id": envelope, "text": options.prompt}),
+        )
+        .map_err(|error| (2, format!("exec: submitting the input failed: {error}")))?;
     let deadline = Instant::now() + Duration::from_secs(options.timeout_s);
     let mut goal_status: Option<String> = None;
+    let mut turn_failure: Option<String> = None;
     let mut reply: Option<String> = None;
-    let mut announced_approval = String::new();
+    let mut pending_approval: Option<String> = None;
+    // the deadline is the default outcome: a loop that breaks on a terminal
+    // state always overwrites it
+    let mut end = End::Timeout;
     loop {
         match client.events() {
             Ok(events) => {
@@ -151,12 +216,17 @@ pub fn run(options: ExecOptions) -> i32 {
                     if event["kind"] == json!("goal_completed") {
                         goal_status = Some(event["payload"]["status"].as_str().unwrap_or("unknown").to_string());
                     }
+                    // A permanently failed leader request is a terminal outcome
+                    // of this run: report it instead of waiting out the deadline.
+                    // Failures of *other* instances belong to the leader's turn,
+                    // not to this client.
+                    if event["kind"] == json!("request_failed") && event["scope"] == json!(instance) {
+                        turn_failure =
+                            Some(event["payload"]["reason"].as_str().unwrap_or("the model request failed").to_string());
+                    }
                 }
             }
-            Err(error) => {
-                eprintln!("exec: the event stream broke: {error}");
-                return 2;
-            }
+            Err(error) => return Err((2, format!("exec: the event stream broke: {error}"))),
         }
         let snapshot = client.call("checkpoint", json!({})).unwrap_or(Json::Null);
         let instances = snapshot["snapshot"]["instances"]
@@ -169,91 +239,309 @@ pub fn run(options: ExecOptions) -> i32 {
             if let Ok(entries) = client.history(&instance) {
                 if let Some(last) = entries.last() {
                     if last["kind"] == json!("assistant") {
-                        reply = last["message"]["content"].as_str().map(str::to_string);
+                        // an empty assistant tail (a bare tool call) is not a
+                        // reply the user can read
+                        reply = last["message"]["content"]
+                            .as_str()
+                            .filter(|text| !text.trim().is_empty())
+                            .map(str::to_string);
                     }
                 }
             }
         }
-        // a pending approval blocks the turn on the user: say so instead of
-        // looking stuck (the TUI is the approval surface, §9)
+        // A pending approval blocks the turn on the user, and a headless run
+        // has nobody to answer it: report it immediately instead of waiting for
+        // the deadline (the TUI is the approval surface, §9).
         if let Ok(approvals) = client.call("approvals", json!({})) {
             for approval in approvals["approvals"].as_array().into_iter().flatten() {
-                let id = approval["id"].as_str().unwrap_or("");
-                if id != announced_approval.as_str() {
-                    announced_approval = id.to_string();
-                    eprintln!(
-                        "[exec] waiting for user approval: {} (approve or deny in the TUI; or start the daemon with --full-auto to skip the gate)",
-                        approval["preview"].as_str().unwrap_or("")
-                    );
+                let preview = approval["preview"].as_str().unwrap_or("");
+                if pending_approval.as_deref() != Some(preview) {
+                    pending_approval = Some(preview.to_string());
                 }
             }
         }
-        if goal_status.is_some() || reply.is_some() || Instant::now() > deadline {
+        // A settlement recorded after this input was submitted is this run's
+        // outcome (history was drained before submitting); a plain reply only
+        // counts once the leader is back to READY.
+        let terminal = match &goal_status {
+            Some(status) => Some(if status == "SUCCEEDED" { End::Completed } else { End::Failed }),
+            None if turn_failure.is_some() => Some(End::Failed),
+            None if pending_approval.is_some() => Some(End::ApprovalRequired),
+            None if settled && reply.is_some() => Some(End::Reply),
+            None => None,
+        };
+        if let Some(terminal) = terminal {
+            end = terminal;
+            break;
+        }
+        if Instant::now() > deadline {
             break;
         }
         std::thread::sleep(Duration::from_millis(250));
     }
-    let end = if goal_status.is_some() {
-        "completed"
-    } else if reply.is_some() {
-        "reply"
+    // The user's own acceptance commands are the last word on a finished turn:
+    // they run in this workspace through the same isolated shell the tools use.
+    // Nothing runs when the run stopped for an approval — that turn is not
+    // finished, so there is no acceptance to verify (§8).
+    let verification = if options.checks.is_empty() || end == End::ApprovalRequired {
+        Vec::new()
     } else {
-        "timeout"
+        run_checks(&options.checks, &options.workspace, options.timeout_s)
     };
+    let verification_path = write_verification(&client.state_root, &verification);
+    let checks_ok = verification.iter().all(|entry| entry["ok"] == json!(true));
     let report = json!({
         "session_id": client.session_id,
         "state_root": client.state_root,
         "instance_id": instance,
-        "end": end,
+        "end": end.name(),
         "goal_status": goal_status,
         "reply": reply.as_ref().map(|text| text.chars().take(2000).collect::<String>()),
+        "failure": turn_failure,
+        "approval": pending_approval,
+        "workspace": options.workspace.to_string_lossy(),
+        "verification": verification,
+        "verification_path": verification_path,
         "watermark": client.watermark,
     });
+    Ok(ExecRun { report, end, checks_ok })
+}
+
+/// One headless run: the outcome on stdout (JSON when asked for it) and the
+/// documented exit code — 0 settled, 1 failed or unfinished, 3 approval
+/// required, 124 timeout, 2 usage/infrastructure.
+pub fn run(options: ExecOptions) -> i32 {
+    let run = match execute(&options) {
+        Ok(run) => run,
+        Err((code, message)) => {
+            eprintln!("{message}");
+            return code;
+        }
+    };
+    let report = &run.report;
     if options.json_out {
         println!("{}", serde_json::to_string(&report).unwrap_or_else(|_| "{}".into()));
     } else {
-        match (&goal_status, &reply) {
-            (Some(status), _) => println!("goal ended: {status}"),
-            (_, Some(text)) => println!("{text}"),
-            _ => println!("timed out: {instance} is still running ({}s)", options.timeout_s),
+        print_human(report, &options);
+    }
+    run.end.exit_code(run.checks_ok)
+}
+
+fn print_human(report: &Json, options: &ExecOptions) {
+    match report["end"].as_str().unwrap_or("") {
+        "approval_required" => {
+            println!("approval required: {}", report["approval"].as_str().unwrap_or("see the TUI approvals panel"));
+            eprintln!("[exec] approve or deny it in the TUI; or start the daemon with --full-auto to skip the gate");
+        }
+        "timeout" => println!(
+            "timed out: {} is still running ({}s)",
+            report["instance_id"].as_str().unwrap_or("the leader"),
+            options.timeout_s
+        ),
+        _ => {
+            if let Some(reason) = report["failure"].as_str() {
+                println!("turn failed: {reason}");
+            } else if let Some(status) = report["goal_status"].as_str() {
+                println!("goal ended: {status}");
+            } else if let Some(text) = report["reply"].as_str() {
+                println!("{text}");
+            } else {
+                println!("the run ended without a reply");
+            }
         }
     }
-    match end {
-        "completed" => 0,
-        "reply" => 0,
-        _ => 1,
+    print_checks(report);
+}
+
+/// Human-readable check verdicts on stdout (the verdict is product output); a
+/// failing command's output is diagnostic and goes to stderr.
+fn print_checks(report: &Json) {
+    let Some(checks) = report["verification"].as_array().filter(|checks| !checks.is_empty()) else {
+        return;
+    };
+    for (index, entry) in checks.iter().enumerate() {
+        let ok = entry["ok"] == json!(true);
+        println!(
+            "check {}: {} (exit {})  {}",
+            index + 1,
+            if ok { "ok" } else { "FAILED" },
+            entry["exit_code"].as_i64().unwrap_or(-1),
+            entry["command"].as_str().unwrap_or("")
+        );
+        if !ok {
+            let output = entry["output"].as_str().unwrap_or("");
+            if !output.is_empty() {
+                eprintln!("{output}");
+            }
+        }
+    }
+    if let Some(path) = report["verification_path"].as_str() {
+        println!("verification: {path}");
     }
 }
 
-/// The session's leader instance: the conventional id first, then any ACTIVE
-/// instance (a fresh session boots exactly one).
-fn leader_instance(checkpoint: &Json) -> Option<String> {
+/// Run the user's acceptance commands in order (v1 contract): the first failure
+/// stops the list, since later commands may depend on earlier ones.
+pub fn run_checks(commands: &[String], workspace: &Path, timeout_s: u64) -> Vec<Json> {
+    let mut results = Vec::new();
+    for command in commands {
+        let marker = format!("__TEAMAGENTS_CHECK_RC_{}__", uuid::Uuid::new_v4().simple());
+        // the command runs in a subshell so that its own `exit` cannot skip the
+        // marker: the marker, not the rendered transcript, is the verdict
+        let wrapped = format!("( {command} ); rc=$?; printf '\\n%s%s\\n' '{marker}' \"$rc\"; exit $rc");
+        let (output, exit_code, note) = match crate::tools::shell_run(&wrapped, workspace, timeout_s, false, None) {
+            Ok(text) => {
+                let (output, code) = parse_check_result(&text, &marker);
+                (output, code, None)
+            }
+            // isolation/setup/timeout: the command never produced a status
+            Err(reason) => (String::new(), -1, Some(reason)),
+        };
+        let ok = exit_code == 0;
+        results.push(json!({
+            "command": command,
+            "ok": ok,
+            "exit_code": exit_code,
+            "output": capped(&output, CHECK_OUTPUT_CAP),
+            "error": note,
+        }));
+        if !ok {
+            break;
+        }
+    }
+    results
+}
+
+/// Split a check transcript into (output, exit code). The exit code is the one
+/// the *command* reported through the marker, so a command that prints
+/// "(exit 0)" cannot fake success; a missing marker means "no status".
+fn parse_check_result(text: &str, marker: &str) -> (String, i32) {
+    let Some((before, after)) = text.rsplit_once(marker) else {
+        return (text.trim_end().to_string(), -1);
+    };
+    let code = after.lines().next().and_then(|line| line.trim().parse().ok()).unwrap_or(-1);
+    (before.trim_end().to_string(), code)
+}
+
+fn capped(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text.to_string();
+    }
+    let mut out: String = text.chars().take(limit).collect();
+    out.push_str("… (truncated)");
+    out
+}
+
+/// Persist the verification ledger next to the session database (the evidence
+/// a CI job can archive) and report its path.
+fn write_verification(state_root: &str, verification: &[Json]) -> Option<String> {
+    if verification.is_empty() {
+        return None;
+    }
+    let root = Path::new(state_root);
+    if std::fs::create_dir_all(root).is_err() {
+        return None;
+    }
+    let path = root.join("verification.json");
+    let body = serde_json::to_vec_pretty(&json!({"verification": verification})).ok()?;
+    match std::fs::write(&path, body) {
+        Ok(()) => Some(path.to_string_lossy().into_owned()),
+        Err(error) => {
+            eprintln!("[exec] cannot write {}: {error}", path.display());
+            None
+        }
+    }
+}
+
+/// The session's leader instance and its lifecycle: the conventional id first,
+/// then any ACTIVE instance (a fresh session boots exactly one).
+fn leader_instance(checkpoint: &Json) -> Option<(String, String)> {
     // the daemon's checkpoint wraps the read snapshot: {"snapshot": {…}}
     let instances = checkpoint["snapshot"]["instances"].as_array().or_else(|| checkpoint["instances"].as_array())?;
-    if let Some(leader) = instances.iter().find(|entry| entry["id"] == json!("i-leader")) {
-        return leader["id"].as_str().map(str::to_string);
-    }
-    instances
+    let entry = instances
         .iter()
-        .find(|entry| entry["lifecycle"] == json!("ACTIVE"))
-        .and_then(|entry| entry["id"].as_str().map(str::to_string))
+        .find(|entry| entry["id"] == json!("i-leader"))
+        .or_else(|| instances.iter().find(|entry| entry["lifecycle"] == json!("ACTIVE")))?;
+    Some((entry["id"].as_str()?.to_string(), entry["lifecycle"].as_str().unwrap_or("UNKNOWN").to_string()))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::leader_instance;
+    use super::{capped, leader_instance, parse_check_result, run_checks, End};
     use serde_json::json;
+    use std::path::Path;
 
     #[test]
     fn the_leader_instance_prefers_the_conventional_id() {
         let checkpoint = json!({"instances": [
             {"id": "i-worker", "lifecycle": "ACTIVE"},
-            {"id": "i-leader", "lifecycle": "ACTIVE"},
+            {"id": "i-leader", "lifecycle": "PARKED"},
         ]});
-        assert_eq!(leader_instance(&checkpoint).as_deref(), Some("i-leader"));
+        // the conventional id wins, and its lifecycle travels with it so the
+        // caller can see that this leader would not run anything
+        assert_eq!(leader_instance(&checkpoint), Some(("i-leader".to_string(), "PARKED".to_string())));
         let only = json!({"instances": [{"id": "i-other", "lifecycle": "ACTIVE"}]});
-        assert_eq!(leader_instance(&only).as_deref(), Some("i-other"));
+        assert_eq!(leader_instance(&only), Some(("i-other".to_string(), "ACTIVE".to_string())));
         let none = json!({"instances": [{"id": "i-x", "lifecycle": "TERMINATED"}]});
         assert_eq!(leader_instance(&none), None);
+    }
+
+    /// The documented headless contract (D-32/D-49): a plain success is 0, a
+    /// failed goal or a failed acceptance check is 1, nobody can answer an
+    /// approval in a headless run so it is 3, and a deadline is 124.
+    #[test]
+    fn exit_codes_follow_the_documented_contract() {
+        assert_eq!(End::Completed.exit_code(true), 0);
+        assert_eq!(End::Completed.exit_code(false), 1);
+        assert_eq!(End::Reply.exit_code(true), 0);
+        assert_eq!(End::Reply.exit_code(false), 1);
+        assert_eq!(End::Failed.exit_code(true), 1);
+        assert_eq!(End::Failed.exit_code(false), 1);
+        assert_eq!(End::ApprovalRequired.exit_code(true), 3);
+        assert_eq!(End::Timeout.exit_code(true), 124);
+    }
+
+    /// The exit code comes from the marker the wrapper prints, not from
+    /// anything the command itself wrote: a check cannot fake success by
+    /// printing an exit-code line.
+    #[test]
+    fn the_check_verdict_reads_the_wrapper_marker() {
+        let marker = "__TEAMAGENTS_CHECK_RC_fixed__";
+        assert_eq!(parse_check_result("all good\n__TEAMAGENTS_CHECK_RC_fixed__0\n", marker), ("all good".into(), 0));
+        assert_eq!(parse_check_result("boom\n__TEAMAGENTS_CHECK_RC_fixed__2\n", marker), ("boom".into(), 2));
+        // a command that prints its own "(exit 0)" and no marker has no status
+        assert_eq!(parse_check_result("faked (exit 0)\n", marker), ("faked (exit 0)".into(), -1));
+    }
+
+    #[test]
+    fn long_check_output_is_capped() {
+        assert_eq!(capped("short", 8), "short");
+        assert!(capped(&"x".repeat(20), 8).starts_with("xxxxxxxx"));
+        assert!(capped(&"x".repeat(20), 8).ends_with("(truncated)"));
+    }
+
+    /// The acceptance commands really run, in order, in the isolated shell and
+    /// stop at the first failure. Shell isolation needs bubblewrap, so this is
+    /// skipped where the kernel forbids unprivileged user namespaces (CI).
+    #[test]
+    fn acceptance_commands_run_in_order_and_stop_at_the_first_failure() {
+        if !crate::tools::bwrap_available() {
+            eprintln!("skipped: bwrap is unavailable");
+            return;
+        }
+        let workspace = std::env::temp_dir();
+        let workspace = Path::new(&workspace);
+        let commands = vec!["echo first; exit 3".to_string(), "echo second".to_string()];
+        let checks = run_checks(&commands, workspace, 60);
+        assert_eq!(checks.len(), 1, "the first failure stops the list: {checks:?}");
+        assert_eq!(checks[0]["ok"], json!(false));
+        assert_eq!(checks[0]["exit_code"], json!(3));
+        assert!(checks[0]["output"].as_str().unwrap().contains("first"), "{checks:?}");
+
+        let passing = vec!["echo one".to_string(), "true".to_string()];
+        let checks = run_checks(&passing, workspace, 60);
+        assert_eq!(checks.len(), 2);
+        assert!(checks.iter().all(|check| check["ok"] == json!(true)), "{checks:?}");
+        assert_eq!(checks[0]["exit_code"], json!(0));
     }
 }
