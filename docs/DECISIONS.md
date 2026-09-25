@@ -231,6 +231,71 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-74 A configured MCP service is bound by declaring it (2026-09-25)
+
+The audit of A25 ("MCP approval / cancellation / unknown outcome", D-25) asked a question the tests could not
+answer: how does a *user* bind an MCP service? The protocol side is well covered (stdio and streamable HTTP
+through fake servers, the approval/cancel/unknown-outcome paths), the design lists MCP as a shipped feature,
+the user guide documents `[tools.web]` as the "optional tool binding (web / fetch / mcp)" section — and the
+answer was: **you cannot**.
+
+`BoundTools::load_in` loads a service when its *name* appears in the member's bindings list. That list is
+built by the product — `cli::daemon_boot` passes `["files", "shell", "web", "skills"]` and nothing else
+anywhere in the tree — so an entry like
+
+```toml
+[tools.probe]
+kind = "mcp"
+command = "/usr/bin/python3"
+args = ["-u", "probe_server.py"]
+```
+
+was parsed, validated by `doctor`, loaded into the merged (trust-filtered) catalog, handed to every driver…
+and never selected. The probe makes it visible: a server that records its own start writes nothing, because
+it is never spawned — no error, no warning, just a capability that is not there. (The web half of the same
+section has always worked, because a `web_search`/`web_fetch` entry is selected whenever `web` is bound; MCP
+was the only kind that needed a name no surface could provide.)
+
+**The fix is one rule**: a `[tools.<name>] kind = "mcp"` entry in the merged catalog *is* the user's binding
+of that service, exactly as it already is for the web tools. The catalog that reaches the loader is the
+user config merged with the project config under the documented trust rule (`[permissions]
+trust_project_tools = true`, or the project's tools are dropped — `config::load_user_config_for`), so a
+cloned repository still cannot bind anything on its own. Names in the bindings list keep working (an unknown
+or unsupported one is still refused), and a service marked `required` still fails the member's start loudly —
+which now means a mistyped `command` in a `required` entry stops the session at boot.
+
+**`doctor` reports each declared service first** (the D-66 rule: a config surface a user cannot see is a
+trap): a row per `[tools.*]` MCP entry saying whether its command is runnable (or its http url present), that
+it runs over which transport, and whether it is required. A `required` service with an unrunnable command is
+now visible before the session boots rather than only in `daemon.log`.
+
+Evidence (all re-runnable):
+
+- `bound::a_declared_mcp_service_is_bound_without_naming_it_in_the_bindings` — the product's own bindings
+  list plus one declared service: the bound tool appears (`probe_probe_ping`, i.e. `<service>_<tool>`) and is
+  the schema the model call advertises, the server really started, and a name the catalog does not define is
+  still refused. With the pre-fix rule restored the same test fails (`left: [], right: ["probe_probe_ping"]`).
+- `v2_supervisor::a_configured_mcp_service_reaches_the_members_surface` — the leader's *offered* tool list
+  from a real session carries `probe_ping` next to the built-ins (fails pre-fix: the surface is
+  `["shell","wait","send","delegate","spawn","finish","read_history"]`).
+- `cli::doctor_probes_isolation_and_config_errors` — the new rows: `[ok ] tools.good`, `[WARN] tools.typo`
+  ("not runnable"), `[ok ] tools.remote`.
+- Real models, both protocols: `python3 review/dogfood/mcp.py [--provider kimi]` — the server's log shows
+  `initialize`/`tools/list`/`tools/call`, and the run reports the tool's own output (a token the server
+  generates at start, so a model that answered from the tool's *description* instead of calling it cannot
+  pass): deepseek 2.5 s, kimi 9.6 s, both `end=reply` with the token.
+- The pre-fix behaviour, measured: a real session with the same config started the daemon and never spawned
+  the server (no marker file, no `tool service` line), while the model's request went out without the tool.
+
+Ceiling: a declared service is bound to **every** member (the bindings list is per session, not per member) —
+per-member MCP selection would be new surface and has no user request behind it. And an MCP server is started
+with the environment the tool gateway builds (its own `env` table plus the documented references), not with
+the daemon's ambient environment — worth knowing when a server expects a variable to be inherited. No new
+formal claim came with this change: an MCP tool reaches a model only through `BoundTools::schemas()`, whose
+only inputs are the trust-filtered catalog and the bindings list, so the design's "binding is the
+authorization" (§12.1) still holds by construction, and `V2Grants::OfferedToolsAreAuthorized` continues to
+cover the grant-backed half of the offered surface.
+
 ## D-73 The CLI refuses what it does not honour (2026-09-25)
 
 The documented-surface audit that produced D-71/D-72 turned to the entry points themselves, and found the same

@@ -334,6 +334,12 @@ teamagents tasks cancel --id t-prose    # releases a delegator waiting on a task
   capability). Calls go through the same permission, approval, budget, cancellation and receipt entry
   points. A remote call dispatched before a crash is recorded as `OUTCOME_UNKNOWN` after recovery and is
   **never replayed**.
+- **Binding one is writing it down** (D-74): a `[tools.<name>] kind = "mcp"` entry in your config *is* the
+  binding, exactly like `[tools.web]` for the web tools — the service starts with the session and its tools
+  reach every member's model surface as `<name>_<tool>`. Only the merged, trust-filtered config is used, so a
+  cloned project's tools load only with `[permissions] trust_project_tools = true`. `required = true` means
+  the session must not start without it; `doctor` lists each declared service and whether its command can run,
+  so a typo shows up there instead of in `daemon.log`.
 
 ## 6. Recovery, compaction and cleanup
 

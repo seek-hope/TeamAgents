@@ -239,6 +239,62 @@ pub fn doctor(state_root: Option<PathBuf>) -> i32 {
             };
             check(&mut results, label, runnable, format!("{argv:?}"));
         }
+        // A declared MCP service is bound to every member at boot (D-74), so a
+        // mistyped command stops the session there: name it here first, where the
+        // user can still fix it without reading a daemon log.
+        for (name, binding) in &catalog.tools {
+            if binding.kind != "mcp" {
+                continue;
+            }
+            let label = format!("tools.{name}");
+            let transport = binding.mcp_transport.as_deref().unwrap_or("stdio");
+            match transport {
+                "http" => optional_check(
+                    &mut results,
+                    &label,
+                    binding.url.as_deref().is_some_and(|url| url.starts_with("http")),
+                    match binding.url.as_deref() {
+                        Some(url) => format!("http transport at {url}"),
+                        None => "kind = \"mcp\" with mcp_transport = \"http\" needs a url".into(),
+                    },
+                ),
+                "stdio" => match binding.command.clone() {
+                    Some(command) if command.contains("${") => optional_check(
+                        &mut results,
+                        &label,
+                        true,
+                        format!("command {command:?} resolves an environment reference at start"),
+                    ),
+                    Some(command) => {
+                        let path = Path::new(&command);
+                        let runnable = if path.components().count() > 1 {
+                            path.is_file() && is_executable(path)
+                        } else {
+                            which(&command).is_some()
+                        };
+                        optional_check(
+                            &mut results,
+                            &label,
+                            runnable,
+                            format!(
+                                "{command:?} {} (bound at start{})",
+                                if runnable { "is runnable" } else { "is not runnable, so the member fails to start" },
+                                if binding.required { ", required" } else { ", optional" }
+                            ),
+                        )
+                    }
+                    None => {
+                        optional_check(&mut results, &label, false, "kind = \"mcp\" over stdio needs a command".into())
+                    }
+                },
+                other => optional_check(
+                    &mut results,
+                    &label,
+                    false,
+                    format!("mcp_transport {other:?} is not one this build speaks (stdio, http)"),
+                ),
+            }
+        }
         // a session with neither ceiling runs until the user stops it, so the
         // user should see what (if anything) bounds their goals
         let tokens = catalog.limits.max_total_tokens;

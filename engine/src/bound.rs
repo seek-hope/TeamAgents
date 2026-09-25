@@ -1,7 +1,9 @@
-//! Member tool bindings: 'files'/'shell' are
-//! native, 'web' unlocks the configured web tools, anything else is an MCP
-//! service from the user config. Binding a service to a member *is* the
-//! authorization for its tools (plan §12.1), so bound tools skip the approval
+//! Member tool bindings: 'files'/'shell' are native, 'web' unlocks the configured
+//! web tools, and a `[tools.<name>] kind = "mcp"` entry of the (trust-filtered)
+//! user catalog is an MCP service — declaring it *is* binding it (D-74). A name in
+//! the bindings list that is not a built-in is looked up the same way, so an
+//! unknown or unsupported one is still refused. Binding a service to a member *is*
+//! the authorization for its tools (plan §12.1), so bound tools skip the approval
 //! gate — the ToolGateway still audits every other tool call.
 
 use crate::mcp::McpClient;
@@ -50,10 +52,19 @@ impl BoundTools {
             selected.push((name.clone(), binding.clone()));
         }
         for (name, binding) in &catalog.tools {
-            if bindings.iter().any(|b| b == "web")
-                && matches!(binding.kind.as_str(), "web_search" | "web_fetch")
-                && !selected.iter().any(|(n, _)| n == name)
-            {
+            let declared_now = selected.iter().any(|(n, _)| n == name);
+            let web =
+                bindings.iter().any(|b| b == "web") && matches!(binding.kind.as_str(), "web_search" | "web_fetch");
+            // D-74: a `[tools.<name>] kind = "mcp"` entry *is* the user's binding of
+            // that service. It used to be loaded only when its name appeared in the
+            // bindings list, and that list is built by the product (the daemon binds
+            // files/shell/web/skills), which no user surface could extend — so every
+            // configured MCP service was unreachable while the docs promised the
+            // `[tools.*]` section as the binding (the web rule below has always
+            // worked this way). Only the merged, trust-filtered catalog reaches here:
+            // a project file's tools need `[permissions] trust_project_tools = true`.
+            let declared_service = binding.kind == "mcp";
+            if (web || declared_service) && !declared_now {
                 selected.push((name.clone(), binding.clone()));
             }
         }
@@ -229,6 +240,53 @@ mod tests {
         serde_json::from_value(value).unwrap()
     }
 
+    /// D-74: `[tools.<name>] kind = "mcp"` in the user catalog is the binding, and
+    /// the session's model surface must carry the service's tools — the service
+    /// used to be loadable only through a bindings list the product builds, which
+    /// no user surface could extend (the web binding has always worked this way).
+    /// The probe's server records that it started, so an unreachable service shows
+    /// up as "no tools" rather than as an error.
+    #[test]
+    fn a_declared_mcp_service_is_bound_without_naming_it_in_the_bindings() {
+        let root = std::env::temp_dir().join(format!("ta-mcp-declared-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let script = r#"
+import json, os, sys
+open(os.path.join(os.path.dirname(__file__) if False else '.', 'started'), 'w').write('1')
+for line in sys.stdin:
+    request = json.loads(line)
+    if 'id' not in request: continue
+    if request['method'] == 'initialize':
+        result = {'protocolVersion': '2025-06-18'}
+    elif request['method'] == 'tools/list':
+        result = {'tools': [{'name': 'probe_ping', 'description': 'answers pong',
+                             'inputSchema': {'type': 'object', 'properties': {}}}]}
+    else:
+        result = {}
+    print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
+"#;
+        std::fs::write(root.join("server.py"), script).unwrap();
+        let mut catalog = UserConfig::default();
+        catalog.tools.insert(
+            "probe".into(),
+            binding(json!({"kind": "mcp", "mcp_execution": "host", "command": "/usr/bin/python3",
+                           "args": ["-u", root.join("server.py").to_string_lossy()]})),
+        );
+        // the product's own bindings: no "probe" anywhere in the list
+        let product_bindings: Vec<String> = ["files", "shell", "web", "skills"].map(str::to_string).to_vec();
+        let bound = BoundTools::load_in(&catalog, &product_bindings, &root).unwrap();
+        let names: Vec<String> = bound.tools.iter().map(|tool| tool.name.clone()).collect();
+        // advertised as <service>_<tool>, so two services cannot collide
+        assert_eq!(names, vec!["probe_probe_ping".to_string()], "the declared service is bound: {names:?}");
+        // …and it is the schema the member's model call advertises
+        let schemas = bound.schemas();
+        assert_eq!(schemas[0]["name"], json!("probe_probe_ping"), "{schemas:?}");
+        assert!(root.join("started").exists(), "the server really started");
+        // naming a service that the catalog does not define is still refused
+        assert!(BoundTools::load_in(&catalog, &["ghost".to_string()], &root).is_err());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
     #[test]
     fn filtered_and_failed_services_reap_started_processes() {
         let root = std::env::temp_dir().join(format!("ta-mcp-cleanup-{}", uuid::Uuid::new_v4()));
@@ -314,14 +372,20 @@ for line in sys.stdin:
         let err = BoundTools::load(&auth, &["auth".to_string()]).err().expect("missing bearer env var");
         assert!(err.contains("TA_MCP_TOKEN_DEFINITELY_UNSET"), "{err}");
 
-        // a required service fails the member start; an optional one only drops the tool
-        let mut catalog = UserConfig::default();
-        catalog
+        // a required service fails the member start; an optional one only drops the
+        // tool. Each case gets its own catalog: declaring a service in `[tools.*]`
+        // *is* binding it (D-74), so a broken `required` one is meant to fail the
+        // start no matter which service the caller names.
+        let mut required_catalog = UserConfig::default();
+        required_catalog
             .tools
             .insert("broken".into(), binding(json!({"kind": "mcp", "command": "/nonexistent/mcp", "required": true})));
-        assert!(BoundTools::load(&catalog, &["broken".to_string()]).is_err());
-        catalog.tools.insert("optional".into(), binding(json!({"kind": "mcp", "command": "/nonexistent/mcp"})));
-        let ok = BoundTools::load(&catalog, &["optional".to_string()]).unwrap();
+        assert!(BoundTools::load(&required_catalog, &["broken".to_string()]).is_err());
+        let mut optional_catalog = UserConfig::default();
+        optional_catalog
+            .tools
+            .insert("optional".into(), binding(json!({"kind": "mcp", "command": "/nonexistent/mcp"})));
+        let ok = BoundTools::load(&optional_catalog, &["optional".to_string()]).unwrap();
         assert!(ok.tools.is_empty());
 
         // a stdio ${VAR} reference to an unset variable fails the binding,

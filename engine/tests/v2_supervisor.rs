@@ -612,6 +612,61 @@ async fn the_offered_surface_follows_the_grants() {
     );
 }
 
+/// D-74: a `[tools.<name>] kind = "mcp"` entry of the user catalog *is* the user's
+/// binding of that service, so its tools are on the member's model surface — named
+/// `<service>_<tool>`. It used to load only when its name appeared in a bindings
+/// list the product builds (files/shell/web/skills), which no user surface could
+/// extend: every configured MCP service was unreachable while the docs promised the
+/// `[tools.*]` section as the binding.
+#[tokio::test]
+async fn a_configured_mcp_service_reaches_the_members_surface() {
+    // a minimal stdio server: initialize + tools/list, one tool
+    let server = r#"
+import json, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    if 'id' not in request: continue
+    if request['method'] == 'initialize':
+        result = {'protocolVersion': '2025-06-18'}
+    elif request['method'] == 'tools/list':
+        result = {'tools': [{'name': 'ping', 'description': 'answers pong',
+                             'inputSchema': {'type': 'object', 'properties': {}}}]}
+    else:
+        result = {}
+    print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
+"#;
+    let root = root("mcp-bound");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let seen: Seen = Arc::new(Mutex::new(HashMap::new()));
+    let mut cfg = config(
+        &root,
+        factory_with_log(
+            HashMap::from([("i-leader".to_string(), vec![Step::Message(finish_call("done"))])]),
+            seen.clone(),
+        ),
+    );
+    cfg.catalog.tools.insert(
+        "probe".into(),
+        serde_json::from_value(json!({"kind": "mcp", "mcp_execution": "host", "command": "/usr/bin/python3",
+                                      "args": ["-u", "-c", server]}))
+        .expect("a tool binding"),
+    );
+    let handle = start(cfg).await.expect("start");
+    handle.input("i-leader", "do the probe").await.expect("input");
+    let closed = wait_event(&handle, "goal_completed", 20_000).await;
+    assert_eq!(closed["payload"]["status"], json!("SUCCEEDED"), "{closed}");
+    handle.shutdown().await.expect("shutdown");
+
+    let seen = seen.lock().unwrap().clone();
+    let offered = seen.get("i-leader").and_then(|requests| requests.first()).cloned().unwrap_or_default();
+    assert!(
+        offered.contains(&"probe_ping".to_string()),
+        "the declared service's tool is on the member's surface: {offered:?}"
+    );
+    // the built-in surface is unchanged
+    assert!(offered.contains(&"shell".to_string()) && offered.contains(&"finish".to_string()), "{offered:?}");
+}
+
 /// An input that arrives while a turn is in flight enters at the **next boundary**
 /// (§5.4 and the model's own `Input` action: user input lands at READY). It is
 /// queued, the turn in flight is not disturbed, and the model sees it *after* its

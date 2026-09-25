@@ -126,6 +126,24 @@ the settlement the first run left behind. Measured (2026-09-25): deepseek 2.8 s
 Against the pre-fix build the same harness reports `end=completed / goal=SUCCEEDED / reply=null` for the queued
 run: the prompt was never answered, and the run claimed the earlier turn's goal as its own.
 
+## `mcp.py`: a configured MCP service is really bound
+
+`mcp.py` writes a user config whose `[tools.probe]` entry is a tiny stdio MCP server (one tool, answering a
+token the server generates when it starts), then asks the model in one headless run to call that tool and
+report its output:
+
+```bash
+python3 review/dogfood/mcp.py                    # DeepSeek
+python3 review/dogfood/mcp.py --provider kimi    # over `responses`
+```
+
+It needs `DEEPSEEK_API_KEY` (and `KIMI_API_KEY` for kimi) and asserts the chain the design promises: the
+server starts with the session, it is asked for its tools, the model calls the tool and the run reports the
+tool's own output (the unguessable token makes a good guess fail). Measured (2026-09-25): deepseek 2.5 s,
+kimi 9.6 s, both `end=reply` with the token, the server's log showing `initialize`/`tools/list`/`tools/call`.
+Before D-74 no surface could bind a configured service: the same config started the session, never spawned
+the server and never offered the tool.
+
 ## `checks.py`: the completion gate with a real model
 
 `checks.py` configures one `[[checks]]` entry that can never pass (`test -f never-written`), asks a real

@@ -105,6 +105,22 @@ fn doctor_probes_isolation_and_config_errors() {
     assert!(with_hooks.contains("[ok  ] hooks.pre_tool"), "{with_hooks}");
     assert!(with_hooks.contains("[ok  ] retention"), "the policy is reported: {with_hooks}");
 
+    // D-74: a declared MCP service is bound at session start, so doctor names each
+    // one and says whether it can run (a mistyped command would stop the boot)
+    std::fs::write(
+        config.join("config.toml"),
+        "[models.m]\nprovider=\"openai\"\nmodel=\"x\"\n\n\
+         [tools.good]\nkind = \"mcp\"\ncommand = \"/bin/sh\"\n\n\
+         [tools.typo]\nkind = \"mcp\"\ncommand = \"/nonexistent/mcp\"\n\n\
+         [tools.remote]\nkind = \"mcp\"\nmcp_transport = \"http\"\nurl = \"https://example.invalid/mcp\"\n",
+    )
+    .unwrap();
+    let with_tools = run(&home.join("state"));
+    assert!(with_tools.contains("[ok  ] tools.good"), "{with_tools}");
+    assert!(with_tools.contains("[WARN] tools.typo"), "a command that cannot run is reported: {with_tools}");
+    assert!(with_tools.contains("not runnable"), "{with_tools}");
+    assert!(with_tools.contains("[ok  ] tools.remote"), "{with_tools}");
+
     // a wrong type in [permissions] is an error, not a silent default
     std::fs::write(config.join("config.toml"), "[permissions]\ntrust_project_tools = \"yes\"\n").unwrap();
     let broken = run(&home.join("state"));
