@@ -231,6 +231,39 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-103 A third fixture waited for the wrong thing: the MCP crash window (2026-09-26)
+
+`make check` failed in `v2_mcp::recovered_mcp_dispatch_is_not_replayed` with
+
+    panicked at tests/v2_mcp.rs:298: called `Result::unwrap()` on an `Err` value:
+    Os { code: 2, kind: NotFound, message: "No such file or directory" }
+
+which is the read of the marker file the fixture's Python MCP server writes on every `tools/call`. Reproduced
+under load (eight copies of the single test in parallel while the binary ran): one failure in two attempts.
+
+The cause is the same shape as D-83 and D-94, one step further out: the fixture waited for the
+`operation_dispatched` **event** — committed *before* the call is sent — and then crashed the driver at once.
+Under load the server had not received `tools/call` yet (its `initialize`/`tools/list` handshake plus the
+driver's send take time), so the marker did not exist, and the test's actual claim — *a call that really
+started is not repeated after a crash* — was not under test at all: the crash could have landed before the
+effect.
+
+The fix is the recipe the other two now use: wait for the **effect**, not for a duration or for the event that
+precedes it. The fixture waits (bounded at 10 s) until the marker exists and asserts it did — which both makes
+the window deterministic and strengthens it, because the assertion that follows ("exactly one `called` line")
+now genuinely means "it was started once and never replayed". The failing read also turns into a named
+assertion (`the fixture's MCP server never recorded the call, so nothing was in flight`) instead of a bare
+`unwrap`.
+
+Evidence: before — under eight-way load, one failure in two attempts, always at the marker read; after — three
+consecutive full-binary runs under the same load, all green, and `make check` green twice.
+
+Ceiling: the 10 s bound is still a bound (a machine slower than that fails the *named* assertion, which is
+what it is for). The pattern is worth stating plainly, because it has now cost three diagnoses in this
+session: **a fixture must wait for the effect it asserts about** — the deadline fixture slept while the
+command had not started (D-83), the supervisor fixture read a receipt the runtime had not written yet (D-94),
+and this one crashed a window the effect had not entered.
+
 ## D-102 `instruction_files` promised a prompt nothing reads (2026-09-26)
 
 D-75's rule is that a config key this build does not serve is *made to work, refused with a pointer, or
@@ -258,9 +291,18 @@ requires the file to really hold the canary, the prompt to exist and be inspecta
 from it, and `doctor` to say "not applied". When the feature lands, the third check becomes "the canary is in
 the prompt" and the probe is its acceptance test.
 
+The class keeps recurring, so it also has a detector now: `review/config_keys.py` reads the config structs out
+of `core/src/models.rs` and reports every field whose mentions outside the loader, the validator, the doctor
+surface and the argv parser are none — the config-side sibling of `review/dead_code.py`. First run over this
+tree: 45 fields, **0 unserved**, four on its allowlist with their reason (`codex_profile` refused, D-75;
+`archived_days`/`history_days` reported as not applied, D-75; `instruction_files`, this entry). Its limits are
+stated in its docstring — the check is name-based, and it cannot tell "read for a report" from "read to act",
+which is what the allowlist is for.
+
 Evidence: `cli::doctor_reports_the_skills_registry_and_missing_configured_paths` (the `[WARN]`/`not applied`
 assertions; with the old wording the test cannot pass, which is its counterfactual), the doctor output above,
-and `python3 review/dogfood/instructions.py` (two runs). `docs/USER-GUIDE.md` §5 no longer implies the files
+`python3 review/config_keys.py` (the negative result for the rest of the config surface), and
+`python3 review/dogfood/instructions.py` (two runs). `docs/USER-GUIDE.md` §5 no longer implies the files
 reach a prompt and points at what does work today (a member's instructions are its profile; the Leader passes
 rules in `spawn`/`delegate` text).
 

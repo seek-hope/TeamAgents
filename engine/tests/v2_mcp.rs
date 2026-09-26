@@ -286,6 +286,17 @@ for line in sys.stdin:
     handle.input("echo once").await.expect("input");
     // crash right after the dispatch is committed (§6.3 crash window)
     wait_event(&handle, "operation_dispatched", 10_000).await;
+    // The dispatch event is committed *before* the call reaches the server, so the crash could be the first
+    // thing the client sees and the effect would never have started — then the marker below would not exist
+    // and the claim ("a started call is not repeated") would not be under test at all. Wait for the effect,
+    // the same way D-83/D-94 wait for their conditions instead of for a duration.
+    for _ in 0..400 {
+        if marker.is_file() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert!(marker.is_file(), "the fixture's MCP server never recorded the call, so nothing was in flight");
     handle.crash().await;
     let recovering = ScriptedProvider::new(vec![finish_call("recovered without guessing")]);
     let mut config = root.config(recovering);
