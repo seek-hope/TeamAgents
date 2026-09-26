@@ -135,8 +135,10 @@ def main() -> int:
         client.kill()
         failures.append(f"the tool never went in flight ({seen})")
 
-    # 2. kill the daemon mid-tool: the client dies with it, the *runner* keeps the job
-    survivors = leak_guard.stop_daemons(state_root)
+    # 2. kill the daemon mid-tool: the client dies with it, the *runner* keeps the job. SIGKILL, because this
+    # scenario is a *crash*: since D-150 the daemon shuts down gracefully on SIGTERM, which is a different
+    # scenario (it stops its drivers and persists what it can).
+    survivors = leak_guard.kill_daemons(state_root)
     interrupted, _ = client.communicate(timeout=120)
     fate = "gone" if not survivors else f"survived: {survivors}"
     print(f"  killed the daemon ({fate}); the client exited {client.returncode}")

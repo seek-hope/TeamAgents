@@ -15,6 +15,11 @@ teamagents                           # open the TUI (starts the per-user daemon 
 - **One daemon per user**: `teamagents` probes `$XDG_STATE_HOME/teamagents/v2/daemon.sock` and, when it is
   missing or refuses the connection, starts `teamagents daemon` detached and hands the socket to the TUI.
   Quitting the TUI does not stop the session.
+- **Stopping that session**: the daemon the client started is *detached*, so there is no terminal to Ctrl-C;
+  send it SIGTERM and it shuts down normally (freezes new dispatch, keeps committed state, removes its socket;
+  DESIGN §9) — `ps -eo pid,args | grep "[t]eamagents daemon"` lists the daemons with their `--state-root`,
+  then `kill <pid>` (D-150). A daemon you started by hand in the foreground also stops with Ctrl-C. The
+  session database stays where it is and the next `teamagents`/`exec` on that state root starts a fresh daemon.
 - **Headless use**: `teamagents exec [--json] [--timeout SEC] [--check CMD] "prompt"` goes through the same
   daemon and reports the goal's terminal state, the assistant reply or a timeout; the prompt may come from
   stdin (`-`). The full contract is in §1.1.
@@ -320,7 +325,7 @@ it. A client that
 finds a session already running keeps that session's mode and prints which one it is, so
 `teamagents exec --full-auto` against a live `approved_scope` session reports
 `the session is already running in approved_scope mode` instead of silently ignoring the flag. To switch
-modes, stop that daemon (Ctrl-C in its terminal) or use another `--state-root`.
+modes, stop that daemon (§1: SIGTERM to its pid, or Ctrl-C where you started it by hand) or use another `--state-root`.
 
 When bubblewrap is unavailable this is a **classified failure** (`started=false`); the command never falls
 back silently to host execution.
@@ -456,11 +461,11 @@ teamagents tasks cancel --id t-prose    # releases a delegator waiting on a task
 | `exec` reports `check 1: FAILED` | Your own `--check` command failed; its output is on stderr and in `<state root>/verification.json` |
 | `exec` exits 3 | A tool call needs approval and a headless run cannot answer it. Approve it in the TUI and run `exec` again, or start the daemon with `--full-auto` |
 | `doctor` reports the state root as FAIL | That path does not hold a current session database (the stamp does not match); use another `--state-root` or follow the message, and never edit the database by hand |
-| The agent worked in the wrong directory | Its session was started with another workspace (or without `--cwd`): the client prints the live one. Stop that daemon (Ctrl-C in its terminal) or start a fresh `--state-root` with `--cwd DIR` |
+| The agent worked in the wrong directory | Its session was started with another workspace (or without `--cwd`): the client prints the live one. Stop that daemon (§1: SIGTERM to its pid) or start a fresh `--state-root` with `--cwd DIR` |
 | The model returns 401/402 | Check the environment variable named by the profile's `api_key_env`; `doctor` lists the credential resolution result per profile |
 | A task stays `RUNNING` while its assignee is idle | The assignee's model ended its turn without settling it (D-65): cancel the task — `c` in the tasks panel or `teamagents tasks cancel --id` — which releases the delegator's wait |
 | A member is stuck in a long or endless command and cancelling its task changed nothing | `tasks cancel` is delegation-level and does not touch the assignee's operation (D-88). Stop the work with `teamagents instances terminate --id … --yes` (the process group dies within seconds, and the receipt says `class: cancelled`) or wait for the command's own tool timeout |
 | An instance is parked | `teamagents instances` shows which; resume it with `instances resume --id` (or `r` in the TUI) when the reason is gone |
 | A command under `approved_scope` waits for approval | Decide it with `teamagents approvals` (§4.1) or in the TUI approvals panel; `--full-auto` (host execution, D-41) skips the gate |
 | A command left a service running (`dev-server &`) | By design the session does not manage it (D-41/D-112): it survives the client, the daemon and the member. Stop it yourself with the pid the command printed (`sleep 300 & echo $!`, then `kill <pid>`), or start such work in a command that exits when you are done. `instances terminate` stops an *operation that is still running*, not a service left behind by one that finished |
-| Start completely fresh | Stop the daemon and run `teamagents --state-root <new directory>` for a clean session; the old database stays where it is |
+| Start completely fresh | Stop the daemon (§1: SIGTERM to its pid) and run `teamagents --state-root <new directory>` for a clean session; the old database stays where it is |

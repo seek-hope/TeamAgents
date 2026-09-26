@@ -18,6 +18,46 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-150 The only stop a user could perform was the one that skipped the shutdown (2026-09-26)
+
+Continuing the first-run audit that produced D-149. A user who wants to stop their session has one instruction
+in the guide: "stop that daemon (Ctrl-C in its terminal)" — three times (§1, §3, the troubleshooting table) —
+but the daemon a *client* starts is detached by design ("starts `teamagents daemon` detached and hands the
+socket to the TUI", §1), so there is no terminal to Ctrl-C in, and no verb replaces it: the CLI offers
+TUI/`exec`/`authority`/`approvals`/`instances`/`tasks`/`daemon`/`init`/`doctor`/`version` and the protocol has
+no shutdown command. The stop a user could perform was therefore `kill <pid>` (SIGTERM) — and `cli::daemon`
+installed only a SIGINT handler (`tokio`'s `ctrl_c`, which no detached daemon can ever receive). Measured (2026-09-26, isolated state root): SIGINT →
+`stopping...`, exit 0, socket removed; SIGTERM → exit status **15** (the default action), socket **left
+behind**, the shutdown never entered. DESIGN §9's "a normal daemon shutdown freezes new dispatch, persists
+pending work and then stops itself" was unreachable for exactly the daemon users have.
+
+**Changed** (`engine/src/cli.rs`, no new surface): the daemon waits on SIGINT *or* SIGTERM and enters the same
+shutdown, its banner says "Ctrl-C or SIGTERM stops it", and the guide's three instructions become the recipe
+that works — SIGTERM to the pid, with `ps -eo pid,args | grep "[t]eamagents daemon"` (which prints each
+daemon's `--state-root`) as the way to find it (pattern chosen to avoid `pgrep -f`, whose self-match hazard
+D-144 measured). `docs/USER-GUIDE.md` §1 carries the bullet and the other two sites point at it.
+
+**And the probes that meant "crash"** (`crash.py` A08/A11/A12, `unknown_outcome.py` A09) now say so in code:
+`review/leak_guard.py` gained `kill_daemons`/`kill_runners` (SIGKILL, no shutdown path) and those two use them,
+because a graceful stop is a different scenario from the one they measure — `stop_daemons` (D-147/D-148)
+escalates TERM→KILL and would have taken the new graceful path. The other probes that kill mid-run already
+used SIGKILL (`os.kill(pid, 9)` in `tui.py`, `approval.py`, `tui_panels.py`, `tui_reconnect.py`,
+`input_latency.py`).
+
+**Measured end to end** (2026-09-26, no model): a detached daemon started by `exec` (pid 4) stopped by SIGTERM
+in 0.3 s with no survivors, its socket removed and its `session.sqlite` kept; a second `exec` on that root then
+started a fresh daemon (pid 18) on the same database and reported the documented `leader … is PARKED` refusal
+(exit 2). New regression test `cli::a_daemon_stops_gracefully_on_sigterm` (0.08 s) asserts exit 0, the
+`stopping...` line, a bounded stop and the removed socket; control: with the handler removed the same test
+fails `ExitStatus(unix_wait_status(15))`, reverted byte-identically (sha256 `141a47b8…`).
+
+Ceiling: finding the pid is still the user's job. A `teamagents daemon --stop` (or a protocol shutdown
+command) is new surface and would have to answer the stale-pid question with the identity machinery the runner
+already has (A15), so it is recorded in `docs/ACCEPTANCE.md`'s known gaps as needing the user's word. And
+SIGTERM now being graceful means a *crash* is only reachable with SIGKILL — stated here because the tree's own
+tests use `pkill -f` (SIGTERM) at several detached-daemon sites; switching those to a pid-based stop is the
+follow-up this entry does not do.
+
 ## D-149 The check that creates what it then warns about (2026-09-26)
 
 On a fresh machine, `teamagents doctor` left an empty `<state>/teamagents/sessions/` behind: the row named
@@ -276,6 +316,9 @@ harness's TERM-then-KILL stops it — whether the daemon
 ignores TERM or its shutdown waits on the outstanding `OUTCOME_UNKNOWN` runner is not established, and the same
 `SIGTERM` question applied to `make test`'s guard, which counted rather than stopped (D-147: it stops what it
 catches now, with the same escalation).
+
+**D-150 changed the signal semantics below this observation**: SIGTERM is the graceful stop now and an abrupt
+end is SIGKILL, so a daemon that outlives a TERM stop is a case this entry did not re-establish.
 
 Ceiling: the check covers what can be stated without a session. The keep-on-failure path needs a real probe run,
 and the daemon check's remaining question (the paragraph above) needs the next `crash.py` run with its state

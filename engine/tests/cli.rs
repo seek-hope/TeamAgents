@@ -1469,3 +1469,56 @@ fn a_tiny_configured_ceiling_parks_the_session_instead_of_running_it() {
     assert!(reason.contains("budget"), "and the reason names the budget: {reason}");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// D-150: the daemon users actually have is the *detached* one (`teamagents`/`exec` start it, §1), and a
+/// detached process has no terminal to Ctrl-C in — so the only stop a user can perform is `kill <pid>`, i.e.
+/// **SIGTERM**. It has to reach the same shutdown Ctrl-C does; before this the daemon died by default action,
+/// skipping the designed shutdown ("freezes new dispatch, persists pending work and then stops itself") and
+/// leaving its socket behind.
+#[test]
+fn a_daemon_stops_gracefully_on_sigterm() {
+    use std::io::Read;
+    let root = std::env::temp_dir().join(format!("ta-daemon-term-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let (config_home, state) = (root.join("config"), root.join("state/teamagents/v2"));
+    std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
+    std::fs::write(
+        config_home.join("teamagents/config.toml"),
+        "[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\n\
+         api_key_env = \"TA_TERM_KEY\"\nbase_url = \"http://127.0.0.1:1/v1\"\n",
+    )
+    .unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_teamagents"));
+    command
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env("XDG_STATE_HOME", root.join("state"))
+        .env("TA_TERM_KEY", "test-value");
+    let mut daemon = command
+        .args(["daemon", "--state-root"])
+        .arg(&state)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("start the daemon");
+    let socket = state.join("daemon.sock");
+    for _ in 0..200 {
+        if socket.exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(socket.exists(), "the daemon must listen before it is signalled");
+
+    // SIGTERM by pid — what `kill <pid>` sends. The daemon is this test's own child, so no pattern is needed.
+    let signalled = Command::new("kill").arg(daemon.id().to_string()).status().expect("send SIGTERM");
+    assert!(signalled.success(), "kill must reach the daemon");
+    let started = std::time::Instant::now();
+    let status = daemon.wait().expect("the daemon exits");
+    assert_eq!(status.code(), Some(0), "a SIGTERM stop is the designed shutdown, not a signal death: {status:?}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(20), "the stop must be bounded");
+    assert!(!socket.exists(), "the shutdown removes the socket: {socket:?}");
+    let mut stderr = String::new();
+    daemon.stderr.take().unwrap().read_to_string(&mut stderr).unwrap();
+    assert!(stderr.contains("stopping..."), "the shutdown says what it is doing: {stderr}");
+    let _ = std::fs::remove_dir_all(&root);
+}

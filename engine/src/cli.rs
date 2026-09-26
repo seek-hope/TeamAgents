@@ -560,11 +560,21 @@ fn daemon_boot(
     runtime.block_on(async move {
         let handle = crate::v2::daemon::serve(config).await?;
         eprintln!(
-            "teamagents daemon started\n  socket:    {}\n  state root: {}\n  clients can attach now; Ctrl-C stops the daemon (committed state is kept)",
+            "teamagents daemon started\n  socket:    {}\n  state root: {}\n  clients can attach now; Ctrl-C or SIGTERM stops it (committed state is kept)",
             socket.display(),
             state_root.display()
         );
-        tokio::signal::ctrl_c().await.map_err(|e| e.to_string())?;
+        // Ctrl-C is only reachable where the daemon has a terminal, and the daemon users actually have is the
+        // detached one (`teamagents`/`exec` start it, §1). SIGTERM is what a user's `kill` and a service
+        // manager send, so it must reach the same shutdown: without this the only stop available to a user was
+        // an abrupt death that skipped the designed shutdown and left the socket behind (measured 2026-09-26,
+        // D-150).
+        let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .map_err(|e| e.to_string())?;
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => { result.map_err(|e| e.to_string())?; }
+            _ = terminate.recv() => {}
+        }
         eprintln!("\nstopping...");
         handle.shutdown().await
     })

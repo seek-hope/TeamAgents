@@ -161,6 +161,34 @@ def stop(pids: list[int], finder=daemon_pids, grace: float = 5.0, kill_grace: fl
     return _alive(pids, finder)
 
 
+def kill(pids: list[int], finder=daemon_pids, grace: float = 10.0) -> list[int]:
+    """SIGKILL these processes and return the survivors: for a probe that deliberately *crashes* one.
+
+    Not the same thing as `stop`: since D-150 the daemon handles SIGTERM and shuts itself down gracefully, so a
+    probe that measures what a *crash* leaves behind (`crash.py`, `unknown_outcome.py`) must send the signal
+    that has no handler. Signals still go to a pid, never to a pattern (D-144).
+    """
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            continue
+    deadline = time.time() + grace
+    while time.time() < deadline and _alive(pids, finder):
+        time.sleep(0.25)
+    return _alive(pids, finder)
+
+
+def kill_daemons(root: pathlib.Path) -> list[int]:
+    """Crash the live daemons serving `root`: SIGKILL, no shutdown path (D-150)."""
+    return kill([pid for pid, _args in daemon_pids(root)])
+
+
+def kill_runners(root: pathlib.Path) -> list[int]:
+    """Crash the live command runners serving `root`: SIGKILL, no shutdown path (D-150)."""
+    return kill([pid for pid, _args in runner_pids(root)], finder=runner_pids)
+
+
 def stop_daemons(root: pathlib.Path) -> list[int]:
     """Stop the live daemons serving `root` (or all of them): what every probe registers with `atexit`.
 

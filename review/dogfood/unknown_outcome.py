@@ -187,9 +187,10 @@ def main() -> int:
         client.kill()
         failures.append(f"the command never went in flight ({seen})")
     else:
-        # the runner first (no terminal receipt) and then the daemon (cold recovery)
-        leak_guard.stop_runners(state_root)
-        leak_guard.stop_daemons(state_root)
+        # the runner first (no terminal receipt) and then the daemon (cold recovery). SIGKILL both: this is the
+        # crash A09 is about, and since D-150 SIGTERM is a graceful stop instead (a different scenario).
+        leak_guard.kill_runners(state_root)
+        leak_guard.kill_daemons(state_root)
     client.communicate(timeout=120)
 
     # 3. a cold start: the supervisor recovers the worker, whose journal is RUNNING with no receipt
