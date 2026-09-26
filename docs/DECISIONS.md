@@ -107,11 +107,20 @@ and two of this session's own shells were killed by it. The guard now counts liv
 attributed to its own root, and stops them **by pid** (`os.kill`), never by pattern. It also names any survivor
 with its argv, and allows a stopping daemon a minute before calling it a leak.
 
-**Open**: with all of that in place, `crash.py` still leaves a **live** daemon after its probe exits — named in
-the guard's report (`--state-root <root>/crash/root`, `--model leader_main --full-auto`), surviving both the
-TERM and the KILL the pid-based sweep sends, and gone when checked two minutes later. So something about that
-run restarts or outlasts its daemon — `crash.py` is also the probe that deliberately leaves an `OUTCOME_UNKNOWN`
-runner (D-112's ceiling) — and the guard is right to fail the set for it until that is understood.
+**And a fifth shape, the worst of the family**: the sweep's predicate matched **nothing at all**. `ps` prints
+the `args` column starting with the binary's *path* (`engine/target/debug/teamagents daemon --state-root …`), so
+`args.startswith("daemon ")` was never true — the guard reported the daemons it could not stop, and every "daemon
+left" line this session was a *real* leftover that the sweep had silently failed to touch. A daemon is recognised
+by its **first argument** now (`args.split()[1] == "daemon"`), which is what `make test`'s own guard has always
+checked (`ps -eo comm,args` with `$3 == "daemon"`), and `daemons()` counts what `daemon_pids()` finds so the two
+can never disagree. Verified against a daemon started by hand under a harness-style root: the predicate finds it
+(pid and argv), `daemons()` agrees with itself, and `stop_daemons` brings it to zero — and `crash.py` through the
+harness now reports `daemons of this run left: 0` with nothing left behind, which it never did before.
+
+Measured while resolving it: that daemon outlives its probe by minutes when stopped only with SIGTERM (the
+probes' own `stop_daemon` helpers send TERM), and the harness's TERM-then-KILL stops it — whether the daemon
+ignores TERM or its shutdown waits on the outstanding `OUTCOME_UNKNOWN` runner is not established, and the same
+`SIGTERM` question applies to `make test`'s guard, which counts rather than stops.
 
 Ceiling: the check covers what can be stated without a session. The keep-on-failure path needs a real probe run,
 and the daemon check's remaining question (the paragraph above) needs the next `crash.py` run with its state
