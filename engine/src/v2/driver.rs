@@ -1214,6 +1214,65 @@ impl<P: Provider> Driver<P> {
                 )
                 .await;
         }
+        self.collect_claimed_artifacts().await?;
+        Ok(())
+    }
+
+    /// §4.3's collector half, at boot: claim unreferenced LIVE artifacts (one transaction), delete their bytes
+    /// (outside it — a file operation may not run inside one), then collect the rows. The order is the model's
+    /// (`V2Artifact::GcClaim` then `GcDelete`), and a failure between the file deletion and the row removal
+    /// leaves the row DELETING, which the next boot retries — a file that is already gone is the outcome we
+    /// wanted, not an error.
+    ///
+    /// ponytail: the sweep runs when a driver boots rather than on a timer. DESIGN §4.3 says collection is
+    /// "scheduled separately" without naming the schedule, and a cadence is a policy this build has not
+    /// confirmed with the user; a root whose last driver never boots again keeps its DELETING rows (and their
+    /// bytes) until one does, which the `doctor` artifact row reports.
+    async fn collect_claimed_artifacts(&mut self) -> Result<(), String> {
+        let claimed = self
+            .submit(
+                self.command(format!("gc-claim-{}", uuid::Uuid::new_v4()), "artifact_gc_claim", json!({"limit": 100})),
+                Identity::System,
+            )
+            .await?;
+        let ids: Vec<String> = claimed["claimed"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|value| value.as_str().map(str::to_string))
+            .collect();
+        for id in ids {
+            let path: Option<String> = self
+                .storage
+                .call({
+                    let id = id.clone();
+                    move |control| {
+                        control
+                            .connection()
+                            .query_row(
+                                "SELECT storage_ref FROM artifacts WHERE id = ?1 AND completeness = 'DELETING'",
+                                [&id],
+                                |row| row.get(0),
+                            )
+                            .optional()
+                            .map_err(|e| format!("collect read {id}: {e}"))
+                    }
+                })
+                .await??;
+            if let Some(path) = path {
+                match std::fs::remove_file(&path) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        eprintln!("driver: could not delete artifact {id} at {path}: {error}");
+                        continue; // the row stays DELETING; the next boot retries
+                    }
+                }
+            }
+            let _ = self
+                .submit(self.command(format!("collect-{id}"), "artifact_collect", json!({"id": id})), Identity::System)
+                .await;
+        }
         Ok(())
     }
 

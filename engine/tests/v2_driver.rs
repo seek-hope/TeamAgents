@@ -1310,6 +1310,82 @@ async fn check_inputs_must_still_hold_at_completion() {
     handle.shutdown().await.expect("shutdown");
 }
 
+/// D-191/§4.3: the collector's other half runs at boot — a claimed (DELETING) artifact's bytes are deleted and
+/// its row leaves the catalog — while an artifact a publishing owner still holds stays untouched
+/// (`V2Artifact::GcDelete`, and `CollectorSkipsIncomplete` from the other side).
+#[tokio::test]
+async fn a_boot_collects_claimed_artifacts_and_leaves_protected_ones() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let root = root("collect-artifacts");
+    let artifacts = root.dir.join("artifacts");
+    std::fs::create_dir_all(&artifacts).unwrap();
+    let claimable = artifacts.join("claimable.log");
+    let protected = artifacts.join("protected.log");
+    std::fs::write(&claimable, "bytes").unwrap();
+    std::fs::write(&protected, "bytes").unwrap();
+    {
+        let mut control = second_control(&root);
+        for (id, path, owner) in
+            [("art-claimable", &claimable, Json::Null), ("art-protected", &protected, json!("op-1"))]
+        {
+            control
+                .submit(
+                    cmd(
+                        &format!("stage-{id}"),
+                        "artifact_stage",
+                        json!({"id": id, "digest": format!("sha256:{id}"), "size": 5, "kind": "log",
+                               "storage_ref": path.to_string_lossy(), "owner_ref": owner}),
+                    ),
+                    teamagents_core::v2::Identity::System,
+                )
+                .expect("stage");
+            control
+                .submit(
+                    cmd(&format!("pub-{id}"), "artifact_publish", json!({"id": id})),
+                    teamagents_core::v2::Identity::System,
+                )
+                .expect("publish");
+        }
+    }
+    let script = vec![Step::Message(reply("nothing to do"))];
+    let handle = start(root.config(ScriptedProvider { script: Mutex::new(script.into()) })).await.expect("start");
+    // the collection is a sequence of committed commands: wait for the row to leave the catalog
+    let mut collected = false;
+    for _ in 0..200 {
+        let rows: i64 = handle
+            .with_control(|control| {
+                control
+                    .connection()
+                    .query_row("SELECT COUNT(*) FROM artifacts WHERE id = 'art-claimable'", [], |row| row.get(0))
+                    .unwrap_or(-1)
+            })
+            .await
+            .expect("storage");
+        if rows == 0 {
+            collected = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(collected, "the claimed artifact's row is collected at boot");
+    assert!(!claimable.exists(), "the claimed artifact's bytes are deleted");
+    assert!(protected.exists(), "an artifact a publishing owner holds is untouched");
+    let (state, bytes): (String, i64) = handle
+        .with_control(|control| {
+            control
+                .connection()
+                .query_row("SELECT completeness, size FROM artifacts WHERE id = 'art-protected'", [], |row| {
+                    Ok((row.get(0)?, row.get(1)?))
+                })
+                .unwrap_or_default()
+        })
+        .await
+        .expect("storage");
+    assert_eq!(state, "LIVE", "the protected artifact stays in the catalog");
+    assert_eq!(bytes, 5);
+    handle.shutdown().await.expect("shutdown");
+}
+
 /// §8/D-187: a repair round says *which* check failed and why. A check that fails on its own leaves its output
 /// and exit code in the conversation; the stale-input verdict is the runtime's own — the check exited 0 — so
 /// without this entry the next request sees only "the required checks must pass" and has to guess (a live run

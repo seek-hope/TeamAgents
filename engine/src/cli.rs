@@ -248,10 +248,9 @@ pub fn doctor(state_root: Option<PathBuf>) -> i32 {
             Err(error) => check(&mut results, "v2 state root", false, error),
         }
     }
-    // D-174: the artifact footprint, where a user looks at their state root. DESIGN §4.4 requires artifact
-    // collection to be *scheduled*; the control plane can mark unreferenced artifacts for it
-    // (`artifact_gc_claim`) but no caller runs that and nothing deletes a file, so the row says what is really
-    // there and what is not done — the D-75 shape for a documented mechanism this build does not apply.
+    // D-174 asked this row to say what is really there and what is not done; D-191 implemented the half that
+    // was missing, so the row now states what collection *does* (a driver's boot claims unreferenced artifacts,
+    // deletes their bytes and collects their rows) and what it still does not (a schedule beyond boot).
     if let Some((files, bytes)) = artifact_footprint(&v2_root) {
         optional_check(
             &mut results,
@@ -259,8 +258,8 @@ pub fn doctor(state_root: Option<PathBuf>) -> i32 {
             false,
             format!(
                 "{files} file(s), {:.1} MB under {}/instances/*/artifacts; oversized tool output is pruned per \
-                 member (512 MB), model responses are kept as evidence, and unreferenced artifacts are not \
-                 collected yet (DESIGN §4.4)",
+                 member (512 MB), model responses are kept as evidence, and unreferenced artifacts are \
+                 collected when a driver boots (DESIGN §4.4; a schedule beyond that is not implemented)",
                 bytes as f64 / 1_048_576.0,
                 v2_root.display()
             ),

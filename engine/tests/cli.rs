@@ -519,9 +519,9 @@ fn init_creates_private_config_and_never_overwrites_existing_paths() {
 }
 
 /// D-174: `doctor` reports the artifact footprint of a state root, because DESIGN §4.4 requires artifact
-/// collection to be scheduled and this build does not apply it (the control plane can mark unreferenced
-/// artifacts for collection, but no caller runs it and no file is deleted). Without a row, a long session's
-/// growth is invisible — and the numbers are the one thing a user can act on.
+/// collection and the user cannot act on growth they cannot see; D-191 implemented the collection half (a
+/// driver's boot claims unreferenced artifacts, deletes their bytes and collects their rows), so the row
+/// now states what that does and that a schedule beyond boot does not exist yet.
 #[test]
 fn doctor_reports_the_artifact_footprint() {
     let root = Scratch::new("artifacts-doctor");
@@ -555,7 +555,7 @@ fn doctor_reports_the_artifact_footprint() {
     std::fs::write(artifacts.join("exec-1.log"), "y".repeat(500)).unwrap();
     let used = run(&tree.join("used"));
     assert!(used.contains("[WARN] artifacts") && used.contains("2 file(s)"), "{used}");
-    assert!(used.contains("not collected yet"), "the row says what is not done: {used}");
+    assert!(used.contains("collected when a driver boots"), "the row says what collection does: {used}");
     let _ = std::fs::remove_dir_all(&root);
 }
 

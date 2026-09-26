@@ -156,6 +156,7 @@ fn dispatch(
         "artifact_stage" => artifact_stage(tx, session_id, params),
         "artifact_publish" => artifact_publish(tx, session_id, params),
         "artifact_gc_claim" => artifact_gc_claim(tx, session_id, params),
+        "artifact_collect" => artifact_collect(tx, session_id, params),
         other => Err(format!("unknown v2 method {other:?}")),
     }
 }
@@ -3659,6 +3660,49 @@ fn artifact_gc_claim(tx: &Connection, session_id: &str, params: &Json) -> Result
     Ok(json!({"claimed": candidates}))
 }
 
+/// GC delete (§4.3, `V2Artifact::GcDelete`): the caller has deleted a claimed (DELETING) artifact's bytes
+/// *outside* any transaction — a file operation may not run inside one (§4.1) — and this removes the row so the
+/// catalog and the disk agree again. The claim's reference clauses are re-checked here rather than trusted: a
+/// DELETING row refuses new references, so a live one at this point is a bug to fail on, not to delete past.
+fn artifact_collect(tx: &Connection, session_id: &str, params: &Json) -> Result<Json, String> {
+    let id = params["id"].as_str().ok_or("artifact_collect.id required")?;
+    let state: Option<String> = tx
+        .query_row(
+            "SELECT completeness FROM artifacts WHERE id = ?1 AND session_id = ?2",
+            rusqlite::params![id, session_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("artifact read {id}: {e}"))?;
+    if state.as_deref() != Some("DELETING") {
+        return Err(format!(
+            "artifact {id} cannot be collected from state {}",
+            state.as_deref().unwrap_or("<missing>")
+        ));
+    }
+    let referenced: i64 = tx
+        .query_row(
+            "SELECT COUNT(*) FROM artifacts WHERE id = ?1 AND (owner_ref IS NOT NULL
+               OR id IN (SELECT payload_ref FROM context_entries WHERE payload_ref IS NOT NULL)
+               OR id IN (SELECT request_ref FROM model_requests)
+               OR id IN (SELECT response_ref FROM attempts WHERE response_ref IS NOT NULL)
+               OR id IN (SELECT payload_ref FROM events WHERE payload_ref IS NOT NULL))",
+            [id],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("artifact reference check {id}: {e}"))?;
+    if referenced != 0 {
+        return Err(format!("artifact {id} is still referenced by a live fact; refusing to collect it"));
+    }
+    tx.execute(
+        "DELETE FROM artifacts WHERE id = ?1 AND session_id = ?2 AND completeness = 'DELETING'",
+        rusqlite::params![id, session_id],
+    )
+    .map_err(|e| format!("artifact collect {id}: {e}"))?;
+    event(tx, session_id, "artifact_collected", id, &json!({"artifact_id": id}))?;
+    Ok(json!({"artifact_id": id, "completeness": "collected"}))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4197,6 +4241,30 @@ mod tests {
         // re-claim finds nothing new
         let again = ctl.submit(cmd("gc-2", "artifact_gc_claim", json!({})), Identity::System).expect("gc again");
         assert_eq!(again["claimed"], json!([]));
+        // D-191: the collector's second half. Collecting is refused for anything the claim did not take — a
+        // STAGING row, a referenced LIVE row — and for a row that is already gone.
+        let err = ctl
+            .submit(cmd("col-staging", "artifact_collect", json!({"id": "art-staging"})), Identity::System)
+            .unwrap_err();
+        assert!(err.contains("cannot be collected from state STAGING"), "{err}");
+        let err =
+            ctl.submit(cmd("col-refed", "artifact_collect", json!({"id": "art-refed"})), Identity::System).unwrap_err();
+        assert!(err.contains("cannot be collected from state LIVE"), "{err}");
+        ctl.submit(cmd("col-live", "artifact_collect", json!({"id": "art-live"})), Identity::System)
+            .expect("collect the claimed artifact");
+        let rows: i64 = ctl
+            .connection()
+            .query_row("SELECT COUNT(*) FROM artifacts WHERE id = 'art-live'", [], |row| row.get(0))
+            .expect("count");
+        assert_eq!(rows, 0, "the collected row leaves the catalog (V2Artifact::GcDelete)");
+        let collected: i64 = ctl
+            .connection()
+            .query_row("SELECT COUNT(*) FROM events WHERE kind = 'artifact_collected'", [], |row| row.get(0))
+            .expect("event count");
+        assert_eq!(collected, 1, "the collection is recorded as an event");
+        let err =
+            ctl.submit(cmd("col-again", "artifact_collect", json!({"id": "art-live"})), Identity::System).unwrap_err();
+        assert!(err.contains("cannot be collected from state <missing>"), "{err}");
         cleanup(&path);
     }
 

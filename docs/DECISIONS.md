@@ -18,6 +18,38 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-191 The artifacts model had a delete step the product never took (2026-09-27)
+
+DESIGN §4.3 specifies the whole collection pipeline — "GC first claims an unreferenced object as DELETING inside
+a transaction, then refuses new references and only afterwards deletes the file, and a failed deletion can be
+retried" — and `verification/tla/V2Artifact.tla` has modeled it from the start: `GcClaim` (LIVE → DELETING, only
+ownerless and unreferenced) followed by `GcDelete` (the bytes go, `disk = absent`, the row leaves the catalog),
+with `CollectorSkipsIncomplete` and `BytesOnlyDeletedWhileDeleting` among the checked invariants and properties.
+The *product* had only the first half: `artifact_gc_claim` existed with no caller, nothing deleted a file, and
+the `doctor` artifact row said so in as many words ("unreferenced artifacts are not collected yet"). The model
+was ahead of the code, and D-174 recorded the gap.
+
+**Implemented** in the model's order, with the file operation where §4.1 requires it (outside the transaction):
+`core::v2::control` gains `artifact_collect` (DELETING → the row is deleted, guarded by a re-check of the claim's
+reference clauses, with an `artifact_collected` event); the driver's boot path — next to the orphan-STAGING pass
+it already had — claims up to a hundred unreferenced LIVE artifacts, deletes each `storage_ref` file, then
+collects the row. A failure between the file deletion and the row removal leaves the row DELETING and the next
+boot retries it; a file that is already gone counts as success, not as an error.
+
+**Measured** (2026-09-27): `v2_driver::a_boot_collects_claimed_artifacts_and_leaves_protected_ones` passes (the
+claimed artifact's bytes and row are gone; an artifact a publishing owner holds keeps both, still `LIVE` with
+its size); `control::artifact_staging_gc_and_publication_ordering` now also refuses collecting a STAGING row, a
+referenced LIVE row and an already-collected one, and asserts the row leaves the catalog and the event is
+recorded; `make verify-model-all` is green on the artifact configuration (241 states generated, `No error has
+been found`, 242 s for the eleven) — the model needed no change, because the delete step was always in it.
+
+**What stays open is a policy, not a mechanism**: DESIGN says collection is "scheduled separately" without
+naming the schedule, so the sweep runs *when a driver boots* — no timer and no daemon-level cadence — and a root
+whose last driver never boots again keeps its DELETING rows and their bytes until one does. The `doctor` row now
+states exactly that ("collected when a driver boots (… a schedule beyond that is not implemented)"), and
+choosing a cadence — an interval, or a maintenance verb to run on demand — is the user's call. The `ponytail:`
+comment on the sweep names the same ceiling.
+
 ## D-190 The install guide is a user-facing document like the other two (2026-09-27)
 
 `docs/INSTALL.md` was the last user-facing document outside the flag audit, and the reason was in the audit's
