@@ -144,6 +144,14 @@ fn command(id: impl Into<String>, method: &str, params: Json) -> Command {
     Command { command_id: id.into(), method: method.into(), params }
 }
 
+/// Set to log, once per request, the exact tool surface an instance is offered (`TEAMAGENTS_LOG_SURFACE=1`).
+///
+/// A member's offer is a governed question — "was the tool there and the model ignored it, or was it never
+/// offered?" — and D-143 sat open because nothing could tell those apart: the only witness was the model's own
+/// account of its tool list. This writes the answer to stderr (the daemon's log), which is a diagnostic, never
+/// persisted state, so it adds no product surface.
+const SURFACE_LOG_ENV: &str = "TEAMAGENTS_LOG_SURFACE";
+
 impl DriverHandle {
     async fn submit(&self, cmd: Command, identity: Identity) -> Result<Json, String> {
         let result = self.storage.call(move |control| control.submit(cmd, identity)).await??;
@@ -1062,6 +1070,7 @@ impl<P: Provider> Driver<P> {
     /// grant regardless (§6.1), so a stale schema never authorizes.
     async fn team_kernel(&self, snapshot: &Snapshot) -> Result<KernelInstance, String> {
         let instance = self.config.instance_id.clone();
+        let surface_of = instance.clone();
         let actions = self
             .storage
             .call(move |control| {
@@ -1105,6 +1114,14 @@ impl<P: Provider> Driver<P> {
         // than into the stored profile so a spawned child never inherits the
         // parent's bound services; the child's own driver merges its own.
         profile.tools.extend(self.toolkit.mcp_schemas());
+        if std::env::var_os(SURFACE_LOG_ENV).is_some() {
+            let names: Vec<&str> = profile.tools.iter().filter_map(|tool| tool["function"]["name"].as_str()).collect();
+            eprintln!(
+                "driver: surface {surface_of} shell={} tools={}",
+                if shell { "yes" } else { "no" },
+                names.join(",")
+            );
+        }
         Ok(KernelInstance::new(self.config.instance_id.clone(), snapshot.epoch as u64, profile))
     }
 

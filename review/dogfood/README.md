@@ -93,6 +93,13 @@ Two things it guards against, because both were observed while developing it:
   prompt now asks what the worker can do (it can answer that, and does), and the probe measures the request
   count against `--budget`, parks the worker through the daemon protocol and reports the finding if it sees
   the loop. The gap itself is recorded in `docs/ACCEPTANCE.md`; it needs the user's decision, not a probe's.
+- **A member's offered surface is now a witness, not an inference** (D-143): the probe starts the daemon with
+  `TEAMAGENTS_LOG_SURFACE=1`, and the driver then writes one line per request into `daemon.log`
+  (`driver: surface <instance> shell=yes|no tools=…`). The probe prints the worker's lines before and after the
+  grant and, when the command does not run, says which side failed — *never offered* (a product finding) versus
+  *offered and unused* (the model's choice) — instead of reasoning from the model's own account of its tool
+  list. Measured 2026-09-27: `shell=no` for the three requests before the grant, `shell=yes` for the two after
+  it, the worker confirming "a `shell` tool is now present in my toolset", and `proof.txt` written.
 - **The session shape of this probe is the one that produced D-62**: turn 1 ends on an accepted `finish`, and
   turn 2 is a new task in the same epoch — the second request used to be rejected by the provider
   (`HTTP 400 ... must be followed by tool messages responding to each 'tool_call_id'`). The first run failed

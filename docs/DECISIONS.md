@@ -2253,6 +2253,18 @@ assertions; with the old wording the test cannot pass, which is its counterfactu
 reach a prompt and points at what does work today (a member's instructions are its profile; the Leader passes
 rules in `spawn`/`delegate` text).
 
+**2026-09-27, the witness added.** The probe no longer has to infer any of this. It starts the daemon with
+`TEAMAGENTS_LOG_SURFACE=1`; the driver then writes one line per prepared request to stderr (the daemon's log) —
+`driver: surface <instance> shell=yes|no tools=…` — which is a diagnostic, never persisted state, so no product
+surface is added. `authority.py` prints the worker's lines before and after the grant and, when the command does
+not run, says which side failed: *never offered* is the product finding, *offered and unused* is the model's
+choice. The first run with it (2026-09-27, DeepSeek Flash, 33 model requests, turn 1 291 s and turn 2 338 s)
+**passed**, and the log is the evidence: `shell=no` for the worker's three requests before the grant and
+`shell=yes` for both after it, the worker itself reporting "a `shell` tool is now present in my toolset", and
+`proof.txt` written with the expected content. So the surface follows the grant in this shape, and the failing
+run recorded above is now either a model that did not use an offered tool or an intermittent path that the next
+failure will name instead of hiding behind the model's account of its own tool list.
+
 **2026-09-27, an exception reproduced and narrowed.** A `make probe-models`-style run of
 `python3 review/dogfood/authority.py` failed *this* way (kept session under the harness root of that run):
 the user grant `shell@workspace` for `worker_shell_probe` was issued and unrevoked, the worker's `workspace_ref`

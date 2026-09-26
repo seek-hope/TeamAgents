@@ -83,11 +83,37 @@ def session_state(state_root: pathlib.Path, worker: str) -> tuple[int, str]:
     return handled, (open_tasks[0][0] if open_tasks else "none")
 
 
+def offered(state_root: pathlib.Path, worker: str) -> list[tuple[str, str]]:
+    """`(shell, tools)` for every request the driver prepared for `worker`, in order (TEAMAGENTS_LOG_SURFACE).
+
+    The daemon's log is the only witness of what a member was *offered*: the tool list is not persisted, and the
+    model's own account of it is what D-143 had to reason from. Lines the daemon wrote before it was restarted
+    are gone with it, which is why the probe reads this after each turn.
+    """
+    log = state_root / "daemon.log"
+    if not log.is_file():
+        return []
+    seen = []
+    for line in log.read_text(errors="replace").splitlines():
+        marker = "driver: surface "
+        if marker not in line:
+            continue
+        rest = line.split(marker, 1)[1]
+        parts = rest.split(" ", 2)
+        if len(parts) < 3 or parts[0] != worker:
+            continue
+        shell = parts[1].removeprefix("shell=")
+        seen.append((shell, parts[2].removeprefix("tools=")))
+    return seen
+
+
 def live_shell_grant(state_root: pathlib.Path, worker: str) -> bool:
-    """Does the worker hold a live `shell@workspace` grant? The surface follows the grants *live* — the driver
-    rebuilds the member's profile for every request (`driver::team_kernel`, which reads the grants and drops
-    `shell` only when no covering grant is held) — so a live grant means the tool was offered, and no attempt
-    then means the model chose not to use it rather than never seeing it (D-143)."""
+    """Does the worker hold a live `shell@workspace` grant right now?
+
+    Holding one is the *authority*; whether that authority reached the request is what `offered()` reads out of
+    the daemon's log (the driver rebuilds the member's surface for every request, `driver::team_kernel`). D-143
+    stayed open because this probe used to assume the two were the same thing; the log is the witness now, and
+    which of the two was true decides whether a failed run is a finding about the product or about the model."""
     db = sqlite3.connect(f"file:{state_root}/session.sqlite?mode=ro", uri=True)
     rows = list(db.execute(
         "SELECT COUNT(*) FROM grants WHERE subject = ?1 AND action = 'shell' AND revoked_at IS NULL", [worker]))
@@ -183,7 +209,11 @@ def main() -> int:
     (root / "config/teamagents/config.toml").write_text(CONFIG)
     state_root = root / "root"
     atexit.register(stop_daemon, root)
-    env = {**os.environ, "XDG_CONFIG_HOME": str(root / "config"), "XDG_STATE_HOME": str(root / "state")}
+    # The daemon the probe autostarts inherits this and writes one line per request into daemon.log: the exact
+    # tool surface each instance was offered. That is the witness D-143 needed — "was the tool there and the
+    # model ignored it, or was it never offered?" — and it is a diagnostic, not persisted state.
+    env = {**os.environ, "XDG_CONFIG_HOME": str(root / "config"), "XDG_STATE_HOME": str(root / "state"),
+           "TEAMAGENTS_LOG_SURFACE": "1"}
     common = ["--state-root", str(state_root), "--full-auto"]
     failures: list[str] = []
 
@@ -251,6 +281,9 @@ def main() -> int:
     if granted.stderr.strip():
         print("  note:", granted.stderr.strip())
     grant_id = (json.loads(granted.stdout) if granted.stdout.strip() else {}).get("grant_id", "")
+    before_grant = len(offered(state_root, worker))
+    for shell, tools in offered(state_root, worker)[:before_grant]:
+        print(f"  offered before the grant: shell={shell} tools={tools}")
 
     # --- turn 2: the same worker runs it -----------------------------------------
     # Asking again is legitimate: the leader sometimes reports the worker's *earlier* answer and leaves the new
@@ -268,8 +301,14 @@ def main() -> int:
             print("  the command did not run in the first ask; asking again (the grant is still in place)")
     report = json.loads(second.stdout or "{}") if second.stdout.strip().startswith("{") else {}
     print("  reply:", (report.get("reply") or second.stdout.strip() or second.stderr.strip())[:400])
+    surfaces = offered(state_root, worker)
+    for shell, tools in surfaces[before_grant:]:
+        print(f"  offered after the grant: shell={shell} tools={tools}")
     if proof.is_file() and proof.read_text().strip() == "granted":
         print("  proof.txt present: the worker ran the shell command after the grant")
+        if not any(shell == "yes" for shell, _tools in surfaces[before_grant:]):
+            failures.append("the worker ran the command without ever being offered shell: "
+                            f"surfaces={surfaces}")
     else:
         # Which shape is this? The difference matters: a worker whose task is still open answered in prose
         # instead of settling it (the recorded gap), a *refused* shell operation is a grant/dispatch question,
@@ -279,12 +318,28 @@ def main() -> int:
         handled, open_task = session_state(state_root, worker)
         attempts = shell_attempts(state_root)
         held = live_shell_grant(state_root, worker)
-        failures.append(
-            f"the worker did not run the command after the grant: grant={'live' if held else 'ABSENT'}, "
-            f"task={open_task} after {handled} requests, attempts={attempts} — with a live grant and no attempt "
-            f"the tool was offered and the model chose not to use it; an absent grant is the finding; an open "
-            f"task is the recorded gap (docs/ACCEPTANCE.md)"
-        )
+        surfaces = offered(state_root, worker)
+        after_grant = surfaces[before_grant:]
+        for shell, tools in after_grant:
+            print(f"  offered after the grant: shell={shell} tools={tools}")
+        if after_grant and all(shell != "yes" for shell, _tools in after_grant):
+            # the driver's own words, not the model's: the tool was never offered, which is the product finding
+            failures.append(
+                f"the worker was never offered shell after the grant: grant={'live' if held else 'ABSENT'}, "
+                f"task={open_task} after {handled} requests, attempts={attempts}, surfaces={after_grant} "
+                f"({len(surfaces)} request(s) logged for {worker})"
+            )
+        elif after_grant:
+            failures.append(
+                f"the worker was offered shell ({after_grant[-1][1]}) and did not run the command: "
+                f"task={open_task} after {handled} requests, attempts={attempts} — the model's choice, not the "
+                f"surface's (D-143); the turn's own deadline is what ended the probe"
+            )
+        else:
+            failures.append(
+                f"no request was prepared for the worker after the grant (grant="
+                f"{'live' if held else 'ABSENT'}, task={open_task} after {handled} requests, attempts={attempts})"
+            )
 
     # --- revoking takes it away again -------------------------------------------
     revoked = call(["authority", *common, "revoke", "--grant", grant_id[:12], "--json"], env)
