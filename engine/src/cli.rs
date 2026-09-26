@@ -389,29 +389,37 @@ pub fn doctor(state_root: Option<PathBuf>) -> i32 {
             if !matches!(binding.kind.as_str(), "web_search" | "web_fetch") {
                 continue;
             }
+            let label = format!("tools.{name}");
             let provider = binding.provider.as_deref().unwrap_or("anysearch");
-            let credential = binding.api_key_env.as_deref();
-            let present = credential.map(|key| std::env::var(key).is_ok());
-            // the search provider is chosen by name; a name this build does not speak
-            // is reported on the binding's own row as well as in the verdict below
-            let supported = binding.kind != "web_search" || provider == "anysearch";
-            optional_check(
-                &mut results,
-                &format!("tools.{name}"),
-                present.unwrap_or(true) && supported,
-                match (credential, present) {
-                    _ if !supported => format!(
-                        "{} provider {provider:?} is not one this build speaks (anysearch)",
-                        binding.kind
-                    ),
-                    (Some(key), Some(false)) => format!(
-                        "{} via {provider:?} needs {key}, which is unset: the tool reports a capability state instead of failing the session",
-                        binding.kind
-                    ),
-                    (Some(key), _) => format!("{} via {provider:?}, credential {key} is set", binding.kind),
-                    (None, _) => format!("{} via {provider:?}, no api_key_env configured", binding.kind),
-                },
-            );
+            // D-167: `web_search` needs a credential — DESIGN §7 calls its absence a capability state — and a
+            // *required* binding that cannot work refuses the member's start, so that is a FAIL (D-164's rule,
+            // applied to the web half). The credential wording comes from the helper the tool call and the boot
+            // use, so the three cannot describe the same binding differently. `web_fetch` is the half that
+            // needs no credential at all.
+            let row: RowReporter = if binding.required { check } else { optional_check };
+            let lost = if binding.required {
+                "the session cannot start a member until it is fixed (the instance parks)"
+            } else {
+                "a call answers with that capability state and the session still boots"
+            };
+            let key = binding.api_key_env.as_deref();
+            let (ok, detail) = if binding.kind == "web_fetch" {
+                (
+                    true,
+                    match key {
+                        Some(key) => format!("web_fetch needs no credential (api_key_env {key} is not used)"),
+                        None => "web_fetch needs no credential".to_string(),
+                    },
+                )
+            } else if provider != "anysearch" {
+                (false, format!("web_search provider {provider:?} is not one this build speaks (anysearch), so {lost}"))
+            } else {
+                match crate::tools::web_search_credential(key) {
+                    Ok(_) => (true, format!("web_search via {provider:?}, credential {} is set", key.unwrap_or(""))),
+                    Err(reason) => (false, format!("web_search via {provider:?}: {reason}, so {lost}")),
+                }
+            };
+            row(&mut results, &label, ok, detail);
         }
         if let Err(error) = crate::tools::web_tools(catalog, &default_bindings()) {
             check(&mut results, "web tools", false, error);

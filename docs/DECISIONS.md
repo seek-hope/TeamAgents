@@ -18,6 +18,49 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-167 `web_search` without a credential called out unauthenticated (2026-09-27)
+
+The `doctor` WARN-vs-FAIL pass the last three entries kept pointing at. DESIGN §7 says "a missing web-search
+credential or an unavailable tool is **reported as a capability state**, and no executable binding is
+invented", and D-76's ceiling note said "a `required` one still fails the member's start (a missing credential
+is a capability state at tool time)". Neither half was implemented. `web_search` read the credential as
+`api_key_env.and_then(std::env::var).ok()` and then sent the request **anyway, without an `Authorization`
+header** — so an unauthenticated request left the host for a third party, and the model saw the provider's own
+401 instead of a sentence naming what to configure. Measured with the control below: `web_search` with an
+unset credential returned a *successful* parsed result (`{"provider":"anysearch","query":"q","results":[]}`)
+from a local endpoint that needed no auth. A `required = true` binding was no better: `web_tools` failed the
+member's load only for an unserved *provider*, never for a missing credential.
+
+**Changed** (`engine/src/tools.rs`, `engine/src/cli.rs`):
+
+* `web_search_credential` is the single wording for the credential state (a variable that is set but *empty*
+  counts as absent, the way `config::missing_key_envs` reads one), and `web_search` refuses with
+  `web_search_capability` — `web_search is unavailable: credential X is unset (its [tools.*] binding's
+  api_key_env); web_fetch needs no credential` — **before** any request is built. The tool call, the member's
+  start and the `doctor` row all use that one helper, so they cannot describe the same binding differently
+  (D-164/D-166's pattern).
+* `web_tools` fails the member's load for a `required = true` `web_search` whose credential is missing, the
+  contract an MCP service with an unset secret already had (`bound.rs`); the driver parks that instance with
+  the reason and `teamagents instances` prints it (D-164/D-165).
+* `doctor`'s web rows follow D-164's rule: a `required` binding that cannot work is a **FAIL** (missing
+  credential *or* unserved provider), an optional one stays a **WARN** whose detail says a call answers with
+  the capability state. A `web_search` with **no** `api_key_env` at all is now a WARN too (it was `[ok]` with
+  "no api_key_env configured", which read as "search works"); `web_fetch` is reported as the half that needs
+  no credential, and an `api_key_env` set on a fetch binding is named as unused.
+
+**Measured** (2026-09-27, `make check`'s own unit test, a local `TcpListener`: no third party, no credential):
+`tools::a_web_search_without_a_credential_answers_with_the_capability_and_never_calls_out` asserts the
+capability sentence, that the listener received **zero** requests, and — with the variable set — that exactly
+one request arrives carrying `authorization: bearer test-value`. **Control** (the two changed lines reverted
+byte-identically): the same test fails on the first `unwrap_err` because the call *succeeded*, which is the
+defect written down. `tools::a_required_web_search_without_a_credential_fails_the_member_load` covers the boot
+half (required → `Err` naming the binding and the variable; optional → the binding stays and answers with the
+state). The `doctor` rows are pinned in `cli::doctor_probes_isolation_and_config_errors` (FAIL for the required
+one, WARN for both optional shapes, the fetch row ok).
+
+Docs: `docs/USER-GUIDE.md` §2 states the credential rule where the `[tools.web]` example is. DESIGN §7 needed
+no edit — the code now does what it already said.
+
 ## D-166 A `--state-root` that is a file (2026-09-27)
 
 The same audit as D-163/D-164/D-165, on the last path-valued flag. Every entry point joins `session.sqlite` and

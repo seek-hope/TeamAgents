@@ -936,6 +936,13 @@ pub(crate) fn web_tools(
                     "required tool service {name:?} is unavailable: unsupported web_search provider {provider:?}"
                 ));
             }
+            // D-167, the other half of DESIGN §7: `web_search` needs a credential, so a *required* one whose
+            // credential is missing fails the member's start — the same contract an MCP service with an unset
+            // secret has (`bound.rs`) — instead of being bound into a member whose every search can only answer
+            // with the capability state. D-76's note claimed this already; nothing implemented it.
+            if let Err(reason) = web_search_credential(binding.api_key_env.as_deref()) {
+                return Err(format!("required tool service {name:?} is unavailable: {reason}"));
+            }
         }
         match binding.kind.as_str() {
             "web_search" if tools.search.is_none() => tools.search = Some(binding.clone()),
@@ -2165,6 +2172,27 @@ pub fn is_private_addr(addr: std::net::IpAddr) -> bool {
     }
 }
 
+/// The bearer token a `web_search` binding authenticates with, or the reason it has none (D-167).
+///
+/// One wording for the three consumers — the tool call, the member's start (`web_tools`) and `doctor` — so the
+/// same binding cannot be described differently in a receipt, a park reason and a doctor row. A variable that
+/// is *set but empty* counts as absent, the way `api_key_env` does in `config::missing_key_envs`.
+pub(crate) fn web_search_credential(api_key_env: Option<&str>) -> Result<String, String> {
+    match api_key_env.map(str::trim).filter(|env| !env.is_empty()) {
+        Some(env) => std::env::var(env)
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| format!("credential {env} is unset (its `[tools.*]` binding's `api_key_env`)")),
+        None => Err("no `api_key_env` is configured in its `[tools.*]` binding".into()),
+    }
+}
+
+/// The capability state a `web_search` call answers with when it has no credential: what to configure, and
+/// what the other half of the same section needs instead. Never an anonymous request (D-167).
+fn web_search_capability(reason: &str) -> String {
+    format!("web_search is unavailable: {reason}; web_fetch needs no credential")
+}
+
 /// AnySearch provider: POST {query, max_results}.
 pub fn web_search(
     query: &str,
@@ -2174,13 +2202,15 @@ pub fn web_search(
     include_content: bool,
 ) -> Result<Json, String> {
     let url = url.unwrap_or("https://api.anysearch.com/v1/search");
-    let key = api_key_env.and_then(|env| std::env::var(env).ok());
+    // D-167: DESIGN §7 — "a missing web-search credential … is reported as a capability state, and no
+    // executable binding is invented". Before this the request went out anyway, without an `Authorization`
+    // header, so the model saw the provider's own 401 instead of a sentence naming what to configure (and an
+    // unauthenticated request left the host for a third party). The call never leaves without a credential.
+    let key = web_search_credential(api_key_env).map_err(|reason| web_search_capability(&reason))?;
     let count = max_results.clamp(1, 20);
     let mut request =
         ureq::post(url).timeout(std::time::Duration::from_secs(30)).set("content-type", "application/json");
-    if let Some(key) = key {
-        request = request.set("authorization", &format!("Bearer {key}"));
-    }
+    request = request.set("authorization", &format!("Bearer {key}"));
     let response = request
         .send_string(&json!({"query": query, "max_results": count}).to_string())
         .map_err(|e| format!("web_search failed: {e}"))?;
@@ -3295,6 +3325,88 @@ mod tests {
             }
         });
         base
+    }
+
+    /// D-167: DESIGN §7 — "a missing web-search credential … is reported as a capability state, and no
+    /// executable binding is invented". Measured before this test existed: with `api_key_env` naming an unset
+    /// variable the request went out anyway, with **no `Authorization` header**, so the model saw the
+    /// provider's own 401 (or an anonymous server's answer) instead of a sentence naming what to configure —
+    /// and an unauthenticated request left the host for a third party.
+    #[test]
+    fn a_web_search_without_a_credential_answers_with_the_capability_and_never_calls_out() {
+        let seen: std::sync::Arc<std::sync::Mutex<Vec<String>>> = Default::default();
+        let record = seen.clone();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            while let Ok((mut conn, _)) = listener.accept() {
+                use std::io::{Read, Write};
+                let mut buf = [0u8; 4096];
+                let read = conn.read(&mut buf).unwrap_or(0);
+                record.lock().unwrap().push(String::from_utf8_lossy(&buf[..read]).into_owned());
+                let body = r#"{"data":{"results":[]}}"#;
+                let _ = conn.write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+
+        // declared but unset: the capability names the variable, and no request is sent
+        let error = web_search("q", 5, Some(&base), Some("TA_WEB_SEARCH_DEFINITELY_UNSET"), false).unwrap_err();
+        assert!(error.contains("TA_WEB_SEARCH_DEFINITELY_UNSET"), "the message names the variable: {error}");
+        assert!(error.contains("web_fetch needs no credential"), "and the other half of §7: {error}");
+        // nothing configured at all: search needs one (`web_fetch` is the half that does not)
+        let error = web_search("q", 5, Some(&base), None, false).unwrap_err();
+        assert!(error.contains("no `api_key_env` is configured"), "the message says what to configure: {error}");
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        assert_eq!(seen.lock().unwrap().len(), 0, "no request may leave without a credential");
+
+        // control: with the credential in the environment the call goes out, carrying the bearer token
+        let _env = crate::env_lock();
+        std::env::set_var("TA_WEB_SEARCH_KEY_SET", "test-value");
+        let result = web_search("q", 5, Some(&base), Some("TA_WEB_SEARCH_KEY_SET"), false).expect("the call goes out");
+        std::env::remove_var("TA_WEB_SEARCH_KEY_SET");
+        assert_eq!(result["results"], json!([]));
+        let requests = seen.lock().unwrap().clone();
+        assert_eq!(requests.len(), 1, "{requests:?}");
+        assert!(
+            requests[0].to_lowercase().contains("authorization: bearer test-value"),
+            "the token is what authenticates the call: {:?}",
+            requests[0]
+        );
+    }
+
+    /// D-167's boot half: a `required = true` `web_search` whose credential is missing fails the member's
+    /// load — D-76's note claimed "a `required` one still fails the member's start" and nothing implemented it
+    /// — while an optional one stays bound and answers with the capability state at call time. The driver parks
+    /// the instance with this reason (the same path D-164 exercised for a required MCP service);
+    /// `teamagents instances` then prints it (D-165).
+    #[test]
+    fn a_required_web_search_without_a_credential_fails_the_member_load() {
+        let binding = |required: bool| {
+            let mut catalog = teamagents_core::models::UserConfig::default();
+            catalog.tools.insert(
+                "search".into(),
+                serde_json::from_value(json!({
+                    "kind": "web_search", "provider": "anysearch",
+                    "api_key_env": "TA_WEB_REQUIRED_DEFINITELY_UNSET", "required": required
+                }))
+                .unwrap(),
+            );
+            catalog
+        };
+        let error = match web_tools(&binding(true), &["web".to_string()]) {
+            Ok(_) => panic!("a required web_search without its credential must fail the member's load"),
+            Err(error) => error,
+        };
+        assert!(error.contains("required tool service \"search\""), "{error}");
+        assert!(error.contains("TA_WEB_REQUIRED_DEFINITELY_UNSET"), "the reason names the variable: {error}");
+        let optional = web_tools(&binding(false), &["web".to_string()]).expect("an optional one only loses it");
+        assert!(optional.search.is_some(), "the binding itself is not dropped: it answers with the state");
     }
 
     #[test]

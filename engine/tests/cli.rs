@@ -134,7 +134,7 @@ fn doctor_probes_isolation_and_config_errors() {
     let _ = std::fs::remove_dir_all(&home);
     let config = home.join("config/teamagents");
     std::fs::create_dir_all(&config).unwrap();
-    let run = |state: &std::path::Path| -> String {
+    let run_status = |state: &std::path::Path| -> (i32, String) {
         let output = Command::new(env!("CARGO_BIN_EXE_teamagents"))
             .arg("doctor")
             .env("XDG_STATE_HOME", state)
@@ -143,8 +143,9 @@ fn doctor_probes_isolation_and_config_errors() {
             .expect("run doctor");
         let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
         text.push_str(&String::from_utf8_lossy(&output.stderr));
-        text
+        (output.status.code().unwrap_or(-1), text)
     };
+    let run = |state: &std::path::Path| -> String { run_status(state).1 };
     let clean = run(&home.join("state"));
     assert!(clean.contains("user config"), "{clean}");
     assert!(clean.contains("bubblewrap isolation"), "{clean}");
@@ -195,7 +196,8 @@ fn doctor_probes_isolation_and_config_errors() {
     .unwrap();
     let without_key = run(&home.join("state"));
     assert!(without_key.contains("[WARN] tools.search"), "{without_key}");
-    assert!(without_key.contains("TA_DOCTOR_WEB_KEY, which is unset"), "{without_key}");
+    assert!(without_key.contains("TA_DOCTOR_WEB_KEY is unset"), "{without_key}");
+    assert!(without_key.contains("capability state"), "the row says what a call will answer: {without_key}");
     let with_key = Command::new(env!("CARGO_BIN_EXE_teamagents"))
         .arg("doctor")
         .env("XDG_STATE_HOME", home.join("state"))
@@ -206,6 +208,28 @@ fn doctor_probes_isolation_and_config_errors() {
     let with_key = String::from_utf8_lossy(&with_key.stdout).into_owned();
     assert!(with_key.contains("[ok  ] tools.search"), "{with_key}");
     assert!(with_key.contains("credential TA_DOCTOR_WEB_KEY is set"), "{with_key}");
+
+    // D-167: DESIGN §7 calls a missing web-search credential a capability state — and the tool now answers
+    // exactly that instead of sending an unauthenticated request. `web_fetch` is the half that needs no
+    // credential, and a *required* binding that cannot work refuses the member's start, so its row is a FAIL
+    // (D-164's rule, on the web half of the section).
+    std::fs::write(
+        config.join("config.toml"),
+        "[models.m]\nprovider=\"openai\"\nmodel=\"x\"\n\n\
+         [tools.fetch]\nkind = \"web_fetch\"\n\n\
+         [tools.nokey]\nkind = \"web_search\"\nprovider = \"anysearch\"\n\n\
+         [tools.needkey]\nkind = \"web_search\"\nprovider = \"anysearch\"\n\
+         api_key_env = \"TA_DOCTOR_REQUIRED_KEY\"\nrequired = true\n",
+    )
+    .unwrap();
+    let (code, web) = run_status(&home.join("state"));
+    assert_eq!(code, 1, "a required binding that cannot work fails doctor: {web}");
+    assert!(web.contains("[FAIL] tools.needkey"), "{web}");
+    assert!(web.contains("TA_DOCTOR_REQUIRED_KEY is unset"), "{web}");
+    assert!(web.contains("cannot start a member"), "the row says what the boot does: {web}");
+    assert!(web.contains("[WARN] tools.nokey"), "no credential at all is a capability state too: {web}");
+    assert!(web.contains("no `api_key_env` is configured"), "{web}");
+    assert!(web.contains("[ok  ] tools.fetch") && web.contains("needs no credential"), "{web}");
 
     // D-79: a config that declares no web binding at all says so too — the model is then
     // offered neither web_search nor web_fetch, which the README's feature list would

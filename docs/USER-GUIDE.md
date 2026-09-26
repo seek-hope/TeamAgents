@@ -161,6 +161,13 @@ api_key_env = "ANYSEARCH_API_KEY"
   state root (stamp, WAL, read/write), the bubblewrap isolation probe and that the programs named in
   `[hooks]` are executable; it also lists the `[[checks]]` that will gate every goal. An `sessions/` layout
   from an earlier release is reported explicitly and is never migrated.
+- A `[tools.*]` binding with `kind = "web_search"` needs a credential: `api_key_env` names the environment
+  variable it authenticates with. Without it — not configured, or the named variable unset — a search call
+  answers with a **capability state** naming what to configure, and no request leaves the host unauthenticated
+  (DESIGN §7, D-167). `kind = "web_fetch"` needs no credential. A binding with `required = true` that cannot
+  work (missing credential, unserved `provider`) refuses the member's start, so `doctor` reports its row as a
+  **FAIL** and the parked instance carries the reason (D-164/D-165); an optional one keeps the capability and
+  the call answers with that state.
 
 ### 2.1 Acceptance checks (`[[checks]]`)
 
