@@ -190,6 +190,18 @@ mod tests {
         frames: std::sync::mpsc::Receiver<Json>,
         /// Keeps the server thread's channel endpoint alive for its lifetime.
         _stop: Sender<()>,
+        /// The scratch directory, removed when the fake daemon drops (D-131).
+        _scratch: Scratch,
+    }
+
+    /// A scratch root removed when it drops: the name carries the process id but the directory is never
+    /// reused, so a leftover accumulates one copy per run until the machine's `TMPDIR` fills (D-131).
+    struct Scratch(PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
     }
 
     fn fake_daemon(tag: &str, protocol_version: u64, replies: Vec<Json>) -> FakeDaemon {
@@ -233,7 +245,7 @@ mod tests {
                 }
             }
         });
-        FakeDaemon { socket, frames: frames_rx, _stop: stop_tx }
+        FakeDaemon { socket, frames: frames_rx, _stop: stop_tx, _scratch: Scratch(dir) }
     }
 
     #[test]

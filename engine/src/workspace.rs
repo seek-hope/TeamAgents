@@ -407,11 +407,30 @@ pub fn member_worktrees(session_dir: &Path) -> Result<Vec<PathBuf>, String> {
 mod tests {
     use super::*;
 
-    fn temp(tag: &str) -> PathBuf {
+    /// Scratch root for one test, removed again when the test ends. It must not outlive the test: the name
+    /// carries the process id but the directory is never reused, so a leftover accumulates one copy per run
+    /// until the machine's `TMPDIR` fills (D-131).
+    struct Scratch(PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    impl std::ops::Deref for Scratch {
+        type Target = PathBuf;
+
+        fn deref(&self) -> &PathBuf {
+            &self.0
+        }
+    }
+
+    fn temp(tag: &str) -> Scratch {
         let dir = std::env::temp_dir().join(format!("ta-ws-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        dir
+        Scratch(dir)
     }
 
     fn init_repo(dir: &Path) {

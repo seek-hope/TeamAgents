@@ -18,6 +18,41 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-131 The test suite filled `/tmp` until the machine stopped (2026-09-26)
+
+`make check` began failing with `create schema: disk I/O error`, `make pty` with `printf: write error: Disk
+quota exceeded`, and then *any* command failed before it started: the work sandbox could not register a
+mount target (`failed to register synthetic bubblewrap mount target /tmp/.git: Quota exceeded (os error
+122)`). The machine's `/tmp` tmpfs was at 13 GB of 16 GB, and **4,824 `ta-*` directories (6.7 GB)** were
+sitting in it — 335 copies of `ta-ws-worktree`, 297 of `ta-tui-daemon-version`, and so on.
+
+Every copy came from a test helper: `workspace::tests::temp` (`engine/src/workspace.rs`) and
+`daemon_client::tests::fake_daemon` (`tui/src/daemon_client.rs`) built `<TMPDIR>/ta-<name>-<pid>`, cleared a
+*stale* copy before creating it, and never removed it afterwards. Because the name carries the process id,
+each run added a fresh copy rather than reusing one, so the directories accumulated one per tag per run
+until the tmpfs was full. Two fixes:
+
+- both helpers now return a `Scratch` guard that removes its directory when it drops, so a test leaves
+  nothing behind even when it fails;
+- `make test` counts `ta-*` entries in `TMPDIR` before and after the suite and fails if the run added any —
+  the scratch analogue of the daemon-leak guard D-111 added, with the same shape of message.
+
+**The tidy-looking fix is rejected, and the reason is measured.** Pointing the suite's `TMPDIR` at a scratch
+root the recipe then removes — the obvious way to bound the whole thing — broke **26 daemon tests**: a daemon
+socket path already sits near Linux's 108-byte `SUN_LEN` limit (`/tmp/teamagents-v2-daemon-exec-budget-
+refused-<uuid>/state/daemon.sock` is 100 bytes), so one more path component makes `bind` fail with `path must
+be shorter than SUN_LEN`. A guard that costs nothing beats an isolation that cannot fit; the recipe's comment
+records this so the same idea is not "fixed" back in.
+
+Evidence: `make check` is green and reports `ta-* before: 0 / after: 0` (the guard's own counters) on the
+fixed tree; with the leak live, the same gate died at `check exit=2`. The 4,824 stale directories were removed
+by hand after confirming no daemon or runner was live — they were this project's own test scratch, and the
+suite's own names (`ta-ws-*`, `ta-tui-daemon-*`) say whose they were.
+
+Ceiling: the guard counts `ta-*` names under `TMPDIR` only, so a test that leaks under another name, or
+outside `TMPDIR` altogether, is still invisible; and cleanup is per test module, so a new helper has to adopt
+the guard itself (nothing enforces that but review).
+
 ## D-130 The surface nothing calls was three kinds of "mention" bigger than the audit said (2026-09-26)
 
 D-86 built `review/dead_code.py` and recorded its blind spot in prose: a name a *test* mentions counts as a
