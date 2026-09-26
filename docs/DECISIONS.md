@@ -18,6 +18,49 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-185 The gates assert an outcome; nothing asserted their shape (2026-09-27)
+
+D-184 gave the audits a catalogue. The formal-verification material had the same shape and no gate at all, and
+D-159 had already written the sentence that assumed one: "What the gate *does* assert, and this entry did not
+change, is the shape: eleven configurations, ten refuted controls, three harnesses." What the targets assert is
+an *outcome*: `make verify-model-all` fails when a configuration it names does not verify, and
+`make verify-model-counterexamples` fails when a control it names verifies. Nothing noticed a line dropped from
+either list, a `.cfg` added to `verification/tla/` that no target runs, a `.tla` module no configuration is run
+against, a target naming a file that was renamed, or the counts in `verification/REPORT.md` drifting from the
+lists they describe. The material around the gate was the unchecked part.
+
+**`review/verification_catalogue.py`**, in `make hygiene` (fast: it reads text, it does not run TLC), holds the
+four together: every `.cfg` and `.tla` a `verify-model*` recipe names exists; every `MC*.cfg` on disk is driven
+by some target (verification material nothing runs); every `V2*.tla` is the spec of some target (a model outside
+the checked set); every configuration and module is described in `verification/README.md`, the property-by-spec
+mapping the report sends a reader to; the report's own two counts equal the sizes of the lists; and the Kani
+bullet's quoted run (`Complete - N successfully verified harnesses, 0 failures, M total`) names the number of
+`#[kani::proof]` functions the crate actually holds, with `N = M` so the quoted line is internally consistent.
+Losing a `verify-model*` target fails the audit instead of passing on an empty set.
+
+**Measured** (2026-09-27): 22 configurations and 10 modules are driven by 4 targets, 22 configurations on disk,
+all named and described, and the report's "all **11** configurations" / "all **10** negative controls" agree
+with the lists, as does its quoted Kani count (3 harnesses, printed as notes). Controls, each reverted: a new
+`verification/tla/MC_orphan_probe.cfg` is
+reported as material nothing checks *and* as undescribed; deleting one pair from the counterexample list
+reports "`verify-model-counterexamples` drives 9" against the report's **10** and the now-orphaned
+configuration; renaming a spec in a copy of the Makefile reports the missing file and the module that is no
+longer checked; an extra `#[kani::proof]` function in the harness crate reports "quotes 3 verified Kani
+harnesses, but `verification/kani/src` holds 4", and mutating the report's quoted `3`s to `4` reports the
+converse.
+
+**The targets were re-run at `f521fd4f` for the report's §0**, which now carries the date, the commit and this
+run's wall clock: `make verify-kani` 3 s (`Complete - 3 successfully verified harnesses, 0 failures, 3 total`),
+`make verify-model-counterexamples` 1 m 22 s (ten refutations, each naming its property), `make
+verify-model-all` 3 m 55 s (eleven times `No error has been found`). Every per-configuration state count is
+identical to the run the report already quoted — `MC_task.cfg` 5,721,401 / 606,904 as the largest, `MC.cfg`
+84,877 / 18,384, `MC_store.cfg` 48 / 13 as the smallest — which is what a deterministic checker on unchanged
+inputs should print, and it makes the point that those numbers describe the *material*.
+
+Ceiling: this audit says nothing about TLC passing a configuration — the states, times and property names in
+§0 are measurements of a run, and re-running the targets is what keeps them true (D-159's ceiling). What is
+now asserted is what D-159 said was asserted: the shape, and that every file in the directory belongs to it.
+
 ## D-184 The audits were the one surface without a catalogue (2026-09-27)
 
 Every documented surface in this repository has an audit that holds it to the code: the events (D-125), the

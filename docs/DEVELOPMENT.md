@@ -60,7 +60,10 @@ audits — each one a claim the tree makes about itself, each with the decision 
   `git commit -a` (D-179); `review/eval_manifests.py` holds the frozen evaluation manifests against the tree
   (D-145); `review/eval_surface.py` holds the evaluation's model-visible surface against those manifests, the
   harness's history and the recorded trials (D-182); `review/dogfood/probes.py --self-check` checks the probe
-  harness's own rules (its selection, budgets, the stray guard and the no-kill-by-pattern rule).
+  harness's own rules (its selection, budgets, the stray guard and the no-kill-by-pattern rule);
+  `review/verification_catalogue.py` holds `verification/tla`'s configurations and modules against the
+  `verify-model*` targets that drive them, and the report's counts — the configurations, the negative controls
+  and the quoted Kani harness count — against the lists and the proofs in the tree (D-185).
 * **the shell, before any of that**: it rejects non-English characters (the two documented exceptions), tracked
   compile caches, Python caches and SQLite temporaries, and checks the syntax of `install.sh`.
 
