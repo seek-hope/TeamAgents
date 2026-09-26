@@ -90,6 +90,12 @@ Because it is behaviour rather than a defect, turn 2 now gets the same bounded r
 is not there after the first ask, the probe asks again **with the grant still in place** (the session is not
 reset), and prints a line saying so. A run of the probe after the change passed in 28 s with the first attempt.
 
+The harness's leak guard also learned some precision: it counts `ta-*` **directories** now, because plain files
+with that prefix appear in `TMPDIR` from elsewhere on this machine — measured: an empty `ta-cap-stdout` and
+`ta-cap-stderr`, and earlier a `ta-wide-d71.log`, none of which this tree writes — and a guard that reported them
+as the probes' leak would be crying wolf. Every probe's scratch is a directory (`mkdtemp` or a `mkdir`ed root),
+so nothing is lost.
+
 ## D-142 The workspace probe sampled a record the retirement was still removing (2026-09-26)
 
 `review/dogfood/workspace.py` — the harness that walks the git-worktree lifecycle end to end (D-76) — failed

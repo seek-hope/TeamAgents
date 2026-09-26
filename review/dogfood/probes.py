@@ -110,8 +110,14 @@ def stop_daemons(state_dir: pathlib.Path) -> None:
 
 
 def strays() -> set:
-    """Scratch directories the probes would leave behind, by their shared prefix."""
-    return {p.name for p in pathlib.Path(os.environ.get("TMPDIR", "/tmp")).glob("ta-*")}
+    """Scratch *directories* the probes would leave behind, by their shared prefix.
+
+    Directories only: every probe's scratch is one (`mkdtemp` or a `mkdir`ed root), while plain files with the
+    same prefix appear in `TMPDIR` from elsewhere on this machine — measured 2026-09-26, an empty `ta-cap-stdout`
+    and `ta-cap-stderr` and a `ta-wide-d71.log` none of which this tree writes — and a guard that counted them
+    would report a leak that is not there (D-143).
+    """
+    return {p.name for p in pathlib.Path(os.environ.get("TMPDIR", "/tmp")).glob("ta-*") if p.is_dir()}
 
 
 def main() -> int:
