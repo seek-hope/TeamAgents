@@ -2198,6 +2198,22 @@ assertions; with the old wording the test cannot pass, which is its counterfactu
 reach a prompt and points at what does work today (a member's instructions are its profile; the Leader passes
 rules in `spawn`/`delegate` text).
 
+**2026-09-27, an exception reproduced and narrowed.** A `make probe-models`-style run of
+`python3 review/dogfood/authority.py` failed *this* way (kept session: `/tmp/teamagents-probe-harness-3/authority`):
+the user grant `shell@workspace` for `worker_shell_probe` was issued and unrevoked, the worker's `workspace_ref`
+was the shared workspace and its stored profile still carried the `shell` schema, yet both of its following
+task-driven turns *reported* thirteen tools without `shell` (`ls … skill, wait, finish, read_history`) and
+answered `blocked`; the probe's own turn timed out at 600 s and the harness's 1800 s budget killed the probe.
+The probe's premise — "a live grant means the tool was offered" — is exactly what the worker's transcript
+contradicts, and the harness test for the same shape
+(`v2_supervisor::a_task_driven_worker_turn_sees_a_live_user_grant`, added then) **passes**: the supervisor path
+offers `shell` on a task-driven turn prepared after a user grant. So the open question is now narrow: either the
+daemon-run session prepared those requests on another path, or the worker misreported its own tool list — its
+second turn's `est_prompt_tokens` (2128, against 1411 for the first) leans towards the schema having been there,
+and that estimate is coarse. Settling it needs the per-request offer to be observable (the persisted surface
+listed below as needing the user's word) or one instrumented run; until then the probe keeps printing what it
+knows (`grant=live|ABSENT`, the worker's attempts, `task=`).
+
 Ceiling: the probe measures the *prompt the leader was given*; a member's prompt follows the same profile path
 (the spawn path copies the parent profile and overrides `instructions` from the tool call), so the finding
 generalises by construction rather than by a second live run.

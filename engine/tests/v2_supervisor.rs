@@ -1089,3 +1089,92 @@ async fn a_prose_reply_leaves_one_turn_and_the_delegator_resolves_the_task() {
     assert_eq!(seen.lock().unwrap().get("i-leader").map(Vec::len), Some(3), "the leader ran its three turns");
     handle.shutdown().await.expect("shutdown");
 }
+
+/// D-143's open question, in the shape that failed live (2026-09-27): a worker whose turn is driven by a
+/// **delegated task** must also see a user grant at its next request. The existing grant test drives the worker
+/// with a *user input* instead ("a delegated task would keep it busy … and its extra requests would make the
+/// 'next request' assertions ambiguous"), so the task-driven shape was never covered.
+///
+/// The live `review/dogfood/authority.py` run of 2026-09-27 failed in exactly that shape (kept session:
+/// `/tmp/teamagents-probe-harness-3/authority`): after `teamagents authority grant --subject
+/// worker_shell_probe --action shell --scope workspace` (unrevoked, the worker's `workspace_ref` the shared
+/// workspace, its stored profile still carrying the `shell` schema), the worker's two following task-driven
+/// turns *reported* thirteen tools without `shell` and answered `blocked` twice. **This test passes for the same
+/// shape** — a task-driven turn prepared after a user grant offers `shell` — so the divergence is not in the
+/// supervisor path the test drives, and D-143's open question is now narrower: either the daemon-run session
+/// built those requests on another path, or the worker misreported its own tool list (`est_prompt_tokens` for
+/// its second turn, 2128 against 1411 for the first, is closer to "the schema was there" than to "it was not",
+/// and the estimate is coarse). What would settle it is the per-request offer made observable (the open new
+/// surface recorded with D-143) or one instrumented run of that session.
+#[tokio::test]
+async fn a_task_driven_worker_turn_sees_a_live_user_grant() {
+    let leader = vec![
+        Step::Message(json!({"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "spawn",
+             "arguments": json!({"instance_id": "i-worker", "instructions": "answer plainly",
+                                 "task": "say hello"}).to_string()}}]})),
+        Step::Message(reply("the worker has it")),
+        // after the first task settles the delegator's turn resumes: hand the worker a *second* task, which is
+        // the turn that must see the grant (the live failure was exactly this turn)
+        Step::Message(json!({"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c2", "type": "function", "function": {"name": "delegate",
+             "arguments": json!({"assignee": "i-worker",
+                                 "description": "run: printf granted > proof.txt"}).to_string()}}]})),
+        Step::Message(reply("done")),
+    ];
+    // the worker settles each task with a `finish`, so the delegator wakes for the next one
+    let finished = || {
+        json!({"role": "assistant", "content": "", "tool_calls": [
+        {"id": "f", "type": "function", "function": {"name": "finish",
+         "arguments": json!({"status": "success", "summary": "hello"}).to_string()}}]})
+    };
+    let worker = vec![Step::Message(finished()), Step::Message(finished()), Step::Message(finished())];
+    let seen: Seen = Arc::new(Mutex::new(HashMap::new()));
+    let root = root("task-driven-grant");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let handle = start(config(
+        &root,
+        factory_with_log(
+            HashMap::from([("i-leader".to_string(), leader), ("i-worker".to_string(), worker)]),
+            seen.clone(),
+        ),
+    ))
+    .await
+    .expect("start");
+    let requests = || seen.lock().unwrap().get("i-worker").cloned().unwrap_or_default();
+    handle.input("i-leader", "spawn a worker and give it the task").await.expect("input");
+    for _ in 0..800 {
+        if !requests().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(!requests().is_empty(), "the task-driven worker took its first turn");
+    assert!(!requests()[0].contains(&"shell".to_string()), "before the grant: {:?}", requests());
+
+    // the user grants the shared-workspace shell (the same `submit_user` path the daemon's client uses)
+    handle
+        .submit_user(cmd(
+            "user-grant-shell-task-driven",
+            "issue_grant",
+            json!({"subject": "i-worker", "action": "shell", "resource_scope": "workspace"}),
+        ))
+        .await
+        .expect("grant");
+    let before = requests().len();
+    for _ in 0..800 {
+        if requests().len() > before {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let after = requests();
+    assert!(after.len() > before, "the worker kept working after the grant: {after:?}");
+    for (index, offered) in after.iter().enumerate().skip(before) {
+        assert!(
+            offered.contains(&"shell".to_string()),
+            "request {index} was prepared after the grant and must offer shell: {offered:?} (all: {after:?})"
+        );
+    }
+    handle.shutdown().await.expect("shutdown");
+}
