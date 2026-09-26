@@ -18,6 +18,83 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-110 Nothing checked the documentation's citations (2026-09-26)
+
+`docs/ACCEPTANCE.md` is the evidence ledger and `review/README.md` is its index, so their citations *are* the
+re-runnable commands: `` `v2_driver::end_to_end_shell_then_finish` ``, `` `review/dogfood/crash.py` ``. A
+citation that names a renamed test, a removed file or a path that never existed makes the claim it supports
+unverifiable while still reading as evidence — and nothing read them. The same class produced D-53 (documented
+claims corrected to the code), D-78/D-86 (public items nothing calls) and D-102 (a config key nothing reads),
+every one of them found by hand.
+
+The audit is now a command: `python3 review/citations.py` reads the tracked markdown (docs, review, README,
+AGENTS) and resolves three kinds of backticked citation against the tree — a qualified name in the a::b shape
+(against every test name, every `fn`/`const`/`struct`/… name and every module file), a repository-looking path
+(under `docs/`, `engine/`, `tui/`, `core/`, `review/`, `verification/`, `examples/`), and a `.rs` basename
+(also in Rust sources, where it is the only rule). First run: 275 citations, 0 unexplained, 7 recorded as
+removed. It runs inside `make hygiene`, so `make check` fails on the next citation that stops resolving.
+
+The "recorded as removed" half is deliberate: this file keeps tables of items the dead-code sweeps deleted, and
+a citation inside such a table *is* how the removal is recorded. The rule is mechanical — the citing line, or
+the header row of the markdown table it sits in, must contain a marker word (`deleted`, `removed`, `no longer
+exists`, `404`, …). A first implementation joined every row of the enclosing table into that context instead of
+its header, which let a `removed` in one row of `docs/ACCEPTANCE.md`'s single A-matrix excuse citations in any
+row below it; the negative control caught it (renaming a test in the code left the ledger citation unflagged).
+
+Pre-fix controls: a line added to `docs/ACCEPTANCE.md` citing the test
+`v2_driver::no_such_test_exists_at_all` and the suite `engine/tests/ghost_suite.rs`, both do not exist,
+produces exactly two findings and exit 1 (and the two findings this audit
+found in the tree were fixed rather than allowed: `docs/INSTALL.md`'s phantom `config.example.toml` path and a
+comment in `engine/tests/v2_mcp.rs` citing the removed pre-v2 `mcp_tools.rs`); renaming
+`mcp_workspace_execution_is_sandboxed` in `engine/tests/v2_mcp.rs` makes the ledger's own citation fail, so the
+check tracks renames and not just the absence of a string.
+
+    python3 review/citations.py
+    make hygiene     # ... which runs it
+
+Limits: bare basenames (`report.json`, `notify.sh`, `INPUTS.md`) are runtime artifacts, user-written files and
+often prose, so they are out of scope; a citation of *another* project's path cannot be resolved by this tree
+at all — D-109 is exactly one of those, found by hand — and the two upstream rows in
+`docs/PRODUCT-COMPARISON.md` now mark the upstream prefix (`packages/…`) so they are not mistaken for ours.
+
+## D-109 The Pi row claimed things the upstream project does not have (2026-09-26)
+
+`docs/PRODUCT-COMPARISON.md` exists to make the product decisions explicit against Codex CLI, Pi and Hermes,
+and its Pi row was derived from the upstream README. A README is not enough for a **negative** claim and not
+enough for a file path, so the row was re-derived from the repository itself (its file tree, its docs index,
+its examples). Three cells were wrong:
+
+- **MCP**: the row claimed "MCP, skills". The upstream tree (2,162 paths, `truncated:false`) has **no** path
+  containing "mcp", the docs index (`packages/coding-agent/docs/docs.json`) has no MCP page, and the
+  coding-agent README does not mention it. The cell now says skills, prompt templates and extensions, and that
+  there is no MCP. (Hermes does have MCP — its docs' tools page lists `mcp-<server>` toolsets — so MCP is a
+  difference against Pi, not a difference against both comparators.)
+- **Worktrees**: the row claimed "worktree isolation for parallel tasks". No path in the tree contains
+  "worktree", and the subagent extension's README describes process-per-subagent with isolated context
+  windows and a concurrency cap (≤8 tasks, 4 concurrent). The cell now says that, and that there is no
+  worktree isolation.
+- **Automations**: the row cited `docs/loops.md`. That path 404s on the default branch and appears nowhere in
+  the tree; the project's own README points automation and workflows at a separate repository,
+  `earendil-works/pi-chat`. The cell now says so.
+
+The sources table in that document now names what was actually read for each row (Pi: README + docs index +
+tree; Hermes: README + the features/tools page) and §4 carries the re-check commands, so the next reader can
+repeat the derivation instead of trusting the row:
+
+    curl -sS "https://api.github.com/repos/earendil-works/pi/git/trees/main?recursive=1"   # 2162 paths, truncated:false
+    curl -sS "https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/docs/docs.json"
+    curl -sS "https://api.github.com/repos/earendil-works/pi/contents/docs"                # 404: pi has no docs/ directory
+    curl -sSL "https://hermes-agent.nousresearch.com/docs/user-guide/features/tools"       # Hermes MCP toolsets
+
+Two of the corrections change the reading of the decision list in §2: item 5 (automations) no longer compares
+against a Pi cron/inbox capability, and item 7 (an MCP management surface) is no longer "everyone has MCP" —
+Pi has none at all. Codex rows were not re-checked by this audit (they come from the installed binary, which
+this machine can run) and Hermes' remaining rows keep the strength the sources table states.
+
+`docs/INSTALL.md` had the same disease one line long: it pointed at a "bundled `config.example.toml`" that
+does not exist in the tree (the release workflow copies `examples/config.toml` to that name inside the
+archive). The sentence now names both.
+
 ## D-108 The last two MCP options bounded nothing the tests watched (2026-09-26)
 
 D-104's ceiling named four stdio binding options that had read sites but no behavioural test. D-106 closed

@@ -153,7 +153,8 @@ fn tool_results(root: &Root) -> Vec<String> {
 
 /// Catalog with one stdio MCP service `echo_service` serving `echo_echo`.
 /// Host mode on purpose: these cases cover binding/advertising/calling a real
-/// stdio server, not the bwrap workspace (same choice as mcp_tools.rs).
+/// stdio server, not the bwrap workspace (the same choice the pre-v2 `mcp_tools.rs`
+/// made; that suite is reachable through Git history, not from this tree).
 fn echo_catalog(command: &str) -> UserConfig {
     let mut catalog = UserConfig::default();
     catalog.tools.insert(

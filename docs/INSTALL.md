@@ -64,7 +64,8 @@ The default profile is `leader_main` with the model `deepseek-flash` (context 1,
 max). For another service, edit `provider`, `protocol`, `model`, `base_url` and `api_key_env` (see the
 [user guide](USER-GUIDE.md#2-configuration)) and set that model's native `context_window` at the same time.
 Only the credential's environment-variable name goes into the file; web search and MCP are configured from
-the bundled `config.example.toml` when needed.
+the example file that ships as `config.example.toml` in the release archive (`examples/config.toml` in the
+source tree) when needed.
 
 v0.1.1 has no `init`; its installer copies a template when the config is missing, so setting the credential
 is enough.
