@@ -183,3 +183,4 @@ hygiene: language-check
 	python3 review/protocol_catalogue.py
 	python3 review/tool_catalogue.py
 	python3 review/config_reference.py
+	python3 review/dead_code.py

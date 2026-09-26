@@ -117,6 +117,16 @@ amended (D-49/D-50).
   `teamagents instances merge --id` verb (or a Leader-side merge tool) is new surface and needs the
   user's word first.
 
+- **`view_image`'s request-build half is parked, so an image never reaches a model.** The tool returns a
+  reference in its receipt (`{"image": …, "media_type": …, "bytes": …}`), but the half that loads those bytes
+  into a request, `tools::load_image_reference`, has no caller: v2 has no image flow, and no tool catalogue
+  advertises `view_image` (`docs/TOOLS.md` catalogues the seventeen tools the product offers and it is not one
+  of them). The loader is parked with a `ponytail:` note naming the upgrade path — the providers' message
+  transforms carry the same note (catalog entries declare input modalities, and a non-vision model gets a
+  placeholder instead of an error). Wiring it is new product surface and needs the user's word; until then
+  `review/dead_code.py` keeps the parked entry visible in its allowlist instead of letting a test's call make
+  it look live (D-130).
+
 - **`instruction_files` is accepted but nothing reads it into a prompt.** The loader validates each path and
   `doctor` used to print `[ok  ] instruction files  1 file(s) reach every member's prompt`; measured
   2026-09-26 (`python3 review/dogfood/instructions.py`) the canary in such a file is absent from the leader's

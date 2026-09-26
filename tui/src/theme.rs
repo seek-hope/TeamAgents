@@ -2,8 +2,7 @@
 //!
 //! Dark surfaces, a single blue accent, grey labels with white body text, and
 //! success/warning/error reserved for state. `BG` is the screen background,
-//! `PANEL_BG` the surface of every bordered panel, and `SELECT_BG`/`HOVER_BG`
-//! mark the selected and hovered row.
+//! and `PANEL_BG` the surface of every bordered panel.
 
 use ratatui::style::Color;
 
@@ -16,7 +15,3 @@ pub const SUCCESS: Color = Color::Rgb(0x00, 0xff, 0x00);
 pub const NOTICE: Color = Color::Rgb(0xaf, 0xaf, 0xaf);
 pub const ERROR: Color = Color::Red;
 pub const WARNING: Color = Color::Yellow;
-/// Selected table row: a barely lighter block under the accent bar.
-pub const SELECT_BG: Color = Color::Rgb(0x1a, 0x1a, 0x1a);
-/// Hovered clickable thing: grey surface + white text (the tab/row hint).
-pub const HOVER_BG: Color = Color::Rgb(0x3a, 0x3a, 0x3a);

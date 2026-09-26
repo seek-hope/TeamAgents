@@ -18,6 +18,56 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-130 The surface nothing calls was three kinds of "mention" bigger than the audit said (2026-09-26)
+
+D-86 built `review/dead_code.py` and recorded its blind spot in prose: a name a *test* mentions counts as a
+use, so "`merge_branch` looks used only because a test drives it". That caveat was never mechanized, and it
+was not the only one — the audit counted any mention as a call, and three kinds of mention are not calls. A
+name mentioned in an integration test or an example, a name mentioned inside a `#[cfg(test)] mod`, and a name
+mentioned in a **Rust doc comment** all read as "used" while the product's own code never calls them (prose
+under `docs/**` was already excluded in D-86, but `///` prose was not).
+
+The audit now splits every mention by whether it is a call: only `core|engine|tui/src` outside a
+`#[cfg(test)] mod`, plus the scripts and `Makefile` that drive the CLI, count. It reports three buckets —
+`uncalled`, `test_only`, `doc_only` — each with its own hand-kept allowlist that states the decision keeping
+the name, and it runs in `make hygiene` (it counts tokens in one pass per line now, ~4 s instead of ~55 s).
+It also scans only the product's own definitions: the old "409 public items" included ones defined in test,
+example and bench files, and one definition is itself `#[cfg(test)]`-gated.
+
+First run over this tree: **4 findings**, all gone now.
+
+| Removed | Why it was dead |
+|---|---|
+| `tools::member_executor`, `tools::workspace_executor` | public convenience constructors over `member_executor_with_control` / `workspace_executor_with_control` — which is what `V2Toolkit::new`, the product's own path, calls. Their only callers were the probe tests, and the inner functions take the member's real `ArtifactPaths`; the shared-artifact shape was the retired v1 entry. Deleted, exactly as D-78 deleted `shell_run_host` and `workspace::is_dirty`; the probe tests keep a small local adapter |
+| `theme::SELECT_BG`, `theme::HOVER_BG` | palette constants nothing paints, whose doc comments claimed they "mark the selected and hovered row" — D-86 deleted `ZEBRA_BG` for the same reason. Deleted, and the module doc no longer lists them |
+
+What the new buckets found *already known* is now allowlisted instead of looking used, each with its reason
+printed by `--list-known`:
+
+- `doc_only` — `driver::cancel_turn` (D-78 kept it as D-63's parked substrate; the driver's own doc was its
+  only other mention), and `Goal` / `Artifact`, the goals/artifacts row shapes of DESIGN §4.1 that the code
+  reads through SQL, which is the reason the four siblings in `KNOWN_UNCALLED` already carry.
+- `test_only` — `run_reference` (the eval group-A reference loop its tests drive), `inject` and
+  `with_stream_stall` and `with_control` (each documented as a test hook where it is defined),
+  `sandbox_usable` (the tests branch on the verdict; `doctor` reports the reason through `sandbox_state()`,
+  which its doc had mis-stated and now says), `load_user_config_for` (the project-config open item in
+  `docs/ACCEPTANCE.md`), `merge_branch` (D-76) and `load_image_reference` (below).
+
+Two comments were corrected because the audit's findings are what they described. The providers' image notes
+said `view_image` "stays on the legacy chat.rs path" — a module that no longer exists (D-78's
+`validate_web_bindings` class). They now say what v2 does: `view_image` returns a reference in its receipt
+and nothing loads it into a request, because the request-build-time loader `tools::load_image_reference` has
+no caller; that loader carries the `ponytail:` note D-78 gives parked substrate, naming what would wire it.
+
+Evidence: `python3 review/dead_code.py` reports `0 uncalled, 17 known and allowed` and exits 0, and it can
+fail — before these changes the same command reported the four names above and exited 1. `make check` and
+`make language-check` are green.
+
+Ceiling: a mention is a name match, not a resolved call, so an item reached only through a macro, a trait
+object or a string in a config can still look called (the detector's note that "the report is a starting
+point, not a verdict" stands); and the allowlists are hand-kept, so a new bucket member is reported until a
+human records why it stays.
+
 ## D-129 The A27 probe told a model's prose apart from a regression (2026-09-26)
 
 `review/dogfood/providers.py` asserted `task_delegated` + `task_started` + `task_completed` for every run. But

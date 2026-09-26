@@ -589,6 +589,10 @@ fn read_image(file: std::fs::File, label: &str) -> Result<Json, String> {
 /// Load an image reference recorded by `view_image` at request-build time.
 /// The reference is re-validated against the same roots the tool used, and the
 /// bytes must still match the recorded media type.
+///
+/// ponytail: no surface calls this yet — v2 has no image flow, so no request builder asks for the bytes
+/// (the same note sits on the providers' message transforms, which is where the image block would be
+/// emitted). `view_image` still returns the reference in its receipt. Wiring the flow is what calls this.
 pub fn load_image_reference(
     root: &Path,
     artifacts: Option<&Path>,
@@ -645,16 +649,9 @@ fn resolve_artifact(artifacts: Option<&PathBuf>, key: &str) -> Result<PathBuf, S
     resolve_in_root(root, name)
 }
 
-/// Standalone workspace executor. Session members use separate shared
-/// deliverables and private automatic output through `ArtifactPaths`.
-pub fn workspace_executor(
-    root: PathBuf,
-    artifacts: Option<PathBuf>,
-) -> impl Fn(&str, &Json) -> Result<Json, String> + Send + Sync + 'static {
-    let executor = workspace_executor_with_control(root, ArtifactPaths::shared(artifacts), None);
-    move |tool, args| executor(tool, args, &TurnControl::default(), ShellMode::Sandbox)
-}
-
+/// The raw tool dispatch for one root: the file, shell and web tools rooted there, with the turn control
+/// and shell mode passed in per call. The member path wraps this with the binding gate and the member's own
+/// `ArtifactPaths` (`member_executor_with_control`, built by `V2Toolkit::new`).
 fn workspace_executor_with_control(
     root: PathBuf,
     artifacts: ArtifactPaths,
@@ -1062,18 +1059,8 @@ fn skill_tool(catalog: &teamagents_core::models::UserConfig, args: &Json) -> Res
     }
 }
 
-/// Executor for one member root: file/shell tools rooted there plus the web
-/// tools that member actually bound.
-pub fn member_executor(
-    root: PathBuf,
-    catalog: teamagents_core::models::UserConfig,
-    bindings: Vec<String>,
-    artifacts: Option<PathBuf>,
-) -> impl Fn(&str, &Json) -> Result<Json, String> + Send + Sync + 'static {
-    let executor = member_executor_with_control(root, catalog, bindings, ArtifactPaths::shared(artifacts), None);
-    move |tool, args| executor(tool, args, &TurnControl::default(), ShellMode::Sandbox)
-}
-
+/// Executor for one member root: the file, shell and web tools rooted there plus the web tools that member
+/// actually bound, over the member's own `ArtifactPaths` and turn control. `V2Toolkit::new` is its caller.
 pub(crate) fn member_executor_with_control(
     root: PathBuf,
     catalog: teamagents_core::models::UserConfig,
@@ -1288,7 +1275,8 @@ pub fn sandbox_state() -> Result<(), String> {
         .clone()
 }
 
-/// `sandbox_state().is_ok()`: the verdict the tests branch on and `doctor` reports.
+/// `sandbox_state().is_ok()`: the verdict the tests branch on. `doctor` reports the *detail* (the reason a
+/// sandbox is unusable) through `sandbox_state()` itself, not through this summary.
 pub fn sandbox_usable() -> bool {
     sandbox_state().is_ok()
 }
@@ -2600,6 +2588,27 @@ impl TurnControl {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The product builds an executor through `V2Toolkit::new`, which resolves the member's own
+    /// `ArtifactPaths` and turn control. The probes below only need the shared-artifact, default-control
+    /// shape, so they adapt it here rather than the crate exporting a second constructor for them (D-130).
+    fn member_executor(
+        root: PathBuf,
+        catalog: teamagents_core::models::UserConfig,
+        bindings: Vec<String>,
+        artifacts: Option<PathBuf>,
+    ) -> impl Fn(&str, &Json) -> Result<Json, String> + Send + Sync + 'static {
+        let executor = member_executor_with_control(root, catalog, bindings, ArtifactPaths::shared(artifacts), None);
+        move |tool, args| executor(tool, args, &TurnControl::default(), ShellMode::Sandbox)
+    }
+
+    fn workspace_executor(
+        root: PathBuf,
+        artifacts: Option<PathBuf>,
+    ) -> impl Fn(&str, &Json) -> Result<Json, String> + Send + Sync + 'static {
+        let executor = workspace_executor_with_control(root, ArtifactPaths::shared(artifacts), None);
+        move |tool, args| executor(tool, args, &TurnControl::default(), ShellMode::Sandbox)
+    }
 
     #[test]
     fn batch_commit_rolls_back_when_a_later_rename_fails() {
