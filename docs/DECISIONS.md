@@ -18,6 +18,45 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-154 The `--json` reports were a scripting surface with no catalogue and no audit (2026-09-26)
+
+Five verbs print one JSON object instead of text — `exec`, `authority`, `approvals`, `instances`, `tasks` — and
+those objects are what a CI job, a wrapper script or the evaluation harness parses. Four sibling surfaces had a
+catalogue audit each (`protocol_catalogue.py`, `event_catalogue.py`, `tool_catalogue.py`,
+`config_reference.py`); this one had none, and half of it was undocumented: `docs/USER-GUIDE.md` §1.1 named
+four of `exec`'s **sixteen** fields (`end`, `goal_status`, `reply`, `verification`/`watermark` — the rest,
+including `failure`, `input_queued`, `permissions` and `verification_path`, were referenced in passing or not
+at all). A rename would have broken callers while every test in the tree stayed green — the shape
+D-133/D-130 punished twice.
+
+**Added**: `docs/USER-GUIDE.md` §1.2 is the catalogue — one table, `every report` plus a row per verb and its
+added fields, with the notes a field name cannot carry (what `end`'s words are, that `goal_status`/`reply` are
+the goal's and the member's and never an earlier turn's, that `verification[]` is the check ledger). And
+`review/exec_report.py` holds the two sides together, in `make hygiene`: it reads the field names out of the
+source — every `json!({ … })` literal in the four report modules that carries `session_id`, which is exactly
+what distinguishes a *printed report* from a protocol request (`{"protocol_version", "request_id", …}`), an
+event payload or a check verdict — and compares the union with §1.2's table **in both directions**: a field the
+reports carry and the catalogue does not name is a finding, and so is a catalogued name no report carries (a
+stale name is how a rename hides). The table's rows are the machine-readable side; the prose that follows it
+names `end`'s values and the nested fields on purpose, so the audit reads the table only.
+
+**Measured** (2026-09-26): the audit reports "35 report fields, 35 catalogued names: 0 unexplained". Against a
+real daemon (a dummy-key config, offline apart from the loopback socket), nine of the reports were printed and
+compared with the extraction: `exec` 16 fields, `authority list` 5, `authority grant` 8, `authority revoke` 6,
+`approvals list` 3, `instances list` 3, `instances pause`/`resume` 5 each, `tasks list` 3 — **nothing printed
+that the extraction does not carry**, and four fields (`approval_id`, `decision`, `task`, `task_id`) are not
+printed by any shape that can run offline. Controls, each reverted byte-identically (sha256 `a7991032…` for
+the source, `f1e96ea7…` for the guide): renaming `parent_grant_id` in `authority.rs` fails in *both*
+directions ("the reports carry `parent_grant_id_renamed` … and §1.2 does not name it" plus "§1.2 names
+`parent_grant_id` and no report carries it any more"), and dropping `revoked` from the catalogue fails with
+"the reports carry `revoked` … and §1.2 does not name it".
+
+Ceiling: the audit covers the **top-level** fields of the five reports; the rows inside them (`instances[]`,
+`tasks[]`, `approvals[]`, `grants[]`) stay `docs/PROTOCOL.md`'s, which has its own audit. Two report shapes
+(`approvals approve`/`deny`, `tasks cancel`) are checked by the source extraction only, because exercising them
+offline would need a pending approval or task. And the audit cannot see a field whose *value* changed meaning —
+only its name, which is what a caller breaks on.
+
 ## D-153 Every abandoned runner kept ticking forever, and one machine had 1,397 of them (2026-09-26)
 
 The sandbox this work runs in has its **own PID namespace**, so every guard in the tree — `review/leak_guard.py`,

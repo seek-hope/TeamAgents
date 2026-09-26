@@ -82,6 +82,40 @@ happened. Diagnostics go to stderr, the outcome to stdout (`--json` prints one J
 - When `exec` starts the daemon itself, the daemon's output goes to `<state root>/daemon.log`; if the daemon
   exits while starting, the reason is reported immediately together with that path.
 
+### 1.2 The JSON reports (`--json`)
+
+Five verbs print one JSON object instead of human text, and that object is the scripting surface: `exec`,
+`authority`, `approvals`, `instances` and `tasks`. The table is the contract — `review/exec_report.py` reads
+the field names out of the source and out of this table and fails if the two drift apart in either direction.
+The arrays inside a report (`instances`, `tasks`, `approvals`, `grants`) are rows of the daemon's own views,
+catalogued with their fields in `docs/PROTOCOL.md`.
+
+| Verb | Fields it adds |
+|---|---|
+| every report | `session_id`, `state_root` |
+| `exec` | `permissions`, `session_workspace`, `instance_id`, `instance_lifecycle`, `end`, `goal_status`, `reply`, `failure`, `approval`, `input_queued`, `workspace`, `verification`, `verification_path`, `watermark` |
+| `authority list` | `revision`, `instances`, `grants` |
+| `authority grant` | `grant_id`, `revision`, `subject`, `action`, `resource_scope`, `parent_grant_id` |
+| `authority revoke` | `grant_id`, `grant`, `revoked`, `revision` |
+| `approvals list` | `approvals` |
+| `approvals approve` / `deny` | `approval_id`, `decision`, `approval`, `result` |
+| `instances list` | `instances` |
+| `instances pause` / `resume` / `terminate` | `instance_id`, `lifecycle`, `instance`, `result` |
+| `tasks list` | `tasks` |
+| `tasks cancel` | `task_id`, `task`, `result` |
+
+What the field names do not carry:
+
+- `end` is the run's own word for how its turn ended — the `End` values behind §1.1's exit-code table;
+  `goal_status` and `reply` are the goal's settlement and the member's answer, and a run reports only what its
+  own input produced (D-72); `failure` is the runtime's reason when it refused or failed the turn.
+- `verification` is the list of `--check` verdicts, each carrying the command, its ok flag, its exit code and
+  its output; `verification_path` is the ledger written next to the session database (`null` when no check ran).
+- `watermark` is the event cursor the report was built at, which is what a client resumes from after a
+  reconnect (A28).
+- `result` is the daemon's own reply to a command, and `instance`/`task`/`approval`/`grant` is the affected row
+  as the daemon reported it.
+
 ## 2. Configuration
 
 Every key this build reads, with its type, what it holds when absent and the files that consume it, is in
