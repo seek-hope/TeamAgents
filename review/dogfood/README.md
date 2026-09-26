@@ -44,6 +44,8 @@ python3 review/dogfood/probes.py --only checks.py --set models
 env -u DEEPSEEK_API_KEY -u KIMI_API_KEY python3 review/dogfood/probes.py   # the offline set needs no credential
 ```
 
+**The model set re-run 2026-09-27** (after D-153's runner-lifecycle change, one probe at a time in six chunks): 25 of the 26 green — `authority.py` is the exception, reproducing the open D-143 shape (its dated note carries the kept session), and `deadline.py` ran through the harness for the first time (D-155, green). The run's own accounting: 0 daemons and 0 scratch directories left.
+
 It counts the daemons and the scratch directories before and after the run and fails if the set added either,
 because those two leaks are how D-111 and D-131 were found; the rules themselves live in
 `review/leak_guard.py`, which `make test` uses too, so the harness's counting and the suite's counting are one
