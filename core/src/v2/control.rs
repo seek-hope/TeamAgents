@@ -1719,6 +1719,10 @@ fn record_attempt(tx: &Connection, session_id: &str, params: &Json) -> Result<Js
     let elapsed = params["elapsed_ms"].as_i64().unwrap_or(0);
     let usage = params.get("usage").cloned().unwrap_or(Json::Null);
     let response_ref = params["response_ref"].as_str();
+    // The driver sends why an attempt failed (`Transient`/`Permanent`/`ContextOverflow`, `empty_summary`,
+    // `lost`); the column existed and the payload carried it, but nothing wrote it, so every attempt row said
+    // `NULL` — the one field that explains a retry (D-123).
+    let error_class = params["error_class"].as_str();
     let request_status: String = tx
         .query_row("SELECT status FROM model_requests WHERE request_id = ?1", [request_id], |row| row.get(0))
         .map_err(|e| format!("record_attempt request {request_id}: {e}"))?;
@@ -1726,12 +1730,13 @@ fn record_attempt(tx: &Connection, session_id: &str, params: &Json) -> Result<Js
         return Err(format!("request {request_id} is {request_status}; attempts for closed requests are refused"));
     }
     tx.execute(
-        "INSERT INTO attempts (attempt_id, request_id, status, response_ref, usage_json, elapsed_ms, created)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO attempts (attempt_id, request_id, status, error_class, response_ref, usage_json, elapsed_ms, created)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         rusqlite::params![
             attempt_id,
             request_id,
             status,
+            error_class,
             response_ref,
             usage.to_string(),
             elapsed,
@@ -6133,11 +6138,18 @@ mod tests {
             cmd(
                 "a1",
                 "record_attempt",
-                json!({"attempt_id": "at1", "request_id": "r1", "status": "FAILED", "unknown_usage": true}),
+                json!({"attempt_id": "at1", "request_id": "r1", "status": "FAILED", "error_class": "lost",
+                       "unknown_usage": true}),
             ),
             Identity::System,
         )
         .expect("lost attempt");
+        // D-123: the failure class the driver sent is *stored* — it is the only field that explains a retry
+        let class: Option<String> = ctl
+            .connection()
+            .query_row("SELECT error_class FROM attempts WHERE attempt_id = 'at1'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(class.as_deref(), Some("lost"), "the attempted failure class is dropped: {class:?}");
         let unknown: i64 = ctl
             .connection()
             .query_row("SELECT unknown_usage FROM goals WHERE id = 'g1'", [], |row| row.get(0))

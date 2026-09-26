@@ -645,3 +645,30 @@ acceptance command run (D-96).
 Unlike its siblings this probe needs **no credentials and no network**: the refusal precedes the provider, so a
 dummy `api_key_env` value is enough and the run is over in about a second. Measured 2026-09-26: three runs green
 (two at 1000 tokens, one at 500 — which correctly reports `> max 500`).
+
+## `truncation.py`: A19's whole path over a real socket (no credentials, no network)
+
+A19 had two halves: the provider edge classifies a truncated stream per protocol (in-process fake servers), and
+since D-117 the driver's retry is tested with a scripted provider. Neither drove the engine's own HTTP/SSE stack
+over a socket. This probe does, with a local chat-completions server, and it needs nothing else:
+
+```bash
+python3 review/dogfood/truncation.py
+python3 review/dogfood/truncation.py --state-dir /tmp/ta-truncation
+```
+
+Two scenarios, both through the real binary:
+
+1. **truncated before any visible text** — the connection closes after a delta that carries only a tool-call id.
+   The attempt is transient, the driver retries inside the turn, the second response completes with a `finish`
+   call, and the goal settles `SUCCEEDED`. The probe asserts: exit 0, goal `SUCCEEDED`, exactly **two** requests
+   seen by the server, and the session's attempts table holding `FAILED` with **no usage** and `error_class`
+   `Transient` next to the priced `COMPLETE` one; the truncated attempt's call id never reaches the conversation.
+2. **truncated after visible text** — the connection closes after a delta with content. The attempt is
+   *permanent* (retrying could duplicate text the user already saw): exit **1**, `failure` starting with
+   `permanent model error:`, exactly **one** request, one `FAILED` attempt with class `Permanent`, and the
+   partial text absent from the conversation.
+
+Writing it found D-123: the driver sends the failure class in every `record_attempt` and the `attempts` table has
+the column, but nothing wrote it — so this probe's classification assertions failed against rows that all said
+`NULL`. Fixed in the control plane, with a core test; measured 2026-09-26, both scenarios green in ~6 s.

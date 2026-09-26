@@ -18,6 +18,42 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-123 A19's whole path over a real socket, and the failure class nothing stored (2026-09-26)
+
+A19's two halves existed separately: `providers_fake` classifies a truncated stream per protocol against
+in-process fake servers, and D-117 tests the driver's retry with a scripted provider. Neither drove the engine's
+own HTTP/SSE stack over a socket. `python3 review/dogfood/truncation.py` does, against a local
+chat-completions server — so it needs **no credentials and no network** — and runs two scenarios through the
+real binary:
+
+* **truncated before any visible text** (a delta carrying only a tool-call id, then the connection closes): the
+  attempt is transient, the driver retries inside the turn, the second response completes with a `finish` call,
+  and the run is exit 0 with the goal `SUCCEEDED`. Measured: the server saw exactly **two** requests, and the
+  session's attempts table holds `FAILED` with **no usage** and class `Transient` next to the priced `COMPLETE`
+  attempt; the truncated attempt's call id never reaches the conversation.
+* **truncated after visible text**: the attempt is *permanent* (a retry could duplicate text the user already
+  saw). Measured: exit **1**, `failure` beginning `permanent model error: model stream ended before completion;
+  partial …`, exactly **one** request, one `FAILED` attempt with class `Permanent`, and the partial text absent
+  from the conversation.
+
+Writing it found a defect of the "declared but not served" family, this time in the database rather than in the
+config: the driver sends `error_class` in every `record_attempt` (four call sites) and `attempts` has the column
+(`store.rs`), but `control::record_attempt` never wrote it — so every attempt row said `NULL`, and the one field
+that explains *why* a request was retried was silently dropped. The probe's own assertion is what exposed it
+(its classification checks failed against rows that were all `NULL`).
+
+Fix: `record_attempt` reads `params["error_class"]` and inserts it; the core test
+`attempts_for_closed_requests_are_refused_and_unknown_usage_is_visible` now asserts the round-trip. Control: with
+the column dropped again from the INSERT, that test fails at `the attempted failure class is dropped: None`,
+and the probe's classification assertions fail with it.
+
+Evidence: the two scenarios above (2026-09-26, ~6 s, credential-free); the control; and `make check` green.
+
+Ceiling: the probe covers the two classification branches; the *budget* half (retries exhausted, D-117) and a real
+remote truncation stay where they are. The permanent branch's fixture sends visible text before closing, which is
+the shape `providers_fake` established; a truncation that lands *between* two tool-call deltas is that same
+fixture's neighbour and is classified by the same rule.
+
 ## D-122 The positive verification targets could not fail (2026-09-26)
 
 The formal-verification targets carry the "what can be machine-checked must be machine-checked" half of the
@@ -200,7 +236,8 @@ pin the shape:
 * `a_transient_model_failure_is_retried_inside_the_turn`: attempt 1 fails transiently, attempt 2 completes, the
   goal settles `SUCCEEDED`, the events carry `FAILED` then `COMPLETE`, the `attempts` table has two rows — the
   failed one with **no** usage, the complete one priced — and the goal's `known_usage` counts only the complete
-  attempt while `unknown_usage` stays 0. That is §6.3's "double billing is possible, and the runtime does not
+  attempt while `unknown_usage` stays 0. (D-123 later made the *class* of that failed row assertable: the driver had always sent
+  `error_class` and the control plane had never stored it.) That is §6.3's "double billing is possible, and the runtime does not
   pretend to know what the lost attempt cost", asserted instead of described.
 * `transient_retries_exhausted_parks_with_the_reason`: three transient failures (the budget is `max_retries = 2`),
   then the turn ends with the documented sentence — `transient retries exhausted: boom three`, the *last* failure
