@@ -899,6 +899,103 @@ fn cwd_reaches_a_started_daemon_and_is_reported_against_a_live_one() {
 /// only grant in a real session was `shell@workspace`, so the model was never
 /// offered spawn/delegate/send and the team feature was unreachable from
 /// `teamagents`, `exec` and `daemon` alike.
+/// A `--cwd` that is not an existing directory cannot become a session's workspace: every file tool and
+/// shell command is confined to that root and `tools.rs` resolves it with `canonicalize`, so accepting it
+/// left the session running against a root nothing could resolve — the model saw a bare `No such file or
+/// directory (os error 2)` that never named the flag, while the greeting reported the bad path as the
+/// session's workspace (measured 2026-09-27, D-163). Both the client that autostarts a daemon and `daemon`
+/// itself refuse it, before any session exists.
+#[test]
+fn a_cwd_that_is_not_a_directory_is_refused_before_a_session_starts() {
+    let root = std::env::temp_dir().join(format!("ta-cwd-refused-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let config_home = root.join("config");
+    std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
+    std::fs::write(
+        config_home.join("teamagents/config.toml"),
+        "[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\n\
+         api_key_env = \"TA_CWD_REFUSED_KEY\"\nbase_url = \"http://127.0.0.1:1/v1\"\n",
+    )
+    .unwrap();
+    let missing = root.join("missing");
+    let file = root.join("afile");
+    std::fs::write(&file, "not a directory").unwrap();
+    let env = |command: &mut Command| {
+        command
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("XDG_STATE_HOME", root.join("state"))
+            .env("TA_CWD_REFUSED_KEY", "test-value");
+    };
+
+    for (index, label, bad) in [(0, "a path that does not exist", &missing), (1, "a path that is a file", &file)] {
+        let state = root.join(format!("state-client-{index}"));
+        let mut exec = Command::new(env!("CARGO_BIN_EXE_teamagents"));
+        env(&mut exec);
+        let output = exec
+            .args(["exec", "--state-root"])
+            .arg(&state)
+            .args(["--cwd"])
+            .arg(bad)
+            .args(["--timeout", "5", "hello"])
+            .output()
+            .expect("run exec");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{label}: {stderr}");
+        assert!(
+            stderr.contains("--cwd") && stderr.contains(bad.to_str().unwrap()) && stderr.contains("not a directory"),
+            "{label} must name the flag and the path: {stderr}"
+        );
+        assert!(!state.join("daemon.sock").exists(), "{label}: the client started nothing");
+        assert!(!stop_detached_daemon(&state), "{label}: no daemon exists for that state root");
+    }
+
+    // `daemon` refuses it too: a session started by hand must not boot with a workspace that is not one
+    let state = root.join("state-direct");
+    let mut daemon = Command::new(env!("CARGO_BIN_EXE_teamagents"));
+    env(&mut daemon);
+    let output =
+        daemon.args(["daemon", "--state-root"]).arg(&state).args(["--cwd"]).arg(&missing).output().expect("run daemon");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("--cwd") && stderr.contains("not a directory"), "{stderr}");
+    assert!(!state.join("daemon.sock").exists(), "the refusal happens before the socket exists");
+
+    // Against a *live* session the same path is refused too: the flag can never be honoured there (the
+    // session keeps its own workspace) and the path is what `--check` would run the user's acceptance
+    // commands in, so the client refuses it instead of printing the "did not apply" note and then running
+    // those commands somewhere that does not exist.
+    let real = root.join("real");
+    std::fs::create_dir_all(&real).unwrap();
+    let state = root.join("state-live");
+    let mut boot = Command::new(env!("CARGO_BIN_EXE_teamagents"));
+    env(&mut boot);
+    boot.args(["exec", "--state-root"]).arg(&state).args(["--cwd"]).arg(&real).args(["--timeout", "5", "hello"]);
+    let _ = boot.output().expect("start the session");
+    assert!(state.join("daemon.sock").exists(), "the session started with a real workspace");
+
+    let mut join = Command::new(env!("CARGO_BIN_EXE_teamagents"));
+    env(&mut join);
+    let output = join
+        .args(["exec", "--state-root"])
+        .arg(&state)
+        .args(["--cwd"])
+        .arg(&missing)
+        .args(["--timeout", "5", "hello"])
+        .output()
+        .expect("join the session");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("not a directory"), "{stderr}");
+    assert!(!stderr.contains("did not apply"), "a path that is not a directory is refused, not reported: {stderr}");
+    assert!(stop_detached_daemon(&state), "the session this test started is stopped by pid, not by pattern");
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// The daemon a user actually starts must authorize its Leader: before D-58 the
+/// only grant in a real session was `shell@workspace`, so the model was never
+/// offered spawn/delegate/send and the team feature was unreachable from
+/// `teamagents`, `exec` and `daemon` alike.
 #[test]
 fn the_daemon_grants_the_leader_the_team_authority() {
     let root = std::env::temp_dir().join(format!("ta-grants-{}", std::process::id()));

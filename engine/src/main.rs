@@ -520,7 +520,8 @@ fn run_approvals(args: &Args) -> i32 {
         }
         other => {
             eprintln!(
-                "approvals: unknown command {other:?}; use `teamagents approvals [list]`,                  `approvals approve --id ID` or `approvals deny --id ID`"
+                "approvals: unknown command {other:?}; use `teamagents approvals [list]`, \
+                 `approvals approve --id ID` or `approvals deny --id ID`"
             );
             return 2;
         }
@@ -551,7 +552,8 @@ fn run_instances(args: &Args) -> i32 {
         }
         (other, _) => {
             eprintln!(
-                "instances: unknown command {other:?}; use `teamagents instances [list]`,                  `instances pause|resume|terminate --id ID [--yes]`"
+                "instances: unknown command {other:?}; use `teamagents instances [list]`, \
+                 `instances pause|resume|terminate --id ID [--yes]`"
             );
             return 2;
         }
@@ -613,7 +615,9 @@ fn note_session_settings(socket: &Path, full_auto: bool, cwd: Option<&str>, star
     if full_auto {
         eprintln!(
             "note: a session is already running for this state root in {} mode, so --full-auto did not apply. \
-             Stop that daemon (Ctrl-C in its terminal) or use another --state-root to start in full_auto.",
+             Stop that daemon first (SIGTERM its pid — `ps -eo pid,args | grep \"[t]eamagents daemon\"` names \
+             the pid and state root; a detached daemon has no terminal to Ctrl-C in), or use another \
+             --state-root to start in full_auto.",
             described("permissions")
         );
     }
@@ -663,6 +667,14 @@ struct DaemonRequest<'a> {
 
 fn ensure_daemon(request: DaemonRequest<'_>) -> Result<(PathBuf, bool), String> {
     let DaemonRequest { state_root, model, full_auto, cwd } = request;
+    // D-163, before the liveness probe: a `--cwd` that is not a directory can never be honoured — not by a
+    // session this client starts, and not by one that is already running (which keeps its own workspace) —
+    // and the same path is what `--check` would run the user's acceptance commands in. So it is refused
+    // here, in the client's own words, rather than relayed later as a daemon start failure or an opaque
+    // check error. `cli::daemon` applies the same rule to a session started by hand.
+    if let Some(cwd) = cwd {
+        cli::require_workspace_dir(cwd)?;
+    }
     let socket = state_root.join("daemon.sock");
     // liveness is a *connection*, not the presence of a socket file: a crashed
     // daemon leaves a stale file that would make bind fail if we kept it

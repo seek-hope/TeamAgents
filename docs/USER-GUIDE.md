@@ -31,7 +31,10 @@ teamagents                           # open the TUI (starts the per-user daemon 
   `--full-auto`), so a client that joins a session already running keeps that session's settings and prints
   them (`note: a session is already running for this state root in … mode` / `that session works in …`).
   Starting a client with a different `--cwd` against a live session therefore does not move it — stop that
-  daemon or use another `--state-root`.
+  daemon or use another `--state-root`. A `--cwd` that is not an *existing directory* is different: it can
+  never be honoured (the session confines every file and shell command to it), so `exec`, the TUI and
+  `daemon` refuse it outright with `--cwd … is not a directory` instead of booting a session whose workspace
+  no tool can resolve.
 - **State root**: `$XDG_STATE_HOME/teamagents/v2/` (default `~/.local/state/teamagents/v2`), where
   `session.sqlite` is the **single source of truth** (WAL with `synchronous=FULL`, carrying a format and
   version stamp).
@@ -361,7 +364,8 @@ A project file can never set the mode (only your user config is read for it), an
 it. A client that
 finds a session already running keeps that session's mode and prints which one it is, so
 `teamagents exec --full-auto` against a live `approved_scope` session reports
-`the session is already running in approved_scope mode` instead of silently ignoring the flag. To switch
+`a session is already running for this state root in approved_scope mode` instead of silently ignoring the
+flag. To switch
 modes, stop that daemon (§1: SIGTERM to its pid, or Ctrl-C where you started it by hand) or use another `--state-root`.
 
 When bubblewrap is unavailable this is a **classified failure** (`started=false`); the command never falls

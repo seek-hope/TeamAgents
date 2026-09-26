@@ -18,6 +18,44 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-163 A `--cwd` that is not a directory became the session's workspace (2026-09-27)
+
+Continuing the first-run audit (D-149, D-150) into the *path*-valued flags. `teamagents exec --cwd DIR` is
+documented as "work in DIR", and the daemon took the string at its word: `daemon_boot` resolved `workspace`
+from the flag with no check at all. Measured (2026-09-27, isolated config and state roots, real daemon):
+`exec --cwd …/nope` (a path that does not exist) and `exec --cwd …/afile` (a regular file) both **exited 0**,
+and both the `--json` report and the socket's own greeting named the bad path as `session_workspace`. The
+session was then unusable in a way that named nothing: every file tool and shell command resolves its root
+with `canonicalize` (`engine/src/tools.rs`), so the turn that tried to write a file failed with a bare
+`No such file or directory (os error 2)` — the flag was never mentioned. D-73's family again, on a path
+instead of a key or a flag.
+
+**Changed** (`engine/src/cli.rs` + `engine/src/main.rs`, no new surface): one helper,
+`cli::require_workspace_dir`, refuses a `--cwd` that is not an existing directory, naming the flag, the path
+and what the user can do instead. It runs in two places: `ensure_daemon` (at the top, so it covers a session
+the client *starts* and one it *joins* — the flag can never be honoured against a live session, and the same
+path is what `--check` would run the user's acceptance commands in) and `cli::daemon_boot`, so a hand-started
+`teamagents daemon --cwd …` cannot boot that way either. Exit codes stay the entries' own: 2 for a client, 1
+for `daemon`. A *different existing* directory against a live session still gets the "did not apply" note
+(D-41/D-57); only a path that is not a directory is refused.
+
+**Measured after** (2026-09-27, same roots): all three invocations name `--cwd`, the path and "not a
+directory", exit 2/2/1 and leave no socket behind (nothing was started); the control — the same `exec` with a
+*real* directory — still boots with `session_workspace` set to it. New regression test
+`cli::a_cwd_that_is_not_a_directory_is_refused_before_a_session_starts` covers the missing path, the regular
+file, the hand-started daemon and the live-session case; `cli::cwd_reaches_a_started_daemon_and_is_reported_against_a_live_one`
+stays green as the control.
+
+**Two riders on the same surface** (same commit, `engine/src/main.rs`):
+
+* the note a second client gets when `--full-auto` cannot apply still said "Stop that daemon (Ctrl-C in its
+  terminal)" — the wording D-150 itself declared impossible for the detached daemon users actually run. It
+  now carries D-150's recipe instead: SIGTERM the pid, with the `ps -eo pid,args | grep "[t]eamagents daemon"`
+  line that names it, so the guide's three instructions and the message agree.
+* `approvals` and `instances` printed their unknown-verb message with a literal run of 18 spaces where a line
+  continuation was intended; the two messages are one clean line again, like the `authority` and `tasks`
+  siblings they sit next to.
+
 ## D-162 Two config *values* were ignored the same way (2026-09-27)
 
 D-161 closed the two tables that dropped an unserved *key*; asking the same question of *values* found two more

@@ -464,6 +464,26 @@ fn daemon_run(state_root: Option<String>, cwd: Option<String>, model: Option<Str
     }
 }
 
+/// The workspace a session works in must exist before it boots.
+///
+/// Every file tool and shell command is confined to this root, and `tools.rs` resolves it with
+/// `canonicalize`, so a `--cwd` that is not a directory left the session running against a root nothing
+/// could resolve: the model saw a bare `No such file or directory (os error 2)` that never named the flag,
+/// while the socket's greeting and the `--json` report named the bad path as `session_workspace` as if it
+/// were fine. A path naming a *file* is the same mistake one step further. Measured 2026-09-27 with
+/// `exec --cwd <missing>` and `--cwd <afile>` (both exited 0 with the bad path as the workspace, D-163).
+pub fn require_workspace_dir(path: &Path) -> Result<(), String> {
+    if path.is_dir() {
+        return Ok(());
+    }
+    Err(format!(
+        "--cwd {} is not a directory: the session works in it and confines every file and shell command to \
+         it, so it has to exist before the session boots. Create it first, point --cwd at another existing \
+         directory, or leave --cwd out to work in the current directory",
+        path.display()
+    ))
+}
+
 fn daemon_boot(
     state_root: Option<String>,
     cwd: Option<String>,
@@ -500,6 +520,7 @@ fn daemon_boot(
         Some(dir) => PathBuf::from(dir),
         None => std::env::current_dir().map_err(|e| e.to_string())?,
     };
+    require_workspace_dir(&workspace)?;
     // one stable root (and socket) per user: init/doctor/daemon/TUI must agree
     // on where the session lives, or the default entry cannot find the daemon
     let state_root = state_root.map(PathBuf::from).unwrap_or_else(crate::v2_root);
