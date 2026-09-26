@@ -246,10 +246,19 @@ def main() -> int:
 
     # `pkill` returns before the daemon it signalled is gone, so give a stopped daemon a moment to leave before
     # calling it a leak: the guard must not report a process that is on its way out (measured: a failing probe's
-    # daemon was still counted, and the run was red for it — D-141).
+    # daemon was still counted, and the run was red for it — D-141). A probe that passed relies on its own
+    # `atexit`, which sends TERM only, so if the count has still grown after the wait the harness applies the
+    # same TERM-then-KILL sweep it applies to a failed probe — over its own root, where every probe's state root
+    # lives — and only then reports a survivor (measured 2026-09-26: a full set with no failing probe was red
+    # for a daemon that outlived its own stop, D-144).
     deadline = time.time() + 15
     while time.time() < deadline and daemons() > before_daemons:
         time.sleep(0.5)
+    if daemons() > before_daemons:
+        stop_daemons(harness_root)
+        deadline = time.time() + 15
+        while time.time() < deadline and daemons() > before_daemons:
+            time.sleep(0.5)
     new_daemons, new_strays = daemons(), strays() - before_strays
     leaks = []
     # a clean run keeps nothing: the harness root only survives when it holds a failure's evidence

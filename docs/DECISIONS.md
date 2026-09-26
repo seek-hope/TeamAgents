@@ -43,6 +43,15 @@ and two controls, each reverted byte-identically, make it fail — counting file
 count directories only, got ['ta-a-directory', 'ta-a-file']", and dropping a set from the budgets gives "every
 set needs a per-probe budget: sets=['all', 'models', 'offline'] timeouts=['models', 'offline']".
 
+**The full set then failed on the guard itself**, which is the same lesson once more: twenty-four probes ran,
+**23 passed** (`authority.py` on its slow path at 587 s — the retries from D-143 doing their work) and the run
+was red for `1 daemon(s) left running`, with *no* failing probe. The guard's TERM-then-KILL sweep only covered
+failed probes; a probe that passed relies on its own `atexit`, which sends TERM only, and a daemon slow to
+honour that left the set red. The guard now applies the same sweep over its own root — where every probe's state
+root lives — when the count has still grown after its wait, and reports only a survivor. Control: a daemon
+started by hand under a fixed harness root, with the baseline patched to look grown, is gone by the end of the
+run (`daemons 0 -> 0`), which is what the sweep is for.
+
 Ceiling: the check covers what can be stated without a session. The daemon predicate, the TERM-then-KILL stop and
 the keep-on-failure path need a real probe run, so they are covered by the sets themselves rather than here.
 
