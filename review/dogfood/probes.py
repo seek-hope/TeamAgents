@@ -98,12 +98,20 @@ def needs_credentials(set_name: str) -> bool:
     return set_name in ("models", "all")
 
 
-def daemons() -> int:
-    """Live session daemons, by the subcommand (D-111's predicate, not the binary's name)."""
+def daemons(root: pathlib.Path | None = None) -> int:
+    """Live session daemons, by the subcommand (D-111's predicate, not the binary's name).
+
+    With `root`, only the daemons whose state root is **under** it — what this harness started, rather than what
+    the machine happens to be running. Measured 2026-09-26: a full set whose every probe passed was reported red
+    by a *global* count of 2 -> 3, i.e. for a daemon that was not the run's (D-144); the harness passes
+    `--state-dir <root>/<probe>` to every probe, so every daemon it starts is under that root and nothing is
+    missed by counting only those.
+    """
     listing = subprocess.run(["ps", "-eo", "comm,args"], capture_output=True, text=True).stdout
-    return sum(1 for line in listing.splitlines()[1:]
-               if len(parts := line.split(None, 2)) == 3 and parts[0] == "teamagents"
-               and parts[2].startswith("daemon "))
+    found = [parts[2] for line in listing.splitlines()[1:]
+             if len(parts := line.split(None, 2)) == 3 and parts[0] == "teamagents"
+             and parts[2].startswith("daemon ")]
+    return sum(1 for args in found if root is None or str(root) in args)
 
 
 def stop_daemons(state_dir: pathlib.Path) -> None:
@@ -208,7 +216,7 @@ def main() -> int:
         print(f"missing probe file(s): {missing}")
         return 1
 
-    before_daemons, before_strays = daemons(), strays()
+    before_strays = strays()
     failures, started_all = [], time.time()
     # Each probe runs with an explicit --state-dir under this harness, so a probe that is killed cannot leave
     # anything behind (its own `atexit` cleanup does not run when the harness has to kill it) and a failing
@@ -255,23 +263,23 @@ def main() -> int:
     # lives — and only then reports a survivor (measured 2026-09-26: a full set with no failing probe was red
     # for a daemon that outlived its own stop, D-144).
     deadline = time.time() + 15
-    while time.time() < deadline and daemons() > before_daemons:
+    while time.time() < deadline and daemons(harness_root):
         time.sleep(0.5)
-    if daemons() > before_daemons:
+    if daemons(harness_root):
         stop_daemons(harness_root)
         deadline = time.time() + 15
-        while time.time() < deadline and daemons() > before_daemons:
+        while time.time() < deadline and daemons(harness_root):
             time.sleep(0.5)
-    new_daemons, new_strays = daemons(), strays() - before_strays
+    left, new_strays = daemons(harness_root), strays() - before_strays
     leaks = []
     # a clean run keeps nothing: the harness root only survives when it holds a failure's evidence
     if not failures:
         shutil.rmtree(harness_root, ignore_errors=True)
-    if new_daemons > before_daemons:
-        leaks.append(f"{new_daemons - before_daemons} daemon(s) left running")
+    if left:
+        leaks.append(f"{left} daemon(s) left running under {harness_root}")
     if new_strays:
         leaks.append(f"scratch left behind: {sorted(new_strays)}")
-    print(f"{len(chosen)} probes in {total}s; daemons {before_daemons} -> {new_daemons}; "
+    print(f"{len(chosen)} probes in {total}s; daemons of this run left: {left}; "
           f"new scratch {sorted(strays() - before_strays) or 'none'}")
     for leak in leaks:
         print("FAIL:", leak)

@@ -52,6 +52,15 @@ root lives — when the count has still grown after its wait, and reports only a
 started by hand under a fixed harness root, with the baseline patched to look grown, is gone by the end of the
 run (`daemons 0 -> 0`), which is what the sweep is for.
 
+**And the lesson a fourth time, on the next full set**: all **24 probes passed** and the run was *still* red —
+`1 daemon(s) left running`, from a **global** count of `2 -> 3`. The daemon was not the run's: counting every
+daemon on the machine attributes another session's (or an earlier root's) to this one, which is precisely the
+stray-*file* false positive again, inside the same guard. The check is now attributed to the harness's own root
+— the count, the sweep and the report all ask "under `<harness root>`" — and since every probe is given
+`--state-dir <root>/<probe>`, nothing the run starts is missed and nothing else is blamed. Control: a daemon
+started by hand under a *different* root leaves the run green with `daemons of this run left: 0`, and it is left
+untouched.
+
 Ceiling: the check covers what can be stated without a session. The daemon predicate, the TERM-then-KILL stop and
 the keep-on-failure path need a real probe run, so they are covered by the sets themselves rather than here.
 
