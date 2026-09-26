@@ -3276,7 +3276,9 @@ fn register_check_runs(tx: &Connection, session_id: &str, params: &Json, identit
 
 /// Check-failure repair path (§8): the failure receipts already sit in the
 /// instance context (decision consumption), so the next request is a repair
-/// turn that sees them; this only flips the completion boundary back to
+/// turn that sees them; this also states the verdict in the runtime's own
+/// voice, because a *stale declared input* is a verdict the check's own output
+/// cannot carry (see below), and then flips the completion boundary back to
 /// READY — one transaction, replay-safe.
 fn repair_completion(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
     if !matches!(identity, Identity::System) {
@@ -3286,13 +3288,55 @@ fn repair_completion(tx: &Connection, session_id: &str, params: &Json, identity:
     let goal_id = params["goal_id"].as_str().ok_or("repair_completion.goal_id required")?;
     let round = params["round"].as_i64().unwrap_or(0);
     let failures = params.get("failures").cloned().unwrap_or(json!([]));
-    let (session, _, _, phase, _) = load_instance(tx, instance_id)?;
+    let (session, epoch, _, phase, _) = load_instance(tx, instance_id)?;
     if session != session_id {
         return Err(format!("instance {instance_id} does not belong to this session"));
     }
     if phase != "COMPLETION_PENDING" {
         return Ok(json!({"instance_id": instance_id, "phase": phase, "already_closed": true}));
     }
+    // §8: "the model is given the real remaining time and error summaries so it can change course". A check
+    // that fails on its own leaves its output and exit code in the conversation as a tool result, but the
+    // stale-input verdict belongs to the *runtime*: the check exited 0 and only the re-verification of its
+    // declared inputs says why the completion was refused. Measured live (D-187): with the verdict recorded as
+    // an event and nowhere else, the model spent eleven requests re-deriving the workspace state and settled
+    // the goal itself, because no one had told it what the runtime had found.
+    let summary: Vec<String> = failures
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .map(|failure| {
+                    format!(
+                        "check {} — {} [{}]",
+                        failure["check_id"].as_str().unwrap_or("?"),
+                        failure["reason"].as_str().unwrap_or("failed"),
+                        failure["class"].as_str().unwrap_or("failed")
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let verdict = if summary.is_empty() {
+        format!("[completion refused: round {round}; goal {goal_id} cannot settle yet]")
+    } else {
+        format!(
+            "[completion refused: round {round}; repair these before goal {goal_id} can settle]\n{}",
+            summary.join("\n")
+        )
+    };
+    // A *note*, not the runtime's closing word (`EntryKind::Runtime`, D-71): the turn is not over — the model
+    // is expected to answer this, and the idle rule must keep the turn open. Notes are the established channel
+    // for "the runtime tells the model what was wrong" (D-56), and they ride as user-role text without being a
+    // user turn.
+    append_context(
+        tx,
+        instance_id,
+        epoch,
+        "note",
+        &json!({"role": "user", "content": verdict}),
+        Some(&format!("completion-repair-{goal_id}-{round}")),
+        &json!([]),
+    )?;
     tx.execute(
         "UPDATE instances SET phase = 'READY', revision = revision + 1 WHERE id = ?1 AND phase = 'COMPLETION_PENDING'",
         [instance_id],

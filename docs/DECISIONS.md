@@ -18,6 +18,49 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-187 The runtime knew why a completion was refused and did not say (2026-09-27)
+
+The 26-probe model pass (its record is in `review/dogfood/README.md`) came back with one red probe, and it was
+worth more than the green ones: `stale_check.py` (A17) failed with "the block reason does not name the stale
+input: `['']`" and "the stale-input verdict never appeared in the conversation". The state the probe kept
+answered both. The runtime had done its job — `completion_repair` recorded `check bound`, `class
+stale_inputs`, `reason "declared input out.txt changed since the check ran"` twice, no goal reported success,
+and the goal ended BLOCKED — but the *model* had never been told any of it. Its transcript is the whole story:
+a synthetic check round (the check runs `printf changed > out.txt` and exits 0), the answer "[finish received:
+required checks round 2 must pass before the goal can settle]", and then eleven requests in which the model
+re-read the file, re-wrote it, re-verified it and finally reported the divergence itself.
+
+**The gap.** §8 says "the model is given the real remaining time and error summaries so it can change course",
+and the repair path's own comment claimed the receipts were enough: "the failure receipts already sit in the
+instance context (decision consumption)". They are — for a check that fails *on its own*, whose output and exit
+code land in the transcript as a tool result. The **stale-input class cannot work that way**: the check
+succeeded, its output is empty, and only the runtime's re-verification of the declared inputs (below the round)
+says why the completion was refused. That verdict was written to the event log and nowhere the model could see.
+
+**Changed.** `repair_completion` (`core/src/v2/control.rs`) now states the verdict in the same transaction that
+flips the completion boundary back to READY, as a **note**: `[completion refused: round 1; repair these before
+goal … can settle]` followed by one line per failure, `check bound — declared input out.txt changed since the
+check ran [stale_inputs]`. The kind matters twice. A note is the established channel for "the runtime tells the
+model what was wrong" (D-56) and rides as user-role text without being a user turn; `EntryKind::Runtime` would
+have been wrong — its own doc calls it the runtime's *closing* word, the idle rule treats that tail as
+committed, and the first version of this change used it: the driver went idle after the repair instead of
+asking again, which `v2_driver::the_check_repair_path_keeps_the_transcript_wire_valid` caught by failing to
+settle.
+
+**The probe was also wrong**, in a smaller way: `stale_check.py` asserted the *park* path's reason string
+(`bound:stale_inputs` in the final `goal_completed`) and searched the conversation for the verdict. The other
+live run of the same day settled the goal itself — a different path with the same correct outcome — so the
+probe now asserts what must hold either way (the runtime records `class: "stale_inputs"`, the verdict is in the
+conversation, no goal is SUCCEEDED, the goal is BLOCKED) and requires the reason to name the stale input only
+when the runtime did the parking.
+
+**Measured** (2026-09-27): the new `v2_driver::a_repair_round_names_the_failed_check_and_its_reason` passes, the
+wire-validity test passes again, and the whole `v2_driver` suite is 36/36. The probe, re-run live on deepseek at
+the fixed build: exit 1 / 16.7 s / 12 requests, "the runtime recorded the stale input: 'declared input out.txt
+changed since the check ran'", "the conversation carries the verdict", "the runtime parked the goal naming the
+stale input: required checks failed (bound:stale_inputs) after 3 round(s)" — the first live run in which the
+model was told.
+
 ## D-186 The daemon-stop helper answered "signalled", not "stopped" (2026-09-27)
 
 D-185's `make check` ended red for a reason that had nothing to do with it: `make test`'s leak guard reported a

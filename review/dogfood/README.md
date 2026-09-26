@@ -44,6 +44,29 @@ python3 review/dogfood/probes.py --only checks.py --set models
 env -u DEEPSEEK_API_KEY -u KIMI_API_KEY python3 review/dogfood/probes.py   # the offline set needs no credential
 ```
 
+**The model set re-run 2026-09-27, at `f521fd4f`** (all 26 in one pass): **24 green, 2 red, and both reds were
+findings rather than flakes.** `stale_check.py` failed on its two assertions about the stale-input verdict, and
+the state it kept showed the runtime doing its job — two `completion_repair` events carrying `class:
+"stale_inputs"`, no success claim, the goal BLOCKED — while the *model* was never told why its completion had
+been refused: the §8 gap D-187 fixed. `authority.py` reproduced the recorded D-143 shape instead of passing:
+turn 1 closed in neither attempt (`exit 124` after 600.4 s and 600.5 s), the probe's own premise — a worker
+that answers without settling its task leaves the leader's wait pending, which is the ACCEPTANCE-recorded gap —
+holding both times, so this is that gap and not a regression. The pass also reported one scratch directory it
+had not created, `/tmp/ta-stale-d187`: a probe run *beside* the harness (this document's own), whose guard
+correctly saw a new directory appear in `TMPDIR` during the pass, and correctly stayed quiet in the re-run
+below, where nothing ran beside it.
+
+**The check family re-run after D-187's fix, same day** (`probes.py --set models --only checks.py --only
+stale_check.py --only two_gates.py --only exec_check.py --only authority.py`, 810 s): **all five green** —
+checks 15.4 s, stale_check 12.3 s (reporting "the runtime recorded the stale input", "the conversation carries
+the verdict", "the runtime parked the goal naming the stale input: required checks failed (bound:stale_inputs)
+after 3 round(s)"), two_gates 13.2 s, exec_check 6.8 s and `authority.py` 762.4 s. Authority's own flakiness is
+visible in the pair: the same probe failed after two 600 s turns in the pass above and closed in 762 s here —
+D-143's shape, and the reason its budget is the largest in the set. Two live runs of `stale_check.py` also
+settled the goal two *different* ways (the model parked the goal after three rounds in the post-fix run; the
+pre-fix run's model settled it itself with an honest blocked report), which is why the probe now asserts what
+must hold in both instead of the park reason alone (D-187).
+
 **The model set re-run 2026-09-27, after the D-163…D-175 pass** (one probe at a time in five chunks, on the
 revision those changes ended at): **25 of the 26 green** — every probe except `run.py`, the fixture task that
 verifies itself outside the agent and takes a task argument rather than a session — including `authority.py`,

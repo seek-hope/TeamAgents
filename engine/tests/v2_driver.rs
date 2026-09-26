@@ -159,7 +159,21 @@ async fn wait_event(handle: &DriverHandle, kind: &str, timeout_ms: u64) -> Json 
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    panic!("event {kind} did not arrive within {timeout_ms}ms");
+    // the events that *did* arrive are the evidence for why this one did not (D-187 read them the hard way)
+    let seen: Vec<String> = handle
+        .events(0)
+        .await
+        .unwrap_or_default()
+        .iter()
+        .map(|event| {
+            format!(
+                "{} {}",
+                event["kind"].as_str().unwrap_or("?"),
+                event["payload"].to_string().chars().take(160).collect::<String>()
+            )
+        })
+        .collect();
+    panic!("event {kind} did not arrive within {timeout_ms}ms; saw {} event(s):\n{}", seen.len(), seen.join("\n"));
 }
 
 async fn wait_phase(handle: &DriverHandle, phase: &str, timeout_ms: u64) {
@@ -1293,6 +1307,36 @@ async fn check_inputs_must_still_hold_at_completion() {
     handle.input("do the work").await.expect("input");
     let blocked = wait_event_where("goal_blocked", &handle, 20_000, |_| true).await;
     assert!(blocked["payload"]["reason"].as_str().unwrap_or("").contains("bound:stale_inputs"));
+    handle.shutdown().await.expect("shutdown");
+}
+
+/// §8/D-187: a repair round says *which* check failed and why. A check that fails on its own leaves its output
+/// and exit code in the conversation; the stale-input verdict is the runtime's own — the check exited 0 — so
+/// without this entry the next request sees only "the required checks must pass" and has to guess (a live run
+/// spent eleven requests re-deriving the state before settling the goal itself).
+#[tokio::test]
+async fn a_repair_round_names_the_failed_check_and_its_reason() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let root = root("checks-repair-summary");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    std::fs::write(root.dir.join("ws").join("input.txt"), "original").unwrap();
+    // two rounds, so the first failure repairs (the second would exhaust the budget and block)
+    let script = vec![Step::Message(finish_call("claimed done")), Step::Message(finish_call("done again"))];
+    let mut config = root.config(ScriptedProvider { script: Mutex::new(script.into()) });
+    config.goal_limits = json!({"required_checks": [{"id": "bound", "command": "printf changed > input.txt",
+                                                     "inputs": ["input.txt"]}],
+                                "max_check_rounds": 2});
+    let handle = start(config).await.expect("start");
+    handle.input("do the work").await.expect("input");
+    let repair = wait_event_where("completion_repair", &handle, 20_000, |_| true).await;
+    assert_eq!(repair["payload"]["failures"][0]["class"], "stale_inputs", "{repair}");
+    let entries = read_transcript(&handle, "i-main").await;
+    let verdict =
+        entries.iter().filter_map(|entry| entry["content"].as_str()).find(|text| text.contains("[completion refused"));
+    let verdict = verdict.unwrap_or_else(|| panic!("no repair verdict in the transcript: {entries:?}"));
+    assert!(verdict.contains("bound"), "the verdict names the check: {verdict}");
+    assert!(verdict.contains("input.txt changed since the check ran"), "and its reason: {verdict}");
+    assert!(verdict.contains("stale_inputs"), "and its class: {verdict}");
     handle.shutdown().await.expect("shutdown");
 }
 
