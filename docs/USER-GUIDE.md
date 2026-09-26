@@ -431,9 +431,17 @@ teamagents tasks cancel --id t-prose    # releases a delegator waiting on a task
 - `terminate` needs `--yes`: it retires the instance, its open work is dealt with explicitly, and a workspace
   holding uncommitted or unmerged work is never deleted — the reason is reported instead. Retiring an instance
   while a run is waiting ends that run at once (`1`, with the reason); **pausing** it does not: a pause stops
-  the instance at a boundary, the run keeps following its turn, and resuming lets it finish (§4.2, D-98).
+  new dispatch, so the turn that was running stops at its next boundary and **does not finish** until you
+  resume — a headless run against it waits out its own deadline and says so (§4.2, D-98).
   If a run does hit its deadline on a stopped instance, the report names the lifecycle instead of claiming the
   instance is still running.
+- **What a pause looks like while it takes effect**: `instances` and the TUI's instances panel print the
+  lifecycle beside the execution position, which tells "pause requested" from "stopped at a safe boundary" —
+  `PAUSED / TOOLS_PENDING` is an in-flight call that will stop at the boundary, `PAUSED / READY` is parked
+  there, and the row carries the reason (`PAUSED by the user (teamagents instances)`, D-165). Measured
+  2026-09-27 with a `sleep 30` command: `ACTIVE / TOOLS_PENDING` → `instances pause` → `PAUSED /
+  TOOLS_PENDING` → the command ends → `PAUSED / READY`, while the waiting `exec` reported `timed out: i-leader
+  is PAUSED, so its turn cannot finish`.
 - **Stopping a command that is already running**: `tasks cancel` is *delegation-level* — the task lands
   `CANCELLED` and the delegator is released, but the assignee's command keeps running until its own tool
   timeout, because the process-group stop (§6.4) is a request against an *operation* and the assignee learns
@@ -530,12 +538,12 @@ teamagents tasks cancel --id t-prose    # releases a delegator waiting on a task
 | `exec: the leader instance i-leader is PARKED …` | The leader stopped on a permanent failure and nothing drives it. The client reports the park as soon as it sees it, with the runtime's own reason (D-164; the same sentence is the TUI's system note and a `daemon.log` line): exit 1 when the input was already submitted (it is waiting — resuming the instance runs it) or exit 2 with "nothing was submitted" when the park was visible before submitting. Fix the cause, then `teamagents instances resume --id i-leader` (or `r` in the TUI instances panel), or start a fresh state root. A **TERMINATED** leader is different: termination is final, so `exec` says so and the only way on is a fresh state root (D-82) |
 | `exec` reports `check 1: FAILED` | Your own `--check` command failed; its output is on stderr and in `<state root>/verification.json` |
 | `exec` exits 3 | A tool call needs approval and a headless run cannot answer it. Approve it in the TUI and run `exec` again, or start the daemon with `--full-auto` |
-| `doctor` reports the state root as FAIL | That path does not hold a current session database (the stamp does not match); use another `--state-root` or follow the message, and never edit the database by hand |
+| `doctor` reports the state root as FAIL | That path does not hold a current session database, and the row says which: a path that is a file where a directory belongs (D-166), a file that is not a database, or a format/version stamp mismatch. Use another `--state-root` or follow the message, and never edit the database by hand |
 | The agent worked in the wrong directory | Its session was started with another workspace (or without `--cwd`): the client prints the live one. Stop that daemon (§1: SIGTERM to its pid) or start a fresh `--state-root` with `--cwd DIR` |
 | The model returns 401/402 | Check the environment variable named by the profile's `api_key_env`; `doctor` lists the credential resolution result per profile |
 | A task stays `RUNNING` while its assignee is idle | The assignee's model ended its turn without settling it (D-65): cancel the task — `c` in the tasks panel or `teamagents tasks cancel --id` — which releases the delegator's wait |
 | A member is stuck in a long or endless command and cancelling its task changed nothing | `tasks cancel` is delegation-level and does not touch the assignee's operation (D-88). Stop the work with `teamagents instances terminate --id … --yes` (the process group dies within seconds, and the receipt says `class: cancelled`) or wait for the command's own tool timeout |
-| An instance is parked | `teamagents instances` shows which; resume it with `instances resume --id` (or `r` in the TUI) when the reason is gone |
+| An instance is parked | `teamagents instances` shows which **and why** (the reason rides on the row, D-165); resume it with `instances resume --id` (or `r` in the TUI) once that cause is gone |
 | A command under `approved_scope` waits for approval | Decide it with `teamagents approvals` (§4.1) or in the TUI approvals panel; `--full-auto` (host execution, D-41) skips the gate |
 | A command left a service running (`dev-server &`) | By design the session does not manage it (D-41/D-112): it survives the client, the daemon and the member. Stop it yourself with the pid the command printed (`sleep 300 & echo $!`, then `kill <pid>`), or start such work in a command that exits when you are done. `instances terminate` stops an *operation that is still running*, not a service left behind by one that finished |
 | A member says it cannot run shell commands although you granted it | Turn the offer into a witness: start the session with `TEAMAGENTS_LOG_SURFACE=1` and the driver writes one line per request into `<state root>/daemon.log` — `driver: surface <instance> shell=yes|no tools=…`. `shell=no` after a live `authority grant` is a bug worth reporting; `shell=yes` with no attempt means the model had the tool and did not use it (§3.1, D-143/D-157) |

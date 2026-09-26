@@ -511,11 +511,14 @@ async fn the_intervention_cli_cancels_a_task_and_pauses_and_resumes_an_instance(
     let (code, out, err) =
         cli(vec!["instances".into(), "pause".into(), "--id".into(), "i-worker".into()], state_root.clone()).await;
     assert_eq!(code, 0, "{err}");
-    assert!(out.contains("PAUSED"), "{out}");
+    // D-177: the line is the row *after* the lever, in the shape `instances` prints — it used to put the new
+    // lifecycle beside the pre-change row ("PAUSED i-worker: ACTIVE / …"), which read as a contradiction
+    assert!(out.contains("i-worker: PAUSED /"), "{out}");
+    assert!(!out.contains("PAUSED i-worker:"), "{out}");
     let (code, out, err) =
         cli(vec!["instances".into(), "resume".into(), "--id".into(), "i-worker".into()], state_root.clone()).await;
     assert_eq!(code, 0, "{err}");
-    assert!(out.contains("ACTIVE"), "{out}");
+    assert!(out.contains("i-worker: ACTIVE /"), "{out}");
     // cancelling the task releases the delegator: the goal settles
     let (code, out, err) =
         cli(vec!["tasks".into(), "cancel".into(), "--id".into(), "t-prose".into()], state_root.clone()).await;

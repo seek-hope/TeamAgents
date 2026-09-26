@@ -18,6 +18,45 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-177 `instances pause` printed the new lifecycle beside the old row (2026-09-27)
+
+Verifying DESIGN §6.4's claim that "the UI distinguishes 'pause requested' from 'stopped at a safe boundary'"
+— by pausing a real turn with a `sleep 30` command in flight — answered the design question and turned up a
+message defect in the same breath. The state sequence is exactly what the design promises, observable through
+the two fields the clients print (`ACTIVE / TOOLS_PENDING` → pause → `PAUSED / TOOLS_PENDING` → the command
+ends → `PAUSED / READY`), and the waiting headless run reported `timed out: i-leader is PAUSED, so its turn
+cannot finish … resume it`, which is D-98's honest line working. What did not work was the lever's own output:
+`instances pause --id i-leader` printed
+
+```
+PAUSED i-leader: ACTIVE / TOOLS_PENDING
+```
+
+— the lifecycle *after* the change beside the row resolved *before* it, which reads as "the pause did not take
+effect" at exactly the moment the user is checking whether it did (the D-164/D-171 family: one line saying two
+different things).
+
+**Changed** (`engine/src/v2/intervene.rs`, `docs/USER-GUIDE.md`): the pause/resume/terminate line now prints the
+row as it is after the lever, in the shape `instances` prints — `i-leader: PAUSED / TOOLS_PENDING`. The phase is
+the one the change was made at (a lifecycle change does not move the execution position), which the comment
+says, and `instances` shows where it settles. The JSON report is unchanged: `lifecycle` is the new value,
+`instance` the row that was resolved.
+
+**Measured** (2026-09-27, after the change): `instances resume --id i-leader` prints `i-leader: ACTIVE / READY`
+and the pause prints `i-leader: PAUSED / READY`, against the pre-fix `PAUSED i-leader: ACTIVE / TOOLS_PENDING`.
+The existing test
+`v2_daemon::the_intervention_cli_cancels_a_task_and_pauses_and_resumes_an_instance` now pins the shape (`…: PAUSED /`
+present, `PAUSED i-worker:` absent), which its old `out.contains("PAUSED")` assertion could not.
+
+**And the guide's pause sentence was misleading** (`docs/USER-GUIDE.md` §4.2): it said a pause "stops the
+instance at a boundary, the run keeps following its turn, and resuming lets it finish". Measured: the running
+turn stops at its next boundary and does **not** finish while the instance is paused — the pause blocks the
+turn's next request, so the headless run waits out its deadline and reports it (which is what the D-98 line
+does). The sentence and a new bullet now say that, with the `lifecycle / phase` sequence and the reason field
+(D-165) a user can watch. Two troubleshooting rows were sharpened at the same time: a state-root FAIL now says
+the row distinguishes a file-where-a-directory-belongs (D-166) from a foreign file or a stamp mismatch, and the
+"an instance is parked" row says `instances` shows *why*.
+
 ## D-176 Two probe counts rotted where nothing read them, and the rule they stated had no gate (2026-09-27)
 
 The consolidated evidence pass after D-163…D-175 (25 of the 26 model probes green, the formal gates re-run,

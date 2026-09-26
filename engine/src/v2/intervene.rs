@@ -204,11 +204,15 @@ fn print_report(options: &InterventionOptions, report: &Json) {
         InterventionCommand::Pause { .. }
         | InterventionCommand::Resume { .. }
         | InterventionCommand::Terminate { .. } => {
+            // the row as it is *after* the lever, in the same shape `instances` prints. It used to print the
+            // new lifecycle beside the row resolved *before* the change, which read as a contradiction —
+            // "PAUSED i-leader: ACTIVE / TOOLS_PENDING" (measured 2026-09-27, D-177). The phase is the one the
+            // change was made at (a lifecycle change does not move the execution position); `instances` shows
+            // where it settles.
             println!(
-                "{} {}: {} / {}",
-                report["lifecycle"].as_str().unwrap_or(""),
+                "{}: {} / {}",
                 report["instance_id"].as_str().unwrap_or(""),
-                report["instance"]["lifecycle"].as_str().unwrap_or("(was)"),
+                report["lifecycle"].as_str().unwrap_or(""),
                 report["instance"]["phase"].as_str().unwrap_or("")
             );
             if report["lifecycle"] == json!("TERMINATED") {
