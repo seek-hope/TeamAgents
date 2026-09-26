@@ -302,6 +302,19 @@ async fn a_runner_waits_while_its_job_is_reachable_and_unsettled_and_exits_other
         let _ = std::process::Command::new("kill").arg(child.to_string()).status();
     }
 
+    // --- a cancelled job is the same shape: its runner goes away too (before this, the cancel path left
+    //     `cancel_requested_at` set, so the loop never became idle and the process kept the 50 ms tick forever;
+    //     that is the shape of the 68 CANCELLED runners found on this machine, D-153) ------------------------
+    let cancelled_dir = root("idle-cancelled");
+    std::env::set_var("TEAMAGENTS_JOB_IDLE_TICK_MS", "200");
+    client::spawn(&cancelled_dir, &spec("op-cancelled", "sleep 30", future(60_000))).await.expect("spawn");
+    std::env::remove_var("TEAMAGENTS_JOB_IDLE_TICK_MS");
+    client::go(&cancelled_dir).await.expect("go");
+    let cancelled_pid = runner_pid(&cancelled_dir).expect("the runner is there while the command runs");
+    client::cancel(&cancelled_dir).await.expect("cancel");
+    assert_eq!(wait_terminal(&cancelled_dir, 10_000).await, "CANCELLED");
+    assert!(wait_gone(&cancelled_dir, 5_000).await, "runner {cancelled_pid} kept waiting after its job was cancelled");
+
     // --- the job settles: the runner goes away on its own, one grace after the settlement ------------------
     let settled_dir = root("idle-settled");
     std::env::set_var("TEAMAGENTS_JOB_IDLE_TICK_MS", "200");

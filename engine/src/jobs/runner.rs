@@ -205,6 +205,9 @@ impl Runner {
                     "FAILED".into()
                 };
                 self.child = None;
+                // the escalation target is gone, so nothing needs a timer any more: without this the loop
+                // stays "busy" forever after a cancel and never reaches the idle rules (D-153)
+                self.cancel_requested_at = None;
                 self.journal.finished_ms = Some(now_ms());
                 self.persist();
             }
@@ -212,6 +215,7 @@ impl Runner {
             Err(e) => {
                 self.journal.state = "OUTCOME_UNKNOWN".into();
                 self.child = None;
+                self.cancel_requested_at = None;
                 self.journal.finished_ms = Some(now_ms());
                 self.persist();
                 tracing_warn(&format!("job {} wait failed: {e}", self.journal.job_id));

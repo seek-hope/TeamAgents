@@ -170,6 +170,18 @@ controls reported "the runner never exits" and were simply reading the mutant �
 the artifact had not. A control script that measures anything by hand must rebuild after its revert (the test
 itself was never fooled: it compiles what it runs).
 
+**Verified in the field, 2026-09-27**: of the machine's live runners, *every one* ran a **deleted** binary
+(`/proc/<pid>/exe` → `(deleted)`, i.e. a build that has since been replaced) and was at least 20 hours old; the
+runs made after this entry's build left none at all (the pids of that session are absent from the list). The
+count is otherwise unchanged (1,398, 19 with their job directory already gone): the population is pre-fix and
+static, which is exactly what the two rules predict — and the one shape they do not retire is a *cancelled*
+job's runner, because the cancel path sets `cancel_requested_at` and never clears it, so `idle` is false and the
+loop keeps its 50 ms tick forever. That is a smaller version of the same defect (it is what the 68 `CANCELLED`
+runners in the population are), and it is fixed the same way: **a finished child clears the marker**
+(`Runner::tick`, so the loop becomes idle and the settled/cancelled rules apply). Test:
+`jobs_runner`'s cancelled shape in the test above; control, reverted byte-identically
+(`f31f5338…`): with the marker left set, "runner 579 kept waiting after its job was cancelled".
+
 Ceiling: a runner whose job directory still exists keeps waiting forever, on purpose — that is the design's live
 partner for an unknown outcome, and it now costs no measurable CPU. The 1,397 processes measured here are *old*
 binaries: the fix bounds what the next runs leave, not what this machine already carries. The supported way to
