@@ -18,6 +18,36 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-161 Two config tables ignored a key this build does not serve (2026-09-27)
+
+D-75's rule is that a key this build does not serve is *made to work, refused with a pointer, or reported as not
+in effect* — and most of the config already refused one: an unserved key in `[limits]`, `[retention]`, `[hooks]`,
+`[tools.*]`, `[models.*]` or `[[checks]]` fails the load with serde's own `unknown field …`. Two places never
+reached that check, and both were measured silent: the **top level** (a key outside `CATALOG_KEYS` was dropped by
+the filter that runs *before* parsing) and the **`[permissions]` table** (read by hand, key by key). Concretely:
+`skills_pathes = []` — a typo of `skills_paths` — left `doctor` green and the skills path never loaded, and
+`[permissions] mod = "full_auto"` — a typo of `mode`, a **safety** setting — silently ran the session in
+`approved_scope`. A user who mistyped a budget, a deadline or a permission mode got no signal at all.
+
+**Changed** (`engine/src/config.rs`): one wording, `unknown_key`, is now used by two guards — the top-level table
+(against `CATALOG_KEYS`, the set the existing test pins to `UserConfig`'s own fields) and `[permissions]` (against
+its two keys, named in the message). Both refuse at load with a pointer to `docs/CONFIG.md`, which gained the rule
+as a third bullet in its trust story; the user guide's §2 says the same in one sentence.
+
+**Measured** (2026-09-27, `doctor` on an isolated config): before, `mystery = 1`, `skills_pathes = []`,
+`[permissions] mod = "full_auto"` and `[permissions] trust_project_tool = true` all exited **0** with `[ok] user
+config`; after, all four exit **1** with `unknown key …`, while a config using the documented keys (including
+`mode` and `trust_project_tools`) still exits 0. Test:
+`config::tests::a_key_the_build_does_not_serve_is_refused_with_a_pointer` (four refusals plus the positive
+control); control: with the top-level guard removed the test fails on its first case (panic in `expect_err`),
+reverted byte-identically (`9f64e78b…`).
+
+Ceiling: the rule covers the keys the loader parses as *structure*; a free-form value is deliberately exempt —
+`generation_options` is a `HashMap` the provider passes through, so its keys belong to the service (stated in
+`docs/CONFIG.md`), and `[tools.*]`'s `env` map is the same shape. And a typo *inside* a string value (a path, a
+command) is out of any loader's reach; `doctor` reports the ones that resolve to nothing (missing skills paths,
+missing credentials).
+
 ## D-160 The leak guard caught its first real leak: a test cleaned up under its own daemon (2026-09-27)
 
 `make check` went red in `make test` with a message that is the whole point of D-147's guard: "leaked scratch

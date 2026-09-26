@@ -19,6 +19,13 @@ Two rules decide whether a key is *honoured*, and both are part of the trust sto
 * **A key this build accepts but does not apply says so** in the table below and in `doctor` (D-102's
   `instruction_files`, D-75's `codex_profile` and the `[retention]` bounds) — accepted-and-ignored would otherwise
   look exactly like accepted-and-working.
+* **A key this build does not serve at all is refused at load, with a pointer here** (`unknown key … docs/CONFIG.md
+  lists every key this build serves`): at the top level, inside every table and inside each `[models.*]`/`[tools.*]`
+  entry. A typo is a config error, never a silent default — measured before the rule was complete (2026-09-27):
+  `skills_pathes = []` left `doctor` green and the path never loaded, and `[permissions] mod = "full_auto"` (a typo
+  of `mode`, a *safety* setting) silently ran the session in `approved_scope` (D-161). The one deliberate exception
+  is a value that is free-form by design: `generation_options` is a `HashMap` the provider passes through, so its
+  keys are the service's, not this build's.
 
 The table is generated from the structs in `core/src/models.rs` by `python3 review/config_reference.py --write`;
 `make hygiene` fails when the two drift. Two things to read carefully: the **Absent** column is the value the

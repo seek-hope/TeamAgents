@@ -141,9 +141,24 @@ pub fn load_user_config(path: &Path) -> Result<UserConfig, String> {
 const CATALOG_KEYS: &[&str] =
     &["models", "tools", "skills_paths", "instruction_files", "retention", "hooks", "checks", "limits"];
 
+/// The one wording for a key this build does not serve (D-75's rule, D-161's enforcement):
+/// refused with a pointer, never dropped in silence.
+fn unknown_key(key: &str) -> String {
+    format!("unknown key `{key}` in the user config; docs/CONFIG.md lists every key this build serves")
+}
+
 pub fn parse_user_config(text: &str) -> Result<UserConfig, String> {
     let value: toml::Value = text.parse().map_err(|e| format!("bad TOML: {e}"))?;
     let table = value.as_table().ok_or("config root must be a table")?;
+    // A key this build does not serve is refused here, with a pointer: the table below
+    // is filtered to the catalog keys before serde ever sees it, so without this an
+    // unknown *top-level* key was dropped silently — measured 2026-09-27, a typo of
+    // `skills_paths` left `doctor` green and the path never loaded (D-161).
+    for key in table.keys() {
+        if key != "permissions" && !CATALOG_KEYS.contains(&key.as_str()) {
+            return Err(unknown_key(key));
+        }
+    }
     // the permissions section is not a catalog field, but a wrong type there is
     // an error, never a silent default
     project_permissions(&value)?;
@@ -333,6 +348,38 @@ mod tests {
             );
         }
         assert_eq!(keys.len(), CATALOG_KEYS.len(), "CATALOG_KEYS and UserConfig drifted: {keys:?} vs {CATALOG_KEYS:?}");
+    }
+
+    /// A key this build does not serve is refused with a pointer — at the top level and inside `[permissions]`,
+    /// the two places serde's own unknown-field check never saw: the top level was filtered to the catalog keys
+    /// *before* parsing, and the permissions table is read by hand. Measured before this test existed
+    /// (2026-09-27): `skills_pathes = []` (a typo of `skills_paths`) and `[permissions] mod = "full_auto"` (a typo
+    /// of `mode`, a *safety* setting — the session would have run in `approved_scope`) both left `doctor` green,
+    /// while unknown keys in `[limits]`, `[retention]`, `[hooks]`, `[tools.*]`, `[models.*]` and `[[checks]]`
+    /// were already refused (D-161).
+    #[test]
+    fn a_key_the_build_does_not_serve_is_refused_with_a_pointer() {
+        let model = "[models.m]\nprovider = \"openai\"\nmodel = \"x\"\n";
+        for (label, text) in [
+            ("the top level", format!("mysterys = 1\n{model}")),
+            ("a typo of skills_paths", format!("skills_pathes = []\n{model}")),
+            ("[permissions]", format!("{model}\n[permissions]\nmod = \"full_auto\"\n")),
+            (
+                "[permissions], a typo of trust_project_tools",
+                format!("{model}\n[permissions]\ntrust_project_tool = true\n"),
+            ),
+        ] {
+            let error = parse_user_config(&text).expect_err(label);
+            assert!(error.contains("unknown key"), "{label}: {error}");
+            assert!(error.contains("docs/CONFIG.md"), "{label} must point at the reference: {error}");
+        }
+        // and the keys the reference lists still parse, both permission keys included
+        let ok = parse_user_config(&format!(
+            "skills_paths = [\"/tmp/skills\"]\ninstruction_files = []\n{model}\n\
+             [permissions]\nmode = \"full_auto\"\ntrust_project_tools = true\n"
+        ))
+        .expect("the documented keys parse");
+        assert_eq!(ok.skills_paths, vec!["/tmp/skills".to_string()]);
     }
 
     #[test]
@@ -586,6 +633,13 @@ fn project_permissions(user: &toml::Value) -> Result<(bool, String), String> {
         return Ok((false, "approved_scope".into()));
     };
     let table = permissions.as_table().ok_or_else(|| "[permissions] must be a table in user config".to_string())?;
+    // the same rule as the top level: `mod = "full_auto"` (a typo of `mode`, a *safety* setting) used to leave
+    // `doctor` green and the session in `approved_scope` (measured 2026-09-27, D-161)
+    for key in table.keys() {
+        if key != "mode" && key != "trust_project_tools" {
+            return Err(format!("{} ([permissions] takes mode and trust_project_tools)", unknown_key(key)));
+        }
+    }
     let trusted = match table.get("trust_project_tools") {
         None => false,
         Some(value) => {

@@ -116,6 +116,8 @@ What the field names do not carry:
 - `result` is the daemon's own reply to a command, and `instance`/`task`/`approval`/`grant` is the affected row
   as the daemon reported it.
 
+A key this build does not serve is **refused at load with a pointer** (`unknown key … docs/CONFIG.md lists every key this build serves`) rather than ignored, so a typo fails loudly instead of silently leaving its setting at the default (D-161).
+
 ## 2. Configuration
 
 Every key this build reads, with its type, what it holds when absent and the files that consume it, is in
