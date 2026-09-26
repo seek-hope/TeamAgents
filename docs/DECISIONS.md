@@ -18,6 +18,43 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-119 A09's live half: the crash that leaves nothing verifiable (2026-09-26)
+
+`crash.py` is the *recoverable* crash (A08/A11): the daemon dies, the runner survives, its receipt is consumed
+once. A09 is the other half — the crash after which nothing can be verified — and it is a promise about honesty
+rather than about recovery, so it gets its own probe, `python3 review/dogfood/unknown_outcome.py`:
+
+1. the Leader hires one worker (the product path) and the user grants it `shell@workspace`
+   (`teamagents authority grant`; a spawned worker holds nothing of its own, §5.1/D-61);
+2. the user asks for a delegated task whose text is exactly one shell call, and waits for the moment A09 is
+   about: **the runner's own journal says the command started** and the delegated task is `RUNNING`;
+3. the probe kills the **runner** (so no terminal receipt can be written) and then the **daemon**, and starts a
+   cold daemon: recovery respawns a runner over the same job directory, which marks the journal `OUTCOME_UNKNOWN`
+   because a runner restarted over a non-terminal state cannot know whether the old child produced effects;
+4. the artifacts decide: `runs.log` holds exactly **one** line (the command ran once, never replayed), the
+   worker's operation is `OUTCOME_UNKNOWN` with receipt class `outcome_unknown`, the task is `BLOCKED` with
+   exactly one `task_blocked` notification, and no goal claims success. The orphaned command (its process group
+   outlives the runner, D-41) is stopped by pid at the end — the user's own lever, as the guide says.
+
+Measured 2026-09-26 (DeepSeek Flash, native window): two consecutive runs green, ~10 s each.
+
+Writing it took three predicates, and the two wrong ones are the record's real content:
+
+* "the worker is in `TOOLS_PENDING` and `runs.log` exists" — a model can *write* the side-effect file itself
+  (one run did exactly that: `write_file runs.log`), so the probe killed nothing and had no crash to recover
+  from. The side effect is not a witness when the agent can author it.
+* "a shell operation is `DISPATCH_COMMITTED`/`RUNNING`" — that only says the driver committed the dispatch. A
+  runner killed before it accepts the GO leaves a `READY` journal, and recovery then legitimately starts the
+  command **once** (§6.2: a READY journal means GO was not accepted). Two runs measured a successful replay —
+  A08's scenario — while the probe believed it was testing A09.
+* the shipped predicate: the **runner's journal** is `START_ACCEPTED`/`RUNNING` **and** the delegated task is
+  `RUNNING`. The journal is the state machine's own statement that the command started, which is exactly the
+  fact A09's claim is about; the operation row is a different fact (dispatch was committed).
+
+This is the same lesson as D-83/D-94/D-103/D-105/D-111/D-117 ("wait for the effect you assert about"), one level
+up: here the wrong witness was not too early in *time* but too early in the *state machine*, and it silently
+switched which scenario was under test.
+
 ## D-118 A02's ring is verified with a real model (2026-09-26)
 
 A02 ("A→B→C→A communication") had two kinds of evidence: the control plane

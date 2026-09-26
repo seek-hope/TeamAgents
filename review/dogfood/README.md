@@ -590,3 +590,39 @@ one turn's obedience. Measured (2026-09-26, DeepSeek Flash, native window): the 
 well), which the probe tolerates — it asserts the ring's hops, not silence. One finding from writing it: a
 delivered message is a `user`-kind context entry (not a `message`-kind one), which is why the probe's wait
 looks for the rendered `[message from …]` line instead of a kind.
+
+## `unknown_outcome.py`: the crash that leaves nothing verifiable (A09)
+
+`crash.py` covers the *recoverable* crash: the daemon dies, the runner survives and finishes the job, and the
+receipt is consumed exactly once (A08/A11). A09 is the other half — the crash that leaves nothing verifiable —
+and it is a promise about honesty rather than about recovery.
+
+```bash
+python3 review/dogfood/unknown_outcome.py
+python3 review/dogfood/unknown_outcome.py --provider kimi --state-dir /tmp/ta-unknown
+```
+
+1. the Leader hires one worker (the product path), and the user grants it `shell@workspace` through
+   `teamagents authority grant` (a spawned worker holds nothing of its own, §5.1/D-61);
+2. the user asks for a delegated task whose text is exactly one shell call
+   (`sh -c 'echo run >> runs.log; sleep 20'`), and waits until **the runner's own journal says the command
+   started** — see below for why that witness and not the operation row;
+3. the probe kills the **runner** (so no terminal receipt is ever written) and then the **daemon**, and starts a
+   cold daemon: recovery respawns a runner over the same job directory, which marks the journal
+   `OUTCOME_UNKNOWN` (a runner that finds itself restarted over a non-terminal state cannot know whether the old
+   child produced effects);
+4. asserts: `runs.log` holds **one** line (the command ran once and was never replayed), the worker's operation
+   is `OUTCOME_UNKNOWN` with receipt class `outcome_unknown`, the delegated task is `BLOCKED` with exactly one
+   `task_blocked` notification, and no goal claims success. The orphaned command (its process group outlives the
+   runner, D-41) is then stopped by pid, which is the user's own lever (`docs/USER-GUIDE.md` §4).
+
+Measured (2026-09-26, DeepSeek Flash, native window): two consecutive runs green, each ~10 s. Writing it took
+three predicates, and the two wrong ones are the interesting part:
+
+* "the worker is in `TOOLS_PENDING` and `runs.log` exists" — a model can *write* the side-effect file itself
+  (one run did), so the probe killed nothing and there was no crash to recover from;
+* "a shell operation is `DISPATCH_COMMITTED`/`RUNNING`" — that only means the driver committed the dispatch. A
+  runner killed before it accepts the GO leaves a `READY` journal, and recovery then starts the command once,
+  which is correct (§6.2) but is A08's scenario: the probe measured a *successful* replay instead of an unknown
+  outcome;
+* the shipped one — the runner's journal is `START_ACCEPTED`/`RUNNING` **and** the delegated task is `RUNNING`.
