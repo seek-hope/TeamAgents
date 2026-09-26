@@ -128,7 +128,7 @@ amended (D-49/D-50).
   session and drop it), `-v`/`--verbose` is refused with a pointer (it was accepted and never honoured), and
   the front-end refuses the flags the daemon owns (`--cwd`/`--full-auto`) with the pointer to the engine's own
   (`cli::a_bare_word_and_verbose_are_refused_without_starting_a_session`,
-  `tui::cli_flags::the_tui_refuses_the_flags_the_daemon_owns`; the first also asserts that no daemon socket was
+  `tui::cli_flags::the_tui_refuses_the_flags_it_cannot_honour`; the first also asserts that no daemon socket was
   created, so a refused argument has no side effect).
 
 ## Known gaps (found while auditing the documented surface, 2026-09-25)

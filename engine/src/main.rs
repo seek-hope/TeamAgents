@@ -369,8 +369,8 @@ fn run_tui(args: &Args) -> i32 {
     // No --cwd here: the workspace belongs to the session the daemon owns, and
     // the client already says so (`note_session_settings`, D-57). Passing a flag
     // the TUI cannot honour was the one thing left of that path (D-73).
-    let engine = std::env::current_exe().unwrap_or_default();
-    command.env("TEAMAGENTS_ENGINE", engine);
+    // D-180: no `TEAMAGENTS_ENGINE` either — the TUI never starts the engine, so the value it used to be handed
+    // was read by nothing (`find_engine_binary` was dead, and `--engine` is now refused).
     match command.status() {
         Ok(status) => status.code().unwrap_or(1),
         Err(e) => {

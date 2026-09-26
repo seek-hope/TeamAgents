@@ -128,7 +128,6 @@ nobody uses, and several are what the probes depend on.
 | `TEAMAGENTS_JOB_TEST_HOOKS` | the runner's own tests | compiles-in fault injection for the job runner, disabled unless the parent opts in; never read from a job file or a model (A31) |
 | `TEAMAGENTS_RUNNER_BIN` | integration tests | the runner image, so the test binary can serve as the runner (production uses the same `teamagents` binary) |
 | `TEAMAGENTS_TUI` | the CLI, when the TUI is not a sibling of it | where `teamagents` finds `teamagents-tui`; its own error message names this variable (`engine/src/main.rs`) |
-| `TEAMAGENTS_ENGINE` | the TUI, when the engine is not a sibling of it | where `teamagents-tui` finds `teamagents`; `--engine PATH` is the same choice as a flag (`tui/src/main.rs`) |
 | `TEAMAGENTS_BIN_DIR` | `install.sh` | where the installer puts the binaries; documented for users in `docs/INSTALL.md` |
 
 ## Formal verification (TLA+ / Kani)

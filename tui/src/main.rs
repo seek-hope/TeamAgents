@@ -18,7 +18,6 @@ use teamagents_tui::v2app::{Focus as V2Focus, V2App, V2Effect, View as V2View};
 use teamagents_tui::v2ui;
 
 struct Args {
-    engine_bin: String,
     /// v2 session daemon socket (R19): --daemon SOCK or --state-root DIR.
     daemon: Option<String>,
     state_root: Option<String>,
@@ -37,7 +36,6 @@ impl Args {
 
 fn usage() -> ! {
     eprintln!("teamagents-tui --daemon SOCK | --state-root DIR   # session daemon (required)");
-    eprintln!("  env: TEAMAGENTS_ENGINE (teamagents binary), --engine PATH");
     std::process::exit(2);
 }
 
@@ -46,50 +44,12 @@ fn usage() -> ! {
 /// accepting the flag and ignoring it (D-73).
 fn refuse(message: &str) -> ! {
     eprintln!("{message}");
-    eprintln!("usage: teamagents-tui --daemon SOCK | --state-root DIR [--engine PATH]");
+    eprintln!("usage: teamagents-tui --daemon SOCK | --state-root DIR");
     std::process::exit(2);
 }
 
-/// Locate the engine binary: --engine, TEAMAGENTS_ENGINE, a sibling of this
-/// executable, the repo's engine/target/{release,debug}/teamagents, then PATH.
-fn find_engine_binary(explicit: Option<String>) -> String {
-    if let Some(path) = explicit {
-        return path;
-    }
-    if let Some(path) = std::env::var_os("TEAMAGENTS_ENGINE").filter(|v| !v.is_empty()) {
-        return path.to_string_lossy().into_owned();
-    }
-    let exe = std::env::current_exe().ok();
-    if let Some(dir) = exe.as_ref().and_then(|p| p.parent()) {
-        let sibling = dir.join("teamagents");
-        if sibling.exists() {
-            return sibling.to_string_lossy().into_owned();
-        }
-    }
-    let mut roots: Vec<std::path::PathBuf> = vec![];
-    if let Ok(cwd) = std::env::current_dir() {
-        roots.push(cwd);
-    }
-    if let Some(exe) = &exe {
-        roots.extend(exe.ancestors().map(std::path::Path::to_path_buf));
-    }
-    for root in roots {
-        for candidate in [
-            root.join("engine/target/release/teamagents"),
-            root.join("engine/target/debug/teamagents"),
-            root.join("target/release/teamagents"),
-            root.join("target/debug/teamagents"),
-        ] {
-            if candidate.exists() {
-                return candidate.to_string_lossy().into_owned();
-            }
-        }
-    }
-    "teamagents".to_string()
-}
-
 fn parse_args() -> Args {
-    let mut a = Args { engine_bin: String::new(), daemon: None, state_root: None };
+    let mut a = Args { daemon: None, state_root: None };
     let takes_value = |i: usize, argv: &[String]| -> usize {
         // value flags consume the next argument
         if i + 1 < argv.len() {
@@ -98,7 +58,6 @@ fn parse_args() -> Args {
             1
         }
     };
-    let mut engine_flag: Option<String> = None;
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
     while i < argv.len() {
@@ -119,10 +78,14 @@ fn parse_args() -> Args {
                  `teamagents exec \"…\"`.",
                 argv[i]
             )),
-            "--engine" => {
-                engine_flag = argv.get(i + 1).cloned();
-                takes_value(i, &argv)
-            }
+            // D-180: `--engine PATH` (and `TEAMAGENTS_ENGINE`) were parsed, documented and never read — this
+            // binary only connects to the socket, so the value had no effect at all. Refused like its
+            // neighbours rather than accepted and ignored.
+            "--engine" => refuse(
+                "--engine is not a TUI flag: this binary only connects to the session's daemon socket and never \
+                 starts the engine. Start the session with `teamagents` (it boots the daemon) or \
+                 `teamagents daemon`.",
+            ),
             "--daemon" => {
                 a.daemon = argv.get(i + 1).cloned();
                 takes_value(i, &argv)
@@ -135,7 +98,6 @@ fn parse_args() -> Args {
         };
         i += step;
     }
-    a.engine_bin = find_engine_binary(engine_flag);
     a
 }
 

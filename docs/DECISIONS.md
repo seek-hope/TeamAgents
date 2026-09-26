@@ -18,6 +18,38 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-180 `--engine` was parsed, documented and read by nothing (2026-09-27)
+
+Checking the last documented surface whose *effect* (rather than existence) no test exercised — the seven
+environment knobs `review/env_knobs.py` keeps in step with the code — found that one of them was not merely
+untested but inert. `TEAMAGENTS_ENGINE` and its flag `--engine PATH` were parsed by `teamagents-tui`, resolved
+by a twelve-line `find_engine_binary` (the explicit path, then the environment, then a sibling, then the repo's
+build directories, then `PATH`) into `Args::engine_bin` — and **nothing ever read that field**: the TUI connects
+to the session's daemon socket and never starts the engine (`v2_main`'s own comment: "the TUI never executes
+anything itself"). Measured 2026-09-27 by reading every use of the field and of the finder: two writes, no
+reads, no other caller. The engine even set the variable for its child (`command.env("TEAMAGENTS_ENGINE", …)`),
+so a value was manufactured, passed and dropped on every launch.
+
+The class is D-73's — a flag the product cannot honour, silently accepted — and the same file already refuses
+its neighbours (`--cwd`, `--full-auto`, `--resume`, `--team`) with an explanation, which is what D-73's own test
+(`tui::the_tui_refuses_the_flags_it_cannot_honour`, renamed here) pins. Why no gate had caught it: rustc's
+`dead_code` does not fire for a field that is written but never read in these shapes, and
+`review/dead_code.py` scans *public* items, so a private dead field and a private dead helper pass both.
+
+**Changed** (`tui/src/main.rs`, `engine/src/main.rs`, `tui/tests/cli_flags.rs`, `docs/DEVELOPMENT.md`,
+`Makefile`): `--engine` is **refused** with the pointer its neighbours use ("this binary only connects to the
+session's daemon socket and never starts the engine. Start the session with `teamagents` (it boots the daemon)
+or `teamagents daemon`"); `find_engine_binary`, the `engine_bin` field and the flag's plumbing are deleted;
+the engine no longer exports `TEAMAGENTS_ENGINE` to the TUI; the knob's row leaves `docs/DEVELOPMENT.md`
+(`review/env_knobs.py` now reports 6 knobs read and 6 documented) and the Makefile's defensive `unset` drops
+the name. The refusal test gained `--engine` and was renamed to what it actually checks.
+
+**Measured** (2026-09-27): `teamagents-tui --engine /x` exits 2 naming the flag and the lever (the test asserts
+it), the tree builds warning-free, and the knob audit reports 6/6 with nothing unexplained. Not gated: the
+general shape ("a flag stored into a field no code reads") would need a careful textual read/assignment
+distinction to avoid false positives, so it stays a recorded candidate rather than a rushed audit — the class
+is now covered for this flag by the refusal test, which is the same defence D-73 uses.
+
 ## D-179 `git commit -a` skipped the new script, twice (2026-09-27)
 
 The trap D-170 and D-178 each fell into, and the reason both commits needed an amend: `git commit -a` stages
@@ -4170,7 +4202,7 @@ user's session on the wrong work.
 
 Evidence: `cli::a_bare_word_and_verbose_are_refused_without_starting_a_session` drives the real binary for
 `hello`, `frobnicate` and `-v` (exit 2, the message names the input, and — the part that matters —
-`<state root>/daemon.sock` was never created); `tui::cli_flags::the_tui_refuses_the_flags_the_daemon_owns`
+`<state root>/daemon.sock` was never created); `tui::cli_flags::the_tui_refuses_the_flags_it_cannot_honour` (renamed in D-180, which added `--engine` to the set)
 drives the real front-end for `--cwd`/`--full-auto`/`--resume`/`--team` and shows a supported invocation still
 parses. `make pty` keeps driving the real terminal through the engine (which no longer passes `--cwd`), and
 `make check` is green.
