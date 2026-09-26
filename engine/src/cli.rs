@@ -164,19 +164,24 @@ pub fn doctor(state_root: Option<PathBuf>) -> i32 {
         optional_check(&mut results, "legacy v1 layout", false, hint);
     }
     let bwrap = bwrap_available();
-    // not just "is it installed": `sandbox_usable` runs a probe so a broken userns/kernel setup is caught here
-    // instead of at the first shell call (the same predicate the tests branch on, D-114)
-    let bwrap_probe = crate::tools::sandbox_usable();
+    // not just "is it installed": `sandbox_state` runs a probe so a broken userns/kernel setup is caught here
+    // instead of at the first shell call, and it carries the reason (the same answer the tests branch on, D-114)
+    let sandbox = crate::tools::sandbox_state();
     check(
         &mut results,
         "bubblewrap isolation",
-        bwrap_probe,
-        if bwrap_probe {
-            "isolation probe passed: system files visible, home directory hidden".into()
-        } else if bwrap {
-            "bwrap is installed but the isolation probe failed; check that the system allows unprivileged user namespaces".into()
-        } else {
-            "bwrap not found, shell commands cannot run; Debian/Ubuntu: sudo apt install bubblewrap; Fedora: sudo dnf install bubblewrap; Arch: sudo pacman -S bubblewrap".into()
+        sandbox.is_ok(),
+        match &sandbox {
+            Ok(()) => "isolation probe passed: system files visible, home directory hidden".into(),
+            Err(reason) if bwrap => {
+                // a row is one line, so the machine's own words (bwrap's last line) are what a user needs; the
+                // generic sentence above them ("the sandbox failed to start …") only says what they already see
+                let own = reason.lines().rfind(|line| !line.trim().is_empty()).unwrap_or(reason);
+                format!("bwrap is installed but the isolation probe failed: {own}; check that the system allows unprivileged user namespaces")
+            }
+            Err(_) => {
+                "bwrap not found, shell commands cannot run; Debian/Ubuntu: sudo apt install bubblewrap; Fedora: sudo dnf install bubblewrap; Arch: sudo pacman -S bubblewrap".into()
+            }
         },
     );
     // hooks are easy to break silently: a wrong path only shows up as a stderr

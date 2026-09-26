@@ -67,8 +67,10 @@ impl McpClient {
         let root = root.canonicalize().map_err(|e| format!("MCP workspace unavailable: {e}"))?;
         let mut cmd = match mode {
             "workspace" => {
-                if !crate::tools::sandbox_usable() {
-                    return Err("IsolationUnavailable: MCP workspace execution requires bwrap".into());
+                if let Err(reason) = crate::tools::sandbox_state() {
+                    return Err(format!(
+                        "IsolationUnavailable: MCP workspace execution requires a working sandbox: {reason}"
+                    ));
                 }
                 let mut argv = crate::tools::bwrap_argv(&root, network, "", None);
                 // Reuse the shell sandbox, replacing only its Bash invocation.

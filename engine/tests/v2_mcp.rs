@@ -231,8 +231,14 @@ for line in sys.stdin:
         // and in both the host path must stay untouched.
         let error = start(config).await.err().expect("workspace mode without a usable sandbox must not boot");
         assert!(error.contains("ws_probe"), "the boot failure names the service: {error}");
-        if !teamagents_engine::tools::bwrap_available() {
-            assert!(error.contains("IsolationUnavailable") && error.contains("requires bwrap"), "{error}");
+        assert!(
+            error.contains("IsolationUnavailable") && error.contains("requires a working sandbox"),
+            "the refusal names the isolation on both sandbox-less machines: {error}"
+        );
+        if teamagents_engine::tools::bwrap_available() {
+            // bwrap is installed and the machine blocks it (Ubuntu 24.04's AppArmor default): the refusal carries
+            // bwrap's own complaint instead of a generic sentence
+            assert!(error.contains("Permission denied"), "the refusal repeats bwrap's words: {error}");
         }
         assert!(!outside.exists(), "the host file was not created: {}", outside.display());
         return;
@@ -367,9 +373,10 @@ for line in sys.stdin:
             // refusal `mcp_workspace_execution_is_sandboxed` asserts)
             let error = start(config).await.err().expect("workspace mode without a usable sandbox must not boot");
             assert!(error.contains("net_probe"), "the boot failure names the service: {error}");
-            if !teamagents_engine::tools::bwrap_available() {
-                assert!(error.contains("IsolationUnavailable") && error.contains("requires bwrap"), "{error}");
-            }
+            assert!(
+                error.contains("IsolationUnavailable") && error.contains("requires a working sandbox"),
+                "the refusal names the isolation on both sandbox-less machines: {error}"
+            );
             continue;
         }
         let handle = start(config).await.expect("start");
@@ -386,7 +393,10 @@ for line in sys.stdin:
 /// Both are bounded here at the edge a user configures them on, in host mode so the test needs no bwrap and CI
 /// runs it too. The fixture's *own* delay is the discriminator, so no wall-clock assertion is needed: the
 /// server answers `initialize` only after 30 s, which the 60 s default would have waited out (the boot would
-/// succeed), while a 1 s bound must fail it.
+/// succeed), while a 5 s bound must fail it. The bound is 5 s and not 1 s because the fixture has to get to
+/// its first statement (a python interpreter start) inside it before the failed handshake reaps it — a 1 s
+/// bound lost that race in a loaded suite (D-115), and the claim under test is unchanged: the *configured*
+/// bound is applied, not the default.
 #[tokio::test]
 async fn startup_timeout_s_bounds_a_silent_handshake() {
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
@@ -416,7 +426,7 @@ for line in sys.stdin:
         serde_json::from_value::<ToolBinding>(json!({
             "kind": "mcp", "mcp_server": "slow", "mcp_transport": "stdio", "mcp_execution": "host",
             "command": "/usr/bin/python3", "args": ["-u", "-c", server, pidfile.to_string_lossy()],
-            "tool_names": ["ping"], "startup_timeout_s": 1, "required": true,
+            "tool_names": ["ping"], "startup_timeout_s": 5, "required": true,
         }))
         .unwrap(),
     );
@@ -427,14 +437,17 @@ for line in sys.stdin:
         start(config).await.err().expect("a handshake the server cannot answer inside the bound must fail boot");
     assert!(error.contains("initialize timed out"), "{error}");
     // the failed handshake must reap the server rather than leave the 30-second sleep behind
-    for _ in 0..200 {
+    // (the bound is a machine-under-load bound, not a claim about speed: the fixture's python must get to its
+    // first write on a suite that runs many tests at once — 5 s was tight enough to lose once, D-115)
+    for _ in 0..1200 {
         if pidfile.is_file() {
             break;
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    let pid = std::fs::read_to_string(&pidfile).expect("the fixture server started");
-    for _ in 0..200 {
+    let pid = std::fs::read_to_string(&pidfile)
+        .expect("the fixture server wrote its pid within 30 s, so the reap below has a subject");
+    for _ in 0..1200 {
         if !PathBuf::from(format!("/proc/{pid}")).exists() {
             break;
         }

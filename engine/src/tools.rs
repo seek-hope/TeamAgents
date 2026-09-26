@@ -1265,21 +1265,32 @@ pub fn bwrap_available() -> bool {
     which("bwrap").is_some()
 }
 
-/// The capability the product needs is not "bwrap is in `PATH`" but "a sandbox really starts here". A
-/// present-but-blocked bwrap — Ubuntu 23.10+/24.04 restricts unprivileged user namespaces by default, so bwrap
-/// dies with `setting up uid map: Permission denied`, and a locked-down container does the same — looks
-/// available to [`bwrap_available`] while every shell call fails closed. `doctor` reports this row and the tests
-/// branch on it, so a machine whose sandbox cannot start asserts the fail-closed half instead of failing an
-/// assertion that assumes isolation (D-113/D-114). The probe costs one sandboxed process and its answer cannot
-/// change while this process lives, so it is cached.
+/// Why a sandbox is not usable here, or `Ok(())` when one really starts. The capability the product needs is not
+/// "bwrap is in `PATH`" but "a sandbox starts here": a present-but-blocked bwrap — Ubuntu 23.10+/24.04 restricts
+/// unprivileged user namespaces by default, so bwrap dies with `setting up uid map: Permission denied`, and a
+/// locked-down container does the same — looks available to [`bwrap_available`] while every sandboxed call fails
+/// closed. `doctor`, the MCP workspace path and the tests all read this one answer (D-113/D-114), including the
+/// reason, so a refusal can repeat the machine's own complaint instead of a generic sentence. The probe costs one
+/// sandboxed process and its answer cannot change while this process lives, so it is cached.
+pub fn sandbox_state() -> Result<(), String> {
+    static STATE: OnceLock<Result<(), String>> = OnceLock::new();
+    STATE
+        .get_or_init(|| {
+            if !bwrap_available() {
+                return Err("bwrap is not available: refusing to run commands without isolation".into());
+            }
+            match shell_run("test -e /etc/hostname && test ! -e /home", &std::env::temp_dir(), 20, false, None) {
+                Ok(out) if !out.contains("(exit ") => Ok(()),
+                Ok(out) => Err(format!("the isolation probe exited non-zero: {out}")),
+                Err(reason) => Err(reason),
+            }
+        })
+        .clone()
+}
+
+/// `sandbox_state().is_ok()`: the verdict the tests branch on and `doctor` reports.
 pub fn sandbox_usable() -> bool {
-    static USABLE: OnceLock<bool> = OnceLock::new();
-    *USABLE.get_or_init(|| {
-        bwrap_available()
-            && shell_run("test -e /etc/hostname && test ! -e /home", &std::env::temp_dir(), 20, false, None)
-                .map(|out| !out.contains("(exit "))
-                .unwrap_or(false)
-    })
+    sandbox_state().is_ok()
 }
 
 pub fn which(name: &str) -> Option<PathBuf> {

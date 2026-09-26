@@ -18,6 +18,44 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-115 The isolation verdict carries its reason (2026-09-26)
+
+D-114 gave one shared predicate, but only its boolean half was used: `doctor` printed a fixed sentence for the
+"installed but blocked" case, and the MCP workspace refusal said `IsolationUnavailable: MCP workspace execution
+requires bwrap` — wrong on exactly the machine that motivated D-114, where bwrap *is* installed and the machine
+blocks it. The probe now returns the reason together with the verdict (`tools::sandbox_state()`), and its three
+readers use it:
+
+* `doctor` puts bwrap's own last line in its FAIL row: `[FAIL] bubblewrap isolation  bwrap is installed but the
+  isolation probe failed: bwrap: setting up uid map: Permission denied; check that the system allows
+  unprivileged user namespaces`. A row is one line, so the machine's words are the actionable part; the generic
+  "the sandbox failed to start" sentence above them only repeats what the user already sees.
+* the MCP workspace path refuses with it too: `IsolationUnavailable: MCP workspace execution requires a working
+  sandbox: <reason>`.
+* the two `v2_mcp` sandbox tests now assert the same sentence on **both** sandbox-less machines, and where bwrap
+  is installed that the refusal repeats bwrap's own words (`Permission denied`) — an assertion that was
+  impossible before, because the message never carried them.
+
+The first full three-condition run (`make check`, `make check-nobwrap`, `make check-broken-sandbox`) also lost one
+fixture race, and it is the D-83/D-94/D-103/D-105/D-111 shape once more, one level down:
+`startup_timeout_s_bounds_a_silent_handshake` (D-108) asserted the failed handshake had reaped the fixture server
+by reading the pid the fixture writes as its *first* statement — inside a 1 s `startup_timeout_s`. On a loaded
+machine python's interpreter start can exceed that bound, so the driver reaps the server before it writes
+anything and the test fails on "the fixture server wrote its pid within 30 s" (after waiting the full 30 s under
+the stub condition, 5 s under the other two). The bound is 5 s now: still 12× below the 60 s default and 6× below
+the fixture's own 30 s stall, so the claim ("the configured bound is applied, not the default") is unchanged
+while the fixture has room to exist. The pre-fix control still holds — the 60 s default waits the 30 s stall out
+and boots.
+
+Evidence: three conditions green at 347 tests each (core 100 / engine 214 / tui 33); the doctor rows quoted above
+are the literal output of `teamagents doctor` with `/tmp/broken-farm` on `PATH` (`review/nobwrap_path.py
+--stub-bwrap`); the MCP assertions live in `v2_mcp::mcp_workspace_execution_is_sandboxed` and
+`mcp_workspace_network_follows_the_config_key`.
+
+Ceiling: the reason is the *last non-empty line* of the probe's failure — bwrap's own message for the blocked
+case, the generic isolation sentence when bwrap printed nothing — and the verdict itself is still a
+first-observation snapshot, cached for the process (D-114's ceiling).
+
 ## D-114 "bwrap is installed" is not the capability (2026-09-26)
 
 D-113's ceiling was the second sandbox-less machine, and it is a machine a user is likely to have: **bwrap
@@ -39,8 +77,9 @@ the sandbox refuses with bwrap's own words and never falls back to the host. Wha
 predicate* — `doctor` already probed here ("not just 'is it installed': run a probe so a broken userns/kernel
 setup is caught here instead of at the first shell call"), and the tests used the `PATH` lookup instead.
 
-The probe is shared now: `tools::sandbox_usable()` (bwrap in `PATH` **and** a trivial sandboxed command
-succeeds; cached for the process life) is what `doctor` reports and what the tests branch on. Every
+The probe is shared now: `tools::sandbox_state()` (bwrap in `PATH` **and** a trivial sandboxed command
+succeeds; cached for the process life, and it carries the reason — D-115) is what `doctor` reports and what the
+tests branch on. Every
 sandbox-dependent test now has three cases — working sandbox, no bwrap, bwrap that cannot start — and asserts
 the fail-closed half in the last two, so the A14 claim ("a command that cannot be sandboxed is refused, never
 run on the host") is asserted on all three. The execution path is deliberately unchanged: it keeps using
@@ -52,8 +91,9 @@ Evidence:
     make check-nobwrap          # the CI condition (D-113): 347 tests, green
     ./engine/target/debug/teamagents doctor
     #   working machine: [ok  ] bubblewrap isolation  isolation probe passed: system files visible, …
-    #   stub farm:       [FAIL] bubblewrap isolation  bwrap is installed but the isolation probe failed; check
-    #                                                  that the system allows unprivileged user namespaces
+    #   stub farm:       [FAIL] bubblewrap isolation  bwrap is installed but the isolation probe failed:
+    #                                                  bwrap: setting up uid map: Permission denied; check that the
+    #                                                  system allows unprivileged user namespaces
 
 Control for the branch selection: with the stub farm in `PATH` and a panic injected into the no-sandbox branch,
 `cli::an_unisolated_shell_refuses_instead_of_running_on_the_host` panics there — the branch is driven by
@@ -287,10 +327,10 @@ ceiling.
 `tool_ms`) and used in exactly two places (`call("initialize", …, startup_ms)` and `call("tools/call", …,
 tool_ms)`), so "the key is honoured" was again a claim about code. Both tests put a *slow server* on the other
 side and let the fixture's own delay be the discriminator, which is what keeps them honest without a wall-clock
-assertion:
+assertion (the startup bound is 5 s, not 1 s: see D-115 for the fixture race that made 1 s too tight):
 
 - `startup_timeout_s_bounds_a_silent_handshake`: the server answers `initialize` only after 30 s. With
-  `startup_timeout_s = 1` the boot must fail (`MCP host initialization failed: MCP initialize timed out`); the
+  `startup_timeout_s = 5` the boot must fail (`MCP host initialization failed: MCP initialize timed out`); the
   60 s default would have waited the server out and booted, so the assertion is about the configured bound and
   not about "it failed eventually". The test also holds the code's own comment ("a failed handshake must
   kill+wait the server") to account: the pid the fixture wrote is gone from `/proc` afterwards.
