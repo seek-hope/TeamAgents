@@ -3,7 +3,7 @@
 CRATES := core engine tui
 CARGO_FLAGS ?= --offline --locked
 
-.PHONY: help check fmt fmt-check lint test build pty hygiene language-check check-nobwrap check-broken-sandbox
+.PHONY: help check fmt fmt-check lint test build pty probe-offline hygiene language-check check-nobwrap check-broken-sandbox
 
 help:
 	@echo 'make check     format, Clippy, regression tests and repository hygiene (offline by default)'
@@ -12,6 +12,7 @@ help:
 	@echo 'make fmt       format the three crates'
 	@echo 'make build     build the CLI and the TUI'
 	@echo 'make pty       real-terminal smoke check with an isolated config (needs Python 3)'
+	@echo 'make probe-offline  the credential-free dogfood probes: the real product, no model, no credential'
 	@echo 'make language-check  reject non-English characters in code and docs (AGENTS.md rule)'
 	@echo 'first run with downloads: make check CARGO_FLAGS=--locked'
 
@@ -72,6 +73,13 @@ pty: build
 			'api_key_env = "TEAMAGENTS_PTY_MISSING_KEY"' 'base_url = "http://127.0.0.1:1/v1"' \
 			> "$$XDG_CONFIG_HOME/teamagents/config.toml"; \
 		python3 tui/scripts/pty_v2_smoke.py
+
+# The credential-free dogfood probes in one command (D-138): the real product driven end to end — the built
+# CLI, real session daemons and the real TUI — with no model and no credential. It guards the two ways a probe
+# can leak (a live daemon, a scratch directory) because D-111 and D-131 were both found that way. Not part of
+# `make check`: the set takes about a minute.
+probe-offline: build
+	python3 review/dogfood/offline.py
 
 # Formal verification (TLA+/TLC; not part of make check; the first run downloads the pinned tla2tools.jar)
 TLA_TOOLS_DIR ?= $(HOME)/.local/share/teamagents-verify

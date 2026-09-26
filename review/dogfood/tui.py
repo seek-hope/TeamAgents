@@ -24,6 +24,7 @@ It is a real-model check: it needs `DEEPSEEK_API_KEY` (or `KIMI_API_KEY`), uses 
 against a fake daemon; this covers the whole stack with a model).
 """
 import argparse
+import atexit
 import json
 import os
 import pathlib
@@ -94,6 +95,11 @@ def main() -> int:
         raise SystemExit(f"{key_env} is not set in this environment")
 
     root = pathlib.Path(args.state_dir or f"/tmp/ta-tui-{args.provider}")
+    # The default scratch is not state anyone keeps: remove it at exit, or one copy per run
+    # accumulates in TMPDIR (D-138, the defect D-131 fixed for the test suite). An explicit
+    # --state-dir is left alone, because the caller asked for it.
+    if not args.state_dir:
+        atexit.register(shutil.rmtree, root, ignore_errors=True)
     workspace = root / "ws"
     state_root = root / "root"
     shutil.rmtree(root, ignore_errors=True)

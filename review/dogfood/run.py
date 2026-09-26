@@ -106,6 +106,11 @@ def main() -> int:
 
     fixture, prompt, check = task_files(args.task)
     root = pathlib.Path(args.state_dir or f"/tmp/ta-dogfood-{args.task}")
+    # The default scratch is not state anyone keeps: remove it at exit, or one copy per run
+    # accumulates in TMPDIR (D-138, the defect D-131 fixed for the test suite). An explicit
+    # --state-dir is left alone, because the caller asked for it.
+    if not args.state_dir:
+        atexit.register(shutil.rmtree, root, ignore_errors=True)
     atexit.register(stop_daemon, root)
     workspace = root / "ws"
     shutil.rmtree(root, ignore_errors=True)

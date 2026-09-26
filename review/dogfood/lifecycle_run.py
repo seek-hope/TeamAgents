@@ -21,6 +21,7 @@ Two levers, two different truths, and only one of them ends the run:
 It needs `DEEPSEEK_API_KEY`, uses the native window (D-36) and writes only under `--state-dir`.
 """
 import argparse
+import atexit
 import json
 import os
 import pathlib
@@ -127,6 +128,11 @@ def main() -> int:
         raise SystemExit("DEEPSEEK_API_KEY is not set in this environment")
 
     root = pathlib.Path(args.state_dir or "/tmp/ta-lifecycle")
+    # The default scratch is not state anyone keeps: remove it at exit, or one copy per run
+    # accumulates in TMPDIR (D-138, the defect D-131 fixed for the test suite). An explicit
+    # --state-dir is left alone, because the caller asked for it.
+    if not args.state_dir:
+        atexit.register(shutil.rmtree, root, ignore_errors=True)
     workspace = root / "ws"
     shutil.rmtree(root, ignore_errors=True)
     workspace.mkdir(parents=True)

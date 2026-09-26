@@ -19,6 +19,7 @@ no acceptance command run for the refused turn (D-96: an unfinished turn verifie
 It needs `DEEPSEEK_API_KEY`, uses the native window (D-36) and writes only under `--state-dir`.
 """
 import argparse
+import atexit
 import json
 import os
 import pathlib
@@ -73,6 +74,16 @@ def session(state_root: pathlib.Path) -> dict:
     return {"goals": goals, "events": events, "requests": requests, "instances": instances}
 
 
+
+def stop_daemon(state_root: pathlib.Path) -> None:
+    """Stop the daemon this probe started.
+
+    `exec` autostarts one and it is detached on purpose (background work survives a client exit, §9), so
+    without this a probe would leave a live session behind on the user's machine. Registered with `atexit`,
+    which also covers the early returns above.
+    """
+    subprocess.run(["pkill", "-f", f"daemon --state-root {state_root}"], capture_output=True)
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state-dir", help="scratch root (default: a fresh /tmp/ta-deadline)")
@@ -83,29 +94,60 @@ def main() -> int:
         raise SystemExit("DEEPSEEK_API_KEY is not set in this environment")
 
     root = pathlib.Path(args.state_dir or "/tmp/ta-deadline")
+    # The default scratch is not state anyone keeps: remove it at exit, or one copy per run
+    # accumulates in TMPDIR (D-138, the defect D-131 fixed for the test suite). An explicit
+    # --state-dir is left alone, because the caller asked for it.
+    if not args.state_dir:
+        atexit.register(shutil.rmtree, root, ignore_errors=True)
     workspace = root / "ws"
     shutil.rmtree(root, ignore_errors=True)
     workspace.mkdir(parents=True)
     (root / "config/teamagents").mkdir(parents=True)
     (root / "config/teamagents/config.toml").write_text(CONFIG)
     state_root = root / "root"
+    atexit.register(stop_daemon, state_root)
     env = {**os.environ, "XDG_CONFIG_HOME": str(root / "config"), "XDG_STATE_HOME": str(root / "state")}
     failures: list[str] = []
     marker = workspace / "check-ran"
 
-    # 1. a short turn creates the goal and its one-minute deadline
-    started = time.time()
-    first, report = run_exec(state_root, workspace, env, FIRST, [])
-    print(f"1. first turn: exit={first.returncode} end={report.get('end')} ({round(time.time() - started, 1)}s)")
-    if first.returncode != 0:
-        failures.append(f"the first turn should succeed, got {first.returncode}: {report}")
-    facts = session(state_root)
-    goal = facts["goals"][0] if facts["goals"] else None
-    if goal is None or goal[2] is None:
-        failures.append(f"the goal carries no deadline: {facts['goals']}")
+    # 1. a short turn creates the goal and its one-minute deadline. The scenario needs a goal that is still
+    #    *open* — the gate refuses a request for a running goal — and the model sometimes settles the goal in
+    #    this first turn instead of only replying, which is the intermittency D-129 records for the A27 probe.
+    #    Set the premise up again rather than reporting its absence as product failures: measured 2026-09-26, a
+    #    run whose first turn settled the goal reported seven FAILs (deadline not refused, a model reached, the
+    #    `--check` run) for what was a scenario that never started.
+    deadline = None
+    for attempt in (1, 2):
+        stop_daemon(state_root)
+        shutil.rmtree(state_root, ignore_errors=True)
+        marker.unlink(missing_ok=True)
+        started = time.time()
+        first, report = run_exec(state_root, workspace, env, FIRST, [])
+        facts = session(state_root)
+        goal = facts["goals"][0] if facts["goals"] else None
+        elapsed = round(time.time() - started, 1)
+        if first.returncode != 0:
+            print(f"1. first turn: exit={first.returncode} end={report.get('end')} ({elapsed}s)")
+            failures.append(f"the first turn should succeed, got {first.returncode}: {report}")
+            break
+        if goal is None or goal[2] is None:
+            print(f"1. first turn: exit=0 end={report.get('end')} ({elapsed}s), goal={goal}")
+            failures.append(f"the goal carries no deadline: {facts['goals']}")
+            break
+        print(f"1. first turn (attempt {attempt}): exit=0 end={report.get('end')} ({elapsed}s); goal {goal[0]} "
+              f"is {goal[1]} with an absolute deadline {round(goal[2] - time.time())}s ahead")
+        if goal[1] == "ACTIVE":
+            deadline = goal[2]
+            break
+        print(f"   the goal is {goal[1]}, not ACTIVE, so a later request can never reach the deadline gate; "
+              f"setting the premise up again")
+    if deadline is None:
+        if not failures:
+            print("SETUP: the first turn left no open goal twice, and this probe needs one that is still open "
+                  "(the model chooses; D-129 records the same intermittency for the A27 probe). Just re-run it.")
+        for failure in failures:
+            print("FAIL:", failure)
         return 1
-    deadline = goal[2]
-    print(f"   goal {goal[0]} is {goal[1]} with an absolute deadline {round(deadline - time.time())}s ahead")
 
     # 2. wait for the deadline the runtime recorded, then ask again
     wait = max(0.0, deadline - time.time()) + 2.0

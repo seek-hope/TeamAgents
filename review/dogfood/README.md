@@ -18,11 +18,31 @@ default) and always runs the model at its native context window (D-36).
 **Every probe stops the daemon it started.** `exec` autostarts one and the daemon is detached on purpose
 (background work survives a client exit, §9), so a probe that just ran would otherwise leave a live session
 behind on the user's machine; `atexit` runs `pkill -f "daemon --state-root <scratch root>"` for every probe
-here. The scratch tree is kept for inspection, and the socket file it leaves is harmless: the next `exec`
-checks liveness by connecting, not by looking at the file. It is not part of `make check`.
+here. **Every probe also removes its own scratch** (D-138): the default `<TMPDIR>/ta-<name>` goes away at
+exit, because a directory left per run accumulates until the machine's `TMPDIR` fills — the defect D-131 fixed
+for the test suite, which the probes shared for 31 files. Pass `--state-dir` to keep a run's state for
+inspection: that is the escape hatch when a probe fails, and it is left alone on purpose. It is not part of
+`make check`.
 Everything it writes stays under `--state-dir`; the repository's fixtures are only read, and the frozen
 evaluation material is untouched (its Chinese prompts are *input data*, which is why the exception in
 AGENTS.md exists).
+
+## The credential-free subset, in one command
+
+Seven of these probes need no model and no credential — `budget.py`, `truncation.py`, `input_latency.py`,
+`providers.py --self-check` and, since D-138, `boundary.py`, `tui_panels.py` and `tui_reconnect.py` (they drive
+the real CLI, real daemons and the real TUI, but a member begins no turn: the session's `model_requests` table
+stays empty). `review/dogfood/offline.py` runs that subset and reports one line per probe:
+
+```bash
+make probe-offline                     # needs `make build`; about a minute
+python3 review/dogfood/offline.py --list
+env -u DEEPSEEK_API_KEY -u KIMI_API_KEY python3 review/dogfood/offline.py   # the set really is credential-free
+```
+
+It counts the daemons and the scratch directories before and after the run and fails if the set added either,
+because those two leaks are how D-111 and D-131 were found. The model-requiring probes still run one at a time,
+each at its model's native window (D-36).
 
 This is the check that found D-57: run against `edit-integrity` it reported success while the session had
 worked in the *repository* rather than the given `--cwd` (60 turns, 291 s, and the edited fixture left in the

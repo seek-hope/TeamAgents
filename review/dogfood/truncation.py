@@ -24,6 +24,7 @@ loopback is involved.
     python3 review/dogfood/truncation.py --state-dir /tmp/ta-truncation
 """
 import argparse
+import atexit
 import json
 import pathlib
 import shutil
@@ -117,6 +118,7 @@ def scenario(name: str, script: list[bytes], prompt: str, root: pathlib.Path) ->
     FakeChat.script = list(script)
     FakeChat.seen = []
     state_root = root / "root"
+    atexit.register(stop_daemon, state_root)
     workspace = root / "ws"
     shutil.rmtree(root, ignore_errors=True)
     workspace.mkdir(parents=True)
@@ -136,6 +138,16 @@ def scenario(name: str, script: list[bytes], prompt: str, root: pathlib.Path) ->
 PORT = 0
 
 
+
+def stop_daemon(state_root: pathlib.Path) -> None:
+    """Stop the daemon this probe started.
+
+    `exec` autostarts one and it is detached on purpose (background work survives a client exit, §9), so
+    without this a probe would leave a live session behind on the user's machine. Registered with `atexit`,
+    which also covers the early returns above.
+    """
+    subprocess.run(["pkill", "-f", f"daemon --state-root {state_root}"], capture_output=True)
+
 def main() -> int:
     global PORT
     parser = argparse.ArgumentParser(description=__doc__)
@@ -148,6 +160,11 @@ def main() -> int:
     PORT = server.server_address[1]
     threading.Thread(target=server.serve_forever, daemon=True).start()
     root = pathlib.Path(args.state_dir or "/tmp/ta-truncation")
+    # The default scratch is not state anyone keeps: remove it at exit, or one copy per run
+    # accumulates in TMPDIR (D-138, the defect D-131 fixed for the test suite). An explicit
+    # --state-dir is left alone, because the caller asked for it.
+    if not args.state_dir:
+        atexit.register(shutil.rmtree, root, ignore_errors=True)
     failures: list[str] = []
     try:
         # --- scenario 1: truncated before any visible text → retried inside the turn -------------

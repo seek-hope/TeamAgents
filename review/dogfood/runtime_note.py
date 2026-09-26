@@ -133,6 +133,11 @@ def main() -> int:
         raise SystemExit(f"{BIN} is missing; build it first (make build)")
     providers = (args.providers.split(",") if args.providers else [args.provider])
     base = pathlib.Path(args.state_dir or "/tmp/ta-runtime-note")
+    # The default scratch is not state anyone keeps: remove it at exit, or one copy per run
+    # accumulates in TMPDIR (D-138, the defect D-131 fixed for the test suite). An explicit
+    # --state-dir is left alone, because the caller asked for it.
+    if not args.state_dir:
+        atexit.register(shutil.rmtree, base, ignore_errors=True)
     failures: list[str] = []
     for provider in providers:
         provider = provider.strip()

@@ -18,6 +18,56 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-138 What the probes left behind, and what they mis-reported (2026-09-26)
+
+The probes in `review/dogfood/` are the repository's most direct evidence — they drive the built CLI, real
+session daemons and the real TUI — and they are run by hand, repeatedly. Running the credential-free subset as
+a batch exposed four things about them rather than about the product, and one about the product's *reporting*.
+There is now a runner for that batch, `python3 review/dogfood/offline.py` (`make probe-offline`).
+
+**Every probe left its scratch behind.** All 31 built a scratch root under `TMPDIR` and none removed it: six
+runs of the offline set added six directories (`ta-boundary`, `ta-budget`, `ta-truncation`, `ta-latency-*`,
+`ta-panels`, `ta-reconnect`). It is the defect D-131 fixed for the test suite and its `make pty` follow-up, and
+it has the same consequence: a directory per run per probe until `TMPDIR` fills. Each probe now removes the
+**default** scratch at exit and leaves an explicit `--state-dir` alone — which is also the escape hatch when a
+probe fails, and it is why the same change did not hide the `deadline.py` finding below. Verified: the offline
+set now reports `new scratch none`, and a re-run also cleaned five stale directories from before the change.
+
+**Six probes never stopped their daemon** (`deadline`, `instructions`, `mcp`, `mcp_http`, `truncation`,
+`two_gates`); their 25 siblings had registered `stop_daemon` with `atexit` and they had not. Measured:
+`truncation.py` left **two** live daemons (`--state-root /tmp/ta-truncation/{invisible,visible}/root`), which
+survived the run and only exited later by themselves. They now register the same helper; `atexit` runs it
+before the scratch removal (LIFO). Verified: 0 daemons before and after, and the offline runner fails the run
+if the count grows.
+
+**Three probes documented as needing no credential did need one** (`boundary`, `tui_panels`,
+`tui_reconnect`): the daemon refuses to boot without a value for the config's `api_key_env`, even though no
+model is called. And `tui_panels.py` went further than its docstring claimed — it delegated a task to a live
+member, which **began a real model request** (measured with a live credential: `request_began`, then the `c`
+key abandoned it, `CANCELLED`). The three now supply a value when the environment has none, and
+`tui_panels.py` holds the member across the delegation, so the session's `model_requests` table stays **empty**
+— the turn its subject never wanted. Its `t`/`n` assertions now check that those keys change *nothing*, which
+is both stronger than "is ACTIVE" and independent of the member's state. Verified by running the whole set with
+`DEEPSEEK_API_KEY` and `KIMI_API_KEY` unset: 7/7 ok.
+
+**`tui_panels.py` crashed instead of reporting** when the daemon failed to start: it read `daemon.log` through
+the handle it had opened for writing (`io.UnsupportedOperation: not readable`). It reads by path now. The
+credential-free control is what surfaced it — a probe that only ever ran with a working credential never took
+that branch.
+
+**`deadline.py` — A35's live evidence — mis-reported a model choice as product failure.** A run whose first
+turn *settled* the goal (the model called `finish` instead of only replying, the intermittency D-129 records
+for the A27 probe) printed seven FAILs: the deadline was not refused, a model was reached, the `--check` ran.
+All of that is *correct* behaviour for a closed goal — the deadline gate refuses a request for a goal that is
+still running — so the scenario had simply never started. The probe now asserts that premise, sets it up again
+once, and otherwise prints `SETUP:` with the reason and exits 1. Measured: the re-run passes on attempt 1
+(`exit=0`, refusal in 0.3 s, one model request, `goal_deadline_refused`, leader PARKED with the reason), and a
+control that makes the premise unsatisfiable exercises the retry and prints SETUP.
+
+Ceiling: the runner covers the credential-free subset only — the model probes still run one at a time — and it
+looks for *new* `ta-*` names and daemons, so a probe that leaks under another name is invisible; the scratch
+policy is "default removed, explicit kept" and a probe can ignore it.
+
 ## D-137 The confirmed requirements had no evidence trail (2026-09-26)
 
 The baseline's §1 lists the requirements the user confirmed (Q1–Q19) and D-42 closes with "the full requirement

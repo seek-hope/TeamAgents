@@ -17,6 +17,7 @@ visible `command failed` note instead of silence, and — once a new daemon owns
 checkpoint and the history, §9). No model, no credential, ~20 s.
 """
 import argparse
+import atexit
 import fcntl
 import json
 import os
@@ -100,6 +101,11 @@ def main() -> int:
         raise SystemExit(f"{BIN} is missing; build it first (make build)")
 
     root = pathlib.Path(args.state_dir or "/tmp/ta-reconnect")
+    # The default scratch is not state anyone keeps: remove it at exit, or one copy per run
+    # accumulates in TMPDIR (D-138, the defect D-131 fixed for the test suite). An explicit
+    # --state-dir is left alone, because the caller asked for it.
+    if not args.state_dir:
+        atexit.register(shutil.rmtree, root, ignore_errors=True)
     workspace = root / "ws"
     shutil.rmtree(root, ignore_errors=True)
     workspace.mkdir(parents=True)
@@ -107,6 +113,9 @@ def main() -> int:
     (root / "config/teamagents/config.toml").write_text(CONFIG)
     state_root = root / "root"
     env = {**os.environ, "XDG_CONFIG_HOME": str(root / "config"), "XDG_STATE_HOME": str(root / "state")}
+    # The daemon refuses to boot without a value for the config's `api_key_env`, and this probe calls no
+    # model: supply one when the environment has none, so the probe really needs no credential (D-138).
+    env.setdefault("DEEPSEEK_API_KEY", "no-model-called")
     failures: list[str] = []
     daemon = None
     pid = fd = None

@@ -22,6 +22,7 @@ It needs `DEEPSEEK_API_KEY`, uses the native window (D-36), runs each scenario o
 (runtime checks belong to the goal) and writes only under `--state-dir`.
 """
 import argparse
+import atexit
 import json
 import os
 import pathlib
@@ -69,6 +70,7 @@ def run_scenario(name: str, root: pathlib.Path, runtime_check: str, client_check
     (root / "config/teamagents").mkdir(parents=True)
     (root / "config/teamagents/config.toml").write_text(config_text(runtime_check))
     state_root = root / "root"
+    atexit.register(stop_daemon, state_root)
     env = {**env_base, "XDG_CONFIG_HOME": str(root / "config"), "XDG_STATE_HOME": str(root / "state")}
     started = time.time()
     run = subprocess.run([str(BIN), "exec", "--state-root", str(state_root), "--full-auto", "--json",
@@ -91,6 +93,16 @@ def run_scenario(name: str, root: pathlib.Path, runtime_check: str, client_check
     return run, report, facts
 
 
+
+def stop_daemon(state_root: pathlib.Path) -> None:
+    """Stop the daemon this probe started.
+
+    `exec` autostarts one and it is detached on purpose (background work survives a client exit, §9), so
+    without this a probe would leave a live session behind on the user's machine. Registered with `atexit`,
+    which also covers the early returns above.
+    """
+    subprocess.run(["pkill", "-f", f"daemon --state-root {state_root}"], capture_output=True)
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state-dir", help="scratch root (default: a fresh /tmp/ta-two-gates)")
@@ -101,6 +113,11 @@ def main() -> int:
         raise SystemExit("DEEPSEEK_API_KEY is not set in this environment")
 
     base = pathlib.Path(args.state_dir or "/tmp/ta-two-gates")
+    # The default scratch is not state anyone keeps: remove it at exit, or one copy per run
+    # accumulates in TMPDIR (D-138, the defect D-131 fixed for the test suite). An explicit
+    # --state-dir is left alone, because the caller asked for it.
+    if not args.state_dir:
+        atexit.register(shutil.rmtree, base, ignore_errors=True)
     shutil.rmtree(base, ignore_errors=True)
     env_base = dict(os.environ)
     failures: list[str] = []

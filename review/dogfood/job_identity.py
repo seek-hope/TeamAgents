@@ -23,6 +23,7 @@ It is a real-model check (`DEEPSEEK_API_KEY`, native window D-36) and runs the s
 part of `make check`; everything it writes stays under `--state-dir` and it stops the daemon it started.
 """
 import argparse
+import atexit
 import hashlib
 import json
 import os
@@ -138,6 +139,11 @@ def main() -> int:
         raise SystemExit("DEEPSEEK_API_KEY is not set in this environment")
 
     root = pathlib.Path(args.state_dir or "/tmp/ta-jobid")
+    # The default scratch is not state anyone keeps: remove it at exit, or one copy per run
+    # accumulates in TMPDIR (D-138, the defect D-131 fixed for the test suite). An explicit
+    # --state-dir is left alone, because the caller asked for it.
+    if not args.state_dir:
+        atexit.register(shutil.rmtree, root, ignore_errors=True)
     workspace = root / "ws"
     heartbeat = workspace / "heartbeat.txt"
     shutil.rmtree(root, ignore_errors=True)

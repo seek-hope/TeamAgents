@@ -18,6 +18,7 @@ each model's native window (D-36), writes only under `--state-dir`, and is not p
 `make check`.
 """
 import argparse
+import atexit
 import json
 import os
 import pathlib
@@ -99,6 +100,16 @@ PROMPT = """Call the tool whose name ends in `ping` (it takes no arguments) and 
 Reply with exactly the tool's output and nothing else."""
 
 
+
+def stop_daemon(state_root: pathlib.Path) -> None:
+    """Stop the daemon this probe started.
+
+    `exec` autostarts one and it is detached on purpose (background work survives a client exit, §9), so
+    without this a probe would leave a live session behind on the user's machine. Registered with `atexit`,
+    which also covers the early returns above.
+    """
+    subprocess.run(["pkill", "-f", f"daemon --state-root {state_root}"], capture_output=True)
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--provider", default="deepseek", choices=sorted(MODELS))
@@ -112,6 +123,11 @@ def main() -> int:
         raise SystemExit(f"{key_env} is not set in this environment")
 
     root = pathlib.Path(args.state_dir or f"/tmp/ta-mcp-{args.provider}")
+    # The default scratch is not state anyone keeps: remove it at exit, or one copy per run
+    # accumulates in TMPDIR (D-138, the defect D-131 fixed for the test suite). An explicit
+    # --state-dir is left alone, because the caller asked for it.
+    if not args.state_dir:
+        atexit.register(shutil.rmtree, root, ignore_errors=True)
     workspace = root / "ws"
     shutil.rmtree(root, ignore_errors=True)
     (root / "config/teamagents").mkdir(parents=True)
@@ -126,6 +142,7 @@ def main() -> int:
         f'args = ["-u", "{server}"]\nmcp_execution = "host"\n\n' + MODELS[args.provider]
     )
     state_root = root / "root"
+    atexit.register(stop_daemon, state_root)
     env = {**os.environ, "XDG_CONFIG_HOME": str(root / "config"), "XDG_STATE_HOME": str(root / "state")}
     failures: list[str] = []
 

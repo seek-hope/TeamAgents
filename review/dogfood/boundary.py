@@ -16,6 +16,7 @@ Both rows are about failing closed at the *file* boundary, and both had only uni
 It needs no credential and calls no model. Everything it writes stays under `--state-dir`.
 """
 import argparse
+import atexit
 import hashlib
 import os
 import pathlib
@@ -52,6 +53,9 @@ def fresh_root(base: pathlib.Path, name: str) -> tuple[pathlib.Path, pathlib.Pat
     (config / "config.toml").write_text(CONFIG)
     env = {**os.environ, "XDG_CONFIG_HOME": str(base / name / "config"),
            "XDG_STATE_HOME": str(base / name / "state")}
+    # The daemon refuses to boot without a value for the config's `api_key_env`, and this probe calls no
+    # model: supply one when the environment has none, so the probe really needs no credential (D-138).
+    env.setdefault("DEEPSEEK_API_KEY", "no-model-called")
     return root, workspace, env
 
 
@@ -153,6 +157,11 @@ def main() -> int:
     if not BIN.is_file():
         raise SystemExit(f"{BIN} is missing; build it first (make build)")
     base = pathlib.Path(args.state_dir or "/tmp/ta-boundary")
+    # The default scratch is not state anyone keeps: remove it at exit, or one copy per run
+    # accumulates in TMPDIR (D-138, the defect D-131 fixed for the test suite). An explicit
+    # --state-dir is left alone, because the caller asked for it.
+    if not args.state_dir:
+        atexit.register(shutil.rmtree, base, ignore_errors=True)
     shutil.rmtree(base, ignore_errors=True)
     base.mkdir(parents=True)
     failures: list[str] = []

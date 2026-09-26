@@ -22,10 +22,12 @@ and a ten-character burst within two seconds. It prints the distribution either 
 Not part of `make check`; it is an observation with a coarse guard, and `make pty` covers the interface
 itself deterministically.
 """
+import atexit
 import fcntl
 import os
 import pathlib
 import pty
+import shutil
 import statistics
 import struct
 import sys
@@ -49,6 +51,10 @@ def main() -> int:
     if not TUI.is_file():
         raise SystemExit(f"{TUI} is missing; build it first (make build)")
     workdir = tempfile.mkdtemp(prefix="ta-latency-")
+    # The default scratch is not state anyone keeps: remove it at exit, or one copy per run
+    # accumulates in TMPDIR (D-138, the defect D-131 fixed for the test suite). An explicit
+    # --state-dir is left alone, because the caller asked for it.
+    atexit.register(shutil.rmtree, workdir, ignore_errors=True)
     daemon = FakeDaemon(os.path.join(workdir, "daemon.sock"))
     daemon.start()
     for _ in range(200):

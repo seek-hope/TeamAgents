@@ -25,6 +25,7 @@ It needs no credential and no network; it stops the TUI and the daemon it starte
 `--state-dir`.
 """
 import argparse
+import atexit
 import fcntl
 import json
 import os
@@ -118,6 +119,11 @@ def main() -> int:
         raise SystemExit(f"{BIN} is missing; build it first (make build)")
 
     root = pathlib.Path(args.state_dir or "/tmp/ta-panels")
+    # The default scratch is not state anyone keeps: remove it at exit, or one copy per run
+    # accumulates in TMPDIR (D-138, the defect D-131 fixed for the test suite). An explicit
+    # --state-dir is left alone, because the caller asked for it.
+    if not args.state_dir:
+        atexit.register(shutil.rmtree, root, ignore_errors=True)
     workspace = root / "ws"
     shutil.rmtree(root, ignore_errors=True)
     workspace.mkdir(parents=True)
@@ -125,6 +131,9 @@ def main() -> int:
     (root / "config/teamagents/config.toml").write_text(CONFIG)
     state_root = root / "root"
     env = {**os.environ, "XDG_CONFIG_HOME": str(root / "config"), "XDG_STATE_HOME": str(root / "state")}
+    # The daemon refuses to boot without a value for the config's `api_key_env`, and this probe calls no
+    # model: supply one when the environment has none, so the probe really needs no credential (D-138).
+    env.setdefault("DEEPSEEK_API_KEY", "no-model-called")
     failures: list[str] = []
     daemon = None
     pid = fd = None
@@ -137,7 +146,9 @@ def main() -> int:
             failures.append("the daemon never bound its socket")
             return 1
         if not socket_path.exists():
-            failures.append(f"the daemon exited: {log.read()[-300:]}")
+            # read the log by path: `log` is opened for writing, and a failed read here would replace the
+            # probe's own finding with a traceback (measured under the credential-free control, D-138)
+            failures.append(f"the daemon exited: {(root / 'daemon.log').read_text(errors='replace')[-300:]}")
             return 1
         spawned = protocol(socket_path, "spawn_instance",
                            {"instance_id": WORKER, "workspace_ref": str(workspace)}, "panel-spawn")
@@ -226,6 +237,13 @@ def main() -> int:
         if goal is None:
             failures.append("the session has no ACTIVE goal to charge a task to")
             return 1
+        # The tasks view needs a *row*, not a running turn: hold the member while the task is delegated, or the
+        # delegation starts a model call the probe's subject does not need (measured with a live credential: the
+        # request began and the `c` key then abandoned it, D-138).
+        held = protocol(socket_path, "set_lifecycle", {"instance_id": WORKER, "lifecycle": "PAUSED"}, "panel-hold")
+        if not held.get("ok"):
+            failures.append(f"the probe could not hold the member before delegating: {held.get('error')}")
+            return 1
         delegated = protocol(socket_path, "delegate_task",
                              {"task_id": TASK, "assignee": WORKER, "goal_id": goal,
                               "description": "panel probe: a task to cancel"}, "panel-delegate")
@@ -259,20 +277,23 @@ def main() -> int:
             return 1
 
         # --- t only asks; n cancels the prompt ----------------------------------
+        # the member is held PAUSED since the delegation (no turn may start, D-138), so the point of these two
+        # keys is that they change *nothing* — captured here and compared after each key
+        before_keys = lifecycle(state_root, env, WORKER)
         os.write(fd, b"t")
         if not wait_for("terminate this instance? y confirm / n cancel", 15, "the confirmation prompt"):
             print(painted()[-400:])
         else:
             print("  `t` asked for confirmation")
-        if lifecycle(state_root, env, WORKER) != "ACTIVE":
-            failures.append(f"`t` alone retired the instance: {lifecycle(state_root, env, WORKER)}")
+        if lifecycle(state_root, env, WORKER) != before_keys:
+            failures.append(f"`t` alone changed the instance: {before_keys} -> {lifecycle(state_root, env, WORKER)}")
         os.write(fd, b"n")
         if not wait_gone("terminate this instance?", 15, "the cancelled prompt"):
             print(painted()[-400:])
         else:
             print("  `n` cancelled the prompt")
-        if lifecycle(state_root, env, WORKER) != "ACTIVE":
-            failures.append(f"`n` retired the instance anyway: {lifecycle(state_root, env, WORKER)}")
+        if lifecycle(state_root, env, WORKER) != before_keys:
+            failures.append(f"`n` changed the instance anyway: {before_keys} -> {lifecycle(state_root, env, WORKER)}")
 
         # --- t then y retires it ------------------------------------------------
         os.write(fd, b"t")

@@ -17,6 +17,7 @@ with a real model:
 It needs `DEEPSEEK_API_KEY`, uses the native window (D-36), binds only 127.0.0.1 and writes under `--state-dir`.
 """
 import argparse
+import atexit
 import http.server
 import json
 import os
@@ -127,6 +128,16 @@ def call(bin_args: list[str], env: dict, timeout: int = 240) -> subprocess.Compl
     return subprocess.run([str(BIN), *bin_args], capture_output=True, text=True, env=env, timeout=timeout)
 
 
+
+def stop_daemon(state_root: pathlib.Path) -> None:
+    """Stop the daemon this probe started.
+
+    `exec` autostarts one and it is detached on purpose (background work survives a client exit, §9), so
+    without this a probe would leave a live session behind on the user's machine. Registered with `atexit`,
+    which also covers the early returns above.
+    """
+    subprocess.run(["pkill", "-f", f"daemon --state-root {state_root}"], capture_output=True)
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state-dir", help="scratch root (default: a fresh /tmp/ta-mcp-http)")
@@ -137,6 +148,13 @@ def main() -> int:
         raise SystemExit("DEEPSEEK_API_KEY is not set in this environment")
 
     base = pathlib.Path(args.state_dir or "/tmp/ta-mcp-http")
+
+    atexit.register(stop_daemon, base)
+    # The default scratch is not state anyone keeps: remove it at exit, or one copy per run
+    # accumulates in TMPDIR (D-138, the defect D-131 fixed for the test suite). An explicit
+    # --state-dir is left alone, because the caller asked for it.
+    if not args.state_dir:
+        atexit.register(shutil.rmtree, base, ignore_errors=True)
     shutil.rmtree(base, ignore_errors=True)
     base.mkdir(parents=True)
     token = "probe-token-canary-7c1"

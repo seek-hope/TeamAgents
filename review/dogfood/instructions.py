@@ -21,6 +21,7 @@ acceptance test; until then the row tells the user the truth instead of promisin
 It needs `DEEPSEEK_API_KEY`, uses the native window (D-36) and writes only under `--state-dir`.
 """
 import argparse
+import atexit
 import json
 import os
 import pathlib
@@ -54,6 +55,16 @@ def call(bin_args: list[str], env: dict, timeout: int = 120) -> subprocess.Compl
     return subprocess.run([str(BIN), *bin_args], capture_output=True, text=True, env=env, timeout=timeout)
 
 
+
+def stop_daemon(state_root: pathlib.Path) -> None:
+    """Stop the daemon this probe started.
+
+    `exec` autostarts one and it is detached on purpose (background work survives a client exit, §9), so
+    without this a probe would leave a live session behind on the user's machine. Registered with `atexit`,
+    which also covers the early returns above.
+    """
+    subprocess.run(["pkill", "-f", f"daemon --state-root {state_root}"], capture_output=True)
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state-dir", help="scratch root (default: a fresh /tmp/ta-instructions)")
@@ -64,6 +75,11 @@ def main() -> int:
         raise SystemExit("DEEPSEEK_API_KEY is not set in this environment")
 
     root = pathlib.Path(args.state_dir or "/tmp/ta-instructions")
+    # The default scratch is not state anyone keeps: remove it at exit, or one copy per run
+    # accumulates in TMPDIR (D-138, the defect D-131 fixed for the test suite). An explicit
+    # --state-dir is left alone, because the caller asked for it.
+    if not args.state_dir:
+        atexit.register(shutil.rmtree, root, ignore_errors=True)
     workspace = root / "ws"
     rules = root / "AGENTS.md"
     shutil.rmtree(root, ignore_errors=True)
@@ -72,6 +88,7 @@ def main() -> int:
     rules.write_text(f"# Project instructions\n{CANARY}: always answer with the single word canary.\n")
     (root / "config/teamagents/config.toml").write_text(CONFIG.replace("__RULES__", str(rules)))
     state_root = root / "root"
+    atexit.register(stop_daemon, state_root)
     env = {**os.environ, "XDG_CONFIG_HOME": str(root / "config"), "XDG_STATE_HOME": str(root / "state")}
     failures: list[str] = []
 
