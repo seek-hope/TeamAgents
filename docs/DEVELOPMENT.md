@@ -27,7 +27,9 @@ the leaked daemon's pid and state root named and the daemon stopped, and the run
 up their end with two RAII guards in `engine/tests/cli.rs`: `Daemon` stops a daemon the test started, on every
 exit path including a panic (D-160), and `Scratch` removes the test's own temp tree the same way (D-175) — a
 test that panics in a CI condition used to skip its final `remove_dir_all`, so one failure reported as two and
-left state roots behind. `make check` runs, in order: formatting, Clippy on
+left state roots behind. After the suites, `review/test_counts.py` compares their exact sizes (asked of
+cargo's test list) with the numbers `docs/ACCEPTANCE.md` states in its baseline line, so the ledger's
+headline cannot go stale (D-178). `make check` runs, in order: formatting, Clippy on
 all targets, the three crates' tests, the Git submodule
 configuration and repository hygiene (it rejects non-English characters in code and docs, tracked compile
 caches, Python caches and SQLite temporaries, checks the syntax of `install.sh`, and checks the shape of the

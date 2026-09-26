@@ -18,6 +18,33 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-178 The acceptance ledger's headline numbers were stale, and nothing derived them (2026-09-27)
+
+The evidence pass that produced D-176 (probe counts) and D-177 had left the most important document of the set
+unchecked: `docs/ACCEPTANCE.md` opens with the precondition every item below rests on — "`make check` is green
+(**core 100 / engine 220 / tui 33** test targets) and `make pty` passes" — and both numbers were stale. Measured
+2026-09-27 with the crates' own test lists: **core 100 / engine 239 / tui 35**. The line was written on
+2026-09-25 and the suites had grown by nineteen engine tests and two TUI tests since. The line's own date was
+stale too: the ledger had not been re-dated although D-176's consolidated pass re-ran every gate, and this turn
+re-ran `make test`, `make pty` and the live install check.
+
+**Changed**:
+
+* `docs/ACCEPTANCE.md` states the measured counts, and its "checked on" date moves to 2026-09-27 with the pass
+  it means named (the gates, the probe sets and the formal gates).
+* `review/test_counts.py` (new, inside `make test`) derives the numbers **exactly** — `cargo test -- --list`
+  per crate, which runs no test body and needs only the build `make test` already has — and compares them with
+  the baseline line, so the sentence cannot rot again; `--write` updates the numbers. It is deliberately *not*
+  in `make hygiene`, whose audits must work on a tree that has not been built, and it deliberately does not
+  touch the date: "checked on <date>" is a human claim about a review, not a derived value.
+
+**Measured** (2026-09-27): the first run of the check failed on exactly the two stale numbers
+(`engine: the ledger says 220, the suite has 239` / `tui: the ledger says 33, the suite has 35`), `--write`
+brought the line to `core 100 / engine 239 / tui 35`, and the check is green. **Control**: a copy with
+`core 1` and `engine 999` produces two findings naming both sides, and a copy without the sentence produces the
+"no baseline line" finding — the shape D-176's probe-count gate uses, applied to the ledger that states the
+definition of done's preconditions.
+
 ## D-177 `instances pause` printed the new lifecycle beside the old row (2026-09-27)
 
 Verifying DESIGN §6.4's claim that "the UI distinguishes 'pause requested' from 'stopped at a safe boundary'"

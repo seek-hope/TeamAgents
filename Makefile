@@ -37,7 +37,8 @@ test:
 	@set -eu; guard=$$(mktemp); trap 'rm -f "$$guard"' EXIT HUP INT TERM; \
 		python3 review/leak_guard.py snapshot "$$guard"; \
 		for crate in $(CRATES); do cargo test $(CARGO_FLAGS) --manifest-path $$crate/Cargo.toml; done; \
-		python3 review/leak_guard.py audit "$$guard"
+		python3 review/leak_guard.py audit "$$guard"; \
+		python3 review/test_counts.py
 
 build:
 	cargo build $(CARGO_FLAGS) --manifest-path engine/Cargo.toml --bin teamagents

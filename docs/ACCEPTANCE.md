@@ -1,12 +1,13 @@
 # Acceptance matrix (A01–A36)
 
 Baseline: [the design and acceptance baseline](DESIGN.md) §12/§16. Current implementation checked on
-**2026-09-25**.
+**2026-09-27** (the date of the last full pass: `make check`, `make test`, `make pty`, the offline and
+model probe sets and the three formal gates).
 
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 100 / engine 220 / tui 33 test targets) and `make pty` passes; both are
+`make check` is green (core 100 / engine 239 / tui 35 test targets) and `make pty` passes; both are
 preconditions for every item below. `make check` includes `make language-check`, which fails on non-English
 characters outside the two documented exceptions (`README.zh-CN.md` and the frozen material under
 `review/eval`).
