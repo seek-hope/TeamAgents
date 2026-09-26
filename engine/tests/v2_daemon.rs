@@ -52,6 +52,12 @@ impl Provider for ScriptedProvider {
         if let Some(reason) = message["__error__"].as_str() {
             return Err(ProviderError::permanent(reason));
         }
+        // {"__transient__": "…", "__retry_after_ms__": N} scripts the flaky-network failure the driver retries
+        // inside the turn, with the provider's own Retry-After (D-117)
+        if let Some(reason) = message["__transient__"].as_str() {
+            let retry_after = message["__retry_after_ms__"].as_u64().map(Duration::from_millis);
+            return Err(ProviderError { retry_after, ..ProviderError::transient(reason) });
+        }
         Ok(AttemptOutcome {
             response: ModelResponse {
                 message,
@@ -1256,4 +1262,43 @@ async fn a_parked_approval_ends_the_headless_run_at_once() {
     );
     assert_eq!(run.report["verification"].as_array().unwrap().len(), 0, "{}", run.report);
     handle.shutdown().await.expect("shutdown");
+}
+
+/// A daemon stop (`Ctrl-C`, `handle.shutdown`) must not wait out a provider's backoff: `Retry-After: 30 s` is a
+/// real answer from a real service, and the supervisor awaits every driver task when it stops (D-117). Before the
+/// retry wait became shutdown-aware this hung for the full 30 s with "stopping…" on screen.
+#[tokio::test]
+async fn a_daemon_stop_does_not_wait_out_a_provider_backoff() {
+    let scripts = HashMap::from([(
+        "i-leader".to_string(),
+        vec![
+            json!({"__transient__": "the service asked for 30 seconds", "__retry_after_ms__": 30_000}),
+            reply("never"),
+        ],
+    )]);
+    let (root, handle) = boot("stop-backoff", scripts).await;
+    let socket = root.dir.join("state/daemon.sock");
+    let mut client = Client::connect(&socket).await;
+    let submitted = client.command("cmd-backoff", "submit_input", input_params("start a turn")).await;
+    assert_eq!(submitted["ok"], json!(true), "{submitted}");
+    // the first attempt failed and the driver is waiting for the retry; the attempt row is the record of that
+    let mut seen = false;
+    let waited = std::time::Instant::now();
+    while waited.elapsed() < Duration::from_secs(10) {
+        let events = client.call("events", json!({"since": 0})).await;
+        if events["result"]["events"].as_array().is_some_and(|rows| {
+            rows.iter().any(|event| {
+                event["kind"] == json!("attempt_recorded") && event["payload"]["status"] == json!("FAILED")
+            })
+        }) {
+            seen = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(seen, "the failed attempt was recorded before the retry wait began");
+    let stopping = std::time::Instant::now();
+    handle.shutdown().await.expect("shutdown");
+    let elapsed = stopping.elapsed();
+    assert!(elapsed < Duration::from_secs(5), "the daemon stop waited out the provider backoff ({elapsed:?})");
 }

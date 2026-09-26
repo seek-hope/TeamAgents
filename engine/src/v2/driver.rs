@@ -689,6 +689,17 @@ impl<P: Provider> Driver<P> {
         }
     }
 
+    /// Resolve once the driver has been asked to stop. The driver's own sleeps select on this (a retry wait, for
+    /// example) so that a shutdown is never held for as long as a provider's `Retry-After` asks (D-117).
+    async fn wait_for_shutdown(&self) {
+        while !self.shared.shutdown.load(Ordering::SeqCst) {
+            tokio::select! {
+                _ = self.shared.wake.notified() => {}
+                _ = tokio::time::sleep(self.config.poll) => {}
+            }
+        }
+    }
+
     fn command(&self, id: impl Into<String>, method: &str, params: Json) -> Command {
         Command { command_id: id.into(), method: method.into(), params }
     }
@@ -1427,9 +1438,14 @@ impl<P: Provider> Driver<P> {
                             .retry_after
                             .unwrap_or_else(|| Duration::from_millis((500u64 << (attempt as u32).min(5)).min(8000)))
                             .min(Duration::from_secs(30));
+                        // A retry wait is the runtime's own decision, so it ends with the runtime: a driver that is
+                        // being shut down (a daemon stop, a session close) must not hang on it for as long as the
+                        // provider asked — `Retry-After: 30` is a real answer (D-117). The turn then ends at the
+                        // loop's own shutdown check instead of asking again.
                         tokio::select! {
                             _ = tokio::time::sleep(wait) => {}
                             _ = cancel.cancelled() => {}
+                            _ = self.wait_for_shutdown() => {}
                         }
                         Ok(())
                     }

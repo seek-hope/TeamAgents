@@ -18,6 +18,51 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-117 The retry path had no test, and its wait was uninterruptible (2026-09-26)
+
+A19's evidence was the provider edge: `providers_fake` classes a truncated stream before visible output as
+transient and after it as permanent, per protocol, and `providers_stall` drives keep-alive sockets. The *driver's*
+half of that contract — the retry that happens inside the turn, its budget, and what a turn looks like when the
+retries run out — had no test at all, and could not have one: the scripted provider of `engine/tests/v2_driver.rs`
+could express a permanent, an interrupted, a context-overflow and a hang, but **not a transient failure**.
+
+With `Step::Transient` / `Step::TransientAfter` (the latter carries the provider's own `Retry-After`) two tests
+pin the shape:
+
+* `a_transient_model_failure_is_retried_inside_the_turn`: attempt 1 fails transiently, attempt 2 completes, the
+  goal settles `SUCCEEDED`, the events carry `FAILED` then `COMPLETE`, the `attempts` table has two rows — the
+  failed one with **no** usage, the complete one priced — and the goal's `known_usage` counts only the complete
+  attempt while `unknown_usage` stays 0. That is §6.3's "double billing is possible, and the runtime does not
+  pretend to know what the lost attempt cost", asserted instead of described.
+* `transient_retries_exhausted_parks_with_the_reason`: three transient failures (the budget is `max_retries = 2`),
+  then the turn ends with the documented sentence — `transient retries exhausted: boom three`, the *last* failure
+  — the instance parks once, no goal settles, and no reply is fabricated.
+
+The third test was written to *measure* the wait and found a defect instead:
+`a_shutdown_does_not_wait_out_a_retry_backoff`. The wait selected on a `Cancel` token nobody can fire while it
+runs (the driver clears `shared.cancel_attempt` right after the provider call returns, and the only caller of
+`cancel_turn` is parked under D-63), so a provider answering `Retry-After: 30 s` made a driver stop take 30 s.
+Measured before the fix — the in-process test failed after 30.21 s, and the daemon-level one
+(`v2_daemon::a_daemon_stop_does_not_wait_out_a_provider_backoff`, which goes through the supervisor's
+`shutdown_shared` and its "await every driver task") failed at `the daemon stop waited out the provider backoff
+(29.984226755s)`. That is what a `Ctrl-C` on the daemon did: print `stopping…` and sit there for as long as the
+provider asked.
+
+The wait now also selects on the driver's own shutdown (`Driver::wait_for_shutdown`, the same wake-plus-flag
+convention every other driver loop uses), so a stop ends the turn at the loop's next shutdown check instead of
+sitting on the backoff. The daemon test then finishes in 0.39 s, and removing the arm reproduces the 29.98 s hang
+(the recorded control).
+
+Evidence: four new tests; three gate conditions green at 353 tests (core 100 / engine 220 / tui 33 — the two
+sandbox-less conditions run the retry tests too, since they need no shell); the control above. The retry tests
+are also what would fail if the classification were wrong: a permanent class produces one attempt row and the
+`permanent model error` sentence, not two rows and `transient retries exhausted`.
+
+Ceiling: the backoff itself is unchanged (500 ms shifted by attempt, or the provider's `Retry-After`, capped at
+8 s / 30 s), and **no surface cancels one turn while it waits** — that is still D-63's open question; what ends
+the wait now is the runtime stopping, not a user interrupt. `max_retries` is a driver-config knob (the CLI passes
+2), not user config.
+
 ## D-116 A running command cost ~4 % of a core, and nobody had measured it (2026-09-26)
 
 Every command a member runs pays two cadences for as long as it runs: the runner's tick (how often it looks at

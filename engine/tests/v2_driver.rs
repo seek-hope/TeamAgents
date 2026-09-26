@@ -22,6 +22,11 @@ enum Step {
     Sleep(u64),
     /// Fail the attempt the way the provider edge reports a permanent error.
     Error(&'static str),
+    /// Fail the attempt the way a flaky network does: the provider edge classes it transient, so the runtime
+    /// retries the request inside the same turn (D-117).
+    Transient(&'static str),
+    /// The same, with the provider's own `Retry-After` in milliseconds.
+    TransientAfter(&'static str, u64),
 }
 
 struct ScriptedProvider {
@@ -58,6 +63,10 @@ impl Provider for ScriptedProvider {
             },
             Step::Sleep(_) => unreachable!("sleeps are consumed above"),
             Step::Error(message) => Err(ProviderError::permanent(message)),
+            Step::Transient(message) => Err(ProviderError::transient(message)),
+            Step::TransientAfter(message, ms) => {
+                Err(ProviderError { retry_after: Some(Duration::from_millis(ms)), ..ProviderError::transient(message) })
+            }
         }
     }
 }
@@ -1656,4 +1665,100 @@ async fn a_crashed_driver_releases_its_coordinator_lock() {
         let handle = start(root.config(recovering)).await.unwrap_or_else(|e| panic!("round {round}: {e}"));
         handle.crash().await;
     }
+}
+
+/// The `attempts` table, oldest first: `(status, usage_json)`.
+fn attempt_rows(root: &Root) -> Vec<(String, String)> {
+    let control =
+        teamagents_core::v2::Control::open(&root.dir.join("session.sqlite"), "s-test", true).expect("control");
+    let connection = control.connection();
+    let mut statement = connection.prepare("SELECT status, usage_json FROM attempts ORDER BY created").unwrap();
+    let rows = statement
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<Result<Vec<(String, String)>, _>>()
+        .unwrap();
+    rows
+}
+
+/// A19's retry shape end to end, which nothing exercised before D-117: a transient provider failure is retried
+/// *inside the same turn* (the driver waits and asks again), so a flaky network costs latency instead of the
+/// goal. The record stays honest at the same time — two attempts, the lost one with no usage to bill and the
+/// complete one priced — which is §6.3's "double billing is possible, and the runtime does not pretend to know".
+#[tokio::test]
+async fn a_transient_model_failure_is_retried_inside_the_turn() {
+    let root = root("retry-transient");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let script = vec![
+        Step::Transient("chat API: connection reset by peer"),
+        Step::Message(finish_call("recovered after the hiccup")),
+    ];
+    let handle = start(root.config(script.into_provider())).await.expect("start");
+    handle.input("do the work").await.expect("input");
+    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED", "the retry carried the turn");
+    let events = handle.events(0).await.unwrap();
+    let statuses: Vec<String> = events
+        .iter()
+        .filter(|event| event["kind"] == json!("attempt_recorded"))
+        .map(|event| event["payload"]["status"].as_str().unwrap_or("").to_string())
+        .collect();
+    assert_eq!(statuses, vec!["FAILED".to_string(), "COMPLETE".to_string()], "{events:?}");
+    let rows = attempt_rows(&root);
+    assert_eq!(rows.len(), 2, "one failed attempt and one complete: {rows:?}");
+    assert_eq!(rows[0].0, "FAILED");
+    assert_eq!(rows[0].1, "null", "a lost attempt has no usage to bill: {rows:?}");
+    assert_eq!(rows[1].0, "COMPLETE");
+    assert!(rows[1].1.contains("total_tokens"), "the complete attempt carries its usage: {rows:?}");
+    let snapshot = handle.snapshot().await.unwrap();
+    assert_eq!(snapshot["goal"]["known_usage"]["total"], json!(5), "only the complete attempt is priced");
+    assert_eq!(snapshot["goal"]["unknown_usage"], json!(0), "a known failure is not an unknown outcome");
+    handle.shutdown().await.expect("shutdown");
+}
+
+/// The other half of A19: when every attempt fails transiently the turn gives up with the documented sentence,
+/// parks the instance once (A07's no-turn-storm rule) and fabricates no reply out of the runtime's own words.
+#[tokio::test]
+async fn transient_retries_exhausted_parks_with_the_reason() {
+    let root = root("retry-exhausted");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let script = vec![
+        Step::Transient("boom one"),
+        Step::Transient("boom two"),
+        Step::Transient("boom three"),
+        Step::Message(reply("this reply must never be reached")),
+    ];
+    let handle = start(root.config(script.into_provider())).await.expect("start");
+    handle.input("doomed").await.expect("input");
+    // max_retries is 2, so attempts 1 and 2 may retry and attempt 3 is the last one asked
+    let event = wait_event(&handle, "request_failed", 30_000).await;
+    let reason = event["payload"]["reason"].as_str().unwrap_or("");
+    assert!(reason.starts_with("transient retries exhausted:"), "{reason}");
+    assert!(reason.contains("boom three"), "the last failure is the one reported: {reason}");
+    wait_lifecycle(&handle, "PARKED", 10_000).await;
+    let rows = attempt_rows(&root);
+    assert_eq!(rows.len(), 3, "three attempts, no more: {rows:?}");
+    assert!(rows.iter().all(|(status, _)| status == "FAILED"), "{rows:?}");
+    let events = handle.events(0).await.unwrap();
+    assert!(
+        !events.iter().any(|event| event["kind"] == json!("goal_completed")),
+        "no goal settled out of a failed turn: {events:?}"
+    );
+    handle.shutdown().await.expect("shutdown");
+}
+
+/// A retry wait is the runtime's own decision, so it must not outlive the runtime that owns it: a provider that
+/// answers `Retry-After: 30 s` is a real answer, and stopping the driver (the daemon's own shutdown, a session
+/// close) must not hang for as long as the provider asked (D-117).
+#[tokio::test]
+async fn a_shutdown_does_not_wait_out_a_retry_backoff() {
+    let root = root("retry-shutdown");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let script = vec![Step::TransientAfter("provider asked for 30 seconds", 30_000), Step::Message(reply("never"))];
+    let handle = start(root.config(script.into_provider())).await.expect("start");
+    handle.input("start a turn").await.expect("input");
+    wait_event(&handle, "attempt_recorded", 10_000).await; // the attempt failed and the backoff began
+    let started = std::time::Instant::now();
+    handle.shutdown().await.expect("shutdown");
+    let elapsed = started.elapsed();
+    assert!(elapsed < Duration::from_secs(5), "a 30 s provider backoff must not hold the shutdown ({elapsed:?})");
 }
