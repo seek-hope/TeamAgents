@@ -3,11 +3,12 @@
 CRATES := core engine tui
 CARGO_FLAGS ?= --offline --locked
 
-.PHONY: help check fmt fmt-check lint test build pty hygiene language-check check-nobwrap
+.PHONY: help check fmt fmt-check lint test build pty hygiene language-check check-nobwrap check-broken-sandbox
 
 help:
 	@echo 'make check     format, Clippy, regression tests and repository hygiene (offline by default)'
 	@echo 'make check-nobwrap  the same gate with the GitHub runner condition: no bwrap in PATH (D-113)'
+	@echo 'make check-broken-sandbox  ... with a bwrap that cannot start a sandbox (Ubuntu 24.04 default, D-114)'
 	@echo 'make fmt       format the three crates'
 	@echo 'make build     build the CLI and the TUI'
 	@echo 'make pty       real-terminal smoke check with an isolated config (needs Python 3)'
@@ -47,6 +48,13 @@ build:
 check-nobwrap:
 	@set -eu; farm=$$(mktemp -d); trap 'rm -rf "$$farm"' EXIT HUP INT TERM; \
 		python3 review/nobwrap_path.py --verify "$$farm"; \
+		PATH="$$farm" $(MAKE) check
+
+# The other sandbox-less condition (D-114): bwrap is on PATH but cannot create a namespace — the default on
+# Ubuntu 23.10+/24.04, where AppArmor restricts unprivileged user namespaces, and inside locked-down containers.
+check-broken-sandbox:
+	@set -eu; farm=$$(mktemp -d); trap 'rm -rf "$$farm"' EXIT HUP INT TERM; \
+		python3 review/nobwrap_path.py --stub-bwrap --verify "$$farm"; \
 		PATH="$$farm" $(MAKE) check
 
 pty: build

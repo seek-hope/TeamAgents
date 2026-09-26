@@ -865,7 +865,7 @@ async fn a_failed_turn_ends_the_headless_run_instead_of_timing_out() {
 /// a failure, the ledger row keeps the isolation reason, and the exit code is 1.
 #[tokio::test]
 async fn headless_runs_verify_the_acceptance_commands_and_gate_the_exit_code() {
-    let have_bwrap = teamagents_engine::tools::bwrap_available();
+    let have_sandbox = teamagents_engine::tools::sandbox_usable();
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
     let scripts = HashMap::from([("i-leader".to_string(), vec![finish_call("done")])]);
     let (root, handle) = boot("exec-checks", scripts).await;
@@ -874,7 +874,7 @@ async fn headless_runs_verify_the_acceptance_commands_and_gate_the_exit_code() {
     assert_eq!(passed.end, End::Completed, "{}", passed.report);
     let verdicts = passed.report["verification"].as_array().unwrap();
     assert_eq!(verdicts.len(), 1, "{}", passed.report);
-    if have_bwrap {
+    if have_sandbox {
         assert!(passed.checks_ok, "{}", passed.report);
         assert_eq!(passed.end.exit_code(passed.checks_ok), 0);
         assert_eq!(verdicts[0]["ok"], json!(true));
@@ -902,7 +902,7 @@ async fn headless_runs_verify_the_acceptance_commands_and_gate_the_exit_code() {
 /// first check that cannot run, and the run is an honest failure rather than a pass over an unchecked goal.
 #[tokio::test]
 async fn a_failing_acceptance_command_fails_the_run() {
-    let have_bwrap = teamagents_engine::tools::bwrap_available();
+    let have_sandbox = teamagents_engine::tools::sandbox_usable();
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
     let scripts = HashMap::from([("i-leader".to_string(), vec![finish_call("done")])]);
     let (root, handle) = boot("exec-checks-fail", scripts).await;
@@ -914,7 +914,7 @@ async fn a_failing_acceptance_command_fails_the_run() {
     assert_eq!(run.end.exit_code(run.checks_ok), 1, "a failed acceptance is not a success");
     let verdicts = run.report["verification"].as_array().unwrap();
     assert_eq!(verdicts.len(), 1, "the first failure stops the list: {}", run.report);
-    if have_bwrap {
+    if have_sandbox {
         assert_eq!(verdicts[0]["exit_code"], json!(7));
         assert!(verdicts[0]["output"].as_str().unwrap().contains("broken"), "{}", run.report);
     } else {

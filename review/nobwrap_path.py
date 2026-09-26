@@ -1,21 +1,33 @@
 #!/usr/bin/env python3
-"""Build a PATH that is this machine's PATH minus bwrap — the GitHub runner's condition, locally (D-113).
+"""Build a PATH without a usable bubblewrap, so the sandbox-less conditions are reproducible locally (D-113/D-114).
 
-CI runs `make test` on a machine whose kernel forbids unprivileged user namespaces and which has no bubblewrap
-installed, so the sandboxed shell cannot start there. That condition is invisible on a dev machine that has
-bwrap, and it is the condition in which one test used to *fail* rather than skip. This script makes the
-condition reproducible: it fills <dir> with symlinks to every executable of the current PATH except `bwrap`, so
-`PATH=<dir> make check` runs exactly what the runner runs.
+Two conditions matter and neither is visible on a dev machine whose sandbox works:
 
-    python3 review/nobwrap_path.py <dir>            # fill <dir>
-    python3 review/nobwrap_path.py --verify <dir>   # ... and assert the farm is what it claims
+* **No bwrap at all** — the GitHub runner (its image ships no `bubblewrap`, verified against
+  `actions/runner-images` on 2026-09-26). `make check-nobwrap` runs the whole gate this way.
+* **bwrap installed but unable to create a namespace** — the default on Ubuntu 23.10+/24.04, where AppArmor
+  restricts unprivileged user namespaces and `bwrap` dies with `bwrap: setting up uid map: Permission denied`.
+  The binary is on `PATH`, so `bwrap_available()` is true and `doctor` has to *probe* to notice; the tests must
+  still assert the fail-closed half instead of failing on an assertion that assumes a working sandbox.
+  `--stub-bwrap` reproduces it with a stub that prints that line and exits non-zero, so `make check-broken-sandbox`
+  runs the gate as such a machine would.
+
+    python3 review/nobwrap_path.py <dir>                    # fill <dir>: every tool except bwrap
+    python3 review/nobwrap_path.py <dir> --stub-bwrap       # ... with a bwrap stub that cannot start a sandbox
+    python3 review/nobwrap_path.py <dir> [--stub-bwrap] --verify   # assert what the farm promises
 """
 import os
 import pathlib
+import subprocess
 import sys
 
+STUB = """#!/bin/sh
+echo "bwrap: setting up uid map: Permission denied" >&2
+exit 1
+"""
 
-def build(farm):
+
+def build(farm, stub):
     farm.mkdir(parents=True, exist_ok=True)
     linked = 0
     for directory in os.environ.get("PATH", "").split(":"):
@@ -33,14 +45,25 @@ def build(farm):
                 linked += 1
             except OSError:
                 pass
+    if stub:
+        stub_path = farm / "bwrap"
+        stub_path.write_text(STUB)
+        stub_path.chmod(0o755)
     return linked
 
 
-def verify(farm):
+def verify(farm, stub):
     names = {entry.name for entry in farm.iterdir()}
     problems = []
-    if "bwrap" in names:
+    if "bwrap" in names and not stub:
         problems.append("the farm still offers bwrap")
+    if stub:
+        if "bwrap" not in names:
+            problems.append("the stub farm has no bwrap for the product to find")
+        else:
+            probe = subprocess.run([str(farm / "bwrap")], capture_output=True, text=True)
+            if probe.returncode == 0 or not probe.stderr.startswith("bwrap: "):
+                problems.append(f"the stub does not look like a broken bwrap: {probe.stderr!r}")
     for needed in ("sh", "python3", "cargo", "make"):
         if needed not in names:
             problems.append(f"the farm is missing {needed}, so `make check` cannot run in it")
@@ -48,19 +71,22 @@ def verify(farm):
 
 
 def main(argv):
-    verify_only = len(argv) > 1 and argv[1] == "--verify"
-    path = argv[2] if verify_only else (argv[1] if len(argv) > 1 else None)
-    if path is None:
+    args = argv[1:]
+    stub = "--stub-bwrap" in args
+    verify_only = "--verify" in args
+    positional = [a for a in args if not a.startswith("--")]
+    if not positional:
         print(__doc__)
         return 2
-    farm = pathlib.Path(path)
-    linked = build(farm)
-    problems = verify(farm)
+    farm = pathlib.Path(positional[0])
+    linked = build(farm, stub)
+    problems = verify(farm, stub)
     for problem in problems:
         print(problem)
     if problems:
         return 1
-    print(f"{farm}: {linked} symlinks, no bwrap (CI's condition, D-113)")
+    what = "a bwrap that cannot start a sandbox" if stub else "no bwrap"
+    print(f"{farm}: {linked} symlinks plus {what} (D-113/D-114)")
     return 0
 
 

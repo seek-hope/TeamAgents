@@ -1265,6 +1265,23 @@ pub fn bwrap_available() -> bool {
     which("bwrap").is_some()
 }
 
+/// The capability the product needs is not "bwrap is in `PATH`" but "a sandbox really starts here". A
+/// present-but-blocked bwrap — Ubuntu 23.10+/24.04 restricts unprivileged user namespaces by default, so bwrap
+/// dies with `setting up uid map: Permission denied`, and a locked-down container does the same — looks
+/// available to [`bwrap_available`] while every shell call fails closed. `doctor` reports this row and the tests
+/// branch on it, so a machine whose sandbox cannot start asserts the fail-closed half instead of failing an
+/// assertion that assumes isolation (D-113/D-114). The probe costs one sandboxed process and its answer cannot
+/// change while this process lives, so it is cached.
+pub fn sandbox_usable() -> bool {
+    static USABLE: OnceLock<bool> = OnceLock::new();
+    *USABLE.get_or_init(|| {
+        bwrap_available()
+            && shell_run("test -e /etc/hostname && test ! -e /home", &std::env::temp_dir(), 20, false, None)
+                .map(|out| !out.contains("(exit "))
+                .unwrap_or(false)
+    })
+}
+
 pub fn which(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path).map(|dir| dir.join(name)).find(|candidate| candidate.is_file())
@@ -2762,7 +2779,7 @@ mod tests {
 
     #[test]
     fn cancelled_shell_keeps_partial_output_and_its_artifact() {
-        if !bwrap_available() {
+        if !sandbox_usable() {
             return;
         }
         let dir = std::env::temp_dir().join(format!("ta-cancel-output-{}", uuid::Uuid::new_v4()));
@@ -2966,9 +2983,18 @@ mod tests {
         assert_eq!(executor("read_file", &json!({"path": "sub/file.txt"})).unwrap(), json!("hello"));
         assert!(executor("read_file", &json!({"path": "../../etc/hosts"})).is_err());
         let listing = executor("ls", &json!({"path": "."})).unwrap();
-        assert!(listing.as_str().unwrap().contains("sub/"));
-        let globbed = executor("glob", &json!({"pattern": "**/*.txt"})).unwrap();
-        assert!(globbed.as_str().unwrap().contains("sub/file.txt"));
+        assert!(listing.as_str().unwrap().contains("sub/"), "ls is native and needs no sandbox: {listing}");
+        // glob prefers `rg` *inside* the sandbox (it knows the ignore rules); the native path is the fallback when
+        // there is no bwrap or no rg, and a sandbox that cannot start refuses instead of globbing differently
+        // (D-114). All three cases are asserted so this test says the same thing on every machine.
+        if !bwrap_available() || !sandbox_rg_available() || sandbox_usable() {
+            let globbed = executor("glob", &json!({"pattern": "**/*.txt"})).unwrap();
+            assert!(globbed.as_str().unwrap().contains("sub/file.txt"));
+        } else {
+            let error = executor("glob", &json!({"pattern": "**/*.txt"}))
+                .expect_err("a sandbox that cannot start must refuse the glob, not glob differently");
+            assert!(error.to_string().contains("IsolationUnavailable"), "{error}");
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -3156,7 +3182,7 @@ mod tests {
         assert!(argv.windows(2).any(|w| w[0] == "--chdir" && w[1] == dir.to_string_lossy()));
         assert_eq!(&argv[argv.len() - 4..], ["--", "/bin/bash", "-lc", "echo hi"]);
         assert!(!bwrap_argv(&dir, true, "x", None).iter().any(|a| a == "--unshare-net"));
-        if bwrap_available() {
+        if sandbox_usable() {
             let out = shell_run("echo isolated-ok && id -u", &dir, 30, false, None).unwrap();
             assert!(out.contains("isolated-ok"), "{out}");
         }
@@ -3164,7 +3190,7 @@ mod tests {
 
     #[test]
     fn sandbox_builds_with_the_host_toolchain() {
-        if !bwrap_available() || toolchain_mounts().is_empty() || which("cargo").is_none() {
+        if !sandbox_usable() || toolchain_mounts().is_empty() || which("cargo").is_none() {
             return;
         }
         let dir = std::env::temp_dir().join(format!("ta-toolchain-{}", uuid::Uuid::new_v4()));

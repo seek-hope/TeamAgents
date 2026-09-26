@@ -90,7 +90,7 @@ fn doctor_probes_isolation_and_config_errors() {
     let clean = run(&home.join("state"));
     assert!(clean.contains("user config"), "{clean}");
     assert!(clean.contains("bubblewrap isolation"), "{clean}");
-    if teamagents_engine::tools::bwrap_available() {
+    if teamagents_engine::tools::sandbox_usable() {
         assert!(clean.contains("[ok  ] bubblewrap isolation"), "the isolation probe really runs: {clean}");
     }
 
@@ -427,7 +427,7 @@ fn exec_takes_the_prompt_from_stdin_and_runs_the_acceptance_check() {
     let ledger: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(state.join("verification.json")).unwrap()).unwrap();
     assert_eq!(ledger["verification"][0]["command"], "echo accepted");
-    if teamagents_engine::tools::bwrap_available() {
+    if teamagents_engine::tools::sandbox_usable() {
         assert!(stdout.contains("check 1: ok (exit 0)  echo accepted"), "{stdout}");
         assert_eq!(ledger["verification"][0]["ok"], true);
     } else {
@@ -540,7 +540,7 @@ fn the_daemon_carries_configured_checks_into_the_goal() {
 /// the refusal instead of printing "skipped" and leaving the A14 claim unchecked where CI runs.
 #[test]
 fn an_unisolated_shell_refuses_instead_of_running_on_the_host() {
-    let have_bwrap = teamagents_engine::tools::bwrap_available();
+    let have_sandbox = teamagents_engine::tools::sandbox_usable();
     let root = std::env::temp_dir().join(format!("ta-isolation-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let (config_home, state, workspace, empty_bin) =
@@ -575,7 +575,7 @@ fn an_unisolated_shell_refuses_instead_of_running_on_the_host() {
     };
 
     let control_state = root.join("root-control");
-    if have_bwrap {
+    if have_sandbox {
         // Control first: the same command with the machine's own PATH runs inside the
         // sandbox and really does leave the file — without this, the absence below would
         // prove nothing (a check whose assertion cannot fail is not a check).

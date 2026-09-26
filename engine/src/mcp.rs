@@ -67,7 +67,7 @@ impl McpClient {
         let root = root.canonicalize().map_err(|e| format!("MCP workspace unavailable: {e}"))?;
         let mut cmd = match mode {
             "workspace" => {
-                if !crate::tools::bwrap_available() {
+                if !crate::tools::sandbox_usable() {
                     return Err("IsolationUnavailable: MCP workspace execution requires bwrap".into());
                 }
                 let mut argv = crate::tools::bwrap_argv(&root, network, "", None);
@@ -651,7 +651,7 @@ for line in sys.stdin:
             listener.local_addr().unwrap().port().to_string(),
             literal.into(),
         ];
-        if !crate::tools::bwrap_available() {
+        if !crate::tools::sandbox_usable() {
             // never degrade to unsandboxed execution: the workspace mode must fail
             // outright (CI has no bwrap)
             assert!(

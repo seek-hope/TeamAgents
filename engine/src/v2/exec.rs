@@ -896,7 +896,7 @@ mod tests {
     fn acceptance_commands_run_in_order_and_stop_at_the_first_failure() {
         let workspace = std::env::temp_dir();
         let workspace = Path::new(&workspace);
-        if !crate::tools::bwrap_available() {
+        if !crate::tools::sandbox_usable() {
             // no isolation anywhere: every check must be refused, the list must stop at the first one, and no
             // command output may appear (the command never ran)
             let refused = vec!["echo one".to_string(), "true".to_string()];

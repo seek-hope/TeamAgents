@@ -1,7 +1,7 @@
 //! CLI entry points: init / doctor / daemon / exec / version.
 
 use crate::config::{load_user_config, missing_key_envs, sessions_dir, user_config_path};
-use crate::tools::{bwrap_available, shell_run, which};
+use crate::tools::{bwrap_available, which};
 use crate::VERSION;
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -164,12 +164,9 @@ pub fn doctor(state_root: Option<PathBuf>) -> i32 {
         optional_check(&mut results, "legacy v1 layout", false, hint);
     }
     let bwrap = bwrap_available();
-    // not just "is it installed": run a probe so a broken
-    // userns/kernel setup is caught here instead of at the first shell call
-    let bwrap_probe = bwrap
-        && shell_run("test -e /etc/hostname && test ! -e /home", &std::env::temp_dir(), 20, false, None)
-            .map(|out| !out.contains("(exit "))
-            .unwrap_or(false);
+    // not just "is it installed": `sandbox_usable` runs a probe so a broken userns/kernel setup is caught here
+    // instead of at the first shell call (the same predicate the tests branch on, D-114)
+    let bwrap_probe = crate::tools::sandbox_usable();
     check(
         &mut results,
         "bubblewrap isolation",

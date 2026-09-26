@@ -223,11 +223,17 @@ for line in sys.stdin:
     let mut config = root.config(provider);
     config.catalog = catalog;
     config.bindings = vec!["ws_probe".into()];
-    if !teamagents_engine::tools::bwrap_available() {
-        // The other half of the same claim, and the branch CI takes (its kernel forbids unprivileged user
-        // namespaces): without bwrap the mode must refuse to start the server rather than run it on the host.
-        let error = start(config).await.err().expect("workspace mode without bwrap must not boot an instance");
-        assert!(error.contains("IsolationUnavailable") && error.contains("requires bwrap"), "{error}");
+    if !teamagents_engine::tools::sandbox_usable() {
+        // No *usable* sandbox, which is two machines (D-113/D-114): bwrap absent (the CI runner) or present but
+        // unable to create a namespace (Ubuntu 23.10+/24.04 restricts unprivileged user namespaces, so bwrap
+        // dies with "setting up uid map: Permission denied"). Both must fail the boot of the required service
+        // rather than run the server unsandboxed; only the machine without bwrap can promise the exact sentence,
+        // and in both the host path must stay untouched.
+        let error = start(config).await.err().expect("workspace mode without a usable sandbox must not boot");
+        assert!(error.contains("ws_probe"), "the boot failure names the service: {error}");
+        if !teamagents_engine::tools::bwrap_available() {
+            assert!(error.contains("IsolationUnavailable") && error.contains("requires bwrap"), "{error}");
+        }
         assert!(!outside.exists(), "the host file was not created: {}", outside.display());
         return;
     }
@@ -355,11 +361,15 @@ for line in sys.stdin:
         let mut config = root.config(provider);
         config.catalog = catalog;
         config.bindings = vec!["net_probe".into()];
-        if execution == "workspace" && !teamagents_engine::tools::bwrap_available() {
-            // no sandbox, so the workspace cases cannot be observed here; the mode must refuse instead of
-            // running the server on the host (the same refusal `mcp_workspace_execution_is_sandboxed` asserts)
-            let error = start(config).await.err().expect("workspace mode without bwrap must not boot");
-            assert!(error.contains("IsolationUnavailable") && error.contains("requires bwrap"), "{error}");
+        if execution == "workspace" && !teamagents_engine::tools::sandbox_usable() {
+            // no usable sandbox (absent, or present and unable to create a namespace): the workspace cases cannot
+            // be observed here, and the mode must refuse instead of running the server on the host (the same
+            // refusal `mcp_workspace_execution_is_sandboxed` asserts)
+            let error = start(config).await.err().expect("workspace mode without a usable sandbox must not boot");
+            assert!(error.contains("net_probe"), "the boot failure names the service: {error}");
+            if !teamagents_engine::tools::bwrap_available() {
+                assert!(error.contains("IsolationUnavailable") && error.contains("requires bwrap"), "{error}");
+            }
             continue;
         }
         let handle = start(config).await.expect("start");

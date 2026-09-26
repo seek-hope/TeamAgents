@@ -18,6 +18,57 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-114 "bwrap is installed" is not the capability (2026-09-26)
+
+D-113's ceiling was the second sandbox-less machine, and it is a machine a user is likely to have: **bwrap
+installed and unable to create a namespace**. Ubuntu 23.10+/24.04 restricts unprivileged user namespaces by
+default (AppArmor), so the binary dies with `bwrap: setting up uid map: Permission denied`; a locked-down
+container does the same. `bwrap_available()` is a `PATH` lookup, so it answers `true` there and the tests took
+their *positive* branch: seven sites failed (not skipped), each at an assertion that assumes a working sandbox —
+
+    python3 review/nobwrap_path.py /tmp/broken-farm --stub-bwrap   # every tool, plus a bwrap stub that prints
+                                                                   # the Ubuntu line and exits 1
+    env PATH=/tmp/broken-farm <cli test> --test-threads=1 an_unisolated_shell_refuses_instead_of_running_on_the_host
+    # FAILED: "the control check runs" — with `… "ok":false, "exit_code":-1, "error":"IsolationUnavailable: the
+    # sandbox failed to start; the command may not have run. … bwrap: setting up uid map: Permission denied"`
+
+and the same shape in `cli::exec_takes_the_prompt_from_stdin_and_runs_the_acceptance_check`, both `v2_daemon`
+acceptance-check tests, both `v2_mcp` sandbox tests, `exec`'s unit test and
+`tools::workspace_paths_stay_inside_root`. The *product* was right in every one of those runs and said so:
+the sandbox refuses with bwrap's own words and never falls back to the host. What was wrong was the *capability
+predicate* — `doctor` already probed here ("not just 'is it installed': run a probe so a broken userns/kernel
+setup is caught here instead of at the first shell call"), and the tests used the `PATH` lookup instead.
+
+The probe is shared now: `tools::sandbox_usable()` (bwrap in `PATH` **and** a trivial sandboxed command
+succeeds; cached for the process life) is what `doctor` reports and what the tests branch on. Every
+sandbox-dependent test now has three cases — working sandbox, no bwrap, bwrap that cannot start — and asserts
+the fail-closed half in the last two, so the A14 claim ("a command that cannot be sandboxed is refused, never
+run on the host") is asserted on all three. The execution path is deliberately unchanged: it keeps using
+`bwrap_available()` and reports bwrap's own failure, which is more useful to a user than "not installed".
+
+Evidence:
+
+    make check-broken-sandbox   # the gate in that condition: 347 tests, core 100 / engine 214 / tui 33, green
+    make check-nobwrap          # the CI condition (D-113): 347 tests, green
+    ./engine/target/debug/teamagents doctor
+    #   working machine: [ok  ] bubblewrap isolation  isolation probe passed: system files visible, …
+    #   stub farm:       [FAIL] bubblewrap isolation  bwrap is installed but the isolation probe failed; check
+    #                                                  that the system allows unprivileged user namespaces
+
+Control for the branch selection: with the stub farm in `PATH` and a panic injected into the no-sandbox branch,
+`cli::an_unisolated_shell_refuses_instead_of_running_on_the_host` panics there — the branch is driven by
+`sandbox_usable()`, not by `PATH`. Before the change the same farm failed that test at its positive assertion.
+`tools::workspace_paths_stay_inside_root` also gained a case: `glob` prefers `rg` *inside* the sandbox, so a
+sandbox that cannot start refuses instead of globbing differently, while `ls` is native and keeps working —
+both are asserted.
+
+Ceiling: the probe runs once per process and is cached, so a sandbox that becomes unusable *during* a long
+session (an AppArmor/SELinux reload, exhausted pids) still reads as usable; the failure then shows up per
+command as the `isolation` class, which is the honest place for it. The three targets run the gate three times
+over (~3 minutes each on this machine), and `--stub-bwrap` is a stub, not the real AppArmor mechanism: it
+reproduces the *shape* a blocked bwrap produces (`bwrap: …` on stderr, non-zero exit), which is what the code
+classifies.
+
 ## D-113 The gate could not be green where CI runs it (2026-09-26)
 
 `docs/ACCEPTANCE.md` opens with "`make check` is green … preconditions for every item below", and the GitHub

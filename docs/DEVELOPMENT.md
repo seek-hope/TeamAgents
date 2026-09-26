@@ -15,6 +15,7 @@ check needs Python 3.
 make check CARGO_FLAGS=--locked   # first run may download dependencies, keeping the lock files
 make check                        # afterwards: --offline --locked by default
 make check-nobwrap                # the same gate with the GitHub runner's condition: no bwrap in PATH (D-113)
+make check-broken-sandbox         # ... and with a bwrap that cannot start a sandbox (Ubuntu 24.04 default, D-114)
 make fmt                          # apply the shared formatting
 make build                        # build the CLI and the TUI into the usual target paths
 make pty                          # real-terminal check with an isolated config and no model credentials
