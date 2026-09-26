@@ -23,7 +23,11 @@ make pty                          # real-terminal check with an isolated config 
 
 `make test` wraps the three crate suites in `review/leak_guard.py` (snapshot before, audit after): the two ways
 a run leaks — a session daemon (D-111) and a scratch directory (D-131) — are reported as a *difference*, with
-the leaked daemon's pid and state root named and the daemon stopped, and the run fails (D-147). `make check` runs, in order: formatting, Clippy on
+the leaked daemon's pid and state root named and the daemon stopped, and the run fails (D-147). The tests hold
+up their end with two RAII guards in `engine/tests/cli.rs`: `Daemon` stops a daemon the test started, on every
+exit path including a panic (D-160), and `Scratch` removes the test's own temp tree the same way (D-175) — a
+test that panics in a CI condition used to skip its final `remove_dir_all`, so one failure reported as two and
+left state roots behind. `make check` runs, in order: formatting, Clippy on
 all targets, the three crates' tests, the Git submodule
 configuration and repository hygiene (it rejects non-English characters in code and docs, tracked compile
 caches, Python caches and SQLite temporaries, checks the syntax of `install.sh`, and checks the shape of the

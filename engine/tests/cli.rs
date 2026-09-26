@@ -2,6 +2,49 @@
 
 use std::process::Command;
 
+/// A scratch tree one test owns, removed on **every** exit path including a panic — the `Daemon` guard's
+/// sibling (D-160).
+///
+/// A test that panics skips its final `remove_dir_all`, so a failing run in a CI condition (where some tests
+/// panic by design: `make check-nobwrap`) left state roots behind for `make test`'s leak guard to report,
+/// turning one failure into two (measured twice, D-171 and D-174). Tests still remove their tree explicitly at
+/// the end; this is the path they cannot reach.
+struct Scratch(std::path::PathBuf);
+
+impl Scratch {
+    /// A fresh, empty directory named after `label` and the test process.
+    fn new(label: &str) -> Scratch {
+        let path = std::env::temp_dir().join(format!("ta-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        Scratch(path)
+    }
+}
+
+impl std::ops::Deref for Scratch {
+    type Target = std::path::Path;
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for Scratch {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::ffi::OsStr> for Scratch {
+    fn as_ref(&self) -> &std::ffi::OsStr {
+        self.0.as_os_str()
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 /// A daemon the test started, stopped on every exit path including a panic:
 /// a leaked daemon would keep running (and hold a coordinator lock) for the
 /// rest of the suite.
@@ -76,8 +119,7 @@ fn teamagents(args: &[&str], state_home: &std::path::Path, config_home: &std::pa
 /// and `-v` was accepted with nothing behind it.
 #[test]
 fn a_bare_word_and_verbose_are_refused_without_starting_a_session() {
-    let home = std::env::temp_dir().join(format!("ta-refuse-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&home);
+    let home = Scratch::new("refuse");
     let (config_home, state_home, state_root) = (home.join("config"), home.join("state"), home.join("root"));
     std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
     std::fs::write(
@@ -130,8 +172,7 @@ fn a_bare_word_and_verbose_are_refused_without_starting_a_session() {
 /// and reports a malformed config instead of silently defaulting it.
 #[test]
 fn doctor_probes_isolation_and_config_errors() {
-    let home = std::env::temp_dir().join(format!("ta-doctor-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&home);
+    let home = Scratch::new("doctor");
     let config = home.join("config/teamagents");
     std::fs::create_dir_all(&config).unwrap();
     let run_status = |state: &std::path::Path| -> (i32, String) {
@@ -252,8 +293,7 @@ fn doctor_probes_isolation_and_config_errors() {
 /// (`skill` answers "no skills configured" only when the model asks).
 #[test]
 fn doctor_reports_the_skills_registry_and_missing_configured_paths() {
-    let root = std::env::temp_dir().join(format!("ta-skills-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let root = Scratch::new("skills");
     let (config, state, skills) = (root.join("config"), root.join("state"), root.join("skills"));
     std::fs::create_dir_all(config.join("teamagents")).unwrap();
     // one skill: a directory whose SKILL.md names it
@@ -316,8 +356,7 @@ fn doctor_reports_the_skills_registry_and_missing_configured_paths() {
 /// start"): nothing expands a command, so the string reaches `exec(2)` literally and the service never starts.
 #[test]
 fn doctor_predicts_whether_an_mcp_service_can_start() {
-    let root = std::env::temp_dir().join(format!("ta-mcp-doctor-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let root = Scratch::new("mcp-doctor");
     let (config, state) = (root.join("config"), root.join("state"));
     std::fs::create_dir_all(config.join("teamagents")).unwrap();
     let model = "[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\napi_key_env = \"TA_MCP_KEY\"\n";
@@ -376,8 +415,7 @@ fn doctor_predicts_whether_an_mcp_service_can_start() {
 /// Keep diagnostics deterministic on machines without user namespaces.
 #[test]
 fn doctor_fresh_install_reports_the_missing_requirements() {
-    let root = std::env::temp_dir().join(format!("ta-doctor-fresh-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let root = Scratch::new("doctor-fresh");
     let bin = root.join("bin");
     let config = root.join("config/teamagents/config.toml");
     std::fs::create_dir_all(&bin).unwrap();
@@ -422,8 +460,7 @@ fn doctor_fresh_install_reports_the_missing_requirements() {
 #[test]
 fn init_creates_private_config_and_never_overwrites_existing_paths() {
     use std::os::unix::fs::{symlink, PermissionsExt};
-    let root = std::env::temp_dir().join(format!("ta-init-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let root = Scratch::new("init");
     let config = root.join("config with spaces/teamagents/config.toml");
     let run = |args: &[&str]| {
         Command::new(env!("CARGO_BIN_EXE_teamagents"))
@@ -469,8 +506,7 @@ fn init_creates_private_config_and_never_overwrites_existing_paths() {
 /// growth is invisible — and the numbers are the one thing a user can act on.
 #[test]
 fn doctor_reports_the_artifact_footprint() {
-    let root = std::env::temp_dir().join(format!("ta-artifacts-doctor-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let root = Scratch::new("artifacts-doctor");
     let (config, state, tree) = (root.join("config"), root.join("state"), root.join("tree"));
     std::fs::create_dir_all(config.join("teamagents")).unwrap();
     std::fs::write(
@@ -511,8 +547,7 @@ fn doctor_reports_the_artifact_footprint() {
 /// is what the user asked for. (D-166 is the neighbouring case: a `--state-root` that already *is* a file.)
 #[test]
 fn init_notes_a_root_named_like_the_session_database() {
-    let root = std::env::temp_dir().join(format!("ta-init-shape-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let root = Scratch::new("init-shape");
     std::fs::create_dir_all(root.join("config/teamagents")).unwrap();
     let run = |args: &[&str]| -> (bool, String) {
         let output = Command::new(env!("CARGO_BIN_EXE_teamagents"))
@@ -546,8 +581,7 @@ fn init_notes_a_root_named_like_the_session_database() {
 /// (A34), and the legacy layout is only reported.
 #[test]
 fn init_prepares_the_v2_root_and_doctor_verifies_it() {
-    let home = std::env::temp_dir().join(format!("ta-cli-v2-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&home);
+    let home = Scratch::new("cli-v2");
     let config = home.join("config");
     std::fs::create_dir_all(config.join("teamagents")).unwrap();
     std::fs::write(
@@ -608,8 +642,7 @@ provider = \"deepseek\"\nprotocol = \"deepseek\"\nmodel = \"deepseek-flash\"\nap
 #[test]
 fn exec_takes_the_prompt_from_stdin_and_runs_the_acceptance_check() {
     use std::io::Write;
-    let root = std::env::temp_dir().join(format!("ta-exec-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let root = Scratch::new("exec");
     let (config_home, state) = (root.join("config"), root.join("root"));
     std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
     // a profile that resolves without a network: the turn fails fast against a
@@ -699,8 +732,7 @@ fn exec_takes_the_prompt_from_stdin_and_runs_the_acceptance_check() {
 /// `v2_driver::configured_checks_gate_the_goal_through_the_config_edge`).
 #[test]
 fn the_daemon_carries_configured_checks_into_the_goal() {
-    let root = std::env::temp_dir().join(format!("ta-checks-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let root = Scratch::new("checks");
     let (config_home, state) = (root.join("config"), root.join("root"));
     std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
     std::fs::write(
@@ -785,8 +817,7 @@ fn the_daemon_carries_configured_checks_into_the_goal() {
 #[test]
 fn an_unisolated_shell_refuses_instead_of_running_on_the_host() {
     let have_sandbox = teamagents_engine::tools::sandbox_usable();
-    let root = std::env::temp_dir().join(format!("ta-isolation-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let root = Scratch::new("isolation");
     let (config_home, state, workspace, empty_bin) =
         (root.join("config"), root.join("root"), root.join("ws"), root.join("empty-bin"));
     std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
@@ -878,8 +909,7 @@ fn full_auto_reaches_a_started_daemon_and_is_reported_against_a_live_one() {
         BufReader::new(stream).read_line(&mut line).expect("greeting");
         serde_json::from_str(&line).expect("greeting JSON")
     }
-    let root = std::env::temp_dir().join(format!("ta-full-auto-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let root = Scratch::new("full-auto");
     let (config_home, state) = (root.join("config"), root.join("root"));
     std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
     std::fs::write(
@@ -986,8 +1016,7 @@ fn cwd_reaches_a_started_daemon_and_is_reported_against_a_live_one() {
         BufReader::new(stream).read_line(&mut line).expect("greeting");
         serde_json::from_str(&line).expect("greeting JSON")
     }
-    let root = std::env::temp_dir().join(format!("ta-cwd-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let root = Scratch::new("cwd");
     let (config_home, state, first, second) =
         (root.join("config"), root.join("root"), root.join("one"), root.join("two"));
     std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
@@ -1074,8 +1103,7 @@ fn cwd_reaches_a_started_daemon_and_is_reported_against_a_live_one() {
 /// itself refuse it, before any session exists.
 #[test]
 fn a_cwd_that_is_not_a_directory_is_refused_before_a_session_starts() {
-    let root = std::env::temp_dir().join(format!("ta-cwd-refused-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let root = Scratch::new("cwd-refused");
     let config_home = root.join("config");
     std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
     std::fs::write(
@@ -1175,8 +1203,7 @@ fn a_cwd_that_is_not_a_directory_is_refused_before_a_session_starts() {
 /// caught exactly that).
 #[test]
 fn a_leader_parked_under_a_waiting_run_reports_the_park_instead_of_timing_out() {
-    let root = std::env::temp_dir().join(format!("ta-park-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let root = Scratch::new("park");
     let (config_home, state) = (root.join("config"), root.join("root"));
     std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
     std::fs::write(
@@ -1220,8 +1247,7 @@ fn a_leader_parked_under_a_waiting_run_reports_the_park_instead_of_timing_out() 
 /// leader's driver at boot, which is the cheapest real park to produce: no model call is involved.
 #[test]
 fn the_instances_list_says_why_an_instance_is_parked() {
-    let root = std::env::temp_dir().join(format!("ta-instances-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let root = Scratch::new("instances");
     let (config_home, state, ws) = (root.join("config"), root.join("root"), root.join("ws"));
     std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
     std::fs::create_dir_all(&ws).unwrap();
@@ -1307,8 +1333,7 @@ fn the_instances_list_says_why_an_instance_is_parked() {
 /// legal: it is created (`init`, `daemon`, or the client that starts the daemon).
 #[test]
 fn a_state_root_that_is_a_file_is_refused_by_every_entry_point() {
-    let root = std::env::temp_dir().join(format!("ta-state-root-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let root = Scratch::new("state-root");
     let (config_home, dir, db_like, plain, uninitialized) =
         (root.join("config"), root.join("dir"), root.join("db-file"), root.join("plain"), root.join("uninitialized"));
     std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
@@ -1374,8 +1399,7 @@ fn a_state_root_that_is_a_file_is_refused_by_every_entry_point() {
 /// `teamagents`, `exec` and `daemon` alike.
 #[test]
 fn the_daemon_grants_the_leader_the_team_authority() {
-    let root = std::env::temp_dir().join(format!("ta-grants-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let root = Scratch::new("grants");
     let (config_home, state) = (root.join("config"), root.join("root"));
     std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
     std::fs::write(
@@ -1462,8 +1486,7 @@ fn the_daemon_grants_the_leader_the_team_authority() {
 #[test]
 fn an_unbootable_instance_parks_itself_and_the_session_survives() {
     use std::io::{BufRead, BufReader, Write};
-    let root = std::env::temp_dir().join(format!("ta-unbootable-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let root = Scratch::new("unbootable");
     let (config_home, state, ws) = (root.join("config"), root.join("root"), root.join("ws"));
     std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
     std::fs::create_dir_all(&ws).unwrap();
@@ -1624,8 +1647,7 @@ impl Rpc {
 /// a revoke must name, so no client could have revoked anything.
 #[test]
 fn the_authority_surface_grants_and_revokes_through_the_daemon() {
-    let root = std::env::temp_dir().join(format!("ta-authority-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let root = Scratch::new("authority");
     let (config_home, state, ws) = (root.join("config"), root.join("root"), root.join("ws"));
     std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
     std::fs::create_dir_all(&ws).unwrap();
@@ -1819,8 +1841,7 @@ fn the_authority_surface_grants_and_revokes_through_the_daemon() {
 /// instead of letting the session run.
 #[test]
 fn configured_limits_reach_the_goal_and_really_bound_the_session() {
-    let root = std::env::temp_dir().join(format!("ta-limits-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let root = Scratch::new("limits");
     let (config_home, state, ws) = (root.join("config"), root.join("root"), root.join("ws"));
     std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
     std::fs::create_dir_all(&ws).unwrap();
@@ -1911,8 +1932,7 @@ fn configured_limits_reach_the_goal_and_really_bound_the_session() {
 /// parks the instance with the budget as the reason (A18) instead of running.
 #[test]
 fn a_tiny_configured_ceiling_parks_the_session_instead_of_running_it() {
-    let root = std::env::temp_dir().join(format!("ta-limit-tiny-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let root = Scratch::new("limit-tiny");
     let (config_home, state, ws) = (root.join("config"), root.join("root"), root.join("ws"));
     std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
     std::fs::create_dir_all(&ws).unwrap();
@@ -2005,8 +2025,7 @@ fn a_tiny_configured_ceiling_parks_the_session_instead_of_running_it() {
 #[test]
 fn a_daemon_stops_gracefully_on_sigterm() {
     use std::io::Read;
-    let root = std::env::temp_dir().join(format!("ta-daemon-term-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let root = Scratch::new("daemon-term");
     let (config_home, state) = (root.join("config"), root.join("state/teamagents/v2"));
     std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
     std::fs::write(

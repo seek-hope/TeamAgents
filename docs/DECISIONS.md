@@ -18,6 +18,31 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-175 A panicking test skipped its own cleanup, so one CI failure reported as two (2026-09-27)
+
+The wart this campaign hit twice. `engine/tests/cli.rs` builds a scratch tree per test
+(`/tmp/ta-<label>-<pid>`) and removes it on the last line — so a test that panics never removes it, and
+`make test`'s leak guard reports the leftovers as a *second* failure (D-111's guard fails the run on a leaked
+scratch directory, D-147). Measured: the D-171 finding leaked three such trees, the D-174 work leaked two more,
+and both times the cleanup was mine to do by hand afterwards. The `Daemon` guard (D-160) had already solved the
+same problem for the daemon half.
+
+**Changed** (`engine/tests/cli.rs`): `Scratch` is that guard's sibling — a `Deref<Target = Path>` wrapper whose
+`Drop` removes the tree, so every exit path including a panic cleans up. All 24 creation sites now read
+`let root = Scratch::new("<label>");` (the pre-test `remove_dir_all` lives inside the constructor), and the
+tests keep their explicit final removal, which is now belt-and-braces rather than the only path.
+`docs/DEVELOPMENT.md` names both guards where the leak rules are described.
+
+**Measured** (2026-09-27): `make check` green (374 tests, 22 hygiene audits), `make check-nobwrap` and
+`make check-broken-sandbox` green (374 each, no `/tmp/ta-*` left), `make probe-offline` 8/8. **Control**:
+reverting D-171's tolerance byte-for-byte makes `doctor_predicts_whether_an_mcp_service_can_start` panic under
+the no-bwrap condition, exactly the case that leaked three trees before — the run fails with that single test
+failure and `/tmp/ta-*` is **empty** afterwards (checked directly, not through the audit, which never runs
+because `make test` stops at the failing suite). The file was restored byte-identically.
+
+Ceiling: a test that panics *while a detached daemon is live* can still leave the daemon (the guard is about the
+tree); that is the leak guard's half, and it stops and reports those by pid (D-147/D-150).
+
 ## D-174 `/artifacts/` was described as shared, and nothing collects artifacts (2026-09-27)
 
 Two defects in the artifact subsystem, found while checking where the `reason` row field of D-165 is documented.
