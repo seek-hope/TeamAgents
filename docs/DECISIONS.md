@@ -18,6 +18,29 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-120 The budget's live half needs no credentials (2026-09-26)
+
+A18's ceiling was verified in-process and by the CLI tests, and D-97 recorded a live run — but as a *manual*
+run, so nothing re-runnable stood behind the claim that a user's ceiling is enforced before any money is spent.
+It is now a probe, `python3 review/dogfood/budget.py`, and its most useful property is what it does *not* need:
+
+* **no credentials and no network.** The refusal happens before the provider is asked for anything
+  (§7's admission gate), so a dummy key in the environment is enough — the probe can be re-run on any machine,
+  including one with no API key and no route out. (Its sibling `deadline.py` cannot make that promise: it needs a
+  real first turn.)
+* it asserts the *whole* shape in one 1-second run: `exec` exits **1** with `end=failed` and a `failure` naming
+  the ceiling (`goal goal-s-main budget exceeded: known 0 + reserved 0 + est 2228 > max 1000`), the session
+  holds **zero** `model_requests` rows (nothing was spent), a `budget_refused` event carries the same arithmetic
+  (`known`/`reserved`/`est`/`max`), the leader is `PARKED` with that sentence, the goal carries
+  `max_total_tokens`, and the attached `--check` never ran (D-96: a turn that never started verifies nothing).
+
+Measured 2026-09-26: three runs green (two at `max_total_tokens = 1000`, one at `500`, which correctly reports
+`est 2228 > max 500`), 0.6–1.0 s each.
+
+Ceiling: the probe covers the *refusal* half — the ceiling is below one request, so the run is over before any
+model call. The other half of A18 ("the ceiling bounds a session that does spend") stays with the in-process and
+CLI tests and D-97's recorded live run, because observing it honestly needs real tokens spent.
+
 ## D-119 A09's live half: the crash that leaves nothing verifiable (2026-09-26)
 
 `crash.py` is the *recoverable* crash (A08/A11): the daemon dies, the runner survives, its receipt is consumed

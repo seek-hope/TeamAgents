@@ -626,3 +626,22 @@ three predicates, and the two wrong ones are the interesting part:
   which is correct (§6.2) but is A08's scenario: the probe measured a *successful* replay instead of an unknown
   outcome;
 * the shipped one — the runner's journal is `START_ACCEPTED`/`RUNNING` **and** the delegated task is `RUNNING`.
+
+## `budget.py`: the ceiling is enforced before any money is spent (A18)
+
+```bash
+python3 review/dogfood/budget.py
+python3 review/dogfood/budget.py --state-dir /tmp/ta-budget --max-tokens 500
+```
+
+A session whose `[limits] max_total_tokens` is below one request must refuse the request **before any model
+call**, park the leader with the runtime's own arithmetic, and report that through the headless client instead of
+waiting out its deadline (D-97). The probe runs one `exec` (with a `--check` attached, to catch the case where a
+turn that never started still verifies something) and asserts on the session database: zero `model_requests`
+rows, a `budget_refused` event carrying `known 0 + reserved 0 + est 2228 > max 1000`, the leader `PARKED` with
+that sentence, the goal carrying the ceiling, exit **1** with the same words in the report's `failure`, and no
+acceptance command run (D-96).
+
+Unlike its siblings this probe needs **no credentials and no network**: the refusal precedes the provider, so a
+dummy `api_key_env` value is enough and the run is over in about a second. Measured 2026-09-26: three runs green
+(two at 1000 tokens, one at 500 — which correctly reports `> max 500`).
