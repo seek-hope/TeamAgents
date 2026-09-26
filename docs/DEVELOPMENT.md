@@ -38,7 +38,8 @@ and the documentation's citations with `review/citations.py` (a cited qualified 
 or a repository path must exist in the tree, unless the line records it as removed) and `D-<n>` citations with
 `review/decision_citations.py` (a cited decision must be a heading in `docs/DECISIONS.md`, or one of the
 earlier rules its index table keeps in force, unless the line records it as history — D-170).
-`review/build_references.py` fails when a `Makefile` target or a workflow runs a script that does not
+`review/flag_fields.py` fails when a CLI parser stores a flag into an `Args` field that no code reads
+(the `--engine` shape, D-180/D-181). `review/build_references.py` fails when a `Makefile` target or a workflow runs a script that does not
 exist or that git does not carry, which is how a new audit stays untracked through a `git commit -a`
 (D-179). `review/silent_skips.py` fails a test that returns from a capability guard without saying
 why (a silent no-op, D-121). `review/command_params.py` fails a command payload field

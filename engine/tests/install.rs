@@ -72,6 +72,24 @@ impl Fixture {
         .unwrap();
     }
 
+    /// The documented knob instead of `--bin-dir`: `TEAMAGENTS_BIN_DIR` (D-181). Nothing exercised its effect
+    /// before — the flag was tested, the variable a user is told to set was not.
+    fn run_with_env_dir(&self) -> Output {
+        let mut command = Command::new("/bin/sh");
+        command
+            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../install.sh"))
+            .arg("--archive")
+            .arg(self.archive())
+            .env("TEAMAGENTS_BIN_DIR", self.bin())
+            .env("XDG_CONFIG_HOME", self.root.join("config"))
+            .env("TA_FIXTURE_DIR", self.root.join("release"))
+            .env("TA_TRANSPORT_LOG", self.root.join("transport.log"));
+        let mut paths = vec![self.root.join("tools")];
+        paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()));
+        command.env("PATH", std::env::join_paths(paths).unwrap());
+        command.output().unwrap()
+    }
+
     fn run(&self, local: bool) -> Output {
         let mut command = Command::new("/bin/sh");
         command
@@ -127,6 +145,22 @@ fn local_install_and_legacy_config_preservation() {
     symlink(f.root.join("missing"), f.config()).unwrap();
     assert!(f.run(true).status.success());
     assert!(!f.root.join("missing").exists());
+}
+
+#[test]
+fn the_bin_dir_knob_decides_where_the_installer_puts_the_binaries() {
+    let f = Fixture::new();
+    let empty = f.root.join("empty");
+    fs::create_dir_all(&empty).unwrap();
+    let output = f.run_with_env_dir();
+    assert!(output.status.success(), "{output:?}");
+    assert!(f.bin().join("teamagents").is_file(), "the engine binary lands where the knob points");
+    assert!(f.bin().join("teamagents-tui").is_file(), "and so does the front-end");
+    assert!(!empty.join("teamagents").exists(), "and nowhere else");
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains(&f.bin().to_string_lossy().to_string()),
+        "the summary names the knob's directory: {output:?}"
+    );
 }
 
 #[test]

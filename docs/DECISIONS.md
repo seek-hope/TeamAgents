@@ -18,6 +18,38 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-181 The knob effects nobody exercised, and a gate for D-180's shape (2026-09-27)
+
+The two candidates D-180 left open, both finished here.
+
+**The knobs whose *effect* nothing tested.** `review/env_knobs.py` keeps the documented knob table equal to the
+code's reads, but three knobs had no check that setting them does what the table says: `TEAMAGENTS_TUI` (the
+engine's front-end discovery), `TEAMAGENTS_BIN_DIR` (the installer's destination) and the `TEAMAGENTS_ENGINE`
+that turned out to be inert (D-180). The first two are documented for users, so they now have effect tests:
+`cli::the_tui_knob_decides_which_front_end_the_engine_launches` gives the engine a recorder and asserts the
+socket it was launched with (the control leaves the knob unset, where the discovery falls back to the
+repository's own TUI and that TUI refuses a non-terminal run — the observable difference between "the knob was
+used" and "the default was"), and
+`install::the_bin_dir_knob_decides_where_the_installer_puts_the_binaries` installs through the variable alone
+and asserts both binaries land there and nowhere else.
+
+**A gate for the shape itself** (`review/flag_fields.py`, in `make hygiene`): for each `struct Args` in the two
+CLI parsers it takes the field names and classifies every mention by context — blanking strings and comments
+first, then treating `field:` (no `.` in front) as a declaration or literal key, `.field = …` as an assignment,
+and everything else (`args.field`, `self.field.method()`, a bare name in a pattern) as a read. A field with no
+read at all is a finding, which is exactly D-180's `engine_bin`. It is the flag-level sibling of
+`review/command_params.py` (D-124's payload-field check), and it exists because neither rustc's `dead_code` nor
+`review/dead_code.py` (public items) sees this shape.
+
+**Measured** (2026-09-27): both new tests pass (0.2 s and 0.1 s); the gate is green on the tree — "21 parsed
+flag field(s) across 2 parser(s): every one is read somewhere" — and its **controls** bite: a synthetic
+`stale: String` produces one finding, and re-adding `engine_bin` (written, never read) reproduces the D-180
+finding verbatim. Writing the audit also reproduced two of this campaign's own lessons in miniature: the first
+version read the *declaration* line as a struct literal and reported nothing (a `re.M` slip, D-170's), and the
+second counted braces inside strings and swallowed nine thousand characters of `main.rs`, hiding the reads it
+was looking for — the committed version blanks string and comment bodies before balancing, and the config
+`pub`/`impl` shapes are named in its comments.
+
 ## D-180 `--engine` was parsed, documented and read by nothing (2026-09-27)
 
 Checking the last documented surface whose *effect* (rather than existence) no test exercised — the seven

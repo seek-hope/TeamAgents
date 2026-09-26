@@ -541,6 +541,63 @@ fn doctor_reports_the_artifact_footprint() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// D-181: `TEAMAGENTS_TUI` is the documented way to point the engine at the front-end (`docs/DEVELOPMENT.md`'s
+/// knob table: "where `teamagents` finds `teamagents-tui`; its own error message names this variable"), and
+/// nothing exercised its *effect* — only the message that names it. The test gives the engine a recorder and
+/// asserts what it was launched with; the control leaves the knob unset, where the discovery falls back to the
+/// repository's own TUI, which refuses a non-terminal run (that refusal is how the fallback shows up in a test).
+#[test]
+fn the_tui_knob_decides_which_front_end_the_engine_launches() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = Scratch::new("tui-knob");
+    let (config, state, out) = (root.join("config"), root.join("root"), root.join("argv"));
+    std::fs::create_dir_all(config.join("teamagents")).unwrap();
+    std::fs::write(
+        config.join("teamagents/config.toml"),
+        "[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\n\
+         api_key_env = \"TA_TUI_KEY\"\nbase_url = \"http://127.0.0.1:1/v1\"\n",
+    )
+    .unwrap();
+    let recorder = root.join("fake-tui.sh");
+    std::fs::write(&recorder, format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\n", out.display())).unwrap();
+    std::fs::set_permissions(&recorder, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let run = |tui: Option<&std::path::Path>| -> std::process::Output {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_teamagents"));
+        command
+            .env("XDG_CONFIG_HOME", &config)
+            .env("XDG_STATE_HOME", root.join("state"))
+            .env("TA_TUI_KEY", "test-value")
+            .env("TEAMAGENTS_TUI", tui.unwrap_or(std::path::Path::new("")))
+            .args(["--state-root"])
+            .arg(&state)
+            .output()
+            .expect("run teamagents")
+    };
+
+    // the knob decides: the recorder sees the daemon socket the engine started for it
+    let output = run(Some(&recorder));
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let argv = std::fs::read_to_string(&out).unwrap_or_default();
+    assert!(argv.contains("--daemon"), "the front-end is launched with the socket: {argv:?}");
+    assert!(
+        argv.contains(&state.join("daemon.sock").to_string_lossy().to_string()),
+        "and the socket is this session's: {argv:?}"
+    );
+    assert!(state.join("daemon.sock").exists(), "the engine booted the session first");
+    assert!(stop_detached_daemon(&state), "the daemon this test started is stopped by pid, not by pattern");
+
+    // control: with the knob unset the discovery falls back to the repository's own TUI, which refuses to run
+    // without a terminal — the observable difference between "the knob was used" and "the default was"
+    let output = run(None);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("needs a real terminal") || stderr.contains("teamagents-tui not found"),
+        "the fallback discovery ran and reached a real TUI (or found none): {stderr}"
+    );
+    stop_detached_daemon(&state);
+}
+
 /// D-169: `init` creates a fresh root at whatever path it is given (D-149), so a path *named like the session
 /// database* used to produce a directory called `session.sqlite` with a database inside it — a layout whose own
 /// `doctor`/`daemon` then fail on. The note names the shape; it never refuses, because a fresh root at any name
