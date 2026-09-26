@@ -18,6 +18,32 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-124 The command payloads are checked against what the command layer reads (2026-09-26)
+
+D-123's defect — the driver sending `error_class` on every `record_attempt` while nothing ever stored it — was
+found by a probe that needed the field, which is luck, not a check. It is a mechanical property though: a
+control command is a method plus a payload, and a payload field the command layer never reads is dropped in
+silence. So it has a detector now:
+
+    python3 review/command_params.py
+    22 commands, 67 payload fields, every one read by core/src/v2/control.rs
+
+It reads every `command(…, "method", json!({…}))` call in `engine/src`, takes each payload's top-level keys, and
+compares them with the keys the command layer reads anywhere in `control.rs` (a field read by a helper counts —
+`record_attempt`'s `publish` is read by `publish_list`, which is why a per-handler scope would have produced a
+false positive here). It runs inside `make hygiene`, so the next field that is sent and never read fails
+`make check` instead of waiting for someone to need it.
+
+Control: with `params["error_class"]` removed again (the pre-D-123 shape) it reports exactly
+`record_attempt: the command layer reads no ['error_class']`, listing all four driver call sites — the same four
+that were found by hand. The current tree has zero findings, which is the honest result of the sweep: D-123 was
+the only such field.
+
+Ceiling: the payload is parsed by brace and key matching, not by a Rust parser, so a key built at runtime is
+invisible; fields sent by the *clients* (`exec`, the TUI) rather than by the engine are out of scope, because
+the scan only reads `engine/src`. Both limits make it quieter than a full check — every finding it does report
+is a field the engine takes the trouble to fill.
+
 ## D-123 A19's whole path over a real socket, and the failure class nothing stored (2026-09-26)
 
 A19's two halves existed separately: `providers_fake` classifies a truncated stream per protocol against

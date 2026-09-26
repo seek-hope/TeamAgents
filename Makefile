@@ -156,6 +156,8 @@ language-check:
 # one heading per entry, newest-first, each with a body. `review/decisions_log.py` states the rules.
 # The documentation's citations are the evidence ledger's commands (D-110): a `crate::test` or a path that
 # names nothing in the tree fails `make check`; the removed-item tables in DECISIONS.md are notes, not errors.
+# A command payload field nothing reads is dropped silently (D-123 was one: `error_class`); the caller's
+# fields and the command layer's reads are compared per method (D-124).
 # A test that skips must say so (D-121): a bare `if <condition> { return; }` inside a test makes it a silent
 # no-op, which is how two sandbox tests contributed nothing on a machine without bubblewrap.
 hygiene: language-check
@@ -168,3 +170,4 @@ hygiene: language-check
 	python3 review/decisions_log.py
 	python3 review/citations.py
 	python3 review/silent_skips.py
+	python3 review/command_params.py
