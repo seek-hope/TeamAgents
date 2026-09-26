@@ -30,6 +30,7 @@ import pathlib
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
@@ -83,6 +84,20 @@ SETS = {"offline": OFFLINE, "models": MODELS, "all": OFFLINE + MODELS}
 TIMEOUTS = {"offline": 300, "models": 1800, "all": 1800}
 
 
+def select(set_name: str, only: list | None) -> list:
+    """The probes a run will execute: the whole set, or every entry whose file name was asked for.
+
+    `providers.py` is deliberately in both sets, so `--only providers.py` can select two entries with different
+    arguments; `probes.py --self-check` states that.
+    """
+    return [p for p in SETS[set_name] if not only or p[0] in only]
+
+
+def needs_credentials(set_name: str) -> bool:
+    """Does this set need a model credential? `--self-check` states the answer for every set."""
+    return set_name in ("models", "all")
+
+
 def daemons() -> int:
     """Live session daemons, by the subcommand (D-111's predicate, not the binary's name)."""
     listing = subprocess.run(["ps", "-eo", "comm,args"], capture_output=True, text=True).stdout
@@ -120,14 +135,58 @@ def strays() -> set:
     return {p.name for p in pathlib.Path(os.environ.get("TMPDIR", "/tmp")).glob("ta-*") if p.is_dir()}
 
 
+def self_check() -> int:
+    """Check the harness's own rules, with no model, no daemon and no probe run (D-144).
+
+    The harness has accumulated rules that are easy to get subtly wrong — a guard that counts the wrong thing is
+    exactly the defect this session kept finding in the probes' assertions — so the rules that can be stated
+    without a session are stated here: the stray guard's precision, the selection, and the budget's coverage.
+    """
+    findings = []
+    if select("offline", None) != OFFLINE or select("all", None) != OFFLINE + MODELS:
+        findings.append("select(set, None) must be the set itself")
+    if len(select("all", ["providers.py"])) != 2 or len(select("offline", ["providers.py"])) != 1:
+        findings.append("providers.py is in both sets, so --only must select it in each set it appears in")
+    if select("offline", ["nothing.py"]):
+        findings.append("an unmatched --only must select nothing (the caller reports it)")
+    if set(SETS) != set(TIMEOUTS):
+        findings.append(f"every set needs a per-probe budget: sets={sorted(SETS)} timeouts={sorted(TIMEOUTS)}")
+    if needs_credentials("offline") or not needs_credentials("models") or not needs_credentials("all"):
+        findings.append("the credential requirement is wrong: only the model sets need one")
+
+    keep = os.environ.get("TMPDIR")
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["TMPDIR"] = tmp
+            (pathlib.Path(tmp) / "ta-a-directory").mkdir()
+            (pathlib.Path(tmp) / "ta-a-file").write_text("")   # files with the prefix appear from elsewhere
+            counted = strays()
+            if counted != {"ta-a-directory"}:
+                findings.append(f"the stray guard must count directories only, got {sorted(counted)}")
+    finally:
+        if keep is None:
+            os.environ.pop("TMPDIR", None)
+        else:
+            os.environ["TMPDIR"] = keep
+
+    for finding in findings:
+        print("FAIL:", finding)
+    if not findings:
+        print(f"self-check ok: selection, budgets and the stray guard over {len(SETS)} sets")
+    return 1 if findings else 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--list", action="store_true", help="print the probes in both sets and exit")
+    parser.add_argument("--self-check", action="store_true", help="check the harness's own rules and exit")
     parser.add_argument("--only", action="append", help="run one probe by file name (repeatable)")
     parser.add_argument("--set", choices=sorted(SETS), default="offline",
                         help="which set to run (default: offline, the credential-free one)")
     args = parser.parse_args()
 
+    if args.self_check:
+        return self_check()
     if args.list:
         for label, probes in (("offline (no model, no credential)", OFFLINE), ("models (credentials required)", MODELS)):
             print(f"  {label}:")
@@ -135,12 +194,12 @@ def main() -> int:
                 print(f"    {name:20s} {' '.join(extra):14s} {why}")
         return 0
 
-    chosen = [p for p in SETS[args.set] if not args.only or p[0] in args.only]
+    chosen = select(args.set, args.only)
     if not chosen:
         print(f"no probe matches {args.only}")
         return 1
-    if args.set in ("models", "all") and not (os.environ.get("DEEPSEEK_API_KEY", "").strip()
-                                              or os.environ.get("KIMI_API_KEY", "").strip()):
+    if needs_credentials(args.set) and not (os.environ.get("DEEPSEEK_API_KEY", "").strip()
+                                            or os.environ.get("KIMI_API_KEY", "").strip()):
         print("the models set needs a credential: set DEEPSEEK_API_KEY (the probes' default) or KIMI_API_KEY, "
               "or run --set offline for the seven that need neither")
         return 2

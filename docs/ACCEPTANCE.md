@@ -220,6 +220,13 @@ amended (D-49/D-50).
   would close it is a task set (or an instruction shape) that makes delegation the shortest path, which is an
   experiment to design rather than a defect to fix.
 
+- **What a member was offered at a request is not recorded.** The tool surface is computed per request
+  (`driver::team_kernel`, from the bindings and the live grants) and only the instance's *configured* profile is
+  persisted, so after a run nothing says which tools a member was actually offered when it answered. Two
+  diagnoses on 2026-09-26 would have been direct instead of inferential with that record (D-140's "did it try?"
+  and D-143's "was the tool there?"). Recording it means a change to `model_requests` (a column) or a new event,
+  which is new persisted and protocol-visible surface, so it needs the user's word.
+
 - **A worker needs the user's grant for the shared-workspace shell** (D-61): a spawned worker holds no
   `shell@workspace` (§5.1), so until the user runs `teamagents authority grant --subject <id> --action shell
   --scope workspace` it works with the file, web and skill tools only. The surface exists and is verified, but

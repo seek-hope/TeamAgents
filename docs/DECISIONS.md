@@ -18,6 +18,34 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-144 The probe harness checks its own rules (2026-09-26)
+
+The harness that runs the probe sets accumulated rules of its own, and this session showed three times that a
+check counting the wrong thing is the expensive kind of defect — D-130's mentions that were not calls, D-140's
+"runs" that were calls of a *different* command, and D-143's witness that counted the leader's `delegate` as a
+shell attempt. Its rules are now stated in a runnable check, with no model, no daemon and no probe run:
+
+    python3 review/dogfood/probes.py --self-check
+
+It states four things: the stray guard counts **directories** (plain files with the `ta-` prefix appear in
+`TMPDIR` from elsewhere on this machine — measured: `ta-cap-stdout`, `ta-cap-stderr` and an earlier
+`ta-wide-d71.log`, none of which this tree writes — and counting them reports a leak that is not there);
+`select()` returns a set unchanged, selects *every* entry whose name was asked for (so `providers.py`, which is
+deliberately in both sets with different arguments, yields two for `--only providers.py`), and selects nothing
+for a name that matches nothing; every set has a per-probe budget (`set(SETS) == set(TIMEOUTS)`, so a new set
+cannot silently fall back); and only the model sets need a credential.
+
+Both `make probe-offline` and `make probe-models` run the check before their set, so a harness rule that breaks
+is reported before twenty-four probes have spent real calls.
+
+Evidence: `--self-check` prints "self-check ok: selection, budgets and the stray guard over 3 sets" and exits 0,
+and two controls, each reverted byte-identically, make it fail — counting files in the stray guard gives "must
+count directories only, got ['ta-a-directory', 'ta-a-file']", and dropping a set from the budgets gives "every
+set needs a per-probe budget: sets=['all', 'models', 'offline'] timeouts=['models', 'offline']".
+
+Ceiling: the check covers what can be stated without a session. The daemon predicate, the TERM-then-KILL stop and
+the keep-on-failure path need a real probe run, so they are covered by the sets themselves rather than here.
+
 ## D-143 The two probes that failed the sweep now say which shape they saw (2026-09-26)
 
 Three of D-141's failures were reported as bare assertions, and a bare assertion is what made them expensive to
@@ -69,11 +97,19 @@ False on the earlier successful run's own session (its grant was revoked at the 
 `grant_revoked` event) and True on a copy with the revocation cleared, and the sharpened message prints
 `grant=live, task=none after 11 requests, attempts=[… five SUCCEEDED …]` under the artifact control.
 
-Ceiling: what the message reports is the *grant*, not the schema list that went out with a request — that surface
-is assembled per request and only the instance's *configured* profile is persisted — so "grant=live and no
-attempt" is read as the model's choice because the code path reads the grants live, not because that run left a
-record of the tools it offered. A run reporting `grant=ABSENT`, or an attempt whose receipt is a refusal, is the
-product-side finding this is watching for.
+**The rule the reading rests on is pinned by tests, not only by reading code** (a correction to this entry's
+first draft): `v2_supervisor::the_offered_surface_follows_the_grants` covers the direction without a grant (a
+spawned worker holds no `shell@workspace` and every call is refused), and
+`v2_supervisor::a_users_grant_reaches_the_workers_surface_at_the_next_request` covers both directions of the
+change — the worker's first request carries no `shell`, the next one after an `issue_grant` **does**, and every
+request after a revoke does not — all issued through `submit_user`, the same single-writer path the daemon's
+`authority` client uses. So "grant=live and no attempt" is a model choice on verified behaviour.
+
+Ceiling: what the *run* cannot show is the schema list that went out with a request — that surface is assembled
+per request and only the instance's *configured* profile is persisted — so a record of what a member was offered
+would be a candidate addition rather than something this probe can read; it is recorded with the known gaps in
+`docs/ACCEPTANCE.md` because it is new persisted surface and needs the user's word. A run reporting
+`grant=ABSENT`, or an attempt whose receipt is a refusal, remains the product-side finding this watches for.
 
 **The live occurrence, later the same evening** (`make probe-models` again) printed exactly that message and then
 showed the witness was too loose: `grant=live, task=none after 10 requests, attempts=[('13d4b5:0', 'SUCCEEDED')]`
