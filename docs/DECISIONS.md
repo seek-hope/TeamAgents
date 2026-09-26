@@ -73,7 +73,9 @@ classifies.
 
 `docs/ACCEPTANCE.md` opens with "`make check` is green … preconditions for every item below", and the GitHub
 workflow runs exactly that on a runner whose kernel forbids unprivileged user namespaces and which has no
-bubblewrap installed. That machine could not pass it. `cli::exec_takes_the_prompt_from_stdin_and_runs_the_acceptance_check`
+bubblewrap installed — the workflow comment said so, and it is now checked outside this repository too: the
+published `actions/runner-images` package lists for Ubuntu 24.04 and 22.04 (`ubuntu-latest` is 24.04) contain
+no `bubblewrap` entry, so the runner is the "bwrap absent" machine this entry fixes. That machine could not pass it. `cli::exec_takes_the_prompt_from_stdin_and_runs_the_acceptance_check`
 asserted that a `--check` command runs and reports `ok` — true only where a sandbox exists — and it has no
 capability guard, so on the runner the run reports the check as refused and the test fails:
 
