@@ -7,10 +7,15 @@ the user guide's §2 explains the sections in prose: `[[checks]]` (§2.1), `[lim
 
 Two rules decide whether a key is *honoured*, and both are part of the trust story:
 
-* **Only your own config is trusted for policy.** `hooks`, `retention`, `checks` and `[permissions] mode` are read
-  from the user config only; a cloned project cannot install a hook, a check or a cleanup policy (D-74/D-75). A
-  project file *is* read for `models` and `tools`, and for `skills_paths`/`instruction_files` only with
-  `[permissions] trust_project_tools = true`.
+* **Only your own config is read at all: the project file is not.** The merge loader for a repository-local
+  `<cwd>/.teamagents/config.toml` is implemented and unit-tested (`config::load_user_config_for`: project
+  `models` and `tools` merge in; `skills_paths`/`instruction_files` need `[permissions] trust_project_tools =
+  true`; `hooks`, `retention`, `checks` and `[permissions] mode` may only come from the user config), but **no
+  entry point calls it yet** — the daemon, TUI and `exec` load the user config only, so cloning a repository
+  cannot change a session today, and this table describes the user config. `docs/USER-GUIDE.md` §2 says the same
+  in prose, and the open decision (wiring it changes what a cloned repository can influence) is recorded in
+  `docs/ACCEPTANCE.md`'s known gaps. `python3 review/project_config_claim.py` checks that every document agrees
+  with the code on this point (D-133).
 * **A key this build accepts but does not apply says so** in the table below and in `doctor` (D-102's
   `instruction_files`, D-75's `codex_profile` and the `[retention]` bounds) — accepted-and-ignored would otherwise
   look exactly like accepted-and-working.

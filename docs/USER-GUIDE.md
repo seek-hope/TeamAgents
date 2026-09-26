@@ -411,8 +411,9 @@ teamagents tasks cancel --id t-prose    # releases a delegator waiting on a task
   **never replayed**.
 - **Binding one is writing it down** (D-74): a `[tools.<name>] kind = "mcp"` entry in your config *is* the
   binding, exactly like `[tools.web]` for the web tools — the service starts with the session and its tools
-  reach every member's model surface as `<name>_<tool>`. Only the merged, trust-filtered config is used, so a
-  cloned project's tools load only with `[permissions] trust_project_tools = true`. `required = true` means
+  reach every member's model surface as `<name>_<tool>`. Only your **user** config is read today (a
+  repository-local project file is not — §2), so a cloned project cannot bind a service at all yet; when the
+  project loader is wired, its `tools` will need `[permissions] trust_project_tools = true`. `required = true` means
   the session must not start without it; `doctor` lists each declared service and whether its command can run,
   so a typo shows up there instead of in `daemon.log`.
 - **Where a stdio server runs** is your choice, and the default is the safe one (D-106):

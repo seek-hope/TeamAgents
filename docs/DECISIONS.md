@@ -18,6 +18,46 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-133 The config reference said the project file was read; nothing reads it (2026-09-26)
+
+`docs/CONFIG.md` opened its trust story with "A project file *is* read for `models` and `tools`, and for
+`skills_paths`/`instruction_files` only with `[permissions] trust_project_tools = true`". Two more places said
+the same in passing: the user guide's MCP bullet ("a cloned project's tools load only with `[permissions]
+trust_project_tools = true`") and the A25 acceptance row ("`[tools.<name>] kind = "mcp"` in the user config
+(or a trusted project config) loads at session start"). All three were false. The daemon, TUI and `exec` load
+the **user** config (`load_user_config(&user_config_path())`); `load_user_config_for`, the re-parse that merges
+`<cwd>/.teamagents/config.toml` under those trust rules, is called from nothing but its own unit tests — so a
+cloned repository cannot change a session at all today. `docs/ACCEPTANCE.md`, `docs/USER-GUIDE.md` §2 and
+`docs/PRODUCT-COMPARISON.md` already said exactly that, so the tree contradicted itself and a reader could
+not tell which half to believe.
+
+The drift has an honest cause: the loader *exists*, is implemented, is tested and is described in D-74's design
+note, so prose about what the loader does reads like prose about what the product does. That is the same shape
+as D-130's "a test drives it" — a fact that is one step away from the behaviour being claimed.
+
+The three documents now say the truth (reusing `USER-GUIDE.md` §2's wording), and **no code changed**: wiring
+the loader is a decision recorded in `docs/ACCEPTANCE.md`'s known gaps, because it changes what a cloned
+repository can influence (including a malformed project file failing the session start). What the tree gained
+instead is a check that the claim cannot drift again: `python3 review/project_config_claim.py`, in
+`make hygiene`. It computes the fact from the code — is there a **call site** of `load_user_config_for` in
+`core|engine|tui/src` outside a `#[cfg(test)] mod`? — and then requires every document to agree with it: four
+negative sentences must be present while it is unwired, and the three wordings that claimed the merge is live
+must be absent. Wiring the loader therefore fails the check until the sentences and the list change together,
+which is the point: one fact with several statements, not several opinions.
+
+Evidence, with the two controls the D-122 rule asks for (each reverted byte-identically afterwards):
+`project_config_claim.py` prints "not called by the product's own code (0 production call site(s))" and exits
+0 on the fixed tree; re-adding "A project file is read for `models` and `tools`." to `CONFIG.md` fails with
+that sentence named; and inserting one production call site (`let _ =
+crate::config::load_user_config_for(std::path::Path::new("."));` at `cli.rs`'s prod call to
+`load_user_config`) makes all four documents report as stale and prints the note naming what to rewrite. The
+comparison is word-based, so markdown emphasis and line wrapping cannot hide a sentence — both were hit while
+writing it (`*not* read yet` and a sentence split across two lines).
+
+Ceiling: the positive half is a blacklist of the three wordings that were wrong, so a *new* way of claiming the
+merge is live is not caught; and the fact is a call-site count, so a call reached through dynamic dispatch
+would look like no call at all.
+
 ## D-132 The Kani proofs were re-run; the toolchain was there all along (2026-09-26)
 
 D-122 recorded a ceiling and `verification/REPORT.md` §0 repeated it: "the Kani toolchain is **not installed in
