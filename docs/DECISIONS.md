@@ -18,6 +18,35 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-156 The harness named its evidence after its pid, and a later run deleted it (2026-09-27)
+
+`review/dogfood/probes.py` keeps a failing probe's state "because that directory is the evidence" (D-140) under
+a root named `teamagents-probe-harness-<pid>`, and removes that root at the end of a run with no failures. This
+work runs inside a sandbox with a **PID namespace per tool call**, so every run gets the same low pid (3, 5, …):
+the same *name* is handed out run after run. The consequence was measured while writing D-143's note — the kept
+session was read, quoted in `docs/DECISIONS.md` and in the A03 row, and an hour later the next clean run had
+removed it as its own root. A citation to a path that no longer exists is worse than no citation: D-140 exists
+because a failing probe's state was gone by the time anyone looked, and this was the same loss caused by the
+very mechanism meant to prevent it.
+
+**Changed**: one place builds a run's scratch root, `harness_root_name()`, and it is `tempfile.mkdtemp` under
+`TMPDIR` — unique by construction, never a pid-shaped name two runs can share. The self-check (which `make
+hygiene` runs, D-155) now calls it twice and fails if the two names are equal or if the name ends in this
+pid; control: with the helper back to `…-<pid>` the self-check reports "the harness root must not be a name two
+runs can share: '/tmp/teamagents-probe-harness-5' / '/tmp/teamagents-probe-harness-5'", reverted
+byte-identically (sha256 `98560d5b…`).
+
+**Recorded honestly**: D-143's note and the A03 row now say the kept session was read while it existed and was
+then deleted by that collision, and that its facts (the grant, the worker's tool list, the two `BLOCKED` tasks)
+are what the note rests on. A kept root is still episode-local (`TMPDIR`), so evidence that has to outlive the
+run belongs in the repository's ignored `review/tmp/` — which is what D-146 did for its own finding, and what a
+future reproduction of D-143 should do.
+
+Ceiling: the fix removes the collision, not the transience — a reboot clears `TMPDIR`, and nothing copies a
+failing session anywhere on its own. Making the harness archive a failed run's session into `review/tmp/` is a
+small change but one that writes into the repository from a tool that currently writes only to `TMPDIR`; it is
+recorded here rather than done unasked.
+
 ## D-155 A probe no set ran, and a count that hid it (2026-09-26)
 
 Re-running the model probes after D-153 (the runner lifecycle is what most of them exercise), `--only
@@ -429,10 +458,10 @@ runtime blocked the goal itself. The probe now *prints* which of the two settled
 (`checks.py`'s "settled by ..."), because both are honest routes to the same promise and only one of them is
 the runtime's decision.
 
-**Kept as evidence**: the failed run's session under `/tmp/teamagents-probe-harness-5/two_gates/a` (the harness
-keeps a failing probe's state on purpose, D-140) with the model's summary and the `never-written` file — quoted
+**Kept as evidence**: the failed run's session — the model's summary and the `never-written` file — quoted
 verbatim, with the four ledger events and the goal row, in `review/tmp/d146-two-gates-satisfiable/` (its
-`README.md`). The model's own `evidence` list records the reasoning — it checked that the file satisfied the
+`README.md`). The harness's own copy of that session lived under a pid-named root and was deleted by a later
+clean run (D-156); the durable copy above is what the record rests on, which is why it was made. The model's own `evidence` list records the reasoning — it checked that the file satisfied the
 check — and its `unverified` list says "Whether the runtime executes the check with cwd = the workspace; I
 verified it passes from the workspace root only".
 
@@ -2213,11 +2242,11 @@ reach a prompt and points at what does work today (a member's instructions are i
 rules in `spawn`/`delegate` text).
 
 **2026-09-27, an exception reproduced and narrowed.** A `make probe-models`-style run of
-`python3 review/dogfood/authority.py` failed *this* way (kept session: `/tmp/teamagents-probe-harness-3/authority`):
+`python3 review/dogfood/authority.py` failed *this* way (kept session under the harness root of that run):
 the user grant `shell@workspace` for `worker_shell_probe` was issued and unrevoked, the worker's `workspace_ref`
 was the shared workspace and its stored profile still carried the `shell` schema, yet both of its following
 task-driven turns *reported* thirteen tools without `shell` (`ls … skill, wait, finish, read_history`) and
-answered `blocked`; the probe's own turn timed out at 600 s and the harness's 1800 s budget killed the probe.
+answered `blocked`; the probe's own turn timed out at 600 s and the harness's 1800 s budget killed the probe. (The kept session was read while it existed and then deleted by the pid-named-root collision of D-156; the facts above are what reading it recorded.)
 The probe's premise — "a live grant means the tool was offered" — is exactly what the worker's transcript
 contradicts, and the harness test for the same shape
 (`v2_supervisor::a_task_driven_worker_turn_sees_a_live_user_grant`, added then) **passes**: the supervisor path

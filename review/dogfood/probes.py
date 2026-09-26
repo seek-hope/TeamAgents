@@ -103,6 +103,16 @@ def select(set_name: str, only: list | None) -> list:
     return [p for p in SETS[set_name] if not only or p[0] in only]
 
 
+def harness_root_name() -> str:
+    """The one place a run's scratch root name is built: unique, never pid-only (D-156).
+
+    `mkdtemp` gives the uniqueness *and* creates the directory (`TMPDIR`, so the harness stays out of a
+    sandboxed `/tmp`). The self-check calls this twice — and removes what it made — because the defect this
+    replaced was a name two runs could share, not a missing directory.
+    """
+    return tempfile.mkdtemp(prefix="teamagents-probe-harness-", dir=os.environ.get("TMPDIR", "/tmp"))
+
+
 def needs_credentials(set_name: str) -> bool:
     """Does this set need a model credential? `--self-check` states the answer for every set."""
     return set_name in ("models", "all")
@@ -143,6 +153,11 @@ def self_check() -> int:
         findings.append("providers.py is in both sets, so --only must select it in each set it appears in")
     if select("offline", ["nothing.py"]):
         findings.append("an unmatched --only must select nothing (the caller reports it)")
+    first, second = harness_root_name(), harness_root_name()
+    shutil.rmtree(first, ignore_errors=True)
+    shutil.rmtree(second, ignore_errors=True)
+    if first == second or pathlib.Path(first).name.endswith(str(os.getpid())):
+        findings.append(f"the harness root must not be a name two runs can share: {first!r} / {second!r}")
     if set(SETS) != set(TIMEOUTS):
         findings.append(f"every set needs a per-probe budget: sets={sorted(SETS)} timeouts={sorted(TIMEOUTS)}")
     if needs_credentials("offline") or not needs_credentials("models") or not needs_credentials("all"):
@@ -219,8 +234,13 @@ def main() -> int:
     # probe's state is kept and named: that directory is the evidence, and D-140 is the case where it was gone
     # by the time anyone looked. The harness root is deliberately not named `ta-*`, so it cannot be mistaken
     # for a probe's own scratch by the guard below.
+    #
+    # The name carries a random component, never just the pid: in a sandbox with a PID namespace per tool call
+    # every run gets the *same* low pid, so a later, clean run deleted an earlier failing run's kept evidence by
+    # naming and then removing the same path — measured 2026-09-27, when D-143's kept session (read and quoted
+    # an hour earlier) was gone (D-156).
     timeout = TIMEOUTS[args.set]
-    harness_root = pathlib.Path(os.environ.get("TMPDIR", "/tmp")) / f"teamagents-probe-harness-{os.getpid()}"
+    harness_root = pathlib.Path(harness_root_name())
     for name, extra, why in chosen:
         state_dir = harness_root / name.removesuffix(".py")
         started = time.time()
