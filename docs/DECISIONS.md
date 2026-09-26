@@ -18,6 +18,43 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-111 The suite leaked daemons, and now it cannot (2026-09-26)
+
+The A14 test (`cli::an_unisolated_shell_refuses_instead_of_running_on_the_host`) drives two `teamagents exec`
+runs, and `exec` *detaches* the daemon it starts — that is its contract, the session outlives the client. Both
+runs therefore left a daemon running under `/tmp/ta-isolation-<pid>/root` and `…/root-control`, and because the
+daemons kept those roots busy the test's `let _ = std::fs::remove_dir_all(&root)` left the directories behind as
+well. The file already states the rule, in the `Daemon` guard at the top: "a leaked daemon would keep running
+(and hold a coordinator lock) for the rest of the suite". Every other test in it either wraps its child in
+`Daemon` or stops the detached daemon with `pkill`; this one did neither.
+
+Measured with only that test selected:
+
+    cargo test --offline --manifest-path engine/Cargo.toml --test cli an_unisolated_shell_refuses_instead_of_running_on_the_host
+    ps -eo pid,etime,args | grep "[t]eamagents daemon"   # two processes, alive after the test binary exited
+    ls -d /tmp/ta-isolation-*                           # their state roots, still there
+
+The test now stops both daemons and *asserts* they are gone (a bounded `pgrep` poll, then the state root is
+removed with `expect` instead of `let _`). Pre-fix control: with the stop disabled the test fails at the new
+assertion and prints the pids it found (`the daemons this test started are gone: 111 137`).
+
+The class also gets a gate, because a per-test rule with nothing behind it is what produced this in the first
+place: `make test` counts `teamagents daemon` processes before and after the three suites and fails when the
+count grows, naming the rule and this entry.
+
+The count is deliberately about *daemons*: the first version counted every `teamagents` process and failed at
+once with "27 daemon(s) behind", all of them `jobs-runner` children. Those are the A12 shape — a command's
+service outlives the job — they linger for tens of seconds and exit on their own, so counting them would have
+made the gate cry wolf. The control below proves it still fires for a real leak:
+
+    make test                                      # 0 daemons before, 0 after
+    make -f /tmp/Makefile.leak test-leak-probe     # "the suite left 1 daemon(s) behind (before: 0, after: 1)"
+
+Ceiling: the count is a delta, so a daemon the developer already had running is not blamed; a *daemon* a test
+forgot to stop is caught, a leaked `jobs-runner` is not (it exits by itself, and nothing here proves how long
+that takes under load — the runner's lifetime rule is A12's). A test that forgets its own stop still leaks
+within its own state root; the gate only notices the daemon.
+
 ## D-110 Nothing checked the documentation's citations (2026-09-26)
 
 `docs/ACCEPTANCE.md` is the evidence ledger and `review/README.md` is its index, so their citations *are* the

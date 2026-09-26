@@ -567,9 +567,10 @@ fn an_unisolated_shell_refuses_instead_of_running_on_the_host() {
     // sandbox and really does leave the file — without this, the absence below would
     // prove nothing (a check whose assertion cannot fail is not a check).
     let control_workspace = root.join("ws-control");
+    let control_state = root.join("root-control");
     std::fs::create_dir_all(&control_workspace).unwrap();
     let host_path = std::env::var("PATH").unwrap_or_default();
-    let control = run(&control_workspace, &root.join("root-control"), std::path::Path::new(&host_path));
+    let control = run(&control_workspace, &control_state, std::path::Path::new(&host_path));
     assert_eq!(control["verification"][0]["ok"], serde_json::json!(true), "the control check runs: {control}");
     assert!(control_workspace.join("ran-unisolated").is_file(), "and leaves its trace: {control}");
 
@@ -581,7 +582,27 @@ fn an_unisolated_shell_refuses_instead_of_running_on_the_host() {
     assert!(error.contains("IsolationUnavailable"), "the refusal names the isolation failure: {report}");
     assert!(!workspace.join("ran-unisolated").exists(), "the check ran somewhere: {report}");
     assert!(std::fs::read_dir(&workspace).unwrap().next().is_none(), "and it must have left nothing behind");
-    let _ = std::fs::remove_dir_all(&root);
+    // `exec` detaches the daemon it starts — that is its contract, the session outlives the client — so the
+    // test has to stop both of them (the same rule the `Daemon` guard at the top of this file states): two
+    // leaked daemons per run stay behind, holding their coordinator locks, and the state root cannot be
+    // removed. Asserting they are gone is what keeps this from being a silent leak again.
+    for state in [&control_state, &state] {
+        let _ = Command::new("pkill").args(["-f", &format!("daemon --state-root {}", state.display())]).status();
+    }
+    let mut alive = String::new();
+    for _ in 0..100 {
+        let output = Command::new("pgrep")
+            .args(["-f", &format!("daemon --state-root {}", root.display())])
+            .output()
+            .expect("pgrep");
+        alive = String::from_utf8_lossy(&output.stdout).into_owned();
+        if alive.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(alive.is_empty(), "the daemons this test started are gone: {alive}");
+    std::fs::remove_dir_all(&root).expect("the state roots go away with their daemons");
 }
 
 /// `--full-auto` used to be parsed and thrown away by both entry points, so a

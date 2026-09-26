@@ -19,7 +19,9 @@ make build                        # build the CLI and the TUI into the usual tar
 make pty                          # real-terminal check with an isolated config and no model credentials
 ```
 
-`make check` runs, in order: formatting, Clippy on all targets, the three crates' tests, the Git submodule
+`make test` counts `teamagents daemon` processes before and after the three crate suites and fails when the
+count grows: a test that starts a daemon must stop it (D-111). `make check` runs, in order: formatting, Clippy on
+all targets, the three crates' tests, the Git submodule
 configuration and repository hygiene (it rejects non-English characters in code and docs, tracked compile
 caches, Python caches and SQLite temporaries, checks the syntax of `install.sh`, and checks the shape of the
 binding decision log with `review/decisions_log.py` (one heading per entry, newest-first, each with a body)

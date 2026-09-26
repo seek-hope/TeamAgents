@@ -27,7 +27,14 @@ lint:
 	done
 
 test:
-	@set -eu; for crate in $(CRATES); do cargo test $(CARGO_FLAGS) --manifest-path $$crate/Cargo.toml; done
+	@set -eu; count_daemons() { ps -eo comm,args | awk '$$1=="teamagents" && $$3=="daemon" {n++} END {print n+0}'; }; \
+		before=$$(count_daemons); \
+		for crate in $(CRATES); do cargo test $(CARGO_FLAGS) --manifest-path $$crate/Cargo.toml; done; \
+		after=$$(count_daemons); \
+		[ "$$after" -le "$$before" ] || { \
+			echo "the suite left $$((after - before)) daemon(s) behind (before: $$before, after: $$after);" >&2; \
+			echo "a test that starts a daemon must stop it — see the Daemon guard in engine/tests/cli.rs (D-111)" >&2; \
+			exit 1; }
 
 build:
 	cargo build $(CARGO_FLAGS) --manifest-path engine/Cargo.toml --bin teamagents
