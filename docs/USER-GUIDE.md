@@ -406,6 +406,12 @@ teamagents tasks cancel --id t-prose    # releases a delegator waiting on a task
   you trust, and the same choice a shell makes when the session runs `--full-auto` (D-41). Without bubblewrap the
   workspace mode **refuses to start** — the instance parks naming the isolation — rather than quietly running the
   server on the host.
+- A server that stops answering is bounded the same way (D-108). `startup_timeout_s` (default 60) covers the
+  handshake: if `initialize` does not answer inside it, the boot fails, the instance parks with
+  `MCP … initialization failed: MCP initialize timed out`, and the server is killed instead of left behind.
+  `tool_timeout_s` (default 120) covers one `tools/call`: a call that does not answer inside it is reported to
+  the model as a timeout — the turn continues and the model can retry or work around it — rather than blocking
+  the member until the server wakes up.
 
 ## 6. Recovery, compaction and cleanup
 

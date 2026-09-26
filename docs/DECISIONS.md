@@ -18,6 +18,47 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-108 The last two MCP options bounded nothing the tests watched (2026-09-26)
+
+D-104's ceiling named four stdio binding options that had read sites but no behavioural test. D-106 closed
+`mcp_execution` and `mcp_network` through the config edge; the two timeouts are closed here, which retires the
+ceiling.
+
+`startup_timeout_s` and `tool_timeout_s` are read once (`load_service` → `connect_stdio_in` → `startup_ms` /
+`tool_ms`) and used in exactly two places (`call("initialize", …, startup_ms)` and `call("tools/call", …,
+tool_ms)`), so "the key is honoured" was again a claim about code. Both tests put a *slow server* on the other
+side and let the fixture's own delay be the discriminator, which is what keeps them honest without a wall-clock
+assertion:
+
+- `startup_timeout_s_bounds_a_silent_handshake`: the server answers `initialize` only after 30 s. With
+  `startup_timeout_s = 1` the boot must fail (`MCP host initialization failed: MCP initialize timed out`); the
+  60 s default would have waited the server out and booted, so the assertion is about the configured bound and
+  not about "it failed eventually". The test also holds the code's own comment ("a failed handshake must
+  kill+wait the server") to account: the pid the fixture wrote is gone from `/proc` afterwards.
+- `tool_timeout_s_bounds_a_slow_call`: the server answers `tools/call` only after 30 s with `late answer`. With
+  `tool_timeout_s = 1` the receipt the model sees carries the timeout and *not* the late answer; the 120 s
+  default would have returned `late answer` after 30 s.
+
+Both are host mode, so no bwrap: CI runs them too.
+
+Pre-fix controls, both refuting: hardcoding `startup_timeout_s` to its 60 s default in `load_service` makes the
+first test fail at `a handshake the server cannot answer inside the bound must fail boot` — the boot *succeeded*
+after 30 s (30.3 s), which is exactly the state the test exists to prevent; hardcoding `tool_timeout_s` to 120 s
+makes the second fail with `event goal_completed did not arrive within 15000ms`, because the call waited the
+sleep out instead of reporting.
+
+    cargo test --offline --manifest-path engine/Cargo.toml --test v2_mcp startup_timeout_s_bounds_a_silent_handshake
+    cargo test --offline --manifest-path engine/Cargo.toml --test v2_mcp tool_timeout_s_bounds_a_slow_call
+
+D-104's `tool_names` clause was too conservative as well: the negative side was already driven in-process
+(`bound::tests::filtered_and_failed_services_reap_started_processes`'s "filtered" scenario — a declared list
+naming only an absent tool leaves an empty surface, and the server is reaped instead of leaking), and the
+config-edge cases in `v2_mcp` drive the positive side. The ceiling is therefore retired rather than shrunk.
+
+Ceiling: the tests pin that the configured bound is *applied*, not how precisely it fires (a 1 s bound is
+asserted to arrive before a 30 s answer, not within a tolerance), and the same two timeouts on the HTTP
+transport still share the code path only by construction (`connect_http` takes the same two numbers).
+
 ## D-107 Nothing checked the shape of the binding decision log (2026-09-26)
 
 While adding an entry to this file it turned out to be structurally broken, and nothing in the repository had
@@ -182,10 +223,10 @@ with the old `?` restored the event never arrives and the test fails with
 scenarios, live). `docs/USER-GUIDE.md` §5 states the behaviour.
 
 Ceiling: the mechanism covers *any* driver-boot failure (that is the point — one place), but the probe
-exercises the MCP case; the stdio options `startup_timeout_s` / `tool_timeout_s` still have no behavioural test
-(their read sites exist, their effects are untested), and `tool_names` filtering is only exercised by this
-probe's single-tool binding. Recorded here rather than implied. (`mcp_execution` and `mcp_network` were in that
-list too; D-106 closed both through the config edge.)
+exercises the MCP case. The ceiling it recorded — four stdio binding options with read sites but no behavioural
+test, and `tool_names` filtering only through this probe — is retired: D-106 (the execution mode and the network
+switch) and D-108 (the two timeouts) took all four through the config edge, and `tool_names`' negative side was
+already an in-process test (`bound::tests::filtered_and_failed_services_reap_started_processes`).
 
 ## D-103 A third fixture waited for the wrong thing: the MCP crash window (2026-09-26)
 

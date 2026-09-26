@@ -371,6 +371,118 @@ for line in sys.stdin:
     }
 }
 
+/// `startup_timeout_s` and `tool_timeout_s` are the last two stdio options D-104 listed as read-only claims.
+/// Both are bounded here at the edge a user configures them on, in host mode so the test needs no bwrap and CI
+/// runs it too. The fixture's *own* delay is the discriminator, so no wall-clock assertion is needed: the
+/// server answers `initialize` only after 30 s, which the 60 s default would have waited out (the boot would
+/// succeed), while a 1 s bound must fail it.
+#[tokio::test]
+async fn startup_timeout_s_bounds_a_silent_handshake() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let root = root("startup-timeout");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let pidfile = root.dir.join("server.pid");
+    let server = r#"
+import json, os, sys, time
+with open(sys.argv[1], 'w') as f:
+    f.write(str(os.getpid()))
+for line in sys.stdin:
+    request = json.loads(line)
+    if 'id' not in request: continue
+    method = request.get('method', '')
+    if method == 'initialize':
+        time.sleep(30)  # a slow server the default bound would have waited out
+        result = {'protocolVersion': '2025-06-18'}
+    elif method == 'tools/list':
+        result = {'tools': [{'name': 'ping', 'inputSchema': {'type': 'object', 'properties': {}}}]}
+    else:
+        result = {}
+    print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
+"#;
+    let mut catalog = UserConfig::default();
+    catalog.tools.insert(
+        "slow_start".into(),
+        serde_json::from_value::<ToolBinding>(json!({
+            "kind": "mcp", "mcp_server": "slow", "mcp_transport": "stdio", "mcp_execution": "host",
+            "command": "/usr/bin/python3", "args": ["-u", "-c", server, pidfile.to_string_lossy()],
+            "tool_names": ["ping"], "startup_timeout_s": 1, "required": true,
+        }))
+        .unwrap(),
+    );
+    let mut config = root.config(ScriptedProvider::new(vec![]));
+    config.catalog = catalog;
+    config.bindings = vec!["slow_start".into()];
+    let error =
+        start(config).await.err().expect("a handshake the server cannot answer inside the bound must fail boot");
+    assert!(error.contains("initialize timed out"), "{error}");
+    // the failed handshake must reap the server rather than leave the 30-second sleep behind
+    for _ in 0..200 {
+        if pidfile.is_file() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let pid = std::fs::read_to_string(&pidfile).expect("the fixture server started");
+    for _ in 0..200 {
+        if !PathBuf::from(format!("/proc/{pid}")).exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(!PathBuf::from(format!("/proc/{pid}")).exists(), "the server of a failed handshake was reaped");
+}
+
+/// The `tools/call` half: the server answers the call only after 30 s, so a 1 s `tool_timeout_s` must turn it
+/// into a reported timeout the model can act on, where the 120 s default would have returned the late answer.
+#[tokio::test]
+async fn tool_timeout_s_bounds_a_slow_call() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let root = root("tool-timeout");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let server = r#"
+import json, sys, time
+for line in sys.stdin:
+    request = json.loads(line)
+    if 'id' not in request: continue
+    method = request.get('method', '')
+    if method == 'initialize':
+        result = {'protocolVersion': '2025-06-18'}
+    elif method == 'tools/list':
+        result = {'tools': [{'name': 'slow', 'inputSchema': {'type': 'object', 'properties': {}}}]}
+    elif method == 'tools/call':
+        time.sleep(30)  # the default 120 s bound would have waited and returned this answer
+        result = {'content': [{'type': 'text', 'text': 'late answer'}]}
+    else:
+        result = {}
+    print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
+"#;
+    let mut catalog = UserConfig::default();
+    catalog.tools.insert(
+        "slow_call".into(),
+        serde_json::from_value::<ToolBinding>(json!({
+            "kind": "mcp", "mcp_server": "slow", "mcp_transport": "stdio", "mcp_execution": "host",
+            "command": "/usr/bin/python3", "args": ["-u", "-c", server],
+            "tool_names": ["slow"], "tool_timeout_s": 1, "required": true,
+        }))
+        .unwrap(),
+    );
+    let provider = ScriptedProvider::new(vec![
+        tool_call("c1", "slow_slow", json!({})),
+        finish_call("the call timed out and was reported"),
+    ]);
+    let mut config = root.config(provider);
+    config.catalog = catalog;
+    config.bindings = vec!["slow_call".into()];
+    let handle = start(config).await.expect("start");
+    handle.input("call the slow tool").await.expect("input");
+    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    let results = tool_results(&root);
+    let reply = results.iter().find(|entry| entry.contains("timed out")).cloned().unwrap_or_default();
+    assert!(!reply.is_empty(), "the timeout reaches the model as a receipt: {results:?}");
+    assert!(!reply.contains("late answer"), "the late answer is not what the model was told: {reply}");
+    handle.shutdown().await.expect("shutdown");
+}
+
 #[tokio::test]
 async fn mcp_tool_round_trips_through_the_same_receipt_contract() {
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
