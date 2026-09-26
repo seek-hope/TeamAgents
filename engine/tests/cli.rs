@@ -14,6 +14,38 @@ impl Drop for Daemon {
     }
 }
 
+/// Stop the daemon serving `state`, by pid, and report whether one was found.
+///
+/// A test that only ran a *client* has no `Child` handle: `exec` detaches the daemon on purpose. Finding it
+/// means reading `/proc` for the process whose argument list says `daemon … --state-root <state>` and that is
+/// not a corpse — never `pkill -f`, whose pattern also matches any other command line that merely mentions the
+/// string (D-144/D-148 measured that killing two shells of a session). SIGTERM is the graceful stop the daemon
+/// handles (D-150), so the socket goes away with it.
+fn stop_detached_daemon(state: &std::path::Path) -> bool {
+    let root = state.to_string_lossy().into_owned();
+    let mut found = false;
+    for entry in std::fs::read_dir("/proc").into_iter().flatten().flatten() {
+        let Some(pid) = entry.file_name().to_str().and_then(|name| name.parse::<u32>().ok()) else { continue };
+        let Ok(raw) = std::fs::read(entry.path().join("cmdline")) else { continue };
+        let argv: Vec<String> = raw
+            .split(|byte| *byte == 0)
+            .filter(|chunk| !chunk.is_empty())
+            .map(|chunk| String::from_utf8_lossy(chunk).into_owned())
+            .collect();
+        if argv.get(1).map(String::as_str) != Some("daemon") || !argv.contains(&root) {
+            continue;
+        }
+        // a zombie keeps the binary's name in this container (pid 1 does not reap): it is not a live daemon
+        let state_field = std::fs::read_to_string(entry.path().join("stat")).unwrap_or_default();
+        if state_field.split_whitespace().nth(2).is_some_and(|field| field.starts_with('Z')) {
+            continue;
+        }
+        found = true;
+        let _ = Command::new("kill").arg(pid.to_string()).status();
+    }
+    found
+}
+
 fn teamagents(args: &[&str], state_home: &std::path::Path, config_home: &std::path::Path) -> String {
     let output = Command::new(env!("CARGO_BIN_EXE_teamagents"))
         .args(args)
@@ -627,7 +659,10 @@ fn an_unisolated_shell_refuses_instead_of_running_on_the_host() {
     // leaked daemons per run stay behind, holding their coordinator locks, and the state root cannot be
     // removed. Asserting they are gone is what keeps this from being a silent leak again.
     for state in [&control_state, &state] {
-        let _ = Command::new("pkill").args(["-f", &format!("daemon --state-root {}", state.display())]).status();
+        // no assertion here: the control state has a daemon only where the sandbox exists (`if have_sandbox`
+        // above), and this loop runs on both kinds of machine — the socket assertion below is what proves the
+        // stop worked. Stopping is still by pid, never by pattern (D-144/D-148/D-150).
+        let _ = stop_detached_daemon(state);
     }
     let mut alive = String::new();
     for _ in 0..100 {
@@ -705,7 +740,7 @@ fn full_auto_reaches_a_started_daemon_and_is_reported_against_a_live_one() {
     );
     // Stop that daemon (exec detaches it on purpose) and prove it is gone: a
     // leaked session would keep this state root alive after the test.
-    let _ = Command::new("pkill").args(["-f", &format!("daemon --state-root {}", state.display())]).status();
+    assert!(stop_detached_daemon(&state), "the daemon this test started is stopped by pid, not by pattern");
     for _ in 0..100 {
         if std::os::unix::net::UnixStream::connect(&socket).is_err() {
             break;
@@ -737,7 +772,7 @@ fn full_auto_reaches_a_started_daemon_and_is_reported_against_a_live_one() {
         command.args(["exec", "--state-root"]).arg(state).args(args).args(["--timeout", "5", "hello"]);
         let _ = command.output().expect("run exec");
         let greeting = greeting(&state.join("daemon.sock"));
-        let _ = Command::new("pkill").args(["-f", &format!("daemon --state-root {}", state.display())]).status();
+        assert!(stop_detached_daemon(state), "the daemon this test started is stopped by pid, not by pattern");
         greeting["permissions"].as_str().unwrap_or("").to_string()
     };
     write_config("full_auto");
@@ -835,7 +870,7 @@ fn cwd_reaches_a_started_daemon_and_is_reported_against_a_live_one() {
         "the note names the live workspace and the ignored flag: {stderr}"
     );
 
-    let _ = Command::new("pkill").args(["-f", &format!("daemon --state-root {}", state.display())]).status();
+    assert!(stop_detached_daemon(&state), "the daemon this test started is stopped by pid, not by pattern");
     for _ in 0..100 {
         if std::os::unix::net::UnixStream::connect(&socket).is_err() {
             break;

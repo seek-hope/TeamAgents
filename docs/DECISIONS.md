@@ -99,9 +99,10 @@ fails `ExitStatus(unix_wait_status(15))`, reverted byte-identically (sha256 `141
 Ceiling: finding the pid is still the user's job. A `teamagents daemon --stop` (or a protocol shutdown
 command) is new surface and would have to answer the stale-pid question with the identity machinery the runner
 already has (A15), so it is recorded in `docs/ACCEPTANCE.md`'s known gaps as needing the user's word. And
-SIGTERM now being graceful means a *crash* is only reachable with SIGKILL — stated here because the tree's own
-tests use `pkill -f` (SIGTERM) at several detached-daemon sites; switching those to a pid-based stop is the
-follow-up this entry does not do.
+SIGTERM now being graceful means a *crash* is only reachable with SIGKILL. The tree's own tests used
+`pkill -f` (SIGTERM) at four detached-daemon sites for the same reason a probe did — a client-started daemon
+has no `Child` handle — and they stop by pid now (`engine/tests/cli.rs::stop_detached_daemon`, which finds the
+process in `/proc` and skips a corpse); no `pkill` call is left in the tree.
 
 ## D-149 The check that creates what it then warns about (2026-09-26)
 
@@ -203,8 +204,9 @@ prints "no leak: 0 daemon(s) and 0 scratch directory(ies) present before the run
 Ceiling: the guard sees what is *left* when the suite exits, so a test that starts a daemon and stops it too
 late (inside the same run) is not distinguished from one that never started it — that is the per-test guard's
 job (`engine/tests/cli.rs`'s `Daemon`, D-111). `make pty` and `make probe-offline` still run their own leak
-accounting through the harness; unifying those is D-144's follow-up, not this entry's. A daemon the current
-user cannot signal (`EPERM`) is reported as a survivor rather than swallowed. The probes' own `stop_daemon`
+accounting — `make probe-offline` *is* this harness, and `make pty` needs none (its daemon is an in-process
+fake, and `make pty` isolates `TMPDIR` into a directory it removes, D-131) — so nothing is left to unify there.
+A daemon the current user cannot signal (`EPERM`) is reported as a survivor rather than swallowed. The probes' own `stop_daemon`
 helpers still called `pkill -f` when this entry was written; D-148 moved all twenty-eight of them onto this
 module's pid-based stop in the same session.
 
