@@ -220,6 +220,9 @@ def main() -> int:
     for name, extra, why in chosen:
         state_dir = harness_root / name.removesuffix(".py")
         started = time.time()
+        # say so *before* the probe runs: a model probe can take minutes (authority.py ran 587 s once), and a
+        # silent harness gives no way to tell a long turn from a hang (D-144)
+        print(f"     {name} …", flush=True)
         try:
             # `-u`: a probe the harness has to kill must still have printed its findings (measured: an
             # `authority.py` whose turn ran to its own 600 s deadline produced nothing, because Python
