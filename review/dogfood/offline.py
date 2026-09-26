@@ -20,6 +20,7 @@ Ceiling: it runs the credential-free subset only. The probes that need a model a
 import argparse
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 import time
@@ -48,6 +49,12 @@ def daemons() -> int:
                and parts[2].startswith("daemon "))
 
 
+def stop_daemons(state_dir: pathlib.Path) -> None:
+    """Stop whatever serves this probe's state root: a killed probe cannot do it itself."""
+    for root in state_dir.rglob("root"):
+        subprocess.run(["pkill", "-f", f"daemon --state-root {root}"], capture_output=True)
+
+
 def strays() -> set:
     """Scratch directories the probes would leave behind, by their shared prefix."""
     return {p.name for p in pathlib.Path(os.environ.get("TMPDIR", "/tmp")).glob("ta-*")}
@@ -74,23 +81,41 @@ def main() -> int:
 
     before_daemons, before_strays = daemons(), strays()
     failures, started_all = [], time.time()
+    # Each probe runs with an explicit --state-dir under this harness, so a probe that is killed cannot leave
+    # anything behind (its own `atexit` cleanup does not run when the harness has to kill it) and a failing
+    # probe's state is kept and named: that directory is the evidence, and D-140 is the case where it was gone
+    # by the time anyone looked. The harness root is deliberately not named `ta-*`, so it cannot be mistaken
+    # for a probe's own scratch by the guard below.
+    harness_root = pathlib.Path(os.environ.get("TMPDIR", "/tmp")) / f"teamagents-probe-harness-{os.getpid()}"
     for name, extra, why in chosen:
+        state_dir = harness_root / name.removesuffix(".py")
         started = time.time()
-        completed = subprocess.run([sys.executable, str(HERE / name), *extra],
-                                   capture_output=True, text=True, timeout=TIMEOUT)
+        try:
+            completed = subprocess.run([sys.executable, str(HERE / name), *extra, "--state-dir", str(state_dir)],
+                                       capture_output=True, text=True, timeout=TIMEOUT)
+            output, returncode = completed.stdout, completed.returncode
+        except subprocess.TimeoutExpired as expired:
+            output = (expired.stdout or b"").decode("utf-8", "replace") if isinstance(expired.stdout, bytes) \
+                else (expired.stdout or "")
+            returncode, why = 124, f"{why} — timed out after {TIMEOUT}s"
         elapsed = round(time.time() - started, 1)
-        status = "ok  " if completed.returncode == 0 else "FAIL"
+        status = "ok  " if returncode == 0 else "FAIL"
         print(f"{status} {name:20s} {elapsed:5.1f}s  {why}")
-        if completed.returncode != 0:
+        if returncode == 0:
+            shutil.rmtree(state_dir, ignore_errors=True)
+        else:
             failures.append(name)
-            for line in completed.stdout.splitlines()[-6:]:
-                print(f"       {line}")
-            for line in completed.stderr.splitlines()[-3:]:
+            stop_daemons(state_dir)
+            print(f"       state kept for inspection: {state_dir}")
+            for line in output.splitlines()[-6:]:
                 print(f"       {line}")
     total = round(time.time() - started_all, 1)
 
     new_daemons, new_strays = daemons(), strays() - before_strays
     leaks = []
+    # a clean run keeps nothing: the harness root only survives when it holds a failure's evidence
+    if not failures:
+        shutil.rmtree(harness_root, ignore_errors=True)
     if new_daemons > before_daemons:
         leaks.append(f"{new_daemons - before_daemons} daemon(s) left running")
     if new_strays:

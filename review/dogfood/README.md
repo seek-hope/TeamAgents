@@ -44,6 +44,11 @@ It counts the daemons and the scratch directories before and after the run and f
 because those two leaks are how D-111 and D-131 were found. The model-requiring probes still run one at a time,
 each at its model's native window (D-36).
 
+Each probe runs with an explicit `--state-dir` under the harness's own root, so the harness can clean up after
+a probe it had to kill (a signal skips the probe's own `atexit`) and can **keep** the state of a probe that
+failed — the line it prints for that probe names the directory, which is where the evidence is. A run in which
+nothing failed removes its root.
+
 This is the check that found D-57: run against `edit-integrity` it reported success while the session had
 worked in the *repository* rather than the given `--cwd` (60 turns, 291 s, and the edited fixture left in the
 repository root). After that fix the same task runs in 6 turns and ~9 s, and `rust-fix` in 8 turns and ~8 s

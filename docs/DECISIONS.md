@@ -136,6 +136,18 @@ Ceiling: the runner covers the credential-free subset only — the model probes 
 looks for *new* `ta-*` names and daemons, so a probe that leaks under another name is invisible; the scratch
 policy is "default removed, explicit kept" and a probe can ignore it.
 
+**The runner's own failure path** (added the same day). A probe that something else has to kill cannot run its
+`atexit` cleanup — a signal skips it — and that is not hypothetical: `authority.py`, killed by a 420 s timeout
+while the machine was saturated by this session's own load experiment, left its daemon and its scratch behind
+(and the probe itself was fine: re-run on a quiet machine it passes in 26 s with the grant, the command and the
+revocation all in place). `review/dogfood/offline.py` now runs each probe with an explicit `--state-dir` under
+its own root, reports a timeout as a failure with the probe named instead of raising out of the loop, stops
+whatever serves that state root, and **keeps** the failing probe's state and prints its path — that directory
+is the evidence, and D-140 is the case where it had already been removed before anyone looked. A run in which
+nothing failed removes its root, so the harness leaves nothing either. Verified: a normal run reports 7 ok in
+49 s with `new scratch none` and no harness root left; with the per-probe timeout lowered to 1 s all seven
+report "timed out after 1s", their state is kept and named, and the daemon count stays 0.
+
 ## D-137 The confirmed requirements had no evidence trail (2026-09-26)
 
 The baseline's §1 lists the requirements the user confirmed (Q1–Q19) and D-42 closes with "the full requirement
