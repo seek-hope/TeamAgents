@@ -862,6 +862,14 @@ made the gate cry wolf. The control below proves it still fires for a real leak:
     make test                                      # 0 daemons before, 0 after
     make -f /tmp/Makefile.leak test-leak-probe     # "the suite left 1 daemon(s) behind (before: 0, after: 1)"
 
+**Count by subcommand, not by name** (measured again 2026-09-26): `ps -eo comm | grep -cx teamagents` counts
+every process of that binary and therefore reports **1** on a clean tree. The one it finds is the A08 crash
+test's `OUTCOME_UNKNOWN` runner (`v2_driver::tool_result_is_reused_after_crash_not_reexecuted`, whose state
+root is `teamagents-v2-driver-crash-runner-*`): it stayed alive through a whole `make check` and for another
+90 s of polling, then exited by itself — longer than the "tens of seconds" this entry first assumed, and still
+the A12 shape rather than a leak. What answers "did the suite leave a daemon" is the guard's own
+predicate, `ps -eo comm,args | awk '$1=="teamagents" && $3=="daemon"' | wc -l` → 0.
+
 Ceiling: the count is a delta, so a daemon the developer already had running is not blamed; a *daemon* a test
 forgot to stop is caught, a leaked `jobs-runner` is not (it exits by itself, and nothing here proves how long
 that takes under load — the runner's lifetime rule is A12's). A test that forgets its own stop still leaks
