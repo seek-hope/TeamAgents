@@ -18,6 +18,36 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-132 The Kani proofs were re-run; the toolchain was there all along (2026-09-26)
+
+D-122 recorded a ceiling and `verification/REPORT.md` §0 repeated it: "the Kani toolchain is **not installed in
+this environment**", so `make verify-kani`'s fixed assertion was unexercised here and the paging-arithmetic
+proof stood only "by subject identity" (the verified commit is still the only commit that touched
+`page_span`). Both statements were false. Kani 0.68.0 with CBMC 6.11.0 is installed at `~/.cargo/bin/kani` —
+the exact prefix the Makefile's `KANI_PATH` already prepends — and `verification/kani/target/` had last been
+written on 2026-09-25, so the proof had already run in this environment once. Nothing in the tree checked
+whether the binary was there; the ceiling was a guess written into the report and copied into the decision
+log, where it would have kept the layer unverified indefinitely.
+
+`make verify-kani` now reports `Complete - 3 successfully verified harnesses, 0 failures, 3 total` (~16 s
+including the build), so the arithmetic is verified on the **current** sources rather than carried over. The
+harnesses compile the repository's own `core/src/kernel/types.rs` through `#[path]` and prove the published
+`page_span` (`page_output` calls it) — two properties for every `usize`, one within the `#[kani::unwind(12)]`
+bound.
+
+The target had never been shown able to fail, which is D-122's own rule, so it got a negative control: with
+`page_span` mutated to `limit.min(total.saturating_sub(offset)).max(1)`, the same command reports `1
+successfully verified harnesses, 2 failures` and exits 1 with the target's own message; the mutation was then
+reverted byte-identically (`git diff` empty) and the green re-run repeated. The proofs are therefore sensitive
+to their subject, and the assertion D-122 added is exercised rather than assumed.
+
+Evidence: the two runs above, and `verification/REPORT.md` §0 and the evidence table updated to say what
+happened (`re-run 2026-09-26`, with the control that flips it to exit 1) instead of why it need not happen.
+
+Ceiling: the toolchain lives at a user path (`~/.cargo/bin`), not in the repository, so a machine without it
+still fails loudly with the Makefile's install hint rather than silently skipping the layer; and the looping
+harness keeps its unwinding bound, so only the two loop-free properties claim every `usize`.
+
 ## D-131 The test suite filled `/tmp` until the machine stopped (2026-09-26)
 
 `make check` began failing with `create schema: disk I/O error`, `make pty` with `printf: write error: Disk
