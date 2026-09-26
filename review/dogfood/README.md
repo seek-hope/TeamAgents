@@ -524,3 +524,17 @@ gives goal `BLOCKED` (the repair ledger names the check) with exit `1` and the c
 passing runtime check plus a failing client check gives goal `SUCCEEDED` with exit `1`. Which is the division
 of labour stated in one sentence in `docs/USER-GUIDE.md` §1: neither gate replaces the other. Measured
 2026-09-26, ~13 s and ~5 s (D-101).
+
+
+## `instructions.py`: `instruction_files` is declared, validated and unread
+
+```bash
+python3 review/dogfood/instructions.py
+```
+
+The config key is accepted, its path is validated, and `doctor` used to print
+`[ok  ] instruction files  1 file(s) reach every member's prompt` — while nothing in this build reads those
+files: a member's system text is its profile's `instructions`. The probe configures a file holding a canary,
+runs one real-model turn and reads the prompt the leader was given: the canary is **not** in it, and `doctor`
+now says `declared, not applied` (D-102). It is written to flip — when the feature lands, the assertion becomes
+"the canary is in the prompt" and this probe is its acceptance test.

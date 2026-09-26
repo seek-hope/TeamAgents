@@ -378,7 +378,11 @@ teamagents tasks cancel --id t-prose    # releases a delegator waiting on a task
   `skill search/read`; a skill's instructions can never widen execution permissions). `skills_paths` and
   `instruction_files` accept `~/…`, and **`doctor` reports what they resolve to** (`skills  3 skill(s) under
   1 configured root(s)`, or a WARN naming a root that does not exist) — a path that is not there is ignored,
-  so without that row a typo would look like "no skills" (D-66).
+  so without that row a typo would look like "no skills" (D-66). **`instruction_files` itself does not change
+  a prompt in this release**: the files are validated and reported, but nothing reads their contents into a
+  member's system text, and `doctor` says `1 declared, not applied` rather than promising a prompt (D-102).
+  Wire it if you need it: a member's instructions come from its profile, so the Leader can pass the rules in
+  its `spawn`/`delegate` text today.
 - MCP: bound services load at startup (a required service fails loudly, an optional one only drops its
   capability). Calls go through the same permission, approval, budget, cancellation and receipt entry
   points. A remote call dispatched before a crash is recorded as `OUTCOME_UNKNOWN` after recovery and is

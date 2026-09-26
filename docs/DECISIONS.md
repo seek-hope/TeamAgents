@@ -231,6 +231,43 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-102 `instruction_files` promised a prompt nothing reads (2026-09-26)
+
+D-75's rule is that a config key this build does not serve is *made to work, refused with a pointer, or
+reported as not in effect*. The sweep behind D-75 covered `[permissions] mode`, `[retention]` and
+`models.*.codex_profile`; `instruction_files` looked served, because `doctor` prints
+
+    [ok  ] instruction files        1 file(s) reach every member's prompt
+
+It is not served. Measured 2026-09-26 (`python3 review/dogfood/instructions.py`): with a file holding
+`CANARY_INSTRUCTION_9F2A` configured, the canary is absent from the leader's prompt — and that prompt is
+inspectable, because it is the profile's `instructions`, which is exactly what `core/src/kernel/instance.rs`
+pushes as the system message. The only readers of the key are the loader (parsing), the validator (the path
+must exist) and that doctor row; the skills registry is built from `skills_paths` alone.
+
+**What it gets, and why.** `doctor` now reports `1 declared, not applied: this release does not read
+instruction files into a prompt (a member's instructions come from its own profile)`, and still names a path
+that does not resolve. The feature itself is *not* implemented here, and the reason is the repository's own
+rule rather than the size of the change: the design baseline does not mention the key at all, so wiring it —
+appending the files' text to every member's prompt at prompt-build time, one place, user-config-only — is new
+design and needs the user's word. It is recorded as a known gap in `docs/ACCEPTANCE.md` with that sketch, the
+same way `[retention]` is.
+
+The probe pins the *current* truth so the promise cannot come back silently, and it is written to flip: it
+requires the file to really hold the canary, the prompt to exist and be inspectable, the canary to be **absent**
+from it, and `doctor` to say "not applied". When the feature lands, the third check becomes "the canary is in
+the prompt" and the probe is its acceptance test.
+
+Evidence: `cli::doctor_reports_the_skills_registry_and_missing_configured_paths` (the `[WARN]`/`not applied`
+assertions; with the old wording the test cannot pass, which is its counterfactual), the doctor output above,
+and `python3 review/dogfood/instructions.py` (two runs). `docs/USER-GUIDE.md` §5 no longer implies the files
+reach a prompt and points at what does work today (a member's instructions are its profile; the Leader passes
+rules in `spawn`/`delegate` text).
+
+Ceiling: the probe measures the *prompt the leader was given*; a member's prompt follows the same profile path
+(the spawn path copies the parent profile and overrides `instructions` from the tool call), so the finding
+generalises by construction rather than by a second live run.
+
 ## D-101 The two acceptance mechanisms in one run, and which one decides what (2026-09-26)
 
 The product has two acceptance mechanisms — `[[checks]]` from the user config, which gate the **goal** at the

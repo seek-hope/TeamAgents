@@ -115,6 +115,14 @@ amended (D-49/D-50).
   `teamagents instances merge --id` verb (or a Leader-side merge tool) is new surface and needs the
   user's word first.
 
+- **`instruction_files` is accepted but nothing reads it into a prompt.** The loader validates each path and
+  `doctor` used to print `[ok  ] instruction files  1 file(s) reach every member's prompt`; measured
+  2026-09-26 (`python3 review/dogfood/instructions.py`) the canary in such a file is absent from the leader's
+  prompt, because a member's system text is its own profile's `instructions`. Since D-102 `doctor` reports the
+  truth (`declared, not applied`). Making it work means appending the files' text to every member's prompt at
+  prompt-build time; the design baseline does not mention the key, so it is the user's call rather than this
+  turn's (D-75's rule: a key this build does not serve is made to work, refused with a pointer, or reported as
+  not in effect).
 - **`[retention]` is accepted but nothing is archived or pruned.** DESIGN §9 promises ordinary history is
   "archived or cleaned per user configuration" while live references and evaluation evidence are never
   evicted; `Retention.archived_days`/`history_days` are parsed, kept user-config-only (like hooks and

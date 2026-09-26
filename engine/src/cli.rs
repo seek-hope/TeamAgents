@@ -211,23 +211,25 @@ pub fn doctor(state_root: Option<PathBuf>) -> i32 {
                 (count, _) => format!("{skills} skill(s) under {count} configured root(s)"),
             },
         );
-        let missing_instructions: Vec<&str> = catalog
-            .instruction_files
-            .iter()
-            .filter(|raw| !crate::config::expand_home(raw).is_file())
-            .map(String::as_str)
-            .collect();
+        // D-102 (D-75's rule): nothing in this build reads these files — a member's system text comes from its
+        // own profile — so the row says "declared, not applied" instead of promising they reach a prompt. It
+        // still names a path that does not resolve, because that is a config mistake either way.
         if !catalog.instruction_files.is_empty() {
-            optional_check(
-                &mut results,
-                "instruction files",
-                missing_instructions.is_empty(),
-                if missing_instructions.is_empty() {
-                    format!("{} file(s) reach every member's prompt", catalog.instruction_files.len())
-                } else {
-                    format!("missing (ignored): {}", missing_instructions.join(", "))
-                },
+            let missing: Vec<&str> = catalog
+                .instruction_files
+                .iter()
+                .filter(|raw| !crate::config::expand_home(raw).is_file())
+                .map(String::as_str)
+                .collect();
+            let mut detail = format!(
+                "{} declared, not applied: this release does not read instruction files into a prompt \
+                 (a member's instructions come from its own profile)",
+                catalog.instruction_files.len()
             );
+            if !missing.is_empty() {
+                detail.push_str(&format!("; missing: {}", missing.join(", ")));
+            }
+            optional_check(&mut results, "instruction files", false, detail);
         }
         for (label, argv) in [("hooks.notify", &catalog.hooks.notify), ("hooks.pre_tool", &catalog.hooks.pre_tool)] {
             let Some(program) = argv.first().filter(|p| !p.trim().is_empty()) else { continue };
