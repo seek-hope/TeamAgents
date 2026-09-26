@@ -18,6 +18,40 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-121 Two tests were skipping silently, and nothing looked (2026-09-26)
+
+D-113 fixed the tests that *said* they skipped and the one that failed on a sandbox-less machine; D-114 gave every
+sandbox-dependent test a fail-closed branch. Two sites were still invisible because they did neither: they
+`return`ed from a capability guard with no message at all.
+
+    engine/src/tools.rs  cancelled_shell_keeps_partial_output_and_its_artifact
+        if !sandbox_usable() { return; }
+    engine/src/tools.rs  sandbox_builds_with_the_host_toolchain
+        if !sandbox_usable() || toolchain_mounts().is_empty() || which("cargo").is_none() { return; }
+
+So on the GitHub runner (no bubblewrap) both contributed exactly nothing, and nothing in any log said so — the CI
+comment even promises that such tests "print 'skipped: bwrap is unavailable'". The second one hid a *second*
+condition as well: a missing `cargo`, or a machine that exposes no host toolchain to mount, looked the same as a
+broken sandbox.
+
+Both now say what is missing, per condition, and keep the claim honest: the cancelled-sandbox test cannot be
+observed without a running sandbox (its fail-closed half is
+`cli::an_unisolated_shell_refuses_instead_of_running_on_the_host`, D-113), and the toolchain test only ever ran
+where a host toolchain exists. A skip is fine; a *silent* one is not.
+
+The class has a detector now, because it is mechanical and it has now produced three rounds of findings:
+`python3 review/silent_skips.py` reports a `#[test]`/`#[tokio::test]` function containing an `if ... {` block whose
+body is only `return;` — after the fix, zero findings. It is narrow on purpose: a guard inside the test's *own*
+helper (a polling `async fn` whose timeout path panics, or the writer loop of a fake server handed to
+`tokio::spawn`) is not a skip and is not reported, which is what the four remaining `return`s in the suite are. It
+runs inside `make hygiene`.
+
+Control: deleting the message from the cancelled-sandbox guard makes the detector fail with that file and test
+name; the nested-helper cases stay quiet in the same run.
+
+Ceiling: the rule sees `return;`. A skip written as `for ... { continue; }`, or a test that quietly stops
+asserting anything, is outside it — the first is rare, the second is what review is for.
+
 ## D-120 The budget's live half needs no credentials (2026-09-26)
 
 A18's ceiling was verified in-process and by the CLI tests, and D-97 recorded a live run — but as a *manual*

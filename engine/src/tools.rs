@@ -2791,6 +2791,11 @@ mod tests {
     #[test]
     fn cancelled_shell_keeps_partial_output_and_its_artifact() {
         if !sandbox_usable() {
+            // A skip has to say so: a silent `return` made this test contribute nothing on a machine without a
+            // sandbox *invisibly* (D-121). The claim itself needs a running sandboxed command, and the
+            // fail-closed half of "no sandbox" is asserted by
+            // `cli::an_unisolated_shell_refuses_instead_of_running_on_the_host`.
+            eprintln!("skipped: no usable bubblewrap sandbox on this machine");
             return;
         }
         let dir = std::env::temp_dir().join(format!("ta-cancel-output-{}", uuid::Uuid::new_v4()));
@@ -3201,7 +3206,18 @@ mod tests {
 
     #[test]
     fn sandbox_builds_with_the_host_toolchain() {
-        if !sandbox_usable() || toolchain_mounts().is_empty() || which("cargo").is_none() {
+        // Each missing piece says which one it is: a silent skip hid both a broken sandbox and a missing
+        // toolchain (D-121).
+        if !sandbox_usable() {
+            eprintln!("skipped: no usable bubblewrap sandbox on this machine");
+            return;
+        }
+        if toolchain_mounts().is_empty() {
+            eprintln!("skipped: this machine exposes no host toolchain to mount into the sandbox");
+            return;
+        }
+        if which("cargo").is_none() {
+            eprintln!("skipped: cargo is not on PATH");
             return;
         }
         let dir = std::env::temp_dir().join(format!("ta-toolchain-{}", uuid::Uuid::new_v4()));
