@@ -18,6 +18,45 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-122 The positive verification targets could not fail (2026-09-26)
+
+The formal-verification targets carry the "what can be machine-checked must be machine-checked" half of the
+project's guard rails, so it matters that they can actually fail. Three of them could not:
+
+    verify-model / verify-model-all / verify-model-wide:
+        java … tlc2.TLC … | grep -E "No error|violation|violated|states generated"
+    verify-kani:
+        cargo kani --lib | grep -E "VERIFICATION|Complete -|failed"
+
+A recipe's status is its last command's, and that is the `grep` — whose pattern *includes the failure words*
+(`violation`, `violated`, `failed`). So the target passes exactly when TLC or Kani reports the thing it exists to
+catch. Proved by pointing the shipped shape at a configuration that must be refuted (one of the counterexample
+configs, `MC_authority_badview.cfg`):
+
+    == MC_authority_badview.cfg (expect a violation) ==
+    Error: Temporal properties were violated.
+    165 states generated, 62 distinct states found, 46 states left on queue.
+    exit=0        # the untouched target "passed"
+
+The same run with the assertion added exits 2 with `MC_authority_badview.cfg did not verify`. (The
+`verify-model-counterexamples` target was already correct: it *requires* the violation line and fails when a
+control verifies instead — which is why the negative controls could never have hidden this.)
+
+All four positive targets now require their success marker — `No error has been found` per TLC configuration,
+and a Kani summary matching `Complete - <n≥1> successfully verified harnesses, 0 failures` — while still printing
+the grep lines so a failure is visible as well as fatal.
+
+Evidence: the control above (shipped shape exit 0 against a refuted config, asserted shape exit 2); the real
+targets re-run on this tree (`make verify-model-all`: 11 configurations, every one "No error has been found";
+`make verify-model-counterexamples`: 10 controls, each refuted).
+
+Ceiling: `verify-kani` needs the Kani toolchain, which is **not installed in this environment**, so its fixed
+assertion is unexercised here. The proof itself does not need a fresh run to stand: its subject is unchanged since
+the verified commit (`git log -L :page_span:core/src/kernel/types.rs` is a single commit, and the harness crate
+changed only in comments since), so the recorded result carries over by identity — a machine with the toolchain can
+re-run it (`cargo install --locked kani-verifier && cargo kani setup`, the command the Makefile prints).
+`verification/REPORT.md` records that split explicitly rather than implying the proof was re-checked.
+
 ## D-121 Two tests were skipping silently, and nothing looked (2026-09-26)
 
 D-113 fixed the tests that *said* they skipped and the one that failed on a sandbox-less machine; D-114 gave every

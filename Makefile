@@ -82,17 +82,24 @@ verify-tools:
 	@echo "$(TLA_SHA256)  $(TLA_TOOLS_DIR)/tla2tools.jar" | sha256sum -c - >/dev/null \
 		|| { echo "tla2tools.jar failed its checksum (wrong version or content)" >&2; exit 1; }
 
+# A positive target must *require* the success marker: TLC prints "Error: … violated." and still exits 0, so a
+# recipe whose status is a `grep` for lines that include violations can pass while a property is broken (D-122).
 verify-model: verify-tools
-	@cd verification/tla && java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
-		tlc2.TLC -config MC.cfg -fp 64 -workers 4 V2Control.tla
+	@cd verification/tla && out=$$(java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
+		tlc2.TLC -config MC.cfg -fp 64 -workers 4 V2Control.tla 2>&1); \
+		echo "$$out" | grep -E "No error|violation|violated|states generated"; \
+		printf '%s' "$$out" | grep -q "No error has been found" || { \
+			echo "MC.cfg did not verify (see above)" >&2; exit 1; }
 
 # small exhaustive configurations for every module (seconds; the wide config is verify-model-wide)
 verify-model-all: verify-tools
 	@cd verification/tla && for cfg in MC.cfg MC_control_two.cfg MC_artifact.cfg MC_wait.cfg MC_task.cfg MC_compress.cfg MC_daemon.cfg MC_checks.cfg MC_grants.cfg MC_authority.cfg MC_store.cfg; do \
 		echo "== $$cfg =="; \
-		java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
-			tlc2.TLC -config $$cfg -fp 64 -workers 4 $$(case $$cfg in MC.cfg|MC_control_two.cfg) echo V2Control.tla;; MC_wait.cfg) echo V2Wait.tla;; MC_task.cfg) echo V2Task.tla;; MC_compress.cfg) echo V2Compress.tla;; MC_daemon.cfg) echo V2Daemon.tla;; MC_checks.cfg) echo V2Checks.tla;; MC_grants.cfg) echo V2Grants.tla;; MC_authority.cfg) echo V2Authority.tla;; MC_store.cfg) echo V2Store.tla;; *) echo V2Artifact.tla;; esac) \
-			| grep -E "No error|violation|violated|states generated"; \
+		out=$$(java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
+			tlc2.TLC -config $$cfg -fp 64 -workers 4 $$(case $$cfg in MC.cfg|MC_control_two.cfg) echo V2Control.tla;; MC_wait.cfg) echo V2Wait.tla;; MC_task.cfg) echo V2Task.tla;; MC_compress.cfg) echo V2Compress.tla;; MC_daemon.cfg) echo V2Daemon.tla;; MC_checks.cfg) echo V2Checks.tla;; MC_grants.cfg) echo V2Grants.tla;; MC_authority.cfg) echo V2Authority.tla;; MC_store.cfg) echo V2Store.tla;; *) echo V2Artifact.tla;; esac) 2>&1); \
+		echo "$$out" | grep -E "No error|violation|violated|states generated"; \
+		printf '%s' "$$out" | grep -q "No error has been found" || { \
+			echo "$$cfg did not verify (see above)" >&2; exit 1; }; \
 	done
 
 # The authority, inbound-boundary and store-identity claims must be *falsifiable*
@@ -120,12 +127,17 @@ KANI_PATH = $(HOME)/.cargo/bin:$(PATH)
 verify-kani:
 	@PATH="$(KANI_PATH)" command -v cargo-kani >/dev/null || { \
 		echo "the Kani toolchain is required: cargo install --locked kani-verifier && cargo kani setup" >&2; exit 1; }
-	@cd verification/kani && PATH="$(KANI_PATH)" CARGO_TARGET_DIR=target cargo kani --lib \
-		| grep -E "VERIFICATION|Complete -|failed"
+	@cd verification/kani && out=$$(PATH="$(KANI_PATH)" CARGO_TARGET_DIR=target cargo kani --lib 2>&1); \
+		echo "$$out" | grep -E "VERIFICATION|Complete -"; \
+		printf '%s' "$$out" | grep -qE "Complete - [1-9][0-9]* successfully verified harnesses, 0 failures" || { \
+			echo "the Kani proofs did not all succeed (see above)" >&2; exit 1; }
 
 verify-model-wide: verify-tools
-	@cd verification/tla && java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
-		tlc2.TLC -config MC_wide.cfg -fp 64 -workers 8 V2Control.tla
+	@cd verification/tla && out=$$(java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
+		tlc2.TLC -config MC_wide.cfg -fp 64 -workers 8 V2Control.tla 2>&1); \
+		echo "$$out" | grep -E "No error|violation|violated|states generated"; \
+		printf '%s' "$$out" | grep -q "No error has been found" || { \
+			echo "MC_wide.cfg did not verify (see above)" >&2; exit 1; }
 
 # Repository language rule (AGENTS.md): code and documentation are English only.
 # The two exceptions are README.zh-CN.md (the Chinese README) and the frozen

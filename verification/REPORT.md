@@ -5,6 +5,19 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
+## 0. Gate status (re-run 2026-09-26)
+
+* `make verify-model-all` was re-run on the current tree: all 11 configurations report "No error has been
+  found" (the largest, `MC.cfg`, generated 5,721,401 states / 606,904 distinct in ~4 minutes).
+* `make verify-model-counterexamples` was re-run: all 10 negative controls are refuted.
+* **The Kani layer was not re-run, and it does not need to be**: the toolchain is not installed here (only
+  `java` is), but its *subject* is unchanged since the verified commit — `git log -L :page_span:core/src/kernel/
+  types.rs` shows a single commit (`0d4c057`, the one that put the published function under the proof), and the
+  harness crate changed only in comments since (`c322677` translated them). The result therefore carries over by
+  identity; a machine with the toolchain can re-run it (`cargo install --locked kani-verifier && cargo kani
+  setup`, the command the Makefile prints when it is missing). `make verify-kani` now fails loudly instead of
+  passing on a `grep` that matched "failed" (D-122).
+
 ## 1. Summary of conclusions
 
 **What can be claimed**:

@@ -9,7 +9,9 @@ specs (`tla/V2*.tla` plus `MC*.cfg`) abstracting the protocol behaviour of `core
 recomputes the invariants over real command sequences; (3) the **pure-function layer** — bounded enumeration in
 `core/tests/kernel_properties.rs` plus Kani proofs in `kani/`. The TLA+ model is **not a refinement proof**:
 results on the model do not automatically hold for the code, and code-side results come from bounded
-exploration. The boundaries are in "Boundaries" below and in [REPORT.md](REPORT.md).
+exploration. The boundaries are in "Boundaries" below and in [REPORT.md](REPORT.md). The two positive targets (`verify-model*`) and `verify-kani` **require their success marker** — a TLC run that prints
+"No error has been found", a Kani summary with zero failures — because their output also contains the failure
+words, and a recipe whose status was a `grep` for those could pass while a property was violated (D-122).
 
 ## Running
 
