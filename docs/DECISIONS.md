@@ -18,6 +18,44 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-162 Two config *values* were ignored the same way (2026-09-27)
+
+D-161 closed the two tables that dropped an unserved *key*; asking the same question of *values* found two more
+silent holes. `protocol = "openais"` — a typo — left `doctor` green and fell through the provider dispatch's
+catch-all arm, so the session spoke the **chat-completions** wire to an endpoint the user had chosen for another
+one; and `[tools.t] kind = "web_fetchx"` kept the tool in `doctor`'s list while the binder's `match` dropped it, so
+nothing was ever bound. Both are the D-75 family ("made to work, refused with a pointer, or reported as not in
+effect"), and both were measured with `doctor` on an isolated config (exit 0, `[ok]`).
+
+**Changed** (`engine/src/config.rs`): `validate_profiles` refuses a `protocol` this build cannot dispatch (the
+set is `openai`, `chat/completions`, `deepseek`, `responses`, `anthropic` — the provider modules' two named arms
+plus the shape three names share), and a new `validate_tools` refuses a `kind` it cannot bind (`web_search`,
+`web_fetch`, `mcp`), both naming the served set and pointing at the reference. An **empty** `protocol` stays
+legal: it is the historical chat/completions default (the base URL still follows `provider`), which several
+configs in this tree and the doc's `provider`-only example rely on — the check says so in a comment rather than
+guessing a default.
+
+**Measured** (2026-09-27, `doctor`, isolated config): before, `protocol = "openais"` and `kind = "web_fetchx"`
+both exited 0 with `[ok]`; after, both exit 1 naming the value and the served set, while all five protocols
+(`openai`, `chat/completions`, `deepseek`, `responses`, `anthropic`), all three kinds and an absent protocol still
+exit 0. Test: `config::tests::a_value_the_build_does_not_serve_is_refused` (the served set plus both refusals plus
+the empty-protocol control). `docs/CONFIG.md`'s third trust rule now says "a key — or a *value*", and the user
+guide's §2 line lists `openai` and the absent case, which it had omitted.
+
+**The same day, one more value, and the route each one takes.** `mcp_execution` — the *safety* boundary that
+decides whether a workspace-sandboxed MCP service runs inside the member's workspace or explicitly on the host —
+had no check at all: `mcp_execution = "workspac"` silently meant the sandboxed default, and `doctor` reported the
+binding as a plain `[ok]`. It is now refused at load with its two served values. `mcp_transport` is deliberately
+*not*: `doctor` has named an unserved transport since D-74 ("where the user can still fix it without reading a
+daemon log", with a test for the removed `sse` value), so this entry's rule is "refused at load **or** named by
+`doctor` before a session starts", and `docs/CONFIG.md` now says which value takes which route. Measured after:
+`mcp_execution = "workspac"` exits 1 at load, `workspace`/`host` exit 0, and a `stdiox` transport still gets
+doctor's `[WARN] tools.t mcp_transport "stdiox" is not one this build speaks (stdio, http)`.
+
+Ceiling: the value sets are validated where the loader knows them (`protocol`, `[tools.*] kind`); values that are
+free-form by design (`generation_options`, `[tools.*] env`) stay the service's or the environment's business, and
+a typo *inside* a path or a command still only shows up when it resolves to nothing.
+
 ## D-161 Two config tables ignored a key this build does not serve (2026-09-27)
 
 D-75's rule is that a key this build does not serve is *made to work, refused with a pointer, or reported as not

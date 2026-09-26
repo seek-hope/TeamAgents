@@ -136,7 +136,8 @@ the *user* config.
 ```toml
 [models.leader_main]
 provider = "deepseek"
-protocol = "deepseek"        # deepseek | chat/completions | responses | anthropic
+protocol = "deepseek"        # deepseek | chat/completions | responses | anthropic | openai (or absent:
+                             # chat/completions, with the base URL following provider)
 model = "deepseek-flash"
 api_key_env = "DEEPSEEK_API_KEY"
 context_window = 1000000     # native window; leave empty when unknown (never guess a small value, D-36)

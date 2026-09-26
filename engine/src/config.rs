@@ -171,6 +171,7 @@ pub fn parse_user_config(text: &str) -> Result<UserConfig, String> {
     let catalog: UserConfig = toml::Value::Table(filtered).try_into().map_err(|e| format!("bad config: {e}"))?;
     validate_checks(&catalog)?;
     validate_profiles(&catalog)?;
+    validate_tools(&catalog)?;
     Ok(catalog)
 }
 
@@ -187,9 +188,59 @@ fn validate_profiles(catalog: &UserConfig) -> Result<(), String> {
                  configure the member directly with provider/protocol/base_url/api_key_env"
             ));
         }
+        // A typo'd protocol used to fall through the provider dispatch's catch-all and quietly speak the
+        // chat-completions wire: `protocol = "openais"` left `doctor` green and the session talking a different
+        // protocol to the endpoint (measured 2026-09-27, D-162). An *empty* protocol is not a typo: it is the
+        // historical default (chat/completions, with the base URL following `provider`), which several configs
+        // in this tree and the doc's `provider`-only example rely on.
+        if !profile.protocol.is_empty() && !PROTOCOLS.contains(&profile.protocol.as_str()) {
+            return Err(format!(
+                "models.{key}.protocol = {:?}: this build serves {} (docs/USER-GUIDE.md §2)",
+                profile.protocol,
+                PROTOCOLS.join(", ")
+            ));
+        }
     }
     Ok(())
 }
+
+/// The wire protocols the provider dispatch can build (`engine/src/providers/mod.rs`): the two named arms and
+/// the chat-completions shape three names share.
+const PROTOCOLS: &[&str] = &["openai", "chat/completions", "deepseek", "responses", "anthropic"];
+
+/// The tool kinds a `[tools.<name>]` entry may declare (`engine/src/bound.rs`).
+const TOOL_KINDS: &[&str] = &["web_search", "web_fetch", "mcp"];
+
+/// A tool binding whose `kind` this build does not serve used to be dropped by the binder in silence: the entry
+/// stayed in `doctor`'s tools list and nothing was ever bound (measured 2026-09-27, D-162).
+fn validate_tools(catalog: &UserConfig) -> Result<(), String> {
+    for (name, binding) in &catalog.tools {
+        if !TOOL_KINDS.contains(&binding.kind.as_str()) {
+            return Err(format!(
+                "tools.{name}.kind = {:?}: this build serves {} (docs/CONFIG.md, `[tools.<name>]`)",
+                binding.kind,
+                TOOL_KINDS.join(", ")
+            ));
+        }
+        // the execution boundary is a *safety* setting, and it had no check at all: `mcp_execution =
+        // "workspac"` silently meant the sandboxed default (measured 2026-09-27, D-162). `mcp_transport` is
+        // deliberately not checked here — `doctor` names an unserved transport before a session boots, which is
+        // D-74's shape ("where the user can still fix it without reading a daemon log").
+        if let Some(execution) = binding.mcp_execution.as_deref() {
+            if !MCP_EXECUTIONS.contains(&execution) {
+                return Err(format!(
+                    "tools.{name}.mcp_execution = {execution:?}: this build serves {} (docs/CONFIG.md)",
+                    MCP_EXECUTIONS.join(", ")
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Where a workspace-sandboxed MCP service may run (`engine/src/bound.rs`): inside the member's workspace, or
+/// explicitly on the host.
+const MCP_EXECUTIONS: &[&str] = &["workspace", "host"];
 
 /// The goal limits the runtime boots with (`create_goal limits`): the user's
 /// acceptance checks and usage ceiling, or `{}` when neither is configured — the
@@ -380,6 +431,38 @@ mod tests {
         ))
         .expect("the documented keys parse");
         assert_eq!(ok.skills_paths, vec!["/tmp/skills".to_string()]);
+    }
+
+    /// A *value* this build does not serve is refused (D-162), where D-161 refused an unserved *key*: a typo'd
+    /// `protocol` used to fall through the provider dispatch's catch-all and speak the chat-completions wire, and
+    /// a typo'd tool `kind` was dropped by the binder in silence while `doctor` still listed the tool. An empty
+    /// protocol stays legal — it is the historical chat/completions default.
+    #[test]
+    fn a_value_the_build_does_not_serve_is_refused() {
+        let profile =
+            |protocol: &str| format!("[models.m]\nprovider = \"openai\"\nprotocol = \"{protocol}\"\nmodel = \"x\"\n");
+        for protocol in ["openai", "chat/completions", "deepseek", "responses", "anthropic"] {
+            parse_user_config(&profile(protocol)).unwrap_or_else(|e| panic!("{protocol}: {e}"));
+        }
+        parse_user_config(&format!("{}\n[tools.t]\nkind = \"web_fetch\"\n", profile("openai")))
+            .expect("a served kind parses");
+        for execution in ["workspace", "host"] {
+            let text = format!("{}\n[tools.t]\nkind = \"mcp\"\nmcp_execution = \"{execution}\"\n", profile("openai"));
+            parse_user_config(&text).unwrap_or_else(|e| panic!("{execution}: {e}"));
+        }
+        let error = parse_user_config(&format!(
+            "{}\n[tools.t]\nkind = \"mcp\"\nmcp_execution = \"workspac\"\n",
+            profile("openai")
+        ))
+        .expect_err("a typo is refused");
+        assert!(error.contains("mcp_execution") && error.contains("workspace"), "{error}");
+        let error = parse_user_config(&profile("openais")).expect_err("a typo is refused");
+        assert!(error.contains("protocol") && error.contains("chat/completions"), "{error}");
+        let error = parse_user_config(&format!("{}\n[tools.t]\nkind = \"web_fetchx\"\n", profile("openai")))
+            .expect_err("a typo is refused");
+        assert!(error.contains("kind") && error.contains("web_fetch"), "{error}");
+        parse_user_config("[models.m]\nprovider = \"openai\"\nmodel = \"x\"\n")
+            .expect("an absent protocol keeps the chat/completions default");
     }
 
     #[test]

@@ -19,9 +19,13 @@ Two rules decide whether a key is *honoured*, and both are part of the trust sto
 * **A key this build accepts but does not apply says so** in the table below and in `doctor` (D-102's
   `instruction_files`, D-75's `codex_profile` and the `[retention]` bounds) — accepted-and-ignored would otherwise
   look exactly like accepted-and-working.
-* **A key this build does not serve at all is refused at load, with a pointer here** (`unknown key … docs/CONFIG.md
-  lists every key this build serves`): at the top level, inside every table and inside each `[models.*]`/`[tools.*]`
-  entry. A typo is a config error, never a silent default — measured before the rule was complete (2026-09-27):
+* **A key — or a *value* — this build does not serve is refused, or named by `doctor` before a session can start.**
+  At load, with a pointer here (`unknown key … docs/CONFIG.md lists every key this build serves`): at the top
+  level, inside every table and inside each `[models.*]`/`[tools.*]` entry — `protocol` must be one this build can
+  dispatch (an *empty* one is the historical chat/completions default), `kind` one it can bind, and
+  `mcp_execution` one it can honour. In a `doctor` row instead, when the value is one a *session* would fail on
+  later and the user can still fix it: `mcp_transport` and a mistyped MCP command (D-74's "where the user can
+  still fix it without reading a daemon log"). A typo is a config error, never a silent default — measured before the rule was complete (2026-09-27):
   `skills_pathes = []` left `doctor` green and the path never loaded, and `[permissions] mod = "full_auto"` (a typo
   of `mode`, a *safety* setting) silently ran the session in `approved_scope` (D-161). The one deliberate exception
   is a value that is free-form by design: `generation_options` is a `HashMap` the provider passes through, so its
