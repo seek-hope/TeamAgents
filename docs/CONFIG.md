@@ -61,7 +61,7 @@ so it names the consumers rather than proving every code path. A key the loader 
 
 | Key | Type | Absent | Read by | Meaning |
 |---|---|---|---|---|
-| `kind` | `String` | empty | `core/src/kernel/mod.rs`, `core/src/v2/control.rs` … (12 files) | — |
+| `kind` | `String` | empty | `core/src/kernel/mod.rs`, `core/src/v2/control.rs` … (13 files) | — |
 | `required` | `bool` | false | `engine/src/bound.rs`, `engine/src/tools.rs` | — |
 | `provider` | `Option<String>` | unset (the reader applies its own) | `engine/src/providers/mod.rs`, `engine/src/tools.rs` … (3 files) | — |
 | `api_key_env` | `Option<String>` | unset (the reader applies its own) | `engine/src/providers/mod.rs`, `engine/src/tools.rs` | — |

@@ -4,8 +4,11 @@ Every model request carries a list of functions the model may call, and every ca
 durable receipt (A08/A30) — so this list *is* the capability surface of the product. A member's subset is decided
 in three layers:
 
-* **The profile's tools** — the schemas in `reference::basic_tool_schemas(web, skills)`: the file, shell and
-  (when bound) web/skill tools. The leader's profile ships them by default (`docs/USER-GUIDE.md` §5).
+* **The profile's tools** — the schemas in `reference::basic_tool_schemas(web, skills)`, which a session starts
+  from as `reference::session_tool_schemas`: the file, shell and `skill` tools, plus **each** web kind only when
+  the config declares a `[tools.*]` binding of it (§12.1: binding is the authorization — a session with no
+  `[tools.fetch]`/`[tools.search]` entry offers neither, D-168). The leader's profile ships them by default
+  (`docs/USER-GUIDE.md` §5).
 * **The instance's grants** — the team tools in `kernel::collaboration_tool_schemas(actions)` appear only for the
   actions the instance holds a grant for (D-61: a spawned worker holds nothing of its own, and `wait` is always
   offered to team instances). The dispatch boundary re-checks regardless of what was offered (§6.1), which is why
@@ -99,7 +102,7 @@ Park this instance until the conditions hold or the timer fires. Must be the onl
 
 ### `ls`
 
-*Offered by `reference::basic_tool_schemas(web, skills)` (the profile's tools).*
+*Offered by `reference::session_tool_schemas` (the profile's tools; the web half only for the kinds the config declares — §12.1/D-79/D-168).*
 
 List files in your workspace (path defaults to '.').
 
@@ -109,7 +112,7 @@ List files in your workspace (path defaults to '.').
 
 ### `read_file`
 
-*Offered by `reference::basic_tool_schemas(web, skills)` (the profile's tools).*
+*Offered by `reference::session_tool_schemas` (the profile's tools; the web half only for the kinds the config declares — §12.1/D-79/D-168).*
 
 Read UTF-8 workspace text, shared /artifacts/ files, or your private /tool-output/ logs in bounded pages. offset is a 1-based line; byte_offset is an absolute byte continuation. Follow next_byte_offset until eof. include_sha256 returns a revision for safe edits.
 
@@ -123,7 +126,7 @@ Read UTF-8 workspace text, shared /artifacts/ files, or your private /tool-outpu
 
 ### `write_file`
 
-*Offered by `reference::basic_tool_schemas(web, skills)` (the profile's tools).*
+*Offered by `reference::session_tool_schemas` (the profile's tools; the web half only for the kinds the config declares — §12.1/D-79/D-168).*
 
 Write a text file in your workspace, creating parent directories. /artifacts/ is shared by the session: write only deliberate deliverables there. /tool-output/ is private and read-only.
 
@@ -135,7 +138,7 @@ Write a text file in your workspace, creating parent directories. /artifacts/ is
 
 ### `edit_file`
 
-*Offered by `reference::basic_tool_schemas(web, skills)` (the profile's tools).*
+*Offered by `reference::session_tool_schemas` (the profile's tools; the web half only for the kinds the config declares — §12.1/D-79/D-168).*
 
 Replace exactly one occurrence of old_string. Ambiguous matches fail unchanged. Pass expected_sha256 from read_file to reject concurrent changes.
 
@@ -148,7 +151,7 @@ Replace exactly one occurrence of old_string. Ambiguous matches fail unchanged. 
 
 ### `delete`
 
-*Offered by `reference::basic_tool_schemas(web, skills)` (the profile's tools).*
+*Offered by `reference::session_tool_schemas` (the profile's tools; the web half only for the kinds the config declares — §12.1/D-79/D-168).*
 
 Delete a file (a directory when recursive=true) from your workspace.
 
@@ -159,7 +162,7 @@ Delete a file (a directory when recursive=true) from your workspace.
 
 ### `glob`
 
-*Offered by `reference::basic_tool_schemas(web, skills)` (the profile's tools).*
+*Offered by `reference::session_tool_schemas` (the profile's tools; the web half only for the kinds the config declares — §12.1/D-79/D-168).*
 
 Find workspace files matching a glob pattern, e.g. '**/*.py' (max 500 hits).
 
@@ -169,7 +172,7 @@ Find workspace files matching a glob pattern, e.g. '**/*.py' (max 500 hits).
 
 ### `grep`
 
-*Offered by `reference::basic_tool_schemas(web, skills)` (the profile's tools).*
+*Offered by `reference::session_tool_schemas` (the profile's tools; the web half only for the kinds the config declares — §12.1/D-79/D-168).*
 
 Search workspace files for a pattern; returns matching lines (max 100).
 
@@ -180,7 +183,7 @@ Search workspace files for a pattern; returns matching lines (max 100).
 
 ### `shell`
 
-*Offered by `reference::basic_tool_schemas(web, skills)` (the profile's tools).*
+*Offered by `reference::session_tool_schemas` (the profile's tools; the web half only for the kinds the config declares — §12.1/D-79/D-168).*
 
 Run Bash in the current shell_environment mode. approved_scope uses bwrap: network=true needs approval; temporary files/background processes end with the call. full_auto uses the host filesystem/network; services may survive CLI exit. For services redirect stdin/stdout/stderr, record PID, verify in a later call, and stop explicitly. Timeout/cancel kills the active process group. cwd/exports persist separately per mode; a missing cwd skips this call and resets to workspace root. Inspect nonzero exits. Page long output with read_file under private /tool-output/. /tool-output/ and /artifacts/ are virtual file-tool paths.
 
@@ -192,7 +195,7 @@ Run Bash in the current shell_environment mode. approved_scope uses bwrap: netwo
 
 ### `web_search`
 
-*Offered by `reference::basic_tool_schemas(web, skills)` (the profile's tools).*
+*Offered by `reference::session_tool_schemas` (the profile's tools; the web half only for the kinds the config declares — §12.1/D-79/D-168).*
 
 Search the web and return title, source URL, snippet, fetch time (and full content when include_content=true).
 
@@ -204,7 +207,7 @@ Search the web and return title, source URL, snippet, fetch time (and full conte
 
 ### `web_fetch`
 
-*Offered by `reference::basic_tool_schemas(web, skills)` (the profile's tools).*
+*Offered by `reference::session_tool_schemas` (the profile's tools; the web half only for the kinds the config declares — §12.1/D-79/D-168).*
 
 Fetch a web page and return title, source URL, fetch time and the readable text body (HTML only; capped).
 
@@ -215,7 +218,7 @@ Fetch a web page and return title, source URL, fetch time and the readable text 
 
 ### `skill`
 
-*Offered by `reference::basic_tool_schemas(web, skills)` (the profile's tools).*
+*Offered by `reference::session_tool_schemas` (the profile's tools; the web half only for the kinds the config declares — §12.1/D-79/D-168).*
 
 Discover and load agent skills. action='search' with query keywords lists matching skills (name â summary); action='read' with a skill name loads its full instructions. Read a skill before applying it.
 

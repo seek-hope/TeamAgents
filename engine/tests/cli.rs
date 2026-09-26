@@ -291,6 +291,9 @@ fn doctor_reports_the_skills_registry_and_missing_configured_paths() {
     let missing = run("\"/nonexistent/skills\"", "\"/nonexistent/rules.md\"");
     assert!(missing.contains("[WARN] skills"), "{missing}");
     assert!(missing.contains("/nonexistent/skills") && missing.contains("never load"), "{missing}");
+    // D-168: and what the model gets from those roots — the `skill` tool stays offered and can only answer the
+    // capability state, so the row names it instead of leaving the user to guess
+    assert!(missing.contains("`skill` tool stays offered") && missing.contains("no skills configured"), "{missing}");
     assert!(
         missing.contains("[WARN] instruction files")
             && missing.contains("/nonexistent/rules.md")
@@ -300,6 +303,7 @@ fn doctor_reports_the_skills_registry_and_missing_configured_paths() {
     // and no configured root at all says where to put one
     let none = run("", "");
     assert!(none.contains("[WARN] skills") && none.contains("skills_paths"), "{none}");
+    assert!(none.contains("`skill` tool is still offered"), "{none}");
     assert!(!none.contains("instruction files"), "no row without configured files: {none}");
     let _ = std::fs::remove_dir_all(&root);
 }

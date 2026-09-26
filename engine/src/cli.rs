@@ -222,9 +222,15 @@ pub fn doctor(state_root: Option<PathBuf>) -> i32 {
             "skills",
             roots.iter().any(|(_, path)| path.is_dir()) && missing.is_empty(),
             match (roots.len(), missing.len()) {
-                (0, _) => "none configured: skills_paths in the user config registers a root (the shipped config uses ~/.agents/skills)".into(),
+                // D-168: name what the *model* sees. The `skills` binding is product-default, so the `skill`
+                // tool stays offered whatever the roots are; with none it can only answer the capability state.
+                (0, _) => "none configured: the `skill` tool is still offered and answers `no skills configured`. \
+                             `skills_paths` in the user config registers a root (the shipped config uses \
+                             ~/.agents/skills)"
+                    .into(),
                 (_, missing_count) if missing_count > 0 => format!(
-                    "a configured root does not exist and is ignored, so those skills never load: {}",
+                    "a configured root does not exist and is ignored, so those skills never load: {}; the \
+                     `skill` tool stays offered and answers `no skills configured`",
                     missing.join(", ")
                 ),
                 (count, _) => format!("{skills} skill(s) under {count} configured root(s)"),
@@ -622,6 +628,10 @@ fn daemon_boot(
     require_state_root_dir(&state_root)?;
     let socket = state_root.join("daemon.sock");
     let catalog_for_factory = catalog.clone();
+    // D-168: the members' tool surface follows the config — a web tool is offered only for the kind the catalog
+    // declares a binding of (§12.1: binding is the authorization), which is what `doctor`'s row for a config
+    // without one already claimed.
+    let member_tools = crate::reference::session_tool_schemas(&catalog);
     let config = crate::v2::daemon::DaemonConfig {
         supervisor: crate::v2::supervisor::SupervisorConfig {
             marker: std::marker::PhantomData,
@@ -631,7 +641,7 @@ fn daemon_boot(
             leader_profile: KernelProfile {
                 model: model_key,
                 instructions: crate::v2::daemon::LEADER_INSTRUCTIONS.into(),
-                tools: crate::reference::basic_tool_schemas(true, true),
+                tools: member_tools,
                 options: json!({}),
                 context_window: None,
             },

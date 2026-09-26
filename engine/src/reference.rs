@@ -326,3 +326,63 @@ pub fn basic_tool_schemas(web: bool, skills: bool) -> Vec<Json> {
     }
     schemas
 }
+
+/// The tool surface a session's members start from: the basic tools, with each *web* kind offered only when the
+/// config declares a binding of that kind.
+///
+/// §12.1 says binding *is* the authorization, and D-79 recorded the consequence as the design — "`web_fetch` and
+/// `web_search` are offered only when the config declares a binding". The daemon passed `true, true` instead, so
+/// a session whose config declares no `[tools.*]` web entry still offered both and every call answered "tool
+/// web_search is not bound to this member" (measured 2026-09-27 with the surface witness, D-168) — while the
+/// `doctor` row written for exactly that config said "the model is offered neither". `skill` stays offered: the
+/// `skills` binding is product-default and the tool answers a capability state when no root resolves (D-167).
+pub fn session_tool_schemas(catalog: &UserConfig) -> Vec<Json> {
+    let declares = |kind: &str| catalog.tools.values().any(|binding| binding.kind == kind);
+    let mut schemas = basic_tool_schemas(true, true);
+    schemas.retain(|tool| match tool["function"]["name"].as_str().unwrap_or_default() {
+        "web_search" => declares("web_search"),
+        "web_fetch" => declares("web_fetch"),
+        _ => true,
+    });
+    schemas
+}
+
+#[cfg(test)]
+mod tests {
+    use super::session_tool_schemas;
+    use serde_json::json;
+    use teamagents_core::models::{ToolBinding, UserConfig};
+
+    /// D-168: the web half of a session's surface follows the declared bindings (§12.1: binding is the
+    /// authorization — and D-79 recorded exactly that as the design), while `skill` stays offered because the
+    /// `skills` binding is product-default and the tool answers a capability state when no root resolves (D-167).
+    #[test]
+    fn the_web_half_of_the_surface_follows_the_declared_bindings() {
+        let names = |catalog: &UserConfig| -> Vec<String> {
+            session_tool_schemas(catalog)
+                .iter()
+                .filter_map(|tool| tool["function"]["name"].as_str().map(str::to_string))
+                .collect()
+        };
+        let binding = |kind: &str| -> ToolBinding { serde_json::from_value(json!({"kind": kind})).unwrap() };
+        let has = |names: &[String], name: &str| names.iter().any(|candidate| candidate == name);
+
+        // nothing declared: neither web tool, but the rest of the basics and `skill` are offered
+        let without = names(&UserConfig::default());
+        assert!(!has(&without, "web_search") && !has(&without, "web_fetch"), "{without:?}");
+        assert!(has(&without, "skill"), "skills stay offered: {without:?}");
+        assert!(has(&without, "shell") && has(&without, "write_file"), "{without:?}");
+
+        // exactly one kind declared: exactly that tool is offered
+        let mut fetch_only = UserConfig::default();
+        fetch_only.tools.insert("fetch".into(), binding("web_fetch"));
+        let fetch_only = names(&fetch_only);
+        assert!(has(&fetch_only, "web_fetch") && !has(&fetch_only, "web_search"), "{fetch_only:?}");
+
+        let mut both = UserConfig::default();
+        both.tools.insert("fetch".into(), binding("web_fetch"));
+        both.tools.insert("search".into(), binding("web_search"));
+        let both = names(&both);
+        assert!(has(&both, "web_fetch") && has(&both, "web_search"), "{both:?}");
+    }
+}

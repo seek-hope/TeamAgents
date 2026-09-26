@@ -18,6 +18,37 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-168 The session offered web tools its config never declared (2026-09-27)
+
+The `skills`-row question ("what is the model actually offered?") answered itself with the surface witness D-143
+added. Doctor's row for a config with no `[tools.*]` web entry says "the model is offered neither `web_search`
+nor `web_fetch`" — and with `TEAMAGENTS_LOG_SURFACE=1` on exactly that config, the leader's real surface was
+`ls,read_file,write_file,edit_file,delete,glob,grep,shell,web_search,web_fetch,skill,wait,send,delegate,spawn`
+(2026-09-27, one real turn). Every call to those two would answer `tool web_search is not bound to this member`.
+The daemon passed `reference::basic_tool_schemas(true, true)` unconditionally, so the *report* was wrong and,
+worse, the offered surface contradicted the rule D-79 recorded as the design in the same breath: "`web_fetch`
+and `web_search` are offered **only when the config declares a binding** — that part is the design (§12.1:
+binding is the authorization)". D-60 states the same principle for `shell` ("a tool the instance cannot dispatch
+is not offered") and only `shell` implemented it.
+
+**Changed** (`engine/src/reference.rs`, `engine/src/cli.rs`): `reference::session_tool_schemas` is the surface a
+session's members start from — `basic_tool_schemas(true, true)` with each web kind retained only when the catalog
+declares a binding of that kind (`web_search` and `web_fetch` are independent: a config with only
+`[tools.fetch]` offers only `web_fetch`). The daemon's leader profile uses it, and a spawned child copies that
+profile (`driver`), so the rule holds for the whole team. `skill` stays offered: the `skills` binding is
+product-default and the tool answers a capability state when no root resolves (D-167) — which is where the
+original question came from, and its `doctor` rows now say so (`the skill tool is still offered and answers no
+skills configured`), instead of leaving the user to guess what the model sees.
+
+**Measured after** (2026-09-27, surface witness, one real turn per config): the same config as the baseline now
+logs `…,shell,skill,wait,send,delegate,spawn` — neither web tool; the control (`[tools.fetch]` declared only)
+logs `…,shell,web_fetch,skill,…` — exactly the declared kind. So D-79's report sentence is true as written, and
+the tool catalogue's "profile's tools" label (regenerated) points at the function that decides it.
+
+New tests: `reference::the_web_half_of_the_surface_follows_the_declared_bindings` (nothing declared → neither
+tool while `skill`/`shell` stay; one kind declared → exactly that tool; both → both) and the `skills` row
+expectations in `cli::doctor_reports_the_skills_registry_and_missing_configured_paths`.
+
 ## D-167 `web_search` without a credential called out unauthenticated (2026-09-27)
 
 The `doctor` WARN-vs-FAIL pass the last three entries kept pointing at. DESIGN §7 says "a missing web-search

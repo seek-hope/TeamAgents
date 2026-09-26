@@ -168,6 +168,9 @@ api_key_env = "ANYSEARCH_API_KEY"
   work (missing credential, unserved `provider`) refuses the member's start, so `doctor` reports its row as a
   **FAIL** and the parked instance carries the reason (D-164/D-165); an optional one keeps the capability and
   the call answers with that state.
+  The tools themselves appear only for the kinds you declare (§12.1: binding is the authorization, D-168): a
+  config with no web entry offers the model neither `web_search` nor `web_fetch` — `doctor` says so, and adding
+  a `[tools.fetch]` entry makes exactly `web_fetch` appear.
 
 ### 2.1 Acceptance checks (`[[checks]]`)
 
