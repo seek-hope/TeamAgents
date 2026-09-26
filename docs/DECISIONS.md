@@ -18,6 +18,34 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-172 The acceptance matrix had no gate, only the requirement list did (2026-09-27)
+
+§16's definition of done starts with "A01–A36 have automated evidence (uncovered items are listed in
+ACCEPTANCE)". The Q half of that ledger has been gated since D-137 (`review/requirement_trace.py`), but the
+**A-matrix — the per-item evidence columns themselves — had none**: the two tables were in step by hand (36 rows
+each, same ids, verified 2026-09-27), and nothing would have noticed an item dropped from
+`docs/ACCEPTANCE.md`, a row for an item the baseline does not list, a row with an empty evidence cell, or the
+same item appearing twice (the parse kept the last row and the first became invisible).
+
+**Changed** (`review/requirement_trace.py`, still one audit and still in `make hygiene`): the script now reads
+both indexes — `docs/DESIGN.md` §1 (Q1–Q19) and §12 (A01–A36) — and both ledgers in `docs/ACCEPTANCE.md`, and
+applies the same rules to each: every baseline id has exactly one row, every row names an id the baseline
+lists, no row is a placeholder (a requirement row must cite an acceptance item, a decision or an existing path;
+a matrix row must fill both its scenario and its evidence cell), a duplicated row is a finding in either half,
+and a missing section is a finding rather than a traceback. `--baseline`/`--acceptance` point at copies, which
+is how the control is run (the pattern `decisions_log.py`/`citations.py` established).
+
+**Measured** (2026-09-27): the tree is green — "19 confirmed requirements and 36 acceptance items in the
+baseline; 19 requirement rows and 36 matrix rows in ACCEPTANCE.md" — and the control on mutated copies produces
+exactly the four findings the rules name: `A01 has more than one row`, `A17 is in the baseline's acceptance
+matrix and has no evidence row`, `A14: the row carries no evidence`, `A99 has an evidence row but the baseline's
+acceptance matrix does not list it` (`exit 1`). The first control attempt also caught a bug in the new code
+(the duplicate message printed `AA01`, because the A pattern captures the whole item where the Q pattern
+captures digits); the fix is in the same script.
+
+Ceiling, stated where the script states it: this is coverage and shape, not judgement — a matrix row citing
+unrelated evidence passes, and the human who writes the row still decides.
+
 ## D-171 The entry document described two things the build does not do (2026-09-27)
 
 `README.md` is what a user reads first, and two of its claims contradicted the tree:
