@@ -47,6 +47,7 @@ TOOL_FLAGS = {
     "--manifest-path": "cargo: point at a crate's Cargo.toml",
     "--release": "cargo build: an optimised build",
     "--bin": "cargo build: build only this binary",
+    "--strict": "review/dogfood/protocols.py: fail instead of skipping a family with no credential",
 }
 
 FLAG = re.compile(r"(?<![\w-])--[a-z][a-z-]*")

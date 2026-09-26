@@ -72,8 +72,9 @@ you ──goal (natural language)──▶ Leader ──spawn / delegate──�
 - **Permission gate**: `approved_scope` (default: bubblewrap isolation, approvals for out-of-scope work) and
   `full_auto` (user-only, host shell); an approval binds one concrete operation, its argument hash and its
   permission revision, so it is used up by that single dispatch.
-- **Completion gate**: `finish` only accepts honest outcomes; required checks defined by the user or project
-  must actually pass.
+- **Completion gate**: `finish` only accepts honest outcomes; the `[[checks]]` in **your own** config must
+  actually pass before a goal settles. A project file cannot add one yet — the merge loader exists but no entry
+  point calls it (see *Configuration and team*).
 - **Long-context compaction**: triggered by real window usage; the summary keeps the original request, user
   revisions, acceptance criteria and open questions, while the full text stays retrievable through
   `read_history`. Compaction calls count against the goal budget.
@@ -231,9 +232,11 @@ and `t` terminates (with confirmation); in the tasks panel `c` cancels a task; i
 - Linux only; instance shell isolation needs `bubblewrap` and fails loudly when it is missing.
 - Releases are x86_64 (musl) only; no Windows/macOS, distributed execution, remote instance protocol or
   browser automation.
-- All three wire protocols (responses / anthropic / chat-completions) are implemented with local fake-server
-  regression tests; **compatibility acceptance against five real model services still needs environments
-  with the corresponding credentials**.
+- The four protocol families of DESIGN §7 (Chat Completions — the `openai` and `chat/completions` names —
+  DeepSeek extensions, Anthropic and responses) each have a local fake-server regression test
+  (`engine/tests/providers_fake.rs`), and `python3 review/dogfood/protocols.py` accepts each one against a real
+  service. A family whose credential is not in the environment is reported as **skipped** (`--strict` turns that
+  into a failure), so how many are accepted live depends on the credentials of the machine running it (D-151).
 - Acceptance boundaries and evidence live in [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md), which lists every open
   item and known ceiling.
 

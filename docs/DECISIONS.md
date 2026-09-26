@@ -18,6 +18,52 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-171 The entry document described two things the build does not do (2026-09-27)
+
+`README.md` is what a user reads first, and two of its claims contradicted the tree:
+
+* **"required checks defined by the user or project must actually pass"** (*Completion gate*). The build reads
+  the `[[checks]]` of the **user** config only: the project merge loader exists and is unit-tested but no entry
+  point calls it (`review/project_config_claim.py`: 0 production call sites), and `config.rs`'s
+  `a_project_must_not_be_able_to_install_an_acceptance_command` asserts "only the user's own checks load"
+  (`engine/tests/cli.rs` drives the same). The README's own *Configuration and team* section said so three
+  paragraphs later, so the document contradicted itself — and the wrong half was the one that suggested a
+  cloned repository could impose acceptance contracts on a session, which is the direction the code refuses on
+  purpose.
+* **"All three wire protocols … compatibility acceptance against five real model services still needs
+  environments with the corresponding credentials"** (*Status and limits*). DESIGN §7 keeps **four** protocol
+  families apart (Chat Completions, DeepSeek extensions, Anthropic, Responses) and requires "each is accepted
+  with a real service separately"; `review/dogfood/protocols.py --self-check` reports "4 families … over the
+  wires ['/chat/completions', '/responses', '/v1/messages']", and the probe accepts each family whose credential
+  is in the environment, reporting the rest as skipped (D-151). "Three" and "five" appear nowhere in the tree's
+  own vocabulary for this (the five *names* are the `protocol` values D-162 serves: `openai`,
+  `chat/completions`, `deepseek`, `responses`, `anthropic`).
+
+**Changed** (`README.md` and its Chinese mirror `README.zh-CN.md`, which the repository keeps in step): the
+completion-gate bullet says the checks in **your own** config are what must pass and that a project file cannot
+add one yet; the status bullet names the four families with their fake-server regression tests
+(`engine/tests/providers_fake.rs`), points at `python3 review/dogfood/protocols.py`, and says a family without a
+credential is reported as skipped (`--strict` turns that into a failure), so how many are accepted live depends
+on the machine.
+
+**And the gate that watches those documents had to be told about the probe's flag**: the new sentence names
+`--strict`, which is `review/dogfood/protocols.py`'s, not this product's, so `review/doc_flags.py` (D-135)
+refused the README until the flag was added to its toolchain allowlist **with its reason** — the mechanism that
+audit's own docstring describes for flags of the tools the docs tell the user to run. Nothing else changed in
+either document; `readme_zh.py`'s structural parity still holds (12 headings, 16 links, 18 flags on each side).
+
+**And the same turn found this campaign's own tests coupling to bubblewrap** (`make check-nobwrap`, the CI
+condition where `bwrap` is not in `PATH`): three CLI tests were red — `doctor_predicts_whether_an_mcp_service_`
+`can_start` and `a_state_root_that_is_a_file_is_refused_by_every_entry_point` asserted `doctor` exits 0, and
+without bubblewrap its *isolation* row fails by design (A14), so the verdict is 1 whatever the row under test
+says; and `a_leader_parked_under_a_waiting_run_reports_the_park_instead_of_timing_out` used the MCP **workspace**
+default, whose server cannot start at all without a sandbox, so the park landed before the client's checkpoint
+and the pre-submit guard — not the in-loop path under test — reported it. All three now assert the *row* (the
+thing they are about) plus "either doctor passed or its isolation row failed", and the park test's binding is
+`mcp_execution = "host"`, which makes the failure timing hold in both conditions. Product behaviour was correct
+in every case; the tests were the defect. `make check-nobwrap` and `make check-broken-sandbox` are both green on
+this tree (372 tests each), and so is the default `make check`.
+
 ## D-170 The comparison document was wrong about this build, and nothing read its citations (2026-09-27)
 
 `docs/PRODUCT-COMPARISON.md` exists for the direction the user set ("reference Codex CLI, pi and hermes"), and

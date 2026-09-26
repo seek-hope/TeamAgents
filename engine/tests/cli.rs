@@ -343,11 +343,13 @@ fn doctor_predicts_whether_an_mcp_service_can_start() {
     assert!(out.contains("[FAIL] tools.broken") && out.contains("not runnable"), "{out}");
     assert!(out.contains("the instance parks"), "the row says what the boot does: {out}");
 
-    // the same service optional: the session boots without that capability — WARN, and doctor still passes
+    // the same service optional: the session boots without that capability — a WARN row, and doctor's verdict is
+    // decided by the other rows (its exit code is 1 wherever the *isolation* probe fails, which is the documented
+    // A14 behaviour without bubblewrap — `make check-nobwrap` runs this suite in exactly that condition)
     let (code, out) = run(&binding("broken", "command = \"/nonexistent/mcp-server\"\n"));
-    assert_eq!(code, 0, "{out}");
     assert!(out.contains("[WARN] tools.broken"), "{out}");
     assert!(out.contains("capability is dropped") && out.contains("still boots"), "{out}");
+    assert!(code == 0 || out.contains("[FAIL] bubblewrap isolation"), "{code} without an isolation failure: {out}");
 
     // `${VAR}` in a command: expanded by nothing, so it can never start (it used to be reported `ok`)
     let (code, out) = run(&binding("ref", "command = \"${HOME}/bin/mcp-server\"\nrequired = true\n"));
@@ -365,8 +367,9 @@ fn doctor_predicts_whether_an_mcp_service_can_start() {
 
     // control: a service that is really there stays ok, required or not
     let (code, out) = run(&binding("sh", "command = \"/bin/sh\"\nrequired = true\n"));
-    assert_eq!(code, 0, "{out}");
     assert!(out.contains("[ok  ] tools.sh") && out.contains("is runnable"), "{out}");
+    // doctor's exit code belongs to all its rows: without bubblewrap the isolation probe fails by design (A14)
+    assert!(code == 0 || out.contains("[FAIL] bubblewrap isolation"), "{code} without an isolation failure: {out}");
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -1123,6 +1126,11 @@ fn a_cwd_that_is_not_a_directory_is_refused_before_a_session_starts() {
 /// The service here fails *after* the client submitted (its handshake blocks for a few seconds), which is the
 /// ordering the pre-submit guard cannot cover: the instance is ACTIVE when `exec` reads its checkpoint, and
 /// parks afterwards.
+///
+/// `mcp_execution = "host"` is what makes that ordering hold in both CI conditions: under the workspace default
+/// the server cannot start at all without bubblewrap (`IsolationUnavailable`, A14), so the park would land
+/// before the client's checkpoint and the guard — not the path under test — would report it (`make check-nobwrap`
+/// caught exactly that).
 #[test]
 fn a_leader_parked_under_a_waiting_run_reports_the_park_instead_of_timing_out() {
     let root = std::env::temp_dir().join(format!("ta-park-{}", std::process::id()));
@@ -1134,7 +1142,7 @@ fn a_leader_parked_under_a_waiting_run_reports_the_park_instead_of_timing_out() 
         "[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\n\
          api_key_env = \"TA_PARK_KEY\"\nbase_url = \"http://127.0.0.1:1/v1\"\n\n\
          [tools.slow]\nkind = \"mcp\"\nmcp_transport = \"stdio\"\ncommand = \"/bin/sh\"\n\
-         args = [\"-c\", \"sleep 4; exit 1\"]\nrequired = true\n",
+         args = [\"-c\", \"sleep 4; exit 1\"]\nmcp_execution = \"host\"\nrequired = true\n",
     )
     .unwrap();
     let started = std::time::Instant::now();
@@ -1308,8 +1316,9 @@ fn a_state_root_that_is_a_file_is_refused_by_every_entry_point() {
     }
     // control: a directory that is not initialized yet stays legal — WARN, then `init` makes it a root
     let (code, out) = run(&["doctor", "--state-root", uninitialized.to_str().unwrap()]);
-    assert_eq!(code, 0, "{out}");
     assert!(out.contains("[WARN] v2 state root") && out.contains("not initialized yet"), "{out}");
+    // the verdict is doctor's, over every row: an isolation FAIL (no bubblewrap, A14) is not about this root
+    assert!(code == 0 || out.contains("[FAIL] bubblewrap isolation"), "{code} without an isolation failure: {out}");
     let (code, out) = run(&["init", "--state-root", uninitialized.to_str().unwrap()]);
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("state root ready"), "{out}");

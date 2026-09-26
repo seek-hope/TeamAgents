@@ -52,7 +52,8 @@
   已知结果复用、在途丢失诚实记账（`OUTCOME_UNKNOWN`）、**不猜测重放**。
 - **权限门**：`approved_scope`（默认，bubblewrap 隔离，越权需批准）与 `full_auto`（仅用户可开，D-41
   主机 Shell）；一条批准绑定一个具体操作、其参数散列与权限 revision，只对那一次派发生效。
-- **完成检查闸门**：`finish` 只接受诚实结论；用户或项目预定义的必要检查必须真实通过。
+- **完成检查闸门**：`finish` 只接受诚实结论；目标结算前必须真实通过的是**你自己**配置里的 `[[checks]]`。
+  项目文件目前还不能添加检查——合并加载器已实现，但没有任何入口调用它（见下文「配置与团队」）。
 - **长上下文压缩**：按实际窗口占用触发，摘要保留原始要求、用户修订、验收与未决问题；
   原文经 `read_history` 仍可检索，压缩调用计入目标预算。
 - **工具面**：文件读写/搜索（精确匹配编辑、SHA-256 版本校验、原子写入，进程内写锁串行化）、
@@ -191,8 +192,10 @@ TUI 键位（与屏幕底部提示一致；**刻意不使用 F 键**，因为部
 
 - 只支持 Linux；成员 shell 隔离依赖 `bubblewrap`，缺失时明确报错而非降级为不隔离执行。
 - 发行包只有 x86_64（musl）；暂无 Windows/macOS、分布式执行、远程成员协议、浏览器自动化。
-- 三类线上协议（responses / anthropic / chat-completions）都已实现并有本地假服务回归；
-  **五家真实模型服务的兼容性验收仍待具备相应凭据的环境**。
+- DESIGN §7 的四类协议族（chat-completions——`openai` 与 `chat/completions` 两个名字、DeepSeek 扩展、
+  Anthropic、responses）都有本地假服务回归测试（`engine/tests/providers_fake.rs`），并由
+  `python3 review/dogfood/protocols.py` 逐个对真实服务验收。环境中没有对应凭据的协议族会报告为**跳过**
+  （`--strict` 会把跳过变成失败），因此实际能验收几类取决于运行机器的凭据（D-151）。
 - 验收边界与证据见 [验收对照表](docs/ACCEPTANCE.md)，未做项与已知天花板在那里逐条列明。
 
 英文版见 [README.md](README.md)；本文件是仓库里唯一允许出现中文的文件。
