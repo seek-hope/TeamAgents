@@ -18,6 +18,70 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-142 The workspace probe sampled a record the retirement was still removing (2026-09-26)
+
+`review/dogfood/workspace.py` — the harness that walks the git-worktree lifecycle end to end (D-76) — failed
+**twice in five runs** during D-141's sweeps, both times on "the worktree is gone but its record is still
+there". It waited for the worktree *directory* to disappear and then checked, in the same breath, that the
+member's `workspace.json` was gone; the retirement removes the directory first and the records after it, so a run
+that samples the moment the directory goes reports a race that is not there. The state the harness kept proves
+it: in one failing run the record was present when the probe looked and gone a minute later, with the probe's
+branch merged and `git worktree list` showing only the main worktree.
+
+**Fixed**: the probe waits for the *pair* — directory and record — inside the same 30 s it already allowed, and
+fails with "the worktree was retired but its record is still there after 30 s" if the record outlives that. Five
+runs after the fix passed (16–20 s each).
+
+**Open, and not guessed at.** The other of the two failures has a shape this session could not explain. Its kept
+state: the member directory holds **both** records (`workspace.json` and `worktree.json`), the worktree path is
+gone, `git worktree list` shows only the main worktree — so the git-level cleanup did run — and the daemon log's
+last word about that member is the *refusal* from the earlier pass ("the worktree has uncommitted, ignored or
+conflicting files", which is the probe's deliberate step 2, terminating while the work is uncommitted). Nothing
+was logged for the pass that removed the worktree. A member directory whose record names a worktree that no
+longer exists is what `prepare` reads on a resume ("an already existing member directory wins over the project's
+current state"), so if such a record really outlives the retirement it is a product-side inconsistency in the
+bookkeeping rather than a probe race. That is why the probe now says so explicitly and keeps its state: the next
+occurrence will show whether the record outlives the 30 s wait (a finding) or not (this race).
+
+## D-141 The probes that take a model have one command too (2026-09-26)
+
+D-138 gave the credential-free probes a runner; the twenty-four that take a model were still run one command at
+a time — which is how the sweep that found D-140 had to be assembled, by hand. `make probe-models`
+(`python3 review/dogfood/probes.py --set models`) now runs all of them, one line per probe with its duration and
+what it asserts. The file was `offline.py` and it runs both sets, so it is `probes.py`; `make probe-offline`
+keeps its behaviour and its minute.
+
+The sets differ in more than membership, and both differences were measured:
+
+* **the per-probe budget**: 300 s for the credential-free set, 900 s for the model set. `crash.py` takes about
+  70 s and one `authority.py` run needed more than 400 s on a loaded host, so the 300 s budget reported a slow
+  probe as a failure — the harness's own false negative, not the probe's;
+* **a credential pre-check**: the model set refuses to start without `DEEPSEEK_API_KEY` (or `KIMI_API_KEY`)
+  rather than failing twenty-four times for one missing key.
+
+Three defects in the harness itself came out of running the set, and each is fixed:
+
+1. **the guard counted daemons that were leaving**: `pkill` returns before its target is gone, so a run was red
+   for a daemon that was already exiting. The guard polls for up to 15 s, and `stop_daemons` now sends SIGTERM
+   and then SIGKILL for whatever is left — a daemon from a timed-out probe outlived that window once.
+2. **a killed probe's findings were lost**: Python buffers stdout when it is not a terminal, so a probe the
+   harness killed printed *nothing* — `authority.py`'s timed-out run had in fact emitted its own failure lines.
+   The probes now run under `python3 -u` and the per-probe line is flushed, so a seven-minute run is watchable
+   and a probe that is killed still explains itself.
+3. **one file is in both sets**: `providers.py` (its `--self-check` half needs nothing, its session half needs
+   two providers), so `--only providers.py` runs both shapes — worth knowing when reading the output.
+
+Evidence: the full set ran in 346 s and then 1167 s, each passing 23 of 24. The failures were D-140's assertion,
+`workspace.py`'s race (D-142; five runs green after the fix) and `authority.py`'s **premise**: its first turn is
+supposed to be a reply that waits for the user, and the model sometimes delegates a task instead, leaving the
+turn to run to its own 600 s deadline — the kept session shows thirty completed requests and a leader still
+`WAITING`. That is the model's choice rather than a product failure, but the probe reports it as "the first
+turn should succeed, got 124" instead of naming the premise, which is D-129's shape and is not this item's.
+
+Ceiling: the model set is sequential and is not a benchmark; it spends real model calls; the `--provider kimi`
+variants of the probes stay manual (the runner passes no provider flag); and a probe whose premise the model
+declines to satisfy fails the run, as it should, with its state kept and its path printed.
+
 ## D-140 A probe reported a replay, and the assertion was measuring the wrong thing (2026-09-26)
 
 Running the eight model-requiring probes as a batch (the offline set of D-138 covers the credential-free ones)
@@ -91,7 +155,7 @@ this item's.
 The probes in `review/dogfood/` are the repository's most direct evidence — they drive the built CLI, real
 session daemons and the real TUI — and they are run by hand, repeatedly. Running the credential-free subset as
 a batch exposed four things about them rather than about the product, and one about the product's *reporting*.
-There is now a runner for that batch, `python3 review/dogfood/offline.py` (`make probe-offline`).
+There is now a runner for that batch, `python3 review/dogfood/probes.py --set offline` (`make probe-offline`); D-141 renamed it from `offline.py` when it gained the model set.
 
 **Every probe left its scratch behind.** All 31 built a scratch root under `TMPDIR` and none removed it: six
 runs of the offline set added six directories (`ta-boundary`, `ta-budget`, `ta-truncation`, `ta-latency-*`,
@@ -140,7 +204,7 @@ policy is "default removed, explicit kept" and a probe can ignore it.
 `atexit` cleanup — a signal skips it — and that is not hypothetical: `authority.py`, killed by a 420 s timeout
 while the machine was saturated by this session's own load experiment, left its daemon and its scratch behind
 (and the probe itself was fine: re-run on a quiet machine it passes in 26 s with the grant, the command and the
-revocation all in place). `review/dogfood/offline.py` now runs each probe with an explicit `--state-dir` under
+revocation all in place). `review/dogfood/probes.py` runs each probe with an explicit `--state-dir` under
 its own root, reports a timeout as a failure with the probe named instead of raising out of the loop, stops
 whatever serves that state root, and **keeps** the failing probe's state and prints its path — that directory
 is the evidence, and D-140 is the case where it had already been removed before anyone looked. A run in which

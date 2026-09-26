@@ -235,14 +235,15 @@ engine/target/debug/teamagents exec --json --timeout 180 "1+1=?"
 # direct reference loop (group A entry, same kernel/tools/config)
 engine/target/debug/examples/eval_group_a --task "..." --workdir /tmp/t --trace /tmp/t-trace
 # the dogfood probes: the built CLI, real daemons and the real TUI, driven end to end
-make probe-offline                       # the seven that need no model and no credential, about a minute
+make probe-offline                       # the seven probes that need no model and no credential, ~1 min
+make probe-models                        # the twenty-four that take a model, one after another (~7 min)
 python3 review/dogfood/checks.py --state-dir /tmp/ta-checks   # one model probe at a time
 ```
 
 - **The probes** are in `review/dogfood/` (`review/dogfood/README.md` describes each one and what it asserts).
-  Seven of them need no model and no credential and run in one command — `make probe-offline`, which also fails
-  if the set leaves a daemon or a scratch directory behind (D-111, D-131) and keeps the state of a probe that
-  failed (D-138). The rest take a model, one at a time; pass `--state-dir` to keep a run's state for inspection.
+  `make probe-offline` runs the seven that need no model and no credential; `make probe-models` runs the
+  twenty-four that do, one after another. Both fail if the run leaves a daemon or a scratch directory behind
+  (D-111, D-131) and keep the state of a probe that failed (D-138).
 - Always use the model's native context length and record the value and its source in the report (D-36);
   DeepSeek Flash uses the user-confirmed 1M.
 - Every trial uses a fresh working and state directory; results go to `runs/<date>/results.jsonl` and each

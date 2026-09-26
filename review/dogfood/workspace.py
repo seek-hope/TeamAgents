@@ -188,16 +188,22 @@ def main() -> int:
     branch = git(worktree, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
     merged = git(project, "merge", "--no-edit", branch)
     print(f"  merged {branch}: {'ok' if merged.returncode == 0 else merged.stderr.strip()[:120]}")
-    retired = False
+    # Wait for the *pair*: the retirement removes the worktree directory and then its two records
+    # (`workspace.json` beside the member and `worktree.json` beside the worktree), so sampling once as soon as
+    # the directory disappears reports a race. Measured 2026-09-26: two failures in five runs, one of which left
+    # state showing both records gone a moment later (D-142).
+    record_path = pathlib.Path(record["path"]).parent / "workspace.json"
+    retired, settled = False, False
     for _ in range(120):
-        if not worktree.exists():
-            retired = True
+        retired = not worktree.exists()
+        if retired and not record_path.exists():
+            settled = True
             break
         time.sleep(0.25)
     if not retired:
         failures.append(f"the merged worktree was not retired by the running session: {worktree}")
-    if (pathlib.Path(record["path"]).parent / "workspace.json").exists() and retired:
-        failures.append("the worktree is gone but its record is still there")
+    elif not settled:
+        failures.append(f"the worktree was retired but its record is still there after 30 s: {record_path}")
 
     for failure in failures:
         print("FAIL:", failure)

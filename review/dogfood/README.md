@@ -32,12 +32,14 @@ AGENTS.md exists).
 Seven of these probes need no model and no credential — `budget.py`, `truncation.py`, `input_latency.py`,
 `providers.py --self-check` and, since D-138, `boundary.py`, `tui_panels.py` and `tui_reconnect.py` (they drive
 the real CLI, real daemons and the real TUI, but a member begins no turn: the session's `model_requests` table
-stays empty). `review/dogfood/offline.py` runs that subset and reports one line per probe:
+stays empty). `review/dogfood/probes.py` runs a whole set and reports one line per probe:
 
 ```bash
-make probe-offline                     # needs `make build`; about a minute
-python3 review/dogfood/offline.py --list
-env -u DEEPSEEK_API_KEY -u KIMI_API_KEY python3 review/dogfood/offline.py   # the set really is credential-free
+make probe-offline                     # needs `make build`; the seven credential-free ones, about a minute
+make probe-models                      # the twenty-four that take a model, one after another (~7 min)
+python3 review/dogfood/probes.py --list
+python3 review/dogfood/probes.py --only checks.py --set models
+env -u DEEPSEEK_API_KEY -u KIMI_API_KEY python3 review/dogfood/probes.py   # the offline set needs no credential
 ```
 
 It counts the daemons and the scratch directories before and after the run and fails if the set added either,

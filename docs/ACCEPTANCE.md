@@ -140,7 +140,10 @@ amended (D-49/D-50).
 
 - **A worktree member's branch has no merge surface.** The `git_worktree` policy (§12.3/D-46) gives a
   member its own branch and checkout, retirement refuses to delete an unmerged one, and the real-model
-  harness `review/dogfood/workspace.py` walks the whole lifecycle (D-76) — but nothing merges the
+  harness `review/dogfood/workspace.py` walks the whole lifecycle (D-76) — its first runs in `make probe-models`
+  were intermittent on one assertion (a probe-side race between the retirement's directory removal and its
+  record removal, fixed in D-142) and one failing run left a member record whose worktree no longer exists,
+  with no log line for the pass that removed it, which D-142 records as open — but nothing merges the
   branch: `workspace::merge_branch` and `workspace::member_worktrees` have no caller anywhere in the
   tree, and the name lives only in `<state root>/instances/<id>/worktree.json` (or `git worktree
   list`). Today the user merges with git, or a Leader with `shell@workspace` does; a
