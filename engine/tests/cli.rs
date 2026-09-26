@@ -63,6 +63,20 @@ fn a_bare_word_and_verbose_are_refused_without_starting_a_session() {
     let (code, stderr) = run(&["-v"]);
     assert_eq!(code, Some(2), "{stderr}");
     assert!(stderr.contains("-v/--verbose is not supported") && stderr.contains("--version"), "{stderr}");
+    // An entry point no release serves is refused *by name*, even when a flag of the removed subcommand
+    // follows it: the word is the problem, and the flag must not be parsed into a field nothing reads
+    // (D-136).
+    for word in ["sessions", "validate", "serve"] {
+        for args in [vec![word], vec![word, "--dry-run"], vec![word, "--history-days", "30"]] {
+            let (code, stderr) = run(&args);
+            assert_eq!(code, Some(2), "{args:?}: {stderr}");
+            assert!(
+                stderr.contains(&format!("teamagents {word}: this entry point is no longer supported")),
+                "{args:?}: the message must name the entry point, not the flag: {stderr}"
+            );
+            assert!(stderr.contains("teamagents exec"), "{args:?}: {stderr}");
+        }
+    }
     // refusing happens before the session: no socket, no daemon, nothing written
     assert!(!state_root.join("daemon.sock").exists(), "a refused argument must not start a session");
     let _ = std::fs::remove_dir_all(&home);

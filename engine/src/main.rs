@@ -62,8 +62,6 @@ pub struct Args {
     pub timeout: Option<u64>,
     pub checks: Vec<String>,
     pub exec_json: bool,
-    pub dry_run: bool,
-    pub history_days: Option<u64>,
     pub subject: Option<String>,
     pub action: Option<String>,
     pub scope: Option<String>,
@@ -98,8 +96,6 @@ fn parse_args() -> Args {
         timeout: None,
         checks: Vec::new(),
         exec_json: false,
-        dry_run: false,
-        history_days: None,
         subject: None,
         action: None,
         scope: None,
@@ -193,6 +189,15 @@ fn parse_args() -> Args {
                 if args.command.is_some() {
                     usage();
                 }
+                // An entry point no release serves is refused *here*, as soon as the word is read, so the
+                // message names it instead of whatever flag followed it, and so no flag of a removed
+                // subcommand is left in the parser to be accepted and ignored (D-136; D-75's rule, for flags).
+                if matches!(argv[i].as_str(), "serve" | "validate" | "sessions") {
+                    refuse(&format!(
+                        "teamagents {}: this entry point is no longer supported; the Leader builds the team through spawn/delegate and the daemon owns the session.\nRun teamagents for the TUI, or teamagents exec \"…\" for one headless input.",
+                        argv[i]
+                    ));
+                }
                 args.command = Some(argv[i].clone());
                 if argv[i] == "exec" {
                     args.exec_json = false;
@@ -278,29 +283,6 @@ fn parse_args() -> Args {
             "--check" if args.command.as_deref() == Some("exec") => {
                 args.checks.push(argv.get(i + 1).cloned().filter(|v| !v.starts_with('-')).unwrap_or_else(|| usage()));
                 i += 2;
-            }
-            "--history-days" if args.command.as_deref() == Some("sessions") => {
-                if args.history_days.is_some() {
-                    usage();
-                }
-                let raw = argv.get(i + 1).cloned().filter(|v| !v.starts_with('-')).unwrap_or_else(|| usage());
-                args.history_days = Some(raw.parse::<u64>().unwrap_or_else(|_| usage()));
-                i += 2;
-            }
-            "--days" if args.command.as_deref() == Some("sessions") => {
-                if args.timeout.is_some() {
-                    usage();
-                }
-                let raw = argv.get(i + 1).cloned().filter(|v| !v.starts_with('-')).unwrap_or_else(|| usage());
-                args.timeout = Some(raw.parse::<u64>().unwrap_or_else(|_| usage()));
-                i += 2;
-            }
-            "--dry-run" if args.command.as_deref() == Some("sessions") => {
-                if args.dry_run {
-                    usage();
-                }
-                args.dry_run = true;
-                i += 1;
             }
             other if !other.starts_with('-') || other == "-" => {
                 if args.positional.is_some() {
@@ -819,14 +801,6 @@ fn main() {
         Some("approvals") => run_approvals(&args),
         Some("instances") => run_instances(&args),
         Some("tasks") => run_tasks(&args),
-        // entries that no longer exist: refuse them with a pointer to the current ones
-        Some("validate") | Some("sessions") | Some("serve") | Some("repl") => {
-            eprintln!(
-                "teamagents {}: this entry point is no longer supported; the Leader builds the team through spawn/delegate and the daemon owns the session.\nRun teamagents for the TUI, or teamagents exec \"…\" for one headless input.",
-                args.command.as_deref().unwrap_or("")
-            );
-            2
-        }
         _ if args.plain || args.resume.is_some() || args.team.is_some() => {
             eprintln!("--plain/--resume/--team are no longer supported; use teamagents (TUI) or teamagents exec.");
             2

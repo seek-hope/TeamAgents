@@ -18,6 +18,44 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-136 The parser kept a removed subcommand's flags, and the guard looks at the parser now (2026-09-26)
+
+Checking the product documents against the CLI's help text (D-135) turned up the same question one layer down,
+in the parser: three match arms were gated on `args.command == Some("sessions")` — `--history-days`, `--days`
+and `--dry-run` — and the two fields they wrote (`history_days`, `dry_run`) are read nowhere in the crate. No
+invocation could use them, because `sessions` itself is refused ("this entry point is no longer supported"):
+they were the flag surface of the removed `sessions prune`, left behind when the entry point went (D-73/D-78,
+whose rule is that a removed surface leaves nothing behind). `--days` was even writing into `args.timeout`,
+a copy-paste artefact of the same removal.
+
+Two smaller dead shapes fell out of the same reading. The dispatch arm `Some("validate") | Some("sessions") |
+Some("serve") | Some("repl")` could never see `Some("repl")`: that word is not accepted as a command, so
+`teamagents repl` was refused as a bare word (measured — it prints "is not an entry point"), which made one of
+the four alternatives unreachable. And `-v/--verbose`'s *refusal* arm looked unadvertised to a naive scan
+because its message is a multi-line string literal: the same shape that made D-130's audit count a doc
+comment as a call, and the reason the check below compares arm *patterns* exactly rather than any line that
+starts with a quote.
+
+**Fixed**: the removed entry points (`serve`, `validate`, `sessions`) are refused where their word is read,
+with the message they already had, so the command is named rather than whatever flag followed it; the three
+flag arms, the two fields and the dead dispatch arm are gone. Measured after the change: `sessions`,
+`sessions --dry-run` and `sessions --history-days 30` all still print "teamagents sessions: this entry point is
+no longer supported…" and exit 2, and `repl` still gets the bare-word refusal — the refusal *site* moved, the
+user-visible behaviour did not. `cli::a_bare_word_and_verbose_are_refused_without_starting_a_session` now pins
+all of it; it had no coverage of the removed entry points at all before.
+
+**Guarded**: `review/doc_flags.py` gained the parser half of its check — *a flag the parser accepts must be
+advertised in the help text or named in a refusal message*. Accepted-and-then-ignored is exactly the defect
+D-75's rule forbids for config keys, applied to flags. It needs no allowlist: `--plain`, `--resume`, `--team`
+and `--verbose` are parsed on purpose so their refusal can name them, and each is named in one. Before the fix
+the check reported precisely the three silent flags; after it, "the parser accepts 20 flags; 16 of them are
+advertised, 0 are accepted silently".
+
+Ceiling: the parser half reads match-arm *patterns*, so a flag accepted through some other shape (a loop over
+a literal array, say) is invisible to it; it reads the source, so it cannot see whether a flag is honoured at
+runtime; and it does not model per-flag *reachability* (a flag gated on a subcommand that exists but never
+sets the field it guards).
+
 ## D-135 The user guide showed a flag this build does not serve (2026-09-26)
 
 D-73's rule is that an unserved argument is a *refusal naming the word* — so a flag a document shows either
