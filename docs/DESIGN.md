@@ -12,6 +12,9 @@ falsification conditions were argued in the 45-item design review (removed from 
 cleanup; reachable through `git log -- review/archive`). Language, framework or line count never prove a model
 performance gain.
 
+Each requirement's evidence trail — the acceptance items, decisions, probes and measurements that cover it —
+is tabulated in [ACCEPTANCE](ACCEPTANCE.md) under "Requirements (Q1–Q19) and their evidence".
+
 ## 1. Confirmed requirements and delivery scope
 
 | # | User-confirmed | Implementation constraint |

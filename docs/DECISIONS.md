@@ -18,6 +18,48 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-137 The confirmed requirements had no evidence trail (2026-09-26)
+
+The baseline's §1 lists the requirements the user confirmed (Q1–Q19) and D-42 closes with "the full requirement
+mapping and acceptance are in the design baseline". There was no mapping. `docs/ACCEPTANCE.md` carried
+per-**scenario** evidence for A01–A36, and **fourteen of the nineteen requirements appeared in no document but
+`docs/DESIGN.md` itself**; §12's scenarios and §1's requirements were never joined. The requirement an
+experiment actually settled — Q16's "collaboration must show a reproducible gain" — was not connected to the
+experiment that measured it, and `ACCEPTANCE.md` did not refer to the evaluation at all.
+
+That is the gap the A-matrix's discipline exists to prevent one level down: every scenario has a row with
+evidence, while the requirements those scenarios serve had none, so "is the baseline met?" could only be
+answered scenario by scenario, and a requirement could go unexamined without anything noticing.
+
+**Added**: `docs/ACCEPTANCE.md` now has a "Requirements (Q1–Q19) and their evidence" section — one row per
+requirement, naming the acceptance items, decisions, probes or measurements that cover it, in the A-matrix's own
+marker vocabulary (✅ automated evidence, 🔶 partial, ⚠ not implemented). `docs/DESIGN.md` §1 points at it,
+closing the loop D-42 promised.
+
+Writing it recorded a real outcome rather than only cross-references. **Q16's collaboration half is 🔶 measured
+and not confirmed**: the pre-registered experiment in `review/eval/r2-p6/REPORT.md` passed H1 (single-instance
+behaviour does not regress — 135/135 accepted, per-task paired difference 0) and did not confirm H2 (a
+reproducible collaboration gain — in all 99 group-C trials the model stayed a team of one, which the design
+explicitly allows). That is now a known-gap bullet in `docs/ACCEPTANCE.md`, written as a gap in the *evidence*
+rather than a violation of the runtime: what would close it is a task set or an instruction shape that makes
+delegation the shortest path, which is an experiment to design.
+
+**Guarded**: `review/requirement_trace.py`, in `make hygiene`. Every `Q<n>` in the baseline's §1 table must have
+a row; every row must name a `Q<n>` the baseline lists (a row for a requirement that no longer exists is the
+same defect in reverse); every row must cite an acceptance item (`A01`–`A36`), a decision (`D-<n>`) or a path
+that exists, so a row cannot be a placeholder; and a missing section is reported as a finding — the first draft
+died with a traceback when the heading was renamed, which its own control caught.
+
+Evidence: the script reports "19 confirmed requirements in the baseline; 19 evidence rows" and exits 0. Five
+controls, each reverted byte-identically afterwards: dropping Q9's row fails ("Q9 … has no evidence row"),
+adding a `| Q20 |` row fails ("the baseline does not list it"), citing a non-existent path fails (Q12), emptying
+Q7's evidence cell fails ("names no acceptance item, decision or path"), and renaming the section fails
+(missing section plus nineteen missing rows).
+
+Ceiling: coverage and shape, not adequacy — a row citing an unrelated acceptance item passes, so the judgement
+stays with whoever writes the row (`--list` prints every row for review); and the trace is one-way, from
+requirement to evidence, so an acceptance item that serves no requirement is not reported.
+
 ## D-136 The parser kept a removed subcommand's flags, and the guard looks at the parser now (2026-09-26)
 
 Checking the product documents against the CLI's help text (D-135) turned up the same question one layer down,

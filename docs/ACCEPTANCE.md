@@ -11,6 +11,36 @@ preconditions for every item below. `make check` includes `make language-check`,
 characters outside the two documented exceptions (`README.zh-CN.md` and the frozen material under
 `review/eval`).
 
+## Requirements (Q1–Q19) and their evidence
+
+The baseline's §1 lists the nineteen requirements the user confirmed, and D-42 re-based them ("after 19
+requirement clarifications… the full requirement mapping and acceptance are in the design baseline"). This is
+that mapping: the A-matrix below carries the scenario evidence, so each row here names the items that cover the
+requirement plus the decisions, probes or measurements behind them. `python3 review/requirement_trace.py`
+checks that every requirement has a row and every row names a requirement that exists (D-137).
+
+| # | Requirement (short form) | Evidence |
+|---|---|---|
+| Q1 | Success rate and long-horizon reliability weigh the same at one model and budget | the A-matrix below as a whole; measured at a fixed budget in `review/eval/r2-p6/REPORT.md` (135/135 acceptance, per-task paired difference 0); D-42 |
+| Q2 | Language and component boundaries are free; the user chose the Rust-native shape | D-42 (small kernel + persistent runtime + SQLite + separate tool processes + Rust TUI); the tree is the three crates `core`/`engine`/`tui` behind one entry point (`docs/DEVELOPMENT.md`) |
+| Q3 | Scope may be re-cut; the kernel and the runtime come first | D-42's confirmed delivery list; the repository carries only the current implementation, earlier material staying reachable through Git history (AGENTS.md) |
+| Q4 | Context, messages and tool access are isolated by default; `full_auto` is only logical isolation | A05 (reading another instance's history), A14 (bubblewrap unavailable is a classified failure, never a host fallback), A25's two `mcp_execution` halves; D-41, D-42 |
+| Q5 | The Leader manages by default and may delegate part of that authority | A02 (A→B→C→A), A03 (limited delegation and revocation), A04 (a queued action meets a revocation); the authority surface of D-61; `review/dogfood/team_ring.py` |
+| Q6 | The first usable release ships a TUI with conversation, status and task control | A21 (the user adjusts an instance directly); the TUI probes `review/dogfood/tui.py` (D-85) and `review/dogfood/tui_panels.py` (D-95); `tui/tests` |
+| Q7 | Closing the UI keeps work running, and the user can reconnect and intervene | A28 (disconnect, slow client, reconnect) with `review/dogfood/tui_reconnect.py` (D-99) and `v2_daemon::reconnect_backfills_events_after_the_watermark` |
+| Q8 | The user talks to the Leader, may read any instance's history and may pause or cancel | A05, A21; the intervention CLI (`v2_daemon::the_intervention_cli_cancels_a_task_and_pauses_and_resumes_an_instance`, D-68) |
+| Q9 | Instances are reused and retained within a session, can be terminated or reset, and sessions are isolated | A21, A29 (session isolation and a shared project); `review/dogfood/lifecycle_run.py` (D-98); the cancel lever of D-88 |
+| Q10 | Work continues by default with an optional goal budget, and failures are bounded | A18 (multi-instance usage budget), A19 (truncated stream and connection loss), A35 (goal deadline); D-97 (a refused request is not a slow one) |
+| Q11 | Required checks must pass; other claims carry evidence; independent review is on demand | A16 (a required check fails), A17 (artifacts change after a check) with `review/dogfood/stale_check.py` (D-90); D-50 |
+| Q12 | The first release ships basic tools, MCP and Skills, and needs no external Codex adaptation | A01 (basic tools), A25 (MCP over both transports), A26 (skills permissions); `docs/TOOLS.md` (the generated catalogue of the seventeen tools); D-74, D-66 |
+| Q13 | Multiple providers and mixed models inside one team; DeepSeek is the main baseline | A27 (heterogeneous providers) with `review/dogfood/providers.py` (D-129), A19; D-36 (native window recorded), D-69 (each member's model written down) |
+| Q14 | The project workspace is shared by default, with isolated directories or Git worktrees on demand | A29; D-46 (workspace policies wired into `spawn`); `review/dogfood/workspace.py` (D-76) |
+| Q15 | Authorized work resumes after a restart; an unknown outcome is verified first and parked if it stays unknown | A06 (a message applied across a restart), A08 (crash after a tool succeeded), A09 (unknown external outcome) with `review/dogfood/unknown_outcome.py` (D-119), A11 (daemon and runner crash separately); D-112 |
+| Q16 | Single-instance behaviour must not regress, and collaboration must show a reproducible gain on a pre-defined task set | 🔶 **measured, half confirmed** — `review/eval/r2-p6/REPORT.md`: H1 (no regression against the direct reference loop) passed, 135/135 accepted with a per-task difference of 0; H2 (a reproducible collaboration gain) was **not confirmed**: in all 99 group-C trials the model stayed a team of one, which the design allows. See the known gaps below |
+| Q17 | Usage cost is estimated on a small scale before the full multi-round budget | the same harness, which runs in phases (`python3 review/eval/r2-p6/run.py --phase pilot`) against a pre-registered design and manifests; D-42 records the rule and states that the requirement itself makes no real-model calls |
+| Q18 | No compatibility with old configs or sessions is required, and old data may be cleaned up | the upgrade notes above; `docs/INSTALL.md` records what changed for earlier releases (≤ v0.1.2) |
+| Q19 | Old sessions, state, caches and configs may be cleaned up; credentials, raw evaluation records, review evidence and Git history are kept | the upgrade notes above; D-42's last bullet (cleanup runs from an ownership inventory); `review/` and `review/eval` are kept in the tree |
+
 ## Matrix A01–A36 (per-item evidence)
 
 | Item | Scenario | Evidence |
@@ -177,6 +207,16 @@ amended (D-49/D-50).
   design question about team semantics, not a bug — it needs the user's word. Related and also open: whether
   the runtime should *interrupt* a running turn when the user sends something, instead of holding the input to
   the boundary as D-63 now does.
+- **The collaboration half of Q16 was measured and not confirmed.** The baseline requires that
+  on-demand collaboration "show a reproducible gain" on a pre-defined task set, next to the no-regression half.
+  The pre-registered experiment in `review/eval/r2-p6/REPORT.md` (135 trials, four batches, DeepSeek Flash at
+  its native window) passed H1 — the persistent runtime did not regress against the direct reference loop —
+  and **did not confirm H2**: in all 99 group-C trials the model stayed a team of one, so the collaboration
+  surface was available and visible but never used, and the per-task paired difference stayed 0. The design
+  explicitly allows a team of one, so this is a gap in the *evidence*, not a violation of the runtime; what
+  would close it is a task set (or an instruction shape) that makes delegation the shortest path, which is an
+  experiment to design rather than a defect to fix.
+
 - **A worker needs the user's grant for the shared-workspace shell** (D-61): a spawned worker holds no
   `shell@workspace` (§5.1), so until the user runs `teamagents authority grant --subject <id> --action shell
   --scope workspace` it works with the file, web and skill tools only. The surface exists and is verified, but
