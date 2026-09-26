@@ -18,6 +18,43 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-140 A probe reported a replay, and the assertion was measuring the wrong thing (2026-09-26)
+
+Running the eight model-requiring probes as a batch (the offline set of D-138 covers the credential-free ones)
+found one failure: `unknown_outcome.py`, A09's live half, reported `runs.log holds 2 line(s)` where D-119
+recorded one — "the command ran 2 times (exactly once expected: never replayed)". Everything else in that run
+was right: the operation reached `OUTCOME_UNKNOWN` with receipt class `outcome_unknown`, the task parked
+`BLOCKED`, exactly one `task_blocked` notification.
+
+Reproduction failed, which is itself the first piece of evidence: **11 runs in isolation and 10 under load**
+(eight `yes` workers, then sixty on a 20-core machine, load average 966) all reported one line. The code says
+the same as the reproduction: a runner that recovers a non-terminal journal turns it into `OUTCOME_UNKNOWN` and
+starts nothing (`go` fires only from `READY`), and a duplicate GO is a no-op (A10) — so an operation cannot be
+replayed through recovery, and two runs of the command need two **calls** of it.
+
+That points at the assertion. It demanded *exactly one line*, which conflates "the runtime replayed an effect"
+(what A09 forbids) with "the model issued the command twice" (which the design allows and nothing forbids). Two
+measurements settled it: the `operations` table holds **every** tool call — one run showed seven, the leader's
+`spawn` and `delegate` among them — so counting operations would be far too loose; and each operation's
+`intent_json` names the tool and the command, so the calls of *this* command can be counted exactly (one, in
+every run inspected).
+
+**Fixed**: the invariant is per call of this command — `runs <= calls` (never replay) and `runs >= 1` (the
+effect really happened) — printed as `calls of this command: N, runs: M` and named in the failure message.
+Two controls, each reverted byte-identically: pretending the command was never called fails with "the command
+ran 1 times for 0 call(s) of it: an operation was replayed (A09)", and an empty `runs` fails with "the command
+never ran, so there was no in-flight effect to recover".
+
+**Instrumentation for the next occurrence**: the command's own line now carries the shell's pid and its runner
+parent (`run pid=… ppid=…`), and the probe prints every operation with its status. A future failure therefore
+says whether the two runs came from one runner (a replay) or two (two calls) — the question the one observed
+failure could not answer, because the probe's scratch had already been removed at exit (D-138's policy; passing
+`--state-dir` is how to keep the artifact of a run).
+
+Ceiling: the observed failure stays unexplained — one run in a batch, not reproduced in 21 attempts — and what
+this entry settles is that the *assertion* was wrong, not that the product is right. A replay would now be
+reported precisely, with the artifact that identifies it.
+
 ## D-139 A test measured the wrong window, and only a loaded machine said so (2026-09-26)
 
 The D-138 gate failed once, in `jobs::tests::a_momentarily_held_lock_is_absorbed`, with "it must actually wait,

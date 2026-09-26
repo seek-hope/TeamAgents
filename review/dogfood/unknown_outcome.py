@@ -62,7 +62,10 @@ context_window = 262144
 """,
 }
 
-COMMAND = "sh -c 'echo run >> runs.log; sleep 20'"
+# The line carries the shell's pid and its parent (the runner's): a replay by the same runner and a fresh attempt
+# under a new runner are indistinguishable from `run` alone, which is what made the 2026-09-26 batch failure hard
+# to attribute (D-140).
+COMMAND = "sh -c 'echo \"run pid=$$ ppid=$PPID\" >> runs.log; sleep 20'"
 HIRE = (
     "Spawn exactly one worker with the instructions `run the shell command the task gives you, then finish`. Do "
     "not delegate anything yet and do not settle the goal: report the worker's instance id and end your turn."
@@ -203,10 +206,32 @@ def main() -> int:
     # 4. the trail
     runs = (workspace / "runs.log").read_text().splitlines() if (workspace / "runs.log").is_file() else []
     print(f"  runs.log holds {len(runs)} line(s)")
-    if len(runs) != 1:
-        failures.append(f"the command ran {len(runs)} times (exactly once expected: never replayed)")
-    operations = read(state_root, "SELECT operation_id, status, receipt_json FROM operations")
-    unknown = [(op, receipt) for op, status, receipt in operations if status == "OUTCOME_UNKNOWN"]
+    operations = read(state_root, "SELECT operation_id, status, receipt_json, intent_json FROM operations")
+    unknown = [(op, receipt) for op, status, receipt, _intent in operations if status == "OUTCOME_UNKNOWN"]
+    # The invariant is **per call of this command**: an effect that may have happened is never started twice, so
+    # the runs cannot outnumber the calls of the same command — and the probe's premise needs at least one call
+    # to have really started. Two things make that count necessary rather than a plain "exactly one line":
+    #   * the operations table holds every tool call, the leader's `spawn` and `delegate` included (measured:
+    #     3 operations, 1 line), so counting operations would allow replays it must forbid;
+    #   * the model may issue the same command twice, which the design allows and nothing forbids, and which
+    #     the earlier "exactly one line" assertion reported as a replay (a batch run on 2026-09-26 did exactly
+    #     that, and the artifact was gone by then because the probe's scratch is removed at exit — D-140).
+    def command_of(intent_json) -> str:
+        try:
+            return str((json.loads(intent_json or "{}").get("args") or {}).get("command") or "")
+        except (json.JSONDecodeError, TypeError, AttributeError):
+            return ""
+
+    calls = [op for op, _status, _receipt, intent in operations if "runs.log" in command_of(intent)]
+    print(f"  operations: {[(op.split(':')[0][-8:], status) for op, status, _r, _i in operations]}")
+    print(f"  calls of this command: {len(calls)}, runs: {len(runs)}")
+    if len(runs) > len(calls):
+        failures.append(f"the command ran {len(runs)} times for {len(calls)} call(s) of it: an operation was "
+                        f"replayed (A09)")
+    elif not runs:
+        failures.append("the command never ran, so there was no in-flight effect to recover")
+    elif len(calls) > 1:
+        print(f"  the model issued the same command {len(calls)} times; each ran once, which the invariant allows")
     if not unknown:
         failures.append(f"no operation reached OUTCOME_UNKNOWN: {operations}")
     else:
