@@ -28,6 +28,7 @@ import argparse
 import os
 import pathlib
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -98,6 +99,25 @@ def needs_credentials(set_name: str) -> bool:
     return set_name in ("models", "all")
 
 
+def daemon_args(root: pathlib.Path) -> list:
+    """The argv of the daemons under `root`, for a report that names the survivor (D-144)."""
+    listing = subprocess.run(["ps", "-eo", "stat,comm,args"], capture_output=True, text=True).stdout
+    return [parts[3][:160] for line in listing.splitlines()[1:]
+            if len(parts := line.split(None, 3)) == 4 and is_running(parts[0]) and parts[1] == "teamagents"
+            and parts[3].startswith("daemon ") and str(root) in parts[3]]
+
+
+def is_running(stat: str) -> bool:
+    """Is this process alive? A zombie is not.
+
+    `crash.py` kills its daemons on purpose, and in this container an orphaned dead child stays `<defunct>`
+    (pid 1 does not reap), so a *corpse* keeps the binary's name and its argv. Counting those reported a leak
+    for a process that serves nothing and cannot be killed — the third false positive of this family, after the
+    stray files and the foreign daemons (D-144).
+    """
+    return not stat.startswith("Z")
+
+
 def daemons(root: pathlib.Path | None = None) -> int:
     """Live session daemons, by the subcommand (D-111's predicate, not the binary's name).
 
@@ -107,29 +127,52 @@ def daemons(root: pathlib.Path | None = None) -> int:
     `--state-dir <root>/<probe>` to every probe, so every daemon it starts is under that root and nothing is
     missed by counting only those.
     """
-    listing = subprocess.run(["ps", "-eo", "comm,args"], capture_output=True, text=True).stdout
-    found = [parts[2] for line in listing.splitlines()[1:]
-             if len(parts := line.split(None, 2)) == 3 and parts[0] == "teamagents"
-             and parts[2].startswith("daemon ")]
+    listing = subprocess.run(["ps", "-eo", "stat,comm,args"], capture_output=True, text=True).stdout
+    found = [parts[3] for line in listing.splitlines()[1:]
+             if len(parts := line.split(None, 3)) == 4 and is_running(parts[0]) and parts[1] == "teamagents"
+             and parts[3].startswith("daemon ")]
     return sum(1 for args in found if root is None or str(root) in args)
 
 
-def stop_daemons(state_dir: pathlib.Path) -> None:
-    """Stop whatever serves this probe's state root: a killed probe cannot do it itself.
+def daemon_pids(state_dir: pathlib.Path) -> list:
+    """`(pid, args)` for the live daemons serving a state root under `state_dir`.
 
-    SIGTERM first, then SIGKILL for what is left: the harness reports a leftover daemon as a leak, so a probe it
-    had to kill must not leave one behind because the daemon was slow to honour the first signal (measured: a
-    daemon from a timed-out probe outlived the guard's 15 s window — D-141).
+    By **pid**, never by a pattern: `pgrep`/`pkill -f` match any command line that *contains* the string, so a
+    pattern like `daemon --state-root <root>` also matched the shells whose text mentioned it — measured
+    2026-09-26, it killed two of this session's own shells (the probes' own `stop_daemon` helpers have that
+    hazard; this harness does not, D-144).
     """
-    for root in state_dir.rglob("root"):
-        pattern = f"daemon --state-root {root}"
-        subprocess.run(["pkill", "-f", pattern], capture_output=True)
-        for _ in range(10):
-            if subprocess.run(["pgrep", "-f", pattern], capture_output=True).returncode != 0:
-                break
-            time.sleep(0.5)
-        else:
-            subprocess.run(["pkill", "-9", "-f", pattern], capture_output=True)
+    listing = subprocess.run(["ps", "-eo", "pid,stat,comm,args"], capture_output=True, text=True).stdout
+    found = []
+    for line in listing.splitlines()[1:]:
+        parts = line.split(None, 3)
+        if len(parts) != 4 or not is_running(parts[1]) or parts[2] != "teamagents":
+            continue
+        if parts[3].startswith("daemon ") and str(state_dir) in parts[3]:
+            found.append((int(parts[0]), parts[3]))
+    return found
+
+
+def stop_daemons(state_dir: pathlib.Path) -> None:
+    """Stop whatever serves a probe's state root: a killed probe cannot do it itself.
+
+    SIGTERM first, then SIGKILL for what is left (a daemon from a timed-out probe outlived the guard's window
+    once, D-141); both go to the pid `daemon_pids` found, so nothing else can be signalled.
+    """
+    for pid, _args in daemon_pids(state_dir):
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            continue
+    for _ in range(10):
+        if not daemon_pids(state_dir):
+            return
+        time.sleep(0.5)
+    for pid, _args in daemon_pids(state_dir):
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 
 
 def strays() -> set:
@@ -267,16 +310,21 @@ def main() -> int:
         time.sleep(0.5)
     if daemons(harness_root):
         stop_daemons(harness_root)
-        deadline = time.time() + 15
+        # A grace long enough for a shutdown that is genuinely under way: `crash.py`'s daemon was still listed
+        # ~20 s after its probe exited and gone when checked moments later (measured 2026-09-26). A daemon that
+        # ignores TERM *and* the KILL above for a minute is a leak; one that needs a few seconds is not.
+        deadline = time.time() + 60
         while time.time() < deadline and daemons(harness_root):
-            time.sleep(0.5)
+            time.sleep(1.0)
     left, new_strays = daemons(harness_root), strays() - before_strays
     leaks = []
     # a clean run keeps nothing: the harness root only survives when it holds a failure's evidence
     if not failures:
         shutil.rmtree(harness_root, ignore_errors=True)
     if left:
-        leaks.append(f"{left} daemon(s) left running under {harness_root}")
+        # name what survived, so the next occurrence says which probe's daemon it was and what it was started
+        # with — the guard has twice reported a count and left the reader to guess (D-144)
+        leaks.append(f"{left} daemon(s) left running under {harness_root}: {daemon_args(harness_root)}")
     if new_strays:
         leaks.append(f"scratch left behind: {sorted(new_strays)}")
     print(f"{len(chosen)} probes in {total}s; daemons of this run left: {left}; "

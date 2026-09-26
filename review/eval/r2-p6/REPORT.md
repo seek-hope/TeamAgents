@@ -12,6 +12,8 @@ run). Model: DeepSeek Flash (catalog key `leader_main`), **native context 1,000,
 permissions, a fresh working directory per trial and the acceptance script executed in that same directory
 after the trial.
 
+> Note (2026-09-26): the analysis script in the tree is no longer the exact bytes the manifests pin — `478d679` translated it into English — so its digest differs from the recorded `52d257b4…`. The rule is unchanged: comparing the two with every string literal stripped leaves identical syntax trees, which is what `review/eval_manifests.py` checks on every `make hygiene` (D-145).
+
 ## Conclusions (per the pre-registered criteria)
 
 | Hypothesis | Conclusion | Evidence |

@@ -18,6 +18,43 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-145 The pre-registered analysis no longer matches the tree, and nothing said so (2026-09-26)
+
+`review/eval/r2-p6/` is pre-registered evidence: all three manifests pin the analysis script's sha256 ("frozen
+before the run") plus every task's prompt, fixture and check-list digests, at a frozen date and commit. Nothing
+checked that the tree still matched, and it does not: the current `analyze.py` hashes to `07f85926…`, the pin is
+`52d257b4…`. The cause is benign and the *claim* was the problem: `478d679` ("English verification material")
+translated the script into English under the repository's language rule, so the file is no longer the bytes the
+pre-registration names — silently, so a reader who verifies gets a mismatch and cannot tell whether the
+*analysis rule* changed.
+
+It did not. The frozen bytes are recoverable from the repository's own history — the commit `27d7529` that ran
+the trials holds a version hashing to exactly `52d257b4…` — and the two are **AST-identical with every string
+literal replaced** ("<text>"), so only comments and printed text differ. The manifest's `git` field turns out not
+to name those bytes at all: at `eda3b56e` the files did not exist ("new file" in `git diff`), which is why a
+naive `git show <frozen>:<path>` recovery fails. The rule is therefore intact and the digest divergence is a
+*translation*, not a change of method — but only because someone looked.
+
+**Added**: `review/eval_manifests.py`, in `make hygiene`. For every manifest it recomputes each task's
+`prompt.md` digest, fixture tree digest and `checks` list; it recovers the pre-registered bytes **by digest**
+(the newest commit of that file that hashes to the pin) rather than trusting the manifest's commit field; and it
+compares the analysis script and the driver against those bytes by AST with strings stripped — so translated
+text is a *note* ("its digest differs from the recorded one (its text was translated), and its rule is identical
+to `27d7529`") while a changed rule is a **failure**.
+
+Evidence: the audit reports the three manifests, six notes (analyze.py and run.py, once per manifest) and exits
+0. Controls, each reverted byte-identically: appending one newline to `tasks/edit-integrity/prompt.md` fails with
+"edit-integrity prompt.md no longer matches its digest"; changing `analyze.py`'s sort to `reverse=True` fails
+with "differs from the pre-registered 27d7529 in its *rule*, not only in its text" for all three manifests.
+
+Also updated in `review/eval/r2-p6/REPORT.md`: the note above the conclusions, so a reader of the evaluation
+record learns this before trying to verify the digest themselves.
+
+Ceiling: "the rule is identical" is a statement about syntax trees — a translated format string cannot change a
+number, but the audit cannot prove the *numbers* the frozen script would print today; the recorded verdicts
+stand because they were produced by the frozen bytes at run time. And the audit needs the frozen bytes to remain
+in history.
+
 ## D-144 The probe harness checks its own rules (2026-09-26)
 
 The harness that runs the probe sets accumulated rules of its own, and this session showed three times that a
@@ -61,8 +98,24 @@ stray-*file* false positive again, inside the same guard. The check is now attri
 started by hand under a *different* root leaves the run green with `daemons of this run left: 0`, and it is left
 untouched.
 
-Ceiling: the check covers what can be stated without a session. The daemon predicate, the TERM-then-KILL stop and
-the keep-on-failure path need a real probe run, so they are covered by the sets themselves rather than here.
+**The daemon check had four shapes of false positive, and each was measured before it was fixed**: the *stray
+files* with the `ta-` prefix that this machine writes from elsewhere; the *foreign daemons* a global count
+attributed to the run; the *zombies* — `crash.py` kills its daemons on purpose and an orphaned corpse stays
+`<defunct>` here, keeping the binary's name; and, worst, the *patterns*: `pgrep`/`pkill -f` match any command
+line that *contains* the string, so `daemon --state-root <root>` also matched the shells whose text mentioned it,
+and two of this session's own shells were killed by it. The guard now counts live processes by `ps` state,
+attributed to its own root, and stops them **by pid** (`os.kill`), never by pattern. It also names any survivor
+with its argv, and allows a stopping daemon a minute before calling it a leak.
+
+**Open**: with all of that in place, `crash.py` still leaves a **live** daemon after its probe exits — named in
+the guard's report (`--state-root <root>/crash/root`, `--model leader_main --full-auto`), surviving both the
+TERM and the KILL the pid-based sweep sends, and gone when checked two minutes later. So something about that
+run restarts or outlasts its daemon — `crash.py` is also the probe that deliberately leaves an `OUTCOME_UNKNOWN`
+runner (D-112's ceiling) — and the guard is right to fail the set for it until that is understood.
+
+Ceiling: the check covers what can be stated without a session. The keep-on-failure path needs a real probe run,
+and the daemon check's remaining question (the paragraph above) needs the next `crash.py` run with its state
+kept.
 
 ## D-143 The two probes that failed the sweep now say which shape they saw (2026-09-26)
 
