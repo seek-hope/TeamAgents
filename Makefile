@@ -203,6 +203,7 @@ hygiene: language-check
 	python3 review/dead_code.py
 	python3 review/eval_manifests.py
 	python3 review/exec_report.py
+	python3 review/dogfood/probes.py --self-check
 	python3 review/project_config_claim.py
 	python3 review/readme_zh.py
 	python3 review/doc_flags.py

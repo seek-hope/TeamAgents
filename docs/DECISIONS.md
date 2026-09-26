@@ -18,6 +18,36 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-155 A probe no set ran, and a count that hid it (2026-09-26)
+
+Re-running the model probes after D-153 (the runner lifecycle is what most of them exercise), `--only
+deadline.py` selected **nothing**: `review/dogfood/probes.py`'s `--only` matches inside a set, and
+`deadline.py` — A35's live half, with its own section in `review/dogfood/README.md` — was in neither set. So
+`make probe-models` had never run it, and A35's live evidence rested on a probe the regression run could not
+reach. The harness's own documents said "the twenty-four that take a model" while the list held 25, and the
+number was both wrong and the reason nobody noticed: a reader comparing a count with a directory has to count
+by hand, and nothing checked the file list at all.
+
+**Changed**: `deadline.py` is in `MODELS` (it needs `DEEPSEEK_API_KEY`: one short turn creates the goal, the
+probe waits out the goal's one-minute deadline, and the second turn must be refused). `probes.py --self-check`
+now requires **every** `*.py` in the directory to be in exactly one set, or named in `NOT_PROBES` with a
+reason (the set is empty today: every module here is a probe), and reports the reverse too (a listed name with
+no file). `make hygiene` runs that self-check, so the class cannot come back silently in a `make check` — the
+harness is one of the four things a user runs to accept this product, and a probe it never runs is worse than
+a missing one. The documents' counts became count-free phrasing, and `--list` prints both sets with each
+probe's reason.
+
+**Measured** (2026-09-26, the probe's first run *through the harness*): `deadline.py` passes on the current
+tree — the first turn exits 0 in 1.0 s with the goal's deadline 59 s ahead, the second exits **1 in 0.0 s**
+with `failure: "goal goal-s-main deadline passed before request … could start"`, the session holds exactly one
+model request, records `goal_deadline_refused`, and parks the leader with the same words. Controls, each
+reverted byte-identically: dropping `deadline.py` from its set fails "deadline.py is in neither set: nothing
+runs it"; creating a new probe file nobody added fails the same way for that file.
+
+Ceiling: the self-check proves *coverage* — every probe file is scheduled somewhere — not that a probe is
+right, which is what its own controls are for. `NOT_PROBES` is the escape hatch for a future helper module,
+and it is deliberately explicit rather than a glob.
+
 ## D-154 The `--json` reports were a scripting surface with no catalogue and no audit (2026-09-26)
 
 Five verbs print one JSON object instead of text — `exec`, `authority`, `approvals`, `instances`, `tasks` — and

@@ -59,6 +59,7 @@ MODELS = [
     ("unknown_outcome.py", [], "the unverifiable crash parks the task and never replays the effect (A09)"),
     ("cancel.py", [], "the terminate lever really stops a running command (A13/D-88)"),
     ("lifecycle_run.py", [], "what pause and terminate do to a run that is already waiting (D-98)"),
+    ("deadline.py", [], "the goal deadline end to end: the daemon refuses, the client says why (A35/D-97)"),
     ("job_identity.py", [], "the running job's identity, a duplicate GO and a guessed token (A15/A10)"),
     ("checks.py", [], "a required check no workspace state can satisfy blocks the goal (A16/D-50/D-146)"),
     ("stale_check.py", [], "a check that rewrites its own declared input cannot let the goal settle (A17)"),
@@ -80,6 +81,10 @@ MODELS = [
     ("providers.py", [], "one team spanning DeepSeek and Kimi (A27)"),
     ("protocols.py", [], "every wire protocol accepted against a real service (DESIGN §7/D-151)"),
 ]
+
+# Files in this directory that are not probes (none today: every module here is one, and a module that
+# accumulates helpers should be named here with its reason).
+NOT_PROBES: set = set()
 
 SETS = {"offline": OFFLINE, "models": MODELS, "all": OFFLINE + MODELS}
 # Per-probe budget, by set: the credential-free probes answer in under a minute, while a model probe waits on
@@ -142,6 +147,16 @@ def self_check() -> int:
         findings.append(f"every set needs a per-probe budget: sets={sorted(SETS)} timeouts={sorted(TIMEOUTS)}")
     if needs_credentials("offline") or not needs_credentials("models") or not needs_credentials("all"):
         findings.append("the credential requirement is wrong: only the model sets need one")
+    # D-155: a probe file that no set runs is a probe nothing ever measures — `deadline.py` (A35's live half,
+    # documented in this directory's README) was in neither set, so `make probe-models` had never run it.
+    # If a file here is *not* a probe (a helper module), add it to NOT_PROBES with a reason rather than
+    # leaving the gap silent.
+    on_disk = {path.name for path in HERE.glob("*.py")} - {"probes.py"} - NOT_PROBES
+    listed = {name for name, _extra, _why in OFFLINE + MODELS}
+    for missing in sorted(on_disk - listed):
+        findings.append(f"{missing} is in neither set: nothing runs it (add it, or list it in NOT_PROBES)")
+    for extra in sorted(listed - on_disk):
+        findings.append(f"{extra} is in a set and the file does not exist")
 
     keep = os.environ.get("TMPDIR")
     try:

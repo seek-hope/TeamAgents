@@ -38,7 +38,7 @@ stays empty). `review/dogfood/probes.py` runs a whole set and reports one line p
 
 ```bash
 make probe-offline                     # needs `make build`; the seven credential-free ones, about a minute
-make probe-models                      # the twenty-four that take a model, one after another (~7 min)
+make probe-models                      # the probes that take a model, one after another (~7 min)
 python3 review/dogfood/probes.py --list
 python3 review/dogfood/probes.py --only checks.py --set models
 env -u DEEPSEEK_API_KEY -u KIMI_API_KEY python3 review/dogfood/probes.py   # the offline set needs no credential
