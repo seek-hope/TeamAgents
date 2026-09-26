@@ -123,6 +123,35 @@ real model and sometimes answers with *prose* ("Confirmed: answer.txt written…
 Then the task stays `RUNNING` (D-65's ceiling: the runtime does not re-ask a model that stopped settling), the
 Leader reads the artifact itself, and the goal still settles `SUCCEEDED` with that task open, because
 `complete_goal` checks open **operations**, not open **tasks** — the recorded known gap in `docs/ACCEPTANCE.md`.
+
+## `protocols.py`: every wire protocol, accepted against a real service
+
+DESIGN §7 keeps four protocol families apart (Chat Completions, DeepSeek extensions, Anthropic, Responses) and
+requires that each is "accepted with a real service separately". The tree had contract samples for all four
+(`engine/tests/providers_fake.rs` drives a fake HTTP server through each adapter) and live runs on two wires —
+nothing said which family had a live acceptance and which had only a fake. This probe is the live half for every
+family, one small goal each (write a file, `--check` verifies it) in its own state root:
+
+```bash
+python3 review/dogfood/protocols.py                    # every family whose credential is set
+python3 review/dogfood/protocols.py --family anthropic
+python3 review/dogfood/protocols.py --strict           # a family not accepted fails the run
+python3 review/dogfood/protocols.py --self-check       # the table against the code, no model and no key
+```
+
+Each run takes the native context window from the service's **own model list** (`/models`; D-36's "value and
+source") and writes that value into the config, so a window a vendor changed shows up as a mismatch instead of
+a quiet shrink; it then asserts the turn really completed on that wire (exit 0, a settlement, the artifact, a
+recorded request) and that the adapter's native field survived into the stored message (`reasoning_content`,
+`anthropic_blocks`, `responses_output`). `--self-check` re-derives the endpoint, the native field, the protocol
+dispatch and the contract tests from the code, so the table cannot drift.
+
+Measured (2026-09-26, all four, no `--strict` needed): `anthropic` `k3-256k` via Kimi's Anthropic-compatible
+`/v1/messages` (exit 0, 2 requests, 7.7 s, `anthropic_blocks` kept), `chat/completions` `k3-256k` (2 / 7.7 s,
+`reasoning_content`), `deepseek` `deepseek-flash` (3 / 3.1 s, `reasoning_content`), `responses` `k3-256k`
+(2 / 9.2 s, `responses_output`) — and both declared windows match the tree's recorded values (`1048576`,
+`262144`). A family whose credential is missing is printed as `NOT ACCEPTED LIVE` with its contract tests, so a
+gap is stated rather than skipped.
 The probe accepts that one shape only (artifact exact **and** goal `SUCCEEDED` **and** the task still open) and
 prints it as the gap; every other shape where the event is missing still fails the run.
 `python3 review/dogfood/providers.py --self-check` checks that rule with no model, no network and no

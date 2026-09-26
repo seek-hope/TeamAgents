@@ -18,6 +18,51 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-151 DESIGN §7 asked for a live acceptance per protocol family, and nothing said which ones had one (2026-09-26)
+
+DESIGN §7 separates the protocol layer from the vendor name — "the reusable parsing and contract samples of Chat
+Completions, DeepSeek extensions, Anthropic and Responses are kept, and each is accepted with a real service
+separately" — and the tree had the first half: `engine/tests/providers_fake.rs` drives a fake HTTP server
+through every adapter (six Anthropic tests among them). What it did not have, and what no document said, is the
+second half for two of the four families. Live runs existed on the DeepSeek wire (protocol `deepseek`, i.e.
+chat/completions plus the `xhigh`→`max` mapping) and on Kimi's `responses` wire; the plain chat/completions
+family and the Anthropic family had **contract samples only**, and a reader of A27 could not tell: it lists one
+DeepSeek+Kimi team probe. This is D-133/D-130's shape again — the code for a promise exists and is tested, so
+prose about it reads like evidence for the promise.
+
+**Added**: `review/dogfood/protocols.py`, one small goal per family (write a file, `--check` verifies it) in its
+own state root, with three properties worth naming. It takes each family's native context window **from the
+service's own model list** and writes that value into the config it runs with — value and source in D-36's
+sense, and the only window source that cannot go stale silently, since a vendor change shows up as a refusal
+instead of a quiet shrink. It asserts the design's retention half as well ("opaque provider fields are stored
+with their origin and version, and never flattened") by requiring the native field the family's own adapter
+stores (`chat_completions.rs`'s `reasoning_content`, `anthropic.rs`'s `anthropic_blocks`, `responses.rs`'s
+`responses_output`). And `--self-check` re-derives the endpoint, the native field, the protocol dispatch and the
+contract tests from those files, so the table cannot drift away from the code. A family whose credential is
+unset is printed as `NOT ACCEPTED LIVE` with its contract tests named; `--strict` makes that a non-zero exit for
+a machine that has all of them.
+
+**Measured** (2026-09-26, all four, no `--strict` needed): `anthropic` `k3-256k` over Kimi's
+Anthropic-compatible `/v1/messages` — exit 0, `end=completed`, 2 model requests, 7.7 s, `anthropic_blocks`
+kept; `chat/completions` (protocol `openai`) `k3-256k` — 2 / 7.7 s, `reasoning_content`; `deepseek`
+`deepseek-flash` — 3 / 3.1 s, `reasoning_content`; `responses` `k3-256k` — 2 / 9.2 s, `responses_output`; every
+one exit 0 with the artifact and the check passing. The windows both services declare (`/models`:
+`context_window` 1048576 for `deepseek-flash`, `context_length` 262144 for `k3-256k`) match the values the tree
+already recorded (D-36's user-confirmed 1 MiB and the probes' 262144), which is a second, independent source
+for them. Controls, each reverted byte-identically (sha256 `f2406f8a…`): a family pointing at `/v1/wrong` fails
+the self-check ("does not post to /v1/wrong"), a family claiming an invented native field fails it, and an
+acceptance command that cannot pass refuses the family (`the check did not pass` with the verdict quoted) —
+acceptance is the whole path, not a request that returned 200.
+
+Ceiling: one small turn per family is an acceptance, not a benchmark (no long tool loop, no compaction, no
+provider failover), and the Anthropic family is accepted through a **compatible gateway**, which is what §7's
+own separation of protocol and vendor describes; Anthropic's own deployment is still not exercised, because no
+`ANTHROPIC_API_KEY` exists in this environment — and the `OPENAI_API_KEY` that is present is refused by
+`api.openai.com` (`401 invalid_api_key`), so the chat/completions family is accepted through Kimi as well. A
+probe detail worth keeping: this container's Python ships its own bundled CAs (conda's `certifi`) and therefore
+failed TLS where `curl` succeeded, so the probe prefers the machine's trust store when one is installed
+(`review/dogfood/protocols.py`'s `_trust`).
+
 ## D-150 The only stop a user could perform was the one that skipped the shutdown (2026-09-26)
 
 Continuing the first-run audit that produced D-149. A user who wants to stop their session has one instruction

@@ -77,6 +77,7 @@ MODELS = [
     ("tui.py", [], "the real TUI on a real daemon, with the answer on screen (D-85)"),
     ("team_ring.py", [], "a message travels A -> B -> C -> A around a real team (A02/D-118)"),
     ("providers.py", [], "one team spanning DeepSeek and Kimi (A27)"),
+    ("protocols.py", [], "every wire protocol accepted against a real service (DESIGN §7/D-151)"),
 ]
 
 SETS = {"offline": OFFLINE, "models": MODELS, "all": OFFLINE + MODELS}
