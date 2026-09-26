@@ -18,6 +18,32 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-188 A latency number without its machine is not a measurement (2026-09-27)
+
+Refreshing A32's scale evidence at the current build — the row's figures were from 2026-09-25, before D-165's
+events index and forty decisions of change — produced numbers that look like a regression and are not one:
+append p50 6.1 ms → 8.2 ms, turn step p50 11.1 ms → 14.8-15.2 ms. The machine's **load average was 26-31 on
+twenty cores** (it carries the ~1,390 stray `jobs-runner` processes the pre-fix builds left, the standing
+host-cleanup item), and both figures are *fsync-bound wall clock*: with `synchronous=FULL` almost all of that
+latency is waiting for a commit, so another machine's work is what changed, not the product's cost. The
+comparison that isolates it is the probe's own total CPU, which is load-independent: **5.57 s and 5.76 s in two
+runs today against 5.50 s on 2026-09-25 (+1 to +5%)**, with the same 10.7 MB of database growth and the same
+1.5 ms reopen. Two runs at the same load also reproduce each other (append p50 8.26 / 8.23 ms), so the number
+is stable *within* a condition and only moves *between* conditions.
+
+**Changed** (`engine/examples/load_probe.rs`): the report now carries the conditions beside the numbers —
+`loadavg_1_5_15` from `/proc/loadavg` and `cpus` from `available_parallelism()` — and the comment above
+`cpu_us` says which half of the table is load-bound. That is the whole fix: the previous reports cannot be
+compared across machines because nothing in them says what the machine was doing, and the campaign's own rule
+("before claiming a falsification, rule out probe error") is what made the difference visible here.
+
+**A32** carries both measurements, the load context and the CPU decomposition, so a reader comparing 2026-09-25
+with 2026-09-27 gets the honest reading rather than a phantom regression.
+
+Ceiling: the probe still cannot *control* the load; it can only record it. A measurement taken for a regression
+decision should be run on an idle machine (or with the machine's other work named), and `cpu_us` is the metric
+to compare when that is not possible.
+
 ## D-187 The runtime knew why a completion was refused and did not say (2026-09-27)
 
 The 26-probe model pass (its record is in `review/dogfood/README.md`) came back with one red probe, and it was

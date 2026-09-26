@@ -18,6 +18,9 @@ in [README.md](README.md); the fix ledger is in
   property (`AuthorizedEffectsOnly`, `InputLandsAtTheBoundary`, `NoRequestAfterDeadline`, `NoTurnWithoutWork`
   twice, `SettlementFollowsATurnAfterTheLanding`, `NoForeignAdoption`, and three temporal refutations), in
   1 m 22 s.
+* The wall clocks above are upper bounds, not machine-independent figures: they were measured while this
+  machine carried a load average of about 25-31 on 20 cores (the standing host-cleanup item), and TLC is
+  CPU-bound. The probe in A32 now records the same conditions next to its numbers for the same reason (D-188).
 * **The Kani layer was re-run on this tree** (2026-09-27; first re-run 2026-09-26, D-132): `make verify-kani`
   reports `Complete - 3 successfully verified harnesses, 0 failures, 3 total` in ~3 s with a cached build
   (the 2026-09-26 run paid for the build: ~16 s). The toolchain this report called missing is

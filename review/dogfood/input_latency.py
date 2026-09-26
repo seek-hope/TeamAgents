@@ -93,6 +93,15 @@ def main() -> int:
         os.kill(pid, 9)
         return 1
     print(f"  attached to the scripted daemon ({daemon.sock_path})")
+    # D-188: a wall-clock latency carries its machine. The bounds below are loose enough that load does not
+    # decide the verdict (a loaded machine is not a defect), but the printed numbers are only comparable when
+    # the condition is known, and this machine also carries the stray pre-fix runners.
+    try:
+        with open("/proc/loadavg", encoding="utf-8") as handle:
+            load = " ".join(handle.read().split()[:3])
+        print(f"  conditions: load average {load} on {os.cpu_count()} cpu(s)")
+    except OSError:
+        pass
 
     failures: list[str] = []
     singles: list[float] = []

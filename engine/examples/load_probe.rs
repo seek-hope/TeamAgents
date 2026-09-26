@@ -26,6 +26,21 @@ fn metric(key: &str) -> u64 {
         .unwrap_or(0)
 }
 
+/// The machine's one/five/fifteen-minute load averages, as `/proc/loadavg` gives them (D-188).
+///
+/// Wall-clock latencies here are fsync-bound, so a machine carrying other work reports slower numbers for the
+/// same code — measured 2026-09-27: the same probe, with the same total CPU (`cpu_us` 5.50 s against 5.57 s),
+/// reported an append p50 of 6.1 ms at load 1 and 8.3 ms at load 31. Recording the condition is what tells the
+/// two apart.
+fn load_average() -> String {
+    std::fs::read_to_string("/proc/loadavg")
+        .unwrap_or_default()
+        .split_whitespace()
+        .take(3)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn cpu_us() -> u64 {
     let mut usage = std::mem::MaybeUninit::<libc::rusage>::uninit();
     // Linux fills the complete structure on success.
@@ -308,6 +323,11 @@ fn main() -> Fallible<()> {
         "peer_page_bytes": peer_bytes,
         "read_command_receipt_bytes": read_receipt_bytes,
         "cpu_us": cpu_us().saturating_sub(cpu_before),
+        // D-188: these figures are wall clock, and the two slow ones (append, turn step) are fsync-bound — so
+        // they carry the machine's load, not only the product's cost. The conditions travel with the numbers,
+        // and `cpu_us` above is the load-independent half of the comparison.
+        "loadavg_1_5_15": load_average(),
+        "cpus": std::thread::available_parallelism().map(|cpus| cpus.get()).unwrap_or(0),
         "rss_after_append_kib": rss_after_append_kib,
         "rss_kib_final": metric("VmRSS:"),
         "peak_rss_kib": metric("VmHWM:"),
