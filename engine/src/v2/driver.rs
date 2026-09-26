@@ -1775,6 +1775,15 @@ impl<P: Provider> Driver<P> {
         // GO dedups: a replay never starts a second command (A10)
         let _ = client::go(&job_dir).await;
         let journal = self.await_job(operation_id, &job_dir).await?;
+        // A known terminal outcome ends the runner's reason to exist (§6.2: one controlled runner per *active*
+        // command; A12's own test ends it with `client::shutdown`). The journal on disk stays the recoverable
+        // record and a later recovery respawns a runner over the same directory (§6.3), so this is a stop of the
+        // *runner*, never of a service the command left behind (D-41, A12). An OUTCOME_UNKNOWN keeps its runner:
+        // that is the state where the design wants a live partner for verification and cancellation (§6.2/§6.4).
+        // Before this, nothing in the product called `shutdown` at all: every finished command left a detached
+        // process that ticked every 10 ms for the life of the machine (measured: 11 CPU ticks in 6 s at rest).
+        let outcome_known =
+            matches!(journal.state.as_str(), "SUCCEEDED" | "FAILED" | "CANCELLED" | "CANCELLED_BEFORE_START");
         let output = client::read_output(&job_dir, MAX_OUTPUT);
         let (status, ok, error_class, reason) = match journal.state.as_str() {
             "SUCCEEDED" => ("SUCCEEDED", true, None, None),
@@ -1856,6 +1865,10 @@ impl<P: Provider> Driver<P> {
         let args = intent["args"].clone();
         let result =
             self.complete_op(operation_id, status, &serde_json::to_value(receipt).unwrap_or(Json::Null), publish).await;
+        if outcome_known {
+            // best effort: a runner that already exited (or a job directory a recovery pass owns) is not an error
+            let _ = client::shutdown(&job_dir).await;
+        }
         self.notify_tool_call("shell", &args, call_ok, call_error);
         result
     }

@@ -360,6 +360,39 @@ async fn end_to_end_shell_then_finish() {
     handle.shutdown().await.expect("shutdown");
 }
 
+/// §6.2/A12/D-112: a shell command with a known outcome ends its runner. `jobs::client::shutdown` is the verb
+/// A12's own test uses, but nothing in the product called it, so every finished command left a detached runner
+/// behind: reparented to init, holding its job directory, ticking every 10 ms for the life of the machine
+/// (measured on a settled job: 11 CPU ticks in 6 s at rest, and 23 such processes after a single test suite).
+/// The journal stays on disk as the recoverable record and a later recovery respawns a runner over the same
+/// directory (§6.3), so ending the runner loses nothing; a service the *command* left behind is untouched
+/// (D-41, A12's own assertion).
+#[tokio::test]
+async fn a_settled_shell_job_leaves_no_runner_behind() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let root = root("runner-retire");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let script = vec![
+        Step::Message(shell_call("c1", "echo settled > marker.txt")),
+        Step::Message(finish_call("ran one command")),
+    ];
+    let handle = start(root.config(ScriptedProvider { script: Mutex::new(script.into()) })).await.expect("start");
+    handle.input("run one command").await.expect("input");
+    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    let jobs: Vec<PathBuf> = std::fs::read_dir(root.dir.join("state").join("jobs"))
+        .expect("the job directory exists")
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(jobs.len(), 1, "one command, one job: {jobs:?}");
+    let journal = teamagents_engine::jobs::client::persisted_journal(&jobs[0]).expect("the journal stays readable");
+    assert!(journal.state == "SUCCEEDED" && journal.terminal(), "the outcome is on disk: {journal:?}");
+    assert!(
+        teamagents_engine::jobs::client::status(&jobs[0]).await.is_err(),
+        "no runner answers for a settled job (a live one would reply to `status`)"
+    );
+    handle.shutdown().await.expect("shutdown");
+}
+
 #[tokio::test]
 async fn wait_parks_and_the_timer_wake_lets_the_model_continue() {
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));

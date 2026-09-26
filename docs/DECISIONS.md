@@ -18,6 +18,53 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-112 Nothing ever stopped a shell runner (2026-09-26)
+
+§6.2 gives "one controlled runner per *active* command", A12's own test ends its runner with
+`jobs::client::shutdown`, and the verb has existed as long as the runner has — but **the product never called
+it**. Every shell command and every acceptance check therefore left a detached `jobs-runner` process behind:
+reparented to init (measured: `PPID 1`), holding its job directory under `<state root>/jobs/<op>`, ticking on a
+10 ms interval for the life of the machine. Measured on one settled job (`state: SUCCEEDED`, `exit_code: 0`,
+`finished_ms` set, one start): **11 CPU ticks in 6 s at rest**, ~1.8 % of a core per idle runner. A single
+`engine` test suite left **25** of them; a long session would leave one per command, and §6.4 says a daemon
+shutdown deliberately does not reap them.
+
+The fix goes in the one place that builds a job directory (`driver.rs`, `execute_shell`): once the terminal
+receipt is committed, a job with a *known* outcome sends `client::shutdown`. It is deliberately the last act
+after `complete_op`, so the outcome is durable before the runner goes; the journal on disk stays the recoverable
+record and §6.3's recovery respawns a runner over the same directory when it needs a status or a cancel. It
+stops the *runner*, never a service the command left behind — A12's own test
+(`a_successful_commands_service_outlives_the_job`) asserts the `sleep 300` it spawned survives the runner's
+shutdown, and D-41 makes such a service explicit-only cleanup.
+
+An unknown outcome keeps its runner on purpose: that is the state where §6.2/§6.4 want a live partner for
+identity-verified cancellation and verification. After the fix, a whole engine suite (15 test binaries) leaves
+exactly one runner, and its journal reads `OUTCOME_UNKNOWN` — the crash fixture's, the one that is supposed to
+stay.
+
+Evidence (all commands re-runnable):
+
+    cargo test --offline --manifest-path engine/Cargo.toml --test v2_driver a_settled_shell_job_leaves_no_runner_behind
+    #   the new test: the journal is still SUCCEEDED on disk and `client::status(job_dir)` fails, i.e. no runner answers
+    #   pre-fix control: with the shutdown removed it fails at
+    #   "no runner answers for a settled job (a live one would reply to `status`)"
+    #   suite A/B, counting `jobs-runner` processes by the state in their journal:
+    #     before: 25 (v2_driver suite) — after: 0, with the single OUTCOME_UNKNOWN one still there
+    # live, real model: python3 review/dogfood/checks.py --provider deepseek (a goal blocked by an impossible
+    #   configured check after three rounds) ends with 0 jobs-runner processes and 0 daemons
+
+The measurement that found it was the D-111 gate, which counts `teamagents daemon` processes: its first version
+counted every `teamagents` process and failed with "27 daemon(s) behind" — those 27 were these runners. D-111's
+entry records the correction to the *gate*; this entry records the *defect* the correction exposed, which is why
+the two are separate.
+
+Ceiling: an `OUTCOME_UNKNOWN` job keeps its runner (and its 10 ms tick) until the state root is retired.
+Resolving such an operation (the user cancels or retries the parked task) is a database action, and the runner
+is only reachable over its socket, so nothing retires it today — the supervisor's recovery pass would respawn
+one if it needed it. A follow-up could send the shutdown when the operation is resolved; deleting the state
+root removes it either way. `jobs_runner`'s own tests still manage their runners by hand (they test the verb
+itself).
+
 ## D-111 The suite leaked daemons, and now it cannot (2026-09-26)
 
 The A14 test (`cli::an_unisolated_shell_refuses_instead_of_running_on_the_host`) drives two `teamagents exec`
