@@ -590,6 +590,32 @@ fn panel_selections_clamp_after_data_refreshes() {
     assert_eq!(app.instance_sel, 1); // two instances in the checkpoint
 }
 
+/// D-165: the instances panel says *why* an instance is not running. The checkpoint row now carries the last
+/// lifecycle transition's own words (the park reason the runtime recorded), which is the answer the panel
+/// could not give before — it said `PARKED` and left the user to open a log.
+#[test]
+fn the_instances_panel_says_why_an_instance_is_parked() {
+    let mut app = app();
+    app.apply_checkpoint(
+        json!({"instances": [
+            {"id": "i-leader", "lifecycle": "PARKED", "phase": "READY", "model": "deepseek-flash",
+             "reason": "MCP server exited"},
+            {"id": "i-worker", "lifecycle": "ACTIVE", "phase": "READY", "model": "k3-256k",
+             "reason": "ACTIVE by the user (teamagents instances)"}
+        ], "goal": null}),
+        6,
+    );
+    cycle_to(&mut app, View::Instances);
+    let mut terminal = Terminal::new(TestBackend::new(72, 18)).unwrap();
+    terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
+    let all = frame_lines(&terminal).join("\n");
+    assert!(all.contains("i-leader · PARKED · READY"), "{all}");
+    assert!(all.contains("— MCP server exited"), "the park reason is on the row: {all}");
+    // an ACTIVE member's last transition says nothing a user needs, so its row is unchanged
+    assert!(all.contains("i-worker · ACTIVE · READY · k3-256k"), "{all}");
+    assert!(!all.contains("ACTIVE by the user"), "no reason on an ACTIVE row: {all}");
+}
+
 #[test]
 fn frame_shows_the_panels_and_panel_hit_testing() {
     let mut app = app();

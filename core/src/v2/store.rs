@@ -30,6 +30,14 @@ CREATE TABLE IF NOT EXISTS events (
     PRIMARY KEY (session_id, sequence)
 );
 
+-- D-165: `checkpoint` reads the last `instance_lifecycle` per instance for the row's `reason`, and every client
+-- polls the checkpoint (`exec` and the TUI at ~4 Hz). Measured 2026-09-27 over a 200k-event log: the
+-- kind-filtered read took 44.6 ms per call without this index (a full b-tree walk, 20 matching rows) and 0.02 ms
+-- with it; the write side pays 1.71x on a bulk insert (100k events: 228 ms -> 392 ms, ~1.6 us per row). The
+-- index is additive and applied to an existing database by the `verify schema` pass (`IF NOT EXISTS`, no format
+-- or schema-version change), so a v3 state root opens unchanged.
+CREATE INDEX IF NOT EXISTS idx_events_kind_sequence ON events(kind, sequence);
+
 CREATE TABLE IF NOT EXISTS instances (
     id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL,

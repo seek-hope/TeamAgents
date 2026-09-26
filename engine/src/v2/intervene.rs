@@ -165,16 +165,26 @@ fn print_report(options: &InterventionOptions, report: &Json) {
             let instances = report["instances"].as_array().cloned().unwrap_or_default();
             println!("session {}: {} instance(s)", report["session_id"].as_str().unwrap_or(""), instances.len());
             for instance in &instances {
+                let lifecycle = instance["lifecycle"].as_str().unwrap_or("");
+                // D-165: say *why* an instance is not running — the runtime's own words from the last
+                // lifecycle transition (the park reason, or "PAUSED by the user …"). An ACTIVE member's last
+                // transition says nothing a user needs, so the row stays as it was for those.
+                let why = instance["reason"]
+                    .as_str()
+                    .filter(|_| lifecycle != "ACTIVE")
+                    .map(|reason| format!("  — {reason}"))
+                    .unwrap_or_default();
                 println!(
-                    "  {}  {} / {}{}",
+                    "  {}  {} / {}{}{}",
                     instance["id"].as_str().unwrap_or(""),
-                    instance["lifecycle"].as_str().unwrap_or(""),
+                    lifecycle,
                     instance["phase"].as_str().unwrap_or(""),
                     // which model a member runs on (D-69): a team can span providers
                     match instance["model"].as_str().filter(|model| !model.is_empty()) {
                         Some(model) => format!("  · {model}"),
                         None => String::new(),
-                    }
+                    },
+                    why
                 );
             }
         }

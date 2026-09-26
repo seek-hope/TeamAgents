@@ -68,6 +68,10 @@ pub struct InstanceInfo {
     /// (`spawn(model = …)`), so the panel says which one each member uses. Empty
     /// for an older daemon that does not report it.
     pub model: String,
+    /// The last lifecycle transition's own words (D-165): why this instance is not
+    /// running — a park reason, or the user's own pause. Empty for an ACTIVE member
+    /// and for a transition recorded without words.
+    pub reason: String,
 }
 
 #[derive(Clone, Debug)]
@@ -260,6 +264,7 @@ impl V2App {
                 lifecycle: i["lifecycle"].as_str().unwrap_or("").to_string(),
                 phase: i["phase"].as_str().unwrap_or("").to_string(),
                 model: i["model"].as_str().unwrap_or("").to_string(),
+                reason: i["reason"].as_str().unwrap_or("").to_string(),
             })
             .collect();
         self.active = previous

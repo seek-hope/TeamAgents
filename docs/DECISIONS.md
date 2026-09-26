@@ -18,6 +18,50 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-165 The instance list showed `PARKED` and not why (2026-09-27)
+
+D-164's recorded open item, closed rather than left as a known gap. D-164 carried the park reason to the run's
+own report (`failure`), the TUI's system note and `doctor`'s static rows, but the surface a user reads *first* —
+`teamagents instances` — still printed `id / lifecycle / phase · model` and stopped there, so the user guide's
+promise that the list "shows `PARKED` and the reason" was true of neither half of it. The reason was never
+missing from the system: the control plane records it in the `instance_lifecycle` event payload (`set_lifecycle`
+writes `{lifecycle, reason}` on every transition) and D-104's supervisor test asserts exactly that. What was
+missing was the field on the read the clients actually use.
+
+**Changed** (`engine/src/v2/daemon.rs`, `engine/src/v2/intervene.rs`, `tui/src/v2app.rs`, `tui/src/v2ui.rs`):
+the checkpoint's instance row carries `reason` — the last lifecycle transition's own words, read with a
+correlated subquery over the event log (`reason: null` for an instance that never transitioned, or a
+transition recorded without words; no sentence is invented). Every client of the checkpoint gets it without
+further protocol work: `teamagents instances` (text and `--json`) prints it for an instance whose lifecycle is
+not `ACTIVE`, and the TUI's instances panel shows it the same way. An ACTIVE member's last transition says
+nothing a user needs, so those rows are unchanged (`i-leader · ACTIVE · READY · deepseek-flash`), which also
+keeps the panel's width.
+
+**Measured** (2026-09-27, real daemon, a `required = true` MCP service whose command does not exist — it parks
+the leader's driver at boot, no model call): before, `teamagents instances` printed `i-leader  PARKED / READY  ·
+deepseek-flash`; after, `i-leader  PARKED / READY  · deepseek-flash  — required tool service "broken" is
+unavailable: MCP workspace initialization failed: MCP server exited`, and `--json` carries the same sentence
+in a `reason` field on the `instances[]` row a script already reads. New tests:
+`cli::the_instances_list_says_why_an_instance_is_parked` (0.2 s; asserts the
+product's own text and JSON output, after waiting for the park over the socket) and
+`v2app_tests::the_instances_panel_says_why_an_instance_is_parked` (a TestBackend frame: the reason is on a
+PARKED row, absent on an ACTIVE one). `docs/PROTOCOL.md`'s generated tables are unchanged — they catalogue
+methods, not row fields, and the document already states that a method's caller "should treat the shape it does
+not understand as opaque", so an added row field is compatible by contract.
+
+**The read had to pay for itself** (`core/src/v2/store.rs`): the reason comes from the event log, and the
+checkpoint is polled by every client (~4 Hz for `exec` and the TUI), so a kind-filtered scan of an unindexed
+`events` table would have been a new per-poll cost that grows with the session. Measured on a 200k-event log
+(SQLite, this container): 44.6 ms per read without an index (a full b-tree walk, 20 matching rows) versus
+0.02 ms with `idx_events_kind_sequence`. The index is additive — `CREATE INDEX IF NOT EXISTS` in `SCHEMA`, which
+the existing-database path already re-applies as its "verify schema" pass — so no format or schema-version
+change and a v3 state root opens unchanged (`foreign_tables` counts tables, not indexes, so the foreign-file
+refusal is untouched). The write side pays for it: a bulk insert of 100k events went 228 ms → 392 ms (1.71x,
+~1.6 µs per event), which is the honest cost of the read being 2000x cheaper at 4 Hz.
+
+**And the guide says what is true again** (`docs/USER-GUIDE.md` §5): the two surfaces that show the park now
+show the reason, so the sentence D-164 had to soften is accurate as written.
+
 ## D-164 The park reason no client ever showed, and doctor's promise about an MCP service (2026-09-27)
 
 Completing D-104's story. D-104 stopped a driver that cannot boot from taking the coordinator down with it and
@@ -63,6 +107,8 @@ and `v2app_tests::a_lifecycle_note_carries_the_runtime_reason`.
 §5 of the user guide said it did — the read model's snapshot carries no park reason (it lives in the event),
 so making that true means extending the checkpoint row (`docs/PROTOCOL.md`'s row catalogue and the audit go
 with it) rather than stretching the prose. The guide's claim is corrected here to what the code does today.
+(**D-165 closed this the same day**: the checkpoint row carries the reason, `instances` and the TUI panel show
+it, and the guide's sentence is accurate as written again.)
 
 ## D-163 A `--cwd` that is not a directory became the session's workspace (2026-09-27)
 

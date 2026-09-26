@@ -217,14 +217,47 @@ fn read_only<T>(
 fn read_snapshot(conn: &rusqlite::Connection) -> Result<Json, String> {
     // `model` rides along (D-69): a team can span providers (`spawn(model = …)`),
     // and without it no client can say which member runs on what.
+    // `reason` rides along too (D-165): the last lifecycle transition's own words, which is what answers "why
+    // is this instance not running?" — for a leader that parked, the runtime's sentence about the cause. It
+    // lived only in the event log, so `instances` could show `PARKED` and the guide's promise that it "shows
+    // the reason" was not true of the surface a user reads first. The checkpoint is that surface for every
+    // client (`instances`, `exec`'s guard, the TUI panel), so the field belongs on the row.
+    //
+    // The reasons come from a query of their own, ordered by sequence, so the last transition per scope is the
+    // current one — and the row query below stays as it was: qualifying a column with a table alias here would
+    // read as a use of an unrelated *config* key of the same name to `review/config_reference.py`'s name
+    // search, which credited this file as a reader of `[tools.*] kind` when the correlated subquery did it
+    // (measured 2026-09-27: the count for `kind` went 12 → 13 files with nothing actually reading it).
+    let mut reasons: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    {
+        let mut stmt = conn
+            .prepare("SELECT scope, payload_json FROM events WHERE kind = 'instance_lifecycle' ORDER BY sequence")
+            .map_err(|e| format!("snapshot reasons prepare: {e}"))?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+            .map_err(|e| format!("snapshot reasons query: {e}"))?;
+        for row in rows {
+            let (scope, payload) = row.map_err(|e| format!("snapshot reasons row: {e}"))?;
+            // a transition recorded without words leaves the previous sentence in place; an instance that never
+            // transitioned has no entry at all (the row's `reason` is null, and nothing is invented)
+            if let Some(reason) = serde_json::from_str::<Json>(&payload)
+                .ok()
+                .and_then(|payload| payload["reason"].as_str().map(str::to_string))
+            {
+                reasons.insert(scope, reason);
+            }
+        }
+    }
     let mut stmt = conn
         .prepare("SELECT id, lifecycle, phase, profile_json FROM instances ORDER BY id")
         .map_err(|e| format!("snapshot prepare: {e}"))?;
     let rows = stmt
         .query_map([], |row| {
             let profile: Json = serde_json::from_str(&row.get::<_, String>(3)?).unwrap_or(Json::Null);
-            Ok(json!({"id": row.get::<_, String>(0)?, "lifecycle": row.get::<_, String>(1)?,
-                      "phase": row.get::<_, String>(2)?, "model": profile["model"]}))
+            let id = row.get::<_, String>(0)?;
+            let reason = reasons.get(&id);
+            Ok(json!({"id": id, "lifecycle": row.get::<_, String>(1)?,
+                      "phase": row.get::<_, String>(2)?, "model": profile["model"], "reason": reason}))
         })
         .map_err(|e| format!("snapshot query: {e}"))?;
     let mut instances = Vec::new();

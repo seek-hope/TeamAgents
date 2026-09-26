@@ -1099,6 +1099,92 @@ fn a_leader_parked_under_a_waiting_run_reports_the_park_instead_of_timing_out() 
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// D-165: `teamagents instances` says *why* an instance is not running. D-164 carried the park reason to the
+/// run's own report and the TUI note, but the list a user reads first showed `PARKED` and stopped there — the
+/// checkpoint's row had no reason (it lived in the event log), so the guide's promise that `instances` "shows
+/// `PARKED` and the reason" was not true of it. A required MCP service whose command does not exist parks the
+/// leader's driver at boot, which is the cheapest real park to produce: no model call is involved.
+#[test]
+fn the_instances_list_says_why_an_instance_is_parked() {
+    let root = std::env::temp_dir().join(format!("ta-instances-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let (config_home, state, ws) = (root.join("config"), root.join("root"), root.join("ws"));
+    std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
+    std::fs::create_dir_all(&ws).unwrap();
+    std::fs::write(
+        config_home.join("teamagents/config.toml"),
+        "[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\n\
+         api_key_env = \"TA_INSTANCES_KEY\"\nbase_url = \"http://127.0.0.1:1/v1\"\n\n\
+         [tools.broken]\nkind = \"mcp\"\nmcp_transport = \"stdio\"\ncommand = \"/nonexistent/mcp-server\"\n\
+         required = true\n",
+    )
+    .unwrap();
+    let env = |command: &mut Command| {
+        command
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("XDG_STATE_HOME", root.join("state"))
+            .env("TA_INSTANCES_KEY", "test-value");
+    };
+    let mut daemon = Command::new(env!("CARGO_BIN_EXE_teamagents"));
+    env(&mut daemon);
+    let daemon = daemon
+        .args(["daemon", "--state-root"])
+        .arg(&state)
+        .arg("--cwd")
+        .arg(&ws)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("start the daemon");
+    let mut daemon_guard = Daemon(daemon);
+    let socket = state.join("daemon.sock");
+    for _ in 0..400 {
+        if socket.exists() && std::os::unix::net::UnixStream::connect(&socket).is_ok() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    // wait for the park over the socket (cheaper than spawning the CLI per poll), then read the product's own
+    // surface: the assertion is about what `instances` prints, not about the database behind it
+    let mut rpc = Rpc::connect(&socket);
+    let mut parked = false;
+    for _ in 0..600 {
+        let checkpoint = rpc.call("checkpoint", serde_json::json!({}));
+        let instances = checkpoint["result"]["snapshot"]["instances"].as_array().cloned().unwrap_or_default();
+        if instances.iter().any(|row| row["lifecycle"] == "PARKED") {
+            parked = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(parked, "a required MCP service whose command does not exist parks the leader's driver");
+    let run_instances = |json_out: bool| -> String {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_teamagents"));
+        env(&mut command);
+        command.args(["instances", "--state-root"]).arg(&state);
+        if json_out {
+            command.arg("--json");
+        }
+        let output = command.output().expect("run instances");
+        format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr))
+    };
+    let list = run_instances(false);
+    assert!(list.contains("i-leader") && list.contains("PARKED"), "{list}");
+    assert!(list.contains("required tool service \"broken\" is unavailable"), "the row says why: {list}");
+
+    // the JSON form carries the same field, which is what a script reads
+    let report: serde_json::Value = serde_json::from_str(&run_instances(true)).expect("a JSON report on stdout");
+    let row = report["instances"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row["id"] == "i-leader"))
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(row["lifecycle"], "PARKED", "{report}");
+    assert!(row["reason"].as_str().unwrap_or("").contains("is unavailable"), "{report}");
+    daemon_guard.stop();
+    std::fs::remove_dir_all(&root).expect("the state root goes away with its daemon");
+}
+
 /// The daemon a user actually starts must authorize its Leader: before D-58 the
 /// only grant in a real session was `shell@workspace`, so the model was never
 /// offered spawn/delegate/send and the team feature was unreachable from

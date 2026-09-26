@@ -456,7 +456,9 @@ teamagents tasks cancel --id t-prose    # releases a delegator waiting on a task
   …`), the TUI writes the same sentence into its system notes, and `doctor` names a *static* cause before any
   session starts (a command that is missing or not executable, `${VAR}` in a command — nothing expands one —
   an `env` value naming an unset variable, an unset bearer variable). Fix the cause and pull the lever the
-  client names (`teamagents instances resume --id …`, or `r` in the TUI instances panel). Measured live over the HTTP
+  client names (`teamagents instances resume --id …`, or `r` in the TUI instances panel): `teamagents instances`
+  and the TUI's instances panel both show the park **and its reason** (D-165), so the answer is on the surface a
+  user looks at first. Measured live over the HTTP
   transport (`python3 review/dogfood/mcp_http.py`, D-104). Calls go through the same permission, approval, budget, cancellation and receipt entry
   points. A remote call dispatched before a crash is recorded as `OUTCOME_UNKNOWN` after recovery and is
   **never replayed**.
