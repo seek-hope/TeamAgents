@@ -18,6 +18,41 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-157 The TUI's keys were the last documented surface without a gate (2026-09-27)
+
+Every documented surface here had a catalogue audit — CLI flags, config keys, events, tools, protocol methods,
+the `--json` reports (D-154) — except the terminal keys, which are the surface a user is *inside*. `README.md`
+even makes the claim this entry is about: "TUI keys (they match the hint line at the bottom …)", and nothing
+checked it: a hint that advertises a key nothing handles is D-130/D-133's shape (a promise with no behaviour),
+and the only witness was a human pressing the key.
+
+**Added**: `review/tui_keys.py`, in `make hygiene`. Three lists are compared against
+`tui/src/v2app.rs` — the keys the hint lines print (`footer_hint`, the confirmation line, the per-panel hints),
+the keys `README.md`'s TUI paragraph documents, and the keys `USER-GUIDE.md` names in its key sections — and
+every one of them must have a handler. Only that direction is a finding: a handler no surface advertises
+(Home/End, Backspace/Delete, plain typing) is normal. Measured today: "16 advertised and 18 documented key(s)
+checked against v2app.rs: 0 unexplained" — the README's claim holds.
+
+Two things the audit's own controls taught it, and both are now part of it:
+
+* a chord is proven by a **window**, not a line: the handlers are nested (`if modifiers.contains(CONTROL) {
+  match code { KeyCode::Char('n') => … } }`) and the `Ctrl+A` arm sits 1318 characters from its guard, so the
+  first version reported a handler that exists;
+* a single letter is proven by a **command arm** (`Char('d') =>`), not by a mention: the quit chord writes
+  `KeyCode::Char('c') | KeyCode::Char('d')` inside a `matches!`, which satisfied the first version even after
+  the approvals panel's `d` arm was renamed.
+
+**Controls**, five, each reverted byte-identically: renaming the instances panel's `p` arm and the approvals
+panel's `d` arm each fail with the hint *and* the document naming them; adding `Ctrl+Z` to a hint fails "the
+hints advertise 'Ctrl+Z' and this audit does not know how to prove it"; adding `Ctrl+V` to the README fails the
+same way for the document; and naming `F5` in a key line fails too — which also pins the README's own
+"deliberately no function keys" claim.
+
+Ceiling: the audit proves a *handler exists* (a control-arm-shaped mention), not that it is reachable in the
+view that advertises it — the panel probes do that for the keys a user actually presses (`tui_panels.py`,
+`approval.py`). And the documents' key paragraphs are found by a marker heuristic (`ctrl+`, `` `Enter` ``, "tui
+keys"), so a key named in unrelated prose is out of scope by construction.
+
 ## D-156 The harness named its evidence after its pid, and a later run deleted it (2026-09-27)
 
 `review/dogfood/probes.py` keeps a failing probe's state "because that directory is the evidence" (D-140) under
