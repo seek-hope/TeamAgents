@@ -59,7 +59,7 @@ teamagents init
 ```
 
 The config lives at `${XDG_CONFIG_HOME:-$HOME/.config}/teamagents/config.toml`. Running it again keeps any
-existing file, symlinks included. The new file is mode `0600`, holds no credentials and creates no session.
+existing file, symlinks included. The new file is mode `0600` and holds no credentials. `init` also prepares the state root: it creates `v2/session.sqlite` with the schema and prints the database and socket paths. It starts no daemon and opens no conversation, so there is nothing to clean up before your first goal.
 The default profile is `leader_main` with the model `deepseek-flash` (context 1,000,000, reasoning effort
 max). For another service, edit `provider`, `protocol`, `model`, `base_url` and `api_key_env` (see the
 [user guide](USER-GUIDE.md#2-configuration)) and set that model's native `context_window` at the same time.

@@ -18,6 +18,43 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-190 The install guide is a user-facing document like the other two (2026-09-27)
+
+`docs/INSTALL.md` was the last user-facing document outside the flag audit, and the reason was in the audit's
+own docstring: it was excluded *because it records the flags of earlier releases* — the v0.1.2 note names
+`--plain`, `--resume` and `--team` — and a file-level exclusion took the document's *current* commands with it,
+the three lines that tell a user to run `teamagents --cwd …`, `exec --json` and the installer's own `--version`
+/ `--bin-dir` / `--archive`. Nothing would have noticed if one of those stopped existing, which is the shape
+D-135 fixed for the other two documents.
+
+**The audit now covers it**, with the reason for excluding the historical lines turned into a rule instead of an
+exemption: a flag on a line that marks itself as history — an older version number (`v0.1.1`, `v0.1.2`) or one
+of `earlier`, `legacy`, `removed`, `pre-v2`, `no longer` — is reported as a note, and the window is the line
+plus the two above it because prose wraps (measured: the v0.1.2 note carries its marker on line 6 and its flags
+on line 9). `--bin-dir` and `--archive` join the toolchain list with the installer as their reason — their own
+coverage is `engine/tests/install.rs` and `review/install_check.py` — and the document set is stated once, in
+the module docstring: the three documents that tell a user which commands to run are audited, while the rest
+quote other products, this repository's scripts, or history.
+
+**Controls** (each reverted): a fresh line `teamagents run --watch-forever` fails with "is not a flag this
+build serves"; the same line written as `v0.1.2 had teamagents run --watch-forever` is a note; reverting leaves
+the tree at its three historical notes and exit 0.
+
+**And the walk found a sentence the command itself contradicts.** §2 said `init` "creates no session"; the
+command prints `session db: …/v2/session.sqlite` because it creates that database, and `init`'s own test
+asserts it (`cli::init_creates_private_config_and_never_overwrites_existing_paths`: "init must prepare the v2
+root"). The sentence now says what the command does — config mode `0600` with no credentials, state root
+prepared with `v2/session.sqlite` created and its paths printed, no daemon started, no conversation opened.
+
+The rest of the guide was walked claim by claim and holds: the platform refusal before any download
+(`install.sh`'s `uname` checks), the `gh`-then-`curl` transport, the leading `v` on `--version`, the local
+archive requiring the adjacent `SHA256SUMS` and ignoring other platforms' lines, the rollback promise
+(`engine/tests/install.rs::failed_second_replacement_restores_both_old_programs`), "never calls sudo and never
+edits shell startup files", the musl static archive from the release workflow, the archive carrying
+`config.example.toml` (the workflow copies `examples/config.toml` to that name — the phantom path D-109 fixed
+in this same document), the bubblewrap table, and "the current version does not probe Codex at all"
+(`codex_profile` is a config field no code path reads, D-75).
+
 ## D-189 The machine that measures is the machine the leftovers run on (2026-09-27)
 
 D-188 could say "these numbers are load-bound" but not what the load *was*, so this turn measured it. A `ps`

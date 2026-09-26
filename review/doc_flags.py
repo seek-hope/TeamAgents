@@ -21,11 +21,15 @@ D-75's rule forbids for config keys, and it is how the removed `sessions` subcom
 is refused. This half needs no allowlist: the three removed top-level flags (`--plain`, `--resume`, `--team`)
 are accepted on purpose so the refusal can name them, and each is named in one.
 
-Scope of the document half: `README.md` and `docs/USER-GUIDE.md`. The other documents talk about flags on
-purpose —
-`docs/ACCEPTANCE.md` and `docs/INSTALL.md` record the ones this build *removed* (`--plain`, `--resume`,
-`--team`, `--verbose`), `docs/PRODUCT-COMPARISON.md` names other products' flags and a proposed one, and
-`docs/DECISIONS.md` and `docs/DEVELOPMENT.md` quote the scripts and tools this repository runs.
+Scope of the document half: the three documents that tell a *user* which commands to run — `README.md`,
+`docs/USER-GUIDE.md` and `docs/INSTALL.md` (D-190 added the last one: it was left out because it records the
+flags of earlier releases, but its *current* commands, `teamagents --cwd …` and `exec --json`, went unaudited
+with them). A line that marks itself as history — an older version number (`v0.1.1`, `v0.1.2`) or one of the
+words `earlier`, `legacy`, `removed`, `pre-v2`, `no longer` — is reported as a note rather than a finding,
+because it states what that release had, not what this one serves. The rest of the documents stay out of
+scope on purpose: `docs/ACCEPTANCE.md` records the flags this build *removed*, `docs/PRODUCT-COMPARISON.md`
+names other products' flags and a proposed one, and `docs/DECISIONS.md`, `docs/DEVELOPMENT.md`, `AGENTS.md`
+and `review/*.md` quote the scripts and tools this repository runs.
 
 Ceiling: the parser half reads match-arm *patterns*, so a flag accepted through a different shape (a loop over
 `["--a", "--b"]`, say) is invisible to it; and neither half checks that a help-advertised flag is actually
@@ -38,7 +42,12 @@ import sys
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 CLI_SOURCE = REPO / "engine/src/main.rs"
-DOCS = ["README.md", "docs/USER-GUIDE.md"]
+DOCS = ["README.md", "docs/USER-GUIDE.md", "docs/INSTALL.md"]
+# A line that says it is about an earlier release states history, not a claim about this build (D-190). Prose
+# wraps, so the *window* is the line and the two above it: `docs/INSTALL.md`'s v0.1.2 note names the flags it
+# had on its second line.
+HISTORY_MARKERS = ("v0.1.1", "v0.1.2", "earlier", "legacy", "removed", "pre-v2", "no longer")
+HISTORY_WINDOW = 2
 
 # Flags of the tools these docs tell the user to run, not of this product.
 TOOL_FLAGS = {
@@ -47,6 +56,8 @@ TOOL_FLAGS = {
     "--manifest-path": "cargo: point at a crate's Cargo.toml",
     "--release": "cargo build: an optimised build",
     "--bin": "cargo build: build only this binary",
+    "--bin-dir": "install.sh: where the installer puts the binaries (its own test is engine/tests/install.rs)",
+    "--archive": "install.sh: install from a local archive instead of downloading (review/install_check.py)",
     "--strict": "review/dogfood/protocols.py: fail instead of skipping a family with no credential",
 }
 
@@ -91,15 +102,19 @@ def main() -> int:
     served = served_flags()
     if args.list_served:
         print("served: " + " ".join(sorted(served)))
-    findings = []
+    findings, history = [], []
     scanned = 0
     for name in DOCS:
-        for number, line in enumerate((REPO / name).read_text().splitlines(), 1):
+        lines = (REPO / name).read_text().splitlines()
+        for number, line in enumerate(lines, 1):
+            window = " ".join(lines[max(0, number - 1 - HISTORY_WINDOW):number]).lower()
+            told_as_history = any(marker in window for marker in HISTORY_MARKERS)
             for flag in FLAG.findall(line):
                 scanned += 1
                 if flag in served or flag in TOOL_FLAGS:
                     continue
-                findings.append(f"{name}:{number}: {flag} is not a flag this build serves")
+                where = f"{name}:{number}: {flag} is not a flag this build serves"
+                (history if told_as_history else findings).append(where)
 
     accepted, named = accepted_flags(), named_flags()
     silent = sorted(accepted - served - named)
@@ -110,6 +125,9 @@ def main() -> int:
           f"{len(TOOL_FLAGS)} belong to the toolchain")
     print(f"the parser accepts {len(accepted)} flags; "
           f"{len(accepted & served)} of them are advertised, {len(silent)} are accepted silently")
+    if history:
+        print(f"note: {len(history)} flag mention(s) sit on a line that says it is about an earlier release: "
+              + "; ".join(history[:3]) + (" …" if len(history) > 3 else ""))
     for finding in findings:
         print("FAIL:", finding)
     return 1 if findings else 0
