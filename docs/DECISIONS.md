@@ -18,6 +18,40 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-176 Two probe counts rotted where nothing read them, and the rule they stated had no gate (2026-09-27)
+
+The consolidated evidence pass after D-163…D-175 (25 of the 26 model probes green, the formal gates re-run,
+recorded in `review/dogfood/README.md`) started by re-reading the evidence documents — and both numbers in them
+were wrong. `review/dogfood/README.md` said `make probe-offline` runs "the **seven** credential-free ones" (the
+offline set has **eight** entries: `boundary`, `budget`, `truncation`, `input_latency`, `tui_panels`,
+`tui_reconnect`, `providers --self-check`, `shutdown`), and `review/README.md`'s leak-guard row said "since
+D-148 the **twenty-eight** dogfood probes stop their own daemon" (there are 34 entries across the two sets, and
+29 probe scripts stop their own daemon). Prose counts are exactly the kind of claim no gate reads: they were
+true when written and rotted when the sets grew.
+
+**Changed**:
+
+* `review/dogfood/probes.py --self-check` (inside `make hygiene`) now checks the offline set's *documented*
+  size: the phrase `the 8 credential-free ones` must appear in `review/dogfood/README.md`, so growing or
+  shrinking the set fails the gate until the sentence is updated. The document states the count in digits for
+  that reason, and `--list` prints each set's size next to its header.
+* `review/README.md`'s row drops the rotted count for the rule it was about and names the new gate; the
+  sentence now says every dogfood probe stops what it started through `review/leak_guard.py` by pid.
+* The same self-check refuses an **executable** kill-by-pattern mention anywhere under `review/`:
+  `probes.py` parses each Python file with `ast`, drops docstrings (and its own word list, which has to name the
+  words) and flags a surviving string containing `pkill`, `killall` or `kill -f`. The prose that explains the
+  hazard — in `leak_guard.py`, `crash.py`, the READMEs — is docstrings and comments, so the check is quiet on
+  the tree and loud on a re-introduction; D-144/D-148 removed the pattern kills by hand and nothing kept them
+  out.
+
+**Measured** (2026-09-27): `--self-check` green on the tree ("selection, budgets, the stray guard, the documented
+set sizes and the no-kill-by-pattern rule over 3 sets"), and its own first run caught two things worth keeping —
+the stale count (the check exists because it fired) and a **self-reference**: the new word list
+`("pkill", "killall", "kill -f")` is itself an executable string, so the tokenizer-based first version flagged
+`probes.py` three times; the `ast` version scopes the checker's own function out instead of exempting the file.
+**Control**: inserting `PKILL = ["pkill", "-f", "teamagents"]` into `review/dogfood/boundary.py` produces exactly
+one finding naming `boundary.py:153`, and the file restored byte-identically is green again.
+
 ## D-175 A panicking test skipped its own cleanup, so one CI failure reported as two (2026-09-27)
 
 The wart this campaign hit twice. `engine/tests/cli.rs` builds a scratch tree per test

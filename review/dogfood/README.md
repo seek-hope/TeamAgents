@@ -37,14 +37,27 @@ the real CLI, real daemons and the real TUI, but a member begins no turn: the se
 stays empty). `review/dogfood/probes.py` runs a whole set and reports one line per probe:
 
 ```bash
-make probe-offline                     # needs `make build`; the seven credential-free ones, about a minute
+make probe-offline                     # needs `make build`; the 8 credential-free ones, about a minute
 make probe-models                      # the probes that take a model, one after another (~7 min)
 python3 review/dogfood/probes.py --list
 python3 review/dogfood/probes.py --only checks.py --set models
 env -u DEEPSEEK_API_KEY -u KIMI_API_KEY python3 review/dogfood/probes.py   # the offline set needs no credential
 ```
 
-**The model set re-run 2026-09-27** (after D-153's runner-lifecycle change, one probe at a time in six chunks): 25 of the 26 green — `authority.py` is the exception, reproducing the open D-143 shape (its dated note carries the kept session), and `deadline.py` ran through the harness for the first time (D-155, green). The run's own accounting: 0 daemons and 0 scratch directories left.
+**The model set re-run 2026-09-27, after the D-163…D-175 pass** (one probe at a time in five chunks, on the
+revision those changes ended at): **25 of the 26 green** — every probe except `run.py`, the fixture task that
+verifies itself outside the agent and takes a task argument rather than a session — including `authority.py`,
+which passed on its first attempt, so D-143's shape did not reproduce and its witness had nothing to classify. Two observations worth
+keeping: `authority.py` took **617.8 s** (against 21.0 s in the earlier run below), which is what a run looks
+like when the model is slow to use an offered tool without the shape actually failing; and the whole set left
+0 daemons and 0 scratch directories. The formal gates were re-run on the same revision: `make verify-model-all`
+(11 configurations, no error), `make verify-model-counterexamples` (10 refutations) and `make verify-kani`
+(3 harnesses). The paragraph below is kept as the record of the run before those changes.
+
+**An earlier model set re-run (2026-09-27**, after D-153's runner-lifecycle change, one probe at a time in six
+chunks): 25 of the 26 green — `authority.py` was the exception, reproducing the open D-143 shape (its dated note
+carries the kept session), and `deadline.py` ran through the harness for the first time (D-155, green). That
+run's own accounting: 0 daemons and 0 scratch directories left.
 
 It counts the daemons and the scratch directories before and after the run and fails if the set added either,
 because those two leaks are how D-111 and D-131 were found; the rules themselves live in

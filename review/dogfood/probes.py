@@ -25,6 +25,7 @@ Ceiling: the `offline` set is the credential-free subset; the `models` set is on
 `providers.py` in both sets runs both of its shapes.
 """
 import argparse
+import ast
 import os
 import pathlib
 import shutil
@@ -139,6 +140,39 @@ def stop_daemons(state_dir: pathlib.Path) -> None:
     leak_guard.stop([pid for pid, _args in leak_guard.daemon_pids(state_dir)])
 
 
+def kill_by_pattern_lines(text: str) -> list:
+    """1-based lines where *executable* code mentions killing by pattern, or `[]`.
+
+    Docstrings are skipped (`ast` knows them), and so is this checker's own word list — it has to name the words
+    to look for them. What survives is a string the code could hand to a shell.
+    """
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return []  # a file that does not parse is some other audit's finding
+    prose = set()
+    for node in ast.walk(tree):
+        body = getattr(node, "body", None)
+        if not isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) or not body:
+            continue
+        first = body[0]
+        if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) and isinstance(first.value.value, str):
+            prose.update(range(first.lineno, (first.end_lineno or first.lineno) + 1))
+    own = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "kill_by_pattern_lines":
+            own.update(range(node.lineno, (node.end_lineno or node.lineno) + 1))
+    return [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and node.lineno not in prose
+        and node.lineno not in own
+        and any(word in node.value for word in ("pkill", "killall", "kill -f"))
+    ]
+
+
 def self_check() -> int:
     """Check the harness's own rules, with no model, no daemon and no probe run (D-144).
 
@@ -172,6 +206,26 @@ def self_check() -> int:
         findings.append(f"{missing} is in neither set: nothing runs it (add it, or list it in NOT_PROBES)")
     for extra in sorted(listed - on_disk):
         findings.append(f"{extra} is in a set and the file does not exist")
+    # D-176: the docs state how many probes a set holds, and the number rots (it said "seven credential-free
+    # ones" while the set had eight). The phrase is the contract: the digits must equal the set size.
+    documented = (REPO / "review" / "dogfood" / "README.md").read_text()
+    phrase = f"the {len(OFFLINE)} credential-free ones"
+    if phrase not in documented:
+        findings.append(
+            f"review/dogfood/README.md must say {phrase!r} (the offline set has {len(OFFLINE)} entries; "
+            f"if the set changed, update the sentence)"
+        )
+    # D-148/D-144: a probe stops what it started **by pid**. Killing by pattern is the hazard those entries
+    # measured, and the prose that says so is fine — what must not exist is an *executable* mention, which is
+    # what the token scan below leaves once comments and docstrings are gone.
+    for path in sorted((REPO / "review").rglob("*.py")):
+        if "review/tmp/" in str(path.relative_to(REPO)) + "/":
+            continue
+        for line in kill_by_pattern_lines(path.read_text(errors="replace")):
+            findings.append(
+                f"{path.relative_to(REPO)}:{line}: an executable kill-by-pattern mention "
+                f"(stop a process by pid — review/leak_guard.py)"
+            )
 
     keep = os.environ.get("TMPDIR")
     try:
@@ -191,7 +245,8 @@ def self_check() -> int:
     for finding in findings:
         print("FAIL:", finding)
     if not findings:
-        print(f"self-check ok: selection, budgets and the stray guard over {len(SETS)} sets")
+        print(f"self-check ok: selection, budgets, the stray guard, the documented set sizes and the "
+              f"no-kill-by-pattern rule over {len(SETS)} sets")
     return 1 if findings else 0
 
 
@@ -208,7 +263,9 @@ def main() -> int:
         return self_check()
     if args.list:
         for label, probes in (("offline (no model, no credential)", OFFLINE), ("models (credentials required)", MODELS)):
-            print(f"  {label}:")
+            # the count is printed here because two documents state it (D-176): a stale number is how the
+            # README said "seven" about a set of eight
+            print(f"  {label} — {len(probes)} probe(s):")
             for name, extra, why in probes:
                 print(f"    {name:20s} {' '.join(extra):14s} {why}")
         return 0
