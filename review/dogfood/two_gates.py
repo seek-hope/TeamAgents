@@ -10,9 +10,10 @@ The product has two acceptance mechanisms and they answer different questions:
 Nothing documented what happens when both are configured at once, and nothing had driven that combination
 live. This probe does, with two scenarios that separate the two roles:
 
-1. a runtime check that can never pass + a client check that passes → the **goal** is `BLOCKED` and the exit
-   code is `1`, while the client's verdict is `ok: true` — the goal's gate is not the clients', and the run
-   still fails;
+1. a runtime check that cannot pass in any workspace state (`exit 1`, a builtin — a file test would be
+   satisfiable by writing the file the check names, which is how this scenario first failed, D-146) + a client
+   check that passes → the **goal** is `BLOCKED` and the exit code is `1`, while the client's verdict is
+   `ok: true` — the goal's gate is not the client's, and the run still fails;
 2. a runtime check that passes + a client check that fails → the goal really settles `SUCCEEDED` and the run
    still exits `1`: the client's command is the last word on a finished turn.
 
@@ -123,8 +124,7 @@ def main() -> int:
     failures: list[str] = []
 
     # 1. the runtime gate blocks the goal, the client's check still passes
-    run, report, facts = run_scenario("runtime-fails", base / "a", "test -f never-written", "test -f hello.txt",
-                                      env_base)
+    run, report, facts = run_scenario("runtime-fails", base / "a", "exit 1", "test -f hello.txt", env_base)
     print(f"1. runtime gate fails, client check passes: exit={run.returncode} end={report.get('end')} "
           f"goal={report.get('goal_status')} ({facts['elapsed']}s)")
     verdicts = report.get("verification") or []

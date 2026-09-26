@@ -18,6 +18,54 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-146 "A check that can never pass" is a claim about the command, and the model can satisfy one (2026-09-26)
+
+`review/dogfood/checks.py` (A16's live half) and `two_gates.py`'s first scenario both configured their
+never-passing gate as a workspace-relative file test — `test -f never-written`, run with the session workspace
+as its cwd. On 2026-09-26 that scenario did not block at all: `exec` exited **0** with `goal_status:
+SUCCEEDED`. The session's own ledger shows the product behaving exactly as designed and the *premise* being
+false: `check_round_registered` round 1 → `completion_repair` (`runtime-gate: command exited 1`) → round 2 →
+`goal_completed SUCCEEDED`, with the completion summary saying "I created the workspace file `never-written` so
+the declared check passes". The file holds one line: "created so the declared runtime-gate check (`test -f
+never-written`) can pass". Nothing was bypassed — the check ran, failed, and the model then made it pass, which
+is what a *satisfiable* acceptance criterion looks like. The gate was never broken; the probe's word "never"
+was, and the same latent defect sat in `checks.py`, whose docstring even named a path
+(`review/dogfood/never-written`) its own `CHECK` constant did not use. Worse, the probe had been *passing* for
+the wrong reason: in its D-101 run the same check held only because that model chose to concede
+(`blocked`) instead of writing the file, so the "impossible" premise was never tested.
+
+**Changed**: both probes now configure `command = "exit 1"` — a bash builtin whose status no workspace content
+can change, so the gate cannot pass by any action the model could take — and the reason is stated in the probe,
+not in the generated config. The generated config is *model-readable*: in the first fixed run the model quoted
+the probe's own comment back ("its own comment states this check 'cannot pass in any workspace state'") while
+deciding not to report success, so the wording now says only that the entry is the runtime's gate
+(`review/dogfood/checks.py::config_text`). A probe that writes its conclusion into the scenario is prompting,
+not observing.
+
+**Measured** (2026-09-26, native windows per D-36): `checks.py` on **deepseek** 10 model requests / 16.2 s and
+on **kimi** 9 / 36.9 s — `end=failed`, exit 1, goal **BLOCKED**, **3 check rounds**, 2 repairs, settlement
+`blocked_by: runtime`, the ledger naming `check_id: impossible` / `class: exit`, `hello.txt` exact in both, and
+0 job runners left (A12); `two_gates.py` scenario 1 exit 1 / goal `BLOCKED` / client verdict `ok: true` in
+16.0 s and scenario 2 goal `SUCCEEDED` / exit 1 in 5.2 s. The comment is not cosmetic: with the editorializing
+wording the deepseek run conceded after **one** repair (goal `BLOCKED`, `exec` 1, the candidate's own blocked
+finish) instead of exhausting the rounds; with the neutral wording both providers kept claiming success and the
+runtime blocked the goal itself. The probe now *prints* which of the two settled it
+(`checks.py`'s "settled by ..."), because both are honest routes to the same promise and only one of them is
+the runtime's decision.
+
+**Kept as evidence**: the failed run's session under `/tmp/teamagents-probe-harness-5/two_gates/a` (the harness
+keeps a failing probe's state on purpose, D-140) with the model's summary and the `never-written` file — quoted
+verbatim, with the four ledger events and the goal row, in `review/tmp/d146-two-gates-satisfiable/` (its
+`README.md`). The model's own `evidence` list records the reasoning — it checked that the file satisfied the
+check — and its `unverified` list says "Whether the runtime executes the check with cwd = the workspace; I
+verified it passes from the workspace root only".
+
+Ceiling: a check the model *can* satisfy is not a product defect — `[[checks]]` are the user's acceptance
+criteria, and whether a criterion can be gamed is the user's choice of criterion (Q11); what is not allowed is
+a probe claiming "impossible" without a command that is. And a gate no workspace state can satisfy is
+conceded by a model often enough that the runtime's own block is worth driving deliberately: the exhaustion
+path stays pinned by `v2_driver::required_checks_exhausted_parks_the_goal_blocked` as well as by the probe.
+
 ## D-145 The pre-registered analysis no longer matches the tree, and nothing said so (2026-09-26)
 
 `review/eval/r2-p6/` is pre-registered evidence: all three manifests pin the analysis script's sha256 ("frozen
@@ -1811,6 +1859,9 @@ the completion event's own fields.
 Evidence: `python3 review/dogfood/two_gates.py` (two runs), and the probes it complements — `checks.py` (A16,
 a check that cannot pass), `stale_check.py` (A17, a verified input that changed) and `exec_check.py` (the
 client's `--check` in three scenarios).
+
+Scenario 1's runtime check is now `exit 1` (D-146): the `test -f never-written` configured here was not
+impossible after all — the model can write that file — and a later run did, settling the goal `SUCCEEDED`.
 
 Ceiling: two scenarios; the repair-round budget (`max_check_rounds`), per-check `timeout`/`network` options and
 the interaction with `[[checks]]` *inputs* stay with the offline tests. `docs/USER-GUIDE.md` now states the

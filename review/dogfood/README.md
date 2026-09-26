@@ -253,10 +253,12 @@ behind the recovered turn), one line in `runs.log`.
 
 ## `checks.py`: the completion gate with a real model
 
-`checks.py` configures one `[[checks]]` entry that can never pass (`test -f never-written`), asks a real
-model for a small file, and then watches the gate do its job. The gate is protocol-agnostic in the design, so
-the same scenario runs on either catalog entry — the wire for the check round's synthetic entry differs per
-protocol, and that difference is where D-70 lived:
+`checks.py` configures one `[[checks]]` entry that cannot pass in any workspace state (`exit 1`: a builtin, so
+no content the model writes changes its status — the file test this probe used to carry could be satisfied by
+writing the file the check names, and a model did exactly that, D-146), asks a real model for a small file,
+and then watches the gate do its job. The gate is protocol-agnostic in the design, so the same scenario runs
+on either catalog entry — the wire for the check round's synthetic entry differs per protocol, and that
+difference is where D-70 lived:
 
 ```bash
 python3 review/dogfood/checks.py                  # fresh /tmp state root, DeepSeek
@@ -270,13 +272,18 @@ row's claims: the work really happened (the file exists with the asked content),
 repair ledger names the failing check (`check_id: impossible`, `class: exit`) while the model sees its output
 in the conversation.
 
-Measured (2026-09-25): on **deepseek** 11 model requests / 9.7 s, on **kimi** 8 requests / 37.8 s — both exit
-1, goal `BLOCKED`, the artifact exact, and the model explicitly reporting that creating `never-written` to
-satisfy the gate would be bypassing it. Two defects came out of this harness: the first deepseek run failed
-with `chat API 400: The reasoning_content in the thinking mode must be passed back to the API` (D-70: the
-repair turn after a failed check died on the wire), and the first kimi run reported
-`exit 0 / end=reply / goal=None` although the goal was `BLOCKED` (D-71: the runtime's own block note was
-stored in the member's voice and read back as the reply).
+Measured (2026-09-26): on **deepseek** 10 model requests / 16.2 s, on **kimi** 9 requests / 36.9 s — both exit
+1, goal `BLOCKED`, 3 check rounds and 2 repair rounds, the settlement `blocked_by: runtime`, the artifact
+exact, and 0 job runners left (A12). The probe prints which of the two honest routes settled the block, because
+they are not the same evidence: the runtime blocks a goal whose checks exhaust their repair rounds, while a
+model that reads a gate no workspace state can satisfy may concede on its own first (with an editorializing
+comment in the config, the deepseek run did; with the neutral wording the probe now writes, both providers kept
+claiming success and the runtime decided — the config is model-readable, D-146). Two defects came out of this
+harness: the first deepseek run failed with `chat API 400: The reasoning_content in the thinking mode must be
+passed back to the API` (D-70: the repair turn after a failed check died on the wire), and the first kimi run
+reported `exit 0 / end=reply / goal=None` although the goal was `BLOCKED` (D-71: the runtime's own block note
+was stored in the member's voice and read back as the reply). Its first version (2026-09-25, 11/9.7 s and
+8/37.8 s) measured the same gate on a check the model could have satisfied.
 
 ## `tui.py`: the surface a user opens first, with a model in it
 
@@ -548,11 +555,12 @@ The product has two acceptance mechanisms — `[[checks]]` gate the *goal* (§8/
 python3 review/dogfood/two_gates.py
 ```
 
-Two scenarios on their own fresh state roots: a runtime check that can never pass plus a passing client check
-gives goal `BLOCKED` (the repair ledger names the check) with exit `1` and the client's verdict `ok: true`; a
-passing runtime check plus a failing client check gives goal `SUCCEEDED` with exit `1`. Which is the division
-of labour stated in one sentence in `docs/USER-GUIDE.md` §1: neither gate replaces the other. Measured
-2026-09-26, ~13 s and ~5 s (D-101).
+Two scenarios on their own fresh state roots: a runtime check that cannot pass in any workspace state (`exit
+1` — the file test this scenario first used was satisfiable, and a model satisfied it by writing the file the
+check named, D-146) plus a passing client check gives goal `BLOCKED` (the repair ledger names the check) with
+exit `1` and the client's verdict `ok: true`; a passing runtime check plus a failing client check gives goal
+`SUCCEEDED` with exit `1`. Which is the division of labour stated in one sentence in `docs/USER-GUIDE.md` §1:
+neither gate replaces the other. Measured 2026-09-26, 16.0 s and 5.2 s (D-101, D-146).
 
 
 ## `instructions.py`: `instruction_files` is declared, validated and unread

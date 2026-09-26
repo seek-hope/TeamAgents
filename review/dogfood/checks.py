@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """A real-model check that a failing acceptance check really blocks a goal (A16).
 
-One session, one configured `[[checks]]` entry that cannot pass (`test -f
-review/dogfood/never-written`), and a task a model can actually complete (write a file). The runtime runs the
-check at the completion boundary: the model's `finish` claims success, the check fails, the work goes back for
-a bounded repair round, and the goal must end **BLOCKED with the failing check id** instead of reporting
-success — which is the whole point of the completion gate (§8/A16).
+One session, one configured `[[checks]]` entry that cannot pass (`exit 1`: a builtin, so no workspace content
+changes its status — the file test this probe used to carry could be satisfied by writing the file the check
+names, and a model did exactly that, D-146), and a task a model can actually complete (write a file). The
+runtime runs the check at the completion boundary: the model's `finish` claims success, the check fails, the
+work goes back for a bounded repair round, and the goal must end **BLOCKED with the failing check id** instead
+of reporting success — which is the whole point of the completion gate (§8/A16).
 
 The artifact decides the other half: the file the model was asked to write must really exist, so the run shows
 "the work happened, the goal was not reported done" rather than "nothing happened".
@@ -58,17 +59,22 @@ context_window = 262144
 """,
 }
 
+# `exit 1` is a bash builtin: its exit status is the same whatever the workspace holds, so no action the model
+# can take makes this gate pass. A workspace-relative file test is *not* such a command — the model wrote the
+# file it named, on purpose, and the goal settled SUCCEEDED (D-146).
 CHECK = """[[checks]]
 id = "impossible"
-command = "test -f never-written"
+command = "exit 1"
 timeout = 60
 """
 
 
 def config_text(provider: str) -> str:
     return (
-        "# Completion-gate dogfood (A16): the check below can never pass, so no run that\n"
-        "# reaches the completion boundary may report success.\n"
+        # Deliberately says nothing about whether the check can pass: this file is readable by the model, and
+        # a comment that explains the gate answers the question the probe is asking (a real model quoted the
+        # previous wording back while concluding it could not report success, D-146).
+        "# Completion-gate dogfood (A16): the `[[checks]]` entry below is the runtime's completion gate.\n"
         "skills_paths = []\n\n" + MODELS[provider] + "\n" + CHECK
     )
 
@@ -166,7 +172,14 @@ def main() -> int:
     if not settled or settled[-1].get("status") != "BLOCKED":
         failures.append(f"the goal did not settle BLOCKED: {settled}")
     else:
-        print(f"the goal settled BLOCKED: {settled[-1].get('status')}")
+        # Who decided the block is part of the evidence, not a pass/fail: the runtime blocks a goal whose
+        # checks exhaust their repair rounds (`blocked_by: runtime`), and a model that reads a gate no
+        # workspace state can satisfy may concede on its own first — the gate refused its success claim in
+        # round 1 either way (D-146).
+        rounds = kinds.count("check_round_registered")
+        decider = settled[-1].get("blocked_by") or "the model's own blocked finish"
+        print(f"the goal settled BLOCKED: {settled[-1].get('status')} after {rounds} check round(s), "
+              f"settled by {decider}")
     repairs = [payload for kind, payload in facts["events"] if kind == "completion_repair"]
     named = [failure for payload in repairs for failure in payload.get("failures", [])]
     if not named or any(failure.get("check_id") != "impossible" for failure in named):

@@ -57,7 +57,7 @@ MODELS = [
     ("cancel.py", [], "the terminate lever really stops a running command (A13/D-88)"),
     ("lifecycle_run.py", [], "what pause and terminate do to a run that is already waiting (D-98)"),
     ("job_identity.py", [], "the running job's identity, a duplicate GO and a guessed token (A15/A10)"),
-    ("checks.py", [], "a required check that can never pass blocks the goal (A16/D-50)"),
+    ("checks.py", [], "a required check no workspace state can satisfy blocks the goal (A16/D-50/D-146)"),
     ("stale_check.py", [], "a check that rewrites its own declared input cannot let the goal settle (A17)"),
     ("two_gates.py", [], "the runtime's checks and the client's `--check` in one run (D-101)"),
     ("exec_check.py", [], "the client's `--check` contract, a forged success marker included (D-93)"),
