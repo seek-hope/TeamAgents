@@ -29,7 +29,10 @@ configuration and repository hygiene (it rejects non-English characters in code 
 caches, Python caches and SQLite temporaries, checks the syntax of `install.sh`, and checks the shape of the
 binding decision log with `review/decisions_log.py` (one heading per entry, newest-first, each with a body)
 and the documentation's citations with `review/citations.py` (a cited qualified name — a test or an item —
-or a repository path must exist in the tree, unless the line records it as removed). `review/silent_skips.py` fails a test that returns from a capability guard without saying
+or a repository path must exist in the tree, unless the line records it as removed) and `D-<n>` citations with
+`review/decision_citations.py` (a cited decision must be a heading in `docs/DECISIONS.md`, or one of the
+earlier rules its index table keeps in force, unless the line records it as history — D-170).
+`review/silent_skips.py` fails a test that returns from a capability guard without saying
 why (a silent no-op, D-121). `review/command_params.py` fails a command payload field
 that the command layer never reads (D-124). `review/event_catalogue.py` fails when
 `docs/EVENTS.md` and the emitted events drift (D-125). `review/protocol_catalogue.py` fails when

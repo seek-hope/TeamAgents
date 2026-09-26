@@ -194,6 +194,7 @@ hygiene: language-check
 	sh -n install.sh
 	python3 review/decisions_log.py
 	python3 review/citations.py
+	python3 review/decision_citations.py
 	python3 review/silent_skips.py
 	python3 review/command_params.py
 	python3 review/event_catalogue.py

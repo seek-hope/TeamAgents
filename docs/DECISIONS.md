@@ -18,6 +18,47 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-170 The comparison document was wrong about this build, and nothing read its citations (2026-09-27)
+
+`docs/PRODUCT-COMPARISON.md` exists for the direction the user set ("reference Codex CLI, pi and hermes"), and
+**no audit reads it**: `citations.py` resolves code names and paths, `doc_flags.py` scans README and the user
+guide, and the comparison's *TeamAgents* column is prose that only a human re-reads. Re-reading it against the
+tree (2026-09-27) found five cells wrong or stale:
+
+* **Sandbox backends** said bubblewrap was "only for shell". `tools::shell_command_spec` → `tools::bwrap_argv`
+  is one spec builder used by the shell tool *and* everything dispatched through it — the `[[checks]]`, the
+  client's `--check`, and the job runner's commands — and `engine/src/mcp.rs` builds MCP `mcp_execution =
+  "workspace"` (the default) from the same argv. `full_auto` and `mcp_execution = "host"` are the deliberate
+  opt-outs.
+* **Tools** did not say that the web half is offered only for the kinds the config declares (D-168) or that
+  search needs a credential (D-167).
+* **Config** was missing `instruction_files` and `[retention]`, the two sections that load and are reported as
+  declared-but-not-applied (D-102/D-75).
+* **Extensions** cited `D-53/D-79` for the user hooks; the binding decision is **D-45** (live evidence D-92),
+  while D-53 is a docs-correction entry and D-79 is about the web tools.
+* **Headless / CI** cited `D-32/D-49`; D-32 belongs to the *earlier* implementation and is not in this log, so
+  the cell now says so ("restoring the v1 D-32 contract that lives in Git history"). `citations.py` cannot see
+  this class: a decision *number* is not a path or a qualified name.
+
+**Changed** (`docs/PRODUCT-COMPARISON.md`): those five cells, the column header's date, and — following the
+document's own convention for corrected cells — a bullet in its "Honest limits of this snapshot" section that
+records what was wrong and why. The comparator cells (Codex/Pi/Hermes) are untouched; their sources are dated
+in the table.
+
+**And the class got a gate** (`review/decision_citations.py`, in `make hygiene`): every `D-<n>` in the tracked
+markdown must resolve to a `## D-<n>` heading in `docs/DECISIONS.md`, or to a number in that file's "Earlier
+rules that still apply" table (the index of earlier decisions that are deliberately not re-stated), unless its
+own line marks it as history (`v1`, `earlier`, `removed`, `archive`, `history`, `gone`, `no longer`) — which is
+how a documented removal stays legal. `--list` prints both indexes; `--only PATH` checks one file, which is how
+the control is run: a synthetic file citing a fabricated number produced exactly one finding while D-42 on the same line
+resolved (`exit 1`), and the tree itself is green.
+
+**What the gate immediately found** (2026-09-27, first run): one citation that pointed at nothing —
+`docs/DECISIONS.md`'s D-46 entry said the connection graph "replacing D-33's member-to-member restriction", and
+D-33 is a **superseded** v1 decision that is in no heading and no index row. The line now says "replacing the
+earlier (v1) D-33's …", which is what it means. 128 live decisions and 10 earlier rules are indexed; 0
+citations are unexplained.
+
 ## D-169 `init` created a directory named `session.sqlite` without saying so (2026-09-27)
 
 The neighbouring typo of D-166, one path segment over. D-166 refuses a `--state-root` that *is* a file; this is
@@ -5020,7 +5061,8 @@ confirms the system direction and scope.
   Python/LangGraph are not a premise.
 - A team of one is legal; instances isolate context, messages and tool access by default. The Leader manages
   by default and can delegate a limited subset; authorized instances may talk directly and the connection
-  graph may be arbitrary, replacing D-33's member-to-member restriction. The shared project directory is
+  graph may be arbitrary, replacing the earlier (v1) D-33's member-to-member restriction. The shared project
+  directory is
   granted by default, with isolated directories or worktrees on demand; `full_auto` is still only logical
   isolation.
 - The first usable version includes the Rust TUI, basic file/shell/web tools, MCP, Skills, multiple providers
