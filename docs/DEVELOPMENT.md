@@ -33,7 +33,8 @@ why (a silent no-op, D-121). `review/command_params.py` fails a command payload 
 that the command layer never reads (D-124). `review/event_catalogue.py` fails when
 `docs/EVENTS.md` and the emitted events drift (D-125). `review/protocol_catalogue.py` fails when
 `docs/PROTOCOL.md` and the daemon's dispatchers drift (D-126). `review/tool_catalogue.py` fails when
-`docs/TOOLS.md` and the tool schemas drift (D-127). `make language-check`
+`docs/TOOLS.md` and the tool schemas drift (D-127). `review/config_reference.py` fails when
+`docs/CONFIG.md` and the config structs drift (D-128). `make language-check`
 runs the language rule on its own: it scans the tracked tree for CJK characters and excludes exactly the two
 documented exceptions (`README.zh-CN.md` and the frozen evaluation material under `review/eval`), so a
 stray Chinese comment fails the gate instead of being noticed in review. Clippy warnings are errors. CI uses

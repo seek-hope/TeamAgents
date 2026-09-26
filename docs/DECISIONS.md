@@ -18,6 +18,33 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-128 The config reference is generated, and the audit got stricter (2026-09-26)
+
+The config file is the first thing a user edits and its reference was scattered: part of it in `USER-GUIDE.md` §2,
+part in `INSTALL.md`, the rest discoverable only in `core/src/models.rs`. `docs/CONFIG.md` is generated from those
+structs by `python3 review/config_reference.py --write` — **45 keys** in the six tables this build ships, each with
+its type, what it holds when the key is absent, the files that *use* it, and the field's own doc comment as its
+meaning. The introduction states the two things a reader must not misread: the absent value is the Rust default,
+not always the effective one (an `Option` key is usually read with `unwrap_or(…)`, so `tool_timeout_s` is unset in
+the table and 120 seconds where it is used), and the reader column is a search, not a proof.
+
+Writing it exposed a flaw in the audit that shares this extraction (`review/config_keys.py`): "read by" was a
+**bare-name** search, so `[models.<name>] provider` was reported as read by the kernel's own unrelated `provider`
+fields — three of its nine "readers" were other structs' declarations. Both scripts now count a *use*
+(`.key` or `["key"]`). Two keys lose every reader under the stricter form, and both are honest: `retention` is
+parsed and reported as not applied (D-75's known gap), and `deadline_minutes` is applied **by the loader** —
+`config.rs` turns it into each goal's absolute deadline, which the audit's plumbing exclusion cannot see. Both are
+in the known list with those reasons, so `config_keys.py` still reports 0 unserved and 6 known.
+
+`make hygiene` runs the reference's check mode: a new key, a renamed key, a retyped one, a changed doc comment or
+an unmapped config struct fails until regenerated. Controls (run): adding `probe_key` fails the reference *and*
+makes the audit report it as unserved (1 unserved, 6 known); renaming `instruction_files` fails the reference with
+the new name as undocumented.
+
+Ceiling: the reader column is still a name-based search (a differently named accessor shows nothing), only the
+tables this build ships are listed, and a key that is consumed purely inside the loader has no reader column to
+show — `doctor` is the surface for what a session resolved.
+
 ## D-127 The tool surface had no catalogue either (2026-09-26)
 
 D-125 catalogued the events and D-126 the protocol; the third surface in the same state was the one a user cares

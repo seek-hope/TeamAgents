@@ -79,6 +79,10 @@ happened. Diagnostics go to stderr, the outcome to stdout (`--json` prints one J
 
 ## 2. Configuration
 
+Every key this build reads, with its type, what it holds when absent and the files that consume it, is in
+[docs/CONFIG.md](CONFIG.md) — generated from the structs and kept in sync by `make hygiene`; `doctor`
+reports what a session resolved (including the keys that are accepted but not applied).
+
 The user config is `$XDG_CONFIG_HOME/teamagents/config.toml` (default
 `~/.config/teamagents/config.toml`). Credentials are referenced by environment-variable name and never
 written into the file:

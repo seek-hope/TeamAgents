@@ -34,7 +34,20 @@ KNOWN_UNSERVED = {
     "instruction_files": "D-102: declared, validated and reported as not applied; the gap is in ACCEPTANCE",
     "archived_days": "D-75: reported as not applied; retention is a known gap in ACCEPTANCE",
     "history_days": "D-75: reported as not applied; retention is a known gap in ACCEPTANCE",
+    "retention": "D-75: the [retention] table is parsed and reported as not applied; retention is a known gap",
+    "deadline_minutes": "applied by the loader: config.rs turns it into each goal's absolute deadline",
 }
+
+
+def uses_field(text: str, field: str) -> bool:
+    """A *use* of the field (`.field` or `["field"]`), not a bare name.
+
+    A bare-name search counts another struct's field declaration, a local variable or a doc comment as a reader;
+    D-128 tightened this after `docs/CONFIG.md` showed `[models.<name>] provider` being "read" by the kernel's own
+    unrelated `provider` fields. `retention` and `deadline_minutes` are the two keys that lose every reader under
+    the stricter form — correctly: the loader is where they are applied (see KNOWN_UNSERVED).
+    """
+    return re.search(rf'\.{re.escape(field)}\b|\["{re.escape(field)}"\]', text) is not None
 
 
 def config_fields() -> list[str]:
@@ -63,9 +76,8 @@ def main() -> int:
             rel = str(path.relative_to(REPO))
             if rel in PLUMBING:
                 continue
-            for number, line in enumerate(path.read_text().splitlines(), 1):
-                if re.search(r"\b" + re.escape(field) + r"\b", line):
-                    reads.append(f"{rel}:{number}")
+            if uses_field(path.read_text(errors="replace"), field):
+                reads.append(rel)
         if reads:
             continue
         (allowed if field in KNOWN_UNSERVED else findings).append(field)

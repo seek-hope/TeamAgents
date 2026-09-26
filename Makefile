@@ -164,6 +164,8 @@ language-check:
 # method, a renamed one or a changed parameter list must be documented in the same change (D-126).
 # `docs/TOOLS.md` is generated from the tool schemas, so a renamed tool, a new parameter or a reworded
 # model-facing description must be documented in the same change (D-127).
+# `docs/CONFIG.md` is generated from the config structs, so a new key (or a renamed one) must be documented in
+# the same change (D-128); `review/config_keys.py` then says whether anything reads it.
 # A test that skips must say so (D-121): a bare `if <condition> { return; }` inside a test makes it a silent
 # no-op, which is how two sandbox tests contributed nothing on a machine without bubblewrap.
 hygiene: language-check
@@ -180,3 +182,4 @@ hygiene: language-check
 	python3 review/event_catalogue.py
 	python3 review/protocol_catalogue.py
 	python3 review/tool_catalogue.py
+	python3 review/config_reference.py
