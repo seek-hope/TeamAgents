@@ -18,6 +18,54 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-189 The machine that measures is the machine the leftovers run on (2026-09-27)
+
+D-188 could say "these numbers are load-bound" but not what the load *was*, so this turn measured it. A `ps`
+inside the sandbox sees four processes; `/proc/loadavg` reports 3,062 threads on the host. Read from outside the
+sandbox (`review/host_cleanup.py`), the host carries **1,399 leftover `jobs-runner` processes**, **1,398 of them
+orphaned** (reparented to init) and all but one older than six hours — the exception being the `OUTCOME_UNKNOWN`
+runner the A09/A12 test is *supposed* to leave behind, created by this turn's `make check`. None of the old ones
+comes from this build, whose runner retires itself when its job settles (D-112) and waits at ~0 CPU when idle
+(D-153). Together they hold **5.3 GiB** resident, have burned **665.6 CPU-hours**, and are burning **13.3 cores
+continuously right now** (66.4 CPU-seconds in a five-second sample, 347 of them active in it). That is the load
+behind D-188's wall clocks and the reason this machine's load average sits at 25-50 on twenty cores.
+
+**What each leftover serves decides its class**, never its age, and the classification is a script rather than
+an anecdote — `review/host_cleanup.py` (read-only) reads every runner's job directory and journal:
+
+| class | today | what it means |
+|---|---|---|
+| `settled-journal` | 1,237 | the journal records a finished command with its exit code (988 `SUCCEEDED`, 249 `FAILED`) |
+| `unknown-outcome` | 70 | finished on disk, outcome unverifiable (`CANCELLED`) |
+| `dir-gone` | 19 | the job directory it was told to serve no longer exists |
+| `unfinished` | 72 | no finish on disk: the command may still be running (`OUTCOME_UNKNOWN` before its finish) — keep |
+| `live-parent` | 1 | its parent is alive, so it belongs to a live tree — and on this machine that is **the user's own session** |
+
+The last row is why this census was worth writing before anyone acted on the earlier note: the single runner
+whose parent is not init serves `~/.local/state/teamagents/v2`, whose parent is the user's own daemon. A stop
+rule phrased as "the terminal-journal and dir-gone set" would have been right; a rule phrased as "everything
+whose job finished" would have killed the user's session's runner. So the conservative stop is the **1,256**
+`settled-journal` + `dir-gone` processes, `unknown-outcome` is the operator's call (its journal stays on disk
+either way, so stopping the process cannot lose evidence), and `unfinished` and `live-parent` are never
+candidates. The acting step is one `kill <pid>` per pid taken from a class list
+(`review/host_cleanup.py --class settled-journal --pids`); a pattern kill is what D-144/D-148 removed from this
+repository and the reason stands — the pattern matches any command line that merely mentions the string.
+
+**The daemons are inventoried too** (3 live): one `user-session` (the user's own root, never a leftover) and two
+`root-gone` — one from a crash probe 10.5 h old, one from an isolation test 29 h old, both serving state roots
+that no longer exist, which is the stuck shape.
+
+**Two honest notes.** The first is why earlier turns' closing checks could report "0 runners" while this machine
+carried 1,399: `review/leak_guard.py` counts the runner family *inside the shell's own PID namespace*, and a
+sandboxed shell sees only its own. The guard is right about what it measures — a test that leaks a runner leaks
+it into that namespace — but it is not a host census, and the new script says so when it runs inside one. The
+second is that the census is a reading, not a control: it records the machine, it does not change it.
+
+**Measured** (2026-09-27): the table above, from one run of `python3 review/host_cleanup.py` plus its five-second
+burn sample; `--json` prints the same numbers for a machine-readable record and `--class <name> --pids` prints
+one class's pids for the stop. The item stays open until the user says which classes to stop; this entry is its
+measured basis, and the script is how the basis is refreshed.
+
 ## D-188 A latency number without its machine is not a measurement (2026-09-27)
 
 Refreshing A32's scale evidence at the current build — the row's figures were from 2026-09-25, before D-165's

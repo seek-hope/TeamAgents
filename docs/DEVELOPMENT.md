@@ -104,6 +104,10 @@ engine/target/debug/examples/eval_groups_abc --group A --task-file t.md --workdi
 # load and acceptance probes
 engine/target/debug/examples/load_probe DIR [--steps N] [--payload BYTES]
 engine/target/debug/examples/accept_probe --evidence DIR --workspace DIR --lead KEY --worker KEY
+
+# the host's leftover command runners (D-189): a read-only census with the classes that decide what may be
+# stopped. Run it *outside* any sandbox — a sandboxed shell sees only its own PID namespace and reports zero.
+python3 review/host_cleanup.py [--json | --class settled-journal --pids]
 ```
 
 Deterministic coverage of fault injection and multi-instance behaviour lives in the test files:
