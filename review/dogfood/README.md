@@ -479,6 +479,7 @@ Two levers, two different truths, and the harness that measured both:
 
 ```bash
 python3 review/dogfood/lifecycle_run.py                     # terminate: the run ends at once with the reason
+python3 review/dogfood/lifecycle_run.py --lever reset       # reset: the epoch move is named, also at once
 python3 review/dogfood/lifecycle_run.py --lever pause       # pause + resume: the run still finishes
 ```
 
@@ -486,8 +487,10 @@ python3 review/dogfood/lifecycle_run.py --lever pause       # pause + resume: th
 `end=failed` and `failure: "instance i-leader is terminated; this run cannot finish (termination is final —
 start a fresh state root for new work)"` (before D-98 it waited out its deadline and said `timeout`). `pause`
 is a boundary: the run keeps following its turn, and after `instances resume` the *same* run finishes —
-measured `exit 0 / end=completed / goal SUCCEEDED` with the file on disk. Measured 2026-09-26, three runs
-(D-98).
+measured `exit 0 / end=completed / goal SUCCEEDED` with the file on disk. `--lever reset` speaks the
+protocol's `reset_instance` (no CLI verb) and the run ends 0.2 s later with `failure` naming the epoch move
+(`epoch 0 → 1`) — the case D-100 fixed, where the client used to wait out its deadline. Measured 2026-09-26,
+three runs per lever (D-98/D-100).
 
 
 ## `tui_reconnect.py`: the TUI against a daemon that dies and comes back

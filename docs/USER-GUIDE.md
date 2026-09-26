@@ -40,7 +40,7 @@ happened. Diagnostics go to stderr, the outcome to stdout (`--json` prints one J
 | Exit code | Meaning |
 |---|---|
 | `0` | settled: the goal completed as `SUCCEEDED`, or the leader answered directly |
-| `1` | not delivered: the goal settled otherwise, the turn failed permanently, the runtime **refused the request before it began** (a goal budget ceiling, a passed goal deadline — it says so in `failure`), the leader was **terminated while the run was in flight** (it says so in `failure` too),, a `--check` command failed, or the run ended `unsettled` (the turn closed with nothing settled — the runtime's own closing word, never a reply) or `undelivered` (the input waited for a boundary and a context reset sealed it before it landed) |
+| `1` | not delivered: the goal settled otherwise, the turn failed permanently, the runtime **refused the request before it began** (a goal budget ceiling, a passed goal deadline — it says so in `failure`), the leader was **terminated while the run was in flight** (it says so in `failure` too), the instance was **reset** while the run was in flight (the epoch move is named),, a `--check` command failed, or the run ended `unsettled` (the turn closed with nothing settled — the runtime's own closing word, never a reply) or `undelivered` (the input waited for a boundary and a context reset sealed it before it landed) |
 | `3` | an approval is pending — a headless run does not wait for the deadline; decide it with `teamagents approvals` (§4) |
 | `124` | the `--timeout` deadline passed with the instance still running (a refusal is not a timeout: it ends the run at once with `1`) |
 | `2` | usage or infrastructure: no daemon, no model profile, a leader that is parked or paused |
@@ -362,6 +362,9 @@ teamagents tasks cancel --id t-prose    # releases a delegator waiting on a task
   `class` is `cancelled`. Measured with a real model and a real command (`python3
   review/dogfood/cancel.py`, D-88): the effect stops 1.5–6 s after the lever. There is no lighter lever for
   one command today.
+- A **reset** has no CLI verb: it is the `reset_instance` command of the session protocol (§9), and it closes
+  the epoch's execution — a run waiting on a turn in the old epoch ends at once with exit `1` and a `failure`
+  naming the epoch move (D-100).
 - Ids must name a listed instance or task (full id or an unambiguous prefix); `--json` prints the raw report
   for scripts. Exit codes: `0` done, `1` the session refused it, `2` usage or no session.
 

@@ -231,6 +231,41 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-100 A reset mid-run, and the one place that decides a run's fate (2026-09-26)
+
+The fourth member of the family D-97/D-98 opened: `reset_instance` (a user command; there is no CLI verb, so
+the probe speaks the documented protocol) closes the epoch's execution and moves the instance to a new epoch.
+A run waiting on a turn in the old epoch therefore has nothing that will ever answer it — and the client
+waited out its deadline and reported `end: "timeout"`, measured with a real model:
+
+    reset reply:  {'epoch': 1, 'closed': {'requests_closed': 1, …}}
+    exec report:  {'end': 'timeout', 'goal_status': None, 'failure': None}       (40 s deadline)
+
+Rather than add a fourth branch, the client now has **one** place that decides this: `run_fate(event,
+instance) -> Option<String>` maps the events that end a run while its turn can never finish — a refused
+request (budget ceiling, goal deadline), a retired instance, a reset — to the runtime's own words, and the
+loop has a single call site. The next such fact is one arm in that match instead of a new branch, which is
+what the last three defects all would have been.
+
+The reset case itself, measured live (`review/dogfood/lifecycle_run.py --lever reset`): the run ends **0.2 s**
+after the reset with exit `1` and `failure: "instance i-leader was reset while this run was in flight (epoch
+0 → 1); its turn is gone, so nothing will answer this input"`.
+
+One ordering had to change with it: a *queued* input that a reset seals is named by the runtime in
+`envelopes_sealed`, and D-72 makes that the input's own outcome (`undelivered`). Since a reset now also sets
+"this run failed", the terminal match checks `undelivered` **first** — a fact the runtime stated about *this
+input's envelope* is more precise than a generic failure, and both are true after a reset. The existing test
+for that path (`a_queued_input_a_reset_sealed_is_reported_undelivered`) is the guard.
+
+Evidence: `v2_daemon::a_reset_mid_run_ends_the_headless_run_with_the_reason` (pre-fix control: `Timeout`),
+`v2::exec::tests::the_facts_that_end_a_run_are_named_in_the_runtimes_words` (all four fates plus the two
+non-fates: `request_failed` and a *pause*), the D-72 regression test above, and the live probe in all three
+lever modes (terminate / reset / pause, measured 2026-09-26).
+
+Ceiling: `run_fate` covers the events the control plane commits today. A future terminal-for-this-run fact
+still has to be added there — the difference is that it is now one arm next to the others rather than a new
+code path, and the unit test lists them together so a missing one is visible in one place.
+
 ## D-99 The TUI kept saying "disconnected" while it was connected again (2026-09-26)
 
 A28's client half had the pieces — `mark_disconnected`/`mark_connected`, a fresh checkpoint and a history

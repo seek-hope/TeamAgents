@@ -257,10 +257,12 @@ pub struct ExecRun {
     pub checks_ok: bool,
 }
 
-/// The runtime's own words for a request it refused before it began, from the committed event that records
-/// the refusal (a goal budget ceiling, A18, or a passed goal deadline, A35). `None` for every other kind, so
-/// the caller can use it as one branch among the run's event handling.
-fn startup_refusal(event: &Json) -> Option<String> {
+/// The runtime's own words for a fact that ends *this* run while its turn can never finish: a request it
+/// refused before it began (a goal budget ceiling, A18; a passed goal deadline, A35 — D-97), an instance the
+/// user retired mid-run (D-98), or a reset that took the turn's epoch away (D-100). `None` for every other
+/// kind. Keeping every such fact in one place is deliberate: the client used to learn about them one at a
+/// time, and three of them were found only by driving the product (`end=timeout` for work nobody was doing).
+fn run_fate(event: &Json, instance: &str) -> Option<String> {
     let payload = &event["payload"];
     match event["kind"].as_str()? {
         "budget_refused" => Some(format!(
@@ -275,6 +277,20 @@ fn startup_refusal(event: &Json) -> Option<String> {
             "goal {} deadline passed before request {} could start",
             payload["goal_id"].as_str().unwrap_or("?"),
             payload["request_id"].as_str().unwrap_or("?"),
+        )),
+        // The user retired the instance: the control plane closes the epoch's execution, so nothing will ever
+        // answer this run. A *pause* is deliberately absent — it stops the instance at a safe boundary, the
+        // turn may still finish, and a resumed instance lets the run report the turn's own outcome (D-98).
+        "instance_lifecycle" if payload["lifecycle"] == json!("TERMINATED") => Some(format!(
+            "instance {instance} is terminated; this run cannot finish (termination is final — start a fresh \
+             state root for new work)"
+        )),
+        // A reset moves the instance to a new epoch: the turn this run was waiting on goes with the old one.
+        "instance_reset" => Some(format!(
+            "instance {instance} was reset while this run was in flight (epoch {} → {}); its turn is gone, so \
+             nothing will answer this input",
+            payload["old_epoch"].as_i64().unwrap_or(-1),
+            payload["new_epoch"].as_i64().unwrap_or(-1),
         )),
         _ => None,
     }
@@ -361,33 +377,16 @@ pub fn execute(options: &ExecOptions) -> Result<ExecRun, (i32, String)> {
                         turn_failure =
                             Some(event["payload"]["reason"].as_str().unwrap_or("the model request failed").to_string());
                     }
-                    // A request the runtime refused *before it began* is a committed outcome, not a slow turn
-                    // (A18's ceiling, A35's deadline): reporting it as `124` would tell the caller "still
-                    // running" about work that never started, and burn its deadline waiting for it.
+                    // One place decides whether this event ends the run while its turn can never finish (see
+                    // `run_fate`): a refused request, a retired instance, a reset that took the epoch away.
+                    // Reporting any of them as `124` would tell the caller "still running" about work nobody is
+                    // doing, and burn its deadline waiting for it.
                     if event["scope"] == json!(instance) {
-                        if let Some(reason) = startup_refusal(event) {
-                            // remembered separately from `turn_failure`: a refused request never *started*,
-                            // so there is no turn whose acceptance could be verified either
+                        if let Some(reason) = run_fate(event, &instance) {
+                            // remembered separately from `turn_failure`: a run whose turn never started (or
+                            // never finished) has no acceptance to verify either (D-96/D-97)
                             refused.get_or_insert_with(|| reason.clone());
                             turn_failure.get_or_insert(reason);
-                        }
-                        // The user retired this instance: the control plane closes the epoch's execution, so
-                        // nothing will ever answer this run. Waiting out the deadline and calling it a timeout
-                        // would tell the caller "still running" about an instance that is gone — the
-                        // misreporting D-97 fixed for a refused request. A *pause* is deliberately **not**
-                        // handled here: it stops the instance at a safe boundary, the turn may still finish (a
-                        // reply closes it), and a run that is resumed before its deadline reports the turn's own
-                        // outcome; if the deadline wins instead, the report says which lifecycle the instance is
-                        // in (D-98).
-                        if event["kind"] == json!("instance_lifecycle")
-                            && event["payload"]["lifecycle"] == json!("TERMINATED")
-                        {
-                            let note = format!(
-                                "instance {instance} is terminated; this run cannot finish (termination is final \
-                                 — start a fresh state root for new work)"
-                            );
-                            refused.get_or_insert_with(|| note.clone());
-                            turn_failure.get_or_insert(note);
                         }
                     }
                     // A queued input is sealed, not delivered, when a context reset
@@ -445,13 +444,15 @@ pub fn execute(options: &ExecOptions) -> Result<ExecRun, (i32, String)> {
         // session-level fact that makes the run impossible (a failed request, an
         // approval no headless caller can give, an input a reset sealed) is
         // reported only while nothing of the run's own has happened.
+        // `undelivered` comes first: it is a fact the runtime stated *about this input's envelope* (a reset
+        // named it as sealed), which is more precise than "the run failed" — and a reset sets both (D-72).
         let terminal = match &attribution {
             Attribution::Settled(status) => Some(if status == "SUCCEEDED" { End::Completed } else { End::Failed }),
             Attribution::Reply(_) => Some(End::Reply),
             Attribution::Closed => Some(End::Unsettled),
+            Attribution::Pending if undelivered => Some(End::Undelivered),
             Attribution::Pending if turn_failure.is_some() => Some(End::Failed),
             Attribution::Pending if pending_approval.is_some() => Some(End::ApprovalRequired),
-            Attribution::Pending if undelivered => Some(End::Undelivered),
             Attribution::Pending => None,
         };
         if let Some(terminal) = terminal {
@@ -727,9 +728,7 @@ fn leader_instance(checkpoint: &Json) -> Option<(String, String)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        capped, leader_instance, parse_check_result, run_checks, startup_refusal, timeout_line, Attribution, End,
-    };
+    use super::{capped, leader_instance, parse_check_result, run_checks, run_fate, timeout_line, Attribution, End};
     use serde_json::json;
     use std::path::Path;
 
@@ -743,24 +742,34 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_request_becomes_the_runs_failure_in_the_runtimes_words() {
+    fn the_facts_that_end_a_run_are_named_in_the_runtimes_words() {
         // the budget gate's committed event: the sentence matches what the runtime parks the instance with
         let budget = json!({"kind": "budget_refused", "scope": "i-leader", "payload": {
             "goal_id": "goal-s-main", "request_id": "req-1", "known": 0, "reserved": 0, "est": 2235, "max": 1000}});
         assert_eq!(
-            startup_refusal(&budget).unwrap(),
+            run_fate(&budget, "i-leader").unwrap(),
             "goal goal-s-main budget exceeded: known 0 + reserved 0 + est 2235 > max 1000"
         );
         // the deadline gate's event
         let deadline = json!({"kind": "goal_deadline_refused", "scope": "i-leader",
                               "payload": {"goal_id": "goal-s-main", "request_id": "req-2"}});
         assert_eq!(
-            startup_refusal(&deadline).unwrap(),
+            run_fate(&deadline, "i-leader").unwrap(),
             "goal goal-s-main deadline passed before request req-2 could start"
         );
-        // every other event is not a refusal, and a malformed payload never panics
-        assert!(startup_refusal(&json!({"kind": "request_failed", "payload": {}})).is_none());
-        assert!(startup_refusal(&json!({"kind": "budget_refused"})).is_some());
+        // a retired instance ends the run; a *paused* one must not (D-98)
+        let terminated =
+            json!({"kind": "instance_lifecycle", "scope": "i-leader", "payload": {"lifecycle": "TERMINATED"}});
+        assert!(run_fate(&terminated, "i-leader").unwrap().contains("termination is final"));
+        let paused = json!({"kind": "instance_lifecycle", "scope": "i-leader", "payload": {"lifecycle": "PAUSED"}});
+        assert!(run_fate(&paused, "i-leader").is_none());
+        // a reset names the epoch move (D-100)
+        let reset = json!({"kind": "instance_reset", "scope": "i-leader",
+                           "payload": {"old_epoch": 0, "new_epoch": 1, "reason": "probe"}});
+        assert!(run_fate(&reset, "i-leader").unwrap().contains("epoch 0 → 1"));
+        // every other event is not a fate, and a malformed payload never panics
+        assert!(run_fate(&json!({"kind": "request_failed", "payload": {}}), "i-leader").is_none());
+        assert!(run_fate(&json!({"kind": "budget_refused"}), "i-leader").is_some());
     }
 
     #[test]

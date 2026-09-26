@@ -1116,6 +1116,46 @@ async fn pausing_the_leader_mid_run_lets_the_turn_finish() {
 }
 
 #[tokio::test]
+async fn a_reset_mid_run_ends_the_headless_run_with_the_reason() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let slow = json!({"role": "assistant", "content": "late", "__slow_ms__": 3_000});
+    let scripts = HashMap::from([("i-leader".to_string(), vec![slow])]);
+    let (root, handle) = boot("exec-reset", scripts).await;
+    let (socket, workspace) = (root.dir.join("state/daemon.sock"), root.dir.join("ws"));
+    let mut options = exec_options(&socket, &workspace, "write an essay", Vec::new());
+    options.timeout_s = 30;
+    let running = tokio::task::spawn_blocking(move || execute(&options));
+    let mut client = Client::connect(&socket).await;
+    let mut in_flight = false;
+    for _ in 0..400 {
+        let checkpoint = client.call("checkpoint", json!({})).await;
+        let instances = checkpoint["result"]["snapshot"]["instances"].clone();
+        if instances.as_array().is_some_and(|rows| rows.iter().any(|row| row["phase"] == json!("MODEL_PENDING"))) {
+            in_flight = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(in_flight, "the run never reached the model");
+    client
+        .command("reset-while-running", "reset_instance", json!({"instance_id": "i-leader", "reason": "probe reset"}))
+        .await;
+    let started = std::time::Instant::now();
+    let run = running.await.expect("exec task").expect("headless run");
+    assert_eq!(run.end, End::Failed, "{}", run.report);
+    assert_eq!(run.end.exit_code(run.checks_ok), 1);
+    let failure = run.report["failure"].as_str().unwrap_or("");
+    assert!(failure.contains("was reset"), "{}", run.report);
+    assert!(failure.contains("epoch 0 → 1"), "the epoch move travels with it: {failure}");
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "a reset ends the run at once ({}s)",
+        started.elapsed().as_secs()
+    );
+    handle.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
 async fn a_budget_refusal_ends_the_headless_run_instead_of_timing_out() {
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
     let scripts = HashMap::from([("i-leader".to_string(), vec![finish_call("never asked")])]);
