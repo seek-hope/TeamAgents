@@ -244,4 +244,23 @@ mod tests {
         assert!(super::LOCK_WAIT >= Duration::from_millis(500) && super::LOCK_WAIT <= Duration::from_secs(5));
         assert!(super::LOCK_STEP < super::LOCK_WAIT);
     }
+
+    /// D-116: the runner's tick is the whole CPU cost of a running job (at 10 ms it measured 1.80 % of a core
+    /// per command, because *every* command pays it for as long as it runs). It must stay coarse enough to be
+    /// cheap and fine enough that each latency it buys stays far below what a person notices.
+    #[test]
+    fn the_runner_tick_trades_cpu_for_a_bounded_latency() {
+        use super::runner::{CANCEL_ESCALATION_MS, TICK};
+        // these are constant comparisons, so they are checked when this file is compiled rather than when the
+        // test runs (clippy asks for exactly this shape)
+        const { assert!(TICK.as_millis() >= 25, "a finer tick than 25 ms is CPU the loop cannot justify") };
+        const { assert!(TICK.as_millis() <= 200, "a coarser tick than 200 ms starts to be felt") };
+        const { assert!(CANCEL_ESCALATION_MS <= 1000, "the escalation budget stays under a second") };
+        const {
+            assert!(
+                CANCEL_ESCALATION_MS + TICK.as_millis() as u64 <= 1000,
+                "TERM→KILL lands within a second even on the slowest tick"
+            )
+        };
+    }
 }

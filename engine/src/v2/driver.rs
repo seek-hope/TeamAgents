@@ -25,6 +25,38 @@ use teamagents_core::v2::{Command, Identity};
 const MAX_OUTPUT: usize = 200_000;
 const MAX_ARTIFACT_BYTES: u64 = 64 * 1024 * 1024;
 
+/// How often the driver asks a running job for its status while it waits (D-116). One poll is one socket round
+/// trip and a round trip costs the runner ~0.8 ms of CPU (measured), so this is the dominant per-command cost for
+/// a command that runs for minutes — while a quick command ("ls", "rg") finishes inside the first second, where
+/// the finer cadence is what a user feels. So: 50 ms for the first second, 250 ms after it. Both are far below
+/// anything a person notices, and the coarser one still notices a terminal state, a past deadline or a user's
+/// cancel within a fifth of a second.
+const JOB_POLL: Duration = Duration::from_millis(50);
+const JOB_POLL_IDLE: Duration = Duration::from_millis(250);
+const JOB_POLL_PATIENCE: Duration = Duration::from_secs(1);
+
+#[cfg(test)]
+mod cadence {
+    use super::{JOB_POLL, JOB_POLL_IDLE, JOB_POLL_PATIENCE};
+
+    /// D-116: the polling cadence is a measured cost (one `status` round trip is ~0.8 ms of runner CPU), and
+    /// every latency it buys must stay far below what a person notices.
+    #[test]
+    fn the_job_poll_is_coarse_but_prompt() {
+        assert!(
+            JOB_POLL >= std::time::Duration::from_millis(25),
+            "a finer poll than 25 ms is CPU the loop cannot justify"
+        );
+        assert!(JOB_POLL <= std::time::Duration::from_millis(100), "the quick-command cadence stays snappy");
+        assert!(JOB_POLL_IDLE > JOB_POLL, "a long command must be polled less often, not more");
+        assert!(
+            JOB_POLL_IDLE <= std::time::Duration::from_millis(500),
+            "a user cancel is noticed within half a second"
+        );
+        assert!(JOB_POLL_PATIENCE >= std::time::Duration::from_millis(500), "quick commands do not back off instantly");
+    }
+}
+
 /// Default bound on required-check repair rounds before the goal parks
 /// BLOCKED (§8 requires bounded repair, not a specific number — this is a
 /// policy knob, overridable per goal via limits.max_check_rounds).
@@ -1877,6 +1909,7 @@ impl<P: Provider> Driver<P> {
     /// request is durable in the database (§6.4).
     async fn await_job(&mut self, operation_id: &str, job_dir: &Path) -> Result<Journal, String> {
         let mut cancel_sent = false;
+        let started = std::time::Instant::now();
         loop {
             if self.shared.shutdown.load(Ordering::SeqCst) {
                 return Err("driver shutdown with a job in flight".into());
@@ -1935,7 +1968,10 @@ impl<P: Provider> Driver<P> {
                     cancel_sent = true;
                 }
             }
-            tokio::time::sleep(Duration::from_millis(25)).await;
+            // D-116: the cadence is a direct cost per in-flight command; back off once the command has proven
+            // itself to be a long one (see the constants above).
+            let wait = if started.elapsed() < JOB_POLL_PATIENCE { JOB_POLL } else { JOB_POLL_IDLE };
+            tokio::time::sleep(wait).await;
         }
     }
 

@@ -16,6 +16,21 @@ use tokio::net::UnixListener;
 /// explicitly opts in per runner process (never from the job file or model).
 const TEST_HOOKS_ENV: &str = "TEAMAGENTS_JOB_TEST_HOOKS";
 
+/// How often the runner looks at its child. The loop costs CPU in *every* running job — measured at a 10 ms
+/// interval it was 1.80 % of a core per command (D-116) — and the only thing the cadence buys is how late a
+/// completed command, a past deadline or the TERM→KILL escalation is noticed:
+///
+/// * a command's exit is reported to the model up to one tick later,
+/// * a deadline is enforced up to one tick late,
+/// * the escalation is `CANCEL_ESCALATION_MS` plus at most one tick.
+///
+/// 50 ms keeps all three well under a tenth of a second (and the escalation within one tick of its budget),
+/// while cutting the loop's cost by five.
+pub(crate) const TICK: Duration = Duration::from_millis(50);
+
+/// How long a cancelled command gets between TERM and KILL (§6.4's "stop request, then escalate").
+pub(crate) const CANCEL_ESCALATION_MS: u64 = 500;
+
 struct Runner {
     root: std::path::PathBuf,
     spec: JobSpec,
@@ -145,7 +160,7 @@ impl Runner {
             self.cancel_requested_at = Some(now_ms());
         }
         if let Some(since) = self.cancel_requested_at {
-            if now_ms().saturating_sub(since) > 500 && self.child.is_some() {
+            if now_ms().saturating_sub(since) > CANCEL_ESCALATION_MS && self.child.is_some() {
                 let _ = signal_group(&self.journal, libc::SIGKILL);
             }
         }
@@ -242,7 +257,7 @@ pub async fn serve(root: &Path) -> Result<(), String> {
     runner.persist();
     let listener = UnixListener::bind_addr(&super::socket_addr(&runner.spec.token)?)
         .map_err(|e| format!("bind job socket: {e}"))?;
-    let mut tick = tokio::time::interval(Duration::from_millis(10));
+    let mut tick = tokio::time::interval(TICK);
     loop {
         tokio::select! {
             _ = tick.tick() => runner.tick(),

@@ -18,6 +18,47 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-116 A running command cost ~4 % of a core, and nobody had measured it (2026-09-26)
+
+Every command a member runs pays two cadences for as long as it runs: the runner's tick (how often it looks at
+its child) and the driver's `status` poll (one socket round trip per poll, §6.3). Neither had been measured, and
+this product's stated priority is long-horizon stability — a team of members building in parallel pays whatever
+the constants happen to be. Measured on this machine (`python3 review/runner_cost.py`: one `sleep 45` command in
+a runner the probe starts itself, 10 s windows, `/proc/<pid>/stat`):
+
+| what | before | after |
+|---|---|---|
+| the runner's tick alone (no poller) | 1.80 % of a core (10 ms tick; three samples 1.80/1.80/1.80) | 0.47–0.50 % (50 ms tick) |
+| the runner serving the driver's polls | 2.30–2.40 % (25 ms cadence, ~300 requests / 10 s) | 0.70–0.90 % (50 ms for the first second, 250 ms after) |
+| **per in-flight command** | **~4.2 %** | **~1.2 %** |
+
+Each round trip costs the runner ~0.8 ms of CPU (803 µs at the 25 ms cadence, 888 µs at 50 ms — the same work,
+fewer times), which is why the poll dominated: 40 requests/s is 40 journal reads, parses and replies.
+
+The change is three named constants and no behaviour change beyond latency: `jobs::runner::TICK` = 50 ms (with
+`CANCEL_ESCALATION_MS` named beside it), and the driver's `JOB_POLL` = 50 ms for the first second, then
+`JOB_POLL_IDLE` = 250 ms (`JOB_POLL_PATIENCE` = 1 s). What the cadences buy is bounded and unchanged in kind:
+
+* a command's exit reaches the model within one tick (≤50 ms) or one poll (≤250 ms after the first second — a
+  quick command finishes inside the first second, where the finer cadence still applies),
+* a past deadline is enforced within one tick,
+* TERM→KILL lands within `CANCEL_ESCALATION_MS` plus one tick (≤550 ms),
+* a user's cancel (`instances terminate`, the TUI's key) is noticed within 250 ms.
+
+Both bounds are compile-time invariants now (`jobs::tests::the_runner_tick_trades_cpu_for_a_bounded_latency` and
+`v2::driver::cadence::the_job_poll_is_coarse_but_prompt` use `const { assert!(…) }`, so a wrong constant fails
+the build instead of a test run).
+
+Evidence: the probe above (re-runnable, no model, no daemon); three gate conditions green at 349 tests
+(core 100 / engine 216 / tui 33); and the live stop lever re-run after the change
+(`python3 review/dogfood/cancel.py --state-dir /tmp/ta-cancel-cpu2`: the effect stopped 4.0 s after the lever,
+the receipt class was `cancelled`) — the coarser cadence delays only the *notice*, by at most 250 ms.
+
+Ceiling: the cadences are compile-time constants, not config, so a user cannot trade latency for CPU. A command
+that runs for hours is still ticked 20×/s and polled 4×/s, so ~1 % of a core remains per in-flight command; the
+way below it is a push channel from the runner (new protocol, a design change) or a longer idle cadence, not a
+finer poll. The numbers are this machine's, which is why the probe prints them instead of asserting thresholds.
+
 ## D-115 The isolation verdict carries its reason (2026-09-26)
 
 D-114 gave one shared predicate, but only its boolean half was used: `doctor` printed a fixed sentence for the
