@@ -84,6 +84,14 @@ filesystem as the witness:
 Pre-fix control: with `load_service` hardcoded to `"host"` the sandbox test fails at `a host path outside the
 workspace is unreachable: … "inside=ok outside=ok"`.
 
+The same edge carries the network switch, and it has the same shape — `mcp_network` is off unless the user asks
+for it, which is what a sandbox is for. `mcp_workspace_network_follows_the_config_key` runs one server that
+reports whether it could connect to a host loopback listener in three configurations: `workspace` with no
+`mcp_network` key (must observe `network=no`), `workspace` with `mcp_network = true` (must observe
+`network=yes`) and `host` (the control that the measurement works). Pre-fix controls: hardcoding `load_service`
+to pass `true` makes the default case fail (`the server observed … "network=yes", expected network=no`) and
+hardcoding `false` makes the requested case fail (`… "network=no", expected network=yes`).
+
 The same test also covers the branch CI takes, because GitHub runners have no bubblewrap (their kernel forbids
 unprivileged user namespaces) and a test that only skipped there would leave "workspace mode never silently
 degrades to the host" unchecked on the machine that runs every push. The binding is `required`, so without
@@ -95,11 +103,12 @@ did not refuse honestly, it tried to run.
 
     cargo test --offline --manifest-path engine/Cargo.toml --test v2_mcp mcp_workspace_execution_is_sandboxed
     cargo test --offline --manifest-path engine/Cargo.toml --test v2_mcp mcp_host_execution_is_not_sandboxed
+    cargo test --offline --manifest-path engine/Cargo.toml --test v2_mcp mcp_workspace_network_follows_the_config_key
     env PATH=/nonexistent <the v2_mcp test binary> mcp_workspace_execution_is_sandboxed   # the no-bwrap branch
 
-Ceiling: D-104's ceiling shrinks by one of four — `mcp_network`, `startup_timeout_s` and `tool_timeout_s` are
-still read-only claims — and `tool_names` filtering is still exercised only by the HTTP probe's single-tool
-binding. Recorded rather than implied.
+Ceiling: D-104's ceiling shrinks by two of four — `startup_timeout_s` and `tool_timeout_s` are still read-only
+claims — and `tool_names` filtering is still exercised only by the HTTP probe's single-tool binding. Recorded
+rather than implied.
 
 ## D-105 The fourth fixture race, and the shape they all share (2026-09-26)
 
@@ -173,10 +182,10 @@ with the old `?` restored the event never arrives and the test fails with
 scenarios, live). `docs/USER-GUIDE.md` §5 states the behaviour.
 
 Ceiling: the mechanism covers *any* driver-boot failure (that is the point — one place), but the probe
-exercises the MCP case; the stdio options `mcp_network` and `startup_timeout_s` / `tool_timeout_s` still have
-no behavioural test (their read sites exist, their effects are untested), and `tool_names` filtering is only
-exercised by this probe's single-tool binding. Recorded here rather than implied. (`mcp_execution` was in that
-list too; D-106 closed it through the config edge.)
+exercises the MCP case; the stdio options `startup_timeout_s` / `tool_timeout_s` still have no behavioural test
+(their read sites exist, their effects are untested), and `tool_names` filtering is only exercised by this
+probe's single-tool binding. Recorded here rather than implied. (`mcp_execution` and `mcp_network` were in that
+list too; D-106 closed both through the config edge.)
 
 ## D-103 A third fixture waited for the wrong thing: the MCP crash window (2026-09-26)
 

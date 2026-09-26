@@ -298,6 +298,79 @@ for line in sys.stdin:
     handle.shutdown().await.expect("shutdown");
 }
 
+/// The other half of the config edge that D-106 covers: `mcp_network` is *off* unless the user asks for it, and
+/// the key really reaches the sandbox (`--unshare-net` vs `--share-net`). The witness is a host loopback
+/// listener: the server reports whether it could connect. `host` mode is the control that the measurement
+/// itself works, and it is the one case that still runs on a machine without bwrap.
+#[tokio::test]
+async fn mcp_workspace_network_follows_the_config_key() {
+    let server = r#"
+import json, socket, sys
+port = int(sys.argv[1])
+def reachable():
+    sock = socket.socket()
+    sock.settimeout(0.5)
+    try:
+        return sock.connect_ex(('127.0.0.1', port)) == 0
+    finally:
+        sock.close()
+for line in sys.stdin:
+    request = json.loads(line)
+    if 'id' not in request: continue
+    method = request['method']
+    if method == 'initialize':
+        result = {'protocolVersion': '2025-06-18'}
+    elif method == 'tools/list':
+        result = {'tools': [{'name': 'reach', 'inputSchema': {'type': 'object', 'properties': {}}}]}
+    elif method == 'tools/call':
+        result = {'content': [{'type': 'text', 'text': f"network={'yes' if reachable() else 'no'}"}]}
+    else:
+        result = {}
+    print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
+"#;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a host listener");
+    let port = listener.local_addr().unwrap().port().to_string();
+    // (tag, execution mode, what the config says about the network, what the server must observe)
+    let cases = [
+        ("mcp-net-default", "workspace", None, "network=no"),
+        ("mcp-net-requested", "workspace", Some(true), "network=yes"),
+        ("mcp-net-host", "host", None, "network=yes"),
+    ];
+    for (tag, execution, network, expected) in cases {
+        let root = root(tag);
+        std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+        let mut binding = json!({
+            "kind": "mcp", "mcp_server": "netprobe", "mcp_transport": "stdio", "mcp_execution": execution,
+            "command": "/usr/bin/python3", "args": ["-u", "-c", server, port],
+            "tool_names": ["reach"], "required": true,
+        });
+        if let Some(value) = network {
+            binding["mcp_network"] = json!(value);
+        }
+        let mut catalog = UserConfig::default();
+        catalog.tools.insert("net_probe".into(), serde_json::from_value::<ToolBinding>(binding).unwrap());
+        let provider =
+            ScriptedProvider::new(vec![tool_call("c1", "netprobe_reach", json!({})), finish_call("reached out")]);
+        let mut config = root.config(provider);
+        config.catalog = catalog;
+        config.bindings = vec!["net_probe".into()];
+        if execution == "workspace" && !teamagents_engine::tools::bwrap_available() {
+            // no sandbox, so the workspace cases cannot be observed here; the mode must refuse instead of
+            // running the server on the host (the same refusal `mcp_workspace_execution_is_sandboxed` asserts)
+            let error = start(config).await.err().expect("workspace mode without bwrap must not boot");
+            assert!(error.contains("IsolationUnavailable") && error.contains("requires bwrap"), "{error}");
+            continue;
+        }
+        let handle = start(config).await.expect("start");
+        handle.input("try to reach the listener").await.expect("input");
+        assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED", "{tag}");
+        let results = tool_results(&root);
+        let reply = results.iter().find(|entry| entry.contains("network=")).cloned().unwrap_or_default();
+        assert!(reply.contains(expected), "{tag}: the server observed {reply:?}, expected {expected}");
+        handle.shutdown().await.expect("shutdown");
+    }
+}
+
 #[tokio::test]
 async fn mcp_tool_round_trips_through_the_same_receipt_contract() {
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
