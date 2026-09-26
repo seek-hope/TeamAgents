@@ -656,6 +656,9 @@ provider = \"deepseek\"\nprotocol = \"deepseek\"\nmodel = \"deepseek-flash\"\nap
     assert!(doctor.contains("v2 state root"), "{doctor}");
     assert!(doctor.contains("journal_mode=wal"), "{doctor}");
     assert!(doctor.contains("synchronous=FULL"), "{doctor}");
+    // D-183: the same row states the SQLite this build links, because DESIGN §4.4 makes its version (the
+    // WAL-reset fix) part of the durability guarantee; the predicate itself is asserted in core's own test.
+    assert!(doctor.contains(&format!("sqlite={}", rusqlite::version())), "{doctor}");
     // D-149: the check that names the state directory must not create the *legacy* one. `doctor`'s writability
     // probe used to run on `teamagents/sessions/`, so running `doctor` before `init` (which the guide invites:
     // "config, credentials, state root, …") made the next `init` tell the user to remove "an older release's

@@ -348,7 +348,11 @@ pub async fn run(output: PathBuf) -> Result<()> {
         json!({"phase":"probe","status":"running","model_calls":0,"sqlite_version":rusqlite::version(),"checks":{}});
     atomic_json(&output.join("report.json"), &report)?;
     let result: Result<()> = async {
-        ensure(rusqlite::version_number() >= 3_051_003, "this SQLite lacks the required WAL fix")?;
+        // D-183: one predicate, shared with `doctor` and the store's own test in `make check`
+        ensure(
+            teamagents_core::v2::store::linked_sqlite_carries_the_wal_reset_fix(),
+            &format!("this SQLite ({}) lacks the required WAL fix", rusqlite::version()),
+        )?;
         report["checks"]["sqlite_full"] = sqlite_full()?;
         report["checks"]["atomic_input"] = transactions(&scratch.0.join("transactions"))?;
         report["checks"]["artifacts_gc"] = artifacts(&scratch.0.join("artifacts"))?;

@@ -18,6 +18,49 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-183 The SQLite version DESIGN requires was checked only by a probe nobody runs (2026-09-27)
+
+Walking DESIGN §3 and §4 — the last prose this campaign had only spot-checked — found §4.4's durability clause
+half-wired: "The selected SQLite must include the official WAL-reset fix (3.51.3 and the specific backports),
+verified against the version the lock file actually links rather than the crate's declared version." The
+comparison existed, as one line inside the probe envelope
+(`ensure(rusqlite::version_number() >= 3_051_003, …)` in `engine/examples/probe/suite.rs`), and nothing else in
+the tree read it: not `make check`'s 376 tests, not `doctor`, which already reports the store's `journal_mode`
+and `synchronous` but not the library those depend on. That envelope is a target no `make` goal runs — only
+`docs/DEVELOPMENT.md` names the command that drives it — so a dependency change below the fix would have been
+caught only by whoever happened to run it by hand.
+
+**One predicate, three readers.** `core::v2::store::linked_sqlite_carries_the_wal_reset_fix()` answers the
+question from the *linked* library (`rusqlite::version_number()`), never the crate's declared version, with
+`MIN_SQLITE_VERSION` beside it; `store::the_linked_sqlite_carries_the_wal_reset_fix` asserts it inside
+`make check` (offline, no model); the probe envelope now calls it instead of carrying its own copy; and
+`doctor`'s `v2 state root` row reports the version and **fails** when it is older, so the durability guarantee
+is visible next to the other store facts:
+
+    [ok  ] v2 state root   …/teamagents/v2 (journal_mode=wal, synchronous=FULL, sqlite=3.53.2)
+
+The refusing branch is a private helper with its own test, because a machine that links a new SQLite cannot
+produce it any other way.
+
+**Measured** (2026-09-27): the linked library here is 3.53.2 (`libsqlite3-sys 0.38.2`, `bundled`), so the
+requirement holds — and now it is also *checked*: `store::the_linked_sqlite_carries_the_wal_reset_fix` passes,
+`cli::the_state_root_row_names_the_linked_sqlite_and_refuses_an_old_one` covers both branches (3.53.2 ok;
+3.49.1 refused with `lacks the WAL-reset fix 3051003` and the requirement cited), the extended
+`cli::init_prepares_the_v2_root_and_doctor_verifies_it` asserts the row carries `sqlite={rusqlite::version()}`,
+and `review/test_counts.py` moved the ledger to core 101 / engine 242 / tui 35 (D-178's gate is what demanded
+that, and `--write` is what performed it).
+
+Ceiling: a *backport* keeps its old version number, so a patched 3.49.x is refused as too old — the
+conservative direction, and recording such a backport belongs in a decision. The check reads the runtime's own
+answer, so it says what the binary actually linked and not what a manifest declares.
+
+**The rest of the §3/§4 walk needed no change**: §3's five execution positions and its separation of
+`PAUSED/PARKED/TERMINATED` from a phase are exactly `Lifecycle`/`Phase` in `core/src/v2/models.rs`; §4.1's
+object list maps onto the sixteen tables (the session *is* the database, its stamp in `meta`); §4.2's commit
+points are the control transaction's own tests; §4.3's artifact lifecycle (`STAGING → LIVE → DELETING /
+ABANDONED`) is implemented in `core/src/v2/control.rs` with tests. §4.4's remaining sentences — artifact
+collection, retention, the full-disk stop — stay the gaps they are already recorded as (D-174, D-75).
+
 ## D-182 The evaluation's model-visible surface: claimed frozen, pinned by nothing (2026-09-27)
 
 `review/eval/r2-p6/` is pre-registered evidence and this campaign's measurement of the collaboration

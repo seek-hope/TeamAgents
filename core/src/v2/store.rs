@@ -295,6 +295,23 @@ fn apply_store_pragmas(conn: &Connection, path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The first SQLite release carrying the official WAL-reset fix (DESIGN §4.4): 3.51.3, and the specific
+/// backports of it.
+pub const MIN_SQLITE_VERSION: i32 = 3_051_003;
+
+/// Whether the SQLite this binary **actually links** carries that fix.
+///
+/// A runtime answer, never the crate's declared version (DESIGN §4.4): `rusqlite::version_number()` reports the
+/// library the build linked, so a dependency change, a switch to a system SQLite or a vendored patch is seen
+/// here. One predicate, three readers — `doctor`'s state-root row, the store's own test in `make check`, and
+/// the probe envelope (`engine/examples/probe/suite.rs`) that used to carry this comparison inline.
+///
+/// Ceiling: a backport keeps its old version number, so a patched 3.49.x is reported as too old. That is the
+/// conservative direction — the check refuses until someone states the backport's fix in a decision.
+pub fn linked_sqlite_carries_the_wal_reset_fix() -> bool {
+    rusqlite::version_number() >= MIN_SQLITE_VERSION
+}
+
 /// Table names `SCHEMA` itself creates, read from the schema text so the list
 /// cannot drift from it (an index or trigger does not count as a table).
 fn schema_tables() -> std::collections::HashSet<String> {
@@ -410,6 +427,23 @@ mod tests {
         let _ = std::fs::remove_file(p);
         let _ = std::fs::remove_file(format!("{}-wal", p.display()));
         let _ = std::fs::remove_file(format!("{}-shm", p.display()));
+    }
+
+    /// DESIGN §4.4: the state store's durability rests on SQLite's WAL-reset fix, so the version this build
+    /// links is a requirement, not a detail. `make check` runs this offline; `doctor` reports the same
+    /// predicate to a user, and the probe envelope asserts it before it measures anything else.
+    #[test]
+    fn the_linked_sqlite_carries_the_wal_reset_fix() {
+        let linked = rusqlite::version_number();
+        assert!(
+            super::linked_sqlite_carries_the_wal_reset_fix(),
+            "the linked SQLite is {} ({}), older than the WAL-reset fix {} (DESIGN §4.4); bump libsqlite3-sys \
+             or link a backport in a recorded decision — do not weaken the sync strategy instead",
+            rusqlite::version(),
+            linked,
+            super::MIN_SQLITE_VERSION
+        );
+        assert!(rusqlite::version().starts_with("3."), "unexpected SQLite version string {}", rusqlite::version());
     }
 
     #[test]

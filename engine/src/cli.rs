@@ -137,6 +137,26 @@ fn optional_check(results: &mut Vec<DoctorRow>, name: &str, ok: bool, detail: St
     results.push((name.to_string(), if ok { "ok  " } else { "WARN" }, detail));
 }
 
+/// The `v2 state root` row: the journal mode, the sync level and the SQLite this build **links** — DESIGN §4.4
+/// makes that version part of the durability guarantee, so the row fails when it predates the WAL-reset fix
+/// (D-183). Split out because the branch that refuses an old library cannot be provoked on a machine that
+/// links a new one; its test is in this file.
+fn v2_state_root_row(root: &Path, journal: &str, sync: &str, version: &str, carries_the_fix: bool) -> (bool, String) {
+    if carries_the_fix {
+        (true, format!("{} (journal_mode={journal}, synchronous={sync}, sqlite={version})", root.display()))
+    } else {
+        (
+            false,
+            format!(
+                "{} (journal_mode={journal}, synchronous={sync}, sqlite={version} lacks the WAL-reset fix {}, \
+                 which DESIGN §4.4 requires of the SQLite this build selects)",
+                root.display(),
+                teamagents_core::v2::store::MIN_SQLITE_VERSION
+            ),
+        )
+    }
+}
+
 pub fn doctor(state_root: Option<PathBuf>) -> i32 {
     let mut results = vec![];
     // the core is a library now: report the linked core's own version string
@@ -215,11 +235,14 @@ pub fn doctor(state_root: Option<PathBuf>) -> i32 {
                     other => other.to_string(),
                 };
                 let probe = conn.execute_batch("CREATE TABLE IF NOT EXISTS doctor_probe(x); DROP TABLE doctor_probe;");
+                let sqlite = rusqlite::version();
+                let carries_the_fix = teamagents_core::v2::store::linked_sqlite_carries_the_wal_reset_fix();
+                let (fix_ok, detail) = v2_state_root_row(&v2_root, &journal, &sync, sqlite, carries_the_fix);
                 check(
                     &mut results,
                     "v2 state root",
-                    journal.eq_ignore_ascii_case("wal") && probe.is_ok(),
-                    format!("{} (journal_mode={journal}, synchronous={sync})", v2_root.display()),
+                    journal.eq_ignore_ascii_case("wal") && probe.is_ok() && fix_ok,
+                    detail,
                 );
             }
             Err(error) => check(&mut results, "v2 state root", false, error),
@@ -771,4 +794,24 @@ fn daemon_boot(
         eprintln!("\nstopping...");
         handle.shutdown().await
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::v2_state_root_row;
+    use std::path::Path;
+
+    /// D-183: both branches of the state-root row, the refusing one included — a machine that links a new
+    /// SQLite cannot produce it, so the rule that says an old one is reported as a failure is asserted here.
+    #[test]
+    fn the_state_root_row_names_the_linked_sqlite_and_refuses_an_old_one() {
+        let root = Path::new("/state/teamagents/v2");
+        let (ok, detail) = v2_state_root_row(root, "wal", "FULL", "3.53.2", true);
+        assert!(ok, "{detail}");
+        assert_eq!(detail, "/state/teamagents/v2 (journal_mode=wal, synchronous=FULL, sqlite=3.53.2)");
+        let (ok, detail) = v2_state_root_row(root, "wal", "FULL", "3.49.1", false);
+        assert!(!ok, "{detail}");
+        assert!(detail.contains("sqlite=3.49.1 lacks the WAL-reset fix 3051003"), "{detail}");
+        assert!(detail.contains("DESIGN §4.4"), "the refusal cites the requirement: {detail}");
+    }
 }
