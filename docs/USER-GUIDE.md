@@ -37,7 +37,10 @@ teamagents                           # open the TUI (starts the per-user daemon 
   no tool can resolve.
 - **State root**: `$XDG_STATE_HOME/teamagents/v2/` (default `~/.local/state/teamagents/v2`), where
   `session.sqlite` is the **single source of truth** (WAL with `synchronous=FULL`, carrying a format and
-  version stamp).
+  version stamp). It is a *directory*: the session database and the daemon socket live inside it, so a
+  `--state-root` naming a file (most often the `session.sqlite` itself) is refused with the flag named, by
+  `doctor`, `init`, `daemon`, `exec` and the session verbs alike (D-166). A path that does not exist yet is
+  not an error: it is created.
 
 ### 1.1 Headless runs (`teamagents exec`)
 

@@ -675,6 +675,9 @@ fn ensure_daemon(request: DaemonRequest<'_>) -> Result<(PathBuf, bool), String> 
     if let Some(cwd) = cwd {
         cli::require_workspace_dir(cwd)?;
     }
+    // D-166: the same for the root itself — a state root that is a file cannot hold the socket, so the client
+    // says so instead of spawning a daemon that dies with `File exists (os error 17)`.
+    cli::require_state_root_dir(state_root)?;
     let socket = state_root.join("daemon.sock");
     // liveness is a *connection*, not the presence of a socket file: a crashed
     // daemon leaves a stale file that would make bind fail if we kept it

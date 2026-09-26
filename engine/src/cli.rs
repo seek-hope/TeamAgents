@@ -38,6 +38,7 @@ pub fn init(state_root: Option<PathBuf>) -> i32 {
 /// refused — never reinterpreted (A34, §4.4).
 pub fn prepare_v2_root(state_root: Option<PathBuf>) -> Result<PathBuf, String> {
     let root = state_root.unwrap_or_else(crate::v2_root);
+    require_state_root_dir(&root)?;
     std::fs::create_dir_all(&root).map_err(|e| format!("create {}: {e}", root.display()))?;
     let db = root.join("session.sqlite");
     // opening with create stamps format/schema; opening an existing foreign or
@@ -139,7 +140,12 @@ pub fn doctor(state_root: Option<PathBuf>) -> i32 {
     // layout is only reported (its cleanup belongs to §14/R28)
     let v2_root = state_root.unwrap_or_else(crate::v2_root);
     let v2_db = v2_root.join("session.sqlite");
-    if !v2_db.exists() {
+    if v2_root.exists() && !v2_root.is_dir() {
+        // D-166: the root is a *file* (usually the session database itself). The rows below would say "not
+        // initialized yet; `teamagents init` creates it" — advice that cannot be followed, because `init`
+        // refuses the same path. So this is a FAIL, with the words the other entry points use.
+        check(&mut results, "v2 state root", false, state_root_not_a_dir(&v2_root));
+    } else if !v2_db.exists() {
         optional_check(
             &mut results,
             "v2 state root",
@@ -520,6 +526,31 @@ fn daemon_run(state_root: Option<String>, cwd: Option<String>, model: Option<Str
     }
 }
 
+/// A `--state-root` must be a directory, or not exist yet (it is then created).
+///
+/// The two shapes a user confuses are one path segment apart — the root *directory* and the
+/// `session.sqlite` file inside it — and every entry point joins `session.sqlite`/`daemon.sock` onto the root.
+/// Naming the file produced four different raw errnos, none of them naming the mistake (measured 2026-09-27,
+/// D-166): `daemon`/`init` answered `File exists (os error 17)`, a read verb `Not a directory (os error 20)`,
+/// and `doctor` printed a WARN telling the user to run `init` — a command that then failed the same way.
+pub fn require_state_root_dir(path: &Path) -> Result<(), String> {
+    if !path.exists() || path.is_dir() {
+        return Ok(());
+    }
+    Err(state_root_not_a_dir(path))
+}
+
+/// The one wording for a `--state-root` that cannot be a state root. The callers that refuse it and the one
+/// that *reports* it (`doctor`) share this, so a row and a refusal cannot drift apart.
+fn state_root_not_a_dir(path: &Path) -> String {
+    format!(
+        "--state-root {} is not a directory: the state root is the directory that holds session.sqlite and \
+         daemon.sock. If you meant the database file, pass the directory that holds it; otherwise name an \
+         existing directory, or one that does not exist yet.",
+        path.display()
+    )
+}
+
 /// The workspace a session works in must exist before it boots.
 ///
 /// Every file tool and shell command is confined to this root, and `tools.rs` resolves it with
@@ -580,6 +611,7 @@ fn daemon_boot(
     // one stable root (and socket) per user: init/doctor/daemon/TUI must agree
     // on where the session lives, or the default entry cannot find the daemon
     let state_root = state_root.map(PathBuf::from).unwrap_or_else(crate::v2_root);
+    require_state_root_dir(&state_root)?;
     let socket = state_root.join("daemon.sock");
     let catalog_for_factory = catalog.clone();
     let config = crate::v2::daemon::DaemonConfig {

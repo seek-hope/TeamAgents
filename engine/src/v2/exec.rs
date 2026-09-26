@@ -95,6 +95,12 @@ impl Client {
 }
 
 fn handshake(socket: &Path) -> Result<(Conn, Json), String> {
+    // D-166: a state root that is a *file* makes every path under it meaningless, and the OS answer for the
+    // connect below is `Not a directory (os error 20)`, which names neither the flag nor the fix. Every client
+    // (exec and the four CLI verbs) arrives here with the same socket path, so the check lives here once.
+    if let Some(root) = socket.parent() {
+        crate::cli::require_state_root_dir(root)?;
+    }
     let stream = UnixStream::connect(socket).map_err(|e| format!("connect {}: {e}", socket.display()))?;
     stream.set_read_timeout(Some(Duration::from_secs(30))).map_err(|e| e.to_string())?;
     stream.set_write_timeout(Some(Duration::from_secs(30))).map_err(|e| e.to_string())?;

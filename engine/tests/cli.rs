@@ -1185,6 +1185,74 @@ fn the_instances_list_says_why_an_instance_is_parked() {
     std::fs::remove_dir_all(&root).expect("the state root goes away with its daemon");
 }
 
+/// D-166: a `--state-root` that is a *file* must be refused with the flag named, in every entry point. The two
+/// shapes a user confuses are one path segment apart — the root directory and the `session.sqlite` inside it —
+/// and each entry point answered with a different raw errno (measured 2026-09-27): `File exists (os error 17)`
+/// from `daemon` and `init`, `Not a directory (os error 20)` from a read verb, and a `doctor` WARN that told
+/// the user to run `init` — a command that then failed the same way. A root that does not exist yet stays
+/// legal: it is created (`init`, `daemon`, or the client that starts the daemon).
+#[test]
+fn a_state_root_that_is_a_file_is_refused_by_every_entry_point() {
+    let root = std::env::temp_dir().join(format!("ta-state-root-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let (config_home, dir, db_like, plain, uninitialized) =
+        (root.join("config"), root.join("dir"), root.join("db-file"), root.join("plain"), root.join("uninitialized"));
+    std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
+    std::fs::create_dir_all(&dir).unwrap();
+    // the mistake this pins: the session database itself, passed where its directory belongs
+    std::fs::write(dir.join("session.sqlite"), "not a database").unwrap();
+    std::fs::write(&db_like, "not a database").unwrap();
+    std::fs::write(&plain, "just a file").unwrap();
+    std::fs::write(
+        config_home.join("teamagents/config.toml"),
+        "[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\napi_key_env = \"TA_SR_KEY\"\n",
+    )
+    .unwrap();
+    let run = |args: &[&str]| -> (i32, String) {
+        let output = Command::new(env!("CARGO_BIN_EXE_teamagents"))
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("XDG_STATE_HOME", root.join("state"))
+            .env("TA_SR_KEY", "test-value")
+            .args(args)
+            .output()
+            .expect("run teamagents");
+        (
+            output.status.code().unwrap_or(-1),
+            format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr)),
+        )
+    };
+    for bad in [dir.join("session.sqlite"), db_like, plain] {
+        let bad = bad.to_str().unwrap();
+        // doctor: a FAIL row; the WARN it printed before pointed at a command that cannot work
+        let (code, out) = run(&["doctor", "--state-root", bad]);
+        assert_eq!(code, 1, "{out}");
+        assert!(out.contains("[FAIL] v2 state root") && out.contains("is not a directory"), "{out}");
+        // the entry points that need the root: none of them leaves the errno to speak for itself
+        for (args, expected) in [
+            (vec!["init", "--state-root", bad], 1),
+            (vec!["daemon", "--state-root", bad], 1),
+            (vec!["authority", "--state-root", bad], 2),
+        ] {
+            let (code, out) = run(&args);
+            assert_eq!(code, expected, "{args:?}: {out}");
+            assert!(out.contains("--state-root") && out.contains("is not a directory"), "{args:?}: {out}");
+        }
+        // a client that would start a daemon refuses before spawning one
+        let (code, out) = run(&["exec", "--state-root", bad, "--timeout", "5", "hello"]);
+        assert_eq!(code, 2, "{out}");
+        assert!(out.contains("--state-root") && out.contains("is not a directory"), "{out}");
+    }
+    // control: a directory that is not initialized yet stays legal — WARN, then `init` makes it a root
+    let (code, out) = run(&["doctor", "--state-root", uninitialized.to_str().unwrap()]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("[WARN] v2 state root") && out.contains("not initialized yet"), "{out}");
+    let (code, out) = run(&["init", "--state-root", uninitialized.to_str().unwrap()]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("state root ready"), "{out}");
+    assert!(uninitialized.join("session.sqlite").is_file(), "init created the root");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// The daemon a user actually starts must authorize its Leader: before D-58 the
 /// only grant in a real session was `shell@workspace`, so the model was never
 /// offered spawn/delegate/send and the team feature was unreachable from

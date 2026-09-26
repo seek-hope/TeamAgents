@@ -193,7 +193,7 @@ instead. Details, the full action vocabulary and the exit codes are in
 | Usage | Meaning |
 |---|---|
 | `--cwd DIR` | work in DIR (default: the current directory); it applies to the session this command starts — a running session keeps its own workspace, and the client prints that one instead of working somewhere else. A path that is not an existing directory is refused before anything starts (the session confines every file and shell command to it) |
-| `--state-root PATH` | use a specific state root (default `$XDG_STATE_HOME/teamagents/v2`) |
+| `--state-root PATH` | use a specific state root (default `$XDG_STATE_HOME/teamagents/v2`); it is the *directory* holding `session.sqlite` and `daemon.sock`, created when it does not exist yet — a path that is a file is refused with the flag named (`doctor`, `init`, `daemon`, `exec` and the session verbs) |
 | `--model KEY` | pick a model catalog entry (default `leader_main`) |
 | `--full-auto` | user-only full-auto mode (out-of-scope work is approved instead of requested); it applies to the session this command starts — a session that is already running keeps the mode it booted with, and the client prints that mode instead of pretending |
 | `init` / `doctor` / `daemon` / `exec` / `authority` / `approvals` / `instances` / `tasks` / `version` / `--help` | config and state root / self-check (config, credentials, state root, skills, goal limits, checks, hooks, bubblewrap) / run the daemon alone (its output goes to `<state root>/daemon.log`) / headless input / list, grant and revoke capabilities / list and decide approvals / pause, resume, terminate and list instances / list and cancel tasks / version / usage |

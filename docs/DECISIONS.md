@@ -18,6 +18,34 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-166 A `--state-root` that is a file (2026-09-27)
+
+The same audit as D-163/D-164/D-165, on the last path-valued flag. Every entry point joins `session.sqlite` and
+`daemon.sock` onto `--state-root`, and the two shapes a user confuses are one path segment apart: the root
+*directory* and the database file inside it. Passing the file produced four different raw errnos, none of them
+naming the mistake (measured 2026-09-27, real state root): `daemon` and `init` answered
+`File exists (os error 17)`, a read verb `Not a directory (os error 20)` with a trailing "point --state-root at
+the session you mean", and — worst — `doctor` printed `[WARN] v2 state root not initialized yet (…);
+teamagents init or teamagents daemon creates it` with **exit 0**: advice that cannot be followed, because
+`init` refuses the same path. D-73's rule ("refused, made to work, or reported as not in effect") again.
+
+**Changed** (`engine/src/cli.rs`, `engine/src/main.rs`, `engine/src/v2/exec.rs`; no new surface): one helper,
+`cli::require_state_root_dir`, refuses a path that **exists and is not a directory** — naming the flag, the
+shape (the directory holding `session.sqlite` and `daemon.sock`) and the likely intent ("if you meant the
+database file, pass the directory that holds it"). A path that does not exist is still legal: every entry
+point creates it (`init`, `daemon`, or the client that starts the daemon), which D-149's regression pins. It is
+applied where each entry point resolves the root: `prepare_v2_root` (`init`), `daemon_boot`, `doctor` (a FAIL
+row instead of the impossible-advice WARN), `handshake` in `exec.rs` (one place covering `exec` and the four
+CLI verbs), and `ensure_daemon` (so a client refuses before it spawns anything). Exit codes stay the entries'
+own: 1 for `doctor`/`init`/`daemon`, 2 for a client.
+
+**Measured after** (2026-09-27, both a session database file and a plain file): `doctor` exits 1 with
+`[FAIL] v2 state root --state-root … is not a directory: …`; `init`/`daemon` exit 1 and `authority`/`exec`
+exit 2, all naming `--state-root` and the fix; the control (a directory that does not exist yet) is unchanged —
+`doctor` WARNs "not initialized yet", `init` creates it, and `exec` boots a fresh session and answers
+(`end=reply`, exit 0). New test `cli::a_state_root_that_is_a_file_is_refused_by_every_entry_point` (0.3 s)
+covers all five surfaces plus both controls.
+
 ## D-165 The instance list showed `PARKED` and not why (2026-09-27)
 
 D-164's recorded open item, closed rather than left as a known gap. D-164 carried the park reason to the run's
