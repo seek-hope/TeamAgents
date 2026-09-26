@@ -81,6 +81,13 @@ def session_state(state_root: pathlib.Path, worker: str) -> tuple[int, str]:
     return handled, (open_tasks[0][0] if open_tasks else "none")
 
 
+def shell_attempts(state_root: pathlib.Path) -> list[tuple[str, str]]:
+    """(operation id tail, status) for the operations whose arguments name this command's artifact."""
+    db = sqlite3.connect(f"file:{state_root}/session.sqlite?mode=ro", uri=True)
+    return [(op[-8:], status) for op, status, intent in
+            db.execute("SELECT operation_id, status, intent_json FROM operations") if "proof.txt" in str(intent)]
+
+
 def park(socket: pathlib.Path, instance: str, reason: str) -> str:
     """Park an instance through the daemon protocol, the way the TUI does.
 
@@ -154,10 +161,34 @@ def main() -> int:
     failures: list[str] = []
 
     # --- turn 1: the worker cannot run the command -------------------------------
-    started = time.time()
-    first = call(["exec", *common, "--json", "--timeout", str(args.timeout), "--cwd", str(workspace),
-                  FIRST.format(proof=proof)], env)
-    print(f"turn 1: exit={first.returncode} elapsed={round(time.time() - started, 1)}s")
+    # Turn 1 has to *close*: the leader spawns the worker, delegates the question and reports the answer. When
+    # the worker answers in prose instead of settling its task, the leader's `wait` stays pending and the turn
+    # runs to its own deadline — that is the recorded known gap ("a model that stops settling its task leaves a
+    # visible wait", docs/ACCEPTANCE.md, D-129), not anything about the authority surface. Measured 2026-09-26:
+    # one run spent thirty model requests that way and reported `got 124`. Set the premise up again once so the
+    # probe can still produce its evidence, and name the gap when it cannot.
+    first = None
+    for attempt in (1, 2):
+        if attempt > 1:
+            stop_daemon(state_root)
+            shutil.rmtree(root, ignore_errors=True)
+            workspace.mkdir(parents=True)
+            (root / "config/teamagents").mkdir(parents=True)
+            (root / "config/teamagents/config.toml").write_text(CONFIG)
+        started = time.time()
+        first = call(["exec", *common, "--json", "--timeout", str(args.timeout), "--cwd", str(workspace),
+                      FIRST.format(proof=proof)], env)
+        print(f"turn 1 (attempt {attempt}): exit={first.returncode} elapsed={round(time.time() - started, 1)}s")
+        if first.returncode == 0:
+            break
+        print("  the turn did not close; a worker that answers without settling its task leaves the leader's "
+              "wait pending (the recorded gap in docs/ACCEPTANCE.md), so the premise is set up again")
+    if first.returncode != 0:
+        failures.append(f"turn 1 did not close in two attempts (exit {first.returncode}); the likely cause is "
+                        f"the recorded gap — a worker that answers without settling its task (D-129) — so re-run")
+        for failure in failures:
+            print("FAIL:", failure)
+        return 1
     report = json.loads(first.stdout or "{}") if first.stdout.strip().startswith("{") else {}
     print("  reply:", (report.get("reply") or first.stdout.strip() or first.stderr.strip())[:400])
     if proof.exists():
@@ -204,7 +235,18 @@ def main() -> int:
     if proof.is_file() and proof.read_text().strip() == "granted":
         print("  proof.txt present: the worker ran the shell command after the grant")
     else:
-        failures.append("the worker still could not run the command after the grant")
+        # Which shape is this? The difference matters: a worker whose task is still open answered in prose
+        # instead of settling it (the recorded gap), a *refused* shell operation is a grant/dispatch question,
+        # and no attempt at all is a surface question. Measured 2026-09-26: one run reported "still could not run
+        # the command" while its worker's own turn claimed a tool list without shell, and the artifact was gone
+        # because the probe's scratch is removed at exit — so the message names the evidence instead (D-143).
+        handled, open_task = session_state(state_root, worker)
+        attempts = shell_attempts(state_root)
+        failures.append(
+            f"the worker did not run the command after the grant: task={open_task} after {handled} requests, "
+            f"attempts={attempts} — no attempt means the surface lacked the tool, a refusal is a grant question, "
+            f"an open task means the worker answered in prose (docs/ACCEPTANCE.md, the recorded gap)"
+        )
 
     # --- revoking takes it away again -------------------------------------------
     revoked = call(["authority", *common, "revoke", "--grant", grant_id[:12], "--json"], env)

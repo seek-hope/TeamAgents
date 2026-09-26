@@ -204,6 +204,13 @@ def main() -> int:
         failures.append(f"the merged worktree was not retired by the running session: {worktree}")
     elif not settled:
         failures.append(f"the worktree was retired but its record is still there after 30 s: {record_path}")
+    if failures:
+        # Say what the *engine's* bookkeeping looks like when this fails: whether git still lists the worktree
+        # (the retirement's git half) and which of the two records survived (the half after it). One failure in
+        # the 2026-09-26 sweeps had the directory gone, both records present and only the earlier *refusal* in
+        # the daemon log, which is not a shape the code explains (D-142); this dump is what settles it.
+        print(f"  git worktree list: {git(project, 'worktree', 'list').stdout.strip()[:300]}")
+        print(f"  records: {record_path.exists()=}, {(pathlib.Path(record['path']).parent / 'worktree.json').exists()=}")
 
     for failure in failures:
         print("FAIL:", failure)

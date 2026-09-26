@@ -18,6 +18,52 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-143 The two probes that failed the sweep now say which shape they saw (2026-09-26)
+
+Three of D-141's failures were reported as bare assertions, and a bare assertion is what made them expensive to
+diagnose. Each now names the evidence it has.
+
+**`workspace.py`** (D-142) is green in **8 of 8 runs** after the pair-wait, so the race is closed; a failure now
+dumps `git worktree list` and which of the two records survived, because the one *unexplained* shape — the
+directory gone, both records present, and only the earlier refusal in the daemon log — is precisely what that
+dump settles. It did not recur in those eight runs.
+
+**`authority.py`** had two problems in one assertion.
+
+*Turn 1* has to close (the leader spawns the worker, delegates the question and reports the answer), and one run
+instead spent **thirty model requests** and ended `got 124`: the worker answered in prose without settling its
+task, so the leader's `wait` stayed pending until the turn hit its own deadline. That is the gap
+`docs/ACCEPTANCE.md` has recorded since this session's first turn ("a model that stops settling its task leaves
+a visible wait", D-129) and not anything about the authority surface. The probe now sets the turn up again once
+(resetting the state root and stopping the daemon in between) and, if it cannot, reports the gap as the likely
+cause instead of a bare exit code.
+
+*Turn 2's* assertion — "the worker still could not run the command after the grant" — conflates three shapes,
+so a failure now prints them: the worker's open task and request count, and every operation whose arguments
+name the command's artifact. **No attempt** means the surface never offered the tool, a **refusal** is a
+grant/dispatch question, and an **open task** is the recorded gap again.
+
+That distinction is not academic, because one run in five showed the first shape: the grant was issued
+(`revision: 8`, subject `worker_shell_check`, scope `workspace`) and the worker's next turn reported its tool
+list *without* a shell tool and never ran the command — while a run twenty minutes earlier ran it and a later
+run ran it in 621 s. I have not explained it, and I am not guessing: the probe's scratch had already been
+removed at exit, so the evidence is gone (the D-138 policy; `--state-dir` keeps it). **Open**: does a
+`shell@workspace` grant always reach the next request's surface, or is there a window in which it does not?
+The next occurrence answers it directly from the message above.
+
+Also measured, and the reason the harness budget moved: `authority.py` took **21 s** in one run and **621 s** in
+another on the same build, because the model chooses how long its turns are. The models set's per-probe budget is
+1800 s (each turn is still bounded by the probe's own 600 s) rather than reporting a slow model as a failure.
+
+Both new paths are exercised by a control, each reverted byte-identically: treating a *closed* first turn as a
+failure makes the probe set the premise up twice and print the gap note both times, and making the artifact check
+unsatisfiable prints the new message with the worker's own attempts — `task=none after 9 requests,
+attempts=[('6dbe4b:0', 'SUCCEEDED'), ('8d4a8d:1', 'FAILED')]` in that run, i.e. the worker *had* run the command.
+
+Ceiling: the three shapes are distinguished, not proven — a model that *chooses* not to use an available tool
+and one that was never offered it both leave no operation, and the message says so rather than pretending to
+know.
+
 ## D-142 The workspace probe sampled a record the retirement was still removing (2026-09-26)
 
 `review/dogfood/workspace.py` — the harness that walks the git-worktree lifecycle end to end (D-76) — failed

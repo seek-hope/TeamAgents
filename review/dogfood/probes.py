@@ -76,10 +76,11 @@ MODELS = [
 ]
 
 SETS = {"offline": OFFLINE, "models": MODELS, "all": OFFLINE + MODELS}
-# Per-probe budget, by set: the credential-free probes answer in under a minute, while a model probe can
-# wait on a turn (`crash.py` takes ~70 s, and one `authority.py` run needed more than 400 s while the host
-# was loaded), so the models set gets the room rather than the harness reporting a slow probe as a failure.
-TIMEOUTS = {"offline": 300, "models": 900, "all": 900}
+# Per-probe budget, by set: the credential-free probes answer in under a minute, while a model probe waits on
+# turns whose length the model chooses. Measured 2026-09-26: `authority.py` took 21 s in one run and 621 s in
+# another on the same build, so the models set gets the room (its two turns are bounded by the probe's own 600 s
+# each) rather than the harness reporting a slow probe as a failure (D-143).
+TIMEOUTS = {"offline": 300, "models": 1800, "all": 1800}
 
 
 def daemons() -> int:
