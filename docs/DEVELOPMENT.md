@@ -38,7 +38,9 @@ and the documentation's citations with `review/citations.py` (a cited qualified 
 or a repository path must exist in the tree, unless the line records it as removed) and `D-<n>` citations with
 `review/decision_citations.py` (a cited decision must be a heading in `docs/DECISIONS.md`, or one of the
 earlier rules its index table keeps in force, unless the line records it as history — D-170).
-`review/silent_skips.py` fails a test that returns from a capability guard without saying
+`review/build_references.py` fails when a `Makefile` target or a workflow runs a script that does not
+exist or that git does not carry, which is how a new audit stays untracked through a `git commit -a`
+(D-179). `review/silent_skips.py` fails a test that returns from a capability guard without saying
 why (a silent no-op, D-121). `review/command_params.py` fails a command payload field
 that the command layer never reads (D-124). `review/event_catalogue.py` fails when
 `docs/EVENTS.md` and the emitted events drift (D-125). `review/protocol_catalogue.py` fails when

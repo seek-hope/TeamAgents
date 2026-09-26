@@ -18,6 +18,30 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-179 `git commit -a` skipped the new script, twice (2026-09-27)
+
+The trap D-170 and D-178 each fell into, and the reason both commits needed an amend: `git commit -a` stages
+*modifications* to tracked files and skips **new** ones, so a hygiene audit added in the same commit as the
+Makefile line that calls it stays untracked — `make check` passes locally (the file is on disk) and a fresh
+clone fails at that target. D-170's `decision_citations.py` and D-178's `test_counts.py` were both caught only
+by reading `git status` after committing, which is a manual habit, not a gate.
+
+**Changed**: `review/build_references.py`, in `make hygiene`. It reads the surfaces that *execute* scripts —
+the `Makefile` and `.github/workflows/*.yml` — and requires every `python3`/`sh`/`bash` invocation of a
+`.py`/`.sh` path to (a) exist and (b) be tracked by git. The second half is the trap above; the first catches
+the neighbouring failure mode that nothing watched either, a path **typo** in a target. `--surface PATH`
+replaces the surfaces, which is how the control is run.
+
+**Measured** (2026-09-27): the tree is green — "32 script reference(s) across 3 surface(s): every one exists
+and is tracked" (every hygiene audit, the probes, the pty smoke, `install.sh`) — and the audit **caught its own
+introduction**: the first run after wiring it into `make hygiene` reported
+`Makefile:196: runs review/build_references.py, which is not tracked by git`, which is the D-170/D-178 defect
+stated about itself, before `git add` fixed it. **Controls**: a surface copy that runs an existing-but-untracked
+script produces exactly one finding naming the file and the cause; a copy that runs a misspelled path produces
+the "does not exist" finding. The audit's own first version flagged `cp install.sh dist/install.sh` — the `sh`
+at the end of `install.sh` read as an invocation of the next token — and the lookbehind that fixes it is in the
+same commit, with the false positive recorded in the code.
+
 ## D-178 The acceptance ledger's headline numbers were stale, and nothing derived them (2026-09-27)
 
 The evidence pass that produced D-176 (probe counts) and D-177 had left the most important document of the set
