@@ -268,4 +268,17 @@ mod tests {
             )
         };
     }
+
+    /// D-153: an *idle* runner (no child, no cancel in flight) has nothing a timer can notice — its tick's
+    /// three jobs all need a child — so its cadence only has to see its job directory disappear. It must stay
+    /// far coarser than the running-job tick, because a leaked runner used to pay that tick forever (measured
+    /// 2026-09-26: 0.40 % of a core per process, 1,397 of them on one machine), and it must still be bounded,
+    /// because a job directory that is gone means no client can resolve the runner's socket any more. The
+    /// measurement itself is `review/runner_cost.py`'s idle window.
+    #[test]
+    fn an_idle_runner_checks_rarely_but_never_waits_forever() {
+        use super::runner::IDLE_TICK;
+        const { assert!(IDLE_TICK.as_secs() >= 5, "an idle runner must not keep a running-job cadence") };
+        const { assert!(IDLE_TICK.as_secs() <= 120, "an unreachable runner should not linger for minutes") };
+    }
 }

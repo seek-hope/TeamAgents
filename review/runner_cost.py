@@ -7,12 +7,15 @@ pays for it in proportion to how sensible the cadences are:
 
 * the runner's own tick (how often it looks at its child),
 * the driver's `status` poll (one socket round trip per poll).
+* and, since D-153, the cost of an **idle** runner: one that has no child and has a client, i.e. the state every
+  crashed or abandoned job leaves behind. It used to keep ticking at the same cadence forever, which is how one
+  machine accumulated 1,397 live runners burning CPU (measured 2026-09-26 at ~0.8 % of a core each).
 
 This probe measures both on this machine, at the cadences the code uses and at the ones it used to use, and it
 needs no model and no daemon: it writes one job directory, starts `teamagents jobs-runner` itself, sends GO over
 the runner's own socket (the abstract name derives from the token, §6.2) and samples `/proc/<pid>/stat`:
 
-    python3 review/runner_cost.py            # ~50 s: one 40 s command, measured in three windows
+    python3 review/runner_cost.py            # ~60 s: one 45 s command, then the idle window after it exits
 
 The numbers are machine-dependent, so the probe prints the table rather than asserting a threshold; the
 *relationship* (a finer cadence costs proportionally more) is what the code's constants are chosen against, and
@@ -46,7 +49,9 @@ def main():
     root = pathlib.Path(STATE)
     shutil.rmtree(root, ignore_errors=True)
     root.mkdir(parents=True)
-    token = "runner-cost-token"
+    # a token of its own per run: the runner's socket is an *abstract* name derived from it, so a leaked
+    # runner from an earlier run would otherwise shadow this one and the probe would fail confusingly
+    token = f"runner-cost-{os.getpid()}"
     (root / "job.json").write_text(json.dumps({
         "job_id": "runner-cost", "program": "/bin/sh", "args": ["-c", "sleep 45"], "cwd": str(root),
         "env": [("PATH", os.environ.get("PATH", ""))],
@@ -89,7 +94,20 @@ def main():
             seconds = (end - start) / 100
             print(f"  {label:30} {sent:4d} requests, {end - start} ticks = "
                   f"{seconds / 10 * 100:.2f}% of a core ({seconds / sent * 1e6:.0f} µs per request)")
-        request("cancel")
+
+        # The state every abandoned job leaves behind: no child, no client, nothing to notice on a timer. The
+        # loop only needs to answer a client that connects (and, since D-153, to notice that its job directory
+        # is gone), so this window is the price of a *leaked* runner — the shape measured at 1,397 processes on
+        # one machine after two days.
+        for _ in range(200):
+            if json.loads((root / "journal.json").read_text())["state"] not in ("RUNNING", "CANCEL_REQUESTED"):
+                break
+            time.sleep(0.25)
+        start = cpu_ticks(pid)
+        time.sleep(10)
+        idle = cpu_ticks(pid) - start
+        print(f"  {'idle, no child (D-153)':30}     — requests, {idle} ticks = {idle / 1000 * 100:.2f}% of a core "
+              f"(a leaked runner pays this forever)")
     finally:
         runner.terminate()
         runner.wait(timeout=10)

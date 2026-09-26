@@ -28,6 +28,29 @@ const TEST_HOOKS_ENV: &str = "TEAMAGENTS_JOB_TEST_HOOKS";
 /// while cutting the loop's cost by five.
 pub(crate) const TICK: Duration = Duration::from_millis(50);
 
+/// How often an **idle** runner looks at anything: with no child and no cancel in flight there is nothing a
+/// timer can notice — the tick's three jobs (a command's exit, a past deadline, the TERM→KILL escalation) all
+/// need a child — so the loop only has to answer a client that connects and to notice the two states in which
+/// waiting can only leak the process: a job directory that is gone, and a job that is settled. It used to keep
+/// the 50 ms tick forever, which is what a *leaked* runner cost: measured 2026-09-26, every crashed or
+/// abandoned job left a process burning 0.40 % of a core for as long as it lived, and one machine had
+/// accumulated **1,397** of them (oldest 57 h, ~5–11 cores in total; 988 of them had a `SUCCEEDED` journal,
+/// 250 `FAILED`, 70 `CANCELLED` — a settled job whose runner nobody ever shut down) because nothing ever told
+/// them to stop (D-153). At this cadence the same process costs one wakeup every 30 s, and it is also the
+/// grace a settled job gets before its runner goes away.
+pub(crate) const IDLE_TICK: Duration = Duration::from_secs(30);
+
+/// Test-only override for [`IDLE_TICK`]: a test cannot wait 30 s for a rule about waiting.
+const IDLE_TICK_ENV: &str = "TEAMAGENTS_JOB_IDLE_TICK_MS";
+
+fn idle_tick() -> Duration {
+    std::env::var(IDLE_TICK_ENV)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(IDLE_TICK)
+}
+
 /// How long a cancelled command gets between TERM and KILL (§6.4's "stop request, then escalate").
 pub(crate) const CANCEL_ESCALATION_MS: u64 = 500;
 
@@ -37,6 +60,9 @@ struct Runner {
     journal: Journal,
     child: Option<Child>,
     cancel_requested_at: Option<u64>,
+    /// Read once at startup (see [`IDLE_TICK_ENV`]): a test sets it before spawning, and the runner keeps the
+    /// value its parent gave it even after the parent restores its own environment.
+    idle_tick: Duration,
     fail_writes: bool,
     test_hooks: bool,
 }
@@ -192,6 +218,20 @@ impl Runner {
             }
         }
     }
+
+    /// Has this job been settled long enough that a runner adds nothing to it?
+    ///
+    /// A settled job is fully readable without a runner: the journal, the output and the receipt are files
+    /// (`client::read_output`) and a client that finds no runner judges from the persisted journal (§6.3, A11)
+    /// — which is exactly what recovery does after a crash. So the only thing the grace buys is the client that
+    /// is *watching* the job as it settles: it polls every few hundred ms (D-116), so one idle cadence is
+    /// generous by an order of magnitude, and it keeps a machine from accumulating settled runners forever
+    /// (D-153: 1,308 of the 1,397 measured had a terminal journal).
+    fn settled_long_enough(&self) -> bool {
+        self.journal
+            .finished_ms
+            .is_some_and(|finished| now_ms().saturating_sub(finished) >= self.idle_tick.as_millis() as u64)
+    }
 }
 
 fn tracing_warn(message: &str) {
@@ -251,6 +291,7 @@ pub async fn serve(root: &Path) -> Result<(), String> {
         journal,
         child: None,
         cancel_requested_at: None,
+        idle_tick: idle_tick(),
         fail_writes: false,
         test_hooks: std::env::var(TEST_HOOKS_ENV).is_ok(),
     };
@@ -259,8 +300,24 @@ pub async fn serve(root: &Path) -> Result<(), String> {
         .map_err(|e| format!("bind job socket: {e}"))?;
     let mut tick = tokio::time::interval(TICK);
     loop {
+        // An idle runner waits on its socket alone, at a cadence that only has to notice a job directory that
+        // vanished (see IDLE_TICK): the tick is for the child, and there is no child.
+        let idle = runner.child.is_none() && runner.cancel_requested_at.is_none();
+        tick.reset_after(if idle { runner.idle_tick } else { TICK });
         tokio::select! {
-            _ = tick.tick() => runner.tick(),
+            _ = tick.tick() => {
+                // A job directory that is gone cannot be served: every client resolves the socket from the
+                // token in its `job.json`, and nothing this runner records can be written any more. Waiting can
+                // only leak the process (measured: 19 of one machine's 1,397 live runners; D-153).
+                if !runner.root.is_dir() {
+                    break;
+                }
+                // An idle runner whose job is settled has nothing left to add (see `settled_long_enough`).
+                if idle && runner.journal.terminal() && runner.settled_long_enough() {
+                    break;
+                }
+                runner.tick();
+            }
             accepted = listener.accept() => {
                 let (stream, _) = match accepted {
                     Ok(pair) => pair,

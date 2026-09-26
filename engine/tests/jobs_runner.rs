@@ -235,3 +235,93 @@ async fn a_successful_commands_service_outlives_the_job() {
     assert!(alive(), "the service survives the runner shutdown");
     unsafe { libc::kill(pid, libc::SIGKILL) };
 }
+
+/// The runner process serving `dir`, by its argument list: `jobs-runner <dir>` (a client-started runner is
+/// detached, so the test has no `Child` handle for it), skipping a corpse that keeps the name in this
+/// container.
+fn runner_pid(dir: &Path) -> Option<u32> {
+    let needle = dir.to_string_lossy().into_owned();
+    for entry in std::fs::read_dir("/proc").ok()?.flatten() {
+        let Some(pid) = entry.file_name().to_str().and_then(|name| name.parse::<u32>().ok()) else { continue };
+        let Ok(raw) = std::fs::read(entry.path().join("cmdline")) else { continue };
+        let argv: Vec<String> = raw
+            .split(|byte| *byte == 0)
+            .filter(|chunk| !chunk.is_empty())
+            .map(|chunk| String::from_utf8_lossy(chunk).into_owned())
+            .collect();
+        if argv.get(1).map(String::as_str) != Some("jobs-runner") || !argv.contains(&needle) {
+            continue;
+        }
+        let stat = std::fs::read_to_string(entry.path().join("stat")).unwrap_or_default();
+        if !stat.split_whitespace().nth(2).is_some_and(|field| field.starts_with('Z')) {
+            return Some(pid);
+        }
+    }
+    None
+}
+
+/// D-153: a runner nobody will ever talk to again must not wait forever, and there are two shapes of that.
+///
+/// * the **job directory is gone**: every client resolves the runner's socket from the token in `<job
+///   dir>/job.json`, and nothing the runner records can be written any more. Measured on one machine: 19 of
+///   1,397 live runners were in this state.
+/// * the **job is settled**: the journal, the output and the receipt are files, and a client that finds no
+///   runner judges from the persisted journal (§6.3/A11) — that is what recovery does after a crash. So a
+///   settled job's runner only has to outlive the client watching it settle. Measured: 1,308 of those 1,397
+///   had a terminal journal (`SUCCEEDED` 988, `FAILED` 250, `CANCELLED` 70) and were never shut down.
+///
+/// Each shape also has its control: a runner whose job is *reachable and unsettled* keeps serving, and it does
+/// not exit just because some cadence passed. Before this, every one of those processes kept the 50 ms
+/// running-job tick forever — 0.40 % of a core each, ~5–11 cores on that machine (D-153).
+#[tokio::test]
+async fn a_runner_waits_while_its_job_is_reachable_and_unsettled_and_exits_otherwise() {
+    // a test cannot wait 30 s for a rule about waiting: the runner reads this at startup (test-only knob,
+    // restored before the assertions so nothing else in this binary inherits it)
+    std::env::set_var("TEAMAGENTS_JOB_IDLE_TICK_MS", "200");
+    runner_bin();
+
+    // --- control: a reachable, *unsettled* job keeps its runner, well past several idle cadences ----------
+    let dir = root("idle-waits");
+    client::spawn(&dir, &spec("op-idle", "sleep 30", future(60_000))).await.expect("spawn");
+    std::env::remove_var("TEAMAGENTS_JOB_IDLE_TICK_MS");
+    client::go(&dir).await.expect("go");
+    let pid = runner_pid(&dir).expect("the runner is a live process while its job is reachable");
+    for _ in 0..10 {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(client::status(&dir).await.is_ok(), "a reachable, unsettled runner must keep serving");
+    }
+    assert_eq!(runner_pid(&dir), Some(pid), "the reachable runner is still there after several cadences");
+
+    // --- the job directory disappears: nothing can reach this runner any more ------------------------------
+    let journal = client::status(&dir).await.expect("status before the removal");
+    std::fs::remove_dir_all(&dir).expect("remove the job directory");
+    let gone = wait_gone(&dir, 5_000).await;
+    assert!(gone, "runner {pid} kept waiting after its job directory disappeared");
+    if let Some(child) = journal.pid {
+        // the command is in its own process group and survives its runner (A12): stop it as well
+        let _ = std::process::Command::new("kill").arg(child.to_string()).status();
+    }
+
+    // --- the job settles: the runner goes away on its own, one grace after the settlement ------------------
+    let settled_dir = root("idle-settled");
+    std::env::set_var("TEAMAGENTS_JOB_IDLE_TICK_MS", "200");
+    client::spawn(&settled_dir, &spec("op-settled", "true", future(30_000))).await.expect("spawn");
+    std::env::remove_var("TEAMAGENTS_JOB_IDLE_TICK_MS");
+    client::go(&settled_dir).await.expect("go");
+    assert_eq!(wait_terminal(&settled_dir, 10_000).await, "SUCCEEDED");
+    let settled_pid = runner_pid(&settled_dir).expect("the runner is there while the command finishes");
+    assert!(wait_gone(&settled_dir, 5_000).await, "runner {settled_pid} kept waiting after its job settled");
+    // and the job is still fully readable without a runner: the files are the record (A11)
+    assert_eq!(client::persisted_journal(&settled_dir).expect("journal").state, "SUCCEEDED");
+}
+
+/// Poll until the runner serving `dir` is gone, up to `timeout_ms`.
+async fn wait_gone(dir: &Path, timeout_ms: u64) -> bool {
+    for _ in 0..(timeout_ms / 100) {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        if runner_pid(dir).is_none() {
+            return true;
+        }
+    }
+    false
+}

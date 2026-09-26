@@ -18,6 +18,68 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-153 Every abandoned runner kept ticking forever, and one machine had 1,397 of them (2026-09-26)
+
+The sandbox this work runs in has its **own PID namespace**, so every guard in the tree — `review/leak_guard.py`,
+the probes, `make test` — only ever saw the processes of its own run: "daemons of this run left: 0" was true and
+said nothing about the machine. The host process table said something else. On 2026-09-26 this machine held
+**1,397 live `teamagents jobs-runner` processes**: the oldest 56.8 h, the median 47 h, every one of them older
+than an hour, 19 of them with their job directory *already deleted* (so no client could ever resolve their
+socket again). Sampling 200 of them for 6 s cost **9.62 s of CPU** — ~0.8 % of a core each, i.e. **5–11 cores**
+of the machine spent on processes with nothing to do. Each was started legitimately: a killed or abandoned
+session leaves a runner holding a job whose outcome is unknown, which DESIGN §6.2/§6.3 *wants* (the runner is
+the live partner for verification and cancellation, and `crash.py`/`unknown_outcome.py` prove that role). What
+nothing bounded is what such a runner does while it waits.
+
+It kept the running-job tick. `TICK` is 50 ms (D-116: 10 ms cost 1.80 % of a core per *running* command), the
+serve loop ticks whether or not a child exists, and `Runner::tick` returns immediately when there is no child —
+so the whole cost was wakeups, paid forever by exactly the processes nobody would ever talk to again.
+
+Reading the journals of those 1,397 said which shapes they were: **988 `SUCCEEDED`**, **250 `FAILED`**,
+**70 `CANCELLED`** — 1,308 runners whose job had reached a *terminal* state and was never shut down, because
+D-112's retirement is sent by the driver that is alive to see the receipt — 70 `OUTCOME_UNKNOWN` (the design's
+live partner, legitimate) and 19 with their job directory already deleted. No child process was still alive.
+
+**Changed** (`engine/src/jobs/runner.rs`), two rules for an idle runner — no child, no cancel in flight:
+
+* it waits at `IDLE_TICK` (30 s) instead of `TICK`, because the tick's three jobs (a command's exit, a past
+  deadline, the TERM→KILL escalation) all need a child, and the whole cost of the old behaviour was wakeups;
+* it **exits** when its **job directory is gone** — every client resolves the runner's socket from the token in
+  `<job dir>/job.json` (§6.2), so a removed directory cannot be reached by anything the product has, and
+  nothing the runner records can be written any more;
+* it also **exits one idle cadence after its job settles**. A settled job is fully readable without a runner:
+  the journal, the output and the receipt are files (`client::read_output`) and a client that finds no runner
+  judges from the persisted journal — which is exactly the recovery path after a crash (§6.3/A11). So the grace
+  only has to outlive the client watching the job settle, and that client polls every few hundred ms (D-116).
+  This is the rule that retires 1,308 of the 1,397 by itself.
+
+**Measured** (2026-09-26, new idle window in `review/runner_cost.py`, no model, no daemon): the same process in
+the same state — no child, no client — costs **0.40 % of a core before and 0.00 % after**; the running-job
+windows are unchanged (tick only 0.30–0.40 %, the poll table unchanged), so the child-side latency budget D-116
+chose is untouched. Live, with the default cadence: a settled job's runner exits by itself after **29.5 s**
+(rc 0), one idle cadence after `finished_ms`. Tests:
+`jobs_runner::a_runner_waits_while_its_job_is_reachable_and_unsettled_and_exits_otherwise` covers both rules and
+their control (a *reachable, unsettled* job keeps its runner past several idle cadences);
+`jobs::tests::an_idle_runner_checks_rarely_but_never_waits_forever` is a **compile-time** pin on the cadence.
+Controls, each reverted byte-identically: removing the directory-gone exit fails "runner 735 kept waiting after
+its job directory disappeared"; removing the settled-job exit fails "runner 1312 kept waiting after its job
+settled"; collapsing `IDLE_TICK` back to `TICK` fails at compile time ("an idle runner must not keep a
+running-job cadence").
+
+**And a methodology lesson from those controls**: a control that mutates a source file and runs `cargo test`
+leaves the **mutant binary** in `engine/target/debug/teamagents` behind. Two manual measurements after the
+controls reported "the runner never exits" and were simply reading the mutant — the source had been reverted,
+the artifact had not. A control script that measures anything by hand must rebuild after its revert (the test
+itself was never fooled: it compiles what it runs).
+
+Ceiling: a runner whose job directory still exists keeps waiting forever, on purpose — that is the design's live
+partner for an unknown outcome, and it now costs no measurable CPU. The 1,397 processes measured here are *old*
+binaries: the fix bounds what the next runs leave, not what this machine already carries. The supported way to
+retire one is to reopen its session (the daemon imports the receipt and the runner is shut down, D-112); a
+lever that stops a state root's runners without reopening it is the same missing product surface as D-150's
+daemon stop, and is recorded with it in `docs/ACCEPTANCE.md`'s known gaps. And the sandbox lesson is worth
+keeping: an in-run leak guard is evidence about *that run*, never about the machine.
+
 ## D-152 A graceful stop with a command in flight: DESIGN §9's sentence, measured (2026-09-26)
 
 DESIGN §9 states what a normal daemon shutdown does — "freezes new dispatch, persists pending work and then
