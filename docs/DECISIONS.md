@@ -18,7 +18,32 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
-## D-157 The TUI's keys were the last documented surface without a gate (2026-09-27)
+## D-158 Seven environment knobs, one of them brand new, and no place to find them (2026-09-27)
+
+D-143's fix added a knob — `TEAMAGENTS_LOG_SURFACE`, which turns a member's *offer* into a witness — and it
+lived in a code comment and one probe's README until the user guide's troubleshooting table got a row this turn.
+Writing that row exposed the class: the product reads seven `TEAMAGENTS_*` variables (a diagnostic, two
+deployment knobs that locate a binary, and four test-only ones) and nothing connected the list to the code. A
+knob nobody can find is a knob nobody uses; worse, the table's *first* version got a row wrong — it listed
+`TEAMAGENTS_CHECK_RC_*` as an environment variable, and that string is a **marker the `exec --check` wrapper
+writes into a command's output** (`__TEAMAGENTS_CHECK_RC_<uuid>__`), never read from the environment.
+
+**Added**: `review/env_knobs.py`, in `make hygiene`. A *knob* is a whole string literal that names one
+(`"TEAMAGENTS_LOG_SURFACE"`) — a literal that merely contains the prefix is not, which is exactly the rule that
+catches the marker — collected from `core|engine|tui/src` plus the bare names `install.sh` writes (`${NAME:-…}`,
+so it is parsed as a name rather than a literal). Every one must be named by `docs/DEVELOPMENT.md` or
+`docs/INSTALL.md`, and no row may name a knob the code stopped reading. Measured: "7 knob(s) read by the code,
+7 named by the documents: 0 unexplained".
+
+**Controls**, each reverted byte-identically: renaming a knob in the code fails in both directions ("the code
+reads `TEAMAGENTS_LOG_SURFACE_V2` … and no document names it" plus the stale row), and a table row naming a knob
+the code does not read fails too.
+
+Ceiling: the audit checks names against names — it cannot tell that a knob's *meaning* changed, which is what the
+table's prose is for, and it deliberately does not scan `review/` or `tui/scripts/`, where the probes' own dummy
+credentials (`TEAMAGENTS_TRUNCATION_PROBE_KEY` and friends) live and are not product knobs.
+
+## D-157 The TUI's keys had no gate (2026-09-27)
 
 Every documented surface here had a catalogue audit — CLI flags, config keys, events, tools, protocol methods,
 the `--json` reports (D-154) — except the terminal keys, which are the surface a user is *inside*. `README.md`
@@ -47,6 +72,9 @@ panel's `d` arm each fail with the hint *and* the document naming them; adding `
 hints advertise 'Ctrl+Z' and this audit does not know how to prove it"; adding `Ctrl+V` to the README fails the
 same way for the document; and naming `F5` in a key line fails too — which also pins the README's own
 "deliberately no function keys" claim.
+
+**D-158** then closed the same gap for the environment knobs the code reads, which this entry's turn had
+just written down for the first time.
 
 Ceiling: the audit proves a *handler exists* (a control-arm-shaped mention), not that it is reachable in the
 view that advertises it — the panel probes do that for the keys a user actually presses (`tui_panels.py`,

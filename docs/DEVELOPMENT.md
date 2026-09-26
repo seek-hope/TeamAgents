@@ -104,6 +104,22 @@ cargo test --offline --locked --manifest-path engine/Cargo.toml --test install
 cargo test --offline --locked --manifest-path tui/Cargo.toml --test v2app_tests
 ```
 
+## Environment knobs the code reads
+
+None of these *configures* behaviour — a setting belongs in `config.toml` (`docs/CONFIG.md`); they locate a
+binary, turn on a diagnostic, or exist for tests. They are listed because a knob nobody can find is a knob
+nobody uses, and several are what the probes depend on.
+
+| Variable | Who sets it | What it does |
+|---|---|---|
+| `TEAMAGENTS_LOG_SURFACE=1` | an operator diagnosing a member's offer, and `review/dogfood/authority.py` | the driver writes one line per prepared request into stderr (the daemon's log): `driver: surface <instance> shell=yes\|no tools=…` — the witness that separates "the tool was never offered" from "the model ignored it" (D-143) |
+| `TEAMAGENTS_JOB_IDLE_TICK_MS` | tests | how often an *idle* job runner re-checks (default 30 s): a test cannot wait 30 s for a rule about waiting (D-153) |
+| `TEAMAGENTS_JOB_TEST_HOOKS` | the runner's own tests | compiles-in fault injection for the job runner, disabled unless the parent opts in; never read from a job file or a model (A31) |
+| `TEAMAGENTS_RUNNER_BIN` | integration tests | the runner image, so the test binary can serve as the runner (production uses the same `teamagents` binary) |
+| `TEAMAGENTS_TUI` | the CLI, when the TUI is not a sibling of it | where `teamagents` finds `teamagents-tui`; its own error message names this variable (`engine/src/main.rs`) |
+| `TEAMAGENTS_ENGINE` | the TUI, when the engine is not a sibling of it | where `teamagents-tui` finds `teamagents`; `--engine PATH` is the same choice as a flag (`tui/src/main.rs`) |
+| `TEAMAGENTS_BIN_DIR` | `install.sh` | where the installer puts the binaries; documented for users in `docs/INSTALL.md` |
+
 ## Formal verification (TLA+ / Kani)
 
 `verification/` holds formal material that is tied to the implementation: `tla/V2*.tla` with `MC*.cfg` are the
