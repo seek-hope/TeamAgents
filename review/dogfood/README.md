@@ -508,3 +508,19 @@ either way).
 
 The first run found the defect D-99 fixed: the client really reconnected while the status line kept saying
 "disconnected" for 90 s, because clearing the flag did not rebuild the frame.
+
+
+## `two_gates.py`: the runtime's gate and the client's gate in one run
+
+The product has two acceptance mechanisms — `[[checks]]` gate the *goal* (§8/A16), `exec --check` decides the
+*exit code* of a finished turn (D-49) — and nothing had driven them together:
+
+```bash
+python3 review/dogfood/two_gates.py
+```
+
+Two scenarios on their own fresh state roots: a runtime check that can never pass plus a passing client check
+gives goal `BLOCKED` (the repair ledger names the check) with exit `1` and the client's verdict `ok: true`; a
+passing runtime check plus a failing client check gives goal `SUCCEEDED` with exit `1`. Which is the division
+of labour stated in one sentence in `docs/USER-GUIDE.md` §1: neither gate replaces the other. Measured
+2026-09-26, ~13 s and ~5 s (D-101).

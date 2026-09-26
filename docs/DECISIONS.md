@@ -231,6 +231,39 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-101 The two acceptance mechanisms in one run, and which one decides what (2026-09-26)
+
+The product has two acceptance mechanisms — `[[checks]]` from the user config, which gate the **goal** at the
+completion boundary (§8/A16), and `exec --check`, the **client's** own command, which decides the **exit
+code** of a finished turn (D-49) — and nothing documented or drove what happens when both are configured at
+once. `review/dogfood/two_gates.py` does, with two scenarios that separate the roles:
+
+| Scenario | Goal | Exit code | Client verdicts |
+|---|---|---|---|
+| the runtime check can never pass; the client's check passes | `BLOCKED` (2 repair rounds reported, the ledger names `runtime-gate`) | `1` | `test -f hello.txt` → `ok: true` |
+| the runtime check passes; the client's check fails | `SUCCEEDED` | `1` | `test -f missing.txt` → `ok: false`, exit `1` |
+
+So the division of labour is exactly as designed and now measured from both sides: the runtime's gate decides
+whether the goal may be reported done, the client's commands decide the exit code — and neither replaces the
+other (a passing client check does not rescue a blocked goal; a settled goal does not rescue a failing client
+check). Measured 2026-09-26, ~13 s and ~5 s per scenario, each on its own fresh state root (runtime checks
+belong to the goal).
+
+One event-level detail this pinned, because it is what an integration would parse: in the first scenario the
+goal ended `BLOCKED` **because the model itself reported `blocked`** after the repair turn showed it the
+failing check (its completion summary says the deliverable exists but the gate cannot pass), not because the
+repair budget ran out — the runtime accepts either honest route. The check's name therefore lives in the check
+ledger (`completion_repair.failures[].check_id`), which is where the probe reads it, and not necessarily in
+the completion event's own fields.
+
+Evidence: `python3 review/dogfood/two_gates.py` (two runs), and the probes it complements — `checks.py` (A16,
+a check that cannot pass), `stale_check.py` (A17, a verified input that changed) and `exec_check.py` (the
+client's `--check` in three scenarios).
+
+Ceiling: two scenarios; the repair-round budget (`max_check_rounds`), per-check `timeout`/`network` options and
+the interaction with `[[checks]]` *inputs* stay with the offline tests. `docs/USER-GUIDE.md` now states the
+division in one sentence next to `--check`.
+
 ## D-100 A reset mid-run, and the one place that decides a run's fate (2026-09-26)
 
 The fourth member of the family D-97/D-98 opened: `reset_instance` (a user command; there is no CLI verb, so
