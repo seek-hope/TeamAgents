@@ -18,6 +18,37 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-139 A test measured the wrong window, and only a loaded machine said so (2026-09-26)
+
+The D-138 gate failed once, in `jobs::tests::a_momentarily_held_lock_is_absorbed`, with "it must actually wait,
+not steal the lock" — the assertion that `state_lock_waiting` waited at least 40 ms while another thread held
+the coordinator lock for 60 ms. Run alone the test passed **20 times out of 20**, so the failure was
+load-dependent, and the implementation is not at fault: `state_lock_waiting` loops on `File::try_lock()` with a
+10 ms step until its deadline and never steals, which is exactly what that assertion exists to catch (it caught
+a real steal once).
+
+The mechanism is in the test's own clock. It took `started = Instant::now()` **after** spawning the thread that
+releases the holder 60 ms later, so under load the main thread can be starved for longer than those 60 ms
+between the spawn and the measurement: the clock then starts after the window has closed, the wait it measures
+is ~0, and the test reports a steal that never happened. Reproduced deterministically by sleeping 70 ms in
+exactly that window — the same panic, first try.
+
+**Fixed**: the clock starts before the releaser exists. The guard keeps its meaning, verified both ways: with
+the 70 ms starvation injected the test now passes (the race is gone), and a control in which the holder
+releases immediately still fails the assertion (a waiter that did not wait is still caught, because a steal
+returns within `LOCK_STEP`).
+
+Evidence: 20 runs alone green before the change; the starvation control panics before the fix and passes
+after; the release-at-once control panics after the fix; five consecutive runs green. The failing runs also
+left three `ta-state-lock-absorb-*` directories behind, which is how the flake was spotted in `/tmp` as well as
+in the log.
+
+Ceiling: this is D-115's class — a test measuring wall-clock behaviour around a scheduling window — so only a
+load run exposes it, and `make test`'s scratch guard cannot report it (the suite aborts at the first failing
+test, so the guard's counters never run). The module's `temp_path` directories are still removed at the end of
+each test rather than on drop, so a panicking test leaves one; that is D-131's per-module cleanup ceiling, not
+this item's.
+
 ## D-138 What the probes left behind, and what they mis-reported (2026-09-26)
 
 The probes in `review/dogfood/` are the repository's most direct evidence — they drive the built CLI, real

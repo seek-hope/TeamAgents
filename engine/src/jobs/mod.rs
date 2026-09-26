@@ -214,11 +214,16 @@ mod tests {
     fn a_momentarily_held_lock_is_absorbed() {
         let path = temp_path("absorb");
         let holder = state_lock(&path).unwrap();
+        // The clock starts *before* the releaser exists: under load the main thread can be starved for longer
+        // than the holder's 60 ms between the spawn and the first measurement, and the test then reports "it
+        // must actually wait" for a wait that really happened (reproduced by sleeping 70 ms in that window,
+        // D-138). Measured from here, a lock that is *stolen* still returns within `LOCK_STEP` — well inside
+        // the 40 ms the assertion allows — so the guard keeps its meaning.
+        let started = Instant::now();
         let release = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(60));
             drop(holder);
         });
-        let started = Instant::now();
         let taken = state_lock_waiting(&path, Duration::from_secs(2)).expect("the window closes");
         assert!(started.elapsed() >= Duration::from_millis(40), "it must actually wait, not steal the lock");
         drop(taken);
