@@ -16,6 +16,28 @@ def digest_tree(path: pathlib.Path) -> str:
 
 import sys
 
+sys.path.insert(0, str(HERE.parents[1]))  # review/, where eval_surface.py lives
+import eval_surface  # the decoder behind D-182: the surface pin is computed from the harness, never copied
+
+
+def surface_pin() -> dict:
+    """The harness's half of the model-visible surface (D-182), read out of the code that carries it.
+
+    `review/eval_surface.py` recomputes every field here from the tree and from the recorded trials, so a
+    hand-edited pin cannot pass. The product's half (prompt assembly, the tools a grant adds) is not pinned
+    here: each batch records the commit that holds it.
+    """
+    agent, team = eval_surface.surface_of((REPO / eval_surface.HARNESS).read_text(encoding="utf-8"))
+    return {
+        "pinned": "2026-09-27",
+        "note": "the harness's half of the model-visible surface; recomputed from the tree by review/eval_surface.py",
+        "agent_instructions_sha256": eval_surface.digest(agent),
+        "team_instructions_sha256": eval_surface.digest(team),
+        "tools": eval_surface.tools_of((REPO / eval_surface.REFERENCE).read_text(encoding="utf-8")),
+        "reasoning_effort": "high",
+    }
+
+
 only = sys.argv[2].split(",") if len(sys.argv) > 2 and sys.argv[2] else None
 tasks = []
 for task_dir in sorted(p for p in (HERE / "tasks").iterdir() if p.is_dir()):
@@ -46,6 +68,13 @@ manifest = {
     },
     "limits": {"trial_timeout_s": 900, "reference_max_steps": 40, "permissions": "full_auto", "max_retries": 2},
     "repeats": {"pilot": 1, "formal": 3},
+    "surface": surface_pin(),
+    # Deliberate changes to the driver (`run.py`) after the pre-registration, each with the decision that
+    # records it: `review/eval_manifests.py` compares the driver's syntax tree with the frozen bytes and
+    # needs to know which differences are intended (D-145's rule; D-182 is the first entry).
+    "driver_changes": [
+        {"decision": "D-182", "what": "run-header.json also names the manifest the batch ran, and hashes it"},
+    ],
     "analysis": {
         "metric": "checks_ok (all checks exit 0 in the trial workspace)",
         "pairing": "same repeat index within a task",

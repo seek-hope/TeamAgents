@@ -1,0 +1,15 @@
+=== process check (new shell invocation) ===
+    PID    PPID    PGID    SESS     ELAPSED CMD
+    968       1     968     968       00:02 python3 service.py
+=== curl (real request) ===
+http_code=200
+content_type=text/plain; charset=utf-8
+size_download=13
+time_total=0.001678
+=== response body (cat) ===
+p6-service-ok
+=== write real body to service.txt ===
+--- service.txt bytes ---
+13 service.txt
+0000000   p   6   -   s   e   r   v   i   c   e   -   o   k
+0000015

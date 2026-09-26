@@ -1,0 +1,13 @@
+awk sum:
+44
+sort -u:
+apple
+Apple
+fig
+pear
+plum
+files:
+total 12
+-rw-r--r-- 1 rimuru rimuru 68 Sep 27 05:40 notes.txt
+-rw-r--r-- 1 rimuru rimuru  3 Sep 27 05:40 sum.txt
+-rw-r--r-- 1 rimuru rimuru 26 Sep 27 05:40 words.txt

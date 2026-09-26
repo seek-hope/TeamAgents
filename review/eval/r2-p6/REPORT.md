@@ -12,6 +12,12 @@ run). Model: DeepSeek Flash (catalog key `leader_main`), **native context 1,000,
 permissions, a fresh working directory per trial and the acceptance script executed in that same directory
 after the trial.
 
+> Note (2026-09-27): the four pre-registered batches below (135 trials) are unchanged. A fifth, *regression*
+> batch was recorded at the productized HEAD on 2026-09-27 (groups B and C only, one repeat per cell, 16
+> trials, 16/16 accepted — its own section below); having no group A arm it enters no conclusion here. From
+> that batch on, every trial also records the surface it ran under and `review/eval_surface.py` checks it
+> (D-182).
+
 > Note (2026-09-26): the analysis script in the tree is no longer the exact bytes the manifests pin — `478d679` translated it into English — so its digest differs from the recorded `52d257b4…`. The rule is unchanged: comparing the two with every string literal stripped leaves identical syntax trees, which is what `review/eval_manifests.py` checks on every `make hygiene` (D-145).
 
 ## Conclusions (per the pre-registered criteria)
@@ -36,10 +42,14 @@ claiming that collaboration paid off**.
 | formal round 1, 72 trials | 534,021 | 613,075 (+14.8%) | 641,274 (+4.6% vs B) |
 | round 2, 27 trials | 217,276 | 238,293 (+9.7%) | 266,190 (+11.7% vs B) |
 | round 3, 18 trials | 278,166 | 252,483 | 230,923 |
+| regression batch, 16 trials (2026-09-27) | — | 220,692 | 200,414 |
 
 The four batches total ≈ 3.60M tokens and about 55 minutes of machine time (6–40 s per trial, the slowest
 being 40 s in round 3). The persistent runtime costs about +10% to +15% tokens over the reference loop, and on
 this task set the collaboration surface (C) only added cost, because it was never used.
+
+The 2026-09-27 regression batch costs a further 421,106 tokens in 3 min 33 s; the last row of the table is that
+batch, not a fifth round (see its section below).
 
 ### Pilot R25 (6 tasks × 3 groups × 1 repeat)
 
@@ -88,6 +98,34 @@ this task set the collaboration surface (C) only added cost, because it was neve
 | timebox-audit | 3/3, 219,905t | 3/3, 168,597t | 3/3, 114,301t |
 | timebox-two-modules | 3/3, 58,261t | 3/3, 83,886t | 3/3, 116,622t |
 
+### Regression batch at the productized HEAD (8 tasks × groups B/C × 1 repeat)
+
+16 trials, 16/16 passed; 421,106 real tokens in total; 3 min 33 s of wall clock (203.8 s of trial time).
+
+Run 2026-09-27 at commit `0fb2624d` — after the productization work of the D-163…D-181 decisions — with the
+same manifest, model and limits as round 1 and with the harness's own half of the surface pinned (D-182). It
+is a *regression* check of the tasks the rounds above already measured, not a fifth round: there is no group A
+arm and one repeat per cell, so it changes no conclusion (`analyze.py` reports "too few samples" for B−A and
+`+0.000` for C−B on it, correctly). What it says is that the productized HEAD still passes every task in every
+group it ran.
+
+| Task | B (passed/runs, tokens) | C |
+|---|---|---|
+| edit-integrity | 1/1, 18,449t | 1/1, 18,103t |
+| long-horizon | 1/1, 41,657t | 1/1, 26,283t |
+| long-output | 1/1, 19,690t | 1/1, 21,121t |
+| multi-step | 1/1, 23,555t | 1/1, 19,825t |
+| parallel-deliverables | 1/1, 32,576t | 1/1, 53,187t |
+| rust-fix | 1/1, 22,579t | 1/1, 19,131t |
+| service-check | 1/1, 45,320t | 1/1, 30,319t |
+| split-deliverable | 1/1, 16,866t | 1/1, 12,445t |
+
+Each trial's record carries the surface it ran under (instruction-template digest, offered tool names, request
+options, limits) and `review/eval_surface.py` compares those with the `surface` pins in the manifests; the
+same batch was recorded twice, and the first run — made before the harness reported its surface — was replaced
+by this one rather than kept beside it (D-182), because a batch is evidence for the treatment its own records
+state.
+
 ## Limits and follow-up (recorded honestly, never merged into the conclusions)
 
 - **The task set stays inside a single instance's capability ceiling**: each round got heavier (6 tasks → 8
@@ -97,6 +135,9 @@ this task set the collaboration surface (C) only added cost, because it was neve
   external deadline). That was **not done** here, so H2 can only be recorded as "not confirmed".
 - **The hard-deadline dimension produced no signal in round 3**: the slowest measured trial took 40 s against
   the 150 s deadline, so the deadline never bound.
+- **The instruction text carries a fixed date**: it tells the model "Today's date: 2026-09-24", so a trial run
+  later is told a date that is not today. It is part of the pinned surface (D-182) — changing it changes the
+  treatment of every group, which is why it stays as recorded instead of being made dynamic.
 - No Codex execution member took part (the current implementation has no such member type) and heterogeneous
   model performance was not measured (§13.1 lists that separately).
 
@@ -116,3 +157,8 @@ Raw data: `review/eval/r2-p6/runs/<batch>/results.jsonl` (one line per trial wit
 clock, per-check output and runner stderr) plus `run-header.json` in the same directory (the frozen
 analysis/harness/git summary). Running inside the sandbox gets killed silently by resource limits (it happened
 in two batches); the formal batches ran outside the sandbox, and `--resume` continues an interrupted batch.
+
+From 2026-09-27 (D-182) each trial also records the surface it ran under (`surface`: the instruction-template
+digest for its group, the tool names it was offered, the request options and the limits) and `run-header.json`
+names and hashes the manifest the batch ran; `python3 review/eval_surface.py` checks both against the
+manifests' `surface` pins and the harness's own history (part of `make check`).

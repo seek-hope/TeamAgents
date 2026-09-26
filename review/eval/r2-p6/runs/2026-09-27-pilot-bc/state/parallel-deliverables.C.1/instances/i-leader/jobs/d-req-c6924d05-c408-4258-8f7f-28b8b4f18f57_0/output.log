@@ -1,0 +1,5 @@
+/bin/bash: line 28: cd: csvfix: No such file or directory
+csvfix_exit=1
+.                                                                        [100%]
+1 passed in 0.01s
+rules_exit=0

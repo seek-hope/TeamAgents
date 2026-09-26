@@ -9,9 +9,12 @@
 //!     --group A|B|C --task-file FILE --workdir DIR --state DIR --out FILE \
 //!     [--model KEY] [--id TASK_ID] [--timeout S] [--max-steps N] [--web]
 //!
-//! A/B keep identical instructions, tools, options and window (the manifest
-//! freezes them); C adds the collaboration paragraph and grants, which is the
-//! experiment's treatment and is billed like everything else.
+//! A/B keep identical instructions, tools, options and window; C adds the collaboration paragraph and
+//! grants, which is the experiment's treatment and is billed like everything else. The manifests pin the
+//! *harness's* half of that surface (the instruction templates, the offered tool names, the request options
+//! and the limits, D-182) and every trial records it; the *product's* half (prompt assembly, the tools a
+//! grant adds) is pinned by the batch's recorded commit. `--print-surface` prints the record for one flag
+//! set without a model call, which is what `review/eval_surface.py` recomputes from this file's text.
 
 use serde_json::{json, Value as Json};
 use std::path::{Path, PathBuf};
@@ -33,46 +36,100 @@ const GROUP_C: &str = "C";
 fn usage() -> ! {
     eprintln!(
         "usage: eval_groups_abc --group A|B|C --task-file FILE --workdir DIR --state DIR --out FILE \\
-[--model KEY] [--id TASK_ID] [--timeout S] [--max-steps N] [--web]"
+[--model KEY] [--id TASK_ID] [--timeout S] [--max-steps N] [--web]   (or --group G --print-surface)"
     );
     std::process::exit(2);
 }
 
-/// A/B instructions: the model-visible surface the manifest freezes.
-fn agent_instructions(workspace: &str) -> String {
-    format!(
-        "You are a careful coding agent working in the workspace directory {workspace}.\n\
-         - Use the file and shell tools to inspect, modify and verify. Verify claims with real commands before finishing.\n\
-         - Long tool outputs are masked with a read_history recipe; page them back instead of re-running blind.\n\
-         - Finish by calling `finish` exactly once with the honest status, a summary and evidence (files, commands).\n\
-           Work you did not deliver must not be reported as success; list unverified claims in `unverified`.\n\
-         - Today's date: 2026-09-24. Platform: linux.",
-        workspace = workspace,
-    )
+/// A/B instructions: the model-visible surface the manifests pin by digest (D-182).
+///
+/// It is a *template*: `{workspace}` is substituted per trial and the digest is taken of the template, so
+/// every trial of a group reports the same one and a reader can check the treatment from the trial's own
+/// record. Changing this text changes the experiment: the manifest pins, the recorded trials' self-reported
+/// digests and `review/eval_surface.py` move together or the audit fails.
+const AGENT_INSTRUCTIONS: &str = "You are a careful coding agent working in the workspace directory {workspace}.\n\
+     - Use the file and shell tools to inspect, modify and verify. Verify claims with real commands before finishing.\n\
+     - Long tool outputs are masked with a read_history recipe; page them back instead of re-running blind.\n\
+     - Finish by calling `finish` exactly once with the honest status, a summary and evidence (files, commands).\n\
+       Work you did not deliver must not be reported as success; list unverified claims in `unverified`.\n\
+     - Today's date: 2026-09-24. Platform: linux.";
+
+/// C's treatment: A/B's text plus this paragraph, appended unchanged.
+const TEAM_EXTRA: &str = "\n\
+     - You may build a team: spawn worker instances, delegate bounded tasks, send messages and wait for results. \
+Work directly on small or tightly coupled work; delegate only work that can progress independently, and keep every \
+task description specific with acceptance criteria.";
+
+/// The instruction text a trial of this group runs with.
+fn instructions_for(team: bool, workspace: &str) -> String {
+    let text = AGENT_INSTRUCTIONS.replace("{workspace}", workspace);
+    if team {
+        format!("{text}{TEAM_EXTRA}")
+    } else {
+        text
+    }
 }
 
-/// C's treatment: the same instructions plus the collaboration vocabulary.
-fn team_instructions(workspace: &str) -> String {
-    format!(
-        "{}\n\
-         - You may build a team: spawn worker instances, delegate bounded tasks, send messages and wait for results. \
-Work directly on small or tightly coupled work; delegate only work that can progress independently, and keep every \
-task description specific with acceptance criteria.",
-        agent_instructions(workspace)
-    )
+/// The template [`instructions_for`] substitutes into — what the manifests pin and each trial records.
+fn instructions_template(team: bool) -> String {
+    if team {
+        format!("{AGENT_INSTRUCTIONS}{TEAM_EXTRA}")
+    } else {
+        AGENT_INSTRUCTIONS.to_string()
+    }
+}
+
+/// The request options every group runs with (the manifest's `model.reasoning_effort` pins the same value).
+fn request_options() -> Json {
+    json!({"reasoning_effort": "high"})
+}
+
+/// Retries inside one turn, for every group.
+const MAX_RETRIES: usize = 2;
+
+/// The tool surface this harness offers a trial, in the order the model sees it.
+fn tools_for(web: bool) -> (Vec<Json>, Vec<String>) {
+    let tools = basic_tool_schemas(web, false);
+    let names = tools.iter().filter_map(|tool| tool["function"]["name"].as_str().map(str::to_string)).collect();
+    (tools, names)
+}
+
+/// Everything this harness decides that the model sees, so a recorded trial's treatment is checkable from
+/// its own record instead of from the source (D-182). The product's half of the surface — how a prompt is
+/// assembled, which collaboration tools a grant adds — is pinned by the batch's recorded commit instead.
+fn surface_json(group_team: bool, web: bool, timeout_s: u64, max_steps: usize) -> Json {
+    let (_, names) = tools_for(web);
+    json!({
+        "instructions_kind": if group_team { "team" } else { "agent" },
+        "instructions_template_sha256": sha256_hex(&instructions_template(group_team)),
+        "tools": names,
+        "request_options": request_options(),
+        "timeout_s": timeout_s,
+        "max_steps": max_steps,
+        "max_retries": MAX_RETRIES,
+    })
+}
+
+/// Lower-case hex of the SHA-256 of `text`.
+fn sha256_hex(text: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(text.as_bytes());
+    format!("{:x}", hasher.finalize())
 }
 
 struct Args {
     group: String,
-    task_file: PathBuf,
-    workdir: PathBuf,
-    state: PathBuf,
-    out: PathBuf,
+    task_file: Option<PathBuf>,
+    workdir: Option<PathBuf>,
+    state: Option<PathBuf>,
+    out: Option<PathBuf>,
     model: String,
     id: String,
     timeout_s: u64,
     max_steps: usize,
     web: bool,
+    print_surface: bool,
 }
 
 fn parse_args() -> Args {
@@ -87,6 +144,7 @@ fn parse_args() -> Args {
     let mut timeout_s = 900u64;
     let mut max_steps = 40usize;
     let mut web = false;
+    let mut print_surface = false;
     while let Some(flag) = args.next() {
         let value = |args: &mut std::iter::Skip<std::env::Args>| args.next().unwrap_or_else(|| usage());
         match flag.as_str() {
@@ -100,22 +158,33 @@ fn parse_args() -> Args {
             "--timeout" => timeout_s = value(&mut args).parse().unwrap_or_else(|_| usage()),
             "--max-steps" => max_steps = value(&mut args).parse().unwrap_or_else(|_| usage()),
             "--web" => web = true,
+            "--print-surface" => print_surface = true,
             _ => usage(),
         }
     }
-    let (Some(group), Some(task_file), Some(workdir), Some(state), Some(out)) = (group, task_file, workdir, state, out)
-    else {
-        usage()
-    };
+    let Some(group) = group else { usage() };
     if !matches!(group.as_str(), GROUP_A | GROUP_B | GROUP_C) {
         usage();
     }
-    Args { group, task_file, workdir, state, out, model, id, timeout_s, max_steps, web }
+    Args { group, task_file, workdir, state, out, model, id, timeout_s, max_steps, web, print_surface }
 }
 
 fn main() -> Fallible<()> {
     let args = parse_args();
-    let task = std::fs::read_to_string(&args.task_file)?;
+    let team = args.group == GROUP_C;
+    if args.print_surface {
+        // What a trial with these flags would run under, without a model call: the offline half of the
+        // surface audit (`review/eval_surface.py` recomputes the same digests from this file's text).
+        let surface = surface_json(team, args.web, args.timeout_s, args.max_steps);
+        println!("{}", serde_json::to_string_pretty(&surface)?);
+        return Ok(());
+    }
+    let (Some(task_file), Some(workdir), Some(state), Some(out)) =
+        (&args.task_file, &args.workdir, &args.state, &args.out)
+    else {
+        usage()
+    };
+    let task = std::fs::read_to_string(task_file)?;
     let catalog = load_user_config(&user_config_path())?;
     let entry = catalog
         .models
@@ -137,33 +206,27 @@ fn main() -> Fallible<()> {
     }
     // the runner prepares the workspace (fixture copied in) and owns the trial
     // bookkeeping; only a *reused* state root would silently mix two trials
-    if args.state.join("session.sqlite").exists() {
-        return Err(format!(
-            "state {} already holds a session; each trial needs a fresh state root",
-            args.state.display()
-        )
-        .into());
+    if state.join("session.sqlite").exists() {
+        return Err(
+            format!("state {} already holds a session; each trial needs a fresh state root", state.display()).into()
+        );
     }
-    std::fs::create_dir_all(&args.workdir)?;
-    std::fs::create_dir_all(&args.state)?;
-    let workspace = std::fs::canonicalize(&args.workdir)?;
-    let state = std::fs::canonicalize(&args.state)?;
+    std::fs::create_dir_all(workdir)?;
+    std::fs::create_dir_all(state)?;
+    let workspace = std::fs::canonicalize(workdir)?;
+    let state = std::fs::canonicalize(state)?;
     let bindings: Vec<String> = if args.web {
         vec!["files".into(), "shell".into(), "web".into(), "skills".into()]
     } else {
         vec!["files".into(), "shell".into(), "skills".into()]
     };
-    let team = args.group == GROUP_C;
+    let (tools, _) = tools_for(args.web);
     let profile = KernelProfile {
         model: args.model.clone(),
-        instructions: if team {
-            team_instructions(&workspace.to_string_lossy())
-        } else {
-            agent_instructions(&workspace.to_string_lossy())
-        },
-        tools: basic_tool_schemas(args.web, false),
-        // the manifest freezes effort=high for all three groups
-        options: json!({"reasoning_effort": "high"}),
+        instructions: instructions_for(team, &workspace.to_string_lossy()),
+        tools,
+        // the manifest freezes effort=high for all three groups (and the trial record states it)
+        options: request_options(),
         context_window: entry.context_window,
     };
     // A/B use the resolved profile directly (there is no resolution step inside
@@ -199,7 +262,9 @@ fn main() -> Fallible<()> {
     report["permissions"] = json!("full_auto");
     report["web"] = json!(args.web);
     report["wall_ms"] = json!(started.elapsed().as_millis() as u64);
-    std::fs::write(&args.out, serde_json::to_vec_pretty(&report)?)?;
+    // D-182: the harness's half of the model-visible surface, in the trial's own record
+    report["surface"] = surface_json(team, args.web, args.timeout_s, args.max_steps);
+    std::fs::write(out, serde_json::to_vec_pretty(&report)?)?;
     println!("{}", serde_json::to_string(&report)?);
     Ok(())
 }
@@ -227,7 +292,7 @@ async fn run_reference_trial(
         catalog: catalog.clone(),
         bindings: bindings.to_vec(),
         max_steps: args.max_steps,
-        max_retries: 2,
+        max_retries: MAX_RETRIES,
         deadline: Some(Duration::from_secs(args.timeout_s)),
         trace_dir: trace_dir.clone(),
         run_id: args.id.clone(),
@@ -291,7 +356,7 @@ async fn run_driver_trial(
             permissions: "full_auto".into(),
             catalog: catalog.clone(),
             bindings: bindings.to_vec(),
-            max_retries: 2,
+            max_retries: MAX_RETRIES,
             storage_queue: 256,
             poll: Duration::from_millis(100),
             goal_limits: json!({}),
@@ -326,7 +391,7 @@ async fn run_driver_trial(
             provider,
             catalog: catalog.clone(),
             bindings: bindings.to_vec(),
-            max_retries: 2,
+            max_retries: MAX_RETRIES,
             storage_queue: 256,
             poll: Duration::from_millis(100),
             goal_limits: json!({}),

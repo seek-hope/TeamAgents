@@ -1,0 +1,11 @@
+44 ['Apple', 'apple', 'fig', 'pear', 'plum']
+=== sum.txt ===
+44
+=== words.txt ===
+Apple
+apple
+fig
+pear
+plum
+=== notes.txt ===
+sum of integers in data/a.txt is 44; data/b.txt has 5 unique words.

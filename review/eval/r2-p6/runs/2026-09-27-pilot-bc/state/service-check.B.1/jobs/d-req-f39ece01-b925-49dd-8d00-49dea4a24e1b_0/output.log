@@ -1,0 +1,14 @@
+--- port 8765 listening? (ss) ---
+NOT LISTENING on 8765
+--- any python3 service.py process? ---
+NO service.py process running
+--- workspace listing ---
+total 24
+drwxr-xr-x  2 rimuru rimuru 4096 Sep 27 05:39 .
+drwxr-xr-x 15 rimuru rimuru 4096 Sep 27 05:39 ..
+-rw-r--r--  1 rimuru rimuru  154 Sep 27 05:39 headers.txt
+-rw-r--r--  1 rimuru rimuru  109 Sep 27 05:39 service.log
+-rw-r--r--  1 rimuru rimuru 1292 Sep 27 05:39 service.py
+-rw-r--r--  1 rimuru rimuru   13 Sep 27 05:39 service.txt
+--- service.txt content ---
+p6-service-ok

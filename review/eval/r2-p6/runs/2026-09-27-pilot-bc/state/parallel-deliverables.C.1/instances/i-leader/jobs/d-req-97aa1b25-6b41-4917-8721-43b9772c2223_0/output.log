@@ -1,0 +1,17 @@
+total 20
+drwxr-xr-x  4 rimuru rimuru 4096 Sep 27 05:39 .
+drwxr-xr-x 12 rimuru rimuru 4096 Sep 27 05:38 ..
+drwxr-xr-x  4 rimuru rimuru 4096 Sep 27 05:39 csvfix
+-rw-r--r--  1 rimuru rimuru 1362 Sep 27 05:39 INDEX.md
+drwxr-xr-x  4 rimuru rimuru 4096 Sep 27 05:39 rules
+--- git status (if repo) ---
+ M Makefile
+ M engine/examples/eval_groups_abc.rs
+ M review/README.md
+ M review/eval/r2-p6/freeze.py
+ M review/eval/r2-p6/manifest-r2.json
+ M review/eval/r2-p6/manifest-r3.json
+ M review/eval/r2-p6/manifest.json
+ M review/eval/r2-p6/run.py
+?? review/eval/r2-p6/runs/2026-09-27-pilot-bc/
+?? review/eval_surface.py

@@ -1,0 +1,14 @@
+===== alpha/alpha.py =====
+     1	def add(a, b):
+     2	    return a - b
+===== alpha/check.py =====
+     1	import alpha
+     2	assert alpha.add(2, 3) == 5, alpha.add(2, 3)
+     3	print("alpha ok")
+===== beta/beta.py =====
+     1	def mul(a, b):
+     2	    return a + b
+===== beta/check.py =====
+     1	import beta
+     2	assert beta.mul(3, 4) == 12, beta.mul(3, 4)
+     3	print("beta ok")

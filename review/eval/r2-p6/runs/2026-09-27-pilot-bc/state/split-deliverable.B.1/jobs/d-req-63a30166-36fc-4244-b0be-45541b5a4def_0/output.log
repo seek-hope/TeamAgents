@@ -1,0 +1,17 @@
+total 20
+drwxr-xr-x 2 rimuru rimuru 4096 Sep 27 05:40 .
+drwxr-xr-x 4 rimuru rimuru 4096 Sep 27 05:40 ..
+-rw-r--r-- 1 rimuru rimuru  115 Sep 27 05:40 notes.txt
+-rw-r--r-- 1 rimuru rimuru    3 Sep 27 05:40 sum.txt
+-rw-r--r-- 1 rimuru rimuru   26 Sep 27 05:40 words.txt
+---
+== out/sum.txt
+44
+== out/words.txt
+Apple
+apple
+fig
+pear
+plum
+== out/notes.txt
+数值为 44（data/a.txt 中所有整数之和），单词个数为 5（data/b.txt 去重后的单词个数）。

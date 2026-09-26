@@ -1,0 +1,36 @@
+{
+  "status": "succeeded",
+  "steps": 6,
+  "prompt_tokens": 16936,
+  "completion_tokens": 1167,
+  "total_tokens": 18103,
+  "events": 45,
+  "group": "C",
+  "task_id": "edit-integrity",
+  "model_key": "leader_main",
+  "model": "deepseek-flash",
+  "context_window": 1000000,
+  "permissions": "full_auto",
+  "web": false,
+  "wall_ms": 8114,
+  "surface": {
+    "instructions_kind": "team",
+    "instructions_template_sha256": "68ced8fc85e5b01dac9cca952975c1e7caaed1d2e37df2b8c2b2a1a89ab96eff",
+    "tools": [
+      "ls",
+      "read_file",
+      "write_file",
+      "edit_file",
+      "delete",
+      "glob",
+      "grep",
+      "shell"
+    ],
+    "request_options": {
+      "reasoning_effort": "high"
+    },
+    "timeout_s": 900,
+    "max_steps": 40,
+    "max_retries": 2
+  }
+}

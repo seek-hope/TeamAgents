@@ -206,6 +206,7 @@ hygiene: language-check
 	python3 review/config_reference.py
 	python3 review/dead_code.py
 	python3 review/eval_manifests.py
+	python3 review/eval_surface.py
 	python3 review/exec_report.py
 	python3 review/tui_keys.py
 	python3 review/env_knobs.py

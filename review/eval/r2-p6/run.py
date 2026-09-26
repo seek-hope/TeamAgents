@@ -64,6 +64,9 @@ def main() -> int:
     header = {
         "phase": args.phase, "repeats": repeats, "groups": groups,
         "started": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        # which pre-registered manifest this batch ran, so the batch names its own rule and limits (D-182)
+        "manifest": args.manifest,
+        "manifest_sha256": hashlib.sha256((HERE / args.manifest).read_bytes()).hexdigest(),
         "manifest_analysis_sha256": manifest["analysis"]["sha256"],
         "harness_sha256": hashlib.sha256(BIN.read_bytes()).hexdigest() if BIN.exists() else None,
         "git": subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO, capture_output=True, text=True).stdout.strip(),

@@ -16,6 +16,10 @@ This audit answers that, without touching the frozen material:
   rule itself is a failure;
 * a digest that matches the manifest is reported as such.
 
+A structural change to the driver is allowed only when the manifest **records** it (`driver_changes`, one
+entry per decision): the pre-registered bytes produced the recorded verdicts, so a later change to the code
+that runs the trials is a deviation to be written down, not a silent edit (D-182's header field is the first).
+
     python3 review/eval_manifests.py
 
 Ceiling: "the rule is identical" is a statement about syntax trees, not behaviour — a translated *format string*
@@ -113,8 +117,19 @@ def main() -> int:
                 notes.append(f"{name}: {script}'s digest differs from the recorded one (its text was "
                              f"translated), and its rule is identical to {snapshot[:12]}")
             else:
-                findings.append(f"{name}: {script} differs from the pre-registered {snapshot[:12]} in its "
-                                f"*rule*, not only in its text")
+                # A structural change to the driver is allowed only when the manifest records it: the record
+                # is part of the pre-registered material, so it is reviewed like the rest of it (D-182's
+                # `driver_changes`, the first such entry).
+                recorded = manifest.get("driver_changes") or []
+                if script == "run.py" and recorded:
+                    for change in recorded:
+                        notes.append(f"{name}: {script} differs from the pre-registered {snapshot[:12]} by "
+                                     f"decision {change.get('decision')}: {change.get('what')} — the recorded "
+                                     "verdicts were produced by the frozen bytes, this change is afterwards")
+                else:
+                    findings.append(f"{name}: {script} differs from the pre-registered {snapshot[:12]} in its "
+                                    f"*rule*, not only in its text (record it in the manifest's "
+                                    "`driver_changes` if the change is intended)")
     print(f"{len(MANIFESTS)} manifests checked: tasks, fixtures, checks, the analysis and the driver")
     for note in sorted(set(notes)):
         print("note:", note)

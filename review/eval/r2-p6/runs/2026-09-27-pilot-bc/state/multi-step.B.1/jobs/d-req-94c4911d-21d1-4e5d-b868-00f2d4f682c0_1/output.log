@@ -1,0 +1,8 @@
+/bin/bash: line 28: cd: alpha: No such file or directory
+12
+--- md5 of check files (unchanged?) ---
+md5sum: alpha/check.py: No such file or directory
+md5sum: beta/check.py: No such file or directory
+--- final source ---
+cat: alpha/alpha.py: No such file or directory
+cat: beta/beta.py: No such file or directory

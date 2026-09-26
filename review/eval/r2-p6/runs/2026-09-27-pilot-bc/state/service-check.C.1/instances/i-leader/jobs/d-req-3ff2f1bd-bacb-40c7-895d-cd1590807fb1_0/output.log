@@ -1,0 +1,8 @@
+launcher_pid=968
+    PID    PPID    PGID    SESS CMD
+    968     964     968     968 python3 service.py
+--- service.log ---
+listening on http://127.0.0.1:8765/health
+--- listening sockets ---
+State  Recv-Q Send-Q       Local Address:Port  Peer Address:PortProcess
+LISTEN 0      5                127.0.0.1:8765       0.0.0.0:*    users:(("python3",pid=968,fd=3))

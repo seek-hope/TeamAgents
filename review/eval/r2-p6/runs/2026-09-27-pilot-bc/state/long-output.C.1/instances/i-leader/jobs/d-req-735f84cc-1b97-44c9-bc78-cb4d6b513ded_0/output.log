@@ -1,0 +1,15 @@
+--- answer.txt ---
+mid-9f3a1c
+--- bytes ---
+11 answer.txt
+--- diff vs grep extract ---
+1c1
+< mid-9f3a1c
+---
+> mid-9f3a1c
+\ No newline at end of file
+--- err file ---
+0 gen_err.txt
+--- tail of output (large) ---
+line 3999 xxxxxxxxxxxxxxxxxxxx
+line 4000 xxxxxxxxxxxxxxxxxxxx

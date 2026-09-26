@@ -18,6 +18,74 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-182 The evaluation's model-visible surface: claimed frozen, pinned by nothing (2026-09-27)
+
+`review/eval/r2-p6/` is pre-registered evidence and this campaign's measurement of the collaboration
+hypothesis, so its treatment has to be the treatment that ran. The harness's own doc comment claimed it — "A/B
+keep identical instructions, tools, options and window (the manifest freezes them)" — and checked field by
+field the manifests froze two of the four: effort (`model.reasoning_effort`) and the window
+(`model.context_window`, D-36). The **instruction text** — A/B's 545-character brief plus group C's
+collaboration paragraph, which *is* the experiment's single treatment — and the **offered tool names** were in
+no manifest: a one-character edit to that paragraph would have changed group C silently, with all 135 recorded
+trials and the H1/H2 conclusions still reading as one experiment.
+
+**What holds it now.** The harness builds its instructions from two named constants and reports, in every
+trial's own record, the digest of the template it ran under, the tool names it was offered, the request
+options and the limits; `review/eval_surface.py` (in `make hygiene`) checks three anchors against each other:
+
+* the **tree** — the templates are decoded out of `engine/examples/eval_groups_abc.rs` with Rust's literal
+  rules (escapes, the `\` continuation that drops the line's indentation, comments), and the tool names out of
+  `engine/src/reference.rs::basic_tool_schemas` up to its `if web` block, the shape the harness calls with
+  `web=false, skills=false`; if either shape moves the audit refuses instead of reporting a smaller surface;
+* the **history** — *every* revision of the harness, its rename followed (the name `rebuild_p6.rs` is gone from
+  the tree; the file is `eval_groups_abc.rs` since; five revisions from the pre-registration commit
+  `27d7529d` to HEAD) must decode to the same pins, which is how the four 2026-09-24 batches stay covered
+  although they predate the field;
+* the **records** — every trial that self-reports must report the pinned digest for its group's kind, the
+  pinned tools and the pinned effort; and where a trial's committed `session.sqlite` still holds the profile
+  the product persisted (`{"model":…,"instructions":…,"options":…,"context_window":…}`), the prompt, the
+  effort and the window are read back out of it and compared with the pins.
+
+`freeze.py` computes the pins from those two sources instead of carrying literals, so the manifest and the code
+cannot drift apart; `--self-check` exercises the decoder (six literal rules, both source shapes — the inline
+`format!` of the pre-registration and today's constants — a mutation that must change the digest, and a source
+without the anchors that must be refused). Two mistakes of the first version are recorded in its comments: it
+read the recorded prompt with real newlines and matched nothing (inside `session.sqlite` the value is
+JSON-escaped, so the reader parses the blob first), and it skipped the state check for batches that predate the
+field (which hid the very evidence that later confirmed them).
+
+One change was needed in the driver: `run.py` now writes the manifest's name and digest into
+`run-header.json`, so a batch names its own rule instead of being recognised by its task ids. D-145's audit
+compares the driver's syntax tree with the pre-registered bytes, so a structural change to it is a failure
+there by construction — deliberately, because the driver is the code that produced the recorded verdicts. It
+now accepts a difference the manifest **records** in a `driver_changes` entry (D-182 is the first), and prints
+it as a note naming the decision and stating that the recorded verdicts came from the frozen bytes; an
+unrecorded structural change still fails.
+
+**Measured** (2026-09-27): the audit is green — "5 harness revision(s) and 3 manifest(s) carry one surface" —
+and the built harness's own `--print-surface` prints exactly the digests the audit decodes, on both groups.
+The controls bite: changing `spawn worker instances` to `spawn worker instance` fails at all three anchors
+(the manifest pin, all five harness revisions, and the group-C trials whose committed state carries the old
+prompt); prepending a tool to `basic_tool_schemas` fails with "the harness now offers […, `ls_all`, …]"; and
+reverting either restores green.
+
+**The batch.** The evaluation was re-run at the productized HEAD to give the new check something to check:
+`review/eval/r2-p6/runs/2026-09-27-pilot-bc/` — commit `0fb2624d`, §13's groups B and C, 8 tasks × 1 repeat
+with the manifest's own limits (deepseek-flash at its native 1M window, effort `high`, 900 s timeout):
+**16/16 trials accepted** (every trial `checks=ok` and `succeeded`), 421,106 real tokens (B 220,692 /
+C 200,414), 203.8 s of trial time in a 3 min 33 s batch. It is a *regression* batch, not a fifth round — no
+group A arm, one repeat per cell — so it enters no H1/H2 conclusion (`analyze.py` calls B−A "too few samples"
+and C−B `+0.000` on it, correctly); what it establishes is that the productized HEAD still passes every task it
+ran. All 16 trials self-report the pins, and 11 of their committed checkpoints independently carry the pinned
+prompt.
+
+The batch was recorded twice. The first run (same day, same configuration, also 16/16, 418,991 tokens) predates
+the surface field, so the re-run *replaced* it: a batch is evidence for the treatment its own records state,
+and keeping the older directory would have meant keeping records this audit has to list as "predates D-182".
+The two runs' totals differ by under 1% (421,106 vs 418,991) while single cells move by about a tenth in both
+directions — the model's own variance on one repeat, which is the honest reason a one-repeat batch supports no
+comparison.
+
 ## D-181 The knob effects nobody exercised, and a gate for D-180's shape (2026-09-27)
 
 The two candidates D-180 left open, both finished here.

@@ -1,0 +1,9 @@
+sum check: 44
+words check: ['Apple', 'apple', 'fig', 'pear', 'plum'] 5
+sum.txt ok: True
+words.txt ok: True
+--- bytes:
+0000000   4   4  \n
+0000003
+
+数值为 44（data/a.txt 中所有整数之和），单词个数为 5（data/b.txt 去重后的单词个数）。

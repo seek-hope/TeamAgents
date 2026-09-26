@@ -1,0 +1,14 @@
+{
+  "phase": "pilot",
+  "repeats": 1,
+  "groups": [
+    "B",
+    "C"
+  ],
+  "started": "2026-09-27T05:37:05+0800",
+  "manifest": "manifest.json",
+  "manifest_sha256": "e4e61023ffdac89231712325ff97cb180e7daf212924d2a00e72d7413aa9778b",
+  "manifest_analysis_sha256": "52d257b4c435a0513a68df9e4147d33a9946a821e3b0c0edcf012cd7c8bca974",
+  "harness_sha256": "978658b890c03e9bac9d70d7331f66781b36720da8e3b333fb8bed34a7e18053",
+  "git": "0fb2624d66ab9de96b9ca0a910e4a2fee5ab1384"
+}

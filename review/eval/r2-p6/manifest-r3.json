@@ -24,6 +24,29 @@
     "pilot": 1,
     "formal": 3
   },
+  "surface": {
+    "pinned": "2026-09-27",
+    "note": "the harness's half of the model-visible surface; recomputed from the tree by review/eval_surface.py",
+    "agent_instructions_sha256": "8acbda452914ec6135a4a68ccc52d930c6c7f54ff6e81c1c5cf1cd0d31bce046",
+    "team_instructions_sha256": "68ced8fc85e5b01dac9cca952975c1e7caaed1d2e37df2b8c2b2a1a89ab96eff",
+    "tools": [
+      "ls",
+      "read_file",
+      "write_file",
+      "edit_file",
+      "delete",
+      "glob",
+      "grep",
+      "shell"
+    ],
+    "reasoning_effort": "high"
+  },
+  "driver_changes": [
+    {
+      "decision": "D-182",
+      "what": "run-header.json also names the manifest the batch ran, and hashes it"
+    }
+  ],
   "analysis": {
     "metric": "checks_ok (all checks exit 0 in the trial workspace)",
     "pairing": "same repeat index within a task",

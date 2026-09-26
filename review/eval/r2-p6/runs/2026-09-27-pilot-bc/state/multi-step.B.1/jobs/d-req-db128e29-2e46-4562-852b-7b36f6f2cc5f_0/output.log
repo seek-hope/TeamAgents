@@ -1,0 +1,12 @@
+alpha ok
+alpha exit=0
+beta ok
+beta exit=0
+--- md5 of check.py (must be unchanged by us) ---
+4391d9cc813f85ff330ee11e11b65d9c  /home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-27-pilot-bc/work/multi-step.B.1/alpha/check.py
+35422f37953fbf37963d3672f88eae31  /home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-27-pilot-bc/work/multi-step.B.1/beta/check.py
+--- final sources ---
+def add(a, b):
+    return a + b
+def mul(a, b):
+    return a * b

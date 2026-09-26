@@ -1,0 +1,20 @@
+=== cat ===
+[dev]
+host = dev.internal
+retries = 3
+
+[staging]
+host = staging.internal
+retries = 5
+timeout = 30
+
+[prod]
+host = prod.internal
+retries = 3
+timeout = 60
+=== grep -n retries ===
+3:retries = 3
+7:retries = 5
+12:retries = 3
+=== sha256 ===
+5e4a7090eec9fda26384d9f42e17b3524ccfb4dfcba1a00184f79f2bdff2c2c9  app.ini

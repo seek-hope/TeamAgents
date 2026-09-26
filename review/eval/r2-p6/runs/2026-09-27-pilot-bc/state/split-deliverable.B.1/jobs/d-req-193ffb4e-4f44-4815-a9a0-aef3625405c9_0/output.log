@@ -1,0 +1,10 @@
+--- out/sum.txt:
+44
+--- out/words.txt:
+Apple
+apple
+fig
+pear
+plum
+--- word count:
+5
