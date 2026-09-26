@@ -18,6 +18,43 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-125 The event log had no catalogue (2026-09-26)
+
+The event log is a product surface — the daemon's `events` request is how a client reconnects from a watermark,
+`exec --json` builds its report from it, probes assert on it, and an operator can read `session.sqlite` — and this
+build emits **45 kinds** of them. The design describes the *shape* (a per-session sequence, a scope, a payload)
+but names no kind, and neither did any other document: a client author or a curious user had to read
+`core/src/v2/control.rs`.
+
+`docs/EVENTS.md` is that catalogue now, and it is **generated** from the code rather than written by hand:
+`review/event_catalogue.py --write` reads every `event(...)` call site in `core/src` and rewrites the table with
+each kind's scope, payload keys, emitting site and the files outside `core/src` that mention it. `make hygiene`
+runs the check mode, so the document cannot drift from the code in either direction:
+
+* a kind emitted but not listed,
+* a listed kind with no call site any more,
+* a changed payload key (the table would no longer match the generator), or
+* a hand edit inside the generated block,
+
+each fail the gate. Controls (all three run): renaming `goal_created` in the code reports
+`goal_created_probe: emitted by core/src/v2/control.rs:1351 but not in docs/EVENTS.md` **and**
+`goal_created: documented but no event(…) call site exists`; deleting that row from the document reports the
+first of those; renaming a payload key reports the table drift.
+
+The last column is a text search over the *consumers* — `tui/`, `engine/src`, the test suites and the probes
+under `review/` — so the document also says who reads what. Prose is deliberately not a reader: this entry
+names nine kinds, and counting a document that merely writes about a kind would flip the column whenever the
+log is discussed (the first run of the generator did exactly that against an earlier version of this entry). **9 of the 45 kinds have no reader in this tree** (`artifact_abandoned`,
+`artifacts_gc_claimed`, `goal_created`, `inbox_drained`, `instance_terminated`, `operation_cancel_requested`,
+`operation_cancelled`, `operation_unauthorized`, `request_cancelled`) and are marked *observability only*. That is
+an honest column value, not a defect: the log is a supported way to observe them, and the ones a probe or a test
+does assert on are now named in one place.
+
+Ceiling: the arguments are split by commas and payload keys are read from a `json!({…})` literal, so a payload
+built at runtime is invisible to the generator (it would then be missing from the table rather than wrong); the
+readers column is a text search, so a reader that matches a kind dynamically may not be credited. Neither limit
+can make the check pass something that is *wrong* — only quieter.
+
 ## D-124 The command payloads are checked against what the command layer reads (2026-09-26)
 
 D-123's defect — the driver sending `error_class` on every `record_attempt` while nothing ever stored it — was

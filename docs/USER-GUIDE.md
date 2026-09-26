@@ -189,7 +189,9 @@ pre_tool = ["/home/you/bin/policy.sh"]            # policy hook before tool call
 
 - The daemon owns the session: one JSON-lines protocol (`/v1`) over a Unix socket, with the TUI and `exec`
   as thin clients. A reconnect resumes events from the last watermark and commands deduplicate by
-  `command_id`.
+  `command_id`. The event log is a documented surface: every kind
+  this build emits, with its scope, payload and emitting site, is listed in [docs/EVENTS.md](EVENTS.md)
+  (generated from the code and kept in sync by `make hygiene`).
 - **The Leader builds the team**: it uses `spawn` to create working instances, `delegate` to hand out tasks,
   `send` for messages and `wait` for results. These appear in the model-visible tool surface according to
   its grants (`manage`/`delegate`/`message`), and the permission revision is re-checked at dispatch. The

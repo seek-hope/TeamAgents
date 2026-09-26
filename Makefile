@@ -158,6 +158,8 @@ language-check:
 # names nothing in the tree fails `make check`; the removed-item tables in DECISIONS.md are notes, not errors.
 # A command payload field nothing reads is dropped silently (D-123 was one: `error_class`); the caller's
 # fields and the command layer's reads are compared per method (D-124).
+# `docs/EVENTS.md` is generated from the event call sites, so a new kind or a renamed payload key must be
+# documented in the same change (D-125).
 # A test that skips must say so (D-121): a bare `if <condition> { return; }` inside a test makes it a silent
 # no-op, which is how two sandbox tests contributed nothing on a machine without bubblewrap.
 hygiene: language-check
@@ -171,3 +173,4 @@ hygiene: language-check
 	python3 review/citations.py
 	python3 review/silent_skips.py
 	python3 review/command_params.py
+	python3 review/event_catalogue.py
