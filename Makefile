@@ -64,7 +64,8 @@ check-broken-sandbox:
 
 pty: build
 	@set -eu; check_dir=$$(mktemp -d); trap 'rm -rf "$$check_dir"' EXIT HUP INT TERM; \
-		export XDG_CONFIG_HOME="$$check_dir/config" XDG_STATE_HOME="$$check_dir/state"; \
+		export XDG_CONFIG_HOME="$$check_dir/config" XDG_STATE_HOME="$$check_dir/state" TMPDIR="$$check_dir/tmp"; \
+		mkdir -p "$$TMPDIR"; \
 		unset TEAMAGENTS_ENGINE TEAMAGENTS_TUI TEAMAGENTS_PTY_MISSING_KEY; \
 		mkdir -p "$$XDG_CONFIG_HOME/teamagents"; \
 		printf '%s\n' '[models.leader_main]' 'provider = "openai"' 'model = "test"' \

@@ -8,7 +8,7 @@ set_lifecycle frames), tasks (cancel_task), topology edge list.
 
 Requires: built tui binary (tui/target/debug/teamagents-tui).
 """
-import fcntl, json, os, pty, re, socket, struct, subprocess, sys, tempfile, termios, threading, time, unicodedata
+import atexit, fcntl, json, os, pty, re, shutil, socket, struct, subprocess, sys, tempfile, termios, threading, time, unicodedata
 
 BIN = os.path.join(os.path.dirname(__file__), "..", "target", "debug", "teamagents-tui")
 ENV = dict(os.environ, TERM="xterm-256color")
@@ -133,6 +133,9 @@ from pty_screen import Screen, read_all  # virtual terminal + PTY reader for dif
 
 def main():
     workdir = tempfile.mkdtemp(prefix="ta-v2-pty-")
+    # `make pty` runs this once per gate run; a workdir left in TMPDIR accumulates one per run (D-131),
+    # and the socket inside it is the fake daemon's. Removed however this function returns.
+    atexit.register(shutil.rmtree, workdir, ignore_errors=True)
     daemon = FakeDaemon(os.path.join(workdir, "daemon.sock"))
     daemon.start()
     for _ in range(100):

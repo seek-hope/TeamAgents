@@ -79,6 +79,13 @@ fixed tree; with the leak live, the same gate died at `check exit=2`. The 4,824 
 by hand after confirming no daemon or runner was live — they were this project's own test scratch, and the
 suite's own names (`ta-ws-*`, `ta-tui-daemon-*`) say whose they were.
 
+The same class had a second source. The PTY smoke (`tui/scripts/pty_v2_smoke.py`) built its fake-daemon
+workdir with `tempfile.mkdtemp(prefix="ta-v2-pty-")` and never removed it, so `make pty` left one directory
+(and the `daemon.sock` inside it) per run — measured going from 1 to 2 across one run, with **no** daemon left
+behind. It now registers `shutil.rmtree` with `atexit`, and the `pty` recipe points `TMPDIR` at the
+`check_dir` its own trap already removes, so the run's config, state and temp all live under one root that
+goes away. Re-measured: `make pty` leaves 0 directories, 0 daemons, and still prints `pty v2 smoke: ok`.
+
 Ceiling: the guard counts `ta-*` names under `TMPDIR` only, so a test that leaks under another name, or
 outside `TMPDIR` altogether, is still invisible; and cleanup is per test module, so a new helper has to adopt
 the guard itself (nothing enforces that but review).
