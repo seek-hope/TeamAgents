@@ -18,6 +18,36 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-129 The A27 probe told a model's prose apart from a regression (2026-09-26)
+
+`review/dogfood/providers.py` asserted `task_delegated` + `task_started` + `task_completed` for every run. But
+the worker in that probe is a real Kimi model, and a model sometimes ends its turn with prose instead of calling
+`finish`. Then the task never settles and a leader that verifies the artifact itself can still settle the goal
+`SUCCEEDED` with that task open — the recorded known gap ("A model that stops settling its task leaves a visible
+wait", `docs/ACCEPTANCE.md`, `complete_goal` checks open **operations**, not open **tasks**). So the probe went
+red on a documented product limitation, and a red probe that reports nothing about what the build did wrong is
+worse than no probe.
+
+The rule is now explicit and *narrower*, not weaker. `classify_task_result` returns one of `completed` /
+`known_gap` / `unexpected`: `task_completed` is the expected event; a missing one is accepted **only** for the
+recorded shape (artifact exact **and** goal `SUCCEEDED` **and** the task still `PENDING`/`RUNNING`) and printed
+as the gap, citing the clause; every other missing-event shape is still a failure. The blanket assertion was
+replaced by one that also rejects a settled task with no completion event, or the gap shape behind a `BLOCKED`
+goal — cases the old single `in`-test could not separate.
+
+Evidence. The rule is checked without a model, a network or credentials: `providers.py --self-check` classifies
+six shapes, and a mutated classifier (returning `completed` unconditionally) makes it fail, so the check can
+itself fail (D-122's lesson). The classifier replayed over the two real sessions the earlier red runs left on
+disk — `/tmp/ta-providers-d128/root` and `/tmp/ta-providers/root`, both `task write_answer_txt RUNNING`,
+`goal-s-main SUCCEEDED`, artifact exact, no `task_completed` — now returns `known_gap`, which is what those runs
+actually were. Two fresh real-model runs are green: DeepSeek Flash leader + `k3-256k` worker, goal `SUCCEEDED`,
+artifact exact, `task_completed` present, 8 requests / 15.7 s and 8 requests / 22.6 s (2026-09-26).
+
+Ceiling: the classifier reads only the events, the task rows, the artifact and the goal's status, so it cannot
+tell a prose answer from any other cause of a missing `task_completed` beyond that shape. Whether the runtime
+should *refuse* a settlement while the goal's delegated tasks are open remains a design question about team
+semantics and stays with the user (`docs/ACCEPTANCE.md`).
+
 ## D-128 The config reference is generated, and the audit got stricter (2026-09-26)
 
 The config file is the first thing a user edits and its reference was scattered: part of it in `USER-GUIDE.md` §2,

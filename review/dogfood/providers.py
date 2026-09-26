@@ -7,10 +7,15 @@ tokens). The worker writes a file in the shared workspace; the Leader waits for 
 
 The artifact decides: `answer.txt` must contain exactly what the task asked for. The probe also asserts the
 session really is heterogeneous — the two instances carry different resolved model names — and that the
-delegation exchanged a task assignment and a task result (the events the runtime records).
+delegation exchanged a task assignment and a task start. The task result is expected as a `task_completed`
+event too, but the worker is a model, so the probe accepts the one recorded shape where it is missing (the
+worker answers with prose, its task stays open, and the leader settles the goal on the artifact itself) and
+reports that as the known gap it is — any other shape fails. `--self-check` checks that classification
+without a model, a network or credentials.
 
     python3 review/dogfood/providers.py                  # fresh /tmp state root
     python3 review/dogfood/providers.py --state-dir /tmp/ta-providers --timeout 600
+    python3 review/dogfood/providers.py --self-check     # the shapes above, no model needed
 
 It is a real-model check: it needs `DEEPSEEK_API_KEY` and `KIMI_API_KEY`, uses each model's native window,
 and writes only under `--state-dir`.
@@ -76,6 +81,52 @@ def session_facts(state_root: pathlib.Path) -> dict:
     return {"instances": instances, "tasks": tasks, "events": kinds, "requests": requests}
 
 
+def classify_task_result(events: list, tasks: list, artifact_ok: bool, goal_status) -> tuple:
+    """Classify how the delegated task ended: `completed`, `known_gap`, or `unexpected`.
+
+    Split out of `main` so the three shapes are checkable without a model or credentials (`--self-check`).
+    `tasks` is `session_facts()`'s `(id, assignee, status, requester)` rows.
+    """
+    if "task_completed" in events:
+        return "completed", "the worker settled its task (task_completed event present)"
+    unsettled = [task for task in tasks if task[2] in ("PENDING", "RUNNING")]
+    if artifact_ok and goal_status == "SUCCEEDED" and unsettled:
+        return "known_gap", (
+            "known gap (docs/ACCEPTANCE.md, 'A model that stops settling its task leaves a visible wait'): "
+            f"the worker answered with prose instead of calling `finish`, so task {unsettled[0][0]} stayed "
+            f"{unsettled[0][2]} while the leader verified the artifact itself and settled the goal "
+            "SUCCEEDED — the runtime does not resolve an unsettled task"
+        )
+    return "unexpected", (
+        "no task_completed event and not the recorded known-gap shape: "
+        f"artifact_ok={artifact_ok} goal_status={goal_status!r} "
+        f"unsettled_tasks={[(task[0], task[2]) for task in unsettled]}"
+    )
+
+
+def self_check() -> int:
+    """The three shapes the classifier must separate, without a model, a network or credentials."""
+    settled = [("t-1", "i-worker", "SUCCEEDED", "i-leader")]
+    running = [("t-1", "i-worker", "RUNNING", "i-leader")]
+    cases = [
+        (["task_completed"], settled, True, "SUCCEEDED", "completed"),
+        # the recorded known gap: prose answer, artifact still exact, goal settled with the task open
+        (["task_delegated"], running, True, "SUCCEEDED", "known_gap"),
+        # every other shape stays a failure, including a settled task with no completion event
+        (["task_delegated"], settled, True, "SUCCEEDED", "unexpected"),
+        (["task_delegated"], running, False, "SUCCEEDED", "unexpected"),
+        (["task_delegated"], running, True, "BLOCKED", "unexpected"),
+        (["task_delegated"], running, True, None, "unexpected"),
+    ]
+    for events, tasks, artifact_ok, goal_status, expected in cases:
+        got, detail = classify_task_result(events, tasks, artifact_ok, goal_status)
+        if got != expected:
+            print(f"FAIL: {events} {tasks} artifact_ok={artifact_ok} goal={goal_status!r} -> {got}, want {expected}")
+            return 1
+    print(f"self-check ok: {len(cases)} task-result shapes classified as expected")
+    return 0
+
+
 
 def stop_daemon(state_root: pathlib.Path) -> None:
     """Stop the daemon this probe started.
@@ -90,7 +141,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state-dir", help="scratch root (default: a fresh /tmp/ta-providers)")
     parser.add_argument("--timeout", type=int, default=600, help="exec --timeout in seconds")
+    parser.add_argument("--self-check", action="store_true", help="check the task-result shapes and exit")
     args = parser.parse_args()
+    if args.self_check:
+        return self_check()
     if not BIN.is_file():
         raise SystemExit(f"{BIN} is missing; build it first (make build)")
     for key in ("DEEPSEEK_API_KEY", "KIMI_API_KEY"):
@@ -138,19 +192,29 @@ def main() -> int:
     if workers != {"k3-256k"}:
         failures.append(f"the worker did not run the Kimi entry: {models}")
 
-    # 2. the delegation exchanged a task assignment and a task result
-    for kind in ("task_delegated", "task_started", "task_completed"):
+    # 2. the delegation exchanged a task assignment and a task start
+    for kind in ("task_delegated", "task_started"):
         if kind not in facts["events"]:
             failures.append(f"no {kind} event: {facts['events']}")
 
     # 3. the artifact is the contract
     answer = (workspace / "answer.txt")
-    if answer.is_file() and answer.read_text().strip() == "kimi wrote this":
+    artifact_ok = answer.is_file() and answer.read_text().strip() == "kimi wrote this"
+    if artifact_ok:
         print("answer.txt present with the expected content")
     else:
         failures.append(f"answer.txt is missing or wrong: {answer.read_text() if answer.is_file() else '(absent)'!r}")
 
-    # 4. the goal settled on its own report
+    # 4. the task result, read together with the artifact and the goal: `task_completed` is expected
+    #    (the worker called `finish`), and the one recorded shape where it is missing is reported as the
+    #    known gap instead of passing silently. `classify_task_result` holds the rule and `--self-check`
+    #    checks it without a model.
+    verdict, detail = classify_task_result(facts["events"], facts["tasks"], artifact_ok, report.get("goal_status"))
+    print(detail)
+    if verdict == "unexpected":
+        failures.append(detail)
+
+    # 5. the goal settled on its own report
     if report.get("goal_status") not in (None, "SUCCEEDED") and report.get("end") != "reply":
         failures.append(f"the goal did not settle successfully: {report.get('goal_status')} / {report.get('end')}")
 

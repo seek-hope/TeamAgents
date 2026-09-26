@@ -80,20 +80,22 @@ python3 review/dogfood/providers.py                  # fresh /tmp state root
 python3 review/dogfood/providers.py --state-dir /tmp/ta-providers
 ```
 
-It needs `DEEPSEEK_API_KEY` and `KIMI_API_KEY`, then asserts the three facts the acceptance row claims: the
-session really spanned two models (each member's resolved model is recorded, D-69), the delegation exchanged a
-task assignment and a task result, and `answer.txt` holds exactly the line the task asked for. Measured
-(2026-09-25): 7 model requests, 14.0 s, goal `SUCCEEDED`, `i-leader` on `deepseek-flash`, `worker1` on
-`k3-256k`, `task t1 SUCCEEDED`; re-measured after D-71 on the same shape: 8 requests, 23.1 s, all four
-assertions green.
+It needs `DEEPSEEK_API_KEY` and `KIMI_API_KEY`, then asserts the facts the acceptance row claims: the session
+really spanned two models (each member's resolved model is recorded, D-69), the delegation exchanged a task
+assignment and a task start, `answer.txt` holds exactly the line the task asked for, and the worker settled its
+task (`task_completed`). Measured (2026-09-25): 7 model requests, 14.0 s, goal `SUCCEEDED`, `i-leader` on
+`deepseek-flash`, `worker1` on `k3-256k`, `task t1 SUCCEEDED`; re-measured 2026-09-26: 8 requests / 15.7 s and
+8 requests / 22.6 s, both green with `task_completed` present.
 
-**This harness is intermittent, and the reason is worth knowing** (measured 2026-09-25): a run whose Kimi
-worker answered with *prose* ("Confirmed: answer.txt written…") instead of calling `finish` left
-`task_completed` missing — the task stayed `RUNNING` (D-65's ceiling: the runtime does not re-ask a model that
-stopped settling), the Leader read the artifact itself, and the goal still settled `SUCCEEDED` with that task
-open, because `complete_goal` checks open **operations**, not open **tasks**. The run is honest about it (the
-harness fails on the missing event, and `docs/ACCEPTANCE.md` records both the ceiling and the question), and
-the goal's own claim rests on the artifact the Leader verified.
+**A missing `task_completed` is neither read as a regression nor accepted silently** (D-129): the worker is a
+real model and sometimes answers with *prose* ("Confirmed: answer.txt written…") instead of calling `finish`.
+Then the task stays `RUNNING` (D-65's ceiling: the runtime does not re-ask a model that stopped settling), the
+Leader reads the artifact itself, and the goal still settles `SUCCEEDED` with that task open, because
+`complete_goal` checks open **operations**, not open **tasks** — the recorded known gap in `docs/ACCEPTANCE.md`.
+The probe accepts that one shape only (artifact exact **and** goal `SUCCEEDED` **and** the task still open) and
+prints it as the gap; every other shape where the event is missing still fails the run.
+`python3 review/dogfood/providers.py --self-check` checks that rule with no model, no network and no
+credentials.
 
 ## `runtime_note.py`: the runtime's own closing note rides the next turn
 
