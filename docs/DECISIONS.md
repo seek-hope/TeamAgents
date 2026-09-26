@@ -224,6 +224,20 @@ the self-check ("does not post to /v1/wrong"), a family claiming an invented nat
 acceptance command that cannot pass refuses the family (`the check did not pass` with the verdict quoted) —
 acceptance is the whole path, not a request that returned 200.
 
+**2026-09-27, two re-runs taught the probe what its assertions may claim.** The first re-run was refused by the
+**service**: Kimi answered `chat API 429 {"error":{"message":"The engine is currently overloaded…"}}` to all three
+attempts of the chat/completions family's turn, and the driver did the right thing (three `Transient` attempts,
+then `transient retries exhausted`). The second re-run completed the same family with `exit 0` and the artifact
+correct, but its stored assistant message carried no `reasoning_content` — that wire sends reasoning only
+sometimes (present 2026-09-26, absent 2026-09-27), so the probe had been asserting a *vendor* behaviour, not the
+product's. Both are fixed the same way this repository treats such premises: the probe now re-asks a family once
+when the *service* refused transiently (printing both attempts, so nothing is hidden), and it asserts retention
+only where it is the product's promise — `anthropic_blocks` and `responses_output` are written by the adapters
+themselves, `reasoning_content` is DeepSeek's thinking wire (D-70) — while anything else is required only to be
+*unrecognised-free* (a foreign or flattened field still fails). Re-run after both changes: all four families
+accepted (anthropic 2 requests / 40.9 s, chat/completions 2 / 35.8 s — with `reasoning_content` present this
+time, deepseek 3 / 3.4 s, responses 2 / 34.7 s).
+
 Ceiling: one small turn per family is an acceptance, not a benchmark (no long tool loop, no compaction, no
 provider failover), and the Anthropic family is accepted through a **compatible gateway**, which is what §7's
 own separation of protocol and vendor describes; Anthropic's own deployment is still not exercised, because no
