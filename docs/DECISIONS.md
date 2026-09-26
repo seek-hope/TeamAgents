@@ -187,6 +187,8 @@ Evidence (all commands re-runnable):
     # live, real model: python3 review/dogfood/checks.py --provider deepseek (a goal blocked by an impossible
     #   configured check after three rounds) ends with 0 jobs-runner processes and 0 daemons
 
+Re-verified against the real product path after the change, not only in-process: `review/dogfood/job_identity.py` (A15/A10: journal identity re-derived from `/proc` while a command ran, duplicate GO kept `starts` at 1, a guessed token refused) and `review/dogfood/cancel.py` (A13: the effect stopped 1.5 s after the lever, receipt class `cancelled`, **0 runners and 0 daemons** left at the end) both pass with the retirement in place, and `review/dogfood/checks.py --provider deepseek` ends with 0 runners.
+
 The measurement that found it was the D-111 gate, which counts `teamagents daemon` processes: its first version
 counted every `teamagents` process and failed with "27 daemon(s) behind" — those 27 were these runners. D-111's
 entry records the correction to the *gate*; this entry records the *defect* the correction exposed, which is why
