@@ -48,7 +48,10 @@ the grep lines so a failure is visible as well as fatal.
 
 Evidence: the control above (shipped shape exit 0 against a refuted config, asserted shape exit 2); the real
 targets re-run on this tree (`make verify-model-all`: 11 configurations, every one "No error has been found";
-`make verify-model-counterexamples`: 10 controls, each refuted).
+`make verify-model-counterexamples`: 10 controls, each refuted). The rest of the Makefile was swept for the same shape: every other recipe asserts its own
+failure path (`sha256sum -c`, the daemon-count guard, the three detectors, `sh -n install.sh`), and
+`language-check` is the deliberate inverse — its `git grep` *matching* is the failure, so matching is what
+exits 1.
 
 Ceiling: `verify-kani` needs the Kani toolchain, which is **not installed in this environment**, so its fixed
 assertion is unexercised here. The proof itself does not need a fresh run to stand: its subject is unchanged since
