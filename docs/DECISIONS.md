@@ -18,6 +18,32 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-186 The daemon-stop helper answered "signalled", not "stopped" (2026-09-27)
+
+D-185's `make check` ended red for a reason that had nothing to do with it: `make test`'s leak guard reported a
+scratch directory that appeared during the run — `/tmp/ta-tui-knob-778/root/instances/i-leader`, the state root
+of D-181's `TEAMAGENTS_TUI` test. The directory had been removed by its `Scratch` guard (D-175) and then
+*recreated*, which is the shape D-160 recorded when it added the `Daemon` RAII guard: "a live daemon recreates
+the directories it uses, so a removal that raced it left the root behind". D-160 fixed that for a daemon a test
+holds a `Child` for (`.kill()` **and** `.wait()`); the sibling helper `stop_detached_daemon`, which the tests
+use for the daemon the *engine* detaches, sent SIGTERM and returned at once — "found and signalled" was read as
+"stopped", and the very next statement removes the tree that daemon is still writing.
+
+**Changed** (`engine/tests/cli.rs`): `stop_detached_daemon` now waits — bounded at five seconds, polling every
+20 ms — until the process is gone or has become a zombie (the container's pid 1 never reaps, which is why the
+scan already had that rule). The state-field read is now one `daemon_running(pid)` predicate used by both the
+scan and the wait, and it parses `/proc/<pid>/stat` after the parenthesised command name so a name containing a
+space cannot shift the field. The D-181 test's second call keeps its deliberately ignored answer, with the
+reason written down beside it: the control run boots a session only when the repository's own TUI was found,
+and the leak guard is the backstop when there was nothing to stop.
+
+**Measured** (2026-09-27): the test passes 6/6 consecutive runs leaving no `ta-tui-knob-*` directory, and `make
+check` is green again ("no leak: 0 daemon(s) and 0 scratch directory(ies) present before the run are still all
+there is"). The race was **not** reproduced: with the wait removed the same test leaked nothing in 10
+consecutive runs, so the evidence that it exists is the guard's catch — plus D-160's record of the identical
+shape — and not a reproduction on demand. That is the same honest ceiling D-161 and D-175 state for their own
+races, and it is why the guard, not a test assertion, is what has to keep this closed.
+
 ## D-185 The gates assert an outcome; nothing asserted their shape (2026-09-27)
 
 D-184 gave the audits a catalogue. The formal-verification material had the same shape and no gate at all, and

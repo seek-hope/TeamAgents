@@ -76,6 +76,12 @@ impl Drop for Daemon {
 /// not a corpse — never `pkill -f`, whose pattern also matches any other command line that merely mentions the
 /// string (D-144/D-148 measured that killing two shells of a session). SIGTERM is the graceful stop the daemon
 /// handles (D-150), so the socket goes away with it.
+///
+/// Returning means *stopped*, not *signalled*: D-160 learned that for `Daemon` (`.kill()` **and** `.wait()`),
+/// and the same race came back through this path — a detached daemon still shutting down recreated
+/// `/tmp/ta-tui-knob-<pid>/root/instances/i-leader` after the test had removed its tree, and the leak guard
+/// reported the reappeared directory (D-186). The wait is bounded and ends when the process is gone or becomes
+/// a zombie, which this container's pid 1 never reaps.
 fn stop_detached_daemon(state: &std::path::Path) -> bool {
     let root = state.to_string_lossy().into_owned();
     let mut found = false;
@@ -90,15 +96,27 @@ fn stop_detached_daemon(state: &std::path::Path) -> bool {
         if argv.get(1).map(String::as_str) != Some("daemon") || !argv.contains(&root) {
             continue;
         }
-        // a zombie keeps the binary's name in this container (pid 1 does not reap): it is not a live daemon
-        let state_field = std::fs::read_to_string(entry.path().join("stat")).unwrap_or_default();
-        if state_field.split_whitespace().nth(2).is_some_and(|field| field.starts_with('Z')) {
-            continue;
+        if !daemon_running(pid) {
+            continue; // a zombie keeps the binary's name in this container (pid 1 does not reap)
         }
         found = true;
         let _ = Command::new("kill").arg(pid.to_string()).status();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while daemon_running(pid) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
     }
     found
+}
+
+/// Whether `pid` still runs: `/proc/<pid>/stat`'s state field, with `Z` (a zombie) counting as gone and a
+/// missing entry meaning the process has exited.
+fn daemon_running(pid: u32) -> bool {
+    let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else { return false };
+    // the state field follows the parenthesised command name, which may itself contain spaces
+    stat.rsplit_once(')')
+        .map(|(_, rest)| rest.trim_start().chars().next().is_some_and(|field| field != 'Z'))
+        .unwrap_or(false)
 }
 
 fn teamagents(args: &[&str], state_home: &std::path::Path, config_home: &std::path::Path) -> String {
@@ -595,6 +613,9 @@ fn the_tui_knob_decides_which_front_end_the_engine_launches() {
         stderr.contains("needs a real terminal") || stderr.contains("teamagents-tui not found"),
         "the fallback discovery ran and reached a real TUI (or found none): {stderr}"
     );
+    // the control run boots a session when the repository's TUI was found; when discovery failed before
+    // booting there is nothing to stop, so the answer is deliberately not asserted here (the leak guard in
+    // `make test` is the backstop, D-147)
     stop_detached_daemon(&state);
 }
 
