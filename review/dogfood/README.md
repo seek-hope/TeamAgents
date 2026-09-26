@@ -284,6 +284,25 @@ replayed), the file exists, and the resumed session settles coherently instead o
 (2026-09-26): deepseek and kimi both `end=completed`, goal `SUCCEEDED`, `input_queued=true` (the resume waited
 behind the recovered turn), one line in `runs.log`.
 
+## `shutdown.py`: a graceful stop with a command in flight
+
+DESIGN §9 says a normal daemon shutdown "freezes new dispatch, persists pending work and then stops itself"; the
+crash path had a probe (`crash.py`) and the graceful one had none. `shutdown.py` runs the same shape with **no
+credentials and no network** — a local chat-completions server scripts the turn that dispatches
+`sh echo run >> runs.log; sleep 20` — and then stops the daemon the supported way:
+
+```bash
+python3 review/dogfood/shutdown.py                    # fresh /tmp state root
+python3 review/dogfood/shutdown.py --state-dir /tmp/ta-shutdown
+```
+
+It asserts what the design promises (measured 2026-09-26, D-152): the stop is bounded (0.3 s) and **settles
+nothing** — the operation keeps `DISPATCH_COMMITTED`; the runner survives and finishes the command alone; the
+next daemon settles that operation `SUCCEEDED` **from the runner's journal** with its receipt; the command ran
+exactly once; and the session stays usable, with the input that arrives after the recovery already settled the
+goal reporting its own outcome (`end=unsettled`) rather than the earlier settlement. It ends with 0 daemons and
+0 runners.
+
 ## `checks.py`: the completion gate with a real model
 
 `checks.py` configures one `[[checks]]` entry that cannot pass in any workspace state (`exit 1`: a builtin, so

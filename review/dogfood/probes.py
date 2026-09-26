@@ -48,6 +48,7 @@ OFFLINE = [
     ("tui_panels.py", [], "the instances panel's keys against a real daemon (D-95)"),
     ("tui_reconnect.py", [], "the TUI through a daemon kill and restart (A28, D-99)"),
     ("providers.py", ["--self-check"], "the A27 probe's task-result rule, without a model"),
+    ("shutdown.py", [], "a graceful stop with a command in flight, and the recovery after it (DESIGN §9/D-152)"),
 ]
 
 # The set that takes a model. Each probe is the live half of an acceptance item or a decision; `--state-dir`

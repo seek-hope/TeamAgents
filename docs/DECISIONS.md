@@ -18,6 +18,45 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-152 A graceful stop with a command in flight: DESIGN §9's sentence, measured (2026-09-26)
+
+DESIGN §9 states what a normal daemon shutdown does — "freezes new dispatch, persists pending work and then
+stops itself" — and nothing exercised it. `crash.py` measures the crash (SIGKILL: the runner keeps the job and
+the session recovers the verifiable operation from its journal; `unknown_outcome.py` kills the runner too and
+gets `OUTCOME_UNKNOWN`), and D-150 made SIGTERM reach the shutdown path at all but asserted only that the daemon
+exits 0 and removes its socket. So the question "what happens to a command that is genuinely in flight when the
+user stops the session the supported way?" had no evidence behind it, in either direction.
+
+**Measured** (2026-09-26, offline: a local chat-completions server scripts the turn, so no credential and no
+network), and now re-runnable as `python3 review/dogfood/shutdown.py` (in `make probe-offline`):
+
+* the daemon stops in **0.3 s**; the client attached to it ends `exit 2` with the transport error
+  (`the event stream broke: daemon write: Broken pipe`);
+* the operation is **not settled** by the stop — it keeps `DISPATCH_COMMITTED`, because the command is still
+  running and the stop cannot know its outcome;
+* the **runner survives** and finishes the command on its own, writing its journal (A12);
+* the next daemon over that state root **settles the operation `SUCCEEDED` from the runner's journal**, with
+  its receipt (`"ok": true`) — A11's "reconnect when verifiable", never a guess and never a replay;
+* the command ran **exactly once** (`runs.log` holds one line) and the session stays usable: the goal ends
+  `SUCCEEDED` with the user's continuation, and the input that arrives *after* the recovery already settled the
+  goal reports its own outcome (`end=unsettled`, exit 1) instead of claiming the earlier settlement — D-72's
+  rule, observed rather than assumed.
+
+So the sentence holds, and one detail of it is now precise: "persists pending work" here means the operation
+stays open and the *journal on disk* is the record, not that the daemon writes a verdict it cannot know.
+
+**Controls**, each reverted byte-identically (sha256 `6874b30c…`): skipping the stop fails "the graceful stop was
+not bounded" plus two follow-ons; a command that leaves no trace and a first reply that calls no tool both fail
+at the premise ("the command never went in flight") and then on the trace/replay assertions instead of crashing
+— the second control is what found the probe's own `FileNotFoundError` (a probe that throws away its FAIL list
+is worse than one that fails). The probe ends with 0 daemons and 0 runners, as the harness guard requires.
+
+Ceiling: one command, one in-flight shape (a *model request* in flight at shutdown is not measured here; the
+driver abandons the attempt and the daemon is stopping, so the next daemon's turn is what the user sees — that
+is the same `crash.py`/`unknown_outcome` family and is left where those probes measure it). The probe also does
+not distinguish "graceful" from "crash" by the daemon's exit status: it cannot reap a child it did not spawn —
+that half is pinned by `cli::a_daemon_stops_gracefully_on_sigterm` (D-150).
+
 ## D-151 DESIGN §7 asked for a live acceptance per protocol family, and nothing said which ones had one (2026-09-26)
 
 DESIGN §7 separates the protocol layer from the vendor name — "the reusable parsing and contract samples of Chat
