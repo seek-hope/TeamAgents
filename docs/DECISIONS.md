@@ -18,219 +18,89 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
-## D-48 TUI shortcuts without function keys (2026-09-25)
+## D-107 Nothing checked the shape of the binding decision log (2026-09-26)
 
-The user pointed out that some keyboards have no function keys, so the interface no longer binds any. View
-switching is now:
+While adding an entry to this file it turned out to be structurally broken, and nothing in the repository had
+any reason to notice: an earlier edit had cut the tail block (D-48 … D-42) and pasted it *above* D-105, leaving
+the original `## D-48` heading behind as the last line of the file with no body under it. In the committed file
+that meant
 
-| Key | Effect |
-|---|---|
-| `Ctrl+N` | cycle the views: conversation → instances → tasks → topology → conversation (works while composing) |
-| `Ctrl+A` | jump into the approvals box (only when approvals are pending) |
-| `Esc` | back to the conversation from a panel (unchanged) |
-| `Tab` | switch the conversation target (unchanged) |
-| `Ctrl+C` / `Ctrl+D` | quit (unchanged) |
+    line   21: ## D-48 TUI shortcuts without function keys (2026-09-25)      <- the moved block
+    line  234: ## D-105 The fourth fixture race, and the shape they all share (2026-09-26)   <- the newest entry
+    line 2486: ## D-48 TUI shortcuts without function keys (2026-09-25)      <- heading only, end of file
 
-The removed bindings were `F1` (conversation), `F2` (approvals), `F3` (instances), `F4` (tasks) and `F5`
-(topology). Panel-local keys (`Enter`, `p`, `r`, `t`, `c`, arrows) are unchanged, and the footer hint line now
-advertises `Ctrl+N` / `Ctrl+A` instead of the function keys. Control chords never insert text into the
-composer, so a `Ctrl+<letter>` press can no longer leave a stray character behind.
+Two headings for one entry, the newest entry 213 lines below an older block, and D-54 sitting between D-61 and
+D-60 — in the file that says which rules are in force and which deviations the user confirmed. Every gate was
+green, because no gate reads this file.
 
-Evidence: `tui/tests/v2app_tests.rs::view_switching_cycles_with_ctrl_n_and_esc_returns` walks the cycle,
-asserts that pressing `F3` leaves the view unchanged and that the hint mentions `Ctrl+N`;
-`instances_panel_pauses_resumes_and_switches_the_conversation`, `tasks_panel_cancels_only_live_tasks`,
-`termination_requires_an_explicit_confirmation` and `the_palette_drives_panels_selection_and_status` reach
-their panels through the cycle. `make pty` drives the real terminal with the `Ctrl+N` bytes, and `make check`
-is green.
+The file is now D-105 … D-42, strictly descending, one heading per entry; comparing the sorted lines before and
+after shows exactly one removed line, the duplicate heading (the body was never lost — the whole block had
+moved, heading included). The shape also has a detector, so the next edit that breaks it fails a gate instead of
+being found by eye:
 
-## D-47 TUI colour scheme: the v1 palette (2026-09-25)
+    python3 review/decisions_log.py    # -> 66 entries, all unique, newest-first, each with a body
+    make hygiene                       # ... which now runs it inside `make check`
 
-The user preferred the v1 TUI's colours over the ones the current conversation UI used. The palette is restored
-as `tui/src/theme.rs` (the Codex palette: `BG` 0x0d0d0d, `PANEL_BG` 0x181818, white foreground, `GREY` 0x5d5d5d,
-`ACCENT` 0x3b82f6, green success, `NOTICE` 0xafafaf, red error, yellow warning plus `SELECT_BG`/`ZEBRA_BG`/
-`HOVER_BG`) and applied to the current UI:
+`review/decisions_log.py` states its four rules (a heading matches `## D-<n> <title> (<YYYY-MM-DD>)`; a number
+appears once; headings are strictly descending; a heading is followed by a blank line and at least five body
+lines), and it takes an optional path, which is how the pre-fix control is run: against `ead5704:docs/DECISIONS.md`
+it reports exactly the four real problems (`D-48` twice, `D-42` above `D-105`, `D-54` above `D-60`, `D-48` with
+0 body lines). Each rule was also exercised against a synthetic mutation — duplicate heading, dangling heading,
+a block buried above the newest entry, a heading without a date, too little body — and every one produced a
+complaint naming the line.
 
-- the whole screen sits on `BG`;
-- every bordered panel uses an `ACCENT` border, a `PANEL_BG` surface and an accent title;
-- the selected list row is the accent surface with panel-dark text (v1's selection look);
-- the status line sits on `PANEL_BG`, and turns dark-on-red while disconnected;
-- chat labels follow the v1 convention: grey bold labels, white body text, accent for the assistant, notice
-  grey for machine-generated text and red for errors; the footer is grey.
+It belongs in `make hygiene` rather than in the manual-audit group with `dead_code.py`/`config_keys.py` for the
+same reason the D-105 recipe belongs in the tests: the rule is mechanical and its failure is silent. Audits that
+need judgment (`is this item *true*?`) stay manual, and so does the truth of an entry.
 
-The v1 TUI itself (its layout, tabs, forms and slash commands) is **not** restored: it drove the retired
-backend. Only the colour scheme was ported, which is what was asked; further v1 interface elements can be
-ported one by one on request (the source stays in Git history, `git log -- tui/src/ui.rs`).
+Ceiling: these are shape rules, so an entry deleted whole leaves no trace (nothing here can tell a missing
+decision from one that was never written), and `make hygiene` now needs `python3` — already required by
+`make pty` and by the `review/*.py` scripts.
 
-Evidence: `tui/tests/v2app_tests.rs::the_palette_drives_panels_selection_and_status` asserts the screen
-background, the accent panel border, the accent-surface selection and the panel-surface status line on a
-TestBackend frame; `make check` and `make pty` are green.
+## D-106 `mcp_execution` reached the sandbox only by construction (2026-09-26)
 
-## D-46 Workspace policies wired into spawn (2026-09-25)
+D-104 recorded a ceiling: the stdio binding options `mcp_execution`, `mcp_network`, `startup_timeout_s` and
+`tool_timeout_s` had read sites but no behavioural test, so "this key is read" was a claim about a line of code
+rather than about a running server. The first of the four is now observed through the same edge a user
+configures it on.
 
-D-45 found that the shared/isolated/git-worktree policies in `engine/src/workspace.rs` ([design](DESIGN.md)
-§12.3, Q14) were only called by their own unit tests. After the user confirmed "wire it up":
+The gap had two sides. Every other case in `engine/tests/v2_mcp.rs` passes `"host"` explicitly — `echo_catalog`
+says so on purpose — and the live `review/dogfood/mcp.py` and `mcp_http.py` do too, so the *config edge* was
+untested: `load_service` (`engine/src/bound.rs`) is the single line that turns `binding.mcp_execution` (default
+`"workspace"`) into the bubblewrap argv, and only the direct `McpClient::connect_stdio_in` unit test in
+`engine/src/mcp.rs` exercised `"workspace"` at all.
 
-- **Model-visible entry**: the `spawn` tool gains an optional `workspace` argument — `shared` (default: the
-  project directory), `isolated` (a private directory at `<state root>/instances/<id>/work`) or
-  `git_worktree` (the instance's own branch and worktree). An unknown value fails that tool call (a
-  `collaboration`-class receipt) and **never** kills the driver.
-- **Resolution and record**: `driver::prepare_spawn_workspace` resolves the policy before the instance
-  starts, creates the directory or worktree and writes the result to `<instances_dir>/<id>/workspace.json`
-  (atomic replace). `workspace_ref` points at the resolved directory and the tool receipt carries
-  `path/policy/note`, so the model can see whether it got a shared or isolated workspace and why a fallback
-  happened.
-- **Fallback**: asking for a worktree in a project that is not a Git repository or has uncommitted changes
-  runs in shared mode and says why in `note` — uncommitted input is never ignored silently.
-- **Retirement**: when an instance reaches `TERMINATED` the supervisor retires the workspace from its record.
-  A shared record only drops the record; an isolated directory that holds anything besides our own
-  `INPUTS.md`, or a worktree with uncommitted or unmerged work, is **refused and reported** (the site is
-  kept). Everything else is removed together with the record, and a failed retirement never affects
-  termination itself.
-- **No garbage on failure**: when the control plane refuses a spawn, the prepared directory is kept (nothing
-  is deleted on a guess) and a retry with the same instance id reuses it.
-- Evidence: `engine/src/workspace.rs` unit tests (policy, fallback, record, retirement, including "uncommitted
-  work is not deleted"), `engine/tests/v2_driver.rs::spawn_resolves_the_requested_workspace_policy` (isolated
-  and worktree rows plus receipts; an unknown policy is refused without creating a directory) and
-  `engine/tests/v2_supervisor.rs::terminating_an_instance_retires_its_workspace` (the directory and its record
-  are retired, the shared project stays). Docs: `docs/USER-GUIDE.md` §3 and the README feature list.
-- Side cleanup: `AgentSpec`/`RuntimeKind` in `core/src/models.rs` were only used by the old signature and
-  went away with the change to `prepare(id, policy, project_cwd, member_dir)`.
+Two tests close it with the control shape this session keeps using — one server, one config key, and the host
+filesystem as the witness:
 
-## D-45 Cleaning earlier-implementation leftovers and restoring `[hooks]` (2026-09-25)
+- `mcp_workspace_execution_is_sandboxed`: `mcp_execution = "workspace"`; the server writes `inside.txt` in its
+  cwd (the member workspace, so it must succeed) and a path under the state root outside the workspace (so it
+  must fail). Asserted: the receipt carries `inside=ok` and not `outside=ok`, the host file does not exist
+  afterwards, and `ws/inside.txt` is `in` — the positive half matters, or a server that cannot write anything
+  would "pass" the sandbox claim.
+- `mcp_host_execution_is_not_sandboxed` (the control): the same server with `mcp_execution = "host"` writes that
+  host path, so the negative result above is about the sandbox and not about a server that cannot write at all.
 
-The user confirmed, item by item: (1) rewrite history; (2) remove the earlier implementation's code;
-(3) drop doctor's Codex probe; (4) delete the two `#[ignore]`d old entry-point tests; (5) restore `[hooks]`
-with the existing wire protocol; (6) keep `review/tmp/` as the probe area; (7) push.
+Pre-fix control: with `load_service` hardcoded to `"host"` the sandbox test fails at `a host path outside the
+workspace is unreachable: … "inside=ok outside=ok"`.
 
-- **hooks (5)**: `engine/src/hooks.rs` keeps the existing wire protocol — for `notify`, argv[1] is the event
-  name and the event JSON arrives on stdin; it is asynchronous, bounded at 10 seconds and only logs failures
-  to stderr. `pre_tool` runs synchronously before every native tool call: exit 0 allows, exit 2 denies (the
-  first stderr line becomes the reason handed to the model) and any other exit code, spawn failure or timeout
-  allows the call while logging to stderr. The event set is `tool_call` (with
-  `tool`/`arguments`/`ok`/`error`), `team_action`, `run_completed`, `run_failed`, `run_cancelled` and
-  `run_paused` (the edge into PAUSED; the value seen at boot does not count). A replay after crash recovery
-  is not asked again (the decision was made at first dispatch), and required checks are the user's own
-  acceptance commands rather than model tool calls, so they skip `pre_tool`. Evidence: the `hooks.rs` unit
-  tests plus `a_pre_tool_hook_vetoes_a_tool_call_and_the_turn_continues` and
-  `notify_hooks_receive_tool_call_and_run_completed` in `engine/tests/v2_driver.rs`; doctor still checks that
-  hook programs are executable.
-- **Old control plane removed (2)**: deleted `core/src/{control,storage,views,server,references}.rs`, the
-  `teamagents-core` stdio binary, the six test files that existed for it and the `core/src/models.rs` types
-  only those used; `BUILTIN_TOOL_BINDINGS` moved to its single product use site, `engine/src/bound.rs`. Core
-  dropped from 243 to 91 test cases, keeping every case the product path and the acceptance matrix cite
-  (`core/src/v2/control.rs` unit tests, `v2_invariants`, `kernel_properties`).
-- **Doctor's Codex probe (3)**: the current implementation has no Codex member type, so the
-  `codex app-server` and `codex protocol schema` checks and their helpers were removed. The
-  "no longer supported" errors for `--resume/--team/--plain` stay, because a clear message beats silently
-  ignoring the argument.
-- **Two old entry-point tests (4)**: they could only fail if enabled (they assert the removed entry points
-  return `ok:`), so they went away with the code.
-- **History rewrite (1)**: `verification/tla/states/` (TLC state files, roughly 23 GB uncompressed) appeared in
-  two unpushed commits only and was removed with
-  `git filter-repo --path verification/tla/states --invert-paths`. Verification: `HEAD^{tree}` and
-  `git ls-files` are identical before and after (content unchanged), the path has no objects left in history,
-  and the pack dropped from 6.18 GiB to about 27 MiB. The pre-rewrite `.git` backup was kept next to the
-  repository and deleted once the result was confirmed. The commit id cited in `verification/REPORT.md`
-  (`bc536bb5`) was updated to the rewritten `d37e1b4`.
-- **Workspace policies**: untouched here; the user then chose "wire it up", see D-46.
+The same test also covers the branch CI takes, because GitHub runners have no bubblewrap (their kernel forbids
+unprivileged user namespaces) and a test that only skipped there would leave "workspace mode never silently
+degrades to the host" unchecked on the machine that runs every push. The binding is `required`, so without
+bwrap the instance must not boot at all: the test runs with a `PATH` that has no `bwrap` and asserts the boot
+error names the isolation (`IsolationUnavailable … MCP workspace execution requires bwrap`) and that the host
+file still does not exist. Pre-fix control for that half: with the availability guard in `engine/src/mcp.rs`
+removed, the same run fails with `cannot start MCP server "/usr/bin/python3": No such file or directory` — it
+did not refuse honestly, it tried to run.
 
-## D-44 Two fixes found by formal verification (2026-09-24)
+    cargo test --offline --manifest-path engine/Cargo.toml --test v2_mcp mcp_workspace_execution_is_sandboxed
+    cargo test --offline --manifest-path engine/Cargo.toml --test v2_mcp mcp_host_execution_is_not_sandboxed
+    env PATH=/nonexistent <the v2_mcp test binary> mcp_workspace_execution_is_sandboxed   # the no-bwrap branch
 
-Landed after the user confirmed "fix everything". Both findings started as counterexamples from the TLA+/TLC
-specs and were confirmed with code probes; each has a regression test. The fix ledger is in
-[review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
+Ceiling: D-104's ceiling shrinks by one of four — `mcp_network`, `startup_timeout_s` and `tool_timeout_s` are
+still read-only claims — and `tool_names` filtering is still exercised only by the HTTP probe's single-tool
+binding. Recorded rather than implied.
 
-- **V-W1: a wait's tool_call was not answered.** Only the drain path answered it; the "satisfied at
-  registration" and "superseded/closed epoch" paths moved the wait to SATISFIED/CANCELLED without appending
-  a tool response, so a strict wire endpoint rejects the next request. Fix: `answer_closed_waits` extends the
-  answer to both paths (same reason text as the drain, deduplication key stays the wait id). Spec side:
-  `ResolvedWaitIsAnswered`; regression `wait_call_answered_outside_the_drain_path`.
-- **V-G1: a settled goal still accepted new work.** Delegation, opening operations and continued billing all
-  ignored the goal status, so new turns kept billing a settled goal. Fix: `budget_goal` accepts only ACTIVE
-  goals (both the instance pointer and the oldest open task path), `complete_goal`/`block_goal` detach the
-  instance pointer on settlement (`detach_goal`, with `detached` in the response and events), and
-  `delegate_task` requires an ACTIVE goal and tells the caller to create one first. Spec side:
-  `NoStaleActiveGoal`, `RegisteredWorkNeedsAnActiveGoal`, `RequestsResolveToActiveGoals`; regression
-  `a_settled_goal_takes_no_new_work`.
-- **Deliberate semantic boundary**: the linearization point for "new work" is the request, not the operation.
-  A request admitted while the goal was ACTIVE may still open operations and bill that goal after settlement —
-  that is honest accounting, not new work. `complete_goal` checks open operations but not tasks, so a goal can
-  settle while its own tasks are still open and those tasks' later requests have no billing goal; tightening
-  that would need a committed "completion refused" result for the driver and is out of scope here.
-- **V-P1: stale execution pointer after termination.** The spec-to-code correspondence test
-  (`core/tests/v2_invariants.rs`) found, during a random walk, an instance whose phase stayed
-  `MODEL_PENDING` with `active_request_id` pointing at a cancelled request. Fix: the termination branch
-  normalizes the execution pointer exactly like `reset_instance`/`fail_request`. Regression
-  `terminating_an_instance_normalizes_its_execution_pointer`.
-- **V-P2: a compression request could be imported as a turn.** The same correspondence test reached
-  `import_response` on a compression request and it succeeded. Fix: the control plane refuses imports whose
-  `kind != 'turn'` (compression is submitted by `compress_context`); regression
-  `import_response_refuses_a_compression_request`.
-- Evidence: `make verify-model-all` (control plane, artifacts, waits, tasks and compression all exhaustively
-  green) and `make check` (including `core/tests/v2_invariants.rs`: all command sequences up to length 2, 60
-  fixed-seed walks, coverage assertions and a negative control for checker sensitivity). The property ↔ code
-  ↔ acceptance-item mapping is in [verification/README.md](../verification/README.md).
-
-## D-43 Provider edges aligned with the pi coding agent (2026-09-24)
-
-The user asked for multi-provider support to follow the pi coding agent directly (the `pi-ai` package in the
-`earendil-works/pi` repository). The gaps from the earlier comparison were landed by current impact:
-
-- **Landed**: tool-call ids normalized across protocols (the same id maps consistently within one request) and
-  `max_tokens` clamped to the remaining context (4096 safety margin) — both had already landed earlier. This
-  round added provider-independent retry-text classification (a 429 carrying quota/billing-exhausted wording
-  becomes Permanent before the status-code table) and effort normalization at the config edge (deepseek
-  xhigh→max keeps the existing user decision; anthropic xhigh/max→high follows pi's `clampReasoning`; anything
-  else passes through, since a catalog entry is the user's declaration of what the model supports).
-- **Not landed yet**: image downgrading (the runtime has no image flow; a `ponytail:` comment records the pi
-  style upgrade path — declare input modalities in the catalog plus a placeholder at the edge), a cost rate
-  catalog (A18 bills tokens, not dollars yet) and more protocol adapters such as google/vertex/bedrock (add
-  them when one is needed; the adapter pattern is in place).
-
-## D-42 System direction and scope confirmed (2026-09-23)
-
-After 19 requirement clarifications and a re-examination of the Python kernel and LangGraph, the user
-explicitly chose: "a small Rust kernel + a persistent Rust instance runtime + SQLite + separate tool process
-management + a Rust TUI", and asked for every rationale and alternative to be re-examined. This record
-confirms the system direction and scope.
-
-- The product stays in Rust. The small kernel owns concise model interaction and execution decisions, and the
-  persistent instance runtime owns long-horizon tasks, permissions, scheduling, recovery and tool execution;
-  Python/LangGraph are not a premise.
-- A team of one is legal; instances isolate context, messages and tool access by default. The Leader manages
-  by default and can delegate a limited subset; authorized instances may talk directly and the connection
-  graph may be arbitrary, replacing D-33's member-to-member restriction. The shared project directory is
-  granted by default, with isolated directories or worktrees on demand; `full_auto` is still only logical
-  isolation.
-- The first usable version includes the Rust TUI, basic file/shell/web tools, MCP, Skills, multiple providers
-  and mixed models inside one team. No external Codex backend is needed; short-lived helpers use the same
-  instance mechanism, and D-39's separate helper loop is no longer an architectural requirement.
-- Background work survives CLI/TUI exits; the user can reconnect, read any instance's history, talk directly
-  to an instance and pause or cancel it. Those user permissions are not automatically granted to the Leader or
-  other agents. Instances are reused within a session, can be terminated or reset, and are isolated across
-  sessions by default.
-- Work continues by default with an optional goal-level budget, and permanent failures or repeated failures
-  are handled in a bounded way. A restart resumes authorized work; when an external outcome is unknown it is
-  verified first, and if it still cannot be confirmed the affected tasks park and notify instead of being
-  replayed blindly.
-- Required checks must pass and every other completion claim carries evidence and unverified items;
-  independent review happens on demand and never forces extra instances. Acceptance weighs success rate and
-  long-horizon reliability at the same model and budget: single-instance behaviour must not regress and
-  on-demand collaboration must show a reproducible gain. Costs are estimated on a small scale before the
-  formal evaluation budget is set; this item contains no real-model calls.
-- DeepSeek Flash is the user-confirmed DeepSeek V4.1 Flash and the main acceptance baseline with its native
-  1,000,000 context. D-36's native-window rule and D-41's `full_auto`/`approved_scope`, process-group
-  cancellation and credential-environment semantics stay in force.
-- No compatibility with old configs or sessions is required; old sessions, run state, caches and old configs
-  may be cleaned up, while credentials, raw evaluation records, review evidence, other applications' data and
-  Git history are kept. Cleanup runs from an ownership inventory during a switch; this item deleted no data.
-
-The full requirement mapping and acceptance are in the [design baseline](DESIGN.md). The engineering arguments
-about the single-database atomic boundary, the runner handshake, the I/O candidates and concurrency defaults
-are in the 45-item design review (reachable through Git history: `git log -- review/archive`). Those arguments
-are not measured performance results, and they do not mean the user approved each pending library, parameter
-or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
-untouched behaviour contracts remain in force.
 ## D-105 The fourth fixture race, and the shape they all share (2026-09-26)
 
 `make check` failed in `v2_driver::notify_hooks_receive_tool_call_and_run_completed`, and the failing
@@ -303,10 +173,10 @@ with the old `?` restored the event never arrives and the test fails with
 scenarios, live). `docs/USER-GUIDE.md` §5 states the behaviour.
 
 Ceiling: the mechanism covers *any* driver-boot failure (that is the point — one place), but the probe
-exercises the MCP case; the stdio options `mcp_execution`, `mcp_network` and `startup_timeout_s` /
-`tool_timeout_s` still have no behavioural test (their read sites exist, their effects are untested), and
-`tool_names` filtering is only exercised by this probe's single-tool binding. Recorded here rather than
-implied.
+exercises the MCP case; the stdio options `mcp_network` and `startup_timeout_s` / `tool_timeout_s` still have
+no behavioural test (their read sites exist, their effects are untested), and `tool_names` filtering is only
+exercised by this probe's single-tool binding. Recorded here rather than implied. (`mcp_execution` was in that
+list too; D-106 closed it through the config edge.)
 
 ## D-103 A third fixture waited for the wrong thing: the MCP crash window (2026-09-26)
 
@@ -2085,43 +1955,6 @@ model requests, both delegated tasks `SUCCEEDED`, no failed request.
 `shell@workspace`, and `issue_grant` would accept the narrowing) would turn a boundary the user owns into one
 the team manages. Neither is implemented; the surface is the user's.
 
-## D-54 The completion path survives a real model (2026-09-25)
-
-Several things fixed earlier were verified again against a real DeepSeek Flash session (isolated state root, native
-1,000,000 context window per D-36, effort `high`). Two of those runs failed in ways the scripted providers
-cannot express, because they emulate neither a strict wire endpoint nor a model that forgets a field:
-
-- **The repair turn after a failing check was wire-invalid.** The model's `finish` call is an assistant
-  `tool_calls` entry with no operation of its own; on the check path nothing answered it, so the transcript
-  sent to the repair turn contained an assistant message whose call had no tool answer following it. DeepSeek
-  answered `HTTP 400 … An assistant message with 'tool_calls' must be followed by tool messages responding to
-  each 'tool_call_id'` and the run died as a permanent model error. `register_check_runs` now answers the
-  dangling call (with `[finish received: required checks round N must pass before the goal can settle]`)
-  before it appends the synthetic check entry, so the transcript stays valid on both the repair and the
-  blocked path.
-- **A `finish` without a usable status produced a false failure.** The kernel mapped a missing or unknown
-  `status` to `failed`, the goal closed as `FAILED` although the work was done, and the required checks never
-  ran (they only run for a claimed success). The kernel now refuses such a call: it produces no completion,
-  reports the problem, and hands the call to the runtime as an ordinary intent, which answers it with
-  `finish refused: status is required and must be one of success, blocked, failed …` and continues the same
-  turn — the uniform "invalid call → error receipt → model retries" path. A stated outcome (`success`,
-  `blocked`, `failed`) is unchanged, and the goal can no longer be settled by a call that states nothing.
-
-The structural rule both fixes protect is now asserted where the scripted providers cannot fake it:
-`v2_driver::assert_wire_valid` walks the real transcript and requires every assistant `tool_calls` entry to be
-answered before the next assistant message (this is what strict endpoints check), and
-`a_finish_without_a_status_is_corrected_in_the_same_turn` requires the correction, the continued turn and the
-required check. Both tests fail against the pre-fix code (`assert_wire_valid` reported
-`an assistant message followed unanswered tool_calls: ["finish-…"]`; the status test reported the goal as
-`FAILED`), which is how they were checked.
-
-Evidence: `core::kernel::tests::a_finish_without_a_usable_status_is_not_a_completion`,
-`v2_driver::the_check_repair_path_keeps_the_transcript_wire_valid`,
-`v2_driver::a_finish_without_a_status_is_corrected_in_the_same_turn`, plus five real runs recorded under
-`review/tmp/d50-live/` (one positive gate run, one 400-error run, one false-`FAILED` run, one approval exit-3
-run, and the post-fix re-runs). The scripted tests in this repository accept any transcript, so this is exactly
-the class of defect the real-service rule exists for.
-
 ## D-60 The tool surface follows the grants, and the authority layer is verified (2026-09-25)
 
 The user's rule — a design addition must be formally verified where it can be — had an obvious gap to close
@@ -2319,6 +2152,43 @@ Evidence: `cli::full_auto_reaches_a_started_daemon_and_is_reported_against_a_liv
 through `exec --full-auto`, asserts the daemon greeting reports `full_auto`, then runs against that live
 session and asserts the note names the real mode (and that the daemon it started is stopped again).
 
+## D-54 The completion path survives a real model (2026-09-25)
+
+Several things fixed earlier were verified again against a real DeepSeek Flash session (isolated state root, native
+1,000,000 context window per D-36, effort `high`). Two of those runs failed in ways the scripted providers
+cannot express, because they emulate neither a strict wire endpoint nor a model that forgets a field:
+
+- **The repair turn after a failing check was wire-invalid.** The model's `finish` call is an assistant
+  `tool_calls` entry with no operation of its own; on the check path nothing answered it, so the transcript
+  sent to the repair turn contained an assistant message whose call had no tool answer following it. DeepSeek
+  answered `HTTP 400 … An assistant message with 'tool_calls' must be followed by tool messages responding to
+  each 'tool_call_id'` and the run died as a permanent model error. `register_check_runs` now answers the
+  dangling call (with `[finish received: required checks round N must pass before the goal can settle]`)
+  before it appends the synthetic check entry, so the transcript stays valid on both the repair and the
+  blocked path.
+- **A `finish` without a usable status produced a false failure.** The kernel mapped a missing or unknown
+  `status` to `failed`, the goal closed as `FAILED` although the work was done, and the required checks never
+  ran (they only run for a claimed success). The kernel now refuses such a call: it produces no completion,
+  reports the problem, and hands the call to the runtime as an ordinary intent, which answers it with
+  `finish refused: status is required and must be one of success, blocked, failed …` and continues the same
+  turn — the uniform "invalid call → error receipt → model retries" path. A stated outcome (`success`,
+  `blocked`, `failed`) is unchanged, and the goal can no longer be settled by a call that states nothing.
+
+The structural rule both fixes protect is now asserted where the scripted providers cannot fake it:
+`v2_driver::assert_wire_valid` walks the real transcript and requires every assistant `tool_calls` entry to be
+answered before the next assistant message (this is what strict endpoints check), and
+`a_finish_without_a_status_is_corrected_in_the_same_turn` requires the correction, the continued turn and the
+required check. Both tests fail against the pre-fix code (`assert_wire_valid` reported
+`an assistant message followed unanswered tool_calls: ["finish-…"]`; the status test reported the goal as
+`FAILED`), which is how they were checked.
+
+Evidence: `core::kernel::tests::a_finish_without_a_usable_status_is_not_a_completion`,
+`v2_driver::the_check_repair_path_keeps_the_transcript_wire_valid`,
+`v2_driver::a_finish_without_a_status_is_corrected_in_the_same_turn`, plus five real runs recorded under
+`review/tmp/d50-live/` (one positive gate run, one 400-error run, one false-`FAILED` run, one approval exit-3
+run, and the post-fix re-runs). The scripted tests in this repository accept any transcript, so this is exactly
+the class of defect the real-service rule exists for.
+
 ## D-53 Documentation claims corrected to the code (2026-09-25)
 
 Continuing the documented-surface audit (D-49 … D-52), three prose claims did not match the implementation. All
@@ -2484,3 +2354,215 @@ Evidence: `v2::exec::tests::exit_codes_follow_the_documented_contract`,
 `cli::exec_takes_the_prompt_from_stdin_and_runs_the_acceptance_check`.
 
 ## D-48 TUI shortcuts without function keys (2026-09-25)
+
+The user pointed out that some keyboards have no function keys, so the interface no longer binds any. View
+switching is now:
+
+| Key | Effect |
+|---|---|
+| `Ctrl+N` | cycle the views: conversation → instances → tasks → topology → conversation (works while composing) |
+| `Ctrl+A` | jump into the approvals box (only when approvals are pending) |
+| `Esc` | back to the conversation from a panel (unchanged) |
+| `Tab` | switch the conversation target (unchanged) |
+| `Ctrl+C` / `Ctrl+D` | quit (unchanged) |
+
+The removed bindings were `F1` (conversation), `F2` (approvals), `F3` (instances), `F4` (tasks) and `F5`
+(topology). Panel-local keys (`Enter`, `p`, `r`, `t`, `c`, arrows) are unchanged, and the footer hint line now
+advertises `Ctrl+N` / `Ctrl+A` instead of the function keys. Control chords never insert text into the
+composer, so a `Ctrl+<letter>` press can no longer leave a stray character behind.
+
+Evidence: `tui/tests/v2app_tests.rs::view_switching_cycles_with_ctrl_n_and_esc_returns` walks the cycle,
+asserts that pressing `F3` leaves the view unchanged and that the hint mentions `Ctrl+N`;
+`instances_panel_pauses_resumes_and_switches_the_conversation`, `tasks_panel_cancels_only_live_tasks`,
+`termination_requires_an_explicit_confirmation` and `the_palette_drives_panels_selection_and_status` reach
+their panels through the cycle. `make pty` drives the real terminal with the `Ctrl+N` bytes, and `make check`
+is green.
+
+## D-47 TUI colour scheme: the v1 palette (2026-09-25)
+
+The user preferred the v1 TUI's colours over the ones the current conversation UI used. The palette is restored
+as `tui/src/theme.rs` (the Codex palette: `BG` 0x0d0d0d, `PANEL_BG` 0x181818, white foreground, `GREY` 0x5d5d5d,
+`ACCENT` 0x3b82f6, green success, `NOTICE` 0xafafaf, red error, yellow warning plus `SELECT_BG`/`ZEBRA_BG`/
+`HOVER_BG`) and applied to the current UI:
+
+- the whole screen sits on `BG`;
+- every bordered panel uses an `ACCENT` border, a `PANEL_BG` surface and an accent title;
+- the selected list row is the accent surface with panel-dark text (v1's selection look);
+- the status line sits on `PANEL_BG`, and turns dark-on-red while disconnected;
+- chat labels follow the v1 convention: grey bold labels, white body text, accent for the assistant, notice
+  grey for machine-generated text and red for errors; the footer is grey.
+
+The v1 TUI itself (its layout, tabs, forms and slash commands) is **not** restored: it drove the retired
+backend. Only the colour scheme was ported, which is what was asked; further v1 interface elements can be
+ported one by one on request (the source stays in Git history, `git log -- tui/src/ui.rs`).
+
+Evidence: `tui/tests/v2app_tests.rs::the_palette_drives_panels_selection_and_status` asserts the screen
+background, the accent panel border, the accent-surface selection and the panel-surface status line on a
+TestBackend frame; `make check` and `make pty` are green.
+
+## D-46 Workspace policies wired into spawn (2026-09-25)
+
+D-45 found that the shared/isolated/git-worktree policies in `engine/src/workspace.rs` ([design](DESIGN.md)
+§12.3, Q14) were only called by their own unit tests. After the user confirmed "wire it up":
+
+- **Model-visible entry**: the `spawn` tool gains an optional `workspace` argument — `shared` (default: the
+  project directory), `isolated` (a private directory at `<state root>/instances/<id>/work`) or
+  `git_worktree` (the instance's own branch and worktree). An unknown value fails that tool call (a
+  `collaboration`-class receipt) and **never** kills the driver.
+- **Resolution and record**: `driver::prepare_spawn_workspace` resolves the policy before the instance
+  starts, creates the directory or worktree and writes the result to `<instances_dir>/<id>/workspace.json`
+  (atomic replace). `workspace_ref` points at the resolved directory and the tool receipt carries
+  `path/policy/note`, so the model can see whether it got a shared or isolated workspace and why a fallback
+  happened.
+- **Fallback**: asking for a worktree in a project that is not a Git repository or has uncommitted changes
+  runs in shared mode and says why in `note` — uncommitted input is never ignored silently.
+- **Retirement**: when an instance reaches `TERMINATED` the supervisor retires the workspace from its record.
+  A shared record only drops the record; an isolated directory that holds anything besides our own
+  `INPUTS.md`, or a worktree with uncommitted or unmerged work, is **refused and reported** (the site is
+  kept). Everything else is removed together with the record, and a failed retirement never affects
+  termination itself.
+- **No garbage on failure**: when the control plane refuses a spawn, the prepared directory is kept (nothing
+  is deleted on a guess) and a retry with the same instance id reuses it.
+- Evidence: `engine/src/workspace.rs` unit tests (policy, fallback, record, retirement, including "uncommitted
+  work is not deleted"), `engine/tests/v2_driver.rs::spawn_resolves_the_requested_workspace_policy` (isolated
+  and worktree rows plus receipts; an unknown policy is refused without creating a directory) and
+  `engine/tests/v2_supervisor.rs::terminating_an_instance_retires_its_workspace` (the directory and its record
+  are retired, the shared project stays). Docs: `docs/USER-GUIDE.md` §3 and the README feature list.
+- Side cleanup: `AgentSpec`/`RuntimeKind` in `core/src/models.rs` were only used by the old signature and
+  went away with the change to `prepare(id, policy, project_cwd, member_dir)`.
+
+## D-45 Cleaning earlier-implementation leftovers and restoring `[hooks]` (2026-09-25)
+
+The user confirmed, item by item: (1) rewrite history; (2) remove the earlier implementation's code;
+(3) drop doctor's Codex probe; (4) delete the two `#[ignore]`d old entry-point tests; (5) restore `[hooks]`
+with the existing wire protocol; (6) keep `review/tmp/` as the probe area; (7) push.
+
+- **hooks (5)**: `engine/src/hooks.rs` keeps the existing wire protocol — for `notify`, argv[1] is the event
+  name and the event JSON arrives on stdin; it is asynchronous, bounded at 10 seconds and only logs failures
+  to stderr. `pre_tool` runs synchronously before every native tool call: exit 0 allows, exit 2 denies (the
+  first stderr line becomes the reason handed to the model) and any other exit code, spawn failure or timeout
+  allows the call while logging to stderr. The event set is `tool_call` (with
+  `tool`/`arguments`/`ok`/`error`), `team_action`, `run_completed`, `run_failed`, `run_cancelled` and
+  `run_paused` (the edge into PAUSED; the value seen at boot does not count). A replay after crash recovery
+  is not asked again (the decision was made at first dispatch), and required checks are the user's own
+  acceptance commands rather than model tool calls, so they skip `pre_tool`. Evidence: the `hooks.rs` unit
+  tests plus `a_pre_tool_hook_vetoes_a_tool_call_and_the_turn_continues` and
+  `notify_hooks_receive_tool_call_and_run_completed` in `engine/tests/v2_driver.rs`; doctor still checks that
+  hook programs are executable.
+- **Old control plane removed (2)**: deleted `core/src/{control,storage,views,server,references}.rs`, the
+  `teamagents-core` stdio binary, the six test files that existed for it and the `core/src/models.rs` types
+  only those used; `BUILTIN_TOOL_BINDINGS` moved to its single product use site, `engine/src/bound.rs`. Core
+  dropped from 243 to 91 test cases, keeping every case the product path and the acceptance matrix cite
+  (`core/src/v2/control.rs` unit tests, `v2_invariants`, `kernel_properties`).
+- **Doctor's Codex probe (3)**: the current implementation has no Codex member type, so the
+  `codex app-server` and `codex protocol schema` checks and their helpers were removed. The
+  "no longer supported" errors for `--resume/--team/--plain` stay, because a clear message beats silently
+  ignoring the argument.
+- **Two old entry-point tests (4)**: they could only fail if enabled (they assert the removed entry points
+  return `ok:`), so they went away with the code.
+- **History rewrite (1)**: `verification/tla/states/` (TLC state files, roughly 23 GB uncompressed) appeared in
+  two unpushed commits only and was removed with
+  `git filter-repo --path verification/tla/states --invert-paths`. Verification: `HEAD^{tree}` and
+  `git ls-files` are identical before and after (content unchanged), the path has no objects left in history,
+  and the pack dropped from 6.18 GiB to about 27 MiB. The pre-rewrite `.git` backup was kept next to the
+  repository and deleted once the result was confirmed. The commit id cited in `verification/REPORT.md`
+  (`bc536bb5`) was updated to the rewritten `d37e1b4`.
+- **Workspace policies**: untouched here; the user then chose "wire it up", see D-46.
+
+## D-44 Two fixes found by formal verification (2026-09-24)
+
+Landed after the user confirmed "fix everything". Both findings started as counterexamples from the TLA+/TLC
+specs and were confirmed with code probes; each has a regression test. The fix ledger is in
+[review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
+
+- **V-W1: a wait's tool_call was not answered.** Only the drain path answered it; the "satisfied at
+  registration" and "superseded/closed epoch" paths moved the wait to SATISFIED/CANCELLED without appending
+  a tool response, so a strict wire endpoint rejects the next request. Fix: `answer_closed_waits` extends the
+  answer to both paths (same reason text as the drain, deduplication key stays the wait id). Spec side:
+  `ResolvedWaitIsAnswered`; regression `wait_call_answered_outside_the_drain_path`.
+- **V-G1: a settled goal still accepted new work.** Delegation, opening operations and continued billing all
+  ignored the goal status, so new turns kept billing a settled goal. Fix: `budget_goal` accepts only ACTIVE
+  goals (both the instance pointer and the oldest open task path), `complete_goal`/`block_goal` detach the
+  instance pointer on settlement (`detach_goal`, with `detached` in the response and events), and
+  `delegate_task` requires an ACTIVE goal and tells the caller to create one first. Spec side:
+  `NoStaleActiveGoal`, `RegisteredWorkNeedsAnActiveGoal`, `RequestsResolveToActiveGoals`; regression
+  `a_settled_goal_takes_no_new_work`.
+- **Deliberate semantic boundary**: the linearization point for "new work" is the request, not the operation.
+  A request admitted while the goal was ACTIVE may still open operations and bill that goal after settlement —
+  that is honest accounting, not new work. `complete_goal` checks open operations but not tasks, so a goal can
+  settle while its own tasks are still open and those tasks' later requests have no billing goal; tightening
+  that would need a committed "completion refused" result for the driver and is out of scope here.
+- **V-P1: stale execution pointer after termination.** The spec-to-code correspondence test
+  (`core/tests/v2_invariants.rs`) found, during a random walk, an instance whose phase stayed
+  `MODEL_PENDING` with `active_request_id` pointing at a cancelled request. Fix: the termination branch
+  normalizes the execution pointer exactly like `reset_instance`/`fail_request`. Regression
+  `terminating_an_instance_normalizes_its_execution_pointer`.
+- **V-P2: a compression request could be imported as a turn.** The same correspondence test reached
+  `import_response` on a compression request and it succeeded. Fix: the control plane refuses imports whose
+  `kind != 'turn'` (compression is submitted by `compress_context`); regression
+  `import_response_refuses_a_compression_request`.
+- Evidence: `make verify-model-all` (control plane, artifacts, waits, tasks and compression all exhaustively
+  green) and `make check` (including `core/tests/v2_invariants.rs`: all command sequences up to length 2, 60
+  fixed-seed walks, coverage assertions and a negative control for checker sensitivity). The property ↔ code
+  ↔ acceptance-item mapping is in [verification/README.md](../verification/README.md).
+
+## D-43 Provider edges aligned with the pi coding agent (2026-09-24)
+
+The user asked for multi-provider support to follow the pi coding agent directly (the `pi-ai` package in the
+`earendil-works/pi` repository). The gaps from the earlier comparison were landed by current impact:
+
+- **Landed**: tool-call ids normalized across protocols (the same id maps consistently within one request) and
+  `max_tokens` clamped to the remaining context (4096 safety margin) — both had already landed earlier. This
+  round added provider-independent retry-text classification (a 429 carrying quota/billing-exhausted wording
+  becomes Permanent before the status-code table) and effort normalization at the config edge (deepseek
+  xhigh→max keeps the existing user decision; anthropic xhigh/max→high follows pi's `clampReasoning`; anything
+  else passes through, since a catalog entry is the user's declaration of what the model supports).
+- **Not landed yet**: image downgrading (the runtime has no image flow; a `ponytail:` comment records the pi
+  style upgrade path — declare input modalities in the catalog plus a placeholder at the edge), a cost rate
+  catalog (A18 bills tokens, not dollars yet) and more protocol adapters such as google/vertex/bedrock (add
+  them when one is needed; the adapter pattern is in place).
+
+## D-42 System direction and scope confirmed (2026-09-23)
+
+After 19 requirement clarifications and a re-examination of the Python kernel and LangGraph, the user
+explicitly chose: "a small Rust kernel + a persistent Rust instance runtime + SQLite + separate tool process
+management + a Rust TUI", and asked for every rationale and alternative to be re-examined. This record
+confirms the system direction and scope.
+
+- The product stays in Rust. The small kernel owns concise model interaction and execution decisions, and the
+  persistent instance runtime owns long-horizon tasks, permissions, scheduling, recovery and tool execution;
+  Python/LangGraph are not a premise.
+- A team of one is legal; instances isolate context, messages and tool access by default. The Leader manages
+  by default and can delegate a limited subset; authorized instances may talk directly and the connection
+  graph may be arbitrary, replacing D-33's member-to-member restriction. The shared project directory is
+  granted by default, with isolated directories or worktrees on demand; `full_auto` is still only logical
+  isolation.
+- The first usable version includes the Rust TUI, basic file/shell/web tools, MCP, Skills, multiple providers
+  and mixed models inside one team. No external Codex backend is needed; short-lived helpers use the same
+  instance mechanism, and D-39's separate helper loop is no longer an architectural requirement.
+- Background work survives CLI/TUI exits; the user can reconnect, read any instance's history, talk directly
+  to an instance and pause or cancel it. Those user permissions are not automatically granted to the Leader or
+  other agents. Instances are reused within a session, can be terminated or reset, and are isolated across
+  sessions by default.
+- Work continues by default with an optional goal-level budget, and permanent failures or repeated failures
+  are handled in a bounded way. A restart resumes authorized work; when an external outcome is unknown it is
+  verified first, and if it still cannot be confirmed the affected tasks park and notify instead of being
+  replayed blindly.
+- Required checks must pass and every other completion claim carries evidence and unverified items;
+  independent review happens on demand and never forces extra instances. Acceptance weighs success rate and
+  long-horizon reliability at the same model and budget: single-instance behaviour must not regress and
+  on-demand collaboration must show a reproducible gain. Costs are estimated on a small scale before the
+  formal evaluation budget is set; this item contains no real-model calls.
+- DeepSeek Flash is the user-confirmed DeepSeek V4.1 Flash and the main acceptance baseline with its native
+  1,000,000 context. D-36's native-window rule and D-41's `full_auto`/`approved_scope`, process-group
+  cancellation and credential-environment semantics stay in force.
+- No compatibility with old configs or sessions is required; old sessions, run state, caches and old configs
+  may be cleaned up, while credentials, raw evaluation records, review evidence, other applications' data and
+  Git history are kept. Cleanup runs from an ownership inventory during a switch; this item deleted no data.
+
+The full requirement mapping and acceptance are in the [design baseline](DESIGN.md). The engineering arguments
+about the single-database atomic boundary, the runner handshake, the I/O candidates and concurrency defaults
+are in the 45-item design review (reachable through Git history: `git log -- review/archive`). Those arguments
+are not measured performance results, and they do not mean the user approved each pending library, parameter
+or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
+untouched behaviour contracts remain in force.

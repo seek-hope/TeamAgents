@@ -116,6 +116,8 @@ language-check:
 		exit 1; \
 	fi
 
+# Repository shape rule: `docs/DECISIONS.md` is the binding record, so its shape is checked (D-107):
+# one heading per entry, newest-first, each with a body. `review/decisions_log.py` states the rules.
 hygiene: language-check
 	git diff --check
 	git submodule status
@@ -123,3 +125,4 @@ hygiene: language-check
 		'*.sqlite-wal' '*.sqlite-shm')" || \
 		{ echo 'tracked build artifacts (compile caches, Python caches, SQLite temporaries); remove them before committing.'; exit 1; }
 	sh -n install.sh
+	python3 review/decisions_log.py

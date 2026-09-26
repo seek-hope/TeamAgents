@@ -168,6 +168,136 @@ fn echo_catalog(command: &str) -> UserConfig {
     catalog
 }
 
+/// `mcp_execution = "workspace"` really runs the server inside the workspace sandbox (A14's question, for the
+/// MCP surface): a server that writes to a host path outside the workspace must fail there, while the same
+/// server writing inside its cwd succeeds — and the host file must not exist afterwards. The sibling test
+/// `mcp_host_execution_is_not_sandboxed` is the control that the observation itself works.
+#[tokio::test]
+async fn mcp_workspace_execution_is_sandboxed() {
+    let server = r#"
+import json, sys
+outside = sys.argv[1]
+for line in sys.stdin:
+    request = json.loads(line)
+    if 'id' not in request: continue
+    method = request['method']
+    if method == 'initialize':
+        result = {'protocolVersion': '2025-06-18'}
+    elif method == 'tools/list':
+        result = {'tools': [{'name': 'write', 'inputSchema': {'type': 'object', 'properties': {}}}]}
+    elif method == 'tools/call':
+        try:
+            with open('inside.txt', 'w') as f: f.write('in')
+            inside = 'ok'
+        except Exception as e:
+            inside = type(e).__name__
+        try:
+            with open(outside, 'w') as f: f.write('out')
+            result_outside = 'ok'
+        except Exception as e:
+            result_outside = type(e).__name__
+        result = {'content': [{'type': 'text', 'text': f'inside={inside} outside={result_outside}'}]}
+    else:
+        result = {}
+    print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
+"#;
+    let root = root("mcp-workspace");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    // a path the *engine* can write and the sandbox cannot: outside the workspace, and under /tmp the sandbox
+    // replaces with a private tmpfs (so the directory does not even exist in there)
+    let outside = root.dir.join("state").join("outside.txt");
+    std::fs::create_dir_all(outside.parent().unwrap()).unwrap();
+    let mut catalog = UserConfig::default();
+    catalog.tools.insert(
+        "ws_probe".into(),
+        serde_json::from_value::<ToolBinding>(json!({
+            "kind": "mcp", "mcp_server": "wsprobe", "mcp_transport": "stdio", "mcp_execution": "workspace",
+            "command": "/usr/bin/python3", "args": ["-u", "-c", server, outside.to_string_lossy()],
+            "tool_names": ["write"], "required": true,
+        }))
+        .unwrap(),
+    );
+    let provider =
+        ScriptedProvider::new(vec![tool_call("c1", "wsprobe_write", json!({})), finish_call("wrote what it could")]);
+    let mut config = root.config(provider);
+    config.catalog = catalog;
+    config.bindings = vec!["ws_probe".into()];
+    if !teamagents_engine::tools::bwrap_available() {
+        // The other half of the same claim, and the branch CI takes (its kernel forbids unprivileged user
+        // namespaces): without bwrap the mode must refuse to start the server rather than run it on the host.
+        let error = start(config).await.err().expect("workspace mode without bwrap must not boot an instance");
+        assert!(error.contains("IsolationUnavailable") && error.contains("requires bwrap"), "{error}");
+        assert!(!outside.exists(), "the host file was not created: {}", outside.display());
+        return;
+    }
+    let handle = start(config).await.expect("start");
+    handle.input("probe the sandbox").await.expect("input");
+    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    let results = tool_results(&root);
+    let reply = results.iter().find(|entry| entry.contains("inside=")).cloned().unwrap_or_default();
+    assert!(!reply.is_empty(), "the MCP call's receipt is in the conversation: {results:?}");
+    assert!(reply.contains("inside=ok"), "the workspace is writable inside the sandbox: {reply}");
+    assert!(!reply.contains("outside=ok"), "a host path outside the workspace is unreachable: {reply}");
+    assert!(!outside.exists(), "the host file was not created: {}", outside.display());
+    assert_eq!(std::fs::read_to_string(root.dir.join("ws/inside.txt")).unwrap_or_default(), "in");
+    handle.shutdown().await.expect("shutdown");
+}
+
+/// The control for `mcp_workspace_execution_is_sandboxed`: the *same* server in `mcp_execution = "host"` mode
+/// reaches the host path, so the sibling test's negative result is about the sandbox and not about the server.
+#[tokio::test]
+async fn mcp_host_execution_is_not_sandboxed() {
+    let server = r#"
+import json, sys
+outside = sys.argv[1]
+for line in sys.stdin:
+    request = json.loads(line)
+    if 'id' not in request: continue
+    method = request['method']
+    if method == 'initialize':
+        result = {'protocolVersion': '2025-06-18'}
+    elif method == 'tools/list':
+        result = {'tools': [{'name': 'write', 'inputSchema': {'type': 'object', 'properties': {}}}]}
+    elif method == 'tools/call':
+        try:
+            with open(outside, 'w') as f: f.write('out')
+            result_outside = 'ok'
+        except Exception as e:
+            result_outside = type(e).__name__
+        result = {'content': [{'type': 'text', 'text': f'outside={result_outside}'}]}
+    else:
+        result = {}
+    print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
+"#;
+    let root = root("mcp-host");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let outside = root.dir.join("state").join("outside.txt");
+    std::fs::create_dir_all(outside.parent().unwrap()).unwrap();
+    let mut catalog = UserConfig::default();
+    catalog.tools.insert(
+        "host_probe".into(),
+        serde_json::from_value::<ToolBinding>(json!({
+            "kind": "mcp", "mcp_server": "hostprobe", "mcp_transport": "stdio", "mcp_execution": "host",
+            "command": "/usr/bin/python3", "args": ["-u", "-c", server, outside.to_string_lossy()],
+            "tool_names": ["write"],
+        }))
+        .unwrap(),
+    );
+    let provider =
+        ScriptedProvider::new(vec![tool_call("c1", "hostprobe_write", json!({})), finish_call("wrote the host path")]);
+    let mut config = root.config(provider);
+    config.catalog = catalog;
+    config.bindings = vec!["host_probe".into()];
+    let handle = start(config).await.expect("start");
+    handle.input("probe the host").await.expect("input");
+    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    let results = tool_results(&root);
+    let reply = results.iter().find(|entry| entry.contains("outside=")).cloned().unwrap_or_default();
+    assert!(reply.contains("outside=ok"), "host mode reaches the host path: {reply}");
+    assert_eq!(std::fs::read_to_string(&outside).unwrap_or_default(), "out");
+    handle.shutdown().await.expect("shutdown");
+}
+
 #[tokio::test]
 async fn mcp_tool_round_trips_through_the_same_receipt_contract() {
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));

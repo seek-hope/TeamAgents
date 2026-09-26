@@ -397,6 +397,15 @@ teamagents tasks cancel --id t-prose    # releases a delegator waiting on a task
   cloned project's tools load only with `[permissions] trust_project_tools = true`. `required = true` means
   the session must not start without it; `doctor` lists each declared service and whether its command can run,
   so a typo shows up there instead of in `daemon.log`.
+- **Where a stdio server runs** is your choice, and the default is the safe one (D-106):
+  `mcp_execution = "workspace"` starts the server inside bubblewrap, with the member's workspace as its working
+  directory — it cannot read or write host paths outside that workspace, its `HOME` is a private directory, and
+  it has no network at all unless you also set `mcp_network = true` (a server that must call an API needs that
+  switch; the default keeps a package-manager or config-fetching server from reaching the network by itself).
+  `mcp_execution = "host"` runs the server as yourself, with your whole filesystem and network: only for a server
+  you trust, and the same choice a shell makes when the session runs `--full-auto` (D-41). Without bubblewrap the
+  workspace mode **refuses to start** — the instance parks naming the isolation — rather than quietly running the
+  server on the host.
 
 ## 6. Recovery, compaction and cleanup
 

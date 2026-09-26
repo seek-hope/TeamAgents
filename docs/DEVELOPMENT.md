@@ -21,7 +21,9 @@ make pty                          # real-terminal check with an isolated config 
 
 `make check` runs, in order: formatting, Clippy on all targets, the three crates' tests, the Git submodule
 configuration and repository hygiene (it rejects non-English characters in code and docs, tracked compile
-caches, Python caches and SQLite temporaries, and checks the syntax of `install.sh`). `make language-check`
+caches, Python caches and SQLite temporaries, checks the syntax of `install.sh`, and checks the shape of the
+binding decision log with `review/decisions_log.py`: one heading per entry, newest-first, each with a body).
+`make language-check`
 runs the language rule on its own: it scans the tracked tree for CJK characters and excludes exactly the two
 documented exceptions (`README.zh-CN.md` and the frozen evaluation material under `review/eval`), so a
 stray Chinese comment fails the gate instead of being noticed in review. Clippy warnings are errors. CI uses
