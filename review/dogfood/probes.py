@@ -252,7 +252,7 @@ def main() -> int:
             stop_daemons(state_dir)
             print(f"       state kept for inspection: {state_dir}")
             for line in output.splitlines()[-6:]:
-                print(f"       {line}")
+                print(f"       {line}", flush=True)
     total = round(time.time() - started_all, 1)
 
     # `pkill` returns before the daemon it signalled is gone, so give a stopped daemon a moment to leave before
@@ -280,7 +280,7 @@ def main() -> int:
     if new_strays:
         leaks.append(f"scratch left behind: {sorted(new_strays)}")
     print(f"{len(chosen)} probes in {total}s; daemons of this run left: {left}; "
-          f"new scratch {sorted(strays() - before_strays) or 'none'}")
+          f"new scratch {sorted(strays() - before_strays) or 'none'}", flush=True)
     for leak in leaks:
         print("FAIL:", leak)
     return 1 if (failures or leaks) else 0

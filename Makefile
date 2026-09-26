@@ -81,14 +81,14 @@ pty: build
 # `make check`: the set takes about a minute.
 probe-offline: build
 	python3 review/dogfood/probes.py --self-check
-	python3 review/dogfood/probes.py --set offline
+	python3 -u review/dogfood/probes.py --set offline
 
 # The probes that take a model, one after another (D-141): every live half of an acceptance item or decision
 # that needs credentials. About seven minutes; each probe runs at its model's native window (D-36). Not part of
 # `make check`: it spends real model calls.
 probe-models: build
 	python3 review/dogfood/probes.py --self-check
-	python3 review/dogfood/probes.py --set models
+	python3 -u review/dogfood/probes.py --set models
 
 # Formal verification (TLA+/TLC; not part of make check; the first run downloads the pinned tla2tools.jar)
 TLA_TOOLS_DIR ?= $(HOME)/.local/share/teamagents-verify
