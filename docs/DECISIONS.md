@@ -18,6 +18,52 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-164 The park reason no client ever showed, and doctor's promise about an MCP service (2026-09-27)
+
+Completing D-104's story. D-104 stopped a driver that cannot boot from taking the coordinator down with it and
+parked the instance **with the runtime's own reason** — its comment even named the remaining half: "a headless
+run waited out its whole deadline with no event and no log line". Measured (2026-09-27, real daemon, real
+session): a `required = true` MCP service whose command does not exist gave `doctor` **exit 0, `[WARN]
+tools.broken … (bound at start, required)` under the footer "WARN marks optional capabilities"**, and then
+`exec --timeout 60` sat for the whole minute and ended `end=timeout`, exit **124**, `failure: null` — while the
+one sentence that says what to fix (`required tool service "broken" is unavailable: …`) sat in `daemon.log`.
+The TUI was no better: its `instance_lifecycle` note carried only the lifecycle word, so the reason the
+control plane records in the event payload reached **no client at all**. And `doctor`'s static rows did not
+predict the boot: a `command` containing `${VAR}` was reported `ok` with "resolves an environment reference at
+start", which nothing implements — `mcp.rs` spawns the command verbatim, so `${HOME}/bin/server` reaches
+`exec(2)` literally and the service never starts. `doctor` also never looked at the binding's `env` map or its
+bearer variable, both of which `bound.rs` reads from this environment and treats as hard errors.
+
+**Changed** (`engine/src/cli.rs`, `engine/src/v2/exec.rs`, `tui/src/v2app.rs`; no new surface):
+
+* `exec` ends the run when it sees the leader parked **under a waiting run** and reports the runtime's reason,
+  with the same lever the pre-submit guard names (`parked_fate`, D-164): `end=failed`, exit 1. The park is
+  deliberately *not* terminal while a turn is in flight (`phase_now == "RUNNING"`), so a pause keeps D-98's
+  behaviour (the driver finishes the current step and a resumed instance still lets the run report that turn's
+  own outcome), and a park the user lifted again is re-read every pass (`lifecycle_now`), never assumed.
+* the TUI's `instance_lifecycle` note carries the reason (`instance i-leader lifecycle -> PARKED: …`), which
+  is where a user watching the session sees it.
+* `doctor`'s MCP rows now predict the boot: `required = true` + any condition `bound.rs` refuses is a **FAIL**
+  (the instance parks, no member runs), the same condition optional stays a WARN that says the capability is
+  dropped; a `${…}` in a command is a failure with the explanation that nothing expands it; and an `env` value
+  or `bearer_token_env_var` naming an unset variable is checked the way `bound.rs` reads it.
+
+**Measured after** (2026-09-27, same config): `doctor` exits 1 with `[FAIL] tools.broken … the session cannot
+start a member until it is fixed (the instance parks)`; the control (the same binding without `required`)
+exits 0, keeps its WARN, and the session boots and answers (`end=reply`, exit 0). With a *required http*
+service that fails only after the client submitted (~30 s connect timeout, so the pre-submit guard cannot
+cover it), `exec --timeout 120` ends in 30 s with `end=failed`, exit 1 and `failure` = the runtime's own
+`required tool service "slow" is unavailable: … connection timed out` plus the resume lever — before this it
+was `end=timeout`/124 with `failure: null`. New tests:
+`cli::doctor_predicts_whether_an_mcp_service_can_start` (0.3 s), `cli::a_leader_parked_under_a_waiting_run_reports_the_park_instead_of_timing_out`
+(4.4 s, a required stdio service whose handshake sleeps then fails), `exec::a_park_the_run_observed_says_why_and_what_to_do`
+and `v2app_tests::a_lifecycle_note_carries_the_runtime_reason`.
+
+**Still open** (recorded, not silently dropped): `teamagents instances` lists `PARKED` but not the reason, and
+§5 of the user guide said it did — the read model's snapshot carries no park reason (it lives in the event),
+so making that true means extending the checkpoint row (`docs/PROTOCOL.md`'s row catalogue and the audit go
+with it) rather than stretching the prose. The guide's claim is corrected here to what the code does today.
+
 ## D-163 A `--cwd` that is not a directory became the session's workspace (2026-09-27)
 
 Continuing the first-run audit (D-149, D-150) into the *path*-valued flags. `teamagents exec --cwd DIR` is

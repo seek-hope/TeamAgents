@@ -281,6 +281,43 @@ fn events_drive_refreshes_and_notes() {
     assert!(notes.iter().any(|n| n.text.contains("unknown outcome")), "{notes:?}");
 }
 
+/// D-164: a park is the runtime saying why nobody drives that instance (a required MCP service that cannot
+/// start, a driver that failed to boot). The note carried only the lifecycle word, so the reason the runtime
+/// recorded reached no client at all — this note and `daemon.log` were the only places a user could have seen
+/// it. An event without words keeps the plain wording.
+#[test]
+fn a_lifecycle_note_carries_the_runtime_reason() {
+    let mut parked = app();
+    parked.apply_events(&[json!({
+        "sequence": 6, "kind": "instance_lifecycle", "scope": "i-leader",
+        "payload": {"lifecycle": "PARKED", "reason": "required tool service \"probe\" is unavailable: no command"}
+    })]);
+    assert!(
+        parked
+            .entries
+            .iter()
+            .any(|e| e.text.contains("instance i-leader lifecycle -> PARKED")
+                && e.text.contains("required tool service")),
+        "{:?}",
+        parked.entries.iter().map(|e| &e.text).collect::<Vec<_>>()
+    );
+
+    let mut plain = app();
+    plain.apply_events(&[json!({
+        "sequence": 6, "kind": "instance_lifecycle", "scope": "i-w2", "payload": {"lifecycle": "PAUSED"}
+    })]);
+    assert!(
+        plain.entries.iter().any(|e| e.text.contains("instance i-w2 lifecycle -> PAUSED")),
+        "{:?}",
+        plain.entries.iter().map(|e| &e.text).collect::<Vec<_>>()
+    );
+    assert!(
+        !plain.entries.iter().any(|e| e.text.contains("lifecycle -> PAUSED:")),
+        "no dangling separator without a reason: {:?}",
+        plain.entries.iter().map(|e| &e.text).collect::<Vec<_>>()
+    );
+}
+
 #[test]
 fn goal_events_mark_checkpoint_refresh() {
     let mut app = app();

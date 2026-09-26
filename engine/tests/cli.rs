@@ -280,6 +280,68 @@ fn doctor_reports_the_skills_registry_and_missing_configured_paths() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// D-164: `doctor`'s MCP rows have to predict the boot (`engine/src/bound.rs`). A `required = true` service
+/// that cannot load refuses the *driver* boot — the instance parks and no member ever runs — while an optional
+/// one only drops that capability. Both were WARN rows under doctor's "WARN marks optional capabilities"
+/// footer with exit 0, so a user was told the session was fine while nothing drove it. And a `command`
+/// carrying `${VAR}` was reported `ok` with a promise no code keeps ("resolves an environment reference at
+/// start"): nothing expands a command, so the string reaches `exec(2)` literally and the service never starts.
+#[test]
+fn doctor_predicts_whether_an_mcp_service_can_start() {
+    let root = std::env::temp_dir().join(format!("ta-mcp-doctor-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let (config, state) = (root.join("config"), root.join("state"));
+    std::fs::create_dir_all(config.join("teamagents")).unwrap();
+    let model = "[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\napi_key_env = \"TA_MCP_KEY\"\n";
+    let run = |tools: &str| -> (i32, String) {
+        std::fs::write(config.join("teamagents/config.toml"), format!("{model}{tools}")).unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_teamagents"))
+            .arg("doctor")
+            .env("XDG_CONFIG_HOME", &config)
+            .env("XDG_STATE_HOME", &state)
+            .env("TA_MCP_KEY", "test-value")
+            .output()
+            .expect("run doctor");
+        (
+            output.status.code().unwrap_or(-1),
+            format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr)),
+        )
+    };
+    let binding = |name: &str, body: &str| format!("\n[tools.{name}]\nkind = \"mcp\"\n{body}\n");
+
+    // a required service whose command does not exist: the boot refuses, so the row fails and so does doctor
+    let (code, out) = run(&binding("broken", "command = \"/nonexistent/mcp-server\"\nrequired = true\n"));
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("[FAIL] tools.broken") && out.contains("not runnable"), "{out}");
+    assert!(out.contains("the instance parks"), "the row says what the boot does: {out}");
+
+    // the same service optional: the session boots without that capability — WARN, and doctor still passes
+    let (code, out) = run(&binding("broken", "command = \"/nonexistent/mcp-server\"\n"));
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("[WARN] tools.broken"), "{out}");
+    assert!(out.contains("capability is dropped") && out.contains("still boots"), "{out}");
+
+    // `${VAR}` in a command: expanded by nothing, so it can never start (it used to be reported `ok`)
+    let (code, out) = run(&binding("ref", "command = \"${HOME}/bin/mcp-server\"\nrequired = true\n"));
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("nothing expands") && out.contains("in a command"), "{out}");
+
+    // an env value naming an unset variable is a hard error in `bound.rs`, so the row must not be green
+    let (code, out) = run(&binding(
+        "env",
+        "command = \"/bin/sh\"\nargs = [\"-c\", \"true\"]\nenv = { TOKEN = \"${TA_MCP_STDIO_DEFINITELY_UNSET}\" }\n\
+         required = true\n",
+    ));
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("TA_MCP_STDIO_DEFINITELY_UNSET") && out.contains("unset"), "{out}");
+
+    // control: a service that is really there stays ok, required or not
+    let (code, out) = run(&binding("sh", "command = \"/bin/sh\"\nrequired = true\n"));
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("[ok  ] tools.sh") && out.contains("is runnable"), "{out}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// Keep diagnostics deterministic on machines without user namespaces.
 #[test]
 fn doctor_fresh_install_reports_the_missing_requirements() {
@@ -895,10 +957,6 @@ fn cwd_reaches_a_started_daemon_and_is_reported_against_a_live_one() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// The daemon a user actually starts must authorize its Leader: before D-58 the
-/// only grant in a real session was `shell@workspace`, so the model was never
-/// offered spawn/delegate/send and the team feature was unreachable from
-/// `teamagents`, `exec` and `daemon` alike.
 /// A `--cwd` that is not an existing directory cannot become a session's workspace: every file tool and
 /// shell command is confined to that root and `tools.rs` resolves it with `canonicalize`, so accepting it
 /// left the session running against a root nothing could resolve — the model saw a bare `No such file or
@@ -989,6 +1047,55 @@ fn a_cwd_that_is_not_a_directory_is_refused_before_a_session_starts() {
     assert!(!stderr.contains("did not apply"), "a path that is not a directory is refused, not reported: {stderr}");
     assert!(stop_detached_daemon(&state), "the session this test started is stopped by pid, not by pattern");
 
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// D-164: a leader that cannot start must not leave a headless run waiting out its whole deadline. The
+/// supervisor parks such an instance with the runtime's own words (D-104), but nothing carried them to a
+/// client: the TUI logged only the lifecycle word and `exec` reported `end=timeout`/exit 124 with
+/// `failure: null` — 15 minutes of silence on the default timeout, with the one sentence that says what to
+/// fix sitting in `daemon.log`.
+///
+/// The service here fails *after* the client submitted (its handshake blocks for a few seconds), which is the
+/// ordering the pre-submit guard cannot cover: the instance is ACTIVE when `exec` reads its checkpoint, and
+/// parks afterwards.
+#[test]
+fn a_leader_parked_under_a_waiting_run_reports_the_park_instead_of_timing_out() {
+    let root = std::env::temp_dir().join(format!("ta-park-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let (config_home, state) = (root.join("config"), root.join("root"));
+    std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
+    std::fs::write(
+        config_home.join("teamagents/config.toml"),
+        "[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\n\
+         api_key_env = \"TA_PARK_KEY\"\nbase_url = \"http://127.0.0.1:1/v1\"\n\n\
+         [tools.slow]\nkind = \"mcp\"\nmcp_transport = \"stdio\"\ncommand = \"/bin/sh\"\n\
+         args = [\"-c\", \"sleep 4; exit 1\"]\nrequired = true\n",
+    )
+    .unwrap();
+    let started = std::time::Instant::now();
+    let output = Command::new(env!("CARGO_BIN_EXE_teamagents"))
+        .args(["exec", "--state-root"])
+        .arg(&state)
+        .args(["--json", "--timeout", "60", "hello"])
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env("XDG_STATE_HOME", root.join("state"))
+        .env("TA_PARK_KEY", "test-value")
+        .output()
+        .expect("run exec");
+    let elapsed = started.elapsed();
+    let report: serde_json::Value =
+        serde_json::from_slice(&output.stdout).unwrap_or_else(|e| panic!("a JSON report ({e}): {output:?}"));
+    assert_eq!(report["end"], "failed", "{report}");
+    assert_eq!(report["instance_lifecycle"], "PARKED", "{report}");
+    let failure = report["failure"].as_str().unwrap_or("");
+    assert!(failure.contains("PARKED") && failure.contains("required tool service \"slow\""), "{failure}");
+    assert!(failure.contains("instances resume"), "the message carries the lever: {failure}");
+    assert_eq!(output.status.code(), Some(1), "{report}");
+    // The report itself is the proof the *pre-submit* guard did not produce this outcome: that path prints no
+    // report at all ("nothing was submitted", exit 2).
+    assert!(elapsed.as_secs() < 30, "the run ends on the park, not on its 60 s deadline: {elapsed:?}");
+    assert!(stop_detached_daemon(&state), "the daemon this test started is stopped by pid, not by pattern");
     let _ = std::fs::remove_dir_all(&root);
 }
 

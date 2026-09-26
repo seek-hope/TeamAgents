@@ -75,11 +75,16 @@ fn is_executable(path: &Path) -> bool {
     path.metadata().map(|meta| meta.permissions().mode() & 0o111 != 0).unwrap_or(false)
 }
 
-fn check(results: &mut Vec<(String, &'static str, String)>, name: &str, ok: bool, detail: String) {
+/// One `doctor` row: the name, the status word and the detail line.
+type DoctorRow = (String, &'static str, String);
+/// A row reporter: `check` for something that has to work, `optional_check` for a capability.
+type RowReporter = fn(&mut Vec<DoctorRow>, &str, bool, String);
+
+fn check(results: &mut Vec<DoctorRow>, name: &str, ok: bool, detail: String) {
     results.push((name.to_string(), if ok { "ok  " } else { "FAIL" }, detail));
 }
 
-fn optional_check(results: &mut Vec<(String, &'static str, String)>, name: &str, ok: bool, detail: String) {
+fn optional_check(results: &mut Vec<DoctorRow>, name: &str, ok: bool, detail: String) {
     results.push((name.to_string(), if ok { "ok  " } else { "WARN" }, detail));
 }
 
@@ -249,59 +254,110 @@ pub fn doctor(state_root: Option<PathBuf>) -> i32 {
             };
             check(&mut results, label, runnable, format!("{argv:?}"));
         }
-        // A declared MCP service is bound to every member at boot (D-74), so a
-        // mistyped command stops the session there: name it here first, where the
-        // user can still fix it without reading a daemon log.
+        // A declared MCP service is bound to every member at boot (D-74), so a mistyped command stops the
+        // session there: name it here first, where the user can still fix it without reading a daemon log.
+        // What each row *promises* has to be what the boot does (`engine/src/bound.rs`): a `required = true`
+        // service that cannot load fails the driver boot — the instance parks and no member ever runs — while
+        // an optional one only drops that capability. D-164 measured both reported as WARN under doctor's
+        // "WARN marks optional capabilities" footer with exit 0, so a user was told the session was fine while
+        // nothing drove it. The rows below are the checks the boot performs *before* it talks to a service: the
+        // command is spawned verbatim (nothing expands `${…}` in a command), the `env` map and the bearer
+        // variable are read from this environment, and the transport is one of the two this build speaks.
+        // Whether a service *answers* needs starting it, which `doctor` does not do (it never spawns anything).
         for (name, binding) in &catalog.tools {
             if binding.kind != "mcp" {
                 continue;
             }
             let label = format!("tools.{name}");
+            // a required service that cannot load refuses the boot; an optional one only loses a capability
+            let row: RowReporter = if binding.required { check } else { optional_check };
+            let lost = if binding.required {
+                "the session cannot start a member until it is fixed (the instance parks)"
+            } else {
+                "that capability is dropped and the session still boots"
+            };
             let transport = binding.mcp_transport.as_deref().unwrap_or("stdio");
             match transport {
-                "http" => optional_check(
-                    &mut results,
-                    &label,
-                    binding.url.as_deref().is_some_and(|url| url.starts_with("http")),
-                    match binding.url.as_deref() {
-                        Some(url) => format!("http transport at {url}"),
-                        None => "kind = \"mcp\" with mcp_transport = \"http\" needs a url".into(),
-                    },
-                ),
-                "stdio" => match binding.command.clone() {
-                    Some(command) if command.contains("${") => optional_check(
+                "http" => match (binding.url.as_deref(), binding.bearer_token_env_var.as_deref()) {
+                    (Some(url), _) if !url.starts_with("http") => row(
                         &mut results,
                         &label,
-                        true,
-                        format!("command {command:?} resolves an environment reference at start"),
+                        false,
+                        format!("http transport url {url:?} is not an http(s) URL, so {lost}"),
+                    ),
+                    (Some(url), Some(var)) if std::env::var(var).is_err() => row(
+                        &mut results,
+                        &label,
+                        false,
+                        format!("http transport at {url} needs bearer token {var}, which is unset, so {lost}"),
+                    ),
+                    (Some(url), Some(var)) => {
+                        row(&mut results, &label, true, format!("http transport at {url}, bearer {var} is set"))
+                    }
+                    (Some(url), None) => row(&mut results, &label, true, format!("http transport at {url}")),
+                    (None, _) => row(
+                        &mut results,
+                        &label,
+                        false,
+                        format!("kind = \"mcp\" with mcp_transport = \"http\" needs a url, so {lost}"),
+                    ),
+                },
+                "stdio" => match binding.command.as_deref() {
+                    None => row(
+                        &mut results,
+                        &label,
+                        false,
+                        format!("kind = \"mcp\" over stdio needs a command, so {lost}"),
+                    ),
+                    // `${…}` in a *command* is expanded by nothing: the string reaches `exec(2)` literally, so
+                    // the service never starts. (The `env` map below is where a reference does resolve.)
+                    Some(command) if command.contains("${") => row(
+                        &mut results,
+                        &label,
+                        false,
+                        format!(
+                            "command {command:?} carries a `${{…}}` reference, which nothing expands in a \
+                             command (use an absolute path, or a shell wrapper with the reference in args), so {lost}"
+                        ),
                     ),
                     Some(command) => {
-                        let path = Path::new(&command);
+                        let path = Path::new(command);
                         let runnable = if path.components().count() > 1 {
                             path.is_file() && is_executable(path)
                         } else {
-                            which(&command).is_some()
+                            which(command).is_some()
                         };
-                        optional_check(
-                            &mut results,
-                            &label,
-                            runnable,
-                            format!(
-                                "{command:?} {} (bound at start{})",
-                                if runnable { "is runnable" } else { "is not runnable, so the member fails to start" },
-                                if binding.required { ", required" } else { ", optional" }
-                            ),
-                        )
-                    }
-                    None => {
-                        optional_check(&mut results, &label, false, "kind = \"mcp\" over stdio needs a command".into())
+                        // `bound.rs` reads a `${VAR}` env value from this environment and treats an unset one
+                        // as a hard error, so a row that stopped at "the command exists" was green while the
+                        // boot refused.
+                        let unset: Vec<&str> = binding
+                            .env
+                            .values()
+                            .filter_map(|value| value.strip_prefix("${").and_then(|v| v.strip_suffix('}')))
+                            .filter(|var| std::env::var(*var).is_err())
+                            .collect();
+                        let (ok, detail) = if !runnable {
+                            (false, format!("{command:?} is not runnable, so {lost}"))
+                        } else if !unset.is_empty() {
+                            (
+                                false,
+                                format!(
+                                    "{command:?} is runnable but its env {} {} unset, so {lost}",
+                                    unset.join(", "),
+                                    if unset.len() == 1 { "is" } else { "are" }
+                                ),
+                            )
+                        } else {
+                            (true, format!("{command:?} is runnable (bound at start)"))
+                        };
+                        row(&mut results, &label, ok, detail);
                     }
                 },
-                other => optional_check(
+                other => row(
                     &mut results,
                     &label,
                     false,
-                    format!("mcp_transport {other:?} is not one this build speaks (stdio, http)"),
+                    format!("mcp_transport {other:?} is not one this build speaks (stdio, http), so {lost}"),
                 ),
             }
         }

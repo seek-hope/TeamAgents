@@ -426,11 +426,23 @@ impl V2App {
                 }
                 "instance_lifecycle" => {
                     refresh.checkpoint = true;
-                    self.note(format!(
-                        "instance {} lifecycle -> {}",
-                        event["scope"].as_str().unwrap_or("?"),
-                        payload["lifecycle"].as_str().unwrap_or("?")
-                    ));
+                    // the reason rides along (D-164): a park is the runtime saying why nobody drives the
+                    // instance (a required MCP service that cannot start, a driver that failed to boot), and
+                    // the note was the only place a user could have seen it without reading `daemon.log`
+                    let reason = payload["reason"].as_str().unwrap_or("");
+                    self.note(match reason.is_empty() {
+                        true => format!(
+                            "instance {} lifecycle -> {}",
+                            event["scope"].as_str().unwrap_or("?"),
+                            payload["lifecycle"].as_str().unwrap_or("?")
+                        ),
+                        false => format!(
+                            "instance {} lifecycle -> {}: {}",
+                            event["scope"].as_str().unwrap_or("?"),
+                            payload["lifecycle"].as_str().unwrap_or("?"),
+                            reason
+                        ),
+                    });
                 }
                 "instance_created" => {
                     refresh.checkpoint = true;

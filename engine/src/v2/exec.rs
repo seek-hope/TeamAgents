@@ -296,6 +296,21 @@ fn run_fate(event: &Json, instance: &str) -> Option<String> {
     }
 }
 
+/// The sentence for a leader that parked while this run was waiting (D-164): why it parked — the runtime's own
+/// words, when it gave any — and the two ways on, the same advice the pre-submit guard gives about the same
+/// state (`execute`). A park with no recorded words still says *what* the instance is, which is what the user
+/// needs: a PARKED leader does not run input, and `daemon.log`/the TUI carry the detail.
+fn parked_fate(instance: &str, reason: Option<&str>) -> String {
+    let advice = format!(
+        "Resume it (`teamagents instances resume --id {instance}`, or `r` in the TUI instances panel) once the \
+         cause is gone, or use a fresh state root"
+    );
+    match reason {
+        Some(reason) => format!("the leader instance {instance} is PARKED: {reason}. {advice}."),
+        None => format!("the leader instance {instance} is PARKED; new input would not run. {advice}."),
+    }
+}
+
 /// One headless run with no printing at all: submit the prompt to the leader,
 /// follow the run to its terminal state, then run the user's acceptance
 /// commands. Errors are (exit code, message).
@@ -353,6 +368,11 @@ pub fn execute(options: &ExecOptions) -> Result<ExecRun, (i32, String)> {
     // the lifecycle as the loop last saw it: a run that ends on its deadline has to say *what* the instance
     // was doing, because "still running" is wrong for a paused or retired one (D-98)
     let mut lifecycle_now = String::new();
+    // the instance's phase as the loop last saw it: RUNNING means a turn is in flight, so a park that lands
+    // now still lets that turn finish and be reported (D-98) instead of ending this run on the park
+    let mut phase_now = String::new();
+    // the runtime's own words for a park, when it gave any (D-164): nobody is driving the instance
+    let mut park_reason: Option<String> = None;
     // set when the runtime names *this* envelope among the ones it sealed
     let mut undelivered = false;
     // the deadline is the default outcome: a loop that breaks on a terminal
@@ -399,6 +419,19 @@ pub fn execute(options: &ExecOptions) -> Result<ExecRun, (i32, String)> {
                             undelivered = true;
                         }
                     }
+                    // A park is the runtime saying nobody is driving this instance, and its `reason` is the
+                    // runtime's own words for why (a required MCP service that cannot start, a driver that
+                    // failed to boot — D-164). Before this no client ever showed it: the TUI logged only the
+                    // lifecycle word and `exec` reported a bare timeout, so the one sentence that tells the
+                    // user what to fix lived in `daemon.log`.
+                    if event["kind"] == json!("instance_lifecycle")
+                        && event["scope"] == json!(instance)
+                        && event["payload"]["lifecycle"] == json!("PARKED")
+                        && park_reason.is_none()
+                    {
+                        park_reason =
+                            event["payload"]["reason"].as_str().filter(|reason| !reason.is_empty()).map(str::to_string);
+                    }
                 }
             }
             Err(error) => return Err(socket_lost("reading the event stream", &error)),
@@ -408,10 +441,12 @@ pub fn execute(options: &ExecOptions) -> Result<ExecRun, (i32, String)> {
             .or_else(|| snapshot["instances"].as_array())
             .cloned()
             .unwrap_or_default();
-        if let Some(lifecycle) =
-            instances.iter().find(|row| row["id"] == json!(instance)).and_then(|row| row["lifecycle"].as_str())
-        {
+        let leader_row = instances.iter().find(|row| row["id"] == json!(instance));
+        if let Some(lifecycle) = leader_row.and_then(|row| row["lifecycle"].as_str()) {
             lifecycle_now = lifecycle.to_string();
+        }
+        if let Some(phase) = leader_row.and_then(|row| row["phase"].as_str()) {
+            phase_now = phase.to_string();
         }
         let settled = instances.iter().any(|entry| entry["id"] == json!(instance) && entry["phase"] == json!("READY"));
         // What *this* run's input produced (D-72): its own entry, and the first
@@ -446,6 +481,24 @@ pub fn execute(options: &ExecOptions) -> Result<ExecRun, (i32, String)> {
         // reported only while nothing of the run's own has happened.
         // `undelivered` comes first: it is a fact the runtime stated *about this input's envelope* (a reset
         // named it as sealed), which is more precise than "the run failed" — and a reset sets both (D-72).
+        //
+        // A leader parked under a waiting run can never answer it: the runtime parked it because nobody drives
+        // the instance, and the input this run submitted will not run until someone resumes it. Ending the run
+        // here reports *why* (D-164) instead of burning the caller's deadline and calling it a timeout — the
+        // documented outcome for a parked leader, which until now only the pre-submit guard produced. A park
+        // with a turn *in flight* is deliberately not terminal (the driver finishes the current step, and a
+        // resumed instance still lets the run report that turn's own outcome, D-98), and neither is a park the
+        // user lifted again: `phase_now`/`lifecycle_now` are re-read every pass.
+        if lifecycle_now == "PARKED"
+            && phase_now != "RUNNING"
+            && attribution == Attribution::Pending
+            && turn_failure.is_none()
+        {
+            // the park also means there is no turn whose acceptance could be verified (§8). `refused` is the
+            // flag the verification gate reads; its value is never printed — the words ride in `failure`.
+            turn_failure = Some(parked_fate(&instance, park_reason.as_deref()));
+            refused.get_or_insert_with(|| "the leader parked before this run's turn started".to_string());
+        }
         let terminal = match &attribution {
             Attribution::Settled(status) => Some(if status == "SUCCEEDED" { End::Completed } else { End::Failed }),
             Attribution::Reply(_) => Some(End::Reply),
@@ -754,7 +807,8 @@ fn leader_instance(checkpoint: &Json) -> Option<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::{
-        capped, leader_instance, parse_check_result, run_checks, run_fate, socket_lost, timeout_line, Attribution, End,
+        capped, leader_instance, parked_fate, parse_check_result, run_checks, run_fate, socket_lost, timeout_line,
+        Attribution, End,
     };
     use serde_json::json;
     use std::path::Path;
@@ -766,6 +820,19 @@ mod tests {
         assert!(paused.contains("is PAUSED") && paused.contains("instances resume --id i-leader"), "{paused}");
         let retired = timeout_line("i-leader", "TERMINATED", 60);
         assert!(retired.contains("TERMINATED") && retired.contains("termination is final"), "{retired}");
+    }
+
+    /// D-164: the sentence for a park the run observed carries the runtime's own words when it gave any, and
+    /// always the lever the pre-submit guard names for the same state.
+    #[test]
+    fn a_park_the_run_observed_says_why_and_what_to_do() {
+        let named = parked_fate("i-leader", Some("required tool service \"probe\" is unavailable: no command"));
+        assert!(named.starts_with("the leader instance i-leader is PARKED: required tool service"), "{named}");
+        assert!(named.contains("instances resume --id i-leader"), "{named}");
+        // a park with no recorded words still says what the instance is, which is what the user needs
+        let wordless = parked_fate("i-leader", None);
+        assert!(wordless.starts_with("the leader instance i-leader is PARKED; new input would not run"), "{wordless}");
+        assert!(wordless.contains("fresh state root"), "{wordless}");
     }
 
     #[test]

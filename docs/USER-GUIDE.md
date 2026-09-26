@@ -449,9 +449,14 @@ teamagents tasks cancel --id t-prose    # releases a delegator waiting on a task
   bindings) — are catalogued in [docs/TOOLS.md](TOOLS.md), generated from the schemas.
 - MCP: bound services load at startup (a required service fails loudly, an optional one only drops its
   capability). "Fails loudly" means: the instance whose driver cannot boot is **parked with the runtime's
-  reason** — a `bearer_token_env_var` that is not set, an unreachable endpoint or a missing command leaves the
-  session usable and says what is wrong (`teamagents instances` shows `PARKED` and the reason); fix the cause
-  and pull the lever the client names (`teamagents instances resume --id …`). Measured live over the HTTP
+  reason** — a `bearer_token_env_var` that is not set, an unreachable endpoint or a missing command. The
+  session keeps running, but **nothing drives that instance**: a `required = true` service that cannot start
+  leaves every member unstarted, so a headless run (D-164) ends on the park instead of waiting out its
+  deadline and reports the runtime's own words (`failure`, e.g. `required tool service "x" is unavailable:
+  …`), the TUI writes the same sentence into its system notes, and `doctor` names a *static* cause before any
+  session starts (a command that is missing or not executable, `${VAR}` in a command — nothing expands one —
+  an `env` value naming an unset variable, an unset bearer variable). Fix the cause and pull the lever the
+  client names (`teamagents instances resume --id …`, or `r` in the TUI instances panel). Measured live over the HTTP
   transport (`python3 review/dogfood/mcp_http.py`, D-104). Calls go through the same permission, approval, budget, cancellation and receipt entry
   points. A remote call dispatched before a crash is recorded as `OUTCOME_UNKNOWN` after recovery and is
   **never replayed**.
@@ -498,7 +503,7 @@ teamagents tasks cancel --id t-prose    # releases a delegator waiting on a task
 |---|---|
 | `exec: connect ... Connection refused` | Run `teamagents doctor` to inspect the state root; the next `teamagents`/`exec` starts the daemon automatically |
 | `the daemon exited while starting (exit status: 1): …` | The reason is the daemon's own first words; the full log is `<state root>/daemon.log` (usually a missing/broken config or an unset credential) |
-| `exec: the leader instance i-leader is PARKED` | The leader stopped after a permanent failure (`error` in `daemon.log` or the receipt says why). Resume it with `teamagents instances resume --id i-leader` (or `r` in the TUI instances panel), or start a fresh state root; nothing was submitted. A **TERMINATED** leader is different: termination is final, so `exec` says so and the only way on is a fresh state root (D-82) |
+| `exec: the leader instance i-leader is PARKED …` | The leader stopped on a permanent failure and nothing drives it. The client reports the park as soon as it sees it, with the runtime's own reason (D-164; the same sentence is the TUI's system note and a `daemon.log` line): exit 1 when the input was already submitted (it is waiting — resuming the instance runs it) or exit 2 with "nothing was submitted" when the park was visible before submitting. Fix the cause, then `teamagents instances resume --id i-leader` (or `r` in the TUI instances panel), or start a fresh state root. A **TERMINATED** leader is different: termination is final, so `exec` says so and the only way on is a fresh state root (D-82) |
 | `exec` reports `check 1: FAILED` | Your own `--check` command failed; its output is on stderr and in `<state root>/verification.json` |
 | `exec` exits 3 | A tool call needs approval and a headless run cannot answer it. Approve it in the TUI and run `exec` again, or start the daemon with `--full-auto` |
 | `doctor` reports the state root as FAIL | That path does not hold a current session database (the stamp does not match); use another `--state-root` or follow the message, and never edit the database by hand |
