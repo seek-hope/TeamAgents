@@ -18,6 +18,43 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-184 The audits were the one surface without a catalogue (2026-09-27)
+
+Every documented surface in this repository has an audit that holds it to the code: the events (D-125), the
+protocol (D-126/D-173), the tools (D-127), the config keys (D-128), the CLI flags (D-135/D-136), the TUI keys
+(D-157). The audits themselves had none. `docs/DEVELOPMENT.md` is the page a contributor reads to learn what
+`make check` does, and its paragraph walked through **eleven of hygiene's twenty-two audit invocations** and
+stopped: `dead_code` (D-130), `readme_zh` (D-134), `doc_flags` (D-135/D-136), `exec_report` (D-154),
+`tui_keys` (D-157), `env_knobs`, `project_config_claim` (D-133), `eval_manifests` (D-145), `eval_surface`
+(D-182) and `requirement_trace` (D-137) ran without the page naming them — ten of twenty-two, measured
+2026-09-27. Nothing could notice: a script the page never mentions cannot fail a citation, because the page is
+prose, and `build_references.py` (D-179) only checks that the *build's* references resolve.
+
+**The page now names every step, and a gate keeps it that way.** `docs/DEVELOPMENT.md`'s hygiene walkthrough is
+a list grouped by what each audit protects (the documents, the generated references, what the code does with
+what it is given, the build and its evidence, the shell checks), and the new
+`review/hygiene_catalogue.py` fails when a script `make hygiene` or `make test` invoke is not named there. It
+rules on the two targets the page walks through, refuses when a walked target has disappeared instead of
+passing on an empty list, and prints the `review/*.py` the page names that no target runs as a note (four
+probe/evaluation entry points are meant to be run by hand).
+
+**Measured** (2026-09-27): before the page was fixed the audit reported exactly the ten missing names, one
+finding each; after it, "26 script(s) invoked by make hygiene/test: every one is named in
+`docs/DEVELOPMENT.md`", with the four hand-run scripts noted. Controls, each reverted: adding
+`python3 review/config_keys.py` to the recipe fails with that script unnamed; deleting the `tui_keys.py`
+sentence from the page fails with `docs/DEVELOPMENT.md does not name …`; renaming `hygiene:` in a copy of the
+Makefile fails with "no `hygiene` target runs a python script … its rule has stopped applying" — the shape
+D-121 calls a silent skip.
+
+**A correction to D-183, found while writing this.** D-183's closing paragraph listed DESIGN §4.4's
+"full-disk stop" among the record gaps. It is not one: the clause is implemented and tested — A31 records
+`control::disk_full_is_classified_at_the_submit_boundary` and
+`v2_driver::disk_full_stops_dispatch_reports_and_resumes_after_parking`, which drive a *real* `SQLITE_FULL`
+through the store boundary and park the instance with the reason. The §4.4 gaps are artifact collection
+(D-174) and retention (D-75) only, and D-183 now says so. The mistake is the campaign's own recurring shape
+in miniature: a walk that reads a *neighbouring* sentence's subject (the probe's injected-error check) as the
+behaviour, where the behaviour had its own two tests one `grep` away.
+
 ## D-183 The SQLite version DESIGN requires was checked only by a probe nobody runs (2026-09-27)
 
 Walking DESIGN §3 and §4 — the last prose this campaign had only spot-checked — found §4.4's durability clause
@@ -59,7 +96,10 @@ answer, so it says what the binary actually linked and not what a manifest decla
 object list maps onto the sixteen tables (the session *is* the database, its stamp in `meta`); §4.2's commit
 points are the control transaction's own tests; §4.3's artifact lifecycle (`STAGING → LIVE → DELETING /
 ABANDONED`) is implemented in `core/src/v2/control.rs` with tests. §4.4's remaining sentences — artifact
-collection, retention, the full-disk stop — stay the gaps they are already recorded as (D-174, D-75).
+collection and retention — stay the gaps they are already recorded as (D-174, D-75). Its full-disk clause is
+*implemented*, not a gap: `control::disk_full_is_classified_at_the_submit_boundary` and
+`v2_driver::disk_full_stops_dispatch_reports_and_resumes_after_parking` push a real `SQLITE_FULL` through the
+same storage boundary (A31). This sentence said the opposite when D-183 was written — see D-184.
 
 ## D-182 The evaluation's model-visible surface: claimed frozen, pinned by nothing (2026-09-27)
 

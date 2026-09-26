@@ -29,30 +29,46 @@ exit path including a panic (D-160), and `Scratch` removes the test's own temp t
 test that panics in a CI condition used to skip its final `remove_dir_all`, so one failure reported as two and
 left state roots behind. After the suites, `review/test_counts.py` compares their exact sizes (asked of
 cargo's test list) with the numbers `docs/ACCEPTANCE.md` states in its baseline line, so the ledger's
-headline cannot go stale (D-178). `make check` runs, in order: formatting, Clippy on
-all targets, the three crates' tests, the Git submodule
-configuration and repository hygiene (it rejects non-English characters in code and docs, tracked compile
-caches, Python caches and SQLite temporaries, checks the syntax of `install.sh`, and checks the shape of the
-binding decision log with `review/decisions_log.py` (one heading per entry, newest-first, each with a body)
-and the documentation's citations with `review/citations.py` (a cited qualified name — a test or an item —
-or a repository path must exist in the tree, unless the line records it as removed) and `D-<n>` citations with
-`review/decision_citations.py` (a cited decision must be a heading in `docs/DECISIONS.md`, or one of the
-earlier rules its index table keeps in force, unless the line records it as history — D-170).
-`review/flag_fields.py` fails when a CLI parser stores a flag into an `Args` field that no code reads
-(the `--engine` shape, D-180/D-181). `review/build_references.py` fails when a `Makefile` target or a workflow runs a script that does not
-exist or that git does not carry, which is how a new audit stays untracked through a `git commit -a`
-(D-179). `review/silent_skips.py` fails a test that returns from a capability guard without saying
-why (a silent no-op, D-121). `review/command_params.py` fails a command payload field
-that the command layer never reads (D-124). `review/event_catalogue.py` fails when
-`docs/EVENTS.md` and the emitted events drift (D-125). `review/protocol_catalogue.py` fails when
-`docs/PROTOCOL.md` and the daemon's dispatchers drift (D-126). `review/tool_catalogue.py` fails when
-`docs/TOOLS.md` and the tool schemas drift (D-127). `review/config_reference.py` fails when
-`docs/CONFIG.md` and the config structs drift (D-128). `make language-check`
-runs the language rule on its own: it scans the tracked tree for CJK characters and excludes exactly the two
-documented exceptions (`README.zh-CN.md` and the frozen evaluation material under `review/eval`), so a
-stray Chinese comment fails the gate instead of being noticed in review. Clippy warnings are errors. CI uses
-the same make targets and may only download the locked dependencies; the release workflow uses the same Rust
-version.
+headline cannot go stale (D-178). `make check` runs, in order: formatting (`make fmt-check`), Clippy on all
+targets with warnings as errors, the three crates' tests and repository hygiene. Hygiene is a set of small
+audits — each one a claim the tree makes about itself, each with the decision that built it, and
+`review/hygiene_catalogue.py` fails when a script the build runs is missing from this list (D-184):
+
+* **the documents**: `review/decisions_log.py` keeps `docs/DECISIONS.md`'s shape — one heading per entry,
+  newest-first, each with a body (D-107); `review/citations.py` resolves every backticked citation in tracked
+  markdown, a qualified name or a repository path, unless the line records it as removed (D-110);
+  `review/decision_citations.py` resolves every `D-<n>` to a heading or to one of the earlier rules the index
+  table keeps in force (D-170); `review/readme_zh.py` holds `README.zh-CN.md` to `README.md` on the heading
+  skeleton, the in-repository links and the CLI surface (D-134); `review/doc_flags.py` holds the documents and
+  the parsers against the CLI's own help text — a documented flag must exist, a parsed flag must be advertised
+  (D-135/D-136); `review/exec_report.py` does the same for the five `--json` reports (D-154) and
+  `review/tui_keys.py` for the TUI's keys (D-157); `review/requirement_trace.py` keeps the baseline's Q-rows
+  and `docs/ACCEPTANCE.md`'s rows in step (D-137).
+* **the generated references**: `review/event_catalogue.py` (`docs/EVENTS.md` vs the emitted events, D-125),
+  `review/protocol_catalogue.py` (`docs/PROTOCOL.md` vs the daemon's dispatchers and the row-field table,
+  D-126/D-173), `review/tool_catalogue.py` (`docs/TOOLS.md` vs the tool schemas, D-127) and
+  `review/config_reference.py` (`docs/CONFIG.md` vs the config structs, D-128).
+* **what the code does with what it is given**: `review/flag_fields.py` fails a flag parsed into an `Args`
+  field no code reads (the `--engine` shape, D-180/D-181); `review/command_params.py` fails a command payload
+  field the command layer never reads (D-124); `review/dead_code.py` lists the public items the product's own
+  code never calls (D-78/D-86, in hygiene since D-130); `review/env_knobs.py` keeps the `TEAMAGENTS_*` table
+  below equal to the code's reads; `review/project_config_claim.py` checks the one fact every document states —
+  the project config is not read (D-133); `review/silent_skips.py` fails a test that returns from a capability
+  guard without saying why (D-121).
+* **the build and its evidence**: `review/build_references.py` fails a script a `Makefile` target or a
+  workflow runs that does not exist or that git does not carry — how a new audit stays untracked through a
+  `git commit -a` (D-179); `review/eval_manifests.py` holds the frozen evaluation manifests against the tree
+  (D-145); `review/eval_surface.py` holds the evaluation's model-visible surface against those manifests, the
+  harness's history and the recorded trials (D-182); `review/dogfood/probes.py --self-check` checks the probe
+  harness's own rules (its selection, budgets, the stray guard and the no-kill-by-pattern rule).
+* **the shell, before any of that**: it rejects non-English characters (the two documented exceptions), tracked
+  compile caches, Python caches and SQLite temporaries, and checks the syntax of `install.sh`.
+
+`make language-check` runs the language rule on its own: it scans the tracked tree for CJK characters and
+excludes exactly the two documented exceptions (`README.zh-CN.md` and the frozen evaluation material under
+`review/eval`), so a stray Chinese comment fails the gate instead of being noticed in review. Clippy warnings
+are errors. CI uses the same make targets and may only download the locked dependencies; the release workflow
+uses the same Rust version.
 A green Cargo run can include tests that returned early for a missing dependency, so it never substitutes for
 real isolation or real-model acceptance.
 

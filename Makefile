@@ -194,6 +194,7 @@ hygiene: language-check
 		{ echo 'tracked build artifacts (compile caches, Python caches, SQLite temporaries); remove them before committing.'; exit 1; }
 	sh -n install.sh
 	python3 review/build_references.py
+	python3 review/hygiene_catalogue.py
 	python3 review/flag_fields.py
 	python3 review/decisions_log.py
 	python3 review/citations.py
