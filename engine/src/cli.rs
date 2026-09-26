@@ -1,6 +1,6 @@
 //! CLI entry points: init / doctor / daemon / exec / version.
 
-use crate::config::{load_user_config, missing_key_envs, sessions_dir, user_config_path};
+use crate::config::{load_user_config, missing_key_envs, sessions_dir, state_dir, user_config_path};
 use crate::tools::{bwrap_available, which};
 use crate::VERSION;
 use serde_json::json;
@@ -53,9 +53,15 @@ pub fn prepare_v2_root(state_root: Option<PathBuf>) -> Result<PathBuf, String> {
 }
 
 /// Legacy v1 state: reported, never touched here (R28 owns cleaning it).
+///
+/// A **non-empty** directory is the evidence. An empty one has nothing to migrate, and this build used to
+/// create exactly that: `doctor`'s writability probe ran on this legacy path, so `doctor` followed by `init`
+/// told the user to remove "an older release's sessions directory" that `doctor` itself had just made
+/// (measured 2026-09-26, D-149).
 fn legacy_layout_hint() -> Option<String> {
-    let sessions = crate::config::sessions_dir();
-    if sessions.is_dir() {
+    let sessions = sessions_dir();
+    let holds_sessions = std::fs::read_dir(&sessions).map(|mut entries| entries.next().is_some()).unwrap_or(false);
+    if holds_sessions {
         return Some(format!(
             "found an older release's sessions directory at {} (the old format is not migrated; remove it by an explicit inventory — nothing is deleted automatically)",
             sessions.display()
@@ -394,7 +400,10 @@ pub fn doctor(state_root: Option<PathBuf>) -> i32 {
             );
         }
     }
-    let dir = sessions_dir();
+    // The probe runs on the state directory this build actually uses, never on the legacy `sessions/` path:
+    // a check that creates the directory it then warns about is how `init` came to blame an older release for
+    // this build's own empty directory (measured 2026-09-26, D-149).
+    let dir = state_dir();
     let probe = dir.join(".doctor-probe");
     let state_ok = std::fs::create_dir_all(&dir).is_ok()
         && std::fs::write(&probe, "ok").is_ok()

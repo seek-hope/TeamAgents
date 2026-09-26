@@ -350,6 +350,13 @@ provider = \"deepseek\"\nprotocol = \"deepseek\"\nmodel = \"deepseek-flash\"\nap
     assert!(doctor.contains("v2 state root"), "{doctor}");
     assert!(doctor.contains("journal_mode=wal"), "{doctor}");
     assert!(doctor.contains("synchronous=FULL"), "{doctor}");
+    // D-149: the check that names the state directory must not create the *legacy* one. `doctor`'s writability
+    // probe used to run on `teamagents/sessions/`, so running `doctor` before `init` (which the guide invites:
+    // "config, credentials, state root, …") made the next `init` tell the user to remove "an older release's
+    // sessions directory" that this build had just made.
+    assert!(!home.join("teamagents/sessions").exists(), "doctor must not create the legacy sessions layout: {doctor}");
+    let rerun = teamagents(&["init"], &home, &config);
+    assert!(!rerun.contains("older release"), "init must not report a legacy layout this build made: {rerun}");
 
     // an explicit --state-root is honoured and reported
     let other = home.join("other-root");
@@ -370,6 +377,12 @@ provider = \"deepseek\"\nprotocol = \"deepseek\"\nmodel = \"deepseek-flash\"\nap
     std::fs::create_dir_all(home.join("teamagents/sessions/old")).unwrap();
     let doctor = teamagents(&["doctor"], &home, &config);
     assert!(doctor.contains("an older release's sessions directory"), "{doctor}");
+    // …and an *empty* one is not evidence of an older release (D-149): it holds nothing to migrate, and an
+    // empty directory there is what this build's own probe used to leave behind.
+    std::fs::remove_dir_all(home.join("teamagents/sessions")).unwrap();
+    std::fs::create_dir_all(home.join("teamagents/sessions")).unwrap();
+    let doctor = teamagents(&["doctor"], &home, &config);
+    assert!(!doctor.contains("older release"), "an empty sessions directory is not a legacy layout: {doctor}");
     std::fs::remove_dir_all(&home).unwrap();
 }
 

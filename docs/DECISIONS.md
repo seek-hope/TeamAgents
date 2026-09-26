@@ -18,6 +18,36 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-149 The check that creates what it then warns about (2026-09-26)
+
+On a fresh machine, `teamagents doctor` left an empty `<state>/teamagents/sessions/` behind: the row named
+"state directory" probed writability by `create_dir_all` on the **legacy v1** path (`config::sessions_dir()`)
+and writing `.doctor-probe` in it. The next `init` then printed "found an older release's sessions directory
+at … (the old format is not migrated; remove it by an explicit inventory — nothing is deleted automatically)"
+— about a directory this build had created moments earlier, inviting the user to clean up the product's own
+artifact. The guide invites that order ("doctor … config, credentials, state root, skills, bubblewrap and host
+checks"), and the tree's own test already stated the intent the probe broke: "init prepares only the *v2* state
+root (R27/A36); it never opens a v1 session, so no legacy state directory appears". `sessions_dir()` has
+exactly two callers — this hint and that probe — so nothing else in the build creates the path (`init` alone:
+no; `exec` without a config: nothing at all).
+
+**Changed** (`engine/src/cli.rs`, no new surface): the row probes the directory it names, `state_dir()`
+(`<state>/teamagents`), and the legacy hint requires a **non-empty** directory. An empty one holds nothing to
+migrate, and since anything this build creates is empty, "exists" can no longer be mistaken for "an older
+release left it". Both halves have regression assertions in `engine/tests/cli.rs::init_prepares_the_v2_root_and_doctor_verifies_it`.
+
+**Measured** (2026-09-26, isolated `XDG_STATE_HOME`): after `doctor`, the state tree is `teamagents/sessions`
+(the defect) and `init` prints the false note; after the fix, `doctor` reports `[ok] state directory
+/…/teamagents`, `sessions/` does not exist, and `init` prints no note — while a legacy directory with content
+(`sessions/old-session`) still reports and an empty one does not. Controls, each reverted byte-identically
+(sha256 `6e4e8885…`): the probe back on `sessions_dir()` fails with "doctor must not create the legacy sessions
+layout", and the hint back on `is_dir()` fails with "an empty sessions directory is not a legacy layout".
+
+Ceiling: `doctor` still creates `<state>/teamagents` — the directory its row names — because a writability
+probe must write somewhere; the strict read-only alternative (report "not created yet" like the `v2 state
+root` row and probe the parent) is a wording decision, not a defect. No other `doctor` row touches the
+filesystem (the only `create_dir_all`/`write`/`remove_file` in it is this probe).
+
 ## D-148 Every probe stopped its daemon with `pkill -f`, the pattern that killed two shells (2026-09-26)
 
 Each of the twenty-eight dogfood probes ended with the same two lines: a `stop_daemon(state_root)` helper,
