@@ -96,6 +96,8 @@ amended (D-49/D-50).
 
 ## Known gaps (found while auditing the documented surface, 2026-09-25)
 
+- **Nothing stops a service a settled command left behind.** D-41 says such a service is explicit-only cleanup and the product does not re-adopt it, but the explicit lever does not exist: `instances terminate` cancels an operation that is still *running* (A13, D-88), and the runner that owned the command's process group is retired once the job settles (D-112), so afterwards nothing in the product can signal it. `docs/USER-GUIDE.md` §4 and the troubleshooting table now say what a user can do (have the command print its pid and `kill` it). A product lever would be new surface — a verb that re-opens a job directory and issues one best-effort, identity-verified `signal_group`, the path the runner already has for `OUTCOME_UNKNOWN` — and it needs the user's word.
+
 - **The published release is the earlier implementation, and shares the tree's version.** `review/install_check.py` verifies the
   documented install path end to end (mechanics and the refusal above), and the published `v0.1.2` artifact it installs is the
   *pre-v2* product: its `--help` is not in English and still offers `validate`, `sessions prune`, `--plain`, `--resume` and

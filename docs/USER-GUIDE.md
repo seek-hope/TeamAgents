@@ -290,6 +290,13 @@ scope and the short id); issuing and revoking grants is the CLI's job.
 | `approved_scope` (default) | Shell runs under bubblewrap; network access and out-of-scope writes need user approval, bound to the concrete operation and its argument hash |
 | `full_auto` | Host shell (D-41): long commands and background services survive across calls, and `exec` exiting does not stop an already started service |
 
+A service a command leaves behind (`dev-server &`) belongs to **you**, not to the session: the product does not
+adopt it, does not restart it and does not clean it up when the client, the daemon or the member exits — that is
+the deliberate half of D-41, and the runner that owned the command's process group is retired once the job
+settles (D-112). Stop such a service the way you would from a shell: have the command print its pid (`sleep 300 &
+echo $!`) and `kill` it, or keep the command short-lived. What the session *does* stop is the command itself —
+`instances terminate` cancels an operation that is still running, and its receipt says `class: cancelled`.
+
 The mode belongs to the **session**, not to the client, and you choose it in two places: the flag
 (`teamagents --full-auto`, `teamagents --full-auto --state-root …`, `teamagents daemon --full-auto`) asks for host
 execution for that boot, and `mode` in `[permissions]` of **your own** config makes it the default for the
@@ -441,4 +448,5 @@ teamagents tasks cancel --id t-prose    # releases a delegator waiting on a task
 | A member is stuck in a long or endless command and cancelling its task changed nothing | `tasks cancel` is delegation-level and does not touch the assignee's operation (D-88). Stop the work with `teamagents instances terminate --id … --yes` (the process group dies within seconds, and the receipt says `class: cancelled`) or wait for the command's own tool timeout |
 | An instance is parked | `teamagents instances` shows which; resume it with `instances resume --id` (or `r` in the TUI) when the reason is gone |
 | A command under `approved_scope` waits for approval | Decide it with `teamagents approvals` (§4.1) or in the TUI approvals panel; `--full-auto` (host execution, D-41) skips the gate |
+| A command left a service running (`dev-server &`) | By design the session does not manage it (D-41/D-112): it survives the client, the daemon and the member. Stop it yourself with the pid the command printed (`sleep 300 & echo $!`, then `kill <pid>`), or start such work in a command that exits when you are done. `instances terminate` stops an *operation that is still running*, not a service left behind by one that finished |
 | Start completely fresh | Stop the daemon and run `teamagents --state-root <new directory>` for a clean session; the old database stays where it is |
