@@ -384,7 +384,11 @@ teamagents tasks cancel --id t-prose    # releases a delegator waiting on a task
   Wire it if you need it: a member's instructions come from its profile, so the Leader can pass the rules in
   its `spawn`/`delegate` text today.
 - MCP: bound services load at startup (a required service fails loudly, an optional one only drops its
-  capability). Calls go through the same permission, approval, budget, cancellation and receipt entry
+  capability). "Fails loudly" means: the instance whose driver cannot boot is **parked with the runtime's
+  reason** — a `bearer_token_env_var` that is not set, an unreachable endpoint or a missing command leaves the
+  session usable and says what is wrong (`teamagents instances` shows `PARKED` and the reason); fix the cause
+  and pull the lever the client names (`teamagents instances resume --id …`). Measured live over the HTTP
+  transport (`python3 review/dogfood/mcp_http.py`, D-104). Calls go through the same permission, approval, budget, cancellation and receipt entry
   points. A remote call dispatched before a crash is recorded as `OUTCOME_UNKNOWN` after recovery and is
   **never replayed**.
 - **Binding one is writing it down** (D-74): a `[tools.<name>] kind = "mcp"` entry in your config *is* the

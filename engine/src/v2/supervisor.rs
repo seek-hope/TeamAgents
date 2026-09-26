@@ -84,6 +84,20 @@ fn report_refusal(reported: &mut HashMap<String, String>, instance: &str, retire
     Some(line)
 }
 
+/// Park an instance whose driver cannot boot, with the reason, as the *system* — the only lifecycle an
+/// instance's own runtime may set (§5.4). `instances resume` is the lever the user pulls to try again
+/// (`docs/USER-GUIDE.md` §4.2); a failure to park is reported rather than swallowed.
+async fn park_unusable(storage: &Storage, instance: &str, reason: &str) {
+    let command = Command {
+        command_id: format!("park-unusable-{instance}-{}", uuid::Uuid::new_v4().simple()),
+        method: "set_lifecycle".into(),
+        params: json!({"instance_id": instance, "lifecycle": "PARKED", "reason": reason}),
+    };
+    if let Err(error) = storage.call(move |control| control.submit(command, Identity::System)).await {
+        eprintln!("instance {instance}: could not park it after a driver failure: {error}");
+    }
+}
+
 impl SupervisorHandle {
     async fn submit(&self, cmd: Command, identity: Identity) -> Result<Json, String> {
         self.storage.call(move |control| control.submit(cmd, identity)).await?
@@ -326,6 +340,7 @@ where
                         }
                     }
                 }
+                let mut unusable: Vec<(String, String)> = vec![];
                 let no_drivers = {
                     let mut drivers = self.drivers.lock().unwrap();
                     // retire finished or terminated drivers (§5.4)
@@ -370,11 +385,30 @@ where
                             goal_limits: self.config.goal_limits.clone(),
                             require_shell_approval: self.config.require_shell_approval,
                         };
-                        let (shared, task) = spawn_driver(driver_config, &self.storage)?;
+                        let (shared, task) = match spawn_driver(driver_config, &self.storage) {
+                            Ok(pair) => pair,
+                            Err(error) => {
+                                // A driver that cannot boot — a required MCP service whose secret is missing, an
+                                // unusable profile — must not take the coordinator down with it: the session
+                                // stayed up and *silent* while nothing drove the instance, and a headless run
+                                // waited out its whole deadline with no event and no log line (measured
+                                // 2026-09-26). The system's only self-action is parking (§5.4), so the instance
+                                // is parked with the runtime's own words: `instances` shows it, `instances
+                                // resume` is the lever, and the next discovery pass skips it (no turn storm).
+                                eprintln!("instance {id} cannot start its driver: {error}; parking it");
+                                // parked after the drivers lock is released: a `MutexGuard` is not `Send` and
+                                // the coordinator's task must stay `Send`
+                                unusable.push((id.clone(), error));
+                                continue;
+                            }
+                        };
                         drivers.insert(id.clone(), InstanceDriver { shared, task });
                     }
                     drivers.is_empty()
                 };
+                for (id, reason) in unusable {
+                    park_unusable(&self.storage, &id, &reason).await;
+                }
                 if no_drivers && instances.iter().all(|(_, lifecycle, _, _)| lifecycle == "TERMINATED") {
                     break; // every instance retired: the session is done (§5.4)
                 }

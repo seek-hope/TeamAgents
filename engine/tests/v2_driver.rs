@@ -1495,10 +1495,13 @@ async fn notify_hooks_receive_tool_call_and_run_completed() {
     let root = root("hook-notify");
     std::fs::create_dir_all(root.dir.join("ws")).unwrap();
     let seen = root.dir.join("events.txt");
+    // one line per event, name and payload together: two writes left a window where the name was on disk
+    // and the payload (the part the assertion below needs) was not, which is how this fixture flaked under
+    // load (D-105)
     let hook = hook_script(
         &root.dir,
         "notify.sh",
-        &format!("printf '%s\\n' \"$1\" >> {}\ncat >> {}\n", seen.display(), seen.display()),
+        &format!("payload=$(cat)\nprintf '%s %s\\n' \"$1\" \"$payload\" >> {}\n", seen.display()),
     );
     let script = vec![Step::Message(shell_call("c1", "echo notified")), Step::Message(finish_call("done"))];
     let mut config = root.config(ScriptedProvider { script: Mutex::new(script.into()) });
@@ -1511,12 +1514,13 @@ async fn notify_hooks_receive_tool_call_and_run_completed() {
     let mut text = String::new();
     while std::time::Instant::now() < deadline {
         text = std::fs::read_to_string(&seen).unwrap_or_default();
-        if text.contains("tool_call") && text.contains("run_completed") {
+        // wait for what the assertions need, not just for the event names (D-83/D-94/D-103/D-105)
+        if text.contains("tool_call ") && text.contains("echo notified") && text.contains("run_completed") {
             break;
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    assert!(text.contains("tool_call\n"), "the tool call was reported: {text}");
+    assert!(text.contains("tool_call "), "the tool call was reported: {text}");
     assert!(text.contains("run_completed"), "the completed run was reported: {text}");
     assert!(text.contains("\"instance_id\":\"i-main\""), "the payload carries the instance: {text}");
     assert!(text.contains("echo notified"), "the tool arguments travel on stdin: {text}");

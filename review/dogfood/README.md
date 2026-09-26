@@ -538,3 +538,26 @@ files: a member's system text is its profile's `instructions`. The probe configu
 runs one real-model turn and reads the prompt the leader was given: the canary is **not** in it, and `doctor`
 now says `declared, not applied` (D-102). It is written to flip — when the feature lands, the assertion becomes
 "the canary is in the prompt" and this probe is its acceptance test.
+
+
+## `mcp_http.py`: the HTTP transport, its bearer token, and a required service that cannot start
+
+The `mcp_transport = "http"` half of the MCP surface had no test at all before this probe: the offline suite
+and `mcp.py` both drive stdio.
+
+```bash
+python3 review/dogfood/mcp_http.py
+```
+
+It stands up a minimal streamable-HTTP MCP server on loopback and runs two scenarios with a real model:
+
+1. `bearer_token_env_var` set → the model is offered only the declared tool, its call comes back as
+   `probe-pong-ping-1` in the conversation, and the server's log shows every POST carrying
+   `Authorization: Bearer <token>`;
+2. the same binding with that variable **unset** → the runtime parks the instance with
+   `required tool service "probe" is unavailable: binding "probe": bearer token env var PROBE_MCP_TOKEN is not
+   set`, and `exec` exits `2` naming the parked leader and the resume lever (`instances resume --id i-leader`).
+
+The second scenario is what found D-104: before the fix the coordinator task died on the boot failure and the
+session stayed up and silent — no event, no log line, no model request — while a headless run waited out its
+whole deadline.

@@ -231,6 +231,83 @@ are in the 45-item design review (reachable through Git history: `git log -- rev
 are not measured performance results, and they do not mean the user approved each pending library, parameter
 or statistical precision. Requirements that conflict with this item's confirmed scope are superseded by it;
 untouched behaviour contracts remain in force.
+## D-105 The fourth fixture race, and the shape they all share (2026-09-26)
+
+`make check` failed in `v2_driver::notify_hooks_receive_tool_call_and_run_completed`, and the failing
+assertion printed the log it had read:
+
+    the tool arguments travel on stdin: run_completed
+    {"event":"run_completed",…}run_completed
+    tool_call
+
+The fixture's hook wrote the event **name** and then its payload as two separate writes, and the test's wait
+condition looked for the event *names* only — so under load it could read the file between the two writes:
+`tool_call` was on disk, its arguments were not, and the assertion that needs the arguments failed. Reproduced
+under 16-way load: one failure in four attempts.
+
+The fix is the same recipe as D-83/D-94/D-103, applied to a *line* instead of an event: the hook now writes one
+line per event (`payload=$(cat); printf '%s %s\n' "$1" "$payload"`), and the wait condition waits for exactly
+what the assertions need (`tool_call `, `echo notified`, `run_completed`). After the fix: eight consecutive
+full-binary runs under the same 16-way load, all green, and `make check` green twice.
+
+Four of these in one session is a pattern, not bad luck, and all four are the same mistake in different clothes:
+**a fixture waited for something adjacent to the effect it asserts about.**
+
+| Entry | What it waited for | What it should have waited for |
+|---|---|---|
+| D-83 | a fixed duration | the command having started |
+| D-94 | a fixed sleep after the model's answer | the receipt the assertion reads |
+| D-103 | the dispatch event (committed *before* the call is sent) | the call having reached the server |
+| D-105 | the event *name* in the log | the whole line, arguments included |
+
+Ceiling: none of these was a product defect, and all four would have been invisible on an idle machine. The
+cheap mechanical guard is the one this session kept applying by hand: for every `assert!` in a fixture, find the
+observation it depends on and make the wait observe *that*. A linter for it does not exist here.
+
+## D-104 A driver that cannot boot took the coordinator down silently (2026-09-26)
+
+The `mcp_transport = "http"` half of the MCP surface had **no test at all** — the offline suite drives stdio,
+the live `mcp.py` drives stdio — so `review/dogfood/mcp_http.py` stands up a minimal streamable-HTTP MCP server
+on loopback and drives it with a real model. The happy path came out as designed: with
+`bearer_token_env_var = "PROBE_MCP_TOKEN"` set, the model was offered only the declared tool, its call came
+back as `probe-pong-ping-1` in the conversation, and the server's log shows **all four** POSTs carrying
+`Authorization: Bearer <token>` (the handshake, `tools/list`, `tools/call`, and the initialized notification).
+
+The second scenario — the same binding with that variable **unset** — found a defect. A *required* service must
+fail loudly (the offline test `required_mcp_service_failure_fails_driver_boot` pins that at the driver level),
+but through the daemon the failure vanished: the supervisor's discovery loop spawned each ACTIVE instance's
+driver with `?`, so the error ended the coordinator task, and the session stayed up and **silent** —
+
+    exec report:  {'end': 'timeout', 'failure': None}   after 60 s, no event, no log line, no model request
+    daemon.log:   the startup banner only
+
+while nothing drove any instance. The user's session was wedged with a reason that existed only inside a dead
+task.
+
+The fix keeps the coordinator alive and uses the runtime's only self-action (§5.4): the instance whose driver
+cannot boot is **parked with the runtime's own words**, and the discovery pass skips it afterwards (no retry
+storm). Measured after the fix, the same probe:
+
+    exec: exit 2 — "the leader instance i-leader is PARKED; new input would not run. Resume it
+          (`teamagents instances resume --id i-leader`, …)"
+    park reason: required tool service "probe" is unavailable: binding "probe": bearer token env var
+          PROBE_MCP_TOKEN is not set
+
+so D-82's refusal names the lever, the reason names the missing variable, `instances` shows the state, and
+fixing the environment plus `instances resume` is a real recovery path.
+
+Evidence: `v2_supervisor::a_driver_that_cannot_boot_parks_the_instance_with_the_reason` (the instance is parked
+with the service and variable named, exactly one lifecycle event, and **no** `request_began`; pre-fix control —
+with the old `?` restored the event never arrives and the test fails with
+`event instance_lifecycle did not arrive within 10000ms`), and `python3 review/dogfood/mcp_http.py` (two
+scenarios, live). `docs/USER-GUIDE.md` §5 states the behaviour.
+
+Ceiling: the mechanism covers *any* driver-boot failure (that is the point — one place), but the probe
+exercises the MCP case; the stdio options `mcp_execution`, `mcp_network` and `startup_timeout_s` /
+`tool_timeout_s` still have no behavioural test (their read sites exist, their effects are untested), and
+`tool_names` filtering is only exercised by this probe's single-tool binding. Recorded here rather than
+implied.
+
 ## D-103 A third fixture waited for the wrong thing: the MCP crash window (2026-09-26)
 
 `make check` failed in `v2_mcp::recovered_mcp_dispatch_is_not_replayed` with

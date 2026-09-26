@@ -619,6 +619,55 @@ async fn the_offered_surface_follows_the_grants() {
 /// extend: every configured MCP service was unreachable while the docs promised the
 /// `[tools.*]` section as the binding.
 #[tokio::test]
+async fn a_driver_that_cannot_boot_parks_the_instance_with_the_reason() {
+    // The failure mode this pins (D-104): the coordinator's discovery loop spawned each ACTIVE instance's
+    // driver with `?`, so a driver that could not boot (here a *required* MCP service whose secret is not in
+    // the environment) ended the coordinator task. The session stayed up and silent — no event, no log line,
+    // and a headless run waited out its whole deadline — while nothing drove any instance.
+    let root = root("driver-boot-failure");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let seen: Seen = Arc::new(Mutex::new(HashMap::new()));
+    let mut cfg = config(
+        &root,
+        factory_with_log(
+            HashMap::from([("i-leader".to_string(), vec![Step::Message(finish_call("never runs"))])]),
+            seen.clone(),
+        ),
+    );
+    cfg.catalog.tools.insert(
+        "probe".into(),
+        serde_json::from_value(json!({
+            "kind": "mcp", "mcp_server": "probe", "mcp_transport": "http", "mcp_execution": "host",
+            "required": true, "url": "http://127.0.0.1:1/mcp",
+            "bearer_token_env_var": "PROBE_DRIVER_BOOT_TOKEN_9F2A"
+        }))
+        .expect("a tool binding"),
+    );
+    let handle = start(cfg).await.expect("the coordinator stays up");
+    // the instance is parked with the runtime's own words...
+    let event = wait_event(&handle, "instance_lifecycle", 10_000).await;
+    assert_eq!(event["payload"]["lifecycle"], json!("PARKED"), "{event}");
+    let reason = event["payload"]["reason"].as_str().unwrap_or("");
+    assert!(
+        reason.contains("PROBE_DRIVER_BOOT_TOKEN_9F2A") && reason.contains("probe"),
+        "the park reason names the service and the missing variable: {event}"
+    );
+    // ...and the coordinator is still driving: the instance is not retried in a storm, and no turn was opened
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let events = handle.events(0).await.unwrap();
+    assert_eq!(
+        events.iter().filter(|e| e["kind"] == json!("instance_lifecycle")).count(),
+        1,
+        "a parked instance is not parked again and again: {events:?}"
+    );
+    assert!(
+        !events.iter().any(|e| e["kind"] == json!("request_began")),
+        "nothing opens a turn for an instance whose driver cannot boot: {events:?}"
+    );
+    handle.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
 async fn a_configured_mcp_service_reaches_the_members_surface() {
     // a minimal stdio server: initialize + tools/list, one tool
     let server = r#"
