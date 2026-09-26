@@ -321,6 +321,16 @@ started a fresh daemon (pid 18) on the same database and reported the documented
 `stopping...` line, a bounded stop and the removed socket; control: with the handler removed the same test
 fails `ExitStatus(unix_wait_status(15))`, reverted byte-identically (sha256 `141a47b8…`).
 
+**And the client says what that means (2026-09-27)**: making the stop supported exposed the other half — a run
+attached when the daemon goes away printed `exec: the event stream broke: daemon write: Broken pipe (os error
+32)`, accurate and useless. The client now classifies a lost socket (broken pipe, connection reset, EOF) on all
+four paths that can meet one (the event stream, the checkpoint, the submit, the poll loop) and reports it as
+`the daemon's socket was lost <what it was doing> (<the transport error>) — the session and its committed state
+are kept; start the daemon again …`, exit `2` as documented; a failure that is not a lost socket keeps the plain
+wording, because calling every failure a stopped daemon would hide the real one
+(`v2::exec::tests::a_lost_socket_is_reported_as_what_it_means`, measured live by SIGTERMing the daemon under an
+attached run).
+
 Ceiling: finding the pid is still the user's job. A `teamagents daemon --stop` (or a protocol shutdown
 command) is new surface and would have to answer the stale-pid question with the identity machinery the runner
 already has (A15), so it is recorded in `docs/ACCEPTANCE.md`'s known gaps as needing the user's word. And
@@ -2261,9 +2271,11 @@ not run, says which side failed: *never offered* is the product finding, *offere
 choice. The first run with it (2026-09-27, DeepSeek Flash, 33 model requests, turn 1 291 s and turn 2 338 s)
 **passed**, and the log is the evidence: `shell=no` for the worker's three requests before the grant and
 `shell=yes` for both after it, the worker itself reporting "a `shell` tool is now present in my toolset", and
-`proof.txt` written with the expected content. So the surface follows the grant in this shape, and the failing
-run recorded above is now either a model that did not use an offered tool or an intermittent path that the next
-failure will name instead of hiding behind the model's account of its own tool list.
+`proof.txt` written with the expected content — the worker's own lines are kept in
+`review/tmp/d143-surface-witness/` (a copy: the harness's root is episode-local, D-156). So the surface
+follows the grant in this shape, and the failing run recorded above is now either a model that did not use
+an offered tool or an intermittent path that the next failure will name instead of hiding behind the
+model's account of its own tool list.
 
 **2026-09-27, an exception reproduced and narrowed.** A `make probe-models`-style run of
 `python3 review/dogfood/authority.py` failed *this* way (kept session under the harness root of that run):

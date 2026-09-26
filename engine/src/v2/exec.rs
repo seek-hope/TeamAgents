@@ -304,9 +304,9 @@ pub fn execute(options: &ExecOptions) -> Result<ExecRun, (i32, String)> {
         .map_err(|error| (2, format!("exec: {error}; start teamagents daemon first (or just run teamagents)")))?;
     // Drain the events recorded before this input and keep the watermark: a
     // goal settlement from an earlier run is history, not this run's outcome.
-    client.events().map_err(|error| (2, format!("exec: the event stream broke: {error}")))?;
+    client.events().map_err(|error| socket_lost("reading the event stream", &error))?;
     let checkpoint =
-        client.call("checkpoint", json!({})).map_err(|error| (2, format!("exec: checkpoint failed: {error}")))?;
+        client.call("checkpoint", json!({})).map_err(|error| socket_lost("reading the checkpoint", &error))?;
     let (instance, lifecycle) = leader_instance(&checkpoint)
         .ok_or_else(|| (2, format!("exec: the session has no usable leader instance: {checkpoint}")))?;
     // A parked or paused leader will not run the input: saying so beats
@@ -338,7 +338,7 @@ pub fn execute(options: &ExecOptions) -> Result<ExecRun, (i32, String)> {
             "submit_input",
             json!({"instance_id": instance, "envelope_id": envelope, "text": options.prompt}),
         )
-        .map_err(|error| (2, format!("exec: submitting the input failed: {error}")))?;
+        .map_err(|error| socket_lost("submitting the input", &error))?;
     // A turn that was already in flight when this run started cannot include the
     // input: it waits for the boundary and enters the conversation after that
     // turn's own reply (D-63). Report it instead of pretending it landed.
@@ -401,7 +401,7 @@ pub fn execute(options: &ExecOptions) -> Result<ExecRun, (i32, String)> {
                     }
                 }
             }
-            Err(error) => return Err((2, format!("exec: the event stream broke: {error}"))),
+            Err(error) => return Err(socket_lost("reading the event stream", &error)),
         }
         let instances = snapshot["snapshot"]["instances"]
             .as_array()
@@ -504,6 +504,31 @@ pub fn execute(options: &ExecOptions) -> Result<ExecRun, (i32, String)> {
         "watermark": client.watermark,
     });
     Ok(ExecRun { report, end, checks_ok })
+}
+
+/// The daemon's socket died under a run — say what that means for the user.
+///
+/// The daemon can be stopped on purpose: SIGTERM is the supported stop since D-150, and a client that was
+/// waiting on it then sees a bare transport error. Measured 2026-09-27: `exec: the event stream broke: daemon
+/// write: Broken pipe (os error 32)` — accurate and useless, because a user cannot tell a crashed daemon from a
+/// stopped one from a lost run. The session and its committed state survive a stop, so the message says so and
+/// names the way on; a failure that is *not* a lost socket keeps the plain wording, since calling every failure
+/// a stopped daemon would hide the real one. The exit code is the documented `2` either way (§1.1).
+fn socket_lost(what: &str, error: &str) -> (i32, String) {
+    let lost = ["Broken pipe", "Connection reset", "UnexpectedEof", "os error 32", "os error 104", "connection closed"]
+        .iter()
+        .any(|marker| error.contains(marker));
+    if lost {
+        (
+            2,
+            format!(
+                "exec: the daemon's socket was lost {what} ({error}) — the session and its committed state \
+                     are kept; start the daemon again (`teamagents` or `exec`) to continue"
+            ),
+        )
+    } else {
+        (2, format!("exec: {what} failed: {error}"))
+    }
 }
 
 /// One headless run: the outcome on stdout (JSON when asked for it) and the
@@ -728,7 +753,9 @@ fn leader_instance(checkpoint: &Json) -> Option<(String, String)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{capped, leader_instance, parse_check_result, run_checks, run_fate, timeout_line, Attribution, End};
+    use super::{
+        capped, leader_instance, parse_check_result, run_checks, run_fate, socket_lost, timeout_line, Attribution, End,
+    };
     use serde_json::json;
     use std::path::Path;
 
@@ -785,6 +812,25 @@ mod tests {
         assert_eq!(leader_instance(&only), Some(("i-other".to_string(), "ACTIVE".to_string())));
         let none = json!({"instances": [{"id": "i-x", "lifecycle": "TERMINATED"}]});
         assert_eq!(leader_instance(&none), None);
+    }
+
+    /// A daemon that stops under a run is a supported thing to do (D-150), so the client says what it means
+    /// rather than printing the errno: measured 2026-09-27, `exec: the event stream broke: daemon write: Broken
+    /// pipe (os error 32)` was the whole of it. A failure that is *not* a lost socket keeps the plain wording —
+    /// calling every failure a stopped daemon would hide the real one — and the exit code is `2` either way.
+    #[test]
+    fn a_lost_socket_is_reported_as_what_it_means() {
+        let (code, message) = socket_lost("reading the event stream", "daemon write: Broken pipe (os error 32)");
+        assert_eq!(code, 2);
+        assert!(message.contains("the daemon's socket was lost reading the event stream"), "{message}");
+        assert!(message.contains("committed state are kept"), "{message}");
+        assert!(message.contains("start the daemon again"), "{message}");
+        for transport in ["Connection reset by peer", "UnexpectedEof", "os error 104", "connection closed"] {
+            assert!(socket_lost("submitting the input", transport).1.contains("was lost"), "{transport}");
+        }
+        let (code, message) = socket_lost("submitting the input", "no such instance: i-ghost");
+        assert_eq!(code, 2);
+        assert_eq!(message, "exec: submitting the input failed: no such instance: i-ghost");
     }
 
     /// The documented headless contract (D-32/D-49): a plain success is 0, a
