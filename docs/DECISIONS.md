@@ -18,6 +18,47 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-113 The gate could not be green where CI runs it (2026-09-26)
+
+`docs/ACCEPTANCE.md` opens with "`make check` is green … preconditions for every item below", and the GitHub
+workflow runs exactly that on a runner whose kernel forbids unprivileged user namespaces and which has no
+bubblewrap installed. That machine could not pass it. `cli::exec_takes_the_prompt_from_stdin_and_runs_the_acceptance_check`
+asserted that a `--check` command runs and reports `ok` — true only where a sandbox exists — and it has no
+capability guard, so on the runner the run reports the check as refused and the test fails:
+
+    env PATH=<a PATH with every tool except bwrap> <cli test binary> --exact \
+        exec_takes_the_prompt_from_stdin_and_runs_the_acceptance_check
+    # panicked at tests/cli.rs:426: check 1: FAILED (exit -1)  echo accepted
+
+Three more tests took the other way out and skipped whole: `cli::an_unisolated_shell_refuses_instead_of_running_on_the_host`
+(A14's own test), `v2_daemon::headless_runs_verify_the_acceptance_commands_and_gate_the_exit_code`,
+`v2_daemon::a_failing_acceptance_command_fails_the_run` and
+`exec::tests::acceptance_commands_run_in_order_and_stop_at_the_first_failure` each printed
+"skipped: bwrap is unavailable" and returned — so on the machine that runs every push, the A14 claim ("a command
+that cannot be sandboxed is refused, never run on the host") and the acceptance-check ledger were **unchecked**,
+and one test simply failed.
+
+All four now assert the half that *is* observable without a sandbox, which is the fail-closed half the product
+promises: the check is reported `ok: false` with `exit_code: -1`, its `error` names the isolation
+(`IsolationUnavailable`), no command output appears (it never ran), the list stops at the first refusal, and the
+run is an honest failure (exit 1) rather than a pass over an unchecked goal. Where bubblewrap exists the
+positive half is asserted as before, including A14's control (the same command really runs and leaves its
+trace). Nothing skips any more; no test lost an assertion.
+
+The condition is now reproducible instead of implicit:
+
+    make check-nobwrap      # review/nobwrap_path.py builds a PATH with every tool except bwrap, then runs make check
+
+Measured: with that PATH the whole engine suite is green (214 tests, 15 binaries) where
+`exec_takes_the_prompt_from_stdin_and_runs_the_acceptance_check` failed before; core (100) and tui (33) are green
+there too. `review/nobwrap_path.py --verify` asserts the farm really has no bwrap and does have `sh`, `python3`,
+`cargo` and `make`, so the target cannot silently test the wrong PATH.
+
+Ceiling: a CI machine *with* a broken sandbox (bwrap installed but unable to create a namespace) is neither
+condition: `bwrap_available()` only looks at `PATH`, so there the positive half is attempted and fails, and the
+refusal branch is not taken. That machine fails loudly rather than lying, which is the right side to be on, but
+it is not covered by either branch here.
+
 ## D-112 Nothing ever stopped a shell runner (2026-09-26)
 
 §6.2 gives "one controlled runner per *active* command", A12's own test ends its runner with

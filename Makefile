@@ -3,10 +3,11 @@
 CRATES := core engine tui
 CARGO_FLAGS ?= --offline --locked
 
-.PHONY: help check fmt fmt-check lint test build pty hygiene language-check
+.PHONY: help check fmt fmt-check lint test build pty hygiene language-check check-nobwrap
 
 help:
 	@echo 'make check     format, Clippy, regression tests and repository hygiene (offline by default)'
+	@echo 'make check-nobwrap  the same gate with the GitHub runner condition: no bwrap in PATH (D-113)'
 	@echo 'make fmt       format the three crates'
 	@echo 'make build     build the CLI and the TUI'
 	@echo 'make pty       real-terminal smoke check with an isolated config (needs Python 3)'
@@ -39,6 +40,14 @@ test:
 build:
 	cargo build $(CARGO_FLAGS) --manifest-path engine/Cargo.toml --bin teamagents
 	cargo build $(CARGO_FLAGS) --manifest-path tui/Cargo.toml --bin teamagents-tui
+
+# CI's condition, reproducible locally (D-113): the GitHub runner has no bubblewrap, so the sandboxed shell
+# cannot start there. `review/nobwrap_path.py` builds a PATH with every tool except bwrap, and the whole gate
+# runs in it — a test that only passes where bubblewrap exists would show up here instead of in CI.
+check-nobwrap:
+	@set -eu; farm=$$(mktemp -d); trap 'rm -rf "$$farm"' EXIT HUP INT TERM; \
+		python3 review/nobwrap_path.py --verify "$$farm"; \
+		PATH="$$farm" $(MAKE) check
 
 pty: build
 	@set -eu; check_dir=$$(mktemp -d); trap 'rm -rf "$$check_dir"' EXIT HUP INT TERM; \

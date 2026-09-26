@@ -888,16 +888,27 @@ mod tests {
     }
 
     /// The acceptance commands really run, in order, in the isolated shell and
-    /// stop at the first failure. Shell isolation needs bubblewrap, so this is
-    /// skipped where the kernel forbids unprivileged user namespaces (CI).
+    /// stop at the first failure. Where the kernel forbids unprivileged user
+    /// namespaces (CI, D-113) there is no sandbox to run in, and the claim that
+    /// *is* observable there is the fail-closed one: a check that cannot run is
+    /// never a pass and never runs on the host.
     #[test]
     fn acceptance_commands_run_in_order_and_stop_at_the_first_failure() {
-        if !crate::tools::bwrap_available() {
-            eprintln!("skipped: bwrap is unavailable");
-            return;
-        }
         let workspace = std::env::temp_dir();
         let workspace = Path::new(&workspace);
+        if !crate::tools::bwrap_available() {
+            // no isolation anywhere: every check must be refused, the list must stop at the first one, and no
+            // command output may appear (the command never ran)
+            let refused = vec!["echo one".to_string(), "true".to_string()];
+            let checks = run_checks(&refused, workspace, 60);
+            assert_eq!(checks.len(), 1, "the first refusal stops the list: {checks:?}");
+            assert_eq!(checks[0]["ok"], json!(false), "a check that cannot run is not a pass: {checks:?}");
+            assert_eq!(checks[0]["exit_code"], json!(-1), "{checks:?}");
+            assert!(checks[0]["output"].as_str().unwrap_or("").is_empty(), "{checks:?}");
+            let error = checks[0]["error"].as_str().unwrap_or("");
+            assert!(error.contains("IsolationUnavailable"), "the refusal names the isolation: {checks:?}");
+            return;
+        }
         let commands = vec!["echo first; exit 3".to_string(), "echo second".to_string()];
         let checks = run_checks(&commands, workspace, 60);
         assert_eq!(checks.len(), 1, "the first failure stops the list: {checks:?}");

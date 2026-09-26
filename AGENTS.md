@@ -41,6 +41,7 @@ cargo test --offline --manifest-path tui/Cargo.toml     # TUI logic + TestBacken
 engine/target/debug/teamagents {init,doctor,daemon,exec,version}  # CLI entry points
 engine/target/debug/teamagents exec --json --timeout 180 "…"      # headless turn (starts the daemon if needed)
 make pty                                 # real-terminal smoke check (tui/scripts/pty_v2_smoke.py)
+make check-nobwrap                       # `make check` with no bwrap in PATH: the CI runner's condition (D-113)
 make verify-model-all                    # small TLA+ configurations for all modules (see verification/README.md)
 make verify-kani                         # Kani proofs (paging arithmetic)
 python3 review/eval/r2-p6/run.py --phase pilot --out <new date directory>  # real-model A/B/C comparison (needs credentials)

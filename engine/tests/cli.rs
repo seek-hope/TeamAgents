@@ -423,12 +423,22 @@ fn exec_takes_the_prompt_from_stdin_and_runs_the_acceptance_check() {
     assert!(!stdout.contains("usage:") && !stderr.contains("usage:"), "plain mode is legal: {stdout}{stderr}");
     // the endpoint is closed, so the turn fails and the run is an honest 1
     assert_eq!(output.status.code(), Some(1), "{stdout}{stderr}");
-    assert!(stdout.contains("check 1: ok (exit 0)  echo accepted"), "{stdout}");
     assert!(stdout.contains("verification:"), "{stdout}");
     let ledger: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(state.join("verification.json")).unwrap()).unwrap();
     assert_eq!(ledger["verification"][0]["command"], "echo accepted");
-    assert_eq!(ledger["verification"][0]["ok"], true);
+    if teamagents_engine::tools::bwrap_available() {
+        assert!(stdout.contains("check 1: ok (exit 0)  echo accepted"), "{stdout}");
+        assert_eq!(ledger["verification"][0]["ok"], true);
+    } else {
+        // No sandbox on this machine (the GitHub runner, D-113): the same run must report the check as failed
+        // *closed* — never as a pass, and never by running the command on the host.
+        assert!(stdout.contains("check 1: FAILED (exit -1)  echo accepted"), "{stdout}");
+        assert_eq!(ledger["verification"][0]["ok"], false);
+        assert_eq!(ledger["verification"][0]["exit_code"], -1);
+        let error = ledger["verification"][0]["error"].as_str().unwrap_or("");
+        assert!(error.contains("IsolationUnavailable"), "the refusal names the isolation: {ledger}");
+    }
     // the piped prompt really reached the leader's context (§4.2 accept boundary)
     let mut client = teamagents_engine::v2::exec::Client::connect(&socket).expect("client");
     let history = client.history("i-leader").expect("history");
@@ -524,12 +534,13 @@ fn the_daemon_carries_configured_checks_into_the_goal() {
 /// never the test process's own: other tests resolve tools through `PATH`), with a
 /// dead model endpoint, so the turn fails first and the verdict is where the refusal
 /// shows up — the same shape a user meets it in.
+///
+/// The positive control (the same command *with* bwrap runs and leaves its trace) needs a machine that has
+/// bubblewrap; the refusal does not, so on a machine without one — the GitHub runner, D-113 — the test asserts
+/// the refusal instead of printing "skipped" and leaving the A14 claim unchecked where CI runs.
 #[test]
 fn an_unisolated_shell_refuses_instead_of_running_on_the_host() {
-    if !teamagents_engine::tools::bwrap_available() {
-        eprintln!("skipped: this machine has no bwrap, so the sandbox path is unavailable either way");
-        return;
-    }
+    let have_bwrap = teamagents_engine::tools::bwrap_available();
     let root = std::env::temp_dir().join(format!("ta-isolation-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let (config_home, state, workspace, empty_bin) =
@@ -563,16 +574,18 @@ fn an_unisolated_shell_refuses_instead_of_running_on_the_host() {
             .unwrap_or_else(|e| panic!("the run must print its JSON report ({e}): {printed:?}"))
     };
 
-    // Control first: the same command with the machine's own PATH runs inside the
-    // sandbox and really does leave the file — without this, the absence below would
-    // prove nothing (a check whose assertion cannot fail is not a check).
-    let control_workspace = root.join("ws-control");
     let control_state = root.join("root-control");
-    std::fs::create_dir_all(&control_workspace).unwrap();
-    let host_path = std::env::var("PATH").unwrap_or_default();
-    let control = run(&control_workspace, &control_state, std::path::Path::new(&host_path));
-    assert_eq!(control["verification"][0]["ok"], serde_json::json!(true), "the control check runs: {control}");
-    assert!(control_workspace.join("ran-unisolated").is_file(), "and leaves its trace: {control}");
+    if have_bwrap {
+        // Control first: the same command with the machine's own PATH runs inside the
+        // sandbox and really does leave the file — without this, the absence below would
+        // prove nothing (a check whose assertion cannot fail is not a check).
+        let control_workspace = root.join("ws-control");
+        std::fs::create_dir_all(&control_workspace).unwrap();
+        let host_path = std::env::var("PATH").unwrap_or_default();
+        let control = run(&control_workspace, &control_state, std::path::Path::new(&host_path));
+        assert_eq!(control["verification"][0]["ok"], serde_json::json!(true), "the control check runs: {control}");
+        assert!(control_workspace.join("ran-unisolated").is_file(), "and leaves its trace: {control}");
+    }
 
     // Then the refusal: no bwrap anywhere, so `which("bwrap")` fails inside the client
     let report = run(&workspace, &state, &empty_bin);

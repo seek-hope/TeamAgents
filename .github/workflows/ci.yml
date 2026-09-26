@@ -28,10 +28,11 @@ jobs:
         with:
           toolchain: ${{ steps.rust-version.outputs.version }}
           components: rustfmt, clippy
-      # bubblewrap does not work on GitHub runners (the kernel/AppArmor forbids unprivileged
-      # user namespaces), so it is not installed: tests that need real isolation print
-      # "skipped: bwrap is unavailable" and their authoritative runs happen on a dev machine
-      # with bwrap (see docs/ACCEPTANCE.md).
+      # bubblewrap does not work on GitHub runners (the kernel/AppArmor forbids unprivileged user
+      # namespaces), so it is not installed. Since D-113 every isolation test asserts its fail-closed
+      # half on this machine — a command that cannot be sandboxed is refused, never run on the host —
+      # instead of printing "skipped"; the positive half (the sandbox really runs the command) stays
+      # with a dev machine that has bwrap, and `make check-nobwrap` reproduces this condition locally.
       - name: Format and Clippy
         run: make fmt-check lint CARGO_FLAGS=--locked
       - name: Regression tests for the three crates

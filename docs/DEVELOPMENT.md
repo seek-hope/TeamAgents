@@ -14,6 +14,7 @@ check needs Python 3.
 ```bash
 make check CARGO_FLAGS=--locked   # first run may download dependencies, keeping the lock files
 make check                        # afterwards: --offline --locked by default
+make check-nobwrap                # the same gate with the GitHub runner's condition: no bwrap in PATH (D-113)
 make fmt                          # apply the shared formatting
 make build                        # build the CLI and the TUI into the usual target paths
 make pty                          # real-terminal check with an isolated config and no model credentials

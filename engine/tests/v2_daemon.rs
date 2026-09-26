@@ -859,25 +859,35 @@ async fn a_failed_turn_ends_the_headless_run_instead_of_timing_out() {
 /// The user's `--check` acceptance commands run in the client's workspace
 /// through the isolated shell and gate the exit code; the ledger lands next to
 /// the session database as the artifact a CI job archives.
+///
+/// Without bubblewrap (the GitHub runner, D-113) the ledger cannot show a pass, and the claim that *is*
+/// observable there is asserted instead of skipped: a check that cannot run fails closed — the run reports it as
+/// a failure, the ledger row keeps the isolation reason, and the exit code is 1.
 #[tokio::test]
 async fn headless_runs_verify_the_acceptance_commands_and_gate_the_exit_code() {
-    if !teamagents_engine::tools::bwrap_available() {
-        eprintln!("skipped: bwrap is unavailable");
-        return;
-    }
+    let have_bwrap = teamagents_engine::tools::bwrap_available();
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
     let scripts = HashMap::from([("i-leader".to_string(), vec![finish_call("done")])]);
     let (root, handle) = boot("exec-checks", scripts).await;
     let (socket, workspace) = (root.dir.join("state/daemon.sock"), root.dir.join("ws"));
     let passed = headless(exec_options(&socket, &workspace, "finish it", vec!["echo checked".to_string()])).await;
     assert_eq!(passed.end, End::Completed, "{}", passed.report);
-    assert!(passed.checks_ok, "{}", passed.report);
-    assert_eq!(passed.end.exit_code(passed.checks_ok), 0);
     let verdicts = passed.report["verification"].as_array().unwrap();
     assert_eq!(verdicts.len(), 1, "{}", passed.report);
-    assert_eq!(verdicts[0]["ok"], json!(true));
-    assert_eq!(verdicts[0]["exit_code"], json!(0));
-    assert!(verdicts[0]["output"].as_str().unwrap().contains("checked"), "{}", passed.report);
+    if have_bwrap {
+        assert!(passed.checks_ok, "{}", passed.report);
+        assert_eq!(passed.end.exit_code(passed.checks_ok), 0);
+        assert_eq!(verdicts[0]["ok"], json!(true));
+        assert_eq!(verdicts[0]["exit_code"], json!(0));
+        assert!(verdicts[0]["output"].as_str().unwrap().contains("checked"), "{}", passed.report);
+    } else {
+        assert!(!passed.checks_ok, "a check that cannot run is not a pass: {}", passed.report);
+        assert_eq!(passed.end.exit_code(passed.checks_ok), 1);
+        assert_eq!(verdicts[0]["ok"], json!(false));
+        assert_eq!(verdicts[0]["exit_code"], json!(-1));
+        let error = verdicts[0]["error"].as_str().unwrap_or("");
+        assert!(error.contains("IsolationUnavailable"), "the refusal names the isolation: {}", passed.report);
+    }
     let ledger = passed.report["verification_path"].as_str().expect("ledger path");
     assert_eq!(Path::new(ledger), root.dir.join("state/verification.json"));
     let written: Json = serde_json::from_str(&std::fs::read_to_string(ledger).unwrap()).unwrap();
@@ -887,12 +897,12 @@ async fn headless_runs_verify_the_acceptance_commands_and_gate_the_exit_code() {
 
 /// A failing acceptance command turns a nominal success into exit 1 and stops
 /// the remaining commands (later ones may depend on earlier ones).
+///
+/// Without bubblewrap (D-113) the same two properties are asserted through the refusal: the list stops at the
+/// first check that cannot run, and the run is an honest failure rather than a pass over an unchecked goal.
 #[tokio::test]
 async fn a_failing_acceptance_command_fails_the_run() {
-    if !teamagents_engine::tools::bwrap_available() {
-        eprintln!("skipped: bwrap is unavailable");
-        return;
-    }
+    let have_bwrap = teamagents_engine::tools::bwrap_available();
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
     let scripts = HashMap::from([("i-leader".to_string(), vec![finish_call("done")])]);
     let (root, handle) = boot("exec-checks-fail", scripts).await;
@@ -904,8 +914,15 @@ async fn a_failing_acceptance_command_fails_the_run() {
     assert_eq!(run.end.exit_code(run.checks_ok), 1, "a failed acceptance is not a success");
     let verdicts = run.report["verification"].as_array().unwrap();
     assert_eq!(verdicts.len(), 1, "the first failure stops the list: {}", run.report);
-    assert_eq!(verdicts[0]["exit_code"], json!(7));
-    assert!(verdicts[0]["output"].as_str().unwrap().contains("broken"), "{}", run.report);
+    if have_bwrap {
+        assert_eq!(verdicts[0]["exit_code"], json!(7));
+        assert!(verdicts[0]["output"].as_str().unwrap().contains("broken"), "{}", run.report);
+    } else {
+        assert_eq!(verdicts[0]["ok"], json!(false));
+        assert_eq!(verdicts[0]["exit_code"], json!(-1));
+        let error = verdicts[0]["error"].as_str().unwrap_or("");
+        assert!(error.contains("IsolationUnavailable"), "the refusal names the isolation: {}", run.report);
+    }
     handle.shutdown().await.expect("shutdown");
 }
 
