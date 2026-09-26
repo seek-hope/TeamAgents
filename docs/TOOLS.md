@@ -114,7 +114,7 @@ List files in your workspace (path defaults to '.').
 
 *Offered by `reference::session_tool_schemas` (the profile's tools; the web half only for the kinds the config declares — §12.1/D-79/D-168).*
 
-Read UTF-8 workspace text, shared /artifacts/ files, or your private /tool-output/ logs in bounded pages. offset is a 1-based line; byte_offset is an absolute byte continuation. Follow next_byte_offset until eof. include_sha256 returns a revision for safe edits.
+Read UTF-8 workspace text, your own /artifacts/ files, or your private /tool-output/ logs in bounded pages. offset is a 1-based line; byte_offset is an absolute byte continuation. Follow next_byte_offset until eof. include_sha256 returns a revision for safe edits.
 
 | Parameter | Type | Required | Meaning |
 |---|---|---|---|
@@ -128,7 +128,7 @@ Read UTF-8 workspace text, shared /artifacts/ files, or your private /tool-outpu
 
 *Offered by `reference::session_tool_schemas` (the profile's tools; the web half only for the kinds the config declares — §12.1/D-79/D-168).*
 
-Write a text file in your workspace, creating parent directories. /artifacts/ is shared by the session: write only deliberate deliverables there. /tool-output/ is private and read-only.
+Write a text file in your workspace, creating parent directories. /artifacts/ is this member's own deliverable directory â teammates cannot read it, so put work the team shares in the workspace. /tool-output/ is private and read-only.
 
 | Parameter | Type | Required | Meaning |
 |---|---|---|---|
@@ -185,7 +185,7 @@ Search workspace files for a pattern; returns matching lines (max 100).
 
 *Offered by `reference::session_tool_schemas` (the profile's tools; the web half only for the kinds the config declares — §12.1/D-79/D-168).*
 
-Run Bash in the current shell_environment mode. approved_scope uses bwrap: network=true needs approval; temporary files/background processes end with the call. full_auto uses the host filesystem/network; services may survive CLI exit. For services redirect stdin/stdout/stderr, record PID, verify in a later call, and stop explicitly. Timeout/cancel kills the active process group. cwd/exports persist separately per mode; a missing cwd skips this call and resets to workspace root. Inspect nonzero exits. Page long output with read_file under private /tool-output/. /tool-output/ and /artifacts/ are virtual file-tool paths.
+Run Bash in the current shell_environment mode. approved_scope uses bwrap: network=true needs approval; temporary files/background processes end with the call. full_auto uses the host filesystem/network; services may survive CLI exit. For services redirect stdin/stdout/stderr, record PID, verify in a later call, and stop explicitly. Timeout/cancel kills the active process group. cwd/exports persist separately per mode; a missing cwd skips this call and resets to workspace root. Inspect nonzero exits. Page long output with read_file under /artifacts/ (exec-*.log). /artifacts/ is a virtual file-tool path and belongs to your member alone.
 
 | Parameter | Type | Required | Meaning |
 |---|---|---|---|

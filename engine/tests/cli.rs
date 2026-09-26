@@ -463,6 +463,48 @@ fn init_creates_private_config_and_never_overwrites_existing_paths() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// D-174: `doctor` reports the artifact footprint of a state root, because DESIGN §4.4 requires artifact
+/// collection to be scheduled and this build does not apply it (the control plane can mark unreferenced
+/// artifacts for collection, but no caller runs it and no file is deleted). Without a row, a long session's
+/// growth is invisible — and the numbers are the one thing a user can act on.
+#[test]
+fn doctor_reports_the_artifact_footprint() {
+    let root = std::env::temp_dir().join(format!("ta-artifacts-doctor-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let (config, state, tree) = (root.join("config"), root.join("state"), root.join("tree"));
+    std::fs::create_dir_all(config.join("teamagents")).unwrap();
+    std::fs::write(
+        config.join("teamagents/config.toml"),
+        "[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\napi_key_env = \"TA_ART_KEY\"\n",
+    )
+    .unwrap();
+    let run = |state_root: &std::path::Path| -> String {
+        let output = Command::new(env!("CARGO_BIN_EXE_teamagents"))
+            .args(["doctor", "--state-root"])
+            .arg(state_root)
+            .env("XDG_CONFIG_HOME", &config)
+            .env("XDG_STATE_HOME", &state)
+            .env("TA_ART_KEY", "test-value")
+            .output()
+            .expect("run doctor");
+        format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr))
+    };
+
+    // nothing on disk yet: no row (a fresh root has nothing to report)
+    let empty = run(&tree.join("empty"));
+    assert!(!empty.contains("[WARN] artifacts"), "{empty}");
+
+    // one member's artifacts, the layout the driver creates (D-174): the row names the count and the size
+    let artifacts = tree.join("used/instances/i-leader/artifacts");
+    std::fs::create_dir_all(&artifacts).unwrap();
+    std::fs::write(artifacts.join("resp-a1.json"), "x".repeat(1500)).unwrap();
+    std::fs::write(artifacts.join("exec-1.log"), "y".repeat(500)).unwrap();
+    let used = run(&tree.join("used"));
+    assert!(used.contains("[WARN] artifacts") && used.contains("2 file(s)"), "{used}");
+    assert!(used.contains("not collected yet"), "the row says what is not done: {used}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// D-169: `init` creates a fresh root at whatever path it is given (D-149), so a path *named like the session
 /// database* used to produce a directory called `session.sqlite` with a database inside it — a layout whose own
 /// `doctor`/`daemon` then fail on. The note names the shape; it never refuses, because a fresh root at any name

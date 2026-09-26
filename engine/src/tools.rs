@@ -75,18 +75,18 @@ const TOOL_OUTPUT_PREFIX: &str = "/tool-output/";
 
 #[derive(Default)]
 pub(crate) struct ArtifactPaths {
-    shared: Option<PathBuf>,
+    own: Option<PathBuf>,
     private_output: Option<PathBuf>,
 }
 
 impl ArtifactPaths {
-    fn shared(shared: Option<PathBuf>) -> Self {
-        Self { shared, private_output: None }
+    fn own(own: Option<PathBuf>) -> Self {
+        Self { own, private_output: None }
     }
 
-    fn shared_path(&self, key: &str) -> Result<PathBuf, String> {
-        let path = resolve_artifact(self.shared.as_ref(), key)?;
-        // Older releases mixed unowned automatic logs with shared deliverables.
+    fn own_path(&self, key: &str) -> Result<PathBuf, String> {
+        let path = resolve_artifact(self.own.as_ref(), key)?;
+        // Older releases mixed unowned automatic logs with a member's deliverables.
         // Preserve those bytes for the human, but never guess their owner or
         // make an old private log readable by every member after an upgrade.
         if self.private_output.is_some()
@@ -105,14 +105,14 @@ impl ArtifactPaths {
             let root = self.private_output.as_deref().ok_or("no private output directory for this member")?;
             return Ok((root, resolve_in_root(root, name)?));
         }
-        let path = self.shared_path(key)?;
-        Ok((self.shared.as_deref().expect("shared_path checked the root"), path))
+        let path = self.own_path(key)?;
+        Ok((self.own.as_deref().expect("own_path checked the root"), path))
     }
 
     fn output(&self) -> OutputLocation<'_> {
         match self.private_output.as_deref() {
             Some(root) => OutputLocation { root: Some(root), prefix: TOOL_OUTPUT_PREFIX },
-            None => OutputLocation { root: self.shared.as_deref(), prefix: ARTIFACTS_PREFIX },
+            None => OutputLocation { root: self.own.as_deref(), prefix: ARTIFACTS_PREFIX },
         }
     }
 }
@@ -599,7 +599,7 @@ pub fn load_image_reference(
     reference: &str,
     media_type: &str,
 ) -> Result<Vec<u8>, String> {
-    load_member_image_reference(root, &ArtifactPaths::shared(artifacts.map(Path::to_path_buf)), reference, media_type)
+    load_member_image_reference(root, &ArtifactPaths::own(artifacts.map(Path::to_path_buf)), reference, media_type)
 }
 
 pub(crate) fn load_member_image_reference(
@@ -642,7 +642,7 @@ fn cap_read(file: std::fs::File) -> Result<String, String> {
 }
 
 /// Resolve a member-visible artifact reference (`/artifacts/<name>`) inside the
-/// session artifact directory; traversal out of it is refused like any root.
+/// member's own artifact directory; traversal out of it is refused like any root.
 fn resolve_artifact(artifacts: Option<&PathBuf>, key: &str) -> Result<PathBuf, String> {
     let root = artifacts.ok_or_else(|| "no artifact directory for this member".to_string())?;
     let name = key.strip_prefix(ARTIFACTS_PREFIX).unwrap_or(key);
@@ -658,7 +658,7 @@ fn workspace_executor_with_control(
     shell_state: Option<PathBuf>,
 ) -> impl Fn(&str, &Json, &TurnControl, ShellMode) -> Result<Json, String> + Send + Sync + 'static {
     // cross-process write locks live beside the session state, never in the project
-    let lock_dir = artifacts.shared.as_ref().and_then(|dir| dir.parent()).map(|state| state.join("locks"));
+    let lock_dir = artifacts.own.as_ref().and_then(|dir| dir.parent()).map(|state| state.join("locks"));
     move |tool: &str, args: &Json, control: &TurnControl, mode: ShellMode| -> Result<Json, String> {
         control.check()?;
         let arg = |key: &str| args.get(key).and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -669,7 +669,7 @@ fn workspace_executor_with_control(
         // output receipts. Private output is exposed only through the read path.
         let member_path = |key: &str| -> Result<PathBuf, String> {
             if key.starts_with(ARTIFACTS_PREFIX) {
-                artifacts.shared_path(key)
+                artifacts.own_path(key)
             } else {
                 resolve_in_root(&root, key)
             }
@@ -719,8 +719,13 @@ fn workspace_executor_with_control(
                 control.check()?;
                 let path = member_path(&arg("path"))?;
                 let content = args.get("content").and_then(|v| v.as_str()).ok_or("content must be a string")?;
-                let file_root =
-                    if arg("path").starts_with(ARTIFACTS_PREFIX) { artifacts.shared.as_ref().unwrap() } else { &root };
+                // a toolkit built without an artifact directory refuses a /artifacts/ path instead of
+                // panicking on it (D-174)
+                let file_root: &Path = if arg("path").starts_with(ARTIFACTS_PREFIX) {
+                    artifacts.own.as_deref().ok_or("no artifact directory for this member")?
+                } else {
+                    &root
+                };
                 atomic_write(file_root, lock_dir.as_deref(), &path, content.as_bytes(), expected_hash(args)?, control)?;
                 Ok(json!(format!("wrote {}", path.display())))
             }
@@ -743,8 +748,13 @@ fn workspace_executor_with_control(
                 if expected_hash(args)?.is_some_and(|expected| !expected.eq_ignore_ascii_case(&hash)) {
                     return Err("file conflict: expected_sha256 no longer matches; read the file again".into());
                 }
-                let file_root =
-                    if arg("path").starts_with(ARTIFACTS_PREFIX) { artifacts.shared.as_ref().unwrap() } else { &root };
+                // a toolkit built without an artifact directory refuses a /artifacts/ path instead of
+                // panicking on it (D-174)
+                let file_root: &Path = if arg("path").starts_with(ARTIFACTS_PREFIX) {
+                    artifacts.own.as_deref().ok_or("no artifact directory for this member")?
+                } else {
+                    &root
+                };
                 atomic_write(
                     file_root,
                     lock_dir.as_deref(),
@@ -792,8 +802,8 @@ fn workspace_executor_with_control(
                             "{key}: file conflict: expected_sha256 no longer matches; read the file again"
                         ));
                     }
-                    let file_root = if key.starts_with(ARTIFACTS_PREFIX) {
-                        artifacts.shared.as_ref().unwrap().clone()
+                    let file_root: PathBuf = if key.starts_with(ARTIFACTS_PREFIX) {
+                        artifacts.own.as_deref().ok_or("no artifact directory for this member")?.to_path_buf()
                     } else {
                         root.clone()
                     };
@@ -2433,7 +2443,7 @@ impl V2Toolkit {
             root.clone(),
             catalog,
             bindings,
-            ArtifactPaths::shared(artifacts.clone()),
+            ArtifactPaths::own(artifacts.clone()),
             shell_state.clone(),
         );
         Ok(V2Toolkit { executor: Box::new(executor), bound, root, artifacts, shell_state })
@@ -2628,7 +2638,7 @@ mod tests {
         bindings: Vec<String>,
         artifacts: Option<PathBuf>,
     ) -> impl Fn(&str, &Json) -> Result<Json, String> + Send + Sync + 'static {
-        let executor = member_executor_with_control(root, catalog, bindings, ArtifactPaths::shared(artifacts), None);
+        let executor = member_executor_with_control(root, catalog, bindings, ArtifactPaths::own(artifacts), None);
         move |tool, args| executor(tool, args, &TurnControl::default(), ShellMode::Sandbox)
     }
 
@@ -2636,7 +2646,7 @@ mod tests {
         root: PathBuf,
         artifacts: Option<PathBuf>,
     ) -> impl Fn(&str, &Json) -> Result<Json, String> + Send + Sync + 'static {
-        let executor = workspace_executor_with_control(root, ArtifactPaths::shared(artifacts), None);
+        let executor = workspace_executor_with_control(root, ArtifactPaths::own(artifacts), None);
         move |tool, args| executor(tool, args, &TurnControl::default(), ShellMode::Sandbox)
     }
 
@@ -3023,6 +3033,37 @@ mod tests {
         // executor enforces the binding (bound = authorized, like web tools)
         let executor = member_executor(root.clone(), catalog, vec![], None);
         assert!(executor("skill", &json!({"action": "search"})).is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// D-174: `/artifacts/` is the **member's own** directory, not a session-wide one — the driver's root is
+    /// `<state root>/instances/<id>`, so two members' artifact directories are disjoint. The model-facing
+    /// descriptions said "shared by the session" and the type called it `shared`; a recorded evaluation trace
+    /// shows what that costs ("Maybe /artifacts is shared … I'll write to both to be safe").
+    #[test]
+    fn artifact_paths_are_per_member_not_session_shared() {
+        let root = std::env::temp_dir().join(format!("ta-artifacts-{}", uuid::Uuid::new_v4()));
+        let leader_art = root.join("instances/i-leader/artifacts");
+        let worker_art = root.join("instances/i-worker/artifacts");
+        for dir in [&leader_art, &worker_art] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let catalog = teamagents_core::models::UserConfig::default();
+        let files = vec!["files".to_string()];
+        let leader =
+            member_executor(root.join("instances/i-leader"), catalog.clone(), files.clone(), Some(leader_art.clone()));
+        let worker = member_executor(root.join("instances/i-worker"), catalog, files, Some(worker_art.clone()));
+
+        leader("write_file", &json!({"path": "/artifacts/plan.md", "content": "leader plan"})).unwrap();
+        assert!(leader_art.join("plan.md").is_file(), "the file lands in the member's own directory");
+        assert!(leader("read_file", &json!({"path": "/artifacts/plan.md"})).is_ok(), "the member reads its own");
+        assert!(worker("read_file", &json!({"path": "/artifacts/plan.md"})).is_err(), "a teammate cannot");
+        assert!(!worker_art.join("plan.md").exists(), "and its own directory never saw it");
+
+        // the legacy `/tool-output/` root has no directory in this build: reading it says so instead of
+        // resolving the name inside the member's workspace
+        let error = leader("read_file", &json!({"path": "/tool-output/old.log"})).unwrap_err();
+        assert!(error.contains("no private output directory"), "{error}");
         let _ = std::fs::remove_dir_all(&root);
     }
 

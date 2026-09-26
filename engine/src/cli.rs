@@ -94,6 +94,31 @@ fn legacy_layout_hint() -> Option<String> {
     None
 }
 
+/// `(files, bytes)` under one state root's artifact directories, or `None` when there are none.
+///
+/// Artifacts live per member (`<state root>/instances/<id>/artifacts`, the driver's own root — D-174) and, in a
+/// state root written by an older release, possibly also at `<state root>/artifacts`; both are counted so the
+/// report does not depend on which layout produced the files.
+fn artifact_footprint(root: &Path) -> Option<(u64, u64)> {
+    let mut roots = vec![root.join("artifacts")];
+    if let Ok(entries) = std::fs::read_dir(root.join("instances")) {
+        roots.extend(entries.flatten().map(|entry| entry.path().join("artifacts")));
+    }
+    let (mut files, mut bytes) = (0u64, 0u64);
+    for dir in roots {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            if let Ok(meta) = entry.metadata() {
+                if meta.is_file() {
+                    files += 1;
+                    bytes += meta.len();
+                }
+            }
+        }
+    }
+    (files > 0).then_some((files, bytes))
+}
+
 fn is_executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     path.metadata().map(|meta| meta.permissions().mode() & 0o111 != 0).unwrap_or(false)
@@ -199,6 +224,24 @@ pub fn doctor(state_root: Option<PathBuf>) -> i32 {
             }
             Err(error) => check(&mut results, "v2 state root", false, error),
         }
+    }
+    // D-174: the artifact footprint, where a user looks at their state root. DESIGN §4.4 requires artifact
+    // collection to be *scheduled*; the control plane can mark unreferenced artifacts for it
+    // (`artifact_gc_claim`) but no caller runs that and nothing deletes a file, so the row says what is really
+    // there and what is not done — the D-75 shape for a documented mechanism this build does not apply.
+    if let Some((files, bytes)) = artifact_footprint(&v2_root) {
+        optional_check(
+            &mut results,
+            "artifacts",
+            false,
+            format!(
+                "{files} file(s), {:.1} MB under {}/instances/*/artifacts; oversized tool output is pruned per \
+                 member (512 MB), model responses are kept as evidence, and unreferenced artifacts are not \
+                 collected yet (DESIGN §4.4)",
+                bytes as f64 / 1_048_576.0,
+                v2_root.display()
+            ),
+        );
     }
     if let Some(hint) = legacy_layout_hint() {
         optional_check(&mut results, "legacy v1 layout", false, hint);

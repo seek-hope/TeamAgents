@@ -18,6 +18,55 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-174 `/artifacts/` was described as shared, and nothing collects artifacts (2026-09-27)
+
+Two defects in the artifact subsystem, found while checking where the `reason` row field of D-165 is documented.
+
+**1. The model was told `/artifacts/` is session-shared; it is per member.** Every model-facing description
+said so — `write_file`: "`/artifacts/` is shared by the session: write only deliberate deliverables there",
+`read_file`: "shared `/artifacts/` files", `shell`: "Page long output with read_file under private
+`/tool-output/`" — and the type called the member's directory `ArtifactPaths::shared`. What the code does: the
+driver's root is `<state root>/instances/<id>` (`supervisor`), so `/artifacts/` resolves inside the *member's
+own* directory (`ArtifactPaths::own_path` → `resolve_artifact`) and a teammate cannot read it; `/tool-output/`
+is a legacy root with **no** producer in this build (every `OutputLocation` is built with the `/artifacts/`
+prefix; oversized output is reported as `/artifacts/exec-*.log`), so reading it answers "no private output
+directory for this member". The cost is in the tree's own frozen evaluation material: the recorded traces show
+models spending turns on the sentence — *"Maybe /artifacts is shared … I'll write to both to be safe"* and
+*"Also should I write to /artifacts? … I'll write to workspace root only"* — while a Leader that delegates "write
+your report to `/artifacts/report.md`" cannot read the worker's file.
+
+**Changed** (`engine/src/reference.rs`, `engine/src/tools.rs`, regenerated `docs/TOOLS.md`): the three
+descriptions now say what the code does — `write_file`: "`/artifacts/` is this member's own deliverable
+directory — teammates cannot read it, so put work the team shares in the workspace"; `read_file`: "your own
+`/artifacts/` files"; `shell`: "Page long output with read_file under `/artifacts/` (exec-*.log)". The type and
+its methods were renamed to match (`ArtifactPaths::own`, `own_path`), the doc comments that called it the
+*session* artifact directory were corrected, and the three `artifacts.own.as_ref().unwrap()` sites in the write
+paths now refuse a `/artifacts/` path with "no artifact directory for this member" instead of panicking on a
+toolkit built without one. New test
+`tools::artifact_paths_are_per_member_not_session_shared` pins the semantics: one member writes and reads
+`/artifacts/plan.md`, a second member (its own directory) gets an error and never sees the file, and the legacy
+`/tool-output/` read is refused by name rather than resolved inside the workspace.
+
+**2. DESIGN §4.4's artifact collection is not applied, and nothing said so.** §4.4 requires "WAL reclamation,
+artifact collection and history retention … scheduled separately", A30 requires orphan files to stay
+collectable, and the control plane carries the designed step (`artifact_gc_claim`, which marks unreferenced
+artifacts `DELETING` and protects every live reference). No build path calls it and nothing deletes a file:
+`prune_artifacts` bounds only `exec-*.log` (512 MB per member, measured live), while `resp-*.json` — one per
+model response — is kept forever as evidence. History retention is already reported as not applied (D-75);
+artifact collection was invisible.
+
+**Changed** (`engine/src/cli.rs`, `docs/USER-GUIDE.md`): `doctor` gains an `artifacts` row when a state root
+holds any (count and size, `<state root>/instances/*/artifacts`), saying what *is* done (per-member pruning of
+oversized tool output), what is kept (response artifacts as evidence) and what is not (unreferenced artifacts
+are not collected). The guide's §6 cleanup bullet carries the same facts. Implementing the collection is a
+deletion path through user-visible files, so it stays a recorded gap until the user's word — the same treatment
+`[retention]` got in D-75. New test `cli::doctor_reports_the_artifact_footprint` (a row with the numbers when
+artifacts exist, no row on a fresh root).
+
+**Measured** (2026-09-27): three real turns in a fresh state root left four `resp-*.json` files under
+`instances/i-leader/artifacts/` and `doctor` prints `[WARN] artifacts 4 file(s), 0.0 MB … not collected yet
+(DESIGN §4.4)`.
+
 ## D-173 The scripting contract's row fields were named in two documents and catalogued in none (2026-09-27)
 
 The user guide's report contract (§1.2) says "the arrays inside a report (`instances`, `tasks`, `approvals`,

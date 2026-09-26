@@ -514,6 +514,12 @@ teamagents tasks cancel --id t-prose    # releases a delegator waiting on a task
   against a written inventory taken first (the upgrade notes in `docs/ACCEPTANCE.md` record it). Nothing in
   this build deletes your data on its own, and credentials, `~/.agents/skills`, `~/.codex` and the evidence
   under `review/` are always kept.
+- **Artifacts** are the exception to remember when you look at disk usage: every member keeps its own
+  `/artifacts/` directory under the state root — oversized tool output is pruned there per member at 512 MB,
+  while model-response artifacts are kept as the evidence a recovery reads. Artifacts no record references are
+  **not collected yet**: the control plane can mark them (`artifact_gc_claim`), but no build path runs that and
+  no file is deleted, so DESIGN §4.4's scheduled artifact collection is a known gap here (D-174). `teamagents
+  doctor` reports the count and size it finds.
 
 ## 7. Troubleshooting
 
