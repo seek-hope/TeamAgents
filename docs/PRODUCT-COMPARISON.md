@@ -8,7 +8,7 @@ and the last section lists what follows for this repository.
 
 | Reference | Source | Strength |
 |---|---|---|
-| Codex CLI | the installed binary here (`codex --help`, `codex exec --help`, `codex resume --help`, `codex mcp --help`, `codex sandbox --help`) | verified locally on 2026-09-26 |
+| Codex CLI | the installed binary here, `codex-cli 0.156.1` (`codex --help`, `codex exec --help`, `codex mcp --help`, `codex sandbox --help`, `codex debug --help`, `codex app-server --help`) | re-checked locally on 2026-09-26: every claimed verb appears in that help output |
 | Pi | the upstream README, its docs index (`packages/coding-agent/docs/docs.json`) and its file tree (GitHub API, 2,162 paths, `truncated:false`) | re-derived 2026-09-26: the README alone cannot support a **negative** claim, so the row was checked against the tree and the docs index |
 | Hermes | the upstream README (`NousResearch/hermes-agent`) plus the features/tools page of its docs site | re-checked 2026-09-26: seven backends, cron, TUI and MCP toolsets all confirmed there |
 | TeamAgents | this repository: `docs/USER-GUIDE.md`, `docs/DECISIONS.md`, `docs/ACCEPTANCE.md`, `review/dogfood/*` | the evidence in this tree |
@@ -31,7 +31,7 @@ their projects claim. Codex was run (its help output is the evidence above).
 | TUI | interactive CLI | pi-tui (differential rendering) | full TUI: multiline editing, slash autocomplete, history, **interrupt-and-redirect**, streaming tool output | ratatui TUI: conversation, panels (instances/tasks/topology), approvals box, composer history and word editing (D-77); no slash commands; no interrupt of a running turn (the open D-63 question) |
 | Durability | local sessions, app-server daemon | `pi-durable` (durable conversation/task/document runtime) | serverless persistence for hibernating environments | SQLite per session (WAL + `synchronous=FULL`), one coordinator per state root, receipts consumed rather than replayed — verified live by killing the daemon mid-tool (`review/dogfood/crash.py`, A08/A11) |
 | Automations | — | automation and workflows live in a separate project (`earendil-works/pi-chat`, linked from the README); the agent itself has no scheduled triggers | built-in cron scheduler with platform delivery | none (a goal runs when the user asks) |
-| Observability | `doctor`, `debug`, traces | telemetry package (vendor-neutral contracts) | session search, trajectory export for research | `doctor` (config/credentials/state/skills/isolation/tools rows), `daemon.log`, per-session artifacts, events + receipts in SQLite; evaluation evidence under `review/` |
+| Observability | `doctor`, `debug` (model catalog, prompt input, app-server) | telemetry package (vendor-neutral contracts) | session search, trajectory export for research | `doctor` (config/credentials/state/skills/isolation/tools rows), `daemon.log`, per-session artifacts, events + receipts in SQLite; evaluation evidence under `review/` |
 
 ## 2. What this comparison suggests, in decision order
 
@@ -89,7 +89,9 @@ their projects claim. Codex was run (its help output is the evidence above).
   isolation and a scheduled-automation document. The upstream tree has no `mcp` path and no `worktree` path, the
   docs index has no MCP page, and the cited `docs/loops.md` 404s and appears nowhere in the tree. The cells now
   state what the upstream tree and docs index actually contain.
-- Codex rows come from the installed binary's help output, not from its documentation site.
+- Codex rows come from the installed binary's help output (`codex-cli 0.156.1`), not from its documentation
+  site. That re-check removed one claim: the Observability row said Codex had "traces", and no `codex` subcommand
+  offers a trace surface (`debug` renders the model catalog, the prompt input and app-server tooling).
 - No comparator was benchmarked: this is a surface comparison, not a capability or quality comparison.
 
 Re-check the two upstream rows (network only; nothing here is part of `make check`):

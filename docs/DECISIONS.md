@@ -88,8 +88,12 @@ repeat the derivation instead of trusting the row:
 
 Two of the corrections change the reading of the decision list in §2: item 5 (automations) no longer compares
 against a Pi cron/inbox capability, and item 7 (an MCP management surface) is no longer "everyone has MCP" —
-Pi has none at all. Codex rows were not re-checked by this audit (they come from the installed binary, which
-this machine can run) and Hermes' remaining rows keep the strength the sources table states.
+Pi has none at all. The Codex column was re-checked the same day against the installed binary
+(`codex-cli 0.156.1`): every claimed verb is in its help output (`resume`/`fork`/`archive`/`delete`/
+`migrate-rollouts`/`agents`, `exec` with its own `resume`/`fork`/`review`, `review`, `cloud`, `mcp
+list/get/add/remove/login/logout`, `plugin`, `features`, `sandbox`, `doctor`, `debug`, `-c` overrides), and one
+claim was withdrawn — "traces", because no `codex` subcommand offers one. Hermes' rows keep the strength the
+sources table states (README plus the features/tools docs page, which confirms its MCP toolsets).
 
 `docs/INSTALL.md` had the same disease one line long: it pointed at a "bundled `config.example.toml`" that
 does not exist in the tree (the release workflow copies `examples/config.toml` to that name inside the
