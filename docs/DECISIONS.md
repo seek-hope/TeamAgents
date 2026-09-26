@@ -18,6 +18,38 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-118 A02's ring is verified with a real model (2026-09-26)
+
+A02 ("A→B→C→A communication") had two kinds of evidence: the control plane
+(`control::messages_flow_across_an_authorized_ring`) and the authority surface (D-61). Neither shows what a user
+does with a team — ask a Leader to hire people and then let the members talk — so the ring now has a live probe,
+`python3 review/dogfood/team_ring.py`:
+
+1. the user asks the Leader to hire two workers (the product path; the probe reads the member ids from the
+   session, it does not name them);
+2. a spawned worker holds no authority of its own (§5.1/D-61), so the user grants both `message@session` through
+   `teamagents authority grant` — the permission step is part of the ring, not scenery;
+3. the user submits one instruction to B and one to C through the daemon's `submit_input` (the TUI's own call),
+   each asking for exactly one `send`;
+4. the artifact is the **recipient's context**: the delivered envelope is rendered by the runtime as
+   `[message from <sender>] <text>`, and the probe additionally asserts the two `message_sent` events exist with
+   the expected sender and recipient. Nothing is read out of a model's prose.
+
+Measured (2026-09-26, DeepSeek Flash, native window): the ring closed in **23.5 s** and **14.2 s** in two runs.
+The first run also shows the members talking beyond the minimum (B answered A as well, and one `send` went to
+itself); the probe asserts the ring's hops rather than silence, which is the honest scope. A hop whose turn
+produced no `send` is re-asked up to three times — the claim is about delivery, not about one turn's obedience.
+
+Two things were learned by writing it. A **delivered message is a `user`-kind context entry**, not a
+`message`-kind one (the envelope is applied to the recipient's context, §5.3), which is why the probe's wait
+looks for the rendered `[message from …]` line and asserts the sender with it. And a `message_sent` event
+carries the **recipient in the event's scope**, not in its payload (`event(…, "message_sent", recipient, …)`); a
+probe that reads a payload field there sees nothing.
+
+Ceiling: the probe drives one hop at a time as the user, so it proves that the ring *can* close through the
+product surfaces and that delivery is attributed — not that a single turn orchestrates a three-hop ring on its
+own (that would be a much flakier claim, and the members' extra sends in the first run are the reason).
+
 ## D-117 The retry path had no test, and its wait was uninterruptible (2026-09-26)
 
 A19's evidence was the provider edge: `providers_fake` classes a truncated stream before visible output as

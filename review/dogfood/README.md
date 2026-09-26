@@ -561,3 +561,32 @@ It stands up a minimal streamable-HTTP MCP server on loopback and runs two scena
 The second scenario is what found D-104: before the fix the coordinator task died on the boot failure and the
 session stayed up and silent — no event, no log line, no model request — while a headless run waited out its
 whole deadline.
+
+## `team_ring.py`: a message travels around a team (A02's live half)
+
+A02's offline evidence is the control plane (`control::messages_flow_across_an_authorized_ring`) plus the
+authority surface D-61 gave the user. What a user does with a team is different: they ask a Leader to hire
+people, and then the members *talk*. This probe builds the smallest ring that is still a ring — A → B → C → A —
+and puts one token through it.
+
+```bash
+python3 review/dogfood/team_ring.py
+python3 review/dogfood/team_ring.py --state-dir /tmp/ta-ring --timeout 300
+```
+
+1. The user asks the Leader to hire two workers (`exec`); the probe reads the member ids from the session.
+2. A spawned worker holds no authority of its own (§5.1/D-61), so the user grants both of them
+   `message@session` through `teamagents authority grant` — the permission step is part of the ring.
+3. The user submits one small instruction to B ("send exactly this text to C"), then one to C ("…to i-leader"),
+   each through the daemon's `submit_input` (the same call the TUI makes).
+4. The artifact is the **recipient's own context**: the delivered envelope is rendered by the runtime as
+   `[message from <sender>] <text>`, so delivery *and* attribution are read from the session, never from a
+   model's prose. The probe also asserts the two `message_sent` events exist with the expected sender and
+   recipient (the recipient is the event's scope).
+
+A hop is re-asked up to three times when a turn did not send anything: the claim is about delivery, not about
+one turn's obedience. Measured (2026-09-26, DeepSeek Flash, native window): the ring closed in **23.5 s** and
+**14.2 s** in two runs; the first run also shows the members talking more than the minimum (B replied to A as
+well), which the probe tolerates — it asserts the ring's hops, not silence. One finding from writing it: a
+delivered message is a `user`-kind context entry (not a `message`-kind one), which is why the probe's wait
+looks for the rendered `[message from …]` line instead of a kind.
