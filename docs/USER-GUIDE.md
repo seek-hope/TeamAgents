@@ -394,6 +394,9 @@ teamagents tasks cancel --id t-prose    # releases a delegator waiting on a task
   member's system text, and `doctor` says `1 declared, not applied` rather than promising a prompt (D-102).
   Wire it if you need it: a member's instructions come from its profile, so the Leader can pass the rules in
   its `spawn`/`delegate` text today.
+- The tools themselves — every function a model may be offered, with its parameters and the model-facing
+  description, split by the layer that decides it (the profile's tools, the instance's grants, the session's
+  bindings) — are catalogued in [docs/TOOLS.md](TOOLS.md), generated from the schemas.
 - MCP: bound services load at startup (a required service fails loudly, an optional one only drops its
   capability). "Fails loudly" means: the instance whose driver cannot boot is **parked with the runtime's
   reason** — a `bearer_token_env_var` that is not set, an unreachable endpoint or a missing command leaves the
