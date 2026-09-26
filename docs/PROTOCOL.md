@@ -30,7 +30,10 @@ that method's caller and may grow, so a client should treat the shape it does no
 **Read methods** are answered from the session database in one read transaction, without involving the
 supervisor; they are the observation surface. `checkpoint` returns a snapshot plus the watermark it is consistent
 with, and `events` returns what happened since a watermark — the reconnect contract, whose kinds are catalogued in
-[docs/EVENTS.md](EVENTS.md).
+[docs/EVENTS.md](EVENTS.md). Every object a reply or the greeting carries — a snapshot's `instances[]` rows and
+its `goal`, a task, an approval, a grant, a history entry, the envelopes themselves — has its fields in the
+generated table at the end of this document, which is what the user guide's report contract (§1.2) points at
+(D-173).
 
 **Commands** are executed by the control plane under the caller's identity (`Identity::User`) in one database
 transaction, with the permission and budget checks of `core/src/v2/capability.rs`; `identity checked` below means
@@ -93,5 +96,33 @@ the handler re-checks who may do this rather than trusting the request.
 | `artifact_stage` | `digest`, `id`, `kind`, `owner_ref`, `owner_scope`, `size`, `storage_ref` | no | `core/src/v2/control.rs:156` |
 | `artifact_publish` | `id` | no | `core/src/v2/control.rs:157` |
 | `artifact_gc_claim` | `limit` | no | `core/src/v2/control.rs:158` |
+
+### Every field the protocol carries in one object, and where it is built
+
+The rows a client reads (`instances[]`, `tasks[]`, `approvals[]`, `grants[]`, `entries[]`), a
+checkpoint's `goal` object and the greeting/reply envelopes are all built as `json!({ … })`
+literals in `engine/src/v2/daemon.rs`; this table is that list. A row is one literal.
+
+| Built at | Fields |
+|---|---|
+| `serve_client` | `server`, `protocol_version`, `session_id`, `state_root`, `permissions`, `workspace` |
+| `serve_client` | `request_id`, `ok`, `error` |
+| `handle` | `request_id`, `ok`, `result` |
+| `handle` | `request_id`, `ok`, `error` |
+| `handle` | — |
+| `read_snapshot` | `id`, `lifecycle`, `phase`, `model`, `reason` |
+| `read_snapshot` | `instances`, `goal` |
+| `read_snapshot` | `status`, `known_usage`, `unknown_usage`, `limits`, `deadline` |
+| `read_events` | `sequence`, `kind`, `scope`, `payload` |
+| `checkpoint` arm | `snapshot`, `watermark` |
+| `events` arm | `events`, `watermark`, `resync_required` |
+| `history` arm | `epoch`, `idx`, `kind`, `envelope_id`, `message` |
+| `history` arm | `instance_id`, `entries` |
+| `tasks` arm | `id`, `goal_id`, `assignee`, `status` |
+| `tasks` arm | `tasks` |
+| `approvals` arm | `id`, `operation_id`, `tool`, `preview` |
+| `approvals` arm | `approvals` |
+| `grants` arm | `id`, `issuer`, `subject`, `action`, `resource_scope`, `parent_grant_id`, `revoked` |
+| `grants` arm | `grants`, `revision` |
 
 <!-- generated: end -->

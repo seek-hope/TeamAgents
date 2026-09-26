@@ -18,6 +18,37 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-173 The scripting contract's row fields were named in two documents and catalogued in none (2026-09-27)
+
+The user guide's report contract (§1.2) says "the arrays inside a report (`instances`, `tasks`, `approvals`,
+`grants`) are rows of the daemon's own views, catalogued with their fields in `docs/PROTOCOL.md`", and
+`review/exec_report.py` says the same in its own docstring ("`docs/PROTOCOL.md` keeps the fields of the rows
+inside those reports … so this audit deliberately stops at the top level"). Neither was true: `PROTOCOL.md`'s
+generated tables listed methods, parameters and reply keys, and its tail was empty — no row catalogue existed.
+So the *rows* a script reads had no document and no gate, which is how `reason` reached the instance rows in
+D-165 with a decision entry as its only record.
+
+**Changed** (`review/protocol_catalogue.py`, `docs/PROTOCOL.md`): the generator produces one more table from the
+same file — **every field the protocol carries in one JSON object**, labelled by the function or read arm that
+builds it (`serve_client`'s greeting, `handle`'s replies, `read_snapshot`'s instance rows and `goal`,
+`read_events`' rows, and each read arm's rows and envelope). It is built from the `json!({ … })` literals at any
+depth in `engine/src/v2/daemon.rs`, so the 19 literals are 19 rows and any field added, removed or renamed in a
+protocol object fails `make hygiene` until the document is regenerated. The hand-written prose above it now
+points at the table (the sentence the guide's pointer refers to), and the method scan was scoped so the new
+table's first column cannot be mistaken for a documented method — a bug the first run of the extended check
+reported as four phantom findings (`handle`, `read_events`, `read_snapshot`, `serve_client`: "documented but no
+dispatcher arm exists").
+
+**Measured** (2026-09-27): the tree is green ("6 read methods and 40 commands documented and in sync"); the
+control — `"sneaky_new_field": Json::Null` inserted into the instance-row literal, then reverted
+byte-identically — makes exactly the expected failure appear and then disappear
+("the generated tables do not match the code: run `python3 review/protocol_catalogue.py --write`"). The guide's
+§1.2 sentence now resolves to real content and additionally names the `reason` field the panel and `instances`
+print (D-165).
+
+Ceiling: a protocol object built at runtime is invisible to the table, the same limit the two method tables have;
+and the table lists fields, not their types or meanings, which the prose and the code's own names carry.
+
 ## D-172 The acceptance matrix had no gate, only the requirement list did (2026-09-27)
 
 §16's definition of done starts with "A01–A36 have automated evidence (uncovered items are listed in

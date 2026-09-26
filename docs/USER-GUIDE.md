@@ -96,7 +96,8 @@ Five verbs print one JSON object instead of human text, and that object is the s
 `authority`, `approvals`, `instances` and `tasks`. The table is the contract — `review/exec_report.py` reads
 the field names out of the source and out of this table and fails if the two drift apart in either direction.
 The arrays inside a report (`instances`, `tasks`, `approvals`, `grants`) are rows of the daemon's own views,
-catalogued with their fields in `docs/PROTOCOL.md`.
+whose fields the generated table in `docs/PROTOCOL.md` lists (D-173) — including the `reason` on an instance
+row, which the TUI's panel and `instances` print when a member is not running (D-165).
 
 | Verb | Fields it adds |
 |---|---|

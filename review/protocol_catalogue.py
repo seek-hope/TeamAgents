@@ -10,15 +10,25 @@ catalogue, generated from the two dispatch points in the code:
 * the commands the control plane executes (`fn dispatch` in `core/src/v2/control.rs`), with the parameters each
   handler reads and whether the handler takes an identity (i.e. whether authorization applies).
 
+and one more table from the same file: **every field the protocol carries in one JSON object**, with the function
+or read arm that builds it. The arrays a client reads (`instances[]`, `tasks[]`, `approvals[]`, `grants[]`) and a
+checkpoint's `goal` object are rows of the daemon's own views; the guide's §1.2 calls them part of the scripting
+contract and points *here* for their fields, and until this table existed a row field could be added to the
+protocol without any document changing — `reason` on the instance rows arrived exactly that way (D-165).
+
     python3 review/protocol_catalogue.py            # check (inside `make hygiene`)
     python3 review/protocol_catalogue.py --write     # regenerate the tables in place
 
 A method added to either dispatcher without a line in the document, a documented method that no longer exists, a
 changed parameter list or a stale table fails the check.
 
+The same holds for the field table, generated from the `json!({ … })` literals in `engine/src/v2/daemon.rs`: a
+field added, removed or renamed in any protocol object changes it.
+
 Limits: handler parameters are the ones the handler *itself* reads (`params["…"]` in its own body), so a field a
 helper reads is not listed (that is a documentation gap, not a wrong entry); the tables are generated from
-`match` arms, so a method built at runtime would be missing entirely.
+`match` arms, so a method built at runtime would be missing entirely, and a protocol object built at runtime is
+invisible to the field table for the same reason.
 """
 import pathlib
 import re
@@ -30,6 +40,51 @@ BEGIN = "<!-- generated: begin -->"
 END = "<!-- generated: end -->"
 DAEMON = REPO / "engine" / "src" / "v2" / "daemon.rs"
 CONTROL = REPO / "core" / "src" / "v2" / "control.rs"
+# the two markers a literal can sit under: a read arm of the dispatcher, or the function that builds it
+MARKERS = ((re.compile(r'^\s*"([a-z_]+)" => \{', re.M), True),
+           (re.compile(r'^(?:pub(?:\(crate\))? )?(?:async )?fn ([a-z_]+)', re.M), False))
+JSON_OBJECT = re.compile(r"json!\(\s*\{")
+# the heading of the generated field table: the method scan stops there, and `tables()` writes it
+FIELDS_HEADING = "### Every field the protocol carries in one object, and where it is built"
+
+
+def enclosing(text: str, position: int) -> str:
+    """The function or read arm a literal sits in: the nearest preceding marker, as a doc reference."""
+    found = (-1, "", False)
+    for pattern, is_arm in MARKERS:
+        for match in pattern.finditer(text, 0, position):
+            if match.start() > found[0]:
+                found = (match.start(), match.group(1), is_arm)
+    _, name, is_arm = found
+    return f"`{name}`" + (" arm" if is_arm else "")
+
+
+def literal_fields(text: str):
+    """[(where, [fields])] for every `json!({ … })` in the protocol file, in source order.
+
+    The keys are the literal's own top level; a nested `json!` (the goal object inside a snapshot) is a literal
+    of its own and is picked up by the same scan, so no key is counted twice.
+    """
+    out = []
+    for match in JSON_OBJECT.finditer(text):
+        start = text.rindex("{", match.start(), match.end())
+        keys, depth, index = [], 0, start
+        while index < len(text):
+            character = text[index]
+            if character == "{":
+                depth += 1
+            elif character == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            elif character == '"' and depth == 1:
+                token = re.match(r'"(?:[^"\\]|\\.)*"', text[index:])
+                if token and text[index + token.end():].lstrip().startswith(":"):
+                    keys.append(token.group(0)[1:-1])
+                index += token.end() - 1 if token else 0
+            index += 1
+        out.append((enclosing(text, match.start()), keys))
+    return out
 
 
 def read_methods():
@@ -89,6 +144,13 @@ def tables():
     for name, params, identity, site in commands():
         lines.append(f"| `{name}` | {', '.join(f'`{p}`' for p in params) or '—'} | "
                      f"{'yes' if identity else 'no'} | {site} |")
+    lines += ["", "### Every field the protocol carries in one object, and where it is built", "",
+              "The rows a client reads (`instances[]`, `tasks[]`, `approvals[]`, `grants[]`, `entries[]`), a",
+              "checkpoint's `goal` object and the greeting/reply envelopes are all built as `json!({ … })`",
+              "literals in `engine/src/v2/daemon.rs`; this table is that list. A row is one literal.", "",
+              "| Built at | Fields |", "|---|---|"]
+    for where, fields in literal_fields(DAEMON.read_text(errors="replace")):
+        lines.append(f"| {where} | {', '.join(f'`{field}`' for field in fields) or '—'} |")
     return "\n".join(lines)
 
 
@@ -101,7 +163,9 @@ def main(argv):
         print(f"docs/PROTOCOL.md regenerated: {len(read_methods())} read methods, {len(commands())} commands")
         return 0
     text = DOC.read_text()
-    documented = (set(re.findall(r"^\| `([a-z_]+)` \|", text, re.M)))
+    # only the two method tables name methods; the field table's first column names functions and read arms
+    methods_region = text.split(FIELDS_HEADING, 1)[0]
+    documented = (set(re.findall(r"^\| `([a-z_]+)` \|", methods_region, re.M)))
     findings = []
     for name, _, _, _, _ in read_methods():
         if name not in documented:
