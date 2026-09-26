@@ -36,6 +36,8 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO / "review"))   # shared pid-based stop (D-148)
+import leak_guard  # noqa: E402
 BIN = REPO / "engine/target/debug/teamagents"
 KEY_VAR = "TEAMAGENTS_TRUNCATION_PROBE_KEY"
 
@@ -146,7 +148,7 @@ def stop_daemon(state_root: pathlib.Path) -> None:
     without this a probe would leave a live session behind on the user's machine. Registered with `atexit`,
     which also covers the early returns above.
     """
-    subprocess.run(["pkill", "-f", f"daemon --state-root {state_root}"], capture_output=True)
+    leak_guard.stop_daemons(state_root)
 
 def main() -> int:
     global PORT

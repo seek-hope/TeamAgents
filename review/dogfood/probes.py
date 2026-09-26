@@ -234,10 +234,10 @@ def main() -> int:
                 print(f"       {line}", flush=True)
     total = round(time.time() - started_all, 1)
 
-    # `pkill` returns before the daemon it signalled is gone, so give a stopped daemon a moment to leave before
-    # calling it a leak: the guard must not report a process that is on its way out (measured: a failing probe's
-    # daemon was still counted, and the run was red for it — D-141). A probe that passed relies on its own
-    # `atexit`, which sends TERM only, so if the count has still grown after the wait the harness applies the
+    # A signal returns before the daemon it was sent to is gone, so give a stopped daemon a moment to leave
+    # before calling it a leak: the guard must not report a process that is on its way out (measured: a failing
+    # probe's daemon was still counted, and the run was red for it — D-141). A probe that passed relies on its
+    # own `atexit`, which escalates TERM then KILL since D-148; if the count has still grown after the wait the harness applies the
     # same TERM-then-KILL sweep it applies to a failed probe — over its own root, where every probe's state root
     # lives — and only then reports a survivor (measured 2026-09-26: a full set with no failing probe was red
     # for a daemon that outlived its own stop, D-144).

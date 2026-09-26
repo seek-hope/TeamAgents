@@ -18,6 +18,38 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-148 Every probe stopped its daemon with `pkill -f`, the pattern that killed two shells (2026-09-26)
+
+Each of the twenty-eight dogfood probes ended with the same two lines: a `stop_daemon(state_root)` helper,
+registered with `atexit`, whose body was `pkill -f "daemon --state-root <state root>"`. `pkill -f` matches any
+command line that *contains* the string, so on 2026-09-26 it matched the shells whose own text mentioned
+`daemon --state-root …` and killed two of this session's shells (D-144; three of the probes also pattern-killed
+the job runner, and `crash.py` pattern-killed its daemon mid-run). It was also the reason the probes could not
+share the guard `make test` uses: the harness had already been fixed to signal by pid, and the probes had not.
+
+**Changed**: the same predicates D-147 extracted now serve the probes. `review/dogfood/*.py` import
+`review/leak_guard.py` and call `stop_daemons(<state root>)` — and `unknown_outcome.py` calls `stop_runners`,
+the runner family of the same `_pids` predicate (`teamagents jobs-runner <job dir>`), where it used to kill the
+runner by pattern. No `pkill`/`pgrep` call remains in any script of this tree; the only mention left is the
+docstring that explains why there is none.
+
+**Measured** (2026-09-26): `python3 review/leak_guard.py --self-check` green, including the new cross-family
+control ("a daemon is not a runner": `runner_pids(root)` stays empty while `daemon_pids(root)` does not);
+`make probe-offline` 7/7 green with "daemons of this run left: 0; new scratch none"; and the two probes whose
+kill is *in flight* rather than cleanup were re-run against a real model — `crash.py` printed "killed the
+daemon (gone); the client exited 2" and still measured the A08/A11/A12 claims (one line in `runs.log`, the
+resumed run `end=completed` / goal `SUCCEEDED` / `input_queued=True`), and `unknown_outcome.py` still measured
+A09's (runner stopped by pid, cold recovery marked the operation `OUTCOME_UNKNOWN`, one call of the command,
+the task `BLOCKED`). A `grep -rn pkill` over the probes, this module and `tui/scripts` returns the docstring
+that explains the rule and nothing that calls it.
+
+Ceiling: `stop_daemons` matches a daemon whose argument list *contains* the state root, which is what the
+probes' own pattern did too, but by pid and with the process identity checked (`comm == teamagents`, first
+argument `daemon`), so it cannot reach an unrelated process; two probes on the same root would stop each
+other's daemon, which is why every probe takes its own `--state-dir`. Stopping still costs up to the guard's
+15 s worst case (TERM, then KILL), and `crash.py` needs the daemon dead promptly — measured at ~1 s there,
+because the daemon exits on TERM.
+
 ## D-147 The leak guard counted and stopped nothing, and it existed twice (2026-09-26)
 
 `make test` and `review/dogfood/probes.py` each answered the same two questions — did this run leave a session
@@ -57,10 +89,9 @@ Ceiling: the guard sees what is *left* when the suite exits, so a test that star
 late (inside the same run) is not distinguished from one that never started it — that is the per-test guard's
 job (`engine/tests/cli.rs`'s `Daemon`, D-111). `make pty` and `make probe-offline` still run their own leak
 accounting through the harness; unifying those is D-144's follow-up, not this entry's. A daemon the current
-user cannot signal (`EPERM`) is reported as a survivor rather than swallowed. And the thirty probes' own
-`stop_daemon` helpers still call `pkill -f`, the pattern D-144 measured killing two of this session's shells
-whenever another command line contained the string; they should call this module's pid-based `stop` (recorded
-here as the next step rather than half-done).
+user cannot signal (`EPERM`) is reported as a survivor rather than swallowed. The probes' own `stop_daemon`
+helpers still called `pkill -f` when this entry was written; D-148 moved all twenty-eight of them onto this
+module's pid-based stop in the same session.
 
 ## D-146 "A check that can never pass" is a claim about the command, and the model can satisfy one (2026-09-26)
 
@@ -210,9 +241,11 @@ can never disagree. Verified against a daemon started by hand under a harness-st
 harness now reports `daemons of this run left: 0` with nothing left behind, which it never did before.
 
 Measured while resolving it: that daemon outlives its probe by minutes when stopped only with SIGTERM (the
-probes' own `stop_daemon` helpers send TERM), and the harness's TERM-then-KILL stops it — whether the daemon
+probes' own `stop_daemon` helpers sent TERM only then; D-148 gave them this guard's TERM-then-KILL), and the
+harness's TERM-then-KILL stops it — whether the daemon
 ignores TERM or its shutdown waits on the outstanding `OUTCOME_UNKNOWN` runner is not established, and the same
-`SIGTERM` question applies to `make test`'s guard, which counts rather than stops.
+`SIGTERM` question applied to `make test`'s guard, which counted rather than stopped (D-147: it stops what it
+catches now, with the same escalation).
 
 Ceiling: the check covers what can be stated without a session. The keep-on-failure path needs a real probe run,
 and the daemon check's remaining question (the paragraph above) needs the next `crash.py` run with its state

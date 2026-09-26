@@ -68,12 +68,12 @@ def is_running(stat: str) -> bool:
     return not stat.startswith("Z")
 
 
-def daemon_pids(root: pathlib.Path | None = None) -> list[tuple[int, str]]:
-    """`(pid, args)` for the live session daemons, optionally only those serving a root under `root`.
+def _pids(subcommand: str, root: pathlib.Path | None = None) -> list[tuple[int, str]]:
+    """`(pid, args)` for the live `teamagents <subcommand> …` processes serving a root under `root`.
 
-    A daemon is recognised by its **first argument** (`teamagents daemon …`), which is what `make test`'s guard
-    checked too. The `args` column of `ps` begins with the binary's *path*, so a prefix test such as
-    `args.startswith("daemon ")` matches nothing at all — measured 2026-09-26, after the sweep had been
+    Such a process is recognised by its **first argument** (`teamagents daemon …`, `teamagents jobs-runner …`),
+    which is what `make test`'s guard checked too. The `args` column of `ps` begins with the binary's *path*, so
+    a prefix test such as `args.startswith("daemon ")` matches nothing at all — measured 2026-09-26, after the sweep had been
     silently doing nothing while the guard reported a leak it could not stop (D-144).
     """
     listing = subprocess.run(["ps", "-eo", "pid,stat,comm,args"], capture_output=True, text=True).stdout
@@ -82,17 +82,31 @@ def daemon_pids(root: pathlib.Path | None = None) -> list[tuple[int, str]]:
         parts = line.split(None, 3)
         if len(parts) != 4 or not is_running(parts[1]) or parts[2] != "teamagents":
             continue
-        if parts[3].split()[1:2] != ["daemon"]:
+        if parts[3].split()[1:2] != [subcommand]:
             continue
         if root is None or str(root) in parts[3]:
             found.append((int(parts[0]), parts[3]))
     return found
 
 
+def daemon_pids(root: pathlib.Path | None = None) -> list[tuple[int, str]]:
+    """The live session daemons (`teamagents daemon …`), optionally only those serving a root under `root`."""
+    return _pids("daemon", root)
+
+
 def daemons(root: pathlib.Path | None = None) -> int:
     """How many live daemons there are — the same predicate as `daemon_pids`, so counting and stopping can
     never disagree."""
     return len(daemon_pids(root))
+
+
+def runner_pids(root: pathlib.Path | None = None) -> list[tuple[int, str]]:
+    """The live command runners (`teamagents jobs-runner <job dir>`, §6.2/A12).
+
+    A runner belongs to the *job directory* under a state root, so a probe that wants to crash a running
+    command stops it the same way it stops a daemon: by pid, from a predicate — never by `pkill -f`.
+    """
+    return _pids("jobs-runner", root)
 
 
 def strays(root: pathlib.Path | None = None) -> set[str]:
@@ -114,14 +128,14 @@ def observe(root: pathlib.Path | None = None) -> dict:
     return {"daemons": [[pid, args] for pid, args in daemon_pids(root)], "strays": sorted(strays(root))}
 
 
-def _alive(pids: list[int]) -> list[int]:
-    """Which of these pids are still live daemons — never a pattern, and never a corpse (D-144)."""
-    known = {pid for pid, _args in daemon_pids()}
+def _alive(pids: list[int], finder=daemon_pids) -> list[int]:
+    """Which of these pids are still live processes of that family — never a pattern, never a corpse (D-144)."""
+    known = {pid for pid, _args in finder()}
     return [pid for pid in pids if pid in known]
 
 
-def stop(pids: list[int], grace: float = 5.0, kill_grace: float = 10.0) -> list[int]:
-    """Stop these daemons by pid: SIGTERM, then SIGKILL for what is left; return the survivors.
+def stop(pids: list[int], finder=daemon_pids, grace: float = 5.0, kill_grace: float = 10.0) -> list[int]:
+    """Stop these processes by pid: SIGTERM, then SIGKILL for what is left; return the survivors.
 
     Signals go to a pid, never to a pattern: `pgrep`/`pkill -f` match any command line that *contains* the
     string, so `daemon --state-root <root>` also matched the shells whose text mentioned it and killed two of
@@ -134,17 +148,32 @@ def stop(pids: list[int], grace: float = 5.0, kill_grace: float = 10.0) -> list[
         except ProcessLookupError:
             continue
     deadline = time.time() + grace
-    while time.time() < deadline and _alive(pids):
+    while time.time() < deadline and _alive(pids, finder):
         time.sleep(0.25)
-    for pid in _alive(pids):
+    for pid in _alive(pids, finder):
         try:
             os.kill(pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
     deadline = time.time() + kill_grace
-    while time.time() < deadline and _alive(pids):
+    while time.time() < deadline and _alive(pids, finder):
         time.sleep(0.25)
-    return _alive(pids)
+    return _alive(pids, finder)
+
+
+def stop_daemons(root: pathlib.Path) -> list[int]:
+    """Stop the live daemons serving `root` (or all of them): what every probe registers with `atexit`.
+
+    Each probe used to run `pkill -f "daemon --state-root <root>"` here, the hazard D-144 measured: `pkill -f`
+    matches any command line that *contains* the string, so it also matched the shells whose text mentioned it
+    and killed two of this session's own shells (D-148).
+    """
+    return stop([pid for pid, _args in daemon_pids(root)])
+
+
+def stop_runners(root: pathlib.Path) -> list[int]:
+    """Stop the live command runners serving `root` (or all of them): `crash.py` and `unknown_outcome.py`."""
+    return stop([pid for pid, _args in runner_pids(root)], finder=runner_pids)
 
 
 def snapshot(path: pathlib.Path, root: pathlib.Path | None = None) -> None:
@@ -232,6 +261,11 @@ def self_check() -> int:
     The corpse rule is asserted twice on purpose: as a pure function (`is_running`), because the end-to-end case
     cannot isolate it here — `ps` replaces a zombie's arguments with `<defunct>`, so the argument test alone
     already excludes the corpse (measured while writing this check).
+
+    The runner predicate is checked as far as a synthetic process can take it: a live daemon is *not* a runner
+    (its first argument is `daemon`), and the two families filter by root independently. A live runner needs a
+    job directory a daemon wrote, so the runners' own stop is exercised where they exist — `crash.py` and
+    `unknown_outcome.py` (D-148).
     """
     if not BIN.is_file():
         print(f"FAIL: {BIN} is missing; build it first (make build)")
@@ -271,6 +305,8 @@ def self_check() -> int:
         if not wait_until(lambda: daemon.pid in {pid for pid, _args in daemon_pids()}, 20):
             findings.append(f"the daemon predicate did not find a daemon this check started "
                             f"(pid {daemon.pid}, stat {process_state(daemon.pid)!r})")
+        if runner_pids(tmp) or not daemon_pids(tmp):
+            findings.append(f"a daemon is not a runner: runners={runner_pids(tmp)}, daemons={daemon_pids(tmp)}")
 
         # 4. the audit reports a daemon that appeared after the snapshot, stops it, and exits non-zero
         report = io.StringIO()

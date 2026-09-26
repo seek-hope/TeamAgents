@@ -34,6 +34,9 @@ import sys
 import time
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
+
+sys.path.insert(0, str(REPO / "review"))   # the shared pid-based stop: never `pkill -f` (D-148)
+import leak_guard  # noqa: E402
 BIN = REPO / "engine/target/debug/teamagents"
 
 MODELS = {
@@ -133,9 +136,10 @@ def main() -> int:
         failures.append(f"the tool never went in flight ({seen})")
 
     # 2. kill the daemon mid-tool: the client dies with it, the *runner* keeps the job
-    killed = subprocess.run(["pkill", "-f", f"daemon --state-root {state_root}"], capture_output=True, text=True)
+    survivors = leak_guard.stop_daemons(state_root)
     interrupted, _ = client.communicate(timeout=120)
-    print(f"  killed the daemon (pkill exit {killed.returncode}); the client exited {client.returncode}")
+    fate = "gone" if not survivors else f"survived: {survivors}"
+    print(f"  killed the daemon ({fate}); the client exited {client.returncode}")
     if interrupted.strip():
         print(f"  the interrupted client said: {interrupted.strip()[:120]}")
 

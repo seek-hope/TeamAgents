@@ -29,6 +29,8 @@ import sys
 import time
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO / "review"))   # shared pid-based stop (D-148)
+import leak_guard  # noqa: E402
 BIN = REPO / "engine/target/debug/teamagents"
 KEY_VAR = "TEAMAGENTS_BUDGET_PROBE_KEY"
 
@@ -134,7 +136,7 @@ def main() -> int:
     else:
         print(f"  the goal carries the ceiling: {goals[0][4]}")
 
-    subprocess.run(["pkill", "-f", f"daemon --state-root {state_root}"], capture_output=True)
+    leak_guard.stop_daemons(state_root)
     for failure in failures:
         print("FAIL:", failure)
     return 1 if failures else 0

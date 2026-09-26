@@ -34,6 +34,8 @@ import time
 import uuid
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO / "review"))   # shared pid-based stop (D-148)
+import leak_guard  # noqa: E402
 BIN = REPO / "engine/target/debug/teamagents"
 
 CONFIG = """# Lifecycle-lever dogfood (D-98): a real model on the native context window (D-36).
@@ -261,7 +263,7 @@ def main() -> int:
     finally:
         if running is not None and running.poll() is None:
             running.kill()
-        subprocess.run(["pkill", "-f", f"daemon --state-root {state_root}"], capture_output=True)
+        leak_guard.stop_daemons(state_root)
     for failure in failures:
         print("FAIL:", failure)
     return 1 if failures else 0

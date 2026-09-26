@@ -36,6 +36,8 @@ import sys
 import time
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO / "review"))   # shared pid-based stop (D-148)
+import leak_guard  # noqa: E402
 BIN = REPO / "engine/target/debug/teamagents"
 
 MODELS = {
@@ -186,8 +188,8 @@ def main() -> int:
         failures.append(f"the command never went in flight ({seen})")
     else:
         # the runner first (no terminal receipt) and then the daemon (cold recovery)
-        subprocess.run(["pkill", "-f", f"jobs-runner {state_root}"], capture_output=True)
-        subprocess.run(["pkill", "-f", f"daemon --state-root {state_root}"], capture_output=True)
+        leak_guard.stop_runners(state_root)
+        leak_guard.stop_daemons(state_root)
     client.communicate(timeout=120)
 
     # 3. a cold start: the supervisor recovers the worker, whose journal is RUNNING with no receipt
@@ -267,7 +269,7 @@ def main() -> int:
         if pid:
             subprocess.run(["kill", str(pid)], capture_output=True)
     if daemon is not None:
-        subprocess.run(["pkill", "-f", f"daemon --state-root {state_root}"], capture_output=True)
+        leak_guard.stop_daemons(state_root)
         daemon.wait(timeout=30)
     log.close()
     for failure in failures:

@@ -17,8 +17,10 @@ default) and always runs the model at its native context window (D-36).
 
 **Every probe stops the daemon it started.** `exec` autostarts one and the daemon is detached on purpose
 (background work survives a client exit, §9), so a probe that just ran would otherwise leave a live session
-behind on the user's machine; `atexit` runs `pkill -f "daemon --state-root <scratch root>"` for every probe
-here. **Every probe also removes its own scratch** (D-138): the default `<TMPDIR>/ta-<name>` goes away at
+behind on the user's machine; `atexit` calls `leak_guard.stop_daemons(<scratch root>)` for every probe here —
+the pid-based stop of `review/leak_guard.py`, which never guesses by pattern (`pkill -f "daemon --state-root
+<root>"`, the shape these probes used until D-148, also matches any shell whose command line merely mentions
+that string; D-144 measured it killing two of a session's own shells). **Every probe also removes its own scratch** (D-138): the default `<TMPDIR>/ta-<name>` goes away at
 exit, because a directory left per run accumulates until the machine's `TMPDIR` fills — the defect D-131 fixed
 for the test suite, which the probes shared for 31 files. Pass `--state-dir` to keep a run's state for
 inspection: that is the escape hatch when a probe fails, and it is left alone on purpose. It is not part of

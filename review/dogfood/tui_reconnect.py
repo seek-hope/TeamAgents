@@ -34,6 +34,8 @@ import time
 import uuid
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO / "review"))   # shared pid-based stop (D-148)
+import leak_guard  # noqa: E402
 BIN = REPO / "engine/target/debug/teamagents"
 sys.path.insert(0, str(REPO / "tui" / "scripts"))
 from pty_screen import Screen, read_all  # noqa: E402  (the smoke's virtual terminal)
@@ -229,7 +231,7 @@ def main() -> int:
                 daemon.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 daemon.kill()
-        subprocess.run(["pkill", "-f", f"daemon --state-root {state_root}"], capture_output=True)
+        leak_guard.stop_daemons(state_root)
         for failure in failures:
             print("FAIL:", failure)
     return 1 if failures else 0
