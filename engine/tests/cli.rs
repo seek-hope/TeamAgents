@@ -7,10 +7,22 @@ use std::process::Command;
 /// rest of the suite.
 struct Daemon(std::process::Child);
 
-impl Drop for Daemon {
-    fn drop(&mut self) {
+impl Daemon {
+    /// Stop the daemon and wait for it, now rather than at the end of the scope.
+    ///
+    /// A test that removes its state root has to let the daemon go *first*: a live daemon recreates the
+    /// directories it uses, so a removal that raced it left the root behind — `make test`'s leak guard caught
+    /// exactly that (`/tmp/ta-checks-<pid>/root/instances/i-leader`, D-160). Idempotent: calling it again from
+    /// `Drop` ignores the already-reaped child.
+    fn stop(&mut self) {
         let _ = self.0.kill();
         let _ = self.0.wait();
+    }
+}
+
+impl Drop for Daemon {
+    fn drop(&mut self) {
+        self.stop();
     }
 }
 
@@ -452,7 +464,7 @@ fn exec_takes_the_prompt_from_stdin_and_runs_the_acceptance_check() {
         .stderr(std::process::Stdio::null())
         .spawn()
         .expect("start the daemon");
-    let _daemon = Daemon(daemon);
+    let mut daemon_guard = Daemon(daemon);
     let socket = state.join("daemon.sock");
     for _ in 0..200 {
         if socket.exists() && std::os::unix::net::UnixStream::connect(&socket).is_ok() {
@@ -506,7 +518,8 @@ fn exec_takes_the_prompt_from_stdin_and_runs_the_acceptance_check() {
         "the stdin prompt is what was submitted: {history:?}"
     );
     drop(client);
-    let _ = std::fs::remove_dir_all(&root);
+    daemon_guard.stop();
+    std::fs::remove_dir_all(&root).expect("the state root goes away with its daemon");
 }
 
 /// The acceptance checks a user writes in `[[checks]]` really reach the goal the
@@ -550,7 +563,7 @@ fn the_daemon_carries_configured_checks_into_the_goal() {
         .stderr(std::process::Stdio::null())
         .spawn()
         .expect("start the daemon");
-    let _daemon = Daemon(daemon);
+    let mut daemon_guard = Daemon(daemon);
     let socket = state.join("daemon.sock");
     for _ in 0..200 {
         if socket.exists() && std::os::unix::net::UnixStream::connect(&socket).is_ok() {
@@ -583,7 +596,8 @@ fn the_daemon_carries_configured_checks_into_the_goal() {
     assert_eq!(checks[0]["inputs"], serde_json::json!(["src"]));
     assert!(checks[0].get("network").is_none(), "an unset flag stays absent: {}", checks[0]);
     assert_eq!(checks[1]["id"], "docs");
-    let _ = std::fs::remove_dir_all(&root);
+    daemon_guard.stop();
+    std::fs::remove_dir_all(&root).expect("the state root goes away with its daemon");
 }
 
 /// A14: with no bubblewrap the shell must refuse to run **anything**, and the client's
@@ -912,7 +926,7 @@ fn the_daemon_grants_the_leader_the_team_authority() {
         .stderr(std::process::Stdio::null())
         .spawn()
         .expect("start the daemon");
-    let _daemon = Daemon(daemon);
+    let mut daemon_guard = Daemon(daemon);
     let socket = state.join("daemon.sock");
     for _ in 0..200 {
         if socket.exists() && std::os::unix::net::UnixStream::connect(&socket).is_ok() {
@@ -962,7 +976,8 @@ fn the_daemon_grants_the_leader_the_team_authority() {
     for action in ["manage", "delegate", "message"] {
         assert!(granted(action), "the session must grant the leader {action}@session: {grants}");
     }
-    let _ = std::fs::remove_dir_all(&root);
+    daemon_guard.stop();
+    std::fs::remove_dir_all(&root).expect("the state root goes away with its daemon");
 }
 
 /// One instance whose model cannot be built must not take the session with it.
@@ -1000,7 +1015,7 @@ fn an_unbootable_instance_parks_itself_and_the_session_survives() {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .expect("start the daemon");
-    let _daemon = Daemon(daemon);
+    let mut daemon_guard = Daemon(daemon);
     let socket = state.join("daemon.sock");
     for _ in 0..200 {
         if socket.exists() && std::os::unix::net::UnixStream::connect(&socket).is_ok() {
@@ -1079,7 +1094,8 @@ fn an_unbootable_instance_parks_itself_and_the_session_survives() {
     }
     assert!(parked, "the unbootable instance parks itself through the classified path");
     assert!(reason.contains("gpt-9"), "the reason names the model: {reason:?}");
-    let _ = std::fs::remove_dir_all(&root);
+    daemon_guard.stop();
+    std::fs::remove_dir_all(&root).expect("the state root goes away with its daemon");
 }
 
 /// A socket client for the daemon's JSON-lines protocol, as a test would write it:
@@ -1179,7 +1195,7 @@ fn the_authority_surface_grants_and_revokes_through_the_daemon() {
         .stderr(std::process::Stdio::null())
         .spawn()
         .expect("start the daemon");
-    let _daemon = Daemon(daemon);
+    let mut daemon_guard = Daemon(daemon);
     let socket = state.join("daemon.sock");
     for _ in 0..400 {
         if socket.exists() && std::os::unix::net::UnixStream::connect(&socket).is_ok() {
@@ -1319,7 +1335,8 @@ fn the_authority_surface_grants_and_revokes_through_the_daemon() {
     let (code, _, stderr) = authority(&["authority", "revoke", "--grant", "g-nope"]);
     assert_eq!(code, 2, "{stderr}");
     assert!(stderr.contains("no grant id starts with"), "{stderr}");
-    let _ = std::fs::remove_dir_all(&root);
+    daemon_guard.stop();
+    std::fs::remove_dir_all(&root).expect("the state root goes away with its daemon");
 }
 
 /// `[limits]` in the user config bounds every goal the session creates (D-64): the
@@ -1386,7 +1403,7 @@ fn configured_limits_reach_the_goal_and_really_bound_the_session() {
         .stderr(std::process::Stdio::null())
         .spawn()
         .expect("start the daemon");
-    let _daemon = Daemon(daemon);
+    let mut daemon_guard = Daemon(daemon);
     let db = state.join("session.sqlite");
     let mut row = None;
     for _ in 0..400 {
@@ -1413,7 +1430,8 @@ fn configured_limits_reach_the_goal_and_really_bound_the_session() {
     let deadline = deadline.expect("a configured deadline lands on the goal");
     let expected = before + 15.0 * 60.0;
     assert!((deadline - expected).abs() < 120.0, "the deadline is ~15 minutes out: {deadline} vs {expected}");
-    let _ = std::fs::remove_dir_all(&root);
+    daemon_guard.stop();
+    std::fs::remove_dir_all(&root).expect("the state root goes away with its daemon");
 }
 
 /// The ceiling is not decoration: a goal whose budget cannot cover even one request
@@ -1449,7 +1467,7 @@ fn a_tiny_configured_ceiling_parks_the_session_instead_of_running_it() {
         .stderr(std::process::Stdio::null())
         .spawn()
         .expect("start the daemon");
-    let _daemon = Daemon(daemon);
+    let mut daemon_guard = Daemon(daemon);
     let socket = state.join("daemon.sock");
     for _ in 0..400 {
         if socket.exists() && std::os::unix::net::UnixStream::connect(&socket).is_ok() {
@@ -1502,7 +1520,8 @@ fn a_tiny_configured_ceiling_parks_the_session_instead_of_running_it() {
     }
     assert!(parked, "a 4-token ceiling parks the leader instead of running it: {reason:?}");
     assert!(reason.contains("budget"), "and the reason names the budget: {reason}");
-    let _ = std::fs::remove_dir_all(&root);
+    daemon_guard.stop();
+    std::fs::remove_dir_all(&root).expect("the state root goes away with its daemon");
 }
 
 /// D-150: the daemon users actually have is the *detached* one (`teamagents`/`exec` start it, §1), and a

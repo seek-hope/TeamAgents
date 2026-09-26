@@ -5,12 +5,20 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
-## 0. Gate status (re-run 2026-09-26)
+## 0. Gate status (re-run 2026-09-27)
 
-* `make verify-model-all` was re-run on the current tree: all 11 configurations report "No error has been
-  found" (the largest, `MC.cfg`, generated 5,721,401 states / 606,904 distinct in ~4 minutes).
-* `make verify-model-counterexamples` was re-run: all 10 negative controls are refuted.
-* **The Kani layer was re-run on this tree** (2026-09-26, D-132). The toolchain this report called missing is
+* `make verify-model-all` was re-run on the current tree: all **11** configurations report `No error has been
+  found`, in 3 m 54 s. The largest is **`MC_task.cfg`** with 5,721,401 states generated / 606,904 distinct;
+  `MC.cfg` itself generates 84,877 / 18,384, and the smallest, `MC_store.cfg`, 48 / 13. (The previous version
+  of this line called `MC.cfg` the largest and quoted `MC_task`'s numbers for it — a mis-attribution no gate
+  looked at, found by re-running the target and reading its output per configuration, D-159.)
+* `make verify-model-counterexamples` was re-run: all **10** negative controls are refuted, each naming its
+  property (`AuthorizedEffectsOnly`, `InputLandsAtTheBoundary`, `NoRequestAfterDeadline`, `NoTurnWithoutWork`
+  twice, `SettlementFollowsATurnAfterTheLanding`, `NoForeignAdoption`, and three temporal refutations), in
+  1 m 16 s.
+* **The Kani layer was re-run on this tree** (2026-09-27; first re-run 2026-09-26, D-132): `make verify-kani`
+  reports `Complete - 3 successfully verified harnesses, 0 failures, 3 total` in ~3 s with a cached build
+  (the 2026-09-26 run paid for the build: ~16 s). The toolchain this report called missing is
   installed after all, at the path the Makefile's `KANI_PATH` already points at: `~/.cargo/bin/kani` reports
   Kani 0.68.0 with CBMC 6.11.0, and `verification/kani/target/` had last been written on 2026-09-25. `make
   verify-kani` reports `Complete - 3 successfully verified harnesses, 0 failures, 3 total`, so the paging
@@ -74,7 +82,7 @@ in [README.md](README.md); the fix ledger is in
 | Protocol model (wide) | `MC_wide.cfg` (2 instances / 2 operations) | 275,004,673 states / 11 min 25 s (historical run of `d37e1b4`, before the 2026-09-25 history rewrite). The spec has changed since (D-63/D-64/D-65/D-71 add instance fields, the deadline flag and the committed-tail rule), so that number is history: re-runs in this round reached about 170M / 250M states, and the D-71 re-run reached **36.5M states generated / 7.6M distinct / 29 min, 4.6M still queued, no violation** before it was stopped under the turn's time bound. The wide configuration stays the slow, best-effort target; the small two-instance configurations carry the per-instance checks in `make verify-model-all` | `make verify-model-wide` |
 | Code-level correspondence | `core/tests/v2_invariants.rs` | 38 commands; 1,482 short sequences plus a 60×24-step walk | `cargo test --offline --manifest-path core/Cargo.toml --test v2_invariants` |
 | Pure functions | `core/tests/kernel_properties.rs` | 258 entry combinations plus a full paging enumeration | `cargo test --offline --manifest-path core/Cargo.toml --test kernel_properties` |
-| Kani proofs | `kani/` (compiles the repository sources, 3 harnesses, 0 failures) | 2 properties for **every `usize`** plus 1 within a bound | `make verify-kani` (re-run 2026-09-26: 3 harnesses, 0 failures, ~16 s including the build; the negative control flips it to exit 1 — D-132) |
+| Kani proofs | `kani/` (compiles the repository sources, 3 harnesses, 0 failures) | 2 properties for **every `usize`** plus 1 within a bound | `make verify-kani` (re-run 2026-09-27: 3 harnesses, 0 failures, ~3 s with a cached build, ~16 s cold; the negative control flips it to exit 1 — D-132) |
 | Gate | fmt + clippy `-D warnings` + all tests | 23 suites | `make check` |
 
 Evidence that the checks are neither vacuous nor insensitive ("passing" is not because a check is too weak):

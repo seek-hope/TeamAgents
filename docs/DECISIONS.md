@@ -18,6 +18,59 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-160 The leak guard caught its first real leak: a test cleaned up under its own daemon (2026-09-27)
+
+`make check` went red in `make test` with a message that is the whole point of D-147's guard: "leaked scratch
+directory /tmp/ta-checks-799 (kept: the directory is the evidence)". The directory came from
+`cli::the_daemon_carries_configured_checks_into_the_goal`, which creates `ta-checks-<pid>`, starts a daemon
+against a state root inside it, and ended with `let _ = std::fs::remove_dir_all(&root)` — while the `Daemon`
+guard that owns that daemon was still alive, because it only drops at the end of the scope. What survived was
+`root/instances/i-leader/{artifacts,jobs}`: the daemon **recreated what it uses** after the removal had run.
+The `let _ =` is why nobody saw it — a cleanup that fails silently looks like a cleanup — and the leak is a
+*race*: restoring the old shape by hand and re-running `make test` passed. That is exactly why the detector had
+to be a guard rather than a habit.
+
+**Changed**: `Daemon` gains `stop()` (kill, then wait; `Drop` calls the same method, so it is idempotent), and
+all **seven** tests that hold a daemon now call `daemon_guard.stop()` *before*
+`std::fs::remove_dir_all(&root).expect("the state root goes away with its daemon")` — the loud form D-111 asked
+for. The root can no longer be removed under a live daemon, by construction rather than by luck.
+
+**Measured** (2026-09-27): the failing run's message and leftover shape above; after the change `make test`
+reports `no leak: 0 daemon(s) and 0 scratch directory(ies) present before the run are still all there is`, no
+`/tmp/ta-*` directory remains, and `cargo test --test cli` is 17/17. The control is stated honestly: restoring
+the old shape ran green once (the race did not manifest), so the *evidence* of the leak is the guard's catch,
+not a reproduction on demand — and the fix removes the race instead of the symptom.
+
+Ceiling: the other eighteen tests in that file clean up with `let _ = std::fs::remove_dir_all(&root)` too, and
+they do not hold a daemon, so their removal is best-effort; the leak guard is their backstop. This is also the
+first leak the guard has caught in the field, which is worth recording because it is the argument for having
+written it (D-147) rather than a note that counts.
+
+## D-159 The verification report's largest run had the wrong name (2026-09-27)
+
+Re-running the formal gates on the current tree — all 11 configurations, all 10 negative controls, the Kani
+harnesses — is evidence maintenance *and* a reading exercise, and the reading found a claim that had been wrong
+since the report was written: §0 said "the largest, `MC.cfg`, generated 5,721,401 states / 606,904 distinct".
+Those numbers are `MC_task.cfg`'s; `MC.cfg` itself generates 84,877 / 18,384, and the smallest
+(`MC_store.cfg`) 48 / 13. Nothing checked the sentence because `make verify-model-all` proves *TLC said
+`No error has been found` for every configuration* — its per-configuration state counts are printed for a human
+and never compared with the prose that quotes them. The mis-attribution was harmless to the conclusions and
+still wrong: a reader who wanted to know which model is the expensive one was told the wrong one.
+
+**Changed** (`verification/REPORT.md` §0): the sentence now names `MC_task.cfg` as the largest with its own
+numbers, gives `MC.cfg`'s and the smallest configuration's for scale, states the wall clock of the two gates
+(3 m 54 s and 1 m 16 s) and names the properties each negative control refutes — all of it refreshed to
+2026-09-27, which is also the date the gates were last run on this tree.
+
+**Measured** (2026-09-27): `make verify-model-all` exit 0, 11 × `No error has been found`; `make
+verify-model-counterexamples` exit 0, 10 × a refutation naming its property; `make verify-kani` exit 0, "3
+successfully verified harnesses, 0 failures, 3 total" in ~3 s.
+
+Ceiling: the numbers in §0 remain *prose* — the gate cannot compare them with a run (re-running TLC inside
+`make hygiene` would cost four minutes per check), so they are dated and illustrative rather than asserted, and
+the per-configuration counts stay in the run's own log. What the gate *does* assert, and this entry did not
+change, is the shape: eleven configurations, ten refuted controls, three harnesses.
+
 ## D-158 Seven environment knobs, one of them brand new, and no place to find them (2026-09-27)
 
 D-143's fix added a knob — `TEAMAGENTS_LOG_SURFACE`, which turns a member's *offer* into a witness — and it
