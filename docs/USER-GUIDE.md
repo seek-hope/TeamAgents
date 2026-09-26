@@ -440,9 +440,11 @@ teamagents tasks cancel --id t-prose    # releases a delegator waiting on a task
 - Long-context compaction triggers on **real window usage**: the summary keeps the original request, user
   revisions, acceptance criteria and open questions, while the full text stays retrievable through
   `read_history`. Compaction calls count against the goal budget.
-- Data cleanup: the session state of earlier releases was removed against an explicit inventory (list
-  first, delete only with an explicit `--apply`). Credentials, `~/.agents/skills`, `~/.codex` and the
-  evidence under `review/` are always kept.
+- Data cleanup is a one-off migration, not a lever this build has: the state of earlier releases (≤ v0.1.2)
+  is **not migrated**, and that old state — sessions, preferences and caches — was removed deliberately,
+  against a written inventory taken first (the upgrade notes in `docs/ACCEPTANCE.md` record it). Nothing in
+  this build deletes your data on its own, and credentials, `~/.agents/skills`, `~/.codex` and the evidence
+  under `review/` are always kept.
 
 ## 7. Troubleshooting
 

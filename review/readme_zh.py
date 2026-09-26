@@ -7,7 +7,8 @@ CLI surface it shows — has to stay equal to the English file. Nothing checked 
 
 * the documentation table lost a row (`docs/PRODUCT-COMPARISON.md` was added to the English table by
   `35dc328` and never to the Chinese one), and
-* the file carried **two** `## 快速开始` sections, the earlier one a shortened copy of the later one.
+* the file carried **two sections under the same heading** (the quick-start heading, used twice), the earlier
+  one a shortened copy of the later one.
 
 Both are invisible to `citations.py` (the paths it lost still resolve) and to `language-check` (the Chinese
 file is the documented exception). This script asserts the three invariants that are language-independent:

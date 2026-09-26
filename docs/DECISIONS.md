@@ -18,6 +18,39 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-135 The user guide showed a flag this build does not serve (2026-09-26)
+
+D-73's rule is that an unserved argument is a *refusal naming the word* — so a flag a document shows either
+exists, or the reader meets an error the first time they copy the line. Nothing checked the two documents a
+user reads first. A scan of every backticked `--flag` in the tree found one: `docs/USER-GUIDE.md` §6 described
+the earlier-release cleanup as "list first, delete only with an explicit `--apply`", and `--apply` is a flag of
+no entry point. The cleanup was a one-off migration performed against a written inventory, which is how
+`docs/ACCEPTANCE.md`'s upgrade notes already described it; §6 now says that in the same words, and adds what
+matters to a reader — nothing in this build deletes their data on its own.
+
+The scan also showed why the other documents are *not* in scope, and each for a reason worth recording:
+`docs/ACCEPTANCE.md` and `docs/INSTALL.md` record the flags this build **removed** (`--plain`, `--resume`,
+`--team`, `--verbose` — naming them is the point), `docs/PRODUCT-COMPARISON.md` names other products' flags
+and one proposal (`--last`, `--stream-json`), and `docs/DECISIONS.md` and `docs/DEVELOPMENT.md` quote this
+repository's own tools (`--list-known`, `--stub-bwrap`, `--locked`). The flags in the two product documents
+that belong to the *toolchain* rather than to this build are five, and the script lists them with their
+reason (`--offline`, `--locked`, `--manifest-path`, `--release`, `--bin`).
+
+**Guarded**: `review/doc_flags.py`, in `make hygiene`. Its authority is the CLI's own help text — the `HELP`
+constant in `engine/src/main.rs`, which is what `teamagents --help` prints — read from the source so the check
+runs in `make hygiene` on a tree that has not been built. The served set it derives is exactly the sixteen
+flags the binary prints.
+
+Evidence: the script reports "95 flag mentions in README.md, docs/USER-GUIDE.md; the CLI's help lists 16 flags
+and 5 belong to the toolchain" and exits 0. Two controls, each reverted byte-identically: restoring the
+pre-fix sentence fails at `docs/USER-GUIDE.md:445: --apply is not a flag this build serves`, and adding
+`--plain` to a README command fails at `README.md:136`.
+
+Ceiling: it compares the documents with the help text, not the help text with the parser, so a flag the help
+advertises but the parser refuses would pass here — that would be a different finding, in
+`engine/src/main.rs`. The check is also one-directional: a flag this build serves and the documents never
+mention is fine.
+
 ## D-134 The Chinese README is a mirror, and two things had stopped mirroring (2026-09-26)
 
 `README.zh-CN.md` is the repository's single non-English document (AGENTS.md), which makes it a *translation*
