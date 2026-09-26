@@ -81,11 +81,36 @@ def session_state(state_root: pathlib.Path, worker: str) -> tuple[int, str]:
     return handled, (open_tasks[0][0] if open_tasks else "none")
 
 
-def shell_attempts(state_root: pathlib.Path) -> list[tuple[str, str]]:
-    """(operation id tail, status) for the operations whose arguments name this command's artifact."""
+def live_shell_grant(state_root: pathlib.Path, worker: str) -> bool:
+    """Does the worker hold a live `shell@workspace` grant? The surface follows the grants *live* — the driver
+    rebuilds the member's profile for every request (`driver::team_kernel`, which reads the grants and drops
+    `shell` only when no covering grant is held) — so a live grant means the tool was offered, and no attempt
+    then means the model chose not to use it rather than never seeing it (D-143)."""
     db = sqlite3.connect(f"file:{state_root}/session.sqlite?mode=ro", uri=True)
-    return [(op[-8:], status) for op, status, intent in
-            db.execute("SELECT operation_id, status, intent_json FROM operations") if "proof.txt" in str(intent)]
+    rows = list(db.execute(
+        "SELECT COUNT(*) FROM grants WHERE subject = ?1 AND action = 'shell' AND revoked_at IS NULL", [worker]))
+    return rows[0][0] > 0
+
+
+def shell_attempts(state_root: pathlib.Path) -> list[tuple[str, str]]:
+    """(operation id tail, status) for the *shell* operations naming this command's artifact.
+
+    The tool name is part of the intent, and it has to be checked: a leader's `delegate` carries the command in
+    its task description, so matching on the artifact alone reported a delegation as a shell attempt (measured
+    2026-09-26, the same loose-witness trap D-130 and D-140 record).
+    """
+    db = sqlite3.connect(f"file:{state_root}/session.sqlite?mode=ro", uri=True)
+    out = []
+    for op, status, intent in db.execute("SELECT operation_id, status, intent_json FROM operations"):
+        if "proof.txt" not in str(intent):
+            continue
+        try:
+            named = json.loads(intent or "{}").get("name")
+        except json.JSONDecodeError:
+            named = None
+        if named == "shell":
+            out.append((op[-8:], status))
+    return out
 
 
 def park(socket: pathlib.Path, instance: str, reason: str) -> str:
@@ -226,10 +251,19 @@ def main() -> int:
     grant_id = (json.loads(granted.stdout) if granted.stdout.strip() else {}).get("grant_id", "")
 
     # --- turn 2: the same worker runs it -----------------------------------------
-    started = time.time()
-    second = call(["exec", *common, "--json", "--timeout", str(args.timeout), "--cwd", str(workspace),
-                   SECOND.format(proof=proof)], env)
-    print(f"turn 2: exit={second.returncode} elapsed={round(time.time() - started, 1)}s")
+    # Asking again is legitimate: the leader sometimes reports the worker's *earlier* answer and leaves the new
+    # task PENDING when its turn ends (measured 2026-09-26: a run whose worker never attempted the command, with
+    # the grant live and the delegated task still pending — a model behaviour, not a surface problem). The grant
+    # stays in place across attempts, so the second ask is the same question with the same authority.
+    for attempt in (1, 2):
+        started = time.time()
+        second = call(["exec", *common, "--json", "--timeout", str(args.timeout), "--cwd", str(workspace),
+                       SECOND.format(proof=proof)], env)
+        print(f"turn 2 (attempt {attempt}): exit={second.returncode} elapsed={round(time.time() - started, 1)}s")
+        if proof.is_file() and proof.read_text().strip() == "granted":
+            break
+        if attempt == 1:
+            print("  the command did not run in the first ask; asking again (the grant is still in place)")
     report = json.loads(second.stdout or "{}") if second.stdout.strip().startswith("{") else {}
     print("  reply:", (report.get("reply") or second.stdout.strip() or second.stderr.strip())[:400])
     if proof.is_file() and proof.read_text().strip() == "granted":
@@ -242,10 +276,12 @@ def main() -> int:
         # because the probe's scratch is removed at exit — so the message names the evidence instead (D-143).
         handled, open_task = session_state(state_root, worker)
         attempts = shell_attempts(state_root)
+        held = live_shell_grant(state_root, worker)
         failures.append(
-            f"the worker did not run the command after the grant: task={open_task} after {handled} requests, "
-            f"attempts={attempts} — no attempt means the surface lacked the tool, a refusal is a grant question, "
-            f"an open task means the worker answered in prose (docs/ACCEPTANCE.md, the recorded gap)"
+            f"the worker did not run the command after the grant: grant={'live' if held else 'ABSENT'}, "
+            f"task={open_task} after {handled} requests, attempts={attempts} — with a live grant and no attempt "
+            f"the tool was offered and the model chose not to use it; an absent grant is the finding; an open "
+            f"task is the recorded gap (docs/ACCEPTANCE.md)"
         )
 
     # --- revoking takes it away again -------------------------------------------

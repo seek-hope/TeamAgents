@@ -60,9 +60,35 @@ failure makes the probe set the premise up twice and print the gap note both tim
 unsatisfiable prints the new message with the worker's own attempts — `task=none after 9 requests,
 attempts=[('6dbe4b:0', 'SUCCEEDED'), ('8d4a8d:1', 'FAILED')]` in that run, i.e. the worker *had* run the command.
 
-Ceiling: the three shapes are distinguished, not proven — a model that *chooses* not to use an available tool
-and one that was never offered it both leave no operation, and the message says so rather than pretending to
-know.
+**The grant question in that message is answerable from the code, so the message now answers it** with
+`grant=live` or `grant=ABSENT`: `driver::team_kernel` rebuilds a member's profile for **every** request and reads
+the grants live on the single-writer connection, dropping `shell` only when no covering grant is held — so a
+request built after a grant always offers the tool, and *no attempt with a live grant* means the model chose not
+to use it rather than never seeing it. Both paths of the new helper are validated: `live_shell_grant` answers
+False on the earlier successful run's own session (its grant was revoked at the end — `revoked_at` set and a
+`grant_revoked` event) and True on a copy with the revocation cleared, and the sharpened message prints
+`grant=live, task=none after 11 requests, attempts=[… five SUCCEEDED …]` under the artifact control.
+
+Ceiling: what the message reports is the *grant*, not the schema list that went out with a request — that surface
+is assembled per request and only the instance's *configured* profile is persisted — so "grant=live and no
+attempt" is read as the model's choice because the code path reads the grants live, not because that run left a
+record of the tools it offered. A run reporting `grant=ABSENT`, or an attempt whose receipt is a refusal, is the
+product-side finding this is watching for.
+
+**The live occurrence, later the same evening** (`make probe-models` again) printed exactly that message and then
+showed the witness was too loose: `grant=live, task=none after 10 requests, attempts=[('13d4b5:0', 'SUCCEEDED')]`
+— and that operation is the leader's **`delegate`**, whose task description names the command, so matching on the
+artifact alone counted a delegation as a shell attempt (D-130's and D-140's trap, a third time). `shell_attempts`
+now requires the intent's `name` to be `shell`; against that state it returns `[]`, and against the earlier
+successful run's it returns three. The shape is therefore settled: the grant was **live**, the worker **never
+attempted** the shell, and the task the leader had just delegated was still `PENDING` when its turn ended — the
+leader had reported the worker's *earlier* (pre-grant) answer and did not wait for the new task. That is the
+model's behaviour, with no evidence anywhere in the run that the tool was missing, and the same build ran the
+command in two other runs.
+
+Because it is behaviour rather than a defect, turn 2 now gets the same bounded retry turn 1 has: if the artifact
+is not there after the first ask, the probe asks again **with the grant still in place** (the session is not
+reset), and prints a line saying so. A run of the probe after the change passed in 28 s with the first attempt.
 
 ## D-142 The workspace probe sampled a record the retirement was still removing (2026-09-26)
 
