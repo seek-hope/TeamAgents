@@ -41,6 +41,8 @@ teamagents                           # open the TUI (starts the per-user daemon 
   `--state-root` naming a file (most often the `session.sqlite` itself) is refused with the flag named, by
   `doctor`, `init`, `daemon`, `exec` and the session verbs alike (D-166). A path that does not exist yet is
   not an error: it is created.
+  If such a fresh path is *named* like the database (`…/session.sqlite`), `init` creates it as asked and prints
+  a note, because the root is the directory that holds that file (D-169).
 
 ### 1.1 Headless runs (`teamagents exec`)
 

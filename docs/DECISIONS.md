@@ -18,6 +18,33 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-169 `init` created a directory named `session.sqlite` without saying so (2026-09-27)
+
+The neighbouring typo of D-166, one path segment over. D-166 refuses a `--state-root` that *is* a file; this is
+the path that *does not exist yet* and is named like the database file. A fresh root is legal and gets created
+(D-149), so `init --state-root …/real/session.sqlite` did exactly what it was asked and produced a directory
+called `session.sqlite` with a *second* `session.sqlite` (the database) inside it — measured 2026-09-27, and the
+layout then fails its own `daemon`/`doctor` on the parent. Nothing said a word about it.
+
+**Changed** (`engine/src/cli.rs`): when `init` has just *created* the root and its own name looks like a session
+database (`session.sqlite`, or any `*.sqlite`), it prints one note naming the shape and the way out — "the state
+root is the *directory* that holds session.sqlite and daemon.sock … if you meant that database file, pass its
+parent directory next time". It never refuses: creating a fresh root at the name the user chose is the
+documented behaviour (D-149), and the note is measured against that — a fresh ordinary directory prints nothing.
+An existing root is never noted, since the mistake can only happen while creating one.
+
+**Measured** (2026-09-27): `init --state-root /tmp/…/real/session.sqlite` prints the note (and the odd
+`session.sqlite/session.sqlite` layout it would otherwise have left silently); the controls — a fresh ordinary
+directory, and that directory used by `exec` end to end — print none. New test
+`cli::init_notes_a_root_named_like_the_session_database`.
+
+**And the live model probes were re-run in full** after D-163…D-168, in chunks (`--set models`, 25 probes; the
+offline set had already been green): skills, mcp, mcp_http, crash, unknown_outcome, cancel, lifecycle_run,
+deadline, job_identity, checks, stale_check, two_gates, exec_check, queued_input, runtime_note, instructions,
+hooks, workspace, approval, tui, team_ring, providers, protocols, authority — **all green, no daemons left**,
+plus `web.py` (exit 0) and the 8 offline probes. `authority.py` — D-143's recorded exception — passed on its
+first attempt, so the shape did not reproduce and its witness did not have to classify a failure.
+
 ## D-168 The session offered web tools its config never declared (2026-09-27)
 
 The `skills`-row question ("what is the model actually offered?") answered itself with the surface witness D-143

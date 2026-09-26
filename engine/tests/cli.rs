@@ -460,6 +460,42 @@ fn init_creates_private_config_and_never_overwrites_existing_paths() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// D-169: `init` creates a fresh root at whatever path it is given (D-149), so a path *named like the session
+/// database* used to produce a directory called `session.sqlite` with a database inside it — a layout whose own
+/// `doctor`/`daemon` then fail on. The note names the shape; it never refuses, because a fresh root at any name
+/// is what the user asked for. (D-166 is the neighbouring case: a `--state-root` that already *is* a file.)
+#[test]
+fn init_notes_a_root_named_like_the_session_database() {
+    let root = std::env::temp_dir().join(format!("ta-init-shape-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("config/teamagents")).unwrap();
+    let run = |args: &[&str]| -> (bool, String) {
+        let output = Command::new(env!("CARGO_BIN_EXE_teamagents"))
+            .args(args)
+            .env("XDG_CONFIG_HOME", root.join("config"))
+            .env("XDG_STATE_HOME", root.join("state"))
+            .output()
+            .unwrap();
+        (
+            output.status.success(),
+            format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr)),
+        )
+    };
+    let (ok, out) = run(&["init", "--state-root", root.join("data/session.sqlite").to_str().unwrap()]);
+    assert!(ok, "{out}");
+    assert!(out.contains("looks like a session database"), "the note names the shape: {out}");
+    assert!(out.contains("pass its parent directory"), "and the way out: {out}");
+    assert!(
+        root.join("data/session.sqlite/session.sqlite").is_file(),
+        "the fresh root is still created, exactly as asked (D-149)"
+    );
+    // control: an ordinary fresh directory gets no note
+    let (ok, out) = run(&["init", "--state-root", root.join("plain").to_str().unwrap()]);
+    assert!(ok, "{out}");
+    assert!(!out.contains("looks like a session database"), "{out}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// A36/R27: `init` prepares an identifiable v2 state root and `doctor` verifies
 /// it; a foreign database in the same path is refused rather than reinterpreted
 /// (A34), and the legacy layout is only reported.

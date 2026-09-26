@@ -39,6 +39,7 @@ pub fn init(state_root: Option<PathBuf>) -> i32 {
 pub fn prepare_v2_root(state_root: Option<PathBuf>) -> Result<PathBuf, String> {
     let root = state_root.unwrap_or_else(crate::v2_root);
     require_state_root_dir(&root)?;
+    let fresh = !root.exists();
     std::fs::create_dir_all(&root).map_err(|e| format!("create {}: {e}", root.display()))?;
     let db = root.join("session.sqlite");
     // opening with create stamps format/schema; opening an existing foreign or
@@ -47,10 +48,32 @@ pub fn prepare_v2_root(state_root: Option<PathBuf>) -> Result<PathBuf, String> {
     println!("state root ready: {}", root.display());
     println!("  session db: {}", db.display());
     println!("  socket:     {}", root.join("daemon.sock").display());
+    // D-169: the neighbouring typo of D-166's (one path segment over). A root that does not exist yet is legal
+    // and gets created (D-149), so a path *named like the database file* used to produce a directory called
+    // `session.sqlite` with a database inside it — measured 2026-09-27. The note names the shape; it never
+    // refuses, because a fresh root at any name is what the user asked for.
+    if fresh {
+        if let Some(hint) = database_shaped_root_hint(&root) {
+            println!("  note: {hint}");
+        }
+    }
     if let Some(legacy) = legacy_layout_hint() {
         println!("  note: {legacy}");
     }
     Ok(root)
+}
+
+/// A note when the just-created root's own name looks like the session database.
+fn database_shaped_root_hint(root: &Path) -> Option<String> {
+    let name = root.file_name()?.to_string_lossy().into_owned();
+    (name == "session.sqlite" || name.ends_with(".sqlite")).then(|| {
+        format!(
+            "{name} looks like a session database, not a state root: the state root is the *directory* that \
+             holds session.sqlite and daemon.sock, and a fresh root was created at {} — if you meant that \
+             database file, pass its parent directory next time",
+            root.display()
+        )
+    })
 }
 
 /// Legacy v1 state: reported, never touched here (R28 owns cleaning it).
