@@ -28,7 +28,6 @@ import argparse
 import os
 import pathlib
 import shutil
-import signal
 import subprocess
 import sys
 import tempfile
@@ -36,6 +35,9 @@ import time
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 HERE = REPO / "review/dogfood"
+
+sys.path.insert(0, str(REPO / "review"))   # the shared guard, also used by `make test` (D-147)
+import leak_guard  # noqa: E402
 
 # (file, extra arguments, why it is in this set) — the credential-free set: no model, no credential
 OFFLINE = [
@@ -99,79 +101,25 @@ def needs_credentials(set_name: str) -> bool:
     return set_name in ("models", "all")
 
 
-def is_running(stat: str) -> bool:
-    """Is this process alive? A zombie is not.
-
-    `crash.py` kills its daemons on purpose, and in this container an orphaned dead child stays `<defunct>`
-    (pid 1 does not reap), so a corpse keeps the binary's name and its argv. Counting those reported a leak for
-    a process that serves nothing and cannot be killed (D-144).
-    """
-    return not stat.startswith("Z")
-
-
-def daemon_pids(root: pathlib.Path | None = None) -> list:
-    """`(pid, args)` for the live session daemons, optionally only those serving a root under `root`.
-
-    A daemon is recognised by its **first argument** (`teamagents daemon …`), which is what `make test`'s guard
-    checks too. The `args` column of `ps` begins with the binary's *path*, so a prefix test such as
-    `args.startswith("daemon ")` matches nothing at all — measured 2026-09-26, after the sweep had been
-    silently doing nothing while the guard reported a leak it could not stop (D-144).
-
-    The stop below signals by pid, never by a pattern: `pgrep`/`pkill -f` match any command line that *contains*
-    the string, so `daemon --state-root <root>` also matched the shells whose text mentioned it and killed two
-    of this session's own shells. The probes' own `stop_daemon` helpers still carry that hazard; this harness
-    does not.
-    """
-    listing = subprocess.run(["ps", "-eo", "pid,stat,comm,args"], capture_output=True, text=True).stdout
-    found = []
-    for line in listing.splitlines()[1:]:
-        parts = line.split(None, 3)
-        if len(parts) != 4 or not is_running(parts[1]) or parts[2] != "teamagents":
-            continue
-        if parts[3].split()[1:2] != ["daemon"]:
-            continue
-        if root is None or str(root) in parts[3]:
-            found.append((int(parts[0]), parts[3]))
-    return found
-
-
-def daemons(root: pathlib.Path | None = None) -> int:
-    """How many live daemons there are — the same predicate as `daemon_pids`, so counting and stopping can
-    never disagree."""
-    return len(daemon_pids(root))
+# The two ways a probe run can leak — a live session daemon and a scratch directory — are guarded by
+# `review/leak_guard.py`, which `make test` uses too, so the harness's counting rule and its stopping rule are
+# the same rule as the suite's (D-147). It also carries the two measurements that shaped it: a daemon is
+# recognised by its first *argument*, because `ps` prints the binary's path first and a prefix test matches
+# nothing (D-144), and a zombie is not a leak because pid 1 does not reap here (D-144); scratch is directories
+# only (D-143). This harness used to hold its own copy, and that copy was the one that matched nothing.
+daemons = leak_guard.daemons
+daemon_pids = leak_guard.daemon_pids
+strays = leak_guard.strays
 
 
 def stop_daemons(state_dir: pathlib.Path) -> None:
     """Stop whatever serves a probe's state root: a killed probe cannot do it itself.
 
-    SIGTERM first, then SIGKILL for what is left (a daemon from a timed-out probe outlived the guard's window,
-    D-141); both go to the pid the predicate found, so nothing else can be signalled.
+    Registered with `atexit` by each probe, so this is the harness's backstop for a probe that could not run
+    its own cleanup (D-138). SIGTERM first, then SIGKILL for what is left (a daemon from a timed-out probe
+    outlived the guard's window, D-141); both go to the pid the predicate found, so nothing else is signalled.
     """
-    for pid, _args in daemon_pids(state_dir):
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except ProcessLookupError:
-            continue
-    for _ in range(10):
-        if not daemon_pids(state_dir):
-            return
-        time.sleep(0.5)
-    for pid, _args in daemon_pids(state_dir):
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-
-
-def strays() -> set:
-    """Scratch *directories* the probes would leave behind, by their shared prefix.
-
-    Directories only: every probe's scratch is one (`mkdtemp` or a `mkdir`ed root), while plain files with the
-    same prefix appear in `TMPDIR` from elsewhere on this machine — measured 2026-09-26, an empty `ta-cap-stdout`
-    and `ta-cap-stderr` and a `ta-wide-d71.log` none of which this tree writes — and a guard that counted them
-    would report a leak that is not there (D-143).
-    """
-    return {p.name for p in pathlib.Path(os.environ.get("TMPDIR", "/tmp")).glob("ta-*") if p.is_dir()}
+    leak_guard.stop([pid for pid, _args in leak_guard.daemon_pids(state_dir)])
 
 
 def self_check() -> int:
@@ -200,7 +148,7 @@ def self_check() -> int:
             (pathlib.Path(tmp) / "ta-a-directory").mkdir()
             (pathlib.Path(tmp) / "ta-a-file").write_text("")   # files with the prefix appear from elsewhere
             counted = strays()
-            if counted != {"ta-a-directory"}:
+            if counted != {str(pathlib.Path(tmp) / "ta-a-directory")}:
                 findings.append(f"the stray guard must count directories only, got {sorted(counted)}")
     finally:
         if keep is None:

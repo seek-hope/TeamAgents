@@ -18,6 +18,50 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-147 The leak guard counted and stopped nothing, and it existed twice (2026-09-26)
+
+`make test` and `review/dogfood/probes.py` each answered the same two questions — did this run leave a session
+daemon running, did it leave a scratch directory — and each answered them in its own copy of the rule. The
+suite's copy stopped neither: it counted `teamagents daemon` processes before and after the three crates and
+failed with a number ("the suite left 1 daemon(s) behind"), so the reader still had to find the process, the
+daemon kept holding its socket and state root, and the *next* run's baseline counted it. The harness's copy had
+already rotted into the measured D-144 defect — a predicate that matched nothing while the guard reported a
+leak it could not stop — and the fact that the two copies could disagree at all was the underlying defect:
+counting and stopping were two implementations of one rule.
+
+**Changed**: `review/leak_guard.py` is that rule, once, and both callers use it. `make test` takes
+`snapshot` before the three crates and `audit` after them; `review/dogfood/probes.py` imports the predicates for
+its own end-of-set accounting. The audit reports a *difference* (so a daemon or a directory that was already
+there is not this run's doing), names what appeared — pid, and the `--state-root` from its argument list — stops
+the daemon it reported (SIGTERM, then SIGKILL, by pid: never `pkill -f`, D-144) and keeps the **state root**,
+because that directory is the evidence of the test that wrote it (D-140). The scratch rule is directories only
+(D-143's measurement: `TMPDIR` holds `ta-*` *files* written by nothing in this tree, and counting them reports
+a leak that is not there). The zombie rule (D-144) is still there, and this entry records that it is now
+enforced twice for free: `ps` replaces a corpse's arguments with `<def [teamagents] <defunct>`, so the argument
+test excludes it as well — measured while writing the check, which is why the corpse rule is asserted as a pure
+function (`is_running`) *and* end to end.
+
+**Measured** (2026-09-26, no model, no credential): `python3 review/leak_guard.py --self-check` — "self-check
+ok: the daemon predicate, the zombie rule, the scratch rule and the audit/stop path". Four controls, each
+reverted byte-identically (sha256 `0e06faea…`): the predicate replaced by the D-144 prefix test fails three
+ways ("did not find a daemon this check started", the audit then finding nothing, and the report naming no pid);
+`is_running` returning True fails "a zombie is not a running process: Z->True, Sl->True"; counting `ta-*` files
+fails "must count directories only, got […ta-a-directory, …ta-a-file]"; and an audit that reports without
+stopping fails "the audit did not stop the daemon it reported". Through the CLI with a leak planted by hand:
+`snapshot` then a started daemon then `audit` prints "leaked daemon pid 6 (state root /tmp/ta-guard-control-…/root):
+sent SIGTERM, then SIGKILL — gone", keeps the state root, and exits 1; a planted `ta-*` directory prints "leaked
+scratch directory … (kept: the directory is the evidence)". `make test` is green with the guard in place and
+prints "no leak: 0 daemon(s) and 0 scratch directory(ies) present before the run are still all there is".
+
+Ceiling: the guard sees what is *left* when the suite exits, so a test that starts a daemon and stops it too
+late (inside the same run) is not distinguished from one that never started it — that is the per-test guard's
+job (`engine/tests/cli.rs`'s `Daemon`, D-111). `make pty` and `make probe-offline` still run their own leak
+accounting through the harness; unifying those is D-144's follow-up, not this entry's. A daemon the current
+user cannot signal (`EPERM`) is reported as a survivor rather than swallowed. And the thirty probes' own
+`stop_daemon` helpers still call `pkill -f`, the pattern D-144 measured killing two of this session's shells
+whenever another command line contained the string; they should call this module's pid-based `stop` (recorded
+here as the next step rather than half-done).
+
 ## D-146 "A check that can never pass" is a claim about the command, and the model can satisfy one (2026-09-26)
 
 `review/dogfood/checks.py` (A16's live half) and `two_gates.py`'s first scenario both configured their
@@ -691,7 +735,8 @@ until the tmpfs was full. Two fixes:
 - both helpers now return a `Scratch` guard that removes its directory when it drops, so a test leaves
   nothing behind even when it fails;
 - `make test` counts `ta-*` entries in `TMPDIR` before and after the suite and fails if the run added any —
-  the scratch analogue of the daemon-leak guard D-111 added, with the same shape of message.
+  the scratch analogue of the daemon-leak guard D-111 added, with the same shape of message (**D-147**: the two
+  are one implementation now, in `review/leak_guard.py`, and it names and stops what it catches).
 
 **The tidy-looking fix is rejected, and the reason is measured.** Pointing the suite's `TMPDIR` at a scratch
 root the recipe then removes — the obvious way to bound the whole thing — broke **26 daemon tests**: a daemon
@@ -1447,6 +1492,9 @@ made the gate cry wolf. The control below proves it still fires for a real leak:
 
     make test                                      # 0 daemons before, 0 after
     make -f /tmp/Makefile.leak test-leak-probe     # "the suite left 1 daemon(s) behind (before: 0, after: 1)"
+
+**Amended by D-147**: the guard is `review/leak_guard.py` now, shared with the probe harness; the same control
+prints the leaked daemon's pid and state root and stops it instead of reporting that count.
 
 **Count by subcommand, not by name** (measured again 2026-09-26): `ps -eo comm | grep -cx teamagents` counts
 every process of that binary and therefore reports **1** on a clean tree. The one it finds is the A08 crash

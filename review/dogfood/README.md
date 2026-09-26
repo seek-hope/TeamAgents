@@ -43,8 +43,10 @@ env -u DEEPSEEK_API_KEY -u KIMI_API_KEY python3 review/dogfood/probes.py   # the
 ```
 
 It counts the daemons and the scratch directories before and after the run and fails if the set added either,
-because those two leaks are how D-111 and D-131 were found. The model-requiring probes still run one at a time,
-each at its model's native window (D-36).
+because those two leaks are how D-111 and D-131 were found; the rules themselves live in
+`review/leak_guard.py`, which `make test` uses too, so the harness's counting and the suite's counting are one
+implementation (D-147). The model-requiring probes still run one at a time, each at its model's native window
+(D-36).
 
 Each probe runs with an explicit `--state-dir` under the harness's own root, so the harness can clean up after
 a probe it had to kill (a signal skips the probe's own `atexit`) and can **keep** the state of a probe that

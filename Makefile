@@ -30,20 +30,14 @@ lint:
 		cargo clippy $(CARGO_FLAGS) --all-targets --manifest-path $$crate/Cargo.toml -- -D warnings; \
 	done
 
+# The two ways a test can leak — a live session daemon (D-111) and a scratch directory (D-131) — are checked
+# by `review/leak_guard.py` around the run: it names and stops whatever appeared, instead of reporting a count
+# that leaves the reader guessing and a daemon that poisons the next run's baseline (D-147).
 test:
-	@set -eu; count_daemons() { ps -eo comm,args | awk '$$1=="teamagents" && $$3=="daemon" {n++} END {print n+0}'; }; \
-		count_strays() { find "$${TMPDIR:-/tmp}" -maxdepth 1 -name 'ta-*' 2>/dev/null | wc -l; }; \
-		before=$$(count_daemons); strays_before=$$(count_strays); \
+	@set -eu; guard=$$(mktemp); trap 'rm -f "$$guard"' EXIT HUP INT TERM; \
+		python3 review/leak_guard.py snapshot "$$guard"; \
 		for crate in $(CRATES); do cargo test $(CARGO_FLAGS) --manifest-path $$crate/Cargo.toml; done; \
-		after=$$(count_daemons); strays_after=$$(count_strays); \
-		[ "$$strays_after" -le "$$strays_before" ] || { \
-			echo "the suite left $$((strays_after - strays_before)) scratch dir(s) in $${TMPDIR:-/tmp} (before: $$strays_before, after: $$strays_after);" >&2; \
-			echo "a test must remove its temp dir when it is done (a daemon socket path cannot take a longer prefix, D-131)" >&2; \
-			exit 1; }; \
-		[ "$$after" -le "$$before" ] || { \
-			echo "the suite left $$((after - before)) daemon(s) behind (before: $$before, after: $$after);" >&2; \
-			echo "a test that starts a daemon must stop it — see the Daemon guard in engine/tests/cli.rs (D-111)" >&2; \
-			exit 1; }
+		python3 review/leak_guard.py audit "$$guard"
 
 build:
 	cargo build $(CARGO_FLAGS) --manifest-path engine/Cargo.toml --bin teamagents

@@ -21,8 +21,9 @@ make build                        # build the CLI and the TUI into the usual tar
 make pty                          # real-terminal check with an isolated config and no model credentials
 ```
 
-`make test` counts `teamagents daemon` processes before and after the three crate suites and fails when the
-count grows: a test that starts a daemon must stop it (D-111). `make check` runs, in order: formatting, Clippy on
+`make test` wraps the three crate suites in `review/leak_guard.py` (snapshot before, audit after): the two ways
+a run leaks — a session daemon (D-111) and a scratch directory (D-131) — are reported as a *difference*, with
+the leaked daemon's pid and state root named and the daemon stopped, and the run fails (D-147). `make check` runs, in order: formatting, Clippy on
 all targets, the three crates' tests, the Git submodule
 configuration and repository hygiene (it rejects non-English characters in code and docs, tracked compile
 caches, Python caches and SQLite temporaries, checks the syntax of `install.sh`, and checks the shape of the
@@ -243,7 +244,7 @@ python3 review/dogfood/checks.py --state-dir /tmp/ta-checks   # one model probe 
 - **The probes** are in `review/dogfood/` (`review/dogfood/README.md` describes each one and what it asserts).
   `make probe-offline` runs the seven that need no model and no credential; `make probe-models` runs the
   twenty-four that do, one after another. Both fail if the run leaves a daemon or a scratch directory behind
-  (D-111, D-131) and keep the state of a probe that failed (D-138).
+  (D-111, D-131; the same guard as `make test`, D-147) and keep the state of a probe that failed (D-138).
 - Always use the model's native context length and record the value and its source in the report (D-36);
   DeepSeek Flash uses the user-confirmed 1M.
 - Every trial uses a fresh working and state directory; results go to `runs/<date>/results.jsonl` and each
