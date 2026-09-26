@@ -18,6 +18,43 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-134 The Chinese README is a mirror, and two things had stopped mirroring (2026-09-26)
+
+`README.zh-CN.md` is the repository's single non-English document (AGENTS.md), which makes it a *translation*
+of `README.md`: everything that does not need translating has to stay equal to the English file. Two things
+had drifted.
+
+The documentation table lost a row: `docs/PRODUCT-COMPARISON.md` was added to the English table by `35dc328`
+("compare the product with Codex CLI, Pi and Hermes") and never to the Chinese one, so a Chinese reader's
+index silently lacked the document the user's own direction produced. And the file carried **two sections
+under the same heading** — the quick-start heading, used twice, the earlier a shortened copy of the later one
+and present since the file was created (`b6a8948`) — which is why the Chinese README had ten `##` headings to
+the English one's nine.
+
+Nothing caught either: `citations.py` only asks whether a cited path resolves (and the lost row's path
+resolves elsewhere in the tree), and `language-check` deliberately exempts this file. The one document with no
+structural check was the one in another language.
+
+**Fixed**: the duplicate section is gone (its five lines are a subset of the later Quick start — `init`,
+`doctor`, `--cwd`, the TUI launch and an `exec --json` example all appear there), and the comparison row is
+back in the table in the English row's position, with its description translated. The Chinese README now has
+the same nine `##` headings and the same eight table rows as the English.
+
+**Guarded**: `review/readme_zh.py`, in `make hygiene`, asserts the three invariants that are language-
+independent — 1. the heading-level skeleton (sequence of `#`/`##`/`###`), so a section added, removed or
+re-levelled on one side is a finding; 2. the in-repository link targets; 3. the CLI surface both files show
+(`teamagents <verb>` invocations and `--flag` tokens), because neither commands nor flags are translated. The
+translated text is deliberately not compared, and the one intentional asymmetry — each README links to the
+other ("read this in Chinese/English") — is an explicit exception in the script.
+
+Evidence: the script reports "12 headings, 16 in-repo links and 5 verbs / 17 flags on each side" and exits 0
+on the fixed tree. Four controls, each reverted byte-identically: dropping the comparison row again fails on
+the link, adding a section fails on the skeleton, renaming `--timeout` fails on the flag set, and
+`teamagents exec` → `teamagents execute` fails on the verb set.
+
+Ceiling: this compares structure and surface, not meaning. A paragraph that drifts from its English original
+while keeping its section and links is not caught, and neither is a link that is equally stale in both files.
+
 ## D-133 The config reference said the project file was read; nothing reads it (2026-09-26)
 
 `docs/CONFIG.md` opened its trust story with "A project file *is* read for `models` and `tools`, and for

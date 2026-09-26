@@ -9,21 +9,12 @@
 - **受控协作**：`spawn`/`delegate`/`send`/`wait` 全部经控制平面授权与派发线性化点重查。
 - **多供应商**：同一会话内可混用 DeepSeek（chat-completions）、Responses、Anthropic 三类协议的真实实例。
 
-## 快速开始
-
-```bash
-teamagents init          # 写配置并准备状态根
-export DEEPSEEK_API_KEY=...
-teamagents doctor        # 配置 / 密钥 / 状态根 / 技能路径 / 隔离探针
-teamagents               # 打开 TUI（必要时自动拉起 daemon）
-teamagents exec --json "用一句话自我介绍"    # 同一后端的无头输入
-```
-
 ## 文档
 
 | 文档 | 内容 |
 |---|---|
 | [使用指南](docs/USER-GUIDE.md) | 上手、配置、权限、Skills/MCP、恢复与清理 |
+| [与 Codex CLI、Pi、Hermes 的对比](docs/PRODUCT-COMPARISON.md) | 带日期与出处的对比快照，以及它引出的决策 |
 | [验收对照表](docs/ACCEPTANCE.md) | A01–A36 逐项证据与已知缺口 |
 | [开发与维护](docs/DEVELOPMENT.md) | 工具链、门禁、目录约定、复跑命令 |
 | [设计与验收基线](docs/DESIGN.md) | 已确认需求、架构与协议约束、验收矩阵 A01–A36、完成定义 |

@@ -191,3 +191,4 @@ hygiene: language-check
 	python3 review/config_reference.py
 	python3 review/dead_code.py
 	python3 review/project_config_claim.py
+	python3 review/readme_zh.py
