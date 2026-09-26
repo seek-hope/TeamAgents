@@ -18,6 +18,36 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-126 The daemon protocol had no catalogue either (2026-09-26)
+
+D-125 documented the event log; the requests and replies that produce it were in the same state — DESIGN.md calls
+the surface "one JSON-lines protocol (`/v1`)" and states its guarantees (handshake, `command_id` dedup, the event
+watermark) without listing a method, while the TUI, `exec`, the CLI verbs and every probe speak it by hand.
+`docs/PROTOCOL.md` is that catalogue now, generated from the daemon's two dispatchers:
+
+* **6 read methods** (`checkpoint`, `events`, `history`, `tasks`, `approvals`, `grants`) with the parameters each
+  arm reads, the reply keys it builds, and the dispatch site. The generator also cross-checks the arms against the
+  read-only whitelist in `handle` — the list that decides which methods are answered from the database without the
+  supervisor — and reports an arm that is missing from it.
+* **40 commands** from `fn dispatch` in the control plane, with the parameters each handler reads, whether the
+  handler takes an identity (32 of 40 do, i.e. re-check who may do this), and the dispatch site.
+
+Plus the parts no extractor could invent: the framing (one JSON object per line, greeting first with `server`,
+`protocol_version` 1, session, state root, permissions and workspace), the request shape (`request_id`,
+`command_id` required for commands and how a retry reuses it), the reply shape (`ok` with `result`, or `error` as
+a sentence the clients turn into exit codes), and the statement that a `result` is the handler's own JSON, so a
+client should treat keys it does not know as opaque.
+
+`make hygiene` runs the check mode, so the document cannot drift: a method added to either dispatcher without a
+row, a row whose method no longer exists, a changed parameter list or a hand edit fails the gate. Controls (all
+run): renaming `history` in the read dispatcher reports both the new name as undocumented and the old one as
+having no arm; deleting the `submit_input` row reports it as missing; renaming `cancel_task` in the control
+plane's dispatcher reports the same pair for commands.
+
+Ceiling: the parameter column lists what the handler *itself* reads, so a field a helper reads is missing from the
+row (a gap, never a wrong entry — the same shape the D-124 detector had to widen its scope for), and the tables
+come from `match` arms, so a method constructed at runtime would be absent entirely.
+
 ## D-125 The event log had no catalogue (2026-09-26)
 
 The event log is a product surface — the daemon's `events` request is how a client reconnects from a watermark,

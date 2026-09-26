@@ -191,7 +191,9 @@ pre_tool = ["/home/you/bin/policy.sh"]            # policy hook before tool call
   as thin clients. A reconnect resumes events from the last watermark and commands deduplicate by
   `command_id`. The event log is a documented surface: every kind
   this build emits, with its scope, payload and emitting site, is listed in [docs/EVENTS.md](EVENTS.md)
-  (generated from the code and kept in sync by `make hygiene`).
+  (generated from the code and kept in sync by `make hygiene`). The requests and replies themselves
+  (framing, the greeting, `command_id` dedup, every read method and command) are catalogued in
+  [docs/PROTOCOL.md](PROTOCOL.md), also generated from the dispatchers.
 - **The Leader builds the team**: it uses `spawn` to create working instances, `delegate` to hand out tasks,
   `send` for messages and `wait` for results. These appear in the model-visible tool surface according to
   its grants (`manage`/`delegate`/`message`), and the permission revision is re-checked at dispatch. The

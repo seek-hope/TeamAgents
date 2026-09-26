@@ -160,6 +160,8 @@ language-check:
 # fields and the command layer's reads are compared per method (D-124).
 # `docs/EVENTS.md` is generated from the event call sites, so a new kind or a renamed payload key must be
 # documented in the same change (D-125).
+# `docs/PROTOCOL.md` is generated from the daemon's two dispatchers (read methods and commands), so a new
+# method, a renamed one or a changed parameter list must be documented in the same change (D-126).
 # A test that skips must say so (D-121): a bare `if <condition> { return; }` inside a test makes it a silent
 # no-op, which is how two sandbox tests contributed nothing on a machine without bubblewrap.
 hygiene: language-check
@@ -174,3 +176,4 @@ hygiene: language-check
 	python3 review/silent_skips.py
 	python3 review/command_params.py
 	python3 review/event_catalogue.py
+	python3 review/protocol_catalogue.py
