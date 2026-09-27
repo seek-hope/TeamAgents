@@ -256,11 +256,28 @@ need; when upgrading one, update only the affected lock files and re-run the int
 `make check`. Upgrading Rust means editing the version in `rust-toolchain.toml` and re-running `make fmt`,
 `make check` and `make pty`; CI and the release workflow pick the new version up automatically.
 
-Before a release, bump the three crates' versions and their lock files, update the release notes, pass CI and
-then push the `vX.Y.Z` tag. Afterwards verify the SHA-256 from the public URL and check the install,
-`init` keeping the existing config and a real TUI start. Real-model evaluation needs explicit credentials and
-the model's native context, recorded separately; a maintenance regression never claims to widen provider
-compatibility.
+**Cutting a release** (the steps `.github/workflows/release.yml` enforces, each one checked locally first):
+
+1. **Bump all three crates and their lock files.** Each `Cargo.lock` carries its crate's own version, and both
+   `make check` and the release build run `--locked`, so a missed lock is a build failure. `review/release_artifact.py`
+   (in `make hygiene`) reports a version the three disagree about, which the workflow would refuse at the tag.
+2. **Update `.github/release-notes.md`** — the workflow publishes it as the release body (`--generate-notes` adds the
+   rest) — and pass CI: `make check`, `make pty`, and the probes that need no credentials.
+3. **Push the `vX.Y.Z` tag.** The workflow refuses a tag that is not `v<version>`, reads the toolchain from
+   `rust-toolchain.toml`, builds musl-static binaries, packages them with `README.md`, `config.example.toml`,
+   `install.sh`, `docs/`, `examples/` and `AGENTS.md`, checksums the archive and the installer, smoke-installs the
+   exact archive (install, `init` writing a config, and the TUI binary executable), and publishes the assets.
+   `review/build_references.py` reads the same workflow and fails on a file it copies that the repository does not
+   carry — D-216 found the one that did, which would have stopped the release at that step.
+4. **Afterwards, flip the caveats.** Four places say the latest release is the earlier implementation:
+   `docs/INSTALL.md`'s note, `README.md`, `README.zh-CN.md` and `docs/ACCEPTANCE.md`'s known gap. With the release
+   serving this tree, `review/release_artifact.py` *fails until they are removed*, and its statement list is the
+   fifth place to update; `review/install_check.py` then stops reporting the vintage failure and the known gap goes.
+5. **Verify the published artifact**: the SHA-256 from the public URL, the install, `init` keeping an existing
+   config and a real TUI start.
+
+Real-model evaluation needs explicit credentials and the model's native context, recorded separately; a maintenance
+regression never claims to widen provider compatibility.
 
 ## Fixed tasks and grading
 

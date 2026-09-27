@@ -58,7 +58,7 @@ jobs:
           cp examples/config.toml "dist/$name/config.example.toml"
           cp install.sh "dist/$name/install.sh"
           cp -r docs examples "dist/$name/"
-          cp TeamAgents-Implementation-Plan.zh-CN.md AGENTS.md "dist/$name/"
+          cp AGENTS.md "dist/$name/"
           "dist/$name/teamagents" --help
           "dist/$name/teamagents" version
           tar -C dist -czf "dist/$name.tar.gz" "$name"

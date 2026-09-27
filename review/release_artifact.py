@@ -25,6 +25,11 @@ the one token only the caveat mentions in either README.
     python3 review/release_artifact.py --doc README.md=/tmp/readme-without-the-note.md   # the control
     python3 review/release_artifact.py --layout core/src   # the other side: a layout every tag's tree has
 
+**D-216 added the version the three crates share.** `.github/workflows/release.yml` refuses a tag that is not
+`v<version>`, and it reads that version from `engine/Cargo.toml` — after checking that `core` and `tui` carry the same
+one. A tag cut while those three disagree fails the workflow instead of shipping, and the checksum-and-install steps
+never run: a rule the release notes' own paragraph states, checked here before a tag rather than on it.
+
 Ceiling: the fact is read from the tags in this clone, so a checkout that never fetched them cannot compute it
 (a note, not a finding: the statements are still what the documents must say, and the failure is in the lenient
 direction); the statements are matched as text, so a document that states the caveat in new words is invisible;
@@ -104,6 +109,15 @@ def main(argv) -> int:
     print(f"the newest release tag `{tag or '(none)'}` {state} built on {args.layout}: the published artifact "
           f"{'is' if released else 'is not'} the product the documents describe")
     findings = check(released, documents)
+    crate_versions = {}
+    for crate in ("engine", "core", "tui"):
+        manifest = REPO / crate / "Cargo.toml"
+        found = re.search(r'^version = "([^"]+)"', manifest.read_text(encoding="utf-8"), re.M)
+        crate_versions[crate] = found.group(1) if found else ""
+    if len(set(crate_versions.values())) != 1:
+        findings.append("the crates disagree about the version the release would carry: "
+                        + ", ".join(f"{crate} {version}" for crate, version in crate_versions.items())
+                        + " — the release workflow refuses that tag before it builds anything")
     for finding in findings:
         print("FAIL:", finding)
     if released and not findings:

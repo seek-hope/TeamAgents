@@ -41,6 +41,10 @@ RUNS = re.compile(
 PHONY = re.compile(r"^\.PHONY:(.*)$", re.M)
 ECHO = re.compile(r"@echo '([^']*)'")
 MAKE_NAME = re.compile(r"make ([a-z][a-z0-9-]*)")
+# a `cp` in a surface needs the files it copies: the destination is the last argument, `-r`/`-f` are flags, a
+# `$…` or build-directory path is made by the run itself, and the lookbehind keeps `java -cp` (a classpath flag) out
+COPY = re.compile(r"(?<![\w.-])cp(?:\s+-[A-Za-z]+)*\s+((?:[^\s|;&]+\s+)+)([^\s|;&]+)")
+GENERATED = re.compile(r"[\"'`]?\$|[\"'`]?(?:dist|target)/")
 
 
 def surfaces() -> list:
@@ -106,7 +110,7 @@ def main(argv):
     args = parser.parse_args(argv)
     read = args.surface or surfaces()
     index = tracked()
-    findings, checked, targets = [], 0, 0
+    findings, checked, targets, copied = [], 0, 0, 0
     for name in read:
         path = REPO / name
         if not path.is_file():
@@ -116,6 +120,24 @@ def main(argv):
         if "Makefile" in path.name:
             targets += check_makefile_help(name, text, findings)
         for line_number, line in enumerate(text.split("\n"), 1):
+            for sources, _destination in COPY.findall(line):
+                for source in sources.split():
+                    if GENERATED.search(source):
+                        continue
+                    path = source.strip("\"'")
+                    if not path or GENERATED.search(path):
+                        continue
+                    copied += 1
+                    target = REPO / path
+                    if not target.exists():
+                        findings.append(f"{name}:{line_number}: copies {path}, which does not exist — the release "
+                                        "would stop there (a `cp` under `set -eu`)")
+                    elif target.is_file() and path not in index:
+                        findings.append(f"{name}:{line_number}: copies {path}, which is not tracked by git — a "
+                                        "fresh clone would fail there")
+                    elif target.is_dir() and not any(entry.startswith(path + "/") for entry in index):
+                        findings.append(f"{name}:{line_number}: copies the directory {path}, which holds nothing "
+                                        "git tracks")
             for referenced in RUNS.findall(line):
                 checked += 1
                 if not (REPO / referenced).is_file():
@@ -130,6 +152,8 @@ def main(argv):
     if findings:
         return 1
     print(f"{checked} script reference(s) across {len(read)} surface(s): every one exists and is tracked")
+    if copied:
+        print(f"{copied} file(s) the surfaces copy: every one exists and is tracked")
     if targets:
         print(f"the Makefile's {targets} `.PHONY` target(s) and its help text name each other")
     return 0

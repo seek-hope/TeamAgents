@@ -18,6 +18,38 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-216 The release could not be cut: the workflow copied a file the tree no longer carries (2026-09-27)
+
+Releasing is the one product-facing step left, and the known gap that records it says "the machinery itself is sound
+and re-runnable". It was not: `.github/workflows/release.yml`'s package step ran
+`cp TeamAgents-Implementation-Plan.zh-CN.md AGENTS.md "dist/$name/"`, and the first of those files has not been in
+the tree since the v2 cleanup removed the earlier implementation's material — the workflow was its only remaining
+mention anywhere. The step runs under `set -eu`, so a tag would have failed *there*, after the build and before any
+archive existed: cutting the release today would have produced nothing, and the failure would have read as a broken
+machine rather than a stale line.
+
+**Found by reading the workflow against the tree and then demonstrated**: the `cp` exits 1 with "cannot stat", and
+the same command without the dead file succeeds.
+
+**Fixed, and guarded**: `review/build_references.py` already read the Makefile and the workflows for the scripts they
+*run* and required each to exist and be tracked; it now does the same for every file a surface *copies* — the last
+argument of a `cp` is the destination, flags are skipped, and `$…` or build-directory paths are made by the run
+itself (the lookbehind keeps `java -cp`, a classpath flag, out). Measured: 7 copied files across the three surfaces,
+every one existing and tracked. Controls: the workflow as committed before this entry reports the dead file by name,
+and a surface copying a ghost reports it too.
+
+**Two smaller things in the same area**: the three crates must agree about the version a tag would carry — the
+workflow enforces that at the tag (`test "$GITHUB_REF_NAME" = "v$version"`, after comparing `core` and `tui` against
+`engine`), and `review/release_artifact.py` now reports a disagreement *before* the tag (control: a bumped `tui`
+reports it); and `docs/DEVELOPMENT.md`'s release paragraph became the five-step checklist the workflow actually
+enforces, including the version bump with its lock files, the notes file it publishes, and the four caveat sites
+(two READMEs, the install guide, the acceptance ledger) plus this audit's own statement list that has to flip when
+the release lands.
+
+Ceiling: the copy rule reads `cp` arguments, so a file assembled by another command (`install`, `tar`, a shell
+function) is not seen, and it can only tell that what the workflow *names* exists — not that what it publishes is
+complete; the checklist is a reading of the workflow, not a run of it.
+
 ## D-215 The simulation supplement ran one configuration, by name (2026-09-27)
 
 D-211's supplement was `verify-model-wide-sim`: the *wide* configuration, by its own name, against a specification

@@ -149,7 +149,7 @@ amended (D-49/D-50).
   `--team`, none of which the documented surface has (D-52/D-73 removed them), so "install the latest release" does not install
   what the README and `docs/USER-GUIDE.md` describe. `engine/Cargo.toml` (and `core`/`tui`) still say `0.1.2`, the version the
   existing tag already names, and the release workflow refuses a tag that does not equal `v<version>` — so a new release needs a
-  version bump first. The machinery itself is sound and re-runnable (`.github/workflows/release.yml` builds musl-static binaries,
+  version bump first. The machinery **was broken until D-216**: the workflow's package step copied `TeamAgents-Implementation-Plan.zh-CN.md`, a file the v2 tree does not carry, so a tag would have failed there under `set -eu` before building anything — fixed, and `review/build_references.py` now checks every file the workflow copies. With that fixed, the machinery is re-runnable (`.github/workflows/release.yml` builds musl-static binaries,
   packages the docs and `install.sh`, SHA256SUMS them, smoke-installs the exact archive and publishes the assets); cutting the
   release is the user's decision (D-203; `review/release_artifact.py` now holds the same fact to both READMEs, which had recommended this install with no caveat). Until then `docs/INSTALL.md` says the install docs describe the tree, not the artifact.
 
