@@ -233,3 +233,4 @@ hygiene: language-check
 	python3 review/readme_zh.py
 	python3 review/doc_flags.py
 	python3 review/requirement_trace.py
+	python3 review/markdown_tables.py

@@ -18,6 +18,42 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-199 The table-shape rule belonged to every table, not just the ledger's two (2026-09-27)
+
+D-198 fixed three rows of `docs/ACCEPTANCE.md`'s tables and gave those two a shape check. The class was never
+specific to the ledger: this repository's documents are full of tables — the headless-client contract, the user
+guide's troubleshooting table, the review registries, `verification/README.md`'s property and per-item ledgers,
+`docs/DEVELOPMENT.md`'s audit lists — and a row that splits or merges in any of them is just as invisible,
+because a markdown table renders an extra column without complaining. `review/markdown_tables.py` (in
+`make hygiene`) applies the rule to **99 tables across 21 tracked markdown files**: inside one table block the
+separator row defines the column count and every row must match it, a separator being a pipe that is not escaped
+(`\|` is how a literal pipe is written inside a cell). Fenced code blocks are skipped, because a table shown
+there is an example, and a block of pipe lines with no separator row is not a table.
+
+**It found six rows in four documents**, each a genuine rendering defect (an unescaped `|` inside a code span, so
+the rendered row gained a column and its text was chopped):
+
+| where | the pipe that split it |
+|---|---|
+| `docs/ACCEPTANCE.md`, headless-client contract | three evidence items separated by a pipe inside a two-column row |
+| `docs/USER-GUIDE.md`, troubleshooting | `` `driver: surface <instance> shell=yes\|no tools=…` `` — the witness line written for D-143 |
+| `review/README.md`, two rows of the audit registry | `` `core\|engine\|tui/src` `` in `dead_code.py`'s row, and a literal pipe quoted in the sentence D-198 had just added |
+| `verification/README.md`, two rows of its ledgers | `` `SUCCEEDED\|FAILED\|CANCELLED` `` and `` `terminal = SUCCEEDED\|FAILED` `` |
+
+All six are repaired by escaping the pipe, or — where the text reads better that way — by writing the alternation
+as `SUCCEEDED`/`FAILED`. Repairing the first one also reproduced the class inside this turn: joining its three
+evidence cells ate the row's case/evidence separator, and the audit caught that on its next run, which is the
+point of having it.
+
+**Measured** (2026-09-27): the audit reports "99 markdown table(s) across 21 file(s): every row matches its
+header's column count", and both controls fire on the user guide's troubleshooting table — an inserted `|` gives
+"3 cell(s) where its table has 2", and a dropped trailing pipe gives "1 cell(s) where its table has 2", the shape
+D-198's `A03` had.
+
+Ceiling: shape only. A table whose cells are in the wrong order, or whose text is wrong, passes — and the audit
+cannot tell a pipe meant as content from one meant as structure, which is why each repair above is described
+rather than silently applied.
+
 ## D-198 Three acceptance rows were not rows of their table (2026-09-27)
 
 `docs/ACCEPTANCE.md`'s two tables are the two halves of the definition of done — the Q rows and the A matrix —
