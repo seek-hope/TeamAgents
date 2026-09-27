@@ -18,6 +18,44 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-227 A state root too deep for a Unix socket was diagnosed as `[ok]` (2026-09-27)
+
+D-226's ceiling recorded the fragility its TMPDIR experiment stumbled on; this entry closes it. Linux's
+`sun_path` holds 108 bytes *including* the terminating NUL, so an AF_UNIX path binds only while it is shorter:
+measured 2026-09-27 with a probe over 103…112 bytes, **107 binds and 108 fails** (`AF_UNIX path too long`). The
+daemon's socket is `<state root>/daemon.sock`, so a state root deep enough — a long `HOME`, a deep
+`XDG_STATE_HOME`, a nested CI workspace — makes every session under it impossible. What the product did with
+that, measured on a 165-byte socket path:
+
+* `init` **succeeded**, printing the socket path as if it were usable;
+* `doctor` reported the state root **`[ok]`** — the green diagnostic a user's first run reads;
+* `exec` failed (exit 2, honestly) with the daemon's raw `bind …: path must be shorter than SUN_LEN` — a message
+  that names the OS's limit and no fix.
+
+**Fixed with one predicate and four callers.** `cli::require_socket_path_fits` holds the boundary
+(`SOCKET_PATH_LIMIT = 108`, with the measurement in its doc comment) and the one wording, so a row and a refusal
+cannot drift apart (the shape `state_root_not_a_dir` set for D-166):
+
+* **`init` refuses** the root — a user meets the limit where the root is created, not at the first run;
+* **`doctor` reports `[FAIL] daemon socket`** with the byte count, the limit and the fix;
+* **the daemon refuses before binding**, replacing the raw OS answer with the classified one (`serve` checks
+  before it creates the socket directory);
+* **the client refuses before spawning** — `ensure_daemon` (where D-163/D-166 already refuse in the client's own
+  words) and `handshake`, so `exec` no longer starts a daemon only to read its bind error back.
+
+**Measured after**: `init` exits 1 naming the 165 bytes, the 108-byte limit and `point XDG_STATE_HOME …`;
+`doctor` shows `[FAIL] daemon socket`; `exec` exits 2 with the client's own message and spawns nothing.
+**Tests**: a unit test pins the boundary itself (107 binds, 108 refuses — one byte wide, and the OS never states
+it) and an integration test drives the real binary with a deep `XDG_STATE_HOME` and asserts both the refusal and
+the row. **Documents**: `docs/INSTALL.md`'s troubleshooting table gains the symptom and the fix, and
+`docs/USER-GUIDE.md`'s list of what `doctor` checks names the socket path.
+
+Ceiling: the check counts *bytes* of the path as the kernel does, so a path whose bytes differ from its display
+length (non-UTF-8, a trailing slash) is measured correctly but reported in the display form; it applies to the
+conventional socket path the CLI and daemon derive (`<state root>/daemon.sock`), so a caller that binds a socket
+of its own elsewhere is not covered; and a *deep root inside a short `TMPDIR`* is untouched — the suite's own
+socket paths (D-226's ceiling) still fit only in a short `TMPDIR`, which is the test harness's business.
+
 ## D-226 The suites left 46,016 scratch roots behind, and the leak guard could not see them (2026-09-27)
 
 `make test` guards the ways a run leaks (D-111's daemon, D-131's scratch): it snapshots `review/leak_guard.py`'s

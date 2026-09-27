@@ -39,6 +39,10 @@ pub fn init(state_root: Option<PathBuf>) -> i32 {
 pub fn prepare_v2_root(state_root: Option<PathBuf>) -> Result<PathBuf, String> {
     let root = state_root.unwrap_or_else(crate::v2_root);
     require_state_root_dir(&root)?;
+    // D-227: a root deep enough that `daemon.sock` crosses Linux's `sun_path` limit cannot hold a session, and
+    // `init` is where a user meets that — printing the socket path as if it were usable sent them to a later
+    // failure whose OS answer names no fix.
+    require_socket_path_fits(&root.join("daemon.sock"))?;
     let fresh = !root.exists();
     std::fs::create_dir_all(&root).map_err(|e| format!("create {}: {e}", root.display()))?;
     let db = root.join("session.sqlite");
@@ -208,6 +212,12 @@ pub fn doctor(state_root: Option<PathBuf>) -> i32 {
     // layout is only reported (its cleanup belongs to the archived plan's §14/R28)
     let v2_root = state_root.unwrap_or_else(crate::v2_root);
     let v2_db = v2_root.join("session.sqlite");
+    // D-227: the row that would have been green in the probe that found this — a root whose socket path cannot
+    // be bound is a FAIL, because no client and no daemon can use it.
+    match require_socket_path_fits(&v2_root.join("daemon.sock")) {
+        Ok(()) => {}
+        Err(error) => check(&mut results, "daemon socket", false, error),
+    }
     if v2_root.exists() && !v2_root.is_dir() {
         // D-166: the root is a *file* (usually the session database itself). The rows below would say "not
         // initialized yet; `teamagents init` creates it" — advice that cannot be followed, because `init`
@@ -642,6 +652,29 @@ pub fn require_state_root_dir(path: &Path) -> Result<(), String> {
     Err(state_root_not_a_dir(path))
 }
 
+/// Linux's `sun_path` is 108 bytes *including* the terminating NUL, so an AF_UNIX path binds only while it is
+/// **shorter than that**: measured 2026-09-27, a 107-byte path binds and a 108-byte one fails with
+/// `AF_UNIX path too long`.
+pub const SOCKET_PATH_LIMIT: usize = 108;
+
+/// A state root deep enough puts the daemon's socket past that limit, and then nothing under it works: the
+/// daemon's `bind` fails, and every client's `connect` fails on the same path. The raw answers are the OS's —
+/// `bind …: path must be shorter than SUN_LEN` (the daemon) or `AF_UNIX path too long` (a client) — and neither
+/// names the fix; the callers that refuse it and the one that reports it (`doctor`) share this wording, so a
+/// row and a refusal cannot drift apart (D-227).
+pub fn require_socket_path_fits(socket: &Path) -> Result<(), String> {
+    use std::os::unix::ffi::OsStrExt;
+    let bytes = socket.as_os_str().as_bytes().len();
+    if bytes < SOCKET_PATH_LIMIT {
+        return Ok(());
+    }
+    Err(format!(
+        "the daemon socket path is {bytes} bytes, at or above Linux's {SOCKET_PATH_LIMIT}-byte `sun_path` \
+         limit: {} — point XDG_STATE_HOME (or HOME) at a shorter directory and run `teamagents init` again",
+        socket.display()
+    ))
+}
+
 /// The one wording for a `--state-root` that cannot be a state root. The callers that refuse it and the one
 /// that *reports* it (`doctor`) share this, so a row and a refusal cannot drift apart.
 fn state_root_not_a_dir(path: &Path) -> String {
@@ -797,8 +830,23 @@ fn daemon_boot(
 
 #[cfg(test)]
 mod tests {
-    use super::v2_state_root_row;
+    use super::{require_socket_path_fits, v2_state_root_row, SOCKET_PATH_LIMIT};
     use std::path::Path;
+
+    /// D-227: the boundary itself, because it is one byte wide and the OS's own answers never state it — the
+    /// kernel refuses 108 bytes and binds 107 (measured 2026-09-27), and everything above the socket (the
+    /// daemon's bind, every client's connect, `init`, `doctor`) hangs off this predicate.
+    #[test]
+    fn the_socket_path_limit_is_one_byte_under_the_kernels() {
+        let fits = "/".to_string() + &"a".repeat(SOCKET_PATH_LIMIT - 2);
+        assert_eq!(fits.len(), SOCKET_PATH_LIMIT - 1);
+        require_socket_path_fits(Path::new(&fits)).expect("107 bytes is the longest path the kernel binds");
+        let too_long = "/".to_string() + &"a".repeat(SOCKET_PATH_LIMIT - 1);
+        assert_eq!(too_long.len(), SOCKET_PATH_LIMIT);
+        let error = require_socket_path_fits(Path::new(&too_long)).expect_err("108 bytes is one over");
+        assert!(error.contains("108-byte `sun_path` limit"), "{error}");
+        assert!(error.contains("point XDG_STATE_HOME"), "the refusal names the fix: {error}");
+    }
 
     /// D-183: both branches of the state-root row, the refusing one included — a machine that links a new
     /// SQLite cannot produce it, so the rule that says an old one is reported as a failure is asserted here.

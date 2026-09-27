@@ -101,6 +101,9 @@ fn handshake(socket: &Path) -> Result<(Conn, Json), String> {
     if let Some(root) = socket.parent() {
         crate::cli::require_state_root_dir(root)?;
     }
+    // D-227: a socket path past `sun_path` fails for the daemon *and* for this connect; refusing here means the
+    // client never spawns a daemon only to read its bind error back.
+    crate::cli::require_socket_path_fits(socket)?;
     let stream = UnixStream::connect(socket).map_err(|e| format!("connect {}: {e}", socket.display()))?;
     stream.set_read_timeout(Some(Duration::from_secs(30))).map_err(|e| e.to_string())?;
     stream.set_write_timeout(Some(Duration::from_secs(30))).map_err(|e| e.to_string())?;

@@ -131,6 +131,34 @@ fn teamagents(args: &[&str], state_home: &std::path::Path, config_home: &std::pa
     text
 }
 
+/// D-227: a state root deep enough that `daemon.sock` crosses Linux's `sun_path` limit cannot hold a session.
+/// Measured 2026-09-27: `init` printed the socket path as if it were usable and `doctor` reported the state root
+/// `[ok]`, so the first run was where the user met it — as the daemon's raw `bind …: path must be shorter than
+/// SUN_LEN`. Both entry points now refuse it in the shell's own words, before anything starts.
+#[test]
+fn a_socket_path_past_the_kernel_limit_is_refused_before_anything_starts() {
+    let home = Scratch::new("socklen");
+    // `sun_path` is 108 bytes including the NUL, so 107 bind and 108 do not; this root is well past it
+    let deep = home.join("a".repeat(60)).join("b".repeat(60));
+    std::fs::create_dir_all(&deep).unwrap();
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_teamagents"))
+            .args(args)
+            .env("XDG_STATE_HOME", &deep)
+            .env("XDG_CONFIG_HOME", home.join("config"))
+            .output()
+            .expect("run cli")
+    };
+    let init = run(&["init"]);
+    let text = String::from_utf8_lossy(&init.stderr).into_owned();
+    assert_ne!(init.status.code(), Some(0), "init must not claim a root it cannot use: {text}");
+    assert!(text.contains("`sun_path` limit"), "{text}");
+    assert!(text.contains("point XDG_STATE_HOME"), "the refusal names the fix: {text}");
+    let doctor = run(&["doctor"]);
+    let text = String::from_utf8_lossy(&doctor.stdout).into_owned();
+    assert!(text.contains("[FAIL] daemon socket"), "doctor must name the socket, not only the root: {text}");
+}
+
 /// D-73: the entry point refuses what it does not honour, and refuses it
 /// *before* starting anything. A bare word used to fall through to the TUI — a
 /// typo'd verb or a pasted prompt silently booted a session and was dropped —
