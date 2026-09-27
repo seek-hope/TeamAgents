@@ -5462,6 +5462,105 @@ mod tests {
         cleanup(&path);
     }
 
+    /// The contract the `wait` and `delegate` descriptions now state (D-255): a
+    /// delegated outcome is delivered as a *task result*, so it satisfies a
+    /// `{kind:'task'}` condition and never a `{kind:'message'}` one. Measured
+    /// on a real session before this test existed: a delegator parked on
+    /// `{kind:'message',from:<worker>}` slept until its ~600 s timer while both
+    /// settlements sat APPLIED in its inbox (round 4's pilot, `design-r4.md`).
+    #[test]
+    fn a_delegated_result_does_not_satisfy_a_message_condition() {
+        let (mut ctl, path) = control("wait-msgkind");
+        create_instance(&mut ctl, "i1");
+        create_instance(&mut ctl, "i2");
+        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1"})), Identity::User).expect("goal");
+        ctl.submit(
+            cmd("gd-1", "issue_grant", json!({"subject": "i1", "action": "delegate", "resource_scope": "instance:i2"})),
+            Identity::User,
+        )
+        .expect("grant delegate");
+        ctl.submit(
+            cmd("dt-1", "delegate_task", json!({"task_id": "t1", "assignee": "i2", "goal_id": "g1"})),
+            Identity::Instance("i1".into()),
+        )
+        .expect("delegate");
+        // the delegator names a chat message from the assignee, not the task
+        let wait_id = open_wait(
+            &mut ctl,
+            "x",
+            "i1",
+            0,
+            json!({"mode": "ANY", "conditions": [{"kind": "message", "from": "i2"}]}),
+        );
+        assert_eq!(phase_of(&ctl, "i1"), "WAITING");
+        let done = ctl
+            .submit(
+                cmd("ct-1", "complete_task", json!({"task_id": "t1", "status": "SUCCEEDED", "summary": "ok"})),
+                Identity::Instance("i2".into()),
+            )
+            .expect("complete");
+        // the delegator *is* informed — the outcome is queued to it as a task
+        // result, exactly the envelope the message condition cannot see
+        assert_eq!(done["delivered"], json!(true));
+        let queued: i64 = ctl
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM envelopes WHERE recipient = 'i1' AND kind = 'task_result'
+                 AND correlation_id = 't1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(queued, 1, "the delegated outcome arrives as a task result");
+        assert_eq!(done["woken"], json!([]), "a task result is not a chat message");
+        assert_eq!(wait_state(&ctl, &wait_id), "PENDING");
+        assert_eq!(phase_of(&ctl, "i1"), "WAITING");
+        cleanup(&path);
+    }
+
+    /// The other half of the same contract (D-255): `BLOCKED` is a *report*, not
+    /// a settlement — the assignee may still be unblocked and settle the same
+    /// task — so a task condition stays pending; the documented release is
+    /// cancelling it (`USER-GUIDE` §4, `A22`).
+    #[test]
+    fn a_blocked_settlement_does_not_satisfy_a_task_condition_but_cancelling_does() {
+        let (mut ctl, path) = control("wait-blocked");
+        create_instance(&mut ctl, "i1");
+        create_instance(&mut ctl, "i2");
+        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1"})), Identity::User).expect("goal");
+        ctl.submit(
+            cmd("dt-1", "delegate_task", json!({"task_id": "t1", "assignee": "i2", "goal_id": "g1"})),
+            Identity::User,
+        )
+        .expect("delegate");
+        let wait_id = open_wait(
+            &mut ctl,
+            "x",
+            "i1",
+            0,
+            json!({"mode": "ANY", "conditions": [{"kind": "task", "task_id": "t1"}]}),
+        );
+        assert_eq!(phase_of(&ctl, "i1"), "WAITING");
+        let reported = ctl
+            .submit(
+                cmd("ct-1", "complete_task", json!({"task_id": "t1", "status": "BLOCKED", "summary": "stuck"})),
+                Identity::Instance("i2".into()),
+            )
+            .expect("report blocked");
+        assert_eq!(reported["status"], json!("BLOCKED"));
+        assert_eq!(reported["woken"], json!([]), "a reported block is not a terminal settlement");
+        assert_eq!(wait_state(&ctl, &wait_id), "PENDING");
+        assert_eq!(phase_of(&ctl, "i1"), "WAITING");
+        // the user's own lever releases it: a cancelled task is terminal
+        let cancelled = ctl
+            .submit(cmd("cx-1", "cancel_task", json!({"task_id": "t1", "reason": "unblock by hand"})), Identity::User)
+            .expect("cancel");
+        assert_eq!(cancelled["woken"], json!([wait_id.clone()]));
+        assert_eq!(wait_state(&ctl, &wait_id), "SATISFIED");
+        assert_eq!(phase_of(&ctl, "i1"), "READY");
+        cleanup(&path);
+    }
+
     #[test]
     fn task_settlement_closes_the_turn_and_notes_queue_continuation() {
         let (mut ctl, path) = control("settle-note");

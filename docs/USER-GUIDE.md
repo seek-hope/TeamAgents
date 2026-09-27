@@ -300,6 +300,12 @@ pre_tool = ["/home/you/bin/policy.sh"]            # policy hook before tool call
   its grants (`manage`/`delegate`/`message`), and the permission revision is re-checked at dispatch. The
   session's bootstrap grants the Leader those three capabilities over the session, so the team tools are there
   without further setup; revoking a grant removes the tool from the surface and makes every call fail closed.
+  A delegator's `wait` must name the *task*, not a message: a delegated outcome is delivered as a task result
+  (`{kind:'task',task_id:'<id>'}`, satisfied by `SUCCEEDED`/`FAILED`/`CANCELLED`), so a condition like
+  `{kind:'message',from:'<worker>'}` — which only a chat message sent with `send` satisfies — stays pending
+  until the timer fires. Both tool descriptions say so. A due timer releases a wait exactly as a fact does, so
+  only the gap in the log shows which happened: in the round-4 pilot a delegator that named `message from
+  <worker>` was released by its timer **575.6 s** after the settlement it was waiting for (D-255).
   `spawn` also takes `model` (a catalog key or the model name it declares) so a team can mix entries: an unknown
   entry fails that call with the available keys, and an instance that cannot boot at all is parked with the
   reason (its task stays open for you to cancel). A tool the instance cannot dispatch is not offered at all: a

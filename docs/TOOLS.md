@@ -65,7 +65,7 @@ Send a message to another instance. Delivery is queued and applied at the recipi
 
 *Offered by `kernel::collaboration_tool_schemas(actions)` (per grant).*
 
-Delegate a task to another instance with a narrow return path: the assignee can settle exactly this task back to you, nothing more. The task is charged to the delegating instance's active goal, which must still be open — create a new goal first when the previous one is settled.
+Delegate a task to another instance with a narrow return path: the assignee can settle exactly this task back to you, nothing more. The task is charged to the delegating instance's active goal, which must still be open — create a new goal first when the previous one is settled. To be woken by its outcome, wait on {kind:'task',task_id:'<id>'}: the settlement arrives as a task result, not as a chat message.
 
 | Parameter | Type | Required | Meaning |
 |---|---|---|---|
@@ -92,7 +92,7 @@ Create a new instance and atomically register its initial task with the return p
 
 *Offered by `kernel::collaboration_tool_schemas(actions)` (per grant).*
 
-Park this instance until the conditions hold or the timer fires. Must be the only tool call in this response. Conditions: {kind:'message',from?:'<instance>'}, {kind:'task',task_id:'<id>'}, {kind:'operation',operation_id:'<id>'}, {kind:'envelope',envelope_id:'<id>'}.
+Park this instance until the conditions hold or the timer fires. Must be the only tool call in this response. Conditions: {kind:'message',from?:'<instance>'} — a chat message from that instance (any sender when omitted) has been applied; a delegated task's outcome is a task result, not a chat message, and never satisfies this. {kind:'task',task_id:'<id>'} — that task reached SUCCEEDED, FAILED or CANCELLED; name this one for work you delegated. A task the assignee settled BLOCKED does not satisfy it. {kind:'operation',operation_id:'<id>'}, {kind:'envelope',envelope_id:'<id>'}.
 
 | Parameter | Type | Required | Meaning |
 |---|---|---|---|

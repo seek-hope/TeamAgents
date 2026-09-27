@@ -331,6 +331,31 @@ mod tests {
         assert!(collaboration_tool_schemas(&[]).is_empty());
     }
 
+    /// The descriptions must name the condition a delegator has to use (D-255):
+    /// round 4's pilot stalled 575.6 s because its delegator named `message`
+    /// for work whose outcome arrives as a task result, and a reported
+    /// `BLOCKED` never wakes a task condition.
+    #[test]
+    fn the_wait_and_delegate_descriptions_name_the_condition_that_wakes_a_delegator() {
+        let schemas = collaboration_tool_schemas(&[WAIT_TOOL, DELEGATE_TOOL]);
+        let description = |want: &str| -> String {
+            schemas
+                .iter()
+                .find(|t| t["function"]["name"].as_str() == Some(want))
+                .unwrap_or_else(|| panic!("{want} was not offered"))["function"]["description"]
+                .as_str()
+                .expect("every offered tool carries a description")
+                .to_string()
+        };
+        let wait = description(WAIT_TOOL);
+        let delegate = description(DELEGATE_TOOL);
+        for (name, text) in [(WAIT_TOOL, &wait), (DELEGATE_TOOL, &delegate)] {
+            assert!(text.contains("{kind:'task',task_id:'<id>'}"), "{name} must name the task condition");
+        }
+        assert!(wait.contains("task result, not a chat message"), "the wait must separate the two kinds: {wait}");
+        assert!(wait.contains("BLOCKED does not satisfy"), "a reported block is not a wake: {wait}");
+    }
+
     #[test]
     fn page_output_contract() {
         let out = page_output("hello world", &json!({"offset": 6, "limit": 5})).unwrap();

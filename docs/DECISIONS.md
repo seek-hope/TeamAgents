@@ -20,6 +20,53 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-255 The delegator's wait gets an unambiguous contract (the walk-up to round 4's 575.6 s stall) (2026-09-28)
+
+D-254's pilot left one measurement unread: *why* one D trial's wall clock was 575.6 s in a single gap. Reading
+it settled the question, and the answer is a contract defect rather than a runtime one. `control::condition_state`
+(`core/src/v2/control.rs`) resolves a **`message`** condition only against envelopes of `kind='message'`, and a
+delegated outcome is delivered as `kind='task_result'` — so the delegator that named `{kind:'message',
+from:<worker>}` could only ever be released by its own ~600 s timer, while the two settlements it was waiting for
+sat `APPLIED` in its inbox. The other stalled trial waited on the right condition (two task ids) and still slept
+284.6 s, because both members *reported* `BLOCKED` and `condition_state`'s task arm satisfies only `SUCCEEDED` /
+`FAILED` / `CANCELLED`.
+
+**Decided: make the contract say what the runtime does** — the design-conservative half, and the only half that
+is not a semantics change.
+
+* the **`wait`** description now spells each condition out, including that a delegated outcome "is a task result,
+  not a chat message", that `{kind:'task',task_id:'<id>'}` is the one to name for delegated work, and that "a
+  task the assignee settled BLOCKED does not satisfy it";
+* the **`delegate`** description names the wait to use, at the point of decision: "To be woken by its outcome,
+  wait on `{kind:'task',task_id:'<id>'}`";
+* **`LEADER_INSTRUCTIONS`** says "wait on the task ids you delegated instead of polling — a member's outcome
+  arrives as a task result, not as a chat message" (the old text said only "wait on results", which is what the
+  pilot's leader followed into the wrong condition);
+* **`docs/USER-GUIDE.md` §4** states the same for a reader, with the measured consequence (a timer releases a
+  wait exactly as a fact does, so only the log's gap shows which happened).
+
+**Evidence.** The runtime behaviour the text now promises was already true and was *not* pinned; it is now, in
+`core`: `a_delegated_result_does_not_satisfy_a_message_condition` (the outcome is queued to the delegator as a
+`task_result` — asserted in `envelopes` — yet `woken: []` and the wait stays `PENDING`) and
+`a_blocked_settlement_does_not_satisfy_a_task_condition_but_cancelling_does` (`BLOCKED` reports, no wake; the
+user's `cancel_task` satisfies the same wait, which is USER-GUIDE §4's documented lever). The prose itself is
+pinned by `kernel::the_wait_and_delegate_descriptions_name_the_condition_that_wakes_a_delegator`, and
+`review/tool_catalogue.py` holds `docs/TOOLS.md` to the schemas.
+
+**Left open, and both need the user's word** (they change §5.3's wait semantics, so each needs `V2Wait`'s model
+and the recorded controls updated, not just a patch): **(a)** should a `message` condition also match a
+`task_result` from that sender — a result *is* a message in a reader's sense, but it blurs the two kinds the
+vocabulary keeps apart; **(b)** should a reported `BLOCKED` satisfy a task condition — it is a *report*, not a
+settlement (the assignee may still be unblocked and settle the same task), yet nothing else wakes the delegator
+at that moment, and §5.4's "directly adjusting a worker's task notifies the relevant delegator" is the same
+question from the other side.
+
+Ceiling: pinned prose is not measured model behaviour. The change makes the *correct* condition the one the tool
+surface recommends; whether a real model then names it is what a re-run of the D arm would show, and this entry
+claims nothing about it. The orchestration fixed cost D-254 measured (20–21 requests against B's 7) is untouched,
+and a delegator that insists on `message` still sleeps to its timer — the runtime cannot see that its sender
+holds no `message` grant.
+
 ## D-254 Round 4: the collaboration treatment becomes the *instruction shape*, and its pilot measures the cost (2026-09-27)
 
 The four recorded evaluation rounds passed H1 (no regression, 135/135) and did not confirm H2, and their own
