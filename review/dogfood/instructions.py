@@ -38,6 +38,7 @@ BIN = REPO / "engine/target/debug/teamagents"
 KEY_VAR = "TEAMAGENTS_INSTRUCTION_PROBE_KEY"
 CANARY = "CANARY_INSTRUCTION_9F2A"
 MEMBER_MARKER = "MEMBER_INSTRUCTIONS_7C1B"
+GUIDANCE = "run-and-fix loop"  # the phrase D-262 added to LEADER_INSTRUCTIONS
 
 HEAD = b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n"
 SPAWN = HEAD + (
@@ -118,6 +119,13 @@ def judgement(systems: list, doctor_row: str) -> list:
         # D-258: the runtime's own settlement rule reaches every member as well, and only a real prompt shows it
         if "Settlement rule:" not in text:
             failures.append(f"request {index + 1}'s system prompt does not carry the settlement rule: {text[:120]!r}")
+    # D-262: the product's leader prompt carries the measured delegation guidance; a worker's does not
+    leaders = [text for text in systems if MEMBER_MARKER not in text]
+    if not leaders:
+        failures.append("no leader's prompt was seen, so the leader's own guidance is not what this run checked")
+    for index, text in enumerate(leaders):
+        if GUIDANCE not in text:
+            failures.append(f"a leader's prompt does not carry the delegation guidance: {text[:120]!r}")
     if not any(MEMBER_MARKER in text for text in systems):
         failures.append("no child's prompt was seen, so 'every member' is not what this run checked")
     if "[ok  ] instruction files" not in doctor_row or "reach every member's prompt" not in doctor_row:
@@ -129,8 +137,8 @@ def self_check() -> int:
     """Exercise `judgement` on the measured shapes and on the pre-D-246 shape it must report."""
     findings = []
     rule = "Settlement rule: settle a task you were given, or say why not"
-    good = [f"{MEMBER_MARKER}: you are a worker\n\n{rule}\n\n<!-- instruction file: /rules.md -->\n{CANARY}: say canary",
-            f"{rule}\n\n<!-- instruction file: /rules.md -->\n{CANARY}: say canary"]
+    lead = f"{GUIDANCE}: delegate what needs it\n\n{rule}\n\n<!-- instruction file: /rules.md -->\n{CANARY}: say canary"
+    good = [f"{MEMBER_MARKER}: you are a worker\n\n{rule}\n\n<!-- instruction file: /rules.md -->\n{CANARY}: say canary", lead]
     row = "[ok  ] instruction files          2 file(s), 84 byte(s) reach every member's prompt"
     if judgement(good, row):
         findings.append("the shapes this build produces must pass")
@@ -142,6 +150,8 @@ def self_check() -> int:
         findings.append("a doctor row that does not promise the delivery must be reported")
     if not judgement([good[0].replace(rule, "settle later"), good[1]], row):
         findings.append("a prompt without the settlement rule must be reported (D-258)")
+    if not judgement([good[0], good[1].replace(GUIDANCE, "delegate freely")], row):
+        findings.append("a leader prompt without the delegation guidance must be reported (D-262)")
     for finding in findings:
         print(f"FAIL: {finding}")
     if not findings:

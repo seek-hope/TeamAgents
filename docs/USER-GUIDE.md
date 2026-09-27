@@ -306,6 +306,15 @@ pre_tool = ["/home/you/bin/policy.sh"]            # policy hook before tool call
   until the timer fires. Both tool descriptions say so. A due timer releases a wait exactly as a fact does, so
   only the gap in the log shows which happened: in the round-4 pilot a delegator that named `message from
   <worker>` was released by its timer **575.6 s** after the settlement it was waiting for (D-255).
+- **When delegating pays, measured (D-262).** The same twelve-unit job was run two ways, three times each
+  (`review/eval/r2-p6/REPORT.md`): a team reached *every unit verified green* in 41–60 s against a single
+  instance's 65–148 s, and it was earlier in **6 of 6 paired repeats** — but end to end (one accepted
+  result) the two were indistinguishable (92–200 s against 79–164 s), because the leader's own integration
+  costs about as much as the parallelism saves. So the Leader is told to delegate parts that each need
+  their own run-and-fix loop, to check the finished work with **one** gate instead of re-running every
+  part's command in turn, and *not* to delegate work a single instance can finish in one pass. A member
+  that ends its turn without settling its task never wakes the delegator (only the timer does), which is
+  why the guidance asks for a short timer and says an abandoned part is then the Leader's.
   `spawn` also takes `model` (a catalog key or the model name it declares) so a team can mix entries: an unknown
   entry fails that call with the available keys, and an instance that cannot boot at all is parked with the
   reason (its task stays open for you to cancel). A tool the instance cannot dispatch is not offered at all: a

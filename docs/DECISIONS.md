@@ -20,6 +20,31 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-262 The measured cost model becomes the leader's guidance (2026-09-28)
+
+Four batches (rounds 5 and 6, ~40 real trials) measured *when* delegation pays, and the answer is narrow enough to
+act on: a solo instance **writes** independent pieces in one or two responses (its largest single response
+carried 11,248 completion tokens in 40 s) and then **greens** them serially, while a team greens one unit per
+worker, concurrently — 41–60 s against 65–148 s to all-units-green, earlier in **6 of 6 paired repeats** — but
+*end to end* the two were indistinguishable (92–200 s against 79–164 s) because the leader's own integration
+costs about what the parallelism saves (D-259, D-261).
+
+**Decided: the product's `LEADER_INSTRUCTIONS` says what the measurements say.** It now tells the Leader to work
+directly on what it can finish in one pass (delegating that costs at least as much as it saves), to delegate
+parts that each need their own run-and-fix loop, to check the finished work with **one** gate rather than
+re-running every part's command in turn, to wait on the task ids with a **short** timer, and that an abandoned
+part is then the Leader's own. `docs/USER-GUIDE.md` §4 carries the same finding for a reader, with the numbers.
+
+**Evidence.** `LEADER_INSTRUCTIONS` is the product's own text (a real session's leader reads it; the eval's D
+arm uses the harness's templates instead, so no eval surface pin moves), and `review/dogfood/instructions.py`
+now observes it in a live run: the leader's prompt grew from 1,066 to 1,638 characters and carries the new
+phrase, while a worker's prompt (439 characters) does not — the probe's self-check covers both shapes and the
+negative case.
+
+Ceiling: the *behaviour* this guidance produces is not measured — round 5/6 tested the harness's directive arm,
+not this text, so "the Leader now delegates more selectively" is a hypothesis, not a result; the guidance is
+also a product default a user can override with their own instruction files.
+
 ## D-261 The collaboration gain is in *greening*, not writing — measured, then pre-registered (2026-09-28)
 
 Round 5's verdict (D-259) was that the arms are indistinguishable on the *gate* — time to a fully accepted
