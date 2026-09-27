@@ -38,9 +38,96 @@ async fn runners(root: &Path, command: RunnersCommand) -> serde_json::Value {
         state_root: root.to_path_buf(),
         command,
         json_out: true,
+        confirmed: true,
     })
     .await
     .expect("runners")
+}
+
+/// The live members of a job's process group, from the journal's own recorded child.
+fn group_len(dir: &Path) -> usize {
+    let journal = client::persisted_journal(dir).expect("journal");
+    let Some(group) = journal.pid else { return 0 };
+    teamagents_engine::jobs::group_members(&teamagents_engine::jobs::proc_table(), group).len()
+}
+
+/// D-251: the other leftover — the service a settled command left behind (a child started with `&` whose shell
+/// is gone). It cannot be *asked* anything (no runner supervises it any more), so it is a signal, and the
+/// identity rule is the members' birth time rather than A15's child check.
+#[tokio::test]
+async fn the_runners_verb_stops_the_service_a_settled_command_left_behind() {
+    runner_bin();
+    let scratch = root("service");
+    let dir = scratch.join("jobs/op-service");
+    // the shell exits at once and leaves a child behind: the classic `dev-server &`
+    client::spawn(&dir, &spec("op-service", "sleep 20 & echo started", future(30_000))).await.expect("spawn");
+    client::go(&dir).await.expect("go");
+    assert_eq!(wait_terminal(&dir, 10_000).await, "SUCCEEDED");
+
+    // the census sees the leftover group, and the signal needs the caller's `--yes`
+    let listed = runners(&scratch, RunnersCommand::List).await;
+    assert_eq!(listed["runners"][0]["service"], serde_json::json!(1), "{listed}");
+    let unconfirmed = teamagents_engine::v2::runners::execute_async(&RunnersOptions {
+        state_root: scratch.to_path_buf(),
+        command: RunnersCommand::Stop { job_id: None, service: true },
+        json_out: true,
+        confirmed: false,
+    })
+    .await;
+    match unconfirmed {
+        Err((2, message)) => assert!(message.contains("--yes"), "{message}"),
+        other => panic!("a service stop without --yes must be a usage error: {other:?}"),
+    }
+    assert_eq!(group_len(&dir), 1, "the service is alive before the stop");
+
+    // the stop lands on the group the command created
+    let stopped = runners(&scratch, RunnersCommand::Stop { job_id: Some("op-service".into()), service: true }).await;
+    let outcome = stopped["runners"][0]["outcome"].as_str().unwrap_or("");
+    assert!(outcome.starts_with("service stopped:"), "{stopped}");
+    for _ in 0..100 {
+        if group_len(&dir) == 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(group_len(&dir), 0, "the signalled group is gone");
+    // and a second stop reports the truth instead of signalling nothing twice
+    let again = runners(&scratch, RunnersCommand::Stop { job_id: None, service: true }).await;
+    assert_eq!(again["runners"][0]["outcome"], serde_json::json!("no service left"), "{again}");
+
+    // the same stop with the runner already *gone* (which is the usual case — a settled runner retires itself):
+    // the service lever must not depend on a runner being there to answer
+    let second = root("service-no-runner");
+    let dir2 = second.join("jobs/op-service");
+    client::spawn(&dir2, &spec("op-service", "sleep 20 & echo started", future(30_000))).await.expect("spawn");
+    client::go(&dir2).await.expect("go");
+    assert_eq!(wait_terminal(&dir2, 10_000).await, "SUCCEEDED");
+    client::shutdown(&dir2).await.expect("retire the runner first");
+    assert!(client::status(&dir2).await.is_err(), "the runner is gone, the service is not");
+    assert_eq!(group_len(&dir2), 1, "the service outlives its runner");
+    let stopped = runners(&second, RunnersCommand::Stop { job_id: None, service: true }).await;
+    assert_eq!(stopped["runners"][0]["runner"], serde_json::json!("gone"), "{stopped}");
+    assert!(
+        stopped["runners"][0]["outcome"].as_str().unwrap_or("").starts_with("service stopped:"),
+        "a gone runner must not stop the service lever: {stopped}"
+    );
+}
+
+/// D-251's other half, and the one that matters most: a command that may still be *running* is not a service.
+#[tokio::test]
+async fn a_service_stop_refuses_a_job_that_is_not_settled() {
+    runner_bin();
+    let scratch2 = root("service-live");
+    let dir = scratch2.join("jobs/op-live");
+    client::spawn(&dir, &spec("op-live", "sleep 3", future(30_000))).await.expect("spawn");
+    client::go(&dir).await.expect("go");
+    let refused = runners(&scratch2, RunnersCommand::Stop { job_id: None, service: true }).await;
+    let outcome = refused["runners"][0]["outcome"].as_str().unwrap_or("");
+    assert!(outcome.starts_with("refused:"), "{refused}");
+    assert!(outcome.contains("not settled"), "the reason names what it is: {refused}");
+    assert_eq!(group_len(&dir), 1, "the running command's group is untouched");
+    assert_eq!(wait_terminal(&dir, 15_000).await, "SUCCEEDED");
+    client::shutdown(&dir).await.expect("shutdown");
 }
 
 /// D-250: the `runners` verb over a real state root — what it lists, and the one thing it must never do: take a
@@ -66,7 +153,7 @@ async fn the_runners_verb_lists_a_state_roots_jobs_and_never_breaks_a_running_co
     assert!(rows[0]["child_pid"].as_u64().is_some(), "the command's pid is reported: {listed}");
 
     // stopping it is refused by the runner's own gate, and the command keeps running
-    let refused = runners(&root, RunnersCommand::Stop { job_id: None }).await;
+    let refused = runners(&root, RunnersCommand::Stop { job_id: None, service: false }).await;
     let outcome = refused["runners"][0]["outcome"].as_str().unwrap_or("");
     assert!(outcome.starts_with("refused:"), "{refused}");
     assert!(outcome.contains("active command"), "the reason is the runner's own: {refused}");
@@ -75,17 +162,18 @@ async fn the_runners_verb_lists_a_state_roots_jobs_and_never_breaks_a_running_co
     // the command finishes on its own (the runner outlives the daemon and journals it), and now the same verb
     // retires the runner instead of refusing
     assert_eq!(wait_terminal(&dir, 15_000).await, "SUCCEEDED");
-    let retired = runners(&root, RunnersCommand::Stop { job_id: None }).await;
+    let retired = runners(&root, RunnersCommand::Stop { job_id: None, service: false }).await;
     assert_eq!(retired["runners"][0]["outcome"], serde_json::json!("retired"), "{retired}");
     assert!(client::status(&dir).await.is_err(), "the retired runner answers nothing");
 
     // a second stop reports the truth instead of inventing work, and an unknown id is a usage error
-    let again = runners(&root, RunnersCommand::Stop { job_id: Some("op-verb".into()) }).await;
+    let again = runners(&root, RunnersCommand::Stop { job_id: Some("op-verb".into()), service: false }).await;
     assert_eq!(again["runners"][0]["runner"], serde_json::json!("gone"), "{again}");
     let missing = teamagents_engine::v2::runners::execute_async(&RunnersOptions {
         state_root: root.to_path_buf(),
-        command: RunnersCommand::Stop { job_id: Some("no-such-job".into()) },
+        command: RunnersCommand::Stop { job_id: Some("no-such-job".into()), service: false },
         json_out: true,
+        confirmed: true,
     })
     .await;
     match missing {

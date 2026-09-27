@@ -56,7 +56,7 @@ OFFLINE = [
     ("shutdown.py", [], "a graceful stop with a command in flight, and the recovery after it (DESIGN §9/D-152)"),
     ("daemon_stop.py", [], "`daemon --stop` stops the session by its socket, and the process really goes (D-248)"),
     ("stream_json.py", [], "`exec --stream-json` streams the events while the run waits, then the report (D-249)"),
-    ("runners.py", [], "`runners` lists a state root's leftover job runners and retires the settled ones (D-250)"),
+    ("runners.py", [], "`runners` lists a state root's leftovers, retires settled runners (D-250) and stops a settled command's service group (D-251)"),
 ]
 
 # The set that takes a model. Each probe is the live half of an acceptance item or a decision; `--state-dir`

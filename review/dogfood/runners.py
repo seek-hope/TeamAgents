@@ -43,6 +43,24 @@ HEAD = b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close
 # Long enough for the probe to look at the job while it runs, short enough to keep the probe under twenty
 # seconds: the command's own lifetime is what step 3 waits for.
 COMMAND = "sh -c 'echo started > marker.txt; sleep 8'"
+# The other leftover (D-251): the shell exits at once and leaves a child behind — the classic `dev-server &`.
+SERVICE_COMMAND = "sh -c 'echo started > service.txt; sleep 30 & echo left'"
+SERVICE_PROMPT = "leave a server running"
+
+
+def group_members(pgid: int) -> list:
+    """The live members of a process group, read from /proc — the probe's own check, not the verb's."""
+    members = []
+    for entry in pathlib.Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            tail = (entry / "stat").read_text().rsplit(")", 1)[1].split()
+            if int(tail[2]) == pgid:
+                members.append(int(entry.name))
+        except (OSError, IndexError, ValueError):
+            continue
+    return sorted(members)
 
 
 def stream(*deltas: dict) -> bytes:
@@ -77,7 +95,13 @@ class FakeChat(BaseHTTPRequestHandler):
             conversation = json.loads(body.decode("utf-8", "replace")).get("messages", [])
         except json.JSONDecodeError:
             conversation = []
-        reply = FINISH_TURN if any(m.get("role") == "tool" for m in conversation) else SHELL_TURN
+        if any(message.get("role") == "tool" for message in conversation):
+            reply = FINISH_TURN
+        else:
+            asked = " ".join(str(message.get("content") or "") for message in conversation
+                             if message.get("role") == "user")
+            first = SERVICE_COMMAND if "leave a server" in asked else COMMAND
+            reply = tool_call("shell", {"command": first, "timeout": 60})
         self.wfile.write(reply)
         self.wfile.flush()
         self.close_connection = True
@@ -168,6 +192,12 @@ def main() -> int:
         failures.append(f"the runner's own gate must refuse a stop with a child: {outcome!r} {err}")
     if not alive:
         failures.append("the refusal still let the command die: the lever must never take a running command away")
+    # ... and the *service* stop refuses it too: a command that may still be running is not a leftover
+    code, report, _ = runners(state_root, env, ["stop", "--service", "--yes"])
+    outcome = rows(report)[0].get("outcome", "") if rows(report) else ""
+    print(f"3b. service stop while it runs: exit={code} outcome={outcome!r}")
+    if not outcome.startswith("refused:") or "not settled" not in outcome:
+        failures.append(f"a running command is not a service: {outcome!r}")
 
     # 2. the case the verb exists for: no session at all
     for pid, _args in leak_guard.daemon_pids(state_root):
@@ -208,9 +238,54 @@ def main() -> int:
         failures.append(f"an unknown job id is a usage error naming it: {code} {err!r}")
     client.wait(timeout=30)
 
+    # ---- the second leftover: the service a settled command left behind (D-251) ----------------------------
+    service_root = root / "service"
+    served = subprocess.run(
+        [str(BIN), "exec", "--full-auto", "--json", "--state-root", str(service_root), "--cwd", str(workspace),
+         "--timeout", "120", SERVICE_PROMPT],
+        capture_output=True, text=True, env=env, timeout=180)
+    atexit.register(leak_guard.stop_daemons, service_root)
+    deadline = time.time() + 60
+    while time.time() < deadline and not (workspace / "service.txt").exists():
+        time.sleep(0.2)
+    code, report, err = runners(service_root, env)
+    row = rows(report)[0] if rows(report) else {}
+    group = row.get("child_pid")
+    members = group_members(group) if group else []
+    print(f"8. a settled command left a service: exec={served.returncode} state={row.get('state')!r} "
+          f"service={row.get('service')!r} members={members}")
+    if served.returncode != 0:
+        failures.append(f"the service run must settle (exit 0): {served.returncode} {served.stderr[-200:]!r}")
+    if row.get("state") != "SUCCEEDED" or row.get("service") != len(members) or not members:
+        failures.append(f"the census must show the leftover group: {row} members={members}")
+
+    # the signal needs the caller's `--yes`, and then it lands on that group and only that group
+    code, _report, err = runners(service_root, env, ["stop", "--service"])
+    print(f"9. service stop without --yes: exit={code} {err.strip()[:60]!r}")
+    if code != 2 or "--yes" not in err:
+        failures.append(f"a service stop must ask for --yes: {code} {err!r}")
+    code, report, err = runners(service_root, env, ["stop", "--service", "--yes"])
+    outcome = rows(report)[0].get("outcome", "") if rows(report) else ""
+    gone = []
+    for _ in range(40):
+        gone = [pid for pid in members if not pathlib.Path(f"/proc/{pid}").exists()]
+        if len(gone) == len(members):
+            break
+        time.sleep(0.25)
+    code2, report2, _ = runners(service_root, env)
+    left_group = rows(report2)[0].get("service") if rows(report2) else None
+    print(f"10. service stopped: exit={code} outcome={outcome!r} members gone={len(gone)}/{len(members)} "
+          f"census now={left_group!r}")
+    if not outcome.startswith("service stopped:"):
+        failures.append(f"the lever must stop the leftover group: {outcome!r} {err!r}")
+    if len(gone) != len(members) or left_group != 0:
+        failures.append(f"the signalled service must really be gone: gone={gone} members={members} "
+                        f"census={left_group!r}")
+
     leak_guard.stop_daemons(state_root)
-    left = (len(leak_guard.daemon_pids(state_root)), len(leak_guard.runner_pids(state_root)))
-    print(f"8. cleaned up: daemons/runners left = {left}")
+    leak_guard.stop_daemons(service_root)
+    left = (len(leak_guard.daemon_pids(root)), len(leak_guard.runner_pids(root)))
+    print(f"11. cleaned up: daemons/runners left = {left}")
     if left != (0, 0):
         failures.append(f"the probe left processes behind: {left}")
     for failure in failures:

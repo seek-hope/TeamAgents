@@ -21,6 +21,7 @@ usage: teamagents [--cwd DIR] [--state-root PATH] [--model KEY] [--full-auto]\n\
   teamagents tasks cancel --id ID               cancel one; a delegator waiting on it is released\n\
   teamagents runners [list] [--json]            the job runners this state root still carries\n\
   teamagents runners stop [--id JOB]            ask them to retire (a runner with a running command refuses)\n\
+  teamagents runners stop --service --yes [--id JOB]   stop the group a settled command left behind\n\
   teamagents daemon [--state-root PATH] [--cwd DIR] [--model KEY] [--full-auto]\n\
   teamagents daemon --stop [--state-root PATH]   stop that session's daemon (no pid: the socket is the address)\n\
   teamagents init [--state-root PATH]   write config and prepare the state root\n\
@@ -96,6 +97,8 @@ pub struct Args {
     pub exec_json: bool,
     /// D-249: `exec --stream-json` — the session's events as NDJSON while the run waits, then the report.
     pub stream_json: bool,
+    /// D-251: `runners stop --service` — stop the process group a settled command left behind.
+    pub service_stop: bool,
     pub subject: Option<String>,
     pub action: Option<String>,
     pub scope: Option<String>,
@@ -141,6 +144,7 @@ fn parse_args() -> Args {
         confirmed: false,
         daemon_stop: false,
         stream_json: false,
+        service_stop: false,
     };
     let mut i = 0;
     while i < argv.len() {
@@ -288,11 +292,21 @@ fn parse_args() -> Args {
                 args.stream_json = true;
                 i += 1;
             }
-            "--yes" if matches!(args.command.as_deref(), Some("instances" | "tasks")) => {
+            "--yes" if matches!(args.command.as_deref(), Some("instances" | "tasks" | "runners")) => {
                 if args.confirmed {
                     given_twice("--yes");
                 }
                 args.confirmed = true;
+                i += 1;
+            }
+            // D-251: the other leftover — the process group a settled command left behind (a service started
+            // with `&`). It signals processes rather than asking a runner, so it is its own flag and needs
+            // `--yes`.
+            "--service" if args.command.as_deref() == Some("runners") => {
+                if args.service_stop {
+                    given_twice("--service");
+                }
+                args.service_stop = true;
                 i += 1;
             }
             "--id" if matches!(args.command.as_deref(), Some("approvals" | "instances" | "tasks" | "runners")) => {
@@ -742,21 +756,30 @@ fn run_tasks(args: &Args) -> i32 {
 fn run_runners(args: &Args) -> i32 {
     use teamagents_engine::v2::runners::{RunnersCommand, RunnersOptions};
     let state_root = args.state_root.clone().map(PathBuf::from).unwrap_or_else(teamagents_engine::v2_root);
-    let command = match (args.positional.as_deref().unwrap_or("list"), args.approval_id.clone()) {
+    // `--service` *is* the stop action (the listing already shows what a group holds), so it may stand in for
+    // the subcommand; it never combines with `list`, which reads.
+    let verb = args.positional.as_deref().unwrap_or(if args.service_stop { "stop" } else { "list" });
+    let command = match (verb, args.approval_id.clone()) {
         ("list", None) => RunnersCommand::List,
-        ("stop", job) => RunnersCommand::Stop { job_id: job },
         ("list", Some(_)) => {
             eprintln!("runners list takes no --id; use `runners stop --id JOB`");
             return 2;
         }
+        ("stop", job) => RunnersCommand::Stop { job_id: job, service: args.service_stop },
         (other, _) => {
             eprintln!(
-                "runners: unknown command {other:?}; use `teamagents runners [list]` or `runners stop [--id JOB]`"
+                "runners: unknown command {other:?}; use `teamagents runners [list]`, \
+                 `runners stop [--id JOB]` or `runners stop --service --yes [--id JOB]`"
             );
             return 2;
         }
     };
-    teamagents_engine::v2::runners::run(RunnersOptions { state_root, command, json_out: args.exec_json })
+    teamagents_engine::v2::runners::run(RunnersOptions {
+        state_root,
+        command,
+        json_out: args.exec_json,
+        confirmed: args.confirmed,
+    })
 }
 
 /// Say it out loud when `--full-auto` could not apply: the mode belongs to the

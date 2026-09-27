@@ -14,11 +14,13 @@
 //! safety: `shutdown` is refused while it has an active child (§6.2, `jobs/client.rs`), so a command that is
 //! really running is never taken away by a listing tool.
 //!
-//! What it deliberately does not do: signal the command's *process group*. That is the stray-service lever
-//! (a service a settled command left behind) and its own decision — after the group's leader exits,
-//! `signal_group`'s identity check has nothing left to verify, so it needs a different rule than the one A15
-//! pinned. A runner from a build whose protocol this one does not speak is reported `unreachable`, and the
-//! documented fallback for it stays the per-pid `kill` (`docs/USER-GUIDE.md` §4).
+//! The *other* leftover is the one a settled command left behind: a service started with `&`, whose shell is
+//! long gone (`runners stop --service --yes`, D-251). Nothing can be asked there — no runner is left to ask —
+//! so it is a signal, and its identity rule is not A15's: `signal_group` re-verifies the recorded child, which
+//! a settled job no longer has. What identifies the group instead is *when its members were born*
+//! (`jobs::stop_leftover_group`: every member predates the job's own end, so a group id the kernel handed out
+//! again cannot pass). A runner from a build whose protocol this one does not speak is reported `unreachable`,
+//! and the documented fallback for it stays the per-pid `kill` (`docs/USER-GUIDE.md` §4).
 
 use serde_json::{json, Value as Json};
 use std::path::{Path, PathBuf};
@@ -36,7 +38,11 @@ pub enum RunnersCommand {
     /// What this state root still carries.
     List,
     /// Ask every runner of this state root to retire, or the one named by `--id`.
-    Stop { job_id: Option<String> },
+    ///
+    /// With `service` the action is the *other* leftover: the process group a settled command left behind (a
+    /// service the command started and did not wait for, D-41/D-112). That one is a signal, not a request, so it
+    /// needs the caller's explicit `--yes`.
+    Stop { job_id: Option<String>, service: bool },
 }
 
 pub struct RunnersOptions {
@@ -45,6 +51,8 @@ pub struct RunnersOptions {
     pub state_root: PathBuf,
     pub command: RunnersCommand,
     pub json_out: bool,
+    /// The caller's `--yes`: the service stop signals processes, so it is deliberate.
+    pub confirmed: bool,
 }
 
 /// One job directory of a state root: the owning instance (`instances/<id>/jobs/<job>`), or `None` for a
@@ -110,22 +118,53 @@ async fn answers(dir: &Path) -> Result<bool, String> {
 }
 
 /// One row of the report: everything the lever knows about one job directory, and (for `stop`) what it did.
-async fn row(instance: Option<String>, dir: &Path, act: bool) -> Json {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Act {
+    None,
+    Retire,
+    Service,
+}
+
+async fn row(instance: Option<String>, dir: &Path, act: Act, table: &[jobs::Proc]) -> Json {
     let journal = journal_of(dir);
     let job_id = journal
         .as_ref()
         .map(|journal| journal.job_id.clone())
         .or_else(|| dir.file_name().map(|name| name.to_string_lossy().into_owned()))
         .unwrap_or_default();
-    let (runner, outcome) = match answers(dir).await {
-        Ok(false) => ("gone".to_string(), Some("no runner".to_string())),
-        Err(reason) => ("unreachable".to_string(), Some(format!("unreachable: {reason}"))),
-        Ok(true) if !act => ("live".to_string(), None),
-        Ok(true) => match tokio::time::timeout(PROBE_TIMEOUT, jobs::client::shutdown(dir)).await {
-            Ok(Ok(())) => ("live".to_string(), Some("retired".to_string())),
-            // the runner's own gate: a command that is running is never taken away by this verb
-            Ok(Err(reason)) => ("live".to_string(), Some(format!("refused: {reason}"))),
-            Err(_) => ("live".to_string(), Some("refused: the runner did not answer within 2s".to_string())),
+    // how many processes are still in the group the command created: the census half of the service lever
+    let service = journal
+        .as_ref()
+        .filter(|journal| journal.terminal() && journal.boot_id == jobs::boot_id().unwrap_or_default())
+        .and_then(|journal| journal.pid)
+        .map(|group| jobs::group_members(table, group).len());
+    let reachable = answers(dir).await;
+    let runner = match &reachable {
+        Ok(true) => "live".to_string(),
+        Ok(false) => "gone".to_string(),
+        Err(_) => "unreachable".to_string(),
+    };
+    // The service stop does not need a runner at all (the leftover it stops is the one whose runner is usually
+    // already gone), so it is decided before the reachability of the runner means anything.
+    let outcome = match act {
+        Act::None => None,
+        Act::Service => Some(match journal.as_ref() {
+            Some(journal) => match jobs::stop_leftover_group(journal, libc::SIGTERM) {
+                Ok(0) => "no service left".to_string(),
+                Ok(count) => format!("service stopped: {count} process(es)"),
+                Err(reason) => format!("refused: {reason}"),
+            },
+            None => "refused: the job directory has no journal".to_string(),
+        }),
+        // the runner ask: only a runner that answers can be asked, and its own gate is the safety
+        Act::Retire => match reachable {
+            Ok(true) => match tokio::time::timeout(PROBE_TIMEOUT, jobs::client::shutdown(dir)).await {
+                Ok(Ok(())) => Some("retired".to_string()),
+                Ok(Err(reason)) => Some(format!("refused: {reason}")),
+                Err(_) => Some("refused: the runner did not answer within 2s".to_string()),
+            },
+            Ok(false) => Some("no runner".to_string()),
+            Err(reason) => Some(format!("unreachable: {reason}")),
         },
     };
     json!({
@@ -135,6 +174,7 @@ async fn row(instance: Option<String>, dir: &Path, act: bool) -> Json {
         "terminal": journal.as_ref().map(|journal| journal.terminal()),
         "runner": runner,
         "child_pid": journal.as_ref().and_then(|journal| journal.pid),
+        "service": service,
         "finished_ms": journal.as_ref().and_then(|journal| journal.finished_ms),
         "exit_code": journal.as_ref().and_then(|journal| journal.exit_code),
         "outcome": outcome,
@@ -162,9 +202,21 @@ pub async fn execute_async(options: &RunnersOptions) -> Result<Json, (i32, Strin
     };
     let dirs = job_dirs(&options.state_root);
     let (act, wanted) = match &options.command {
-        RunnersCommand::List => (false, None),
-        RunnersCommand::Stop { job_id } => (true, job_id.clone()),
+        RunnersCommand::List => (Act::None, None),
+        RunnersCommand::Stop { job_id, service } => {
+            if *service && !options.confirmed {
+                return Err((
+                    2,
+                    "runners stop --service signals the process group a settled command left behind \
+                     (a server started with `&`, for instance): add --yes to mean it"
+                        .to_string(),
+                ));
+            }
+            (if *service { Act::Service } else { Act::Retire }, job_id.clone())
+        }
     };
+    // one process-table scan for the whole listing (the acting path re-reads it and re-verifies)
+    let table = jobs::proc_table();
     let mut rows = Vec::new();
     for (instance, dir) in dirs {
         if let Some(wanted) = &wanted {
@@ -175,7 +227,7 @@ pub async fn execute_async(options: &RunnersOptions) -> Result<Json, (i32, Strin
                 continue;
             }
         }
-        rows.push(row(instance, &dir, act).await);
+        rows.push(row(instance, &dir, act, &table).await);
     }
     if let Some(wanted) = wanted {
         if rows.is_empty() {
@@ -227,8 +279,13 @@ fn print_report(options: &RunnersOptions, report: &Json) {
             None => "no child".to_string(),
         };
         let outcome = row["outcome"].as_str().map(|outcome| format!("  → {outcome}")).unwrap_or_default();
+        let group = match row["service"].as_u64() {
+            Some(0) => "no group left".to_string(),
+            Some(count) => format!("group: {count} process(es)"),
+            None => "group: unknown".to_string(),
+        };
         println!(
-            "  {}  {}  runner: {runner}  {child}  {}{outcome}",
+            "  {}  {}  runner: {runner}  {child}  {group}  {}{outcome}",
             row["job_id"].as_str().unwrap_or(""),
             state,
             match row["instance"].as_str() {

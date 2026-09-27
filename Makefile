@@ -167,6 +167,8 @@ verify-model-counterexamples: verify-tools
 		MC_jobs_guess_notrun.cfg:V2Jobs.tla MC_jobs_double_go.cfg:V2Jobs.tla \
 		MC_jobs_late_go.cfg:V2Jobs.tla MC_jobs_spawn_first.cfg:V2Jobs.tla \
 		MC_jobs_retires_a_running_command.cfg:V2Jobs.tla \
+		MC_jobs_service_signals_a_stranger.cfg:V2Jobs.tla \
+		MC_jobs_service_signals_a_live_command.cfg:V2Jobs.tla \
 		MC_inbox_no_dedup.cfg:V2Inbox.tla MC_inbox_drop_when_full.cfg:V2Inbox.tla \
 		MC_inbox_unbounded.cfg:V2Inbox.tla MC_inbox_stale_applied.cfg:V2Inbox.tla \
 		MC_inbox_foreign_drain.cfg:V2Inbox.tla \

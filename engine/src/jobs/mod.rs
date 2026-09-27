@@ -196,10 +196,152 @@ fn state_lock_waiting(path: &std::path::Path, wait: Duration) -> Result<std::fs:
     }
 }
 
+/// One process of the machine's table, as the group identity check reads it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Proc {
+    pub pid: u32,
+    /// The process group (`/proc/<pid>/stat`'s pgrp): what a job's own group is keyed by.
+    pub group: u32,
+    /// When the process started, in the same clock as the journal's `*_ms` fields (wall clock ms).
+    pub start_ms: u64,
+}
+
+/// The machine's process table, from `/proc` — one scan, so a listing of many jobs costs one pass.
+pub fn proc_table() -> Vec<Proc> {
+    let boot_ms = boot_epoch_ms();
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir("/proc") else { return out };
+    for entry in entries.flatten() {
+        let Some(pid) = entry.file_name().to_str().and_then(|name| name.parse::<u32>().ok()) else { continue };
+        let Ok(text) = std::fs::read_to_string(entry.path().join("stat")) else { continue };
+        let Some(tail) = text.rsplit_once(')').map(|(_, tail)| tail) else { continue };
+        let fields: Vec<&str> = tail.split_whitespace().collect();
+        // after the command name: state(0) ppid(1) pgrp(2) session(3) … starttime(19)
+        let (Some(group), Some(ticks)) = (
+            fields.get(2).and_then(|field| field.parse::<u32>().ok()),
+            fields.get(19).and_then(|field| field.parse::<u64>().ok()),
+        ) else {
+            continue;
+        };
+        out.push(Proc { pid, group, start_ms: boot_ms + ticks * 1000 / clock_ticks() });
+    }
+    out
+}
+
+/// The live members of the group `group`, in pid order.
+pub fn group_members(table: &[Proc], group: u32) -> Vec<Proc> {
+    let mut members: Vec<Proc> = table.iter().copied().filter(|proc_| proc_.group == group).collect();
+    members.sort_by_key(|proc_| proc_.pid);
+    members
+}
+
+fn clock_ticks() -> u64 {
+    let ticks = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    if ticks > 0 {
+        ticks as u64
+    } else {
+        100
+    }
+}
+
+/// The wall-clock instant of boot, so a `/proc` start tick can be compared with the journal's `*_ms` fields.
+fn boot_epoch_ms() -> u64 {
+    let uptime_s = std::fs::read_to_string("/proc/uptime")
+        .ok()
+        .and_then(|text| text.split_whitespace().next().and_then(|first| first.parse::<f64>().ok()))
+        .unwrap_or(0.0);
+    now_ms().saturating_sub((uptime_s * 1000.0) as u64)
+}
+
+/// Clock slack between a runner's `now_ms()` and a `/proc` start time: the two are read microseconds apart, and
+/// the spawn happens after `started_ms` is written, so only the *upper* bound below is used for identity.
+const SERVICE_SLACK_MS: u64 = 1000;
+
+/// Stop the process group a *settled* command left behind — the service a command started and did not wait for
+/// (DESIGN §9's explicit-only cleanup, D-41/D-112).
+///
+/// The identity question is different from `signal_group`'s (A15): that one re-verifies the recorded child, and
+/// the direct child of a settled job is gone by definition — the code that does have a live child says why it can
+/// trust the group id at all ("the direct child is not reaped yet, so its group ID cannot be reused",
+/// `tools.rs`). Once the child *is* reaped the kernel may hand its pid out again, and a new process that becomes
+/// its own group leader would wear the same group id. What rules that out here is **when the members were
+/// born**: a member of the reused group is newer than the moment the job ended, while every process the command
+/// left behind was born while the command ran (`started_ms` … `finished_ms`). So the rule is: a terminal
+/// journal, the same boot, at least one live member of the group, and **every** member born at or before the
+/// job's end — then one `kill(-group)` reaches the command's own leftovers and nothing else.
+///
+/// Returns how many members were signalled; `Ok(0)` means the group is gone (nothing left), never a refusal.
+pub fn stop_leftover_group(journal: &Journal, signal: i32) -> Result<usize, String> {
+    let pid = journal.pid.ok_or("no recorded process group")?;
+    if !journal.terminal() {
+        return Err(format!(
+            "job {} is not settled ({}): its command may still be running, so its group is not a leftover",
+            journal.job_id, journal.state
+        ));
+    }
+    if journal.boot_id != boot_id()? {
+        return Err("the journal is from another boot: its process group id means nothing here".into());
+    }
+    let finished = journal.finished_ms.ok_or("the journal has no end time to bound the group by")?;
+    let members = group_members(&proc_table(), pid);
+    if members.is_empty() {
+        return Ok(0);
+    }
+    for member in &members {
+        if member.start_ms > finished.saturating_add(SERVICE_SLACK_MS) {
+            return Err(format!(
+                "process {} started after this job ended ({} > {}): the group id was reused, refusing to signal",
+                member.pid, member.start_ms, finished
+            ));
+        }
+    }
+    let result = unsafe { libc::kill(-(pid as i32), signal) };
+    if result != 0 {
+        return Err(format!("signal group -{pid}: {}", std::io::Error::last_os_error()));
+    }
+    Ok(members.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{state_lock, state_lock_waiting};
     use std::time::{Duration, Instant};
+
+    /// D-251's identity rule, measured with a forged journal rather than a pid that really was recycled (which
+    /// no test can arrange): the group id a settled job recorded is *refused* when the live members of that
+    /// group were born after the job ended — exactly the shape a recycled pid would have, and the reason the
+    /// rule is about birth times and not about the id alone.
+    #[test]
+    fn a_group_whose_members_are_newer_than_the_job_is_never_signalled() {
+        use super::{boot_id, group_members, now_ms, proc_table, start_ticks, stop_leftover_group, Journal};
+        use std::os::unix::process::CommandExt;
+        let mut child = std::process::Command::new("sleep")
+            .arg("5")
+            .process_group(0)
+            .spawn()
+            .expect("spawn a process group of its own");
+        let pid = child.id();
+        let journal = Journal {
+            job_id: "op-forged".into(),
+            state: "SUCCEEDED".into(),
+            command_hash: "forged".into(),
+            pid: Some(pid),
+            start_ticks: Some(start_ticks(pid).expect("start ticks")),
+            boot_id: boot_id().expect("boot id"),
+            exit_code: Some(0),
+            signal: None,
+            // the job ended half a minute ago; the process wearing its group id started just now
+            started_ms: Some(now_ms().saturating_sub(60_000)),
+            finished_ms: Some(now_ms().saturating_sub(30_000)),
+            starts: 1,
+            cancel_saved: false,
+        };
+        let refused = stop_leftover_group(&journal, libc::SIGTERM).expect_err("a group born after the job: refuse");
+        assert!(refused.contains("reused"), "the reason names the shape: {refused}");
+        assert_eq!(group_members(&proc_table(), pid).len(), 1, "nothing was signalled: the stranger is alive");
+        let _ = child.kill();
+        let _ = child.wait();
+    }
 
     fn temp_path(tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("ta-state-lock-{tag}-{}", uuid::Uuid::new_v4()));

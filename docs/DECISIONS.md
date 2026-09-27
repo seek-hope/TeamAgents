@@ -20,6 +20,58 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-251 `runners stop --service`: the process group a settled command left behind (2026-09-27)
+
+The last bullet of ACCEPTANCE's known-gap list: "nothing stops a service a settled command left behind". D-41
+makes such a service explicit-only cleanup — the product does not re-adopt it — and the explicit lever did not
+exist: `instances terminate` stops an operation that is still *running* (A13/D-88), and the runner that owned
+the group is retired once the job settles (D-112), so afterwards nothing could signal it. **Decided: add the
+lever**, in the shape the runner family already has (`runners stop`), with its own identity rule.
+
+**The gap's own suggestion does not survive the case it names.** It proposed "a verb that re-opens a job
+directory and issues one best-effort, identity-verified `signal_group`" — A15's check, which re-verifies the
+recorded *child*. A settled job's direct child is gone by definition, and `/proc/<pid>` with it, so that check
+can only refuse. The code that *can* rely on the group id says why it can: "The direct child is not reaped yet,
+so its group ID cannot be reused" (`tools.rs`, the synchronous path). The runner reaps its child, so after a
+settled job the kernel may hand that pid out again — and a new process that becomes its own group leader would
+wear the same group id. **What rules that out is when the group's members were born**: every process the
+command left behind was born while the command ran, and a member of a reused group is newer than the moment the
+job ended. So the rule is: a terminal journal, the same boot, at least one live member of the group, and every
+member's start at or before the job's `finished_ms` — then one `kill(-group)` reaches the command's own
+leftovers and nothing else.
+
+**Two refusals are the safety.** A job that is **not settled** is not a leftover, it is work in progress (the
+design's live partner, §6.2/§6.3), so it is refused by name; and a group whose members are newer than the job
+is refused as a recycled id. `--yes` is required, because unlike `runners stop` (which *asks* a runner through
+its own gate) this one signals processes directly. The listing gained a `service` column (how many processes
+the group still holds), so a user sees the leftover before acting on it.
+
+**Measured.** `review/dogfood/runners.py` (credential-free, in `make probe-offline`) runs a scripted
+`sh -c '…; sleep 30 & …'`, waits for the job to settle, and then: the census reports `service: 1`; the stop
+without `--yes` is exit 2 naming the flag; the stop with it reports `service stopped: 1 process(es)`; the
+probe's **own `/proc` scan** (not the verb's answer) sees the member gone; the census drops to 0; and the same
+stop on the still-running session is `refused: … is not settled`. The deterministic halves are
+`jobs_runner::the_runners_verb_stops_the_service_a_settled_command_left_behind` — which also covers the shape
+where the runner is *already gone*, the usual case, and which caught a real defect: the first implementation
+decided the service stop inside the runner-reachability match, so a retired runner made it answer `no runner`
+and never signal (found by the probe, fixed before committing) — and
+`a_service_stop_refuses_a_job_that_is_not_settled`. The identity rule itself is measured against a **forged
+journal** (`jobs::tests::a_group_whose_members_are_newer_than_the_job_is_never_signalled`): a live process group
+whose members are newer than the job's end is refused, which is the recycled-id shape no test can arrange for
+real. Formally `V2Jobs.tla` gains the `service`/`recycled` state and two claims — `OnlyTheJobsOwnGroupIsSignalled`
+and `NoLiveCommandWasSignalled` — with a control each (`MC_jobs_service_signals_a_stranger.cfg`,
+`MC_jobs_service_signals_a_live_command.cfg`); the positive configuration verifies *including* the world where
+the id was recycled and the lever correctly refuses (621 states / 149 distinct). Writing it also hit the
+repository's oldest TLA+ trap a third time — `liveService' = liveService \/ …` without parentheses, so the
+variable was left unassigned and TLC refused the successor state (the module now carries the note).
+
+Ceiling: the group the runner created is what a stop reaches. A service that daemonized itself (`setsid`) leaves
+that group, and the product deliberately does not hunt it — the same `ponytail:` boundary the synchronous shell
+path carries ("a deliberate setsid() escapes this group; cgroup ownership is needed for stronger full-auto
+containment"), and `docs/USER-GUIDE.md` §4 says so to the user. The lever is
+per state root (A33), the same as `runners`; the host-wide census of strangers' leftovers stays
+`review/host_cleanup.py`'s job. And a job directory without a journal is refused rather than guessed at.
+
 ## D-250 `teamagents runners`: a state root's leftover command runners, and the gate that keeps it safe (2026-09-27)
 
 ACCEPTANCE's known gap recorded the last thing a user could not do about their own state root: "a killed session
@@ -61,9 +113,9 @@ Ceiling: the lever is **per state root** (A33) — it sweeps the root you name, 
 whatever `--state-root` points at; the host-wide census of strangers' leftovers stays `review/host_cleanup.py`'s
 job, a review tool whose acting step is the operator's per-pid `kill` (D-189). A runner from a build whose
 protocol this one does not speak is reported `unreachable` and falls back to that same documented `kill <pid>`
-(never a pattern kill, D-148). And it never signals a *process group*: stopping a service a settled command left
-behind is the separate lever ACCEPTANCE's known gap still carries, and it needs its own identity rule because
-`signal_group` verifies the recorded child — a leader that has exited has nothing left to verify.
+(never a pattern kill, D-148). And it does not signal a *process group*: that is the sibling lever, delivered one decision later as D-251
+(`runners stop --service`), which needs its own identity rule because `signal_group` verifies the recorded child
+and a settled job's child is gone.
 
 ## D-249 `exec --stream-json`: the events while the run waits, then the report (2026-09-27)
 
