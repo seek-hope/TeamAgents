@@ -1,0 +1,6 @@
+22844016be3f2ee68902554c6dce0547aa51664a25b8bf3ab6271bdfe13122ad  schedule.py
+d0eac968ccaa16dd71ca63f9a264f9aca424a03de2e94c6d77e607d7a5585b14  test_schedule.py
+--- final run ---
+..                                                                       [100%]
+2 passed in 0.04s
+EXIT=0

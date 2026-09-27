@@ -1,0 +1,20 @@
+### alpha/alpha.py
+def add(a, b):
+    return a + b
+### beta/beta.py
+def mul(a, b):
+    return a * b
+### alpha/check.py (untouched)
+import alpha
+assert alpha.add(2, 3) == 5, alpha.add(2, 3)
+print("alpha ok")
+### beta/check.py (untouched)
+import beta
+assert beta.mul(3, 4) == 12, beta.mul(3, 4)
+print("beta ok")
+### run alpha
+alpha ok
+alpha exit=0
+### run beta
+beta ok
+beta exit=0

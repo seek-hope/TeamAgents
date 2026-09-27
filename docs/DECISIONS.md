@@ -20,6 +20,73 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-257 Round 5's race material, and the reconnaissance that found the loss mode instead (2026-09-28)
+
+Round 5 asks the question the four recorded rounds could not: does the collaboration *mechanism* pay when the
+work is delegated (D-254), with the treatment D-256 measured (`directive + the user's grant`). It needs tasks a
+solo instance cannot finish inside a wall-clock bound, so **two six-unit tasks were built**: `six-deliverables`
+(four units lifted from `parallel-deliverables`/`timebox-two-modules`, plus `intervals` and `flags` authored for
+this task) and `six-mixed` (six units lifted from `bulk-modules`, `multi-step` and `long-chain`). Every unit
+carries its own frozen tests, so the new thing is the *size*, not the difficulty — each unit was solved by B in
+its own earlier task. Both tasks are validated in both states: as shipped, every unit check fails (6/6); with the
+recorded, already-accepted solutions dropped in, all 8 check lines pass. `freeze.py` now builds round 5's
+manifests (and reproduces r4's task digests and all three surface pins exactly), `run.py` honours a per-task
+`timeout_s`, and `manifest-r5-recon.json` freezes the reconnaissance below — with the un-calibrated 900 s bound,
+so it cannot bias the bound derived from it.
+
+**Measured (1 repeat × {B, D} × 4 tasks, `runs/2026-09-28-r5-recon/`, the full 8 planned trials).**
+
+| task | B | D |
+|---|---|---|
+| `six-deliverables` | **90.8 s**, checks ok | **timeout at 900.2 s, checks FAIL** |
+| `six-mixed` | **56.2 s**, checks ok | 78.7 s, checks ok |
+| `multi-step` (control) | 12.8 s ok | 20.5 s ok |
+| `parallel-deliverables` (control) | 23.5 s ok | 450.5 s ok |
+
+**No task met the inclusion criterion** — `solo_median ≥ 1.5 × team_median` — so by the rule below round 5's
+formal round is *not* run on these numbers, and the honest reading is the opposite of the one round 5 hoped for:
+with the product as it stood, the team arm was **slower on every task of the set**, small and large, and on the
+largest it did not finish.
+
+Three things came out of it. **(1) The race material is real**: B needs 90.8 s and 56.2 s on the two candidates,
+against 6–42 s for everything in the recorded set, so a bound between the arms exists to be found. **(2) The D
+arm builds the right team**: it spawned **six workers in one response** (one per part, as the directive asks),
+delegated each unit to its own task id, and 4 of the 6 settled `SUCCEEDED` within about a minute. **(3) It then
+lost to a wait that could never be satisfied**, not to the parallel arithmetic: the remaining two members ended
+their turns without settling (both `READY`, their tasks still `RUNNING` — D-65's ceiling), and the leader's wait
+carried **no timer at all** (`timer_at` NULL in its `waits` row), so no fact and no timer could wake it; the
+harness cut the trial at its 900 s bound and the two unsolved units failed the checks. The `parallel-deliverables`
+control shows the same shape in miniature: 450.5 s for work its own workers finished in ~15 s.
+
+**Decided: the timer rule becomes part of the product's tool surface.** The `wait` and `delegate` descriptions
+now say that delegated work is waited on **with `timer_seconds` set**, that an assignee which ends its turn
+without settling produces no result and no fact, and that the delegator re-checks the task statuses when the
+timer fires. This is the same kind of change D-255 made (contract text, not semantics), and it is visible to
+*every* arm — B and D read the same tool schemas — so no group's treatment moves and no eval-surface pin changes
+(those pin the harness's instruction templates and the tool *names*).
+
+**Left open, and both need the user's word** — the reconnaissance is the measurement behind both of ACCEPTANCE's
+older gaps: should the **runtime** wake a delegator whose task's assignee has gone idle (or treat an abandoned
+task as dead for a task condition)? And should a **delegator-facing `task cancel` tool** exist — the control plane
+already authorizes the *requester* to close its own task (§5.3) but no model-facing tool exposes it, so a leader
+has no lever on a member that abandoned its work. Round 5's treatment uses only what the product already offers.
+
+**The bound rule, fixed before the formal round** (from D-256's arithmetic and the reconnaissance's inputs): for
+a race task, `bound = floor((solo_median + team_median) / 2)`, and a task counts as a race task only if
+`solo_median ≥ 1.5 × team_median`; otherwise it stays a control and no conclusion is drawn from it. The formal
+round is 3 repeats × {B, D} × the two race tasks, with the bounds frozen in `manifest-r5.json`, plus the two
+controls; its verdicts are pre-registered in `design-r5.md` before it runs. **This reconnaissance does not
+satisfy that rule, so the formal round is not run from it**: the timer sentence above is the treatment's next
+change, and the reconnaissance that can satisfy the rule is the one that measures it. If a fresh reconnaissance
+still shows no task with the 1.5× headroom, the measured answer to Q16's H2 is "not confirmed, because the
+orchestration cost exceeds the parallel saving on every task this harness can bound" — which is a conclusion the
+question can be settled with, not a reason to keep running trials.
+
+Ceiling: one repeat per arm, one model and one provider; the new timer sentence is *unmeasured* until the next
+reconnaissance; the six-unit tasks reuse unit material the model has solved before, so they measure
+orchestration rather than novel difficulty; and the harness's grant pass (D-256) stays part of D's treatment, not
+of the product's default.
+
 ## D-256 The delegation cost, measured: members that cannot execute, and the user's grant as round 5's missing half (2026-09-28)
 
 Round 4's pilot said *that* a D trial costs 20–21 model requests against group B's 7 on the same two-file task

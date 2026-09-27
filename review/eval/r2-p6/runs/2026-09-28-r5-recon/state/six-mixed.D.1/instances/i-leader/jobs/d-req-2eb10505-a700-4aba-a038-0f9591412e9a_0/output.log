@@ -1,0 +1,10 @@
+units/measure | python3 -m pytest -q | exit=0 | 1 passed in 0.01s
+units/slugify | python3 -m pytest -q | exit=0 | 1 passed in 0.01s
+units/ranges | python3 -m pytest -q | exit=0 | 1 passed in 0.01s
+units/chain | python3 -m pytest -q tests/ | exit=0 | 4 passed in 0.02s
+units/alpha | python3 check.py | exit=0 | alpha ok
+units/beta | python3 check.py | exit=0 | beta ok
+OVERALL_FAIL=0
+--- units/ changes in git ---
+(none)
+-rw-r--r-- 1 rimuru rimuru 5848 Sep 28 04:15 REPORT.md

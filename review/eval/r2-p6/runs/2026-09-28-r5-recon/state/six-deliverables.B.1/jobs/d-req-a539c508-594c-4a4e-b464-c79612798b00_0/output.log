@@ -1,0 +1,6 @@
+csvfix exit=0
+rules exit=0
+ledger exit=0
+schedule exit=0
+intervals exit=0
+flags exit=0

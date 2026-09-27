@@ -1,0 +1,12 @@
+=== alpha.py ===
+def add(a, b):
+    return a + b
+=== beta.py ===
+def mul(a, b):
+    return a * b
+=== run alpha ===
+alpha ok
+alpha exit=0
+=== run beta ===
+beta ok
+beta exit=0

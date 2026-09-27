@@ -1,0 +1,48 @@
+total 16
+drwxr-xr-x 2 rimuru rimuru 4096 Sep 28 03:44 .
+drwxr-xr-x 8 rimuru rimuru 4096 Sep 28 03:44 ..
+-rw-r--r-- 1 rimuru rimuru  425 Sep 28 03:44 schedule.py
+-rw-r--r-- 1 rimuru rimuru  295 Sep 28 03:44 test_schedule.py
+---BASELINE---
+FF                                                                       [100%]
+=================================== FAILURES ===================================
+_________________________ test_slots_merges_and_splits _________________________
+
+    def test_slots_merges_and_splits():
+>       assert slots([(0,60),(30,90),(120,150)], 30) == [(0,90),(120,150)]
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+test_schedule.py:3: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+ranges = [(0, 60), (30, 90), (120, 150)], minutes = 30
+
+    def slots(ranges, minutes):
+        """合并闭区间：两段之间的空隙（next_lo - prev_hi）小于 minutes 视为同一段。
+        返回按起点升序的合并结果；空输入返回 []。"""
+>       raise NotImplementedError
+E       NotImplementedError
+
+schedule.py:7: NotImplementedError
+________________________________ test_overlaps _________________________________
+
+    def test_overlaps():
+>       assert overlaps((0,10),(5,20)) is True
+               ^^^^^^^^^^^^^^^^^^^^^^^
+
+test_schedule.py:6: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+a = (0, 10), b = (5, 20)
+
+    def overlaps(a, b):
+        """两个闭区间是否有交叠；端点正好相接（如 (0,10) 与 (10,20)）不算交叠。"""
+>       raise NotImplementedError
+E       NotImplementedError
+
+schedule.py:12: NotImplementedError
+=========================== short test summary info ============================
+FAILED test_schedule.py::test_slots_merges_and_splits - NotImplementedError
+FAILED test_schedule.py::test_overlaps - NotImplementedError
+2 failed in 0.03s
+EXIT=1

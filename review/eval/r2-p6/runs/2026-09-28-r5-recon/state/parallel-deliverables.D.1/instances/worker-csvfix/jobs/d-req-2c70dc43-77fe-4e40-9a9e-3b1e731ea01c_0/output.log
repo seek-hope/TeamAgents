@@ -1,0 +1,9 @@
+=== git status csvfix ===
+?? review/eval/r2-p6/runs/2026-09-28-r5-recon/work/parallel-deliverables.D.1/csvfix/
+=== git diff impl.py ===
+=== rerun pytest ===
+..                                                                       [100%]
+2 passed in 0.01s
+EXIT=0
+=== test file sha after ===
+588db2b78e9d1365dd8d7563abe70812bf958955665a95ad02b1e6a16c793724  csvfix/test_csvfix.py

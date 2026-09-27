@@ -1,0 +1,23 @@
+csv quoted: ['a,b', '2', 'x']
+csv 4col: None
+csv 2col: None
+csv bad -> ValueError
+csv blank: 3
+all []: True any []: False
+missing key: False
+rules unknown -> ValueError
+empty acct: [] 0
+ledger neg(other acct) -> ValueError
+ledger badkind -> ValueError
+sch empty: []
+sch merge nested: [(0, 100)]
+sch touch thr: [(0, 10), (40, 50)]
+ovl touch: False ovl pt: True
+iv merge default join: [(0, 1)]
+iv subtract disjoint: [(0, 1), (10, 11)]
+iv total overlap: 21
+iv total empty: 0
+flags dashdash: {'values': {}, 'flags': {}, 'positional': ['-x', '--y']}
+flags k=v: {'values': {'k': ['', 'v']}, 'flags': {}, 'positional': []}
+flags short value-ish: {'values': {'k': ['-abc']}, 'flags': {}, 'positional': []}
+flags empty: {'values': {}, 'flags': {}, 'positional': []}

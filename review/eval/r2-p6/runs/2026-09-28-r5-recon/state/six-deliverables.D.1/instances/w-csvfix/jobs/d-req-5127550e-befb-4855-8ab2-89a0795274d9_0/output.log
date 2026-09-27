@@ -1,0 +1,17 @@
+trim: ['a', '2', 'x']
+wrong cols: None None None
+quoted comma: ['a,b', '2', 'x']
+escaped quote: ['he said "hi"', '2', 'x']
+quoted pad: ['a b', '2', 'x']
+empty middle: ['a', '', 'c']
+blank at ends: ['a', '', 'c']
+quote trimmed unquoted: None
+empty quoted field: ['', '2', 'x']
+unterminated: None
+junk after quote: None
+total blank skip: 2
+total ws blank: 0
+total negative: 2
+total empty list: 0
+bad amount raises: row 0: bad amount 'zz'
+bad cols raises: row 0: expected 3 columns, got 2

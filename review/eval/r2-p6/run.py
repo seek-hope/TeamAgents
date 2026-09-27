@@ -112,14 +112,17 @@ def main() -> int:
                 if fixture.is_dir():
                     shutil.copytree(fixture, workdir, dirs_exist_ok=True)
                 result_file = out / f"{tag}.json"
+                # round 5 (D-257): a race task carries its own wall-clock bound, calibrated by the
+                # reconnaissance run and frozen in the manifest; everything else uses the manifest's limit
+                bound = int(task.get("timeout_s", manifest["limits"]["trial_timeout_s"]))
                 cmd = [str(BIN), "--group", group, "--task-file", str(TASKS / task["id"] / "prompt.md"),
                        "--workdir", str(workdir), "--state", str(state), "--out", str(result_file),
                        "--id", task["id"], "--model", manifest["model"]["key"],
-                       "--timeout", str(manifest["limits"]["trial_timeout_s"]),
+                       "--timeout", str(bound),
                        "--max-steps", str(manifest["limits"]["reference_max_steps"])]
                 started = time.time()
                 proc = subprocess.run(cmd, cwd=REPO, capture_output=True, text=True, env=env,
-                                      timeout=manifest["limits"]["trial_timeout_s"] + 300)
+                                      timeout=bound + 300)
                 wall = time.time() - started
                 record = {"task": task["id"], "group": group, "repeat": repeat, "wall_s": round(wall, 1),
                           "runner_rc": proc.returncode, "runner_stderr": proc.stderr[-2000:]}

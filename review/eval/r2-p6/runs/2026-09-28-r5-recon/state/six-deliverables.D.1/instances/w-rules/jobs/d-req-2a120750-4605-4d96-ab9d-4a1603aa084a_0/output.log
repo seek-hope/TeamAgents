@@ -1,0 +1,14 @@
+total 12
+-rw-r--r-- 1 rimuru rimuru 2523 Sep 28 03:58 engine.py
+drwxr-xr-x 2 rimuru rimuru 4096 Sep 28 03:58 __pycache__
+-rw-r--r-- 1 rimuru rimuru  319 Sep 24 15:32 test_rules.py
+ M review/eval/r2-p6/freeze.py
+ M review/eval/r2-p6/run.py
+?? review/eval/r2-p6/manifest-r5-recon.json
+?? review/eval/r2-p6/runs/2026-09-28-r5-recon/
+?? review/eval/r2-p6/tasks/six-deliverables/
+?? review/eval/r2-p6/tasks/six-mixed/
+---
+.                                                                        [100%]
+1 passed in 0.02s
+EXIT=0

@@ -1,0 +1,9 @@
+/bin/bash: line 28: cd: units/intervals: No such file or directory
+no git
+total 24
+drwxr-xr-x 4 rimuru rimuru 4096 Sep 28 03:58 .
+drwxr-xr-x 8 rimuru rimuru 4096 Sep 28 03:44 ..
+-rw-r--r-- 1 rimuru rimuru 1953 Sep 28 03:58 intervals.py
+drwxr-xr-x 2 rimuru rimuru 4096 Sep 28 03:58 __pycache__
+drwxr-xr-x 3 rimuru rimuru 4096 Sep 28 03:58 .pytest_cache
+-rw-r--r-- 1 rimuru rimuru 1346 Sep 28 03:44 test_intervals.py

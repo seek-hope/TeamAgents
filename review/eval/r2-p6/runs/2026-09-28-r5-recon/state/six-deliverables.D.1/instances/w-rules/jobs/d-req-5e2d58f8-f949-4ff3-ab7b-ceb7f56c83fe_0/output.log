@@ -1,0 +1,12 @@
+{'all': []} -> True OK
+{'any': []} -> False OK
+{'all': ['missing']} -> False OK
+{'any': ['missing']} -> False OK
+{'all': ['a', 'n']} -> False OK
+{'any': ['n', 's']} -> True OK
+{'all': ['a'], 'any': ['b']} -> False OK
+{'all': ['a'], 'any': ['a', 'b']} -> True OK
+{'nope': ['a']} -> ValueError : unknown rule key(s): ["'nope'"]; expected one of 'all', 'any'
+{} -> ValueError : empty rule: expected 'all' and/or 'any'
+{'all': 'a'} -> TypeError : rule 'all' must map to a sequence of fact names, got 'str'
+{'all': ['a'], 'any': ['a'], 'x': []} -> ValueError : unknown rule key(s): ["'x'"]; expected one of 'all', 'any'

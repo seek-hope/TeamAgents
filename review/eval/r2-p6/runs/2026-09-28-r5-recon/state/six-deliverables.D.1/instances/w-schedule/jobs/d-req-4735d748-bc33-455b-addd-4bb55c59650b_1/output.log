@@ -1,0 +1,12 @@
+empty        -> []
+single       -> [(0, 10)]
+gap==minutes -> [(0, 10), (20, 30)]
+gap<minutes  -> [(0, 30)]
+gap>minutes  -> [(0, 10), (21, 30)]
+unsorted     -> [(0, 90), (120, 150)]
+nested       -> [(0, 100)]
+touching     -> False
+overlap      -> True
+disjoint     -> False
+nested olap  -> True
+types        -> bool bool

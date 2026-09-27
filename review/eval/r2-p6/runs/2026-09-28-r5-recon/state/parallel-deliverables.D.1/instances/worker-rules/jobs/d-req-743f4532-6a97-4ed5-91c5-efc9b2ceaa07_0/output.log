@@ -1,0 +1,9 @@
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r5-recon/work/parallel-deliverables.D.1
+4c425638c58c34872b0800f5fe19092c011785e123c15a1c69e2e99d762a5af8  rules/test_rules.py
+93678abedea97e019052d82c6755513eac1d73c3c726a4aa37d20c136411fed3  rules/engine.py
+ M review/eval/r2-p6/freeze.py
+ M review/eval/r2-p6/run.py
+?? review/eval/r2-p6/manifest-r5-recon.json
+?? review/eval/r2-p6/runs/2026-09-28-r5-recon/
+?? review/eval/r2-p6/tasks/six-deliverables/
+?? review/eval/r2-p6/tasks/six-mixed/

@@ -278,7 +278,7 @@ pub fn collaboration_tool_schemas(actions: &[&str]) -> Vec<Json> {
                 "type": "function",
                 "function": {
                     "name": DELEGATE_TOOL,
-                    "description": "Delegate a task to another instance with a narrow return path: the assignee can settle exactly this task back to you, nothing more. The task is charged to the delegating instance's active goal, which must still be open — create a new goal first when the previous one is settled. To be woken by its outcome, wait on {kind:'task',task_id:'<id>'}: the settlement arrives as a task result, not as a chat message.",
+                    "description": "Delegate a task to another instance with a narrow return path: the assignee can settle exactly this task back to you, nothing more. The task is charged to the delegating instance's active goal, which must still be open — create a new goal first when the previous one is settled. To be woken by its outcome, wait on {kind:'task',task_id:'<id>'} **with timer_seconds set**: the settlement arrives as a task result, not as a chat message, and an assignee that ends its turn without settling produces no result at all.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -314,7 +314,7 @@ pub fn collaboration_tool_schemas(actions: &[&str]) -> Vec<Json> {
                 "type": "function",
                 "function": {
                     "name": WAIT_TOOL,
-                    "description": "Park this instance until the conditions hold or the timer fires. Must be the only tool call in this response. Conditions: {kind:'message',from?:'<instance>'} — a chat message from that instance (any sender when omitted) has been applied; a delegated task's outcome is a task result, not a chat message, and never satisfies this. {kind:'task',task_id:'<id>'} — that task reached SUCCEEDED, FAILED or CANCELLED; name this one for work you delegated. A task the assignee settled BLOCKED does not satisfy it. {kind:'operation',operation_id:'<id>'}, {kind:'envelope',envelope_id:'<id>'}.",
+                    "description": "Park this instance until the conditions hold or the timer fires. Must be the only tool call in this response. Conditions: {kind:'message',from?:'<instance>'} — a chat message from that instance (any sender when omitted) has been applied; a delegated task's outcome is a task result, not a chat message, and never satisfies this. {kind:'task',task_id:'<id>'} — that task reached SUCCEEDED, FAILED or CANCELLED; name this one for work you delegated. A task the assignee settled BLOCKED does not satisfy it. {kind:'operation',operation_id:'<id>'}, {kind:'envelope',envelope_id:'<id>'}. Always set timer_seconds when you wait for delegated work: an assignee that ends its turn without settling leaves the task open, no fact will satisfy the condition, and the timer is then the only wake you get. Re-check the task statuses when it fires and settle only what really holds.",
                     "parameters": {
                         "type": "object",
                         "properties": {

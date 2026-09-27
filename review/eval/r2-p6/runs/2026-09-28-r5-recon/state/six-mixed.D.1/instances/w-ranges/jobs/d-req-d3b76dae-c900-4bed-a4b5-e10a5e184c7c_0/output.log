@@ -1,0 +1,7 @@
+total 16
+drwxr-xr-x 2 rimuru rimuru 4096 Sep 28 03:46 .
+drwxr-xr-x 8 rimuru rimuru 4096 Sep 28 03:46 ..
+-rw-r--r-- 1 rimuru rimuru   84 Sep 28 03:46 ranges.py
+-rw-r--r-- 1 rimuru rimuru  178 Sep 28 03:46 test_ranges.py
+./ranges.py
+./test_ranges.py

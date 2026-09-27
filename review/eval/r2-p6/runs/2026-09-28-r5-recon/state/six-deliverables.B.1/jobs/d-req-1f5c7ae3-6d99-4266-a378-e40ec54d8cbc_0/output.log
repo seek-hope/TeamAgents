@@ -1,0 +1,15 @@
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r5-recon/work/six-deliverables.B.1
+csvfix     2 passed in 0.01s
+rules      1 passed in 0.01s
+ledger     2 passed in 0.01s
+schedule   2 passed in 0.01s
+intervals  7 passed in 0.03s
+flags      8 passed in 0.01s
+--- artifacts ---
+REPORT.md
+units/csvfix/impl.py
+units/flags/flags.py
+units/intervals/intervals.py
+units/ledger/ledger.py
+units/rules/engine.py
+units/schedule/schedule.py

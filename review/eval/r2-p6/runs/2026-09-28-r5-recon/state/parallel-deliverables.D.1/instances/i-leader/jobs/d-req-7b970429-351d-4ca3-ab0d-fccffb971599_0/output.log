@@ -1,0 +1,19 @@
+=== csvfix ===
+..                                                                       [100%]
+2 passed in 0.01s
+exit=0
+=== rules ===
+.                                                                        [100%]
+1 passed in 0.01s
+exit=0
+=== files ===
+csvfix:
+impl.py
+__pycache__
+test_csvfix.py
+
+rules:
+engine.py
+__pycache__
+test_rules.py
+INDEX.md

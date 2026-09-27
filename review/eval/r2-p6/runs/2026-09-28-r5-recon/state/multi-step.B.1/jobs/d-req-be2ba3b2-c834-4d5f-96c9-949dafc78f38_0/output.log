@@ -1,0 +1,14 @@
+/bin/bash: line 28: cd: alpha: No such file or directory
+---ALPHA EXIT 1---
+beta ok
+---BETA EXIT 0---
+=== files ===
+def add(a, b):
+    return a + b
+def mul(a, b):
+    return a * b
+=== md5 ===
+4391d9cc813f85ff330ee11e11b65d9c  alpha/check.py
+06cc59c6d133cff5257db0975d5b6817  alpha/alpha.py
+35422f37953fbf37963d3672f88eae31  beta/check.py
+5504ff690518a8dfdb9e4a62b180a206  beta/beta.py

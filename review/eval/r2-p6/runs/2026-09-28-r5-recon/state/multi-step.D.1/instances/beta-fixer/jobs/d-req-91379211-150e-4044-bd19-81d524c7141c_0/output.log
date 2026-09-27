@@ -1,0 +1,6 @@
+def mul(a, b):
+    return a * b
+--- check.py (untouched) ---
+import beta
+assert beta.mul(3, 4) == 12, beta.mul(3, 4)
+print("beta ok")

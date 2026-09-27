@@ -1,0 +1,12 @@
+['--k=v'] -> {'values': {'k': ['v']}, 'flags': {}, 'positional': []}
+['--k', 'v'] -> {'values': {'k': ['v']}, 'flags': {}, 'positional': []}
+['--k', '--j'] -> {'values': {}, 'flags': {'k': True, 'j': True}, 'positional': []}
+['-abc'] -> {'values': {}, 'flags': {'a': True, 'b': True, 'c': True}, 'positional': []}
+['-'] -> {'values': {}, 'flags': {}, 'positional': ['-']}
+['a', '-', 'b'] -> {'values': {}, 'flags': {}, 'positional': ['a', '-', 'b']}
+['--', '--x', 'y'] -> {'values': {}, 'flags': {}, 'positional': ['--x', 'y']}
+['--k', '1', '--k', '2'] -> {'values': {'k': ['1', '2']}, 'flags': {}, 'positional': []}
+['--x', 'y', '--x'] -> {'values': {'x': ['y']}, 'flags': {'x': True}, 'positional': []}
+['--k', '-5'] -> {'values': {'k': ['-5']}, 'flags': {}, 'positional': []}
+['--k=--v'] -> {'values': {'k': ['--v']}, 'flags': {}, 'positional': []}
+['--k='] -> {'values': {'k': ['']}, 'flags': {}, 'positional': []}

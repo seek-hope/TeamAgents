@@ -1,0 +1,10 @@
+--- alpha.py ---
+def add(a, b):
+    return a + b
+--- check.py (unmodified) ---
+import alpha
+assert alpha.add(2, 3) == 5, alpha.add(2, 3)
+print("alpha ok")
+--- sha256 ---
+ba1a531f581d2e6094e978ed6f7aca7a8d92eeb62c6e7ad73ee692f7f18bc772  alpha.py
+8f30e265cbfa6ae5fdcf42d313033cd960d83bd1d7cd7f8f7ba3ca09eb289dd4  check.py

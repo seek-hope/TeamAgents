@@ -354,6 +354,10 @@ mod tests {
         }
         assert!(wait.contains("task result, not a chat message"), "the wait must separate the two kinds: {wait}");
         assert!(wait.contains("BLOCKED does not satisfy"), "a reported block is not a wake: {wait}");
+        // D-257: a delegator parked on a task an idle member never settles needs the timer's guidance
+        for (name, text) in [(WAIT_TOOL, &wait), (DELEGATE_TOOL, &delegate)] {
+            assert!(text.contains("timer_seconds"), "{name} must tell a delegator to set the timer: {text}");
+        }
     }
 
     #[test]

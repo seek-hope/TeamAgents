@@ -1,0 +1,6 @@
+1.5m-> 150 int
+3cm-> 3
+20mm-> 2
+ft raises ValueError: unknown unit: 'ft'
+slug: 'hello-world' 'a-b' 'untitled'
+slug unicode: 'caf-d-j-vu-42'

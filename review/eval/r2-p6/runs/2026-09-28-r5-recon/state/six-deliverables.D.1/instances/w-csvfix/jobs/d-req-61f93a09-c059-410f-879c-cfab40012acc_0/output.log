@@ -1,0 +1,21 @@
+total 24
+drwxr-xr-x 4 rimuru rimuru 4096 Sep 28 03:58 .
+drwxr-xr-x 8 rimuru rimuru 4096 Sep 28 03:44 ..
+-rw-r--r-- 1 rimuru rimuru 3908 Sep 28 03:58 impl.py
+drwxr-xr-x 2 rimuru rimuru 4096 Sep 28 03:58 __pycache__
+drwxr-xr-x 3 rimuru rimuru 4096 Sep 28 03:58 .pytest_cache
+-rw-r--r-- 1 rimuru rimuru  302 Sep 24 15:32 test_csvfix.py
+--- test_csvfix.py (unmodified) ---
+import impl
+
+def test_parse_trims_and_validates():
+    assert impl.parse(' a , 2 , x ') == ["a", "2", "x"]
+    assert impl.parse('a,2') is None  # 列数不是 3 时返回 None
+
+def test_total_skips_blank_and_reports_bad():
+    rows = [["a", "1", "2"], ["b", "2", ""]]
+    assert impl.total(rows) == 2
+=== FINAL RUN ===
+..                                                                       [100%]
+2 passed in 0.02s
+EXIT=0

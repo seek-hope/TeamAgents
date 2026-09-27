@@ -1,0 +1,2 @@
+/bin/bash: line 28: cd: units/alpha: No such file or directory
+ALPHA_EXIT=1
