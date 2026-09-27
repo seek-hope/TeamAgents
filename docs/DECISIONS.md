@@ -65,6 +65,27 @@ sweep's job, and its next boot does it), and it does not decide the release poli
 collect across sessions at once — the loop exists because `artifact_gc_claim` is session-scoped, and A33 means
 the loop runs once; the code keeps the general shape rather than assuming it.
 
+### D-253, the read half: a census must never under-report (same day)
+
+The first version had the census open the store **read-only** and claimed "a root this process cannot write still
+lists". Running it exposed two defects, both fixed in a follow-up rather than left in the entry:
+
+* **a leftover shared-memory file made the reader answer stale** — measured on a real fixture: the same root read
+  its artifact with the `-shm` present and reported **zero** artifacts, with *no error*, without it. A census
+  that silently under-reports is worse than one that fails, so `store::open_read_only` probes the log
+  (`<db>-shm` must be openable, or the refusal names the shape and the fix — "open the root once with a session,
+  or copy it somewhere writable") and `artifacts list` tries the **ordinary** open first, falling back to the
+  read-only one only for a root this process cannot write.
+* **the read-only path's real limit is SQLite's, not ours**: a write-ahead-log database cannot be read read-only
+  without that file, and an unwritable directory cannot create it. The claim in the paragraph above is narrowed
+  accordingly: a root this process cannot write is read when the log can be attached and **refused by name** when
+  it cannot — the verb never answers "nothing here" for a root it could not read.
+
+Measured after the fix: `cli::artifacts_census_and_gc_free_what_nothing_references` (three consecutive runs, the
+fixture's permissions restored before every assertion so a failure cannot leave an unremovable directory) and
+`store::tests::a_read_only_open_reads_a_foreign_or_old_root_without_touching_it` — which also pins the bytes: a
+read-only open does not migrate a stamped-older root, and a write on it is refused.
+
 ## D-252 `instances merge`: a worktree member's branch, brought into the session's tree (2026-09-27)
 
 ACCEPTANCE's known gap: `workspace::merge_branch` and `workspace::member_worktrees` (deleted with this decision

@@ -7,7 +7,7 @@
 use super::models::{V2_FORMAT_ID, V2_SCHEMA_VERSION};
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::{json, Value as Json};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -285,6 +285,60 @@ pub fn open(path: &Path, create: bool) -> Result<Connection, String> {
     Ok(conn)
 }
 
+/// Open a v2 session database **read-only** (D-253): the same identity check — a foreign, unstamped or
+/// wrong-format file is refused — but nothing is written. Not the stamp, not the pragmas (WAL, `synchronous`,
+/// `foreign_keys` are a *writer's* settings, A34), no migration and no schema verification.
+///
+/// It exists because a reader must work where this process cannot write: an `EVIDENCE`-marked root on read-only
+/// media, another user's root, or — the case that produced it — a state root whose schema predates this build,
+/// where `open` would migrate (a write) as a side effect of *reading*. `teamagents artifacts [list]` is the
+/// first caller. The version is not migrated here; a reader that needs the current schema must say so, and a
+/// writer (`gc`) uses `open`, which migrates the way a session's own boot does.
+pub fn open_read_only(path: &Path) -> Result<Connection, String> {
+    // A write-ahead-log database cannot be read read-only without its shared-memory file: SQLite has to be able
+    // to open (or create) `<db>-shm`. Probing it here is what turns an unhelpful `attempt to write a readonly
+    // database` into a named refusal — measured on a WAL-mode root whose directory was not writable and whose shm
+    // was gone, which is exactly the read-only-media case this open exists for, and (the other direction) on a
+    // root where a leftover shm made the reader answer **stale** — zero artifacts and no error at all. A silent
+    // under-report is the one answer this must never give.
+    let shm = PathBuf::from(format!("{}-shm", path.display()));
+    let probed = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(&shm).is_ok();
+    if !probed {
+        return Err(format!(
+            "{}: this root is in write-ahead-log mode and its shared-memory file ({}) is missing and cannot be \
+             created here, so a read-only open cannot attach the log; open the root once with a session (which \
+             creates it), or copy it somewhere writable, and read again",
+            path.display(),
+            shm.display()
+        ));
+    }
+    let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|e| format!("open {}: {e}", path.display()))?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))
+        .map_err(|e| format!("{}: busy_timeout: {e}", path.display()))?;
+    let has_meta = conn
+        .query_row("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'meta'", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .map_err(|e| format!("inspect {}: {e}", path.display()))?
+        > 0;
+    if !has_meta {
+        return Err(format!("{} is not a v2 session database (no format stamp)", path.display()));
+    }
+    let format: Option<String> = conn
+        .query_row("SELECT value FROM meta WHERE key = 'format_id'", [], |row| row.get(0))
+        .optional()
+        .map_err(|e| format!("read meta: {e}"))?;
+    match format.as_deref() {
+        Some(found) if found == V2_FORMAT_ID => Ok(conn),
+        Some(found) => Err(format!(
+            "{} has format {found:?}, expected {V2_FORMAT_ID:?}; refusing to reinterpret state",
+            path.display()
+        )),
+        None => Err(format!("{} is not a v2 session database (no format stamp)", path.display())),
+    }
+}
+
 /// The store's own durability settings. Applied only to a database this session
 /// owns: they are the settings a *write* needs, and switching a foreign file to
 /// WAL is a write (A34).
@@ -418,6 +472,70 @@ fn rewrite_closing_notes(tx: &rusqlite::Transaction) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// D-253: a read-only open refuses what `open` refuses and **writes nothing** — a reader must not migrate a
+    /// state root. The case that produced it: `artifacts list` against a root whose schema predates this build
+    /// attempted the migration inside a *read* and failed wherever the process could not write, which is exactly the
+    /// read-only (or read-only-media `EVIDENCE`) root a reader has to serve.
+    #[test]
+    fn a_read_only_open_reads_a_foreign_or_old_root_without_touching_it() {
+        use super::{open, open_read_only};
+        use crate::v2::models::V2_FORMAT_ID;
+        // a leftover from a failed run of this same test would be a *stamped* store, and the setup below has to
+        // start from nothing
+        let dir = std::env::temp_dir().join(format!("ta-store-readonly-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session.sqlite");
+        {
+            let conn = open(&path, true).unwrap();
+            // a stamp from an older build: a writable open would migrate it (that is the reader's hazard)
+            conn.execute("UPDATE meta SET value = '1' WHERE key = 'schema_version'", []).unwrap();
+        }
+        let before = std::fs::read(&path).unwrap();
+        let reader = open_read_only(&path).unwrap();
+        let seen: String =
+            reader.query_row("SELECT value FROM meta WHERE key = 'schema_version'", [], |row| row.get(0)).unwrap();
+        assert_eq!(seen, "1", "a read-only open must not migrate");
+        // the identity check still runs, and a write on it is refused rather than silently allowed
+        assert!(reader.execute("UPDATE meta SET value = '9' WHERE key = 'schema_version'", []).is_err());
+        drop(reader);
+        assert_eq!(std::fs::read(&path).unwrap(), before, "a read changed the store's bytes");
+        // it never creates a database: a missing path stays missing
+        let missing = dir.join("absent.sqlite");
+        assert!(open_read_only(&missing).is_err());
+        assert!(!missing.exists(), "a read-only open must not create anything");
+        // a file that is not ours is refused, read-only included
+        let foreign = dir.join("foreign.sqlite");
+        {
+            let conn = rusqlite::Connection::open(&foreign).unwrap();
+            conn.execute_batch("CREATE TABLE someone_elses (id INTEGER)").unwrap();
+        }
+        assert!(open_read_only(&foreign).is_err(), "an unstamped file is not a v2 store");
+        let wrong_format = dir.join("wrong.sqlite");
+        {
+            let conn = open(&wrong_format, true).unwrap();
+            conn.execute("UPDATE meta SET value = 'not-ours' WHERE key = 'format_id'", []).unwrap();
+        }
+        let refused = open_read_only(&wrong_format).expect_err("a foreign format is refused");
+        assert!(refused.contains("refusing to reinterpret state"), "{refused}");
+        // a write-ahead log with commits and no shared-memory file: a read-only open would answer *stale* (the
+        // measured shape: zero artifacts, no error), so it refuses and names the fix instead
+        let stale = dir.join("stale.sqlite");
+        {
+            let conn = open(&stale, true).unwrap();
+            conn.execute("UPDATE meta SET value = '1' WHERE key = 'schema_version'", []).unwrap();
+        }
+        let _ = std::fs::remove_file(format!("{}-shm", stale.display()));
+        let unwritable = std::fs::metadata(&dir).unwrap().permissions();
+        std::fs::set_permissions(&dir, std::os::unix::fs::PermissionsExt::from_mode(0o555)).unwrap();
+        let refused = open_read_only(&stale).expect_err("no attachable shm in an unwritable root: refuse");
+        assert!(refused.contains("shared-memory"), "{refused}");
+        assert!(refused.contains("writable"), "the refusal names the fix: {refused}");
+        std::fs::set_permissions(&dir, unwritable).unwrap();
+        let _ = V2_FORMAT_ID;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn path(tag: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("teamagents-v2-store-{tag}-{}.db", uuid::Uuid::new_v4()))

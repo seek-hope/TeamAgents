@@ -19,6 +19,14 @@
 //! and a driver can never write together; a held lock is answered with the levers the user has (stop the session
 //! with `daemon --stop`, D-248 — its next boot sweeps anyway, or run this then).
 //!
+//! **The census reads what the root really holds.** It opens the store the ordinary way first (the same open a
+//! session's boot and `doctor` use), because a read-only open of a write-ahead-log database depends on its
+//! shared-memory file: measured while wiring this, a leftover `-shm` made a read-only reader answer **zero**
+//! artifacts with no error at all, and an unwritable directory with no `-shm` made SQLite answer an unhelpful
+//! "attempt to write a readonly database". Only a root this process cannot write falls back to
+//! `store::open_read_only`, which probes the log and refuses *by name* when it cannot attach it — a silent
+//! under-report is the one answer a census must never give.
+//!
 //! **What it does not do, measured 2026-09-28**: it does not invent a *release* policy. Both places that stage an
 //! artifact write an `owner_ref` (`driver.rs`: a model response's request, a tool output's operation), nothing
 //! ever clears it, and the reference clauses in `artifact_gc_claim` ask for `owner_ref IS NULL` — so a real
@@ -136,7 +144,7 @@ pub fn execute(options: &ArtifactsOptions) -> Result<Json, (i32, String)> {
         }
     };
     // The session id is the store's own (a read is session-agnostic; the claim command is scoped to it).
-    let reader = open(&db)?;
+    let reader = open(&db, !listing)?;
     let (sessions, rows) = census(&reader).map_err(|error| (2, error))?;
     drop(reader);
     let on_disk: Vec<Json> = rows
@@ -167,9 +175,33 @@ pub fn execute(options: &ArtifactsOptions) -> Result<Json, (i32, String)> {
     }))
 }
 
-fn open(db: &Path) -> Result<teamagents_core::v2::Control, (i32, String)> {
-    teamagents_core::v2::Control::open(db, "maintenance", false)
-        .map_err(|error| (2, format!("artifacts: {}: {error}", db.display())))
+/// Open the store for the census (D-253).
+///
+/// The normal, writable open comes first — the same one `doctor` and a session's boot use, which is what makes a
+/// read see every committed row (a *read-only* open of a write-ahead-log database depends on the shared-memory
+/// file, and a leftover one can answer a stale view; measured while wiring this). Only a root this process
+/// cannot write falls back to `store::open_read_only`, which refuses when it cannot be trusted (`a WAL with
+/// commits and no shm`). `gc` always opens writable: a sweep that has to migrate a root migrates it the way the
+/// product does.
+fn open(db: &Path, writable: bool) -> Result<teamagents_core::v2::Control, (i32, String)> {
+    if writable {
+        return teamagents_core::v2::Control::open(db, "maintenance", false)
+            .map_err(|error| (2, format!("artifacts: {}: {error}", db.display())));
+    }
+    match teamagents_core::v2::Control::open(db, "maintenance", false) {
+        Ok(control) => Ok(control),
+        Err(writable_error) => {
+            teamagents_core::v2::Control::open_read_only(db, "maintenance").map_err(|read_only_error| {
+                (
+                    2,
+                    format!(
+                        "artifacts: {}: {read_only_error}\n(an ordinary open failed too: {writable_error})",
+                        db.display()
+                    ),
+                )
+            })
+        }
+    }
 }
 
 /// §4.3's collection, exactly as a driver's boot runs it: claim (one transaction), delete the bytes (outside it),

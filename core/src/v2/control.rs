@@ -58,6 +58,13 @@ impl Control {
         &self.conn
     }
 
+    /// A **read-only** connection (D-253): see `store::open_read_only`. A reader that must not write — not the
+    /// stamp, not the pragmas, no migration — uses this; `submit` on it fails like any write on a read-only
+    /// database, which is the point.
+    pub fn open_read_only(path: &Path, session_id: &str) -> Result<Control, String> {
+        Ok(Control { conn: store::open_read_only(path)?, session_id: session_id.to_string() })
+    }
+
     /// The single entry point. Duplicate command ids return the stored
     /// receipt; the same id with a different payload is rejected (§6.3).
     pub fn submit(&mut self, command: Command, identity: Identity) -> Result<Json, String> {

@@ -2495,6 +2495,26 @@ fn artifacts_census_and_gc_free_what_nothing_references() {
     assert_eq!(listed["bytes"], json!(4096), "{listed}");
     assert_eq!(listed["artifacts"][0]["owner_ref"], json!(null), "{listed}");
     assert_eq!(listed["artifacts"][0]["bytes_present"], json!(true), "{listed}");
+    // D-253's second half: a *read* verb must not need write access. A root this process cannot write (an
+    // `EVIDENCE` root on read-only media, a root another user owns) still lists — the census opens the store
+    // read-only — while the sweep says what it cannot do instead of pretending.
+    // (the *directory* is what cannot be written: a WAL writer has to be able to create the side files, which is
+    // the shape the sandbox produced when this was first run by hand)
+    use std::os::unix::fs::PermissionsExt;
+    // A root this process cannot write: no shared-memory file (removed here, so the fixture is deterministic) and
+    // a directory that forbids creating one — the state SQLite cannot attach a write-ahead log from, which is why
+    // the refusal is a *named* one instead of SQLite's raw "attempt to write a readonly database".
+    let _ = std::fs::remove_file(state.join("session.sqlite-wal"));
+    let _ = std::fs::remove_file(state.join("session.sqlite-shm"));
+    std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let listed = call("list");
+    let swept = call("gc");
+    // restore *before* asserting: a failing assertion must not leave a directory nothing can remove
+    std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_ne!(listed.0, Some(0), "an unattachable log is refused, not under-reported: {listed:?}");
+    assert!(listed.2.contains("shared-memory"), "the census refusal names the shape: {listed:?}");
+    assert_ne!(swept.0, Some(0), "a sweep cannot run where the root cannot be written: {swept:?}");
+
     // a live session owns the state root: the sweep refuses and names the levers
     let held = teamagents_engine::jobs::state_lock(&state.join("coordinator.lock")).expect("take the lock");
     let (code, out, err) = call("gc");
