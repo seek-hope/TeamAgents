@@ -18,6 +18,40 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-196 The default target's own text had drifted, and six targets were not even declared (2026-09-27)
+
+`make` with no arguments prints the `help` target (`.DEFAULT_GOAL := help`), so that text is the first thing a
+contributor reads. Measured 2026-09-27: the Makefile had **twenty** targets and the help named **nine** — and the
+missing ones were not trivia: `hygiene` (which runs the thirty audits), `lint`, `test`, `fmt-check`, and the whole
+`verify-*` family that carries the formal verification (six targets). Six of those targets were also absent from
+`.PHONY`, which is the quieter defect: they are recipes, not files, so a file named `verify-kani` in the tree
+would make `make verify-kani` answer "up to date" and run nothing — the target that produces the Kani evidence
+could be skipped in silence.
+
+**Changed**: `.PHONY` declares all twenty targets (the six `verify-*` ones joined it) and `make help` names every
+one of them, with a line each for the verification family (`verify-tools`, `verify-model`, `verify-model-all`,
+`verify-model-counterexamples`, `verify-model-wide`, `verify-kani`) — so the default goal now tells a contributor
+that the formal layer exists and how to run it.
+
+**Guarded** (`review/build_references.py`, in `make hygiene`): for a surface whose name contains `Makefile`,
+every `.PHONY` target except `help` itself must be named by a `help` echo line, and every name the help prints
+must be a `.PHONY` target; a Makefile surface with no `.PHONY` at all is a finding, because then neither half can
+be checked and a target can still be shadowed by a file. Writing the check taught its own lesson immediately: the
+first version read only the first line of `.PHONY` and reported the continuation marker `\` as a target the help
+did not name — the multi-line form is joined now, and the docstring records it.
+
+**Measured** (2026-09-27): the audit reports "38 script reference(s) across 3 surface(s): every one exists and is
+tracked" and "the Makefile's 20 `.PHONY` target(s) and its help text name each other". Controls, each on a copy:
+dropping `hygiene` from `.PHONY` fails with "`make help` names `hygiene`, which is not a `.PHONY` target";
+dropping its help line fails with "`hygiene` is a target `.PHONY` declares and `make help` (the default goal)
+does not name"; deleting `.PHONY` fails with "declares no `.PHONY` targets"; adding a `make deploy` help line
+fails with "names `deploy`, which is not a `.PHONY` target".
+
+Ceiling: the check reads the help's `@echo` lines and the `.PHONY` declaration, not whether a target's
+*description* is true, and it applies to a surface whose file name contains `Makefile` — a renamed one is caught
+by the audit's own "no such surface to read" finding instead, which is why the default surface list keeps
+`Makefile` first.
+
 ## D-195 The user's decision queue had fallen three entries behind (2026-09-27)
 
 Every turn of this campaign ends with the decision queue for the user, and its authoritative copies are

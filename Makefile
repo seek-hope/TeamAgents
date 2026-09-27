@@ -3,7 +3,9 @@
 CRATES := core engine tui
 CARGO_FLAGS ?= --offline --locked
 
-.PHONY: help check fmt fmt-check lint test build pty probe-offline probe-models hygiene language-check check-nobwrap check-broken-sandbox
+.PHONY: help check fmt fmt-check lint test build pty probe-offline probe-models hygiene language-check \
+        check-nobwrap check-broken-sandbox verify-tools verify-model verify-model-all \
+        verify-model-counterexamples verify-model-wide verify-kani
 
 help:
 	@echo 'make check     format, Clippy, regression tests and repository hygiene (offline by default)'
@@ -15,6 +17,16 @@ help:
 	@echo 'make probe-offline  the credential-free dogfood probes: the real product, no model, no credential'
 	@echo 'make probe-models   the model-requiring probes: every live half, one after another (~7 min)'
 	@echo 'make language-check  reject non-English characters in code and docs (AGENTS.md rule)'
+	@echo 'make fmt-check  the formatting check alone (what make check runs)'
+	@echo 'make lint      Clippy on all targets, warnings as errors'
+	@echo 'make test      the three crate suites under the leak guard, plus the ledger check'
+	@echo 'make hygiene   the audits and the generated-document checks (make check runs it too)'
+	@echo 'make verify-tools  fetch the pinned TLC jar (the verify targets do this themselves)'
+	@echo 'make verify-model  the small control-plane configuration in TLC (~seconds)'
+	@echo 'make verify-model-all  every TLA+ configuration, exhaustively (~4 min; verification/README.md)'
+	@echo 'make verify-model-counterexamples  the negative controls, every one of which must be refuted'
+	@echo 'make verify-model-wide  the wide control-plane configuration (slow, best effort)'
+	@echo 'make verify-kani  the Kani proofs of the paging arithmetic'
 	@echo 'first run with downloads: make check CARGO_FLAGS=--locked'
 
 check: fmt-check lint test hygiene

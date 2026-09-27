@@ -61,7 +61,7 @@ audits — each one a claim the tree makes about itself, each with the decision 
   the `toml` blocks of the three user-facing documents name a key the loader does not accept, or one it refuses.
 * **the build and its evidence**: `review/build_references.py` fails a script a `Makefile` target or a
   workflow runs that does not exist or that git does not carry — how a new audit stays untracked through a
-  `git commit -a` (D-179); `review/hygiene_catalogue.py` fails a script the build runs that this page does not name (D-184) **and** a root-level `review/*.py` that no target runs unless it is listed in that audit's `HAND_RUN` with its reason (D-194: `review/config_keys.py`, the detector behind four findings, was in that position until D-193); `review/eval_manifests.py` holds the frozen evaluation manifests against the tree
+  `git commit -a` (D-179), and since D-196 the same audit keeps the Makefile's `.PHONY` targets and its `make help` text naming each other (the help is the default goal); `review/hygiene_catalogue.py` fails a script the build runs that this page does not name (D-184) **and** a root-level `review/*.py` that no target runs unless it is listed in that audit's `HAND_RUN` with its reason (D-194: `review/config_keys.py`, the detector behind four findings, was in that position until D-193); `review/eval_manifests.py` holds the frozen evaluation manifests against the tree
   (D-145); `review/eval_surface.py` holds the evaluation's model-visible surface against those manifests, the
   harness's history and the recorded trials (D-182); `review/dogfood/probes.py --self-check` checks the probe
   harness's own rules (its selection, budgets, the stray guard and the no-kill-by-pattern rule);
