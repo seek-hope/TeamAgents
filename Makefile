@@ -111,10 +111,10 @@ verify-model: verify-tools
 
 # small exhaustive configurations for every module (seconds; the wide config is verify-model-wide)
 verify-model-all: verify-tools
-	@cd verification/tla && for cfg in MC.cfg MC_control_two.cfg MC_artifact.cfg MC_wait.cfg MC_task.cfg MC_compress.cfg MC_daemon.cfg MC_checks.cfg MC_grants.cfg MC_authority.cfg MC_store.cfg; do \
+	@cd verification/tla && for cfg in MC.cfg MC_control_two.cfg MC_artifact.cfg MC_wait.cfg MC_task.cfg MC_compress.cfg MC_daemon.cfg MC_checks.cfg MC_grants.cfg MC_authority.cfg MC_store.cfg MC_retention.cfg; do \
 		echo "== $$cfg =="; \
 		out=$$(java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
-			tlc2.TLC -config $$cfg -fp 64 -workers 4 $$(case $$cfg in MC.cfg|MC_control_two.cfg) echo V2Control.tla;; MC_wait.cfg) echo V2Wait.tla;; MC_task.cfg) echo V2Task.tla;; MC_compress.cfg) echo V2Compress.tla;; MC_daemon.cfg) echo V2Daemon.tla;; MC_checks.cfg) echo V2Checks.tla;; MC_grants.cfg) echo V2Grants.tla;; MC_authority.cfg) echo V2Authority.tla;; MC_store.cfg) echo V2Store.tla;; *) echo V2Artifact.tla;; esac) 2>&1); \
+			tlc2.TLC -config $$cfg -fp 64 -workers 4 $$(case $$cfg in MC.cfg|MC_control_two.cfg) echo V2Control.tla;; MC_wait.cfg) echo V2Wait.tla;; MC_task.cfg) echo V2Task.tla;; MC_compress.cfg) echo V2Compress.tla;; MC_daemon.cfg) echo V2Daemon.tla;; MC_checks.cfg) echo V2Checks.tla;; MC_grants.cfg) echo V2Grants.tla;; MC_authority.cfg) echo V2Authority.tla;; MC_store.cfg) echo V2Store.tla;; MC_retention.cfg) echo V2Retention.tla;; *) echo V2Artifact.tla;; esac) 2>&1); \
 		echo "$$out" | grep -E "No error|violation|violated|states generated"; \
 		printf '%s' "$$out" | grep -q "No error has been found" || { \
 			echo "$$cfg did not verify (see above)" >&2; exit 1; }; \
@@ -129,7 +129,9 @@ verify-model-counterexamples: verify-tools
 		MC_authority_stalesurface.cfg:V2Authority.tla MC_control_midturninput.cfg:V2Control.tla \
 		MC_control_two_disjunction.cfg:V2Control.tla MC_control_deadline.cfg:V2Control.tla \
 		MC_control_reask.cfg:V2Control.tla MC_control_runtimeTail.cfg:V2Control.tla \
-		MC_control_landing.cfg:V2Control.tla MC_store_adopt.cfg:V2Store.tla; do \
+		MC_control_landing.cfg:V2Control.tla MC_store_adopt.cfg:V2Store.tla \
+		MC_retention_evicts_live.cfg:V2Retention.tla MC_retention_evicts_evidence.cfg:V2Retention.tla \
+		MC_retention_evicts_young.cfg:V2Retention.tla MC_retention_runs_disabled.cfg:V2Retention.tla; do \
 		cfg=$${pair%%:*}; spec=$${pair##*:}; \
 		echo "== $$cfg (must be refuted) =="; \
 		out=$$(java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \

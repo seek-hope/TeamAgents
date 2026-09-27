@@ -7,17 +7,18 @@ in [README.md](README.md); the fix ledger is in
 
 ## 0. Gate status (re-run 2026-09-27 at `f521fd4f`)
 
-* `make verify-model-all` was re-run on this tree: all **11** configurations report `No error has been found`,
-  in 3 m 55 s. The largest is **`MC_task.cfg`** with 5,721,401 states generated / 606,904 distinct; `MC.cfg`
+* `make verify-model-all` was re-run on this tree: all **12** configurations report `No error has been found`,
+  in 4 m 3 s (the twelfth is the retention rule, D-192). The largest is **`MC_task.cfg`** with 5,721,401 states generated / 606,904 distinct; `MC.cfg`
   itself generates 84,877 / 18,384, and the smallest, `MC_store.cfg`, 48 / 13. Every count is identical to the
   previous run on the same tree — what a deterministic checker on unchanged inputs should print, and the
   reason these numbers describe the *material*, not a machine. (The line once called `MC.cfg` the largest and
   quoted `MC_task`'s numbers for it — a mis-attribution no gate looked at, found by re-running the target and
   reading its output per configuration, D-159.)
-* `make verify-model-counterexamples` was re-run: all **10** negative controls are refuted, each naming its
+* `make verify-model-counterexamples` was re-run: all **14** negative controls are refuted, each naming its
   property (`AuthorizedEffectsOnly`, `InputLandsAtTheBoundary`, `NoRequestAfterDeadline`, `NoTurnWithoutWork`
-  twice, `SettlementFollowsATurnAfterTheLanding`, `NoForeignAdoption`, and three temporal refutations), in
-  1 m 22 s.
+  twice, `SettlementFollowsATurnAfterTheLanding`, `NoForeignAdoption`, three temporal refutations, and the
+  four retention guards: `NoReferenceToEvictedFact`, `EvidenceIsNeverEvicted` and `OnlyOldFactsAreEvicted`
+  twice), in 1 m 31 s.
 * The wall clocks above are upper bounds, not machine-independent figures: they were measured while this
   machine carried a load average of about 25-31 on 20 cores (the standing host-cleanup item), and TLC is
   CPU-bound. The probe in A32 now records the same conditions next to its numbers for the same reason (D-188).
@@ -44,10 +45,12 @@ in [README.md](README.md); the fix ledger is in
 
 **What can be claimed**:
 
-- The safety properties of ten protocol surfaces (control plane, artifacts/GC, waits/wakeups,
-  tasks/delegation/goal settlement, compression, the daemon protocol, the required checks, the authority layer,
-  the user's authority surface and session-store identity) hold under exhaustive TLC checking of the
-  **abstract model**; liveness holds only under the explicitly stated weak fairness assumptions.
+- The safety properties of eleven surfaces (control plane, artifacts/GC, waits/wakeups,
+  tasks/delegation/goal settlement, compression, the daemon protocol, the required checks, the authority
+  layer, the user's authority surface, session-store identity and — added 2026-09-27, D-192 — the
+  retention rule, which is a spec *before* its implementation: the code it describes does not exist yet)
+  hold under exhaustive TLC checking of the **abstract model**; liveness holds only under the explicitly
+  stated weak fairness assumptions.
 - The same invariants are recomputed against the **real `core::v2::Control`** by the executable
   correspondence test: every command sequence up to length 2 (38 commands, including refused combinations)
   plus 60 fixed-seed coverage-driven walks, re-checking 23 invariant groups after every step, with coverage
@@ -338,11 +341,17 @@ alone**, and conversely formal coverage does not excuse an item from sample or r
 4. **Code outside the model**: provider adapters and retry classification, MCP, Skills, TUI rendering and
    hit-testing, shell and bubblewrap isolation, job/process lifetimes and real provider behaviour. These are
    covered by sample tests and real-environment acceptance only.
-5. **Concurrency**: `Control::submit` is serialized on a single connection (a single writer) and the model
+5. **A modeled rule without an implementation** (D-192): `V2Retention` states the retention rule and
+   checks it exhaustively as a *spec*, and nothing in the product evicts anything — the `[retention]`
+   keys are accepted and reported as not applied (D-75), deliberately, because deleting history is
+   destructive. What the model therefore proves is that the *rule* is consistent and non-vacuous (each
+   guard is refuted by a negative control), not that the product obeys it; that check belongs to the
+   implementation when the user asks for one.
+6. **Concurrency**: `Control::submit` is serialized on a single connection (a single writer) and the model
    does not cover interleavings across connections; the daemon's concurrent read and write connections appear
    only in A28's structural statement that a slow client cannot block the writer, without an exhaustive
    interleaving.
-6. **Pure-function layer**: the paging arithmetic has a Kani machine proof and the proven `page_span` is the
+7. **Pure-function layer**: the paging arithmetic has a Kani machine proof and the proven `page_span` is the
    published function (`page_output` calls it), with two properties holding for **every `usize`**. What is not
    covered: (a) `page_output`'s argument parsing goes through serde_json, where symbolic coordinates degrade
    numeric comparisons into a symbolic `memcmp` (measured not to converge), so argument validity is only
@@ -357,7 +366,7 @@ alone**, and conversely formal coverage does not excuse an item from sample or r
 ## 6. Re-running and what would invalidate this
 
 ```bash
-make verify-model-all     # exhaustive configurations for the ten protocol surfaces (seconds to ~2 min;
+make verify-model-all     # exhaustive configurations for the eleven surfaces (seconds to ~2 min;
                           # the task, grants and authority models are the slow ones)
 make verify-model-counterexamples  # the ten negative controls, each must be refuted
 make verify-model-wide    # wide control-plane configuration (~11 minutes / 275M states)

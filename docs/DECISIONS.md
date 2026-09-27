@@ -18,6 +18,40 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-192 The retention rule is modeled before it is destructive (2026-09-27)
+
+D-75 left `[retention]` as the one config surface that is *accepted and reported as not applied*, and it named
+its reason: "deleting history is destructive and the design ties it to conditions that need their own
+verification (ordinary history may be cleaned; live references and evaluation evidence may never be evicted), so
+the honest step now is that `doctor` stops implying it works. Implementing it is the user's call." This turn
+takes the half of that sentence that does not need the user: the conditions now *have* their own verification —
+a specification the implementation will be checked against, before anything can be deleted.
+
+`verification/tla/V2Retention.tla` states DESIGN §9's rule — "ordinary history is archived or cleaned per user
+configuration … while live references and evaluation evidence are never evicted" — over the facts a session's
+`history_days` would prune, with the interleavings that make it worth a model rather than a sentence: a live
+reference can attach to a fact, detach again, and evaluation evidence can be marked, all while days pass and the
+sweep picks facts. The rule is therefore stated as a property of the *step* that evicts — retention switched on,
+the fact old enough, nothing protecting it *at that moment* — plus the state claims that a live reference or an
+evidence mark always implies the fact is still there.
+
+**Measured** (2026-09-27): `MC_retention.cfg` exhaustively checks 1,059 states / 186 distinct with `No error has
+been found` (the whole `make verify-model-all` is now twelve configurations in 4 m 3 s), and the four negative
+controls are each refuted by `make verify-model-counterexamples` (now fourteen controls, 1 m 31 s), naming the
+guard they break: `MC_retention_evicts_live.cfg` → `NoReferenceToEvictedFact`, `…_evicts_evidence.cfg` →
+`EvidenceIsNeverEvicted`, `…_evicts_young.cfg` and `…_runs_disabled.cfg` → `OnlyOldFactsAreEvicted`. Writing it
+also settled a modeling question the first draft got wrong: the sweep must leave the protection flags alone — a
+buggy sweep that "cleans up" the reference it ignored does *not* violate the reference invariant, only the step
+property catches it — and after that change the live control is refuted by the invariant, which is the
+corruption the design's sentence is about.
+
+**Recorded honestly** (`verification/REPORT.md` §5, item 5): this is a modeled rule *without* an
+implementation. The model says the rule is consistent and that no guard is vacuous; it does **not** say the
+product obeys it, because the product still evicts nothing. When the user asks for retention, the implementation
+has a checked reference: a control command that deletes rows in one transaction (the shape `artifact_collect`
+has, D-191), with the four guards the controls pin down — and the `doctor` row and the config's own comments
+change with it.
+
 ## D-191 The artifacts model had a delete step the product never took (2026-09-27)
 
 DESIGN §4.3 specifies the whole collection pipeline — "GC first claims an unreferenced object as DELETING inside
