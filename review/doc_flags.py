@@ -7,6 +7,15 @@ prompted this found one such flag: `docs/USER-GUIDE.md` §6 described the earlie
 only with an explicit `--apply`", and `--apply` is not a flag of any entry point (the cleanup was a one-off
 migration, recorded in `docs/ACCEPTANCE.md`'s upgrade notes).
 
+**D-214 added the verbs.** The rule above is about flags; the same document already tells the user which *verb* to
+run (`teamagents exec`, `teamagents instances terminate --id …`), and a verb this build does not serve is exactly
+the same defect — D-52/D-73 removed `validate` and `sessions prune`, and a document showing them would send a user
+into a refusal. So a backticked `teamagents <verb>` in these three documents must be a verb the help text names (or
+the dispatcher's own `Some("…")` arms serve: the hidden `jobs-runner` entry point is one), and when the mention
+carries a second word *and* that verb takes sub-verbs at all, the pair must be one the help text shows
+(`instances resume|pause`, `tasks cancel`, …). Measured 2026-09-27: 30 verb mentions and 12 pairs in the three
+documents, all served. The same history window applies — a line about an earlier release is a note.
+
 The authority is the CLI's own help text — the `usage()` literal in `engine/src/main.rs`, which is the surface
 `teamagents --help` prints. It is read from the source rather than by running the binary, so this check works
 in `make hygiene` on a tree that has not been built. Flags that belong to the *toolchain* rather than to this
@@ -65,6 +74,11 @@ FLAG = re.compile(r"(?<![\w-])--[a-z][a-z-]*")
 # A match arm whose pattern is a bare alternation of string literals, e.g. `"--json"` on its own line (its
 # guard and `=>` follow). Distinguishes an arm from a message that merely starts with a quote.
 ARM_LINE = re.compile(r'^"[^"]*"(?:\s*\|\s*"[^"]*")*\s*$')
+VERB_MENTION = re.compile(r"`teamagents ([a-z][a-z-]*)(?: ([a-z][a-z-]*))?")
+# a verb line of the help text, e.g. "  teamagents instances resume|pause --id ID"
+VERB_LINE = re.compile(r"\s*teamagents ([a-z][a-z-]*)(.*)$")
+# the hidden entry points the dispatcher matches, which are served without being advertised
+HIDDEN_VERB = re.compile(r'Some\("([a-z][a-z-]*)"\)')
 
 
 def served_flags() -> set:
@@ -73,6 +87,31 @@ def served_flags() -> set:
     start = next(i for i, line in enumerate(lines) if line.startswith("const HELP"))
     end = next(i for i in range(start, len(lines)) if lines[i].rstrip().endswith('";'))
     return set(FLAG.findall("\n".join(lines[start:end])))
+
+
+def served_verbs() -> tuple:
+    """`(verbs, pairs)` the CLI serves: what the help text names, plus the dispatcher's own arms.
+
+    The help text is D-135's authority for the flag surface, and it is the authority here too — with one addition,
+    because a served verb is also a `match` arm: `jobs-runner` is the runner's hidden entry point and appears in no
+    help line.
+    """
+    lines = CLI_SOURCE.read_text().splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith("const HELP"))
+    end = next(i for i in range(start, len(lines)) if lines[i].rstrip().endswith('";'))
+    verbs, pairs = set(), set()
+    for line in lines[start:end]:
+        match = VERB_LINE.match(line)
+        if not match:
+            continue
+        verb, rest = match.group(1), match.group(2).split()
+        verbs.add(verb)
+        # the sub-verbs are the next word unless it is a flag or nothing: `instances resume|pause`, `tasks cancel`
+        if rest and not rest[0].startswith("-"):
+            for sub in rest[0].strip("[]").split("|"):
+                if re.fullmatch(r"[a-z][a-z-]*", sub):
+                    pairs.add(f"{verb} {sub}")
+    return verbs | set(HIDDEN_VERB.findall(CLI_SOURCE.read_text())), pairs
 
 
 def accepted_flags() -> set:
@@ -100,10 +139,11 @@ def main() -> int:
     parser.add_argument("--list-served", action="store_true", help="print the flags the CLI's help lists")
     args = parser.parse_args()
     served = served_flags()
+    verbs, pairs = served_verbs()
     if args.list_served:
         print("served: " + " ".join(sorted(served)))
     findings, history = [], []
-    scanned = 0
+    scanned, scanned_verbs = 0, 0
     for name in DOCS:
         lines = (REPO / name).read_text().splitlines()
         for number, line in enumerate(lines, 1):
@@ -115,6 +155,15 @@ def main() -> int:
                     continue
                 where = f"{name}:{number}: {flag} is not a flag this build serves"
                 (history if told_as_history else findings).append(where)
+            for verb, sub in VERB_MENTION.findall(line):
+                scanned_verbs += 1
+                if verb not in verbs:
+                    where = f"{name}:{number}: `teamagents {verb}` is not a verb this build serves"
+                    (history if told_as_history else findings).append(where)
+                elif sub and f"{verb} {sub}" not in pairs and any(p.startswith(verb + " ") for p in pairs):
+                    where = (f"{name}:{number}: `teamagents {verb} {sub}` is not a pair this build serves "
+                             f"(it shows {', '.join(sorted(p.split(' ', 1)[1] for p in pairs if p.startswith(verb + ' ')))})")
+                    (history if told_as_history else findings).append(where)
 
     accepted, named = accepted_flags(), named_flags()
     silent = sorted(accepted - served - named)
@@ -123,6 +172,8 @@ def main() -> int:
                         f"refusal message names it")
     print(f"{scanned} flag mentions in {', '.join(DOCS)}; the CLI's help lists {len(served)} flags and "
           f"{len(TOOL_FLAGS)} belong to the toolchain")
+    print(f"{scanned_verbs} verb mention(s) in the same documents name {len(verbs)} served verb(s) and "
+          f"{len(pairs)} pair(s)")
     print(f"the parser accepts {len(accepted)} flags; "
           f"{len(accepted & served)} of them are advertised, {len(silent)} are accepted silently")
     if history:

@@ -18,6 +18,33 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-214 The documents' verbs were unchecked (2026-09-27)
+
+D-135 gave the three user-facing documents a rule for *flags* — a documented flag must be one the CLI's help text
+serves, and `--apply` was the proof that the class is real — and D-190 extended that rule's scope to the install
+guide. The same documents also say which *verb* to run (`teamagents exec`, `teamagents instances terminate --id …`),
+and nothing checked those: `readme_zh.py` compares the two READMEs' verb sets with each other, which is a
+translation check rather than a service check. A verb this build refuses sends a reader into a refusal, and D-52/D-73
+removed three of them (`validate`, `sessions prune`, and the flags beside them).
+
+**Guarded** (`review/doc_flags.py`, in `make hygiene`): a backticked `teamagents <verb>` in the README, the user
+guide or the install guide must be a verb the CLI's help text names, or one the dispatcher's own `Some("…")` arms
+serve — `jobs-runner` is the hidden entry point the help text does not advertise, and a document may legitimately
+name it. When the mention carries a second word *and* that verb takes sub-verbs at all, the pair must be one the
+help text shows, and the finding lists the ones it does (`instances list, pause, resume, terminate`). The history
+window the flag rule already had applies unchanged: a line about an earlier release is a note, which is how the
+install guide's record of what `v0.1.2` had stays a record.
+
+**Measured** (2026-09-27): 30 verb mentions naming 11 verbs and 12 pairs across the three documents, all served —
+the rule is added after the fact, as D-200's was. Controls: `teamagents validate` (the v1 verb) reports "not a verb
+this build serves", `teamagents instances delete` reports "not a pair this build serves (it shows list, pause,
+resume, terminate)", and the same verb on a line that says it is about an earlier release is a note.
+
+Ceiling: only backticked mentions are read (prose naming a verb without one is invisible — the contract
+`citations.py` states too), the pair rule fires only for a verb that takes sub-verbs (so a second word after `exec`
+is not judged), and the rule reads the help text, so it cannot see whether a served verb *works*: that is the
+probes' job.
+
 ## D-213 The model's own names were cited unchecked (2026-09-27)
 
 `verification/tla/` is cited across the documents — `MC_compress.cfg`, `tla/V2Jobs.tla`, and properties by module
