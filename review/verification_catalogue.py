@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """The formal-verification material, against the targets that drive it and the report that counts it (D-185).
 
-`verification/tla/` holds fourteen TLA+ modules and forty configurations; `verification/REPORT.md`
+`verification/tla/` holds fourteen TLA+ modules and forty-three configurations — and **these numbers are
+checked against the directory by this script's own rule**, because the sentence that said "forty" was the
+kind of count nothing looked at (the module count in this line and the two the report states are all
+compared with what the tree holds); `verification/REPORT.md`
 states what runs ("all **15** configurations report `No error has been found`", "all **27** negative
 controls are refuted") and every property is mapped to its spec in `verification/README.md`. What no audit looked at is
 whether the material and the Makefile still agree: a `.cfg` added without a line in a `verify-model*` target is
@@ -187,6 +190,27 @@ def main(argv) -> int:
             else:
                 notes.append(f"the re-run heading names `{commit}`, at or after the newest change to the "
                              f"verification material (`{newest[:12]}`)")
+    # This script's own docstring states counts too, and nothing looked at them: the
+    # sentence in it said "forty" while the directory held forty-three (D-208).
+    stated = re.search(r"holds ([a-z-]+) TLA\+ modules and ([a-z-]+) configurations", __doc__ or "")
+    # both counts are spelled out in the prose, so the rule has to read words
+    words = {"ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
+             "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19, "twenty": 20,
+             "thirty-four": 34, "thirty-seven": 37, "forty": 40, "forty-one": 41, "forty-two": 42,
+             "forty-three": 43, "forty-four": 44, "forty-five": 45, "forty-six": 46}
+    if stated is None:
+        findings.append("this script's docstring no longer states its own module and configuration counts, so the "
+                        "rule that checks them has nothing to compare with")
+    else:
+        modules_stated = words.get(stated.group(1), int(stated.group(1)) if stated.group(1).isdigit() else -1)
+        configs_stated = words.get(stated.group(2), int(stated.group(2)) if stated.group(2).isdigit() else -1)
+        on_disk = len(on_disk_cfgs)
+        if modules_stated != len(on_disk_specs):
+            findings.append(f"this script's docstring says {modules_stated} module(s), {TLA} holds "
+                            f"{len(on_disk_specs)}: the prose and the directory have to agree")
+        if configs_stated != on_disk:
+            findings.append(f"this script's docstring says {stated.group(2)!r} ({configs_stated}) configurations, "
+                            f"{TLA} holds {on_disk}")
     for finding in findings:
         print(f"FAIL: {finding}")
     if findings:

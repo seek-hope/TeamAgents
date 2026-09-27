@@ -44,6 +44,13 @@ in 1 m 53 s, `MC_diskfull.cfg` itself is 63 states / 22 distinct, and no run pri
   version ("if the store is writable and the latch is set, the latch clears") claimed something the design does
   not, and the ceiling paragraph of `V2DiskFull` now says so.
 
+**The audit's own prose was wrong in the same breath**: `review/verification_catalogue.py`'s docstring said
+`verification/tla/` holds "forty" configurations while the directory holds forty-three (the wide configuration is
+one of them) — a count nothing looked at, because D-185's rule compares the *report's* counts with the lists and
+leaves the audit's own documentation as prose. That script now reads its own sentence and compares both numbers
+with the directory, and the rule is controlled by editing the docstring back to "forty" (the audit reports it) and
+reverting.
+
 Ceiling: one instance and one in-flight effect; no *cost* side (an artifact write failing latches through the same
 signature, so "a write" is one thing here); no storage-worker queueing; no operation-ledger states after a lost
 outcome (that story is `V2Control`'s crash/recovery and unknown-usage one); and no model of the tool that produced
