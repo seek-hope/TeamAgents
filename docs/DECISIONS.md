@@ -18,6 +18,43 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-224 Two more numbers the documents state that nothing held (2026-09-27)
+
+D-221 held the documents that restate the per-crate test counts to the acceptance ledger, and D-223 did the same
+for section numbers. A sweep of the same shape — every spelled count of a tree artifact in the tracked markdown,
+and every pinned value restated in prose — found two statements that **nothing compared with their source**, both
+true today and both one edit away from lying to a reader:
+
+| The statement | Where | Held to | By |
+|---|---|---|---|
+| "the seventeen tools" (twice) | `docs/ACCEPTANCE.md` — the Q12 requirement row and the harness paragraph | the schemas `review/tool_catalogue.py` derives | `review/tool_catalogue.py` (D-224) |
+| "TLC v1.7.1" | `docs/DEVELOPMENT.md`'s verify-tools comment and `verification/README.md`'s pinned-jar paragraph | the Makefile's `TLA_VERSION` | `review/verification_catalogue.py` (D-224) |
+
+Adding a tool leaves the ledger's requirement row claiming seventeen while `docs/TOOLS.md` lists eighteen; bumping
+the jar leaves two documents telling a reader the old version, which no reader of either can check. Both are now
+compared, and the count word is read with the helper `verification_catalogue.py` already uses for its own
+docstring counts, so the two audits spell a number one way (the D-144 lesson: one implementation, not two).
+**Controls**: `docs/ACCEPTANCE.md` with "seventeen" → "sixteen" reports `says there are sixteen tools, the schemas
+define 17`, and a Makefile copy pinning `TLA_VERSION := 1.9.9` reports both documents by name; each mutation was
+reverted byte-identically before the green run.
+
+**What the sweep measured**: the eight statements of "the three crates" / "the three suites" (the Makefile's
+`CRATES` is the source, and nothing holds the prose to it — a fourth crate would leave them stale, so they are
+recorded here as a gap this sweep did not close); the seventeen "the two/three/four controls" phrasings beside
+the model rows in `verification/README.md` (D-220 holds the *total*, and the per-module counts are prose this
+sweep also leaves alone); the 697 `A<nn>` and 85 `Q<n>` references, all inside the matrix's range except `A99`
+and `Q20`, which are `review/requirement_trace.py`'s own controls and say so on the line; and the 48 `R<nn>`
+references, left alone on purpose — they are the archived plan's requirement ids, and no document in the tree
+defines them.
+
+**One bookkeeping consequence, noticed by a gate**: D-223's comment-only citation fix in `engine/examples/load_probe.rs` put A32's pin (`50c2ee4b`) behind the example the row runs, and `review/requirement_trace.py` (D-202's rule for matrix rows) said so; the row now pins `49cfe14b`, with the reason the numbers still stand written beside them.
+
+Ceiling: the tool-count rule reads the phrase "the `word` tools" in `docs/ACCEPTANCE.md` only, so another document
+that states the count is not swept in, and a word the number parser does not know is skipped — a misspelled count
+fails in the lenient direction; the version rule reads the two documents listed, so a new document restating the
+TLC version has to be added to it; and neither can know whether the *pinned* version is the one the jar on disk
+carries — `make verify-tools` checks that against the SHA-256 in the same Makefile.
+
 ## D-223 Forty-three citations of plan sections the design does not have (2026-09-27)
 
 The documents, the repository's own instruction file and the Rust sources cite the design by section: `§4.4`

@@ -89,6 +89,10 @@ REPO = pathlib.Path(__file__).resolve().parents[1]
 TLA = "verification/tla"
 KANI_SRC = "verification/kani/src"
 MATERIAL = ("verification/tla", "verification/kani")
+# (D-224) the version the Makefile pins and the documents that state it: a reader of either trusts the number
+TLA_VERSION = re.compile(r"^TLA_VERSION\s*:=\s*(\S+)", re.M)
+STATED_TLC = re.compile(r"TLC v([0-9][0-9.]*)")
+VERSION_DOCS = ("docs/DEVELOPMENT.md", "verification/README.md")
 TARGET = re.compile(r"^([A-Za-z0-9_.-]+):")
 CFG = re.compile(r"\b(MC[A-Za-z0-9_]*\.cfg)\b")
 MARKER = re.compile(r"^\s*\\\*[ \t]*-+[ \t]*(invariants|properties)\b", re.M)
@@ -382,7 +386,23 @@ def main(argv) -> int:
             findings.append(f"{tla}/{spec} never changes {', '.join(dead)}: a variable no action writes is a "
                             "constant of the model, so every claim over it holds for want of a step that could "
                             "break it (D-219)")
-    # This script's own docstring states counts too, and nothing looked at them: the
+    # (D-224) The version the Makefile pins, against the documents that state it. Both are read by a person who
+    # will never check the jar: measured 2026-09-27, the two statements agreed with the pin — and nothing had
+    # been comparing them, so a bumped `TLA_VERSION` would have left both telling a reader the old one.
+    pinned = TLA_VERSION.search(makefile_text)
+    if pinned is None:
+        findings.append(f"{args.makefile} states no `TLA_VERSION`, so the documents that name the pinned TLC "
+                        "cannot be held to it (D-224)")
+    else:
+        for doc in VERSION_DOCS:
+            stated = STATED_TLC.search((REPO / doc).read_text(errors="replace"))
+            if stated is None:
+                findings.append(f"{doc} no longer states the pinned TLC version, so this audit cannot hold it "
+                                "to the Makefile (D-224)")
+            elif stated.group(1) != pinned.group(1):
+                findings.append(f"{doc} says TLC v{stated.group(1)}, {args.makefile} pins {pinned.group(1)}: the "
+                                "reader of one trusts the number in the other (D-224)")
+        # This script's own docstring states counts too, and nothing looked at them: the
     # sentence in it said "forty" while the directory held forty-three (D-208).
     stated = re.search(r"holds ([a-z-]+) TLA\+ modules and ([a-z-]+) configurations", __doc__ or "")
     if stated is None:

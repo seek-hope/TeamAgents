@@ -22,8 +22,14 @@ import pathlib
 import re
 import sys
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import verification_catalogue   # `number`: one implementation of spelling a count, shared by two audits
+
 REPO = pathlib.Path(__file__).resolve().parents[1]
 DOC = REPO / "docs" / "TOOLS.md"
+# the documents that state how many tools the product offers, in words, and the phrase they state it with
+COUNT_DOCS = ("docs/ACCEPTANCE.md",)
+SPELLED_COUNT = re.compile(r"the ([a-z]+) tools")
 BEGIN = "<!-- generated: begin -->"
 END = "<!-- generated: end -->"
 TYPES = REPO / "core" / "src" / "kernel" / "types.rs"
@@ -130,6 +136,17 @@ def main(argv):
         return 0
     text = DOC.read_text()
     findings = []
+    names = [tool[0] for tool in tools()]
+    # (D-224) The documents that state how many tools there are, held to the schemas this catalogue derives —
+    # `docs/ACCEPTANCE.md` says it twice ("the seventeen tools"), and nothing compared either with the list.
+    # The count word is read with `verification_catalogue.number`, so the two audits spell numbers the same way.
+    for doc in COUNT_DOCS:
+        for word in sorted(set(SPELLED_COUNT.findall((REPO / doc).read_text(errors="replace")))):
+            if verification_catalogue.number(word) < 0:
+                continue        # "the team tools" is not a count; only a spelled number is compared
+            if verification_catalogue.number(word) != len(names):
+                findings.append(f"{doc} says there are {word} tools, the schemas define {len(names)}: the count "
+                                "in the prose has to be one this catalogue recomputes (D-224)")
     if BEGIN not in text or END not in text:
         findings.append("docs/TOOLS.md has no generated markers")
     else:
@@ -140,7 +157,6 @@ def main(argv):
         print(finding)
     if findings:
         return 1
-    names = [tool[0] for tool in tools()]
     print(f"{len(names)} tools documented and in sync: {', '.join(names)}")
     return 0
 
