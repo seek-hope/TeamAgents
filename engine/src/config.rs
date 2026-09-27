@@ -169,10 +169,22 @@ pub fn parse_user_config(text: &str) -> Result<UserConfig, String> {
         }
     }
     let catalog: UserConfig = toml::Value::Table(filtered).try_into().map_err(|e| format!("bad config: {e}"))?;
-    validate_checks(&catalog)?;
-    validate_profiles(&catalog)?;
-    validate_tools(&catalog)?;
+    validate_shared(&catalog)?;
     Ok(catalog)
+}
+
+/// The rules **both** loaders apply (D-232): the profiles, the tool bindings and the checks.
+///
+/// `parse_user_config` (the product's path, through `load_user_config`) and `load_user_config_for` (the
+/// project-merge path, which D-133 records as unread by the product) had drifted: the merge path never ran
+/// `validate_tools`, so a `kind`/`mcp_execution`/required-field mistake was refused on one path and accepted on
+/// the other — measured 2026-09-27, `[tools.t] kind = "mcp"` with no `command` passed `load_user_config_for`
+/// while `parse_user_config` refused it. Which checks a config gets must not depend on the loader.
+fn validate_shared(catalog: &UserConfig) -> Result<(), String> {
+    validate_checks(catalog)?;
+    validate_profiles(catalog)?;
+    validate_tools(catalog)?;
+    Ok(())
 }
 
 /// A model-profile key this release does not serve must not be ignored silently
@@ -248,6 +260,33 @@ fn validate_tools(catalog: &UserConfig) -> Result<(), String> {
         // "workspac"` silently meant the sandboxed default (measured 2026-09-27, D-162). `mcp_transport` is
         // deliberately not checked here — `doctor` names an unserved transport before a session boots, which is
         // D-74's shape ("where the user can still fix it without reading a daemon log").
+        // D-232: the field a binding's kind and transport *need*, refused at load — D-162's class one level in.
+        // The binder reports a missing one when the session boots ("binding \"probe\" needs a command",
+        // engine/src/bound.rs) while `doctor` still shows the binding as fine, so the user meets it after
+        // starting a run. An unserved *transport* stays `doctor`'s row (D-74's shape, see above).
+        if binding.kind == "mcp" {
+            let url_is_usable = binding
+                .url
+                .as_deref()
+                .filter(|url| !url.is_empty())
+                .and_then(|url| reqwest::Url::parse(url).ok())
+                .is_some_and(|url| matches!(url.scheme(), "http" | "https"));
+            match binding.mcp_transport.as_deref().unwrap_or("stdio") {
+                "stdio" if binding.command.as_deref().is_none_or(str::is_empty) => {
+                    return Err(format!(
+                        "tools.{name}.command is required for kind = \"mcp\" over stdio: the service is started \
+                         from that argv (docs/CONFIG.md, `[tools.<name>]`)"
+                    ));
+                }
+                "http" if !url_is_usable => {
+                    return Err(format!(
+                        "tools.{name}.url is required for kind = \"mcp\" over http and must be an absolute \
+                         http(s) URL (docs/CONFIG.md, `[tools.<name>]`)"
+                    ));
+                }
+                _ => {}
+            }
+        }
         if let Some(execution) = binding.mcp_execution.as_deref() {
             if !MCP_EXECUTIONS.contains(&execution) {
                 return Err(format!(
@@ -488,6 +527,51 @@ mod tests {
     /// `protocol` used to fall through the provider dispatch's catch-all and speak the chat-completions wire, and
     /// a typo'd tool `kind` was dropped by the binder in silence while `doctor` still listed the tool. An empty
     /// protocol stays legal — it is the historical chat/completions default.
+    /// D-232: both loaders run the same rules, with one *deliberate* difference. They had drifted —
+    /// `load_user_config_for` (the project-merge path) never ran `validate_tools`, so a binding mistake was
+    /// refused on one path and accepted on the other (measured 2026-09-27). The difference that stays: the merge
+    /// path refuses a configured path that resolves nowhere, while the product's path leaves it to `doctor`'s
+    /// skills/instruction rows, which name it (D-102/D-168 — the intent `doctor_reports_the_skills_registry_and_
+    /// missing_configured_paths` asserts end to end).
+    #[test]
+    fn both_loaders_refuse_the_same_shapes() {
+        let _env = crate::env_lock();
+        let root = std::env::temp_dir().join(format!("ta-config-paths-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::env::set_var("XDG_CONFIG_HOME", root.join("config"));
+        std::fs::create_dir_all(root.join("config/teamagents")).unwrap();
+        let model = "[models.m]\nprovider = \"openai\"\nmodel = \"x\"\n";
+        for (label, text) in [
+            (
+                "a typo'd protocol",
+                "[models.m]\nprovider = \"openai\"\nprotocol = \"openais\"\nmodel = \"x\"\n".to_string(),
+            ),
+            ("a typo'd kind", format!("{model}[tools.t]\nkind = \"mcp_transport\"\n")),
+            ("an mcp binding without a command", format!("{model}[tools.t]\nkind = \"mcp\"\n")),
+            (
+                "an mcp http binding without a url",
+                format!("{model}[tools.t]\nkind = \"mcp\"\nmcp_transport = \"http\"\n"),
+            ),
+            (
+                "a typo'd mcp_execution",
+                format!("{model}[tools.t]\nkind = \"mcp\"\ncommand = \"/bin/true\"\nmcp_execution = \"workspac\"\n"),
+            ),
+        ] {
+            let direct = parse_user_config(&text).expect_err(label);
+            std::fs::write(root.join("config/teamagents/config.toml"), &text).unwrap();
+            let merged = load_user_config_for(&root).expect_err(label);
+            assert!(merged.contains(&direct), "{label}: the loaders disagree — direct: {direct}; merged: {merged}");
+        }
+        // … and the one difference that is deliberate: a configured path that resolves nowhere is the merge
+        // path's refusal and the product's warning
+        let missing = format!("skills_paths = [\"/nonexistent/skills-dir\"]\n{model}");
+        parse_user_config(&missing).expect("the product's path leaves a missing root to doctor's row");
+        std::fs::write(root.join("config/teamagents/config.toml"), &missing).unwrap();
+        let merged = load_user_config_for(&root).expect_err("the merge path refuses a path that resolves nowhere");
+        assert!(merged.contains("does not exist"), "{merged}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn a_value_the_build_does_not_serve_is_refused() {
         let profile =
@@ -498,11 +582,15 @@ mod tests {
         parse_user_config(&format!("{}\n[tools.t]\nkind = \"web_fetch\"\n", profile("openai")))
             .expect("a served kind parses");
         for execution in ["workspace", "host"] {
-            let text = format!("{}\n[tools.t]\nkind = \"mcp\"\nmcp_execution = \"{execution}\"\n", profile("openai"));
+            // D-232: the fixture needs the field its kind and transport require — the rule it never met
+            let text = format!(
+                "{}\n[tools.t]\nkind = \"mcp\"\ncommand = \"/bin/true\"\nmcp_execution = \"{execution}\"\n",
+                profile("openai")
+            );
             parse_user_config(&text).unwrap_or_else(|e| panic!("{execution}: {e}"));
         }
         let error = parse_user_config(&format!(
-            "{}\n[tools.t]\nkind = \"mcp\"\nmcp_execution = \"workspac\"\n",
+            "{}\n[tools.t]\nkind = \"mcp\"\ncommand = \"/bin/true\"\nmcp_execution = \"workspac\"\n",
             profile("openai")
         ))
         .expect_err("a typo is refused");
@@ -756,9 +844,13 @@ pub fn load_user_config_for(cwd: &Path) -> Result<UserConfig, String> {
     }
     let _ = empty;
     let catalog: UserConfig = toml::Value::Table(merged).try_into().map_err(|e| format!("bad config: {e}"))?;
+    // the rules both loaders share …
+    validate_shared(&catalog)?;
+    // … plus the one this path alone applies: it *merges* a project's paths, so a path that resolves nowhere is
+    // refused here (D-232). The product's path deliberately does not run it: a missing configured path is a
+    // mistake the user can still fix at `doctor`, whose skills row names it (D-102/D-168), and the test
+    // `doctor_reports_the_skills_registry_and_missing_configured_paths` says so.
     validate_configured_paths(&catalog)?;
-    validate_checks(&catalog)?;
-    validate_profiles(&catalog)?;
     Ok(catalog)
 }
 

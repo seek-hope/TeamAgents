@@ -18,6 +18,47 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-232 One rule set for both config loaders, and the field an mcp binding needs (2026-09-27)
+
+Two functions load the user's config: `parse_user_config` (the product's path, through `load_user_config`) and
+`load_user_config_for` (the project-merge path, which D-133 records as unread by the product). They had drifted —
+the merge path never ran `validate_tools`, so a `kind` or `mcp_execution` mistake was refused on the product's
+path and accepted on the merge path (measured 2026-09-27; the shared rules are what the test now drives through
+both).
+Which checks a config gets must not depend on the loader, so the profile, tool and check rules became one
+`validate_shared` that both call.
+
+**And one rule had never existed on either path**: a `kind = "mcp"` binding must carry the field its transport
+needs — `command` over stdio, an absolute http(s) `url` over http. `doctor` showed such a binding as part of a
+healthy config, and the *binder* refused it when the session booted (`binding "probe" needs a command`,
+`engine/src/bound.rs`), so the user met the mistake after starting a run. It is now refused at load, in D-162's
+shape: a value this build cannot serve is refused with the key named, not discovered later. Two fixtures in the
+config tests gained the field, which is what they had been missing to be valid.
+
+**Two drafts of the rule were wrong, and the tree's own tests said so** — recorded because both were the same
+over-reach in different clothes:
+
+* the first refused a *missing* configured path at load. `doctor_reports_the_skills_registry_and_missing_configured_paths`
+  asserts the intended behaviour instead: a root that resolves nowhere is a `[WARN] skills` row naming it
+  (D-102/D-168's "where the user can still fix it"), and its `skills_paths = ["/tmp/skills"]` fixture passed
+  because no loader ran a path rule on that path at all. So `validate_configured_paths` stays where it was — the
+  merge path — and the difference is now *pinned* by a test rather than implied by which loader someone used;
+* the second applied "must be a directory" to `instruction_files` too, and the same test's `house-rules.md` entry
+  (a *file*, which is what that key means) caught it. Nothing in the loader checks that key's kind; the row that
+  covers the one which must be a directory was also wrong in passing — it said a root "does not exist" while the
+  set it names is computed with `!path.is_dir()`, so a *file* landed under that wording. It now says "is not a
+  usable directory (missing, or a file)".
+
+**Measured**: `[tools.probe] kind = "mcp"` and its `mcp_transport = "http"` sibling exit 1 at load with the key
+named; a `skills_paths` entry that is a file, or does not exist, exits 0 with the `[WARN] skills` row naming the
+path; and `both_loaders_refuse_the_same_shapes` drives five shared-rule shapes through both loaders plus the one
+deliberate difference.
+
+Ceiling: the shared set is the profile, tool and check rules; `validate_configured_paths` remains the merge
+path's alone, deliberately (above); the mcp field rule covers the two transports this build serves and leaves an
+unserved transport to `doctor`'s row (D-74's split, unchanged); and the merge path is still unread by the product
+(D-133), so this entry makes the two paths agree rather than wiring the merge in.
+
 ## D-231 The TUI's own path was the one thing its error could not name (2026-09-27)
 
 `teamagents` starts the TUI by exec'ing `teamagents-tui`, and when the binary is missing the CLI says exactly

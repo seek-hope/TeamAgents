@@ -88,10 +88,14 @@ pub struct ToolBinding {
     /// Network access for workspace-sandboxed MCP processes.
     #[serde(default)]
     pub mcp_network: bool,
+    /// The `kind = "mcp"` service's argv over stdio (the default transport) — required for that kind and
+    /// transport, refused at load otherwise (D-232).
     #[serde(default)]
     pub command: Option<String>,
     #[serde(default)]
     pub args: Vec<String>,
+    /// The `kind = "mcp"` service's endpoint over the `http` transport — required there, and an absolute
+    /// http(s) URL (D-232).
     #[serde(default)]
     pub url: Option<String>,
     /// Bearer token for the http transport: names the environment variable the
@@ -117,6 +121,8 @@ pub struct UserConfig {
     pub models: HashMap<String, ModelProfile>,
     #[serde(default)]
     pub tools: HashMap<String, ToolBinding>,
+    /// Directories the `skill` tool searches for `SKILL.md` entries. An entry must exist and be a directory;
+    /// the default (`~/.agents/skills`) is used only when the key is unset (D-232).
     #[serde(default)]
     pub skills_paths: Vec<String>,
     #[serde(default)]

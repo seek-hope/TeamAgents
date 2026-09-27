@@ -336,8 +336,8 @@ pub fn doctor(state_root: Option<PathBuf>) -> i32 {
                              ~/.agents/skills)"
                     .into(),
                 (_, missing_count) if missing_count > 0 => format!(
-                    "a configured root does not exist and is ignored, so those skills never load: {}; the \
-                     `skill` tool stays offered and answers `no skills configured`",
+                    "a configured root is not a usable directory (missing, or a file) and is ignored, so those \
+                     skills never load: {}; the `skill` tool stays offered and answers `no skills configured`",
                     missing.join(", ")
                 ),
                 (count, _) => format!("{skills} skill(s) under {count} configured root(s)"),
