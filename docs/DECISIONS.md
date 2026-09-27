@@ -20,6 +20,42 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-246 `instruction_files` reach every member's prompt (D-102's promise, delivered) (2026-09-27)
+
+D-102 measured the canary: a file in `instruction_files` was validated, counted by `doctor` as reaching "every
+member's prompt", and read by nothing — a member's system text is its own profile's `instructions` — so the row was
+rewritten to "declared, not applied" and the probe was written to pin the absence. The recorded plan was
+"appending the files' text to every member's prompt at prompt-build time". This is that wiring.
+
+**Implemented**: `config::instruction_text(files)` composes each file's content in config order, under a heading
+line naming the file as the config spells it (a member with two files must be able to tell where one ends and the
+next begins, and a reader of a stored prompt can see where a rule came from), and returns the paths it could not
+read. `driver::team_kernel` appends that text to the instance's profile instructions — it is the **one** place an
+instance's system text is composed, so the leader *and* every child get it, whatever their own profile says — and
+it composes **per turn**, so an edit to a file lands on the next turn rather than the next state root. A file that
+cannot be read is named on stderr (the daemon's log) and counted by `doctor`, never silently absent from both. The
+files stay the user's own config (a repository's count needs `[permissions] trust_project`, D-244).
+
+`doctor`'s row is the flip D-102 predicted: `[ok  ] instruction files  1 file(s), 141 byte(s) reach every
+member's prompt (the leader's and every child's system text, read per turn)`, or a `[WARN]` naming each file it
+cannot read.
+
+**Measured**: the probe D-102 wrote now runs *after* the flip, and it is credential-free (in `make probe-offline`,
+which is twelve probes now): a local chat-completions server answers the leader's first request with a `spawn`
+call (whose `instructions` carry a member marker) and every later request with a `finish`, and the probe reads the
+captured **requests** — measured 2026-09-27, four requests: three of the leader's (719 chars each) and the child's
+(185 chars: the marker plus the rules), every system prompt carrying the canary under the file's heading. That is
+stronger than the profile-row check D-102 used: the assertion is on the bytes the provider received.
+`config::instruction_text_names_each_file_and_reports_what_it_cannot_read` covers the composition (order,
+headings, an unreadable path named back, an empty list producing empty text).
+
+Ceiling: the composition is per *turn*, so the files are re-read on every turn — a deliberate choice (an edit
+lands immediately) at the cost of one read per file per turn, with no size cap beyond the context window and
+compaction; the probe covers the leader and one child, so "every member" rests on the single composition point
+plus that pair rather than on an enumeration; and the model side of this rule (which prompt gets what, across the
+orders in which instances are created and turns run) is not a TLA model yet — the property is a text composition,
+and the evidence here is the delivered request, the direct form of it.
+
 ## D-245 `[retention] history_days` is applied, against the model that pinned its guards (2026-09-27)
 
 D-75 left `[retention]` accepted-and-unapplied and named the reason ("deleting history is destructive and the

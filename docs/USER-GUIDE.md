@@ -478,11 +478,12 @@ teamagents tasks cancel --id t-prose    # releases a delegator waiting on a task
   `skill search/read`; a skill's instructions can never widen execution permissions). `skills_paths` and
   `instruction_files` accept `~/…`, and **`doctor` reports what they resolve to** (`skills  3 skill(s) under
   1 configured root(s)`, or a WARN naming a root that does not exist) — a path that is not there is ignored,
-  so without that row a typo would look like "no skills" (D-66). **`instruction_files` itself does not change
-  a prompt in this release**: the files are validated and reported, but nothing reads their contents into a
-  member's system text, and `doctor` says `1 declared, not applied` rather than promising a prompt (D-102).
-  Wire it if you need it: a member's instructions come from its profile, so the Leader can pass the rules in
-  its `spawn`/`delegate` text today.
+  so without that row a typo would look like "no skills" (D-66). **`instruction_files` now reach every prompt**:
+  each file's text is appended to the leader's *and* every child's system text, in config order, under a heading
+  naming the file, and it is read per turn, so an edit lands on the next turn (D-102 recorded the promise,
+  D-246 delivers it). `doctor` counts what a session will deliver — `1 file(s), 141 byte(s) reach every member's
+  prompt` — and warns, naming it, when a declared file cannot be read. Keep these files for rules that must hold
+  for the whole team; a member's own profile text still comes first.
 - The tools themselves — every function a model may be offered, with its parameters and the model-facing
   description, split by the layer that decides it (the profile's tools, the instance's grants, the session's
   bindings) — are catalogued in [docs/TOOLS.md](TOOLS.md), generated from the schemas.

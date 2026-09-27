@@ -989,6 +989,32 @@ pub fn permission_mode_from_config() -> Result<String, String> {
     Ok(project_permissions(&user)?.1)
 }
 
+/// The text a member's prompt gets from `instruction_files` (D-102 recorded the promise; D-246 delivers it).
+///
+/// Every file's content in config order, each under one heading line naming the file as the *config* spells it —
+/// a member receiving two files must be able to tell where one ends and the next begins, and a reader of a stored
+/// prompt can see which file a rule came from. The caller prints `unreadable` (the daemon's log) and `doctor`
+/// counts what it can read: a file that cannot be read is never silently absent from both.
+///
+/// Read per turn, not once per session: instruction files are policy a user edits, and the useful behaviour is
+/// that an edit reaches the *next* turn (the shape D-102 asked for) rather than the next state root.
+pub fn instruction_text(files: &[String]) -> (String, Vec<String>) {
+    let mut text = String::new();
+    let mut unreadable = Vec::new();
+    for raw in files {
+        match std::fs::read_to_string(expand_home(raw)) {
+            Ok(body) => {
+                if !text.is_empty() {
+                    text.push_str("\n\n");
+                }
+                text.push_str(&format!("<!-- instruction file: {raw} -->\n{}", body.trim_end()));
+            }
+            Err(error) => unreadable.push(format!("{raw}: {error}")),
+        }
+    }
+    (text, unreadable)
+}
+
 pub fn expand_home(path: &str) -> PathBuf {
     if let Some(rest) = path.strip_prefix("~/") {
         return home_dir().join(rest);
@@ -1063,6 +1089,33 @@ model = "project-loses"
     /// instruction files, hooks, checks and retention, and silently dropped `[limits]` — so wiring the merge
     /// (D-244) would have lost every goal ceiling and deadline the user set. Found while writing that wiring;
     /// this test is what keeps the two rule sets equal.
+    /// D-246: what `instruction_files` delivers to a prompt — content in config order under a heading naming
+    /// each file, and every file that could not be read named back to the caller (never dropped in silence).
+    #[test]
+    fn instruction_text_names_each_file_and_reports_what_it_cannot_read() {
+        let _env = crate::env_lock();
+        let root = std::env::temp_dir().join(format!("ta-rules-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::env::set_var("HOME", &root);
+        std::fs::write(root.join("one.md"), "# One\nthe first rule\n").unwrap();
+        std::fs::write(root.join("two.md"), "the second rule").unwrap();
+        let files = vec!["~/one.md".to_string(), "~/two.md".to_string(), "~/gone.md".to_string()];
+        let (text, unreadable) = instruction_text(&files);
+        assert!(text.contains("<!-- instruction file: ~/one.md -->"), "{text}");
+        assert!(text.contains("the first rule") && text.contains("the second rule"), "{text}");
+        assert!(
+            text.find("the first rule").unwrap() < text.find("the second rule").unwrap(),
+            "the files keep config order: {text}"
+        );
+        assert_eq!(unreadable.len(), 1, "{unreadable:?}");
+        assert!(unreadable[0].starts_with("~/gone.md:"), "{unreadable:?}");
+        assert!(!text.contains("gone.md <!--"), "an unreadable file contributes no heading: {text}");
+        // an empty list is empty text, not a stray separator
+        assert_eq!(instruction_text(&[]).0, "");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn the_two_loaders_agree_on_a_user_only_config() {
         let _env = crate::env_lock();

@@ -1171,6 +1171,18 @@ impl<P: Provider> Driver<P> {
                 names.join(",")
             );
         }
+        // D-102/D-246: the user's instruction files reach **every** member's prompt — the leader and every child
+        // — because this is the one place an instance's system text is composed. The files are session policy
+        // (`[permissions] trust_project` decides whether a repository's count, D-244) and they are read here, per
+        // turn, so an edit lands on the next turn; a file that cannot be read is named on stderr (the daemon's
+        // log) and never silently absent.
+        let (rules, unreadable) = crate::config::instruction_text(&self.config.catalog.instruction_files);
+        for why in &unreadable {
+            eprintln!("teamagents: instruction file not read: {why}");
+        }
+        if !rules.is_empty() {
+            profile.instructions = format!("{}\n\n{rules}", profile.instructions);
+        }
         Ok(KernelInstance::new(self.config.instance_id.clone(), snapshot.epoch as u64, profile))
     }
 

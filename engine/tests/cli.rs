@@ -621,11 +621,10 @@ fn doctor_reports_the_skills_registry_and_missing_configured_paths() {
     let good = run(&format!("\"{}\"", skills.display()), &format!("\"{}\"", root.join("house-rules.md").display()));
     assert!(good.contains("[ok  ] skills"), "a resolving root is reported ok: {good}");
     assert!(good.contains("1 skill(s) under 1 configured root(s)"), "{good}");
-    // D-102: the instruction files are *not* read into a prompt by this build, so the row must say so even
-    // when the path resolves — it used to promise "N file(s) reach every member's prompt" while nothing read
-    // them (D-75's rule: a key this build does not serve is reported as not in effect)
-    assert!(good.contains("[WARN] instruction files"), "{good}");
-    assert!(good.contains("not applied") && good.contains("come from its own profile"), "{good}");
+    // D-102/D-246: the promise is delivered now, so a resolving file is reported *ok* with what a session will
+    // actually hand a prompt — the flip this row was built to make visible
+    assert!(good.contains("[ok  ] instruction files"), "{good}");
+    assert!(good.contains("reach every member's prompt") && good.contains("byte(s)"), "{good}");
     // a root that does not exist is a warning that names it, instead of a skill
     // list that silently stays empty
     let missing = run("\"/nonexistent/skills\"", "\"/nonexistent/rules.md\"");
@@ -637,7 +636,7 @@ fn doctor_reports_the_skills_registry_and_missing_configured_paths() {
     assert!(
         missing.contains("[WARN] instruction files")
             && missing.contains("/nonexistent/rules.md")
-            && missing.contains("missing:"),
+            && missing.contains("cannot read:"),
         "{missing}"
     );
     // and no configured root at all says where to put one

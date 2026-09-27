@@ -128,6 +128,10 @@ pub struct UserConfig {
     /// the default (`~/.agents/skills`) is used only when the key is unset (D-232).
     #[serde(default)]
     pub skills_paths: Vec<String>,
+    /// Files whose text is appended to **every** member's system prompt (the leader's and each child's), in this
+    /// order, each under a heading naming the file: read per turn, so an edit lands on the next turn, and a file
+    /// that cannot be read is named by `doctor` and on the daemon's log rather than skipped in silence (D-102
+    /// recorded the promise, D-246 delivers it).
     #[serde(default)]
     pub instruction_files: Vec<String>,
     #[serde(default)]

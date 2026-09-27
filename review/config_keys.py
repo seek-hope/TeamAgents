@@ -71,7 +71,6 @@ REFUSED_AT_LOAD = {
 # field -> why it is allowed to have no read site
 KNOWN_UNSERVED = {
     "codex_profile": "D-75: refused at load — an external Codex profile is not part of this release",
-    "instruction_files": "D-102: declared, validated and reported as not applied; the gap is in ACCEPTANCE",
     "archived_days": "D-245: accepted and not applied — one session per state root (A33) means no archived set",
     "deadline_minutes": "applied by the loader: config.rs turns it into each goal's absolute deadline",
 }

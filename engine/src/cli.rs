@@ -395,25 +395,21 @@ pub fn doctor(state_root: Option<PathBuf>) -> i32 {
                 (count, _) => format!("{skills} skill(s) under {count} configured root(s)"),
             },
         );
-        // D-102 (D-75's rule): nothing in this build reads these files — a member's system text comes from its
-        // own profile — so the row says "declared, not applied" instead of promising they reach a prompt. It
-        // still names a path that does not resolve, because that is a config mistake either way.
+        // D-102 asked for this row to say the truth; since D-246 the truth is that the files *do* reach every
+        // member's prompt (the driver composes them into every instance's system text), so the row counts what a
+        // session will deliver — bytes and files — and a file it cannot read is a WARN naming it.
         if !catalog.instruction_files.is_empty() {
-            let missing: Vec<&str> = catalog
-                .instruction_files
-                .iter()
-                .filter(|raw| !crate::config::expand_home(raw).is_file())
-                .map(String::as_str)
-                .collect();
+            let (text, unreadable) = crate::config::instruction_text(&catalog.instruction_files);
+            let read = catalog.instruction_files.len() - unreadable.len();
             let mut detail = format!(
-                "{} declared, not applied: this release does not read instruction files into a prompt \
-                 (a member's instructions come from its own profile)",
-                catalog.instruction_files.len()
+                "{read} file(s), {} byte(s) reach every member's prompt (the leader's and every child's system \
+                 text, read per turn)",
+                text.len()
             );
-            if !missing.is_empty() {
-                detail.push_str(&format!("; missing: {}", missing.join(", ")));
+            if !unreadable.is_empty() {
+                detail.push_str(&format!("; cannot read: {}", unreadable.join(", ")));
             }
-            optional_check(&mut results, "instruction files", false, detail);
+            optional_check(&mut results, "instruction files", unreadable.is_empty(), detail);
         }
         for (label, argv) in [("hooks.notify", &catalog.hooks.notify), ("hooks.pre_tool", &catalog.hooks.pre_tool)] {
             let Some(program) = argv.first().filter(|p| !p.trim().is_empty()) else { continue };

@@ -7,7 +7,7 @@ model probe sets and the three formal gates).
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 102 / engine 259 / tui 35 test targets) and `make pty` passes; both are
+`make check` is green (core 102 / engine 260 / tui 35 test targets) and `make pty` passes; both are
 preconditions for every item below. `make check` includes `make language-check`, which fails on non-English
 characters outside the two documented exceptions (`README.zh-CN.md` and the frozen material under
 `review/eval`).
@@ -175,14 +175,15 @@ amended (D-49/D-50).
   `review/dead_code.py` keeps the parked entry visible in its allowlist instead of letting a test's call make
   it look live (D-130).
 
-- **`instruction_files` is accepted but nothing reads it into a prompt.** The loader validates each path and
-  `doctor` used to print `[ok  ] instruction files  1 file(s) reach every member's prompt`; measured
-  2026-09-26 (`python3 review/dogfood/instructions.py`) the canary in such a file is absent from the leader's
-  prompt, because a member's system text is its own profile's `instructions`. Since D-102 `doctor` reports the
-  truth (`declared, not applied`). Making it work means appending the files' text to every member's prompt at
-  prompt-build time; the design baseline does not mention the key, so it is the user's call rather than this
-  turn's (D-75's rule: a key this build does not serve is made to work, refused with a pointer, or reported as
-  not in effect).
+- ~~**`instruction_files` is accepted but nothing reads it into a prompt.**~~ **Delivered since D-246.** The
+  loader validates each path, the driver composes the files' text into every instance's system prompt at prompt
+  build time (`config::instruction_text` → `team_kernel`), and `doctor` counts what a session will deliver
+  (`[ok  ] instruction files  1 file(s), 141 byte(s) reach every member's prompt`). The evidence is the probe
+  D-102 wrote to pin the *absence* (`python3 review/dogfood/instructions.py`, credential-free since D-246, in
+  `make probe-offline`): a local chat-completions server answers the leader's first request with a `spawn` call
+  and the probe reads the captured bodies — the leader's **and the child's** system prompt both carry the canary,
+  under the heading naming the file. `core`'s `config::instruction_text` test covers the composition (order,
+  headings, an unreadable file named back).
 - **`[models.*].max_retries` is accepted but nothing applies it.** The profile's retry count is parsed and
   validated like any other key and the driver's budget is the session's own constant (`engine/src/cli.rs` passes
   `max_retries: 2`), so a config that writes `max_retries = 9` gets 2 retries and no word about it. Since D-240 it
