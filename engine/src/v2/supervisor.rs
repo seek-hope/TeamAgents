@@ -390,7 +390,15 @@ where
                             provider: (self.config.provider_factory)(id, &profile),
                             catalog: self.config.catalog.clone(),
                             bindings: self.config.bindings.clone(),
-                            max_retries: self.config.max_retries,
+                            // D-247: the retry budget is the *instance's* own profile's `max_retries` (D-240
+                            // measured the key accepted and never applied: one session constant served every
+                            // member). The session's value stays the fallback for a profile the catalog cannot
+                            // resolve — a case the provider factory refuses at boot anyway — and the default
+                            // `default_retries()` is the constant this session used to pass, so a config that
+                            // omits the key behaves as before.
+                            max_retries: crate::providers::resolve_model(&self.config.catalog, &profile.model)
+                                .map(|(_, entry)| entry.max_retries.max(0) as usize)
+                                .unwrap_or(self.config.max_retries),
                             storage_queue: self.config.storage_queue,
                             poll: self.config.poll,
                             goal_limits: self.config.goal_limits.clone(),

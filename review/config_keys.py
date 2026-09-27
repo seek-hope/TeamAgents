@@ -37,7 +37,8 @@ found belong to `ReferenceConfig`/`DriverConfig`. Such a field is recorded in `M
 foreign mentions use, reported in its own bucket (the first number of the summary line stays the unserved count),
 and *checked*: a mention with any other receiver — the natural way to wire the key — is a finding, so the entry
 cannot outlive the gap it records. `--doc PATH=FILE` reads a copy of any crate file, which is the control
-(`--doc engine/src/v2/driver.rs=<copy where the driver takes the profile's value>` reports the new receiver).
+(`--doc engine/src/v2/driver.rs=<copy where the driver takes the profile's value>` reports the new receiver). (D-247 wired that key — the supervisor reads the instance's own catalog
+entry — and the check reported the new receiver exactly as advertised; `MASKED` is empty since.)
 
 Ceiling: only the *key* is compared — the model name, the context window and the reasoning effort the same
 sentences carry are prose; the statement list is fixed, so a *new* document that names the key is not swept in
@@ -78,14 +79,14 @@ KNOWN_UNSERVED = {
 # (D-240) A field the name-based search *over*-counts: every use it finds outside the plumbing is a same-named
 # field of *another* struct, so the field looks served while nothing reads the config key. Each entry records the
 # receivers those foreign uses have — a mention with any other receiver (the natural way to wire the key) is a
-# finding, so the entry cannot outlive the gap it records. Measured 2026-09-27: `[models.*].max_retries` is
-# accepted, validated and never applied; the driver's budget is the session's own constant (`engine/src/cli.rs`
-# passes `max_retries: 2`), so a user's `max_retries = 9` changes nothing — the D-75 class, masked by
-# `ReferenceConfig`/`DriverConfig`'s same-named field.
-MASKED = {
-    "max_retries": ({"config", "self.config"},
-                    "D-240: never applied — the driver's budget is the session's own constant, not this key"),
-}
+# finding, so the entry cannot outlive the gap it records.
+#
+# The table is **empty now**, and that is D-240's own outcome: `[models.*].max_retries` was its one entry (`the
+# driver's budget is the session's own constant`), D-247 wired the key per instance — the supervisor reads
+# `entry.max_retries` — and this check is what noticed: it reported the new receiver and said "either the key was
+# wired (then it is no longer unserved and this entry must go) or a new same-named field appeared". The mechanism
+# stays for the next field of that shape.
+MASKED = {}
 
 
 def unserved_reason(field: str):

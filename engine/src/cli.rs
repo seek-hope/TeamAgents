@@ -961,6 +961,8 @@ fn daemon_boot(
             permissions: if full_auto { "full_auto".into() } else { crate::config::permission_mode_from_config()? },
             catalog,
             bindings: default_bindings(),
+            // the fallback for an instance whose profile the catalog cannot resolve; each instance's own
+            // `[models.<key>] max_retries` is the budget it uses (D-247)
             max_retries: 2,
             storage_queue: 256,
             poll: Duration::from_millis(100),

@@ -7,7 +7,7 @@ model probe sets and the three formal gates).
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 102 / engine 260 / tui 35 test targets) and `make pty` passes; both are
+`make check` is green (core 102 / engine 261 / tui 35 test targets) and `make pty` passes; both are
 preconditions for every item below. `make check` includes `make language-check`, which fails on non-English
 characters outside the two documented exceptions (`README.zh-CN.md` and the frozen material under
 `review/eval`).
@@ -184,20 +184,15 @@ amended (D-49/D-50).
   and the probe reads the captured bodies — the leader's **and the child's** system prompt both carry the canary,
   under the heading naming the file. `core`'s `config::instruction_text` test covers the composition (order,
   headings, an unreadable file named back).
-- **`[models.*].max_retries` is accepted but nothing applies it.** The profile's retry count is parsed and
-  validated like any other key and the driver's budget is the session's own constant (`engine/src/cli.rs` passes
-  `max_retries: 2`), so a config that writes `max_retries = 9` gets 2 retries and no word about it. Since D-240 it
-  is *reported*: the field's own doc comment in `core/src/models.rs`, the `docs/CONFIG.md` row (`nothing: D-240:
-  …` instead of the two foreign structs the search used to name), the audit's `masked:` bucket, which also fails
-  when the key is mentioned through any other receiver, and — measured rather than asserted —
-  `python3 review/dogfood/max_retries.py` (offline, 4.6 s): a config asking for `max_retries = 0` against a server
-  that always truncates still sends three requests before `transient retries exhausted`, and the probe fails if a
-  future build sends the config's one instead. The
-  three fates D-75's rule allows are not equivalent here and the choice is **the user's call**: wire it (which
-  means deciding the bound, and A19 pins the retry shape at `max_retries = 2`), refuse it at load like
-  `codex_profile` (a load error for a config that writes it today), or keep it dead and report it in `doctor` too
-  (which needs the field to become an `Option`, because serde fills the absent value in, so a row cannot tell
-  "declared" from "the struct's default").
+- ~~**`[models.*].max_retries` is accepted but nothing applies it.**~~ **Applied per instance since D-247.** The
+  profile's retry budget is the budget *that instance's* driver uses (`supervisor` resolves the instance's catalog
+  entry; the session constant stays the fallback for a profile the catalog cannot resolve), a negative value is
+  refused at load, and the default (`default_retries()`) is the constant the session passed before, so a config
+  that omits the key behaves as before. The probe D-240 wrote now runs after the flip
+  (`python3 review/dogfood/max_retries.py`, offline): `max_retries = 0` sends **one** request, `= 3` sends
+  **four**, and the key omitted sends the default's count — measured 2026-09-27 in 14 s, and the audit that
+  recorded the gap (`review/config_keys.py`'s `MASKED` table) reported the new receiver the moment the wiring
+  landed, which is how the entry came out.
 - **`[retention] history_days` is applied since D-245; `archived_days` still is not.** DESIGN §9 promises
   ordinary history is "archived or cleaned per user configuration" while live references and evaluation
   evidence are never evicted; D-192 modelled that rule first (`verification/tla/V2Retention.tla` with four

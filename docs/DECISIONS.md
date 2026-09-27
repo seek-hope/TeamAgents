@@ -20,6 +20,45 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-247 `[models.*].max_retries` is applied, per instance (2026-09-27)
+
+D-240 measured the key accepted, validated and ignored — one session constant (`engine/src/cli.rs` passed
+`max_retries: 2`) served every member — and left the fix to a decision, because the three fates D-75's rule allows
+are not equivalent here. **Decided: make it work**, with two constraints that keep the change honest.
+
+**Applied per instance, from that instance's own profile**: the supervisor builds each driver's config and now
+resolves the instance's catalog entry (`providers::resolve_model`, which already maps a profile's wire model name
+back to its key — D-59) and passes *its* `max_retries`; the session constant stays the fallback for a profile the
+catalog cannot resolve, a case the provider factory refuses at boot anyway. So a mixed team can give a flaky
+provider more retries than a local one, and a member's budget is the one its own `[models.<key>]` declares.
+
+**The default does not move**: `default_retries()` is 2 — exactly the constant every instance was given before
+this change — so a config that omits the key behaves as it did, and the only behaviour that changes is the one a
+user asked for by writing the key. A negative value is *refused at load* with the key named (D-229's shape);
+0 means one attempt, the natural reading of "do not retry" (the reading `[retention] history_days = 0` already
+has).
+
+**Measured** (`review/dogfood/max_retries.py`, offline, 14 s): the probe D-240 wrote now runs after the flip —
+`max_retries = 0` sends **one** request and records one transient `FAILED` attempt, `= 3` sends **four**, and the
+key omitted sends the struct default's count (3), all against a local server that truncates every response. The
+old expectation failed first with exactly the sentence it was built to say: "the config's max_retries=0 IS
+applied now … delete the D-240 record, the `masked:` bucket and this probe's expectation together". And the audit
+that recorded the gap (`review/config_keys.py`'s `MASKED` table, D-240) reported the new receiver (`entry`) the
+moment the wiring landed — "either the key was wired (then it is no longer unserved and this entry must go) or a
+new same-named field appeared" — so the entry came out as designed, and `MASKED` is empty again.
+
+Ceiling: the budget is a *count of retries per request*, not a wall-clock bound — a large value delays the park
+(DESIGN Q10's bound is the turn's budget and deadline, which still apply), and a user who wants no retries writes
+0; the probe writes the key into the *user* config only, so what a trusted repository's profile does with it is
+D-244's gate, not this entry's; and one instance's budget is read from the catalog at driver construction, so a
+config edited mid-session applies to the next session (the stored profile of a member is its own, D-69).
+
+**Two probe-authoring defects were caught by running it, and are recorded because the probe is the evidence**:
+the first version's regex (`(?:\*[^\n]*\n\s*)*`) backtracked catastrophically over `core/src/models.rs` and hung
+the run — the pattern is now a plain body match; and the second version read the default as **247**, because the
+function's own doc comment names this decision and `\d+` found its digits first — comments are stripped before
+the number is read.
+
 ## D-246 `instruction_files` reach every member's prompt (D-102's promise, delivered) (2026-09-27)
 
 D-102 measured the canary: a file in `instruction_files` was validated, counted by `doctor` as reaching "every
@@ -302,8 +341,11 @@ offline set's size visible — `review/README.md`'s `probes.py` row still said "
 which no rule read — so the self-check now recomputes that row's number beside
 `review/dogfood/README.md`'s phrase and name list (D-176/D-233's rule, one document further out).
 
+**Decided (D-247)**: the key is *made to work*, per instance, with the previous default kept — so the
+three fates below were weighed and the first one chosen.
+
 Ceiling: the three fates D-75's rule allows ("made to work, refused with a pointer, or reported as not in
-effect") are not equivalent here, so the choice needs the user's word. Wiring it means deciding a bound — a
+effect") are not equivalent here, so the choice needed a decision. Wiring it means deciding a bound — a
 user-set retry count is a bounded-resource policy (DESIGN Q10) and A19 pins the retry shape at `max_retries = 2`
 — and it needs a lookup the supervisor does not have today (the instance's catalog entry, since `KernelProfile`
 carries no retry count); refusing it is a load error for a config that writes the key today; and reporting it in
@@ -6443,9 +6485,12 @@ invisible to the runtime.
   right: "full_auto"`).
 - **`retention` is reported, not implemented.** Deleting history is destructive and the design ties it to
   conditions that need their own verification (ordinary history may be cleaned; live references and
-  evaluation evidence may never be evicted), so the honest step now is that `doctor` stops implying it works:
-  the row is a WARN saying the numbers "are not applied: this release never archives or prunes a session, so
-  nothing is deleted". Implementing it is the user's call and is recorded in ACCEPTANCE's known gaps.
+  evaluation evidence may never be evicted), so the honest step now was that `doctor` stops implying it works:
+  the row was a WARN saying the numbers "are not applied: this release never archives or prunes a session, so
+  nothing is deleted". **Closed by D-245/D-247**: `history_days` is applied at a session's boot under the guards
+  `verification/tla/V2Retention.tla` pins (D-245), `archived_days` stays unapplied *and* reported (one session per
+  state root, A33), and the other keys this rule named were each made to work or refused in between
+  (`[permissions] mode` earlier, `instruction_files` in D-246, `max_retries` in D-247).
 - **`codex_profile` is refused.** A key that changes which provider and credentials a member uses must not be
   ignored; the loader now fails with `models.<key>.codex_profile = …: an external Codex profile is not part of
   this release; configure the member directly with provider/protocol/base_url/api_key_env`

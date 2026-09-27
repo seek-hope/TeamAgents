@@ -37,9 +37,10 @@ pub struct ModelProfile {
     pub api_key_env: Option<String>,
     #[serde(default = "default_timeout")]
     pub timeout: i64,
-    /// Transport retries the driver may add to one request. **Accepted but not applied in this release** (D-240):
-    /// the session's retry budget is its own constant, so this key changes nothing yet — `docs/CONFIG.md` lists it
-    /// with that reason and `docs/ACCEPTANCE.md` carries the open question (wire it, refuse it, or report it).
+    /// Transport retries the driver may add to one request: the instance that uses this profile retries a
+    /// transient failure this many times before the turn parks with `transient retries exhausted` (A19). Applied
+    /// per instance since D-247 (D-240 measured the key accepted and ignored, because one session constant served
+    /// every member); 0 means one attempt, and a negative value is refused at load.
     #[serde(default = "default_retries")]
     pub max_retries: i64,
     #[serde(default)]
@@ -66,8 +67,12 @@ fn default_timeout() -> i64 {
     120
 }
 
+/// D-247: the budget the session passed for *every* instance before `max_retries` was applied per instance, so
+/// applying the key changed no configuration that omits it. (The comment sits *above* the function on purpose:
+/// `review/config_reference.py` reads a `#[serde(default = "…")]` value from the function's body and reports
+/// anything but a bare literal rather than guessing — which is how this one was noticed, D-239.)
 fn default_retries() -> i64 {
-    5
+    2
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

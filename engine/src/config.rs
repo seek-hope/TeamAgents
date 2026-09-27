@@ -255,6 +255,16 @@ fn validate_profiles(catalog: &UserConfig) -> Result<(), String> {
                 PROTOCOLS.join(", ")
             ));
         }
+        // D-247: the retry budget is applied per instance now, so a value the build cannot serve is refused at
+        // load rather than clamped: a negative count has no meaning, and silently reading it as zero would make
+        // the key look applied while changing nothing (D-75's rule).
+        if profile.max_retries < 0 {
+            return Err(format!(
+                "models.{key}.max_retries = {}: the retry budget is a whole number of retries, 0 or more \
+                 (0 means one attempt)",
+                profile.max_retries
+            ));
+        }
         // D-229: two more silent misconfigurations, the class D-162 fixed for `protocol`. Measured 2026-09-27:
         // `base_url = "not a url"` loaded fine and failed at the first call as `permanent model error: chat API:
         // builder error` — neither the key nor the URL — and `context_window = 0` loaded fine, though a
@@ -474,6 +484,18 @@ mod tests {
     /// scope excludes (DESIGN Q12) and that no code path reads; a config carrying it
     /// used to run the shipped provider while the user believed Codex owned the
     /// profile.
+    /// D-247: the retry budget is applied per instance now, so a value the build cannot serve is refused at load
+    /// with the key named (the D-229 shape) rather than clamped to zero, which would look applied while adding no
+    /// retry at all.
+    #[test]
+    fn a_negative_retry_budget_is_refused_at_load() {
+        let error = parse_user_config("[models.m]\nprovider = \"openai\"\nmodel = \"x\"\nmax_retries = -1\n")
+            .expect_err("a negative budget is refused");
+        assert!(error.contains("models.m.max_retries = -1") && error.contains("0 or more"), "{error}");
+        assert!(parse_user_config("[models.m]\nprovider = \"openai\"\nmodel = \"x\"\nmax_retries = 0\n").is_ok(),
+                "0 means one attempt, which is a valid budget");
+    }
+
     #[test]
     fn a_codex_profile_is_refused_instead_of_ignored() {
         let _env = crate::env_lock();
