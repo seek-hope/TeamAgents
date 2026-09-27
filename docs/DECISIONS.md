@@ -20,6 +20,60 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-256 The delegation cost, measured: members that cannot execute, and the user's grant as round 5's missing half (2026-09-28)
+
+Round 4's pilot said *that* a D trial costs 20–21 model requests against group B's 7 on the same two-file task
+(D-254) and left the *where* open. `review/eval/r2-p6/anatomy.py` reads it out of the committed checkpoints:
+every request is classified by the tools it called (inspect / edit / execute / orchestrate / settle / wait), per
+instance, so the split is a re-runnable measurement rather than an inference.
+
+**Measured (the r4 batch, `runs/2026-09-27-r4-pilot/`).** In all three D trials **every member made zero
+`execute` calls**: `alpha-fixer` 5 requests (inspect=7, edit=1), `beta-fixer` 6 (inspect=10, edit=1),
+`worker_words` 7 (inspect=**29**, edit=1) — while the leader made 3–5 and group B, as one instance, made 4–5.
+The reason is §5.1's boundary: a spawned member holds no `shell@workspace`, so it **cannot run the acceptance
+check its own task names**. It can only inspect files, which is why the one member that had to reason about
+whitespace-normalising text read its inputs 29 times; the leader then re-derived the workspace and ran *every*
+acceptance command itself. Delegation was therefore paying twice: unverified member work, plus the leader's
+full verification of it.
+
+**Decided: the user does its part of the design's flow in the treatment.** `eval_groups_abc`'s team branch now
+issues the user's grant — `shell@workspace` to each member, within 100 ms of its appearing (the poll tightens to
+100 ms only in that branch) — which is exactly what A03's live probe does by hand and what §5.1 says the user
+must do. The *product's* default is untouched: a real session still spawns members with no shell, and whether
+that default should change stays D-61's open question. What changes is that round 5's arm can now be *competent*
+instead of handicapped.
+
+**Measured again on the same two tasks with the same manifest** (`runs/2026-09-28-grant-pilot/`, harness digest
+in its header): members execute **1–5** times each and both of their tasks settle `SUCCEEDED`; `multi-step.D`
+went **32.0 → 23.4 s**. Three honest caveats, because the second number is not a clean gain:
+
+* `parallel-deliverables.D` went 327.1 → 38.0 s, and that comparison is **confounded**: r4's 327 s was 284.6 s
+  of timer stall caused by the two members *reporting* `BLOCKED` (D-255's second trap), and this run's members
+  chose `SUCCEEDED`. One repeat per arm cannot separate the grant from the model's own choice, and this entry
+  does not claim it does.
+* the **request count did not fall** (20 → 23 in `multi-step.D`): the leader still runs the acceptance commands
+  itself. The grant buys *verified work where the work happens*, not a cheaper integration.
+* so the fixed integration cost — the leader's ~3–5 requests to re-run the checks and settle, ≈10–15 s — is not
+  something this change removes, and on a task a solo instance finishes in 6–25 s, **group D cannot beat group
+  B**: D is B plus the orchestration.
+
+**What that fixes for the experiment.** The arithmetic is now measured rather than assumed: `D ≈ 13 s + u`
+(setup, batched spawn/delegate, the longest member, integration) against `B ≈ u × N` for `N` independent units
+of `u` seconds each, so the break-even is `N ≥ 3` units of ~12 s and `N = 6` gives roughly a 2× margin. Round 5
+is therefore a **task set of six independent units, each with its own frozen tests**, with the wall-clock bound
+calibrated by a reconnaissance run *before* the pre-registration is frozen (the pre-registration will state the
+derivation rule, and the reconnaissance is not evidence for the hypothesis).
+
+**And the batch runner gained a list.** `run.py --only` took one task id, so a pilot that wanted two tasks had to
+rewrite its own `run-header.json` twice; it now takes a comma-separated list and refuses a name the manifest does
+not carry. That is a structural change to the analysis driver, which `review/eval_manifests.py` allows only when
+a manifest records it — so round 5's manifest names it in `driver_changes` (D-182's entry is the only one the
+*frozen* r4 manifest carries, and it is not edited). No recorded verdict depends on task selection.
+
+Ceiling: one repeat per arm and one model (DeepSeek Flash) on one provider; the bucket is a tool *name*, so an
+inspection that re-verifies is indistinguishable from one that explores; a wall-clock race measures time, not
+the quality of collaboration; and the grant pass makes a *harness* arm competent, not the product's default.
+
 ## D-255 The delegator's wait gets an unambiguous contract (the walk-up to round 4's 575.6 s stall) (2026-09-28)
 
 D-254's pilot left one measurement unread: *why* one D trial's wall clock was 575.6 s in a single gap. Reading

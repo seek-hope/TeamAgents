@@ -1,0 +1,35 @@
+== csvfix ==
+..                                                                       [100%]
+2 passed in 0.01s
+== rules ==
+.                                                                        [100%]
+1 passed in 0.01s
+== files ==
+.:
+total 20
+drwxr-xr-x 4 rimuru rimuru 4096 Sep 28 03:34 .
+drwxr-xr-x 5 rimuru rimuru 4096 Sep 28 03:34 ..
+drwxr-xr-x 4 rimuru rimuru 4096 Sep 28 03:34 csvfix
+-rw-r--r-- 1 rimuru rimuru 1911 Sep 28 03:34 INDEX.md
+drwxr-xr-x 4 rimuru rimuru 4096 Sep 28 03:34 rules
+
+csvfix:
+total 24
+drwxr-xr-x 4 rimuru rimuru 4096 Sep 28 03:34 .
+drwxr-xr-x 4 rimuru rimuru 4096 Sep 28 03:34 ..
+-rw-r--r-- 1 rimuru rimuru  591 Sep 28 03:34 impl.py
+drwxr-xr-x 2 rimuru rimuru 4096 Sep 28 03:34 __pycache__
+drwxr-xr-x 3 rimuru rimuru 4096 Sep 28 03:34 .pytest_cache
+-rw-r--r-- 1 rimuru rimuru  302 Sep 24 15:32 test_csvfix.py
+
+rules:
+total 24
+drwxr-xr-x 4 rimuru rimuru 4096 Sep 28 03:34 .
+drwxr-xr-x 4 rimuru rimuru 4096 Sep 28 03:34 ..
+-rw-r--r-- 1 rimuru rimuru  573 Sep 28 03:34 engine.py
+drwxr-xr-x 2 rimuru rimuru 4096 Sep 28 03:34 __pycache__
+drwxr-xr-x 3 rimuru rimuru 4096 Sep 28 03:34 .pytest_cache
+-rw-r--r-- 1 rimuru rimuru  319 Sep 24 15:32 test_rules.py
+== hashes ==
+588db2b78e9d1365dd8d7563abe70812bf958955665a95ad02b1e6a16c793724  csvfix/test_csvfix.py
+4c425638c58c34872b0800f5fe19092c011785e123c15a1c69e2e99d762a5af8  rules/test_rules.py

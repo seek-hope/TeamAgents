@@ -1,0 +1,9 @@
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-grant-pilot/work/multi-step.D.1
+alpha ok
+ALPHA_EXIT=0
+beta ok
+BETA_EXIT=0
+4391d9cc813f85ff330ee11e11b65d9c  alpha/check.py
+35422f37953fbf37963d3672f88eae31  beta/check.py
+06cc59c6d133cff5257db0975d5b6817  alpha/alpha.py
+5504ff690518a8dfdb9e4a62b180a206  beta/beta.py

@@ -1,0 +1,5 @@
+diff: alpha/alpha.py: No such file or directory
+/bin/bash: line 29: cd: alpha: No such file or directory
+---
+def add(a, b):
+    return a + b

@@ -1,0 +1,12 @@
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-grant-pilot/work/multi-step.D.1/alpha
+--- alpha/alpha.py:
+def add(a, b):
+    return a + b
+--- check.py:
+import alpha
+assert alpha.add(2, 3) == 5, alpha.add(2, 3)
+print("alpha ok")
+--- beta:
+beta.py
+check.py
+__pycache__

@@ -1,0 +1,11 @@
+./beta.py
+./check.py
+./__pycache__/beta.cpython-313.pyc
+--- git ---
+ M engine/examples/eval_groups_abc.rs
+ M review/eval/r2-p6/run.py
+?? review/eval/r2-p6/anatomy.py
+?? review/eval/r2-p6/runs/2026-09-28-grant-pilot/
+--- pycache check ---
+./__pycache__
+./__pycache__/beta.cpython-313.pyc

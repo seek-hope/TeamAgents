@@ -1,0 +1,1 @@
+{"message":{"role":"assistant","reasoning_content":"Let me start by exploring the workspace.","content":"","tool_calls":[{"id":"call_00_o7A8qchmKC3k2BtHiib67653","type":"function","function":{"name":"ls","arguments":"{\"path\": \".\"}"}}]},"usage":{"prompt":2416,"completion":44,"total":2460},"native":{"protocol":"chat_completions","base":"https://api.deepseek.com/v1"}}

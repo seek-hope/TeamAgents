@@ -25,7 +25,7 @@ use teamagents_engine::config::{load_user_config, user_config_path};
 use teamagents_engine::providers::build_for_model;
 use teamagents_engine::reference::{basic_tool_schemas, run_reference, ReferenceConfig, ReferenceEnd};
 use teamagents_engine::v2::driver::{start, DriverConfig};
-use teamagents_engine::v2::supervisor::{start as start_supervisor, SupervisorConfig};
+use teamagents_engine::v2::supervisor::{start as start_supervisor, SupervisorConfig, SupervisorHandle};
 
 type Fallible<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -417,7 +417,8 @@ async fn run_driver_trial(
                 .await?;
         }
         handle.input(instance, task).await?;
-        let outcome = wait_goal(&session_db, session_id, instance, args.timeout_s, &mut events_seen).await?;
+        let outcome =
+            wait_goal(&session_db, session_id, instance, args.timeout_s, &mut events_seen, Some(&handle)).await?;
         handle.shutdown().await?;
         outcome
     } else {
@@ -442,7 +443,7 @@ async fn run_driver_trial(
         };
         let handle = start(config).await?;
         handle.input(task).await?;
-        let outcome = wait_goal(&session_db, session_id, instance, args.timeout_s, &mut events_seen).await?;
+        let outcome = wait_goal(&session_db, session_id, instance, args.timeout_s, &mut events_seen, None).await?;
         handle.shutdown().await?;
         outcome
     };
@@ -458,17 +459,37 @@ async fn run_driver_trial(
 
 /// Terminal goal status, idle reply, or the deadline: the same stopping rule
 /// for B and C (§13.1 keeps the two groups comparable).
+///
+/// **The user's half of the flow (D-256).** A spawned member holds no
+/// `shell@workspace` (§5.1), so it cannot run the acceptance check its task
+/// names and can only inspect files — measured in the round-4 pilot, where the
+/// leader then re-ran every check itself (20 requests against group B's 8 for
+/// the same two-file task). The design's answer is the *user's* grant (A03's
+/// live probe issues exactly this by hand), so the team branch does it here,
+/// within 100 ms of a member appearing, and records how many it granted. The
+/// product's default is untouched; this is the treatment the round-5 arm adds.
 async fn wait_goal(
     session_db: &Path,
     session_id: &str,
     instance: &str,
     timeout_s: u64,
     events_seen: &mut i64,
+    grant_shell_to_members: Option<&SupervisorHandle>,
 ) -> Fallible<(String, Usage, usize)> {
     let deadline = Instant::now() + Duration::from_secs(timeout_s);
+    let mut granted: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     loop {
         let control = Control::open(session_db, session_id, false)?;
         let conn = control.connection();
+        // the members that exist right now: the grant has to land while a
+        // worker is still choosing how to work, not after it has finished
+        let members: Vec<String> = {
+            let mut stmt = conn
+                .prepare("SELECT id FROM instances WHERE session_id = ?1 AND id != ?2 AND lifecycle != 'TERMINATED'")
+                .map_err(|e| format!("members: {e}"))?;
+            let rows = stmt.query_map(rusqlite::params![session_id, instance], |row| row.get::<_, String>(0))?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
         let goal: Option<(String, String)> = conn
             .query_row("SELECT status, known_usage_json FROM goals LIMIT 1", [], |row| Ok((row.get(0)?, row.get(1)?)))
             .ok();
@@ -496,6 +517,20 @@ async fn wait_goal(
         let phase: Option<String> =
             conn.query_row("SELECT phase FROM instances WHERE id = ?1", [instance], |row| row.get(0)).ok();
         drop(control);
+        if let Some(handle) = grant_shell_to_members {
+            for member in members {
+                if !granted.insert(member.clone()) {
+                    continue;
+                }
+                handle
+                    .submit_user(Command {
+                        command_id: format!("grant-shell-{member}"),
+                        method: "issue_grant".into(),
+                        params: json!({"subject": member, "action": "shell", "resource_scope": "workspace"}),
+                    })
+                    .await?;
+            }
+        }
         let usage = goal.as_ref().and_then(|(_, known)| serde_json::from_str::<Usage>(known).ok()).unwrap_or_default();
         if let Some((status, _)) = &goal {
             if matches!(status.as_str(), "SUCCEEDED" | "FAILED" | "BLOCKED" | "CANCELLED") {
@@ -515,6 +550,9 @@ async fn wait_goal(
         if Instant::now() > deadline {
             return Ok(("timeout".to_string(), usage, attempts as usize));
         }
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        // the member grant is only useful while the member is still working, so
+        // the team branch watches faster than the single-instance one
+        let poll = if grant_shell_to_members.is_some() { 100 } else { 500 };
+        tokio::time::sleep(Duration::from_millis(poll)).await;
     }
 }

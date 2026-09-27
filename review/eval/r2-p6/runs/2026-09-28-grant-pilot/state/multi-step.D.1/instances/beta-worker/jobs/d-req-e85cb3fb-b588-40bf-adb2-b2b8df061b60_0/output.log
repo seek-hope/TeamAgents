@@ -1,0 +1,23 @@
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-grant-pilot/work/multi-step.D.1/beta
+def mul(a, b):
+    return a * b
+diff --git a/engine/examples/eval_groups_abc.rs b/engine/examples/eval_groups_abc.rs
+index 4f908581..2d2c42e4 100644
+--- a/engine/examples/eval_groups_abc.rs
++++ b/engine/examples/eval_groups_abc.rs
+@@ -25,7 +25,7 @@ use teamagents_engine::config::{load_user_config, user_config_path};
+ use teamagents_engine::providers::build_for_model;
+ use teamagents_engine::reference::{basic_tool_schemas, run_reference, ReferenceConfig, ReferenceEnd};
+ use teamagents_engine::v2::driver::{start, DriverConfig};
+-use teamagents_engine::v2::supervisor::{start as start_supervisor, SupervisorConfig};
++use teamagents_engine::v2::supervisor::{start as start_supervisor, SupervisorConfig, SupervisorHandle};
+ 
+ type Fallible<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
+ 
+@@ -417,7 +417,8 @@ async fn run_driver_trial(
+                 .await?;
+         }
+         handle.input(instance, task).await?;
+-        let outcome = wait_goal(&session_db, session_id, instance, args.timeout_s, &mut events_seen).await?;
++        let outcome =
++            wait_goal(&session_db, session_id, instance, args.timeout_s, &mut events_seen, Some(&handle)).await?;

@@ -37,7 +37,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--phase", choices=["pilot", "formal"], required=True)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--only", default="")
+    # a comma-separated list, so a pilot can name the two or three tasks it means and still bake one header
+    ap.add_argument("--only", default="", help="task id(s) to run, comma-separated")
     ap.add_argument("--groups", default="A,B,C")
     ap.add_argument("--repeats", type=int, default=0, help="override the manifest's repeat count")
     ap.add_argument("--resume", action="store_true", help="skip trials already present in results.jsonl")
@@ -47,7 +48,13 @@ def main() -> int:
     manifest = load_manifest(args.manifest)
     repeats = args.repeats or (1 if args.phase == "pilot" else manifest["repeats"]["formal"])
     groups = [g for g in args.groups.split(",") if g]
-    tasks = [t for t in manifest["tasks"] if not args.only or t["id"] == args.only]
+    wanted = [name for name in args.only.split(",") if name]
+    tasks = [t for t in manifest["tasks"] if not wanted or t["id"] in wanted]
+    if wanted:
+        unknown = [name for name in wanted if name not in {t["id"] for t in manifest["tasks"]}]
+        if unknown:
+            print(f"--only names task(s) this manifest does not carry: {', '.join(unknown)}", file=sys.stderr)
+            return 2
     out = pathlib.Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     results_path = out / "results.jsonl"

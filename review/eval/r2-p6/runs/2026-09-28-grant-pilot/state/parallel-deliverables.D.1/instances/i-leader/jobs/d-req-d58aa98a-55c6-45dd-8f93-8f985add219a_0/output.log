@@ -1,0 +1,55 @@
+== csvfix pytest ==
+..                                                                       [100%]
+2 passed in 0.01s
+exit=0
+== rules pytest ==
+.                                                                        [100%]
+1 passed in 0.01s
+exit=0
+== test hashes ==
+588db2b78e9d1365dd8d7563abe70812bf958955665a95ad02b1e6a16c793724  csvfix/test_csvfix.py
+4c425638c58c34872b0800f5fe19092c011785e123c15a1c69e2e99d762a5af8  rules/test_rules.py
+== impl.py ==
+def parse(line):
+    """Trim each field and require exactly 3 columns.
+
+    Returns the list of trimmed fields, or None when the column count != 3.
+    """
+    fields = [field.strip() for field in line.split(",")]
+    if len(fields) != 3:
+        return None
+    return fields
+
+
+def total(rows):
+    """Sum the 3rd column (amount), skipping rows with a blank amount."""
+    result = 0
+    for row in rows:
+        if len(row) > 2:
+            amount = row[2].strip()
+            if amount:
+                result += int(amount)
+    return result
+== engine.py ==
+def evaluate(rules, facts):
+    """Evaluate a rule mapping against a fact mapping.
+
+    Supported rule forms:
+      {"all": [fact, ...]} -> True iff every listed fact is truthy
+      {"any": [fact, ...]} -> True iff at least one listed fact is truthy
+
+    Missing facts are treated as falsy. If both keys are present, both
+    conditions must hold. Always returns a real ``bool``.
+    """
+    results = []
+    if "all" in rules:
+        results.append(all(bool(facts.get(key, False)) for key in rules["all"]))
+    if "any" in rules:
+        results.append(any(bool(facts.get(key, False)) for key in rules["any"]))
+    if not results:
+        return False
+    return all(results)
+== extras check (edge) ==
+None
+2
+False
