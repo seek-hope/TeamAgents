@@ -52,9 +52,16 @@ headings, an unreadable path named back, an empty list producing empty text).
 Ceiling: the composition is per *turn*, so the files are re-read on every turn — a deliberate choice (an edit
 lands immediately) at the cost of one read per file per turn, with no size cap beyond the context window and
 compaction; the probe covers the leader and one child, so "every member" rests on the single composition point
-plus that pair rather than on an enumeration; and the model side of this rule (which prompt gets what, across the
-orders in which instances are created and turns run) is not a TLA model yet — the property is a text composition,
-and the evidence here is the delivered request, the direct form of it.
+plus that pair rather than on an enumeration.
+
+**And the composition is modelled** (`verification/tla/V2Prompt.tla`, three refuted controls): an instance that
+runs a turn is prompted with the session's rules whatever its own profile says — the child spawned mid-session
+included — a prompt is composed from the rules as they are *now* (so an edit lands on the next turn), and an
+unreadable file is noted rather than dropped in silence. The counterfactuals are the shapes to avoid: a member
+whose prompt is its own profile only (exactly D-102's measurement), a composition frozen at the session's start,
+and an unreadable file ignored. Writing it caught one of *this model's own* drafts: `stalePrompt' = stalePrompt \/
+…` needs parentheses because `=` binds tighter than `\/`, and TLC said so — "Successor state is not completely
+specified … not assigned: stalePrompt" — while the base configuration, where both constants are FALSE, verified.
 
 ## D-245 `[retention] history_days` is applied, against the model that pinned its guards (2026-09-27)
 
