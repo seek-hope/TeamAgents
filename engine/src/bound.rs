@@ -66,7 +66,7 @@ impl BoundTools {
             // configured MCP service was unreachable while the docs promised the
             // `[tools.*]` section as the binding (the web rule below has always
             // worked this way). Only the merged, trust-filtered catalog reaches here:
-            // a project file's tools need `[permissions] trust_project_tools = true`.
+            // a project file's tools need `[permissions] trust_project = true`.
             let declared_service = binding.kind == "mcp";
             if (web || declared_service) && !declared_now {
                 selected.push((name.clone(), binding.clone()));

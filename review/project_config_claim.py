@@ -11,12 +11,21 @@ reader who sees the function, its tests and D-74's design note has every reason 
 So the fact is computed here from the code — does `load_user_config_for` have a production caller (a mention
 in `core|engine|tui/src` outside a `#[cfg(test)] mod`)? — and the documents have to agree with it:
 
-* while it has none, each negative sentence below must be **present**, and each wording that claims the merge
-  is live must be **absent**;
-* wiring the loader flips both halves, so the script fails until the sentences are rewritten and this list is
-  updated with them. That is the point: the claim is one fact with several statements, not several opinions.
+* while it has none, each sentence of `UNWIRED_CLAIMS` must be **present** and each sentence of `WIRED_CLAIMS`
+  **absent**;
+* the lists flip with the fact, so the script fails until the sentences are rewritten together. That is the
+  point: the claim is one fact with several statements, not several opinions.
 
     python3 review/project_config_claim.py
+
+**D-244 flipped them**, and the flip is what the design was for: the loader became the product's path (the
+daemon, `doctor` and the client all load through it) under one gate — `[permissions] trust_project = true` in the
+user's own config, with `[permissions]` itself, `hooks`, `checks`, `retention` and `limits` never coming from a
+repository. The four negative sentences are now this audit's blacklist (`WIRED_ONLY_PHRASES` was folded into
+`WIRED_CLAIMS`: each document must state the live behaviour in words the list carries), and the wiring was
+measured over a real session rather than inferred from the call graph —
+`review/dogfood/project_config.py` reads the offered-surface witness twice, refused and trusted, and a third time
+for a project that tries to grant itself the flag.
 
 **D-236 added the sibling fact in the same files.** The *user* config's path is stated in five places — the
 README, the user guide, the config reference, the install guide and `install.sh`, which **writes** the very file
@@ -59,7 +68,9 @@ CFG_TEST = "#[cfg(test)]"
 TEST_MOD = re.compile(r"^mod \w+")
 CLOSE = re.compile(r"^}")
 
-# (document, sentence that must be present while nothing reads the project config, where it lives)
+# (document, sentence that must be present while nothing reads the project config, where it lives). Since D-244
+# this is the blacklist: the loader *is* wired, so each of these must be gone, and this list is what notices if one
+# comes back.
 UNWIRED_CLAIMS = [
     ("docs/CONFIG.md", "no entry point calls it yet", "the config reference's trust rule"),
     ("docs/USER-GUIDE.md", "not read by the current entry points", "the user guide's §2"),
@@ -67,12 +78,15 @@ UNWIRED_CLAIMS = [
     ("docs/PRODUCT-COMPARISON.md", "not read yet", "the comparison's config row"),
 ]
 
-# Wording that asserts the merge is live. All three were in the tree before D-133 and are false while nothing
-# calls the loader; they must be gone, and this is what notices if one comes back.
-WIRED_ONLY_PHRASES = [
-    ("docs/CONFIG.md", "project file *is* read"),
-    ("docs/USER-GUIDE.md", "a cloned project's tools load only with"),
-    ("docs/ACCEPTANCE.md", "or a trusted project config"),
+# (D-244) …and the statements that replace them, one per document, required while the merge is live. They say the
+# same fact with the parts a reader needs: that it is read, the one gate that makes it contribute, and what a
+# repository can never set. `WIRED_ONLY_PHRASES` (the three wordings that were wrong while nothing read the file)
+# is folded into this list: the positive half is no longer a blacklist but a statement.
+WIRED_CLAIMS = [
+    ("docs/CONFIG.md", "is read by the product now", "the config reference's trust rule"),
+    ("docs/USER-GUIDE.md", "it contributes nothing until you opt in", "the user guide's §2"),
+    ("docs/ACCEPTANCE.md", "The project config is read, since D-244", "the known-gap entry"),
+    ("docs/PRODUCT-COMPARISON.md", "reads repository-local configuration", "the comparison's config row"),
 ]
 
 # (D-236) The *user* config's path is the sibling fact, stated in the same files and compared by nothing: the
@@ -162,14 +176,14 @@ def main() -> int:
     print(f"the project-config loader ({LOADER}) {state} called by the product's own code "
           f"({calls} production call site(s))")
     findings = []
-    for path, sentence, where in UNWIRED_CLAIMS:
-        present = normalize(sentence) in normalize((REPO / path).read_text())
-        if present == wired:  # must be present while unwired, absent once wired
-            verb = "still present although the loader is now called" if wired else "missing"
-            findings.append(f"{path}: the statement that the project config is not read is {verb} — {where}")
-    for path, phrase in WIRED_ONLY_PHRASES:
-        if not wired and normalize(phrase) in normalize((REPO / path).read_text()):
-            findings.append(f"{path}: {phrase!r} claims the merge is live, but no entry point calls the loader")
+    state = "read" if wired else "not read"
+    for path, sentence, where in (WIRED_CLAIMS if wired else UNWIRED_CLAIMS):
+        if normalize(sentence) not in normalize((REPO / path).read_text()):
+            findings.append(f"{path}: the statement that the project config is {state} is missing — {where}")
+    for path, sentence, where in (UNWIRED_CLAIMS if wired else WIRED_CLAIMS):
+        if normalize(sentence) in normalize((REPO / path).read_text()):
+            findings.append(f"{path}: {sentence!r} states the {'unwired' if wired else 'wired'} side of the fact, "
+                            f"but the loader is {'called' if wired else 'not called'} — {where}")
     # D-236: the user config's path, derived from the code, against every place that states it
     source = read(str(UPATH_SOURCE.relative_to(REPO)), overrides)
     app, body = UPATH_APP.search(source), UPATH_FN.search(source)
@@ -210,9 +224,6 @@ def main() -> int:
                                 f"`{env.group(1)}` (or the `{default}` default) is the other half of the path")
     for finding in findings:
         print("FAIL:", finding)
-    if wired and not findings:
-        print("  next: the loader is wired now, so the four negative sentences and this script's list must be "
-              "rewritten together")
     return 1 if findings else 0
 
 

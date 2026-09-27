@@ -29,7 +29,7 @@ their projects claim. Codex was run (its help output is the evidence above).
 | Extensions | `mcp add/remove/login`, `plugin`, `features` | skills, prompt templates and extensions (upstream `packages/coding-agent/docs/skills.md` and `extensions.md`); **no MCP** — no MCP page in the upstream docs index and no path in its tree contains "mcp" | MCP, skills (agentskills.io compatible), memory providers | MCP over stdio + streamable HTTP, declared in `[tools.*]` (D-74); skills from `~/.agents/skills` and configured roots (A26, D-34/D-66); user hooks `pre_tool`/`notify` (D-45, live evidence D-92) |
 | Teams / subagents | (single agent per session; `fork` for branches) | one subagent extension example (one process per subagent, isolated context windows; ≤8 tasks, 4 concurrent); **no worktree isolation** — no path in the upstream tree contains "worktree" | subagents for parallel workstreams | the product's centre: one Leader per session, `spawn`/`delegate`/`send`/`wait`, per-member models (D-69), workspace policies shared/isolated/git worktree (D-46/D-76) |
 | Headless / CI | `exec` (resume/fork/review), `review`, `cloud` | (interactive CLI) | (gateway + CLI) | `teamagents exec` with `--json`, `--timeout`, `--check` (client-side acceptance) and documented exit codes (D-49, restoring the v1 D-32 contract that lives in Git history); one JSON report at the end — **no streaming event output** |
-| Config | `~/.codex/config.toml`, `-c key=value` overrides | provider keys/`/login` | `hermes model` picker, per-platform integration config | `~/.config/teamagents/config.toml`: models, tools, skills, hooks, checks, limits and permissions — plus `instruction_files` and `[retention]`, which load and are reported as declared-but-not-applied (D-102/D-75); a project file is *not* read yet (known gap) |
+| Config | `~/.codex/config.toml`, `-c key=value` overrides | provider keys/`/login` | `hermes model` picker, per-platform integration config | `~/.config/teamagents/config.toml`: models, tools, skills, hooks, checks, limits and permissions — plus `instruction_files` and `[retention]`, which load and are reported as declared-but-not-applied (D-102/D-75); a repository-local project file is read under one opt-in (`[permissions] trust_project = true`, D-244), from the session's own directory only |
 | TUI | interactive CLI | pi-tui (differential rendering) | full TUI: multiline editing, slash autocomplete, history, **interrupt-and-redirect**, streaming tool output | ratatui TUI: conversation, panels (instances/tasks/topology), approvals box, composer history and word editing (D-77); no slash commands; no interrupt of a running turn (the open D-63 question) |
 | Durability | local sessions, app-server daemon | `pi-durable` (durable conversation/task/document runtime) | serverless persistence for hibernating environments | SQLite per session (WAL + `synchronous=FULL`), one coordinator per state root, receipts consumed rather than replayed — verified live by killing the daemon mid-tool (`review/dogfood/crash.py`, A08/A11) |
 | Automations | — | automation and workflows live in a separate project (`earendil-works/pi-chat`, linked from the README); the agent itself has no scheduled triggers | built-in cron scheduler with platform delivery | none (a goal runs when the user asks) |
@@ -65,9 +65,10 @@ their projects claim. Codex was run (its help output is the evidence above).
    **Low value; the user's call.**
 8. **Config overrides** (Codex: `-c key=value`). This product's flags cover the session-shaping keys
    (`--cwd`, `--state-root`, `--model`, `--full-auto`); everything else is the config file. **Low value.**
-9. **Project config** is a gap of this repository's own making (the loader exists, no entry point calls it,
-   `docs/ACCEPTANCE.md`). Codex and Pi both read repository-local configuration. **Needs the user's word**
-   (it changes what a cloned repository can influence).
+9. **Project config**: done since D-244 — the product reads repository-local configuration
+   (`<cwd>/.teamagents/config.toml`) under the user's `[permissions] trust_project` opt-in, which is what Codex
+   and Pi do. What remains is what `docs/ACCEPTANCE.md` records: no walk up to a parent directory, and one
+   opt-in for every repository rather than a per-project trust list.
 
 ## 3. What this product already does that the comparators do not (or state they do not)
 

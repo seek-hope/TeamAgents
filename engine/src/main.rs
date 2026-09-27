@@ -798,7 +798,7 @@ fn ensure_daemon(request: DaemonRequest<'_>) -> Result<(PathBuf, bool), String> 
         let _ = std::fs::remove_file(&socket);
     }
     let exe = std::env::current_exe().map_err(|e| format!("current exe: {e}"))?;
-    let model = model.or_else(default_model_key);
+    let model = model.or_else(|| default_model_key(cwd));
     let mut command = if which_binary("setsid").is_some() {
         let mut command = std::process::Command::new("setsid");
         command.arg(&exe);
@@ -875,10 +875,15 @@ fn tail_from(path: &std::path::Path, from: u64, cap: usize) -> String {
     text.trim().to_string()
 }
 
-/// The leader's model key when the caller did not choose one: the documented
-/// default, else the only configured key.
-fn default_model_key() -> Option<String> {
-    let catalog = teamagents_engine::config::load_user_config(&teamagents_engine::config::user_config_path()).ok()?;
+/// The leader's model key when the caller did not choose one: the documented default, else the only configured
+/// key — read through the same loader the daemon uses (D-244), so the client and the session cannot disagree
+/// about the catalog a repository-local config contributes.
+fn default_model_key(cwd: Option<&std::path::Path>) -> Option<String> {
+    let cwd = match cwd {
+        Some(path) => std::path::PathBuf::from(path),
+        None => std::env::current_dir().ok()?,
+    };
+    let catalog = teamagents_engine::config::load_user_config_for(&cwd).ok()?.0;
     if catalog.models.contains_key("leader_main") {
         return Some("leader_main".to_string());
     }

@@ -55,7 +55,7 @@ audits — each one a claim the tree makes about itself, each with the decision 
   field the command layer never reads (D-124); `review/dead_code.py` lists the public items the product's own
   code never calls (D-78/D-86, in hygiene since D-130); `review/env_knobs.py` keeps the `TEAMAGENTS_*` table
   below equal to the code's reads; `review/project_config_claim.py` checks the one fact every document states —
-  the project config is not read (D-133), and `review/release_artifact.py` does the same for the second one —
+  the project config is read, under the user's opt-in (D-133, wired by D-244), and `review/release_artifact.py` does the same for the second one —
   the published release is not this product (D-203: the fact is computed from the tags, whose trees all predate
   the v2 layout, and the two READMEs had recommended that install with no caveat); `review/silent_skips.py` fails a test that returns from a capability
   guard without saying why (D-121).

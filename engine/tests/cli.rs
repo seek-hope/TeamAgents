@@ -547,7 +547,7 @@ fn doctor_probes_isolation_and_config_errors() {
     assert!(without_web.contains("offered neither web_search nor web_fetch"), "{without_web}");
 
     // a wrong type in [permissions] is an error, not a silent default
-    std::fs::write(config.join("config.toml"), "[permissions]\ntrust_project_tools = \"yes\"\n").unwrap();
+    std::fs::write(config.join("config.toml"), "[permissions]\ntrust_project = \"yes\"\n").unwrap();
     let broken = run(&home.join("state"));
     assert!(broken.contains("[FAIL] user config"), "{broken}");
     assert!(broken.contains("must be true/false"), "{broken}");

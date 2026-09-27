@@ -46,6 +46,7 @@ OFFLINE = [
     ("budget.py", [], "a ceiling below one request is refused before any model call (A18)"),
     ("truncation.py", [], "A19's whole path over a real socket: truncated before output retries, after it fails"),
     ("max_retries.py", [], "a profile's `max_retries` is ignored: the budget is the session's constant (D-240)"),
+    ("project_config.py", [], "the repository-local config is read, and gated by the user's opt-in (D-244)"),
     ("input_latency.py", [], "per-keystroke composer latency against the scripted daemon"),
     ("tui_panels.py", [], "the instances panel's keys against a real daemon (D-95)"),
     ("geometry.py", [], "the TUI under an extreme terminal size and a mid-run resize (D-233)"),

@@ -68,8 +68,9 @@ KNOWN_TEST_ONLY = {
     "with_stream_stall": "provider test-support hook: makes a stream stall so the retry path can be driven",
     "sandbox_usable": "the tests' branch on the sandbox verdict; `doctor` reports the detail through "
                       "`sandbox_state()` instead",
-    "load_user_config_for": "the project-config wiring is an open item (docs/ACCEPTANCE.md, 'The project "
-                            "config is not read'); only its own tests call it yet",
+    "load_user_config": "the user-only loader, kept as the reference the merge path is compared against "
+                        "(`the_two_loaders_agree_on_a_user_only_config`): the product loads through "
+                        "`load_user_config_for` since D-244, so only tests call this one",
     "merge_branch": "D-76: the member-branch merge surface is an open item; only a test drives it",
     "load_image_reference": "the request-build half of the image flow, which v2 does not have yet; parked with "
                             "a ponytail note (the providers carry the same note)",

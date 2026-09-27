@@ -21,7 +21,7 @@ str_enum!(WorkspacePolicy, "snake_case", Shared, Isolated, GitWorktree);
 
 pub type Json = serde_json::Value;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelProfile {
     /// The vendor hint: `deepseek` selects that service's defaults (the reasoning echo, the deepseek
@@ -70,7 +70,7 @@ fn default_retries() -> i64 {
     5
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ToolBinding {
     #[serde(default)]
@@ -117,7 +117,7 @@ pub struct ToolBinding {
     pub tool_names: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct UserConfig {
     #[serde(default)]
@@ -205,7 +205,7 @@ impl CheckSpec {
 }
 
 /// Engine event hooks: a user-authored command, never a model-chosen one.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Hooks {
     /// argv of the command to run (event name is appended as the last argument,
@@ -220,7 +220,7 @@ pub struct Hooks {
 }
 /// Session housekeeping policy. Nothing is deleted unless a [retention] block
 /// asks for it: archiving is the user's own "done with this" marker.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Retention {
     /// Delete archived sessions untouched for this many days when a session is

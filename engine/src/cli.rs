@@ -1,6 +1,8 @@
 //! CLI entry points: init / doctor / daemon / exec / version.
 
-use crate::config::{load_user_config, missing_key_envs, sessions_dir, state_dir, user_config_path};
+use crate::config::{
+    load_user_config_for, missing_key_envs, project_config_path, sessions_dir, state_dir, user_config_path,
+};
 use crate::tools::{bwrap_available, which};
 use crate::VERSION;
 use serde_json::json;
@@ -140,6 +142,23 @@ fn check(results: &mut Vec<DoctorRow>, name: &str, ok: bool, detail: String) {
     results.push((name.to_string(), if ok { "ok  " } else { "FAIL" }, detail));
 }
 
+/// Print what the project-config merge decided (D-244).
+///
+/// The daemon is detached, so its stderr is `<state root>/daemon.log`; a user who never reads that file gets the
+/// same facts from `doctor`'s `project config` row, built from the same [`ProjectMerge`].
+fn report_project_merge(merge: &crate::config::ProjectMerge) {
+    if !merge.present {
+        return;
+    }
+    eprintln!(
+        "teamagents: project config {} ({}): accepted {}{}",
+        merge.path.display(),
+        if merge.trusted { "trusted" } else { "untrusted" },
+        if merge.accepted.is_empty() { "nothing".to_string() } else { merge.accepted.join(", ") },
+        if merge.refused.is_empty() { String::new() } else { format!("; refused {}", merge.refused.join("; ")) }
+    );
+}
+
 fn optional_check(results: &mut Vec<DoctorRow>, name: &str, ok: bool, detail: String) {
     results.push((name.to_string(), if ok { "ok  " } else { "WARN" }, detail));
 }
@@ -169,9 +188,13 @@ pub fn doctor(state_root: Option<PathBuf>) -> i32 {
     // the core is a library now: report the linked core's own version string
     check(&mut results, "rust core", true, format!("teamagents-core {}", teamagents_core::core_version()));
     let config_path = user_config_path();
-    let catalog = load_user_config(&config_path);
+    // D-244: doctor reads what a session *started in this directory* would read — the user config plus the
+    // repository-local one, under the user's trust gate — and reports the merge's decision in its own row,
+    // because the daemon's copy of it lands in `<state root>/daemon.log`.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let catalog = load_user_config_for(&cwd);
     match &catalog {
-        Ok(catalog) => {
+        Ok((catalog, merge)) => {
             let models: Vec<&String> = catalog.models.keys().collect();
             let tools: Vec<&String> = catalog.tools.keys().collect();
             check(
@@ -187,6 +210,35 @@ pub fn doctor(state_root: Option<PathBuf>) -> i32 {
                     format!("{} models={models:?} tools={tools:?}", config_path.display())
                 },
             );
+            if merge.present {
+                optional_check(
+                    &mut results,
+                    "project config",
+                    merge.refused.is_empty(),
+                    format!(
+                        "{} ({}): accepted {}{}",
+                        merge.path.display(),
+                        if merge.trusted { "trusted" } else { "untrusted" },
+                        if merge.accepted.is_empty() { "nothing".to_string() } else { merge.accepted.join(", ") },
+                        if merge.refused.is_empty() {
+                            String::new()
+                        } else {
+                            format!("; refused {}", merge.refused.join("; "))
+                        }
+                    ),
+                );
+            } else {
+                check(
+                    &mut results,
+                    "project config",
+                    true,
+                    format!(
+                        "none at {} (a session started here reads only {})",
+                        merge.path.display(),
+                        config_path.display()
+                    ),
+                );
+            }
             let mut keys: Vec<_> = missing_key_envs(catalog).into_iter().collect();
             keys.sort_by(|a, b| a.0.cmp(&b.0));
             for (name, present) in keys {
@@ -310,7 +362,7 @@ pub fn doctor(state_root: Option<PathBuf>) -> i32 {
     );
     // hooks are easy to break silently: a wrong path only shows up as a stderr
     // line at event time, so doctor checks the programs exist and are executable
-    if let Ok(catalog) = &catalog {
+    if let Ok((catalog, _)) = &catalog {
         // Skills and instruction files come from configured paths, and a path that
         // does not resolve is otherwise silent: `skill` answers "no skills
         // configured" at tool time and a missing instruction file simply never
@@ -829,7 +881,16 @@ fn daemon_boot(
     full_auto: bool,
 ) -> Result<(), String> {
     use teamagents_core::kernel::KernelProfile;
-    let catalog = load_user_config(&user_config_path())?;
+    // D-244: the workspace is resolved *first*, because the repository-local config belongs to the directory the
+    // session works in — and the merge's decision goes into the daemon's own log (a detached daemon has no
+    // terminal), which `doctor` shows in the same words for a user who never reads that file.
+    let workspace = match cwd {
+        Some(dir) => PathBuf::from(dir),
+        None => std::env::current_dir().map_err(|e| e.to_string())?,
+    };
+    require_workspace_dir(&workspace)?;
+    let (catalog, project) = load_user_config_for(&workspace)?;
+    report_project_merge(&project);
     let mut available: Vec<String> = catalog.models.keys().cloned().collect();
     available.sort();
     let model_key = match model {
@@ -839,7 +900,7 @@ fn daemon_boot(
         // creates one instead of leaving the user with "(available: )" (D-73)
         None if available.is_empty() => {
             return Err(format!(
-                "the user config has no model profile: run `teamagents init` to write {} (then `teamagents doctor`)",
+                "no model profile is configured: run `teamagents init` to write {} (then `teamagents doctor`)",
                 user_config_path().display()
             ))
         }
@@ -847,18 +908,15 @@ fn daemon_boot(
     };
     if !available.contains(&model_key) {
         return Err(format!(
-            "model {model_key:?} is not in the user catalog (available: {}); `teamagents doctor` reports what {} resolves to",
+            "model {model_key:?} is not in the catalog (available: {}); `teamagents doctor` reports what {} resolves \
+             to, and a repository-local {} needs [permissions] trust_project = true",
             available.join(", "),
-            user_config_path().display()
+            user_config_path().display(),
+            project_config_path(&workspace).display()
         ));
     }
     // preflight: credentials/protocol resolve at boot, not mid-session (§7)
     crate::providers::build_for_model(&catalog, &model_key)?;
-    let workspace = match cwd {
-        Some(dir) => PathBuf::from(dir),
-        None => std::env::current_dir().map_err(|e| e.to_string())?,
-    };
-    require_workspace_dir(&workspace)?;
     // one stable root (and socket) per user: init/doctor/daemon/TUI must agree
     // on where the session lives, or the default entry cannot find the daemon
     let state_root = state_root.map(PathBuf::from).unwrap_or_else(crate::v2_root);

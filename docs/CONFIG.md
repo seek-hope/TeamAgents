@@ -7,15 +7,16 @@ the user guide's §2 explains the sections in prose: `[[checks]]` (§2.1), `[lim
 
 Two rules decide whether a key is *honoured*, and both are part of the trust story:
 
-* **Only your own config is read at all: the project file is not.** The merge loader for a repository-local
-  `<cwd>/.teamagents/config.toml` is implemented and unit-tested (`config::load_user_config_for`: project
-  `models` and `tools` merge in; `skills_paths`/`instruction_files` need `[permissions] trust_project_tools =
-  true`; `hooks`, `retention`, `checks` and `[permissions] mode` may only come from the user config), but **no
-  entry point calls it yet** — the daemon, TUI and `exec` load the user config only, so cloning a repository
-  cannot change a session today, and this table describes the user config. `docs/USER-GUIDE.md` §2 says the same
-  in prose, and the open decision (wiring it changes what a cloned repository can influence) is recorded in
-  `docs/ACCEPTANCE.md`'s known gaps. `python3 review/project_config_claim.py` checks that every document agrees
-  with the code on this point (D-133).
+* **Your own config is read, and the repository's is read under one gate.** A repository-local
+  `<cwd>/.teamagents/config.toml` is read by the product now — `daemon`, `doctor` and the client all load through
+  `config::load_user_config_for` (D-244). It contributes **nothing** until you opt in with
+  `[permissions] trust_project = true` in your own config; with the opt-in its `models`, `tools`,
+  `skills_paths` and `instruction_files` merge in, and your own definitions of the same name always win.
+  `[permissions]` (both `mode` and the trust flag), `hooks`, `checks`, `retention` and `limits` may only ever
+  come from your config, trusted or not. `docs/USER-GUIDE.md` §2 says the same in prose, and
+  `docs/ACCEPTANCE.md` records what is still not covered (the session's own directory only, and one opt-in for
+  every repository). `python3 review/project_config_claim.py` checks that every document agrees with the code on
+  this point (D-133, D-244).
 * **A key this build accepts but does not apply says so** in the table below and in `doctor` (D-102's
   `instruction_files`, D-75's `codex_profile` and the `[retention]` bounds) — accepted-and-ignored would otherwise
   look exactly like accepted-and-working.

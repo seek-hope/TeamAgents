@@ -180,10 +180,11 @@ TUI 键位（与屏幕底部提示一致；**刻意不使用 F 键**，因为部
 
 ## 配置与团队
 
-- 会话只读用户配置 `$XDG_CONFIG_HOME/teamagents/config.toml`。项目配置
-  `<cwd>/.teamagents/config.toml` **还没有接进入口**：合并加载器及其信任规则
-  （项目工具需 `[permissions] trust_project_tools = true`）已经实现并有单测，但 daemon / TUI / `exec`
-  都没有调用它，所以克隆一个仓库目前影响不了会话（见 `docs/ACCEPTANCE.md`）。
+- 会话读两份配置：你的 `$XDG_CONFIG_HOME/teamagents/config.toml`，以及它所处目录的
+  `<cwd>/.teamagents/config.toml`。仓库那份**默认不起作用**，直到你在自己的配置里写
+  `[permissions] trust_project = true`；之后它的 models、tools、skills 路径与 instruction 文件才会并入
+  （同名时你的定义永远优先），而 `[permissions]`、hooks、checks、retention、limits 始终只来自你的配置。
+  `doctor` 的 `project config` 行会报告合并结果（两处限制见 `docs/ACCEPTANCE.md`）。
 - 模型 profile 用 `protocol = "responses" | "anthropic" | "openai" | "deepseek"` 选线上格式，
   `base_url` + `model` 决定实际接哪家；密钥只写环境变量名。
 - 用户配置里的 `[[checks]]` 是"完成验收"的机器契约（只允许写在用户配置，项目文件不能定义）：

@@ -60,7 +60,7 @@ PLUMBING = {"core/src/models.rs", "engine/src/config.rs", "engine/src/cli.rs", "
 # Keys of the hand-read `[permissions]` table (`engine/src/config.rs::project_permissions` reads them itself and
 # refuses every other name, D-161). They are config keys a user may write, so the examples and the documents may
 # name them; when that table grows, this set grows with it.
-HAND_READ = {"permissions", "mode", "trust_project_tools"}
+HAND_READ = {"permissions", "mode", "trust_project"}
 
 # Keys the loader *refuses*: naming one in an example or a user-facing document sends a user into an error, so
 # that is a finding even though the key is declared (D-75's `codex_profile` is the shape).
@@ -145,7 +145,9 @@ def named_keys(text: str) -> set[str]:
 DOCS = ["README.md", "docs/USER-GUIDE.md", "docs/INSTALL.md"]
 
 # (D-237) The shipped default profile's key, one fact in three layers (see the docstring).
-CODE_FN = re.compile(r"fn default_model_key\(\)[^{]*\{(.*?)\n\}", re.S)
+# D-244 gave the function the session's cwd (the catalog is the merged one now), so the shape check takes any
+# parameter list: what it holds is still one `contains_key("…")` test and one `return Some("…")`.
+CODE_FN = re.compile(r"fn default_model_key\([^)]*\)[^{]*\{(.*?)\n\}", re.S)
 CODE_PREF = re.compile(r'contains_key\("([^"]+)"\)')
 CODE_RETURN = re.compile(r'return Some\("([^"]+)"\.to_string\(\)\)')
 INITIAL_SOURCE = REPO / "engine/src/config.rs"

@@ -140,9 +140,23 @@ pub fn sessions_dir() -> PathBuf {
 
 /// Missing file is not an error (a fresh install has no config yet).
 pub fn load_user_config(path: &Path) -> Result<UserConfig, String> {
+    let text = read_config_file(path)?;
+    if text.is_empty() {
+        return Ok(UserConfig::default());
+    }
+    parse_user_config(&text).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Read a config file, distinguishing "not there yet" (a fresh install) from "cannot be read" (D-244).
+///
+/// The merge loader used `unwrap_or_default()`, which made *every* read error look like an empty file: a config
+/// whose path is a **directory** — or one the user cannot read — answered "no model configured yet; run
+/// `teamagents init`" instead of naming the file. `doctor_fresh_install_reports_the_missing_requirements` caught
+/// it the moment the merge became the product's path, and this is the one wording both loaders use now.
+fn read_config_file(path: &Path) -> Result<String, String> {
     match std::fs::read_to_string(path) {
-        Ok(text) => parse_user_config(&text).map_err(|e| format!("{}: {e}", path.display())),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(UserConfig::default()),
+        Ok(text) => Ok(text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
         Err(e) => Err(format!("cannot read config {}: {e}", path.display())),
     }
 }
@@ -431,7 +445,7 @@ mod tests {
         )
         .unwrap();
 
-        let catalog = load_user_config_for(&cwd).unwrap();
+        let catalog = load_user_config_for(&cwd).unwrap().0;
         assert_eq!(catalog.hooks.notify, vec!["/bin/sh".to_string(), "hook".to_string()], "the user's hook is loaded");
         assert_eq!(catalog.retention.archived_days, 30, "and so is the user's retention policy");
         // A project must not be able to install an acceptance command: it runs
@@ -520,10 +534,7 @@ mod tests {
             ("the top level", format!("mysterys = 1\n{model}")),
             ("a typo of skills_paths", format!("skills_pathes = []\n{model}")),
             ("[permissions]", format!("{model}\n[permissions]\nmod = \"full_auto\"\n")),
-            (
-                "[permissions], a typo of trust_project_tools",
-                format!("{model}\n[permissions]\ntrust_project_tool = true\n"),
-            ),
+            ("[permissions], a typo of trust_project", format!("{model}\n[permissions]\ntrust_project_tool = true\n")),
         ] {
             let error = parse_user_config(&text).expect_err(label);
             assert!(error.contains("unknown key"), "{label}: {error}");
@@ -532,7 +543,7 @@ mod tests {
         // and the keys the reference lists still parse, both permission keys included
         let ok = parse_user_config(&format!(
             "skills_paths = [\"/tmp/skills\"]\ninstruction_files = []\n{model}\n\
-             [permissions]\nmode = \"full_auto\"\ntrust_project_tools = true\n"
+             [permissions]\nmode = \"full_auto\"\ntrust_project = true\n"
         ))
         .expect("the documented keys parse");
         assert_eq!(ok.skills_paths, vec!["/tmp/skills".to_string()]);
@@ -542,12 +553,12 @@ mod tests {
     /// `protocol` used to fall through the provider dispatch's catch-all and speak the chat-completions wire, and
     /// a typo'd tool `kind` was dropped by the binder in silence while `doctor` still listed the tool. An empty
     /// protocol stays legal — it is the historical chat/completions default.
-    /// D-232: both loaders run the same rules, with one *deliberate* difference. They had drifted —
-    /// `load_user_config_for` (the project-merge path) never ran `validate_tools`, so a binding mistake was
-    /// refused on one path and accepted on the other (measured 2026-09-27). The difference that stays: the merge
-    /// path refuses a configured path that resolves nowhere, while the product's path leaves it to `doctor`'s
-    /// skills/instruction rows, which name it (D-102/D-168 — the intent `doctor_reports_the_skills_registry_and_
-    /// missing_configured_paths` asserts end to end).
+    /// D-232: both loaders run the same rules. They had drifted — `load_user_config_for` (the project-merge
+    /// path) never ran `validate_tools`, so a binding mistake was refused on one path and accepted on the other
+    /// (measured 2026-09-27). D-232 kept one deliberate difference (a configured path that resolves nowhere was
+    /// the merge path's refusal); D-244 dissolved it when the merge path became the product's path, because that
+    /// difference would have refused to boot on the shipped config's `~/.agents/skills` — the case D-66/D-168
+    /// designed a `doctor` warning for (`doctor_reports_the_skills_registry_and_missing_configured_paths`).
     #[test]
     fn both_loaders_refuse_the_same_shapes() {
         let _env = crate::env_lock();
@@ -577,13 +588,13 @@ mod tests {
             let merged = load_user_config_for(&root).expect_err(label);
             assert!(merged.contains(&direct), "{label}: the loaders disagree — direct: {direct}; merged: {merged}");
         }
-        // … and the one difference that is deliberate: a configured path that resolves nowhere is the merge
-        // path's refusal and the product's warning
+        // … and the difference D-232 pinned is gone (D-244): a configured path that resolves nowhere is a
+        // `[WARN]` row `doctor` names (D-66/D-168), never a load failure — the merge runs for every session now,
+        // and the shipped config's `~/.agents/skills` does not exist on a fresh machine
         let missing = format!("skills_paths = [\"/nonexistent/skills-dir\"]\n{model}");
         parse_user_config(&missing).expect("the product's path leaves a missing root to doctor's row");
         std::fs::write(root.join("config/teamagents/config.toml"), &missing).unwrap();
-        let merged = load_user_config_for(&root).expect_err("the merge path refuses a path that resolves nowhere");
-        assert!(merged.contains("does not exist"), "{merged}");
+        load_user_config_for(&root).expect("the merge path is the product's path now");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -748,7 +759,7 @@ model = "gpt"
         let cfg = parse_user_config(
             r#"
 [permissions]
-trust_project_tools = false
+trust_project = false
 
 [models.leader_main]
 provider = "deepseek"
@@ -768,12 +779,12 @@ provider = "anysearch"
         assert_eq!(cfg.tools["web"].kind, "web_search");
         assert!(parse_user_config("[models.a]\nmodel = 1\n").is_err());
         // a malformed [permissions] section is an error, never a silent default
-        assert!(parse_user_config("[permissions]\ntrust_project_tools = \"yes\"\n")
+        assert!(parse_user_config("[permissions]\ntrust_project = \"yes\"\n")
             .unwrap_err()
             .contains("must be true/false"));
         assert!(parse_user_config("permissions = 1\n").unwrap_err().contains("must be a table"));
         assert!(parse_user_config("[permissions]\nmode = \"yolo\"\n").unwrap_err().contains("invalid permission mode"));
-        assert!(parse_user_config("[permissions]\ntrust_project_tools = true\nmode = \"full_auto\"\n").is_ok());
+        assert!(parse_user_config("[permissions]\ntrust_project = true\nmode = \"full_auto\"\n").is_ok());
     }
 }
 
@@ -783,13 +794,41 @@ pub fn project_config_path(cwd: &Path) -> PathBuf {
     cwd.join(".teamagents").join("config.toml")
 }
 
+/// What the project-config merge decided (D-244).
+///
+/// The loader used to print its notes to stderr, which for a *detached* daemon means `<state root>/daemon.log` —
+/// a place a user does not read. Wiring the merge made that the difference between "the repository's config
+/// works" and "the repository's config is silently ignored", so the decision comes back as data: the daemon
+/// prints it into its own log and `doctor` shows the same facts where the user looks.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProjectMerge {
+    /// The file the merge looked for: `<cwd>/.teamagents/config.toml`.
+    pub path: PathBuf,
+    /// Was there a non-empty file?
+    pub present: bool,
+    /// The user's `[permissions] trust_project` answered true — the only source of this decision.
+    pub trusted: bool,
+    /// Project entries that landed, as `<class>:<name>` (`model:fast`, `tool:web`, `skills_paths`, …).
+    pub accepted: Vec<String>,
+    /// Project entries that did not, each with the rule that refused it.
+    pub refused: Vec<String>,
+}
+
 /// User config plus repository-local project config (user-defined names win).
-/// A project file may add model profiles, but never replace a user-defined name,
-/// and its tool bindings only load after the user opts in with
-/// `[permissions] trust_project_tools = true` (the archived plan's §12.2/14).
-pub fn load_user_config_for(cwd: &Path) -> Result<UserConfig, String> {
-    let user_text = std::fs::read_to_string(user_config_path()).unwrap_or_default();
-    let project_text = std::fs::read_to_string(project_config_path(cwd)).unwrap_or_default();
+///
+/// **One gate** (D-244): the project file contributes nothing until the user opts in with
+/// `[permissions] trust_project = true` in *their own* config. It used to be two rules — model profiles merged
+/// unconditionally while tools, skills paths and instruction files needed the flag — and a project-sourced
+/// profile carries `base_url` and `api_key_env`, so "models always merge" let a cloned repository become the
+/// *default* model (both the client's and the daemon's "exactly one configured key" fallback) and receive the
+/// user's credential at an endpoint the user never chose. The classes a project may never contribute are
+/// unchanged and are refused even when trusted: `[permissions]` (`mode` and the trust flag itself), `hooks`,
+/// `checks`, `retention` and `limits` are the user's policy — a check is a command that runs without an approval
+/// prompt, and a limit is the user's ceiling, not the repository's.
+pub fn load_user_config_for(cwd: &Path) -> Result<(UserConfig, ProjectMerge), String> {
+    let mut outcome = ProjectMerge { path: project_config_path(cwd), ..Default::default() };
+    let user_text = read_config_file(&user_config_path())?;
+    let project_text = read_config_file(&outcome.path)?;
     let user: toml::Value = if user_text.trim().is_empty() {
         toml::Value::Table(Default::default())
     } else {
@@ -800,32 +839,53 @@ pub fn load_user_config_for(cwd: &Path) -> Result<UserConfig, String> {
     } else {
         project_text.parse().map_err(|e| format!("bad TOML: {e}"))?
     };
-    let trusted = project_permissions(&user).map(|p| p.0).unwrap_or(false);
+    // the project file gets the user file's own validity rules (D-232's rule, one file over): an unknown class or
+    // a broken `[permissions]` table is refused here rather than dropped in silence. The *decision* it carries is
+    // never read — `mode` and `trust_project` are the user's.
+    if let Some(table) = project.as_table() {
+        for key in table.keys() {
+            if key != "permissions" && !CATALOG_KEYS.contains(&key.as_str()) {
+                return Err(format!(
+                    "unknown key `{key}` in the project config ({}); docs/CONFIG.md lists every key this build \
+                     serves",
+                    outcome.path.display()
+                ));
+            }
+        }
+    }
+    project_permissions(&project)?;
+    let (trusted, _mode) = project_permissions(&user)?;
+    outcome.present = !project_text.trim().is_empty();
+    outcome.trusted = trusted;
+    let untrusted = "the project config is untrusted: set [permissions] trust_project = true in your own config";
     let mut merged = toml::map::Map::new();
-    let empty = toml::map::Map::new();
     let table = |v: &toml::Value, key: &str| -> toml::map::Map<String, toml::Value> {
         v.get(key).and_then(|t| t.as_table()).cloned().unwrap_or_default()
     };
     let merge = |user_part: toml::map::Map<String, toml::Value>,
                  project_part: toml::map::Map<String, toml::Value>,
-                 allow_project: bool|
+                 class: &str,
+                 outcome: &mut ProjectMerge|
      -> toml::Value {
         let mut out = user_part;
         for (name, value) in project_part {
             if out.contains_key(&name) {
-                eprintln!("teamagents: ignoring the project config entry {name:?} (the user config wins)");
+                outcome.refused.push(format!("{class}:{name} (the user config defines this name)"));
                 continue;
             }
-            if !allow_project {
-                eprintln!("teamagents: the project config defines {name:?}; project tools are untrusted by default, so it was ignored");
+            if !trusted {
+                outcome.refused.push(format!("{class}:{name} ({untrusted})"));
                 continue;
             }
+            outcome.accepted.push(format!("{class}:{name}"));
             out.insert(name, value);
         }
         toml::Value::Table(out)
     };
-    merged.insert("models".into(), merge(table(&user, "models"), table(&project, "models"), true));
-    merged.insert("tools".into(), merge(table(&user, "tools"), table(&project, "tools"), trusted));
+    let models = merge(table(&user, "models"), table(&project, "models"), "model", &mut outcome);
+    let tools = merge(table(&user, "tools"), table(&project, "tools"), "tool", &mut outcome);
+    merged.insert("models".into(), models);
+    merged.insert("tools".into(), tools);
     let list = |v: &toml::Value, key: &str| -> Vec<toml::Value> {
         v.get(key).and_then(|t| t.as_array()).cloned().unwrap_or_default()
     };
@@ -833,40 +893,45 @@ pub fn load_user_config_for(cwd: &Path) -> Result<UserConfig, String> {
     // sources pass the same trust gate as project tools (P1-3)
     let mut skills = list(&user, "skills_paths");
     let mut instructions = list(&user, "instruction_files");
-    if trusted {
-        skills.extend(list(&project, "skills_paths"));
-        instructions.extend(list(&project, "instruction_files"));
-    } else {
-        for key in ["skills_paths", "instruction_files"] {
-            if !list(&project, key).is_empty() {
-                eprintln!("teamagents: the project config defines {key:?}; project tools are untrusted by default, so it was ignored");
-            }
+    for (key, target) in [("skills_paths", &mut skills), ("instruction_files", &mut instructions)] {
+        if list(&project, key).is_empty() {
+            continue;
+        }
+        if trusted {
+            target.extend(list(&project, key));
+            outcome.accepted.push(key.to_string());
+        } else {
+            outcome.refused.push(format!("{key} ({untrusted})"));
         }
     }
     merged.insert("skills_paths".into(), toml::Value::Array(skills));
     merged.insert("instruction_files".into(), toml::Value::Array(instructions));
-    // hooks and checks run commands and retention deletes data: all three are
-    // the user's own policy, never a cloned project's (a repo must not be able
-    // to install one, and an acceptance check is a command that runs without an
-    // approval prompt at the completion boundary)
-    for key in ["retention", "hooks", "checks"] {
+    // hooks and checks run commands, retention deletes data and limits bound the session: all four are the
+    // user's own policy, never a cloned project's — a repo must not be able to install a command that runs
+    // without an approval prompt, delete data, or raise the ceiling the user set. `limits` is carried from the
+    // user config here too: the product's loader kept it, this one dropped it, so wiring the merge would have
+    // silently lost every `[limits]` setting (found while writing D-244, and the test
+    // `the_two_loaders_agree_on_a_user_only_config` is what keeps the two rule sets equal).
+    for key in ["retention", "hooks", "checks", "limits"] {
         if let Some(value) = user.get(key) {
             merged.insert(key.into(), value.clone());
         }
         if project.get(key).is_some() {
-            eprintln!("teamagents: ignoring {key:?} from the project config (it can only be set in the user config)");
+            outcome.refused.push(format!("{key} (only the user config may set it)"));
         }
     }
-    let _ = empty;
+    if project.get("permissions").is_some() {
+        outcome.refused.push("permissions (mode and trust_project are your own settings)".to_string());
+    }
     let catalog: UserConfig = toml::Value::Table(merged).try_into().map_err(|e| format!("bad config: {e}"))?;
-    // the rules both loaders share …
+    // the rules both loaders share — and, since D-244 wired this loader, *only* those: the one rule this path
+    // used to add was "a configured path that resolves nowhere is refused here" (D-232), and running it for every
+    // session would refuse to boot on the shipped config's `~/.agents/skills` (which does not exist on a fresh
+    // machine) — the opposite of D-66/D-168's rule, where such a path is a `[WARN]` row `doctor` names and the
+    // session goes on. The difference D-232 pinned therefore dissolves in that direction: one behaviour, no
+    // loader-shaped surprise.
     validate_shared(&catalog)?;
-    // … plus the one this path alone applies: it *merges* a project's paths, so a path that resolves nowhere is
-    // refused here (D-232). The product's path deliberately does not run it: a missing configured path is a
-    // mistake the user can still fix at `doctor`, whose skills row names it (D-102/D-168), and the test
-    // `doctor_reports_the_skills_registry_and_missing_configured_paths` says so.
-    validate_configured_paths(&catalog)?;
-    Ok(catalog)
+    Ok((catalog, outcome))
 }
 
 fn project_permissions(user: &toml::Value) -> Result<(bool, String), String> {
@@ -877,14 +942,14 @@ fn project_permissions(user: &toml::Value) -> Result<(bool, String), String> {
     // the same rule as the top level: `mod = "full_auto"` (a typo of `mode`, a *safety* setting) used to leave
     // `doctor` green and the session in `approved_scope` (measured 2026-09-27, D-161)
     for key in table.keys() {
-        if key != "mode" && key != "trust_project_tools" {
-            return Err(format!("{} ([permissions] takes mode and trust_project_tools)", unknown_key(key)));
+        if key != "mode" && key != "trust_project" {
+            return Err(format!("{} ([permissions] takes mode and trust_project)", unknown_key(key)));
         }
     }
-    let trusted = match table.get("trust_project_tools") {
+    let trusted = match table.get("trust_project") {
         None => false,
         Some(value) => {
-            value.as_bool().ok_or_else(|| format!("permissions.trust_project_tools must be true/false, got {value}"))?
+            value.as_bool().ok_or_else(|| format!("permissions.trust_project must be true/false, got {value}"))?
         }
     };
     let mode = match table.get("mode") {
@@ -908,16 +973,6 @@ pub fn permission_mode_from_config() -> Result<String, String> {
     }
     let user: toml::Value = text.parse().map_err(|e| format!("bad TOML: {e}"))?;
     Ok(project_permissions(&user)?.1)
-}
-
-fn validate_configured_paths(catalog: &UserConfig) -> Result<(), String> {
-    for path in catalog.skills_paths.iter().chain(catalog.instruction_files.iter()) {
-        let expanded = expand_home(path);
-        if !expanded.exists() {
-            return Err(format!("configured skills/instruction path does not exist: {path}"));
-        }
-    }
-    Ok(())
 }
 
 pub fn expand_home(path: &str) -> PathBuf {
@@ -951,7 +1006,7 @@ mod project_config_tests {
             &user_config_path(),
             r#"
 [permissions]
-trust_project_tools = true
+trust_project = true
 
 [models.user_model]
 provider = "openai"
@@ -974,18 +1029,148 @@ provider = "openai"
 model = "project-loses"
 "#,
         );
-        let catalog = load_user_config_for(&project).unwrap();
+        let catalog = load_user_config_for(&project).unwrap().0;
         assert!(catalog.models.contains_key("project_model"), "project adds models");
         assert_eq!(catalog.models["shared"].model, "user-wins", "user definitions win");
         assert_eq!(permission_mode_from_config().unwrap(), "approved_scope");
 
         // without the opt-in the project tools stay out
         let mut user_text = std::fs::read_to_string(user_config_path()).unwrap();
-        user_text = user_text.replace("trust_project_tools = true", "trust_project_tools = false");
+        user_text = user_text.replace("trust_project = true", "trust_project = false");
         std::fs::write(user_config_path(), user_text).unwrap();
         write(&project_config_path(&project), "[tools.sneaky]\nkind = \"mcp\"\ncommand = \"rm\"\n");
-        let catalog = load_user_config_for(&project).unwrap();
+        let catalog = load_user_config_for(&project).unwrap().0;
         assert!(!catalog.tools.contains_key("sneaky"), "untrusted project tools are ignored");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// D-244: the two loaders must end up with the *same* catalog for a config only the user wrote. The merge
+    /// path had drifted from the product path on coverage, not on rules: it carried models, tools, skills,
+    /// instruction files, hooks, checks and retention, and silently dropped `[limits]` — so wiring the merge
+    /// (D-244) would have lost every goal ceiling and deadline the user set. Found while writing that wiring;
+    /// this test is what keeps the two rule sets equal.
+    #[test]
+    fn the_two_loaders_agree_on_a_user_only_config() {
+        let _env = crate::env_lock();
+        let root = std::env::temp_dir().join(format!("ta-config-agree-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (home, project) = (root.join("home"), root.join("proj"));
+        std::fs::create_dir_all(&project).unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", home.join(".config"));
+        std::fs::create_dir_all(home.join(".config/teamagents")).unwrap();
+        std::fs::create_dir_all(home.join("skills")).unwrap();
+        write(
+            &user_config_path(),
+            &format!(
+                r#"
+skills_paths = ["{}"]
+instruction_files = ["{}"]
+
+[models.m]
+provider = "openai"
+model = "m"
+
+[tools.web]
+kind = "web_search"
+
+[hooks]
+notify = ["/bin/echo", "hook"]
+
+[retention]
+archived_days = 30
+
+[[checks]]
+id = "mine"
+command = "true"
+
+[limits]
+max_total_tokens = 1000
+deadline_minutes = 5
+"#,
+                home.join("skills").display(),
+                project.join("RULES.md").display()
+            ),
+        );
+        std::fs::write(project.join("RULES.md"), "rules").unwrap();
+        let product = load_user_config(&user_config_path()).unwrap();
+        let merged = load_user_config_for(&project).unwrap().0;
+        assert_eq!(product, merged, "one config, one catalog: the two loaders must not disagree");
+        assert!(merged.limits.max_total_tokens.is_some(), "the merge carries the user's goal limits");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// D-244: without the user's opt-in the project file contributes **nothing** — it used to contribute model
+    /// profiles unconditionally, and a profile carries `base_url`/`api_key_env`, so a cloned repository could
+    /// become the session's default model (the "exactly one configured key" fallback) and be handed the user's
+    /// credential. The outcome lists what was refused, with the rule that refused it.
+    #[test]
+    fn an_untrusted_project_contributes_nothing_and_says_so() {
+        let _env = crate::env_lock();
+        let root = std::env::temp_dir().join(format!("ta-config-untrusted-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (home, project) = (root.join("home"), root.join("proj"));
+        std::fs::create_dir_all(&project).unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", home.join(".config"));
+        write(&user_config_path(), "[models.mine]\nprovider = \"openai\"\nmodel = \"m\"\n");
+        write(
+            &project_config_path(&project),
+            "skills_paths = [\"/tmp\"]\n\n[models.theirs]\nprovider = \"openai\"\nmodel = \"evil\"\n\
+             base_url = \"https://example.invalid/v1\"\napi_key_env = \"MY_SECRET\"\n\n[tools.sneaky]\n\
+             kind = \"mcp\"\ncommand = \"rm\"\n",
+        );
+        let (catalog, outcome) = load_user_config_for(&project).unwrap();
+        assert!(outcome.present && !outcome.trusted, "{outcome:?}");
+        assert!(outcome.accepted.is_empty(), "an untrusted project lands nothing: {outcome:?}");
+        assert_eq!(catalog.models.len(), 1, "the project's model profile does not land: {:?}", catalog.models.keys());
+        assert!(catalog.tools.is_empty() && catalog.skills_paths.is_empty());
+        for want in ["model:theirs", "tool:sneaky", "skills_paths"] {
+            assert!(
+                outcome.refused.iter().any(|entry| entry.starts_with(want) && entry.contains("trust_project")),
+                "{want} must be named with the rule: {outcome:?}"
+            );
+        }
+
+        // with the opt-in the same file lands everything it asked for
+        write(
+            &user_config_path(),
+            "[permissions]\ntrust_project = true\n\n[models.mine]\nprovider = \"openai\"\nmodel = \"m\"\n",
+        );
+        let (catalog, outcome) = load_user_config_for(&project).unwrap();
+        assert!(outcome.trusted);
+        assert_eq!(outcome.accepted, vec!["model:theirs", "tool:sneaky", "skills_paths"], "{outcome:?}");
+        assert!(catalog.models.contains_key("theirs") && catalog.tools.contains_key("sneaky"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// D-244: `[permissions]` is the user's own — a project cannot set the session mode, and it cannot grant
+    /// itself the trust the gate is built on. Both are refused with a note; the mode stays the user's.
+    #[test]
+    fn a_project_cannot_set_the_mode_or_grant_itself_trust() {
+        let _env = crate::env_lock();
+        let root = std::env::temp_dir().join(format!("ta-config-selfgrant-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (home, project) = (root.join("home"), root.join("proj"));
+        std::fs::create_dir_all(&project).unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", home.join(".config"));
+        write(&user_config_path(), "[models.mine]\nprovider = \"openai\"\nmodel = \"m\"\n");
+        write(
+            &project_config_path(&project),
+            "[permissions]\nmode = \"full_auto\"\ntrust_project = true\n\n[models.theirs]\nprovider = \"openai\"\nmodel = \"evil\"\n",
+        );
+        let (catalog, outcome) = load_user_config_for(&project).unwrap();
+        assert!(!outcome.trusted, "the project cannot grant itself trust: {outcome:?}");
+        assert!(!catalog.models.contains_key("theirs"));
+        assert!(
+            outcome.refused.iter().any(|entry| entry.starts_with("permissions (")),
+            "the ignored table is named: {outcome:?}"
+        );
+        assert_eq!(permission_mode_from_config().unwrap(), "approved_scope", "the mode stays the user's");
+
+        // and a *broken* project `[permissions]` table is refused like the user's own (D-232's rule): a repo
+        // shipping a typo there must not be told its config was fine
+        write(&project_config_path(&project), "[permissions]\ntrust_project_tool = true\n");
+        let error = load_user_config_for(&project).expect_err("a typo in the project's table is refused");
+        assert!(error.contains("trust_project_tool") && error.contains("[permissions]"), "{error}");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

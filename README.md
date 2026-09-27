@@ -217,10 +217,12 @@ and `t` terminates (with confirmation); in the tasks panel `c` cancels a task; i
 
 ## Configuration and team
 
-- The user config `$XDG_CONFIG_HOME/teamagents/config.toml` is what a session reads. A project config
-  `<cwd>/.teamagents/config.toml` is **not wired into the daemon yet**: the merge loader and its trust rules
-  (`[permissions] trust_project_tools = true` for project tools) exist and are unit-tested, but no entry
-  point calls them, so a repository cannot influence a session today (see `docs/ACCEPTANCE.md`).
+- A session reads two config files: yours, `$XDG_CONFIG_HOME/teamagents/config.toml`, and — for the directory it
+  works in — the repository's `<cwd>/.teamagents/config.toml`. The repository's contributes **nothing** until you
+  opt in with `[permissions] trust_project = true` in your own config; then its models, tools, skills paths and
+  instruction files merge in (your definitions of a name always win), while `[permissions]`, hooks, checks,
+  retention and limits stay yours. `doctor`'s `project config` row reports what the merge did (see
+  `docs/ACCEPTANCE.md` for the two limits).
 - A model profile selects its wire format with `protocol = "responses" | "anthropic" | "openai" |
   "deepseek"`; `base_url` plus `model` decide the actual service, and credentials are only referenced by
   environment-variable name.

@@ -137,10 +137,15 @@ The user config is `$XDG_CONFIG_HOME/teamagents/config.toml` (default
 `~/.config/teamagents/config.toml`). Credentials are referenced by environment-variable name and never
 written into the file:
 
-A repository-local `<cwd>/.teamagents/config.toml` is **not read by the current entry points**: the merge
-loader (`load_user_config_for`) with its trust rules is implemented and unit-tested, but nothing wires it into
-the daemon yet, so cloning a repository cannot change a session today. Until that lands, everything below is
-the *user* config.
+A repository-local `<cwd>/.teamagents/config.toml` is read too — the daemon, `doctor` and the client all load
+it, for the directory the session works in — and **it contributes nothing until you opt in** with
+`[permissions] trust_project = true` in your own config. With the opt-in the repository's model profiles, tool
+bindings, `skills_paths` and `instruction_files` merge in, and your own definitions of the same name win;
+`[permissions]` (both `mode` and the trust flag), `[hooks]`, `[[checks]]`, `[retention]` and `[limits]` can only
+ever come from your config, so a cloned repository cannot install a command that runs without an approval
+prompt, delete data or raise a ceiling you set. `doctor`'s `project config` row says what the merge did — a
+`[WARN]` with one reason per refused entry when nothing landed — and the daemon writes the same line into
+`<state root>/daemon.log`. The rest of this section describes your own config.
 
 ```toml
 [models.leader_main]
@@ -492,7 +497,7 @@ teamagents tasks cancel --id t-prose    # releases a delegator waiting on a task
   binding, exactly like `[tools.web]` for the web tools — the service starts with the session and its tools
   reach every member's model surface as `<name>_<tool>`. Only your **user** config is read today (a
   repository-local project file is not — §2), so a cloned project cannot bind a service at all yet; when the
-  project loader is wired, its `tools` will need `[permissions] trust_project_tools = true`. `required = true` means
+  repository's config contributes, its `tools` need `[permissions] trust_project = true`. `required = true` means
   the session must not start without it; `doctor` lists each declared service and whether its command can run,
   so a typo shows up there instead of in `daemon.log`.
 - **Where a stdio server runs** is your choice, and the default is the safe one (D-106):

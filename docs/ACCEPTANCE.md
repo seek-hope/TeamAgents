@@ -7,7 +7,7 @@ model probe sets and the three formal gates).
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 101 / engine 255 / tui 35 test targets) and `make pty` passes; both are
+`make check` is green (core 101 / engine 258 / tui 35 test targets) and `make pty` passes; both are
 preconditions for every item below. `make check` includes `make language-check`, which fails on non-English
 characters outside the two documented exceptions (`README.zh-CN.md` and the frozen material under
 `review/eval`).
@@ -271,13 +271,15 @@ amended (D-49/D-50).
   whether the *default* should be different — workers getting the shell, or the Leader being allowed to hand
   out the authority it holds — is a design decision that changes §5.1's spawn contract and needs the user's
   call; both options are recorded in `docs/DECISIONS.md` D-61 ("Left open").
-- **The project config is not read.** `config::load_user_config_for` merges `<cwd>/.teamagents/config.toml`
-  with the documented trust rules (project models are allowed, project tools/skills/instructions need
-  `[permissions] trust_project_tools = true`, and hooks/retention/checks may only come from the user config),
-  and it has tests, but no entry point calls it: the daemon, TUI and `exec` load the user config only. The
-  README and the user guide now state this instead of promising the project file. One consequence is already
-  closed: because that loader is the only caller of the path validator, a bad `skills_paths` /
-  `instruction_files` entry in the *user* config used to be silent — `doctor` now reports what they resolve to
-  and warns when a configured path is missing (D-66). Wiring it is a decision,
-  because it changes what a cloned repository can influence (including a malformed project file failing the
-  session start) — it needs the user's call before it lands.
+- **The project config is read, since D-244 — with two limits worth recording.** `config::load_user_config_for`
+  merges `<cwd>/.teamagents/config.toml` under one gate (`[permissions] trust_project = true` in the user's own
+  config; without it the repository's models, tools, skills paths and instruction files are refused, and
+  `[permissions]`, `hooks`, `checks`, `retention` and `limits` stay the user's own even when trusted), the
+  daemon, `doctor` and the client all load it, and `python3 review/dogfood/project_config.py` measures the gate
+  over a real session (the offered-surface witness in the daemon log). The two limits: the file is looked for in
+  the session's **own directory only** — a monorepo root config is not seen from a subdirectory, where Codex and
+  Pi walk up — and the opt-in is one flag in the user config, so trusting one repository trusts every repository
+  a session starts in; a per-project trust list is the upgrade path, and a design decision of its own. One
+  earlier consequence stays closed: because that loader is the only caller of the path validator, a bad
+  `skills_paths` / `instruction_files` entry in the *user* config used to be silent — `doctor` reports what they
+  resolve to and warns when a configured path is missing (D-66).

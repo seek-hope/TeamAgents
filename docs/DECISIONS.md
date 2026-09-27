@@ -17,6 +17,66 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Install and first config | download-and-run install; `init` writes a minimal config and never overwrites an existing file | D-37; `docs/INSTALL.md` records the differences of earlier releases (≤ v0.1.2) |
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
+| Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
+
+## D-244 The repository-local config is read now, under one gate (2026-09-27)
+
+D-133 recorded that the merge loader existed and no entry point called it; this is the wiring, and it is a
+*trust* change, so the rule had to be decided first. The loader's old shape was two rules: model profiles merged
+unconditionally, while tools, skills paths and instruction files needed `[permissions] trust_project_tools = true`.
+A project-sourced **model profile** carries `base_url` and `api_key_env`, so "models always merge" let a cloned
+repository become the session's model — the client's and the daemon's "exactly one configured key" fallback picks
+a single project profile — and be handed the user's credential at an endpoint the user never chose; `--model KEY`
+cannot help either, because a name cannot tell its source. So the rule is now **one gate for the whole file**:
+`[permissions] trust_project` (renamed from `trust_project_tools`, since it no longer means tools) in the *user's*
+own config. With it, the repository's models, tools, `skills_paths` and `instruction_files` merge in and the
+user's own definition of a name always wins; without it the file contributes nothing and every refused entry is
+named with the rule that refused it. The classes that never come from a project, trusted or not, are unchanged and
+now include `limits`: `[permissions]` (the mode *and* the trust flag — a repository cannot grant itself the gate),
+`hooks`, `checks`, `retention` and `limits` are the user's own policy, because a check is a command that runs
+without an approval prompt and a limit is the ceiling the user set.
+
+**Wired**: `daemon` (the session's config is loaded for the directory it works in), `doctor` (what a session
+started *here* would read) and the client's `default_model_key` all go through `config::load_user_config_for`,
+which returns `(UserConfig, ProjectMerge)` — the merge's decision as data, because a detached daemon's stderr is
+`<state root>/daemon.log`, a file a user does not read. `doctor` has a `project config` row (`[ok]` with what
+landed, `[WARN]` with one reason per refused entry, or `[ok] none at <path>`), the daemon prints the same line
+into its log, and `README.md`/`README.zh-CN.md`/`docs/USER-GUIDE.md` §2/`docs/CONFIG.md`'s trust rule state the
+gate — the flip `review/project_config_claim.py` was built for: its lists now carry the *wired* sentences, and the
+four "not read" wordings are its blacklist.
+
+**Wiring it exposed three latent defects, each fixed here.**
+
+* The merge path **dropped `[limits]`**: it carried models, tools, skills, instruction files, hooks, checks and
+  retention, and never `limits` — so wiring would have lost every goal ceiling and deadline the user set. The
+  test `the_two_loaders_agree_on_a_user_only_config` is the rule that keeps the two loaders equal (its control:
+  removing the `limits` carry fails it with `Some(1000)/Some(5)` against `None/None`).
+* D-232's *deliberate difference* — the merge path refused a configured path that resolves nowhere — would have
+  refused to boot on the shipped config's `~/.agents/skills`, which does not exist on a fresh machine. That is
+  the case D-66/D-168 designed a `doctor` warning for, so the difference dissolved in *that* direction:
+  `validate_configured_paths` is removed (it had no other caller) and the skills/instruction rows are the only
+  validator. `doctor_reports_the_skills_registry_and_missing_configured_paths` is the test that decided it.
+* The merge path read its files with `unwrap_or_default()`, so **every** read error looked like an empty file: a
+  config whose path is a directory answered "no model configured yet; run `teamagents init`" instead of naming
+  the file. `doctor_fresh_install_reports_the_missing_requirements` caught it on the first full run; both loaders
+  share `read_config_file` now, where only `NotFound` means an empty config.
+
+**Measured** (`review/dogfood/project_config.py`, offline, ~5 s, in `make probe-offline`): a repository config
+declaring a model profile and `[tools.repo_tool] kind = "web_search"` against a local chat-completions server —
+untrusted the offered-surface witness reads `tools=…,shell,skill,…` (no web_search) and the daemon log says
+`accepted nothing; refused model:repo_model …; tool:repo_tool …`; trusted the same session offers `web_search`
+and the log says `accepted model:repo_model, tool:repo_tool`; and a project that sets
+`[permissions] trust_project = true` in *its own* file is still untrusted, with
+`permissions (mode and trust_project are your own settings)` in the refusals. `doctor` shows the same facts in one
+row (`[WARN]`/`[ok]`), which the CLI test `cli::doctor_*` and the probe together pin.
+
+Ceiling: the file is looked for in the session's own directory only — there is no walk up to a parent, where
+Codex and Pi find a monorepo root's config — and the opt-in is one flag for the user, so trusting one repository
+trusts every repository a session starts in; a per-project trust list is the upgrade path and a design decision of
+its own. A trusted project's model profile becomes the default when the user's config defines none (the fallback
+D-237 pinned), which is the point of opting in but is worth knowing; and a trusted project's `instruction_files`
+entries merge into the catalog while nothing reads them into a prompt yet (D-102), so they are inert until that
+gap closes.
 
 ## D-243 The session's own directories and the daemon's log named neither the path nor a lever (2026-09-27)
 
@@ -6709,9 +6769,10 @@ user who wants unattended runs still chooses `--full-auto` deliberately.
 
 Auditing the documented configuration surface against the code found a silent trap: `skills_paths` and
 `instruction_files` are read from the user config, `expand_home` resolves `~/…`, and
-`tools::skill_roots` *filters out* a configured path that is not a directory — but the only validator
-(`config::validate_configured_paths`) is called from `load_user_config_for`, the **project** config loader
-that no product entry point uses yet (the known gap recorded in `docs/ACCEPTANCE.md`). So a typo'd path, or a
+`tools::skill_roots` *filters out* a configured path that is not a directory — but the only validator then
+(`config::validate_configured_paths`, removed by D-244) ran on the **project** config loader alone, which no
+product entry point used then (D-244 wired that loader, so the path row is the only validator now — the
+direction this entry argued for). So a typo'd path, or a
 `~/.agents/skills` that does not exist yet, meant: skills silently absent (`skill` answers "no skills
 configured" only when the model happens to ask) and instruction files silently missing from every prompt,
 with nothing anywhere telling the user.
@@ -6728,7 +6789,7 @@ It is a **warning, not a load failure**, deliberately: the shipped `init` config
 registration root (D-34), and refusing to start a session because a *feature's* root is missing would break
 the documented first-run flow (`init → set the key → doctor → teamagents`) on every machine that has not
 created it yet. Refusing a bad path stays the behaviour of the project-config loader once that loader is
-wired (a decision that needs the user's word).
+wired — D-244 did that, under the user's own opt-in).
 
 Evidence: `cli::doctor_reports_the_skills_registry_and_missing_configured_paths` (a root with one skill
 reports `1 skill(s) under 1 configured root(s)`; a missing root and a missing instruction file are named;
