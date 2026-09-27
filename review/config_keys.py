@@ -17,6 +17,24 @@ Limits, deliberately stated: the check is name-based (a field reached through a 
 would be missed), it cannot tell "read for a report" from "read to act" — that is what the allowlist is for —
 and the argv parser counts as plumbing (a *flag* that is only parsed for a removed verb, D-53's
 `--history-days`, is therefore reported here as unserved — which is what it is).
+
+**D-237 added the shipped default profile's key.** That key is one fact in three layers: the code prefers it by
+name (`default_model_key` asks the catalog for `contains_key("…")`), `init` writes the config that
+`engine/src/config.rs` includes as `INITIAL_CONFIG` (`examples/config.minimal.toml`), and the documents tell a
+user which key it is (the README's `--model` row, the user guide's configuration example, the install guide's
+first-configuration section, and the full `examples/config.toml` the guides point at). Measured 2026-09-27:
+nothing compared the three, so renaming the profile in the template would leave the code preferring a key that
+ships nowhere and four statements naming a key the shipped config does not declare. The audit now reads the
+preferred key out of `default_model_key`, parses the template's `[models.*]` keys, checks that `INITIAL_CONFIG`
+really is included from that template (so the rule cannot quietly stop reading), and requires the key to be in
+the template *and* in every statement. **Controls**: `--doc examples/config.minimal.toml=<copy without the key>`
+reports the template half; `--doc README.md=<copy with the key renamed>` reports the statement half.
+
+Ceiling: only the *key* is compared — the model name, the context window and the reasoning effort the same
+sentences carry are prose; the statement list is fixed, so a *new* document that names the key is not swept in
+(`docs/TOOLS.md` names it too and is left out deliberately: it is generated, and its writer's catalogue already
+reads the tool that says it); and the comparison is name-based, so a preference reached through a differently
+named accessor in `default_model_key` would be missed.
 """
 import argparse
 import pathlib
@@ -95,6 +113,30 @@ def named_keys(text: str) -> set[str]:
 
 
 DOCS = ["README.md", "docs/USER-GUIDE.md", "docs/INSTALL.md"]
+
+# (D-237) The shipped default profile's key, one fact in three layers (see the docstring).
+CODE_FN = re.compile(r"fn default_model_key\(\)[^{]*\{(.*?)\n\}", re.S)
+CODE_PREF = re.compile(r'contains_key\("([^"]+)"\)')
+CODE_RETURN = re.compile(r'return Some\("([^"]+)"\.to_string\(\)\)')
+INITIAL_SOURCE = REPO / "engine/src/config.rs"
+INITIAL_INCLUDE = 'include_str!("../../examples/config.minimal.toml")'
+TEMPLATE = REPO / "examples/config.minimal.toml"
+DEFAULT_STATEMENTS = [
+    ("README.md", "the --model row"),
+    ("docs/USER-GUIDE.md", "the configuration example"),
+    ("docs/INSTALL.md", "the first-configuration section"),
+    ("examples/config.toml", "the full example the guides point at"),
+]
+
+
+def shipped_profiles(path: pathlib.Path = TEMPLATE) -> set:
+    """The `[models.<key>]` keys the template declares — the config `init` writes."""
+    import tomllib
+    with path.open("rb") as handle:
+        data = tomllib.load(handle)
+    return set(data.get("models", {}))
+
+
 TOML_BLOCK = re.compile(r"```toml\n(.*?)```", re.S)
 
 
@@ -122,10 +164,50 @@ def keys_named_to_a_user() -> dict[str, set[str]]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--list-known", action="store_true", help="also list the allowed unserved fields")
+    parser.add_argument("--doc", action="append", default=[], metavar="PATH=FILE",
+                        help="read one of the inputs (a statement, the template, the code's preference or the "
+                             "include) from FILE instead (a copy is the control)")
     args = parser.parse_args()
+    overrides = dict(item.split("=", 1) for item in args.doc)
     roots = ["core/src", "engine/src", "tui/src"]
     files = [p for root in roots for p in (REPO / root).rglob("*.rs")]
-    findings, allowed = [], []
+    findings, allowed, drift = [], [], []
+
+    def read(rel: str) -> str:
+        """A tracked text input, or the copy `--doc` names for it (the control)."""
+        return (pathlib.Path(overrides[rel]) if rel in overrides else (REPO / rel)).read_text(errors="replace")
+
+    # D-237: the default profile's key, from the code's preference to the template and the documents
+    code = read("engine/src/main.rs")
+    initial = read(str(INITIAL_SOURCE.relative_to(REPO)))
+    body = CODE_FN.search(code)
+    preferred = CODE_PREF.search(body.group(1)) if body else None
+    returned = CODE_RETURN.search(body.group(1)) if body else None
+    template_rel = str(TEMPLATE.relative_to(REPO))
+    template = pathlib.Path(overrides[template_rel]) if template_rel in overrides else TEMPLATE
+    shipped = shipped_profiles(template)
+    if INITIAL_INCLUDE not in initial:
+        drift.append(f"{INITIAL_SOURCE.relative_to(REPO)}: `INITIAL_CONFIG` is no longer included from "
+                     f"{template_rel}, so this audit is holding the documents to a config nothing ships")
+    if body is None:
+        drift.append("engine/src/main.rs: `default_model_key()` is gone, so the default profile's key cannot be "
+                     "read — teach this audit where the preference moved")
+    elif preferred is None or returned is None:
+        drift.append("engine/src/main.rs: `default_model_key()` no longer reads as one `contains_key(\"…\")` test "
+                     "and one `return Some(\"…\")`, so the preferred key cannot be read — teach this audit the new "
+                     "shape")
+    else:
+        key = preferred.group(1)
+        if returned.group(1) != key:
+            drift.append(f"engine/src/main.rs: `default_model_key()` tests `contains_key({key!r})` but returns "
+                         f"{returned.group(1)!r}: the preference and the returned key disagree")
+        if key not in shipped:
+            drift.append(f"the code prefers the model key {key!r} and {template_rel} declares {sorted(shipped)}: "
+                         "`init` writes a config the client does not prefer")
+        for path, where in DEFAULT_STATEMENTS:
+            if key not in read(path):
+                drift.append(f"{path} ({where}) does not name {key!r}, the key the code prefers and the template "
+                             "ships: the default profile is one fact with several statements")
     for field in config_fields():
         reads = []
         for path in files:
@@ -140,6 +222,8 @@ def main() -> int:
     print(f"{len(config_fields())} config fields scanned; {len(findings)} unserved, {len(allowed)} known")
     for field in findings:
         print(f"  unserved: {field} — accepts a value, no code outside the loader/doctor reads it")
+    for finding in drift:
+        print(f"  default profile: {finding} (D-237)")
     known = set(config_fields()) | HAND_READ
     named = keys_named_to_a_user()
     checked = 0
@@ -158,7 +242,7 @@ def main() -> int:
     if args.list_known:
         for field in allowed:
             print(f"  known: {field} ({KNOWN_UNSERVED[field]})")
-    return 1 if findings else 0
+    return 1 if findings or drift else 0
 
 
 if __name__ == "__main__":

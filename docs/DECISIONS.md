@@ -18,6 +18,35 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-237 The default profile's key was one fact in three layers and compared in none (2026-09-27)
+
+D-236 held the user config's *path* to the five places that state it. The `init` **default profile** one file over
+has the same shape and one layer more: the code prefers a key by name —
+`engine/src/main.rs::default_model_key()` returns `"leader_main"` when the catalog declares it — `init` writes the
+config that `engine/src/config.rs` includes as `INITIAL_CONFIG` (`examples/config.minimal.toml`, which declares
+`[models.leader_main]`), and the documents tell a user which key it is: the README's `--model` row, the user
+guide's configuration example, the install guide's first-configuration section, and the full `examples/config.toml`
+the guides point at (the generated `docs/TOOLS.md` names it too). Measured 2026-09-27: nothing compared the three,
+so renaming the profile in the template would leave the client preferring a key that ships nowhere and four
+statements naming a key the shipped config does not declare — the D-75/D-102 class (a config key that only *looks*
+served), one layer further out.
+
+**Fixed**: `review/config_keys.py` — the config-surface audit — reads the preferred key out of
+`default_model_key()` (the `contains_key("…")` test and the key the function returns must agree, and a function
+whose shape it cannot read is *reported* rather than passed), parses the template's `[models.*]` keys, checks that
+`engine/src/config.rs` still includes the template as `INITIAL_CONFIG` (so the rule cannot quietly hold the
+documents to a config nothing ships), and requires the key to be in the template *and* named by each of the four
+statements. `--doc PATH=FILE` now reads a copy of any input. **Controls**: a template copy without the key and a
+`config.rs` copy without the include report the two code-side halves; a README copy with the key renamed reports
+the statement half; and a `main.rs` copy whose `return Some("…")` disagrees with its `contains_key` test reports
+that.
+
+Ceiling: only the *key* is compared — the model name, the context window and the reasoning effort the same
+sentences carry are prose and checked nowhere; the statement list is fixed, so a *new* document that names the key
+is not swept in (`docs/TOOLS.md`, generated, is deliberately left out — its writer's tool catalogue already reads
+the tool whose description says it); and the code half is name-based, so a preference reached through a
+differently named accessor in `default_model_key` would be missed.
+
 ## D-236 The user config's path was stated in five places and compared in none (2026-09-27)
 
 D-235 held the exit codes to the code that produces them. The same shape sits one file over: the **user** config's
