@@ -45,7 +45,7 @@ OFFLINE = [
     ("boundary.py", [], "the state roots the CLI refuses (A33/A34)"),
     ("budget.py", [], "a ceiling below one request is refused before any model call (A18)"),
     ("truncation.py", [], "A19's whole path over a real socket: truncated before output retries, after it fails"),
-    ("max_retries.py", [], "a profile's `max_retries` is ignored: the budget is the session's constant (D-240)"),
+    ("max_retries.py", [], "a profile's `max_retries` is the budget its own driver uses, per instance (D-247)"),
     ("project_config.py", [], "the repository-local config is read, and gated by the user's opt-in (D-244)"),
     ("instructions.py", [], "`instruction_files` reach every member's prompt, seen in the requests (D-246)"),
     ("input_latency.py", [], "per-keystroke composer latency against the scripted daemon"),

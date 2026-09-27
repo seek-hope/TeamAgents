@@ -321,7 +321,7 @@ engine/target/debug/teamagents exec --json --timeout 180 "1+1=?"
 # direct reference loop (group A entry, same kernel/tools/config)
 engine/target/debug/examples/eval_group_a --task "..." --workdir /tmp/t --trace /tmp/t-trace
 # the dogfood probes: the built CLI, real daemons and the real TUI, driven end to end
-make probe-offline                       # the probes that need no model and no credential, ~1 min
+make probe-offline                       # the probes that need no model and no credential, ~2 min
 make probe-models                        # the probes that take a model, one after another (~7 min)
 python3 review/dogfood/checks.py --state-dir /tmp/ta-checks   # one model probe at a time
 ```
