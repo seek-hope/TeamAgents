@@ -262,7 +262,10 @@ need; when upgrading one, update only the affected lock files and re-run the int
    `make check` and the release build run `--locked`, so a missed lock is a build failure. `review/release_artifact.py`
    (in `make hygiene`) reports a version the three disagree about, which the workflow would refuse at the tag.
 2. **Update `.github/release-notes.md`** — the workflow publishes it as the release body (`--generate-notes` adds the
-   rest) — and pass CI: `make check`, `make pty`, and the probes that need no credentials.
+   rest) — and pass CI: `make check`, `make pty`, and the probes that need no credentials. Its local-regression
+   counts are the acceptance ledger's, and `review/test_counts.py` (in `make test`) holds both to the crates' own
+   test lists (D-221); `review/build_references.py` fails if the workflow's `--notes-file` names a file the
+   repository does not carry.
 3. **Push the `vX.Y.Z` tag.** The workflow refuses a tag that is not `v<version>`, reads the toolchain from
    `rust-toolchain.toml`, builds musl-static binaries, packages them with `README.md`, `config.example.toml`,
    `install.sh`, `docs/`, `examples/` and `AGENTS.md`, checksums the archive and the installer, smoke-installs the

@@ -18,6 +18,38 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-221 The release body and the instruction file stated stale test counts (2026-09-27)
+
+D-178 made the acceptance ledger's headline counts a checked fact: `review/test_counts.py` asks the crates for
+their test lists and compares them with `docs/ACCEPTANCE.md`'s baseline line. The same three numbers are stated
+in two more documents that readers trust them from — `.github/release-notes.md`, which the workflow publishes as
+the release body, and `AGENTS.md`, the file a contributor takes as the baseline to judge a run against — and
+nothing held either. Measured 2026-09-27: **both were stale, and each stale differently** — the release body said
+`core 91 / engine 136 / tui 29`, the instruction file `core 100 / engine 220 / tui 33`, the ledger
+`core 101 / engine 244 / tui 35`. The release page would have told a user the local regression was 256 test
+targets when it is 380, and the instruction file would have sent a contributor hunting for a discrepancy in a run
+that is green.
+
+**Fixed**: both statements were brought to the ledger's numbers (and the instruction file's baseline date to the
+day it was measured), and the audit now holds every document in its `STATEMENTS` list to the ledger's:
+`--write` updates all of them together, and a statement that *disappears* is a finding too, because deleting the
+sentence is how the check would otherwise go quiet. Controls: a release-notes copy carrying the old numbers
+reports them, and a copy with no counts sentence reports that.
+
+**The same turn closed the neighbouring hole in the release machinery.** D-216 made
+`review/build_references.py` require every file a surface *copies* to exist and be tracked; the publish step
+*reads* one — `gh release create --notes-file .github/release-notes.md` — and a missing notes file would stop
+step 5 of the release checklist, the only step `review/release_rehearsal.py` (D-217) cannot rehearse, with
+nothing else watching. The audit now checks the files a surface reads through `--notes-file`/`--body-file`
+(measured: one argument, present and tracked). Control: a workflow copy naming
+`.github/notes-that-do-not-exist.md` reports it by name.
+
+Ceiling: the counts rule asks for the sentence in the documents it lists, not in every document that ever states
+a number — a new document that repeats the counts is not swept in, and `docs/DECISIONS.md` deliberately records
+historical numbers, which it must not be held to; the reads rule knows the two flag forms a workflow in this tree
+uses, so a file read by another mechanism (`source`, a tool's own config lookup) is out of scope; and the counts
+check runs inside `make test`, since it needs the suites' test lists.
+
 ## D-220 Three modules' claims nothing could refute (2026-09-27)
 
 D-219's rule found variables no action ever writes; this entry closes the older and larger gap D-218 named:

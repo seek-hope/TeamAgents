@@ -25,6 +25,13 @@ shadowed by a file.
 Limits: only these two surfaces are read (a script named in a document is a citation, which `citations.py`
 resolves); the invocation shape is textual, so a path built at runtime is invisible; and the check is about the
 index, not about a commit — `git add`-ing and committing are still the author's job.
+
+**D-221 covered the files a surface *reads*.** D-216's rule watches `cp`'s destination; `gh release create
+--notes-file .github/release-notes.md` names a file the same way, and a missing one stops the publish step —
+the only step `review/release_rehearsal.py` (D-217) cannot rehearse, so nothing else would have caught it.
+Measured 2026-09-27: one such argument, `.github/release-notes.md`, present and tracked. The flags are the two
+`--notes-file`/`--body-file` forms, because those are the shapes a workflow here uses; a file read by another
+mechanism (`source`, a language's own config lookup) is out of scope, which is this rule's ceiling.
 """
 import argparse
 import pathlib
@@ -44,6 +51,10 @@ MAKE_NAME = re.compile(r"make ([a-z][a-z0-9-]*)")
 # a `cp` in a surface needs the files it copies: the destination is the last argument, `-r`/`-f` are flags, a
 # `$…` or build-directory path is made by the run itself, and the lookbehind keeps `java -cp` (a classpath flag) out
 COPY = re.compile(r"(?<![\w.-])cp(?:\s+-[A-Za-z]+)*\s+((?:[^\s|;&]+\s+)+)([^\s|;&]+)")
+# a file a command *reads* rather than copies: `gh release create --notes-file <path>` is the one in this tree.
+# D-216 covered `cp`'s destination (the publish step's namesake); the argument is the same failure one verb over
+# — a missing notes file stops the publish, which is the only release step D-217 cannot rehearse.
+READS = re.compile(r"--(?:notes|body)-file[= ]+([^\s|;&\\]+)")
 GENERATED = re.compile(r"[\"'`]?\$|[\"'`]?(?:dist|target)/")
 
 
@@ -110,7 +121,7 @@ def main(argv):
     args = parser.parse_args(argv)
     read = args.surface or surfaces()
     index = tracked()
-    findings, checked, targets, copied = [], 0, 0, 0
+    findings, checked, targets, copied, read_files = [], 0, 0, 0, 0
     for name in read:
         path = REPO / name
         if not path.is_file():
@@ -147,6 +158,17 @@ def main(argv):
                         f"{name}:{line_number}: runs {referenced}, which is not tracked by git — a fresh clone "
                         "would fail there (`git commit -a` skips new files; D-170/D-178)"
                     )
+            for argument in READS.findall(line):
+                path = argument.strip("\"'")
+                if not path or GENERATED.search(path):
+                    continue
+                read_files += 1
+                if not (REPO / path).is_file():
+                    findings.append(f"{name}:{line_number}: reads {path}, which does not exist — the step that "
+                                    "wants it stops there (D-221)")
+                elif path not in index:
+                    findings.append(f"{name}:{line_number}: reads {path}, which is not tracked by git — a fresh "
+                                    "clone would fail there (D-221)")
     for finding in findings:
         print(f"FAIL: {finding}")
     if findings:
@@ -154,6 +176,8 @@ def main(argv):
     print(f"{checked} script reference(s) across {len(read)} surface(s): every one exists and is tracked")
     if copied:
         print(f"{copied} file(s) the surfaces copy: every one exists and is tracked")
+    if read_files:
+        print(f"{read_files} file(s) the surfaces read: every one exists and is tracked")
     if targets:
         print(f"the Makefile's {targets} `.PHONY` target(s) and its help text name each other")
     return 0
