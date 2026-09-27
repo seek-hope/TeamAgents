@@ -18,6 +18,44 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-203 Both READMEs recommended an install that is not this product (2026-09-27)
+
+`docs/INSTALL.md` §1 carries a dated note that the latest published release (`v0.1.2`) is the **earlier
+implementation**, and `docs/ACCEPTANCE.md`'s known gaps state the same fact at length — but the README, the page a
+reader is *recommended* the install from, did not, and neither did the Chinese mirror of it. A reader who follows
+the front door therefore installs a different product than the page describes, and the caveat that says so lives
+only on the page they have not opened yet. `review/install_check.py` re-run 2026-09-27 shows it live: the
+*mechanics* pass (the archive downloads, its SHA-256 matches the published manifest, `install.sh --archive …
+--bin-dir …` installs both binaries, they run, the TUI refuses a session-less start, and a corrupted archive is
+refused with the existing installation left untouched), and the *product* assertion **fails** — the installed
+help is not in English and still offers `validate`, `sessions prune`, `--plain` and `--team SPEC`, which D-52/D-73
+removed — so the check exits 1.
+
+**Repaired**: both READMEs now carry the caveat directly under the install heading, naming the release, pointing
+at the install guide and at building from source, and naming the command that re-runs the comparison. A36's row,
+which had quoted the check as "verified live (2026-09-26)" without its verdict, now states both halves and the
+re-run date.
+
+**Guarded** (`review/release_artifact.py`, in `make hygiene`): the fact is computed *without the network* — every
+release tag in this repository predates the v2 layout (`git ls-tree <tag> -- core/src/v2` is empty, while the
+current tree is built on it; measured: `v0.1.0`, `v0.1.1`, `v0.1.2`, none of them carrying it) — and every
+document that states it must agree. The install guide and the acceptance ledger state it in prose; the READMEs
+are held by name. This is D-133's shape one fact over ("one fact with several statements, not several opinions"),
+and it is two-sided: publishing a v2 release flips the fact, so the newest tag then carries the layout and each
+statement must be *absent* — whoever cuts that release meets a failing audit until the statements and the list
+are rewritten together. Controls: a README copy with the caveat removed reports the missing statement, and
+`--layout core/src` (a directory every tag's tree carries) flips the fact and reports all four documents as
+stale.
+
+Ceiling: the fact is read from the tags in *this clone*, so a checkout that never fetched them cannot compute it
+— that is a note, in the lenient direction, because the statements are still what the documents must say; the
+statements are matched as text, so a document that says it in new words is invisible; and the Chinese note is
+held by the release tag it must name rather than by a phrase, because this repository's code is English only.
+
+**Open, and the user's call**: cutting the v2 release itself (a version bump plus a tag — the workflow refuses a
+tag that does not equal `v<engine version>`, and `.github/workflows/release.yml` builds, checksums and
+smoke-installs the archive). Until then the install path, and not the source tree, is what a new user meets.
+
 ## D-202 The report's re-run heading named a commit that predated its own material (2026-09-27)
 
 `verification/REPORT.md` opens with `## 0. Gate status (re-run <date> at `<commit>`)`, and every number under it —

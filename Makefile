@@ -230,6 +230,7 @@ hygiene: language-check
 	python3 review/env_knobs.py
 	python3 review/dogfood/probes.py --self-check
 	python3 review/project_config_claim.py
+	python3 review/release_artifact.py
 	python3 review/readme_zh.py
 	python3 review/doc_flags.py
 	python3 review/requirement_trace.py

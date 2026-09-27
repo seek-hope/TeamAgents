@@ -95,6 +95,11 @@ never written into the config.
 
 ### Latest release (recommended)
 
+> **Note (2026-09-27):** the latest published release (`v0.1.2`) is the **earlier implementation**, not the
+> product this README describes — its help still offers verbs this one removed. Until a v2 release is published,
+> build from source below, or read the [install guide](docs/INSTALL.md), which carries the same note;
+> `python3 review/install_check.py` re-runs the comparison.
+
 The repository and the [releases](https://github.com/seek-hope/TeamAgents/releases/latest) are public: no
 GitHub login and no Rust toolchain needed. The installer picks the latest version, verifies SHA-256 and
 installs both binaries into `~/.local/bin`:
