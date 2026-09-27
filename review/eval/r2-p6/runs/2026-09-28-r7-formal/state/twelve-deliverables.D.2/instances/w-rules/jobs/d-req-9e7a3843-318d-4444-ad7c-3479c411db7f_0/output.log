@@ -1,0 +1,14 @@
+all a      -> True
+all a,b    -> False
+any b,a    -> True
+any b      -> False
+empty all  -> True
+empty any  -> False
+missing key all -> False
+missing key any -> False
+both keys mixed -> False
+types       -> ['bool', 'bool']
+--- test file sha (must be untouched) ---
+4c425638c58c34872b0800f5fe19092c011785e123c15a1c69e2e99d762a5af8  test_rules.py
+--- workspace root ---
+units

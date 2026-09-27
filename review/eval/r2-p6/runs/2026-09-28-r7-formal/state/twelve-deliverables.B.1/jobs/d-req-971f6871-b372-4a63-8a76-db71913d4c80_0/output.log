@@ -1,0 +1,16 @@
+On branch main
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   ../../../../../../eval_manifests.py
+	modified:   ../../../../../../eval_surface.py
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	../../../../design-r7.md
+8777c63b Record how a leak reading depends on the process table the shell can see
+ec0043dc D-263: what the two contract-text changes did, read off the batches that followed
+ec8cf50a D-262: the measured cost model becomes the leader's own guidance
+f94f06de D-261: the gain is in greening, not writing — pre-registered, and not confirmed
+51ac15b5 D-260: the tree is release-ready at 0.2.0, and the rehearsal proves it
+ls: cannot access '.git': No such file or directory

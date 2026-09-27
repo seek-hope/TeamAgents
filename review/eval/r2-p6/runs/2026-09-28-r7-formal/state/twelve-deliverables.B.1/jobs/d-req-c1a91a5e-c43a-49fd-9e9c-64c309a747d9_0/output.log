@@ -1,0 +1,82 @@
+===== 2026-09-28-r5-recon2/work/six-deliverables.B.1 =====
+10:| csvfix | `units/csvfix/impl.py` | `cd units/csvfix && python3 -m pytest -q` | 2 passed |
+11-| rules | `units/rules/engine.py` | `cd units/rules && python3 -m pytest -q` | 1 passed |
+12-| ledger | `units/ledger/ledger.py` | `cd units/ledger && python3 -m pytest -q` | 2 passed |
+13-| schedule | `units/schedule/schedule.py` | `cd units/schedule && python3 -m pytest -q` | 2 passed |
+14-| intervals | `units/intervals/intervals.py` | `cd units/intervals && python3 -m pytest -q` | 7 passed |
+15-| flags | `units/flags/flags.py` | `cd units/flags && python3 -m pytest -q` | 8 passed |
+16-
+17-一次性运行的等价命令：
+18-
+19-```
+20:for d in csvfix rules ledger schedule intervals flags; do
+21-  (cd "units/$d" && python3 -m pytest -q)
+22-done
+23-```
+24-
+25-输出（节选）：
+26-
+27-```
+28:===== csvfix =====    2 passed in 0.02s
+29-===== rules =====     1 passed in 0.02s
+30-===== ledger =====    2 passed in 0.01s
+31-===== schedule =====  2 passed in 0.02s
+32-===== intervals ===== 7 passed in 0.06s
+33-===== flags =====     8 passed in 0.08s
+34-```
+35-
+36:## 1. csvfix (`impl.py`)
+37-
+38-语义：
+39-- `parse(line)`：按 RFC4180 风格切分——双引号包裹的字段可含逗号，`""` 表示字面双引号；
+40-  未加引号的字段裁剪两侧空白，引号字段保留内部原样。列数必须恰好为 3，否则返回 `None`（不抛异常）。
+41-- `total(rows)`：累加每行**第三列**（金额列）。金额为空字符串（或 `None`）的行跳过；
+42-  金额存在但不是合法整数时抛 `ValueError`；行长度不足 3 列跳过。
+43-
+44-边界：
+45-- `' a , 2 , x '` → `["a","2","x"]`；`'a,2'` / `''` → `None`。
+46-- `'"a,b",2,x'` → `["a,b","2","x"]`（引号处理的额外保证，测试未覆盖）。
+47-- 空金额不计入且不报错；非法金额报错（`bad amount: 'x'`）。
+48-
+===== 2026-09-28-r5-recon2/work/six-deliverables.D.1 =====
+10:for d in csvfix rules ledger schedule intervals flags; do
+11-  echo "===== $d ====="; (cd units/$d && python3 -m pytest -q .); echo "EXIT=$?"; done
+12-```
+13-
+14-Result:
+15-
+16-```
+17:===== csvfix =====   2 passed in 0.02s   EXIT=0
+18-===== rules =====     1 passed in 0.01s   EXIT=0
+19-===== ledger =====    2 passed in 0.01s   EXIT=0
+20-===== schedule =====  2 passed in 0.02s   EXIT=0
+21-===== intervals ===== 7 passed in 0.02s   EXIT=0
+22-===== flags =====     8 passed in 0.02s   EXIT=0
+23-```
+24-
+25-Total: 22 passed, 0 failed, every suite EXIT=0.
+26-
+27-Frozen test files (sha256, unchanged from the versions read before any edit):
+28-
+29-```
+30:588db2b78e9d1365dd8d7563abe70812bf958955665a95ad02b1e6a16c793724  units/csvfix/test_csvfix.py
+31-07edf2bc2445551aa24d467a4ed09baca7cff1b8e76aa0760453440b0e521960  units/flags/test_flags.py
+32-3c5fa1bb8a23b1d96acd8df686bce8cd73eb428e6ca6548279f8c3a1b96e0580  units/intervals/test_intervals.py
+33-249141060049bcdd4c266e0448a139d5f8367d3969491c005ccdb5e4082747c8  units/ledger/test_ledger.py
+34-4c425638c58c34872b0800f5fe19092c011785e123c15a1c69e2e99d762a5af8  units/rules/test_rules.py
+35-d0eac968ccaa16dd71ca63f9a264f9aca424a03de2e94c6d77e607d7a5585b14  units/schedule/test_schedule.py
+36-```
+37-
+38----
+39-
+40:## 1. units/csvfix/ — `impl.py` (`parse`, `total`)
+41-
+42:Files changed: `units/csvfix/impl.py`.
+43-
+44-Semantics implemented:
+45-- `parse(line)` parses one CSV record with the stdlib `csv` reader, so **quoted fields
+46-  (including embedded commas) are handled**; every field is `.strip()`-ed of surrounding
+47-  whitespace. It returns the 3-field list only when there are **exactly 3 columns**,
+48-  otherwise `None`. `None`/empty input → `None` (also accepts an already-split list/tuple).
+49-- `total(rows)` sums the **third column (amount)** as an int. Rows whose amount is blank/
+===== 2026-09-28-r5-recon/work/six-mixed.B.1 =====

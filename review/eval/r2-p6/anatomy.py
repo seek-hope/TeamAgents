@@ -127,13 +127,22 @@ def unit_timeline(db: pathlib.Path, units: list) -> dict:
     conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
     start = next(iter(conn.execute("SELECT MIN(created) FROM events")))[0]
     written, settled, greened = {}, {}, {}
+    settlements = []
     for assignee, created in conn.execute(
         """SELECT t.assignee, e.created FROM events e JOIN tasks t ON t.id = json_extract(e.payload_json, '$.task_id')
            WHERE e.kind = 'task_completed' AND json_extract(e.payload_json, '$.status') = 'SUCCEEDED'"""
     ):
+        settlements.append(created - start)
+        # the assignee *may* name its unit (the model often does), which is a witness for the mapping; when it
+        # does not (`w01`, `w02`, …) the count still carries the timing, and every unit is done when the last
+        # task of a full set settles — the frozen checks confirm the set covers the units (D-264)
         for unit in units:
             if assignee and unit in assignee:
                 settled.setdefault(unit, created - start)
+    if settlements and len(settlements) >= len(units):
+        settled_all = max(settlements)
+    else:
+        settled_all = None
     runs, wrote = {}, set()
     for created, message_json in conn.execute(
         """SELECT created, message_json FROM context_entries WHERE kind = 'assistant' ORDER BY created"""
@@ -160,7 +169,8 @@ def unit_timeline(db: pathlib.Path, units: list) -> dict:
         for unit in runs.get(message.get("tool_call_id"), ()):
             greened.setdefault(unit, created - start)
     conn.close()
-    return {"written": written, "settled": settled, "greened": greened}
+    return {"written": written, "settled": settled, "settled_all": settled_all,
+            "settlements": len(settlements), "greened": greened}
 
 
 def report_units(runs: pathlib.Path, only: str, units: list) -> int:
@@ -181,8 +191,9 @@ def report_units(runs: pathlib.Path, only: str, units: list) -> int:
         def last(d):
             return f"{max(d.values()):.1f}s" if d else "-"
         print(f'=== {tag}  wall={row.get("wall_s")}s checks={"ok" if row.get("checks_ok") else "FAIL"}')
+        all_settled = f'{t["settled_all"]:.1f}s' if t["settled_all"] is not None else "-"
         print(f'    written {len(t["written"])}/{len(units)} (last {last(t["written"])})   '
-              f'settled {len(t["settled"])}/{len(units)} (last {last(t["settled"])})   '
+              f'settled {t["settlements"]}/{len(units)} tasks (all by {all_settled})   '
               f'greened {len(t["greened"])}/{len(units)} (last {last(t["greened"])})')
     return 0
 
@@ -247,7 +258,12 @@ def self_check() -> int:
         if units["written"].get("alpha") != 10.0 or "beta" in units["written"]:
             findings.append(f"the write timeline decoded to {units['written']}")
         if units["settled"].get("alpha") != 30.0:
-            findings.append(f"the settle timeline decoded to {units['settled']}")
+            findings.append(f"the settle map decoded to {units['settled']}")
+        # the timing needs a *full* task set: one settlement covers one unit, not two (D-264)
+        if units["settled_all"] is not None:
+            findings.append(f"a partial task set produced a timing: {units['settled_all']}")
+        if unit_timeline(db, ["alpha"])["settled_all"] != 30.0:
+            findings.append("a full task set did not produce its last settlement as the timing")
         if units["greened"].get("alpha") != 20.0 or units["settled"].get("beta") is not None:
             findings.append(f"the green timeline decoded to {units['greened']}")
         if report_units(pathlib.Path("/nonexistent-batch"), "", ["alpha"]) != 2:

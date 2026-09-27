@@ -1,0 +1,12 @@
+csvfix quoted: ['a,b', '2', 'x']
+csvfix 4col: None
+csvfix bad amount raises: ValueError
+flags --k -5: {'values': {'k': ['-5']}, 'flags': {}, 'positional': []}
+flags --k=--v: {'values': {'k': ['--v']}, 'flags': {}, 'positional': []}
+flags dash: {'values': {}, 'flags': {}, 'positional': ['a', '-', 'b']}
+intervals merge nested: [(0, 10)]
+intervals subtract split: [(0, 3), (7, 10)]
+intervals total: 5
+schedule gap==minutes: [(0, 90), (120, 150)]
+schedule touch overview: False
+rules empty all/any: True False

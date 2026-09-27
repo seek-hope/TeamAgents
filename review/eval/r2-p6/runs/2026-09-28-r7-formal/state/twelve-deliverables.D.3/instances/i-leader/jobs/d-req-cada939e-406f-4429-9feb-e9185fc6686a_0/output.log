@@ -1,0 +1,288 @@
+===== SHA256 of frozen acceptance files =====
+588db2b78e9d1365dd8d7563abe70812bf958955665a95ad02b1e6a16c793724  units/csvfix/test_csvfix.py
+4c425638c58c34872b0800f5fe19092c011785e123c15a1c69e2e99d762a5af8  units/rules/test_rules.py
+249141060049bcdd4c266e0448a139d5f8367d3969491c005ccdb5e4082747c8  units/ledger/test_ledger.py
+d0eac968ccaa16dd71ca63f9a264f9aca424a03de2e94c6d77e607d7a5585b14  units/schedule/test_schedule.py
+3c5fa1bb8a23b1d96acd8df686bce8cd73eb428e6ca6548279f8c3a1b96e0580  units/intervals/test_intervals.py
+07edf2bc2445551aa24d467a4ed09baca7cff1b8e76aa0760453440b0e521960  units/flags/test_flags.py
+4d1ca7a8eb9de778485e1a098269aebae5763096bcf87f2b9a9480a5268d766d  units/measure/test_measure.py
+fc56ef2fd6b0007cca58e323e841dc6b75be168d1a08ead13905ace1d134c9fd  units/slugify/test_slugify.py
+4efde602ab3325b7e35c7c59b29a48739f705fa33a335c8eb4d2f11d82507a62  units/ranges/test_ranges.py
+8f30e265cbfa6ae5fdcf42d313033cd960d83bd1d7cd7f8f7ba3ca09eb289dd4  units/alpha/check.py
+4e7ac3aa4b4ddcc08f0e4902f7e25de1af457b7cbcce051aad1394b80ca373e1  units/beta/check.py
+13aa797e9aef3c9aba1c20677f6fec223964e6c285658c224dae79e3efdc3670  units/chain/tests/test_stage1.py
+b48a335be723c00645c2305619266096635a4c2de66703e2987af54a4ece56e5  units/chain/tests/test_stage2.py
+ed5c68b1370162f168d99306dc6cd7feca0d8668757ed0acb7d97a57b130ad32  units/chain/tests/test_stage3.py
+c3d2971eca0f4e523fd9a27a4d017ccc7797dbaf8b8abeffdd411c300fe8c453  units/chain/tests/test_stage4.py
+0de42e870906b9d81a9ebf72bbb2ce97fe65e4b0db9cc2132eb064f13f7c285f  units/chain/data/orders.csv
+
+===== Implementations =====
+----- units/csvfix/impl.py -----
+COLUMNS = 3
+AMOUNT_INDEX = 2
+
+
+def parse(line):
+    """Split a CSV line on commas, strip surrounding whitespace from each
+    field, and reject lines whose column count is not exactly 3."""
+    fields = [field.strip() for field in line.split(",")]
+    if len(fields) != COLUMNS:
+        return None
+    return fields
+
+
+def total(rows):
+    """Sum the third column (amount) as int, skipping rows whose third
+    column is missing or blank."""
+    total_amount = 0
+    for row in rows:
+        if len(row) <= AMOUNT_INDEX:
+            continue
+        amount = row[AMOUNT_INDEX].strip()
+        if not amount:
+            continue
+        total_amount += int(amount)
+    return total_amount
+
+----- units/rules/engine.py -----
+def evaluate(rules, facts):
+    """Evaluate a rule mapping against facts.
+
+    Supported rules (real ``bool`` results):
+      - ``{"all": [keys]}``: True iff every key maps to a truthy value in facts.
+      - ``{"any": [keys]}``: True iff at least one key is truthy in facts.
+
+    Missing keys count as falsy.
+    """
+    if "all" in rules:
+        return all(bool(facts.get(key)) for key in rules["all"])
+    if "any" in rules:
+        return any(bool(facts.get(key)) for key in rules["any"])
+    return False
+
+----- units/ledger/ledger.py -----
+"""一个只关心单个账户的小账本。"""
+
+
+class Ledger:
+    def apply(self, rows, op):
+        """rows 是 [(kind, account, cents), ...]，返回**该账户**的行（保持原顺序）。
+        kind 只有 "deposit" 与 "withdraw"；金额为负时抛 ValueError。"""
+        for row in rows:
+            kind, _account, cents = row
+            if cents < 0:
+                raise ValueError("amount must not be negative: %r" % (cents,))
+        return [row for row in rows if row[1] == op]
+
+
+def balance(rows, account):
+    """返回该账户的净额：deposit 相加、withdraw 相减；没有该账户的行时返回 0。"""
+    net = 0
+    for kind, row_account, cents in rows:
+        if row_account != account:
+            continue
+        if kind == "deposit":
+            net += cents
+        elif kind == "withdraw":
+            net -= cents
+    return net
+
+----- units/schedule/schedule.py -----
+"""闭区间的时间段工具。"""
+
+
+def slots(ranges, minutes):
+    """合并闭区间：两段之间的空隙（next_lo - prev_hi）小于 minutes 视为同一段。
+    返回按起点升序的合并结果；空输入返回 []。"""
+    segments = sorted((lo, hi) for lo, hi in ranges)
+    if not segments:
+        return []
+    merged = [segments[0]]
+    for lo, hi in segments[1:]:
+        prev_lo, prev_hi = merged[-1]
+        gap = lo - prev_hi
+        if gap < minutes:
+            merged[-1] = (prev_lo, max(prev_hi, hi))
+        else:
+            merged.append((lo, hi))
+    return merged
+
+
+def overlaps(a, b):
+    """两个闭区间是否有交叠；端点正好相接（如 (0,10) 与 (10,20)）不算交叠。"""
+    a_lo, a_hi = a
+    b_lo, b_hi = b
+    return a_lo < b_hi and b_lo < a_hi
+
+----- units/intervals/intervals.py -----
+"""闭区间工具（整数端点，lo <= hi）。"""
+
+
+class Impl:
+    def merge(self, ranges, gap=0):
+        """合并闭区间：按 lo 升序排序后，若相邻两段之间**缺失的整数个数**
+        （next.lo - prev.hi - 1）小于等于 gap 就合并。返回 [(lo, hi), ...] 升序；空输入返回 []。"""
+        segs = sorted((lo, hi) for lo, hi in ranges)
+        if not segs:
+            return []
+        merged = [segs[0]]
+        for lo, hi in segs[1:]:
+            prev_lo, prev_hi = merged[-1]
+            if lo - prev_hi - 1 <= gap:
+                if hi > prev_hi:
+                    merged[-1] = (prev_lo, hi)
+            else:
+                merged.append((lo, hi))
+        return merged
+
+    def subtract(self, ranges, hole):
+        """从 ranges 中挖去闭区间 hole：返回剩下的闭区间（升序）。与 hole 不相交的段原样保留，
+        被完全覆盖的段消失，横跨 hole 的段分裂成两段。"""
+        h_lo, h_hi = hole
+        result = []
+        for lo, hi in self.merge(ranges, 0):
+            if h_hi < lo or h_lo > hi:
+                result.append((lo, hi))
+            else:
+                if lo <= h_lo - 1:
+                    result.append((lo, h_lo - 1))
+                if h_hi + 1 <= hi:
+                    result.append((h_hi + 1, hi))
+        return result
+
+    def total_length(self, ranges):
+        """ranges 覆盖的整数个数之和（闭区间含端点；重叠只算一次）。"""
+        return sum(hi - lo + 1 for lo, hi in self.merge(ranges, 0))
+
+----- units/flags/flags.py -----
+"""命令行风格的参数解析。"""
+
+
+class Impl:
+    def parse(self, argv):
+        """返回 {"values": {...}, "flags": {...}, "positional": [...]}：
+        - 不以 "-" 开头、或正好是 "-" 的项，按出现顺序进 positional。
+        - `--` 之后的所有项都是位置参数（`--` 自己不出现在结果里）。
+        - `--key=value` 与 `--key value` 都是键值对，键是 key。
+        - `--key` 后面没有可用值（到结尾，或后面紧跟另一个 "--" 开头的项）时它是开关。
+        - `-abc` 是三个开关 a、b、c。
+        - values 的每个值是**列表**，重复的键按出现顺序累积；开关重复出现仍是 True。"""
+        values = {}
+        flags = {}
+        positional = []
+
+        def add_value(key, value):
+            values.setdefault(key, []).append(value)
+
+        i = 0
+        n = len(argv)
+        only_positional = False
+        while i < n:
+            token = argv[i]
+            i += 1
+
+            if only_positional:
+                positional.append(token)
+                continue
+
+            if token == "--":
+                # 终止符本身不出现，其后所有项都是位置参数
+                only_positional = True
+                continue
+
+            if token.startswith("--"):
+                body = token[2:]
+                if "=" in body:
+                    key, value = body.split("=", 1)
+                    add_value(key, value)
+                elif i < n and not argv[i].startswith("--"):
+                    # 后面的项是可用的值（只有 "--" 开头的项会被拒绝）
+                    add_value(body, argv[i])
+                    i += 1
+                else:
+                    flags[body] = True
+            elif token.startswith("-") and token != "-":
+                for ch in token[1:]:
+                    flags[ch] = True
+            else:
+                positional.append(token)
+
+        return {"values": values, "flags": flags, "positional": positional}
+
+----- units/measure/measure.py -----
+class Impl:
+    def to_cm(self, value, unit):
+        if unit == "m":
+            return value * 100
+        if unit == "cm":
+            return value
+        if unit == "mm":
+            return value / 10
+        raise ValueError(f"unsupported unit: {unit!r}")
+
+----- units/slugify/slugify.py -----
+import re
+
+
+class Impl:
+    def slugify(self, text):
+        """Lowercase `text`, collapse runs of non-alphanumeric characters into
+        a single "-", strip leading/trailing "-", and fall back to "untitled"
+        when nothing remains."""
+        slug = re.sub(r"[^a-z0-9]+", "-", str(text).lower())
+        slug = slug.strip("-")
+        return slug if slug else "untitled"
+
+----- units/ranges/ranges.py -----
+class Impl:
+    def merge(self, ranges):
+        intervals = sorted((r[0], r[1]) for r in ranges)
+        merged = []
+        for lo, hi in intervals:
+            if merged and lo <= merged[-1][1]:
+                prev_lo, prev_hi = merged[-1]
+                if hi > prev_hi:
+                    merged[-1] = (prev_lo, hi)
+            else:
+                merged.append((lo, hi))
+        return merged
+
+----- units/alpha/alpha.py -----
+def add(a, b):
+    return a + b
+
+----- units/beta/beta.py -----
+def mul(a, b):
+    return a * b
+
+----- units/chain/stage1.py -----
+import csv
+
+
+def parse_orders(path):
+    """Read the orders CSV (header: id,qty,price) into a list of dicts with int values."""
+    rows = []
+    with open(path, newline="") as fh:
+        reader = csv.DictReader(fh)
+        for row in reader:
+            rows.append({key: int(value) for key, value in row.items()})
+    return rows
+
+----- units/chain/stage2.py -----
+def filter_orders(rows):
+    """Keep only the rows whose qty is greater than zero."""
+    return [row for row in rows if row["qty"] > 0]
+
+----- units/chain/stage3.py -----
+def total_by_price(rows):
+    """Sum qty per price, returning {price: total_qty}."""
+    totals = {}
+    for row in rows:
+        totals[row["price"]] = totals.get(row["price"], 0) + row["qty"]
+    return totals
+
+----- units/chain/stage4.py -----
+def report(totals):
+    """Render {price: qty} as one "price:qty\\n" line per price, ascending by price."""
+    return "".join(f"{price}:{totals[price]}\n" for price in sorted(totals))
+

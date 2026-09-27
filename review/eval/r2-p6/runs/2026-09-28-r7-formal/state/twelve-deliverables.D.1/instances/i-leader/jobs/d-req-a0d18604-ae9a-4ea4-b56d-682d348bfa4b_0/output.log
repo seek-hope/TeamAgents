@@ -1,0 +1,24 @@
+csvfix parse 4col: None
+csvfix parse 3col spaced: ['a', '2', 'x']
+csvfix total empty list: 0
+rules all empty: True
+rules any empty: False
+rules unknown: False
+ledger other-account negative: ValueError negative cents: -1
+schedule gap==minutes (no merge): [(0, 10), (15, 20)]
+schedule gap<minutes (merge): [(0, 20)]
+schedule empty: []
+schedule nested: [(0, 50)]
+intervals subtract disjoint: [(0, 4), (8, 9)]
+intervals subtract hole = whole: []
+intervals total_length overlap: 5
+ranges nested: [(0, 10)]
+ranges empty: []
+measure mm type/value: 2.0 float
+measure ft: ValueError
+slugify unicode: caf-au-lait
+slugify empty: untitled
+flags dash alone: {'values': {}, 'flags': {}, 'positional': ['-']}
+flags -5: {'values': {}, 'flags': {'5': True}, 'positional': []}
+flags terminator: {'values': {}, 'flags': {}, 'positional': ['x', '--y']}
+chain parse rows: [{'id': 1, 'qty': 2, 'price': 10}, {'id': 2, 'qty': 0, 'price': 5}, {'id': 3, 'qty': 3, 'price': 7}, {'id': 4, 'qty': 1, 'price': 7}]

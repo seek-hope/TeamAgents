@@ -1,0 +1,38 @@
+=== git? ===
+ M review/eval_manifests.py
+ M review/eval_surface.py
+?? review/eval/r2-p6/design-r7.md
+?? review/eval/r2-p6/manifest-r7.json
+?? review/eval/r2-p6/runs/2026-09-28-r7-formal/
+=== mtimes of tests/checks (should predate today's edits) ===
+2026-09-24_15:15:59 units/alpha/check.py
+2026-09-24_15:15:59 units/beta/check.py
+2026-09-24_16:07:45 units/chain/tests/test_stage1.py
+2026-09-24_16:07:45 units/chain/tests/test_stage2.py
+2026-09-24_16:07:45 units/chain/tests/test_stage3.py
+2026-09-24_16:07:45 units/chain/tests/test_stage4.py
+2026-09-24_15:32:41 units/csvfix/test_csvfix.py
+2026-09-28_03:44:22 units/flags/test_flags.py
+2026-09-28_03:44:22 units/intervals/test_intervals.py
+2026-09-28_03:44:19 units/ledger/test_ledger.py
+2026-09-28_03:46:11 units/measure/test_measure.py
+2026-09-28_03:46:11 units/ranges/test_ranges.py
+2026-09-24_15:32:41 units/rules/test_rules.py
+2026-09-28_03:44:19 units/schedule/test_schedule.py
+2026-09-28_03:46:11 units/slugify/test_slugify.py
+=== mtimes of files I edited ===
+2026-09-28_06:39:14 units/csvfix/impl.py
+2026-09-28_06:39:14 units/rules/engine.py
+2026-09-28_06:39:14 units/ledger/ledger.py
+2026-09-28_06:39:14 units/schedule/schedule.py
+2026-09-28_06:39:18 units/intervals/intervals.py
+2026-09-28_06:39:18 units/flags/flags.py
+2026-09-28_06:39:18 units/measure/measure.py
+2026-09-28_06:39:18 units/slugify/slugify.py
+2026-09-28_06:39:20 units/ranges/ranges.py
+2026-09-28_06:39:20 units/alpha/alpha.py
+2026-09-28_06:39:20 units/beta/beta.py
+2026-09-28_06:39:20 units/chain/stage1.py
+2026-09-28_06:39:22 units/chain/stage2.py
+2026-09-28_06:39:22 units/chain/stage3.py
+2026-09-28_06:39:22 units/chain/stage4.py

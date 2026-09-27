@@ -1,0 +1,13 @@
+[csvfix] exit=0 :: 2 passed in 0.02s
+[rules] exit=0 :: 1 passed in 0.01s
+[ledger] exit=0 :: 2 passed in 0.02s
+[schedule] exit=0 :: 2 passed in 0.03s
+[intervals] exit=0 :: 7 passed in 0.03s
+[flags] exit=0 :: 8 passed in 0.04s
+[measure] exit=0 :: 1 passed in 0.01s
+[slugify] exit=0 :: 1 passed in 0.01s
+[ranges] exit=0 :: 1 passed in 0.02s
+[alpha] exit=0 :: alpha ok
+[beta] exit=0 :: beta ok
+[chain] exit=0 :: 4 passed in 0.02s
+OVERALL_OK=0

@@ -1,0 +1,15 @@
+flags -- mode=fast/-v: {'values': {'mode': ['fast']}, 'flags': {'v': True}, 'positional': []}
+flags --k=--v: {'values': {'k': ['--v']}, 'flags': {}, 'positional': []}
+flags -- : {'values': {}, 'flags': {}, 'positional': ['--not-a-flag', 'x']}
+flags -abc: {'values': {}, 'flags': {'a': True, 'b': True, 'c': True}, 'positional': []}
+flags --mode --other: {'values': {}, 'flags': {'mode': True, 'other': True}, 'positional': []}
+flags --k -5: {'values': {'k': ['-5']}, 'flags': {}, 'positional': []}
+intervals subtract disjoint: [(0, 4), (8, 9)]
+intervals merge nested: [(0, 10)]
+intervals total: 5 0
+csv parse quoted: None
+csv parse wrong cols: None
+csv total blanks: 2
+slug: ['hello-world', 'a-b', 'untitled']
+measure: 150.0 3.0 2.0
+measure bad unit -> ValueError: unsupported unit: 'ft'

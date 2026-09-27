@@ -1,0 +1,122 @@
+===== units/schedule/schedule.py =====
+     1	"""闭区间的时间段工具。"""
+     2	
+     3	
+     4	def slots(ranges, minutes):
+     5	    """合并闭区间：两段之间的空隙（next_lo - prev_hi）小于 minutes 视为同一段。
+     6	    返回按起点升序的合并结果；空输入返回 []。"""
+     7	    raise NotImplementedError
+     8	
+     9	
+    10	def overlaps(a, b):
+    11	    """两个闭区间是否有交叠；端点正好相接（如 (0,10) 与 (10,20)）不算交叠。"""
+    12	    raise NotImplementedError
+===== units/schedule/test_schedule.py =====
+     1	from schedule import slots, overlaps
+     2	def test_slots_merges_and_splits():
+     3	    assert slots([(0,60),(30,90),(120,150)], 30) == [(0,90),(120,150)]
+     4	    assert slots([(0,10)], 5) == [(0,10)]
+     5	def test_overlaps():
+     6	    assert overlaps((0,10),(5,20)) is True
+     7	    assert overlaps((0,10),(10,20)) is False
+===== units/intervals/intervals.py =====
+     1	"""闭区间工具（整数端点，lo <= hi）。"""
+     2	
+     3	
+     4	class Impl:
+     5	    def merge(self, ranges, gap=0):
+     6	        """合并闭区间：按 lo 升序排序后，若相邻两段之间**缺失的整数个数**
+     7	        （next.lo - prev.hi - 1）小于等于 gap 就合并。返回 [(lo, hi), ...] 升序；空输入返回 []。"""
+     8	        raise NotImplementedError
+     9	
+    10	    def subtract(self, ranges, hole):
+    11	        """从 ranges 中挖去闭区间 hole：返回剩下的闭区间（升序）。与 hole 不相交的段原样保留，
+    12	        被完全覆盖的段消失，横跨 hole 的段分裂成两段。"""
+    13	        raise NotImplementedError
+    14	
+    15	    def total_length(self, ranges):
+    16	        """ranges 覆盖的整数个数之和（闭区间含端点；重叠只算一次）。"""
+    17	        raise NotImplementedError
+===== units/intervals/test_intervals.py =====
+     1	from intervals import Impl
+     2	
+     3	I = Impl()
+     4	
+     5	def test_merge_orders_joins_and_keeps_real_gaps():
+     6	    # (-1,0) 与 (1,3) 之间没有缺失整数（相邻），(3,5) 与 (5,7) 之间缺 1 个
+     7	    assert I.merge([[5, 7], [1, 3], [-1, 0]]) == [(-1, 3), (5, 7)]
+     8	    assert I.merge([]) == []
+     9	    assert I.merge([[1, 1]]) == [(1, 1)]
+    10	
+    11	def test_merge_gap_counts_missing_integers():
+    12	    assert I.merge([[1, 2], [4, 5]]) == [(1, 2), (4, 5)]
+    13	    assert I.merge([[1, 2], [4, 5]], 1) == [(1, 5)]
+    14	    assert I.merge([[1, 2], [3, 4]]) == [(1, 4)]
+    15	    assert I.merge([[10, 12], [0, 1], [5, 6]], 3) == [(0, 12)]
+    16	
+    17	def test_merge_ignores_nested_and_backwards():
+    18	    assert I.merge([[0, 10], [2, 3]]) == [(0, 10)]
+    19	    assert I.merge([[7, 9], [0, 1]]) == [(0, 1), (7, 9)]
+    20	
+    21	def test_subtract_splits_inside():
+    22	    assert I.subtract([[0, 10]], (4, 6)) == [(0, 3), (7, 10)]
+    23	
+    24	def test_subtract_covers_and_touches():
+    25	    assert I.subtract([[0, 10]], (0, 10)) == []
+    26	    assert I.subtract([[0, 4]], (4, 9)) == [(0, 3)]
+    27	    assert I.subtract([[0, 4], [8, 9]], (5, 7)) == [(0, 4), (8, 9)]
+    28	
+    29	def test_subtract_normalizes_its_input_first():
+    30	    assert I.subtract([[5, 7], [1, 3]], (2, 6)) == [(1, 1), (7, 7)]
+    31	
+    32	def test_total_length_counts_each_integer_once():
+    33	    assert I.total_length([[0, 2], [2, 4]]) == 5
+    34	    assert I.total_length([]) == 0
+    35	    assert I.total_length([[3, 3]]) == 1
+===== units/flags/flags.py =====
+     1	"""命令行风格的参数解析。"""
+     2	
+     3	
+     4	class Impl:
+     5	    def parse(self, argv):
+     6	        """返回 {"values": {...}, "flags": {...}, "positional": [...]}：
+     7	        - 不以 "-" 开头、或正好是 "-" 的项，按出现顺序进 positional。
+     8	        - `--` 之后的所有项都是位置参数（`--` 自己不出现在结果里）。
+     9	        - `--key=value` 与 `--key value` 都是键值对，键是 key。
+    10	        - `--key` 后面没有可用值（到结尾，或后面紧跟另一个 "--" 开头的项）时它是开关。
+    11	        - `-abc` 是三个开关 a、b、c。
+    12	        - values 的每个值是**列表**，重复的键按出现顺序累积；开关重复出现仍是 True。"""
+    13	        raise NotImplementedError
+===== units/flags/test_flags.py =====
+     1	from flags import Impl
+     2	
+     3	I = Impl()
+     4	
+     5	def test_equals_and_space_forms_agree():
+     6	    assert I.parse(["--mode=fast", "-v"]) == {"values": {"mode": ["fast"]}, "flags": {"v": True}, "positional": []}
+     7	    assert I.parse(["--mode", "fast", "-v"]) == {"values": {"mode": ["fast"]}, "flags": {"v": True}, "positional": []}
+     8	
+     9	def test_switch_when_no_value_follows():
+    10	    assert I.parse(["--mode", "--other"]) == {"values": {}, "flags": {"mode": True, "other": True}, "positional": []}
+    11	    assert I.parse(["--mode"]) == {"values": {}, "flags": {"mode": True}, "positional": []}
+    12	
+    13	def test_bundled_short_switches():
+    14	    assert I.parse(["-abc"]) == {"values": {}, "flags": {"a": True, "b": True, "c": True}, "positional": []}
+    15	
+    16	def test_repeated_key_accumulates_in_order():
+    17	    assert I.parse(["--k", "1", "--k", "2"])["values"] == {"k": ["1", "2"]}
+    18	
+    19	def test_repeated_switch_stays_true():
+    20	    assert I.parse(["--x", "y", "--x"]) == {"values": {"x": ["y"]}, "flags": {"x": True}, "positional": []}
+    21	
+    22	def test_positional_and_dash_terminator():
+    23	    assert I.parse(["a", "-", "b"])["positional"] == ["a", "-", "b"]
+    24	    assert I.parse(["--", "--not-a-flag", "x"])["positional"] == ["--not-a-flag", "x"]
+    25	    assert I.parse(["--", "--not-a-flag", "x"])["flags"] == {}
+    26	
+    27	def test_values_may_look_like_switches():
+    28	    assert I.parse(["--k", "-5"])["values"] == {"k": ["-5"]}
+    29	    assert I.parse(["--k=--v"])["values"] == {"k": ["--v"]}
+    30	
+    31	def test_empty_input():
+    32	    assert I.parse([]) == {"values": {}, "flags": {}, "positional": []}

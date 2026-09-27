@@ -1,0 +1,25 @@
+total 56
+drwxr-xr-x 14 rimuru rimuru 4096 Sep 28 04:52 .
+drwxr-xr-x  3 rimuru rimuru 4096 Sep 28 04:52 ..
+drwxr-xr-x  2 rimuru rimuru 4096 Sep 24 15:15 alpha
+drwxr-xr-x  2 rimuru rimuru 4096 Sep 24 15:15 beta
+drwxr-xr-x  4 rimuru rimuru 4096 Sep 24 16:07 chain
+drwxr-xr-x  2 rimuru rimuru 4096 Sep 24 15:32 csvfix
+drwxr-xr-x  2 rimuru rimuru 4096 Sep 28 03:44 flags
+drwxr-xr-x  2 rimuru rimuru 4096 Sep 28 03:44 intervals
+drwxr-xr-x  2 rimuru rimuru 4096 Sep 28 03:44 ledger
+drwxr-xr-x  2 rimuru rimuru 4096 Sep 28 03:46 measure
+drwxr-xr-x  2 rimuru rimuru 4096 Sep 28 03:46 ranges
+drwxr-xr-x  2 rimuru rimuru 4096 Sep 24 15:32 rules
+drwxr-xr-x  2 rimuru rimuru 4096 Sep 28 03:44 schedule
+drwxr-xr-x  2 rimuru rimuru 4096 Sep 28 03:46 slugify
+--- parent ---
+total 20
+drwxr-xr-x 5 rimuru rimuru 4096 Sep 28 06:41 .
+drwxr-xr-x 5 rimuru rimuru 4096 Sep 28 06:41 ..
+drwxr-xr-x 3 rimuru rimuru 4096 Sep 28 06:38 twelve-deliverables.B.1
+drwxr-xr-x 3 rimuru rimuru 4096 Sep 28 06:40 twelve-deliverables.B.2
+drwxr-xr-x 3 rimuru rimuru 4096 Sep 28 04:52 twelve-deliverables.B.3
+--- any py/proj files ---
+Python 3.13.15
+pytest 9.0.3

@@ -128,6 +128,28 @@ in **6 of 6 pairs**, with medians 45.5 s against 84.5 s and 53.5 s against 98.3 
 direction and magnitude that a strict non-overlap bar does not capture at n=3 per arm. The frozen checks still
 decide acceptance, and both arms pass them in every repeat; quality is not what this section measures.
 
+## Round 7 (2026-09-28, D-264): the paired form of the same metric — confirmed
+
+Round 6 pre-registered a **distributional non-overlap** bar (`max(D) < min(B)`) for the time-to-green metric and
+failed it. That bar was the wrong form for a paired design: with three repeats per arm on a load-varying host it
+asks for a separation the pairing already carries. Round 7 pre-registered the **paired** form instead, on fresh
+trials, and stated that it was the last round on the question.
+
+| `twelve-deliverables`, repeat | solo arm: all 12 green | team arm: all 12 settled by their workers |
+|---|---|---|
+| 1 | 131.9 s | **36.1 s** |
+| 2 | 108.6 s | **73.4 s** |
+| 3 | 86.7 s | **43.1 s** |
+
+**Confirmed: the team arm was strictly earlier in all three pairs** (H9), and the secondary, pooled reading is
+8 of 9 pairs in its favour across rounds 5–7 — the ninth being a *treatment failure* rather than a reversal
+(round 5's second pair, where a worker left its task unsettled and the trial stalled to 732 s).
+
+What stands beside it, unchanged: the **end-to-end gate** does not improve (round 5: 92–200 s against 79–164 s),
+and the **success** form of H2 stays at a zero paired difference because both arms pass every task. The gain is
+real but specific — *a team greens a twelve-unit job earlier than a single instance does* — and both the metric
+and the rule were pre-registered before their data (metric in round 6's registration, rule in round 7's).
+
 ## Cost (real tokens, DeepSeek billing)
 
 | Batch | A | B | C |

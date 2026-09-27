@@ -1,0 +1,6 @@
+csvfix.parse quoted: ['a,b', '2', 'x']
+Traceback (most recent call last):
+  File "<stdin>", line 22, in <module>
+  File "/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r7-formal/work/twelve-deliverables.B.1/units/csvfix/impl.py", line 14, in parse
+    fields = next(csv.reader(io.StringIO(line)))
+StopIteration

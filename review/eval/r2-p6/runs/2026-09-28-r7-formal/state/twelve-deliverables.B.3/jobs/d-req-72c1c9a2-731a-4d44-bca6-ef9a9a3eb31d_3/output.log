@@ -1,0 +1,14 @@
+===== units/alpha/alpha.py =====
+def add(a, b):
+    return a - b
+===== units/alpha/check.py =====
+import alpha
+assert alpha.add(2, 3) == 5, alpha.add(2, 3)
+print("alpha ok")
+===== units/beta/beta.py =====
+def mul(a, b):
+    return a + b
+===== units/beta/check.py =====
+import beta
+assert beta.mul(3, 4) == 12, beta.mul(3, 4)
+print("beta ok")

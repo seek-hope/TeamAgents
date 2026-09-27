@@ -1,0 +1,17 @@
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r7-formal/work/twelve-deliverables.D.2/units
+---
+total 56
+drwxr-xr-x 14 rimuru rimuru 4096 Sep 28 04:52 .
+drwxr-xr-x  3 rimuru rimuru 4096 Sep 28 06:48 ..
+drwxr-xr-x  3 rimuru rimuru 4096 Sep 28 06:47 alpha
+drwxr-xr-x  3 rimuru rimuru 4096 Sep 28 06:47 beta
+drwxr-xr-x  6 rimuru rimuru 4096 Sep 28 06:47 chain
+drwxr-xr-x  4 rimuru rimuru 4096 Sep 28 06:47 csvfix
+drwxr-xr-x  4 rimuru rimuru 4096 Sep 28 06:47 flags
+drwxr-xr-x  4 rimuru rimuru 4096 Sep 28 06:47 intervals
+drwxr-xr-x  4 rimuru rimuru 4096 Sep 28 06:47 ledger
+drwxr-xr-x  4 rimuru rimuru 4096 Sep 28 06:47 measure
+drwxr-xr-x  4 rimuru rimuru 4096 Sep 28 06:47 ranges
+drwxr-xr-x  4 rimuru rimuru 4096 Sep 28 06:47 rules
+drwxr-xr-x  4 rimuru rimuru 4096 Sep 28 06:47 schedule
+drwxr-xr-x  4 rimuru rimuru 4096 Sep 28 06:47 slugify

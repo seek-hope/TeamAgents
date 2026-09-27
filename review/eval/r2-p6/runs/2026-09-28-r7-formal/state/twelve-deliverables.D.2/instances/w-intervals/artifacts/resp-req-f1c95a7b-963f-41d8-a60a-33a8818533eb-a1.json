@@ -1,0 +1,1 @@
+{"message":{"role":"assistant","reasoning_content":"","content":"","tool_calls":[{"id":"call_00_ET_DL9qBHUbahGi1Ngy7dRA1111","type":"function","function":{"name":"shell","arguments":"{\"command\": \"cd units/intervals && python3 -m pytest -q\"}"}}]},"usage":{"prompt":4444,"completion":48,"total":4492},"native":{"protocol":"chat_completions","base":"https://api.deepseek.com/v1"}}

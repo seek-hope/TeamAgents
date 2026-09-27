@@ -1,0 +1,6 @@
+########## units/alpha : python3 check.py ##########
+alpha ok
+EXIT=0
+########## units/beta : python3 check.py ##########
+beta ok
+EXIT=0

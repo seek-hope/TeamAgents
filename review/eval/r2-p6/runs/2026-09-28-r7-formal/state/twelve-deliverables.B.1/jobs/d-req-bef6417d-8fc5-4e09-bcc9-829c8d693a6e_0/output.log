@@ -1,0 +1,46 @@
+===== units/csvfix : python3 -m pytest -q =====
+..                                                                       [100%]
+2 passed in 0.01s
+EXIT=0
+===== units/rules : python3 -m pytest -q =====
+.                                                                        [100%]
+1 passed in 0.01s
+EXIT=0
+===== units/ledger : python3 -m pytest -q =====
+..                                                                       [100%]
+2 passed in 0.01s
+EXIT=0
+===== units/schedule : python3 -m pytest -q =====
+..                                                                       [100%]
+2 passed in 0.02s
+EXIT=0
+===== units/intervals : python3 -m pytest -q =====
+.......                                                                  [100%]
+7 passed in 0.02s
+EXIT=0
+===== units/flags : python3 -m pytest -q =====
+........                                                                 [100%]
+8 passed in 0.03s
+EXIT=0
+===== units/measure : python3 -m pytest -q =====
+.                                                                        [100%]
+1 passed in 0.01s
+EXIT=0
+===== units/slugify : python3 -m pytest -q =====
+.                                                                        [100%]
+1 passed in 0.02s
+EXIT=0
+===== units/ranges : python3 -m pytest -q =====
+.                                                                        [100%]
+1 passed in 0.02s
+EXIT=0
+===== units/alpha : python3 check.py =====
+alpha ok
+EXIT=0
+===== units/beta : python3 check.py =====
+beta ok
+EXIT=0
+===== units/chain : python3 -m pytest -q tests/ =====
+....                                                                     [100%]
+4 passed in 0.03s
+EXIT=0

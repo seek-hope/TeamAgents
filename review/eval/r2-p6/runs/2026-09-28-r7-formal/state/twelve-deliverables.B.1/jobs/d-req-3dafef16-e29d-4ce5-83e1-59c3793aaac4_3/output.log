@@ -1,0 +1,36 @@
+===== units/alpha/alpha.py =====
+     1	def add(a, b):
+     2	    return a - b
+===== units/alpha/check.py =====
+     1	import alpha
+     2	assert alpha.add(2, 3) == 5, alpha.add(2, 3)
+     3	print("alpha ok")
+===== units/beta/beta.py =====
+     1	def mul(a, b):
+     2	    return a + b
+===== units/beta/check.py =====
+     1	import beta
+     2	assert beta.mul(3, 4) == 12, beta.mul(3, 4)
+     3	print("beta ok")
+===== units/chain/stage1.py =====
+     1	def parse_orders(*args, **kwargs):
+     2	    raise NotImplementedError
+===== units/chain/stage2.py =====
+     1	def filter_orders(*args, **kwargs):
+     2	    raise NotImplementedError
+===== units/chain/stage3.py =====
+     1	def total_by_price(*args, **kwargs):
+     2	    raise NotImplementedError
+===== units/chain/stage4.py =====
+     1	def report(*args, **kwargs):
+     2	    raise NotImplementedError
+===== chain tree =====
+units/chain/data/orders.csv
+units/chain/stage1.py
+units/chain/stage2.py
+units/chain/stage3.py
+units/chain/stage4.py
+units/chain/tests/test_stage1.py
+units/chain/tests/test_stage2.py
+units/chain/tests/test_stage3.py
+units/chain/tests/test_stage4.py

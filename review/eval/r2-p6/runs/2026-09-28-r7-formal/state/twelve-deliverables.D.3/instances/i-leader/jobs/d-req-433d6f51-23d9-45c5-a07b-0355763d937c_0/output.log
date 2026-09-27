@@ -1,0 +1,5 @@
+flags extra ok
+intervals extra ok
+Traceback (most recent call last):
+  File "<stdin>", line 24, in <module>
+AssertionError

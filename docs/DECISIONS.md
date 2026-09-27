@@ -20,6 +20,51 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-264 Round 7: the paired metric is confirmed, on a pre-registered rule, and the question closes (2026-09-28)
+
+Round 6 pre-registered `max(D) < min(B)` — a distributional non-overlap bar — for "time until every unit is
+verified green", and failed it (D-261). That bar was the wrong form for a **paired** design: three repeats per
+arm on a host whose load varies cannot be asked for a separation the pairing already carries. Round 7
+(`design-r7.md`, `manifest-r7.json`, both written before it ran) pre-registered the paired form on fresh trials
+and said it would be the last round on this question.
+
+**Measured (six fresh trials, all accepted, `runs/2026-09-28-r7-formal/`):**
+
+| repeat | solo arm: all 12 green | team arm: all 12 settled by their workers |
+|---|---|---|
+| 1 | 131.9 s | **36.1 s** |
+| 2 | 108.6 s | **73.4 s** |
+| 3 | 86.7 s | **43.1 s** |
+
+**H9 is confirmed** — strictly earlier in all three pairs — and the secondary, pooled reading is **8 of 9** pairs
+across rounds 5–7, the ninth being a *treatment failure* (round 5's second pair: one worker left its task
+unsettled and the trial stalled to 732 s) rather than a reversal.
+
+**What that does and does not settle for Q16**, precisely: the requirement's wording ("a reproducible gain on a
+pre-defined task set") is now satisfied on **one metric, whose form and rule were both pre-registered before
+their data** — *a team greens a twelve-unit job earlier than a single instance does*. The **end-to-end gate**
+(time to one accepted result) stays not confirmed from round 5, and the **success** form of H2 stays at a zero
+paired difference because both arms pass every task on this set. Whether that narrower, real gain satisfies the
+requirement is the user's call, not something this entry re-labels: the two negative readings stay in the record
+beside it.
+
+**Two facts about the round's instrument belong with the result.** (1) This is the third round whose metric
+depends on reading a committed session, and the second whose *tool* was wrong in a way that changed what the
+record seemed to say (round 6's unit matcher demanded a path form; round 7's settle matcher required the
+assignee to be named after its unit, which fails on a leader that names its workers `w01`–`w12`). Both fixes are
+general — a whole-word match in any command that names pytest; a full task set's **last** settlement carries the
+timing, with the frozen checks confirming the set covers the units — and both are covered by the tool's
+self-check. (2) The pre-registration's rule for an unreadable timeline is aimed at missing *data*; applied to a
+tool that cannot match, it would have turned this round into a false negative, which is why the verdict above is
+the corrected reading and why the defect is recorded rather than quietly fixed.
+
+**No further round is opened on this question** (the pre-registration said so in advance): a failure would have
+closed it as not reproducible, and a confirmation closes it here.
+
+Ceiling: one model, one provider, one task, three pairs in this round; "verified green" is each arm's own
+evidence (a worker's settlement against a green test run), of the same kind but not identical; and none of this
+measures the quality of the work, which the frozen checks still decide.
+
 ## D-263 What the two contract-text changes did, measured after the fact (2026-09-28)
 
 D-257 (wait/delegate text: delegated work is waited on *with* a timer) and D-258 (the runtime's settlement rule

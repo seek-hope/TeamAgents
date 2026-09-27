@@ -1,0 +1,29 @@
+=== full suite ===
+csvfix PASS
+rules PASS
+ledger PASS
+schedule PASS
+intervals PASS
+flags PASS
+measure PASS
+slugify PASS
+ranges PASS
+alpha ok
+beta ok
+chain PASS
+=== csvfix edge ===
+['a', '2', 'x']
+['a,b', 'c', '"d"']
+None
+None
+2
+ValueError bad numeric field in ['a', 'x', '2']
+=== flags edge ===
+{'values': {'mode': ['fast']}, 'flags': {'v': True}, 'positional': []}
+{'values': {'k': ['-5']}, 'flags': {}, 'positional': []}
+{'values': {}, 'flags': {}, 'positional': ['--x', 'y']}
+=== chain end2end ===
+[{'id': 1, 'qty': 2, 'price': 10}, {'id': 2, 'qty': 0, 'price': 5}, {'id': 3, 'qty': 3, 'price': 7}, {'id': 4, 'qty': 1, 'price': 7}]
+7:4
+10:2
+

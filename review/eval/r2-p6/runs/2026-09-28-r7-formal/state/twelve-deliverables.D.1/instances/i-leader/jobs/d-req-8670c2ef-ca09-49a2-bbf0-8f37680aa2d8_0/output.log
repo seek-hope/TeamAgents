@@ -1,0 +1,14 @@
+[csvfix] 2 passed in 0.01s
+[rules] 1 passed in 0.01s
+[ledger] 2 passed in 0.01s
+[schedule] 2 passed in 0.01s
+[intervals] 7 passed in 0.01s
+[flags] 8 passed in 0.01s
+[measure] 1 passed in 0.01s
+[slugify] 1 passed in 0.01s
+[ranges] 1 passed in 0.01s
+[chain] 4 passed in 0.01s
+[chain/tests] 4 passed in 0.01s
+alpha ok
+beta ok
+FINAL_FAIL=0

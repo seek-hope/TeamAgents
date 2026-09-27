@@ -1,0 +1,52 @@
+===== units/alpha/alpha.py =====
+def add(a, b):
+    return a - b
+===== units/alpha/check.py =====
+import alpha
+assert alpha.add(2, 3) == 5, alpha.add(2, 3)
+print("alpha ok")
+===== units/beta/beta.py =====
+def mul(a, b):
+    return a + b
+===== units/beta/check.py =====
+import beta
+assert beta.mul(3, 4) == 12, beta.mul(3, 4)
+print("beta ok")
+=== chain ===
+===== units/chain/stage1.py =====
+def parse_orders(*args, **kwargs):
+    raise NotImplementedError
+===== units/chain/stage2.py =====
+def filter_orders(*args, **kwargs):
+    raise NotImplementedError
+===== units/chain/stage3.py =====
+def total_by_price(*args, **kwargs):
+    raise NotImplementedError
+===== units/chain/stage4.py =====
+def report(*args, **kwargs):
+    raise NotImplementedError
+===== units/chain/tests/test_stage1.py =====
+from stage1 import parse_orders
+def test_parse():
+    rows = parse_orders("data/orders.csv")
+    assert rows == [{"id":1,"qty":2,"price":10},{"id":2,"qty":0,"price":5},{"id":3,"qty":3,"price":7},{"id":4,"qty":1,"price":7}], rows
+===== units/chain/tests/test_stage2.py =====
+from stage2 import filter_orders
+def test_filter():
+    rows = [{"id":1,"qty":2,"price":10},{"id":2,"qty":0,"price":5}]
+    assert filter_orders(rows) == [{"id":1,"qty":2,"price":10}]
+===== units/chain/tests/test_stage3.py =====
+from stage3 import total_by_price
+def test_totals():
+    rows = [{"id":1,"qty":2,"price":10},{"id":3,"qty":3,"price":7},{"id":4,"qty":1,"price":7}]
+    assert total_by_price(rows) == {10:2, 7:4}
+===== units/chain/tests/test_stage4.py =====
+from stage4 import report
+def test_report():
+    assert report({10:2, 7:4}) == "7:4\n10:2\n"
+===== units/chain/data/orders.csv =====
+id,qty,price
+1,2,10
+2,0,5
+3,3,7
+4,1,7
