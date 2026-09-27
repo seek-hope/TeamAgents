@@ -261,7 +261,7 @@ it, a reset seals it with its epoch, termination ends it).
 | Negative control `MC_control_midturninput.cfg` | the pre-D-63 behaviour (input applied inside the running turn) makes TLC report **`Invariant InputLandsAtTheBoundary is violated`**; `make verify-model-counterexamples` requires exactly that |
 | `make verify-model-all` (MC_control_two.cfg, 2 instances) | **No error found** — 1,263,649 states generated / 165,792 distinct / ~45 s. This small two-instance configuration is what makes a *per-instance* liveness assumption testable: the wide configuration cannot finish in a reasonable time |
 | Negative control `MC_control_two_disjunction.cfg` | the same two-instance configuration with the *older* fairness form (one disjunction over instances, as the model had before D-63) makes TLC report **`Temporal properties were violated`** — one instance stays dead while the other recovers, so its queued input never enters the context. Per-instance fairness (the code's one-driver-per-instance reality) removes it |
-| `make verify-model-wide` (MC_wide.cfg) | not re-run to completion in this round: the extra instance fields and the two new temporal properties make it explore far more states than the historical 275M/11m25s run. It stays the broad, slow target; the small two-instance configuration above carries the fairness check |
+| `make verify-model-wide` (MC_wide.cfg) | **re-attempted 2026-09-27 and still not to completion**: the attempt was bounded to one hour and terminated by that bound (exit 124) after writing 2.9 GB of TLC state store, against the historical 275M states / 11 m 25 s — the instance fields and temporal properties added since then put a complete run beyond a bounded attempt. It stays the broad, slow target; the small two-instance configuration above carries the fairness check |
 | Correspondence (`core/src/v2/control.rs`, `engine/tests/v2_supervisor.rs`) | `an_input_inside_a_turn_waits_for_the_boundary` (READY applies; a turn in flight queues, reports `applied: false, queued: true` and leaves the phase alone; the drain applies it exactly once and last) and `an_input_arriving_during_a_turn_enters_at_the_next_boundary` (the real driver opens a second turn, and the input's index is greater than the first reply's) — the latter fails on the pre-fix code |
 
 ### The user's authority surface (added 2026-09-25, D-61)
@@ -419,7 +419,8 @@ alone**, and conversely formal coverage does not excuse an item from sample or r
 make verify-model-all     # exhaustive configurations for the fifteen surfaces (seconds to ~2 min;
                           # the task, grants and authority models are the slow ones)
 make verify-model-counterexamples  # the thirty negative controls, each must be refuted
-make verify-model-wide    # wide control-plane configuration (~11 minutes / 275M states)
+make verify-model-wide    # wide control-plane configuration (best effort: 275M states / 11 m in the historical
+                          # run; a one-hour bounded attempt on 2026-09-27 did not reach a verdict)
 make check                # fmt + clippy -D warnings + 23 suites (including the two code-level layers)
 make verify-kani          # Kani proofs for the paging arithmetic (~16 s; the toolchain is at ~/.cargo/bin)
 ```

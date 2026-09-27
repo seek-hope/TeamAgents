@@ -521,8 +521,10 @@ The proven `page_span(total, offset, limit) = min(limit, total - offset)` is the
 - The code-level correspondence (`core/tests/v2_invariants.rs`) is sampling plus bounded enumeration, not a
   proof: it gives "these executions satisfy the invariants" plus checker sensitivity (the negative control),
   never "all executions do".
-- State-space frontier: the wide configuration is 275M states in 11 minutes; more instances or operations need
-  symmetry, constraints or random simulation (`-simulate`) as a supplement.
+- State-space frontier: the wide configuration is 275M states in 11 minutes in the historical run, and a
+  one-hour bounded attempt on 2026-09-27 did not reach a verdict (2.9 GB of state store written): the fields and
+  properties added since then put it beyond a bounded attempt. More instances or operations need symmetry,
+  constraints or random simulation (`-simulate`) as a supplement.
 
 ## Conclusions and ledger
 
