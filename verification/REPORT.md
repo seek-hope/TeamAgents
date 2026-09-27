@@ -5,7 +5,7 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
-## 0. Gate status (re-run 2026-09-28 at `c72110c2`)
+## 0. Gate status (re-run 2026-09-28 at `ac8743f0`)
 
 * `make verify-model-all` was re-run on this tree: all **23** configurations report `No error has been found`,
   in 6 m 56 s (the newest nine are the retention rule, D-192, the task model's second task, D-218, the
@@ -27,8 +27,8 @@ in [README.md](README.md); the fix ledger is in
   reason these numbers describe the *material*, not a machine. (The line once called `MC.cfg` the largest and
   quoted `MC_task`'s numbers for it — a mis-attribution no gate looked at, found by re-running the target and
   reading its output per configuration, D-159.)
-* **This section was re-run for D-255, D-257 and again for D-258 (2026-09-28), each time with the result
-  *no change*.** All three commits touched
+* **This section was re-run for D-255, D-257, D-258 and again for D-265 (2026-09-28), each time with the
+  result *no change*.** Each of those commits touched
   `core/src/kernel/types.rs` — the `wait`/`delegate` descriptions — which is a Kani subject
   (`verification/kani` compiles it in with `#[path]`), so it is re-run material even though no TLA
   configuration reads it. All **23** configurations still report `No error has been found` and all **70**
@@ -36,8 +36,9 @@ in [README.md](README.md); the fix ledger is in
   (`MC_daemon.cfg` 1,694,761 / 135,750; `MC_task.cfg` 5,721,401 / 606,904), and `make verify-kani` reports
   `Complete - 3 successfully verified harnesses, 0 failures, 3 total`. The three targets took ≈12 min together.
   A prose-only commit does not force this (D-202); a change to Kani material does, which is why the heading
-  above moved to D-258's commit. D-257 and D-258 added sentences to the same two descriptions and reported the
-  same numbers, which is the whole of their difference.
+  above moved to D-265's commit. D-257 and D-258 added sentences to the same two descriptions, and D-265 added
+  a third tool's schema to the same file, and all of them reported the same numbers — which is the whole of
+  their difference.
 * `make verify-model-counterexamples` was re-run: all **70** negative controls are refuted, each naming its
   property (`AuthorizedEffectsOnly`, `InputLandsAtTheBoundary`, `NoRequestAfterDeadline`, `NoTurnWithoutWork`
   twice, `SettlementFollowsATurnAfterTheLanding`, `NoForeignAdoption`, three temporal refutations, the
