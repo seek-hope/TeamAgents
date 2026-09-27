@@ -41,6 +41,30 @@ fn usage() -> ! {
     std::process::exit(2);
 }
 
+/// A rejected argument, with the reason first and the help after it. `usage()` alone never said *which*
+/// argument was wrong: measured 2026-09-27, `teamagents --nonsense` and `teamagents --timeout abc hi` printed
+/// the whole help and never the offending word, so the user had to diff their command against the usage.
+fn reject(reason: &str) -> ! {
+    eprintln!("{reason}");
+    eprintln!();
+    usage()
+}
+
+/// A flag whose value is missing, empty, or looks like another flag.
+fn needs_a_value(flag: &str) -> ! {
+    reject(&format!("{flag} needs a value"))
+}
+
+/// The same flag twice: the parser keeps one, so saying so beats silently dropping the first.
+fn given_twice(flag: &str) -> ! {
+    reject(&format!("{flag} was given twice"))
+}
+
+/// One `--timeout` rule for its three shapes (missing, not a number, zero): the value bounds a whole turn.
+fn bad_timeout() -> ! {
+    reject("--timeout needs a whole number of seconds, at least 1")
+}
+
 /// A flag or entry point that exists in no release this binary serves: say so
 /// and stop, rather than accepting it and doing nothing (D-73, the rule the
 /// removed entry points `--plain`/`--resume`/`--team` already follow).
@@ -109,38 +133,50 @@ fn parse_args() -> Args {
         match argv[i].as_str() {
             "--cwd" => {
                 if args.cwd.is_some() {
-                    usage();
+                    given_twice("--cwd");
                 }
-                let v = argv.get(i + 1).cloned().filter(|v| !v.starts_with('-')).unwrap_or_else(|| usage());
+                let v = argv
+                    .get(i + 1)
+                    .cloned()
+                    .filter(|v| !v.is_empty() && !v.starts_with('-'))
+                    .unwrap_or_else(|| needs_a_value("--cwd"));
                 args.cwd = Some(v);
                 i += 2;
             }
             "--resume" => {
                 if args.resume.is_some() {
-                    usage();
+                    given_twice("--resume");
                 }
-                let v = argv.get(i + 1).cloned().filter(|v| !v.starts_with('-')).unwrap_or_else(|| usage());
+                let v = argv
+                    .get(i + 1)
+                    .cloned()
+                    .filter(|v| !v.is_empty() && !v.starts_with('-'))
+                    .unwrap_or_else(|| needs_a_value("--resume"));
                 args.resume = Some(v);
                 i += 2;
             }
             "--team" => {
                 if args.team.is_some() {
-                    usage();
+                    given_twice("--team");
                 }
-                let v = argv.get(i + 1).cloned().filter(|v| !v.starts_with('-')).unwrap_or_else(|| usage());
+                let v = argv
+                    .get(i + 1)
+                    .cloned()
+                    .filter(|v| !v.is_empty() && !v.starts_with('-'))
+                    .unwrap_or_else(|| needs_a_value("--team"));
                 args.team = Some(v);
                 i += 2;
             }
             "--full-auto" => {
                 if args.full_auto {
-                    usage();
+                    given_twice("--full-auto");
                 }
                 args.full_auto = true;
                 i += 1;
             }
             "--plain" => {
                 if args.plain {
-                    usage();
+                    given_twice("--plain");
                 }
                 args.plain = true;
                 i += 1;
@@ -155,7 +191,7 @@ fn parse_args() -> Args {
             // internal: the controlled shell job runner (§6.2), never user-facing
             "jobs-runner" => {
                 if args.command.is_some() {
-                    usage();
+                    reject("two entry points were given: pick one (teamagents --help lists them)");
                 }
                 args.command = Some(argv[i].clone());
                 args.positional = argv.get(i + 1).cloned();
@@ -163,23 +199,30 @@ fn parse_args() -> Args {
             }
             "--state-root" => {
                 if args.state_root.is_some() {
-                    usage();
+                    given_twice("--state-root");
                 }
-                let v = argv.get(i + 1).cloned().filter(|v| !v.starts_with('-')).unwrap_or_else(|| usage());
+                let v =
+                    argv.get(i + 1).cloned().filter(|v| !v.is_empty() && !v.starts_with('-')).unwrap_or_else(|| {
+                        reject("--state-root needs a path: an empty value would use the current directory")
+                    });
                 args.state_root = Some(v);
                 i += 2;
             }
             "--model" => {
                 if args.model.is_some() {
-                    usage();
+                    given_twice("--model");
                 }
-                let v = argv.get(i + 1).cloned().filter(|v| !v.starts_with('-')).unwrap_or_else(|| usage());
+                let v = argv
+                    .get(i + 1)
+                    .cloned()
+                    .filter(|v| !v.is_empty() && !v.starts_with('-'))
+                    .unwrap_or_else(|| needs_a_value("--model"));
                 args.model = Some(v);
                 i += 2;
             }
             "daemon" => {
                 if args.command.is_some() {
-                    usage();
+                    reject("two entry points were given: pick one (teamagents --help lists them)");
                 }
                 args.command = Some(argv[i].clone());
                 i += 1;
@@ -187,7 +230,7 @@ fn parse_args() -> Args {
             "serve" | "init" | "doctor" | "validate" | "sessions" | "version" | "exec" | "authority" | "approvals"
             | "instances" | "tasks" => {
                 if args.command.is_some() {
-                    usage();
+                    reject("two entry points were given: pick one (teamagents --help lists them)");
                 }
                 // An entry point no release serves is refused *here*, as soon as the word is read, so the
                 // message names it instead of whatever flag followed it, and so no flag of a removed
@@ -211,87 +254,126 @@ fn parse_args() -> Args {
                 ) =>
             {
                 if args.exec_json {
-                    usage();
+                    given_twice("--json");
                 }
                 args.exec_json = true;
                 i += 1;
             }
             "--yes" if matches!(args.command.as_deref(), Some("instances" | "tasks")) => {
                 if args.confirmed {
-                    usage();
+                    given_twice("--yes");
                 }
                 args.confirmed = true;
                 i += 1;
             }
             "--id" if matches!(args.command.as_deref(), Some("approvals" | "instances" | "tasks")) => {
                 if args.approval_id.is_some() {
-                    usage();
+                    given_twice("--id");
                 }
-                args.approval_id =
-                    Some(argv.get(i + 1).cloned().filter(|v| !v.starts_with('-')).unwrap_or_else(|| usage()));
+                args.approval_id = Some(
+                    argv.get(i + 1)
+                        .cloned()
+                        .filter(|v| !v.is_empty() && !v.starts_with('-'))
+                        .unwrap_or_else(|| needs_a_value("--id")),
+                );
                 i += 2;
             }
             "--subject" if args.command.as_deref() == Some("authority") => {
                 if args.subject.is_some() {
-                    usage();
+                    given_twice("--subject");
                 }
-                args.subject =
-                    Some(argv.get(i + 1).cloned().filter(|v| !v.starts_with('-')).unwrap_or_else(|| usage()));
+                args.subject = Some(
+                    argv.get(i + 1)
+                        .cloned()
+                        .filter(|v| !v.is_empty() && !v.starts_with('-'))
+                        .unwrap_or_else(|| needs_a_value("--subject")),
+                );
                 i += 2;
             }
             "--action" if args.command.as_deref() == Some("authority") => {
                 if args.action.is_some() {
-                    usage();
+                    given_twice("--action");
                 }
-                args.action = Some(argv.get(i + 1).cloned().filter(|v| !v.starts_with('-')).unwrap_or_else(|| usage()));
+                args.action = Some(
+                    argv.get(i + 1)
+                        .cloned()
+                        .filter(|v| !v.is_empty() && !v.starts_with('-'))
+                        .unwrap_or_else(|| needs_a_value("--action")),
+                );
                 i += 2;
             }
             "--scope" if args.command.as_deref() == Some("authority") => {
                 if args.scope.is_some() {
-                    usage();
+                    given_twice("--scope");
                 }
-                args.scope = Some(argv.get(i + 1).cloned().filter(|v| !v.starts_with('-')).unwrap_or_else(|| usage()));
+                args.scope = Some(
+                    argv.get(i + 1)
+                        .cloned()
+                        .filter(|v| !v.is_empty() && !v.starts_with('-'))
+                        .unwrap_or_else(|| needs_a_value("--scope")),
+                );
                 i += 2;
             }
             "--parent" if args.command.as_deref() == Some("authority") => {
                 if args.parent_grant.is_some() {
-                    usage();
+                    given_twice("--parent");
                 }
-                args.parent_grant =
-                    Some(argv.get(i + 1).cloned().filter(|v| !v.starts_with('-')).unwrap_or_else(|| usage()));
+                args.parent_grant = Some(
+                    argv.get(i + 1)
+                        .cloned()
+                        .filter(|v| !v.is_empty() && !v.starts_with('-'))
+                        .unwrap_or_else(|| needs_a_value("--parent")),
+                );
                 i += 2;
             }
             "--grant" if args.command.as_deref() == Some("authority") => {
                 if args.grant.is_some() {
-                    usage();
+                    given_twice("--grant");
                 }
-                args.grant = Some(argv.get(i + 1).cloned().filter(|v| !v.starts_with('-')).unwrap_or_else(|| usage()));
+                args.grant = Some(
+                    argv.get(i + 1)
+                        .cloned()
+                        .filter(|v| !v.is_empty() && !v.starts_with('-'))
+                        .unwrap_or_else(|| needs_a_value("--grant")),
+                );
                 i += 2;
             }
             "--timeout" if args.command.as_deref() == Some("exec") => {
                 if args.timeout.is_some() {
-                    usage();
+                    given_twice("--timeout");
                 }
-                let raw = argv.get(i + 1).cloned().filter(|v| !v.starts_with('-')).unwrap_or_else(|| usage());
-                let parsed = raw.parse::<u64>().unwrap_or_else(|_| usage());
+                let raw = argv
+                    .get(i + 1)
+                    .cloned()
+                    .filter(|v| !v.is_empty() && !v.starts_with('-'))
+                    .unwrap_or_else(|| bad_timeout());
+                let parsed = raw.parse::<u64>().unwrap_or_else(|_| bad_timeout());
                 if parsed == 0 {
-                    usage();
+                    bad_timeout();
                 }
                 args.timeout = Some(parsed);
                 i += 2;
             }
             "--check" if args.command.as_deref() == Some("exec") => {
-                args.checks.push(argv.get(i + 1).cloned().filter(|v| !v.starts_with('-')).unwrap_or_else(|| usage()));
+                args.checks.push(
+                    argv.get(i + 1)
+                        .cloned()
+                        .filter(|v| !v.is_empty() && !v.starts_with('-'))
+                        .unwrap_or_else(|| needs_a_value("--check")),
+                );
                 i += 2;
             }
             other if !other.starts_with('-') || other == "-" => {
                 if args.positional.is_some() {
-                    usage();
+                    reject("this entry point takes one positional argument; quote a multi-word prompt as one");
                 }
                 args.positional = Some(argv[i].clone());
                 i += 1;
             }
-            _ => usage(),
+            other => reject(&format!(
+                "{other}: no entry point this build serves accepts that argument here — `teamagents --help` \
+                 shows which flags follow which entry point"
+            )),
         }
     }
     if args.command.as_deref() == Some("init")
@@ -302,7 +384,7 @@ fn parse_args() -> Args {
             || args.plain
             || args.full_auto)
     {
-        usage();
+        reject("init takes no other arguments: it writes the config and prepares the state root");
     }
     args
 }

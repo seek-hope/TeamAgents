@@ -18,6 +18,33 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-230 A rejected argument never said which one (2026-09-27)
+
+The parser refused an unknown flag, a flag without a value, a repeated flag and a bad number by printing the
+whole help — `usage()`'s banner and the first-run advice — and **never the offending word**: measured
+2026-09-27, `teamagents --nonsense` and `teamagents --timeout abc hi` both printed the help with no reason, so the
+user had to diff their command against the usage. Two neighbours were worse than unhelpful: `--state-root ""`
+(the unset-variable trap, `--state-root "$VAR"` with `VAR` unset) was **accepted** and silently used the current
+directory — it created `session.sqlite` there — and a flag given twice silently kept the last value.
+
+**Fixed**: `reject(reason)` prints the reason first and the help after it, and the 23 rejection sites now carry
+one. The value-taking flags name themselves (`--model needs a value`), a repeat says so
+(`--state-root was given twice`), `--timeout` has one rule for its three shapes (missing, not a number, zero), an
+empty value is refused wherever the empty form used to be silently meaningful (a path, an id, a prompt: `--check
+""` verifies nothing), `init`'s extra arguments are named, and the catch-all says where flags are accepted —
+"no entry point this build serves accepts that argument here — `teamagents --help` shows which flags follow which
+entry point" — worded that way because `--timeout` *is* a flag this build serves, only after `exec`, and claiming
+otherwise would be false.
+
+**Measured**: the eight shapes in the integration test each exit 2 with their reason, and an empty `--state-root`
+no longer leaves a database in the caller's directory.
+
+Ceiling: the messages name the *argument*, not the intent, so a flag in the wrong position gets the positional
+wording rather than "--timeout belongs after `exec`" (that needs a per-flag table, and the wording used is true
+as it stands); a value that begins with `-` is read as a missing value, so a path named `-x` must be written
+`./-x`; and the reasons are English prose, so a translation layer would have to reach them the way it reaches
+the rest of the CLI's messages.
+
 ## D-229 Two more model-profile misconfigurations that loaded silently (2026-09-27)
 
 D-162 refused a typo'd `protocol` at load, because the fall-through dispatch quietly spoke the wrong wire; and

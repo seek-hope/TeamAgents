@@ -179,6 +179,42 @@ fn a_directory_where_the_database_or_socket_belongs_is_refused_with_the_shape_na
     assert!(!text.contains("start teamagents daemon first"), "the old advice pointed at the daemon: {text}");
 }
 
+/// D-230: every rejected argument says *why*. Measured 2026-09-27: `teamagents --nonsense` and
+/// `teamagents --timeout abc hi` printed the whole help and never the offending word, so the user had to diff
+/// their command against the usage; and `--state-root ""` (the unset-variable trap) was accepted and silently
+/// used the current directory — it created `session.sqlite` in it.
+#[test]
+fn a_rejected_argument_says_which_one_and_why() {
+    let home = Scratch::new("argreason");
+    let run = |args: &[&str]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_teamagents"))
+            .args(args)
+            .env("XDG_STATE_HOME", home.join("state"))
+            .env("XDG_CONFIG_HOME", home.join("config"))
+            .env("TA_ARG_KEY", "test-value")
+            .output()
+            .expect("run cli");
+        (output.status.code(), String::from_utf8_lossy(&output.stderr).into_owned())
+    };
+    for (args, expected) in [
+        (vec!["--nonsense"], "--nonsense: no entry point this build serves accepts that argument"),
+        (vec!["--state-root", ""], "--state-root needs a path"),
+        (vec!["--state-root", "/tmp/a", "--state-root", "/tmp/b", "init"], "--state-root was given twice"),
+        (vec!["--model"], "--model needs a value"),
+        (vec!["exec", "--timeout", "abc", "hi"], "--timeout needs a whole number of seconds"),
+        (vec!["exec", "--timeout", "0", "hi"], "--timeout needs a whole number of seconds"),
+        (vec!["exec", "hi", "there"], "this entry point takes one positional argument"),
+        (vec!["init", "--cwd", "."], "init takes no other arguments"),
+    ] {
+        let (code, stderr) = run(&args);
+        assert_eq!(code, Some(2), "{args:?} must be a usage error: {stderr}");
+        assert!(stderr.contains(expected), "{args:?} must say {expected:?}, got: {stderr}");
+    }
+    // nothing ran: an empty --state-root no longer leaves a database in the caller's directory
+    let (_, _) = run(&["--state-root", "", "init"]);
+    assert!(!home.join("session.sqlite").exists(), "an empty --state-root must not initialize the cwd");
+}
+
 /// D-227: a state root deep enough that `daemon.sock` crosses Linux's `sun_path` limit cannot hold a session.
 /// Measured 2026-09-27: `init` printed the socket path as if it were usable and `doctor` reported the state root
 /// `[ok]`, so the first run was where the user met it — as the daemon's raw `bind …: path must be shorter than

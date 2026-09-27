@@ -124,3 +124,4 @@ you no longer need them.
 | SHA-256 verification failed | Stop, clear this download and fetch the archive plus its checksum file again |
 | bwrap is installed but the probe fails | The container, kernel or distribution restricts unprivileged user namespaces; member shells cannot run there |
 | macOS / Windows / Linux ARM | No archive exists yet; do not try to run the x86_64 Linux build natively |
+| `session.sqlite` appears in the current directory | An *empty* `--state-root`/`XDG_STATE_HOME` (often `--state-root "$VAR"` with `VAR` unset) — the flag is refused with the reason; pass a path or omit it |
