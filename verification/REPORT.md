@@ -7,12 +7,13 @@ in [README.md](README.md); the fix ledger is in
 
 ## 0. Gate status (re-run 2026-09-27 at `014fb08e`)
 
-* `make verify-model-all` was re-run on this tree: all **21** configurations report `No error has been found`,
-  in 5 m 45 s (the newest five are the retention rule, D-192, the task model's second task, D-218, the
+* `make verify-model-all` was re-run on this tree: all **22** configurations report `No error has been found`,
+  in 12 m 54 s (the newest six are the retention rule, D-192, the task model's second task, D-218, the
   approval window, D-225 — 14,225 states / 3,136 distinct — the config trust gate, D-244, which is
   exhaustive in 9 s (353,217 states generated / 25,376 distinct), and what a member's prompt carries, D-246,
-  exhaustive in 2 s (612 states / 210 distinct); and the retry budget, D-247, exhaustive in 1 s (63 states /
-  24 distinct)). The largest is **`MC_task.cfg`** with 5,721,401 states generated / 606,904 distinct (its one-instance two-task sibling `MC_task_two.cfg` 612,802 / 56,074); `MC.cfg`
+  exhaustive in 2 s (612 states / 210 distinct); the retry budget, D-247, exhaustive in 1 s (63 states /
+  24 distinct), and the daemon's stop lever, D-248 — `MC_daemon_stop.cfg`, exhaustive in 11 s (275,993 states
+  generated / 21,790 distinct, the same space the extended `MC_daemon.cfg` carries)). The largest is **`MC_task.cfg`** with 5,721,401 states generated / 606,904 distinct (its one-instance two-task sibling `MC_task_two.cfg` 612,802 / 56,074); `MC.cfg`
   itself generates 84,877 / 18,384, and the smallest, `MC_store.cfg`, 48 / 13; the job handshake's
   `MC_jobs.cfg` generates 207 / 64 the inbox's `MC_inbox.cfg` 793 / 211 the write-failure latch's
   `MC_diskfull.cfg` 63 / 22 and the coordinator lock's `MC_coordinator.cfg` 51 / 16. Every count that predates this
@@ -20,7 +21,7 @@ in [README.md](README.md); the fix ledger is in
   reason these numbers describe the *material*, not a machine. (The line once called `MC.cfg` the largest and
   quoted `MC_task`'s numbers for it — a mis-attribution no gate looked at, found by re-running the target and
   reading its output per configuration, D-159.)
-* `make verify-model-counterexamples` was re-run: all **59** negative controls are refuted, each naming its
+* `make verify-model-counterexamples` was re-run: all **61** negative controls are refuted, each naming its
   property (`AuthorizedEffectsOnly`, `InputLandsAtTheBoundary`, `NoRequestAfterDeadline`, `NoTurnWithoutWork`
   twice, `SettlementFollowsATurnAfterTheLanding`, `NoForeignAdoption`, three temporal refutations, the
   four retention guards: `NoReferenceToEvictedFact`, `EvidenceIsNeverEvicted` and `OnlyOldFactsAreEvicted`
@@ -32,8 +33,10 @@ in [README.md](README.md); the fix ledger is in
   `TerminalOperationHasNoPendingApproval` and `ParkedHasAnApprovalRow`, and the five D-244 added:
   `NothingFromTheProjectUntrusted`, `UserDefinitionsNeverOverridden`, `PolicyClassesStayTheUsers`,
   `TrustOnlyFromTheUser` and `RefusalsAreNamed`, and the three D-246 added: `EverybodyHasTheRules`,
-  `PromptsFollowTheCurrentRules` and `UnreadableRulesAreNoted`, and the three D-247 added:
-  `ResolvedIsTheInstancesOwn`, `NoAttemptBeyondTheBudget` and `ParkOnlyAfterTheBudget`), in 4 m 13 s.
+  `PromptsFollowTheCurrentRules` and `UnreadableRulesAreNoted`, the three D-247 added:
+  `ResolvedIsTheInstancesOwn`, `NoAttemptBeyondTheBudget` and `ParkOnlyAfterTheBudget`, and the two D-248 added:
+  `StopsOnlyAfterAnswering` and `AStopIsAnsweredAndEndsTheSession` — the first temporal property a refuted control
+  targets in this family), in 8 m 17 s.
 * The wall clocks above are upper bounds, not machine-independent figures: they were measured while this
   machine carried a load average of about 140 on 20 cores (the standing host-cleanup item), and TLC is
   CPU-bound. The probe in A32 now records the same conditions next to its numbers for the same reason (D-188).
@@ -174,7 +177,7 @@ in [README.md](README.md); the fix ledger is in
 | Protocol model | `tla/V2Approval.tla` (6 claims, four counterfactual constants since D-225) | 14,225 states / 3,136 distinct | `make verify-model-all`; the four controls via `make verify-model-counterexamples` |
 | Protocol model | `tla/V2Task.tla` (11, four counterfactual constants since D-218) | `MC_task.cfg` 5,721,401 states; `MC_task_two.cfg` 612,802 states / 56,074 distinct | as above; the four controls via `make verify-model-counterexamples` |
 | Protocol model | `tla/V2Compress.tla` (8, three counterfactual constants since D-219) | 8,467 states | as above; the three controls via `make verify-model-counterexamples` |
-| Protocol model | `tla/V2Daemon.tla` (10, three counterfactual constants since D-219) | 51,713 states | as above; the three controls via `make verify-model-counterexamples` |
+| Protocol model | `tla/V2Daemon.tla` (12, five counterfactual constants since D-219/D-248 — the module carries the daemon's *lifecycle* as well as its protocol) | `MC_daemon.cfg` and the D-248 `MC_daemon_stop.cfg`: 275,993 states generated / 21,790 distinct (11 s) | as above; the five controls via `make verify-model-counterexamples` |
 | Protocol model | `tla/V2Checks.tla` (8, one counterfactual constant since D-219) | 469 states | as above; the control via `make verify-model-counterexamples` |
 | Protocol model | `tla/V2Trust.tla` (6 claims, five counterfactual constants since D-244) | 353,217 states generated / 25,376 distinct (9 s) | as above; the five controls via `make verify-model-counterexamples` |
 | Protocol model | `tla/V2Prompt.tla` (3 claims, three counterfactual constants since D-246) | 612 states generated / 210 distinct (2 s) | as above; the three controls via `make verify-model-counterexamples` |
@@ -461,9 +464,9 @@ alone**, and conversely formal coverage does not excuse an item from sample or r
 ## 6. Re-running and what would invalidate this
 
 ```bash
-make verify-model-all     # exhaustive configurations for the fifteen surfaces (seconds to ~2 min;
+make verify-model-all     # exhaustive configurations for the twenty-two checked configurations (seconds to ~2 min;
                           # the task, grants and authority models are the slow ones)
-make verify-model-counterexamples  # the forty-eight negative controls, each must be refuted
+make verify-model-counterexamples  # the sixty-one negative controls, each must be refuted
 make verify-model-wide    # wide control-plane configuration (best effort: 275M states / 11 m in the historical
                           # run; a one-hour bounded attempt on 2026-09-27 did not reach a verdict)
 make check                # fmt + clippy -D warnings + 23 suites (including the two code-level layers)

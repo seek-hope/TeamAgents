@@ -7,7 +7,7 @@ model probe sets and the three formal gates).
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 102 / engine 261 / tui 35 test targets) and `make pty` passes; both are
+`make check` is green (core 102 / engine 263 / tui 35 test targets) and `make pty` passes; both are
 preconditions for every item below. `make check` includes `make language-check`, which fails on non-English
 characters outside the two documented exceptions (`README.zh-CN.md` and the frozen material under
 `review/eval`).
@@ -135,13 +135,27 @@ amended (D-49/D-50).
 
 - **Nothing stops a service a settled command left behind.** D-41 says such a service is explicit-only cleanup and the product does not re-adopt it, but the explicit lever does not exist: `instances terminate` cancels an operation that is still *running* (A13, D-88), and the runner that owned the command's process group is retired once the job settles (D-112), so afterwards nothing in the product can signal it. `docs/USER-GUIDE.md` §4 and the troubleshooting table now say what a user can do (have the command print its pid and `kill` it). A product lever would be new surface — a verb that re-opens a job directory and issues one best-effort, identity-verified `signal_group`, the path the runner already has for `OUTCOME_UNKNOWN` — and it needs the user's word.
 
-- **Stopping the session has no product lever either, only a signal and a pid.** Since D-150 the daemon handles
-  SIGTERM, so `kill <pid>` (or Ctrl-C where the daemon has a terminal) is the designed shutdown and the next
-  client starts a fresh daemon — but *finding* the pid is left to the user: `ps -eo pid,args | grep "[t]eamagents
-  daemon"`, as `docs/USER-GUIDE.md` §1 now says. A `teamagents daemon --stop` (or a protocol command) would be
-  new surface, and it would have to answer the identity question a pid file raises on its own (a stale pid that
-  now belongs to an unrelated process) with the machinery the runner already has for A15. It needs the user's
-  word. The same holds for a state root's leftover *runners*: a killed session leaves one per in-flight job on purpose (the live partner of §6.2/§6.3), a user can only retire it by reopening that session — and a lever that stops a state root's runners is the same new surface, with the same identity question. Alongside that product question sits a **host** one, and it is now measured rather than estimated (D-189, re-runnable with `python3 review/host_cleanup.py` outside a sandbox): this machine carries **1,398** pre-fix runners, **1,397 of them orphaned**, all older than 6.5 h, holding 5.3 GiB and burning **13.5 cores continuously** (664.6 CPU-hours so far). Their class decides whether stopping one is safe: 1,238 `settled-journal`, 70 `unknown-outcome`, 19 `dir-gone`, 72 `unfinished` and 1 `live-parent` — and that last one is the user's own session's runner, so the conservative stop is the 1,256 `settled-journal` + `dir-gone` processes, one `kill <pid>` per pid, on the user's word.
+- ~~**Stopping the session has no product lever either, only a signal and a pid.**~~ **Delivered since D-248.**
+  `teamagents daemon --stop` stops the session that owns a state root, addressed by that root's socket: the
+  socket *is* the identity, so the identity question this gap raised for a pid file (a stale pid that now belongs
+  to an unrelated process) cannot arise — there is no pid to record, guess or reuse, and the command can only
+  reach the daemon serving that root. It answers over the protocol (`shutdown`), waits for the socket to go, and
+  reports the three cases it can find: stopped (0), nothing running — including a socket a crashed daemon left,
+  which the lever never removes (0), or a daemon that answered and is still serving after 5 s (1). The designed
+  D-150 shutdown is what it runs (the process ends, not just its listener), and the flags of the *starting* shape
+  are refused rather than ignored (D-73). Evidence: `review/dogfood/daemon_stop.py` (credential-free, in
+  `make probe-offline`) measures the five shapes over the real binary,
+  `cli::daemon_stop_stops_the_session_by_its_socket` drives it end to end (start a detached daemon, stop it by
+  socket, the process exits 0 with `stopping…`, a second stop is still 0, `--cwd`/`--model`/`--full-auto` refused
+  with the flag named) and
+  `v2_daemon::the_stop_lever_answers_before_the_daemon_goes` pins the protocol order; the rule itself is
+  modelled (`verification/tla/V2Daemon.tla`: `StopsOnlyAfterAnswering` — a daemon that is gone answered every
+  stop request it took — and the liveness half `AStopIsAnsweredAndEndsTheSession`, with
+  `MC_daemon_stop_before_receipt.cfg` and `MC_daemon_keeps_serving_after_receipt.cfg` each refuting one).
+  **What this bullet still carries**: a killed session leaves one *runner* per in-flight job on purpose (the
+  live partner of §6.2/§6.3), a user can only retire it by reopening that session, and a lever that stops a
+  state root's runners is new surface with the runner's own identity question (A15) — as is the separate
+  stray-service lever above. Alongside that product question sits a **host** one, and it is now measured rather than estimated (D-189, re-runnable with `python3 review/host_cleanup.py` outside a sandbox): this machine carries **1,398** pre-fix runners, **1,397 of them orphaned**, all older than 6.5 h, holding 5.3 GiB and burning **13.5 cores continuously** (664.6 CPU-hours so far). Their class decides whether stopping one is safe: 1,238 `settled-journal`, 70 `unknown-outcome`, 19 `dir-gone`, 72 `unfinished` and 1 `live-parent` — and that last one is the user's own session's runner, so the conservative stop is the 1,256 `settled-journal` + `dir-gone` processes, one `kill <pid>` per pid, on the user's word.
 
 - **The published release is the earlier implementation, and shares the tree's version.** `review/install_check.py` verifies the
   documented install path end to end (mechanics and the refusal above), and the published `v0.1.2` artifact it installs is the

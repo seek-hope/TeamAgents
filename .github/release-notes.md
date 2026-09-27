@@ -14,7 +14,7 @@
   it runs.
 - Installer, `teamagents init`, `doctor` and `exec` as documented in the [install guide](https://github.com/seek-hope/TeamAgents/blob/main/docs/INSTALL.md).
 
-Local regression for this release: `make check` green (core 102 / engine 261 / tui 35) plus `make pty`;
+Local regression for this release: `make check` green (core 102 / engine 263 / tui 35) plus `make pty`;
 real-model acceptance is reported separately in [docs/ACCEPTANCE.md](https://github.com/seek-hope/TeamAgents/blob/main/docs/ACCEPTANCE.md).
 
 ### Install and first run

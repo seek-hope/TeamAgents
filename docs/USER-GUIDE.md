@@ -15,11 +15,16 @@ teamagents                           # open the TUI (starts the per-user daemon 
 - **One daemon per user**: `teamagents` probes `$XDG_STATE_HOME/teamagents/v2/daemon.sock` and, when it is
   missing or refuses the connection, starts `teamagents daemon` detached and hands the socket to the TUI.
   Quitting the TUI does not stop the session.
-- **Stopping that session**: the daemon the client started is *detached*, so there is no terminal to Ctrl-C;
-  send it SIGTERM and it shuts down normally (freezes new dispatch, keeps committed state, removes its socket;
-  DESIGN §9) — `ps -eo pid,args | grep "[t]eamagents daemon"` lists the daemons with their `--state-root`,
-  then `kill <pid>` (D-150). A daemon you started by hand in the foreground also stops with Ctrl-C. The
-  session database stays where it is and the next `teamagents`/`exec` on that state root starts a fresh daemon.
+- **Stopping that session** (D-248): `teamagents daemon --stop` stops the session that owns this state root —
+  the socket *is* the address, so there is no pid to look up and no other session to hit by mistake (add
+  `--state-root PATH` for a non-default root). It asks the running daemon, waits for its socket to go and says
+  which of the three cases it found: the session stopped; nothing is running (also 0 — stopping what is not
+  running is not a failure); or a daemon answered but its socket is still there after 5 s (1). `--stop` takes
+  no `--cwd`, `--model` or `--full-auto`: it stops the session as it is, and a flag it does not honour is
+  named rather than ignored. The shutdown is the designed one (freezes new dispatch, keeps committed state,
+  removes its socket; DESIGN §9), so `kill <pid>` — or Ctrl-C where you started the daemon by hand — still
+  works when the lever is not reachable (`ps -eo pid,args | grep "[t]eamagents daemon"`, D-150). The session
+  database stays where it is and the next `teamagents`/`exec` on that state root starts a fresh daemon.
 - **Headless use**: `teamagents exec [--json] [--timeout SEC] [--check CMD] "prompt"` goes through the same
   daemon and reports the goal's terminal state, the assistant reply or a timeout; the prompt may come from
   stdin (`-`). The full contract is in §1.1.
@@ -397,7 +402,8 @@ finds a session already running keeps that session's mode and prints which one i
 `teamagents exec --full-auto` against a live `approved_scope` session reports
 `a session is already running for this state root in approved_scope mode` instead of silently ignoring the
 flag. To switch
-modes, stop that daemon (§1: SIGTERM to its pid, or Ctrl-C where you started it by hand) or use another `--state-root`.
+modes, stop that daemon (§1: `teamagents daemon --stop`, or SIGTERM to its pid, or Ctrl-C where you started it
+by hand) or use another `--state-root`.
 
 When bubblewrap is unavailable this is a **classified failure** (`started=false`); the command never falls
 back silently to host execution.
@@ -555,7 +561,7 @@ teamagents tasks cancel --id t-prose    # releases a delegator waiting on a task
 | `exec` reports `check 1: FAILED` | Your own `--check` command failed; its output is on stderr and in `<state root>/verification.json` |
 | `exec` exits 3 | A tool call needs approval and a headless run cannot answer it. Approve it in the TUI and run `exec` again, or start the daemon with `--full-auto` |
 | `doctor` reports the state root as FAIL | That path does not hold a current session database, and the row says which: a path that is a file where a directory belongs (D-166), a file that is not a database, or a format/version stamp mismatch. Use another `--state-root` or follow the message, and never edit the database by hand |
-| The agent worked in the wrong directory | Its session was started with another workspace (or without `--cwd`): the client prints the live one. Stop that daemon (§1: SIGTERM to its pid) or start a fresh `--state-root` with `--cwd DIR` |
+| The agent worked in the wrong directory | Its session was started with another workspace (or without `--cwd`): the client prints the live one. Stop that daemon (§1: `teamagents daemon --stop`, which needs no pid) or start a fresh `--state-root` with `--cwd DIR` |
 | The model returns 401/402 | Check the environment variable named by the profile's `api_key_env`; `doctor` lists the credential resolution result per profile |
 | A task stays `RUNNING` while its assignee is idle | The assignee's model ended its turn without settling it (D-65): cancel the task — `c` in the tasks panel or `teamagents tasks cancel --id` — which releases the delegator's wait |
 | A member is stuck in a long or endless command and cancelling its task changed nothing | `tasks cancel` is delegation-level and does not touch the assignee's operation (D-88). Stop the work with `teamagents instances terminate --id … --yes` (the process group dies within seconds, and the receipt says `class: cancelled`) or wait for the command's own tool timeout |
@@ -565,4 +571,4 @@ teamagents tasks cancel --id t-prose    # releases a delegator waiting on a task
 | A member says it cannot run shell commands although you granted it | Turn the offer into a witness: start the session with `TEAMAGENTS_LOG_SURFACE=1` and the driver writes one line per request into `<state root>/daemon.log` — `driver: surface <instance> shell=yes\|no tools=…`. `shell=no` after a live `authority grant` is a bug worth reporting; `shell=yes` with no attempt means the model had the tool and did not use it (§3.1, D-143/D-157) |
 | `exec: the daemon's socket was lost …` | The daemon stopped while this run was waiting — by your own `kill` (§1) or because it crashed. The session and its committed state are kept: start it again (`teamagents` or `exec`) and the work is where it was (D-150) |
 | A `teamagents jobs-runner` process is still in `ps` | By design a runner outlives the session that started it: it is the live partner for a job whose outcome is unknown (§6.2). It costs no measurable CPU while it waits (D-153) and exits by itself once its job directory is gone; opening the session again (`teamagents`/`exec` on that state root) imports the receipt and retires it (D-112) |
-| Start completely fresh | Stop the daemon (§1: SIGTERM to its pid) and run `teamagents --state-root <new directory>` for a clean session; the old database stays where it is |
+| Start completely fresh | Stop the daemon (§1: `teamagents daemon --stop`) and run `teamagents --state-root <new directory>` for a clean session; the old database stays where it is |

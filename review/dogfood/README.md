@@ -34,12 +34,12 @@ AGENTS.md exists).
 These probes need no model and no credential — `budget.py`, `truncation.py`, `max_retries.py`,
 `project_config.py`, `instructions.py` (credential-free since D-246: a local server answers the
 requests it inspects), `input_latency.py`, `providers.py --self-check`, and since D-138 `boundary.py`, `tui_panels.py`,
-`tui_reconnect.py`, `shutdown.py` and `geometry.py` (they drive the real CLI, real daemons and the real TUI,
+`tui_reconnect.py`, `shutdown.py`, `daemon_stop.py` and `geometry.py` (they drive the real CLI, real daemons and the real TUI,
 but a member begins no turn: the session's `model_requests` table stays empty). `probes.py --self-check` requires this list to name every probe in the set,
 because the sentence had gone stale — it said "seven", named seven, and the set had eight (D-233). `review/dogfood/probes.py` runs a whole set and reports one line per probe:
 
 ```bash
-make probe-offline                     # needs `make build`; the 12 credential-free ones, about two minutes
+make probe-offline                     # needs `make build`; the 13 credential-free ones, about two minutes
 make probe-models                      # the probes that take a model, one after another (~7 min)
 python3 review/dogfood/probes.py --list
 python3 review/dogfood/probes.py --only checks.py --set models

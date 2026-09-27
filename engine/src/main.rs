@@ -20,6 +20,7 @@ usage: teamagents [--cwd DIR] [--state-root PATH] [--model KEY] [--full-auto]\n\
   teamagents tasks [list] [--json]              the session's tasks\n\
   teamagents tasks cancel --id ID               cancel one; a delegator waiting on it is released\n\
   teamagents daemon [--state-root PATH] [--cwd DIR] [--model KEY] [--full-auto]\n\
+  teamagents daemon --stop [--state-root PATH]   stop that session's daemon (no pid: the socket is the address)\n\
   teamagents init [--state-root PATH]   write config and prepare the state root\n\
   teamagents doctor [--state-root PATH] check config, credentials, state root and host\n\
   teamagents version | --version      print the version\n\
@@ -93,6 +94,8 @@ pub struct Args {
     pub grant: Option<String>,
     pub approval_id: Option<String>,
     pub confirmed: bool,
+    /// D-248: `daemon --stop` — stop the session's daemon (as opposed to starting one).
+    pub daemon_stop: bool,
 }
 
 fn parse_args() -> Args {
@@ -127,6 +130,7 @@ fn parse_args() -> Args {
         grant: None,
         approval_id: None,
         confirmed: false,
+        daemon_stop: false,
     };
     let mut i = 0;
     while i < argv.len() {
@@ -337,6 +341,11 @@ fn parse_args() -> Args {
                         .unwrap_or_else(|| needs_a_value("--grant")),
                 );
                 i += 2;
+            }
+            // D-248: `daemon --stop` is the stop lever; `daemon` alone starts one in the foreground.
+            "--stop" if args.command.as_deref() == Some("daemon") => {
+                args.daemon_stop = true;
+                i += 1;
             }
             "--timeout" if args.command.as_deref() == Some("exec") => {
                 if args.timeout.is_some() {
@@ -922,6 +931,19 @@ fn main() {
             }
             None => usage(),
         },
+        Some("daemon") if args.daemon_stop => {
+            // D-73's rule for this verb: it refuses what it does not honour, so a flag of the *starting* shape
+            // is named rather than ignored (a stop has no workspace, model or permission mode to choose).
+            for (flag, given) in [("--cwd", &args.cwd), ("--model", &args.model)] {
+                if given.is_some() {
+                    reject(&format!("daemon --stop does not take {flag}: it stops the running session as it is"));
+                }
+            }
+            if args.full_auto {
+                reject("daemon --stop does not take --full-auto: it stops the running session as it is");
+            }
+            cli::daemon_stop(args.state_root.clone().map(PathBuf::from))
+        }
         Some("daemon") => cli::daemon(args.state_root.clone(), args.cwd.clone(), args.model.clone(), args.full_auto),
         Some("init") => cli::init(args.state_root.clone().map(PathBuf::from)),
         Some("doctor") => cli::doctor(args.state_root.clone().map(PathBuf::from)),

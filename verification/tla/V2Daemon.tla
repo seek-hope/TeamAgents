@@ -25,6 +25,18 @@
 (* a client can need a resync (`NoResyncInThisVersion`). `drift`, `shrank` and  *)
 (* `pruned` had no writer at all before this: every claim over them held for    *)
 (* want of a step that could break it.                                         *)
+(*                                                                          *)
+(* D-248 (the session's stop lever) adds the daemon's *lifecycle* to this same  *)
+(* model: a client asks this session to stop over the socket it is listening    *)
+(* on (`teamagents daemon --stop`), the daemon *answers* that request — the     *)
+(* reply is written by the serving task — and only then does the accept loop     *)
+(* leave, taking the socket with it. Two claims come out of that order: a       *)
+(* daemon that is gone has answered every stop request it took                  *)
+(* (`StopsOnlyAfterAnswering`, so the client always has its receipt), and an    *)
+(* answered stop *ends* the session (`AStopIsAnsweredAndEndsTheSession`, the    *)
+(* liveness half). Their two counterfactuals, `StopBeforeReceipt` and           *)
+(* `KeepServingAfterReceipt`, are the two mistakes in that order;               *)
+(* `MC_daemon_stop.cfg` and its controls carry them.                            *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets
 
@@ -34,7 +46,9 @@ CONSTANTS Clients,     \* client slots, e.g. {"c1"}
           MaxLog,      \* event log bound (keeps the state space finite)
           ReplayRewritesReceipt,  \* counterfactual: a same-payload replay re-applies and moves the receipt
           RollbackLog,            \* counterfactual: a compaction drops the oldest version and renumbers
-          ReclaimEvents           \* counterfactual: events are reclaimed, so a resync can be needed
+          ReclaimEvents,          \* counterfactual: events are reclaimed, so a resync can be needed
+          StopBeforeReceipt,      \* counterfactual (D-248): the daemon leaves with a stop request unanswered
+          KeepServingAfterReceipt \* counterfactual (D-248): an answered stop leaves the daemon serving
 
 ASSUME Clients # {} /\ Commands # {} /\ Versions # {} /\ MaxLog > 0
 
@@ -53,10 +67,20 @@ VARIABLES
   view,         \* client -> the version the client has applied
   pruned,       \* whether the log lost events (v1: never)
   drift,        \* monitor: commands whose stored receipt changed (must stay {})
-  shrank        \* monitor: the log ever shrunk (must stay FALSE)
+  shrank,       \* monitor: the log ever shrunk (must stay FALSE)
+  serving,      \* the daemon is up and accepting requests (D-248)
+  asked,        \* a client asked this session to stop over its socket (D-248)
+  answered      \* that request has its reply on the wire (D-248)
 
-vars == <<logLength, applied, receipt, payloadOf, versionOf, snapshot, cursor, view, pruned>>
+vars == <<logLength, applied, receipt, payloadOf, versionOf, snapshot, cursor, view, pruned,
+          serving, asked, answered>>
 monVars == <<vars, drift, shrank>>
+\* The protocol state (the log and its two monitors) and the D-248 lifecycle state. The two halves are
+\* independent, so each action leaves the other half alone *by name* (a tuple no action writes is a constant of
+\* the model, which is what the catalogue audit fails, D-219).
+logVars == <<logLength, applied, receipt, payloadOf, versionOf, snapshot, cursor, view, pruned,
+             drift, shrank>>
+lifecycle == <<serving, asked, answered>>
 
 \* ------------------------------------------------------------------- actions --
 \* The runtime appends an event (a turn, a task settlement, a budget refusal…).
@@ -67,6 +91,7 @@ RuntimeEvent ==
   /\ logLength' = logLength + 1
   /\ shrank' = shrank
   /\ drift' = drift
+  /\ UNCHANGED lifecycle
   /\ UNCHANGED <<applied, receipt, payloadOf, versionOf, snapshot, cursor, view, pruned>>
 
 \* A client submits a command (§9): client-chosen id, stable across reconnects.
@@ -84,6 +109,7 @@ Submit(c, cmd, payload, v) ==
   /\ versionOf' = [versionOf EXCEPT ![cmd] = v]
   /\ shrank' = shrank
   /\ drift' = drift
+  /\ UNCHANGED lifecycle
   /\ UNCHANGED <<snapshot, cursor, view, pruned>>
 
 \* A replayed command id with the SAME payload returns the stored receipt and
@@ -109,6 +135,7 @@ ReapplyOnReplay(c, cmd, payload) ==
   /\ receipt' = [receipt EXCEPT ![cmd] = logLength + 1]
   /\ drift' = drift \cup {cmd}
   /\ shrank' = shrank
+  /\ UNCHANGED lifecycle
   /\ UNCHANGED <<applied, payloadOf, versionOf, snapshot, cursor, view, pruned>>
 
 \* Counterfactual (D-219): a compaction drops the oldest event and renumbers the
@@ -120,6 +147,7 @@ CompactLog ==
   /\ logLength' = logLength - 1
   /\ shrank' = TRUE
   /\ drift' = drift
+  /\ UNCHANGED lifecycle
   /\ UNCHANGED <<applied, receipt, payloadOf, versionOf, snapshot, cursor, view, pruned>>
 
 \* Counterfactual (D-219): events are reclaimed, so a client whose watermark
@@ -131,6 +159,7 @@ Reclaim(c) ==
   /\ pruned' = TRUE
   /\ shrank' = shrank
   /\ drift' = drift
+  /\ UNCHANGED lifecycle
   /\ UNCHANGED <<logLength, applied, receipt, payloadOf, versionOf, snapshot, cursor, view>>
 
 \* checkpoint (§9): the snapshot and its watermark come from ONE read
@@ -142,6 +171,7 @@ Checkpoint(c) ==
   /\ view' = [view EXCEPT ![c] = logLength]
   /\ shrank' = shrank
   /\ drift' = drift
+  /\ UNCHANGED lifecycle
   /\ UNCHANGED <<logLength, applied, receipt, payloadOf, versionOf, pruned>>
 
 \* events(since = cursor): everything after the watermark, never a gap, because
@@ -153,9 +183,43 @@ Fetch(c) ==
   /\ view' = [view EXCEPT ![c] = logLength]
   /\ shrank' = shrank
   /\ drift' = drift
+  /\ UNCHANGED lifecycle
   /\ UNCHANGED <<logLength, applied, receipt, payloadOf, versionOf, snapshot, pruned>>
 
 Stutter == UNCHANGED monVars
+
+\* D-248: a client asks this session to stop over the socket it is listening on (`teamagents daemon --stop`).
+\* The request is only a fact here — the *answer* is its own step, because the order of the two on the wire is
+\* exactly what the claims below are about.
+AskStop ==
+  /\ serving
+  /\ ~asked
+  /\ asked' = TRUE
+  /\ UNCHANGED <<serving, answered>>
+  /\ UNCHANGED logVars
+
+\* The answer is on the wire: `serve_client` writes the reply frame, and the flag that ends the accept loop is
+\* set only after that write returns. A second answer would be a second reply to one request, so it is
+\* refused by the guard.
+AnswerStop ==
+  /\ serving
+  /\ asked
+  /\ ~answered
+  /\ answered' = TRUE
+  /\ UNCHANGED <<serving, asked>>
+  /\ UNCHANGED logVars
+
+\* The accept loop leaves and takes the socket with it. The rule (D-248): it may not leave a stop request
+\* unanswered — the reply is written first, and this is why a client that asked always has its receipt. The two
+\* counterfactuals are the two ways to get that order wrong: leaving early (`StopBeforeReceipt`) and ignoring an
+\* answered stop (`KeepServingAfterReceipt`, which is also what makes the liveness claim below refutable).
+Leave ==
+  /\ serving
+  /\ ~(KeepServingAfterReceipt /\ answered)
+  /\ (StopBeforeReceipt \/ ~asked \/ answered)
+  /\ serving' = FALSE
+  /\ UNCHANGED <<asked, answered>>
+  /\ UNCHANGED logVars
 
 Next ==
   \/ RuntimeEvent
@@ -168,6 +232,9 @@ Next ==
   \/ \E c \in Clients : Reclaim(c)
   \/ \E c \in Clients : Checkpoint(c)
   \/ \E c \in Clients : Fetch(c)
+  \/ AskStop
+  \/ AnswerStop
+  \/ Leave
   \/ Stutter
 
 Init ==
@@ -182,8 +249,14 @@ Init ==
   /\ pruned = FALSE
   /\ drift = {}
   /\ shrank = FALSE
+  /\ serving = TRUE
+  /\ asked = FALSE
+  /\ answered = FALSE
 
-Spec == Init /\ [][Next]_monVars
+\* The accept loop is a running task: while a stop request is waiting to be answered it is busy answering it, and
+\* once answered the loop really does leave (`WF_vars(Leave)` is the driver's poll loop, which cannot sit on a
+\* set flag forever — engine/src/v2/daemon.rs).
+Spec == Init /\ [][Next]_monVars /\ WF_vars(Leave)
 
 \* --------------------------------------------------------------- invariants --
 TypeOK ==
@@ -196,6 +269,9 @@ TypeOK ==
   /\ \A c \in Clients : cursor[c] \in 0..MaxLog
   /\ \A c \in Clients : view[c] \in 0..MaxLog
   /\ pruned \in BOOLEAN
+  /\ serving \in BOOLEAN
+  /\ asked \in BOOLEAN
+  /\ answered \in BOOLEAN
 
 \* the event log only grows: versions are never reused or rolled back
 LogMonotone == shrank = FALSE
@@ -227,5 +303,18 @@ SnapshotNeverLeadsCursor == \A c \in Clients : snapshot[c] <= cursor[c]
 ViewMatchesCursor == \A c \in Clients : view[c] = cursor[c]
 CursorNeverBeyondLog == \A c \in Clients : cursor[c] <= logLength
 NoResyncInThisVersion == ~pruned
+
+\* D-248: a daemon that is *gone* has answered every stop request it took. That is the receipt rule the code
+\* keeps by writing the reply before it sets the flag that ends the accept loop — the client that asked is
+\* never left with a broken connection instead of an answer.
+StopsOnlyAfterAnswering == serving = FALSE => (asked => answered)
+
+\* --------------------------------------------------------------- properties --
+\* D-248, the liveness half: an answered stop *ends* the session. Safety alone would be satisfied by a daemon
+\* that answers and then serves on forever, which is exactly the shape the first wiring of the lever had (the
+\* process sat in its signal wait with its socket already gone, measured 2026-09-27). The `[]` is not
+\* decoration: without it TLC evaluates the implication at the *initial* state, where `asked` is FALSE and the
+\* property is vacuously true — measured 2026-09-27, when the control below verified instead of refuting.
+AStopIsAnsweredAndEndsTheSession == []( (asked /\ answered) => <>(serving = FALSE) )
 
 =============================================================================

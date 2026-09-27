@@ -689,6 +689,61 @@ pub fn version() -> i32 {
 
 /// Run the v2 session daemon: one supervised session over a Unix socket.
 /// The daemon owns the engine; TUI/exec are thin clients of its protocol.
+/// D-248: stop the session's daemon, addressed by its socket.
+///
+/// The state root's socket *is* the identity, which is why this lever needs no pid, no record and no "is that
+/// still the process I meant" question — the shape ACCEPTANCE's known gap asked for when it said a `daemon
+/// --stop` "would have to answer the identity question a pid file raises on its own". The client asks over the
+/// socket, waits for the socket to disappear (bounded), and says which of the three cases it found:
+///
+/// * a daemon was serving and is gone → 0;
+/// * nothing is listening (no socket, or a stale one a crashed daemon left) → 0 with that stated: stopping
+///   something that is not running is not a failure, and this command never removes a socket (the next client
+///   that *starts* a daemon is what replaces it);
+/// * a daemon answered and is still serving after the wait → 1, naming what is left.
+pub fn daemon_stop(state_root: Option<PathBuf>) -> i32 {
+    let root = state_root.unwrap_or_else(crate::v2_root);
+    let socket = root.join("daemon.sock");
+    if !socket.exists() {
+        println!("no daemon is running for {}", root.display());
+        return 0;
+    }
+    let mut client = match crate::v2::exec::Client::connect(&socket) {
+        Ok(client) => client,
+        Err(error) => {
+            // a socket nobody listens on is a crashed daemon's leftover (§9): a client that starts a daemon
+            // replaces it, and a stop has nothing to stop
+            println!("nothing is listening on {} ({error}); a crashed daemon's socket is replaced by the next client that starts one", socket.display());
+            return 0;
+        }
+    };
+    match client.call("shutdown", json!({})) {
+        Ok(result) => {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while socket.exists() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            if socket.exists() {
+                eprintln!(
+                    "the daemon for {} answered the stop but its socket is still there after 5 s",
+                    root.display()
+                );
+                return 1;
+            }
+            println!(
+                "stopped the session for {} (committed state is kept; the next client starts a fresh daemon)",
+                root.display()
+            );
+            let _ = result;
+            0
+        }
+        Err(error) => {
+            eprintln!("the daemon for {} refused to stop: {error}", root.display());
+            1
+        }
+    }
+}
+
 pub fn daemon(state_root: Option<String>, cwd: Option<String>, model: Option<String>, full_auto: bool) -> i32 {
     daemon_run(state_root, cwd, model, full_auto)
 }
@@ -994,7 +1049,7 @@ fn daemon_boot(
     runtime.block_on(async move {
         let handle = crate::v2::daemon::serve(config).await?;
         eprintln!(
-            "teamagents daemon started\n  socket:    {}\n  state root: {}\n  clients can attach now; Ctrl-C or SIGTERM stops it (committed state is kept)",
+            "teamagents daemon started\n  socket:    {}\n  state root: {}\n  clients can attach now; `teamagents daemon --stop`, Ctrl-C or SIGTERM stops it (committed state is kept)",
             socket.display(),
             state_root.display()
         );
@@ -1002,12 +1057,16 @@ fn daemon_boot(
         // detached one (`teamagents`/`exec` start it, §1). SIGTERM is what a user's `kill` and a service
         // manager send, so it must reach the same shutdown: without this the only stop available to a user was
         // an abrupt death that skipped the designed shutdown and left the socket behind (measured 2026-09-26,
-        // D-150).
+        // D-150). The third arm is D-248's lever: a client asked this session to stop over the socket it is
+        // listening on, has its receipt already, and the accept loop is gone with the socket — the daemon's
+        // remaining work is the same designed shutdown. Without this arm the process waited for a signal
+        // forever and a `daemon --stop` reported a stop that had not happened (measured 2026-09-27).
         let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
             .map_err(|e| e.to_string())?;
         tokio::select! {
             result = tokio::signal::ctrl_c() => { result.map_err(|e| e.to_string())?; }
             _ = terminate.recv() => {}
+            _ = handle.stopped() => {}
         }
         eprintln!("\nstopping...");
         handle.shutdown().await

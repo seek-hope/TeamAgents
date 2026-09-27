@@ -2430,3 +2430,92 @@ fn a_daemon_stops_gracefully_on_sigterm() {
     assert!(stderr.contains("stopping..."), "the shutdown says what it is doing: {stderr}");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// D-248: the session's stop lever, which D-150 left to `ps` and a pid. `teamagents daemon --stop` addresses the
+/// daemon by the state root's socket — the socket *is* the identity, so there is no pid file, no stale-pid
+/// question and nothing to guess — asks it over the protocol, and waits for the socket to go. The three shapes
+/// are all answers, not failures: a session that runs is stopped; a session that does not, and a socket a
+/// crashed daemon left behind, are both reported as nothing running (0), and the lever never removes a socket
+/// (the next client that *starts* a daemon replaces it). The refusing half is D-73's rule for a verb: the flags
+/// of the *starting* shape are named, not ignored.
+#[test]
+fn daemon_stop_stops_the_session_by_its_socket() {
+    let root = Scratch::new("daemon-stop");
+    let (config_home, state_home) = (root.join("config"), root.join("state"));
+    let state = state_home.join("teamagents/v2");
+    std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
+    std::fs::write(
+        config_home.join("teamagents/config.toml"),
+        "[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\n\
+         api_key_env = \"TA_STOP_KEY\"\nbase_url = \"http://127.0.0.1:1/v1\"\n",
+    )
+    .unwrap();
+    let run = |args: &[&str]| -> (Option<i32>, String, String) {
+        let output = Command::new(env!("CARGO_BIN_EXE_teamagents"))
+            .args(args)
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("XDG_STATE_HOME", &state_home)
+            .env("TA_STOP_KEY", "test-value")
+            .output()
+            .expect("run teamagents");
+        (
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    };
+
+    // nothing is running yet: that is an answer, not a failure
+    let (code, out, err) = run(&["daemon", "--stop"]);
+    assert_eq!(code, Some(0), "{out}{err}");
+    assert!(out.contains("no daemon is running"), "{out}");
+
+    // a flag of the *starting* shape is named rather than ignored, and a refused stop starts nothing
+    for (flag, extra) in [("--cwd", vec!["/tmp"]), ("--model", vec!["leader_main"]), ("--full-auto", vec![])] {
+        let mut args = vec!["daemon", "--stop", flag];
+        args.extend(extra);
+        let (code, out, err) = run(&args);
+        assert_eq!(code, Some(2), "{flag} must be refused, not ignored: {out}{err}");
+        assert!(err.contains(flag), "the refusal names {flag}: {out}{err}");
+        assert!(!state.join("daemon.sock").exists(), "a refused stop must not start a session: {out}{err}");
+    }
+
+    // a real detached daemon, started the way §1 says and stopped by the lever
+    let mut daemon = Command::new(env!("CARGO_BIN_EXE_teamagents"));
+    daemon.env("XDG_CONFIG_HOME", &config_home).env("XDG_STATE_HOME", &state_home).env("TA_STOP_KEY", "test-value");
+    let mut daemon_guard = Daemon(
+        daemon
+            .args(["daemon", "--state-root"])
+            .arg(&state)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("start the daemon"),
+    );
+    let socket = state.join("daemon.sock");
+    for _ in 0..200 {
+        if socket.exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(socket.exists(), "the daemon must listen before it is stopped");
+
+    let state_arg = state.to_string_lossy().into_owned();
+    let (code, out, err) = run(&["daemon", "--stop", "--state-root", &state_arg]);
+    assert_eq!(code, Some(0), "{out}{err}");
+    assert!(out.contains("stopped the session"), "{out}");
+    assert!(!socket.exists(), "the socket goes with the accept loop: {socket:?}");
+    // the daemon itself reaches the designed shutdown (D-150's "stopping…", a zero exit), not a signal death
+    let status = daemon_guard.0.wait().expect("the daemon exits");
+    assert_eq!(status.code(), Some(0), "the lever reaches the designed shutdown: {status:?}");
+    let mut stderr = String::new();
+    std::io::Read::read_to_string(&mut daemon_guard.0.stderr.take().unwrap(), &mut stderr).unwrap();
+    assert!(stderr.contains("stopping..."), "the shutdown says what it is doing: {stderr}");
+
+    // and stopping again is still not a failure
+    let (code, out, _) = run(&["daemon", "--stop", "--state-root", &state_arg]);
+    assert_eq!(code, Some(0), "{out}");
+    assert!(out.contains("no daemon is running"), "{out}");
+    let _ = std::fs::remove_dir_all(&root);
+}

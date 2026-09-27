@@ -1304,3 +1304,29 @@ async fn a_daemon_stop_does_not_wait_out_a_provider_backoff() {
     let elapsed = stopping.elapsed();
     assert!(elapsed < Duration::from_secs(5), "the daemon stop waited out the provider backoff ({elapsed:?})");
 }
+
+/// D-248: the session's stop lever at the protocol level. `shutdown` is *answered* before the daemon goes — the
+/// accept loop's flag is set only after the reply is on the wire — so the client that asked always has its
+/// receipt and never a broken connection, and the socket leaves with the accept loop. The product surface on
+/// top of this is `teamagents daemon --stop` (its end-to-end half is
+/// `cli::daemon_stop_stops_the_session_by_its_socket`).
+#[tokio::test]
+async fn the_stop_lever_answers_before_the_daemon_goes() {
+    let (root, handle) = boot("stop-lever", HashMap::new()).await;
+    let socket = root.dir.join("state/daemon.sock");
+    let mut client = Client::connect(&socket).await;
+    let reply = client.call("shutdown", json!({})).await;
+    assert_eq!(reply["ok"], json!(true), "{reply}");
+    assert_eq!(reply["result"]["stopping"], json!(true), "{reply}");
+    assert!(reply["result"]["state_root"].as_str().is_some_and(|path| path.ends_with("state")), "{reply}");
+    // the reply above *is* the receipt; only after it was written does the accept loop leave, and the socket
+    // goes with it
+    for _ in 0..100 {
+        if !socket.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(!socket.exists(), "the stopped daemon removes its socket: {socket:?}");
+    handle.shutdown().await.expect("shutdown");
+}

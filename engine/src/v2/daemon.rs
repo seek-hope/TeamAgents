@@ -33,11 +33,24 @@ pub struct DaemonConfig<P, F> {
 
 pub struct DaemonHandle {
     shutdown: Arc<AtomicBool>,
+    stopped: Arc<tokio::sync::Notify>,
     supervisor: Arc<SupervisorHandle>,
     task: tokio::task::JoinHandle<Result<(), String>>,
 }
 
 impl DaemonHandle {
+    /// Resolve when the accept loop has ended on its own — a client asked this session to stop over its socket
+    /// (D-248), or the loop failed. The reply is already on the wire by then (`serve_client` sets the flag only
+    /// *after* it), so this is how the daemon process learns that the stop landed without a signal and runs the
+    /// same designed shutdown `shutdown` runs.
+    ///
+    /// It deliberately does **not** await the join handle: `shutdown` awaits that exactly once, and a
+    /// `JoinHandle` polled twice panics (`JoinHandle polled after completion` — measured 2026-09-27 while
+    /// wiring this). Dropping this future cancels nothing.
+    pub async fn stopped(&self) {
+        self.stopped.notified().await;
+    }
+
     /// Stop accepting, stop the supervisor, wait for the serve task.
     pub async fn shutdown(self) -> Result<(), String> {
         self.shutdown.store(true, Ordering::SeqCst);
@@ -85,17 +98,22 @@ where
         }
     };
     let shutdown = Arc::new(AtomicBool::new(false));
+    let stopped = Arc::new(tokio::sync::Notify::new());
     let task = {
         let shutdown = shutdown.clone();
+        let stopped = stopped.clone();
         let supervisor = supervisor.clone();
         let socket = config.socket.clone();
         tokio::spawn(async move {
             let result = accept_loop(listener, supervisor, session_db, facts, shutdown).await;
             let _ = std::fs::remove_file(&socket);
+            // D-248: wake the process. A client that asked for the stop has its receipt already; without this
+            // the daemon would sit in its signal wait forever while its socket was gone (measured 2026-09-27).
+            stopped.notify_one();
             result
         })
     };
-    Ok(DaemonHandle { shutdown, supervisor, task })
+    Ok(DaemonHandle { shutdown, stopped, supervisor, task })
 }
 
 /// Facts every client is told in the greeting: the session id, its state root,
@@ -130,9 +148,10 @@ async fn accept_loop(
             Ok(pair) => pair,
             Err(e) => return Err(format!("accept: {e}")),
         };
-        let (supervisor, session_db, facts) = (supervisor.clone(), session_db.clone(), facts.clone());
+        let (supervisor, session_db, facts, shutdown_in_client) =
+            (supervisor.clone(), session_db.clone(), facts.clone(), shutdown.clone());
         tokio::spawn(async move {
-            if let Err(error) = serve_client(stream, supervisor, &session_db, &facts).await {
+            if let Err(error) = serve_client(stream, supervisor, &session_db, &facts, shutdown_in_client).await {
                 eprintln!("daemon client: {error}");
             }
         });
@@ -144,6 +163,7 @@ async fn serve_client(
     supervisor: Arc<SupervisorHandle>,
     session_db: &Path,
     facts: &SessionFacts,
+    shutdown: Arc<AtomicBool>,
 ) -> Result<(), String> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
     let (read, mut write) = stream.into_split();
@@ -159,17 +179,24 @@ async fn serve_client(
             continue;
         }
         let reply = match serde_json::from_str::<Json>(&line) {
-            Ok(request) => handle(&request, &supervisor, session_db, &facts.session_id).await,
+            Ok(request) => handle(&request, &supervisor, session_db, facts).await,
             Err(e) => json!({"request_id": Json::Null, "ok": false, "error": format!("bad request JSON: {e}")}),
         };
         if write.write_all(format!("{reply}\n").as_bytes()).await.is_err() {
             return Ok(()); // client went away
         }
+        // D-248: `shutdown` is answered *before* the daemon stops — the flag is set here, after the reply is on the
+        // wire, and the accept loop (a different task, polling at 50 ms) sees it and leaves. A client that asked
+        // to stop therefore always gets its receipt, however quickly the daemon goes.
+        if reply["ok"] == json!(true) && reply["result"]["stopping"] == json!(true) {
+            shutdown.store(true, Ordering::SeqCst);
+        }
     }
     Ok(())
 }
 
-async fn handle(request: &Json, supervisor: &SupervisorHandle, session_db: &Path, session_id: &str) -> Json {
+async fn handle(request: &Json, supervisor: &SupervisorHandle, session_db: &Path, facts: &SessionFacts) -> Json {
+    let session_id = facts.session_id.as_str();
     let request_id = request.get("request_id").cloned().unwrap_or(Json::Null);
     let reply = |ok: bool, payload: Json| {
         if ok {
@@ -190,6 +217,13 @@ async fn handle(request: &Json, supervisor: &SupervisorHandle, session_db: &Path
                 Err(error) => reply(false, json!(error)),
             }
         }
+        // D-248: the session's own stop lever. Addressed by *this socket* — the state root's socket is the
+        // identity, so there is no pid to record, guess or reuse, and the command can only ever reach the daemon
+        // serving this state root (the shape ACCEPTANCE's known gap asked for: "a `teamagents daemon --stop` (or
+        // a protocol command) would be new surface, and it would have to answer the identity question a pid file
+        // raises"). It is not a control-plane command: stopping a daemon is not a state transition of the
+        // session's data, and a member instance never holds this socket.
+        "shutdown" => reply(true, json!({"stopping": true, "state_root": facts.state_root})),
         // A business command: the v2 command vocabulary is the write surface
         // and the control plane authorizes/dedups it (§9). The client-chosen
         // command id rides at the request level, stable across reconnects.

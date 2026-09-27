@@ -20,6 +20,60 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-248 `teamagents daemon --stop`: the session's stop lever, addressed by its socket (2026-09-27)
+
+D-150 made SIGTERM reach the designed shutdown, and `docs/ACCEPTANCE.md` recorded what was left: with the
+detached daemon being the one users actually have (`teamagents`/`exec` start it), stopping a session meant
+*finding* the pid (`ps -eo pid,args | grep "[t]eamagents daemon"`). **Decided: add the lever** — the product may
+decide its own surface (the goal's mandate), and the gap named the shape it had to have: a `daemon --stop` "would
+have to answer the identity question a pid file raises on its own (a stale pid that now belongs to an unrelated
+process)".
+
+**The socket is the identity**, so that question cannot arise. The command opens `<state root>/daemon.sock`,
+sends the protocol's new `shutdown` method and waits for the socket to go. There is no pid to record, guess or
+reuse, and the command can only ever reach the daemon serving *that* state root — which is also why no pid file,
+no run directory and no "is that still the process I meant" check appear anywhere in it. The daemon's side is one
+arm of the dispatcher (`handle`), and the client that asked is answered *before* the daemon goes: `serve_client`
+writes the reply frame, and only then sets the flag the accept loop polls (50 ms) — so a client that asked for a
+stop always has its receipt, never a broken connection. Three outcomes, all answers: stopped (0); nothing is
+running, including a socket a crashed daemon left (0 — the lever never removes a socket, the next client that
+*starts* a daemon replaces it); or a daemon that answered and is still serving after 5 s (1, naming what is left).
+The flags of the *starting* shape (`--cwd`, `--model`, `--full-auto`) are refused with the flag named (D-73's rule
+for a verb) because a stop has no workspace, model or permission mode to choose.
+
+**Measured.** `review/dogfood/daemon_stop.py` (credential-free, in `make probe-offline`) drives the real binary
+through the five shapes; `cli::daemon_stop_stops_the_session_by_its_socket` and
+`v2_daemon::the_stop_lever_answers_before_the_daemon_goes` pin them in the suite. Writing them found **two
+defects that the manual verification of this lever had missed**, both now closed and both checked by a test that
+fails without the fix:
+
+* **the socket went and the process did not.** `serve` returns as soon as the accept loop is *spawned*, and
+  `cli::daemon_boot` then waited on `ctrl_c`/SIGTERM only — so the stop answered, the socket disappeared, the
+  client printed "stopped the session" and exited 0, and the daemon sat in its signal wait forever (proved by the
+  first run of the new CLI test: after the socket was gone the child never reaped, and the test hung — "has been
+  running for over 60 seconds"). A `Notify` the accept-loop task signals on exit is the wake-up, and
+  `DaemonHandle::stopped` selects on it beside the two signals. The second defect came out of the first fix:
+  awaiting the join handle in that select made `shutdown` poll it twice — `JoinHandle polled after completion`,
+  a daemon panic (exit 101) — which is why the wake-up is a notification and the handle is awaited exactly once.
+* **the liveness property was vacuously true.** In the TLA+ model, `(asked /\ answered) => <>(serving = FALSE)` is
+  evaluated at the *initial* state when it is not wrapped in `[]`; `asked` is FALSE there, so the first version of
+  `AStopIsAnsweredAndEndsTheSession` held while its control (`MC_daemon_keeps_serving_after_receipt.cfg`)
+  *verified* instead of refuting. Caught by running the control, not by reading it.
+
+**Formally** (`verification/tla/V2Daemon.tla`, the same module as the protocol: the lever is a protocol method):
+`StopsOnlyAfterAnswering` ("a daemon that is gone answered every stop request it took") plus the liveness half
+above, with two refuted controls — `MC_daemon_stop_before_receipt.cfg` (the accept loop leaves a request
+unanswered → the receipt invariant) and `MC_daemon_keeps_serving_after_receipt.cfg` (an answered stop the daemon
+ignores → the liveness property, which is why the model carries `WF_vars(Leave)`). The positive configuration is
+`MC_daemon_stop.cfg`, exhaustive in 11 s (275,993 states generated / 21,790 distinct).
+
+Ceiling: the lever stops *the daemon*, not the session's leftover **runners** — a killed session leaves one per
+in-flight job on purpose (the live partner of §6.2/§6.3), and a verb that stops them is new surface with the
+runner's own identity question (A15), still open with a stray-settled-*service* lever; it is also not a
+multi-session lever (A33: one session per state root, so "the session that owns this socket" is unambiguous);
+and the 5 s wait for the socket is a *report* bound, not a shutdown bound — the daemon's own shutdown is bounded
+by the supervisor, and a daemon that answered and is still serving after 5 s is a reported 1, never a kill.
+
 ## D-247 `[models.*].max_retries` is applied, per instance (2026-09-27)
 
 D-240 measured the key accepted, validated and ignored — one session constant (`engine/src/cli.rs` passed

@@ -141,7 +141,7 @@ CFG_CASE = case $$cfg in MC.cfg|MC_control_two.cfg) echo V2Control.tla;; MC_arti
 
 # small exhaustive configurations for every module (seconds; the wide config is verify-model-wide)
 verify-model-all: verify-tools
-	@cd verification/tla && for cfg in MC.cfg MC_control_two.cfg MC_artifact.cfg MC_wait.cfg MC_task.cfg MC_task_two.cfg MC_approval.cfg MC_compress.cfg MC_daemon.cfg MC_checks.cfg MC_grants.cfg MC_authority.cfg MC_store.cfg MC_retention.cfg MC_jobs.cfg MC_inbox.cfg MC_diskfull.cfg MC_coordinator.cfg MC_trust.cfg MC_prompt.cfg MC_retry.cfg; do \
+	@cd verification/tla && for cfg in MC.cfg MC_control_two.cfg MC_artifact.cfg MC_wait.cfg MC_task.cfg MC_task_two.cfg MC_approval.cfg MC_compress.cfg MC_daemon.cfg MC_daemon_stop.cfg MC_checks.cfg MC_grants.cfg MC_authority.cfg MC_store.cfg MC_retention.cfg MC_jobs.cfg MC_inbox.cfg MC_diskfull.cfg MC_coordinator.cfg MC_trust.cfg MC_prompt.cfg MC_retry.cfg; do \
 		echo "== $$cfg =="; \
 		out=$$(java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
 			tlc2.TLC -config $$cfg -fp 64 -workers 4 $$( $(CFG_CASE) ) 2>&1); \
@@ -178,6 +178,8 @@ verify-model-counterexamples: verify-tools
 		MC_compress_deletes_originals.cfg:V2Compress.tla MC_compress_lifts_coverage.cfg:V2Compress.tla \
 		MC_compress_rewrites_closed.cfg:V2Compress.tla MC_daemon_rewrites_receipt.cfg:V2Daemon.tla \
 		MC_daemon_rolls_back_log.cfg:V2Daemon.tla MC_daemon_reclaims_events.cfg:V2Daemon.tla \
+		MC_daemon_stop_before_receipt.cfg:V2Daemon.tla \
+		MC_daemon_keeps_serving_after_receipt.cfg:V2Daemon.tla \
 		MC_checks_rewinds_rounds.cfg:V2Checks.tla MC_approval_drops_the_expiry.cfg:V2Approval.tla \
 		MC_approval_rewrites_a_decision.cfg:V2Approval.tla \
 		MC_approval_keeps_pending_on_close.cfg:V2Approval.tla \
