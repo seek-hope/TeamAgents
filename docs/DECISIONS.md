@@ -44,6 +44,12 @@ in 1 m 53 s, `MC_diskfull.cfg` itself is 63 states / 22 distinct, and no run pri
   version ("if the store is writable and the latch is set, the latch clears") claimed something the design does
   not, and the ceiling paragraph of `V2DiskFull` now says so.
 
+**A third trap was in the file's own prose**: SANY's block comments *nest*, so the three header lines this module
+gained that opened a comment without closing it on the same line left the module unparseable — measured, not
+guessed: `(*` appeared 57 times and `*)` 54 in the file, and reflowing the header into self-contained lines fixed
+it. That is why every model in `verification/tla/` writes each comment line as `(* … *)`: the style is what keeps
+nesting from mattering.
+
 **The audit's own prose was wrong in the same breath**: `review/verification_catalogue.py`'s docstring said
 `verification/tla/` holds "forty" configurations while the directory holds forty-three (the wide configuration is
 one of them) — a count nothing looked at, because D-185's rule compares the *report's* counts with the lists and
