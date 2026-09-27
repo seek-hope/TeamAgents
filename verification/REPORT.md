@@ -5,10 +5,10 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
-## 0. Gate status (re-run 2026-09-27 at `f521fd4f`)
+## 0. Gate status (re-run 2026-09-27 at `2ffda733`)
 
 * `make verify-model-all` was re-run on this tree: all **12** configurations report `No error has been found`,
-  in 4 m 3 s (the twelfth is the retention rule, D-192). The largest is **`MC_task.cfg`** with 5,721,401 states generated / 606,904 distinct; `MC.cfg`
+  in 3 m 52 s (the twelfth is the retention rule, D-192). The largest is **`MC_task.cfg`** with 5,721,401 states generated / 606,904 distinct; `MC.cfg`
   itself generates 84,877 / 18,384, and the smallest, `MC_store.cfg`, 48 / 13. Every count is identical to the
   previous run on the same tree — what a deterministic checker on unchanged inputs should print, and the
   reason these numbers describe the *material*, not a machine. (The line once called `MC.cfg` the largest and
@@ -18,12 +18,12 @@ in [README.md](README.md); the fix ledger is in
   property (`AuthorizedEffectsOnly`, `InputLandsAtTheBoundary`, `NoRequestAfterDeadline`, `NoTurnWithoutWork`
   twice, `SettlementFollowsATurnAfterTheLanding`, `NoForeignAdoption`, three temporal refutations, and the
   four retention guards: `NoReferenceToEvictedFact`, `EvidenceIsNeverEvicted` and `OnlyOldFactsAreEvicted`
-  twice), in 1 m 31 s.
+  twice), in 1 m 30 s.
 * The wall clocks above are upper bounds, not machine-independent figures: they were measured while this
-  machine carried a load average of about 25-31 on 20 cores (the standing host-cleanup item), and TLC is
+  machine carried a load average between about 80 and 350 on 20 cores (the standing host-cleanup item), and TLC is
   CPU-bound. The probe in A32 now records the same conditions next to its numbers for the same reason (D-188).
 * **The Kani layer was re-run on this tree** (2026-09-27; first re-run 2026-09-26, D-132): `make verify-kani`
-  reports `Complete - 3 successfully verified harnesses, 0 failures, 3 total` in ~3 s with a cached build
+  reports `Complete - 3 successfully verified harnesses, 0 failures, 3 total` in ~4 s with a cached build
   (the 2026-09-26 run paid for the build: ~16 s). The toolchain this report called missing is
   installed after all, at the path the Makefile's `KANI_PATH` already points at: `~/.cargo/bin/kani` reports
   Kani 0.68.0 with CBMC 6.11.0, and `verification/kani/target/` had last been written on 2026-09-25. `make
@@ -40,6 +40,14 @@ in [README.md](README.md); the fix ledger is in
   the two counts stated above — every configuration and module on disk must be driven and described in
   `verification/README.md`, and a configuration dropped from a list is a finding. Before it, a `.cfg` file
   nothing ran and a count that had drifted both passed every gate.
+* **The heading's commit is held against the material** (2026-09-27, D-202): §0 opened with a pin — `f521fd4f`,
+  the commit D-184 was written at — that could no longer have produced the numbers below it, because it predates
+  `verification/tla/MC_retention.cfg` while the same section counts "the twelfth is the retention rule, D-192".
+  `review/verification_catalogue.py` now requires the pin to be a commit in this repository at or after the
+  newest change to the material a re-run covers (`verification/tla`, `verification/kani`, and the sources the
+  harness crate compiles in with `#[path]`). The same class was found one document over, in
+  `docs/ACCEPTANCE.md`'s A32, whose pin preceded the commit that added the conditions it reports; that pin is
+  repaired, and `review/requirement_trace.py` holds a row's pin against the example its command names.
 
 ## 1. Summary of conclusions
 

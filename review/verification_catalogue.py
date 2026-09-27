@@ -21,21 +21,56 @@ with the report's own sentences rather than with a generated file, so a list tha
 and every module on disk must be described there too: a new model enters the checked set with a paragraph
 about what it models.
 
+**D-202 added the provenance the counts rest on.** The report opens with `## 0. Gate status (re-run <date> at
+`<commit>`)`, and the counts below it describe the material *as of that commit* — but nothing held the two
+against each other. Measured 2026-09-27: the heading named `f521fd4f`, a commit that predates
+`verification/tla/MC_retention.cfg` (D-192), while the same section counted "the twelfth … the retention rule":
+the stated re-run could not have produced the numbers it reported. So the named commit must exist, and it must
+be at or after the newest commit that changed the material a re-run covers — `verification/tla`,
+`verification/kani`, and every file the harness crate compiles in with `#[path]` (`lib.rs` pulls in
+`core/src/kernel/types.rs`, so the proof's subject is material too).
+
 Ceiling: this is a *catalogue* audit — it says nothing about whether TLC would pass a configuration, only that
 the material is driven and counted. The states, the times and the property names in the report are measurements
-of a run, and re-running the targets is what keeps them honest.
+of a run, and re-running the targets is what keeps them honest. It also does not require the named commit to be
+today's `HEAD` (a gate status re-run later at the same commit is fine, and prose edits must not force a re-run),
+and it cannot see a model whose abstraction drifted from the code it describes — that is what the
+spec-to-code test in `make check` is for.
 """
 import argparse
 import pathlib
 import re
+import subprocess
 import sys
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 TLA = "verification/tla"
 KANI_SRC = "verification/kani/src"
+MATERIAL = ("verification/tla", "verification/kani")
 TARGET = re.compile(r"^([A-Za-z0-9_.-]+):")
 CFG = re.compile(r"\b(MC[A-Za-z0-9_]*\.cfg)\b")
 SPEC = re.compile(r"\b(V2[A-Za-z0-9_]*\.tla)\b")
+PATH_ATTR = re.compile(r'#\[path\s*=\s*"([^"]+)"\]')
+RERUN = re.compile(r"Gate status \(re-run (\d{4}-\d{2}-\d{2}) at `([0-9a-f]{7,40})`\)")
+
+
+def git(*args: str) -> tuple[int, str]:
+    """`(exit code, stdout)` for a git command in this repository."""
+    done = subprocess.run(["git", *args], cwd=REPO, capture_output=True, text=True)
+    return done.returncode, done.stdout.strip()
+
+
+def material_paths() -> list[str]:
+    """What a re-run has to cover: the TLA material, the harness crate, and the sources it compiles.
+
+    The harness crate is `#[path]`-based: it compiles this repository's own file instead of a copy, so the
+    proof's subject belongs in the set a stale re-run heading is measured against.
+    """
+    paths = list(MATERIAL)
+    for source in sorted((REPO / KANI_SRC).rglob("*.rs")):
+        for relative in PATH_ATTR.findall(source.read_text(encoding="utf-8")):
+            paths.append(str((source.parent / relative).resolve().relative_to(REPO)))
+    return paths
 
 
 def target_recipes(makefile: str) -> dict[str, str]:
@@ -127,6 +162,31 @@ def main(argv) -> int:
                             "what it did")
     if quoted and all(int(v) == harnesses for v, _ in quoted):
         notes.append(f"verify-kani: {harnesses} harness(es), as the report says")
+    # (D-202) The re-run heading names the commit the gate status was measured at; a commit older than the
+    # material it reports on is a provenance claim the tree contradicts.
+    rerun = RERUN.search(report)
+    if rerun is None:
+        findings.append(f"{args.report} no longer opens with `Gate status (re-run <date> at `<commit>`)`, so its "
+                        "provenance cannot be held against the material")
+    else:
+        date, commit = rerun.groups()
+        material = material_paths()
+        if git("cat-file", "-e", f"{commit}^{{commit}}")[0] != 0:
+            findings.append(f"{args.report} names the re-run commit `{commit}`, which is not a commit in this "
+                            "repository")
+        else:
+            code, newest = git("log", "-1", "--format=%H", "--", *material)
+            if code != 0 or not newest:
+                findings.append(f"no commit touches {', '.join(material)}, so the re-run heading has nothing to "
+                                "be measured against")
+            elif git("merge-base", "--is-ancestor", newest, commit)[0] != 0:
+                findings.append(
+                    f"{args.report} says the gates were re-run at `{commit}` ({date}), but `{newest[:12]}` "
+                    f"changed {', '.join(material)} after it: the stated re-run predates the material it reports "
+                    "on — re-run the targets and update the heading")
+            else:
+                notes.append(f"the re-run heading names `{commit}`, at or after the newest change to the "
+                             f"verification material (`{newest[:12]}`)")
     for finding in findings:
         print(f"FAIL: {finding}")
     if findings:

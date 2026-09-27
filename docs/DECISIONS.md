@@ -18,6 +18,46 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-202 The report's re-run heading named a commit that predated its own material (2026-09-27)
+
+`verification/REPORT.md` opens with `## 0. Gate status (re-run <date> at `<commit>`)`, and every number under it —
+the configuration counts, the property names, the Kani harness total — describes the material *as of that commit*.
+Nothing held the two against each other. Measured 2026-09-27: the heading named `f521fd4f` (the commit D-184 was
+written at) while the same section counted "the twelfth is the retention rule, D-192" — and
+`verification/tla/MC_retention.cfg` does not exist at `f521fd4f`, so the stated re-run could not have produced
+the numbers it reported. D-185's audit checked the counts against the lists and the report's prose, but not the
+provenance the counts rest on.
+
+**Guarded** (`review/verification_catalogue.py`, in `make hygiene`): the re-run heading must name a commit that
+exists in this repository and that is at or after the newest commit touching the material a re-run covers —
+`verification/tla`, `verification/kani`, and every source the harness crate compiles in with `#[path]`
+(`verification/kani/src/lib.rs` compiles `core/src/kernel/types.rs`, so the proof's subject counts as material
+too). The three controls behave: the real heading reports "the stated re-run predates the material it reports
+on", a heading naming `deadbee1234` reports "not a commit in this repository", and the same report with the pin
+moved to a commit that contains the material is green.
+
+**The class had a second instance, in the acceptance ledger.** `docs/ACCEPTANCE.md`'s A32 said its re-measurement
+was taken "at `f521fd4f` with the conditions now recorded beside the numbers (D-188)" — but D-188 is the commit
+that *added* that recording to `engine/examples/load_probe.rs`, so the pinned tree cannot print the conditions the
+row reports. The pin is repaired to `50c2ee4b` (D-188), the tree the run's numbers come from, and
+`review/requirement_trace.py` now holds a matrix row's pin against the example its own command names
+(`--example load_probe` → `engine/examples/load_probe.rs`): the pin must exist and be at or after the newest
+change to that file. A row that names no `--example`, or omits a pin, is not seen.
+
+**Measured** (2026-09-27): with the heading updated, the gates were re-run on this tree — all **12** TLC
+configurations `No error has been found` in 3 m 52 s, all **14** negative controls refuted in 1 m 30 s, and
+`make verify-kani` `Complete - 3 successfully verified harnesses, 0 failures, 3 total` in ~4 s; every per-config
+state count is identical to the previous run (`MC.cfg` 84,877 / 18,384, `MC_task.cfg` 5,721,401 / 606,904,
+`MC_store.cfg` 48 / 13), which is what a deterministic checker on unchanged material prints and the reason the
+report's load figures are now stated with the run (the machine carried a load average between about 80 and 350 on
+20 cores, the standing host-cleanup item).
+
+Ceiling: the pin need not be `HEAD` — a gate status re-run later at the same commit is honest, and prose edits
+must not force a re-run — and neither audit can see a *wrong result* behind a correct pin: the counts rule
+(D-185) and the pin rule together say the numbers are the ones the named tree's material describes, not that a
+re-run would reproduce them. `review/requirement_trace.py` reads only a row's `--example`, so a measurement of
+anything else (a test binary, an external run) is out of its scope.
+
 ## D-201 A `make` command in a document was checked against nothing (2026-09-27)
 
 A document that tells the reader to run `make <target>` is the same kind of citation D-200 had just closed for

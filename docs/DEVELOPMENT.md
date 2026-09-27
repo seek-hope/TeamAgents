@@ -44,7 +44,7 @@ audits — each one a claim the tree makes about itself, each with the decision 
   table keeps in force (D-170); `review/readme_zh.py` holds `README.zh-CN.md` to `README.md` on the heading
   skeleton, the in-repository links and the CLI surface (D-134); `review/doc_flags.py` holds the three user-facing documents (the README, the user guide and the install guide) and the parsers against the CLI's own help text — a documented flag must exist, a parsed flag must be advertised, and a line marked as history is a note (D-135/D-136/D-190); `review/exec_report.py` does the same for the five `--json` reports (D-154) and
   `review/tui_keys.py` for the TUI's keys (D-157); `review/requirement_trace.py` keeps the baseline's Q-rows
-  and `docs/ACCEPTANCE.md`'s rows in step (D-137), and requires every row of those two tables to have exactly three cells (D-198: a stray or a lost `|` had shifted three rows unnoticed). `review/markdown_tables.py`
+  and `docs/ACCEPTANCE.md`'s rows in step (D-137), requires every row of those two tables to have exactly three cells (D-198: a stray or a lost `|` had shifted three rows unnoticed), and holds a row's commit pin against the `--example` its command names (D-202: A32 pinned its measurement to a commit that preceded the probe change it reported). `review/markdown_tables.py`
   applies that shape rule to every markdown table the repository tracks (D-199: fenced examples are skipped, the separator row defines the column count, and six rows in four documents were split or merged by an unescaped `|`).
 * **the generated references**: `review/event_catalogue.py` (`docs/EVENTS.md` vs the emitted events, D-125),
   `review/protocol_catalogue.py` (`docs/PROTOCOL.md` vs the daemon's dispatchers and the row-field table,
@@ -69,7 +69,9 @@ audits — each one a claim the tree makes about itself, each with the decision 
   harness's own rules (its selection, budgets, the stray guard and the no-kill-by-pattern rule);
   `review/verification_catalogue.py` holds `verification/tla`'s configurations and modules against the
   `verify-model*` targets that drive them, and the report's counts — the configurations, the negative controls
-  and the quoted Kani harness count — against the lists and the proofs in the tree (D-185).
+  and the quoted Kani harness count — against the lists and the proofs in the tree (D-185), and its §0 re-run
+  heading's commit against the newest change to the material a re-run covers (D-202: the heading named a commit
+  that predated `MC_retention.cfg`).
 * **the shell, before any of that**: it rejects non-English characters (the two documented exceptions), tracked
   compile caches, Python caches and SQLite temporaries, and checks the syntax of `install.sh`.
 

@@ -17,6 +17,11 @@ probes or measurements that cover it — and this script is what keeps it comple
 * every row *is* a row of the table it belongs to: exactly three cells, so a stray `|` inside a cell (or a lost
   trailing one) cannot split it — the rendered table would gain a column and the reader would see the row shifted
   (D-198 found `A03`, `A14` and `A25` like that, one of them cut off mid-sentence).
+* a row that *pins* its measurement to a commit — `re-measured 2026-09-27 at `<commit>`` — must pin one whose
+  tree can contain the run: the commit has to exist and to be at or after the newest commit that changed the
+  artifact the row's own command names (`--example load_probe` → `engine/examples/load_probe.rs`). The pin is
+  provenance a reader checks the numbers against; A32 carried one from the commit *before* the change that made
+  the probe record its conditions, so the row described a run its own pin could not have produced (D-202).
 
 The same two rules hold for the acceptance matrix itself, which is the other half of the definition of done
 (§16: "A01–A36 have automated evidence"): every `A<n>` in the baseline's §12 matrix has exactly one row in
@@ -31,12 +36,14 @@ Both documents can be pointed at copies, which is how the control is run:
     python3 review/requirement_trace.py --baseline /tmp/copy.md --acceptance /tmp/copy.md
 
 Ceiling: this checks *coverage and shape*, not whether the cited evidence really covers the requirement — a row
-citing an unrelated A-item passes. The judgement stays with the human who writes the row, which is what the
-`--list` output is for.
+citing an unrelated A-item passes, and the pin rule only reads the artifact a row names with `--example`, so a
+row that pins a measurement of anything else (a test binary, an external run) is not seen. The judgement stays
+with the human who writes the row, which is what the `--list` output is for.
 """
 import argparse
 import pathlib
 import re
+import subprocess
 import sys
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
@@ -53,6 +60,44 @@ A_ITEM = re.compile(r"\bA\d\d\b")
 CELL = re.compile(r"(?<!\\)\|")
 D_ITEM = re.compile(r"\bD-\d+\b")
 PATH = re.compile(r"`([A-Za-z0-9_./-]+\.(?:md|py|rs|json|toml|sh|jsonl))`")
+EXAMPLE = re.compile(r"--example ([A-Za-z0-9_-]+)")
+PIN = re.compile(r"at `([0-9a-f]{7,40})`")
+ROW_ITEM = re.compile(r"^\| (A\d\d) \|")
+
+
+def git(*args: str) -> tuple[int, str]:
+    """`(exit code, stdout)` for a git command in this repository."""
+    done = subprocess.run(["git", *args], cwd=REPO, capture_output=True, text=True)
+    return done.returncode, done.stdout.strip()
+
+
+def stale_pins(section: str) -> list:
+    """Rows whose commit pin cannot contain the artifact the row's own command runs.
+
+    `--example NAME` names `engine/examples/NAME.rs`, so the newest commit touching that file must be an ancestor
+    of the pin: the numbers a row reports came from a tree that had the artifact as the pin's tree has it.
+    """
+    out = []
+    for line in section.split("\n"):
+        item = ROW_ITEM.match(line)
+        if not item:
+            continue
+        for name in EXAMPLE.findall(line):
+            path = f"engine/examples/{name}.rs"
+            code, newest = git("log", "-1", "--format=%H", "--", path)
+            if code != 0 or not newest:
+                out.append(f"{item.group(1)} runs `--example {name}`, but no commit touches {path}: its pin "
+                           "cannot be checked against the artifact it measured")
+                continue
+            for pin in PIN.findall(line):
+                if git("cat-file", "-e", f"{pin}^{{commit}}")[0] != 0:
+                    out.append(f"{item.group(1)} pins its measurement to `{pin}`, which is not a commit in this "
+                               "repository")
+                elif git("merge-base", "--is-ancestor", newest, pin)[0] != 0:
+                    out.append(f"{item.group(1)} pins its measurement to `{pin}`, but `{newest[:12]}` changed "
+                               f"{path} after it: the pinned tree cannot contain the run the row reports — "
+                               "re-measure, or pin the commit that did")
+    return out
 
 
 def section_of(text: str, heading: str) -> str:
@@ -131,6 +176,7 @@ def main() -> int:
         findings += table_shape(SECTION, section_of(acceptance, SECTION))
     if A_SECTION in acceptance:
         findings += table_shape(A_SECTION, section_of(acceptance, A_SECTION))
+        findings += stale_pins(section_of(acceptance, A_SECTION))
     wanted, rows = baseline_requirements(baseline), trace_rows(acceptance_path)
     if not wanted:
         findings.append("the baseline's §1 table lists no requirements — is the table still a table?")
