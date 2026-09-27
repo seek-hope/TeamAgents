@@ -7,11 +7,12 @@ in [README.md](README.md); the fix ledger is in
 
 ## 0. Gate status (re-run 2026-09-27 at `f23150ac`)
 
-* `make verify-model-all` was re-run on this tree: all **20** configurations report `No error has been found`,
-  in 5 m 13 s (the newest five are the retention rule, D-192, the task model's second task, D-218, the
+* `make verify-model-all` was re-run on this tree: all **21** configurations report `No error has been found`,
+  in 5 m 45 s (the newest five are the retention rule, D-192, the task model's second task, D-218, the
   approval window, D-225 — 14,225 states / 3,136 distinct — the config trust gate, D-244, which is
   exhaustive in 9 s (353,217 states generated / 25,376 distinct), and what a member's prompt carries, D-246,
-  exhaustive in 2 s (612 states / 210 distinct)). The largest is **`MC_task.cfg`** with 5,721,401 states generated / 606,904 distinct (its one-instance two-task sibling `MC_task_two.cfg` 612,802 / 56,074); `MC.cfg`
+  exhaustive in 2 s (612 states / 210 distinct); and the retry budget, D-247, exhaustive in 1 s (63 states /
+  24 distinct)). The largest is **`MC_task.cfg`** with 5,721,401 states generated / 606,904 distinct (its one-instance two-task sibling `MC_task_two.cfg` 612,802 / 56,074); `MC.cfg`
   itself generates 84,877 / 18,384, and the smallest, `MC_store.cfg`, 48 / 13; the job handshake's
   `MC_jobs.cfg` generates 207 / 64 the inbox's `MC_inbox.cfg` 793 / 211 the write-failure latch's
   `MC_diskfull.cfg` 63 / 22 and the coordinator lock's `MC_coordinator.cfg` 51 / 16. Every count that predates this
@@ -19,7 +20,7 @@ in [README.md](README.md); the fix ledger is in
   reason these numbers describe the *material*, not a machine. (The line once called `MC.cfg` the largest and
   quoted `MC_task`'s numbers for it — a mis-attribution no gate looked at, found by re-running the target and
   reading its output per configuration, D-159.)
-* `make verify-model-counterexamples` was re-run: all **56** negative controls are refuted, each naming its
+* `make verify-model-counterexamples` was re-run: all **59** negative controls are refuted, each naming its
   property (`AuthorizedEffectsOnly`, `InputLandsAtTheBoundary`, `NoRequestAfterDeadline`, `NoTurnWithoutWork`
   twice, `SettlementFollowsATurnAfterTheLanding`, `NoForeignAdoption`, three temporal refutations, the
   four retention guards: `NoReferenceToEvictedFact`, `EvidenceIsNeverEvicted` and `OnlyOldFactsAreEvicted`
@@ -31,7 +32,8 @@ in [README.md](README.md); the fix ledger is in
   `TerminalOperationHasNoPendingApproval` and `ParkedHasAnApprovalRow`, and the five D-244 added:
   `NothingFromTheProjectUntrusted`, `UserDefinitionsNeverOverridden`, `PolicyClassesStayTheUsers`,
   `TrustOnlyFromTheUser` and `RefusalsAreNamed`, and the three D-246 added: `EverybodyHasTheRules`,
-  `PromptsFollowTheCurrentRules` and `UnreadableRulesAreNoted`), in 4 m 21 s.
+  `PromptsFollowTheCurrentRules` and `UnreadableRulesAreNoted`, and the three D-247 added:
+  `ResolvedIsTheInstancesOwn`, `NoAttemptBeyondTheBudget` and `ParkOnlyAfterTheBudget`), in 4 m 13 s.
 * The wall clocks above are upper bounds, not machine-independent figures: they were measured while this
   machine carried a load average of about 140 on 20 cores (the standing host-cleanup item), and TLC is
   CPU-bound. The probe in A32 now records the same conditions next to its numbers for the same reason (D-188).
@@ -115,7 +117,7 @@ in [README.md](README.md); the fix ledger is in
 
 **What can be claimed**:
 
-- The safety properties of eighteen surfaces (control plane, artifacts/GC, waits/wakeups,
+- The safety properties of twenty surfaces (control plane, artifacts/GC, waits/wakeups,
   tasks/delegation/goal settlement, compression, the daemon protocol, the required checks, the authority
   layer, the user's authority surface, session-store identity, and — added 2026-09-27, D-225 — the approval
   window, and — added 2026-09-27, D-192 — the
@@ -125,8 +127,10 @@ in [README.md](README.md); the fix ledger is in
   identity check, the write-failure latch with its park — added 2026-09-27, D-208 — and, added 2026-09-27,
   D-210, the coordinator lock with its fork window, and, added 2026-09-27, D-244, the repository-local
   config's trust gate: what a cloned repository may contribute, never silently dropped and never able to
-  grant itself the opt-in, and, added 2026-09-27, D-246, what a member's prompt carries: the session's
-  instruction files reach the leader and every child, composed per turn)
+  grant itself the opt-in, added 2026-09-27, D-246, what a member's prompt carries: the session's instruction
+  files reach the leader and every child, composed per turn, and, added 2026-09-27, D-247, the retry budget of one
+  request: at most `budget + 1` attempts, a budget of 0 meaning one attempt, each instance's budget from its own
+  profile)
   hold under exhaustive TLC checking of the **abstract model**; liveness holds only under the explicitly
   stated weak fairness assumptions.
 - The same invariants are recomputed against the **real `core::v2::Control`** by the executable
@@ -174,6 +178,7 @@ in [README.md](README.md); the fix ledger is in
 | Protocol model | `tla/V2Checks.tla` (8, one counterfactual constant since D-219) | 469 states | as above; the control via `make verify-model-counterexamples` |
 | Protocol model | `tla/V2Trust.tla` (6 claims, five counterfactual constants since D-244) | 353,217 states generated / 25,376 distinct (9 s) | as above; the five controls via `make verify-model-counterexamples` |
 | Protocol model | `tla/V2Prompt.tla` (3 claims, three counterfactual constants since D-246) | 612 states generated / 210 distinct (2 s) | as above; the three controls via `make verify-model-counterexamples` |
+| Protocol model | `tla/V2Retry.tla` (4 claims, three counterfactual constants since D-247) | 63 states generated / 24 distinct (1 s) | as above; the three controls via `make verify-model-counterexamples` |
 | Protocol model | `tla/V2Authority.tla` (11 invariants + 5 properties, three negative controls) | 270,288 states generated / 35,950 distinct | as above; controls via `make verify-model-counterexamples` |
 | Protocol model | `tla/V2Store.tla` (6 invariants + 3 properties, one negative control) | 48 states generated / 13 distinct | as above; control via `make verify-model-counterexamples` |
 | Protocol model (wide) | `MC_wide.cfg` (2 instances / 2 operations) | 275,004,673 states / 11 min 25 s (historical run of `d37e1b4`, before the 2026-09-25 history rewrite). The spec has changed since (D-63/D-64/D-65/D-71 add instance fields, the deadline flag and the committed-tail rule), so that number is history: re-runs in this round reached about 170M / 250M states, and the D-71 re-run reached **36.5M states generated / 7.6M distinct / 29 min, 4.6M still queued, no violation** before it was stopped under the turn's time bound. The wide configuration stays the slow, best-effort target; the small two-instance configurations carry the per-instance checks in `make verify-model-all` | `make verify-model-wide` |
@@ -385,7 +390,7 @@ The "formal layer" column lists only what the model, the code-level corresponden
 | A16 | a required check fails | all 8 `V2Checks` properties (including "only self-reported successes are verified") | the execution details of `execute_check_ops` |
 | A17 | artifacts change after a check | the stale cases in `V2Checks` and `BlockedAfterTheBudgetOrStale` | real file-hash re-verification |
 | A18 | multi-instance usage budget | `V2Control` (reservation ceiling, admission gate, release) plus `V2Task` (the `budget_goal` resolution rules) | real provider billing |
-| A19 | truncated stream and connection loss | `V2Control`: `SelectionIsComplete`; code-level "a selected attempt is complete" | provider retry details |
+| A19 | truncated stream and connection loss | `V2Control`: `SelectionIsComplete`; code-level "a selected attempt is complete"; `V2Retry`: the budget half — at most `budget + 1` attempts, 0 meaning one attempt, the park at exhaustion, and each instance's budget from its own profile (D-247) | which failures are *transient*, the backoff between attempts, and the adapters' wire behaviour |
 | A20 | restart after compaction | all 8 `V2Compress` properties plus 5 code-level groups (monotone coverage, originals never lost, tail append) | — |
 | A21 | the user adjusts an instance directly | — | sample tests for the single-writer context, plus the live TUI runs (`review/dogfood/tui.py` for the composer path, `cancel.py`/`job_identity.py` for a direct input to a member, `approval.py` for the approvals box) |
 | A22 | wait cycles and timers | `V2Wait` (including "a parked PENDING is eventually closed or superseded") | the graph algorithm of cycle detection itself |
