@@ -492,8 +492,10 @@ mod tests {
         let error = parse_user_config("[models.m]\nprovider = \"openai\"\nmodel = \"x\"\nmax_retries = -1\n")
             .expect_err("a negative budget is refused");
         assert!(error.contains("models.m.max_retries = -1") && error.contains("0 or more"), "{error}");
-        assert!(parse_user_config("[models.m]\nprovider = \"openai\"\nmodel = \"x\"\nmax_retries = 0\n").is_ok(),
-                "0 means one attempt, which is a valid budget");
+        assert!(
+            parse_user_config("[models.m]\nprovider = \"openai\"\nmodel = \"x\"\nmax_retries = 0\n").is_ok(),
+            "0 means one attempt, which is a valid budget"
+        );
     }
 
     #[test]
