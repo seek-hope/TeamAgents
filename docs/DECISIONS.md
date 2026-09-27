@@ -18,6 +18,37 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-208 The write-failure latch had no model (2026-09-27)
+
+§4.4's answer to a failing disk is a latch, and A31 states it as three rules — new side-effect dispatch stops,
+uncertainty is preserved, success is never faked — which the tests exercised with a **real** `SQLITE_FULL` through
+the storage worker (`control::disk_full_is_classified_at_the_submit_boundary`,
+`v2_driver::disk_full_stops_dispatch_reports_and_resumes_after_parking`) but no model did. `V2DiskFull.tla` is the
+fourteenth module: the latch a failed submit sets, one in-flight effect and its outcome, the park retried at poll
+pace, and the four rules — `NoStepRunsWhileLatched` (the failed step is never retried, new side effects stay
+stopped), `NoFakedSuccess`, `LossIsReported` (a parked instance whose in-flight outcome was lost says so) and
+`LatchClearsOnlyWhenWritable` (the clear *is* the park landing, and a park cannot land without a write) — plus
+`ParkEventuallyLands` for the resume. Its four negative controls each forget one rule and must be refuted.
+
+**Measured**: 15 configurations report `No error has been found` in 3 m 52 s, the 27 negative controls are refuted
+in 1 m 53 s, `MC_diskfull.cfg` itself is 63 states / 22 distinct, and no run printed a `Warning:` (D-206's rule).
+
+**Two things the model taught about stating a liveness claim honestly**, both worth keeping:
+
+* **weak fairness was not enough.** The environment can make the store writable only intermittently, so a
+  poll-pace retry needs *strong* fairness — the same reason `V2Control` uses `SF_vars(ApplyQueued(i))`. With
+  `WF` the property was violated by an environment that fills the disk again and again, which is a real shape.
+* **and the property still failed under `SF`, with a counterexample that was right**: a *single* writable moment
+  is not a promise, because the disk can refill before the next poll. The honest property is
+  `[](latched /\ []<>(store = "ok") => <>(~latched))` — the retry is live *while writability recurs*. The first
+  version ("if the store is writable and the latch is set, the latch clears") claimed something the design does
+  not, and the ceiling paragraph of `V2DiskFull` now says so.
+
+Ceiling: one instance and one in-flight effect; no *cost* side (an artifact write failing latches through the same
+signature, so "a write" is one thing here); no storage-worker queueing; no operation-ledger states after a lost
+outcome (that story is `V2Control`'s crash/recovery and unknown-usage one); and no model of the tool that produced
+the effect.
+
 ## D-207 The inbox had no model, and §5.3's rules were test-only (2026-09-27)
 
 §5.3 states rules with teeth — a message is reported accepted only once it is persisted; a recipient applies a

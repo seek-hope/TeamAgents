@@ -123,10 +123,10 @@ verify-model: verify-tools
 
 # small exhaustive configurations for every module (seconds; the wide config is verify-model-wide)
 verify-model-all: verify-tools
-	@cd verification/tla && for cfg in MC.cfg MC_control_two.cfg MC_artifact.cfg MC_wait.cfg MC_task.cfg MC_compress.cfg MC_daemon.cfg MC_checks.cfg MC_grants.cfg MC_authority.cfg MC_store.cfg MC_retention.cfg MC_jobs.cfg MC_inbox.cfg; do \
+	@cd verification/tla && for cfg in MC.cfg MC_control_two.cfg MC_artifact.cfg MC_wait.cfg MC_task.cfg MC_compress.cfg MC_daemon.cfg MC_checks.cfg MC_grants.cfg MC_authority.cfg MC_store.cfg MC_retention.cfg MC_jobs.cfg MC_inbox.cfg MC_diskfull.cfg; do \
 		echo "== $$cfg =="; \
 		out=$$(java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
-			tlc2.TLC -config $$cfg -fp 64 -workers 4 $$(case $$cfg in MC.cfg|MC_control_two.cfg) echo V2Control.tla;; MC_wait.cfg) echo V2Wait.tla;; MC_task.cfg) echo V2Task.tla;; MC_compress.cfg) echo V2Compress.tla;; MC_daemon.cfg) echo V2Daemon.tla;; MC_checks.cfg) echo V2Checks.tla;; MC_grants.cfg) echo V2Grants.tla;; MC_authority.cfg) echo V2Authority.tla;; MC_store.cfg) echo V2Store.tla;; MC_retention.cfg) echo V2Retention.tla;; MC_jobs.cfg) echo V2Jobs.tla;; MC_inbox.cfg) echo V2Inbox.tla;; *) echo V2Artifact.tla;; esac) 2>&1); \
+			tlc2.TLC -config $$cfg -fp 64 -workers 4 $$(case $$cfg in MC.cfg|MC_control_two.cfg) echo V2Control.tla;; MC_wait.cfg) echo V2Wait.tla;; MC_task.cfg) echo V2Task.tla;; MC_compress.cfg) echo V2Compress.tla;; MC_daemon.cfg) echo V2Daemon.tla;; MC_checks.cfg) echo V2Checks.tla;; MC_grants.cfg) echo V2Grants.tla;; MC_authority.cfg) echo V2Authority.tla;; MC_store.cfg) echo V2Store.tla;; MC_retention.cfg) echo V2Retention.tla;; MC_jobs.cfg) echo V2Jobs.tla;; MC_inbox.cfg) echo V2Inbox.tla;; MC_diskfull.cfg) echo V2DiskFull.tla;; *) echo V2Artifact.tla;; esac) 2>&1); \
 		echo "$$out" | grep -E "No error|violation|violated|states generated"; \
 		printf '%s' "$$out" | grep -q "No error has been found" || { \
 			echo "$$cfg did not verify (see above)" >&2; exit 1; }; \
@@ -150,7 +150,9 @@ verify-model-counterexamples: verify-tools
 		MC_jobs_late_go.cfg:V2Jobs.tla MC_jobs_spawn_first.cfg:V2Jobs.tla \
 		MC_inbox_no_dedup.cfg:V2Inbox.tla MC_inbox_drop_when_full.cfg:V2Inbox.tla \
 		MC_inbox_unbounded.cfg:V2Inbox.tla MC_inbox_stale_applied.cfg:V2Inbox.tla \
-		MC_inbox_foreign_drain.cfg:V2Inbox.tla; do \
+		MC_inbox_foreign_drain.cfg:V2Inbox.tla \
+		MC_diskfull_keep_driving.cfg:V2DiskFull.tla MC_diskfull_fake_success.cfg:V2DiskFull.tla \
+		MC_diskfull_park_silently.cfg:V2DiskFull.tla MC_diskfull_clear_anyway.cfg:V2DiskFull.tla; do \
 		cfg=$${pair%%:*}; spec=$${pair##*:}; \
 		echo "== $$cfg (must be refuted) =="; \
 		out=$$(java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
