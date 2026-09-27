@@ -328,6 +328,34 @@ fn an_uncreatable_state_root_names_the_flag_from_every_entry_point() {
     assert!(text.contains("point --state-root/XDG_STATE_HOME"), "the fix is named: {text}");
 }
 
+/// D-243: the client creates `<state root>/daemon.log` so a detached daemon has somewhere to complain, and a
+/// `daemon.log` that exists but cannot be appended to answered the OS: measured 2026-09-27 with a mode-`000`
+/// file, `exec` printed `cannot open …/daemon.log: Permission denied (os error 13)` — naming neither the
+/// file's role nor a lever, while a run that once went through `sudo` leaves exactly that file behind.
+#[test]
+fn an_unopenable_daemon_log_names_the_file_and_the_lever() {
+    let home = Scratch::new("logfile");
+    let root = home.join("root");
+    std::fs::create_dir_all(&root).unwrap();
+    let log = root.join("daemon.log");
+    std::fs::write(&log, "").unwrap();
+    let mut perms = std::fs::metadata(&log).unwrap().permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o000);
+    std::fs::set_permissions(&log, perms).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_teamagents"))
+        .args(["exec", "--state-root"])
+        .arg(&root)
+        .arg("hi")
+        .env("XDG_STATE_HOME", home.join("state"))
+        .env("XDG_CONFIG_HOME", home.join("config"))
+        .output()
+        .expect("run cli");
+    let text = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_ne!(output.status.code(), Some(0), "the client must not start a daemon it cannot log: {text}");
+    assert!(text.contains(&log.display().to_string()), "the log file is named: {text}");
+    assert!(text.contains("point --state-root") || text.contains("make it writable"), "the fix is named: {text}");
+}
+
 /// D-242: the *config* directory that cannot be created names the variable to fix, the way the state root does
 /// (D-241). `init` is its only creator and it answered the OS: measured 2026-09-27 with `XDG_CONFIG_HOME` under
 /// a symlink loop, `init failed: cannot create …/teamagents: Too many levels of symbolic links (os error 40)` —

@@ -258,7 +258,7 @@ fn with_path_lock<T>(
 
 fn acquire_path_lock(lock_dir: Option<&Path>, target: &Path) -> Result<Option<std::fs::File>, String> {
     let Some(lock_dir) = lock_dir else { return Ok(None) };
-    std::fs::create_dir_all(lock_dir).map_err(|e| format!("cannot create lock directory: {e}"))?;
+    std::fs::create_dir_all(lock_dir).map_err(|e| crate::cli::derived_dir_uncreatable(lock_dir, &e))?;
     let file = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -1511,13 +1511,14 @@ struct OutputSink {
 impl OutputSink {
     fn new(location: OutputLocation<'_>) -> Result<Self, String> {
         let (artifact, reference) = if let Some(dir) = location.root {
-            std::fs::create_dir_all(dir).map_err(|e| format!("cannot create output artifact directory: {e}"))?;
+            std::fs::create_dir_all(dir).map_err(|e| crate::cli::derived_dir_uncreatable(dir, &e))?;
             let name = format!("exec-{}.log", uuid::Uuid::new_v4());
+            let path = dir.join(&name);
             let file = std::fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
-                .open(dir.join(&name))
-                .map_err(|e| format!("cannot create output artifact: {e}"))?;
+                .open(&path)
+                .map_err(|e| format!("the output artifact {} cannot be created: {e}", path.display()))?;
             prune_artifacts(dir, ARTIFACT_DIR_BYTES);
             (Some(file), Some(format!("{}{name}", location.prefix)))
         } else {
@@ -1766,8 +1767,7 @@ pub(crate) fn shell_command_spec(
     let host_state = shell_state.filter(|_| mode == ShellMode::Host).map(|state| state.join("host"));
     let shell_state = host_state.as_deref().or(shell_state);
     if let Some(state) = shell_state {
-        std::fs::create_dir_all(state)
-            .map_err(|e| SpecError::setup(format!("cannot create shell state directory: {e}")))?;
+        std::fs::create_dir_all(state).map_err(|e| SpecError::setup(crate::cli::derived_dir_uncreatable(state, &e)))?;
     }
     let state_dir = match (mode, shell_state) {
         (ShellMode::Host, Some(state)) => state.to_string_lossy().into_owned(),
@@ -2705,10 +2705,26 @@ mod tests {
         assert!(first.finish(false).unwrap_err().contains("output artifact write failed"));
         let not_a_dir = dir.join("file");
         std::fs::write(&not_a_dir, "x").unwrap();
-        assert!(OutputSink::new(OutputLocation { root: Some(&not_a_dir), prefix: ARTIFACTS_PREFIX })
-            .err()
-            .unwrap()
-            .contains("artifact directory"));
+        let error = OutputSink::new(OutputLocation { root: Some(&not_a_dir), prefix: ARTIFACTS_PREFIX }).err().unwrap();
+        // D-243: the failure names the path and the lever; it used to say only "cannot create output artifact
+        // directory: File exists (os error 17)", which leaves several candidate directories and nothing to act on
+        assert!(error.contains(&not_a_dir.display().to_string()), "{error}");
+        assert!(error.contains("under its state root") && error.contains("--state-root"), "{error}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// D-243: the lock directory the file tools write through is a path the user never typed (`<state
+    /// root>/locks`), so a failure there has to name it; it used to answer `cannot create lock directory: …`
+    /// with no path at all.
+    #[test]
+    fn a_lock_directory_that_cannot_be_created_names_the_path() {
+        let dir = std::env::temp_dir().join(format!("ta-lockfail-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let blocked = dir.join("locks");
+        std::fs::write(&blocked, "not a directory").unwrap();
+        let error = with_path_lock(Some(&blocked), &dir.join("target.txt"), || Ok(())).err().unwrap();
+        assert!(error.contains(&blocked.display().to_string()), "{error}");
+        assert!(error.contains("under its state root") && error.contains("--state-root"), "{error}");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

@@ -513,8 +513,10 @@ pub(crate) fn spawn_driver<P: Provider + 'static>(
     mut config: DriverConfig<P>,
     storage: &Storage,
 ) -> Result<SpawnedDriver, String> {
-    std::fs::create_dir_all(config.state_root.join("jobs")).map_err(|e| format!("jobs dir: {e}"))?;
-    std::fs::create_dir_all(config.state_root.join("artifacts")).map_err(|e| format!("artifacts dir: {e}"))?;
+    let jobs = config.state_root.join("jobs");
+    std::fs::create_dir_all(&jobs).map_err(|e| crate::cli::derived_dir_uncreatable(&jobs, &e))?;
+    let artifacts = config.state_root.join("artifacts");
+    std::fs::create_dir_all(&artifacts).map_err(|e| crate::cli::derived_dir_uncreatable(&artifacts, &e))?;
     // one coordinator per state root: the supervisor hands its own (possibly
     // relative) root down, and isolated shell binds need an absolute path
     config.state_root = std::fs::canonicalize(&config.state_root)

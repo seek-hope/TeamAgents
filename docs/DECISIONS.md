@@ -18,6 +18,42 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-243 The session's own directories and the daemon's log named neither the path nor a lever (2026-09-27)
+
+D-241 and D-242 fixed the *state root* and the *config directory*. One step in, the paths the session derives
+under its state root, and the client's log redirect, had the same defect. Measured 2026-09-27:
+
+* `exec` with an existing mode-`000` `daemon.log` answered `cannot open …/daemon.log: Permission denied (os
+  error 13)` — the file's role and the lever both implied. A run that once went through `sudo` leaves exactly
+  that file behind, root-owned.
+* The directories the session derives — `<state root>/artifacts`, its `locks`, `<state root>/jobs`, the
+  isolated shell's `<state root>/shell` — answered with messages that named **no path at all**: `cannot create
+  output artifact directory: {e}`, `cannot create lock directory: {e}`, `jobs dir: {e}`, `artifacts dir: {e}`,
+  `cannot create shell state directory: {e}`. The two ways in are a stray *file* where a directory belongs
+  (`File exists (os error 17)`, measured) and a full filesystem (`No space left on device (os error 28)`), and
+  with several candidate directories under the root and no path printed, neither names anything to act on.
+
+**Fixed**: two more wordings in `engine/src/cli.rs`'s path family — `daemon_log_unopenable(path, error)` ("the
+daemon's log {} cannot be opened: {error} — the client writes the daemon's output there, so make it writable or
+remove it, or start the client with --state-root (or XDG_STATE_HOME) on another directory"), used by `main.rs`'s
+detach, and `derived_dir_uncreatable(path, error)` ("{} cannot be created: {error} — it is a directory the
+session needs under its state root; free space there, or start the session with --state-root (or
+XDG_STATE_HOME) on another directory"), used by `tools.rs`'s lock directory, artifact directory and isolated
+shell state and by `driver.rs`'s `jobs`/`artifacts` creates; the artifact *file*'s own message names the file it
+could not create.
+
+**Controls**: `cli::an_unopenable_daemon_log_names_the_file_and_the_lever` (a mode-`000` log must be named
+*with* the lever — the pre-fix message named the file but no lever);
+`tools::tests::a_lock_directory_that_cannot_be_created_names_the_path` (a file where the lock directory goes);
+and the existing `output_capture_…storage_errors` test now requires the artifact-directory failure to name its
+path and the lever, neither of which the pre-fix wording carried.
+
+Ceiling: the wordings name a path and a lever, not the cause, so a full filesystem and a stray file answer with
+the same sentence plus the OS's own words; they are separate from `state_root_uncreatable` (D-241) because the
+*subject* differs — a derived directory, not the root the user typed — so a caller holding the state root itself
+should keep using the more specific one; and the isolated shell's failure travels through `SpecError::setup`, so
+the model sees in its receipt the same sentence the user sees in the log.
+
 ## D-242 The config directory answered the OS too (2026-09-27)
 
 D-241's sibling, one fact over. `init` also creates the **config** directory, and it answered the OS there:

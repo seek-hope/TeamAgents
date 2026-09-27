@@ -826,7 +826,7 @@ fn ensure_daemon(request: DaemonRequest<'_>) -> Result<(PathBuf, bool), String> 
         .create(true)
         .append(true)
         .open(&log_path)
-        .map_err(|e| format!("cannot open {}: {e}", log_path.display()))?;
+        .map_err(|e| cli::daemon_log_unopenable(&log_path, &e))?;
     let log_start = log.metadata().map(|meta| meta.len()).unwrap_or(0);
     command.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(log);
     let mut child = command.spawn().map_err(|e| format!("cannot start the daemon: {e}"))?;

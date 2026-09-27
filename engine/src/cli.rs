@@ -762,6 +762,35 @@ pub fn state_root_uncreatable(path: &Path, error: &std::io::Error) -> String {
     )
 }
 
+/// The one wording for the log file the client redirects the daemon into (D-243).
+///
+/// The client creates `<state root>/daemon.log` so a *detached* daemon has somewhere to complain, and it
+/// answered the OS when the file was there but not writable: measured 2026-09-27 with a mode-`000` file,
+/// `exec` printed `cannot open …/daemon.log: Permission denied (os error 13)` — no lever, and the fix (that
+/// file) only implied. A run that once went through `sudo` leaves exactly that file behind, root-owned.
+pub fn daemon_log_unopenable(path: &Path, error: &std::io::Error) -> String {
+    format!(
+        "the daemon's log {} cannot be opened: {error} — the client writes the daemon's output there, so make it \
+         writable or remove it, or start the client with --state-root (or XDG_STATE_HOME) on another directory",
+        path.display()
+    )
+}
+
+/// The one wording for a directory the session needs *under* its state root that cannot be created (D-243).
+///
+/// Unlike the state root itself (D-241), the user never typed these paths — `<state root>/artifacts`, its
+/// `locks`, an isolated shell's `shell` — and their failures named neither the path nor the lever: measured
+/// 2026-09-27 with a *file* where the artifact directory goes, the tool answered `cannot create output
+/// artifact directory: File exists (os error 17)`, which leaves several candidate directories and nothing to
+/// act on (`No space left on device` is the other way in).
+pub fn derived_dir_uncreatable(path: &Path, error: &std::io::Error) -> String {
+    format!(
+        "{} cannot be created: {error} — it is a directory the session needs under its state root; free space \
+         there, or start the session with --state-root (or XDG_STATE_HOME) on another directory",
+        path.display()
+    )
+}
+
 /// The one wording for a `--state-root` that cannot be a state root. The callers that refuse it and the one
 /// that *reports* it (`doctor`) share this, so a row and a refusal cannot drift apart.
 fn state_root_not_a_dir(path: &Path) -> String {
