@@ -18,6 +18,51 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-225 The approval window had no model (2026-09-27)
+
+`verification/README.md` named two rules as "not modelled": the `expires_at` check of an approval and the
+execution details of `execute_check_ops`. Both are stated in the design (`§6.1`'s pre-execution protocol and
+`§9`'s interface), both are implemented, and both were covered only by the code-level invariants — the
+acceptance row A25 says the gate works, and nothing exhausted it. This entry models the first; the second stays
+on the list.
+
+**`verification/tla/V2Approval.tla`** (one approval per operation — the code looks exactly one up by
+`operation_id`; the args hash and grant revision stay V2Grants' business; "now" is the clock): an operation
+*parks* behind a PENDING approval instead of dispatching, the user's decision flips it and carries the window
+(`change_approval` updates `expires_at`), the clock moves, the effect lands only inside the window, and a
+closing operation expires its pending approval (`expire_pending_approvals`, in the closing transaction).
+Measured 2026-09-27: **`MC_approval.cfg` verifies — 14,225 states generated / 3,136 distinct in 2 s**, no TLC
+warning.
+
+Its claims, and the control that refutes each (measured, each naming exactly the claim its header says):
+
+| Claim | Control |
+|---|---|
+| `NoLateEffect` — an effect never lands with the horizon reached | `MC_approval_drops_the_expiry.cfg` (dispatch ignores the horizon) |
+| `ApprovalDecisionIsFinal` — APPROVED/DENIED/EXPIRED are never rewritten | `MC_approval_rewrites_a_decision.cfg` (a decision is rewritten) |
+| `EffectImpliesApproved` — no effect without a granted approval | the same rewrites control also breaks it, measured: with only that invariant listed, TLC reports it violated |
+| `TerminalOperationHasNoPendingApproval` — a closed operation leaves no pending approval | `MC_approval_keeps_pending_on_close.cfg` (the cascade dropped) |
+| `ParkedHasAnApprovalRow` — a parked operation waits behind a row, not on nothing | `MC_approval_parks_without_a_row.cfg` (parking creates no row) |
+
+**The model found the entry's own first claim wrong**, which is worth recording: it started as
+`ParkedWaitsForADecision == PARKED ⇒ approval ∈ {PENDING, APPROVED}`, and `MC_approval.cfg` refuted it — a
+*denial* leaves the operation parked with a decided row (`change_approval(deny)` closes the decision, not the
+operation), so the honest claim is "a parked operation holds an approval row" (`ParkedHasAnApprovalRow`), which
+is also the state the user reads as `decision_open`. The claim was rewritten, the fourth control added to refute
+it, and only then did the configuration verify — the order the other modules' entries describe from the other
+side.
+
+**Registered**: `make verify-model-all` is 18 configurations and `make verify-model-counterexamples` 48 controls
+(both re-run); `verification/README.md` gains the mapping row, loses the "not modelled" clause for this rule and
+says so in its upgrades list; `docs/DEVELOPMENT.md` now says sixteen modules; and the audit's own docstring
+counts move with them (D-224's rule for the audit that states its own counts).
+
+Ceiling: the model abstracts the args hash and the grant revision (V2Grants holds the dispatch re-check) and
+treats "now" as a bounded clock, so it proves the *window* rule and not the whole gate; `expires_at IS NULL` is
+one sentinel, so an approval that never expires is modelled as one that always may; the status becomes EXPIRED
+only through the closing cascade, because that is the only place the code writes it; and the second half of the
+README's "not modelled" bullet — `execute_check_ops`' dispatch, timeout and reconnect — is still unmodelled.
+
 ## D-224 Two more numbers the documents state that nothing held (2026-09-27)
 
 D-221 held the documents that restate the per-crate test counts to the acceptance ledger, and D-223 did the same

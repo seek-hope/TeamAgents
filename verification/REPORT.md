@@ -7,8 +7,9 @@ in [README.md](README.md); the fix ledger is in
 
 ## 0. Gate status (re-run 2026-09-27 at `a0c0eca2`)
 
-* `make verify-model-all` was re-run on this tree: all **17** configurations report `No error has been found`,
-  in 4 m 17 s (the newest two are the retention rule, D-192, and the task model's second task, D-218). The largest is **`MC_task.cfg`** with 5,721,401 states generated / 606,904 distinct (its one-instance two-task sibling `MC_task_two.cfg` 612,802 / 56,074); `MC.cfg`
+* `make verify-model-all` was re-run on this tree: all **18** configurations report `No error has been found`,
+  in 4 m 15 s (the newest three are the retention rule, D-192, the task model's second task, D-218, and the
+  approval window, D-225 — 14,225 states / 3,136 distinct). The largest is **`MC_task.cfg`** with 5,721,401 states generated / 606,904 distinct (its one-instance two-task sibling `MC_task_two.cfg` 612,802 / 56,074); `MC.cfg`
   itself generates 84,877 / 18,384, and the smallest, `MC_store.cfg`, 48 / 13; the job handshake's
   `MC_jobs.cfg` generates 207 / 64 the inbox's `MC_inbox.cfg` 793 / 211 the write-failure latch's
   `MC_diskfull.cfg` 63 / 22 and the coordinator lock's `MC_coordinator.cfg` 51 / 16. Every count that predates this
@@ -16,15 +17,16 @@ in [README.md](README.md); the fix ledger is in
   reason these numbers describe the *material*, not a machine. (The line once called `MC.cfg` the largest and
   quoted `MC_task`'s numbers for it — a mis-attribution no gate looked at, found by re-running the target and
   reading its output per configuration, D-159.)
-* `make verify-model-counterexamples` was re-run: all **44** negative controls are refuted, each naming its
+* `make verify-model-counterexamples` was re-run: all **48** negative controls are refuted, each naming its
   property (`AuthorizedEffectsOnly`, `InputLandsAtTheBoundary`, `NoRequestAfterDeadline`, `NoTurnWithoutWork`
   twice, `SettlementFollowsATurnAfterTheLanding`, `NoForeignAdoption`, three temporal refutations, the
   four retention guards: `NoReferenceToEvictedFact`, `EvidenceIsNeverEvicted` and `OnlyOldFactsAreEvicted`
   twice, the four task controls D-218 added: `RegisteredWorkNeedsAnActiveGoal`, `RequestsResolveToActiveGoals`,
   `DependenciesPointBackwards` and `NoOpenTaskOnDeadAssignee`, the seven D-219 added: `NoEntryIsEverLost`,
   `CoverageNeverLifted`, `RequestClosesOnce`, `ReceiptsAreStable`, `LogMonotone`, `NoResyncInThisVersion` and
-  `RoundsAreMonotone`, and the three D-220 added: `GcClaimsOnlyUnreferencedLive`, `ResolvedWaitIsAnswered` and
-  `OfferedToolsAreAuthorized`), in 2 m 41 s.
+  `RoundsAreMonotone`, the three D-220 added: `GcClaimsOnlyUnreferencedLive`, `ResolvedWaitIsAnswered` and
+  `OfferedToolsAreAuthorized`, and the four D-225 added: `NoLateEffect`, `ApprovalDecisionIsFinal`,
+  `TerminalOperationHasNoPendingApproval` and `ParkedHasAnApprovalRow`), in 2 m 48 s.
 * The wall clocks above are upper bounds, not machine-independent figures: they were measured while this
   machine carried a load average of about 140 on 20 cores (the standing host-cleanup item), and TLC is
   CPU-bound. The probe in A32 now records the same conditions next to its numbers for the same reason (D-188).
@@ -156,6 +158,7 @@ in [README.md](README.md); the fix ledger is in
 | Protocol model | `tla/V2Control.tla` (16 invariants + 6 properties, incl. the deadline gate, the committed-tail rule and the landing-attribution rule) | 84,877 states | `make verify-model` |
 | Protocol model | `tla/V2Artifact.tla` (4 + 4, one counterfactual constant since D-220) | 241 states | `make verify-model-all`; the control via `make verify-model-counterexamples` |
 | Protocol model | `tla/V2Wait.tla` (8 + 1 liveness, one counterfactual constant since D-220) | 505,905 states | as above; the control via `make verify-model-counterexamples` |
+| Protocol model | `tla/V2Approval.tla` (6 claims, four counterfactual constants since D-225) | 14,225 states / 3,136 distinct | `make verify-model-all`; the four controls via `make verify-model-counterexamples` |
 | Protocol model | `tla/V2Task.tla` (11, four counterfactual constants since D-218) | `MC_task.cfg` 5,721,401 states; `MC_task_two.cfg` 612,802 states / 56,074 distinct | as above; the four controls via `make verify-model-counterexamples` |
 | Protocol model | `tla/V2Compress.tla` (8, three counterfactual constants since D-219) | 8,467 states | as above; the three controls via `make verify-model-counterexamples` |
 | Protocol model | `tla/V2Daemon.tla` (10, three counterfactual constants since D-219) | 51,713 states | as above; the three controls via `make verify-model-counterexamples` |
@@ -377,7 +380,7 @@ The "formal layer" column lists only what the model, the code-level corresponden
 | A22 | wait cycles and timers | `V2Wait` (including "a parked PENDING is eventually closed or superseded") | the graph algorithm of cycle detection itself |
 | A23 | a result arrives before the wait is registered | `V2Wait` evaluation at registration plus code-level `ResolvedWaitIsAnswered` | — |
 | A24 | a late result after a reset | `V2Control::NoReceiptAcrossEpochs` | — |
-| A25 | MCP approval / cancellation / unknown outcome | model `NoEffectBeforeApproval`; code-level approval finality, pending approvals only on PREPARED operations, no effect after a denial | MCP transport and tool surface |
+| A25 | MCP approval / cancellation / unknown outcome | model `NoEffectBeforeApproval`; `V2Approval` (D-225): the `expires_at` window, a final decision, no pending approval after the operation closes; code-level approval finality, pending approvals only on PREPARED operations, no effect after a denial | MCP transport and tool surface |
 | A26 | Skills permissions | — | real symlink/registration-root evidence |
 | A27 | heterogeneous providers cooperating | — | real two-sided message evidence |
 | A28 | disconnect, slow client, reconnect | all 10 `V2Daemon` properties plus code-level receipt stability, replay inertia and append-only logs | the real socket layer (covered by the daemon tests) |
@@ -443,7 +446,7 @@ alone**, and conversely formal coverage does not excuse an item from sample or r
 ```bash
 make verify-model-all     # exhaustive configurations for the fifteen surfaces (seconds to ~2 min;
                           # the task, grants and authority models are the slow ones)
-make verify-model-counterexamples  # the forty-four negative controls, each must be refuted
+make verify-model-counterexamples  # the forty-eight negative controls, each must be refuted
 make verify-model-wide    # wide control-plane configuration (best effort: 275M states / 11 m in the historical
                           # run; a one-hour bounded attempt on 2026-09-27 did not reach a verdict)
 make check                # fmt + clippy -D warnings + 23 suites (including the two code-level layers)
