@@ -7,7 +7,7 @@ model probe sets and the three formal gates).
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 106 / engine 270 / tui 35 test targets) and `make pty` passes; both are
+`make check` is green (core 107 / engine 271 / tui 35 test targets) and `make pty` passes; both are
 preconditions for every item below. `make check` includes `make language-check`, which fails on non-English
 characters outside the two documented exceptions (`README.zh-CN.md` and the frozen material under
 `review/eval`).
@@ -33,7 +33,7 @@ checks that every requirement has a row and every row names a requirement that e
 | Q9 | Instances are reused and retained within a session, can be terminated or reset, and sessions are isolated | A21, A29 (session isolation and a shared project); `review/dogfood/lifecycle_run.py` (D-98); the cancel lever of D-88 |
 | Q10 | Work continues by default with an optional goal budget, and failures are bounded | A18 (multi-instance usage budget), A19 (truncated stream and connection loss), A35 (goal deadline); D-97 (a refused request is not a slow one) |
 | Q11 | Required checks must pass; other claims carry evidence; independent review is on demand | A16 (a required check fails), A17 (artifacts change after a check) with `review/dogfood/stale_check.py` (D-90); D-50 |
-| Q12 | The first release ships basic tools, MCP and Skills, and needs no external Codex adaptation | A01 (basic tools), A25 (MCP over both transports), A26 (skills permissions); `docs/TOOLS.md` (the generated catalogue of the seventeen tools); D-74, D-66 |
+| Q12 | The first release ships basic tools, MCP and Skills, and needs no external Codex adaptation | A01 (basic tools), A25 (MCP over both transports), A26 (skills permissions); `docs/TOOLS.md` (the generated catalogue of the eighteen tools); D-74, D-66 |
 | Q13 | Multiple providers and mixed models inside one team; DeepSeek is the main baseline | A27 (heterogeneous providers) with `review/dogfood/providers.py` (D-129), A19; D-36 (native window recorded), D-69 (each member's model written down) |
 | Q14 | The project workspace is shared by default, with isolated directories or Git worktrees on demand | A29; D-46 (workspace policies wired into `spawn`); `review/dogfood/workspace.py` (D-76) |
 | Q15 | Authorized work resumes after a restart; an unknown outcome is verified first and parked if it stays unknown | A06 (a message applied across a restart), A08 (crash after a tool succeeded), A09 (unknown external outcome) with `review/dogfood/unknown_outcome.py` (D-119), A11 (daemon and runner crash separately); D-112 |
@@ -181,7 +181,7 @@ amended (D-49/D-50).
 - **`view_image`'s request-build half is parked, so an image never reaches a model.** The tool returns a
   reference in its receipt (`{"image": …, "media_type": …, "bytes": …}`), but the half that loads those bytes
   into a request, `tools::load_image_reference`, has no caller: v2 has no image flow, and no tool catalogue
-  advertises `view_image` (`docs/TOOLS.md` catalogues the seventeen tools the product offers and it is not one
+  advertises `view_image` (`docs/TOOLS.md` catalogues the eighteen tools the product offers and it is not one
   of them). The loader is parked with a `ponytail:` note naming the upgrade path — the providers' message
   transforms carry the same note (catalog entries declare input modalities, and a non-vision model gets a
   placeholder instead of an error). Wiring it is new product surface and needs the user's word; until then
@@ -260,6 +260,11 @@ amended (D-49/D-50).
   costs a solo instance 90.8 s. The product's tool text now says to set `timer_seconds` for delegated work
   (`D-257`), which is contract text and visible to every arm; whether the *runtime* should wake such a
   delegator, or expose the requester's `task cancel` as a tool, is still the user's call.
+  **Since D-265 the delegator also has a lever of its own**: `cancel_task` (offered with the `delegate`
+  grant, requester-only, the same command `teamagents tasks cancel` uses) is terminal, tells the assignee,
+  and satisfies a wait on that task — so a Leader can close an abandoned part and re-dispatch or do it
+  itself. What still needs the user's word is the *runtime* rule (should the runtime wake a delegator whose
+  assignee went idle, or treat an abandoned task as dead for a wait?), not a delegator-side lever.
   **And the two contract-text changes that followed are visible in the record** (D-263): of the delegated
   units run before them, 9 of 16 were settled by their worker and one trial's wait had no timer at all
   (it ran to its 900 s bound); with the timer rule only, 50 of 52; with both rules, 37 of 37, and every

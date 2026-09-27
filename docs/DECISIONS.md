@@ -20,6 +20,40 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-265 The delegator gets its own exit from a task it delegated (2026-09-28)
+
+The measurements left one product hole with a lever on the *delegator's* side: a member that ends its turn
+without settling leaves its task `RUNNING` (D-65's ceiling), and the delegator had **no way to close it** — the
+design says "the requester or the user closes it" (§5.3), but only the *user* had a path (`teamagents tasks
+cancel`). A leader could only wait out a timer, redo the part, and settle with the task still open (measured:
+284.6 s and 732.2 s stalls in the round-5 batches; the abandonment counts in D-263).
+
+**Decided: expose the requester's own capability as a tool.** `cancel_task` is offered to an instance that holds
+`delegate` — the same gate the command's own authorization uses — and reaches the control plane's existing
+`cancel_task`, which re-checks that the caller **is the requester** (or the user) at dispatch. Its description
+says what the record shows a model needs to know: closing is terminal, the assignee is told, a cancellation
+**satisfies** a wait on that task, the assignee's work is not undone, and it is the right move when an assignee
+has abandoned its part — after which the part is the delegator's to re-delegate or do itself.
+
+**Evidence.** `engine/tests/v2_supervisor.rs::the_delegator_cancels_its_own_abandoned_task_and_its_wait_resolves`
+drives it through a scripted leader: spawn + delegate, then `cancel_task` on that id, then a wait on the same
+task — which the cancellation satisfies, so the goal completes with the task `CANCELLED`, the assignee holding a
+`task_cancelled` envelope, and the tool present on the leader's offered surface. **The bypass mutation was
+measured**: dropping `task_id` from the command payload makes that test fail (`FAILED … 1 failed`). The prose is
+pinned by `kernel::the_cancel_description_states_who_may_close_and_what_it_releases`, the tool catalogue
+(`docs/TOOLS.md`, 18 tools now) is regenerated, and `docs/USER-GUIDE.md` §4 names the lever.
+
+**This is the delegator's half, and only that half.** Whether the *runtime* should wake a delegator whose
+assignee has gone idle — or treat an abandoned task as dead for a wait condition — stays the open design
+question of D-255 ("Left open") and ACCEPTANCE's known gaps: it changes §5.3's wait semantics and would need
+`V2Wait`'s model and its controls updated, which is why it waits for the user's word. A delegator-side tool
+needs none of that: the state machine it reaches is the one already modelled, and the *actor* it authorizes is
+the one the design names.
+
+Ceiling: the tool is verified by a scripted session and a mutation, not by a real model choosing to use it; the
+assisted-retry path it enables (close the part, re-delegate it) is not measured end to end, and a delegator can
+still be slow to notice an abandoned part — what it can now do is act once it has.
+
 ## D-264 Round 7: the paired metric is confirmed, on a pre-registered rule, and the question closes (2026-09-28)
 
 Round 6 pre-registered `max(D) < min(B)` — a distributional non-overlap bar — for "time until every unit is

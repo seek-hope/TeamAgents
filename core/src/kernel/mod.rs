@@ -323,6 +323,31 @@ mod tests {
         }
     }
 
+    /// D-265: the delegator's own exit says who may use it and what it releases, because both are the parts a
+    /// model gets wrong without being told (a cancellation is not a delete, and only the requester may close).
+    #[test]
+    fn the_cancel_description_states_who_may_close_and_what_it_releases() {
+        let schemas = collaboration_tool_schemas(&[CANCEL_TOOL]);
+        let cancel = schemas
+            .iter()
+            .find(|t| t["function"]["name"].as_str() == Some(CANCEL_TOOL))
+            .expect("cancel_task is offered when asked for")["function"]["description"]
+            .as_str()
+            .expect("a description")
+            .to_string();
+        for clause in ["and only one you delegated", "satisfies a wait on that task", "is not undone"] {
+            assert!(cancel.contains(clause), "cancel_task must say {clause:?}: {cancel}");
+        }
+        let schema = schemas.iter().find(|t| t["function"]["name"].as_str() == Some(CANCEL_TOOL)).expect("cancel_task");
+        let required: Vec<&str> = schema["function"]["parameters"]["required"]
+            .as_array()
+            .expect("required list")
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert_eq!(required, vec!["task_id"], "the caller names the task: {schema}");
+    }
+
     #[test]
     fn collaboration_schemas_follow_the_requested_actions() {
         let schemas = collaboration_tool_schemas(&[WAIT_TOOL, SEND_TOOL]);

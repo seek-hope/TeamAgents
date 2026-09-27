@@ -16,6 +16,9 @@ pub const WAIT_TOOL: &str = "wait";
 pub const SEND_TOOL: &str = "send";
 pub const DELEGATE_TOOL: &str = "delegate";
 pub const SPAWN_TOOL: &str = "spawn";
+/// D-265: the requester's own exit from a task it delegated (§5.3 says "the requester or the user closes
+/// it"); the control plane re-checks that the caller *is* the requester at dispatch.
+pub const CANCEL_TOOL: &str = "cancel_task";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryKind {
@@ -307,6 +310,21 @@ pub fn collaboration_tool_schemas(actions: &[&str]) -> Vec<Json> {
                                 "description": "Where the instance works. shared (default) uses the project directory; isolated gets a private directory under the session state root; git_worktree gets its own branch and worktree, and falls back to shared (saying why) when the project is not a clean git repository."}
                         },
                         "required": ["instance_id", "instructions"]
+                    }
+                }
+            }),
+            CANCEL_TOOL => json!({
+                "type": "function",
+                "function": {
+                    "name": CANCEL_TOOL,
+                    "description": "Close a task you delegated, and only one you delegated: a cancellation is terminal, consumes the assignee's return path, and satisfies a wait on that task. Use it when an assignee has abandoned the part (it ended its turn without settling) — then re-delegate that part or do it yourself — instead of leaving the task open and waiting out a timer. The assignee is told the task was cancelled; its own work is not undone.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "task_id": {"type": "string", "description": "Task id returned by delegate."},
+                            "reason": {"type": "string", "description": "Why it is being closed; the assignee sees this."}
+                        },
+                        "required": ["task_id"]
                     }
                 }
             }),

@@ -1139,6 +1139,9 @@ impl<P: Provider> Driver<P> {
                 }
                 if holds("delegate")? {
                     actions.push(teamagents_core::kernel::DELEGATE_TOOL);
+                    // D-265: the requester's own exit from a task it delegated — the same gate, because the
+                    // control plane lets only the requester (or the user) close it
+                    actions.push(teamagents_core::kernel::CANCEL_TOOL);
                 }
                 if holds("manage")? {
                     actions.push(teamagents_core::kernel::SPAWN_TOOL);
@@ -1877,7 +1880,8 @@ that delegated it learns the outcome only from a settlement.";
                 }
                 teamagents_core::kernel::SEND_TOOL
                 | teamagents_core::kernel::DELEGATE_TOOL
-                | teamagents_core::kernel::SPAWN_TOOL => self.execute_collaboration(&operation_id, &intent).await?,
+                | teamagents_core::kernel::SPAWN_TOOL
+                | teamagents_core::kernel::CANCEL_TOOL => self.execute_collaboration(&operation_id, &intent).await?,
                 _ if recovered && self.toolkit.is_mcp_tool(name) => {
                     // A25/§6.3: the call crossed the process boundary before the
                     // interruption, so the remote effect cannot be verified and
@@ -2190,6 +2194,13 @@ that delegated it learns the outcome only from a settlement.";
         let (method, params) = match name {
             teamagents_core::kernel::SEND_TOOL => {
                 ("send_message", json!({"recipient": args["recipient"], "text": args["text"]}))
+            }
+            teamagents_core::kernel::CANCEL_TOOL => {
+                let mut params = json!({"task_id": args["task_id"]});
+                if let Some(reason) = args.get("reason") {
+                    params["reason"] = reason.clone();
+                }
+                ("cancel_task", params)
             }
             teamagents_core::kernel::DELEGATE_TOOL => {
                 let task_id =

@@ -66,7 +66,7 @@ default (D-239).
 | Key | Type | Absent | Read by | Meaning |
 |---|---|---|---|---|
 | `kind` | `String` | empty | `core/src/kernel/mod.rs`, `core/src/v2/control.rs` … (14 files) | — |
-| `required` | `bool` | false | `engine/src/bound.rs`, `engine/src/tools.rs` | — |
+| `required` | `bool` | false | `core/src/kernel/mod.rs`, `engine/src/bound.rs` … (3 files) | — |
 | `provider` | `Option<String>` | unset (the reader applies its own) | `engine/src/providers/mod.rs`, `engine/src/tools.rs` … (3 files) | — |
 | `api_key_env` | `Option<String>` | unset (the reader applies its own) | `engine/src/providers/mod.rs`, `engine/src/tools.rs` | — |
 | `mcp_server` | `Option<String>` | unset (the reader applies its own) | `engine/src/bound.rs` | — |

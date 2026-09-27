@@ -1088,6 +1088,72 @@ async fn a_prose_reply_leaves_one_turn_and_the_delegator_resolves_the_task() {
     handle.shutdown().await.expect("shutdown");
 }
 
+/// D-265: the **delegator's** own exit from a task it delegated. The design says "the requester or the user
+/// closes it" (§5.3), and until now only the user had a path to it (`teamagents tasks cancel`, the test above):
+/// a leader whose worker had abandoned its part could only wait out a timer, redo the work, and settle with the
+/// task still open (D-65's ceiling). This drives the new `cancel_task` tool through a scripted leader: delegate,
+/// cancel, then wait on that task id — which the cancellation satisfies at registration.
+#[tokio::test]
+async fn the_delegator_cancels_its_own_abandoned_task_and_its_wait_resolves() {
+    let leader = vec![
+        Step::Message(json!({"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "spawn",
+             "arguments": json!({"instance_id": "i-worker", "instructions": "do the task"}).to_string()}},
+            {"id": "c2", "type": "function", "function": {"name": "delegate",
+             "arguments": json!({"assignee": "i-worker", "task_id": "t-abandoned", "description": "write the file"}).to_string()}}
+        ]})),
+        Step::Message(json!({"role": "assistant", "content": "the worker stopped; closing my own task",
+            "tool_calls": [{"id": "c3", "type": "function", "function": {"name": "cancel_task",
+             "arguments": json!({"task_id": "t-abandoned", "reason": "the assignee ended its turn unsettled"}).to_string()}}]})),
+        Step::Message(wait_call(
+            "c4",
+            json!({"mode": "ANY", "conditions": [{"kind": "task", "task_id": "t-abandoned"}]}),
+        )),
+        Step::Message(finish_call("did the part myself after closing the abandoned task")),
+    ];
+    // the worker answers with prose and never settles: the delegator's task stays RUNNING for it to close
+    let worker = vec![Step::Message(reply("see my notes; I did not settle"))];
+    let seen: Seen = Arc::new(Mutex::new(HashMap::new()));
+    let root = root("delegator-cancel");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let handle = start(config(
+        &root,
+        factory_with_log(
+            HashMap::from([("i-leader".to_string(), leader), ("i-worker".to_string(), worker)]),
+            seen.clone(),
+        ),
+    ))
+    .await
+    .expect("start");
+    handle.input("i-leader", "delegate the file to a worker").await.expect("input");
+    let closed = wait_event(&handle, "goal_completed", 20_000).await;
+    assert_eq!(closed["payload"]["status"], json!("SUCCEEDED"), "{closed}");
+    let control = second_control(&root);
+    let status: String = control
+        .connection()
+        .query_row("SELECT status FROM tasks WHERE id = 't-abandoned'", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(status, "CANCELLED", "the delegator closed its own task");
+    // the assignee is told: the cancellation is an envelope, not a silent delete
+    let told: i64 = control
+        .connection()
+        .query_row(
+            "SELECT COUNT(*) FROM envelopes WHERE recipient = 'i-worker' AND kind = 'task_cancelled'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(told, 1, "the assignee learns the task was cancelled");
+    // and the tool was offered to the leader in the first place (the surface carries what the grant allows)
+    let offered =
+        seen.lock().unwrap().get("i-leader").and_then(|requests| requests.first()).cloned().unwrap_or_default();
+    assert!(
+        offered.contains(&"cancel_task".to_string()),
+        "the leader is offered the cancel tool (it holds `delegate`): {offered:?}"
+    );
+    handle.shutdown().await.expect("shutdown");
+}
+
 /// D-143's open question, in the shape that failed live (2026-09-27): a worker whose turn is driven by a
 /// **delegated task** must also see a user grant at its next request. The existing grant test drives the worker
 /// with a *user input* instead ("a delegated task would keep it busy … and its extra requests would make the

@@ -88,6 +88,17 @@ Create a new instance and atomically register its initial task with the return p
 | `task` | `string` | no | Initial task description; registered with its narrow return path when present. |
 | `workspace` | `string` | no | Where the instance works. shared (default) uses the project directory; isolated gets a private directory under the session state root; git_worktree gets its own branch and worktree, and falls back to shared (saying why) when the project is not a clean git repository. |
 
+### `cancel_task`
+
+*Offered by `kernel::collaboration_tool_schemas(actions)` (per grant).*
+
+Close a task you delegated, and only one you delegated: a cancellation is terminal, consumes the assignee's return path, and satisfies a wait on that task. Use it when an assignee has abandoned the part (it ended its turn without settling) — then re-delegate that part or do it yourself — instead of leaving the task open and waiting out a timer. The assignee is told the task was cancelled; its own work is not undone.
+
+| Parameter | Type | Required | Meaning |
+|---|---|---|---|
+| `task_id` | `string` | yes | Task id returned by delegate. |
+| `reason` | `string` | no | Why it is being closed; the assignee sees this. |
+
 ### `wait`
 
 *Offered by `kernel::collaboration_tool_schemas(actions)` (per grant).*

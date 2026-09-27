@@ -315,6 +315,11 @@ pre_tool = ["/home/you/bin/policy.sh"]            # policy hook before tool call
   part's command in turn, and *not* to delegate work a single instance can finish in one pass. A member
   that ends its turn without settling its task never wakes the delegator (only the timer does), which is
   why the guidance asks for a short timer and says an abandoned part is then the Leader's.
+- **The delegator can close its own task since D-265** (`cancel_task`, offered to an instance that holds
+  `delegate`): closing is terminal, the assignee is told, and the cancellation **satisfies** a wait on that
+  task — so a Leader whose member went idle can close the abandoned part and re-dispatch or do it itself
+  instead of waiting out a timer. Only the requester (or you, with `teamagents tasks cancel`) may close a
+  task; the assignee's own work is never undone by it.
   `spawn` also takes `model` (a catalog key or the model name it declares) so a team can mix entries: an unknown
   entry fails that call with the available keys, and an instance that cannot boot at all is parked with the
   reason (its task stays open for you to cancel). A tool the instance cannot dispatch is not offered at all: a
