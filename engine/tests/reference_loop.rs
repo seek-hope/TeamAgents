@@ -5,7 +5,7 @@
 
 use serde_json::{json, Value as Json};
 use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Mutex;
 use std::time::Duration;
 use teamagents_core::kernel::{KernelProfile, ModelRequest, ModelResponse, Usage};
@@ -51,15 +51,16 @@ impl Provider for ScriptedProvider {
     }
 }
 
-fn temp_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("teamagents-rebuild-p1-{tag}-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+mod common;
+
+/// The scratch directory of one test, removed when the test ends (D-226).
+fn temp_dir(tag: &str) -> common::TempRoot {
+    common::TempRoot::new(&format!("rebuild-p1-{tag}"))
 }
 
-fn config(workspace: PathBuf, trace_dir: PathBuf) -> ReferenceConfig {
+fn config(workspace: &Path, trace_dir: &Path) -> ReferenceConfig {
     ReferenceConfig {
-        workspace,
+        workspace: workspace.to_path_buf(),
         artifacts: None,
         shell_state: None,
         permissions: "full_auto".into(),
@@ -75,7 +76,7 @@ fn config(workspace: PathBuf, trace_dir: PathBuf) -> ReferenceConfig {
         max_steps: 12,
         max_retries: 2,
         deadline: Some(Duration::from_secs(60)),
-        trace_dir,
+        trace_dir: trace_dir.to_path_buf(),
         run_id: "test".into(),
     }
 }
@@ -109,7 +110,7 @@ fn tool_intents_execute_and_finish_completes() {
         Ok(tool_call("call1", "shell", r#"{"command":"echo hello > note.txt && cat note.txt","timeout":10}"#)),
         Ok(finish("success", "wrote note.txt")),
     ]);
-    let outcome = run(&provider, config(workspace.clone(), trace), "write a note");
+    let outcome = run(&provider, config(&workspace, &trace), "write a note");
     match outcome.end {
         ReferenceEnd::Completed(candidate) => {
             assert_eq!(candidate.outcome, teamagents_core::kernel::Outcome::Success);
@@ -148,7 +149,7 @@ fn readback_pages_masked_outputs() {
         Ok(tool_call("call2", "read_history", r#"{"tool_call_id":"call1","offset":29990,"limit":20}"#)),
         Ok(finish("success", "paged the output")),
     ]);
-    let outcome = run(&provider, config(workspace, trace), "big output");
+    let outcome = run(&provider, config(&workspace, &trace), "big output");
     assert!(matches!(outcome.end, ReferenceEnd::Completed(_)));
     let trace_text = std::fs::read_to_string(&outcome.trace_path).unwrap();
     let readback = trace_text
@@ -172,7 +173,7 @@ fn plain_reply_terminates_without_completion() {
     let workspace = temp_dir("reply");
     let trace = temp_dir("trace");
     let provider = ScriptedProvider::new(vec![Ok(json!({"role":"assistant","content":"the answer is 4"}))]);
-    let outcome = run(&provider, config(workspace, trace), "2+2?");
+    let outcome = run(&provider, config(&workspace, &trace), "2+2?");
     match outcome.end {
         ReferenceEnd::Reply(text) => assert_eq!(text, "the answer is 4"),
         other => panic!("expected reply, got {other:?}"),
@@ -187,14 +188,14 @@ fn transient_attempt_retries_once_owned_then_permanent_fails() {
         Err((ErrorClass::Transient, "connection reset")),
         Ok(finish("success", "after retry")),
     ]);
-    let outcome = run(&provider, config(workspace, trace.clone()), "retry me");
+    let outcome = run(&provider, config(&workspace, &trace), "retry me");
     assert!(matches!(outcome.end, ReferenceEnd::Completed(_)));
     let trace_text = std::fs::read_to_string(outcome.trace_path).unwrap();
     assert_eq!(trace_text.matches("attempt_start").count(), 2);
 
     let workspace = temp_dir("perm");
     let provider = ScriptedProvider::new(vec![Err((ErrorClass::Permanent, "bad request"))]);
-    let outcome = run(&provider, config(workspace, temp_dir("trace2")), "fail me");
+    let outcome = run(&provider, config(&workspace, &temp_dir("trace2")), "fail me");
     match outcome.end {
         ReferenceEnd::Failed(reason) => assert!(reason.contains("bad request")),
         other => panic!("expected failure, got {other:?}"),
@@ -208,7 +209,7 @@ fn step_budget_is_bounded() {
     let provider = ScriptedProvider::new(
         (0..20).map(|i| Ok(tool_call(&format!("c{i}"), "shell", r#"{"command":"true","timeout":5}"#))).collect(),
     );
-    let outcome = run(&provider, config(workspace, trace), "loop forever");
+    let outcome = run(&provider, config(&workspace, &trace), "loop forever");
     match outcome.end {
         ReferenceEnd::Failed(reason) => assert!(reason.contains("step budget"), "reason: {reason}"),
         other => panic!("expected failure, got {other:?}"),

@@ -2,13 +2,14 @@
 //! duplicate GO dedup, cancel-before-start persistence, crash recovery and
 //! OUTCOME_UNKNOWN honesty. Real processes on the local machine, no model.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use teamagents_engine::jobs::{client, JobSpec};
 
-fn root(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("teamagents-jobs-{tag}-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+mod common;
+
+/// The scratch root of one test, removed when the test ends (D-226).
+fn root(tag: &str) -> common::TempRoot {
+    common::TempRoot::new(&format!("jobs-{tag}"))
 }
 
 fn spec(job_id: &str, script: &str, deadline_ms: u64) -> JobSpec {

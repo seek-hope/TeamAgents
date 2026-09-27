@@ -18,6 +18,52 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-226 The suites left 46,016 scratch roots behind, and the leak guard could not see them (2026-09-27)
+
+`make test` guards the ways a run leaks (D-111's daemon, D-131's scratch): it snapshots `review/leak_guard.py`'s
+observation before the three crate suites, audits after them, names and stops whatever appeared. Measured
+2026-09-27 on this machine: **46,016 scratch directories** created by the integration suites — `v2-driver`
+16,221, `v2-daemon` 9,003, `v2-supervisor` 5,550, `rebuild` 5,838, `jobs` 5,076, `v2-mcp` 4,328, the oldest from
+September 25 — and the audit had been reporting `no leak` for all of them. Two reasons, one per half of the
+guard:
+
+* the stray rule globbed **`ta-`** only, while those suites name their roots `teamagents-<name>-<uuid>`;
+* the observation carried daemons and directories and **not runners** — and a command runner outlives its daemon
+  *by design* (§6.2), so the crash test that kills a runner leaves one behind with no daemon to point at it.
+  Reproduced twice: after a `make check` and after `cargo test … runner_crash_mid_job_is_outcome_unknown` alone,
+  a live `jobs-runner` was still holding the deleted root's job directory.
+
+**Fixed on both sides.** `engine/tests/common/mod.rs` is a shared `TempRoot` — the same shape `engine/tests/cli.rs`
+has had since D-171 — which removes its directory on every exit path and stops the runners under it by pid first
+(`pgrep` to *find*, `kill` by pid; D-144's ban is on `pkill -f`), and the seven suites that leaked use it.
+Measured: with `TMPDIR` pointed at a fresh directory the whole engine suite leaves **0 directories and 0 runners**
+(before the fix the same run left one root per test). And the guard now watches the third way and both prefix
+families: a leaked runner is named with its pid and stopped, and a `teamagents-v2-*` directory counts as scratch.
+The probe harness's own `teamagents-probe-harness-*` root is deliberately **excluded**, because a failing probe
+keeps it as evidence (D-140) and reports the failure itself — counting it would turn one failure into two, the
+trap D-171 fixed for `cli.rs`.
+
+**The backlog was removed** (46,016 directories; the eight kept probe roots were left alone), measured by `df`
+across the removal: `/tmp` went from 11 GiB used to 2.0 GiB, so the set was about **9 GiB**. The first attempt
+looked like it had failed: a shell glob over 16,000 names exceeded the argument limit and `rm` never ran, which
+made `df` read unchanged and nearly produced a wrong "the cleanup freed nothing" conclusion — `find -maxdepth 1
+-name … -exec rm -rf {} +` is what actually removed them. The two other `teamagents-*` families
+in `/tmp` are *files* (`teamagents-artifact-*.bin` from the invariants walk, `teamagents-tui-silent-engine-*.sh`
+from the TUI's scripts, ~530 of them at 4 KiB) and stay: the stray rule counts directories only, on purpose
+(D-143).
+
+**Registered**: `review/leak_guard.py` (the prefix list, `observe`'s three rules, the audit's naming and stopping,
+the self-check's controls for both), the `make test` recipe comment, `review/README.md`'s row for the guard, and
+the shared `TempRoot`'s own docstring. `make test` is green on the new rules — `no leak: 0 daemon(s), 0 runner(s)
+and 46016 scratch directory(ies) present before the run are still all there is`.
+
+Ceiling: the stray prefixes are a hand-kept list, so a suite that invents a new root name is invisible until the
+name is added (the guard's own comment says which families it knows); `TempRoot` stops runners by matching
+`jobs-runner.*<root>` with `pgrep`, so a runner whose arguments do not name the root is not found by it; and the
+suite's socket paths still fit only in a short `TMPDIR` — with `TMPDIR=/tmp/d226farm` seven `v2_daemon` tests fail
+with the daemon's own `path must be shorter than SUN_LEN`, a pre-existing fragility this entry noticed but did
+not change.
+
 ## D-225 The approval window had no model (2026-09-27)
 
 `verification/README.md` named two rules as "not modelled": the `expires_at` check of an approval and the

@@ -76,14 +76,13 @@ fn finish_call(summary: &str) -> Json {
     tool_call("finish-1", "finish", json!({"status": "success", "summary": summary}))
 }
 
-struct Root {
-    dir: PathBuf,
-}
+mod common;
+
+/// The scratch root of one test: `teamagents-v2-mcp-<tag>-<uuid>`, removed when the test ends (D-226).
+type Root = common::TempRoot;
 
 fn root(tag: &str) -> Root {
-    let dir = std::env::temp_dir().join(format!("teamagents-v2-mcp-{tag}-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
-    Root { dir }
+    Root::new(&format!("v2-mcp-{tag}"))
 }
 
 impl Root {

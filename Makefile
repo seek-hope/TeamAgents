@@ -44,9 +44,10 @@ lint:
 		cargo clippy $(CARGO_FLAGS) --all-targets --manifest-path $$crate/Cargo.toml -- -D warnings; \
 	done
 
-# The two ways a test can leak — a live session daemon (D-111) and a scratch directory (D-131) — are checked
+# The three ways a test can leak — a live session daemon (D-111), a command runner that outlives it
+# (D-226) and a scratch directory (D-131) — are checked
 # by `review/leak_guard.py` around the run: it names and stops whatever appeared, instead of reporting a count
-# that leaves the reader guessing and a daemon that poisons the next run's baseline (D-147).
+# that leaves the reader guessing and a process that poisons the next run's baseline (D-147).
 test:
 	@set -eu; guard=$$(mktemp); trap 'rm -f "$$guard"' EXIT HUP INT TERM; \
 		python3 review/leak_guard.py snapshot "$$guard"; \

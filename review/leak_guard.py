@@ -2,7 +2,8 @@
 """The two ways a run leaks into the machine, and the one implementation of both rules (D-147).
 
 A test suite or a probe can leak in exactly two ways, and this repository has recorded a defect for each: a
-**live session daemon** the in-test guard did not stop (D-111) and a **scratch directory** a daemon socket path
+**live session daemon** the in-test guard did not stop (D-111), a **command runner** that outlives
+the daemon that started it (D-226) and a **scratch directory** a daemon socket path
 cannot outlive (D-131). `make test` counted both and stopped neither, so its failure message was a number
 ("the suite left 1 daemon(s) behind") — never which process, never which directory — and the leaked daemon kept
 running, so the *next* run's baseline counted it. `review/dogfood/probes.py` had the same guard written a
@@ -39,7 +40,12 @@ import time
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 BIN = REPO / "engine/target/debug/teamagents"
-SCRATCH_PREFIX = "ta-"
+# The prefixes a run's scratch root carries in `TMPDIR`: `ta-*` (the `cli.rs`/install/probe families) and the
+# integration suites' `teamagents-*` roots, which the rule could not see until D-226 — 46,025 of them had piled up
+# on one developer machine (8.8 GiB) while the audit reported "no leak". The probe harness's own root
+# (`teamagents-probe-harness-*`) is deliberately absent: a failing probe *keeps* it as evidence (D-140), and the
+# harness reports that failure itself, so counting the kept root here would turn one failure into two (D-171).
+SCRATCH_PREFIXES = ("ta-", "teamagents-v2-", "teamagents-jobs-", "teamagents-rebuild-")
 
 # A daemon refuses to start without a model profile ("the user config has no model profile"), and this guard's
 # controls need one that really runs; no key is read unless a model is called, so the guard stays
@@ -120,12 +126,22 @@ def strays(root: pathlib.Path | None = None) -> set[str]:
     base = pathlib.Path(root if root is not None else os.environ.get("TMPDIR", "/tmp"))
     if not base.is_dir():
         return set()
-    return {str(p) for p in base.glob(SCRATCH_PREFIX + "*") if p.is_dir()}
+    found = set()
+    for prefix in SCRATCH_PREFIXES:
+        found |= {str(p) for p in base.glob(prefix + "*") if p.is_dir()}
+    return found
 
 
 def observe(root: pathlib.Path | None = None) -> dict:
-    """What the two rules see right now: `{"daemons": [[pid, args], …], "strays": [path, …]}`."""
-    return {"daemons": [[pid, args] for pid, args in daemon_pids(root)], "strays": sorted(strays(root))}
+    """What the three rules see right now: daemons, runners and stray scratch directories.
+
+    A command runner (§6.2/A12) outlives the daemon that started it *by design*, so a test that crashes a session
+    leaves one behind without any daemon to point at it — measured: `runner_crash_mid_job_is_outcome_unknown`
+    left a live runner behind on every run until D-226 gave the suites a scratch root that stops them.
+    """
+    return {"daemons": [[pid, args] for pid, args in daemon_pids(root)],
+            "runners": [[pid, args] for pid, args in runner_pids(root)],
+            "strays": sorted(strays(root))}
 
 
 def _alive(pids: list[int], finder=daemon_pids) -> list[int]:
@@ -228,23 +244,31 @@ def audit(path: pathlib.Path, root: pathlib.Path | None = None, out=sys.stdout) 
     """
     before = json.loads(pathlib.Path(path).read_text())
     now = observe(root)
-    known = {pid for pid, _args in before["daemons"]}
-    leaked = [(pid, args) for pid, args in now["daemons"] if pid not in known]
+    known_daemons = {pid for pid, _args in before["daemons"]}
+    known_runners = {pid for pid, _args in before.get("runners", [])}
+    leaked = [(pid, args) for pid, args in now["daemons"] if pid not in known_daemons]
+    leaked_runners = [(pid, args) for pid, args in now["runners"] if pid not in known_runners]
     new_strays = sorted(set(now["strays"]) - set(before["strays"]))
-    if not leaked and not new_strays:
-        print(f"no leak: {len(now['daemons'])} daemon(s) and {len(now['strays'])} scratch directory(ies) "
-              "present before the run are still all there is", file=out)
+    if not leaked and not leaked_runners and not new_strays:
+        print(f"no leak: {len(now['daemons'])} daemon(s), {len(now['runners'])} runner(s) and "
+              f"{len(now['strays'])} scratch directory(ies) present before the run are still all there is", file=out)
         return 0
     survivors = stop([pid for pid, _args in leaked]) if leaked else []
     for pid, args in leaked:
         fate = "survived SIGTERM and SIGKILL" if pid in survivors else "gone"
         print(f"leaked daemon pid {pid} (state root {state_root_of(args)}): sent SIGTERM, then SIGKILL — {fate}\n"
               f"  started as: {args[:160]}", file=out)
+    runner_survivors = stop([pid for pid, _args in leaked_runners], finder=runner_pids) if leaked_runners else []
+    for pid, args in leaked_runners:
+        fate = "survived SIGTERM and SIGKILL" if pid in runner_survivors else "gone"
+        print(f"leaked command runner pid {pid}: sent SIGTERM, then SIGKILL — {fate}\n"
+              f"  started as: {args[:160]}", file=out)
     for stray in new_strays:
         # kept on purpose: a leaked state root is the evidence of the test that wrote it (D-140)
         print(f"leaked scratch directory {stray} (kept: the directory is the evidence)", file=out)
-    print(f"FAIL: {len(leaked)} daemon(s) and {len(new_strays)} scratch directory(ies) appeared during the run; a "
-          "test that starts a daemon must stop it and remove its own temp directory (D-111, D-131)", file=out)
+    print(f"FAIL: {len(leaked)} daemon(s), {len(leaked_runners)} command runner(s) and {len(new_strays)} scratch "
+          "directory(ies) appeared during the run; a test that starts a daemon or a runner must stop it and remove "
+          "its own temp directory (D-111, D-131, D-226)", file=out)
     return 1
 
 
@@ -291,9 +315,10 @@ def self_check() -> int:
     already excludes the corpse (measured while writing this check).
 
     The runner predicate is checked as far as a synthetic process can take it: a live daemon is *not* a runner
-    (its first argument is `daemon`), and the two families filter by root independently. A live runner needs a
-    job directory a daemon wrote, so the runners' own stop is exercised where they exist — `crash.py` and
-    `unknown_outcome.py` (D-148).
+    (its first argument is `daemon`), the two families filter by root independently, and the observation carries
+    all three rules (D-226). A live runner needs a job directory a daemon wrote, so the runners' own stop is
+    exercised where they exist — `crash.py` and `unknown_outcome.py` (D-148) and, since D-226, the suites'
+    scratch root, which stops the runners under it the way the probes do.
     """
     if not BIN.is_file():
         print(f"FAIL: {BIN} is missing; build it first (make build)")
@@ -307,6 +332,8 @@ def self_check() -> int:
         os.environ["TMPDIR"] = str(tmp)
         (tmp / "ta-a-directory").mkdir()
         (tmp / "ta-a-file").write_text("")
+        (tmp / "teamagents-v2-leaked").mkdir()          # the suites' own prefix (D-226)
+        (tmp / "teamagents-probe-harness-kept").mkdir()  # kept on purpose when a probe fails (D-140)
         (tmp / "config/teamagents").mkdir(parents=True)
         (tmp / "config/teamagents/config.toml").write_text(CONFIG)
         os.environ["XDG_CONFIG_HOME"] = str(tmp / "config")
@@ -316,9 +343,14 @@ def self_check() -> int:
         if is_running("Z") or is_running("Z+") or not is_running("Sl"):
             findings.append(f"a zombie is not a running process: Z->{is_running('Z')}, Sl->{is_running('Sl')}")
 
-        # 1. scratch is directories only (D-143)
-        if strays() != {str(tmp / "ta-a-directory")}:
-            findings.append(f"the stray rule must count directories only, got {sorted(strays())}")
+        # 1. scratch is directories only (D-143), and it carries both families of prefix (D-226) — while the
+        # probe harness's kept root stays out of it, because that root is a failure's evidence (D-140)
+        expected = {str(tmp / "ta-a-directory"), str(tmp / "teamagents-v2-leaked")}
+        if strays() != expected:
+            findings.append(f"the stray rule must count directories only, both prefixes and not the probe "
+                            f"harness's kept root, got {sorted(strays())}")
+        if set(observe()) != {"daemons", "runners", "strays"}:
+            findings.append(f"the observation must carry the three rules, got {sorted(observe())}")
 
         # 2. an unchanged machine is not a leak (the audit must not report what it merely sees)
         guard = tmp / "guard.json"

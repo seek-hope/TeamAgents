@@ -11,6 +11,8 @@ use std::time::Duration;
 use teamagents_core::kernel::{KernelProfile, ModelRequest, ModelResponse, Usage};
 use teamagents_core::models::UserConfig;
 use teamagents_engine::providers::{AttemptOutcome, Cancel, Provider, ProviderError, ProviderEvent};
+
+mod common;
 use teamagents_engine::v2::driver::{start, DriverConfig, DriverHandle};
 
 struct ScriptedProvider {
@@ -61,8 +63,7 @@ async fn wait_event(handle: &DriverHandle, kind: &str, timeout_ms: u64) -> Json 
 async fn runner_spawn_failure_fails_the_op_and_the_driver_survives() {
     // a binary that exits instantly: the runner never persists READY
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", "/bin/false");
-    let dir = std::env::temp_dir().join(format!("teamagents-v2-spawn-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = common::TempRoot::new("v2-spawn");
     let provider = ScriptedProvider {
         script: Mutex::new(VecDeque::from(vec![json!({"role": "assistant", "content": "",
            "tool_calls": [{"id": "c1", "type": "function",
