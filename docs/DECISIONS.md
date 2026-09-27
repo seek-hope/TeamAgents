@@ -18,6 +18,45 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-201 A `make` command in a document was checked against nothing (2026-09-27)
+
+A document that tells the reader to run `make <target>` is the same kind of citation D-200 had just closed for
+links, one step over: the reader pastes the line, and if the target was renamed or removed the shell answers "make:
+*** No rule to make target". Nothing watched it. `review/build_references.py` reads the Makefile's own two lists
+(D-196: `.PHONY` against the help text, and the scripts a recipe runs) and its Limits paragraph explicitly
+delegates *a script named in a document* to `review/citations.py` — which resolved paths, names and (since D-200)
+links, but never a command. Measured 2026-09-27: 19 tracked markdown files carry **389** `make <target>` citations
+— 356 inside inline code spans, 33 as a line of a fenced block — naming 20 distinct targets, 18 of which the
+Makefile declares. The check is added after the fact, as D-200 was: nothing was broken, and a rename would have
+been.
+
+**Guarded** (`review/citations.py`, in `make hygiene`): every `make <target>` a tracked markdown file tells a
+reader to run must be a `.PHONY` target. The two shapes a reader can paste are read — an inline code span whose
+content is the command, and a fenced-block line that begins with one (an optional `$ ` prompt is stripped). The
+declared list is `build_references.phony_targets`, imported rather than re-parsed, so the two audits cannot
+disagree about what the Makefile offers. A line that records the target as gone is a note, exactly as for a path;
+so is a line that mentions `.PHONY`, because it is discussing the Makefile's declarations rather than telling the
+reader to run something.
+
+Both rules were needed on the first runs, and the first run also taught the extraction its shape: the check counted
+**33** where the answer is 389, because this file's `CODE_SPAN` matches the whole span *with* its backticks, so
+`MAKE_CMD` saw `` `make check` `` and not `make check`; stripping them gives 389. The two non-targets it then
+reported are both records of absence: `review/fix-notes-verification-2026-09-24.md` says a `make
+verify-model-contract` target "was deleted", and this file's own D-196 entry quotes the audit's finding about a
+`make deploy` help line that is not a `.PHONY` target.
+
+**Measured**: the audit is green — "443 citations checked … plus 79 relative link(s) and 389 `make` command(s): 0
+unexplained, 17 recorded as removed" (15 before, plus the two absences) — and its controls behave: an inline span
+reading `make verify-model-contract` and a fenced line reading `make ghost-target` each report "names no `.PHONY`
+target", the same on a line that mentions `.PHONY` is a note, a real target is read and accepted, a bare `make` and
+`make -j4 test` name no target (0 read), and a removed target under a "removed" table header is a note.
+
+Ceiling: only those two shapes are read, so a command in bare prose is invisible; the `.PHONY` list is the
+universe, so a documented target that exists as a recipe but is not in `.PHONY` is reported; a flag between the
+command and the target (`make -f FILE target`, as the D-111 control writes) hides it; a `make` command quoted from
+another project in a fenced example would be reported; and a citation on a line that mentions `.PHONY` for an
+unrelated reason is excused.
+
 ## D-200 The links a reader clicks were checked by nothing (2026-09-27)
 
 `review/citations.py` (D-110) resolves the *backticked* citations in the tracked markdown — the paths and test

@@ -40,6 +40,29 @@ fragment; absolute URLs, `mailto:` and pure fragments are out of scope, as is a 
 code span — the extraction drops code spans and fenced blocks first, because `[](Entitled(i, "shell"))` in a
 TLA+ formula is not a link (the first run of the check reported exactly that as broken, which is how the rule got
 its shape).
+
+**D-201 added the commands a reader runs.** A `make <target>` in a document is the same kind of citation one step
+over from a link: the reader pastes it, and if the target was renamed or removed the shell answers "make: *** No
+rule to make target". Nothing watched it — `build_references.py` reads the Makefile's own two lists (D-196) and
+its own Limits paragraph delegates documents to this file, which resolved paths and links but not commands.
+Measured 2026-09-27: 19 tracked markdown files carry **389** `make <target>` citations (356 inside inline code
+spans, 33 as a line of a fenced block); they name 20 distinct targets, 18 of which the Makefile declares, and the
+two that are not are both absence records (below). The check is added after the fact, not because something was
+broken. The declared list is `build_references.phony_targets`, so the two audits cannot disagree about what the
+Makefile offers.
+
+A document that records a target's absence is a note, exactly as for a path: `review/fix-notes-verification-2026-09-24.md`
+says `make verify-model-contract` "was deleted", and `docs/DECISIONS.md`'s D-196 entry quotes this audit's own
+finding about a made-up `make deploy` help line. A line that mentions `.PHONY` is talking about declarations
+rather than telling the reader to run something, so `.PHONY` on the line makes it a note too (a record, the way
+"deleted" does).
+
+Ceiling: only the two shapes a reader can paste are read (an inline code span whose content is a `make` command,
+and a fenced-block line that begins with one, an optional `$ ` prompt stripped), so a command in bare prose is not
+seen; the `.PHONY` list is the universe, so a documented target that exists as a recipe but is not in `.PHONY` is
+reported; a flag between the command and the target (`make -f FILE target`, as the D-111 control writes) hides it;
+a `make` command quoted from another project inside a fenced example would be reported (none exists today); and a
+citation on a line that mentions `.PHONY` for an unrelated reason is excused.
 """
 import pathlib
 import re
@@ -48,6 +71,10 @@ import sys
 import urllib.parse
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
+
+sys.path.insert(0, str(REPO / "review"))   # one Makefile parser, shared with the audit that owns D-196
+from build_references import phony_targets  # noqa: E402
+
 EXCLUDED = ("review/tmp/", "review/eval/")
 PATH_PREFIXES = ("docs/", "engine/", "tui/", "core/", "review/", "verification/", "examples/")
 PATH_SUFFIXES = (".rs", ".py", ".sh", ".toml", ".md", ".json", ".jsonl")
@@ -55,6 +82,10 @@ PATH_SUFFIXES = (".rs", ".py", ".sh", ".toml", ".md", ".json", ".jsonl")
 LINK = re.compile(r"\[([^\]]*)\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 FENCE = re.compile(r"^\s*(```|~~~)")
 CODE_SPAN = re.compile(r"`[^`]*`")
+# a `make <target>` a reader can paste: the command word, then a target name, then anything (flags, variables)
+MAKE_CMD = re.compile(r"^make\s+([A-Za-z][A-Za-z0-9-]*)")
+# a line that mentions `.PHONY` is discussing the Makefile's declarations, not telling the reader to run a command
+DECLARATION_TALK = ".phony"
 QUALIFIED = re.compile(r"`([a-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)+)`")
 PATH_RE = re.compile(r"`([A-Za-z0-9_./-]+(?:" + "|".join(re.escape(s) for s in PATH_SUFFIXES) + r"))`")
 RS_BASENAME = re.compile(r"`([A-Za-z0-9_-]+\.rs)`")
@@ -161,11 +192,52 @@ def broken_links(name: str, text: str) -> tuple[int, list]:
     return read, out
 
 
+def make_citations(name: str, lines: list, declared: set) -> tuple[int, list, list]:
+    """`(commands read, findings, notes)` for the `make <target>` commands `name` tells a reader to run.
+
+    Only the two shapes a reader pastes count: an inline code span whose whole content is a `make` command, and a
+    fenced-block line that begins with one (an optional `$ ` prompt is stripped). A line that records the target as
+    gone, or that is discussing the Makefile's declarations (a table header marking a removal counts, as in
+    `scan`), is a note rather than a finding.
+    """
+    read, findings, notes = 0, [], []
+    fenced = False
+    for number, line in enumerate(lines, start=1):
+        if FENCE.match(line):
+            fenced = not fenced
+            continue
+        commands = []
+        if fenced:
+            source = line.strip()
+            if source.startswith("$ "):
+                source = source[2:].strip()
+            match = MAKE_CMD.match(source)
+            if match:
+                commands.append(match.group(1))
+        else:
+            for span in CODE_SPAN.finditer(line):
+                match = MAKE_CMD.match(span.group(0).strip("`").strip())
+                if match:
+                    commands.append(match.group(1))
+        if not commands:
+            continue
+        context = (line + " " + table_header(number - 1, lines)).lower()
+        absent = DECLARATION_TALK in context or any(marker in context for marker in GONE_MARKERS)
+        for target in commands:
+            read += 1
+            if target in declared:
+                continue
+            message = f"{name}:{number}: `make {target}` names no `.PHONY` target"
+            (notes if absent else findings).append(message)
+    return read, findings, notes
+
+
 def main():
     files = tracked()
     items, tests, basenames = universe(files)
     paths = set(files)
-    checked, links = 0, 0
+    declared = set(phony_targets((REPO / "Makefile").read_text(errors="replace")))
+    checked, links, made = 0, 0, 0
     findings, notes = [], []
     for name in files:
         if not name.endswith((".md", ".rs")) or name.startswith(EXCLUDED):
@@ -179,13 +251,17 @@ def main():
             read, broken = broken_links(name, text)
             links += read
             findings += broken
+            commands, missing, records = make_citations(name, text.split("\n"), declared)
+            made += commands
+            findings += missing
+            notes += records
     for note in notes:
         print(f"note: {note}")
     for finding in findings:
         print(finding)
     print(f"\n{checked} citations checked against {len(basenames)} files, {len(tests)} tests and "
-          f"{len(items)} items, plus {links} relative link(s): {len(findings)} unexplained, "
-          f"{len(notes)} recorded as removed")
+          f"{len(items)} items, plus {links} relative link(s) and {made} `make` command(s): "
+          f"{len(findings)} unexplained, {len(notes)} recorded as removed")
     return 1 if findings else 0
 
 
