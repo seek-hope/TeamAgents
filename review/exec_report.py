@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """The CLI's `--json` reports and the documentation, held together (the detector behind D-154).
 
-Five verbs print one JSON object instead of text — `exec`, `authority`, `approvals`, `instances`, `tasks` — and
+Six verbs print one JSON object instead of text — `exec`, `authority`, `approvals`, `instances`, `tasks`,
+`runners` — and
 that object is a *scripting* surface: a CI job, a wrapper script or the evaluation harness reads fields out of
 it, so a field that is renamed or dropped breaks callers while every test in the tree stays green. The
 protocol, the events, the tools and the config each had a catalogue audit (`protocol_catalogue.py`,
@@ -10,7 +11,7 @@ fields were partly undocumented (`docs/USER-GUIDE.md` §1.1 named four of `exec`
 
     python3 review/exec_report.py
 
-It reads the field names out of the source — every `json!({ … })` literal in the four report modules that
+It reads the field names out of the source — every `json!({ … })` literal in the five report modules that
 carries `session_id`, which is what makes a literal a *printed report* rather than a protocol request or an
 event payload — and compares the union with the fields `docs/USER-GUIDE.md` §1.2 catalogues, in both
 directions:
@@ -27,7 +28,7 @@ import sys
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 SOURCES = ("engine/src/v2/exec.rs", "engine/src/v2/authority.rs", "engine/src/v2/approvals.rs",
-           "engine/src/v2/intervene.rs")
+           "engine/src/v2/intervene.rs", "engine/src/v2/runners.rs")
 GUIDE = REPO / "docs/USER-GUIDE.md"
 SECTION = "### 1.2 The JSON reports"
 

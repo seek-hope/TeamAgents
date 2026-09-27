@@ -106,8 +106,8 @@ happened. Diagnostics go to stderr, the outcome to stdout (`--json` prints one J
 
 ### 1.2 The JSON reports (`--json`)
 
-Five verbs print one JSON object instead of human text, and that object is the scripting surface: `exec`,
-`authority`, `approvals`, `instances` and `tasks`. The table is the contract — `review/exec_report.py` reads
+Six verbs print one JSON object instead of human text, and that object is the scripting surface: `exec`,
+`authority`, `approvals`, `instances`, `tasks` and `runners`. The table is the contract — `review/exec_report.py` reads
 the field names out of the source and out of this table and fails if the two drift apart in either direction.
 `exec --stream-json` (D-249) carries the *same* `exec` object, wrapped as the last line
 `{"type":"report","report":{…}}` after the session's event lines; the fields below describe it unchanged.
@@ -128,12 +128,14 @@ row, which the TUI's panel and `instances` print when a member is not running (D
 | `instances pause` / `resume` / `terminate` | `instance_id`, `lifecycle`, `instance`, `result` |
 | `tasks list` | `tasks` |
 | `tasks cancel` | `task_id`, `task`, `result` |
+| `runners` / `runners stop` | `runners` |
 
 What the field names do not carry:
 
 - `end` is the run's own word for how its turn ended — the `End` values behind §1.1's exit-code table;
   `goal_status` and `reply` are the goal's settlement and the member's answer, and a run reports only what its
   own input produced (D-72); `failure` is the runtime's reason when it refused or failed the turn.
+- `runners` rows are the verb's own census of the state root's job directories (not a daemon view): `job_id`, `instance` (the owning member, `null` when a driver's state root *is* the session root), `state` (the journal's own word: `READY`, `RUNNING`, `SUCCEEDED`, `CANCELLED`, `OUTCOME_UNKNOWN`, …), `terminal`, `runner` (`live`, `gone` or `unreachable`), `child_pid`, `finished_ms`, `exit_code`, and `outcome` — what `stop` did: `retired`, `no runner`, or `refused: …` with the runner's own reason (a command that is running refuses), `null` when listing.
 - `verification` is the list of `--check` verdicts, each carrying the command, its ok flag, its exit code and
   its output; `verification_path` is the ledger written next to the session database (`null` when no check ran).
 - `watermark` is the event cursor the report was built at, which is what a client resumes from after a
@@ -582,4 +584,5 @@ teamagents tasks cancel --id t-prose    # releases a delegator waiting on a task
 | A member says it cannot run shell commands although you granted it | Turn the offer into a witness: start the session with `TEAMAGENTS_LOG_SURFACE=1` and the driver writes one line per request into `<state root>/daemon.log` — `driver: surface <instance> shell=yes\|no tools=…`. `shell=no` after a live `authority grant` is a bug worth reporting; `shell=yes` with no attempt means the model had the tool and did not use it (§3.1, D-143/D-157) |
 | `exec: the daemon's socket was lost …` | The daemon stopped while this run was waiting — by your own `kill` (§1) or because it crashed. The session and its committed state are kept: start it again (`teamagents` or `exec`) and the work is where it was (D-150) |
 | A `teamagents jobs-runner` process is still in `ps` | By design a runner outlives the session that started it: it is the live partner for a job whose outcome is unknown (§6.2). It costs no measurable CPU while it waits (D-153) and exits by itself once its job directory is gone; opening the session again (`teamagents`/`exec` on that state root) imports the receipt and retires it (D-112) |
+| A state root still runs a `jobs-runner` (`ps -eo pid,args \| grep "[t]eamagents jobs-runner"`) | `teamagents runners` lists every job the state root carries — its journal state, whether a runner still answers and whether the command's child is still alive — and `teamagents runners stop` asks each runner to retire (the token in the job directory is the address, so no pid is guessed). A runner whose command is *still running* refuses, so nothing in flight is taken away; that one is the design's live partner (§6.2/§6.3) and ends when its command does, or is cancelled with `instances terminate` (D-88). A runner from a build this one cannot talk to is reported `unreachable`: retire it with one `kill <pid>` per process, never by pattern (D-148/D-189) |
 | Start completely fresh | Stop the daemon (§1: `teamagents daemon --stop`) and run `teamagents --state-root <new directory>` for a clean session; the old database stays where it is |

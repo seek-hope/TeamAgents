@@ -4,6 +4,7 @@
 
 use std::path::Path;
 use teamagents_engine::jobs::{client, JobSpec};
+use teamagents_engine::v2::runners::{RunnersCommand, RunnersOptions};
 
 mod common;
 
@@ -30,6 +31,67 @@ fn spec(job_id: &str, script: &str, deadline_ms: u64) -> JobSpec {
 
 fn future(ms_from_now: u64) -> u64 {
     teamagents_engine::jobs::now_ms() + ms_from_now
+}
+
+async fn runners(root: &Path, command: RunnersCommand) -> serde_json::Value {
+    teamagents_engine::v2::runners::execute_async(&RunnersOptions {
+        state_root: root.to_path_buf(),
+        command,
+        json_out: true,
+    })
+    .await
+    .expect("runners")
+}
+
+/// D-250: the `runners` verb over a real state root — what it lists, and the one thing it must never do: take a
+/// running command away. The lever talks to the runner itself (the token in the job directory addresses its
+/// socket), so it needs no daemon — and this state root has none, which the report says with `session_id: null`.
+#[tokio::test]
+async fn the_runners_verb_lists_a_state_roots_jobs_and_never_breaks_a_running_command() {
+    runner_bin();
+    let root = root("verb");
+    let dir = root.join("jobs/op-verb");
+    client::spawn(&dir, &spec("op-verb", "sleep 2; echo done", future(30_000))).await.expect("spawn");
+    client::go(&dir).await.expect("go");
+
+    // what the state root carries: one job, its runner live, the command's child named
+    let listed = runners(&root, RunnersCommand::List).await;
+    assert_eq!(listed["session_id"], serde_json::json!(null), "{listed}");
+    let rows = listed["runners"].as_array().expect("rows");
+    assert_eq!(rows.len(), 1, "{listed}");
+    assert_eq!(rows[0]["job_id"], serde_json::json!("op-verb"), "{listed}");
+    assert_eq!(rows[0]["state"], serde_json::json!("RUNNING"), "{listed}");
+    assert_eq!(rows[0]["terminal"], serde_json::json!(false), "{listed}");
+    assert_eq!(rows[0]["runner"], serde_json::json!("live"), "{listed}");
+    assert!(rows[0]["child_pid"].as_u64().is_some(), "the command's pid is reported: {listed}");
+
+    // stopping it is refused by the runner's own gate, and the command keeps running
+    let refused = runners(&root, RunnersCommand::Stop { job_id: None }).await;
+    let outcome = refused["runners"][0]["outcome"].as_str().unwrap_or("");
+    assert!(outcome.starts_with("refused:"), "{refused}");
+    assert!(outcome.contains("active command"), "the reason is the runner's own: {refused}");
+    assert_eq!(refused["runners"][0]["state"], serde_json::json!("RUNNING"), "{refused}");
+
+    // the command finishes on its own (the runner outlives the daemon and journals it), and now the same verb
+    // retires the runner instead of refusing
+    assert_eq!(wait_terminal(&dir, 15_000).await, "SUCCEEDED");
+    let retired = runners(&root, RunnersCommand::Stop { job_id: None }).await;
+    assert_eq!(retired["runners"][0]["outcome"], serde_json::json!("retired"), "{retired}");
+    assert!(client::status(&dir).await.is_err(), "the retired runner answers nothing");
+
+    // a second stop reports the truth instead of inventing work, and an unknown id is a usage error
+    let again = runners(&root, RunnersCommand::Stop { job_id: Some("op-verb".into()) }).await;
+    assert_eq!(again["runners"][0]["runner"], serde_json::json!("gone"), "{again}");
+    let missing = teamagents_engine::v2::runners::execute_async(&RunnersOptions {
+        state_root: root.to_path_buf(),
+        command: RunnersCommand::Stop { job_id: Some("no-such-job".into()) },
+        json_out: true,
+    })
+    .await;
+    match missing {
+        Err((2, message)) => assert!(message.contains("no-such-job"), "{message}"),
+        other => panic!("an unknown job id must be exit 2: {other:?}"),
+    }
 }
 
 /// Point the runner spawn at the real teamagents binary (integration tests

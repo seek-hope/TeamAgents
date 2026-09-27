@@ -22,7 +22,10 @@
 (*     would be a readVerdict about a state nobody looked at;                     *)
 (*   * a settled job's runner goes away instead of idling forever             *)
 (*     (`SettledRunnerLeaves`, under weak fairness of the shutdown step —     *)
-(*     D-153's leaked runners are exactly the jobs whose runner never left).  *)
+(*     D-153's leaked runners are exactly the jobs whose runner never left);   *)
+(*   * the `runners` lever asks a runner to retire through its own gate, so a   *)
+(*     command in flight is never taken away (`NothingInFlightWasRetired`,     *)
+(*     D-250 — the gate is the safety, not a promise the lever makes).         *)
 (*                                                                           *)
 (* Code anchors: engine/src/jobs/mod.rs — the phase list (`Journal::is_termi` *)
 (* nal`) and the recovery contract in the module doc; engine/src/jobs/        *)
@@ -48,19 +51,23 @@
 (* tests and the live probes. `starts` is a real journal field, not a         *)
 (* monitor: the model's `started` is that counter.                            *)
 (*                                                                           *)
-(* The four counterfactuals are the defects the rules exist against:          *)
+(* The five counterfactuals are the defects the rules exist against:          *)
 (* `GuessNotRun` (a missing pid read as "did not run": the pre-D-91 shape),   *)
 (* `DoubleGo` (a duplicate GO starting a second command), `LateGoStarts` (a   *)
 (* late GO after CANCELLED_BEFORE_START starting it anyway) and               *)
 (* `SpawnBeforeAccept` (a command started before its acceptance was           *)
-(* persisted — the ordering `NoEffectBeforeAccept` is about).                 *)
+(* persisted — the ordering `NoEffectBeforeAccept` is about) and, added by     *)
+(* D-250, `RetireWithAChild` (the `runners` lever retiring a runner whose       *)
+(* command is in flight: what `NothingInFlightWasRetired` forbids).            *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets
 
 CONSTANTS GuessNotRun,       \* counterfactual: a dead runner is judged "did not run" without the journal
           DoubleGo,          \* counterfactual: a duplicate GO starts a second command
           LateGoStarts,      \* counterfactual: a GO after CANCELLED_BEFORE_START starts it anyway
-          SpawnBeforeAccept  \* counterfactual: the command starts before its acceptance is persisted
+          SpawnBeforeAccept, \* counterfactual: the command starts before its acceptance is persisted
+          RetireWithAChild   \* counterfactual (D-250): the `runners` lever retires a runner whose command is in
+                             \* flight — a listing tool taking work away
 
 Phases == {"READY", "START_ACCEPTED", "RUNNING", "CANCEL_REQUESTED",
            "SUCCEEDED", "FAILED", "CANCELLED", "CANCELLED_BEFORE_START", "OUTCOME_UNKNOWN"}
@@ -80,10 +87,11 @@ VARIABLES
   readJournal,    \* the journal a recovering client read (none = no read yet)
   readEffect,     \* the effect in that same snapshot: the classification is about the state it read
   readVerdict,    \* what that read classified the job as (none = no read yet)
-  lateGoStarted   \* monitor: a late GO after CANCELLED_BEFORE_START started a command
+  lateGoStarted,  \* monitor: a late GO after CANCELLED_BEFORE_START started a command
+  takenAway       \* monitor (D-250): a retire landed on a job whose command was in flight
 
 vars == <<journal, runner, started, effect, readJournal, readEffect, readVerdict>>
-monVars == <<vars, lateGoStarted>>
+monVars == <<vars, lateGoStarted, takenAway>>
 
 \* ------------------------------------------------------------------- actions --
 \* The driver starts the runner; the runner persists READY before it answers a client.
@@ -91,7 +99,7 @@ StartRunner ==
   /\ runner = "dead"
   /\ journal = "READY"
   /\ runner' = "alive"
-  /\ UNCHANGED <<journal, started, effect, readJournal, readEffect, readVerdict, lateGoStarted>>
+  /\ UNCHANGED <<journal, started, effect, readJournal, readEffect, readVerdict, lateGoStarted, takenAway>>
 
 \* A first GO: accept from READY, persist START_ACCEPTED, and only then spawn (§6.2).
 AcceptGo ==
@@ -99,13 +107,13 @@ AcceptGo ==
   /\ journal = "READY"
   /\ journal' = "START_ACCEPTED"
   /\ started' = started + 1
-  /\ UNCHANGED <<runner, effect, readJournal, readEffect, readVerdict, lateGoStarted>>
+  /\ UNCHANGED <<runner, effect, readJournal, readEffect, readVerdict, lateGoStarted, takenAway>>
 
 SpawnCommand ==
   /\ runner = "alive"
   /\ journal = "START_ACCEPTED"
   /\ journal' = "RUNNING"
-  /\ UNCHANGED <<runner, started, effect, readJournal, readEffect, readVerdict, lateGoStarted>>
+  /\ UNCHANGED <<runner, started, effect, readJournal, readEffect, readVerdict, lateGoStarted, takenAway>>
 
 \* The command's side effect, only while the journal says it is running.
 RunCommand ==
@@ -113,7 +121,7 @@ RunCommand ==
   /\ journal = "RUNNING"
   /\ effect = FALSE
   /\ effect' = TRUE
-  /\ UNCHANGED <<journal, runner, started, readJournal, readEffect, readVerdict, lateGoStarted>>
+  /\ UNCHANGED <<journal, runner, started, readJournal, readEffect, readVerdict, lateGoStarted, takenAway>>
 
 \* The command ended: the runner journals a terminal state (CANCELLED when a
 \* cancel was requested, so a real effect is never reported as a plain success).
@@ -121,21 +129,21 @@ Finish ==
   /\ runner = "alive"
   /\ journal \in {"RUNNING", "CANCEL_REQUESTED"}
   /\ \E outcome \in Outcomes : journal' = outcome
-  /\ UNCHANGED <<runner, started, effect, readJournal, readEffect, readVerdict, lateGoStarted>>
+  /\ UNCHANGED <<runner, started, effect, readJournal, readEffect, readVerdict, lateGoStarted, takenAway>>
 
 \* CANCEL that arrives before the command started: persist CANCELLED_BEFORE_START first.
 CancelBeforeStart ==
   /\ runner = "alive"
   /\ journal = "READY"
   /\ journal' = "CANCELLED_BEFORE_START"
-  /\ UNCHANGED <<runner, started, effect, readJournal, readEffect, readVerdict, lateGoStarted>>
+  /\ UNCHANGED <<runner, started, effect, readJournal, readEffect, readVerdict, lateGoStarted, takenAway>>
 
 \* CANCEL while it runs: a stop request, then the terminal state.
 RequestCancel ==
   /\ runner = "alive"
   /\ journal = "RUNNING"
   /\ journal' = "CANCEL_REQUESTED"
-  /\ UNCHANGED <<runner, started, effect, readJournal, readEffect, readVerdict, lateGoStarted>>
+  /\ UNCHANGED <<runner, started, effect, readJournal, readEffect, readVerdict, lateGoStarted, takenAway>>
 
 \* A duplicate GO is idempotent (`client::go`): the same journal comes back and no
 \* second command starts. The counterfactual is the defect; the monitor saturates
@@ -144,7 +152,7 @@ DuplicateGo ==
   /\ runner = "alive"
   /\ journal \in Unverifiable \cup Terminal
   /\ started' = IF DoubleGo /\ started < 2 THEN started + 1 ELSE started
-  /\ UNCHANGED <<journal, runner, effect, readJournal, readEffect, readVerdict, lateGoStarted>>
+  /\ UNCHANGED <<journal, runner, effect, readJournal, readEffect, readVerdict, lateGoStarted, takenAway>>
 
 \* A GO that arrives after CANCELLED_BEFORE_START is refused for good.
 RejectLateGo ==
@@ -161,7 +169,7 @@ StartLateGo ==
   /\ journal' = "START_ACCEPTED"
   /\ started' = IF started < 2 THEN started + 1 ELSE started
   /\ lateGoStarted' = TRUE
-  /\ UNCHANGED <<runner, effect, readJournal, readEffect, readVerdict>>
+  /\ UNCHANGED <<runner, effect, readJournal, readEffect, readVerdict, takenAway>>
 
 \* The counterfactual the ordering forbids: the command ran, but no acceptance
 \* was ever persisted, so the journal still says READY — invisible to recovery.
@@ -170,19 +178,31 @@ StartBeforeAccepting ==
   /\ journal = "READY"
   /\ SpawnBeforeAccept
   /\ effect' = TRUE
-  /\ UNCHANGED <<journal, runner, started, readJournal, readEffect, readVerdict, lateGoStarted>>
+  /\ UNCHANGED <<journal, runner, started, readJournal, readEffect, readVerdict, lateGoStarted, takenAway>>
 
 \* The runner dies (crash or kill). The journal keeps what it last said.
 CrashRunner ==
   /\ runner = "alive"
   /\ runner' = "dead"
-  /\ UNCHANGED <<journal, started, effect, readJournal, readEffect, readVerdict, lateGoStarted>>
+  /\ UNCHANGED <<journal, started, effect, readJournal, readEffect, readVerdict, lateGoStarted, takenAway>>
 
 \* D-153: once the job is settled a runner adds nothing, so it goes away.
 StopRunner ==
   /\ runner = "alive"
   /\ journal \in Terminal
   /\ runner' = "dead"
+  /\ UNCHANGED <<journal, started, effect, readJournal, readEffect, readVerdict, lateGoStarted, takenAway>>
+
+\* D-250: the `runners` lever asks a runner to retire. It goes through the runner's own gate, and that gate
+\* refuses while the runner has an active child (§6.2, `jobs/runner.rs`: "active command must stop before
+\* shutdown") — so the ask may land where the self-retire may land: a settled job, or one that never started.
+\* The band where a start was accepted (START_ACCEPTED / RUNNING / CANCEL_REQUESTED) is the design's live
+\* partner and is refused; the counterfactual is the defect the verb exists to avoid.
+RetireAsked ==
+  /\ runner = "alive"
+  /\ (RetireWithAChild \/ journal \in Terminal \/ journal = "READY")
+  /\ runner' = "dead"
+  /\ takenAway' = (takenAway \/ (journal \in Unverifiable))
   /\ UNCHANGED <<journal, started, effect, readJournal, readEffect, readVerdict, lateGoStarted>>
 
 \* Recovery (§6.3, A11): read the dead runner's journal and classify. READY is the
@@ -196,7 +216,7 @@ Recover ==
                      ELSE IF journal \in Unverifiable /\ GuessNotRun THEN "not-run"
                      ELSE IF journal \in Unverifiable THEN "unknown"
                      ELSE "ran"
-  /\ UNCHANGED <<journal, runner, started, effect, lateGoStarted>>
+  /\ UNCHANGED <<journal, runner, started, effect, lateGoStarted, takenAway>>
 
 Stutter == UNCHANGED monVars
 
@@ -214,6 +234,7 @@ Next ==
   \/ StartBeforeAccepting
   \/ CrashRunner
   \/ StopRunner
+  \/ RetireAsked
   \/ Recover
   \/ Stutter
 
@@ -226,6 +247,7 @@ Init ==
   /\ readEffect = FALSE
   /\ readVerdict = "none"
   /\ lateGoStarted = FALSE
+  /\ takenAway = FALSE
 
 \* Weak fairness asks the two ends of a job's life to happen: the runner starts,
 \* and a settled job's runner leaves (D-153).
@@ -241,6 +263,7 @@ TypeOK ==
   /\ readEffect \in BOOLEAN
   /\ readVerdict \in Verdicts
   /\ lateGoStarted \in BOOLEAN
+  /\ takenAway \in BOOLEAN
 
 \* A10: at most one authorized executor. `started` is the journal's own `starts`
 \* counter, so a second command — a duplicate GO, or a restart of a job whose
@@ -249,6 +272,10 @@ AtMostOneExecutor == started <= 1
 
 \* A10/A13: cancel before the start is final; no late or replayed GO starts it.
 LateGoIsRejected == lateGoStarted = FALSE
+
+\* D-250: the lever never takes a running command away — a retire only ever landed where the runner's gate
+\* allowed it (a settled job, or one that never started).
+NothingInFlightWasRetired == takenAway = FALSE
 
 \* A10/A11: "did not run" is a proof, not a guess — only a journal with no
 \* accepted start supports it, and the unverifiable band is OUTCOME_UNKNOWN. The

@@ -8,7 +8,7 @@ in [README.md](README.md); the fix ledger is in
 ## 0. Gate status (re-run 2026-09-27 at `fbe14968`)
 
 * `make verify-model-all` was re-run on this tree: all **22** configurations report `No error has been found`,
-  in 6 m 27 s (the newest seven are the retention rule, D-192, the task model's second task, D-218, the
+  in 6 m 29 s (the newest seven are the retention rule, D-192, the task model's second task, D-218, the
   approval window, D-225 — 14,225 states / 3,136 distinct — the config trust gate, D-244, which is
   exhaustive in 9 s (353,217 states generated / 25,376 distinct), and what a member's prompt carries, D-246,
   exhaustive in 2 s (612 states / 210 distinct); the retry budget, D-247, exhaustive in 1 s (63 states /
@@ -18,13 +18,13 @@ in [README.md](README.md); the fix ledger is in
   (1,694,761 states generated / 135,750 distinct), including the transition property
   `HandoversAreTheFullRange`). The largest is **`MC_task.cfg`** with 5,721,401 states generated / 606,904 distinct (its one-instance two-task sibling `MC_task_two.cfg` 612,802 / 56,074); `MC.cfg`
   itself generates 84,877 / 18,384, and the smallest, `MC_store.cfg`, 48 / 13; the job handshake's
-  `MC_jobs.cfg` generates 207 / 64 the inbox's `MC_inbox.cfg` 793 / 211 the write-failure latch's
+  `MC_jobs.cfg` generates 223 / 64 the inbox's `MC_inbox.cfg` 793 / 211 the write-failure latch's
   `MC_diskfull.cfg` 63 / 22 and the coordinator lock's `MC_coordinator.cfg` 51 / 16. Every count that predates this
   entry is identical to the previous run on the same tree — what a deterministic checker on unchanged inputs should print, and the
   reason these numbers describe the *material*, not a machine. (The line once called `MC.cfg` the largest and
   quoted `MC_task`'s numbers for it — a mis-attribution no gate looked at, found by re-running the target and
   reading its output per configuration, D-159.)
-* `make verify-model-counterexamples` was re-run: all **63** negative controls are refuted, each naming its
+* `make verify-model-counterexamples` was re-run: all **64** negative controls are refuted, each naming its
   property (`AuthorizedEffectsOnly`, `InputLandsAtTheBoundary`, `NoRequestAfterDeadline`, `NoTurnWithoutWork`
   twice, `SettlementFollowsATurnAfterTheLanding`, `NoForeignAdoption`, three temporal refutations, the
   four retention guards: `NoReferenceToEvictedFact`, `EvidenceIsNeverEvicted` and `OnlyOldFactsAreEvicted`
@@ -40,7 +40,8 @@ in [README.md](README.md); the fix ledger is in
   `ResolvedIsTheInstancesOwn`, `NoAttemptBeyondTheBudget` and `ParkOnlyAfterTheBudget`, and the two D-248 added:
   `StopsOnlyAfterAnswering` and `AStopIsAnsweredAndEndsTheSession`, and the two D-249 added:
   `HandoversAreTheFullRange` (an action property — the first one a refuted control targets here) and
-  `NothingIsServedTwice`), in 4 m 32 s.
+  `NothingIsServedTwice`, and the one D-250 added: `NothingInFlightWasRetired` — the `runners` lever never
+  takes a command that is running away from its user), in 10 m 28 s.
 * The wall clocks above are upper bounds, not machine-independent figures: they were measured while this
   machine carried a load average of about 140 on 20 cores (the standing host-cleanup item), and TLC is
   CPU-bound. The probe in A32 now records the same conditions next to its numbers for the same reason (D-188).
@@ -80,7 +81,9 @@ in [README.md](README.md); the fix ledger is in
   phases, the acceptance persisted before the spawn, a duplicate GO as a no-op, CANCEL before the start as final,
   and the recovery read as one atomic snapshot of journal and effect ("did not run" only for a READY journal, the
   unverifiable band is `unknown`), with `SettledRunnerLeaves` for D-153's rule that a settled job's runner goes
-  away. Its four negative controls each forget one rule and are refuted. Writing it produced the defect the
+  away. Its five negative controls each forget one rule and are refuted — the fifth, D-250's
+  `MC_jobs_retires_a_running_command.cfg`, is the `runners` lever retiring a runner whose command is in flight,
+  which `NothingInFlightWasRetired` forbids; the module is exhaustive in 2 s (223 states / 64 distinct). Writing it produced the defect the
   recipes could not see — an `UNCHANGED` list that made a counterfactual inert, so a control *verified* instead of
   refuting, with TLC reporting it only as a warning nothing grepped for — and the two targets now treat a
   `Warning:` as a failure.

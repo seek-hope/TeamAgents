@@ -19,6 +19,8 @@ usage: teamagents [--cwd DIR] [--state-root PATH] [--model KEY] [--full-auto]\n\
   teamagents instances terminate --id ID --yes  retire it (workspace and open work handled)\n\
   teamagents tasks [list] [--json]              the session's tasks\n\
   teamagents tasks cancel --id ID               cancel one; a delegator waiting on it is released\n\
+  teamagents runners [list] [--json]            the job runners this state root still carries\n\
+  teamagents runners stop [--id JOB]            ask them to retire (a runner with a running command refuses)\n\
   teamagents daemon [--state-root PATH] [--cwd DIR] [--model KEY] [--full-auto]\n\
   teamagents daemon --stop [--state-root PATH]   stop that session's daemon (no pid: the socket is the address)\n\
   teamagents init [--state-root PATH]   write config and prepare the state root\n\
@@ -35,6 +37,9 @@ teamagents or exec) and exit 0 done, 1 the session refused it, 2 usage. authorit
 spawned worker gets shell@workspace (§5.1) and how a capability is taken back; approvals\n\
 answers the decision that made exec exit 3; instances and tasks are the user-side\n\
 interventions of §5.4 (pause/resume/terminate, cancel a task) without starting the TUI.\n\
+runners works on a state root rather than a session — it asks each leftover jobs-runner\n\
+process to retire, which is what a state root carries after its session is gone; a runner\n\
+whose command is still running refuses, so this never takes work away.\n\
 The Leader builds the team through spawn/delegate/send/wait; entry points from older\n\
 releases (TeamSpec files, line mode, session resume) are not supported.\n\
 First run: teamagents init -> set the credential env var -> teamagents doctor -> teamagents.";
@@ -237,7 +242,7 @@ fn parse_args() -> Args {
                 i += 1;
             }
             "serve" | "init" | "doctor" | "validate" | "sessions" | "version" | "exec" | "authority" | "approvals"
-            | "instances" | "tasks" => {
+            | "instances" | "tasks" | "runners" => {
                 if args.command.is_some() {
                     reject("two entry points were given: pick one (teamagents --help lists them)");
                 }
@@ -259,7 +264,7 @@ fn parse_args() -> Args {
             "--json"
                 if matches!(
                     args.command.as_deref(),
-                    Some("exec" | "authority" | "approvals" | "instances" | "tasks")
+                    Some("exec" | "authority" | "approvals" | "instances" | "tasks" | "runners")
                 ) =>
             {
                 if args.exec_json {
@@ -290,7 +295,7 @@ fn parse_args() -> Args {
                 args.confirmed = true;
                 i += 1;
             }
-            "--id" if matches!(args.command.as_deref(), Some("approvals" | "instances" | "tasks")) => {
+            "--id" if matches!(args.command.as_deref(), Some("approvals" | "instances" | "tasks" | "runners")) => {
                 if args.approval_id.is_some() {
                     given_twice("--id");
                 }
@@ -729,6 +734,31 @@ fn run_tasks(args: &Args) -> i32 {
     })
 }
 
+/// `teamagents runners`: what a state root still carries and how to retire it (D-250).
+///
+/// Deliberately not a client of the running session: the leftover this exists for is the one whose session is
+/// gone. It talks to the *runners* (whose token socket is in each job directory's `job.json`), so a session
+/// that is live is only reported, never required.
+fn run_runners(args: &Args) -> i32 {
+    use teamagents_engine::v2::runners::{RunnersCommand, RunnersOptions};
+    let state_root = args.state_root.clone().map(PathBuf::from).unwrap_or_else(teamagents_engine::v2_root);
+    let command = match (args.positional.as_deref().unwrap_or("list"), args.approval_id.clone()) {
+        ("list", None) => RunnersCommand::List,
+        ("stop", job) => RunnersCommand::Stop { job_id: job },
+        ("list", Some(_)) => {
+            eprintln!("runners list takes no --id; use `runners stop --id JOB`");
+            return 2;
+        }
+        (other, _) => {
+            eprintln!(
+                "runners: unknown command {other:?}; use `teamagents runners [list]` or `runners stop [--id JOB]`"
+            );
+            return 2;
+        }
+    };
+    teamagents_engine::v2::runners::run(RunnersOptions { state_root, command, json_out: args.exec_json })
+}
+
 /// Say it out loud when `--full-auto` could not apply: the mode belongs to the
 /// session, which was started earlier (D-41). Silence here was how a documented
 /// flag became a no-op that nobody noticed.
@@ -974,6 +1004,7 @@ fn main() {
         Some("approvals") => run_approvals(&args),
         Some("instances") => run_instances(&args),
         Some("tasks") => run_tasks(&args),
+        Some("runners") => run_runners(&args),
         _ if args.plain || args.resume.is_some() || args.team.is_some() => {
             eprintln!("--plain/--resume/--team are no longer supported; use teamagents (TUI) or teamagents exec.");
             2

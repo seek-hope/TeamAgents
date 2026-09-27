@@ -20,6 +20,51 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-250 `teamagents runners`: a state root's leftover command runners, and the gate that keeps it safe (2026-09-27)
+
+ACCEPTANCE's known gap recorded the last thing a user could not do about their own state root: "a killed session
+leaves one *runner* per in-flight job on purpose (the live partner of §6.2/§6.3), a user can only retire it by
+reopening that session — and a lever that stops a state root's runners is new surface, with the same identity
+question". The question is real (the runner is a detached process the product never recorded a pid for), and the
+measured cost is real too: this host carried **1,398** leftover runners, 1,397 of them orphaned, burning 13.5
+cores (D-189). **Decided: add the lever**, and let it dissolve the identity question instead of answering it.
+
+**The token socket is the address.** Every job directory holds `job.json`, whose token names the runner's
+abstract socket (§6.2), so `runners` talks to the runner — the same way `daemon --stop` talks to the daemon
+(D-248) — and there is no pid to record, guess or reuse. `teamagents runners [list] [--json]` prints one row per
+job directory of the state root with the journal's own state, whether a runner still answers, and whether the
+command's child is still alive; `runners stop [--id JOB]` asks each (or one) to retire, and reports per job what
+happened: `retired`, `no runner`, `refused: <reason>` or `unreachable: <reason>`. It is deliberately *not* a
+client of the session: the leftover it exists for is the one whose session is gone, so the report says
+`session_id: null` when no daemon answers (`session_id` is present-and-null, never invented).
+
+**The safety is the runner's own gate, not a new promise.** `shutdown` is refused while the runner has an active
+child (`active command must stop before shutdown`, `jobs/client.rs`), so the lever cannot take a command that is
+running away from its user — a state root's in-flight work is the design's live partner, and the verb reports it
+instead of ending it. That is also why the verb needs no `--yes`: nothing it can do is destructive.
+
+**Measured** (`review/dogfood/runners.py`, credential-free, in `make probe-offline`, ~10 s, real session, real
+command, real processes): the running command is listed with `state: RUNNING`, `runner: live` and the child's pid
+and **survives** a `runners stop` (`outcome: refused: active command must stop before shutdown`, the command's
+marker still being written); the daemon is then SIGTERMed and the same lever still works with `session_id: null`
+(the case it exists for); the command ends on its own — the *runner* journals `SUCCEEDED` with no daemon in the
+picture — and the next `runners stop` reports `retired` with **0 runner processes left**; an unknown job id is
+exit 2 naming it. The deterministic half is
+`jobs_runner::the_runners_verb_lists_a_state_roots_jobs_and_never_breaks_a_running_command` (a real job dir, a
+real runner): it asserts the refusal *and* that the job is still `RUNNING` afterwards. **That this is the
+design and not a coincidence was measured**: with the stop path mutated to bypass the runner's gate and signal
+the recorded child's process group instead (the shape an implementation that reached for the pid would have),
+the same test fails — the killed command's journal ends `FAILED` and `wait_terminal` says so — and the mutation
+was reverted byte-for-byte before this entry (the live probe's `still running=True` check fails the same way).
+
+Ceiling: the lever is **per state root** (A33) — it sweeps the root you name, which is the user's own root or
+whatever `--state-root` points at; the host-wide census of strangers' leftovers stays `review/host_cleanup.py`'s
+job, a review tool whose acting step is the operator's per-pid `kill` (D-189). A runner from a build whose
+protocol this one does not speak is reported `unreachable` and falls back to that same documented `kill <pid>`
+(never a pattern kill, D-148). And it never signals a *process group*: stopping a service a settled command left
+behind is the separate lever ACCEPTANCE's known gap still carries, and it needs its own identity rule because
+`signal_group` verifies the recorded child — a leader that has exited has nothing left to verify.
+
 ## D-249 `exec --stream-json`: the events while the run waits, then the report (2026-09-27)
 
 `docs/PRODUCT-COMPARISON.md` §2 listed streaming as the third item in decision order — Codex's `codex exec
