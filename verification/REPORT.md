@@ -5,10 +5,10 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
-## 0. Gate status (re-run 2026-09-27 at `6363b312`)
+## 0. Gate status (re-run 2026-09-27 at `10d77a0a`)
 
 * `make verify-model-all` was re-run on this tree: all **19** configurations report `No error has been found`,
-  in 7 m 21 s (the newest four are the retention rule, D-192, the task model's second task, D-218, the
+  in 4 m 33 s (the newest four are the retention rule, D-192, the task model's second task, D-218, the
   approval window, D-225 — 14,225 states / 3,136 distinct — and the config trust gate, D-244, which is
   exhaustive in 9 s: 353,217 states generated / 25,376 distinct). The largest is **`MC_task.cfg`** with 5,721,401 states generated / 606,904 distinct (its one-instance two-task sibling `MC_task_two.cfg` 612,802 / 56,074); `MC.cfg`
   itself generates 84,877 / 18,384, and the smallest, `MC_store.cfg`, 48 / 13; the job handshake's
@@ -29,7 +29,7 @@ in [README.md](README.md); the fix ledger is in
   `OfferedToolsAreAuthorized`, and the four D-225 added: `NoLateEffect`, `ApprovalDecisionIsFinal`,
   `TerminalOperationHasNoPendingApproval` and `ParkedHasAnApprovalRow`, and the five D-244 added:
   `NothingFromTheProjectUntrusted`, `UserDefinitionsNeverOverridden`, `PolicyClassesStayTheUsers`,
-  `TrustOnlyFromTheUser` and `RefusalsAreNamed`), in 5 m 25 s.
+  `TrustOnlyFromTheUser` and `RefusalsAreNamed`), in 3 m 27 s.
 * The wall clocks above are upper bounds, not machine-independent figures: they were measured while this
   machine carried a load average of about 140 on 20 cores (the standing host-cleanup item), and TLC is
   CPU-bound. The probe in A32 now records the same conditions next to its numbers for the same reason (D-188).
