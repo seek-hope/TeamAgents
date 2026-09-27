@@ -43,7 +43,7 @@ audits — each one a claim the tree makes about itself, each with the decision 
   table keeps in force (D-170); `review/readme_zh.py` holds `README.zh-CN.md` to `README.md` on the heading
   skeleton, the in-repository links and the CLI surface (D-134); `review/doc_flags.py` holds the three user-facing documents (the README, the user guide and the install guide) and the parsers against the CLI's own help text — a documented flag must exist, a parsed flag must be advertised, and a line marked as history is a note (D-135/D-136/D-190); `review/exec_report.py` does the same for the five `--json` reports (D-154) and
   `review/tui_keys.py` for the TUI's keys (D-157); `review/requirement_trace.py` keeps the baseline's Q-rows
-  and `docs/ACCEPTANCE.md`'s rows in step (D-137).
+  and `docs/ACCEPTANCE.md`'s rows in step (D-137), and requires every row of those two tables to have exactly three cells (D-198: a stray or a lost `|` had shifted three rows unnoticed).
 * **the generated references**: `review/event_catalogue.py` (`docs/EVENTS.md` vs the emitted events, D-125),
   `review/protocol_catalogue.py` (`docs/PROTOCOL.md` vs the daemon's dispatchers and the row-field table,
   D-126/D-173), `review/tool_catalogue.py` (`docs/TOOLS.md` vs the tool schemas, D-127) and

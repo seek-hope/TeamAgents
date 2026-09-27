@@ -14,6 +14,9 @@ probes or measurements that cover it — and this script is what keeps it comple
   actually lists (a row for a requirement that no longer exists is the same defect in reverse);
 * every row cites something: an acceptance item (`A01`–`A36`), a decision (`D-<n>`), or a path that exists in
   the tree, so a row cannot be a placeholder.
+* every row *is* a row of the table it belongs to: exactly three cells, so a stray `|` inside a cell (or a lost
+  trailing one) cannot split it — the rendered table would gain a column and the reader would see the row shifted
+  (D-198 found `A03`, `A14` and `A25` like that, one of them cut off mid-sentence).
 
 The same two rules hold for the acceptance matrix itself, which is the other half of the definition of done
 (§16: "A01–A36 have automated evidence"): every `A<n>` in the baseline's §12 matrix has exactly one row in
@@ -46,6 +49,8 @@ ROW = re.compile(r"^\| Q(\d+) \| ([^|]*)\| ([^|]*)\|", re.M)
 A_ROW = re.compile(r"^\| (A\d\d) \| ([^|]*)\| ([^|]*)\|", re.M)
 A_ITEM_ROW = re.compile(r"^\| (A\d\d) \|", re.M)
 A_ITEM = re.compile(r"\bA\d\d\b")
+# a cell separator is a pipe that is not escaped: `\|` inside a cell is how a literal pipe is written
+CELL = re.compile(r"(?<!\\)\|")
 D_ITEM = re.compile(r"\bD-\d+\b")
 PATH = re.compile(r"`([A-Za-z0-9_./-]+\.(?:md|py|rs|json|toml|sh|jsonl))`")
 
@@ -80,6 +85,19 @@ def item_rows(acceptance: pathlib.Path) -> dict:
     return {m.group(1): (m.group(2).strip(), m.group(3).strip()) for m in A_ROW.finditer(section)}
 
 
+def table_shape(where: str, section: str) -> list:
+    """Rows in `section` that are not exactly three cells (a stray or lost `|` splits or merges them)."""
+    out = []
+    for line in section.split("\n"):
+        if not line.startswith("|") or set(line.strip()) <= set("|-: "):
+            continue
+        cells = len(CELL.split(line)) - 2  # the leading and trailing empty parts are not cells
+        if cells != 3:
+            out.append(f"{where}: a table row has {cells} cell(s) instead of 3 — a stray `|` inside a cell (or a "
+                       f"lost trailing one) shifts the row in the rendered table: {line[:80]}…")
+    return out
+
+
 def duplicates(pattern, text: str, label) -> list:
     """Rows that appear more than once (the dict parse would silently keep the last).
 
@@ -109,6 +127,10 @@ def main() -> int:
         findings.append(f"{baseline} has no '## 1. Confirmed requirements' section to read")
     if not acceptance_has_section:
         findings.append(f"{acceptance_path} has no '{SECTION}' section to read")
+    if acceptance_has_section:
+        findings += table_shape(SECTION, section_of(acceptance, SECTION))
+    if A_SECTION in acceptance:
+        findings += table_shape(A_SECTION, section_of(acceptance, A_SECTION))
     wanted, rows = baseline_requirements(baseline), trace_rows(acceptance_path)
     if not wanted:
         findings.append("the baseline's §1 table lists no requirements — is the table still a table?")

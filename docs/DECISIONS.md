@@ -18,6 +18,34 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-198 Three acceptance rows were not rows of their table (2026-09-27)
+
+`docs/ACCEPTANCE.md`'s two tables are the two halves of the definition of done — the Q rows and the A matrix —
+and `review/requirement_trace.py` (D-137) checks their coverage: every baseline requirement and item has exactly
+one row, no row is a placeholder, no row is duplicated. What it never checked was whether a row *is* a row of its
+table: its regexes take the first three cells and ignore whatever follows, so a stray `|` inside a cell — or a
+lost trailing one — passed in silence. Measured 2026-09-27: **three rows** were like that. `A14` and `A25` each
+carried a fourth cell (evidence text after a stray pipe, rendered as a spurious extra column), and `A03` was
+worse — its row had **no trailing pipe and was cut off mid-sentence**, ending at "**The offer itself" — so a
+reader of the matrix met a dangling fragment where the D-143 story should have closed.
+
+**Fixed**: `A14`'s and `A25`'s second evidence cells are merged into their evidence cells; `A03`'s sentence is
+completed with what D-143/D-102 recorded (the per-request surface witness: the probe starts the daemon with
+`TEAMAGENTS_LOG_SURFACE=1` and the driver writes `driver: surface <instance> shell=yes\|no tools=…`, so the next
+run can tell "never offered" from "offered and not used" without inferring it) and the row is closed.
+
+**Guarded** (`review/requirement_trace.py`, in `make hygiene`): every row of the two tables must have exactly
+three cells, where a separator is a pipe that is not escaped (`\|` is how a literal pipe is written inside a
+cell); both a stray pipe and a lost trailing one are findings, each with its cell count.
+
+**Measured** (2026-09-27): the audit is green on the repaired ledger (19 requirement rows and 36 matrix rows),
+and its two controls fire: splitting `A33`'s scenario cell with a pipe reports "4 cell(s) instead of 3", and
+removing `A16`'s trailing pipe reports "2 cell(s) instead of 3".
+
+Ceiling: this is a shape check. A three-cell row whose evidence is wrong still passes, and the audit cannot tell
+whether text after a pipe was meant as a cell or as content — D-198's repairs are judgement calls, which is why
+each one is described here.
+
 ## D-197 The probes' assertions were compared with their claims, and the mapping is gated (2026-09-27)
 
 The model-choice sweep (recorded in `review/dogfood/README.md`) answered "does a probe depend on a path the model
