@@ -18,6 +18,32 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-235 The exit-code contract was pinned in code and unchecked in the documents (2026-09-27)
+
+The headless client's exit codes are the product's most machine-read contract: a CI script branches on them.
+They are stated in prose **twice** — `README.md`'s "Exit codes: `0` settled, `1` failed or unfinished, `3` an
+approval is pending …, `124` the `--timeout` deadline passed, `2` usage or …" and `docs/USER-GUIDE.md`'s table
+beside the `exec` section — and implemented in `engine/src/v2/exec.rs`'s `End::exit_code`, whose values the
+code-level test `exit_codes_follow_the_documented_contract` asserts. The test's name says "documented"; what it
+pins is the *table*. Measured 2026-09-27: nothing compared the two sides, so a changed table (or a changed table
+*and* its test) would leave both documents telling a script the old contract.
+
+**Fixed**: `review/doc_flags.py` — the audit that already holds the three user-facing documents against the CLI's
+own help — compares the two sets of *values*, never the semantics: every code `End::exit_code` can return, plus
+the usage code 2 that `engine/src/main.rs` exits with, must be named by a document, and no document may name a
+code the client cannot return. Missing either side is a finding (a rule that reads one side must not pass by
+reading nothing), and the rule checks its own two assumptions — that `exec.rs` still has `End::… => N` arms and
+that `main.rs` still exits 2 — so a refactor of either is reported instead of silently weakening the comparison.
+**Control**: `--doc` on a copy of the user guide with its `124` changed to `125` reports both directions at once
+("the client can exit 124, and no document names it"; "a document names exit code 125, which the client cannot
+return").
+
+Ceiling: the comparison is over the *set* of codes, so a document can attach a code to the wrong *meaning* and
+pass (the semantics stay prose, and the user guide's table is where they are read); the usage code is assumed to
+be 2 and the assumption is asserted rather than derived, because it comes from the parser's own
+process::exit calls rather than from a table; and the client verbs' smaller sets (`authority`/`approvals` name `0`/`1`/`2`) are
+subsets of the same set, so the rule cannot tell that a verb documented the headless codes by mistake.
+
 ## D-234 The audit index stated counts that no longer held (2026-09-27)
 
 `review/README.md` is the page a reviewer reads to know what each audit does; its `citations.py` row states two

@@ -40,6 +40,16 @@ scope on purpose: `docs/ACCEPTANCE.md` records the flags this build *removed*, `
 names other products' flags and a proposed one, and `docs/DECISIONS.md`, `docs/DEVELOPMENT.md`, `AGENTS.md`
 and `review/*.md` quote the scripts and tools this repository runs.
 
+**D-235 added the exit-code contract.** The headless client's exit codes are a product contract stated in prose
+twice — `README.md`'s "Exit codes: `0` settled, …" sentence and `docs/USER-GUIDE.md`'s table beside the `exec`
+section — and implemented in `engine/src/v2/exec.rs`'s `End::exit_code`, whose values the code-level test
+`exit_codes_follow_the_documented_contract` asserts. So the *code* was pinned by a test and the *documents* were
+the unchecked half: measured 2026-09-27, nothing compared them. The rule compares the two sets of *values* (never
+the semantics): every code `End::exit_code` can return, plus the usage code 2 that `engine/src/main.rs` exits
+with, must be named by a document, and no document may name a code the client cannot return. A missing side is a
+finding too, so the rule cannot pass by reading nothing. Control: `--doc` on a copy of the user guide with its
+`124` changed to `125` reports both directions at once.
+
 Ceiling: the parser half reads match-arm *patterns*, so a flag accepted through a different shape (a loop over
 `["--a", "--b"]`, say) is invisible to it; and neither half checks that a help-advertised flag is actually
 honoured at runtime.
@@ -51,7 +61,15 @@ import sys
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 CLI_SOURCE = REPO / "engine/src/main.rs"
+EXEC_SOURCE = REPO / "engine/src/v2/exec.rs"
 DOCS = ["README.md", "docs/USER-GUIDE.md", "docs/INSTALL.md"]
+# (D-235) The headless exit codes are a product contract in prose (the README's sentence, the user guide's table)
+# and in code (`End::exit_code`, with `exit_codes_follow_the_documented_contract` asserting *its* values). Nothing
+# compared the two sides: the code-level test pins the table, so the table is the source of truth and the
+# documents were the unchecked half (measured 2026-09-27). Only the *values* are compared, never the semantics.
+EXIT_ROW = re.compile(r"^\|\s*`(\d+)`\s*\|", re.M)
+EXIT_ARM = re.compile(r"End::\w+(?:\s*\|\s*End::\w+)*(?:\s*if[^=]*)?\s*=>\s*(\d+)")
+USAGE_EXIT = re.compile(r"process::exit\(2\)")
 # A line that says it is about an earlier release states history, not a claim about this build (D-190). Prose
 # wraps, so the *window* is the line and the two above it: `docs/INSTALL.md`'s v0.1.2 note names the flags it
 # had on its second line.
@@ -137,14 +155,41 @@ def named_flags() -> set:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--list-served", action="store_true", help="print the flags the CLI's help lists")
+    parser.add_argument("--doc", action="append", default=[], metavar="PATH",
+                        help="documents to read instead of the default three (a copy is the control)")
     args = parser.parse_args()
+    docs = args.doc or DOCS
     served = served_flags()
     verbs, pairs = served_verbs()
     if args.list_served:
         print("served: " + " ".join(sorted(served)))
     findings, history = [], []
     scanned, scanned_verbs = 0, 0
-    for name in DOCS:
+    # D-235: the exit-code contract, both ways — every code the client can return is named by the documents, and
+    # no document names a code it cannot return. A missing side is a finding too, so the rule cannot pass by
+    # reading nothing.
+    arms = EXIT_ARM.findall(EXEC_SOURCE.read_text(errors="replace"))
+    if not arms:
+        findings.append("engine/src/v2/exec.rs: no `End::… => N` arm found, so the exit codes cannot be read")
+    if not USAGE_EXIT.search(CLI_SOURCE.read_text(errors="replace")):
+        findings.append("engine/src/main.rs: no `process::exit(2)` found, so the usage code this audit assumes "
+                        "is gone — teach the rule where a usage error exits now")
+    implemented = {int(code) for code in arms} | {2}
+    documented = set()
+    for name in docs:
+        text = (REPO / name).read_text(errors="replace")
+        for match in EXIT_ROW.finditer(text):
+            documented.add(int(match.group(1)))
+        for line in text.split("\n"):
+            if line.startswith("Exit codes") or line.startswith("Exit code "):
+                documented |= {int(code) for code in re.findall(r"`(\d+)`", line)}
+    for code in sorted(implemented - documented):
+        findings.append(f"the client can exit {code}, and no document names it: the exit code is a contract a "
+                        "script reads (docs/USER-GUIDE.md's table, README's sentence — D-235)")
+    for code in sorted(documented - implemented):
+        findings.append(f"a document names exit code {code}, which the client cannot return "
+                        "(End::exit_code in engine/src/v2/exec.rs plus the usage code — D-235)")
+    for name in docs:
         lines = (REPO / name).read_text().splitlines()
         for number, line in enumerate(lines, 1):
             window = " ".join(lines[max(0, number - 1 - HISTORY_WINDOW):number]).lower()
