@@ -27,6 +27,15 @@
 (* when the request was admitted before the close (Request then ImportOp), and *)
 (* its usage then settles on that goal — honest accounting, not new work.     *)
 (*                                                                          *)
+(* Counterfactual constants (D-218): each one TRUE is a plausible mistake the  *)
+(* invariants must refute, so the module's claims are falsifiable rather than  *)
+(* merely stated — the shape V2Jobs/V2Control use. `DelegateToSettledGoal`      *)
+(* drops the ACTIVE-goal gate delegation has (finding V-G1), `BillSettledGoal` *)
+(* lets a request bill a settled goal, `AllowUnorderedDependency` drops both    *)
+(* dependency conditions (a prerequisite that exists and is not the task       *)
+(* itself), and `LeaveTasksOnTerminate` drops the terminate cascade. The four   *)
+(* controls in verification/README.md set exactly one TRUE each.               *)
+(*                                                                          *)
 (* Known boundary (not enforced by the code, see verification/README.md): a    *)
 (* goal may close while its own tasks are still open — complete_goal checks    *)
 (* operations only. Those tasks stay open with a settled goal, and the requests *)
@@ -45,7 +54,11 @@ EXTENDS Naturals, FiniteSets
 CONSTANTS Tasks,        \* task slots, e.g. {"t1","t2"}
           Instances,    \* instances, e.g. {"L","W"}
           Goals,        \* goals, e.g. {"g1"}
-          MaxOps        \* open-operation bound per goal (keeps the state finite)
+          MaxOps,       \* open-operation bound per goal (keeps the state finite)
+          DelegateToSettledGoal,    \* counterfactual (D-218): delegation ignores the goal's status (finding V-G1)
+          BillSettledGoal,          \* counterfactual: a request bills a goal that has already settled
+          AllowUnorderedDependency, \* counterfactual: a prerequisite may be the task itself or a later one
+          LeaveTasksOnTerminate     \* counterfactual: terminating an instance leaves its open tasks open
 
 ASSUME Tasks # {} /\ Instances # {} /\ Goals # {} /\ MaxOps > 0
 
@@ -89,9 +102,9 @@ Delegate(t, who, asg, g, ds) ==
   /\ taskStatus[t] = "none"
   /\ who \in Instances \cup {"user"}        \* the system does not delegate
   /\ asg \in Instances /\ live[asg]
-  /\ g \in Goals /\ goalStatus[g] = "ACTIVE"   \* a settled goal takes no new work
-  /\ ds \subseteq Tasks /\ t \notin ds
-  /\ \A d \in ds : taskStatus[d] # "none"
+  /\ g \in Goals /\ (DelegateToSettledGoal \/ goalStatus[g] = "ACTIVE")   \* a settled goal takes no new work
+  /\ ds \subseteq Tasks
+  /\ (AllowUnorderedDependency \/ (t \notin ds /\ \A d \in ds : taskStatus[d] # "none"))
   /\ taskStatus' = [taskStatus EXCEPT ![t] = "PENDING"]
   /\ assignee' = [assignee EXCEPT ![t] = asg]
   /\ requester' = [requester EXCEPT ![t] = who]   \* the delegator is the requester
@@ -151,7 +164,8 @@ ParkTasks ==
 Terminate(i) ==
   /\ i \in Instances /\ live[i]
   /\ live' = [live EXCEPT ![i] = FALSE]
-  /\ LET gone == { t \in Tasks : assignee[t] = i /\ taskStatus[t] \in OpenTask } IN
+  /\ LET gone == IF LeaveTasksOnTerminate THEN {}
+                 ELSE { t \in Tasks : assignee[t] = i /\ taskStatus[t] \in OpenTask } IN
      /\ taskStatus' = [ t \in Tasks |-> IF t \in gone THEN "CANCELLED" ELSE taskStatus[t] ]
      /\ lastActor' = [ t \in Tasks |-> IF t \in gone THEN "user" ELSE lastActor[t] ]
      /\ returnPath' = [ t \in Tasks |-> IF t \in gone THEN "absent" ELSE returnPath[t] ]
@@ -168,28 +182,25 @@ CreateGoal(g, i) ==
                 returnPath, openOps, live, requestGoal, clock>>
 
 \* The goal this instance's next request resolves to (budget_goal, A18): its own
-\* active goal while that is ACTIVE, else the goal of the single oldest open
-\* task it serves — running work before pending, rowid order in the code — and
-\* only while *that* goal is ACTIVE. A settled oldest task therefore makes the
-\* instance run unbilled even when a newer task carries a live goal: the code
-\* looks at one task, not at the best one.
-\* The goal this instance's next request resolves to (budget_goal, A18): its own
-\* active goal while that is ACTIVE, else the goal of an open task it serves —
-\* and only while *that* goal is ACTIVE. A settled goal is never a billing
-\* target, whatever the fallback picks.
-\* (Modelled loosely on purpose: the code consults the single oldest open task,
-\* so a stale oldest task leaves the instance unbilled even when a newer task
-\* carries a live goal. The gate is identical either way, so the model keeps the
-\* gate and records the pick-order nuance in the header note.)
-TaskGoalOf(i) == taskGoal[CHOOSE t \in Tasks : assignee[t] = i /\ taskStatus[t] \in OpenTask]
-
+\* active goal while that is ACTIVE, else the goal of the *oldest* open task it
+\* serves — running work before pending, rowid order in the code — and only while
+\* that goal is ACTIVE. A settled oldest task therefore leaves the instance
+\* unbilled even when a newer task carries a live goal, because the code looks at
+\* one task and not at the best one. The pick is modelled exactly, by delegation
+\* order (`created`): it is what the code does, and it is also what keeps the
+\* model symmetric under permuting `Tasks`, since the chosen task is then a
+\* function of the state rather than of TLC's internal ordering (D-218).
 HasAnOpenTask(i) == \E t \in Tasks : assignee[t] = i /\ taskStatus[t] \in OpenTask
 
 ResolvedGoal(i) ==
-  IF activeGoal[i] \in Goals /\ goalStatus[activeGoal[i]] = "ACTIVE" THEN activeGoal[i]
-  ELSE IF HasAnOpenTask(i) /\ TaskGoalOf(i) \in Goals
-          /\ goalStatus[TaskGoalOf(i)] = "ACTIVE"
-       THEN TaskGoalOf(i)
+  IF activeGoal[i] \in Goals /\ (BillSettledGoal \/ goalStatus[activeGoal[i]] = "ACTIVE")
+    THEN activeGoal[i]
+  ELSE IF HasAnOpenTask(i) THEN
+        LET open == { u \in Tasks : assignee[u] = i /\ taskStatus[u] \in OpenTask }
+            oldest == CHOOSE t \in open : \A u \in open : created[u] >= created[t]
+        IN IF taskGoal[oldest] \in Goals /\ (BillSettledGoal \/ goalStatus[taskGoal[oldest]] = "ACTIVE")
+           THEN taskGoal[oldest]
+           ELSE "none"
   ELSE "none"
 
 \* begin_request: the request is admitted (and its budget reserved) under that

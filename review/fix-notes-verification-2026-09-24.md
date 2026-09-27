@@ -40,6 +40,11 @@ Re-run commands: `make verify-model-all` (exhaustive configurations for the modu
 - **Spec counterexamples** (re-runnable before the fix): `RegisteredWorkNeedsAnActiveGoal is violated`
   (a task delegated before its goal existed) and `ClosedGoalTakesNoNewOperation is violated` (a settled goal
   still opening a new operation).
+  Since D-218 the first is re-runnable again: the configuration the refutation lived in was renamed into the
+  *positive* `MC_task.cfg` when the fix landed, so nothing refuted `RegisteredWorkNeedsAnActiveGoal` until D-218
+  restored the shape as the counterfactual `DelegateToSettledGoal` and the control
+  `MC_task_delegates_to_settled.cfg`, which reports the same invariant. The second property went with the
+  pre-rename spec.
 - **Root cause**: `budget_goal` returned the instance's `active_goal_id` (or the goal of its oldest open task)
   without looking at the goal status; `delegate_task` only checked that `goal_id` existed; and
   `complete_goal`/`block_goal` left the instance pointer in place, so new turns kept billing a settled goal.

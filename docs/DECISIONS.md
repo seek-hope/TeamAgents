@@ -18,6 +18,65 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-218 The task model's claims were unfalsifiable, and two of them were vacuous (2026-09-27)
+
+Every other modelled surface carries counterfactual constants and negative controls (V2Jobs four, V2Retention
+four, V2Inbox five, V2DiskFull four, V2Authority three, V2Coordinator three, V2Store one) and `V2Task.tla` — the
+module behind delegation, settlement and the `budget_goal` rule — carried none: no configuration refuted any of
+its eleven claims, and the one refutation the fix ledger rests on had been *renamed away*.
+`review/fix-notes-verification-2026-09-24.md` records finding V-G1 as "the expected-counterexample configuration
+`MC_task_contract.cfg`, renamed since to `MC_task.cfg`": the pre-fix shape became the positive configuration, so
+after the fix nothing refuted `RegisteredWorkNeedsAnActiveGoal` — the property the finding *is about* — and the
+ledger's own words, "re-runnable before the fix", stopped being true for it. Two of the eleven were weaker
+still: with `Tasks = {"t1"}` and `ds \subseteq Tasks, t \notin ds`, a prerequisite can only be the empty set, so
+`DependenciesPointBackwards` and `NoSelfDependency` held for want of anything to check.
+
+**Fixed as four counterfactual constants**, one per plausible mistake, each named so TRUE *is* the mistake (the
+V2Jobs/V2Control shape): `DelegateToSettledGoal`, `BillSettledGoal`, `AllowUnorderedDependency` and
+`LeaveTasksOnTerminate`. Four controls set exactly one TRUE, each refuting one named claim, measured 2026-09-27
+at 1–2 s apiece and with no TLC warning:
+
+| Control | What it forgets | Invariant TLC reports |
+|---|---|---|
+| `MC_task_delegates_to_settled.cfg` | the ACTIVE-goal gate on delegation (V-G1's shape, restored) | `RegisteredWorkNeedsAnActiveGoal` |
+| `MC_task_bills_settled.cfg` | the ACTIVE gate on the `budget_goal` fallback | `RequestsResolveToActiveGoals` |
+| `MC_task_unordered_dependency.cfg` | both dependency conditions (a prerequisite that exists and is not the task itself) | `DependenciesPointBackwards` (and, in that state, `NoSelfDependency`) |
+| `MC_task_terminate_leaves_tasks.cfg` | the termination cascade over the instance's open tasks | `NoOpenTaskOnDeadAssignee` |
+
+**And the vacuity**: `MC_task_two.cfg` is the same rules with two task slots at one instance and one goal —
+612,802 states / 56,074 distinct in 8 s — which is what puts a real prerequisite in the graph rather than the
+empty one. `MC_task.cfg` keeps its two-instance two-goal coverage and is unchanged by this entry: 5,721,401
+states / 606,904 distinct, byte-identical to the number the report already carried, which is the check that
+rewriting the `budget_goal` pick was behaviour-preserving for a single task.
+
+**The frontier the README named is now measured, and the answer is not symmetry.** The README and the report both
+said a second task "needs symmetry or a stronger abstraction". Symmetry was tried with a sound group — the
+block-preserving permutations of `Tasks \cup Instances \cup Goals`, which TLC accepts only when those constants
+are *model values* (a string-valued constant is refused: `Symmetry function must have model values as domain and
+range`) — and it cut the distinct count by only about 1.6×: 2 tasks / 2 instances / 2 goals reached 34.2M
+generated / 7.9M distinct after five minutes with the queue still growing without it, and 31.5M / 5.0M after
+five minutes with it. Most states are not in general position under the group, so the group's size is not the
+factor a reader might expect. Two instances with two tasks (one goal) and two goals with two tasks (one
+instance) each ran past four minutes as well. That configuration therefore stays a *search* target
+(`make verify-model-sim SIM_CONFIG=MC_task.cfg`: 20,000 behaviors, 7,663,011 states, no invariant violated) and
+the upgrade it needs is a stronger abstraction. In the same pass the `budget_goal` pick became exact — the
+*oldest* open task by delegation order, which is what the code's rowid order gives, instead of "some open task"
+— which is both more faithful and what keeps the model symmetric under permuting `Tasks`, because the choice is
+then a function of the state rather than of TLC's internal ordering.
+
+**Registered**: `review/verification_catalogue.py` keeps the new configurations against the recipe mapping (the
+`MC_task*` arm), the report's counts (17 configurations, 34 controls) and the README's mapping, and the run block
+in the report; `verification/README.md` names every new configuration and states each control beside the claim it
+refutes. Two stale facts in the same area, read by no gate, were fixed with it: `docs/DEVELOPMENT.md`'s command
+block called `verify-model-all` "small configurations for all **nine** modules (~2 minutes)" — it drives
+**fifteen** modules and took 4 m 18 s — and called the controls "the authority surface's", though all fifteen
+modules have them.
+
+Ceiling: a control is a configuration of the same module with one counterfactual constant TRUE, not an
+independently written buggy spec, so it shows a claim is *falsifiable* — not that the mistake it names ever
+shipped (for V-G1 it did, and the fix ledger is that evidence); the 2 tasks / 2 instances / 2 goals product stays
+unproven (searched, never exhausted); and the model is still not the code (REPORT.md §5).
+
 ## D-217 The release path had never been run, and its smoke was half-isolated (2026-09-27)
 
 D-216 fixed the workflow line that would have stopped a tag and left behind two *readings* of it — a rule that the

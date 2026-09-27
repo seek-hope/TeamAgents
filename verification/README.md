@@ -65,7 +65,7 @@ repository and never enters `make check`. Java is required (this machine uses Op
 | `tla/V2DiskFull.tla` + `tla/MC_diskfull.cfg` | the write-failure latch (§4.4, A31): a step whose submit fails with `StorageFull` latches, the driver stops running steps — the failed step is never retried and new side effects stay stopped (`NoStepRunsWhileLatched`) — success is never faked (`NoFakedSuccess`), the park is retried at poll pace and its reason names the in-flight persistence loss (`LossIsReported`), the latch clears only because that park landed — which needs a write to land (`LatchClearsOnlyWhenWritable`) — and the user resumes once space is freed (`ParkEventuallyLands`, under strong fairness of the park: the retry is live *while writability recurs*, because a single writable moment proves nothing). Its four negative controls `tla/MC_diskfull_keep_driving.cfg`, `tla/MC_diskfull_fake_success.cfg`, `tla/MC_diskfull_park_silently.cfg` and `tla/MC_diskfull_clear_anyway.cfg` each forget one rule and must be refuted |
 | `tla/V2Coordinator.tla` + `tla/MC_coordinator.cfg` | the coordinator lock and its fork window (§6.1, A33): one coordinator per state root (`AtMostOneCoordinator` — the kernel grants the lock to one holder), a restart that lands while only a *tool child's* inherited copy holds it waits for `exec` instead of reporting a coordinator that is not really there (`TheWindowIsNotMistakenForAHolder`), and with no coordinator alive the only thing that may still hold the lock is a child in that window (`NoHeldLockWithoutAHolder` — nothing inherits it past `exec`), with `RecoveryIsLive` for the poll-pace retry. Its three negative controls `tla/MC_coordinator_report.cfg`, `tla/MC_coordinator_inherit.cfg` and `tla/MC_coordinator_shared.cfg` each forget one rule and must be refuted |
 | `tla/V2Wait.tla` + `tla/MC_wait.cfg` | waits/wakeups/timers/supersede: evaluate at registration → parked drain scan → answer in the same transaction when satisfied → cancel/supersede/re-arm |
-| `tla/V2Task.tla` + `tla/MC_task.cfg` | task lifecycle and goal settlement: delegation (dependencies must exist first, the goal must be ACTIVE) → start → settle/cancel → system parking → termination cascade; goal creation, request admission, open operations, settlement and detach |
+| `tla/V2Task.tla` + `tla/MC_task.cfg`, `tla/MC_task_two.cfg` | task lifecycle and goal settlement: delegation (dependencies must exist first, the goal must be ACTIVE) → start → settle/cancel → system parking → termination cascade; goal creation, request admission, open operations, settlement and detach. `tla/MC_task_two.cfg` adds the second task slot at one instance and one goal, which is what makes `DependenciesPointBackwards` and `NoSelfDependency` non-vacuous (with one task a prerequisite can only be empty). Its four counterfactual constants (D-218) each name a plausible mistake and must be refuted: `tla/MC_task_delegates_to_settled.cfg` (delegation onto a settled goal — finding V-G1 — refutes `RegisteredWorkNeedsAnActiveGoal`), `tla/MC_task_bills_settled.cfg` (a request billed to a settled goal refutes `RequestsResolveToActiveGoals`), `tla/MC_task_unordered_dependency.cfg` (a prerequisite that is the task itself or a later one refutes `DependenciesPointBackwards`, and with it `NoSelfDependency`) and `tla/MC_task_terminate_leaves_tasks.cfg` (a termination that leaves the instance's open tasks open refutes `NoOpenTaskOnDeadAssignee`) |
 | `tla/V2Compress.tla` + `tla/MC_compress.cfg` | context compression (A20): open/submit/fail/cancelled by a closed epoch; summaries append at the tail, coverage only grows, originals are never deleted and a request closes only once (`RequestClosesOnce`, which D-212 found unlisted) |
 | `tla/V2Daemon.tla` + `tla/MC_daemon.cfg` | session daemon protocol (A28): deduplication and replay of stable command ids, the atomic snapshot+watermark pair of `checkpoint`, gap-free `events(since)`, a slow client never blocking the writer |
 | `tla/V2Checks.tla` + `tla/MC_checks.cfg` | required checks (A16/§8): only self-reported successes are verified, failures enter a bounded repair round, an exhausted budget or an unusable verification path (stale observation, refused dispatch) parks the goal BLOCKED, and a candidate is never upgraded |
@@ -252,12 +252,19 @@ status:
   ignored the goal status;
 - `reserve_budget`/`settle_usage` ignored it as well (this is finding 2 above).
 
-Spec counterexamples (before the fix; both properties are now guarded by `MC_task.cfg` and TLC is green):
+Spec counterexamples (before the fix; `MC_task.cfg` guards both and TLC is green — and since D-218 the first is
+*refutable again*, so a regression that reopens it fails `make verify-model-counterexamples` rather than passing
+unnoticed):
 
 ```text
 Error: Invariant RegisteredWorkNeedsAnActiveGoal is violated.     # a task was delegated before its goal existed
 Error: Invariant ClosedGoalTakesNoNewOperation is violated.       # a settled goal still opened an operation
 ```
+
+The two lived in the configuration the fix renamed into the positive `MC_task.cfg`, which left no refutation
+behind; D-218 brought the first back as the counterfactual `DelegateToSettledGoal` and the control
+`tla/MC_task_delegates_to_settled.cfg` (it reports the same invariant), and the second property went with the
+spec that named it.
 
 Fix (landed after the user confirmed "fix everything"):
 
@@ -519,11 +526,19 @@ The proven `page_span(total, offset, limit) = min(limit, total - offset)` is the
 - State-space frontier (`MC_grants`): the four bootstrap grants plus one free slot, two instances and two
   operations = 1.29M states (178k distinct) in about one minute, with TLC's estimated chance that a fingerprint
   collision hid a state at 1.2e-9. It is the slowest of the small configurations; the others are seconds.
-- State-space frontier (`MC_task`): 1 task / 2 instances / 2 goals = 5.7M states in about 20 seconds; a second
-  task diverges (measured: 43M states without convergence after four minutes) and needs symmetry or a stronger
-  abstraction. The simulation supplement searches it instead — `make verify-model-sim SIM_CONFIG=MC_task.cfg`:
-  20,000 behaviors of depth 100, **7,663,011 states in 2 m 13 s** on 2026-09-27 with no invariant violated —
-  which is a search and not a proof, and it checks no temporal property.
+- State-space frontier (`MC_task`): 1 task / 2 instances / 2 goals = 5.7M states in about 20 seconds, and
+  `MC_task_two.cfg` adds the second task with one instance and one goal — 612,802 states / 56,074 distinct in 8 s
+  on 2026-09-27 — which is what makes the two dependency invariants non-vacuous, since a single task can only
+  declare the empty prerequisite. The **whole product** (2 tasks / 2 instances / 2 goals, D-218) stays beyond a
+  bounded attempt: measured 2026-09-27 at 34.2M states generated / 7.9M distinct after five minutes with the
+  queue still growing, and the symmetry the report named is *not* enough — a sound block-preserving group over the
+  three constant sets (declared as model values, which TLC requires) cut the distinct count by only about 1.6×
+  (31.5M / 5.0M after five minutes, queue still growing), because most states are not in general position under
+  the group; two tasks with two instances (one goal) and with two goals (one instance) each also ran past four
+  minutes. That configuration needs a stronger abstraction, not symmetry. The simulation supplement searches it
+  instead — `make verify-model-sim SIM_CONFIG=MC_task.cfg`: 20,000 behaviors of depth 100, **7,663,011 states in
+  2 m 13 s** on 2026-09-27 with no invariant violated — which is a search and not a proof, and it checks no
+  temporal property.
 - The code-level correspondence (`core/tests/v2_invariants.rs`) is sampling plus bounded enumeration, not a
   proof: it gives "these executions satisfy the invariants" plus checker sensitivity (the negative control),
   never "all executions do".
@@ -532,7 +547,8 @@ The proven `page_span(total, offset, limit) = min(limit, total - offset)` is the
   properties added since then put it beyond a bounded attempt. The supplement named here is implemented as
   `make verify-model-sim` (its default, `SIM_CONFIG=MC_wide.cfg`): 20,000 random behaviors of depth 100,
   2,022,792 states checked in ~4 minutes on 2026-09-27 with no invariant violated — which is a *search*, not a proof, and it checks no temporal property
-  (the small configurations do that exhaustively). More instances or operations still need symmetry or constraints.
+  (the small configurations do that exhaustively). More instances or operations still need symmetry or constraints
+  — and symmetry alone was measured insufficient for the task product (D-218).
 
 ## Conclusions and ledger
 
@@ -558,8 +574,10 @@ Still open as **upgrades** (not unfinished requirements, but optional depth):
 - Lean 4: an interactive prover that needs the elan toolchain and hand-written scripts; it would turn the
   pure-function layer from "bounded enumeration plus bounded Kani proofs" into unbounded theorems, at the cost
   of a narrower surface than "one more enumerated protocol surface".
-- A second task in `MC_task`: needs symmetry or a stronger abstraction to converge (today 1 task / 2
-  instances / 2 goals = 5.7M states).
+- A second task in `MC_task`: done where it converges (D-218 added `MC_task_two.cfg`, one instance and one goal,
+  so the dependency invariants are no longer vacuous); the full 2 tasks / 2 instances / 2 goals product needs a
+  stronger abstraction, since symmetry was measured at only ~1.6× (D-218) and the simulation supplement searches
+  that shape meanwhile.
 - The `expires_at` check of approvals and the execution details of `execute_check_ops`: currently covered only
   by the code-level invariants and sample tests.
 - A refinement proof (model → implementation): needs every invariant mapped to an executable code assertion

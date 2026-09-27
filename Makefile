@@ -136,11 +136,11 @@ verify-model: verify-tools
 # configuration that fell through the `*)` default would silently run the wrong module (the rule
 # `review/verification_catalogue.py` enforces). The control families are matched by prefix, after the
 # exact arms, because shell `case` takes the first match.
-CFG_CASE = case $$cfg in MC.cfg|MC_control_two.cfg) echo V2Control.tla;; MC_artifact.cfg) echo V2Artifact.tla;; MC_wait.cfg) echo V2Wait.tla;; MC_task.cfg) echo V2Task.tla;; MC_compress.cfg) echo V2Compress.tla;; MC_daemon.cfg) echo V2Daemon.tla;; MC_checks.cfg) echo V2Checks.tla;; MC_grants.cfg) echo V2Grants.tla;; MC_authority*) echo V2Authority.tla;; MC_store.cfg|MC_store_adopt.cfg) echo V2Store.tla;; MC_retention*) echo V2Retention.tla;; MC_jobs*) echo V2Jobs.tla;; MC_inbox*) echo V2Inbox.tla;; MC_diskfull*) echo V2DiskFull.tla;; MC_coordinator*) echo V2Coordinator.tla;; MC_control*) echo V2Control.tla;; MC_wide.cfg) echo V2Control.tla;; *) echo V2Artifact.tla;; esac
+CFG_CASE = case $$cfg in MC.cfg|MC_control_two.cfg) echo V2Control.tla;; MC_artifact.cfg) echo V2Artifact.tla;; MC_wait.cfg) echo V2Wait.tla;; MC_task*) echo V2Task.tla;; MC_compress.cfg) echo V2Compress.tla;; MC_daemon.cfg) echo V2Daemon.tla;; MC_checks.cfg) echo V2Checks.tla;; MC_grants.cfg) echo V2Grants.tla;; MC_authority*) echo V2Authority.tla;; MC_store.cfg|MC_store_adopt.cfg) echo V2Store.tla;; MC_retention*) echo V2Retention.tla;; MC_jobs*) echo V2Jobs.tla;; MC_inbox*) echo V2Inbox.tla;; MC_diskfull*) echo V2DiskFull.tla;; MC_coordinator*) echo V2Coordinator.tla;; MC_control*) echo V2Control.tla;; MC_wide.cfg) echo V2Control.tla;; *) echo V2Artifact.tla;; esac
 
 # small exhaustive configurations for every module (seconds; the wide config is verify-model-wide)
 verify-model-all: verify-tools
-	@cd verification/tla && for cfg in MC.cfg MC_control_two.cfg MC_artifact.cfg MC_wait.cfg MC_task.cfg MC_compress.cfg MC_daemon.cfg MC_checks.cfg MC_grants.cfg MC_authority.cfg MC_store.cfg MC_retention.cfg MC_jobs.cfg MC_inbox.cfg MC_diskfull.cfg MC_coordinator.cfg; do \
+	@cd verification/tla && for cfg in MC.cfg MC_control_two.cfg MC_artifact.cfg MC_wait.cfg MC_task.cfg MC_task_two.cfg MC_compress.cfg MC_daemon.cfg MC_checks.cfg MC_grants.cfg MC_authority.cfg MC_store.cfg MC_retention.cfg MC_jobs.cfg MC_inbox.cfg MC_diskfull.cfg MC_coordinator.cfg; do \
 		echo "== $$cfg =="; \
 		out=$$(java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
 			tlc2.TLC -config $$cfg -fp 64 -workers 4 $$( $(CFG_CASE) ) 2>&1); \
@@ -171,7 +171,9 @@ verify-model-counterexamples: verify-tools
 		MC_diskfull_keep_driving.cfg:V2DiskFull.tla MC_diskfull_fake_success.cfg:V2DiskFull.tla \
 		MC_diskfull_park_silently.cfg:V2DiskFull.tla MC_diskfull_clear_anyway.cfg:V2DiskFull.tla \
 		MC_coordinator_report.cfg:V2Coordinator.tla MC_coordinator_inherit.cfg:V2Coordinator.tla \
-		MC_coordinator_shared.cfg:V2Coordinator.tla; do \
+		MC_coordinator_shared.cfg:V2Coordinator.tla \
+		MC_task_delegates_to_settled.cfg:V2Task.tla MC_task_bills_settled.cfg:V2Task.tla \
+		MC_task_unordered_dependency.cfg:V2Task.tla MC_task_terminate_leaves_tasks.cfg:V2Task.tla; do \
 		cfg=$${pair%%:*}; spec=$${pair##*:}; \
 		echo "== $$cfg (must be refuted) =="; \
 		out=$$(java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \

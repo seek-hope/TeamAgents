@@ -7,20 +7,21 @@ in [README.md](README.md); the fix ledger is in
 
 ## 0. Gate status (re-run 2026-09-27 at `3d907179`)
 
-* `make verify-model-all` was re-run on this tree: all **16** configurations report `No error has been found`,
-  in 3 m 58 s (the twelfth is the retention rule, D-192). The largest is **`MC_task.cfg`** with 5,721,401 states generated / 606,904 distinct; `MC.cfg`
+* `make verify-model-all` was re-run on this tree: all **17** configurations report `No error has been found`,
+  in 4 m 18 s (the newest two are the retention rule, D-192, and the task model's second task, D-218). The largest is **`MC_task.cfg`** with 5,721,401 states generated / 606,904 distinct (its one-instance two-task sibling `MC_task_two.cfg` 612,802 / 56,074); `MC.cfg`
   itself generates 84,877 / 18,384, and the smallest, `MC_store.cfg`, 48 / 13; the job handshake's
   `MC_jobs.cfg` generates 207 / 64 the inbox's `MC_inbox.cfg` 793 / 211 the write-failure latch's
-  `MC_diskfull.cfg` 63 / 22 and the coordinator lock's `MC_coordinator.cfg` 51 / 16. Every count is identical to the
-  previous run on the same tree — what a deterministic checker on unchanged inputs should print, and the
+  `MC_diskfull.cfg` 63 / 22 and the coordinator lock's `MC_coordinator.cfg` 51 / 16. Every count that predates this
+  entry is identical to the previous run on the same tree — what a deterministic checker on unchanged inputs should print, and the
   reason these numbers describe the *material*, not a machine. (The line once called `MC.cfg` the largest and
   quoted `MC_task`'s numbers for it — a mis-attribution no gate looked at, found by re-running the target and
   reading its output per configuration, D-159.)
-* `make verify-model-counterexamples` was re-run: all **30** negative controls are refuted, each naming its
+* `make verify-model-counterexamples` was re-run: all **34** negative controls are refuted, each naming its
   property (`AuthorizedEffectsOnly`, `InputLandsAtTheBoundary`, `NoRequestAfterDeadline`, `NoTurnWithoutWork`
-  twice, `SettlementFollowsATurnAfterTheLanding`, `NoForeignAdoption`, three temporal refutations, and the
+  twice, `SettlementFollowsATurnAfterTheLanding`, `NoForeignAdoption`, three temporal refutations, the
   four retention guards: `NoReferenceToEvictedFact`, `EvidenceIsNeverEvicted` and `OnlyOldFactsAreEvicted`
-  twice), in 2 m 4 s.
+  twice, and the four task controls D-218 added: `RegisteredWorkNeedsAnActiveGoal`,
+  `RequestsResolveToActiveGoals`, `DependenciesPointBackwards` and `NoOpenTaskOnDeadAssignee`), in 2 m 15 s.
 * The wall clocks above are upper bounds, not machine-independent figures: they were measured while this
   machine carried a load average of about 140 on 20 cores (the standing host-cleanup item), and TLC is
   CPU-bound. The probe in A32 now records the same conditions next to its numbers for the same reason (D-188).
@@ -131,8 +132,11 @@ in [README.md](README.md); the fix ledger is in
   weak fairness of the parked drain, i.e. on the driver's poll loop continuing to run — an implementation fact,
   not a proven conclusion.
 - **Bounded state spaces**: every enumeration runs on an explicitly bounded configuration (finite instances,
-  tasks, requests and log lengths) and the frontier is recorded in the README (for example, `MC_task` diverges
-  with two tasks).
+  tasks, requests and log lengths) and the frontier is recorded in the README. The task product is the concrete
+  example (D-218): 2 tasks with one instance and one goal is exhaustive (612,802 states), while 2 tasks with 2
+  instances and 2 goals did not converge in five minutes (34.2M generated / 7.9M distinct, queue still growing),
+  and the symmetry the README named as the upgrade cut that by only about 1.6× — so it stays a *search* target
+  (`make verify-model-sim SIM_CONFIG=MC_task.cfg`), not a proof.
 - **Code outside the model**: provider adapters, MCP, Skills, TUI rendering and hit-testing, shell/bubblewrap
   isolation, process and job management, and real provider behaviour are all outside the formal scope. They
   are covered by sample tests and real-environment acceptance instead (see the "still uncovered" column in §4).
@@ -144,7 +148,7 @@ in [README.md](README.md); the fix ledger is in
 | Protocol model | `tla/V2Control.tla` (16 invariants + 6 properties, incl. the deadline gate, the committed-tail rule and the landing-attribution rule) | 84,877 states | `make verify-model` |
 | Protocol model | `tla/V2Artifact.tla` (4 + 4) | 241 states | `make verify-model-all` |
 | Protocol model | `tla/V2Wait.tla` (8 + 1 liveness) | 505,905 states | as above |
-| Protocol model | `tla/V2Task.tla` (11) | 5,721,401 states | as above |
+| Protocol model | `tla/V2Task.tla` (11, four counterfactual constants since D-218) | `MC_task.cfg` 5,721,401 states; `MC_task_two.cfg` 612,802 states / 56,074 distinct | as above; the four controls via `make verify-model-counterexamples` |
 | Protocol model | `tla/V2Compress.tla` (8) | 8,467 states | as above |
 | Protocol model | `tla/V2Daemon.tla` (10) | 51,713 states | as above |
 | Protocol model | `tla/V2Checks.tla` (8) | 469 states | as above |
@@ -324,7 +328,7 @@ D-87 defect itself.
 | ID | Issue | Spec counterexample | Fix and regression |
 |---|---|---|---|
 | **V-W1** | a wait's tool_call was answered only on the drain path; "satisfied at registration" and "superseded/closed epoch" left it unanswered, so a strict endpoint rejects the next request | `ResolvedWaitAnswersItsCall is violated` (`ArmWait → Supersede → CANCELLED, answers=0`) | `answer_closed_waits` extended to both paths; `wait_call_answered_outside_the_drain_path`; invariant `ResolvedWaitIsAnswered` |
-| **V-G1** | a settled goal still accepted new work (delegation, opening operations, billing) | `RegisteredWorkNeedsAnActiveGoal`, `ClosedGoalTakesNoNewOperation` violated | `budget_goal` accepts only ACTIVE goals, settlement detaches the pointer, delegation requires ACTIVE; `a_settled_goal_takes_no_new_work`; invariants such as `NoStaleActiveGoal` |
+| **V-G1** | a settled goal still accepted new work (delegation, opening operations, billing) | `RegisteredWorkNeedsAnActiveGoal`, `ClosedGoalTakesNoNewOperation` violated (the first is refutable again since D-218: `MC_task_delegates_to_settled.cfg`) | `budget_goal` accepts only ACTIVE goals, settlement detaches the pointer, delegation requires ACTIVE; `a_settled_goal_takes_no_new_work`; invariants such as `NoStaleActiveGoal`, and since D-218 the billing half too (`MC_task_bills_settled.cfg`) |
 | **V-P1** | a terminated instance kept a stale execution pointer (`phase = MODEL_PENDING` pointing at a cancelled request) | code-level invariant: `OneActiveRequest: instance i1 is MODEL_PENDING with 0 pending turn requests` | the termination branch normalizes like `reset_instance`/`fail_request`; `terminating_an_instance_normalizes_its_execution_pointer` |
 | **V-P2** | `import_response` never checked `kind`, so a compression request could be imported as a turn | the walk reached the path and succeeded (the spec requires a refusal) | the control plane refuses `kind != 'turn'`; `import_response_refuses_a_compression_request` |
 | Property fix | `V2Checks` first stated "SUCCEEDED implies the recorded verdict is pass" — a **vacuous** property (an action writes that variable itself) | relaxing `Accept` still "passed" | rewritten to bind the **observed check result**; relaxing it is then immediately refuted |
@@ -428,7 +432,7 @@ alone**, and conversely formal coverage does not excuse an item from sample or r
 ```bash
 make verify-model-all     # exhaustive configurations for the fifteen surfaces (seconds to ~2 min;
                           # the task, grants and authority models are the slow ones)
-make verify-model-counterexamples  # the thirty negative controls, each must be refuted
+make verify-model-counterexamples  # the thirty-four negative controls, each must be refuted
 make verify-model-wide    # wide control-plane configuration (best effort: 275M states / 11 m in the historical
                           # run; a one-hour bounded attempt on 2026-09-27 did not reach a verdict)
 make check                # fmt + clippy -D warnings + 23 suites (including the two code-level layers)
