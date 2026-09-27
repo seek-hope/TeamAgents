@@ -48,7 +48,9 @@ CONSTANTS Clients,     \* client slots, e.g. {"c1"}
           RollbackLog,            \* counterfactual: a compaction drops the oldest version and renumbers
           ReclaimEvents,          \* counterfactual: events are reclaimed, so a resync can be needed
           StopBeforeReceipt,      \* counterfactual (D-248): the daemon leaves with a stop request unanswered
-          KeepServingAfterReceipt \* counterfactual (D-248): an answered stop leaves the daemon serving
+          KeepServingAfterReceipt, \* counterfactual (D-248): an answered stop leaves the daemon serving
+          SkipAnEvent,            \* counterfactual (D-249): a batch hands over the log minus one event
+          DeliverTwice            \* counterfactual (D-249): a batch hands one event over twice
 
 ASSUME Clients # {} /\ Commands # {} /\ Versions # {} /\ MaxLog > 0
 
@@ -70,10 +72,12 @@ VARIABLES
   shrank,       \* monitor: the log ever shrunk (must stay FALSE)
   serving,      \* the daemon is up and accepting requests (D-248)
   asked,        \* a client asked this session to stop over its socket (D-248)
-  answered      \* that request has its reply on the wire (D-248)
+  answered,     \* that request has its reply on the wire (D-248)
+  served,       \* client -> the sequences handed to it (D-249)
+  servedCount   \* client -> how many handovers it was counted (D-249)
 
 vars == <<logLength, applied, receipt, payloadOf, versionOf, snapshot, cursor, view, pruned,
-          serving, asked, answered>>
+          serving, asked, answered, served, servedCount>>
 monVars == <<vars, drift, shrank>>
 \* The protocol state (the log and its two monitors) and the D-248 lifecycle state. The two halves are
 \* independent, so each action leaves the other half alone *by name* (a tuple no action writes is a constant of
@@ -81,6 +85,7 @@ monVars == <<vars, drift, shrank>>
 logVars == <<logLength, applied, receipt, payloadOf, versionOf, snapshot, cursor, view, pruned,
              drift, shrank>>
 lifecycle == <<serving, asked, answered>>
+delivery == <<served, servedCount>>
 
 \* ------------------------------------------------------------------- actions --
 \* The runtime appends an event (a turn, a task settlement, a budget refusal…).
@@ -92,6 +97,7 @@ RuntimeEvent ==
   /\ shrank' = shrank
   /\ drift' = drift
   /\ UNCHANGED lifecycle
+  /\ UNCHANGED delivery
   /\ UNCHANGED <<applied, receipt, payloadOf, versionOf, snapshot, cursor, view, pruned>>
 
 \* A client submits a command (§9): client-chosen id, stable across reconnects.
@@ -110,6 +116,7 @@ Submit(c, cmd, payload, v) ==
   /\ shrank' = shrank
   /\ drift' = drift
   /\ UNCHANGED lifecycle
+  /\ UNCHANGED delivery
   /\ UNCHANGED <<snapshot, cursor, view, pruned>>
 
 \* A replayed command id with the SAME payload returns the stored receipt and
@@ -136,6 +143,7 @@ ReapplyOnReplay(c, cmd, payload) ==
   /\ drift' = drift \cup {cmd}
   /\ shrank' = shrank
   /\ UNCHANGED lifecycle
+  /\ UNCHANGED delivery
   /\ UNCHANGED <<applied, payloadOf, versionOf, snapshot, cursor, view, pruned>>
 
 \* Counterfactual (D-219): a compaction drops the oldest event and renumbers the
@@ -148,6 +156,7 @@ CompactLog ==
   /\ shrank' = TRUE
   /\ drift' = drift
   /\ UNCHANGED lifecycle
+  /\ UNCHANGED delivery
   /\ UNCHANGED <<applied, receipt, payloadOf, versionOf, snapshot, cursor, view, pruned>>
 
 \* Counterfactual (D-219): events are reclaimed, so a client whose watermark
@@ -160,6 +169,7 @@ Reclaim(c) ==
   /\ shrank' = shrank
   /\ drift' = drift
   /\ UNCHANGED lifecycle
+  /\ UNCHANGED delivery
   /\ UNCHANGED <<logLength, applied, receipt, payloadOf, versionOf, snapshot, cursor, view>>
 
 \* checkpoint (§9): the snapshot and its watermark come from ONE read
@@ -172,15 +182,28 @@ Checkpoint(c) ==
   /\ shrank' = shrank
   /\ drift' = drift
   /\ UNCHANGED lifecycle
+  /\ UNCHANGED delivery
   /\ UNCHANGED <<logLength, applied, receipt, payloadOf, versionOf, pruned>>
 
 \* events(since = cursor): everything after the watermark, never a gap, because
-\* this version never reclaims events.
+\* this version never reclaims events. The two variables of D-249 count what the
+\* handover contains: `servedCount` is how many events this client was handed and
+\* `deliveredLast` is the last sequence among them, so "the handover is the log's
+\* prefix, in order and once each" is `servedCount = deliveredLast` — a claim a
+\* batch can *break*, which is what the two counterfactuals do (measured: before
+\* them, gap-free `events(since)` was a property of the arithmetic, not a claim the
+\* model could refute).
 Fetch(c) ==
   /\ cursor[c] <= logLength
   /\ ~pruned
   /\ cursor' = [cursor EXCEPT ![c] = logLength]
   /\ view' = [view EXCEPT ![c] = logLength]
+  /\ served' = [served EXCEPT ![c] =
+        (served[c] \cup (cursor[c] + 1) .. logLength)
+          \ (IF SkipAnEvent /\ cursor[c] < logLength THEN {cursor[c] + 1} ELSE {})]
+  /\ servedCount' = [servedCount EXCEPT ![c] = servedCount[c] + (logLength - cursor[c])
+                       - (IF SkipAnEvent /\ cursor[c] < logLength THEN 1 ELSE 0)
+                       + (IF DeliverTwice /\ cursor[c] < logLength THEN 1 ELSE 0)]
   /\ shrank' = shrank
   /\ drift' = drift
   /\ UNCHANGED lifecycle
@@ -197,6 +220,7 @@ AskStop ==
   /\ asked' = TRUE
   /\ UNCHANGED <<serving, answered>>
   /\ UNCHANGED logVars
+  /\ UNCHANGED delivery
 
 \* The answer is on the wire: `serve_client` writes the reply frame, and the flag that ends the accept loop is
 \* set only after that write returns. A second answer would be a second reply to one request, so it is
@@ -208,6 +232,7 @@ AnswerStop ==
   /\ answered' = TRUE
   /\ UNCHANGED <<serving, asked>>
   /\ UNCHANGED logVars
+  /\ UNCHANGED delivery
 
 \* The accept loop leaves and takes the socket with it. The rule (D-248): it may not leave a stop request
 \* unanswered — the reply is written first, and this is why a client that asked always has its receipt. The two
@@ -220,6 +245,7 @@ Leave ==
   /\ serving' = FALSE
   /\ UNCHANGED <<asked, answered>>
   /\ UNCHANGED logVars
+  /\ UNCHANGED delivery
 
 Next ==
   \/ RuntimeEvent
@@ -252,6 +278,8 @@ Init ==
   /\ serving = TRUE
   /\ asked = FALSE
   /\ answered = FALSE
+  /\ served = [ c \in Clients |-> {} ]
+  /\ servedCount = [ c \in Clients |-> 0 ]
 
 \* The accept loop is a running task: while a stop request is waiting to be answered it is busy answering it, and
 \* once answered the loop really does leave (`WF_vars(Leave)` is the driver's poll loop, which cannot sit on a
@@ -272,6 +300,8 @@ TypeOK ==
   /\ serving \in BOOLEAN
   /\ asked \in BOOLEAN
   /\ answered \in BOOLEAN
+  /\ \A c \in Clients : served[c] \subseteq 1..MaxLog
+  /\ \A c \in Clients : servedCount[c] \in 0..(2 * MaxLog)   \* the duplicate control counts one extra
 
 \* the event log only grows: versions are never reused or rolled back
 LogMonotone == shrank = FALSE
@@ -304,6 +334,11 @@ ViewMatchesCursor == \A c \in Clients : view[c] = cursor[c]
 CursorNeverBeyondLog == \A c \in Clients : cursor[c] <= logLength
 NoResyncInThisVersion == ~pruned
 
+\* D-249: nothing is handed to a client twice — the count of its handovers equals the number of *distinct*
+\* sequences it was handed, so a response that re-serves events behind a stale watermark (the duplicate a
+\* consumer would print twice) breaks it. `ServeTwice` in `MC_daemon_delivers_twice.cfg` is that batch.
+NothingIsServedTwice == \A c \in Clients : servedCount[c] = Cardinality(served[c])
+
 \* D-248: a daemon that is *gone* has answered every stop request it took. That is the receipt rule the code
 \* keeps by writing the reply before it sets the flag that ends the accept loop — the client that asked is
 \* never left with a broken connection instead of an answer.
@@ -316,5 +351,16 @@ StopsOnlyAfterAnswering == serving = FALSE => (asked => answered)
 \* decoration: without it TLC evaluates the implication at the *initial* state, where `asked` is FALSE and the
 \* property is vacuously true — measured 2026-09-27, when the control below verified instead of refuting.
 AStopIsAnsweredAndEndsTheSession == []( (asked /\ answered) => <>(serving = FALSE) )
+
+\* D-249, the gap half, and a claim about *transitions* rather than states: what one handover adds is exactly
+\* the range after the client's watermark — everything after it, nothing skipped (a `checkpoint` moves the
+\* watermark without handing anything over, which is why this cannot be stated as a state predicate over the
+\* delivered set alone; measured 2026-09-27, twice: the first version of this claim — "the handover is the
+\* log's prefix from 1" — was violated by the *positive* configuration the moment a client checkpointed and
+\* then fetched only the new events). `SkipAnEvent` in `MC_daemon_skips_an_event.cfg` hands the log minus one
+\* event over, which is the gap `events(since)` promises never to serve.
+HandoversAreTheFullRange ==
+  [][ \A c \in Clients : servedCount'[c] # servedCount[c] =>
+        served'[c] \ served[c] = (cursor[c] + 1) .. cursor'[c] ]_vars
 
 =============================================================================

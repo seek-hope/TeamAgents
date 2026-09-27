@@ -180,6 +180,8 @@ verify-model-counterexamples: verify-tools
 		MC_daemon_rolls_back_log.cfg:V2Daemon.tla MC_daemon_reclaims_events.cfg:V2Daemon.tla \
 		MC_daemon_stop_before_receipt.cfg:V2Daemon.tla \
 		MC_daemon_keeps_serving_after_receipt.cfg:V2Daemon.tla \
+		MC_daemon_skips_an_event.cfg:V2Daemon.tla \
+		MC_daemon_delivers_twice.cfg:V2Daemon.tla \
 		MC_checks_rewinds_rounds.cfg:V2Checks.tla MC_approval_drops_the_expiry.cfg:V2Approval.tla \
 		MC_approval_rewrites_a_decision.cfg:V2Approval.tla \
 		MC_approval_keeps_pending_on_close.cfg:V2Approval.tla \

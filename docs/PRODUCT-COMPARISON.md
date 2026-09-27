@@ -47,9 +47,11 @@ their projects claim. Codex was run (its help output is the evidence above).
    substrate exists and is parked with a note (`driver::cancel_turn`, `TurnControl::wait_idle`). **Needs the
    user's word.**
 3. **Streaming output for headless runs** (Codex `exec --json` streams events; Hermes streams tool output in
-   the TUI). `teamagents exec` prints one report at the end; the TUI already consumes streamed *previews* that
-   are explicitly not authoritative (§9). A `--stream-json`-style mode is additive surface, no design change.
-   **Needs the user's word** only because it adds protocol-visible output.
+   the TUI) — **done since D-249**: `teamagents exec --stream-json` writes the session's committed events as
+   they are observed (one `{"type":"event","event":{…}}` line each, in log order, flushed per line) and then
+   the report as `{"type":"report","report":{…}}`, which is the same object `--json` prints. It adds no
+   protocol surface — it is a client of the `events(since)` read the daemon already serves — and the exit-code
+   contract is unchanged (`review/dogfood/stream_json.py` measures it without a credential).
 4. **Sandbox backends** (Pi: micro-VM/Docker/OpenShell; Hermes: seven backends). This product ships
    bubblewrap for the shell tool and says so (A14). Anything else (container/micro-VM/remote sandbox) is a new
    execution boundary with its own verification. **Needs the user's word.**

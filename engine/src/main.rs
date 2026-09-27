@@ -7,7 +7,7 @@ use teamagents_engine::{cli, tools};
 const HELP: &str = "TeamAgents: work with a Leader in your terminal\n\n\
 usage: teamagents [--cwd DIR] [--state-root PATH] [--model KEY] [--full-auto]\n\
   teamagents                          TUI attached to your daemon (starts one if needed)\n\
-  teamagents exec [--json] [--timeout SEC] [--check CMD] \"…\"   one headless input\n\
+  teamagents exec [--json|--stream-json] [--timeout SEC] [--check CMD] \"…\"   one headless input\n\
   teamagents authority [list] [--json]          the session's grants, with the ids revoke needs\n\
   teamagents authority grant --subject ID --action A --scope S [--parent G]\n\
   teamagents authority revoke --grant ID        revoke that grant and everything derived from it\n\
@@ -27,7 +27,9 @@ usage: teamagents [--cwd DIR] [--state-root PATH] [--model KEY] [--full-auto]\n\
   teamagents --help                   print this help\n\n\
 exec reads the prompt from stdin when it is \"-\", runs each --check acceptance command\n\
 in the workspace after the turn ends, and exits 0 completed, 1 failed or unfinished,\n\
-3 approval required, 124 timeout, 2 usage.\n\
+3 approval required, 124 timeout, 2 usage. --json prints one report object; --stream-json\n\
+prints the session's events (one {\"type\":\"event\",…} line each, in order, then the same\n\
+report as {\"type\":\"report\",…}) while the run waits, flushed line by line.\n\
 authority, approvals, instances and tasks talk to the running session (start it with\n\
 teamagents or exec) and exit 0 done, 1 the session refused it, 2 usage. authority is how a\n\
 spawned worker gets shell@workspace (§5.1) and how a capability is taken back; approvals\n\
@@ -87,6 +89,8 @@ pub struct Args {
     pub timeout: Option<u64>,
     pub checks: Vec<String>,
     pub exec_json: bool,
+    /// D-249: `exec --stream-json` — the session's events as NDJSON while the run waits, then the report.
+    pub stream_json: bool,
     pub subject: Option<String>,
     pub action: Option<String>,
     pub scope: Option<String>,
@@ -131,6 +135,7 @@ fn parse_args() -> Args {
         approval_id: None,
         confirmed: false,
         daemon_stop: false,
+        stream_json: false,
     };
     let mut i = 0;
     while i < argv.len() {
@@ -260,7 +265,22 @@ fn parse_args() -> Args {
                 if args.exec_json {
                     given_twice("--json");
                 }
+                if args.stream_json {
+                    reject("--json and --stream-json are two shapes of the same stdout: pick one");
+                }
                 args.exec_json = true;
+                i += 1;
+            }
+            // D-249: the streaming shape is an `exec` output mode, not a flag of the read verbs (which print
+            // one report and have no event stream of their own to follow).
+            "--stream-json" if args.command.as_deref() == Some("exec") => {
+                if args.stream_json {
+                    given_twice("--stream-json");
+                }
+                if args.exec_json {
+                    reject("--json and --stream-json are two shapes of the same stdout: pick one");
+                }
+                args.stream_json = true;
                 i += 1;
             }
             "--yes" if matches!(args.command.as_deref(), Some("instances" | "tasks")) => {
@@ -531,6 +551,7 @@ fn run_exec(args: &Args) -> i32 {
         prompt,
         timeout_s: args.timeout.unwrap_or(900),
         json_out: args.exec_json,
+        stream_events: args.stream_json,
         checks: args.checks.clone(),
         workspace,
     })

@@ -617,6 +617,7 @@ fn exec_options(socket: &Path, workspace: &Path, prompt: &str, checks: Vec<Strin
         prompt: prompt.to_string(),
         timeout_s: 60,
         json_out: true,
+        stream_events: false,
         checks,
         workspace: workspace.to_path_buf(),
     }
@@ -1328,5 +1329,92 @@ async fn the_stop_lever_answers_before_the_daemon_goes() {
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     assert!(!socket.exists(), "the stopped daemon removes its socket: {socket:?}");
+    handle.shutdown().await.expect("shutdown");
+}
+
+/// D-249: `exec --stream-json` prints the session's committed events as the run observes them — one typed line
+/// each, in log order, never twice — and then the report as the last line, which is the same object `--json`
+/// prints (the envelope does not change the report's shape). The streaming is a client of the `events(since)`
+/// contract the daemon model pins (`verification/tla/V2Daemon.tla`: a client's view is the contiguous range
+/// after its cursor, and the cursor never runs past the log), so the lines have to be a *prefix* of the log.
+#[tokio::test]
+async fn the_streaming_headless_mode_prints_the_events_then_the_report() {
+    let scripts =
+        HashMap::from([("i-leader".to_string(), vec![finish_call("streamed run"), finish_call("plain second run")])]);
+    let (root, handle) = boot("exec-stream", scripts).await;
+    let (state, workspace) = (root.dir.join("state"), root.dir.join("ws"));
+    let cli = |args: Vec<String>| async move {
+        tokio::task::spawn_blocking(move || {
+            let output =
+                std::process::Command::new(env!("CARGO_BIN_EXE_teamagents")).args(&args).output().expect("run exec");
+            (
+                output.status.code().unwrap_or(-1),
+                String::from_utf8_lossy(&output.stdout).into_owned(),
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            )
+        })
+        .await
+        .expect("join exec")
+    };
+    let invoke = |mode: &str| {
+        vec![
+            "exec".to_string(),
+            mode.to_string(),
+            "--state-root".to_string(),
+            state.to_string_lossy().into_owned(),
+            "--cwd".to_string(),
+            workspace.to_string_lossy().into_owned(),
+            "--timeout".to_string(),
+            "60".to_string(),
+            "stream it".to_string(),
+        ]
+    };
+
+    // 1. the streaming shape
+    let (code, out, err) = cli(invoke("--stream-json")).await;
+    assert_eq!(code, 0, "{out}{err}");
+    let lines: Vec<Json> =
+        out.lines().map(|line| serde_json::from_str(line).expect("every line is one JSON object")).collect();
+    assert!(lines.len() >= 3, "at least the input, the settlement and the report: {out}");
+    let (events, report_line) = lines.split_at(lines.len() - 1);
+    assert_eq!(report_line[0]["type"], json!("report"), "{out}");
+    let sequences: Vec<i64> = events
+        .iter()
+        .map(|line| {
+            assert_eq!(line["type"], json!("event"), "every line before the report is an event: {out}");
+            line["event"]["sequence"].as_i64().expect("a sequence")
+        })
+        .collect();
+    assert!(sequences.windows(2).all(|pair| pair[1] > pair[0]), "the lines are the log in order: {sequences:?}");
+    let report = &report_line[0]["report"];
+    assert_eq!(report["end"], json!("completed"), "{report}");
+    assert_eq!(
+        report["watermark"],
+        json!(*sequences.last().expect("at least one event")),
+        "the report names the watermark the streamed lines reached: {report}"
+    );
+
+    // 2. the same run shape with `--json`: one line, and the report the stream's last line wrapped
+    let (code, out, err) = cli(invoke("--json")).await;
+    assert_eq!(out.lines().count(), 1, "--json prints one object and nothing else: {out}{err}");
+    let plain: Json = serde_json::from_str(out.lines().next().unwrap()).expect("one JSON object");
+    let mut streamed_keys: Vec<&str> = report.as_object().unwrap().keys().map(String::as_str).collect();
+    let mut plain_keys: Vec<&str> = plain.as_object().unwrap().keys().map(String::as_str).collect();
+    streamed_keys.sort_unstable();
+    plain_keys.sort_unstable();
+    assert_eq!(streamed_keys, plain_keys, "the streamed report is the `--json` report, in an envelope");
+    assert_eq!(code, 1, "the second run has no active goal to settle, so it is the documented exit 1: {out}{err}");
+
+    // 3. the two output shapes are refused together, with both flags named (D-230)
+    let (code, out, err) = cli(vec![
+        "exec".to_string(),
+        "--json".to_string(),
+        "--stream-json".to_string(),
+        "--state-root".to_string(),
+        state.to_string_lossy().into_owned(),
+    ])
+    .await;
+    assert_eq!(code, 2, "a usage error, not a run: {out}{err}");
+    assert!(err.contains("--json") && err.contains("--stream-json"), "{err}");
     handle.shutdown().await.expect("shutdown");
 }

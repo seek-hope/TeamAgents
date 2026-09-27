@@ -8,12 +8,15 @@ in [README.md](README.md); the fix ledger is in
 ## 0. Gate status (re-run 2026-09-27 at `18fcd5f1`)
 
 * `make verify-model-all` was re-run on this tree: all **22** configurations report `No error has been found`,
-  in 12 m 54 s (the newest six are the retention rule, D-192, the task model's second task, D-218, the
+  in 6 m 27 s (the newest seven are the retention rule, D-192, the task model's second task, D-218, the
   approval window, D-225 — 14,225 states / 3,136 distinct — the config trust gate, D-244, which is
   exhaustive in 9 s (353,217 states generated / 25,376 distinct), and what a member's prompt carries, D-246,
   exhaustive in 2 s (612 states / 210 distinct); the retry budget, D-247, exhaustive in 1 s (63 states /
   24 distinct), and the daemon's stop lever, D-248 — `MC_daemon_stop.cfg`, exhaustive in 11 s (275,993 states
-  generated / 21,790 distinct, the same space the extended `MC_daemon.cfg` carries)). The largest is **`MC_task.cfg`** with 5,721,401 states generated / 606,904 distinct (its one-instance two-task sibling `MC_task_two.cfg` 612,802 / 56,074); `MC.cfg`
+  generated / 21,790 distinct, the same space the extended `MC_daemon.cfg` carries), and the *gap-free*
+  `events(since)` rule the same daemon module claims, D-249 — `MC_daemon.cfg` is now exhaustive in 12 s
+  (1,694,761 states generated / 135,750 distinct), including the transition property
+  `HandoversAreTheFullRange`). The largest is **`MC_task.cfg`** with 5,721,401 states generated / 606,904 distinct (its one-instance two-task sibling `MC_task_two.cfg` 612,802 / 56,074); `MC.cfg`
   itself generates 84,877 / 18,384, and the smallest, `MC_store.cfg`, 48 / 13; the job handshake's
   `MC_jobs.cfg` generates 207 / 64 the inbox's `MC_inbox.cfg` 793 / 211 the write-failure latch's
   `MC_diskfull.cfg` 63 / 22 and the coordinator lock's `MC_coordinator.cfg` 51 / 16. Every count that predates this
@@ -21,7 +24,7 @@ in [README.md](README.md); the fix ledger is in
   reason these numbers describe the *material*, not a machine. (The line once called `MC.cfg` the largest and
   quoted `MC_task`'s numbers for it — a mis-attribution no gate looked at, found by re-running the target and
   reading its output per configuration, D-159.)
-* `make verify-model-counterexamples` was re-run: all **61** negative controls are refuted, each naming its
+* `make verify-model-counterexamples` was re-run: all **63** negative controls are refuted, each naming its
   property (`AuthorizedEffectsOnly`, `InputLandsAtTheBoundary`, `NoRequestAfterDeadline`, `NoTurnWithoutWork`
   twice, `SettlementFollowsATurnAfterTheLanding`, `NoForeignAdoption`, three temporal refutations, the
   four retention guards: `NoReferenceToEvictedFact`, `EvidenceIsNeverEvicted` and `OnlyOldFactsAreEvicted`
@@ -35,8 +38,9 @@ in [README.md](README.md); the fix ledger is in
   `TrustOnlyFromTheUser` and `RefusalsAreNamed`, and the three D-246 added: `EverybodyHasTheRules`,
   `PromptsFollowTheCurrentRules` and `UnreadableRulesAreNoted`, the three D-247 added:
   `ResolvedIsTheInstancesOwn`, `NoAttemptBeyondTheBudget` and `ParkOnlyAfterTheBudget`, and the two D-248 added:
-  `StopsOnlyAfterAnswering` and `AStopIsAnsweredAndEndsTheSession` — the first temporal property a refuted control
-  targets in this family), in 8 m 17 s.
+  `StopsOnlyAfterAnswering` and `AStopIsAnsweredAndEndsTheSession`, and the two D-249 added:
+  `HandoversAreTheFullRange` (an action property — the first one a refuted control targets here) and
+  `NothingIsServedTwice`), in 4 m 32 s.
 * The wall clocks above are upper bounds, not machine-independent figures: they were measured while this
   machine carried a load average of about 140 on 20 cores (the standing host-cleanup item), and TLC is
   CPU-bound. The probe in A32 now records the same conditions next to its numbers for the same reason (D-188).
@@ -177,7 +181,7 @@ in [README.md](README.md); the fix ledger is in
 | Protocol model | `tla/V2Approval.tla` (6 claims, four counterfactual constants since D-225) | 14,225 states / 3,136 distinct | `make verify-model-all`; the four controls via `make verify-model-counterexamples` |
 | Protocol model | `tla/V2Task.tla` (11, four counterfactual constants since D-218) | `MC_task.cfg` 5,721,401 states; `MC_task_two.cfg` 612,802 states / 56,074 distinct | as above; the four controls via `make verify-model-counterexamples` |
 | Protocol model | `tla/V2Compress.tla` (8, three counterfactual constants since D-219) | 8,467 states | as above; the three controls via `make verify-model-counterexamples` |
-| Protocol model | `tla/V2Daemon.tla` (12, five counterfactual constants since D-219/D-248 — the module carries the daemon's *lifecycle* as well as its protocol) | `MC_daemon.cfg` and the D-248 `MC_daemon_stop.cfg`: 275,993 states generated / 21,790 distinct (11 s) | as above; the five controls via `make verify-model-counterexamples` |
+| Protocol model | `tla/V2Daemon.tla` (14, seven counterfactual constants since D-219/D-248/D-249 — the module carries the protocol, the handover's gap-freeness and the daemon's *lifecycle*) | `MC_daemon.cfg` and the D-248/D-249 configurations: 1,694,761 states generated / 135,750 distinct (12 s) | as above; the seven controls via `make verify-model-counterexamples` |
 | Protocol model | `tla/V2Checks.tla` (8, one counterfactual constant since D-219) | 469 states | as above; the control via `make verify-model-counterexamples` |
 | Protocol model | `tla/V2Trust.tla` (6 claims, five counterfactual constants since D-244) | 353,217 states generated / 25,376 distinct (9 s) | as above; the five controls via `make verify-model-counterexamples` |
 | Protocol model | `tla/V2Prompt.tla` (3 claims, three counterfactual constants since D-246) | 612 states generated / 210 distinct (2 s) | as above; the three controls via `make verify-model-counterexamples` |
@@ -402,7 +406,7 @@ The "formal layer" column lists only what the model, the code-level corresponden
 | A25 | MCP approval / cancellation / unknown outcome | model `NoEffectBeforeApproval`; `V2Approval` (D-225): the `expires_at` window, a final decision, no pending approval after the operation closes; code-level approval finality, pending approvals only on PREPARED operations, no effect after a denial | MCP transport and tool surface |
 | A26 | Skills permissions | — | real symlink/registration-root evidence |
 | A27 | heterogeneous providers cooperating | — | real two-sided message evidence |
-| A28 | disconnect, slow client, reconnect | all 10 `V2Daemon` properties plus code-level receipt stability, replay inertia and append-only logs | the real socket layer (covered by the daemon tests) |
+| A28 | disconnect, slow client, reconnect | all 14 `V2Daemon` claims — including the gap-free handover D-249 made refutable (`HandoversAreTheFullRange`, `NothingIsServedTwice`) — plus code-level receipt stability, replay inertia and append-only logs | the real socket layer (covered by the daemon tests and `review/dogfood/stream_json.py`, which measures the delivered lines against it) |
 | A29 | session isolation and a shared project | the single-session constraint in `V2Control` | shared-directory authorization |
 | A30 | artifact and DB write boundaries | all 8 `V2Artifact` properties plus code-level "LIVE has bytes" | real power loss |
 | A31 | write failure / disk full | — | `StorageFull` classification and real SQLite FULL injection |

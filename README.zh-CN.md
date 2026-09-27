@@ -133,9 +133,15 @@ Leader 会自己决定要不要组队、组几个人、谁干什么；需要你�
 ```bash
 teamagents exec "1+1 等于几？直接回答"                           # 提交一次输入，打印回复
 teamagents exec --json --timeout 180 "把 /tmp/proj 的测试修绿"    # 机器可读摘要
+teamagents exec --stream-json "改到测试全绿" | jq -c '.event.kind' # 运行期间实时看事件
 teamagents exec --check "cargo test --offline" "改到测试全绿"     # 追加你自己的验收命令
 git diff | teamagents exec -                                    # 提示词从 stdin 读
 ```
+
+`--stream-json` 每行向 stdout 写一个 JSON 对象：运行期间观察到的每个会话事件写一行
+`{"type":"event","event":{…}}`（按日志顺序、每个只出现一次、写出即 flush），最后一行是报告
+`{"type":"report","report":{…}}`，与 `--json` 打印的是同一个对象。退出码不变；消费方提前关闭管道（如
+`| head`）只会结束事件流，不会影响这次运行。
 
 退出码：`0` 已结算，`1` 失败或未完成，`3` 有操作在等批准（无头运行没人能批，因此立刻返回而不是干等），
 `124` 超过 `--timeout`，`2` 用法或环境错误（没有 daemon、没有模型 profile）。每个 `--check COMMAND`

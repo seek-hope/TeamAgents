@@ -162,9 +162,15 @@ prompt from stdin, so a long instruction can be piped in):
 ```bash
 teamagents exec "What is 1+1? Answer directly."                  # one input, print the reply
 teamagents exec --json --timeout 180 "Make /tmp/proj tests pass"  # machine-readable summary
+teamagents exec --stream-json "Get the tests green" | jq -c '.event.kind'  # the events while it runs
 teamagents exec --check "cargo test --offline" "Get the tests green"  # plus your own acceptance check
 git diff | teamagents exec -                                      # the prompt comes from stdin
 ```
+
+`--stream-json` writes one JSON object per line to stdout: `{"type":"event","event":{…}}` for each event of the
+session as the run observes it (in log order, each once, flushed as it is written) and then the report as
+`{"type":"report","report":{…}}` — the same object `--json` prints. The exit codes are the same, and a consumer
+that closes the pipe (`| head`) ends the stream, not the run.
 
 Exit codes: `0` settled, `1` failed or unfinished, `3` an approval is pending (a headless run has nobody to
 answer it, so it reports instead of waiting), `124` the `--timeout` deadline passed, `2` usage or

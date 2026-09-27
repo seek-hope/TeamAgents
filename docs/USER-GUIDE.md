@@ -65,6 +65,15 @@ happened. Diagnostics go to stderr, the outcome to stdout (`--json` prints one J
 
 - **Prompt**: the positional argument, or everything piped into stdin when it is `-`. An empty prompt is a
   usage error.
+- **`--stream-json`**: the events while the run waits, then the report (D-249). stdout carries one JSON object
+  per line — `{"type":"event","event":{…}}` for each event of the session as this run observes it (the
+  committed log, in order, each once, flushed as it is written) and then `{"type":"report","report":{…}}`,
+  which wraps exactly the object `--json` prints (§1.2). The exit-code contract below is unchanged, the
+  report line is the last line, and the stream carries this run's own events: what the session did before this
+  input landed is drained first, never printed. `--json` and `--stream-json` are refused together (two shapes
+  of one stdout) and `--stream-json` is an `exec` mode — the read verbs print one report and have no stream to
+  follow. A consumer that closes the pipe (`teamagents exec --stream-json … | head -3`) ends the stream, not
+  the run: the run still finishes and keeps its own exit code, with no write error.
 - **`--check COMMAND`** (repeatable): your own acceptance command, run after the turn ends in order in the
   isolated shell (bubblewrap) inside your workspace (`--cwd`, else the current directory). The first failure
   stops the list; the verdicts are printed, written to `<state root>/verification.json` and included in the
@@ -100,6 +109,8 @@ happened. Diagnostics go to stderr, the outcome to stdout (`--json` prints one J
 Five verbs print one JSON object instead of human text, and that object is the scripting surface: `exec`,
 `authority`, `approvals`, `instances` and `tasks`. The table is the contract — `review/exec_report.py` reads
 the field names out of the source and out of this table and fails if the two drift apart in either direction.
+`exec --stream-json` (D-249) carries the *same* `exec` object, wrapped as the last line
+`{"type":"report","report":{…}}` after the session's event lines; the fields below describe it unchanged.
 The arrays inside a report (`instances`, `tasks`, `approvals`, `grants`) are rows of the daemon's own views,
 whose fields the generated table in `docs/PROTOCOL.md` lists (D-173) — including the `reason` on an instance
 row, which the TUI's panel and `instances` print when a member is not running (D-165).

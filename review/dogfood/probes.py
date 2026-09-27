@@ -55,6 +55,7 @@ OFFLINE = [
     ("providers.py", ["--self-check"], "the A27 probe's task-result rule, without a model"),
     ("shutdown.py", [], "a graceful stop with a command in flight, and the recovery after it (DESIGN §9/D-152)"),
     ("daemon_stop.py", [], "`daemon --stop` stops the session by its socket, and the process really goes (D-248)"),
+    ("stream_json.py", [], "`exec --stream-json` streams the events while the run waits, then the report (D-249)"),
 ]
 
 # The set that takes a model. Each probe is the live half of an acceptance item or a decision; `--state-dir`

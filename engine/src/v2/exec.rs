@@ -123,6 +123,11 @@ pub struct ExecOptions {
     pub prompt: String,
     pub timeout_s: u64,
     pub json_out: bool,
+    /// Stream the session's committed events while the run waits, as NDJSON (`exec --stream-json`, D-249): one
+    /// `{"type":"event","event":{…}}` line per event as the run observes it, then the report as
+    /// `{"type":"report","report":{…}}`. The exit-code contract is unchanged. `json_out` is refused together
+    /// with it: they are two shapes of the same stdout.
+    pub stream_events: bool,
     /// Acceptance commands the user pre-authorized on the command line
     /// (`--check`). They run in the client's workspace after the turn ends and
     /// gate the exit code; an empty list means no client-side verification.
@@ -324,6 +329,19 @@ fn parked_fate(instance: &str, reason: Option<&str>) -> String {
 /// follow the run to its terminal state, then run the user's acceptance
 /// commands. Errors are (exit code, message).
 pub fn execute(options: &ExecOptions) -> Result<ExecRun, (i32, String)> {
+    execute_into(options, None)
+}
+
+/// Where one run's events go while it waits (`exec --stream-json`, D-249). `None` is every other caller: the
+/// events are read (they are how the run learns its outcome) and dropped. A sink writes each one as it
+/// arrives, and the run offers it each event exactly once, in log order — the daemon's `events(since)`
+/// contract, whose per-client watermark rule is modelled in `verification/tla/V2Daemon.tla` (the client's view
+/// is the contiguous range after its cursor, and the cursor never runs past the log).
+type EventSink<'a> = Option<&'a mut dyn FnMut(&Json) -> std::io::Result<()>>;
+
+/// `execute` with a sink for the events as they are observed. Kept separate so the no-printing contract of
+/// `execute` (every test and every non-streaming run) is not weakened by the streaming mode.
+pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRun, (i32, String)> {
     let mut client = Client::connect(&options.socket)
         .map_err(|error| (2, format!("exec: {error}; start teamagents daemon first (or just run teamagents)")))?;
     // Drain the events recorded before this input and keep the watermark: a
@@ -387,6 +405,9 @@ pub fn execute(options: &ExecOptions) -> Result<ExecRun, (i32, String)> {
     // the deadline is the default outcome: a loop that breaks on a terminal
     // state always overwrites it
     let mut end = End::Timeout;
+    // a consumer that closed stdout stops the streaming but not the run (`| head`): a closed reader is not a
+    // failed run, and the report still has its own outcome to report
+    let mut streaming = sink.is_some();
     loop {
         // The checkpoint is read *before* the events on purpose. A settlement
         // commits its event and the instance's phases in one transaction, so a
@@ -398,6 +419,13 @@ pub fn execute(options: &ExecOptions) -> Result<ExecRun, (i32, String)> {
         match client.events() {
             Ok(events) => {
                 for event in &events {
+                    if let (Some(write), true) = (sink.as_mut(), streaming) {
+                        match write(event) {
+                            Ok(()) => {}
+                            Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => streaming = false,
+                            Err(error) => return Err((2, format!("exec: writing the event stream: {error}"))),
+                        }
+                    }
                     // A permanently failed leader request is a terminal outcome
                     // of this run: report it instead of waiting out the deadline.
                     // Failures of *other* instances belong to the leader's turn,
@@ -597,7 +625,8 @@ fn socket_lost(what: &str, error: &str) -> (i32, String) {
 /// documented exit code — 0 settled, 1 failed or unfinished, 3 approval
 /// required, 124 timeout, 2 usage/infrastructure.
 pub fn run(options: ExecOptions) -> i32 {
-    let run = match execute(&options) {
+    let outcome = if options.stream_events { run_streaming(&options) } else { execute(&options) };
+    let run = match outcome {
         Ok(run) => run,
         Err((code, message)) => {
             eprintln!("{message}");
@@ -605,12 +634,46 @@ pub fn run(options: ExecOptions) -> i32 {
         }
     };
     let report = &run.report;
-    if options.json_out {
+    if options.stream_events {
+        // the report line is the stream's last line and went out in `run_streaming`
+    } else if options.json_out {
         println!("{}", serde_json::to_string(&report).unwrap_or_else(|_| "{}".into()));
     } else {
         print_human(report, &options);
     }
     run.end.exit_code(run.checks_ok)
+}
+
+/// `exec --stream-json` (D-249): the run's events as they arrive, then the report, both in a typed envelope so
+/// one reader can tell the lines apart (`{"type":"event","event":{…}}` … `{"type":"report","report":{…}}`).
+/// Every line is flushed as it is written — the point of the mode is that a pipeline sees the run *while* it
+/// waits — and the report line is the same object `--json` prints, so a caller can switch modes by reading the
+/// last line. A consumer that closes stdout (`| head`) ends the stream, not the run: the run reports its own
+/// outcome and the exit code is unchanged.
+fn run_streaming(options: &ExecOptions) -> Result<ExecRun, (i32, String)> {
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    let run = {
+        let mut sink = |event: &Json| -> std::io::Result<()> {
+            writeln!(out, "{}", json!({"type": "event", "event": event})).and_then(|()| out.flush())
+        };
+        // the sink's borrow of `out` ends with this block (and with any early return), so the report line
+        // below can use `out` again
+        execute_into(options, Some(&mut sink))?
+    };
+    match writeln!(out, "{}", json!({"type": "report", "report": run.report})) {
+        Ok(()) => {
+            // a flush that fails is the same story as a failed write: only a closed reader is benign
+            if let Err(error) = out.flush() {
+                if error.kind() != std::io::ErrorKind::BrokenPipe {
+                    return Err((2, format!("exec: writing the report: {error}")));
+                }
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {}
+        Err(error) => return Err((2, format!("exec: writing the report: {error}"))),
+    }
+    Ok(run)
 }
 
 fn print_human(report: &Json, options: &ExecOptions) {

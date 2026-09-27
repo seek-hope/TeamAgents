@@ -20,6 +20,55 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-249 `exec --stream-json`: the events while the run waits, then the report (2026-09-27)
+
+`docs/PRODUCT-COMPARISON.md` §2 listed streaming as the third item in decision order — Codex's `codex exec
+--json` streams typed items and Hermes streams tool output — and called it "additive surface, no design change",
+asking for the user's word only because it changes what a headless run writes. **Decided: implement it**, since
+the goal delegates implementation decisions and this adds no protocol surface: `exec` was already the session's
+event consumer (that is how it learns its own outcome), so the mode is a *second rendering* of a read the
+daemon already serves.
+
+**What it is.** `teamagents exec --stream-json "…"` writes one JSON object per line to stdout while the run
+waits — `{"type":"event","event":{…}}` for each event of the session as this run observes it (the committed
+log, in log order, each once) — and then `{"type":"report","report":{…}}`, whose `report` is exactly the object
+`--json` prints. Every line is flushed as it is written (the point of the mode is that a pipeline sees the run
+while it waits), the exit-code contract is unchanged, and the stream carries **this run's own** events: what
+the session did before the input landed is drained first, never printed (the same attribution rule D-72
+applies to the outcome).
+
+**Two edge cases are decided, not inherited.** A consumer that closes the pipe (`… | head -3`) ends the
+*stream*, not the run: a `BrokenPipe` stops the writing, the run finishes, and the exit code is its own — a
+closed reader is not a failed run. And the two output shapes are refused together (`--json --stream-json`), as
+is `--stream-json` outside `exec`, each naming the argument (D-230's rule) before anything starts.
+
+**Why no new model.** The mode adds no protocol message and no state: it renders the `events(since)` read,
+whose rule is already in `verification/tla/V2Daemon.tla` — a client's view is the contiguous range after its
+cursor, the cursor never runs past the log, and a served batch is that range (`ViewMatchesCursor`,
+`CursorNeverBeyondLog`, `LogMonotone`). The streaming client is a `Fetch(c)`-shaped consumer of exactly that
+contract, and the correspondence is the probe below, which measures the *lines* against it. A model of stdout
+would model a pipe, not the product; the claim that the model cannot state (a line is written once and
+flushed) is a measurement, and it is measured.
+
+**Measured.** `review/dogfood/stream_json.py` (credential-free, in `make probe-offline`) drives the real binary
+over a local scripted service: the first line is read **while the process is still running** (the service holds
+the second turn 3 s, so a mode that collected the events and printed them at the end fails exactly here), 11
+event lines with strictly increasing `sequence` 7→17, exactly one report line whose `watermark` is 17 and whose
+`end` is `completed` with exit 0, a `--json` run in a session of its own printing one line with the same
+16-field set, a closed consumer leaving exit 0 with nothing on stderr, and both refusals at exit 2 with the
+argument named. The deterministic half is
+`v2_daemon::the_streaming_headless_mode_prints_the_events_then_the_report` (the real binary against a real
+daemon, the same field-set comparison). The first smoke run was manual: with the profile pointed at a closed
+port, `exec --stream-json` printed six event lines (7…12, ending `request_failed`) and then the report, exit 1.
+
+Ceiling: the stream is **stdout only** — no per-instance filter, no resume, and the read verbs (`authority`,
+`approvals`, `instances`, `tasks`) keep their single report, because they have no event stream of their own to
+follow; the report is the **last** line, so a caller that wants the verdict still reads to the end (the fields
+come *after* the events by construction); and a consumer that stops reading without closing fills the pipe and
+blocks the client's own write — the run goes on server-side (a slow client never blocks the writer, §9), but
+the client's `--timeout` is not enforced while it is blocked in `write`, so the mode is for consumers that
+read or close, not for ones that stall.
+
 ## D-248 `teamagents daemon --stop`: the session's stop lever, addressed by its socket (2026-09-27)
 
 D-150 made SIGTERM reach the designed shutdown, and `docs/ACCEPTANCE.md` recorded what was left: with the
