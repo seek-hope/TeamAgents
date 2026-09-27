@@ -73,7 +73,24 @@ seen; the `.PHONY` list is the universe, so a documented target that exists as a
 reported; a flag between the command and the target (`make -f FILE target`, as the D-111 control writes) hides it;
 a `make` command quoted from another project inside a fenced example would be reported (none exists today); and a
 citation on a line that mentions `.PHONY` for an unrelated reason is excused.
+
+**D-223 added the sections a reader follows.** The documents cite the design by number — `§4.4`, `§5.3`,
+`§12.1`, `§12.3`, `§14` — and no audit resolved a number: a citation to a section that was renumbered or never
+existed reads exactly like one that resolves. It was not hypothetical. The earlier plan's numbering survives in
+43 places (measured 2026-09-27) across the documents, `AGENTS.md` and twelve Rust sources — `§12.1` (the offered
+surface follows the declared bindings), `§12.2` (sandbox, environment and credential hygiene), `§12.3` (workspace
+policies) and `§14` (one owner per behaviour) — while the design's §12 is the acceptance matrix and its headings
+run 1–10, 12, 13, 16: a reader following `§12.3` in `AGENTS.md`, or `§12.1` in `docs/TOOLS.md`, arrived at the
+wrong place. Every one is repointed at the live section (the mapping is in D-223), the three that state a rule
+the design does not carry say "the archived plan's" instead, and a `§N.M` citation must name a section of one of
+the numbered documents — `docs/DESIGN.md`, `docs/USER-GUIDE.md`, `docs/INSTALL.md`, `verification/REPORT.md` —
+unless the line records it as archived or its file is the upstream-comparison note (`EXTERNAL_SECTIONS`, whose
+numbers are the compared platform's own).
+
+This docstring states counts of the current tree as well, and nothing looked at them either (D-208's pattern, one
+file over): **21** markdown files and **77** Rust files carry **665** citations, **81** relative links, **448** `make` commands and **866** `§`-section references, all five recomputed and compared here.
 """
+
 import pathlib
 import re
 import subprocess
@@ -103,8 +120,22 @@ PATH_RE = re.compile(r"`([A-Za-z0-9_./-]+(?:" + "|".join(re.escape(s) for s in P
 RS_BASENAME = re.compile(r"`([A-Za-z0-9_-]+\.(?:rs|tla|cfg))`")
 ITEM_RE = re.compile(r"\b(?:fn|const|static|struct|enum|type|trait|mod)\s+([A-Za-z_][A-Za-z0-9_]*)")
 TEST_RE = re.compile(r"#\[(?:tokio::)?test\]\s*(?:#\[[^\]]*\]\s*)*fn\s+([A-Za-z_][A-Za-z0-9_]*)")
+# the numbered documents a `§N.M` citation can point at, and the headings that define those numbers (D-223)
+SECTION = re.compile(r"§(\d+(?:\.\d+)*)")
+SECTION_DOCS = ("docs/DESIGN.md", "docs/USER-GUIDE.md", "docs/INSTALL.md", "verification/REPORT.md")
+HEADING = re.compile(r"^#{2,4}\s+(\d+(?:\.\d+)*)\.?\s", re.M)
+STATED_COUNTS = re.compile(r"\*\*(\d+)\*\* markdown files and \*\*(\d+)\*\* Rust files carry "
+                           r"\*\*(\d+)\*\* citations, \*\*(\d+)\*\* relative links, "
+                           r"\*\*(\d+)\*\* `make` commands and \*\*(\d+)\*\* `§`-section references")
+# a file whose `§`-numbers are deliberately not this repository's, with the reason it stays that way
+EXTERNAL_SECTIONS = {
+    "review/dsec-kernel-reference-2026-09-24.md":
+        "it states what an external sandbox platform's own sections contain, so its `§`-numbers are that "
+        "document's",
+}
 # a citation that says the thing is gone is a record of a removal, not a broken reference
 GONE_MARKERS = ("deleted", "removed", "renamed", "gone", "dropped", "no longer exists", "obsolete", "pre-v2", "legacy",
+                "archived",
                 "does not exist", "do not exist", "doesn't exist", "never existed", "nonexistent",
                 "no such file", "404")
 
@@ -152,11 +183,27 @@ def table_header(line_number, lines):
     return header if separator.lstrip().startswith("|") and set(separator.strip()) <= set("|-: ") else ""
 
 
-def scan(name, lines, items, tests, basenames, paths, modules):
-    checked, findings, notes = 0, [], []
+def sections() -> set:
+    """Every section number the numbered documents of this repository define."""
+    out = set()
+    for doc in SECTION_DOCS:
+        out |= set(HEADING.findall((REPO / doc).read_text(errors="replace")))
+    return out
+
+
+def scan(name, lines, items, tests, basenames, paths, modules, numbers):
+    checked, findings, notes, section_refs = 0, [], [], 0
     for number, line in enumerate(lines, start=1):
         context = (line + " " + table_header(number - 1, lines)).lower()
         gone = any(marker in context for marker in GONE_MARKERS)
+        for match in SECTION.finditer(line):
+            section_refs += 1
+            if match.group(1) in numbers or name in EXTERNAL_SECTIONS:
+                continue
+            checked += 1
+            (notes if gone else findings).append(
+                f"{name}:{number}: §{match.group(1)} is not a section of any numbered document here "
+                f"({', '.join(SECTION_DOCS)})")
         for match in QUALIFIED.finditer(line):
             checked += 1
             chain = match.group(1)
@@ -184,7 +231,7 @@ def scan(name, lines, items, tests, basenames, paths, modules):
             checked += 1
             if basename not in basenames:
                 (notes if gone else findings).append(f"{name}:{number}: `{basename}` does not exist")
-    return checked, findings, notes
+    return checked, findings, notes, section_refs
 
 
 def prose_without_code(text: str) -> list[tuple[int, str]]:
@@ -267,16 +314,26 @@ def main():
     paths = set(files)
     declared = set(phony_targets((REPO / "Makefile").read_text(errors="replace")))
     modules = tla_members()
-    checked, links, made = 0, 0, 0
+    numbers = sections()
+    checked, links, made, refs, markdown, rust = 0, 0, 0, 0, 0, 0
     findings, notes = [], []
+    for stale in sorted(set(EXTERNAL_SECTIONS) - set(files)):
+        findings.append(f"EXTERNAL_SECTIONS lists {stale}, which is not a tracked file anymore: an exemption "
+                        "cannot outlive its reason")
     for name in files:
         if not name.endswith((".md", ".rs")) or name.startswith(EXCLUDED):
             continue
         text = (REPO / name).read_text(errors="replace")
-        seen, found, noted = scan(name, text.split("\n"), items, tests, basenames, paths, modules)
+        seen, found, noted, seen_refs = scan(name, text.split("\n"), items, tests, basenames, paths, modules,
+                                            numbers)
         checked += seen
+        refs += seen_refs
         findings += found
         notes += noted
+        if name.endswith(".md"):
+            markdown += 1
+        else:
+            rust += 1
         if name.endswith(".md"):
             read, broken = broken_links(name, text)
             links += read
@@ -285,13 +342,28 @@ def main():
             made += commands
             findings += missing
             notes += records
+    # (D-223) the counts this docstring states are compared with the tree, the way verification_catalogue's are:
+    # a number in the prose that describes an audit must be one the audit recomputes (D-208).
+    stated = STATED_COUNTS.search(__doc__ or "")
+    if stated is None:
+        findings.append("this script's docstring no longer states its counts in the compared form "
+                        "(`**N** markdown files and **N** Rust files carry **N** citations, ...`), so the rule "
+                        "that checks them has nothing to read")
+    else:
+        want = [markdown, rust, checked, links, made, refs]
+        labels = ["markdown files", "Rust files", "citations", "relative links", "`make` commands",
+                  "`§`-section references"]
+        for label, said, real in zip(labels, (int(x) for x in stated.groups()), want):
+            if said != real:
+                findings.append(f"this script's docstring says {said} {label}, the tree has {real}: a count in the "
+                                "prose that describes an audit has to be one the audit recomputes (D-223)")
     for note in notes:
         print(f"note: {note}")
     for finding in findings:
         print(finding)
     print(f"\n{checked} citations checked against {len(basenames)} files, {len(tests)} tests and "
-          f"{len(items)} items, plus {links} relative link(s) and {made} `make` command(s): "
-          f"{len(findings)} unexplained, {len(notes)} recorded as removed")
+          f"{len(items)} items, plus {links} relative link(s), {made} `make` command(s) and {refs} `§`-section "
+          f"reference(s): {len(findings)} unexplained, {len(notes)} recorded as removed")
     return 1 if findings else 0
 
 

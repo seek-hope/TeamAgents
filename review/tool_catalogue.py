@@ -4,7 +4,7 @@
 The tool surface is the capability surface of a coding agent, and this build assembles it from three schema
 functions: `builtin_tool_schemas()` (every instance), the profile's tools — `basic_tool_schemas(web, skills)`,
 which a session starts from as `reference::session_tool_schemas` (the web half only for the kinds the config
-declares, §12.1/D-79) — and `collaboration_tool_schemas(actions)` (the team tools, per grant). None of that was documented anywhere: a user
+declares, §5.2/D-79) — and `collaboration_tool_schemas(actions)` (the team tools, per grant). None of that was documented anywhere: a user
 writing instructions saw the tools only after a run, and the JSON schemas in the code were the only description.
 
     python3 review/tool_catalogue.py            # check (inside `make hygiene`)
@@ -86,7 +86,7 @@ def tools():
                         [(name, spec.get("type", "object"), name in parameters.get("required", []), spec.get("description", ""))
                          for name, spec in parameters.get("properties", {}).items()],
                         "`reference::session_tool_schemas` (the profile's tools; the web half only for the "
-                        "kinds the config declares — §12.1/D-79/D-168)"))
+                        "kinds the config declares — §5.2/D-79/D-168)"))
     return out
 
 

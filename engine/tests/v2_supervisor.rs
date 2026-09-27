@@ -497,7 +497,7 @@ async fn heterogeneous_instances_run_different_protocols_in_one_session() {
     responses_server.task.await.unwrap();
 }
 
-/// §12.3 wiring: a terminated instance's isolated workspace is retired by the
+/// §5.1 wiring: a terminated instance's isolated workspace is retired by the
 /// supervisor (and its record dropped), so nothing accumulates silently.
 #[tokio::test]
 async fn terminating_an_instance_retires_its_workspace() {

@@ -330,7 +330,7 @@ pub fn basic_tool_schemas(web: bool, skills: bool) -> Vec<Json> {
 /// The tool surface a session's members start from: the basic tools, with each *web* kind offered only when the
 /// config declares a binding of that kind.
 ///
-/// §12.1 says binding *is* the authorization, and D-79 recorded the consequence as the design — "`web_fetch` and
+/// §5.2 says binding *is* the authorization, and D-79 recorded the consequence as the design — "`web_fetch` and
 /// `web_search` are offered only when the config declares a binding". The daemon passed `true, true` instead, so
 /// a session whose config declares no `[tools.*]` web entry still offered both and every call answered "tool
 /// web_search is not bound to this member" (measured 2026-09-27 with the surface witness, D-168) — while the
@@ -353,7 +353,7 @@ mod tests {
     use serde_json::json;
     use teamagents_core::models::{ToolBinding, UserConfig};
 
-    /// D-168: the web half of a session's surface follows the declared bindings (§12.1: binding is the
+    /// D-168: the web half of a session's surface follows the declared bindings (§5.2: binding is the
     /// authorization — and D-79 recorded exactly that as the design), while `skill` stays offered because the
     /// `skills` binding is product-default and the tool answers a capability state when no root resolves (D-167).
     #[test]

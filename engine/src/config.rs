@@ -632,7 +632,7 @@ pub fn project_config_path(cwd: &Path) -> PathBuf {
 /// User config plus repository-local project config (user-defined names win).
 /// A project file may add model profiles, but never replace a user-defined name,
 /// and its tool bindings only load after the user opts in with
-/// `[permissions] trust_project_tools = true` (plan §12.2/14).
+/// `[permissions] trust_project_tools = true` (the archived plan's §12.2/14).
 pub fn load_user_config_for(cwd: &Path) -> Result<UserConfig, String> {
     let user_text = std::fs::read_to_string(user_config_path()).unwrap_or_default();
     let project_text = std::fs::read_to_string(project_config_path(cwd)).unwrap_or_default();

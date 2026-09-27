@@ -18,6 +18,55 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-223 Forty-three citations of plan sections the design does not have (2026-09-27)
+
+The documents, the repository's own instruction file and the Rust sources cite the design by section: `§4.4`
+durability, `§5.3` wakeups, and the archived plan's `§12.1` binding, `§12.3` workspaces and `§14` ownership. `review/citations.py` resolved
+paths, links, `make` targets, model files and model members, but **never a section number** — so a citation to a
+renumbered or never-existing section read exactly like one that resolves, which is the failure D-109 built the
+audit to catch for names and D-201 for commands. Measured 2026-09-27: **43 such citations**, across the
+documents, `AGENTS.md` and twelve Rust sources (`engine/src/{reference,bound,mcp,cli,config,lib,workspace}.rs`,
+`engine/src/tools.rs`, `engine/src/v2/{driver,supervisor}.rs`, `tui/src/wrap.rs`,
+`engine/examples/load_probe.rs` and two integration tests) named the **earlier plan's** chapters — and the design
+has no such sections: its headings run 1–10, 12, 13, 16, and its §12 is the *acceptance matrix*, so a reader
+following the archived plan's `§12.3` in `AGENTS.md`, or its `§12.1` in `docs/TOOLS.md` (and in eleven generated
+entries), arrived at
+the A01–A36 table.
+
+**Repointed at the live sections**, per topic, and the three that state a rule the design does not carry say so:
+
+| The archived plan's section | What the citation is about | Where it points now |
+|---|---|---|
+| `§12.1` | the offered surface follows the declared bindings; binding is the authorization | `§5.2` (`§5.1` is the authorization basis beside it) |
+| `§12.2` | sandbox, environment and credential hygiene | `§2` (the decision-review boundary: model credentials never enter the tool environment) and `§7` (tools, credentials, skills) |
+| `§12.3` | workspace policies (shared / isolated / git worktree) | `§5.1` |
+| `§14` | one owner per behaviour; the v2 state-root layout | `§10` (module organisation) and `§4.1` (one database per session) |
+| `§11` | the load probes | `§13` (performance experiments) |
+
+Two sites cite a rule the design deliberately does not carry — the `[permissions] trust_project_tools` opt-in
+(the project-config merge is not read, D-133) and the legacy-layout cleanup inventory — and now say "the archived
+plan's §N", which the audit accepts as a recorded removal like any other.
+
+**And the rule**: a `§N.M` citation must name a section of one of the numbered documents — `docs/DESIGN.md`,
+`docs/USER-GUIDE.md`, `docs/INSTALL.md`, `verification/REPORT.md` — unless the line records it as archived or its
+file is the upstream-comparison note (`review/dsec-kernel-reference-2026-09-24.md`, whose `§`-numbers are the
+compared platform's own; `EXTERNAL_SECTIONS` carries the reason, and a stale entry is a finding).
+**Demonstrated**: with a reference to a section that does not exist appended to `README.md`, the audit
+reports its own message, `README.md:257: §12.9 is not a section of any numbered document here` — a section that does not exist — and the mutation was reverted byte-identically before the green run.
+
+**The same turn made the audit's own prose counts checked.** Its docstring states counts of the tree (D-201/D-213
+did the same), and those counts had already drifted — the sentence said `389`/`418` while the tree carried 448
+`make` citations. The counts they describe are now compared with what the run computes (the shape D-208 gave
+`verification_catalogue.py`), and the check corrected this entry's own numbers while it was being written: 21
+markdown files and 77 Rust files, 648 citations, 81 links, 448 `make` commands, 835 `§`-section references.
+
+Ceiling: the rule resolves a number against the union of the numbered documents' headings, not against the
+document the sentence *means* — `§4.4` in a sentence about the install guide passes if any numbered document has
+a §4.4 (the alternative, guessing the target from the sentence, would be unsound in the other direction); a
+section that exists but holds something else is invisible to it; `§`-numbers inside code spans and fenced blocks
+are read like any other (no formula in this tree contains one); and the exemption list is a hand-kept list of one
+file, so a *new* upstream-comparison note has to be added to it or its numbers reported.
+
 ## D-222 Ten marked claims that the property-by-spec mapping never named (2026-09-27)
 
 `verification/README.md` is the mapping the report sends a reader to: "the property-by-spec mapping is in
@@ -1926,7 +1975,7 @@ nor `web_fetch`" — and with `TEAMAGENTS_LOG_SURFACE=1` on exactly that config,
 (2026-09-27, one real turn). Every call to those two would answer `tool web_search is not bound to this member`.
 The daemon passed `reference::basic_tool_schemas(true, true)` unconditionally, so the *report* was wrong and,
 worse, the offered surface contradicted the rule D-79 recorded as the design in the same breath: "`web_fetch`
-and `web_search` are offered **only when the config declares a binding** — that part is the design (§12.1:
+and `web_search` are offered **only when the config declares a binding** — that part is the design (§5.2:
 binding is the authorization)". D-60 states the same principle for `shell` ("a tool the instance cannot dispatch
 is not offered") and only `shell` implemented it.
 
@@ -5446,7 +5495,7 @@ production; the recipe is in the test's doc comment.
 
 Verifying the last "basic tool" without live evidence turned up a small reporting gap of a familiar shape.
 `web_fetch` and `web_search` are offered only when the config *declares* a binding — that part is the design
-(§12.1: binding is the authorization, and D-74/D-78 kept to it) — but a config that declares none produced no
+(§5.2: binding is the authorization, and D-74/D-78 kept to it) — but a config that declares none produced no
 `doctor` row at all, so a fresh session gave the model neither tool while the README's feature list says "web
 search and fetch". The user had no surface that said the capability was missing.
 
@@ -5540,7 +5589,7 @@ should live in the session state (so a restarted TUI still recalls) is a design 
 
 ## D-76 The workspace lifecycle, observed end to end (2026-09-25)
 
-D-46 wired the §12.3 policies and promised, in the docs, that a terminated instance retires its workspace and
+D-46 wired the §5.1 policies and promised, in the docs, that a terminated instance retires its workspace and
 that uncommitted or unmerged work is never deleted — with unit tests and one driver test as evidence. Nothing
 had observed the *whole* lifecycle with a real model, which is where the two interesting questions live: does
 a member's tools really work inside its own worktree (the D-57 class: a dogfooding run once spent sixty turns
@@ -5674,7 +5723,7 @@ with the environment the tool gateway builds (its own `env` table plus the docum
 the daemon's ambient environment — worth knowing when a server expects a variable to be inherited. No new
 formal claim came with this change: an MCP tool reaches a model only through `BoundTools::schemas()`, whose
 only inputs are the trust-filtered catalog and the bindings list, so the design's "binding is the
-authorization" (§12.1) still holds by construction, and `V2Grants::OfferedToolsAreAuthorized` continues to
+authorization" (§5.2) still holds by construction, and `V2Grants::OfferedToolsAreAuthorized` continues to
 cover the grant-backed half of the offered surface.
 
 ## D-73 The CLI refuses what it does not honour (2026-09-25)
@@ -6761,7 +6810,7 @@ TestBackend frame; `make check` and `make pty` are green.
 ## D-46 Workspace policies wired into spawn (2026-09-25)
 
 D-45 found that the shared/isolated/git-worktree policies in `engine/src/workspace.rs` ([design](DESIGN.md)
-§12.3, Q14) were only called by their own unit tests. After the user confirmed "wire it up":
+§5.1, Q14) were only called by their own unit tests. After the user confirmed "wire it up":
 
 - **Model-visible entry**: the `spawn` tool gains an optional `workspace` argument — `shared` (default: the
   project directory), `isolated` (a private directory at `<state root>/instances/<id>/work`) or

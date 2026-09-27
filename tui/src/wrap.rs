@@ -1,5 +1,5 @@
 //! Styled-span word wrapping shared by the v2 UI (extracted from the retired
-//! v1 renderer, §14: one owner per behaviour).
+//! v1 renderer, §10: one owner per behaviour).
 
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};

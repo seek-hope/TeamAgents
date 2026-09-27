@@ -1,4 +1,4 @@
-//! Minimal MCP client: stdio + streamable HTTP transports (plan §12.1).
+//! Minimal MCP client: stdio + streamable HTTP transports (§5.2).
 //!
 //! One connection per bound member service, retained until its runner closes.
 //! Explicit close and failed initialization reap the owned stdio process group.

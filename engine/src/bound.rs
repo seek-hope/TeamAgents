@@ -3,7 +3,7 @@
 //! user catalog is an MCP service — declaring it *is* binding it (D-74). A name in
 //! the bindings list that is not a built-in is looked up the same way, so an
 //! unknown or unsupported one is still refused. Binding a service to a member *is*
-//! the authorization for its tools (plan §12.1), so bound tools skip the approval
+//! the authorization for its tools (§5.2), so bound tools skip the approval
 //! gate — the ToolGateway still audits every other tool call.
 
 use crate::mcp::McpClient;
@@ -27,7 +27,7 @@ pub struct BoundTools {
 
 /// Bindings the product implements natively: binding one of these *is* the
 /// authorization for the capability, so they are never looked up in the user
-/// catalog as MCP services (plan §12.1) — and they are exactly what a session
+/// catalog as MCP services (§5.2) — and they are exactly what a session
 /// binds by default (D-78): the daemon boots with this list, `doctor` reports the
 /// surface through the same one, and `web` expands to the configured web bindings.
 /// One list means a report can never describe a surface other than the one the

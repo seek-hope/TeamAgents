@@ -1,4 +1,4 @@
-//! Workspace policies: shared / isolated / git worktree (plan §12.3).
+//! Workspace policies: shared / isolated / git worktree (§5.1).
 //!
 //! A worktree isolates working files; it is not a security sandbox. Uncommitted
 //! task inputs in the original directory are never ignored silently: the policy

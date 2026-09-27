@@ -91,7 +91,7 @@ pub struct DriverConfig<P> {
     pub instance_id: String,
     /// Jobs, artifacts and the coordinator lock live here (one lock per root, §6.1).
     pub state_root: PathBuf,
-    /// Per-instance directories (`<session root>/instances`, §12.3): a spawn
+    /// Per-instance directories (`<session root>/instances`, §5.1): a spawn
     /// resolves its workspace policy against this directory.
     pub instances_dir: PathBuf,
     pub workspace: PathBuf,
@@ -2092,7 +2092,7 @@ impl<P: Provider> Driver<P> {
     /// commands under the instance identity — the grant check inside the
     /// command is the second line behind the dispatch re-check (§6.1). The
     /// command result becomes the tool receipt the model observes.
-    /// §12.3: resolve the workspace policy of one `spawn` call. shared (the
+    /// §5.1: resolve the workspace policy of one `spawn` call. shared (the
     /// project directory) is the default; a worktree request on a dirty or
     /// unversioned project falls back to shared and says why. The policy is
     /// recorded before the instance can boot, so retirement cleans up exactly

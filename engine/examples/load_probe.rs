@@ -1,4 +1,4 @@
-//! Load probe (A32: the probes from §11 re-run on the production path): append /
+//! Load probe (A32: the probes from §13 re-run on the production path): append /
 //! step latency, control-boundary latency, request construction, restart,
 //! multi-instance reads, RSS and disk growth over a ~1M-token synthetic
 //! context built through the production `Control` plane.

@@ -326,7 +326,7 @@ where
                 })
                 .await??;
             {
-                // §12.3: once an instance is gone, clean up what its workspace
+                // §5.1: once an instance is gone, clean up what its workspace
                 // policy created. Refusals (uncommitted or unmerged work) keep
                 // the directory and are reported instead of being forced.
                 for (id, lifecycle, _, _) in &instances {

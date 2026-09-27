@@ -965,7 +965,7 @@ pub(crate) fn web_tools(
 
 /// Skills registry roots: user-configured `skills_paths` only (project and
 /// member skill dirs live inside the workspace and are readable with `files`).
-/// Read-only by construction (plan §12.2: selected skills are pre-authorized reads).
+/// Read-only by construction (§7: selected skills are pre-authorized reads).
 fn skill_roots(catalog: &teamagents_core::models::UserConfig) -> Vec<PathBuf> {
     catalog.skills_paths.iter().map(|p| crate::config::expand_home(p)).filter(|p| p.is_dir()).collect()
 }
@@ -1618,7 +1618,7 @@ fn output_socket() -> Result<(UnixStream, Stdio), String> {
 }
 
 /// bwrap-only: missing isolation is an error,
-/// never a silent fallback to unsandboxed execution (plan §12.2).
+/// never a silent fallback to unsandboxed execution (§2).
 pub fn shell_run(
     command: &str,
     workdir: &Path,
@@ -1791,7 +1791,7 @@ pub(crate) fn shell_command_spec(
             ("/bin/bash".into(), vec!["--noprofile".into(), "--norc".into(), "-c".into(), wrapped.clone()])
         }
     };
-    // whitelist environment: no model keys, no credentials (plan §12.2)
+    // whitelist environment: no model keys, no credentials (§2)
     let mut env: Vec<(String, String)> = vec![
         ("PATH".into(), sandbox_path()),
         ("HOME".into(), sandbox_home(shell_state.is_some()).into()),
@@ -1857,7 +1857,7 @@ pub(crate) fn shell_outcome_at(
         Ok(pair) => pair,
         Err(e) => return not_started("capture", e),
     };
-    // whitelist environment: no model keys, no credentials (plan §12.2)
+    // whitelist environment: no model keys, no credentials (§2)
     sandbox.stdin(Stdio::null()).stdout(stdout_stdio).stderr(stderr_stdio).env_clear();
     for (key, value) in &spec.env {
         sandbox.env(key, value);
@@ -2577,7 +2577,7 @@ fn receipt_error_class(text: &str) -> &'static str {
 }
 
 /// The turn-cancellation flag the reference loop and the driver share: cancelling
-/// a running turn is a local execution concern, not team state (§14 keeps one
+/// a running turn is a local execution concern, not team state (§10 keeps one
 /// owner per fact).
 #[derive(Default)]
 pub struct TurnControl {

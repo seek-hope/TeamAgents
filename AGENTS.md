@@ -77,7 +77,7 @@ This describes the current code.
 - Product layer: `engine/src/v2/daemon.rs` (one Unix-socket JSON-lines service per state root),
   `engine/src/v2/exec.rs` (headless client), `engine/src/cli.rs`, `tui/src/daemon_client.rs`. Rendering and
   mouse hit-testing share `tui/src/v2ui.rs::geometry`.
-- Workspace policies: `engine/src/workspace.rs` (shared / isolated / git worktree, §12.3) is selected by the
+- Workspace policies: `engine/src/workspace.rs` (shared / isolated / git worktree, §5.1) is selected by the
   `workspace` argument of the `spawn` tool. `driver::prepare_spawn_workspace` resolves the policy before the
   child instance starts and records it in `<instances_dir>/<id>/workspace.json`; the supervisor retires that
   workspace when the instance is `TERMINATED` (it refuses to delete anything with uncommitted or unmerged

@@ -38,7 +38,7 @@ audits — each one a claim the tree makes about itself, each with the decision 
   newest-first, each with a body (D-107); `review/decision_queue.py` keeps the user's decision queue
   complete — an entry that asks for the user's word must appear in `docs/ACCEPTANCE.md`'s known gaps or
   `docs/PRODUCT-COMPARISON.md` §2, or name the later decision that closed it (D-195); `review/citations.py` resolves every backticked citation in tracked
-  markdown, a qualified name or a repository path, unless the line records it as removed (D-110), since D-200 every relative inline *link*, and since D-201 every `make <target>` a reader is told to run (against the Makefile's `.PHONY` list);
+  markdown, a qualified name or a repository path, unless the line records it as removed (D-110), since D-200 every relative inline *link*, since D-201 every `make <target>` a reader is told to run (against the Makefile's `.PHONY` list) and since D-223 every `§N.M` section reference (against the numbered documents' own headings — the archived plan's numbering survived in 43 places until then);
 
   `review/decision_citations.py` resolves every `D-<n>` to a heading or to one of the earlier rules the index
   table keeps in force (D-170); `review/readme_zh.py` holds `README.zh-CN.md` to `README.md` on the heading

@@ -153,7 +153,7 @@ amended (D-49/D-50).
   packages the docs and `install.sh`, checksums them, smoke-installs the exact archive and publishes the assets, and `make release-rehearsal` (`review/release_rehearsal.py`, D-217) runs all of that except the publish against this tree — version gate, musl release build, archive, checksums and smoke — measured 2026-09-27 at **5 m 26 s** cold with a **5,712 KiB** archive and a green smoke, and that run found the smoke half-isolated (it set only `XDG_CONFIG_HOME`, so `init` prepared its state root under the runner's real home; both smoke lines set `XDG_STATE_HOME` now); cutting the
   release is the user's decision (D-203; `review/release_artifact.py` now holds the same fact to both READMEs, which had recommended this install with no caveat). Until then `docs/INSTALL.md` says the install docs describe the tree, not the artifact.
 
-- **A worktree member's branch has no merge surface.** The `git_worktree` policy (§12.3/D-46) gives a
+- **A worktree member's branch has no merge surface.** The `git_worktree` policy (§5.1/D-46) gives a
   member its own branch and checkout, retirement refuses to delete an unmerged one, and the real-model
   harness `review/dogfood/workspace.py` walks the whole lifecycle (D-76) — its first runs in `make probe-models`
   were intermittent on one assertion (a probe-side race between the retirement's directory removal and its

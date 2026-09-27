@@ -205,7 +205,7 @@ pub fn doctor(state_root: Option<PathBuf>) -> i32 {
         Err(e) => check(&mut results, "user config", false, e.clone()),
     }
     // R27/A36: the v2 state root must be identifiable and usable; the legacy
-    // layout is only reported (its cleanup belongs to §14/R28)
+    // layout is only reported (its cleanup belongs to the archived plan's §14/R28)
     let v2_root = state_root.unwrap_or_else(crate::v2_root);
     let v2_db = v2_root.join("session.sqlite");
     if v2_root.exists() && !v2_root.is_dir() {
@@ -717,7 +717,7 @@ fn daemon_boot(
     let socket = state_root.join("daemon.sock");
     let catalog_for_factory = catalog.clone();
     // D-168: the members' tool surface follows the config — a web tool is offered only for the kind the catalog
-    // declares a binding of (§12.1: binding is the authorization), which is what `doctor`'s row for a config
+    // declares a binding of (§5.2: binding is the authorization), which is what `doctor`'s row for a config
     // without one already claimed.
     let member_tools = crate::reference::session_tool_schemas(&catalog);
     let config = crate::v2::daemon::DaemonConfig {

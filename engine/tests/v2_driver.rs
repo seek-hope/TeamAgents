@@ -1702,7 +1702,7 @@ fn init_git_repo(dir: &std::path::Path) {
     git(&["commit", "-q", "-m", "init"]);
 }
 
-/// §12.3: the spawn tool resolves the requested workspace policy, records it and
+/// §5.1: the spawn tool resolves the requested workspace policy, records it and
 /// points the instance row at the resolved directory.
 #[tokio::test]
 async fn spawn_resolves_the_requested_workspace_policy() {
