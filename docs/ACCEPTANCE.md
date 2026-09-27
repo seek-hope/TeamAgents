@@ -187,8 +187,11 @@ amended (D-49/D-50).
   validated like any other key and the driver's budget is the session's own constant (`engine/src/cli.rs` passes
   `max_retries: 2`), so a config that writes `max_retries = 9` gets 2 retries and no word about it. Since D-240 it
   is *reported*: the field's own doc comment in `core/src/models.rs`, the `docs/CONFIG.md` row (`nothing: D-240:
-  …` instead of the two foreign structs the search used to name) and the audit's `masked:` bucket, which also
-  fails when the key is mentioned through any other receiver — so wiring it cannot leave the record stale. The
+  …` instead of the two foreign structs the search used to name), the audit's `masked:` bucket, which also fails
+  when the key is mentioned through any other receiver, and — measured rather than asserted —
+  `python3 review/dogfood/max_retries.py` (offline, 4.6 s): a config asking for `max_retries = 0` against a server
+  that always truncates still sends three requests before `transient retries exhausted`, and the probe fails if a
+  future build sends the config's one instead. The
   three fates D-75's rule allows are not equivalent here and the choice is **the user's call**: wire it (which
   means deciding the bound, and A19 pins the retry shape at `max_retries = 2`), refuse it at load like
   `codex_profile` (a load error for a config that writes it today), or keep it dead and report it in `doctor` too

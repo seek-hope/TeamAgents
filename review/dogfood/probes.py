@@ -45,6 +45,7 @@ OFFLINE = [
     ("boundary.py", [], "the state roots the CLI refuses (A33/A34)"),
     ("budget.py", [], "a ceiling below one request is refused before any model call (A18)"),
     ("truncation.py", [], "A19's whole path over a real socket: truncated before output retries, after it fails"),
+    ("max_retries.py", [], "a profile's `max_retries` is ignored: the budget is the session's constant (D-240)"),
     ("input_latency.py", [], "per-keystroke composer latency against the scripted daemon"),
     ("tui_panels.py", [], "the instances panel's keys against a real daemon (D-95)"),
     ("geometry.py", [], "the TUI under an extreme terminal size and a mid-run resize (D-233)"),
@@ -232,6 +233,13 @@ def self_check() -> int:
         if name not in documented:
             findings.append(f"review/dogfood/README.md does not name {name}, which is in the offline set: the "
                             "sentence that lists them is how a reader knows what runs without a credential")
+    # D-240: the offline set size is stated a third time, in the audit index's `probes.py` row, and nothing read
+    # it — adding the `max_retries.py` probe found the row still saying "now **9** probes" at ten.
+    index = (REPO / "review" / "README.md").read_text()
+    stated = f"now **{len(OFFLINE)}** probes"
+    if stated not in index:
+        findings.append(f"review/README.md must state {stated!r} in the `dogfood/probes.py` row (the offline set "
+                        f"has {len(OFFLINE)} entries; if the set changed, update the row)")
     # D-148/D-144: a probe stops what it started **by pid**. Killing by pattern is the hazard those entries
     # measured, and the prose that says so is fine — what must not exist is an *executable* mention, which is
     # what the token scan below leaves once comments and docstrings are gone.

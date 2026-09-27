@@ -41,6 +41,19 @@ Meaning column instead of naming two structs that are not it. **Controls**: `--d
 where the driver takes the profile's value>` reports the new receiver `profile` and exits 1; the base run reports
 the masked bucket and stays green.
 
+**And it is measured, not just stated**: `python3 review/dogfood/max_retries.py` (credential-free, in the
+offline probe set) writes a config asking for `max_retries = 0`, points the real client at a local
+chat-completions server that truncates every response before any visible text, and counts what the server saw —
+measured 2026-09-27 in 4.6 s: **three** requests, three `FAILED`/`Transient` attempts, exit 1 with `transient
+retries exhausted: model stream ended before completion; partial tool calls were not executed`. The probe reads
+the session's constant out of `engine/src/cli.rs` rather than remembering it, so a changed constant moves the
+expectation with it, and its `--self-check` (run on every invocation, and re-runnable alone) exercises the one
+branch this build cannot produce: `--self-check` feeds the rule the shape a *wired* key would give (one request)
+and requires it to report that instead of passing. Adding the probe made the *third* statement of the
+offline set's size visible — `review/README.md`'s `probes.py` row still said "now **9** probes" at ten,
+which no rule read — so the self-check now recomputes that row's number beside
+`review/dogfood/README.md`'s phrase and name list (D-176/D-233's rule, one document further out).
+
 Ceiling: the three fates D-75's rule allows ("made to work, refused with a pointer, or reported as not in
 effect") are not equivalent here, so the choice needs the user's word. Wiring it means deciding a bound — a
 user-set retry count is a bounded-resource policy (DESIGN Q10) and A19 pins the retry shape at `max_retries = 2`
