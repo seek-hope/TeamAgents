@@ -32,10 +32,14 @@ type Fallible<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 const GROUP_A: &str = "A";
 const GROUP_B: &str = "B";
 const GROUP_C: &str = "C";
+/// D (D-254): the same runtime, tools and grants as C, with a **directive** instruction shape: the four recorded
+/// rounds measured that C's permissive paragraph never produced a single spawn/delegate on this task set, so
+/// "does collaboration pay?" was never separable from "does the model choose it?". D changes only the paragraph.
+const GROUP_D: &str = "D";
 
 fn usage() -> ! {
     eprintln!(
-        "usage: eval_groups_abc --group A|B|C --task-file FILE --workdir DIR --state DIR --out FILE \\
+        "usage: eval_groups_abc --group A|B|C|D --task-file FILE --workdir DIR --state DIR --out FILE \\
 [--model KEY] [--id TASK_ID] [--timeout S] [--max-steps N] [--web]   (or --group G --print-surface)"
     );
     std::process::exit(2);
@@ -60,22 +64,60 @@ const TEAM_EXTRA: &str = "\n\
 Work directly on small or tightly coupled work; delegate only work that can progress independently, and keep every \
 task description specific with acceptance criteria.";
 
-/// The instruction text a trial of this group runs with.
-fn instructions_for(team: bool, workspace: &str) -> String {
+/// D's treatment (D-254): the same collaboration surface with a directive instruction shape instead.
+const TEAM_DIRECTIVE_EXTRA: &str = "\n\
+     - Build a team for this task. Split it into the independent parts the prompt describes and spawn one worker \
+instance per part **before** doing any of the work yourself; delegate each part with its own acceptance check, \
+then wait for the members and integrate their results. Work directly only on what cannot be split.";
+
+/// Which collaboration instruction shape a group runs (D-254). All three team styles share the runtime, the tools
+/// and the grants; only the paragraph differs, and the trial records which one it ran.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Style {
+    Agent,
+    Permissive,
+    Directive,
+}
+
+fn style_of(group: &str) -> Style {
+    match group {
+        GROUP_D => Style::Directive,
+        GROUP_C => Style::Permissive,
+        _ => Style::Agent,
+    }
+}
+
+impl Style {
+    /// The name a trial records, so a reader can tell the treatment from the record alone.
+    fn name(self) -> &'static str {
+        match self {
+            Style::Agent => "agent",
+            Style::Permissive => "team",
+            Style::Directive => "team-directive",
+        }
+    }
+
+    fn team(self) -> bool {
+        self != Style::Agent
+    }
+}
+
+/// The instruction text a trial of this style runs with.
+fn instructions_for(style: Style, workspace: &str) -> String {
     let text = AGENT_INSTRUCTIONS.replace("{workspace}", workspace);
-    if team {
-        format!("{text}{TEAM_EXTRA}")
-    } else {
-        text
+    match style {
+        Style::Agent => text,
+        Style::Permissive => format!("{text}{TEAM_EXTRA}"),
+        Style::Directive => format!("{text}{TEAM_DIRECTIVE_EXTRA}"),
     }
 }
 
 /// The template [`instructions_for`] substitutes into — what the manifests pin and each trial records.
-fn instructions_template(team: bool) -> String {
-    if team {
-        format!("{AGENT_INSTRUCTIONS}{TEAM_EXTRA}")
-    } else {
-        AGENT_INSTRUCTIONS.to_string()
+fn instructions_template(style: Style) -> String {
+    match style {
+        Style::Agent => AGENT_INSTRUCTIONS.to_string(),
+        Style::Permissive => format!("{AGENT_INSTRUCTIONS}{TEAM_EXTRA}"),
+        Style::Directive => format!("{AGENT_INSTRUCTIONS}{TEAM_DIRECTIVE_EXTRA}"),
     }
 }
 
@@ -97,11 +139,11 @@ fn tools_for(web: bool) -> (Vec<Json>, Vec<String>) {
 /// Everything this harness decides that the model sees, so a recorded trial's treatment is checkable from
 /// its own record instead of from the source (D-182). The product's half of the surface — how a prompt is
 /// assembled, which collaboration tools a grant adds — is pinned by the batch's recorded commit instead.
-fn surface_json(group_team: bool, web: bool, timeout_s: u64, max_steps: usize) -> Json {
+fn surface_json(style: Style, web: bool, timeout_s: u64, max_steps: usize) -> Json {
     let (_, names) = tools_for(web);
     json!({
-        "instructions_kind": if group_team { "team" } else { "agent" },
-        "instructions_template_sha256": sha256_hex(&instructions_template(group_team)),
+        "instructions_kind": style.name(),
+        "instructions_template_sha256": sha256_hex(&instructions_template(style)),
         "tools": names,
         "request_options": request_options(),
         "timeout_s": timeout_s,
@@ -163,7 +205,7 @@ fn parse_args() -> Args {
         }
     }
     let Some(group) = group else { usage() };
-    if !matches!(group.as_str(), GROUP_A | GROUP_B | GROUP_C) {
+    if !matches!(group.as_str(), GROUP_A | GROUP_B | GROUP_C | GROUP_D) {
         usage();
     }
     Args { group, task_file, workdir, state, out, model, id, timeout_s, max_steps, web, print_surface }
@@ -171,11 +213,11 @@ fn parse_args() -> Args {
 
 fn main() -> Fallible<()> {
     let args = parse_args();
-    let team = args.group == GROUP_C;
+    let style = style_of(&args.group);
     if args.print_surface {
         // What a trial with these flags would run under, without a model call: the offline half of the
         // surface audit (`review/eval_surface.py` recomputes the same digests from this file's text).
-        let surface = surface_json(team, args.web, args.timeout_s, args.max_steps);
+        let surface = surface_json(style, args.web, args.timeout_s, args.max_steps);
         println!("{}", serde_json::to_string_pretty(&surface)?);
         return Ok(());
     }
@@ -223,7 +265,7 @@ fn main() -> Fallible<()> {
     let (tools, _) = tools_for(args.web);
     let profile = KernelProfile {
         model: args.model.clone(),
-        instructions: instructions_for(team, &workspace.to_string_lossy()),
+        instructions: instructions_for(style, &workspace.to_string_lossy()),
         tools,
         // the manifest freezes effort=high for all three groups (and the trial record states it)
         options: request_options(),
@@ -242,6 +284,7 @@ fn main() -> Fallible<()> {
         }
         GROUP_B => runtime
             .block_on(run_driver_trial(&catalog, &profile, &args, &task, &workspace, &state, &bindings, false))?,
+        // C and D: the supervisor — same runtime and grants, different instruction shape (D-254)
         _ => runtime.block_on(run_driver_trial(
             &catalog,
             &raw_profile,
@@ -250,7 +293,7 @@ fn main() -> Fallible<()> {
             &workspace,
             &state,
             &bindings,
-            true,
+            style.team(),
         ))?,
     };
     let mut report = result;
@@ -263,7 +306,7 @@ fn main() -> Fallible<()> {
     report["web"] = json!(args.web);
     report["wall_ms"] = json!(started.elapsed().as_millis() as u64);
     // D-182: the harness's half of the model-visible surface, in the trial's own record
-    report["surface"] = surface_json(team, args.web, args.timeout_s, args.max_steps);
+    report["surface"] = surface_json(style, args.web, args.timeout_s, args.max_steps);
     std::fs::write(out, serde_json::to_vec_pretty(&report)?)?;
     println!("{}", serde_json::to_string(&report)?);
     Ok(())

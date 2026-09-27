@@ -1,0 +1,12 @@
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-27-r4/pilot/work/split-deliverable.D.1
+total 12
+drwxr-xr-x 3 rimuru rimuru 4096 Sep 24 15:15 .
+drwxr-xr-x 4 rimuru rimuru 4096 Sep 28 02:34 ..
+drwxr-xr-x 2 rimuru rimuru 4096 Sep 24 15:15 data
+--- data ---
+total 16
+drwxr-xr-x 2 rimuru rimuru 4096 Sep 24 15:15 .
+drwxr-xr-x 3 rimuru rimuru 4096 Sep 24 15:15 ..
+-rw-r--r-- 1 rimuru rimuru   11 Sep 24 15:15 a.txt
+-rw-r--r-- 1 rimuru rimuru   42 Sep 24 15:15 b.txt
+--- out ---

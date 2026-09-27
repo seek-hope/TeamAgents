@@ -1,0 +1,1 @@
+sum of integers in data/a.txt = 44 (out/sum.txt); unique case-sensitive-sorted words in data/b.txt = 5 (Apple, apple, fig, pear, plum) (out/words.txt)

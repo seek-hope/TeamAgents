@@ -481,10 +481,10 @@ mod tests {
     fn a_read_only_open_reads_a_foreign_or_old_root_without_touching_it() {
         use super::{open, open_read_only};
         use crate::v2::models::V2_FORMAT_ID;
-        // a leftover from a failed run of this same test would be a *stamped* store, and the setup below has to
-        // start from nothing
-        let dir = std::env::temp_dir().join(format!("ta-store-readonly-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        // A unique directory, like the sibling helper: a pid-keyed one collided with a *previous* run's leftover
+        // (a stamped store, a 0555 directory) and made the fixture itself flaky — measured while writing the
+        // read-only test, and the reason this is a uuid rather than a pid.
+        let dir = std::env::temp_dir().join(format!("ta-store-readonly-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("session.sqlite");
         {

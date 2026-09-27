@@ -43,12 +43,20 @@ EVAL = REPO / "review/eval/r2-p6"
 RUNS = EVAL / "runs"
 HARNESS = "engine/examples/eval_groups_abc.rs"
 REFERENCE = "engine/src/reference.rs"
-MANIFESTS = ["manifest.json", "manifest-r2.json", "manifest-r3.json"]
+MANIFESTS = ["manifest.json", "manifest-r2.json", "manifest-r3.json", "manifest-r4.json"]
 # The anchors the two templates are found by. The text itself carries the platform line that dates it.
 AGENT_ANCHOR = "You are a careful coding agent"
 TEAM_ANCHOR = "You may build a team"
+# D-254's directive arm: the same collaboration surface, a directive instruction shape instead of a
+# permissive one. Its template is pinned like the others; revisions before D-254 simply do not carry it.
+DIRECTIVE_ANCHOR = "Build a team for this task"
 # The pre-registered treatment: the collaboration paragraph belongs to group C alone.
-KIND_OF_GROUP = {"A": "agent", "B": "agent", "C": "team"}
+KIND_OF_GROUP = {"A": "agent", "B": "agent", "C": "team", "D": "team-directive"}
+# Which pin key holds each kind's template and digest (D-254 added the third kind).
+DIGEST_OF_KIND = {"agent": "agent_instructions_sha256", "team": "team_instructions_sha256",
+                  "team-directive": "team_directive_instructions_sha256"}
+TEMPLATE_OF_KIND = {"agent": "agent_instructions", "team": "team_instructions",
+                    "team-directive": "team_directive_instructions"}
 
 
 class SurfaceError(Exception):
@@ -110,8 +118,13 @@ def rust_literals(source: str):
     return out
 
 
-def surface_of(source: str) -> tuple[str, str]:
-    """`(agent template, team template)` decoded from one revision of the harness."""
+def surface_of(source: str) -> tuple[str, str, str]:
+    """`(agent template, team template, directive template)` decoded from one revision of the harness.
+
+    The directive template (D-254) is `""` for every revision before that arm existed, which is what lets the
+    history rule below accept the older revisions while a *new* batch that records the directive kind must match
+    the current text.
+    """
     literals = rust_literals(source)
     agent = "".join(literal for literal in literals if AGENT_ANCHOR in literal)
     if not agent:
@@ -122,7 +135,14 @@ def surface_of(source: str) -> tuple[str, str]:
     cut = team_literal.rfind("\n", 0, team_literal.index(TEAM_ANCHOR))
     if cut < 0:
         raise SurfaceError("the collaboration paragraph does not start on its own line")
-    return agent, agent + team_literal[cut:]
+    directive = ""
+    directive_literal = "".join(literal for literal in literals if DIRECTIVE_ANCHOR in literal)
+    if directive_literal:
+        directive_cut = directive_literal.rfind("\n", 0, directive_literal.index(DIRECTIVE_ANCHOR))
+        if directive_cut < 0:
+            raise SurfaceError("the directive paragraph does not start on its own line")
+        directive = agent + directive_literal[directive_cut:]
+    return agent, agent + team_literal[cut:], directive
 
 
 def tools_of(source: str) -> list[str]:
@@ -184,15 +204,41 @@ def pins() -> dict:
         if not path.is_file():
             raise SurfaceError(f"{name} is missing")
         loaded.append((name, json.loads(path.read_text(encoding="utf-8"))))
+    # D-254: a manifest may pin the *trial's own config* (the experiment's, not the machine's); where it does,
+    # the file must exist and match. A machine's config that grew an MCP service changes the treatment silently —
+    # measured by the first round-4 smoke trial, whose spawned member parked on it.
+    for name, manifest in loaded:
+        pinned = manifest.get("config")
+        if not pinned:
+            continue
+        path = EVAL / pinned["path"]
+        if not path.is_file():
+            raise SurfaceError(f"{name} pins the trial config {pinned['path']}, which is missing")
+        real = hashlib.sha256(path.read_bytes()).hexdigest()
+        if real != pinned["sha256"]:
+            raise SurfaceError(f"{pinned['path']} is {real[:12]}, {name} pins {pinned['sha256'][:12]}: the "
+                               "experiment's config changed")
     blocks = [(name, manifest.get("surface")) for name, manifest in loaded]
     missing = [name for name, block in blocks if not block]
     if missing:
         raise SurfaceError(f"no `surface` block in {', '.join(missing)}: the harness's half was never pinned")
-    first = blocks[0][1]
-    for name, block in blocks[1:]:
-        if block != first:
-            raise SurfaceError(f"{name}'s surface block differs from {blocks[0][0]}'s; they describe one harness")
-    return first
+    # D-254 made the pin a *set* of instruction kinds rather than one block: every manifest must agree on every
+    # key it states (a contradiction is still an error), and a manifest that adds a key — the directive arm's
+    # template — extends the pin instead of invalidating the batches recorded before it.
+    merged: dict = {}
+    for name, block in blocks:
+        for key, value in block.items():
+            if key == "note":
+                continue   # each manifest's prose about its own round; the *pins* are what must agree
+            if key in merged and merged[key] != value:
+                raise SurfaceError(f"{name}'s surface {key!r} differs from the pin the other manifests state; "
+                                   "they describe one harness")
+            merged[key] = value
+    # The templates' *text* is decoded from the harness by the caller (D-182); the manifests state the digests.
+    for key in ("agent_instructions_sha256", "team_instructions_sha256", "tools", "reasoning_effort"):
+        if key not in merged:
+            raise SurfaceError(f"the manifests state no {key!r}: the surface is not pinned")
+    return merged
 
 
 def profile_blob(data: bytes) -> list[dict]:
@@ -270,7 +316,12 @@ def check_batch(batch: pathlib.Path, pin: dict, findings: list, notes: list) -> 
             if surface.get("instructions_kind") != kind:
                 findings.append(f"{batch.name}: {tag} reports instructions_kind="
                                 f"{surface.get('instructions_kind')!r}, group {trial['group']} is {kind!r}")
-            expected = pin["agent_instructions_sha256"] if kind == "agent" else pin["team_instructions_sha256"]
+            digest_key = DIGEST_OF_KIND.get(kind, "")
+            expected = pin.get(digest_key)
+            if expected is None:
+                findings.append(f"{batch.name}: {tag} runs kind {kind!r}, which no manifest pins an instruction "
+                                "template for")
+                continue
             if surface.get("instructions_template_sha256") != expected:
                 findings.append(f"{batch.name}: {tag} ran instructions whose digest is not the pinned {kind} one "
                                 "— the treatment changed and the recorded batches are no longer one experiment")
@@ -289,7 +340,7 @@ def check_batch(batch: pathlib.Path, pin: dict, findings: list, notes: list) -> 
         if not path.is_file():
             continue
         summary["state"] += 1
-        template = pin["agent_instructions"] if kind == "agent" else pin["team_instructions"]
+        template = pin.get(TEMPLATE_OF_KIND.get(kind, ""), "")
         pattern = text_pattern(template)
         blobs = profile_blob(path.read_bytes())
         if not blobs:
@@ -362,20 +413,27 @@ def main(argv) -> int:
     try:
         pin = pins()
         if args.print:
-            agent, team = surface_of((REPO / HARNESS).read_text(encoding="utf-8"))
-            for name, text in (("agent", agent), ("team", team)):
-                print(f"{name}: {digest(text)}\n{text}\n")
+            agent, team, directive = surface_of((REPO / HARNESS).read_text(encoding="utf-8"))
+            for name, text in (("agent", agent), ("team", team), ("team-directive", directive)):
+                print(f"{name}: {digest(text) if text else '(absent)'}\n{text}\n")
             return 0
         # the source: the tree now, and every revision the file has had
-        agent, team = surface_of((REPO / HARNESS).read_text(encoding="utf-8"))
-        pin = {**pin, "agent_instructions": agent, "team_instructions": team}
-        for name, expected in (("agent_instructions_sha256", digest(agent)),
-                               ("team_instructions_sha256", digest(team))):
-            if pin[name] != expected:
+        agent, team, directive = surface_of((REPO / HARNESS).read_text(encoding="utf-8"))
+        pin = {**pin, "agent_instructions": agent, "team_instructions": team,
+               "team_directive_instructions": directive}
+        for name, text in (("agent_instructions_sha256", agent), ("team_instructions_sha256", team),
+                           ("team_directive_instructions_sha256", directive)):
+            if text and pin.get(name) != digest(text):
                 findings.append(f"the harness's instructions no longer match the manifest pin {name} "
-                                f"(pin {pin[name][:12]}, tree {expected[:12]}) — re-run the batches or revert")
+                                f"(pin {str(pin.get(name))[:12]}, tree {digest(text)[:12]}) — re-run the batches "
+                                "or revert")
+            elif not text and pin.get(name):
+                findings.append(f"a manifest pins {name} and the harness no longer defines that arm: the "
+                                "treatment was removed while its batches stand as evidence")
         if not team.startswith(agent):
             findings.append("group C's text is no longer group A/B's text plus a paragraph: the treatment changed")
+        if directive and not directive.startswith(agent):
+            findings.append("group D's text is no longer group A/B's text plus a paragraph: the treatment changed")
         tools = tools_of((REPO / REFERENCE).read_text(encoding="utf-8"))
         if pin["tools"] != tools:
             findings.append(f"the harness now offers {tools}; the manifests pin {pin['tools']} — the offered "
@@ -383,12 +441,15 @@ def main(argv) -> int:
         history = harness_history()
         for commit, path in history:
             try:
-                revision_agent, revision_team = surface_of(harness_at(commit, path))
+                revision_agent, revision_team, revision_directive = surface_of(harness_at(commit, path))
             except SurfaceError as error:
                 findings.append(f"{commit[:12]}:{path}: {error}")
                 continue
             if (digest(revision_agent), digest(revision_team)) != (digest(agent), digest(team)):
                 findings.append(f"{commit[:12]}:{path}: this revision's instructions differ from the pin, so a "
+                                "recorded batch may have run a different text")
+            if revision_directive and digest(revision_directive) != digest(directive):
+                findings.append(f"{commit[:12]}:{path}: this revision's directive arm differs from the pin, so a "
                                 "recorded batch may have run a different text")
         if not history:
             findings.append(f"{HARNESS} has no history: the recorded batches' harness revision is unknown")

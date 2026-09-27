@@ -34,6 +34,43 @@ instance's capability and attention budget, so the model had no reason to split 
 pre-registered criteria of §13.2/§16 ("too few samples means not confirmed"), but **it does not permit
 claiming that collaboration paid off**.
 
+## Round 4 pilot (2026-09-27, D-254): the instruction shape as the treatment
+
+The four rounds above left H2 unconfirmed *and* diagnosed why: zero spawns in 99 group-C trials, so they measured
+the propensity to collaborate (zero) rather than the value of it. Round 4 changes exactly one thing — C's
+permissive paragraph becomes a **directive** one, group `D` (`review/eval/r2-p6/design-r4.md`, pre-registered
+before the pilot ran; `manifest-r4.json`; the harness gained the arm and `review/eval_surface.py` pins its
+digest). The pilot ran 1 repeat × {B, D} × the three splittable tasks (6 trials, `runs/2026-09-27-r4-pilot/`).
+
+**The directive works, and it costs.** Every D trial spawned members and delegated — **2 workers and 2 delegated
+tasks in each of the three**, against zero in 99 C trials — and all six trials passed their checks:
+
+| Task | B (solo) | D (directed) | D's members / tasks / wait condition |
+|---|---|---|---|
+| `split-deliverable` | passed, 11.3 s | passed, 623.1 s | 2 / 2 / `message from …` (×2) |
+| `parallel-deliverables` | passed, 42.5 s | passed, 327.1 s | 2 / 2 / the two task ids |
+| `multi-step` | passed, 11.3 s | passed, 32.0 s | 2 / 2 / the two task ids |
+
+Three measurements worth freezing before any formal round:
+
+1. **No success ceiling was broken**: B passes these tasks as well, so H4 (a *success* gain) cannot be resolved
+   on this set — the same ceiling the four rounds hit, now with the treatment actually running.
+2. **The tail is a wait-condition choice, not orchestration**: the 623 s trial's wall clock is
+   **575.6 s in one gap** — after the second `task_completed`/`inbox_drained` (event 189) and before
+   `wait_satisfied` (event 190). Its `waits` row says why: the leader waited on `message from worker_sum` and
+   `message from worker_words`, and the members never message — the wait could only end at its own timer
+   (~600 s). The two trials whose leader waited on the *task ids* finished in 327 s and 32 s. So the worst case
+   is a *contract* question (which condition a delegator should wait on), not a scheduling one.
+3. **The fixed cost of delegating is large on this stack**: 20–21 model requests for D against 7 for B, with
+   model time ~56 s against ~10 s, and a wall clock 2.7× to 55× B's on tasks of this size. On work that a solo
+   instance can do in ten seconds, delegation is a *cost center*; a gain needs work whose solo path is far
+   longer (or a smaller orchestration cost).
+
+**No H4/H5 conclusion is drawn from a pilot** (the pre-registration's §5.1): the formal round (3 repeats × 8
+tasks × {B, D} = 48 trials) was **not** run, because measurement 1 says it cannot separate the groups on this
+task set. The next step the pilot points at is the *cost* — the wait-condition contract and the per-turn
+orchestration overhead — and the task set that would need it, not more trials of a set both arms pass.
+
 ## Cost (real tokens, DeepSeek billing)
 
 | Batch | A | B | C |

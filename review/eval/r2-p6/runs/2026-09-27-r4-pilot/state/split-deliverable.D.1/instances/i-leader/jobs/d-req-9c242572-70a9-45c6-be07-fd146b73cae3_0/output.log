@@ -1,0 +1,24 @@
+=== ls out ===
+total 16
+drwxr-xr-x 2 rimuru rimuru 4096 Sep 28 02:34 .
+drwxr-xr-x 4 rimuru rimuru 4096 Sep 28 02:34 ..
+-rw-r--r-- 1 rimuru rimuru    3 Sep 28 02:34 sum.txt
+-rw-r--r-- 1 rimuru rimuru   26 Sep 28 02:34 words.txt
+=== raw sum.txt ===
+44$
+=== sum recheck (awk) ===
+44
+=== sum recheck (python) ===
+44
+=== sum.txt matches? ===
+SUM_OK
+=== raw words.txt ===
+Apple$
+apple$
+fig$
+pear$
+plum$
+=== words recheck diff ===
+WORDS_OK
+=== unique count ===
+5

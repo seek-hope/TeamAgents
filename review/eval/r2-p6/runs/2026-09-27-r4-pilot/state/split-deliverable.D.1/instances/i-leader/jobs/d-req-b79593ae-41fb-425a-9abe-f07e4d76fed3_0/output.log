@@ -1,0 +1,25 @@
+=== out/ listing ===
+total 20
+drwxr-xr-x 2 rimuru rimuru 4096 Sep 28 02:44 .
+drwxr-xr-x 4 rimuru rimuru 4096 Sep 28 02:34 ..
+-rw-r--r-- 1 rimuru rimuru  151 Sep 28 02:44 notes.txt
+-rw-r--r-- 1 rimuru rimuru    3 Sep 28 02:34 sum.txt
+-rw-r--r-- 1 rimuru rimuru   26 Sep 28 02:34 words.txt
+=== notes line count (must be 1) ===
+1
+=== notes raw ===
+sum of integers in data/a.txt = 44 (out/sum.txt); unique case-sensitive-sorted words in data/b.txt = 5 (Apple, apple, fig, pear, plum) (out/words.txt)$
+=== notes mentions both results? ===
+NOTES_OK
+=== final sum ===
+44
+=== final words ===
+Apple
+apple
+fig
+pear
+plum
+=== sha256 ===
+b1ce0aa6fdf3cf349d773243dab9fbbe09d30619f38b0c1e8977e28c4f0bc495  out/sum.txt
+4fbedbb8fc1461cebee21ef47531dc57427251a7536c0920d1883fc96db68bf0  out/words.txt
+5b74226c7ae47b89a5a823b11a7be705396b973ca1e77e1b30bfb13fbe4f3620  out/notes.txt

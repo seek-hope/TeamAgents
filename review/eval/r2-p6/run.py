@@ -61,9 +61,20 @@ def main() -> int:
     if results_path.exists() and args.phase == "formal" and not args.resume:
         print("formal results already exist; use a new directory, or --resume to continue this batch", file=sys.stderr)
         return 2
+    # D-254: the trial's config is the *experiment's*, not the machine's. Measured by the first round-4 smoke
+    # trial: an MCP service the operator's config had grown parked the spawned member and the trial timed out —
+    # the eval was measuring the environment. One private XDG_CONFIG_HOME per batch, whose digest goes in the
+    # header; the harness subprocess gets it, and `check_config` holds the file to the manifest's pin.
+    config_home = out / "config"
+    (config_home / "teamagents").mkdir(parents=True, exist_ok=True)
+    config_bytes = (HERE / manifest["config"]["path"]).read_bytes()
+    (config_home / "teamagents" / "config.toml").write_bytes(config_bytes)
+    env = dict(os.environ, XDG_CONFIG_HOME=str(config_home))
     header = {
         "phase": args.phase, "repeats": repeats, "groups": groups,
         "started": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "config": manifest["config"]["path"],
+        "config_sha256": hashlib.sha256(config_bytes).hexdigest(),
         # which pre-registered manifest this batch ran, so the batch names its own rule and limits (D-182)
         "manifest": args.manifest,
         "manifest_sha256": hashlib.sha256((HERE / args.manifest).read_bytes()).hexdigest(),
@@ -100,7 +111,7 @@ def main() -> int:
                        "--timeout", str(manifest["limits"]["trial_timeout_s"]),
                        "--max-steps", str(manifest["limits"]["reference_max_steps"])]
                 started = time.time()
-                proc = subprocess.run(cmd, cwd=REPO, capture_output=True, text=True,
+                proc = subprocess.run(cmd, cwd=REPO, capture_output=True, text=True, env=env,
                                       timeout=manifest["limits"]["trial_timeout_s"] + 300)
                 wall = time.time() - started
                 record = {"task": task["id"], "group": group, "repeat": repeat, "wall_s": round(wall, 1),

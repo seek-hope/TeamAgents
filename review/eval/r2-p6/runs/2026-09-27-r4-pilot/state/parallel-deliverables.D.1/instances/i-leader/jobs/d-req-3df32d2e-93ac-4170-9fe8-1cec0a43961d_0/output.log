@@ -1,0 +1,10 @@
+== csvfix ==
+..                                                                       [100%]
+2 passed in 0.01s
+== rules ==
+.                                                                        [100%]
+1 passed in 0.01s
+== files ==
+csvfix
+INDEX.md
+rules

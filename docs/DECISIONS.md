@@ -20,6 +20,55 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-254 Round 4: the collaboration treatment becomes the *instruction shape*, and its pilot measures the cost (2026-09-27)
+
+The four recorded evaluation rounds passed H1 (no regression, 135/135) and did not confirm H2, and their own
+record diagnosed why: **zero spawn/delegate in 99 group-C trials**. They measured the *propensity* to
+collaborate (zero), not the *value* of collaborating — and ACCEPTANCE's Q16 row said the same thing in one
+sentence: "what would close it is a task set (or an instruction shape) that makes delegation the shortest
+path, which is an experiment to design rather than a defect to fix."
+
+**Decided: design and run that experiment** — round 4, pre-registered in `review/eval/r2-p6/design-r4.md`
+*before* its pilot ran, with the harness gaining a fourth arm. Group `D` is C's runtime, tools, grants, model and
+tasks with exactly one thing changed: the collaboration paragraph. C's is permissive ("You **may** build a
+team"); D's is a directive ("Build a team for this task. Split it into the independent parts … spawn one worker
+instance per part **before** doing any of the work yourself …"). Both texts are pinned by `manifest-r4.json` and
+re-derived from the harness by `review/eval_surface.py`, so C's earlier batches stay valid (its text and digest
+are unchanged) and D's treatment cannot drift.
+
+**The pilot found an evidence hazard first, and it is fixed in the harness.** Its first smoke trial timed out
+with `tool service "remote_ssh" unavailable` and a parked member: the *machine's* `~/.config/teamagents/
+config.toml` had grown an MCP service that cannot start here, the supervisor bound it for the spawned member,
+and the eval was measuring the operator's config. `run.py` now writes a **frozen experiment config**
+(`eval-config.toml`, digests in the batch header *and* the manifest, checked by the surface audit) into a private
+`XDG_CONFIG_HOME` per batch. Nothing about the machine's environment reaches a trial any more.
+
+**Measured (pilot: 1 repeat × {B, D} × the 3 splittable tasks, 6 trials, all accepted).**
+
+* **The directive elicits delegation**: every D trial spawned **2 workers and delegated 2 tasks** — against zero
+  in the 99 C trials of the four recorded rounds. So the propensity was the binding constraint, not the runtime.
+* **The success ceiling still binds**: B passes those same tasks (11.3 / 42.5 / 11.3 s), so H4 — a *success*
+  gain — cannot be resolved on this task set. Per the pre-registration's own rule the **formal round was not
+  run**, and no H4/H5 conclusion is drawn from a pilot.
+* **The cost is the finding, and it is not what the diagnosis assumed.** The 623 s run's wall clock is
+  **575.6 s in a single gap**: after the second `task_completed`/`inbox_drained` (event 189) and before
+  `wait_satisfied` (event 190). Its `waits` row says why — the leader waited on `message from worker_sum` and
+  `message from worker_words`, and **members never message**: the wait could only end at its own timer (~600 s).
+  The two trials whose leader waited on the delegated **task ids** finished in 327 s and 32 s. Delegation also
+  costs 20–21 model requests against B's 7 (model time ~56 s against ~10 s), i.e. a fixed cost that dwarfs the
+  parallel saving on work a solo instance does in ten seconds.
+
+**So the next lever is the delegation *contract* and its fixed cost**, not the task set: a delegator should be
+guided to wait on the task settlement it actually delegated (the runtime's own fact), and the per-turn
+orchestration overhead is what a reproducible *wall-clock* gain would have to beat. That is where the next round
+starts — a measurement of the wait contract and of the orchestration cost, then a task set whose solo path is
+long enough for the parallel path to matter.
+
+Ceiling: one pilot, one model (DeepSeek Flash) and one provider; six trials cannot separate groups statistically
+and nothing here is reported as a conclusion; the harness's `D` arm exists (with its digest pinned) so a later
+round does not have to rebuild it. The recorded H2 wording stays what it was — "not confirmed" — until a formal
+round confirms it on a set that can fail.
+
 ## D-253 `artifacts [list|gc]`: the census, the on-demand sweep, and the measurement that reframed the gap (2026-09-27)
 
 ACCEPTANCE's known gap, verbatim: "A cadence — an interval, or a maintenance verb to run on demand — is the

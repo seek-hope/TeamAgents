@@ -1,0 +1,12 @@
+numbers: [17, -4, 23, 8] sum: 44
+unique count: 5 words: ['Apple', 'apple', 'fig', 'pear', 'plum']
+=== out/sum.txt ===
+44
+=== out/words.txt ===
+Apple
+apple
+fig
+pear
+plum
+=== out/notes.txt ===
+sum=44; unique_words=5

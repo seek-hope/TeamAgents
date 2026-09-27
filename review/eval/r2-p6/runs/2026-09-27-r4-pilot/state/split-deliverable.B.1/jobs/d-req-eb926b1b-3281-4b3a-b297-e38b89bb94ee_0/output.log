@@ -1,0 +1,9 @@
+--- LC_ALL=C sort -u (byte/codepoint order) ---
+Apple
+apple
+fig
+pear
+plum
+--- diff vs out/words.txt ---
+IDENTICAL
+locale:  / en_US.UTF-8

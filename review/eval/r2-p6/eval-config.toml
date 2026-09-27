@@ -1,0 +1,16 @@
+# The experiment's own config (round 4, D-254): frozen so a *machine's* config cannot change the treatment.
+#
+# Measured by the first round-4 smoke trial: the machine's `~/.config/teamagents/config.toml` had grown an MCP
+# service (a codex companion) that cannot start in this environment, and the supervisor bound it for the spawned
+# member, parked it ("tool service \"remote_ssh\" unavailable") and the trial timed out — i.e. the eval was
+# measuring the operator's config, not the runtime. `run.py` now writes this file into a private XDG_CONFIG_HOME
+# for every trial and records its digest in the batch header; nothing here but the model entry the manifest pins.
+skills_paths = []
+
+[models.leader_main]
+provider = "deepseek"
+protocol = "deepseek"
+model = "deepseek-flash"
+api_key_env = "DEEPSEEK_API_KEY"
+context_window = 1000000
+timeout = 300

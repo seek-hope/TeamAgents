@@ -1,0 +1,14 @@
+sha256sum: alpha/check.py: No such file or directory
+sha256sum: beta/check.py: No such file or directory
+sha256sum: alpha/alpha.py: No such file or directory
+sha256sum: beta/beta.py: No such file or directory
+---
+ M ../../../../../../../../../engine/examples/eval_groups_abc.rs
+ M ../../../../../../run.py
+ M ../../../../../../../../eval_surface.py
+?? ../../../../../../design-r4.md
+?? ../../../../../../eval-config.toml
+?? ../../../../../../manifest-r4.json
+?? ../../../../
+--- final rerun from repo root ---
+/bin/bash: line 28: cd: alpha: No such file or directory

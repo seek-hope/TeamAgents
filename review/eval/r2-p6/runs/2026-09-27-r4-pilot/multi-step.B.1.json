@@ -1,0 +1,36 @@
+{
+  "status": "succeeded",
+  "steps": 8,
+  "prompt_tokens": 25332,
+  "completion_tokens": 1374,
+  "total_tokens": 26706,
+  "events": 67,
+  "group": "B",
+  "task_id": "multi-step",
+  "model_key": "leader_main",
+  "model": "deepseek-flash",
+  "context_window": 1000000,
+  "permissions": "full_auto",
+  "web": false,
+  "wall_ms": 11252,
+  "surface": {
+    "instructions_kind": "agent",
+    "instructions_template_sha256": "8acbda452914ec6135a4a68ccc52d930c6c7f54ff6e81c1c5cf1cd0d31bce046",
+    "tools": [
+      "ls",
+      "read_file",
+      "write_file",
+      "edit_file",
+      "delete",
+      "glob",
+      "grep",
+      "shell"
+    ],
+    "request_options": {
+      "reasoning_effort": "high"
+    },
+    "timeout_s": 900,
+    "max_steps": 25,
+    "max_retries": 2
+  }
+}

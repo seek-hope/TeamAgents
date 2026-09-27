@@ -1,0 +1,16 @@
+--- check sum ---
+44
+--- check words ---
+5
+apple
+Apple
+fig
+pear
+plum
+--- files ---
+total 12
+-rw-r--r-- 1 rimuru rimuru 23 Sep 28 02:34 notes.txt
+-rw-r--r-- 1 rimuru rimuru  3 Sep 28 02:34 sum.txt
+-rw-r--r-- 1 rimuru rimuru 26 Sep 28 02:34 words.txt
+--- hexdump sum ---
+00000000: 3434 0a                                  44.
