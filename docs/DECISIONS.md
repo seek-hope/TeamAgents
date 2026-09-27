@@ -20,6 +20,35 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-260 The v2 release is prepared at 0.2.0; pushing the tag is the user's (2026-09-28)
+
+The release checklist in `docs/DEVELOPMENT.md` had one step that was *missing* rather than pending: the workflow
+refuses a tag that is not `v<version>`, and the three crates still said `0.1.2` — the version the existing tag
+names — so no release of this tree could be cut at all. **Decided: take the tree to `0.2.0` and rehearse the
+whole path**, which is engineering the user's objective asks for; publishing stays theirs (D-203).
+
+* **The bump.** `core`, `engine` and `tui` and their three committed lock files now say `0.2.0`, and
+  `cargo check --offline --locked` is green on all three (the lock is exactly what the manifests describe).
+  The first attempt is worth recording: a plain `cargo update`/`cargo metadata` rewrote the locks *and upgraded
+  unrelated dependencies* (`cfg-if` 1.0.4 → 1.0.5, `indexmap` 2.14.0 → 2.14.2, `syn` 3.0.5 → 3.0.6) — a
+  dependency upgrade the repository treats as its own deliberate act. The locks were restored from the index
+  and only the three workspace members' `version` lines moved, which is why the lock diff is four lines.
+* **The rehearsal** (`make release-rehearsal`, D-217) is green at the new version and says so itself:
+  `[version] 0.2.0, and core and tui agree`, the musl-static release builds of both binaries, the archive
+  `teamagents-0.2.0-x86_64-unknown-linux-musl.tar.gz` (5,896 KiB) with `install.sh` and `SHA256SUMS`, an install
+  from that exact archive, `init` writing a config and a state root, and the TUI binary running — "the release
+  path rehearsed: 0.2.0 packages, installs and runs from this tree".
+* **What is left, and it is the user's**: push `v0.2.0`, then the checklist's step 4/5 — the four caveat
+  statements (both READMEs, `docs/INSTALL.md` §1, ACCEPTANCE's known gap) come out together with
+  `review/release_artifact.py`'s statement list, because the audit flips its requirement the moment the newest
+  tag carries `core/src/v2`; and the published artifact is then verified by SHA-256, install, `init` and a real
+  TUI start. **The four statements stay while the tag is unpushed, and they are true until then.**
+
+Ceiling: the rehearsal runs on this machine rather than `ubuntu-latest`, so it is evidence about the *steps*, not
+about the runner image; the tag half of the version gate (`GITHUB_REF_NAME = v<version>`) can only be proven by
+the push itself; and the archive's size and timing are this host's measurements (it carried load 129–199 during
+the round-5 batches).
+
 ## D-259 Round 5's verdict: the race cannot separate the arms, and the mechanism is measured (2026-09-28)
 
 Round 5's pre-registration (`review/eval/r2-p6/design-r5.md`) said a candidate is a **race task** only if the

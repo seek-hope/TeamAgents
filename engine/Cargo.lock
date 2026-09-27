@@ -1118,7 +1118,7 @@ dependencies = [
 
 [[package]]
 name = "teamagents-core"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "rusqlite",
  "serde",
@@ -1129,7 +1129,7 @@ dependencies = [
 
 [[package]]
 name = "teamagents-engine"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "futures-util",
  "libc",
