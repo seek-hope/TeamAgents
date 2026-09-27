@@ -328,6 +328,29 @@ fn an_uncreatable_state_root_names_the_flag_from_every_entry_point() {
     assert!(text.contains("point --state-root/XDG_STATE_HOME"), "the fix is named: {text}");
 }
 
+/// D-242: the *config* directory that cannot be created names the variable to fix, the way the state root does
+/// (D-241). `init` is its only creator and it answered the OS: measured 2026-09-27 with `XDG_CONFIG_HOME` under
+/// a symlink loop, `init failed: cannot create …/teamagents: Too many levels of symbolic links (os error 40)` —
+/// neither the variable nor a next step, while every other config-path failure in this family names its lever.
+#[test]
+fn an_uncreatable_config_directory_names_the_variable() {
+    let home = Scratch::new("cfgdir");
+    std::fs::create_dir_all(&*home).unwrap();
+    std::os::unix::fs::symlink("loop", home.join("loop")).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_teamagents"))
+        .arg("init")
+        .arg("--state-root")
+        .arg(home.join("state"))
+        .env("XDG_CONFIG_HOME", home.join("loop/config"))
+        .env("XDG_STATE_HOME", home.join("state"))
+        .output()
+        .expect("run cli");
+    let text = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_ne!(output.status.code(), Some(0), "init must not claim a config it could not write: {text}");
+    assert!(text.contains("cannot be created"), "the reason is stated: {text}");
+    assert!(text.contains("point XDG_CONFIG_HOME (or HOME)"), "the lever is named: {text}");
+}
+
 /// D-73: the entry point refuses what it does not honour, and refuses it
 /// *before* starting anything. A bare word used to fall through to the TUI — a
 /// typo'd verb or a pasted prompt silently booted a session and was dropped —

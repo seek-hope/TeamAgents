@@ -18,6 +18,25 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-242 The config directory answered the OS too (2026-09-27)
+
+D-241's sibling, one fact over. `init` also creates the **config** directory, and it answered the OS there:
+measured 2026-09-27 with `XDG_CONFIG_HOME` under a symlink loop, `init failed: cannot create …/teamagents: Too
+many levels of symbolic links (os error 40)` — a sentence naming neither the variable to fix nor a next step,
+while the other failures on that path name their lever (`{} is a directory; point at a config file instead`).
+The path is `<xdg_config_home>/<APP>/config.toml` (D-236's statement), so the two variables are the whole answer.
+
+**Fixed**: `engine/src/config.rs::config_dir_uncreatable(path, error)` — "the config directory {} cannot be
+created: {error} — point XDG_CONFIG_HOME (or HOME) at a directory you can write, or one whose parents do" — is
+what `initialize_config` now answers. **Control**:
+`engine/tests/cli.rs::an_uncreatable_config_directory_names_the_variable` drives `init` with the variable pointed
+into a symlink loop and asserts both the reason and the lever; against the pre-fix build the message is the one
+quoted above.
+
+Ceiling: one creator, so only the wording's shape is shared with `state_root_uncreatable` (D-241); the sentence
+names both variables because neither alone is the answer (`HOME` is the default's base); and a config *file* that
+cannot be read or written is a different failure whose own sentences already name the file.
+
 ## D-241 The state root's preparation answered raw OS errors from three entry points (2026-09-27)
 
 The state-root family has one careful wording per shape — a path that is a file (D-166), an ancestor that is a

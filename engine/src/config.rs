@@ -13,7 +13,7 @@ pub fn initialize_config(path: &Path) -> Result<bool, String> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     let parent = path.parent().ok_or("the config path has no parent directory")?;
-    std::fs::create_dir_all(parent).map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
+    std::fs::create_dir_all(parent).map_err(|e| config_dir_uncreatable(parent, &e))?;
     let mut file = match std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(path) {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -33,6 +33,21 @@ pub fn initialize_config(path: &Path) -> Result<bool, String> {
 
 fn env_path(key: &str) -> Option<PathBuf> {
     std::env::var_os(key).filter(|v| !v.is_empty()).map(PathBuf::from)
+}
+
+/// The one wording for a config directory that cannot be created (D-242).
+///
+/// `init` is the only creator, and it answered the OS: measured 2026-09-27 with `XDG_CONFIG_HOME` under a
+/// symlink loop, `init failed: cannot create …/teamagents: Too many levels of symbolic links (os error 40)` —
+/// a sentence that names neither the variable to fix nor what to do, while every other config-path failure in
+/// this family names its lever (`{path} is a directory; point at a config file instead`, D-236's path
+/// statement). The two variables are the whole answer, because the path *is* `<xdg_config_home>/<APP>/config.toml`.
+pub fn config_dir_uncreatable(path: &Path, error: &std::io::Error) -> String {
+    format!(
+        "the config directory {} cannot be created: {error} — point XDG_CONFIG_HOME (or HOME) at a directory you \
+         can write, or one whose parents do",
+        path.display()
+    )
 }
 
 pub fn home_dir() -> PathBuf {
