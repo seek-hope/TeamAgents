@@ -20,6 +20,33 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-263 What the two contract-text changes did, measured after the fact (2026-09-28)
+
+D-257 (wait/delegate text: delegated work is waited on *with* a timer) and D-258 (the runtime's settlement rule
+in every member's prompt, plus the delegator's recovery clause) were shipped on the strength of a diagnosis, not
+of an effect. The batches that followed can now be read as a before/after, so this entry records it — with the
+confound stated, because both rules landed in the same window and the batches differ in task size.
+
+Reading every delegated trial's session (`units delegated` against `units a worker settled SUCCEEDED`):
+
+| state of the product | trials | units settled by their worker | waits with a timer |
+|---|---|---|---|
+| before both rules (`r4-pilot`, `r5-recon`) | 7 | **9 of 16** (four trials lost a unit) | 6 of 7 — the one without ran to its 900 s bound |
+| timer rule only (`r5-recon2`, `r5-calib12`) | 7 | **50 of 52** | 7 of 7 |
+| both rules (`r6-formal`) | 3 | **37 of 37** | 3 of 3 |
+
+**What that supports**: the timer rule is visible in the record (every delegated trial after it carries a timer,
+where the one pre-rule trial without one ran to its bound), and worker-side abandonment — the loss mode D-257's
+reconnaissance found — is not visible at all in the three trials run after the settlement rule. **What it does
+not support**: a *controlled* effect size. The units per trial differ (2, 4, 6 and 12 across the batches), n is
+three to seven per cell, and both rules plus the user's grant landed in the same window, so the table is a
+description of the record and not an ablation. A controlled measurement would need the pre-rule and post-rule
+arms on the same task in the same conditions, which the recorded batches do not have.
+
+Ceiling: this is a *post hoc* reading of batches whose rules were written for other questions; it is reported so
+the two shipped changes are not left with only a prompt-probe as evidence, and it is deliberately not stated as
+"the settlement rule removes abandonment".
+
 ## D-262 The measured cost model becomes the leader's guidance (2026-09-28)
 
 Four batches (rounds 5 and 6, ~40 real trials) measured *when* delegation pays, and the answer is narrow enough to
