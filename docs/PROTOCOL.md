@@ -97,6 +97,7 @@ the handler re-checks who may do this rather than trusting the request.
 | `artifact_publish` | `id` | no | `core/src/v2/control.rs:157` |
 | `artifact_gc_claim` | `limit` | no | `core/src/v2/control.rs:158` |
 | `artifact_collect` | `id` | no | `core/src/v2/control.rs:159` |
+| `prune_history` | `days`, `evidence`, `now` | no | `core/src/v2/control.rs:160` |
 
 ### Every field the protocol carries in one object, and where it is built
 

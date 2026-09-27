@@ -400,8 +400,19 @@ pub async fn start<P: Provider + 'static>(mut config: DriverConfig<P>) -> Result
     let instance_id = config.instance_id.clone();
     let goal_id = format!("goal-{session_id}");
     let leader_profile = crate::providers::resolve_profile(config.profile.clone(), &config.catalog);
-    bootstrap(&storage, &instance_id, &config.workspace.to_string_lossy(), &config.goal_limits, &leader_profile)
-        .await?;
+    bootstrap(
+        &storage,
+        &instance_id,
+        &config.workspace.to_string_lossy(),
+        &config.goal_limits,
+        &leader_profile,
+        // this path drives one instance over the session's own root, so the root here *is* the session root
+        RetentionBoot {
+            history_days: config.catalog.retention.history_days,
+            evidence: crate::config::state_root_marked_as_evidence(&config.state_root),
+        },
+    )
+    .await?;
     let (shared, task) = spawn_driver(config, &storage)?;
     Ok(DriverHandle { storage, shared, session_id, instance_id, goal_id, task, _lock: lock })
 }
@@ -425,6 +436,7 @@ pub(crate) async fn bootstrap(
     workspace: &str,
     goal_limits: &Json,
     leader_profile: &teamagents_core::kernel::KernelProfile,
+    retention: RetentionBoot,
 ) -> Result<(), String> {
     storage
         .call({
@@ -478,11 +490,45 @@ pub(crate) async fn bootstrap(
                         Identity::User,
                     )?;
                 }
+                // D-245: `[retention] history_days` is applied once per session boot — DESIGN §4.4 says collection
+                // is "scheduled separately", and D-191 gave artifact collection the same cadence. The command
+                // refuses `days = 0` and a root marked as evidence, so both guards live where the deletion happens;
+                // the id carries the moment, because "when a session is opened" is per open (a restart sweeps
+                // again, which is safe: everything it can delete is ordinary history).
+                if retention.history_days > 0 {
+                    let now = teamagents_core::models::now();
+                    let params = json!({"days": retention.history_days, "now": now,
+                                        "evidence": retention.evidence});
+                    let id = format!("boot-prune-{}", (now * 1000.0) as i64);
+                    match control.submit(command(id, "prune_history", params), Identity::System) {
+                        Ok(swept) => {
+                            let (events, deliveries) =
+                                (swept["events"].as_u64().unwrap_or(0), swept["deliveries"].as_u64().unwrap_or(0));
+                            if events + deliveries > 0 {
+                                eprintln!(
+                                    "teamagents: retention: dropped {events} event(s) and {deliveries} applied \
+                                     delivery/deliveries older than {} day(s)",
+                                    retention.history_days
+                                );
+                            }
+                        }
+                        Err(error) => eprintln!("teamagents: retention sweep skipped: {error}"),
+                    }
+                }
                 Ok::<(), String>(())
             }
         })
         .await??;
     Ok(())
+}
+
+/// What the retention sweep needs at boot (`[retention] history_days` and whether the state root is marked as
+/// evidence, D-245): both are the user's own answers, read by the supervisor, which is the layer that knows the
+/// *session* root (a driver only sees its instance's sub-root).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RetentionBoot {
+    pub history_days: u64,
+    pub evidence: bool,
 }
 
 /// One running instance driver: shared flags plus the join handle.

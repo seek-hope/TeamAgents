@@ -223,12 +223,14 @@ pub struct Hooks {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Retention {
-    /// Delete archived sessions untouched for this many days when a session is
-    /// opened. 0 disables it.
+    /// **Accepted and not applied** (D-245): this build keeps one session per state root (A33), so there is no
+    /// "archived sessions" set to walk. It becomes meaningful with multi-session.
     #[serde(default)]
     pub archived_days: u64,
-    /// Drop applied deliveries and events older than this many days from the
-    /// session database on open. 0 keeps the full history: events are the audit trail.
+    /// Drop applied deliveries and events older than this many days **when a session starts** (its daemon
+    /// boots), under the guards `verification/tla/V2Retention.tla` pins: the log's head, a pending wait's fact
+    /// and a non-terminal instance's newest lifecycle event are live references and stay, and a state root
+    /// marked with the `EVIDENCE` file is never pruned. 0 keeps the full history: events are the audit trail.
     #[serde(default)]
     pub history_days: u64,
 }

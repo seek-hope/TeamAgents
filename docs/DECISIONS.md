@@ -18,6 +18,59 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
+| Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
+
+## D-245 `[retention] history_days` is applied, against the model that pinned its guards (2026-09-27)
+
+D-75 left `[retention]` accepted-and-unapplied and named the reason ("deleting history is destructive and the
+design ties it to conditions that need their own verification"); D-192 took the half that did not need a
+decision and modelled the rule (`verification/tla/V2Retention.tla`, four refuted controls); the implementation
+delegated to this session is therefore checked *against* a model rather than written first. DESIGN §9 separates
+three classes — active recovery data, ordinary history, evaluation evidence — and `history_days` is the config's
+word for the second: "drop applied deliveries and events older than this many days … 0 keeps the full history:
+events are the audit trail".
+
+**Implemented**: `core::v2::control::prune_history` — one transaction, deleting rows under the four guards the
+model pins, each of which is a predicate in the statement:
+
+* `days = 0` is **refused**, not treated as a no-op (the model's `IgnoreDisabled` counterfactual is a sweep that
+  runs anyway);
+* the **head** of each log is read before the delete and never dropped: `event()` draws its sequence from
+  `MAX(sequence) + 1`, so deleting the newest row would let a later event reuse a number a live client has
+  already passed as its watermark, and `WHERE sequence > watermark` would never show it. That guard caught its
+  own first draft — `sequence < (SELECT MAX(sequence) …)` re-evaluates *while* SQLite deletes, so the bound
+  shrank with its own deletions and ate the head the test asserts on;
+* the newest `instance_lifecycle` event of a **non-terminal** instance stays (`checkpoint` reads it for the
+  row's reason, D-165); a terminated instance's state is in `instances`, so its event is ordinary history;
+* an **applied delivery** stays while a *pending wait* still counts it as its fact (a `message` wait matches
+  `(recipient, sender, epoch)`, an `envelope` wait names the id), and its age is the age of the context entry
+  that recorded the application — the envelope row carries no timestamp of its own;
+* a state root the user marked with an **`EVIDENCE`** file is refused: the marker is how a user says "keep this
+  session", and the design's own evaluation evidence (`review/eval/**`) is never inside a session database.
+
+The sweep runs **once per session start**, from the supervisor's `bootstrap` — the layer that knows the session
+root (a driver only sees its instance's sub-root) — with a command id carrying the moment, so a restart sweeps
+again; DESIGN §4.4 says collection is "scheduled separately", and D-191 gave artifact collection the same
+cadence. It records itself as a `history_pruned` event (ordinary history, droppable by a later sweep).
+`archived_days` stays **accepted and unapplied**: one session per state root (A33) means there is no
+archived-session set to walk, so `doctor` says exactly that, and `history_days` (applied) or `history_days = 0`
+(full history) or the marker (nothing here) — the row reads differently in each case.
+
+**Measured**: `core`'s `retention_sweep_keeps_the_models_invariants` — the code-level correspondence for this
+model: it ages the log past the horizon, keeps a young fact, parks an instance (its newest lifecycle event must
+survive) and terminates another (its event must go), holds a pending wait over a delivery and lets it go once
+the wait is satisfied, ages the log again so that only the head rule can save the head, and refuses both the
+disabled and the marked case. End to end on a real state root with `history_days = 1`: the boot after an aging
+dropped **12 of 13** events (`history_pruned` records the counts, the daemon log prints
+`retention: dropped 12 event(s) …`, and the two survivors are the head and the new event). `cli::doctor_reports_
+which_retention_keys_apply` pins the three row shapes.
+
+Ceiling: the model is not a refinement proof, so the correspondence is the test above plus the row — not a
+theorem; the sweep is not scheduled beyond a session start (an idle root prunes nothing until one opens, which
+`doctor`'s row does not promise otherwise); only `APPLIED` deliveries are candidates (a sealed `SUPERSEDED`
+envelope is dirt nobody will apply, and the model's facts do not distinguish the class, so it stays); the
+`EVIDENCE` marker is a *file* whose presence is the whole test, and the check lives in the daemon while the core
+command refuses on the flag it is handed.
 
 ## D-244 The repository-local config is read now, under one gate (2026-09-27)
 

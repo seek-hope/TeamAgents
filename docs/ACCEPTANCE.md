@@ -7,7 +7,7 @@ model probe sets and the three formal gates).
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 101 / engine 258 / tui 35 test targets) and `make pty` passes; both are
+`make check` is green (core 102 / engine 259 / tui 35 test targets) and `make pty` passes; both are
 preconditions for every item below. `make check` includes `make language-check`, which fails on non-English
 characters outside the two documented exceptions (`README.zh-CN.md` and the frozen material under
 `review/eval`).
@@ -197,15 +197,16 @@ amended (D-49/D-50).
   `codex_profile` (a load error for a config that writes it today), or keep it dead and report it in `doctor` too
   (which needs the field to become an `Option`, because serde fills the absent value in, so a row cannot tell
   "declared" from "the struct's default").
-- **`[retention]` is accepted but nothing is archived or pruned.** DESIGN §9 promises ordinary history is
-  "archived or cleaned per user configuration" while live references and evaluation evidence are never
-  evicted; `Retention.archived_days`/`history_days` are parsed, kept user-config-only (like hooks and
-  checks) and read by nothing — `doctor` used to print them as `[ok ]`, and since D-75 it prints a WARN
-  saying they are not applied and nothing is deleted. Implementing it means deleting data under
-  conditions that need their own verification (never evict a live reference or evaluation evidence),
-  so it needs the user's word before it lands — **and since D-192 those conditions have a checked
-  specification** (`verification/tla/V2Retention.tla` with four refuted controls), so what remains is the
-  decision and not the analysis.
+- **`[retention] history_days` is applied since D-245; `archived_days` still is not.** DESIGN §9 promises
+  ordinary history is "archived or cleaned per user configuration" while live references and evaluation
+  evidence are never evicted; D-192 modelled that rule first (`verification/tla/V2Retention.tla` with four
+  refuted controls) and D-245 implemented it against that model: a session's boot drops events and *applied*
+  deliveries older than `history_days`, keeping the log's head, a pending wait's fact, a non-terminal
+  instance's newest lifecycle event and anything under an `EVIDENCE`-marked state root. The correspondence is
+  `core`'s `retention_sweep_keeps_the_models_invariants` (each guard exercised, each shown non-vacuous) plus
+  `cli::doctor_reports_which_retention_keys_apply`. What is *not* applied is `archived_days`: one session per
+  state root (A33) means there is no archived-session set to walk, so the key is accepted, reported as not
+  applied by `doctor`, and becomes meaningful with multi-session — its own queue item.
 
 - **Artifact collection runs when a driver boots, and nowhere else.** DESIGN §4.3 says collection is
   "scheduled separately" without naming the schedule, and D-191 implemented the mechanism — claim an

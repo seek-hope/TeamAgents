@@ -182,6 +182,14 @@ api_key_env = "ANYSEARCH_API_KEY"
   config with no web entry offers the model neither `web_search` nor `web_fetch` — `doctor` says so, and adding
   a `[tools.fetch]` entry makes exactly `web_fetch` appear.
 
+`[retention] history_days = N` is applied **when a session starts** (its daemon boots): events and *applied*
+deliveries older than N days are dropped from the session database, while the log's head, a pending wait's fact,
+a non-terminal instance's newest lifecycle event and your evaluation evidence are never evicted — the rule is
+`verification/tla/V2Retention.tla`, with four refuted controls. `history_days = 0` (the default) keeps the full
+history. `archived_days` is accepted and **not** applied: this build keeps one session per state root, so there
+is no archived-session set to walk. To keep a session's history whatever the config says, create a file named
+`EVIDENCE` in its state root — `doctor`'s `retention` row reports both cases.
+
 ### 2.1 Acceptance checks (`[[checks]]`)
 
 These are the machine contracts a goal must satisfy before it can be reported as done (§8, Q11). They come

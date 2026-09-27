@@ -72,9 +72,7 @@ REFUSED_AT_LOAD = {
 KNOWN_UNSERVED = {
     "codex_profile": "D-75: refused at load — an external Codex profile is not part of this release",
     "instruction_files": "D-102: declared, validated and reported as not applied; the gap is in ACCEPTANCE",
-    "archived_days": "D-75: reported as not applied; retention is a known gap in ACCEPTANCE",
-    "history_days": "D-75: reported as not applied; retention is a known gap in ACCEPTANCE",
-    "retention": "D-75: the [retention] table is parsed and reported as not applied; retention is a known gap",
+    "archived_days": "D-245: accepted and not applied — one session per state root (A33) means no archived set",
     "deadline_minutes": "applied by the loader: config.rs turns it into each goal's absolute deadline",
 }
 

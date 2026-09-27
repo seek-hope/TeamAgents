@@ -617,22 +617,36 @@ pub fn doctor(state_root: Option<PathBuf>) -> i32 {
                 format!("{} configured and run at the completion boundary: {}", catalog.checks.len(), ids.join(", "))
             },
         );
-        // D-75: `[retention]` is accepted (it stays user-config-only, like hooks and
-        // checks) but nothing in this release archives or prunes a session, so the row
-        // says that instead of reporting the numbers as if they were in effect —
-        // deleting history is a destructive feature that needs the user's word.
+        // D-245: `history_days` is applied now — a session boot drops ordinary history under the guards
+        // `verification/tla/V2Retention.tla` pins — and `archived_days` is not: this build keeps one session per
+        // state root (A33), so there is no archived-session set to walk. The row says which of the two it is,
+        // and names the state root's `EVIDENCE` marker when the user has asked for nothing to be pruned here.
         if catalog.retention.archived_days > 0 || catalog.retention.history_days > 0 {
-            optional_check(
-                &mut results,
-                "retention",
-                false,
+            let root_here = v2_root.clone();
+            let mut detail = if catalog.retention.history_days == 0 {
+                "history_days=0 keeps the full history: events are the audit trail".to_string()
+            } else if crate::config::state_root_marked_as_evidence(&root_here) {
                 format!(
-                    "archived_days={} history_days={} are not applied: this release never archives or prunes a \
-                     session, so nothing is deleted (the keys are accepted, and kept user-config-only, for the \
-                     session layout of earlier releases)",
-                    catalog.retention.archived_days, catalog.retention.history_days
-                ),
-            );
+                    "history_days={}: this state root carries the {} marker, so no session here prunes anything",
+                    catalog.retention.history_days,
+                    crate::config::EVIDENCE_MARKER
+                )
+            } else {
+                format!(
+                    "history_days={}: a session boot drops events and applied deliveries older than that, keeping \
+                     live references (the log's head, a pending wait's fact, a non-terminal instance's lifecycle) \
+                     and evaluation evidence",
+                    catalog.retention.history_days
+                )
+            };
+            if catalog.retention.archived_days > 0 {
+                detail.push_str(&format!(
+                    "; archived_days={} is not applied: this build keeps one session per state root (A33), so \
+                     there is no archived-session set to walk",
+                    catalog.retention.archived_days
+                ));
+            }
+            optional_check(&mut results, "retention", catalog.retention.archived_days == 0, detail);
         }
     }
     // The probe runs on the state directory this build actually uses, never on the legacy `sessions/` path:

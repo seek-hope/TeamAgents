@@ -18,7 +18,7 @@ Two rules decide whether a key is *honoured*, and both are part of the trust sto
   every repository). `python3 review/project_config_claim.py` checks that every document agrees with the code on
   this point (D-133, D-244).
 * **A key this build accepts but does not apply says so** in the table below and in `doctor` (D-102's
-  `instruction_files`, D-75's `codex_profile` and the `[retention]` bounds) — accepted-and-ignored would otherwise
+  `instruction_files`, D-75's `codex_profile` and `[retention]`'s `archived_days`, D-245) — accepted-and-ignored would otherwise
   look exactly like accepted-and-working.
 * **A key — or a *value* — this build does not serve is refused, or named by `doctor` before a session can start.**
   At load, with a pointer here (`unknown key … docs/CONFIG.md lists every key this build serves`): at the top
@@ -90,7 +90,7 @@ default (D-239).
 | `tools` | `HashMap<String, ToolBinding>` | empty | `core/src/kernel/instance.rs`, `core/src/kernel/mod.rs` … (11 files) | — |
 | `skills_paths` | `Vec<String>` | empty | `engine/src/tools.rs` | Directories the `skill` tool searches for `SKILL.md` entries. An entry must exist and be a directory; the default (`~/.agents/skills`) is used only when the key is unset (D-232). |
 | `instruction_files` | `Vec<String>` | empty | nothing: D-102: declared, validated and reported as not applied; the gap is in ACCEPTANCE | — |
-| `retention` | `Retention` | the Retention default | nothing: D-75: the [retention] table is parsed and reported as not applied; retention is a known gap | — |
+| `retention` | `Retention` | the Retention default | `engine/src/v2/driver.rs`, `engine/src/v2/supervisor.rs` | — |
 | `hooks` | `Hooks` | the Hooks default | `engine/src/hooks.rs`, `engine/src/v2/driver.rs` | — |
 | `checks` | `Vec<CheckSpec>` | empty | `core/src/v2/control.rs`, `engine/src/v2/exec.rs` … (3 files) | Acceptance checks the user predefines for every goal (DESIGN §8, Q11): the runtime runs them in the isolated shell at the completion boundary, so a goal cannot be reported as done while a check fails. They are the user's own machine contracts, never conditions a model extracted. |
 | `limits` | `GoalLimits` | the GoalLimits default | `tui/src/v2app.rs` | Usage and wall-clock ceilings every goal this session creates carries (§8, A18/A35): the goal's `max_total_tokens` refuses a new request once the settled usage would pass it, and its deadline refuses one past that moment. Both are the user's own bounds; a session with neither runs until the user stops it (see `docs/USER-GUIDE.md` §2.2). |
@@ -123,7 +123,7 @@ default (D-239).
 
 | Key | Type | Absent | Read by | Meaning |
 |---|---|---|---|---|
-| `archived_days` | `u64` | 0 | nothing: D-75: reported as not applied; retention is a known gap in ACCEPTANCE | Delete archived sessions untouched for this many days when a session is opened. 0 disables it. |
-| `history_days` | `u64` | 0 | nothing: D-75: reported as not applied; retention is a known gap in ACCEPTANCE | Drop applied deliveries and events older than this many days from the session database on open. 0 keeps the full history: events are the audit trail. |
+| `archived_days` | `u64` | 0 | nothing: D-245: accepted and not applied — one session per state root (A33) means no archived set | **Accepted and not applied** (D-245): this build keeps one session per state root (A33), so there is no "archived sessions" set to walk. It becomes meaningful with multi-session. |
+| `history_days` | `u64` | 0 | `engine/src/v2/driver.rs`, `engine/src/v2/supervisor.rs` | Drop applied deliveries and events older than this many days **when a session starts** (its daemon boots), under the guards `verification/tla/V2Retention.tla` pins: the log's head, a pending wait's fact and a non-terminal instance's newest lifecycle event are live references and stay, and a state root marked with the `EVIDENCE` file is never pruned. 0 keeps the full history: events are the audit trail. |
 
 <!-- generated: end -->

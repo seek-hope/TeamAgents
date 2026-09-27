@@ -117,7 +117,7 @@ in [README.md](README.md); the fix ledger is in
   tasks/delegation/goal settlement, compression, the daemon protocol, the required checks, the authority
   layer, the user's authority surface, session-store identity, and — added 2026-09-27, D-225 — the approval
   window, and — added 2026-09-27, D-192 — the
-  retention rule, which is a spec *before* its implementation: the code it describes does not exist yet — and,
+  retention rule, which D-192 modelled before the destructive code and D-245 implemented against it — and,
   added 2026-09-27, D-206, the job handshake with its recovery verdict, and — added 2026-09-27, D-207 — the
   inbox: the exactly-once application, the sequence order, the bound, the stale-epoch seal and the drain's
   identity check, the write-failure latch with its park — added 2026-09-27, D-208 — and, added 2026-09-27,
@@ -426,12 +426,13 @@ alone**, and conversely formal coverage does not excuse an item from sample or r
 4. **Code outside the model**: provider adapters and retry classification, MCP, Skills, TUI rendering and
    hit-testing, shell and bubblewrap isolation, job/process lifetimes and real provider behaviour. These are
    covered by sample tests and real-environment acceptance only.
-5. **A modeled rule without an implementation** (D-192): `V2Retention` states the retention rule and
-   checks it exhaustively as a *spec*, and nothing in the product evicts anything — the `[retention]`
-   keys are accepted and reported as not applied (D-75), deliberately, because deleting history is
-   destructive. What the model therefore proves is that the *rule* is consistent and non-vacuous (each
-   guard is refuted by a negative control), not that the product obeys it; that check belongs to the
-   implementation when the user asks for one.
+5. ~~A modeled rule without an implementation (D-192)~~ — **implemented in D-245**: `control::prune_history`
+   drops ordinary history at a session's boot under the four guards this model pins, and its test
+   `retention_sweep_keeps_the_models_invariants` exercises each guard *and* its counterfactual over the real
+   command sequence (a pending wait keeps a delivery, satisfying the wait lets the next sweep take it; the
+   log's head survives an aging that would otherwise take it; `[retention] archived_days` stays unapplied —
+   one session per state root, A33 — and `doctor` says so). What remains unproven is the usual ceiling: the
+   model is not a refinement proof, so the correspondence is bounded-enumeration-plus-test, not a theorem.
 6. **Concurrency**: `Control::submit` is serialized on a single connection (a single writer) and the model
    does not cover interleavings across connections; the daemon's concurrent read and write connections appear
    only in A28's structural statement that a slow client cannot block the writer, without an exhaustive

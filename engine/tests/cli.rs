@@ -266,6 +266,41 @@ fn a_socket_path_past_the_kernel_limit_is_refused_before_anything_starts() {
     assert!(text.contains("[FAIL] daemon socket"), "doctor must name the socket, not only the root: {text}");
 }
 
+/// D-245: the retention row says which of the two keys is applied — `history_days` is (a session boot sweeps
+/// ordinary history under the guards `verification/tla/V2Retention.tla` pins) and `archived_days` is not (this
+/// build keeps one session per state root, A33, so there is no archived-session set to walk) — and it names the
+/// state root's `EVIDENCE` marker when the user has asked for nothing to be pruned there.
+#[test]
+fn doctor_reports_which_retention_keys_apply() {
+    let home = Scratch::new("retention");
+    let (config_home, root) = (home.join("config"), home.join("root"));
+    std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
+    std::fs::create_dir_all(&root).unwrap();
+    let model = "[models.m]\nprovider = 'openai'\nmodel = 'x'\n";
+    let run = |text: &str| {
+        std::fs::write(config_home.join("teamagents/config.toml"), text).unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_teamagents"))
+            .args(["doctor", "--state-root"])
+            .arg(&root)
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("XDG_STATE_HOME", home.join("state"))
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+    let text = run(&format!("[retention]\nhistory_days = 7\narchived_days = 30\n{model}"));
+    assert!(text.contains("[WARN] retention"), "{text}");
+    assert!(text.contains("drops events and applied deliveries"), "the applied key says what it does: {text}");
+    assert!(text.contains("archived_days=30 is not applied"), "the unapplied key says so: {text}");
+    std::fs::write(root.join("EVIDENCE"), "").unwrap();
+    let text = run(&format!("[retention]\nhistory_days = 7\n{model}"));
+    assert!(text.contains("[ok  ] retention"), "a marked root is the user's wish, honoured: {text}");
+    assert!(text.contains("EVIDENCE"), "the marker is named: {text}");
+    std::fs::remove_file(root.join("EVIDENCE")).unwrap();
+    let text = run(&format!("[retention]\nhistory_days = 0\narchived_days = 30\n{model}"));
+    assert!(text.contains("keeps the full history"), "{text}");
+}
+
 /// D-241: a state root that cannot be *created* names the flag and the fix, from every entry point that creates
 /// one. They used to answer three different ways, none of them naming `--state-root`: measured 2026-09-27 with
 /// the root under a symlink loop, `init` said `could not prepare the state root: create … (os error 40)`,
@@ -469,11 +504,10 @@ fn doctor_probes_isolation_and_config_errors() {
     let with_hooks = run(&home.join("state"));
     assert!(with_hooks.contains("[FAIL] hooks.notify"), "{with_hooks}");
     assert!(with_hooks.contains("[ok  ] hooks.pre_tool"), "{with_hooks}");
-    // D-75: retention is accepted (and stays user-config-only) but nothing in this
-    // release archives or prunes, so the row says that instead of reporting the
-    // numbers as if they were in effect
+    // D-75/D-245: retention stays user-config-only, `history_days` is applied and `archived_days` is not, so
+    // the row reports each key for what it is instead of printing the numbers as if both were in effect
     assert!(with_hooks.contains("[WARN] retention"), "the policy is reported honestly: {with_hooks}");
-    assert!(with_hooks.contains("are not applied"), "{with_hooks}");
+    assert!(with_hooks.contains("archived_days=30 is not applied"), "{with_hooks}");
 
     // D-74: a declared MCP service is bound at session start, so doctor names each
     // one and says whether it can run (a mistyped command would stop the boot)

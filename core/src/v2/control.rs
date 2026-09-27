@@ -157,6 +157,7 @@ fn dispatch(
         "artifact_publish" => artifact_publish(tx, session_id, params),
         "artifact_gc_claim" => artifact_gc_claim(tx, session_id, params),
         "artifact_collect" => artifact_collect(tx, session_id, params),
+        "prune_history" => prune_history(tx, session_id, params),
         other => Err(format!("unknown v2 method {other:?}")),
     }
 }
@@ -3664,6 +3665,96 @@ fn artifact_gc_claim(tx: &Connection, session_id: &str, params: &Json) -> Result
 /// *outside* any transaction — a file operation may not run inside one (§4.1) — and this removes the row so the
 /// catalog and the disk agree again. The claim's reference clauses are re-checked here rather than trusted: a
 /// DELETING row refuses new references, so a live one at this point is a bug to fail on, not to delete past.
+/// The retention sweep (§4.4/§9; D-192 modelled the rule, this is the implementation it refers to).
+///
+/// DESIGN §9 separates three classes: *active recovery data*, *ordinary history* ("archived or cleaned per user
+/// configuration") and *evaluation evidence* ("never evicted automatically"). `[retention] history_days` says
+/// which facts are ordinary — "drop applied deliveries and events older than this many days … 0 keeps the full
+/// history: events are the audit trail" — and this command drops exactly that class, in one transaction, under
+/// the guards `verification/tla/V2Retention.tla` pins (each of its four controls forgets one of them):
+///
+/// * `days = 0` is refused rather than treated as a no-op: the model's `IgnoreDisabled` control is "the sweep
+///   runs with retention switched off", and a sweep that ran would drop rows;
+/// * an event is dropped only when it is **not the head** of the log — `event()` draws its sequence from
+///   `MAX(sequence) + 1`, so deleting the newest one would let a later event reuse a number a live client has
+///   already passed as its watermark, and `WHERE sequence > watermark` would never show it (`V2Retention`'s
+///   "live reference": the read side is a reference to the log's head);
+/// * the newest `instance_lifecycle` event of a **non-terminal** instance stays: `checkpoint` reads it for the
+///   row's reason (D-165), and the instance is still live; a terminated instance's state is in `instances`;
+/// * an applied delivery stays while a **pending wait** still counts it as its fact — a `message` wait matches
+///   `(recipient, sender, epoch)` and an `envelope` wait names the id — and its age is the age of the context
+///   entry that recorded the application, because the envelope row carries no timestamp of its own;
+/// * evaluation evidence is not a row class inside this database (`review/eval/**` is the design's evidence, and
+///   no product code writes there); the caller refuses to sweep a state root the user marked with the `EVIDENCE`
+///   file, which is the user's way to say "this root is evidence".
+///
+/// The sweep never runs on a timer: DESIGN §4.4 says collection is "scheduled separately", so the driver submits
+/// this once per boot, the shape D-191 gave artifact collection. It writes one `history_pruned` event, which is
+/// itself ordinary history and can be dropped by a later sweep.
+fn prune_history(tx: &Connection, session_id: &str, params: &Json) -> Result<Json, String> {
+    let days = params["days"].as_u64().ok_or("prune_history.days required")?;
+    if days == 0 {
+        return Err("retention is switched off (history_days = 0 keeps the full history); refusing to sweep".into());
+    }
+    // the caller reads the state root's `EVIDENCE` marker (the user's own "keep this root" file, D-245) and
+    // passes it here; the command is where the refusal lives, so no caller can sweep a marked root by omission
+    if params["evidence"].as_bool().unwrap_or(false) {
+        return Err("this state root is marked as evidence; refusing to prune its history".into());
+    }
+    let now = params["now"].as_f64().ok_or("prune_history.now required")?;
+    let cutoff = now - (days as f64) * 86_400.0;
+    // the head of each log is read *before* the delete: SQLite re-evaluates a correlated `MAX(sequence)` while it
+    // scans, so `sequence < (SELECT MAX(sequence) …)` shrinks with its own deletions and eventually ate the head
+    // it was meant to protect — measured by this command's test, one assertion after the first draft.
+    let head_events: i64 = tx
+        .query_row("SELECT COALESCE(MAX(sequence), 0) FROM events WHERE session_id = ?1", [session_id], |row| {
+            row.get(0)
+        })
+        .map_err(|e| format!("prune events head: {e}"))?;
+    let head_envelopes: i64 = tx
+        .query_row("SELECT COALESCE(MAX(sequence), 0) FROM envelopes WHERE session_id = ?1", [session_id], |row| {
+            row.get(0)
+        })
+        .map_err(|e| format!("prune envelopes head: {e}"))?;
+    let events = tx
+        .execute(
+            "DELETE FROM events
+              WHERE session_id = ?1
+                AND created < ?2
+                AND sequence < ?3
+                AND NOT (kind = 'instance_lifecycle'
+                         AND sequence = (SELECT MAX(e2.sequence) FROM events e2
+                                          WHERE e2.session_id = ?1 AND e2.kind = 'instance_lifecycle'
+                                            AND e2.scope = events.scope)
+                         AND scope IN (SELECT id FROM instances WHERE session_id = ?1
+                                        AND lifecycle != 'TERMINATED'))",
+            rusqlite::params![session_id, cutoff, head_events],
+        )
+        .map_err(|e| format!("prune events: {e}"))?;
+    let deliveries = tx
+        .execute(
+            "DELETE FROM envelopes
+              WHERE session_id = ?1 AND state = 'APPLIED'
+                AND sequence < ?3
+                AND id IN (SELECT envelope_id FROM context_entries
+                            WHERE envelope_id IS NOT NULL AND created < ?2)
+                AND NOT EXISTS (
+                    SELECT 1 FROM waits w
+                     WHERE w.status = 'PENDING'
+                       AND (json_extract(w.conditions_json, '$.envelope_id') = envelopes.id
+                           OR (envelopes.kind = 'message'
+                               AND json_extract(w.conditions_json, '$.kind') = 'message'
+                               AND w.instance_id = envelopes.recipient
+                               AND w.epoch = envelopes.epoch
+                               AND (json_extract(w.conditions_json, '$.from') IS NULL
+                                    OR json_extract(w.conditions_json, '$.from') = envelopes.sender))))",
+            rusqlite::params![session_id, cutoff, head_envelopes],
+        )
+        .map_err(|e| format!("prune deliveries: {e}"))?;
+    event(tx, session_id, "history_pruned", "", &json!({"events": events, "deliveries": deliveries, "days": days}))?;
+    Ok(json!({"events": events, "deliveries": deliveries}))
+}
+
 fn artifact_collect(tx: &Connection, session_id: &str, params: &Json) -> Result<Json, String> {
     let id = params["id"].as_str().ok_or("artifact_collect.id required")?;
     let state: Option<String> = tx
@@ -4874,6 +4965,160 @@ mod tests {
         let again = drain(&mut ctl, "i2");
         assert_eq!(again["applied"], json!(0));
         assert_eq!(context_count(&ctl, "i2"), 1);
+        cleanup(&path);
+    }
+
+    /// The rule `verification/tla/V2Retention.tla` pins, over the real command sequence — the spec-to-code
+    /// correspondence for the retention model. Each of the model's four guards is exercised *and* shown
+    /// non-vacuous: switched off (refused), too young (kept), live (kept while the wait is pending, dropped once
+    /// it is satisfied — the model's `AttachReference`/`DetachReference`), and evidence (refused).
+    #[test]
+    fn retention_sweep_keeps_the_models_invariants() {
+        let (mut ctl, path) = control("retention");
+        create_instance(&mut ctl, "i1");
+        create_instance(&mut ctl, "i2");
+        // two instances whose *newest* lifecycle event the guard decides about: a parked one (non-terminal, so
+        // `checkpoint` still reads its reason) and a terminated one (its state is in `instances`)
+        create_instance(&mut ctl, "i4");
+        create_instance(&mut ctl, "i5");
+        ctl.submit(
+            cmd("lc-4", "set_lifecycle", json!({"instance_id": "i4", "lifecycle": "PARKED", "reason": "waiting"})),
+            Identity::User,
+        )
+        .expect("park i4");
+        ctl.submit(
+            cmd("lc-5", "set_lifecycle", json!({"instance_id": "i5", "lifecycle": "TERMINATED", "reason": "done"})),
+            Identity::User,
+        )
+        .expect("terminate i5");
+        grant_message(&mut ctl, "i1", "i2", "a");
+        // a delivery that reaches i2's context (APPLIED), and i1's pending wait that counts it as its fact
+        ctl.submit(
+            cmd("sm-1", "send_message", json!({"recipient": "i2", "text": "one"})),
+            Identity::Instance("i1".into()),
+        )
+        .expect("send");
+        drain(&mut ctl, "i2");
+        ctl.connection()
+            .execute(
+                "INSERT INTO waits (id, instance_id, epoch, mode, conditions_json, status)
+                 VALUES ('w1', 'i1', 0, 'ANY', '{\"kind\":\"message\",\"from\":\"i2\"}', 'PENDING')",
+                [],
+            )
+            .expect("pending wait");
+        // every fact so far is ordinary history: age it well past the horizon
+        ctl.connection().execute("UPDATE events SET created = created - 30 * 86400", []).expect("age events");
+        ctl.connection()
+            .execute("UPDATE context_entries SET created = created - 30 * 86400", [])
+            .expect("age deliveries");
+        // …and one instance written *after* the aging, whose facts are too young to be ordinary history
+        create_instance(&mut ctl, "i3");
+        let young: i64 = ctl
+            .connection()
+            .query_row("SELECT MIN(sequence) FROM events WHERE scope = 'i3'", [], |row| row.get(0))
+            .expect("young event");
+
+        // the disabled guard: a sweep with retention switched off is refused, not a no-op
+        let err = ctl
+            .submit(
+                cmd("prune-off", "prune_history", json!({"days": 0, "now": crate::models::now(), "evidence": false})),
+                Identity::System,
+            )
+            .unwrap_err();
+        assert!(err.contains("retention is switched off"), "{err}");
+        // the evidence guard: a marked root is refused
+        let err = ctl
+            .submit(
+                cmd("prune-ev", "prune_history", json!({"days": 7, "now": crate::models::now(), "evidence": true})),
+                Identity::System,
+            )
+            .unwrap_err();
+        assert!(err.contains("marked as evidence"), "{err}");
+
+        let swept = ctl
+            .submit(
+                cmd("prune-1", "prune_history", json!({"days": 7, "now": crate::models::now(), "evidence": false})),
+                Identity::System,
+            )
+            .expect("sweep");
+        assert!(swept["events"].as_u64().unwrap_or(0) > 0, "the aged events are ordinary history: {swept}");
+        // the young fact survives — and it is *not* the head, so this is the horizon guard alone (see below for
+        // the head guard, where an equally old fact is kept only because it is the log's head)
+        let young_kept: i64 = ctl
+            .connection()
+            .query_row("SELECT COUNT(*) FROM events WHERE sequence = ?1", [young], |row| row.get(0))
+            .expect("young count");
+        assert_eq!(young_kept, 1, "a fact younger than the horizon is not ordinary history yet");
+        let live_lifecycle: i64 = ctl
+            .connection()
+            .query_row("SELECT COUNT(*) FROM events WHERE kind = 'instance_lifecycle' AND scope = 'i4'", [], |row| {
+                row.get(0)
+            })
+            .expect("lifecycle count");
+        assert_eq!(live_lifecycle, 1, "the newest lifecycle event of a non-terminal instance stays (D-165)");
+        let dead_lifecycle: i64 = ctl
+            .connection()
+            .query_row("SELECT COUNT(*) FROM events WHERE kind = 'instance_lifecycle' AND scope = 'i5'", [], |row| {
+                row.get(0)
+            })
+            .expect("terminated lifecycle count");
+        assert_eq!(dead_lifecycle, 0, "a terminated instance's lifecycle event is ordinary history");
+        // the pending wait's fact is still there — `V2Retention::NoReferenceToEvictedFact` at the code level
+        let delivery: i64 = ctl
+            .connection()
+            .query_row("SELECT COUNT(*) FROM envelopes WHERE state = 'APPLIED' AND recipient = 'i2'", [], |row| {
+                row.get(0)
+            })
+            .expect("delivery count");
+        assert_eq!(delivery, 1, "a pending wait still counts the delivery as its fact");
+        let pruned: i64 = ctl
+            .connection()
+            .query_row("SELECT COUNT(*) FROM events WHERE kind = 'history_pruned'", [], |row| row.get(0))
+            .expect("pruned event");
+        assert_eq!(pruned, 1, "the sweep records itself as ordinary history");
+
+        // the head guard on its own: age everything (i3's facts included) and sweep again. The head is now old
+        // like its neighbours and only the head rule keeps it — which is what makes that guard non-vacuous.
+        let head: i64 =
+            ctl.connection().query_row("SELECT MAX(sequence) FROM events", [], |row| row.get(0)).expect("head");
+        ctl.connection().execute("UPDATE events SET created = created - 30 * 86400", []).expect("age everything");
+        let swept = ctl
+            .submit(
+                cmd("prune-head", "prune_history", json!({"days": 7, "now": crate::models::now(), "evidence": false})),
+                Identity::System,
+            )
+            .expect("sweep the aged log");
+        assert!(swept["events"].as_u64().unwrap_or(0) > 0, "the aged facts are ordinary history: {swept}");
+        let kept: i64 = ctl
+            .connection()
+            .query_row("SELECT COUNT(*) FROM events WHERE sequence = ?1", [head], |row| row.get(0))
+            .expect("head count");
+        assert_eq!(kept, 1, "the head of the log is never pruned (a client's watermark is a live reference)");
+
+        // the wait is satisfied: the fact is ordinary again, and the next sweep takes it (the model's
+        // `DetachReference`, which is what makes the live guard above non-vacuous)
+        ctl.connection().execute("UPDATE waits SET status = 'SATISFIED' WHERE id = 'w1'", []).expect("close wait");
+        // one more delivery, so the detached one is no longer the head of the envelope log (the head guard is
+        // what kept it in the first sweep as well as the wait)
+        ctl.submit(
+            cmd("sm-2", "send_message", json!({"recipient": "i2", "text": "two"})),
+            Identity::Instance("i1".into()),
+        )
+        .expect("send again");
+        let swept = ctl
+            .submit(
+                cmd("prune-2", "prune_history", json!({"days": 7, "now": crate::models::now(), "evidence": false})),
+                Identity::System,
+            )
+            .expect("sweep again");
+        assert_eq!(swept["deliveries"], json!(1), "the detached delivery is ordinary history now: {swept}");
+        let delivery: i64 = ctl
+            .connection()
+            .query_row("SELECT COUNT(*) FROM envelopes WHERE state = 'APPLIED' AND recipient = 'i2'", [], |row| {
+                row.get(0)
+            })
+            .expect("delivery count after");
+        assert_eq!(delivery, 0);
         cleanup(&path);
     }
 

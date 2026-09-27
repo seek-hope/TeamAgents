@@ -138,6 +138,20 @@ pub fn sessions_dir() -> PathBuf {
     state_dir().join("sessions")
 }
 
+/// The file a user creates in a state root to say "keep this root": the third class DESIGN §9 separates, and the
+/// `evidence` guard `verification/tla/V2Retention.tla` pins (D-192's `MC_retention_evicts_evidence` control is the
+/// counterfactual "a sweep that ignores the mark"). The design's own evaluation evidence (`review/eval/**`) is
+/// never inside a session database, so the mark is how a *user* keeps a session's history: the retention sweep
+/// refuses a marked root and `doctor` says so (D-245).
+pub const EVIDENCE_MARKER: &str = "EVIDENCE";
+
+/// Is this state root marked as evidence? A *file* named `EVIDENCE` in it — the check is existence, so an empty
+/// file is enough, and a directory of that name is refused by the state-root kind check (D-228) like the other
+/// reserved paths.
+pub fn state_root_marked_as_evidence(root: &Path) -> bool {
+    root.join(EVIDENCE_MARKER).is_file()
+}
+
 /// Missing file is not an error (a fresh install has no config yet).
 pub fn load_user_config(path: &Path) -> Result<UserConfig, String> {
     let text = read_config_file(path)?;
