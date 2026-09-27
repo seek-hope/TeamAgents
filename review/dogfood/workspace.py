@@ -188,8 +188,25 @@ def main() -> int:
     if committed.returncode != 0:
         failures.append(f"the probe could not commit in the worktree: {committed.stderr.strip()}")
     branch = git(worktree, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
-    merged = git(project, "merge", "--no-edit", branch)
-    print(f"  merged {branch}: {'ok' if merged.returncode == 0 else merged.stderr.strip()[:120]}")
+    # The product's own merge lever (D-252): before it, the only way was the `git merge` this probe used to run
+    # by hand, which is what `docs/ACCEPTANCE.md` recorded as the gap. It carries the branch out of the member's
+    # record, refuses a dirty checkout and a member mid-turn, and reports the branch it merged.
+    merged = subprocess.run(
+        [str(BIN), "instances", "merge", "--id", worker, "--json", "--state-root", str(state_root)],
+        capture_output=True, text=True, env=env)
+    report = {}
+    if merged.stdout.strip().startswith("{"):
+        report = json.loads(merged.stdout)
+    print(f"  instances merge --id {worker}: exit={merged.returncode} branch={report.get('branch')!r} "
+          f"merged={report.get('merged')!r}")
+    if merged.returncode != 0 or report.get("merged") is not True:
+        failures.append(f"the merge lever did not merge {branch}: exit={merged.returncode} "
+                        f"{(merged.stdout + merged.stderr).strip()[:200]}")
+    if report.get("branch") != branch:
+        failures.append(f"the lever merged {report.get('branch')!r}, the worktree's branch is {branch!r}")
+    landed = project / "report.md"
+    if not landed.is_file() or MARKER not in landed.read_text():
+        failures.append(f"the member's committed file is not in the session's tree after the merge: {landed}")
     # Wait for the *pair*: the retirement removes the worktree directory and then its two records
     # (`workspace.json` beside the member and `worktree.json` beside the worktree), so sampling once as soon as
     # the directory disappears reports a race. Measured 2026-09-26: two failures in five runs, one of which left

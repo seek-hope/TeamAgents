@@ -46,8 +46,6 @@ USER_FILES = ["Makefile", "install.sh", "tui/scripts/pty_v2_smoke.py", "tui/scri
 
 # name -> why it may be mentioned nowhere at all
 KNOWN_UNCALLED = {
-    "member_worktrees": "D-76: the retirement path inspects one recorded workspace; a scan of every member "
-                        "worktree belongs to the merge surface that is an open item",
     "wait_idle": "D-63: the parked substrate for interrupt-and-redirect; documented with a ponytail note",
     # DESIGN §4.1 names these row shapes as the minimal data contract; the code reads them through SQL
     # (store.rs owns the schema), so the typed form documents the contract instead of being called. Their

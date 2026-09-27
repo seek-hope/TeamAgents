@@ -7,7 +7,7 @@ model probe sets and the three formal gates).
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 102 / engine 268 / tui 35 test targets) and `make pty` passes; both are
+`make check` is green (core 102 / engine 269 / tui 35 test targets) and `make pty` passes; both are
 preconditions for every item below. `make check` includes `make language-check`, which fails on non-English
 characters outside the two documented exceptions (`README.zh-CN.md` and the frozen material under
 `review/eval`).
@@ -175,17 +175,7 @@ amended (D-49/D-50).
   packages the docs and `install.sh`, checksums them, smoke-installs the exact archive and publishes the assets, and `make release-rehearsal` (`review/release_rehearsal.py`, D-217) runs all of that except the publish against this tree — version gate, musl release build, archive, checksums and smoke — measured 2026-09-27 at **5 m 26 s** cold with a **5,712 KiB** archive and a green smoke, and that run found the smoke half-isolated (it set only `XDG_CONFIG_HOME`, so `init` prepared its state root under the runner's real home; both smoke lines set `XDG_STATE_HOME` now); cutting the
   release is the user's decision (D-203; `review/release_artifact.py` now holds the same fact to both READMEs, which had recommended this install with no caveat). Until then `docs/INSTALL.md` says the install docs describe the tree, not the artifact.
 
-- **A worktree member's branch has no merge surface.** The `git_worktree` policy (§5.1/D-46) gives a
-  member its own branch and checkout, retirement refuses to delete an unmerged one, and the real-model
-  harness `review/dogfood/workspace.py` walks the whole lifecycle (D-76) — its first runs in `make probe-models`
-  were intermittent on one assertion (a probe-side race between the retirement's directory removal and its
-  record removal, fixed in D-142) and one failing run left a member record whose worktree no longer exists,
-  with no log line for the pass that removed it, which D-142 records as open — but nothing merges the
-  branch: `workspace::merge_branch` and `workspace::member_worktrees` have no caller anywhere in the
-  tree, and the name lives only in `<state root>/instances/<id>/worktree.json` (or `git worktree
-  list`). Today the user merges with git, or a Leader with `shell@workspace` does; a
-  `teamagents instances merge --id` verb (or a Leader-side merge tool) is new surface and needs the
-  user's word first.
+- ~~**A worktree member's branch has no merge surface.**~~ **Delivered since D-252.** `teamagents instances merge --id ID` brings a `git_worktree` member's branch into the session's own working tree. The branch name is read from the member's own record (`<state root>/instances/<id>/workspace.json`, written when the instance was prepared, D-76) instead of being guessed or asked of git, and the merge is a *local* git operation on the session's tree — not a session-state transition — so it runs in the client and the daemon is only read (for the member's live phase). Three refusals, each naming what it found: the member is in the middle of a turn (a running member is writing the very files the merge would bring in — wait for it, pause it, or cancel its task); the member's checkout still holds uncommitted changes (the merge carries the *branch*, so that work would be left behind — the workspace module's "nothing in a member's directory is dropped silently" rule, the same one retirement applies to deletion); and the instance has no branch at all (a shared/isolated member, or the session's leader, which works in the session's own tree). A merge that ends in conflicts is reported with git's own message and left **in progress** to resolve or abort; the member's branch is untouched. Evidence: the real binary against a real daemon and a real repository — `v2_daemon::the_instances_merge_lever_brings_a_worktree_members_branch_into_the_session_tree` measures the mid-turn refusal, the merge itself (the member's committed file landing in the session tree, under a `merged by the user` commit), the dirty-checkout refusal and the leader refusal — and the live half is `review/dogfood/workspace.py`, which since D-252 merges through the product's own lever instead of the by-hand `git merge` it used to run (measured 2026-09-28 with DeepSeek: exit 0, the branch named, the member's `report.md` in the session tree, and the worktree retired by the running supervisor). Formally `tla/V2Workspace.tla` pins `UncommittedWorkIsNeverMerged`, `NoMergeWhileATurnRuns` and `RetirementNeverBuriesWork`, each refuted by its own control. What stays open next to it: nothing merges *back* into a member, and a conflict is still the user's to resolve (the design lets a Leader do the same work through `shell@workspace`).
 
 - **`view_image`'s request-build half is parked, so an image never reaches a model.** The tool returns a
   reference in its receipt (`{"image": …, "media_type": …, "bytes": …}`), but the half that loads those bytes

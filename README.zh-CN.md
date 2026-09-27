@@ -175,7 +175,7 @@ teamagents authority revoke --grant g-1a2b3c4d          # 撤销是终局的，�
 | `--state-root PATH` | 指定状态根（默认 `$XDG_STATE_HOME/teamagents/v2`） |
 | `--model KEY` | 选择模型目录键（默认 `leader_main`） |
 | `--full-auto` | 用户显式开启全自动（仅用户可开；默认越权时请求批准）；只对这条命令启动的会话生效——已在运行的会话保留它启动时的模式，客户端会把这个模式打印出来而不是假装生效 |
-| `init` / `doctor` / `daemon` / `daemon --stop` / `exec` / `authority` / `approvals` / `instances` / `tasks` / `runners` / `version` / `--help` | 准备配置与状态根 / 自检 / 单独运行 daemon（输出写入 `<state root>/daemon.log`）/ 停止拥有该状态根的会话，以套接字为地址（不依赖 pid；`--cwd`/`--model`/`--full-auto` 会被拒绝）/ 无头输入 / 列出、发放与撤销能力 / 列出并决定待批准操作 / 暂停、恢复、终止并列出实例 / 列出并取消任务 / 列出该状态根仍持有的作业 runner 并让已结束的那些退休（`runners stop --service --yes` 则改为对已结算命令遗留的进程组发信号） / 版本 / 用法 |
+| `init` / `doctor` / `daemon` / `daemon --stop` / `exec` / `authority` / `approvals` / `instances` / `tasks` / `runners` / `version` / `--help` | 准备配置与状态根 / 自检 / 单独运行 daemon（输出写入 `<state root>/daemon.log`）/ 停止拥有该状态根的会话，以套接字为地址（不依赖 pid；`--cwd`/`--model`/`--full-auto` 会被拒绝）/ 无头输入 / 列出、发放与撤销能力 / 列出并决定待批准操作 / 暂停、恢复、终止、合并 worktree 成员的分支并列出实例 / 列出并取消任务 / 列出该状态根仍持有的作业 runner 并让已结束的那些退休（`runners stop --service --yes` 则改为对已结算命令遗留的进程组发信号） / 版本 / 用法 |
 
 TUI 键位（与屏幕底部提示一致；**刻意不使用 F 键**，因为部分键盘没有）：
 `Enter` 发送、`Ctrl+J` 换行（终端会上报修饰键时 `Shift+Enter` 同样换行）、`Tab` 切换对话目标、

@@ -1332,6 +1332,142 @@ async fn the_stop_lever_answers_before_the_daemon_goes() {
     handle.shutdown().await.expect("shutdown");
 }
 
+/// A scratch git repository with one commit, for the worktree tests (D-252).
+fn init_git_repo(dir: &Path) {
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git").arg("-C").arg(dir).args(args).output().expect("git");
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["config", "user.email", "t@example.com"]);
+    git(&["config", "user.name", "T"]);
+    std::fs::write(dir.join("README.md"), "hi").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "init"]);
+}
+
+/// D-252: the worktree member's branch had no merge surface at all (`docs/ACCEPTANCE.md`: "nothing merges the
+/// branch"), so the user merged by hand. `teamagents instances merge --id ID` brings it into the session's own
+/// working tree, and refuses the three ways a merge would be wrong: a member in the middle of a turn, a checkout
+/// with uncommitted work, and a member that is not a worktree at all.
+#[tokio::test]
+async fn the_instances_merge_lever_brings_a_worktree_members_branch_into_the_session_tree() {
+    let root = root("merge-branch");
+    let workspace = root.dir.join("ws");
+    std::fs::create_dir_all(&workspace).unwrap();
+    init_git_repo(&workspace);
+    // The leader spawns a worktree member, delegates to it and finishes its turn; the member's own turn is held
+    // long enough for the test to try the merge *while it runs*.
+    let leader = vec![
+        json!({"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "spawn",
+             "arguments": json!({"instance_id": "i-git", "instructions": "write the feature",
+                                 "workspace": "git_worktree"}).to_string()}},
+            {"id": "c2", "type": "function", "function": {"name": "delegate",
+             "arguments": json!({"assignee": "i-git", "task_id": "t-feature", "description": "write it"}).to_string()}}
+        ]}),
+        finish_call("delegated"),
+    ];
+    let member = vec![
+        json!({"role": "assistant", "content": "working", "__slow_ms__": 2000}),
+        finish_call("the feature is written"),
+    ];
+    let scripts = HashMap::from([("i-leader".to_string(), leader), ("i-git".to_string(), member)]);
+    let handle = serve(config(&root, scripts)).await.expect("daemon");
+    let state = root.dir.join("state");
+    let socket = state.join("daemon.sock");
+    let mut client = Client::connect(&socket).await;
+    let since = client.call("checkpoint", json!({})).await["result"]["watermark"].as_i64().unwrap();
+    client.command("merge-input", "submit_input", input_params("delegate the feature")).await;
+    let merge = |id: &str| {
+        let (state, id) = (state.clone(), id.to_string());
+        async move {
+            tokio::task::spawn_blocking(move || {
+                let out = std::process::Command::new(env!("CARGO_BIN_EXE_teamagents"))
+                    .args(["instances", "merge", "--id", &id, "--json", "--state-root"])
+                    .arg(&state)
+                    .output()
+                    .expect("run instances merge");
+                (
+                    out.status.code().unwrap_or(-1),
+                    String::from_utf8_lossy(&out.stdout).into_owned(),
+                    String::from_utf8_lossy(&out.stderr).into_owned(),
+                )
+            })
+            .await
+            .expect("join merge")
+        }
+    };
+    // ... while the member works: the merge must refuse instead of racing its turn
+    let worktree = state.join("instances/i-git/work");
+    let mut busy = false;
+    for _ in 0..400 {
+        let checkpoint = client.call("checkpoint", json!({})).await;
+        let phase = checkpoint["result"]["snapshot"]["instances"]
+            .as_array()
+            .and_then(|rows| rows.iter().find(|row| row["id"] == json!("i-git")))
+            .and_then(|row| row["phase"].as_str())
+            .unwrap_or("");
+        // a turn in flight: the phases the driver reports while one is in progress
+        if matches!(phase, "MODEL_PENDING" | "TOOLS_PENDING" | "WAITING") && worktree.join(".git").exists() {
+            busy = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(busy, "the member's turn never went in flight");
+    let (code, out, err) = merge("i-git").await;
+    assert_eq!(code, 1, "a turn in flight is not a stable snapshot: {out}{err}");
+    assert!(err.contains("middle of a turn"), "{err}");
+    assert_eq!(wait_goal(&mut client, since).await.0, "SUCCEEDED");
+    // the member's own turn ends on its own (a plain reply; D-65 leaves its task RUNNING, which does not block
+    // merging what it has committed so far)
+    let mut idle = false;
+    for _ in 0..400 {
+        let checkpoint = client.call("checkpoint", json!({})).await;
+        let phase = checkpoint["result"]["snapshot"]["instances"]
+            .as_array()
+            .and_then(|rows| rows.iter().find(|row| row["id"] == json!("i-git")))
+            .and_then(|row| row["phase"].as_str())
+            .unwrap_or("");
+        if phase == "READY" {
+            idle = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(idle, "the member never went idle again");
+
+    // the member committed its work in its own checkout; now the merge brings it into the session's tree
+    std::fs::write(worktree.join("feature.txt"), "the feature\n").unwrap();
+    for args in [vec!["add", "."], vec!["commit", "-q", "-m", "the feature"]] {
+        let out = std::process::Command::new("git").arg("-C").arg(&worktree).args(&args).output().unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+    let (code, out, err) = merge("i-git").await;
+    assert_eq!(code, 0, "{out}{err}");
+    let report: Json = serde_json::from_str(&out).expect("JSON report");
+    assert_eq!(report["merged"], json!(true), "{report}");
+    assert!(report["branch"].as_str().is_some_and(|branch| branch.starts_with("teamagents/")), "{report}");
+    assert!(workspace.join("feature.txt").is_file(), "the member's file is in the session's tree now");
+    let log =
+        std::process::Command::new("git").arg("-C").arg(&workspace).args(["log", "--oneline", "-1"]).output().unwrap();
+    assert!(String::from_utf8_lossy(&log.stdout).contains("merged by the user"), "{log:?}");
+
+    // uncommitted work in the member's checkout is refused by name (the merge would leave it behind)
+    std::fs::write(worktree.join("wip.txt"), "not committed\n").unwrap();
+    let (code, _, err) = merge("i-git").await;
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("uncommitted changes"), "{err}");
+    std::fs::remove_file(worktree.join("wip.txt")).unwrap();
+
+    // and a member that is not a worktree has no branch to merge
+    let (code, _, err) = merge("i-leader").await;
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("no branch to merge"), "{err}");
+    handle.shutdown().await.expect("shutdown");
+}
+
 /// D-249: `exec --stream-json` prints the session's committed events as the run observes them — one typed line
 /// each, in log order, never twice — and then the report as the last line, which is the same object `--json`
 /// prints (the envelope does not change the report's shape). The streaming is a client of the `events(since)`

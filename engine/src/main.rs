@@ -17,6 +17,7 @@ usage: teamagents [--cwd DIR] [--state-root PATH] [--model KEY] [--full-auto]\n\
   teamagents instances [list] [--json]          the session's instances\n\
   teamagents instances resume|pause --id ID     let a parked instance run again, or stop one\n\
   teamagents instances terminate --id ID --yes  retire it (workspace and open work handled)\n\
+  teamagents instances merge --id ID            bring a git_worktree member's branch into the session tree\n\
   teamagents tasks [list] [--json]              the session's tasks\n\
   teamagents tasks cancel --id ID               cancel one; a delegator waiting on it is released\n\
   teamagents runners [list] [--json]            the job runners this state root still carries\n\
@@ -695,11 +696,13 @@ fn run_instances(args: &Args) -> i32 {
         ("pause", Some(id)) => InterventionCommand::Pause { id },
         ("resume", Some(id)) => InterventionCommand::Resume { id },
         ("terminate", Some(id)) => InterventionCommand::Terminate { id },
+        // D-252: the worktree member's branch, brought into the session's own tree
+        ("merge", Some(id)) => InterventionCommand::Merge { id },
         ("list", Some(_)) => {
-            eprintln!("instances list takes no --id; use `instances pause|resume|terminate --id ID`");
+            eprintln!("instances list takes no --id; use `instances pause|resume|terminate|merge --id ID`");
             return 2;
         }
-        (verb @ ("pause" | "resume" | "terminate"), None) => {
+        (verb @ ("pause" | "resume" | "terminate" | "merge"), None) => {
             eprintln!("instances {verb} needs --id ID (see `teamagents instances` for the ids)");
             return 2;
         }

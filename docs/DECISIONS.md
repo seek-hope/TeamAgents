@@ -20,6 +20,54 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-252 `instances merge`: a worktree member's branch, brought into the session's tree (2026-09-27)
+
+ACCEPTANCE's known gap: `workspace::merge_branch` and `workspace::member_worktrees` (deleted with this decision
+— the enumerator walked a layout this tree does not create, see "Earlier rules") "have no caller anywhere in the
+tree, and the name lives only in `<state root>/instances/<id>/worktree.json`" (§5.1), so "the user merges with
+git, or a Leader with `shell@workspace` does". **Decided: add the lever** — additive surface, no design change (the design never said the merge must be manual), and the
+existing helper is now called by the product rather than by a test. The probe that walked the lifecycle even
+carried the workaround: `review/dogfood/workspace.py` ran `git merge` by hand, and now merges through the lever.
+
+**Client-side, deliberately.** Merging changes the session's *working tree*, not the session's state machine, so
+it is not a control-plane command: `intervene::execute` reads the daemon (only for the member's live phase) and
+then runs git locally — the same place the client's `--check` commands run. The branch comes from the member's
+own record (`<state root>/instances/<id>/workspace.json`, written before the instance booted, D-76), because the
+branch name lives nowhere else the product can read (only `git worktree list`).
+
+**Three refusals, each naming what it found.** (1) The member is **in the middle of a turn** — a running member
+is writing the very files the merge would bring in, so the merge waits for an idle member (the refusal names the
+phase and the two levers: wait, or `instances pause`). (2) The member's **checkout is dirty** — the merge
+carries the *branch*, so uncommitted changes would be left behind, which is the workspace module's own rule
+("nothing in a member's directory is dropped silently", the same one retirement applies to deletion, D-76).
+(3) The instance **has no branch** — a shared/isolated member, or the session's leader, which works in the
+session's own tree; the message says which. A merge that ends in **conflicts** is reported with git's own
+message and left in progress (resolve, or `git merge --abort`); the member's branch is untouched either way, and
+the verb never decides a conflict for the user.
+
+**Measured.** `v2_daemon::the_instances_merge_lever_brings_a_worktree_members_branch_into_the_session_tree`
+drives the real binary against a real daemon and a real git repository: a scripted leader spawns a
+`git_worktree` member and delegates with the member's turn held, the merge is *refused* while that turn is in
+flight (`middle of a turn (MODEL_PENDING)`), the member commits in its own checkout, the next merge lands (exit
+0, the branch named, the file in the session tree, the commit message `merged by the user`), an uncommitted file
+in the checkout is refused by name, and the leader is refused with "no branch to merge". The live half is
+`review/dogfood/workspace.py` (real model, DeepSeek 2026-09-28): the member wrote `report.md` in its worktree,
+the terminate kept the uncommitted work, and the probe's merge went through the product — `exit 0
+branch='teamagents/worker_wt-…' merged=True`, the file in the session tree, the worktree retired by the running
+supervisor. Formally `verification/tla/V2Workspace.tla` is new (the twentieth module): `UncommittedWorkIsNeverMerged`,
+`NoMergeWhileATurnRuns` and `RetirementNeverBuriesWork`, with one counterfactual control each
+(`MC_workspace_merges_a_dirty_checkout.cfg`, `MC_workspace_merges_mid_turn.cfg`,
+`MC_workspace_retires_with_work.cfg`); the positive configuration is exhaustive in 2 s (40 states / 10
+distinct). The module also carries the *retirement* half of the same rule, which until now was only tested
+(`check_worktree_cleanup`) and never modelled.
+
+Ceiling: the merge is one-directional (nothing flows back into a member's checkout; a member that must see the
+session's tree needs a fresh spawn or a manual pull), and it merges the *branch* only, so work a member left
+uncommitted is refused rather than swept in — by design, and the refusal says what to do. It requires a running
+session (the live phase is what the idle rule reads), and it does not prove the merged tree *works*: that is the
+runtime's `[[checks]]` or the caller's `--check` (§8). Conflicts stay the user's: the verb reports git's state
+and stops, and the design's other route (a Leader with `shell@workspace`) is unchanged.
+
 ## D-251 `runners stop --service`: the process group a settled command left behind (2026-09-27)
 
 The last bullet of ACCEPTANCE's known-gap list: "nothing stops a service a settled command left behind". D-41
@@ -6330,9 +6378,12 @@ allowlist cannot rot silently:
   minimal data contract. The running code reads them through SQL (`store.rs` owns the schema), so the typed
   form is the contract's representation rather than a call target. Deleting them would leave the
   `CREATE TABLE` text as the only statement of the contract.
-- `workspace::member_worktrees` — belongs to the member-branch merge surface, which is an open item
-  (D-76 and the gap recorded in `docs/ACCEPTANCE.md`); its sibling `merge_branch` looks used only because a
-  test drives it, which is the detector's documented blind spot (a test counts as a use).
+- ~~`workspace::member_worktrees`~~ — **gone since D-252**, which delivered the merge surface it belonged to:
+  the verb addresses one member by id through that member's own record, and the enumerator walked
+  `<session_dir>/members`, a layout this tree does not create (the daemon's members live in
+  `<state root>/instances/<id>`), so a caller would have silently received an empty list. Its sibling
+  `merge_branch` was the detector's documented blind spot until then ("a test counts as a use") and is now the
+  verb's own call.
 - `tools::wait_idle` — D-63's parked substrate for interrupt-and-redirect, carrying its own `ponytail:` note.
 
 One documentation defect came out of the same pass: the doc comment on `driver::with_control` began with
@@ -6653,12 +6704,11 @@ and reports the same reason once — a *different* reason, or a refusal after a 
 again (`supervisor::tests::a_workspace_refusal_is_reported_once_per_reason`). Re-measured: exactly one line
 per reason, in the same scenarios, on both providers.
 
-**Ceiling, and a gap this exposes**: the merge is the *user's* (or a Leader's, through `shell@workspace`),
-because no surface merges a member branch: `workspace::merge_branch` and `workspace::member_worktrees` have no
-caller anywhere in the tree (their doc comment calls the first one a "Leader-side merge helper"), and the
-branch name is discoverable only from `<state root>/instances/<id>/worktree.json` or `git worktree list`.
-That is recorded in ACCEPTANCE's known gaps: a `teamagents instances merge --id` verb (or a Leader-side merge
-tool) is new product surface and needs the user's word before it lands.
+**Ceiling, and a gap this exposed**: the merge was the *user's* (or a Leader's, through `shell@workspace`) at
+the time — no surface merged a member branch, and the branch name was discoverable only from
+`<state root>/instances/<id>/worktree.json` or `git worktree list`. **Delivered since D-252**:
+`teamagents instances merge --id ID` reads the record and merges the branch (and the stale enumerator this
+paragraph named was removed with it, since it walked a layout the tree does not create).
 
 ## D-75 Config keys that did nothing now either work or say so (2026-09-25)
 

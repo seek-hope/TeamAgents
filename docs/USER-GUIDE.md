@@ -126,6 +126,7 @@ row, which the TUI's panel and `instances` print when a member is not running (D
 | `approvals approve` / `deny` | `approval_id`, `decision`, `approval`, `result` |
 | `instances list` | `instances` |
 | `instances pause` / `resume` / `terminate` | `instance_id`, `lifecycle`, `instance`, `result` |
+| `instances merge` | `instance_id`, `phase`, `lifecycle`, `branch`, `project`, `merged`, `output` |
 | `tasks list` | `tasks` |
 | `tasks cancel` | `task_id`, `task`, `result` |
 | `runners` / `runners stop` | `runners` |
@@ -311,11 +312,18 @@ pre_tool = ["/home/you/bin/policy.sh"]            # policy hook before tool call
   repository or has uncommitted changes falls back to shared mode and says why in the tool receipt.
   Terminating an instance retires its workspace from the record, and **a directory with uncommitted or
   unmerged work is never deleted automatically** — only the reason is reported.
-  A worktree member's branch is **not merged for you**: the branch name and base commit are recorded in
-  `<state root>/instances/<id>/worktree.json` (and `git worktree list` shows the checkout), so the merge is
-  yours — or the Leader's, if it holds `shell@workspace` and runs `git merge` in the project. Once the branch
-  is merged, the running session retires the worktree by itself on its next pass (the record goes with it);
-  until then the refusal is reported **once per reason** in `daemon.log`, and the checkout is kept.
+  A worktree member's branch is merged through the product since D-252:
+  `teamagents instances merge --id <member>` carries the branch into the session's own working tree (the branch
+  name and base commit are recorded in `<state root>/instances/<id>/worktree.json`, and `git worktree list`
+  shows the checkout; the lever reads the record instead of guessing). It refuses three ways a merge would be
+  wrong, each by name: the member is in the middle of a turn (wait for it or pause it), the member's checkout
+  still holds uncommitted changes (the merge carries the *branch* — commit or stash them first, because nothing
+  in a member's directory is ever dropped silently), and the instance has no branch at all (only a member
+  spawned with `workspace = "git_worktree"`, and the session's leader works in the session's own tree). A
+  merge that ends in conflicts is reported with git's own message and left **in progress** for you to resolve
+  (`git merge --abort` undoes it); the member's branch is untouched either way. Once the branch is merged, the
+  running session retires the worktree by itself on its next pass (the record goes with it); until then the
+  refusal is reported **once per reason** in `daemon.log`, and the checkout is kept.
 - A member whose model ends its turn with plain text (no tool call) and does not settle its task goes
   **idle with the task still `RUNNING`** (D-65: the runtime never reads an outcome out of prose, §8, and it
   never asks the same question twice — that was a turn storm). The delegator's wait stays pending, so
@@ -577,6 +585,7 @@ teamagents tasks cancel --id t-prose    # releases a delegator waiting on a task
 | The agent worked in the wrong directory | Its session was started with another workspace (or without `--cwd`): the client prints the live one. Stop that daemon (§1: `teamagents daemon --stop`, which needs no pid) or start a fresh `--state-root` with `--cwd DIR` |
 | The model returns 401/402 | Check the environment variable named by the profile's `api_key_env`; `doctor` lists the credential resolution result per profile |
 | A task stays `RUNNING` while its assignee is idle | The assignee's model ended its turn without settling it (D-65): cancel the task — `c` in the tasks panel or `teamagents tasks cancel --id` — which releases the delegator's wait |
+| A worktree member finished and I want its work in my tree | `teamagents instances merge --id <member>` (D-252). It refuses while the member has a turn in flight or its checkout has uncommitted changes, and reports a conflicting merge with git's message, leaving the merge in progress |
 | A member is stuck in a long or endless command and cancelling its task changed nothing | `tasks cancel` is delegation-level and does not touch the assignee's operation (D-88). Stop the work with `teamagents instances terminate --id … --yes` (the process group dies within seconds, and the receipt says `class: cancelled`) or wait for the command's own tool timeout |
 | An instance is parked | `teamagents instances` shows which **and why** (the reason rides on the row, D-165); resume it with `instances resume --id` (or `r` in the TUI) once that cause is gone |
 | A command under `approved_scope` waits for approval | Decide it with `teamagents approvals` (§4.1) or in the TUI approvals panel; `--full-auto` (host execution, D-41) skips the gate |

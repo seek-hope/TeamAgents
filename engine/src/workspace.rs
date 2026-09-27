@@ -377,30 +377,19 @@ pub fn merge_branch(project_cwd: &Path, branch: &str, message: Option<&str>) -> 
     (false, err.trim().to_string())
 }
 
-/// Candidate Git member roots, including broken markers. Inspection must fail
-/// closed rather than treating unreadable or damaged worktrees as absent.
-pub fn member_worktrees(session_dir: &Path) -> Result<Vec<PathBuf>, String> {
-    let members = session_dir.join("members");
-    let entries = match std::fs::read_dir(&members) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
-        Err(error) => return Err(format!("cannot inspect the instance workspace {}: {error}", members.display())),
-    };
-    let mut found = vec![];
-    for entry in entries {
-        let work = entry.map_err(|e| e.to_string())?.path().join("work");
-        match std::fs::symlink_metadata(work.join(".git")) {
-            Ok(_) => found.push(work),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                if origin_path(&work).try_exists().map_err(|e| e.to_string())? {
-                    found.push(work);
-                }
-            }
-            Err(error) => return Err(format!("cannot inspect the workspace {}: {error}", work.display())),
-        }
-    }
-    found.sort();
-    Ok(found)
+/// Does this member's checkout still hold changes that are not in its branch?
+///
+/// The merge (`merge_branch`, D-76/D-252) refuses on `true`: uncommitted work would be invisible to it, and the
+/// module's rule is that work in a member's directory is never ignored silently. Retirement asks the same
+/// question through `check_worktree_cleanup`.
+pub fn worktree_is_dirty(work: &Path) -> Result<bool, String> {
+    dirty_status(work, false)
+}
+
+/// Is this branch still there? A retired member's worktree is gone but its branch survives (retirement refuses to
+/// delete a worktree with unmerged work), so the merge addresses the branch by name rather than the checkout.
+pub fn branch_exists(project_cwd: &Path, branch: &str) -> bool {
+    git(project_cwd, ["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).0 == 0
 }
 
 #[cfg(test)]

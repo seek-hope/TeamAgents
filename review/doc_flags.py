@@ -86,6 +86,7 @@ TOOL_FLAGS = {
     "--bin-dir": "install.sh: where the installer puts the binaries (its own test is engine/tests/install.rs)",
     "--archive": "install.sh: install from a local archive instead of downloading (review/install_check.py)",
     "--strict": "review/dogfood/protocols.py: fail instead of skipping a family with no credential",
+    "--abort": "git: abort the merge an `instances merge` left in progress (docs/USER-GUIDE.md §5.1)",
 }
 
 FLAG = re.compile(r"(?<![\w-])--[a-z][a-z-]*")

@@ -38,6 +38,13 @@ pub enum InterventionCommand {
     /// Cancel one task: the only documented way to release a delegator whose
     /// assignee stopped without settling it (D-65).
     CancelTask { id: String },
+    /// Bring a `git_worktree` member's branch into the session's own working tree (D-252).
+    ///
+    /// The gap this closes is in `docs/ACCEPTANCE.md`: a worktree member's branch had no merge surface at all, so
+    /// the user merged by hand with git (or a Leader did through `shell@workspace`). The merge is a *local* git
+    /// operation on the session's working tree — not a session-state transition — so it runs here, in the
+    /// client, and the daemon is only read (for the member's live phase).
+    Merge { id: String },
 }
 
 pub struct InterventionOptions {
@@ -138,6 +145,34 @@ pub fn execute(options: &InterventionOptions) -> Result<Json, (i32, String)> {
                 "task_id": resolved, "task": row, "result": result,
             }))
         }
+        InterventionCommand::Merge { id } => {
+            let rows = instances(&mut client)?;
+            let row = resolve_prefix(&rows, "id", id, "instance", "teamagents instances")?;
+            let resolved = row["id"].as_str().unwrap_or_default().to_string();
+            let phase = row["phase"].as_str().unwrap_or("").to_string();
+            let lifecycle = row["lifecycle"].as_str().unwrap_or("").to_string();
+            // A turn in flight (or a wait that can still be woken) is not a stable snapshot to merge from: the
+            // member may be writing the very files the merge would bring in. A retired/parked/paused member is
+            // idle; READY is idle too.
+            if lifecycle == "ACTIVE" && phase != "READY" {
+                return Err((
+                    1,
+                    format!(
+                        "intervene: instance {resolved} is in the middle of a turn ({phase}); merge when it is \
+                         idle — wait for it, pause it (`instances pause --id {resolved}`), or cancel its task"
+                    ),
+                ));
+            }
+            let state_root = options.socket.parent().unwrap_or(Path::new(".")).to_path_buf();
+            merge_member(&state_root, &client.session_workspace, &resolved).map(|merge| {
+                json!({
+                    "session_id": session["session_id"], "state_root": session["state_root"],
+                    "instance_id": resolved, "phase": phase, "lifecycle": lifecycle,
+                    "branch": merge["branch"], "project": merge["project"], "merged": merge["merged"],
+                    "output": merge["output"],
+                })
+            })
+        }
     }
 }
 
@@ -151,6 +186,104 @@ fn connect(socket: &Path) -> Result<Client, (i32, String)> {
             ),
         )
     })
+}
+
+/// Bring one member's branch into the session's working tree (D-252).
+///
+/// The member's record (`<state root>/instances/<id>/workspace.json`, written when the instance was prepared,
+/// D-76) is the only place the branch name lives besides `git worktree list`, so the verb reads it rather than
+/// guessing. Four refusals, each naming what it found: not a worktree member; the branch is gone; the checkout
+/// still holds uncommitted work (the merge would leave it behind — the module's "never ignored silently" rule);
+/// and a merge that ends in conflicts (git's own state is kept, and the caller is told to resolve or abort).
+fn merge_member(state_root: &Path, project: &str, id: &str) -> Result<Json, (i32, String)> {
+    use teamagents_core::models::WorkspacePolicy;
+    let member_dir = state_root.join("instances").join(id);
+    let record = crate::workspace::load(&member_dir).ok_or_else(|| {
+        (
+            2,
+            format!(
+                "instances merge: {id} has no workspace of its own in {} — the session's leader works in the \
+                 session's own tree and only a member spawned with `workspace = \"git_worktree\"` has a branch, \
+                 so there is no branch to merge",
+                member_dir.display()
+            ),
+        )
+    })?;
+    let Some(branch) = record.branch.clone().filter(|branch| !branch.is_empty()) else {
+        let policy = match record.policy {
+            WorkspacePolicy::Shared => "shared",
+            WorkspacePolicy::Isolated => "isolated",
+            WorkspacePolicy::GitWorktree => "git worktree (with no branch recorded)",
+        };
+        return Err((
+            2,
+            format!(
+                "instances merge: {id} works in the {policy} policy, which has no branch to merge — only a member \
+                 spawned with `workspace = \"git_worktree\"` has one"
+            ),
+        ));
+    };
+    let project = PathBuf::from(project);
+    if !crate::workspace::is_git_repo(&project) {
+        return Err((
+            2,
+            format!("instances merge: the session workspace {} is not a git repository", project.display()),
+        ));
+    }
+    if !crate::workspace::branch_exists(&project, &branch) {
+        return Err((
+            1,
+            format!(
+                "instances merge: branch {branch} is gone (deleted or renamed); `git -C {} branch --list` shows \
+                 what is there",
+                project.display()
+            ),
+        ));
+    }
+    // The checkout is where the member's *uncommitted* work lives: merging past it would leave that work behind,
+    // which the workspace module refuses to do silently (the same rule retirement applies to deletion).
+    if record.policy == WorkspacePolicy::GitWorktree && record.path.is_dir() {
+        match crate::workspace::worktree_is_dirty(&record.path) {
+            Ok(false) => {}
+            Ok(true) => {
+                return Err((
+                    1,
+                    format!(
+                        "instances merge: the member's checkout {} has uncommitted changes; the merge would leave \
+                         them behind — commit or stash them there first (nothing in a member's directory is dropped \
+                         silently)",
+                        record.path.display()
+                    ),
+                ))
+            }
+            Err(error) => {
+                return Err((1, format!("instances merge: cannot read {}: {error}", record.path.display())));
+            }
+        }
+    }
+    let message = format!("merge {branch} (member {id}, merged by the user)");
+    let (merged, output) = crate::workspace::merge_branch(&project, &branch, Some(&message));
+    if !merged && output.contains("CONFLICT") {
+        return Err((
+            1,
+            format!(
+                "instances merge: {branch} conflicts with the session's tree — git left the merge in progress in \
+                 {} ({output}); resolve it there and commit, or `git -C {} merge --abort`; the member's branch is \
+                 untouched either way",
+                project.display(),
+                project.display()
+            ),
+        ));
+    }
+    if !merged {
+        return Err((1, format!("instances merge: git refused to merge {branch}: {output}")));
+    }
+    Ok(json!({
+        "branch": branch,
+        "project": project.to_string_lossy(),
+        "merged": true,
+        "output": if output.is_empty() { "merged".to_string() } else { output },
+    }))
 }
 
 // ------------------------------------------------------------------ rendering --
@@ -200,6 +333,14 @@ fn print_report(options: &InterventionOptions, report: &Json) {
                     task["goal_id"].as_str().unwrap_or("")
                 );
             }
+        }
+        InterventionCommand::Merge { .. } => {
+            println!(
+                "merged {} into {} — {}",
+                report["branch"].as_str().unwrap_or(""),
+                report["project"].as_str().unwrap_or(""),
+                report["output"].as_str().unwrap_or("")
+            );
         }
         InterventionCommand::Pause { .. }
         | InterventionCommand::Resume { .. }
