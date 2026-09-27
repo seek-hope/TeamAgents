@@ -53,6 +53,10 @@ audits — each one a claim the tree makes about itself, each with the decision 
   below equal to the code's reads; `review/project_config_claim.py` checks the one fact every document states —
   the project config is not read (D-133); `review/silent_skips.py` fails a test that returns from a capability
   guard without saying why (D-121).
+* **the config surface, both directions**: `review/config_keys.py` reports a config field whose only readers
+  are the loader, the validator, the doctor surface and the argv parser — a key this build accepts and never
+  serves (the detector behind D-75 and D-102, in hygiene since D-193) — and fails when the shipped examples or
+  the `toml` blocks of the three user-facing documents name a key the loader does not accept, or one it refuses.
 * **the build and its evidence**: `review/build_references.py` fails a script a `Makefile` target or a
   workflow runs that does not exist or that git does not carry — how a new audit stays untracked through a
   `git commit -a` (D-179); `review/eval_manifests.py` holds the frozen evaluation manifests against the tree

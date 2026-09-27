@@ -28,6 +28,17 @@ CONFIG_STRUCTS = ("UserConfig", "ModelProfile", "ToolBinding", "Retention", "Hoo
 # declaration, parsing/merging/validation, the doctor surface and the argv parser: none of them *use* a key
 PLUMBING = {"core/src/models.rs", "engine/src/config.rs", "engine/src/cli.rs", "engine/src/main.rs"}
 
+# Keys of the hand-read `[permissions]` table (`engine/src/config.rs::project_permissions` reads them itself and
+# refuses every other name, D-161). They are config keys a user may write, so the examples and the documents may
+# name them; when that table grows, this set grows with it.
+HAND_READ = {"permissions", "mode", "trust_project_tools"}
+
+# Keys the loader *refuses*: naming one in an example or a user-facing document sends a user into an error, so
+# that is a finding even though the key is declared (D-75's `codex_profile` is the shape).
+REFUSED_AT_LOAD = {
+    "codex_profile": "D-75: an external Codex profile is refused at load; configure the member directly",
+}
+
 # field -> why it is allowed to have no read site
 KNOWN_UNSERVED = {
     "codex_profile": "D-75: refused at load — an external Codex profile is not part of this release",
@@ -63,6 +74,51 @@ def config_fields() -> list[str]:
     return fields
 
 
+def named_keys(text: str) -> set[str]:
+    """The config keys and section names a TOML-ish text shows, commented lines included.
+
+    One name per line — the first key — because the value may be an inline table whose inner names
+    (`generation_options = { reasoning_effort = "max" }`) are the provider's own options, not config keys. A
+    section contributes its head (`[models.leader_main]` → `models`, `[[checks]]` → `checks`), since everything
+    after the first dot is a user-chosen name.
+    """
+    found = set()
+    for line in text.splitlines():
+        section = re.match(r"\s*(?:#\s*)?\[\[?([a-z_][a-z0-9_.]*)\]?\]", line)
+        if section:
+            found.add(section.group(1).split(".")[0])
+            continue
+        key = re.match(r"\s*(?:#\s*)?([a-z_][a-z0-9_]*)\s*=", line)
+        if key:
+            found.add(key.group(1))
+    return found
+
+
+DOCS = ["README.md", "docs/USER-GUIDE.md", "docs/INSTALL.md"]
+TOML_BLOCK = re.compile(r"```toml\n(.*?)```", re.S)
+
+
+def keys_named_to_a_user() -> dict[str, set[str]]:
+    """`{file: names}` for the surfaces that hand a user config text to copy: the shipped examples and the
+    `toml` blocks of the three user-facing documents.
+
+    A gate for the *other* direction from the rest of this audit: the fields above are what the code accepts, and
+    this is what the documentation promises is accepted. A key that was renamed or removed reaches a user as a
+    load error the first time they paste the snippet (D-193).
+    """
+    out = {}
+    for path in sorted((REPO / "examples").glob("*.toml")):
+        out[str(path.relative_to(REPO))] = named_keys(path.read_text())
+    for name in DOCS:
+        path = REPO / name
+        names: set[str] = set()
+        for block in TOML_BLOCK.findall(path.read_text()):
+            names |= named_keys(block)
+        if names:
+            out[name] = names
+    return out
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--list-known", action="store_true", help="also list the allowed unserved fields")
@@ -84,6 +140,21 @@ def main() -> int:
     print(f"{len(config_fields())} config fields scanned; {len(findings)} unserved, {len(allowed)} known")
     for field in findings:
         print(f"  unserved: {field} — accepts a value, no code outside the loader/doctor reads it")
+    known = set(config_fields()) | HAND_READ
+    named = keys_named_to_a_user()
+    checked = 0
+    for name, names in named.items():
+        for key in sorted(names):
+            checked += 1
+            if key in REFUSED_AT_LOAD:
+                print(f"  {name}: names `{key}`, which the loader refuses ({REFUSED_AT_LOAD[key]})")
+                findings.append(key)
+            elif key not in known:
+                print(f"  {name}: names `{key}`, which is not a config key this build accepts — a user "
+                      "copying it would meet a load error")
+                findings.append(key)
+    print(f"{checked} key mention(s) across {len(named)} user-facing surface(s) "
+          f"({', '.join(sorted(named))})")
     if args.list_known:
         for field in allowed:
             print(f"  known: {field} ({KNOWN_UNSERVED[field]})")

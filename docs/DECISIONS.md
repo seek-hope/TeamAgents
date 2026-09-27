@@ -18,6 +18,39 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-193 The config-key detector was outside the gate, and only looked one way (2026-09-27)
+
+`review/config_keys.py` is the detector behind four real findings — the three keys D-75 made to work, refuse or
+report (`[permissions] mode`, `[retention]`, `models.*.codex_profile`) and D-102's `instruction_files` — and no
+make target ran it: the hygiene step list had never included it, so that class was guarded by whoever remembered
+to type the command. Measured 2026-09-27: among the root-level audit scripts only `config_keys.py`, the host
+census (`host_cleanup.py`, a machine reading), the network install check and the runner-cost meter stay outside
+the gate — and the first of those is the one whose class produced four findings. D-183 found the identical shape
+for the SQLite-version check one turn earlier, which is what made me look.
+
+**It is in `make hygiene` now**, and while it moved it gained the direction it lacked: *named to a user*. The
+audit already answered "does the code serve this key?"; it now also answers "does the documentation promise a
+key the code accepts?" by reading the shipped `examples/*.toml` and the `toml` blocks of `README.md`,
+`docs/USER-GUIDE.md` and `docs/INSTALL.md` — the surfaces a user copies from — and failing when one names a key
+the loader does not accept (a renamed or removed key reaches a user as a load error the first time they paste
+the snippet) or one it refuses (`codex_profile`, D-75). Two lists keep it honest: the hand-read
+`[permissions]` table's keys (`project_permissions` reads `mode` and `trust_project_tools` itself and refuses
+every other name, D-161) count as accepted, and `REFUSED_AT_LOAD` names the refusals — each with its reason,
+and the docstring says both lists are maintained with the code.
+
+**Measured** (2026-09-27): the audit reports "45 config fields scanned; 0 unserved, 6 known" and "68 key
+mention(s) across 3 user-facing surface(s) (docs/USER-GUIDE.md, examples/config.minimal.toml,
+examples/config.toml)" — the examples and the guide are clean today, which is what a gate is for: the
+`[permissions]` keys were invisible to the old check, and the documentation half did not exist at all.
+Controls, each reverted: `# legacy_history_days = 7` in `examples/config.minimal.toml` fails with "names
+`legacy_history_days`, which is not a config key this build accepts"; `# stale_key_from_an_older_release = 1` in
+a `toml` block of the user guide fails for that file; `codex_profile = "work"` in the example fails with "names
+`codex_profile`, which the loader refuses (D-75: …)".
+
+The D-184 audit did its job on this change too: adding the script to the recipe made `make hygiene` fail with
+"docs/DEVELOPMENT.md does not name `review/config_keys.py`, which `make hygiene` runs", so that page gained its
+line before the commit — the catalogue-of-the-audits checking the audit that was missing from the catalogue.
+
 ## D-192 The retention rule is modeled before it is destructive (2026-09-27)
 
 D-75 left `[retention]` as the one config surface that is *accepted and reported as not applied*, and it named
