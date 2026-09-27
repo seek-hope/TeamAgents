@@ -18,6 +18,43 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-213 The model's own names were cited unchecked (2026-09-27)
+
+`verification/tla/` is cited across the documents — `MC_compress.cfg`, `tla/V2Jobs.tla`, and properties by module
+and name (`V2Control::NoReceiptAcrossEpochs`) — and `review/citations.py` resolved none of it: its path suffixes
+lacked `.tla`/`.cfg`, its basename rule knew only `.rs`, and its qualified-name rule required a lowercase start,
+which no TLA+ module name has. Measured: 123 distinct model-file citations and 13 distinct `V2X::member`
+citations, every one of them unchecked.
+
+**Guarded**: a cited model file must exist by path or by basename (the way a `.rs` file must), and a
+`` `V2Name::member` `` citation is resolved only when a `verification/tla/<module>.tla` of that name exists — in which case the
+member must be defined there, with or without parameters (`FailRequest(i) ==` is an action, and citing it is
+legitimate).
+
+**The rule had to be module-scoped, and that is this entry's lesson**: the first draft resolved *any* capitalised
+`::` citation, which flagged `V2Toolkit::new` — and `V2Toolkit` is real, declared by `engine/src/tools.rs`, whose
+own doc comments cite it that way. This tree has Rust types whose names look like TLA+ modules, so a capitalised
+`::` citation is no evidence of a model citation; only a name with a `.tla` behind it is. The near-miss is why the
+ceiling reads as it does.
+
+**Measured**: 597 citations checked (up from 445 before the extension), 0 unexplained, 23 recorded as removed. The
+three new notes are records whose marker sat off the citation's line: the two configurations the fix-notes ledger
+names by their pre-rename names (`MC_wait_contract.cfg`, `MC_task_contract.cfg`) now say "renamed since" beside
+them, and the verification entry's control-probe path says it was created for the control and deleted after it.
+Controls: a `V2Control::NoSuchInvariant` in a copy of the acceptance ledger — a name that does not exist — is
+reported as undefined in the module,
+and `MC_ghost_control.cfg` as a file that does not exist. The registry row it belongs to also carried stale numbers
+— this turn's other small correction: 389 commands and 20 targets became 418 and 22 (19 declared), measured, not
+recalled.
+
+It composes with D-212: a sentence that leans on a *marked* claim now leans on something a configuration checks,
+because D-212 requires every marked name to be listed by a configuration that runs its module.
+
+Ceiling: a citation of a module that does not exist at all is indistinguishable from a Rust type of the same shape
+(hence the module-scoped rule), so a renamed *module* is caught only once its `.tla` is gone and the citation's
+shape changes; "renamed" now counts as a removal record for a citation, which is a note rather than a check; and
+the member check asks whether the module defines the name, not whether a configuration lists it.
+
 ## D-212 The checked set was not held against the modules' own claims (2026-09-27)
 
 Every module in `verification/tla/` marks the section where its invariants and properties live (`\* ---- invariants --`,
@@ -934,8 +971,8 @@ Losing a `verify-model*` target fails the audit instead of passing on an empty s
 **Measured** (2026-09-27): 22 configurations and 10 modules are driven by 4 targets, 22 configurations on disk,
 all named and described, and the report's "all **11** configurations" / "all **10** negative controls" agree
 with the lists, as does its quoted Kani count (3 harnesses, printed as notes). Controls, each reverted: a new
-`verification/tla/MC_orphan_probe.cfg` is
-reported as material nothing checks *and* as undescribed; deleting one pair from the counterexample list
+`verification/tla/MC_orphan_probe.cfg` (created for that control and deleted
+after it) is reported as material nothing checks *and* as undescribed; deleting one pair from the counterexample list
 reports "`verify-model-counterexamples` drives 9" against the report's **10** and the now-orphaned
 configuration; renaming a spec in a copy of the Makefile reports the missing file and the module that is no
 longer checked; an extra `#[kani::proof]` function in the harness crate reports "quotes 3 verified Kani

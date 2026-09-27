@@ -57,6 +57,16 @@ finding about a made-up `make deploy` help line. A line that mentions `.PHONY` i
 rather than telling the reader to run something, so `.PHONY` on the line makes it a note too (a record, the way
 "deleted" does).
 
+**D-213 added the model's own names.** `verification/tla/` is cited all over the documents — `MC_compress.cfg`,
+`tla/V2Jobs.tla`, and properties by module and name (`V2Control::NoReceiptAcrossEpochs`) — and none of it was
+resolved: the path rule's suffixes did not include `.tla`/`.cfg`, the basename rule knew only `.rs`, and the
+qualified-name rule required a lowercase start, which no TLA+ module name has. A cited model file must now exist
+(by path or by basename, like a `.rs` file), and a `` `V2Name::member` `` citation is resolved *only* when
+`verification/tla/V2Name.tla` exists — because the tree has Rust types whose names look the same (`V2Toolkit::new`
+is `engine/src/tools.rs`'s own struct, and its doc comments cite it that way), so a capitalised `::` citation is
+not evidence of a model citation. This is also what makes a sentence that leans on a *marked* claim a sentence
+about something checked: D-212 requires every marked name to be listed by a configuration that runs its module.
+
 Ceiling: only the two shapes a reader can paste are read (an inline code span whose content is a `make` command,
 and a fenced-block line that begins with one, an optional `$ ` prompt stripped), so a command in bare prose is not
 seen; the `.PHONY` list is the universe, so a documented target that exists as a recipe but is not in `.PHONY` is
@@ -77,7 +87,7 @@ from build_references import phony_targets  # noqa: E402
 
 EXCLUDED = ("review/tmp/", "review/eval/")
 PATH_PREFIXES = ("docs/", "engine/", "tui/", "core/", "review/", "verification/", "examples/")
-PATH_SUFFIXES = (".rs", ".py", ".sh", ".toml", ".md", ".json", ".jsonl")
+PATH_SUFFIXES = (".rs", ".py", ".sh", ".toml", ".md", ".json", ".jsonl", ".tla", ".cfg")
 # an inline markdown link: [label](target), optionally with a title, and never inside a code span or fence
 LINK = re.compile(r"\[([^\]]*)\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 FENCE = re.compile(r"^\s*(```|~~~)")
@@ -87,12 +97,14 @@ MAKE_CMD = re.compile(r"^make\s+([A-Za-z][A-Za-z0-9-]*)")
 # a line that mentions `.PHONY` is discussing the Makefile's declarations, not telling the reader to run a command
 DECLARATION_TALK = ".phony"
 QUALIFIED = re.compile(r"`([a-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)+)`")
+# a model citation: a module name that has a `verification/tla/<name>.tla`, and a member of it
+TLA_CITE = re.compile(r"`(V2[A-Za-z0-9_]*)::([A-Za-z_][A-Za-z0-9_]*)`")
 PATH_RE = re.compile(r"`([A-Za-z0-9_./-]+(?:" + "|".join(re.escape(s) for s in PATH_SUFFIXES) + r"))`")
-RS_BASENAME = re.compile(r"`([A-Za-z0-9_-]+\.rs)`")
+RS_BASENAME = re.compile(r"`([A-Za-z0-9_-]+\.(?:rs|tla|cfg))`")
 ITEM_RE = re.compile(r"\b(?:fn|const|static|struct|enum|type|trait|mod)\s+([A-Za-z_][A-Za-z0-9_]*)")
 TEST_RE = re.compile(r"#\[(?:tokio::)?test\]\s*(?:#\[[^\]]*\]\s*)*fn\s+([A-Za-z_][A-Za-z0-9_]*)")
 # a citation that says the thing is gone is a record of a removal, not a broken reference
-GONE_MARKERS = ("deleted", "removed", "gone", "dropped", "no longer exists", "obsolete", "pre-v2", "legacy",
+GONE_MARKERS = ("deleted", "removed", "renamed", "gone", "dropped", "no longer exists", "obsolete", "pre-v2", "legacy",
                 "does not exist", "do not exist", "doesn't exist", "never existed", "nonexistent",
                 "no such file", "404")
 
@@ -101,6 +113,14 @@ def tracked():
     out = subprocess.run(["git", "ls-files", "--cached", "--others", "--exclude-standard"],
                          cwd=REPO, capture_output=True, text=True, check=True).stdout
     return [path for path in out.split("\n") if path]
+
+
+def tla_members() -> dict:
+    """`{module: its text}` for every `verification/tla/V2*.tla`: what a `V2Module::member` citation resolves in."""
+    out = {}
+    for path in (REPO / "verification" / "tla").glob("V2*.tla"):
+        out[path.stem] = path.read_text(errors="replace")
+    return out
 
 
 def universe(files):
@@ -132,7 +152,7 @@ def table_header(line_number, lines):
     return header if separator.lstrip().startswith("|") and set(separator.strip()) <= set("|-: ") else ""
 
 
-def scan(name, lines, items, tests, basenames, paths):
+def scan(name, lines, items, tests, basenames, paths, modules):
     checked, findings, notes = 0, [], []
     for number, line in enumerate(lines, start=1):
         context = (line + " " + table_header(number - 1, lines)).lower()
@@ -144,6 +164,15 @@ def scan(name, lines, items, tests, basenames, paths):
             if last in tests or last in items or last + ".rs" in basenames:
                 continue
             (notes if gone else findings).append(f"{name}:{number}: `{chain}` names nothing in the tree")
+        for match in TLA_CITE.finditer(line):
+            module, member = match.groups()
+            if module not in modules:
+                continue          # a Rust type that looks like a module name, not a model citation
+            checked += 1
+            # a definition, with or without parameters (`FailRequest(i) ==` is an action)
+            if not re.search(rf"^{re.escape(member)}\s*(?:\([^)]*\))?\s*==", modules[module], re.M):
+                (notes if gone else findings).append(
+                    f"{name}:{number}: `{module}::{member}` is not defined in verification/tla/{module}.tla")
         for match in PATH_RE.finditer(line):
             path = match.group(1)
             if not path.startswith(PATH_PREFIXES) or path in paths:
@@ -237,13 +266,14 @@ def main():
     items, tests, basenames = universe(files)
     paths = set(files)
     declared = set(phony_targets((REPO / "Makefile").read_text(errors="replace")))
+    modules = tla_members()
     checked, links, made = 0, 0, 0
     findings, notes = [], []
     for name in files:
         if not name.endswith((".md", ".rs")) or name.startswith(EXCLUDED):
             continue
         text = (REPO / name).read_text(errors="replace")
-        seen, found, noted = scan(name, text.split("\n"), items, tests, basenames, paths)
+        seen, found, noted = scan(name, text.split("\n"), items, tests, basenames, paths, modules)
         checked += seen
         findings += found
         notes += noted

@@ -11,7 +11,7 @@ Re-run commands: `make verify-model-all` (exhaustive configurations for the modu
 ## 1. V-W1: a wait's tool_call was not answered on the two non-drain exits
 
 - **Property**: `ResolvedWaitIsAnswered` (before the fix: `ResolvedWaitAnswersItsCall` in the
-  expected-counterexample configuration `MC_wait_contract.cfg`).
+  expected-counterexample configuration `MC_wait_contract.cfg`, renamed since to `MC_wait.cfg`).
 - **Spec counterexample** (re-runnable before the fix): `Error: Invariant ResolvedWaitAnswersItsCall is
   violated.`, with the trace `ArmWait(PENDING)` → `Supersede` → `CANCELLED` and `answers = 0`.
 - **Code probe** (before the fix): `cargo test --offline --manifest-path core/Cargo.toml --lib
@@ -35,7 +35,8 @@ Re-run commands: `make verify-model-all` (exhaustive configurations for the modu
 ## 2. V-G1: a settled goal still took new work billed to it
 
 - **Properties**: `NoStaleActiveGoal`, `RegisteredWorkNeedsAnActiveGoal`, `RequestsResolveToActiveGoals`
-  (before the fix: the expected-counterexample configuration `MC_task_contract.cfg`).
+  (before the fix: the expected-counterexample configuration `MC_task_contract.cfg`, renamed since to
+  `MC_task.cfg`).
 - **Spec counterexamples** (re-runnable before the fix): `RegisteredWorkNeedsAnActiveGoal is violated`
   (a task delegated before its goal existed) and `ClosedGoalTakesNoNewOperation is violated` (a settled goal
   still opening a new operation).
