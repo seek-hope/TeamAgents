@@ -7,7 +7,7 @@ model probe sets and the three formal gates).
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 102 / engine 269 / tui 35 test targets) and `make pty` passes; both are
+`make check` is green (core 102 / engine 270 / tui 35 test targets) and `make pty` passes; both are
 preconditions for every item below. `make check` includes `make language-check`, which fails on non-English
 characters outside the two documented exceptions (`README.zh-CN.md` and the frozen material under
 `review/eval`).
@@ -216,12 +216,7 @@ amended (D-49/D-50).
   state root (A33) means there is no archived-session set to walk, so the key is accepted, reported as not
   applied by `doctor`, and becomes meaningful with multi-session — its own queue item.
 
-- **Artifact collection runs when a driver boots, and nowhere else.** DESIGN §4.3 says collection is
-  "scheduled separately" without naming the schedule, and D-191 implemented the mechanism — claim an
-  unreferenced artifact in one transaction, delete its bytes outside it, collect the row — at a driver's
-  boot. A state root whose last driver never boots again therefore keeps its `DELETING` rows and their
-  bytes, which the `doctor` artifact row states. A cadence — an interval, or a maintenance verb to run on
-  demand — is the user's call; the rule it must obey is the one D-192 modeled for retention, its sibling.
+- **The collection *cadence* is delivered (D-253); what remains open is the *release policy*, and the measurement that makes it a question.** DESIGN §4.4 schedules artifact collection and history retention "separately" and protects "live references and evaluation evidence"; D-191 implemented the mechanism — claim an unreferenced object in one transaction, delete its bytes outside it, collect the row — at a driver's boot, so the gap recorded here said a state root "whose last driver never boots again therefore keeps its `DELETING` rows and their bytes" and that "a cadence — an interval, or a maintenance verb to run on demand — is the user's call". **Delivered**: `teamagents artifacts [list|gc]` (credential-free probe `python3 review/dogfood/artifacts.py`, in `make probe-offline`; deterministic half `cli::artifacts_census_and_gc_free_what_nothing_references`). `list` is the census the user could not get before — each artifact's kind, size, completeness, the fact that owns it and whether its bytes are really on disk — and `gc` runs exactly the two commands a boot runs (`artifact_gc_claim` then `artifact_collect`, with the byte removal between them, outside any transaction), reporting what it claimed, freed and skipped. **It takes §6.1's coordinator lock itself**, so a maintenance pass and a driver can never write together: beside a live session it refuses with the coordinator named and the lever to stop it (`teamagents daemon --stop`, D-248 — whose next boot sweeps anyway). **And the probe measures why `gc` then has nothing to do**: every artifact a real session stages carries an `owner` (`driver.rs`: a model response's request, a tool output's operation), nothing in the tree ever clears it, and the claim's reference clauses ask for `owner_ref IS NULL` — so a scripted session's 300 KB tool output left **3 LIVE artifacts, 0 claimable**, the sweep reported `collected: []` and the catalog bytes did not move (3 of 3 still on disk). The model says the same thing structurally: in `V2Artifact.tla` a LIVE artifact with no holder exists only under the counterfactual `GcIgnoresHolders`, whose control is what keeps the claim refutable. So the open question is a **policy**, not a mechanism: should artifact bytes expire with the retention window the user already configures (`[retention] history_days` — §9 calls them "ordinary history", and D-245 sweeps events under exactly that rule and the `EVIDENCE` guard), or under a knob of their own? **Needs the user's word**; until then `gc` is the recovery half (a `DELETING` row a crash left half-done) plus the census, and the bytes stay.
 
 - **A settled goal has no product surface to open a new one** (found while auditing the authority surface,
   2026-09-25; verified by `engine/tests/v2_supervisor.rs::a_settled_goal_leaves_a_later_delegation_without_an_active_goal`):

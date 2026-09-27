@@ -4,6 +4,7 @@
 //! session daemon plus its headless client (`daemon`/`exec`).
 
 pub mod approvals;
+pub mod artifacts;
 pub mod authority;
 pub mod daemon;
 pub mod driver;

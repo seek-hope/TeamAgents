@@ -57,6 +57,7 @@ OFFLINE = [
     ("daemon_stop.py", [], "`daemon --stop` stops the session by its socket, and the process really goes (D-248)"),
     ("stream_json.py", [], "`exec --stream-json` streams the events while the run waits, then the report (D-249)"),
     ("runners.py", [], "`runners` lists a state root's leftovers, retires settled runners (D-250) and stops a settled command's service group (D-251)"),
+    ("artifacts.py", [], "the artifact census, the on-demand sweep and the lock it respects (D-253)"),
 ]
 
 # The set that takes a model. Each probe is the live half of an acceptance item or a decision; `--state-dir`

@@ -247,7 +247,7 @@ fn parse_args() -> Args {
                 i += 1;
             }
             "serve" | "init" | "doctor" | "validate" | "sessions" | "version" | "exec" | "authority" | "approvals"
-            | "instances" | "tasks" | "runners" => {
+            | "instances" | "tasks" | "runners" | "artifacts" => {
                 if args.command.is_some() {
                     reject("two entry points were given: pick one (teamagents --help lists them)");
                 }
@@ -269,7 +269,7 @@ fn parse_args() -> Args {
             "--json"
                 if matches!(
                     args.command.as_deref(),
-                    Some("exec" | "authority" | "approvals" | "instances" | "tasks" | "runners")
+                    Some("exec" | "authority" | "approvals" | "instances" | "tasks" | "runners" | "artifacts")
                 ) =>
             {
                 if args.exec_json {
@@ -785,6 +785,24 @@ fn run_runners(args: &Args) -> i32 {
     })
 }
 
+/// `teamagents artifacts`: the census and the on-demand half of §4.3's collection (D-253).
+///
+/// Deliberately not a client of the running session: the root that needs collecting is the one whose last
+/// driver never boots again. `gc` takes §6.1's coordinator lock itself, so it refuses while a session is live.
+fn run_artifacts(args: &Args) -> i32 {
+    use teamagents_engine::v2::artifacts::{ArtifactsCommand, ArtifactsOptions};
+    let state_root = args.state_root.clone().map(PathBuf::from).unwrap_or_else(teamagents_engine::v2_root);
+    let command = match args.positional.as_deref().unwrap_or("list") {
+        "list" => ArtifactsCommand::List,
+        "gc" => ArtifactsCommand::Gc,
+        other => {
+            eprintln!("artifacts: unknown command {other:?}; use `teamagents artifacts [list]` or `artifacts gc`");
+            return 2;
+        }
+    };
+    teamagents_engine::v2::artifacts::run(ArtifactsOptions { state_root, command, json_out: args.exec_json })
+}
+
 /// Say it out loud when `--full-auto` could not apply: the mode belongs to the
 /// session, which was started earlier (D-41). Silence here was how a documented
 /// flag became a no-op that nobody noticed.
@@ -1031,6 +1049,7 @@ fn main() {
         Some("instances") => run_instances(&args),
         Some("tasks") => run_tasks(&args),
         Some("runners") => run_runners(&args),
+        Some("artifacts") => run_artifacts(&args),
         _ if args.plain || args.resume.is_some() || args.team.is_some() => {
             eprintln!("--plain/--resume/--team are no longer supported; use teamagents (TUI) or teamagents exec.");
             2

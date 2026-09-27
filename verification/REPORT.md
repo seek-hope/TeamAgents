@@ -8,7 +8,7 @@ in [README.md](README.md); the fix ledger is in
 ## 0. Gate status (re-run 2026-09-28 at `a4bfb66a`)
 
 * `make verify-model-all` was re-run on this tree: all **23** configurations report `No error has been found`,
-  in 6 m 47 s (the newest eight are the retention rule, D-192, the task model's second task, D-218, the
+  in 6 m 56 s (the newest nine are the retention rule, D-192, the task model's second task, D-218, the
   approval window, D-225 — 14,225 states / 3,136 distinct — the config trust gate, D-244, which is
   exhaustive in 9 s (353,217 states generated / 25,376 distinct), and what a member's prompt carries, D-246,
   exhaustive in 2 s (612 states / 210 distinct); the retry budget, D-247, exhaustive in 1 s (63 states /
@@ -16,8 +16,10 @@ in [README.md](README.md); the fix ledger is in
   generated / 21,790 distinct, the same space the extended `MC_daemon.cfg` carries), and the *gap-free*
   `events(since)` rule the same daemon module claims, D-249 — `MC_daemon.cfg` is now exhaustive in 12 s
   (1,694,761 states generated / 135,750 distinct), including the transition property
-  `HandoversAreTheFullRange`, and the member's *workspace* — `MC_workspace.cfg` is exhaustive in 2 s (40 states
-  generated / 10 distinct) and carries the merge and retirement rules D-252 pinned). The largest is **`MC_task.cfg`** with 5,721,401 states generated / 606,904 distinct (its one-instance two-task sibling `MC_task_two.cfg` 612,802 / 56,074); `MC.cfg`
+  `HandoversAreTheFullRange`, the member's *workspace* — `MC_workspace.cfg` is exhaustive in 2 s (40 states
+  generated / 10 distinct) and carries the merge and retirement rules D-252 pinned — and the coordinator lock's
+  second kind of holder, D-253's maintenance pass (`MC_coordinator.cfg` is exhaustive in 2 s, 125 states
+  generated / 39 distinct)). The largest is **`MC_task.cfg`** with 5,721,401 states generated / 606,904 distinct (its one-instance two-task sibling `MC_task_two.cfg` 612,802 / 56,074); `MC.cfg`
   itself generates 84,877 / 18,384, and the smallest, `MC_store.cfg`, 48 / 13; the job handshake's
   `MC_jobs.cfg` generates 621 / 149 the inbox's `MC_inbox.cfg` 793 / 211 the write-failure latch's
   `MC_diskfull.cfg` 63 / 22 and the coordinator lock's `MC_coordinator.cfg` 51 / 16. Every count that predates this
@@ -25,7 +27,7 @@ in [README.md](README.md); the fix ledger is in
   reason these numbers describe the *material*, not a machine. (The line once called `MC.cfg` the largest and
   quoted `MC_task`'s numbers for it — a mis-attribution no gate looked at, found by re-running the target and
   reading its output per configuration, D-159.)
-* `make verify-model-counterexamples` was re-run: all **69** negative controls are refuted, each naming its
+* `make verify-model-counterexamples` was re-run: all **70** negative controls are refuted, each naming its
   property (`AuthorizedEffectsOnly`, `InputLandsAtTheBoundary`, `NoRequestAfterDeadline`, `NoTurnWithoutWork`
   twice, `SettlementFollowsATurnAfterTheLanding`, `NoForeignAdoption`, three temporal refutations, the
   four retention guards: `NoReferenceToEvictedFact`, `EvidenceIsNeverEvicted` and `OnlyOldFactsAreEvicted`
@@ -45,7 +47,8 @@ in [README.md](README.md); the fix ledger is in
   takes a command that is running away from its user — and the two D-251 added:
   `OnlyTheJobsOwnGroupIsSignalled` (the service stop never signals a group the kernel gave the same id to) and
   `NoLiveCommandWasSignalled`, and the three D-252 added: `UncommittedWorkIsNeverMerged`,
-  `NoMergeWhileATurnRuns` and `RetirementNeverBuriesWork`), in 5 m 7 s.
+  `NoMergeWhileATurnRuns` and `RetirementNeverBuriesWork`, and the one D-253 added, `SweepWaitsForTheSession`
+  — the maintenance pass taking the state root's lock beside a live session), in 5 m 17 s.
 * The wall clocks above are upper bounds, not machine-independent figures: they were measured while this
   machine carried a load average of about 140 on 20 cores (the standing host-cleanup item), and TLC is
   CPU-bound. The probe in A32 now records the same conditions next to its numbers for the same reason (D-188).

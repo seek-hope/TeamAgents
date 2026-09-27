@@ -20,6 +20,51 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-253 `artifacts [list|gc]`: the census, the on-demand sweep, and the measurement that reframed the gap (2026-09-27)
+
+ACCEPTANCE's known gap, verbatim: "A cadence — an interval, or a maintenance verb to run on demand — is the
+user's call; the rule it must obey is the one D-192 modeled for retention, its sibling." **Decided: the
+on-demand verb** (the interval is a policy, and the gap says so), plus the *census* that was missing.
+
+**What it is.** `teamagents artifacts [list]` prints one row per artifact of a state root — kind, size,
+completeness, the fact that owns it, the path, and **whether the bytes are really on disk** (`bytes_present`),
+which nothing reported before; `artifacts gc` runs exactly the two commands a boot runs — `artifact_gc_claim`
+(one transaction), then the byte removal *outside* any transaction, then `artifact_collect` — and reports what it
+claimed, freed and skipped (a deletion that fails leaves the row `DELETING`, which the next run retries: §4.3's
+"a failed deletion can be retried"). It is deliberately not a client of the session: the root that needs
+collecting is the one whose last driver never boots again.
+
+**The lock is the safety.** `gc` takes §6.1's coordinator lock itself (`jobs::state_lock`, with the same bounded
+wait for the fork window `V2Coordinator.tla` models (D-210)), so a maintenance pass and a driver can never write
+together; a live session's lock is answered with the coordinator named and the lever to stop it (`teamagents
+daemon --stop`, D-248), whose next boot sweeps anyway. `list` takes no lock (it reads, and the store is WAL).
+
+**Measured, and it reframes the gap.** `python3 review/dogfood/artifacts.py` (credential-free, in
+`make probe-offline`) runs a real session whose tool output is large enough to be published (300 KB): the census
+reports **3 artifacts / 300,670 bytes, all three with their bytes on disk and all three owned**
+(`d-req-…:0` for the tool output, `req-…` for the two model responses); with the session live `gc` is refused
+(`already has a coordinator`) and names `daemon --stop`; after the stop `gc` exits 0 with `collected: []` —
+because **nothing in this tree ever makes an artifact collectable**: both staging sites write an `owner_ref`
+(`driver.rs`: a model response's request, a tool output's operation), nothing clears it, and the claim asks for
+`owner_ref IS NULL`. `V2Artifact.tla` says the same structurally — a LIVE artifact with no holder exists there
+only under the counterfactual `GcIgnoresHolders`, whose control is what keeps the claim refutable — so the
+dormancy is *by design*, not a wiring slip. The probe asserts that shape (the catalog bytes do not move) rather
+than pretending the sweep collected something. The deterministic half is
+`cli::artifacts_census_and_gc_free_what_nothing_references`, which seeds the one state the collector exists for
+(a LIVE artifact with no owner, staged through the product's own commands, as a crash can leave) and measures the
+census, the lock refusal (a lock held in-process) and the collected row and bytes.
+
+**So the open item is a policy, not a mechanism**, and it is recorded in ACCEPTANCE's known gap as the user's
+question: should artifact bytes expire with the retention window the user already configures
+(`[retention] history_days` — §9 calls artifacts "ordinary history", and D-245 sweeps events under exactly that
+rule and the `EVIDENCE` guard), or under a knob of their own? Until it is answered, `gc` is the recovery half (a
+`DELETING` row a crash left half-done) plus the census.
+
+Ceiling: the verb is per state root (A33), like `runners`; it does not sweep a *live* session (that is the boot
+sweep's job, and its next boot does it), and it does not decide the release policy above. It also does not
+collect across sessions at once — the loop exists because `artifact_gc_claim` is session-scoped, and A33 means
+the loop runs once; the code keeps the general shape rather than assuming it.
+
 ## D-252 `instances merge`: a worktree member's branch, brought into the session's tree (2026-09-27)
 
 ACCEPTANCE's known gap: `workspace::merge_branch` and `workspace::member_worktrees` (deleted with this decision

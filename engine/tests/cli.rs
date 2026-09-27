@@ -2431,6 +2431,95 @@ fn a_daemon_stops_gracefully_on_sigterm() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// D-253: the artifact census and the on-demand half of §4.3's collection — the cadence §4.4 left at a driver's
+/// boot, so a state root whose last driver never boots again kept its DELETING rows and their bytes.
+///
+/// The test seeds the one state the collector exists for (a LIVE artifact nobody references) through the
+/// product's own commands — the state a crash can leave, not one the current staging paths produce — and then
+/// measures the three shapes: the census names the bytes and the missing owner, the sweep frees them, and the
+/// sweep refuses while a session holds §6.1's coordinator lock.
+#[test]
+fn artifacts_census_and_gc_free_what_nothing_references() {
+    use serde_json::json;
+    use teamagents_core::v2::{Command as ControlCommand, Control, Identity};
+    let root = Scratch::new("artifacts");
+    let (config_home, state) = (root.join("config"), root.join("state/teamagents/v2"));
+    std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
+    std::fs::create_dir_all(state.join("artifacts")).unwrap();
+    let bytes = state.join("artifacts/orphan.log");
+    std::fs::write(&bytes, "x".repeat(4096)).unwrap();
+    // staged without an owner, then published: LIVE and unreferenced — the collector's only candidate
+    let mut control = Control::open(&state.join("session.sqlite"), "s-main", true).expect("open the store");
+    for (id, method, params) in [
+        (
+            "t-stage",
+            "artifact_stage",
+            json!({"id": "orphan", "digest": "d", "size": 4096, "kind": "tool_output",
+                                            "owner_scope": "operation", "storage_ref": bytes.to_string_lossy(),
+                                            "owner_ref": null}),
+        ),
+        ("t-publish", "artifact_publish", json!({"id": "orphan"})),
+    ] {
+        control
+            .submit(ControlCommand { command_id: id.into(), method: method.into(), params }, Identity::System)
+            .unwrap_or_else(|error| panic!("{method}: {error}"));
+    }
+    drop(control);
+    let run = |args: Vec<String>| -> (Option<i32>, String, String) {
+        let output = Command::new(env!("CARGO_BIN_EXE_teamagents"))
+            .args(&args)
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("XDG_STATE_HOME", root.join("state"))
+            .output()
+            .expect("run teamagents");
+        (
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    };
+    let call = |verb: &str| {
+        run(vec![
+            "artifacts".into(),
+            verb.into(),
+            "--json".into(),
+            "--state-root".into(),
+            state.to_string_lossy().into_owned(),
+        ])
+    };
+    // the census: one artifact, its bytes present, no owner, and the size it claims
+    let (code, out, err) = call("list");
+    assert_eq!(code, Some(0), "{out}{err}");
+    let listed: serde_json::Value = serde_json::from_str(&out).expect("JSON report");
+    assert_eq!(listed["count"], json!(1), "{listed}");
+    assert_eq!(listed["bytes"], json!(4096), "{listed}");
+    assert_eq!(listed["artifacts"][0]["owner_ref"], json!(null), "{listed}");
+    assert_eq!(listed["artifacts"][0]["bytes_present"], json!(true), "{listed}");
+    // a live session owns the state root: the sweep refuses and names the levers
+    let held = teamagents_engine::jobs::state_lock(&state.join("coordinator.lock")).expect("take the lock");
+    let (code, out, err) = call("gc");
+    assert_eq!(code, Some(1), "{out}{err}");
+    assert!(err.contains("already has a coordinator"), "{err}");
+    assert!(err.contains("daemon --stop"), "the refusal names the stop lever (D-248): {err}");
+    drop(held);
+    // with the lock free the sweep collects it: the row and the bytes both go
+    let (code, out, err) = call("gc");
+    assert_eq!(code, Some(0), "{out}{err}");
+    let swept: serde_json::Value = serde_json::from_str(&out).expect("JSON report");
+    assert_eq!(swept["collected"], json!(["orphan"]), "{swept}");
+    assert_eq!(swept["freed_bytes"], json!(4096), "{swept}");
+    assert!(!bytes.exists(), "the bytes are gone");
+    let (_, out, _) = call("list");
+    let after: serde_json::Value = serde_json::from_str(&out).expect("JSON report");
+    assert_eq!(after["count"], json!(0), "{after}");
+    // and a root that never held a session says so instead of inventing a database
+    let (code, _, err) =
+        run(vec!["artifacts".into(), "--state-root".into(), root.join("nowhere").to_string_lossy().into_owned()]);
+    assert_eq!(code, Some(2), "{err}");
+    assert!(err.contains("never held a session"), "{err}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// D-248: the session's stop lever, which D-150 left to `ps` and a pid. `teamagents daemon --stop` addresses the
 /// daemon by the state root's socket — the socket *is* the identity, so there is no pid file, no stale-pid
 /// question and nothing to guess — asks it over the protocol, and waits for the socket to go. The three shapes

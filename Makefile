@@ -179,6 +179,7 @@ verify-model-counterexamples: verify-tools
 		MC_diskfull_park_silently.cfg:V2DiskFull.tla MC_diskfull_clear_anyway.cfg:V2DiskFull.tla \
 		MC_coordinator_report.cfg:V2Coordinator.tla MC_coordinator_inherit.cfg:V2Coordinator.tla \
 		MC_coordinator_shared.cfg:V2Coordinator.tla \
+		MC_coordinator_sweep_beside_a_session.cfg:V2Coordinator.tla \
 		MC_task_delegates_to_settled.cfg:V2Task.tla MC_task_bills_settled.cfg:V2Task.tla \
 		MC_task_unordered_dependency.cfg:V2Task.tla MC_task_terminate_leaves_tasks.cfg:V2Task.tla \
 		MC_compress_deletes_originals.cfg:V2Compress.tla MC_compress_lifts_coverage.cfg:V2Compress.tla \
