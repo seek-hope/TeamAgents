@@ -23,13 +23,13 @@ shape D-206 was committed in.
 
 ```bash
 make verify-model           # small control-plane configuration (seconds)
-make verify-model-all       # small configurations for all twelve modules (control plane, artifacts, waits,
+make verify-model-all       # small configurations for all thirteen modules (control plane, artifacts, waits,
                             # tasks, compression, daemon, required checks, authority, the user's surface,
-                            # session-store identity, retention, the job handshake)
+                            # session-store identity, retention, the job handshake, the inbox)
 make verify-model-counterexamples   # the negative controls (authority surface D-61, inbound boundary D-63,
                             # the retry boundary D-64/D-65, the runtime's own closing word D-71, the
                             # landing-attribution rule D-72, the store-identity guard D-87, the four retention
-                            # guards D-192 and the four job-handshake rules D-206):
+                            # guards D-192, the four job-handshake rules D-206 and the five inbox rules D-207):
                             # each must be *refuted*, or the property it targets proves nothing
 make verify-model-wide      # wide control-plane configuration (2 instances / 2 operations; tens to hundreds of
                             # millions of states, slow — the 2-instance run is what catches per-instance
@@ -55,6 +55,7 @@ repository and never enters `make check`. Java is required (this machine uses Op
 | `tla/V2Artifact.tla` + `tla/MC_artifact.cfg` | artifacts and GC: write bytes → STAGING row → reference and LIVE in one transaction → GC claim → the caller deletes the bytes → the row is collected (`artifact_collect`), with abandon for a STAGING orphan; the runtime's half runs at a driver's boot (D-191) |
 | `tla/V2Retention.tla` + `tla/MC_retention.cfg` | retention as DESIGN states it, *before* an implementation (D-75 recorded the keys as accepted-but-unapplied, D-192 models the rule): a fact may leave the database only when retention is switched on (`history_days` = 0 keeps the full history), it is at least that old, no live reference protects it and it is not evaluation evidence — with the interleavings that make the rule worth checking (a reference attaching, detaching, evidence being marked while days pass). The negative controls `tla/MC_retention_evicts_live.cfg`, `tla/MC_retention_evicts_evidence.cfg`, `tla/MC_retention_evicts_young.cfg` and `tla/MC_retention_runs_disabled.cfg` each forget one guard and must be refuted by `make verify-model-counterexamples`; it is safety only, because the design does not promise a cleanup ever runs |
 | `tla/V2Jobs.tla` + `tla/MC_jobs.cfg` | the job handshake and the recovery verdict (§6.2/§6.3, A10/A11; D-91/D-112/D-153): the journal's phases (READY, START_ACCEPTED, RUNNING, CANCEL_REQUESTED, terminal), the acceptance persisted *before* the spawn (`NoEffectBeforeAccept`, `EffectImpliesAcceptedStart`), a duplicate GO as a no-op (`AtMostOneExecutor`, reading the journal's own `starts` counter), CANCEL before the start as final (`LateGoIsRejected`), and the recovery read — one atomic snapshot of the journal and the effect — that says "did not run" only for a READY journal and records `unknown` for the START_ACCEPTED/RUNNING/CANCEL_REQUESTED band (`UnverifiableStartIsNeverGuessedNotRun`, `NotRunMeansNoEffect`, whose counterexample is the accept-after-spawn shape); `SettledRunnerLeaves` (under weak fairness of the shutdown step) is D-153's rule that a settled job's runner goes away rather than idling forever. The four negative controls `tla/MC_jobs_guess_notrun.cfg`, `tla/MC_jobs_double_go.cfg`, `tla/MC_jobs_late_go.cfg` and `tla/MC_jobs_spawn_first.cfg` each forget one rule — a missing pid read as "did not run", a duplicate GO starting a second command, a late GO after CANCELLED_BEFORE_START starting it anyway, and a command spawned before its acceptance was persisted (which is what makes a run invisible to recovery) — and must each be refuted by `make verify-model-counterexamples`. The model abstracts pid, start_ticks and boot_id into one "the recorded identity verifies" variable and assumes authenticated control requests; the deadline, the TERM→KILL escalation and the identity refusal are the runner's own tests and the live probes (`review/dogfood/job_identity.py`, `crash.py`, `unknown_outcome.py`, `cancel.py`) |
+| `tla/V2Inbox.tla` + `tla/MC_inbox.cfg` | the inbox and the application of an envelope (§5.3, A06, A24; D-63/D-72): an envelope is persisted as accepted, the recipient applies the lowest pending envelope of the current epoch **once** — the append carries the envelope id as its dedup key, so a replay appends nothing (`AtMostOncePerEnvelope`) — in sequence order (`LogIsIncreasing`), a stale-epoch envelope seals instead of leaking into the new epoch (`NoStaleApplication`), nothing accepted is ever silently dropped (`NoSilentLoss`), no send is accepted into a full inbox (`BoundedInbox`, the bound `queue_envelope` checks; a lost marker may legitimately leave more rows pending than the cap), and only the user or the instance itself drains (`DrainIsOwned`). Its five negative controls `tla/MC_inbox_no_dedup.cfg`, `tla/MC_inbox_drop_when_full.cfg`, `tla/MC_inbox_unbounded.cfg`, `tla/MC_inbox_stale_applied.cfg` and `tla/MC_inbox_foreign_drain.cfg` each forget one rule and must be refuted. The model is safety only (no fairness: whether a drain runs is the client's business) |
 | `tla/V2Wait.tla` + `tla/MC_wait.cfg` | waits/wakeups/timers/supersede: evaluate at registration → parked drain scan → answer in the same transaction when satisfied → cancel/supersede/re-arm |
 | `tla/V2Task.tla` + `tla/MC_task.cfg` | task lifecycle and goal settlement: delegation (dependencies must exist first, the goal must be ACTIVE) → start → settle/cancel → system parking → termination cascade; goal creation, request admission, open operations, settlement and detach |
 | `tla/V2Compress.tla` + `tla/MC_compress.cfg` | context compression (A20): open/submit/fail/cancelled by a closed epoch; summaries append at the tail, coverage only grows and originals are never deleted |
@@ -470,7 +471,16 @@ The proven `page_span(total, offset, limit) = min(limit, total - offset)` is the
 - Modelled: the control-plane state machine, artifacts and GC (A30), waits/wakeups/timers/supersede
   (A22/A23 and the RT-06 deduplication semantics), tasks/delegation/goal settlement (A02/A09), context
   compression (A20), the daemon protocol's command deduplication and snapshot watermark (A28), the
-  required-check rounds with repair/blocking (A16), and the job handshake with its recovery verdict (A10/A11).
+  required-check rounds with repair/blocking (A16), the job handshake with its recovery verdict (A10/A11), and
+  the inbox: the exactly-once application of an envelope, the sequence order, the bound, the stale-epoch seal and
+  the drain's identity check (§5.3, A06/A24).
+- The inbox model (`V2Inbox`) models one recipient's inbox over three envelopes and two epochs, identifies an
+  envelope id with its sequence number (arrivals are ordered), and models one application step per envelope, so
+  "at a safe boundary" is a step here and the driver's boundary machinery stays with `V2Control`. Senders and the
+  `kind` vocabulary are not modelled (every kind obeys the same bound and no-loss rule), and DESIGN's permission
+  for status notes to coalesce has no implementation to model. `CrashLosesMarker` is the window the committed
+  code closes with one transaction; the model keeps it because the dedup, not the caller's transaction
+  discipline, should be what makes a replay safe.
 - The job model (`V2Jobs`) abstracts the three identity fields (pid, `start_ticks`, `boot_id`) into one "the
   recorded identity verifies" variable, assumes the control requests are authenticated (the abstract socket name
   is derived from the job token, which is a transport property), and does not model the deadline, the TERM→KILL

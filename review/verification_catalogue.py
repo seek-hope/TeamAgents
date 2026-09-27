@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """The formal-verification material, against the targets that drive it and the report that counts it (D-185).
 
-`verification/tla/` holds twelve TLA+ modules and twenty-eight configurations; `verification/REPORT.md`
-states what runs ("all **13** configurations report `No error has been found`", "all **18** negative
+`verification/tla/` holds thirteen TLA+ modules and thirty-four configurations; `verification/REPORT.md`
+states what runs ("all **14** configurations report `No error has been found`", "all **23** negative
 controls are refuted") and every property is mapped to its spec in `verification/README.md`. What no audit looked at is
 whether the material and the Makefile still agree: a `.cfg` added without a line in a `verify-model*` target is
 verification material nothing runs, a target naming a `.cfg` or `.tla` that was renamed fails only when

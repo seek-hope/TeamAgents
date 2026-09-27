@@ -18,6 +18,42 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-207 The inbox had no model, and §5.3's rules were test-only (2026-09-27)
+
+§5.3 states rules with teeth — a message is reported accepted only once it is persisted; a recipient applies a
+context change **exactly once per envelope id**, and recovery may re-read pending work but never re-applies it; a
+stale-epoch envelope is sealed instead of leaking into the new epoch; the inbox is bounded and a full one refuses
+the send openly rather than dropping silently; and the drain belongs to the user or the instance itself. Their
+authorities were the tests (`submit_input_applies_context_once_per_envelope`), the drain path itself, and
+`V2Control` for the boundary half of A06 — its exactly-once half was test-only.
+`verification/tla/V2Inbox.tla` is the thirteenth module: the envelope ids *are* the sequence numbers (`arrivals
+ordered`), the application appends the envelope id as its dedup key — so a replay after a lost `APPLIED` marker
+appends nothing (`AtMostOncePerEnvelope`) — the lowest pending envelope of the current epoch applies in sequence
+order (`LogIsIncreasing`), a stale one seals (`NoStaleApplication`), nothing accepted is silently dropped
+(`NoSilentLoss`), no send is accepted into a full inbox (`BoundedInbox`), and only the user or the instance itself
+drains (`DrainIsOwned`). Its five negative controls each forget one rule and must be refuted.
+
+**Measured** (2026-09-27): 14 configurations report `No error has been found` in 4 m 2 s, the 23 negative controls
+are refuted in 1 m 51 s, `make verify-kani` still proves its 3 harnesses, and `MC_inbox.cfg` itself is 793 states /
+211 distinct. No run printed a `Warning:` (D-206's rule).
+
+**Two of the model's own traps were caught by TLC, not by reading**, and both are worth keeping:
+
+* `x' = x \/ cond` is a *disjunction* in TLA+ — `=` binds tighter than `\/` — so the action assigns nothing, and
+  TLC says "successor state is not completely specified" rather than checking a weaker model. Three actions were
+  written that way first; the repaired ones parenthesise the right-hand side.
+* the marker-loss window (`CrashLosesMarker`, the window the committed code closes with one transaction) can leave
+  more rows pending than the cap, so the bound is a property of the **decision at insert** — which is what
+  `queue_envelope` checks — not of the count. The first `BoundedInbox` failed on that legitimate state; the
+  repaired property is the one the code enforces, and the header says why.
+
+Ceiling: one recipient, three envelopes and two epochs; one application step per envelope, so "at a safe boundary"
+is a step here while the driver's boundary machinery stays with `V2Control` (`InputLandsAtTheBoundary`,
+`QueuedInputEntersTheContext`) and the tests; senders and the `kind` vocabulary are not modelled (every kind obeys
+the same bound and no-loss rule) and DESIGN's *permission* for status notifications to coalesce has no
+implementation to model (`coalesce` appears in no source file, so the model does not carry it); safety only, with
+no fairness assumption, because whether a drain runs at all is the client's business.
+
 ## D-206 The job handshake had no model, and the recipes could not see a broken one (2026-09-27)
 
 DESIGN's A10 and A11 are confirmed protocol properties — "at most one authorized executor; an unverifiable start

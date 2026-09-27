@@ -7,21 +7,21 @@ in [README.md](README.md); the fix ledger is in
 
 ## 0. Gate status (re-run 2026-09-27 at `f166d3ea`)
 
-* `make verify-model-all` was re-run on this tree: all **13** configurations report `No error has been found`,
-  in 3 m 56 s (the twelfth is the retention rule, D-192). The largest is **`MC_task.cfg`** with 5,721,401 states generated / 606,904 distinct; `MC.cfg`
+* `make verify-model-all` was re-run on this tree: all **14** configurations report `No error has been found`,
+  in 4 m 2 s (the twelfth is the retention rule, D-192). The largest is **`MC_task.cfg`** with 5,721,401 states generated / 606,904 distinct; `MC.cfg`
   itself generates 84,877 / 18,384, and the smallest, `MC_store.cfg`, 48 / 13; the job handshake's
-  `MC_jobs.cfg` generates 207 / 64. Every count is identical to the
+  `MC_jobs.cfg` generates 207 / 64 and the inbox's `MC_inbox.cfg` 793 / 211. Every count is identical to the
   previous run on the same tree — what a deterministic checker on unchanged inputs should print, and the
   reason these numbers describe the *material*, not a machine. (The line once called `MC.cfg` the largest and
   quoted `MC_task`'s numbers for it — a mis-attribution no gate looked at, found by re-running the target and
   reading its output per configuration, D-159.)
-* `make verify-model-counterexamples` was re-run: all **18** negative controls are refuted, each naming its
+* `make verify-model-counterexamples` was re-run: all **23** negative controls are refuted, each naming its
   property (`AuthorizedEffectsOnly`, `InputLandsAtTheBoundary`, `NoRequestAfterDeadline`, `NoTurnWithoutWork`
   twice, `SettlementFollowsATurnAfterTheLanding`, `NoForeignAdoption`, three temporal refutations, and the
   four retention guards: `NoReferenceToEvictedFact`, `EvidenceIsNeverEvicted` and `OnlyOldFactsAreEvicted`
-  twice), in 1 m 36 s.
+  twice), in 1 m 51 s.
 * The wall clocks above are upper bounds, not machine-independent figures: they were measured while this
-  machine carried a load average of about 200 on 20 cores (the standing host-cleanup item), and TLC is
+  machine carried a load average of about 170 on 20 cores (the standing host-cleanup item), and TLC is
   CPU-bound. The probe in A32 now records the same conditions next to its numbers for the same reason (D-188).
 * **The Kani layer was re-run on this tree** (2026-09-27; first re-run 2026-09-26, D-132): `make verify-kani`
   reports `Complete - 3 successfully verified harnesses, 0 failures, 3 total` in ~3 s with a cached build
@@ -59,15 +59,27 @@ in [README.md](README.md); the fix ledger is in
   refuting, with TLC reporting it only as a warning nothing grepped for — and the two targets now treat a
   `Warning:` as a failure.
 
+* **The inbox is modelled now** (2026-09-27, D-207): `V2Inbox.tla` is the thirteenth module — the envelope
+  persisted as accepted, the exactly-once application whose dedup key is the envelope id (so a replay after a lost
+  marker appends nothing), the sequence order, the stale-epoch seal, the bound that gives a full inbox its
+  backpressure, and the drain's identity check — with five negative controls that each forget one rule. It is
+  safety only, with no fairness assumption (whether a drain runs is the client's business), and `MC_inbox.cfg` is
+  793 states / 211 distinct. The model exposed one of its own traps while being written: `x' = x \/ cond` is a
+  *disjunction* in TLA+, not an assignment, and TLC says so statically ("successor state is not completely
+  specified") — the second time this campaign's modelling work found an audit-side defect rather than a
+  product-side one.
+
 ## 1. Summary of conclusions
 
 **What can be claimed**:
 
-- The safety properties of twelve surfaces (control plane, artifacts/GC, waits/wakeups,
+- The safety properties of thirteen surfaces (control plane, artifacts/GC, waits/wakeups,
   tasks/delegation/goal settlement, compression, the daemon protocol, the required checks, the authority
   layer, the user's authority surface, session-store identity and — added 2026-09-27, D-192 — the
   retention rule, which is a spec *before* its implementation: the code it describes does not exist yet — and,
-  added 2026-09-27, D-206, the job handshake with its recovery verdict)
+  added 2026-09-27, D-206, the job handshake with its recovery verdict, and — added 2026-09-27, D-207 — the
+  inbox: the exactly-once application, the sequence order, the bound, the stale-epoch seal and the drain's
+  identity check)
   hold under exhaustive TLC checking of the **abstract model**; liveness holds only under the explicitly
   stated weak fairness assumptions.
 - The same invariants are recomputed against the **real `core::v2::Control`** by the executable
@@ -385,9 +397,9 @@ alone**, and conversely formal coverage does not excuse an item from sample or r
 ## 6. Re-running and what would invalidate this
 
 ```bash
-make verify-model-all     # exhaustive configurations for the twelve surfaces (seconds to ~2 min;
+make verify-model-all     # exhaustive configurations for the thirteen surfaces (seconds to ~2 min;
                           # the task, grants and authority models are the slow ones)
-make verify-model-counterexamples  # the eighteen negative controls, each must be refuted
+make verify-model-counterexamples  # the twenty-three negative controls, each must be refuted
 make verify-model-wide    # wide control-plane configuration (~11 minutes / 275M states)
 make check                # fmt + clippy -D warnings + 23 suites (including the two code-level layers)
 make verify-kani          # Kani proofs for the paging arithmetic (~16 s; the toolchain is at ~/.cargo/bin)
