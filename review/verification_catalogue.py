@@ -51,6 +51,7 @@ and it cannot see a model whose abstraction drifted from the code it describes �
 spec-to-code test in `make check` is for.
 """
 import argparse
+import fnmatch
 import pathlib
 import re
 import subprocess
@@ -131,7 +132,8 @@ def main(argv) -> int:
     parser.add_argument("--report", default="verification/REPORT.md")
     parser.add_argument("--mapping", default="verification/README.md")
     args = parser.parse_args(argv)
-    recipes = target_recipes((REPO / args.makefile).read_text(encoding="utf-8"))
+    makefile_text = (REPO / args.makefile).read_text(encoding="utf-8")
+    recipes = target_recipes(makefile_text)
     drivers = {name: body for name, body in recipes.items() if name.startswith("verify-model")}
     report = (REPO / args.report).read_text(encoding="utf-8")
     mapping = (REPO / args.mapping).read_text(encoding="utf-8")
@@ -139,7 +141,11 @@ def main(argv) -> int:
     if not drivers:
         findings.append(f"no `verify-model*` target in {args.makefile}: this audit's rule has stopped applying")
     named_cfgs = sorted({cfg for body in drivers.values() for cfg in CFG.findall(body)})
-    named_specs = sorted({spec for body in drivers.values() for spec in SPEC.findall(body)})
+    # the modules the recipes name, *and* the ones the mapping blocks name: the mapping may live in a
+    # variable the recipes expand (D-215), so a recipe that reads it names no `.tla` at all
+    named_specs = sorted({spec + ".tla" for _, spec in re.findall(r"([A-Za-z0-9_.*|]+)\)\s*echo\s+(V2[A-Za-z0-9_]*)\.tla",
+                                                  makefile_text)}
+                        | {spec for body in drivers.values() for spec in SPEC.findall(body)})
     for cfg in named_cfgs:
         if not (REPO / TLA / cfg).is_file():
             findings.append(f"{args.makefile} runs a TLC configuration that does not exist: {TLA}/{cfg}")
@@ -222,36 +228,51 @@ def main(argv) -> int:
             else:
                 notes.append(f"the re-run heading names `{commit}`, at or after the newest change to the "
                              f"verification material (`{newest[:12]}`)")
-    # (D-212) Two halves of one question: is every configuration mapped to its module *explicitly*, and is every
-    # name a module marks as an invariant or a property listed by a configuration that runs it?
-    arms = {}
+    # (D-212, D-215) Where a configuration's module comes from: the `case` blocks that map them — one shared block
+    # the recipes expand, or a copy inside a recipe — and the explicit `cfg:spec` pairs the counterexample target
+    # walks. Every block must name *every* configuration in the directory, and every source must agree about a
+    # configuration's module. A configuration that fell through a `*)` default would silently run another module's
+    # specification: the simulation target met exactly that while it was being generalized (D-215) and TLC's
+    # refusal was reported as a "violation" for as long as no rule read the mapping.
+    blocks = []
+    for match in re.finditer(r"case \S*cfg in (.*?)\besac\b", makefile_text, re.S):
+        arms = []
+        for group, spec in re.findall(r"([A-Za-z0-9_.*|]+)\)\s*echo\s+(V2[A-Za-z0-9_]*)\.tla", match.group(1)):
+            arms += [(arm, spec) for arm in group.split("|") if arm != "*"]
+        blocks.append(arms)
+    if not blocks:
+        findings.append(f"{args.makefile} maps no configuration to a module: this audit's rule has nothing to read")
+    for arms in blocks:
+        for cfg in on_disk_cfgs:
+            if not any(fnmatch.fnmatchcase(cfg, arm) for arm, _ in arms):
+                findings.append(f"{args.makefile}: a mapping block does not name {cfg}, so it would fall through "
+                                "the `*)` default and run another module's specification")
+    pairs = dict(re.findall(r"(MC[A-Za-z0-9_]*\.cfg):(V2[A-Za-z0-9_]*)\.tla", makefile_text))
+    for arms in blocks:
+        for arm, spec in arms:
+            for cfg in on_disk_cfgs:
+                if fnmatch.fnmatchcase(cfg, arm) and cfg in pairs and pairs[cfg] != spec:
+                    findings.append(f"{args.makefile}: a mapping block runs {cfg} against {spec}.tla while the "
+                                    f"counterexample pairs name {pairs[cfg]}.tla: they have to agree")
+    mapping = {}
+    for arms in blocks:
+        for arm, spec in arms:
+            for cfg in on_disk_cfgs:
+                if fnmatch.fnmatchcase(cfg, arm):
+                    mapping.setdefault(cfg, spec)
+    for cfg, spec in pairs.items():
+        if cfg in on_disk_cfgs:
+            mapping.setdefault(cfg, spec)
     for name, body in recipes.items():
         if not name.startswith("verify-model"):
             continue
-        for group, spec in re.findall(r"([A-Za-z0-9_.|*]+)\)\s*echo\s+(V2[A-Za-z0-9_]*)\.tla", body):
-            for cfg in group.split("|"):
-                if cfg != "*":
-                    arms[cfg] = spec
-        for cfg, spec in re.findall(r"(MC[A-Za-z0-9_]*\.cfg):(V2[A-Za-z0-9_]*)\.tla", body):
-            arms[cfg] = spec
-        specs = set(re.findall(r"\b(V2[A-Za-z0-9_]*)\.tla", body))
-        if len(specs) == 1:
-            for cfg in re.findall(r"-config ([A-Za-z0-9_.]+)", body):
-                arms.setdefault(cfg, specs.pop())
-    for name, body in recipes.items():
-        if not name.startswith("verify-model"):
-            continue
-        for cfg in re.findall(r"for cfg in ([^;]+);", body.replace("$$cfg", "")) or []:
-            pass
-        driven = re.findall(r"for cfg in ([^;]+);", body) or re.findall(r"-config ([A-Za-z0-9_.]+)", body)
-        for entry in driven:
-            for cfg in entry.split():
-                if cfg.endswith(".cfg") and cfg not in arms:
-                    findings.append(f"`{name}` runs {cfg} without an explicit arm naming its module: a new "
-                                    "configuration would fall through the `case` default and run the wrong one")
+        for cfg in re.findall(r"-config ([A-Za-z0-9_.]+\.cfg)", body):
+            if cfg not in mapping:
+                findings.append(f"`{name}` runs {cfg}, which no mapping block names: it would fall through the "
+                                "`*)` default and run the wrong module")
     checked = {}
     for cfg in on_disk_cfgs:
-        spec = arms.get(cfg)
+        spec = mapping.get(cfg)
         if not spec:
             continue
         names = set()
@@ -271,8 +292,8 @@ def main(argv) -> int:
             continue
         claimed = set()
         for index, mark in enumerate(marks):
-            end = marks[index + 1].start() if index + 1 < len(marks) else len(text)
-            claimed |= set(DEFN.findall(text[mark.end():end]))
+            stop = len(text) if index + 1 >= len(marks) else marks[index + 1].start()
+            claimed |= set(DEFN.findall(text[mark.end():stop]))
         missing = sorted(claimed - checked.get(module, set()))
         if missing:
             findings.append(f"{TLA}/{spec} marks {', '.join(missing)} as its invariants or properties, and no "

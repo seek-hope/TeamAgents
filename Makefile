@@ -5,7 +5,7 @@ CARGO_FLAGS ?= --offline --locked
 
 .PHONY: help check fmt fmt-check lint test build pty probe-offline probe-models hygiene language-check \
         check-nobwrap check-broken-sandbox verify-tools verify-model verify-model-all \
-        verify-model-counterexamples verify-model-wide verify-model-wide-sim verify-kani
+        verify-model-counterexamples verify-model-wide verify-model-sim verify-kani
 
 help:
 	@echo 'make check     format, Clippy, regression tests and repository hygiene (offline by default)'
@@ -26,7 +26,7 @@ help:
 	@echo 'make verify-model-all  every TLA+ configuration, exhaustively (~4 min; verification/README.md)'
 	@echo 'make verify-model-counterexamples  the negative controls, every one of which must be refuted'
 	@echo 'make verify-model-wide  the wide control-plane configuration (slow, best effort)'
-	@echo 'make verify-model-wide-sim  the wide configuration by random simulation (minutes; invariants only)'
+	@echo 'make verify-model-sim  any configuration by random simulation (minutes; invariants only)'
 	@echo 'make verify-kani  the Kani proofs of the paging arithmetic'
 	@echo 'first run with downloads: make check CARGO_FLAGS=--locked'
 
@@ -122,12 +122,19 @@ verify-model: verify-tools
 		printf '%s' "$$out" | grep -q "No error has been found" || { \
 			echo "MC.cfg did not verify (see above)" >&2; exit 1; }
 
+# The module each configuration runs, in one place: the exhaustive target and `verify-model-sim` both
+# expand this, so they cannot disagree, and it must name *every* configuration in the directory — a
+# configuration that fell through the `*)` default would silently run the wrong module (the rule
+# `review/verification_catalogue.py` enforces). The control families are matched by prefix, after the
+# exact arms, because shell `case` takes the first match.
+CFG_CASE = case $$cfg in MC.cfg|MC_control_two.cfg) echo V2Control.tla;; MC_artifact.cfg) echo V2Artifact.tla;; MC_wait.cfg) echo V2Wait.tla;; MC_task.cfg) echo V2Task.tla;; MC_compress.cfg) echo V2Compress.tla;; MC_daemon.cfg) echo V2Daemon.tla;; MC_checks.cfg) echo V2Checks.tla;; MC_grants.cfg) echo V2Grants.tla;; MC_authority*) echo V2Authority.tla;; MC_store.cfg|MC_store_adopt.cfg) echo V2Store.tla;; MC_retention*) echo V2Retention.tla;; MC_jobs*) echo V2Jobs.tla;; MC_inbox*) echo V2Inbox.tla;; MC_diskfull*) echo V2DiskFull.tla;; MC_coordinator*) echo V2Coordinator.tla;; MC_control*) echo V2Control.tla;; MC_wide.cfg) echo V2Control.tla;; *) echo V2Artifact.tla;; esac
+
 # small exhaustive configurations for every module (seconds; the wide config is verify-model-wide)
 verify-model-all: verify-tools
 	@cd verification/tla && for cfg in MC.cfg MC_control_two.cfg MC_artifact.cfg MC_wait.cfg MC_task.cfg MC_compress.cfg MC_daemon.cfg MC_checks.cfg MC_grants.cfg MC_authority.cfg MC_store.cfg MC_retention.cfg MC_jobs.cfg MC_inbox.cfg MC_diskfull.cfg MC_coordinator.cfg; do \
 		echo "== $$cfg =="; \
 		out=$$(java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
-			tlc2.TLC -config $$cfg -fp 64 -workers 4 $$(case $$cfg in MC.cfg|MC_control_two.cfg) echo V2Control.tla;; MC_artifact.cfg) echo V2Artifact.tla;; MC_wait.cfg) echo V2Wait.tla;; MC_task.cfg) echo V2Task.tla;; MC_compress.cfg) echo V2Compress.tla;; MC_daemon.cfg) echo V2Daemon.tla;; MC_checks.cfg) echo V2Checks.tla;; MC_grants.cfg) echo V2Grants.tla;; MC_authority.cfg) echo V2Authority.tla;; MC_store.cfg) echo V2Store.tla;; MC_retention.cfg) echo V2Retention.tla;; MC_jobs.cfg) echo V2Jobs.tla;; MC_inbox.cfg) echo V2Inbox.tla;; MC_diskfull.cfg) echo V2DiskFull.tla;; MC_coordinator.cfg) echo V2Coordinator.tla;; *) echo V2Artifact.tla;; esac) 2>&1); \
+			tlc2.TLC -config $$cfg -fp 64 -workers 4 $$( $(CFG_CASE) ) 2>&1); \
 		echo "$$out" | grep -E "No error|violation|violated|states generated"; \
 		printf '%s' "$$out" | grep -q "No error has been found" || { \
 			echo "$$cfg did not verify (see above)" >&2; exit 1; }; \
@@ -185,26 +192,31 @@ verify-model-wide: verify-tools
 		printf '%s' "$$out" | grep -q "No error has been found" || { \
 			echo "MC_wide.cfg did not verify (see above)" >&2; exit 1; }
 
-# The wide configuration's exhaustive run is beyond a bounded attempt (D-210: one hour, no verdict), so this
-# supplement explores it by random simulation: `num` deep behaviors of depth `depth`, TLC's invariants checked —
-# simulation mode does not check the temporal properties (the small configurations' job) — and, unlike a
-# fingerprint collision, a violation found here is real, while *absence* proves nothing at all (D-211).
-# `SIM_CONFIG` is the control hook: point it at a control whose invariant *is* violated and this target fails.
+# Two configurations are beyond a bounded exhaustive attempt — the wide control-plane one (D-210: an hour, no
+# verdict) and the task one, whose second task diverges at 43M states without converging — so this supplement
+# explores a configuration by random simulation: `num` deep behaviors of depth `depth`, TLC's *invariants*
+# checked (simulation checks no temporal property: that is the small configurations' job), a violation found here
+# is real while *absence* proves nothing (D-211, D-215).
+# `SIM_CONFIG` is the control hook: any configuration in the directory, including the refuted controls, because
+# the module it runs comes from the shared `CFG_CASE`. A spec TLC refuses (an arm that fell through the default)
+# is reported as "did not run", never as a violation: only the violation phrases count as one.
 SIM_CONFIG ?= MC_wide.cfg
 SIM_TRACES ?= 20000
 SIM_DEPTH  ?= 100
 SIM_SEED   ?= 11
-verify-model-wide-sim: verify-tools
-	@cd verification/tla && out=$$(java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
+verify-model-sim: verify-tools
+	@cd verification/tla && cfg=$(SIM_CONFIG); out=$$(java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
 		tlc2.TLC -simulate num=$(SIM_TRACES) -depth $(SIM_DEPTH) -seed $(SIM_SEED) \
-			-config $(SIM_CONFIG) V2Control.tla 2>&1); \
-		echo "$$out" | grep -E "states checked|Error|violat|Finished in"; \
-		if printf '%s' "$$out" | grep -qE "Error|violat"; then \
-			echo "$(SIM_CONFIG) found a violation under simulation (see above)" >&2; exit 1; fi; \
+			-config $$cfg $$( $(CFG_CASE) ) 2>&1); \
+		echo "$$out" | grep -E "states checked|violated|Error|Finished in"; \
+		if printf '%s' "$$out" | grep -qE "is violated|properties were violated"; then \
+			echo "$$cfg found a violation under simulation (see above)" >&2; exit 1; fi; \
+		if printf '%s' "$$out" | grep -q "Error"; then \
+			echo "$$cfg did not run under simulation: its module or constants were refused (see above)" >&2; exit 1; fi; \
 		printf '%s' "$$out" | grep -q "states checked" || { \
 			echo "the simulation printed no progress line: it did not run" >&2; exit 1; }; \
 		if printf '%s' "$$out" | grep -q "Warning:"; then \
-			echo "$(SIM_CONFIG) carried a TLC warning: an inconsistent model is a defect, not a note (see above)" >&2; exit 1; fi
+			echo "$$cfg carried a TLC warning: an inconsistent model is a defect, not a note (see above)" >&2; exit 1; fi
 
 # Repository language rule (AGENTS.md): code and documentation are English only.
 # The two exceptions are README.zh-CN.md (the Chinese README) and the frozen

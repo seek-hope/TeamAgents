@@ -18,6 +18,39 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-215 The simulation supplement ran one configuration, by name (2026-09-27)
+
+D-211's supplement was `verify-model-wide-sim`: the *wide* configuration, by its own name, against a specification
+hardcoded in the recipe. The report names the same need elsewhere — `MC_task`'s second task "diverges (measured:
+43M states without convergence after four minutes)" — and the instrument could not be pointed at it. It also
+misreported a *refused* run: the recipe treated any `Error` line as a violation, so a specification TLC rejects
+(an arm that fell through the mapping's `*)` default) was announced as "found a violation", which is the loudest
+possible wrong answer.
+
+**Generalized**: `make verify-model-sim` takes `SIM_CONFIG` (default `MC_wide.cfg`) and derives the specification
+from it, and the mapping now lives in **one place** — `CFG_CASE`, a `case` block the exhaustive target and the
+simulation target both expand, with the control families matched by prefix after the exact arms. The two verdicts
+are distinct: only the violation phrases (`is violated`, `properties were violated`) mean a violation, any other
+`Error` means the run was refused and the target says so.
+
+**Measured**: `make verify-model-sim SIM_CONFIG=MC_task.cfg` — 20,000 random behaviors of depth 100, **7,663,011
+states checked in 2 m 13 s** with no invariant violated (the wide default stays at 2,022,792 states / ~4 minutes).
+Controls: a refuted configuration (`MC_control_midturninput.cfg`) fails with the invariant named, a configuration
+the mapping does not name (`MC_ghost.cfg`) reports "did not run" rather than a violation, and the dropped-arm and
+disagreeing-arm Makefile copies are both findings.
+
+**Moving the mapping made the audit fail loudly, twice, and that is how the move was verified**: the rule that
+every `V2*.tla` is run by some target read the *recipes*, and the rule that a marked claim is listed by some
+configuration built its mapping from them — with the mapping in a variable both went quiet (the marked-claim rule
+reported *every* module as unchecked until the mapping was read from the block, and the module rule reported seven
+modules as unrun). `review/verification_catalogue.py` now reads the mapping from every `case` block and every
+`cfg:spec` pair, requires each block to name every configuration, requires the sources to agree, and takes the
+modules a target runs from that same mapping.
+
+Ceiling: the mapping is still a `case` block, so a *new* family of configurations needs an arm (the rule says so
+rather than the run failing mysteriously); the simulation checks invariants only, so a temporal property is
+untouched by it; and, as D-211 says, a search that finds nothing proves nothing.
+
 ## D-214 The documents' verbs were unchecked (2026-09-27)
 
 D-135 gave the three user-facing documents a rule for *flags* — a documented flag must be one the CLI's help text
@@ -123,7 +156,7 @@ named the ways out since the modelling work began: "more instances or operations
 random simulation (`-simulate`) as a supplement". None of the three was implemented, so the deep configuration
 produced no signal at all — an hour of CPU and no verdict.
 
-**`make verify-model-wide-sim` is the simulation supplement**: `SIM_TRACES` random behaviors (default 20,000) of
+**`make verify-model-wide-sim` — renamed by D-215 to `make verify-model-sim`, which takes any configuration — is the simulation supplement**: `SIM_TRACES` random behaviors (default 20,000) of
 `SIM_DEPTH` steps (100) from a fixed `SIM_SEED` (11, so the recorded result is reproducible), with TLC's
 *invariants* checked. Measured 2026-09-27: **no invariant violated, 2,022,792 states checked in 3 m 54 s** (one
 worker, load ~65). The space the exhaustive run cannot reach is *searched*, which is exactly what a simulation can

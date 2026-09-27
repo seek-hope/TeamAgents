@@ -36,9 +36,10 @@ make verify-model-counterexamples   # the negative controls (authority surface D
 make verify-model-wide      # wide control-plane configuration (2 instances / 2 operations; tens to hundreds of
                             # millions of states, slow — the 2-instance run is what catches per-instance
                             # fairness regressions. Beyond a bounded attempt: D-210)
-make verify-model-wide-sim  # the same configuration by random simulation (~4 minutes, 20k behaviors of depth
+make verify-model-sim       # any configuration by random simulation (~2-4 minutes, 20k behaviors of depth
                             # 100): the *invariants* only — simulation checks no temporal property — and a
-                            # violation found here is real while absence proves nothing (D-211)
+                            # violation found here is real while absence proves nothing (D-211, D-215).
+                            # `SIM_CONFIG=…` picks one, including the refuted controls
 make verify-kani            # paging arithmetic (needs the Kani toolchain, see below)
 cargo test --offline --manifest-path core/Cargo.toml --test v2_invariants   # spec-to-code correspondence
 ```
@@ -520,15 +521,17 @@ The proven `page_span(total, offset, limit) = min(limit, total - offset)` is the
   collision hid a state at 1.2e-9. It is the slowest of the small configurations; the others are seconds.
 - State-space frontier (`MC_task`): 1 task / 2 instances / 2 goals = 5.7M states in about 20 seconds; a second
   task diverges (measured: 43M states without convergence after four minutes) and needs symmetry or a stronger
-  abstraction.
+  abstraction. The simulation supplement searches it instead — `make verify-model-sim SIM_CONFIG=MC_task.cfg`:
+  20,000 behaviors of depth 100, **7,663,011 states in 2 m 13 s** on 2026-09-27 with no invariant violated —
+  which is a search and not a proof, and it checks no temporal property.
 - The code-level correspondence (`core/tests/v2_invariants.rs`) is sampling plus bounded enumeration, not a
   proof: it gives "these executions satisfy the invariants" plus checker sensitivity (the negative control),
   never "all executions do".
 - State-space frontier: the wide configuration is 275M states in 11 minutes in the historical run, and a
   one-hour bounded attempt on 2026-09-27 did not reach a verdict (2.9 GB of state store written): the fields and
   properties added since then put it beyond a bounded attempt. The supplement named here is implemented as
-  `make verify-model-wide-sim`: 20,000 random behaviors of depth 100, 2,022,792 states checked in ~4 minutes on
-  2026-09-27 with no invariant violated — which is a *search*, not a proof, and it checks no temporal property
+  `make verify-model-sim` (its default, `SIM_CONFIG=MC_wide.cfg`): 20,000 random behaviors of depth 100,
+  2,022,792 states checked in ~4 minutes on 2026-09-27 with no invariant violated — which is a *search*, not a proof, and it checks no temporal property
   (the small configurations do that exhaustively). More instances or operations still need symmetry or constraints.
 
 ## Conclusions and ledger
