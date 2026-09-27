@@ -18,6 +18,35 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-233 The TUI's geometry had no probe, and the sentence listing the credential-free probes was stale (2026-09-27)
+
+`make pty` boots the interface at one size (36×96) and asserts the text on screen; nothing drove the two things a
+user does to the geometry — start the TUI in a pane of unusual proportions, and resize the window while it runs
+(a split, a maximized terminal, a shrink to a sliver). Rendering is where those become panics (a subtraction at
+zero, a layout wider than its terminal), and a panic in the TUI costs the session's window, not just a frame.
+
+**Measured 2026-09-27 with a scratch probe** (a pty, the smoke's scripted daemon, eight shapes: boot at 1×1, 60×1
+and 1×60; boot at 36×96 then shrink to 5×5, to 1×1, grow-then-shrink, one column; plus the control): every shape
+was **already clean** — the interface wrote to the terminal, rendered the status line where it fits, survived each
+SIGWINCH and exited 0 on the quit chord. That is a fact about this build, not a property, so it is now permanent:
+`review/dogfood/geometry.py` joins the offline set (`make probe-offline`, 40 s) with the shapes, the control's own
+rendering assertion (a harness that silently stopped working fails the probe instead of passing vacuously) and
+its ceiling — it asserts *survival*, not layout. Its 40 s also made the two "about a minute" statements about
+the set stale (measured: 9 probes in 99.7 s), so both now say two minutes — a duration no gate can check, and
+therefore prose that has to be re-measured by whoever changes the set.
+
+**The second half of the same family**: `review/dogfood/README.md` states how many probes need no credential
+**twice** — "the 8 credential-free ones" (checked by `probes.py --self-check`, D-176) and "Seven of these probes
+need no model…", which nothing read. The second was stale: it said *seven*, named seven, and the set had
+**eight** — `shutdown.py` was missing from the list. The sentence no longer carries a count at all (it names the
+probes), and the self-check now requires the README to name every probe in the offline set, so a name cannot go
+missing unnoticed. Control: renaming `geometry.py` in the sentence reports "does not name geometry.py".
+
+Ceiling: the geometry probe asserts survival (a render, no panic, a clean exit), not the layout at an unusual size
+— `make pty` checks the text at one size and nothing checks the pixels elsewhere; a resize reaches the TUI as
+SIGWINCH, so a terminal that changes size without one is not covered; and the name rule reads the README's prose,
+so a probe named in some *other* sentence satisfies it (the sentence that lists the set is the one it means).
+
 ## D-232 One rule set for both config loaders, and the field an mcp binding needs (2026-09-27)
 
 Two functions load the user's config: `parse_user_config` (the product's path, through `load_user_config`) and

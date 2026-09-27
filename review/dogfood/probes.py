@@ -47,6 +47,7 @@ OFFLINE = [
     ("truncation.py", [], "A19's whole path over a real socket: truncated before output retries, after it fails"),
     ("input_latency.py", [], "per-keystroke composer latency against the scripted daemon"),
     ("tui_panels.py", [], "the instances panel's keys against a real daemon (D-95)"),
+    ("geometry.py", [], "the TUI under an extreme terminal size and a mid-run resize (D-233)"),
     ("tui_reconnect.py", [], "the TUI through a daemon kill and restart (A28, D-99)"),
     ("providers.py", ["--self-check"], "the A27 probe's task-result rule, without a model"),
     ("shutdown.py", [], "a graceful stop with a command in flight, and the recovery after it (DESIGN §9/D-152)"),
@@ -224,6 +225,13 @@ def self_check() -> int:
             f"review/dogfood/README.md must say {phrase!r} (the offline set has {len(OFFLINE)} entries; "
             f"if the set changed, update the sentence)"
         )
+    # D-233: the sentence that lists the credential-free probes must name every one of them. It had gone stale —
+    # "Seven of these probes…" named seven and the set had eight, and no rule read the sentence (the digit phrase
+    # above was the only checked statement of the same fact).
+    for name, _args, _description in OFFLINE:
+        if name not in documented:
+            findings.append(f"review/dogfood/README.md does not name {name}, which is in the offline set: the "
+                            "sentence that lists them is how a reader knows what runs without a credential")
     # D-148/D-144: a probe stops what it started **by pid**. Killing by pattern is the hazard those entries
     # measured, and the prose that says so is fine — what must not exist is an *executable* mention, which is
     # what the token scan below leaves once comments and docstrings are gone.
