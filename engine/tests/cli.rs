@@ -266,6 +266,68 @@ fn a_socket_path_past_the_kernel_limit_is_refused_before_anything_starts() {
     assert!(text.contains("[FAIL] daemon socket"), "doctor must name the socket, not only the root: {text}");
 }
 
+/// D-241: a state root that cannot be *created* names the flag and the fix, from every entry point that creates
+/// one. They used to answer three different ways, none of them naming `--state-root`: measured 2026-09-27 with
+/// the root under a symlink loop, `init` said `could not prepare the state root: create … (os error 40)`,
+/// `daemon` said `state root: … (os error 40)` and `exec` said `cannot create … (os error 40)` — while
+/// `doctor`'s WARN sent the user back to `init`, the command that had just failed. The same run found the
+/// sibling shape D-228 had not covered: a *directory* where the daemon's log goes, which `exec` answered with a
+/// bare `cannot open …/daemon.log: Is a directory (os error 21)`.
+#[test]
+fn an_uncreatable_state_root_names_the_flag_from_every_entry_point() {
+    let home = Scratch::new("uncreatable");
+    std::fs::create_dir_all(&*home).unwrap();
+    // a self-referential symlink: every process, root included, gets ELOOP from creating anything under it
+    std::os::unix::fs::symlink("loop", home.join("loop")).unwrap();
+    let root = home.join("loop/root");
+    let run = |args: &[&str]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_teamagents"))
+            .args(args)
+            .arg("--state-root")
+            .arg(&root)
+            .env("XDG_STATE_HOME", home.join("state"))
+            .env("XDG_CONFIG_HOME", home.join("config"))
+            .output()
+            .expect("run cli");
+        (output.status.code(), String::from_utf8_lossy(&output.stderr).into_owned())
+    };
+    for verb in [&["init"][..], &["daemon"][..], &["exec", "hi"][..]] {
+        let (code, stderr) = run(verb);
+        assert_ne!(code, Some(0), "{verb:?} must not claim a root it cannot use: {stderr}");
+        assert!(stderr.contains("cannot be created"), "{verb:?}: the reason is stated: {stderr}");
+        assert!(stderr.contains("point --state-root (or XDG_STATE_HOME)"), "{verb:?}: the fix is named: {stderr}");
+    }
+    // `doctor` reports the root as not initialized and sends the user to `init`; that advice has to lead to a
+    // message that names the flag (the loop D-166 closed for the file case)
+    let doctor = Command::new(env!("CARGO_BIN_EXE_teamagents"))
+        .args(["doctor", "--state-root"])
+        .arg(&root)
+        .env("XDG_STATE_HOME", home.join("state"))
+        .env("XDG_CONFIG_HOME", home.join("config"))
+        .output()
+        .expect("run doctor");
+    let text = String::from_utf8_lossy(&doctor.stdout).into_owned();
+    assert!(text.contains("[WARN] v2 state root"), "{text}");
+    assert!(text.contains("teamagents init"), "the warning names the lever: {text}");
+
+    // D-241's sibling: a directory where the daemon's log goes is refused by the kind check (D-228's rule), the
+    // same way a directory named `session.sqlite` or `daemon.sock` is
+    let log_root = home.join("logdir");
+    std::fs::create_dir_all(log_root.join("daemon.log")).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_teamagents"))
+        .args(["exec", "--state-root"])
+        .arg(&log_root)
+        .arg("hi")
+        .env("XDG_STATE_HOME", home.join("state"))
+        .env("XDG_CONFIG_HOME", home.join("config"))
+        .output()
+        .expect("run cli");
+    let text = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_ne!(output.status.code(), Some(0), "{text}");
+    assert!(text.contains("daemon.log is a directory"), "the shape is named: {text}");
+    assert!(text.contains("point --state-root/XDG_STATE_HOME"), "the fix is named: {text}");
+}
+
 /// D-73: the entry point refuses what it does not honour, and refuses it
 /// *before* starting anything. A bare word used to fall through to the TUI — a
 /// typo'd verb or a pasted prompt silently booted a session and was dropped —

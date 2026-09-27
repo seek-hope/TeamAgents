@@ -388,7 +388,8 @@ pub struct Driver<P: Provider> {
 /// ids, so restarting over an existing session replays receipts instead of
 /// duplicating instances, goals or input (§6.3 row 1).
 pub async fn start<P: Provider + 'static>(mut config: DriverConfig<P>) -> Result<DriverHandle, String> {
-    std::fs::create_dir_all(&config.state_root).map_err(|e| format!("state root: {e}"))?;
+    std::fs::create_dir_all(&config.state_root)
+        .map_err(|e| crate::cli::state_root_uncreatable(&config.state_root, &e))?;
     // the isolated shell binds absolute source paths: a relative state root
     // would reach bwrap as a relative bind and fail with a confusing error
     config.state_root = std::fs::canonicalize(&config.state_root)

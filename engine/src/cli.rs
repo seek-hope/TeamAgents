@@ -47,7 +47,7 @@ pub fn prepare_v2_root(state_root: Option<PathBuf>) -> Result<PathBuf, String> {
     // `daemon.sock` (or an ancestor that is a file) fails later with an error that names no fix.
     require_state_paths_kind(&root)?;
     let fresh = !root.exists();
-    std::fs::create_dir_all(&root).map_err(|e| format!("create {}: {e}", root.display()))?;
+    std::fs::create_dir_all(&root).map_err(|e| state_root_uncreatable(&root, &e))?;
     let db = root.join("session.sqlite");
     // opening with create stamps format/schema; opening an existing foreign or
     // older database fails loudly here instead of mid-session
@@ -731,7 +731,35 @@ pub fn require_state_paths_kind(root: &Path) -> Result<(), String> {
             socket.display()
         ));
     }
+    // 4. the log the client redirects the daemon into (D-241): the same shape one path further out, and one
+    // nothing looked at — `exec` answered a bare `cannot open …/daemon.log: Is a directory (os error 21)`.
+    let log = root.join("daemon.log");
+    if log.is_dir() {
+        return Err(format!(
+            "{} is a directory, but that path is where the daemon's log goes — remove the directory (or point \
+             --state-root/XDG_STATE_HOME at another one) and start the session again",
+            log.display()
+        ));
+    }
     Ok(())
+}
+
+/// The one wording for a state root that cannot be *created* (D-241).
+///
+/// Five places create one — `init`'s prepare step, the daemon's boot, each instance driver's own root under it,
+/// and the client, which only creates it so the daemon's log file has somewhere to land. They answered three
+/// different ways and none of them named the flag or a fix: measured 2026-09-27 with the root under a symlink
+/// loop, `init` said `could not prepare the state root: create … (os error 40)`, `daemon` said `state root: … (os
+/// error 40)` and `exec` said `cannot create … (os error 40)` — while `doctor`'s `[WARN] v2 state root   not
+/// initialized yet; teamagents init …` sent the user back to the command that had just failed. They share this
+/// wording now, so a refusal cannot drift from the others (D-166's rule, D-227/D-228's shape); `path` may be a
+/// directory *under* the state root, which needs the same fix.
+pub fn state_root_uncreatable(path: &Path, error: &std::io::Error) -> String {
+    format!(
+        "the state root {} cannot be created: {error} — point --state-root (or XDG_STATE_HOME) at a directory \
+         you can write, or one whose parents do",
+        path.display()
+    )
 }
 
 /// The one wording for a `--state-root` that cannot be a state root. The callers that refuse it and the one

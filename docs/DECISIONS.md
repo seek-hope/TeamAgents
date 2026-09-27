@@ -18,6 +18,43 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-241 The state root's preparation answered raw OS errors from three entry points (2026-09-27)
+
+The state-root family has one careful wording per shape — a path that is a file (D-166), an ancestor that is a
+file or a *directory* named `session.sqlite`/`daemon.sock` (D-228), a socket path past Linux's `sun_path` limit
+(D-227) — and each is shared by the callers so a refusal cannot drift. The shape nothing covered was the root
+that simply *cannot be created*: five places create one (`init`'s prepare step, the daemon's boot, each instance
+driver's own root under it, and the client, which creates it only so the daemon's log has somewhere to land) and
+three of them answered differently, none naming the flag or a fix. Measured 2026-09-27 with the root under a
+self-referential symlink (an ELOOP that every user, root included, gets — so this is not a permission-shaped
+defect): `init` printed `could not prepare the state root: create …: Too many levels of symbolic links (os error
+40)`, `daemon` printed `daemon: state root: Too many levels of symbolic links (os error 40)`, and `exec` printed
+`cannot create …: Too many levels of symbolic links (os error 40)` — while `doctor`'s `[WARN] v2 state root   not
+initialized yet …; teamagents init or teamagents daemon creates it` sent the user back to the commands that had
+just failed (D-166's complaint, one shape over). The same run found `daemon.log`'s sibling: a *directory* at the
+path the client redirects the daemon's log into answered `cannot open …/daemon.log: Is a directory (os error
+21)` — a shape D-228's kind check covered for `session.sqlite` and `daemon.sock`, but not for the log.
+
+**Fixed**: `engine/src/cli.rs::state_root_uncreatable(path, error)` is the one wording for a create failure
+("the state root {} cannot be created: {error} — point --state-root (or XDG_STATE_HOME) at a directory you can
+write, or one whose parents do"), used by all five creators (`cli.rs`'s prepare step, `main.rs`'s client detach,
+`supervisor.rs` and `driver.rs`'s own creates); and `require_state_paths_kind` gained the fourth case of D-228's
+rule — a directory where the daemon's log goes — so `exec`, `daemon`, `init` and `doctor` refuse it *before* the
+raw errno, in the words the database and socket cases already use. `README.md`'s `--state-root` row states both
+halves.
+
+**Control**: `engine/tests/cli.rs::an_uncreatable_state_root_names_the_flag_from_every_entry_point` drives the
+real binary through `init`, `daemon` and `exec` against a root under a symlink loop, asserting each names the
+reason *and* `--state-root (or XDG_STATE_HOME)`, that `doctor`'s warning still names its lever, and that the
+`daemon.log`-as-a-directory shape is refused with the fix; against the pre-fix build all four messages are the
+ones quoted above and the test fails on them.
+
+Ceiling: the wording names the flag and the fix, not the *cause* — a read-only filesystem and a missing
+permission answer with the same sentence (the OS's own words carry the difference); `canonicalize` failures after
+a successful create (`state root {}: {e}` in `supervisor.rs`/`driver.rs`) keep their own prefix, because they
+cannot happen once the create succeeded except through a race; and the evidence is the integration test rather
+than a probe, because the shape needs a doctored directory, not a session.
+
 ## D-240 `[models.*].max_retries` is accepted and never applied (2026-09-27)
 
 Every model profile carries `max_retries: i64`, whose absent value D-239 had just made the reference state

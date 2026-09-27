@@ -820,7 +820,7 @@ fn ensure_daemon(request: DaemonRequest<'_>) -> Result<(PathBuf, bool), String> 
     }
     // A detached daemon has no terminal to complain on: its banner, its startup
     // failure and anything it logs later land in <state root>/daemon.log.
-    std::fs::create_dir_all(state_root).map_err(|e| format!("cannot create {}: {e}", state_root.display()))?;
+    std::fs::create_dir_all(state_root).map_err(|e| cli::state_root_uncreatable(state_root, &e))?;
     let log_path = state_root.join("daemon.log");
     let log = std::fs::OpenOptions::new()
         .create(true)
