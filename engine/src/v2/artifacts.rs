@@ -192,13 +192,7 @@ fn open(db: &Path, writable: bool) -> Result<teamagents_core::v2::Control, (i32,
         Ok(control) => Ok(control),
         Err(writable_error) => {
             teamagents_core::v2::Control::open_read_only(db, "maintenance").map_err(|read_only_error| {
-                (
-                    2,
-                    format!(
-                        "artifacts: {}: {read_only_error}\n(an ordinary open failed too: {writable_error})",
-                        db.display()
-                    ),
-                )
+                (2, format!("artifacts: {read_only_error}\n(an ordinary open failed too: {writable_error})"))
             })
         }
     }

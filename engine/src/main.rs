@@ -20,6 +20,8 @@ usage: teamagents [--cwd DIR] [--state-root PATH] [--model KEY] [--full-auto]\n\
   teamagents instances merge --id ID            bring a git_worktree member's branch into the session tree\n\
   teamagents tasks [list] [--json]              the session's tasks\n\
   teamagents tasks cancel --id ID               cancel one; a delegator waiting on it is released\n\
+  teamagents artifacts [list] [--json]          what this state root holds on disk (bytes, owner, presence)\n\
+  teamagents artifacts gc [--json]              collect the artifacts nothing references (needs no session)\n\
   teamagents runners [list] [--json]            the job runners this state root still carries\n\
   teamagents runners stop [--id JOB]            ask them to retire (a runner with a running command refuses)\n\
   teamagents runners stop --service --yes [--id JOB]   stop the group a settled command left behind\n\
