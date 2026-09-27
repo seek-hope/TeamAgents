@@ -18,6 +18,26 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-239 The generated config reference stated the wrong "Absent" value for three keys (2026-09-27)
+
+`docs/CONFIG.md`'s Absent column is documented as the value a key holds when it is missing, and it was computed
+from the *type* (`i64` → `0`, `String` → `empty`). That is right for a plain `#[serde(default)]` and wrong for
+every key that carries a named default: `core/src/models.rs` gives `protocol` `default_protocol` (`"openai"`),
+`timeout` `default_timeout` (`120`) and `max_retries` `default_retries` (`5`), so the reference told a user who
+omits `timeout` that it holds 0 and one who omits `max_retries` that the budget is 0 — the three keys with a
+*considered* default were exactly the three rendered wrong (measured 2026-09-27).
+
+**Fixed**: `review/config_reference.py` resolves `#[serde(default = "fn")]` by reading that zero-argument
+function's literal out of the structs file and printing it (`"openai"`/`120`/`5`), and it **fails** — in check mode
+and before `--write` — when a named default is not a literal it can read, so a computed default is *reported*
+instead of a number being invented. `--models PATH` reads a copy of the structs file. **Controls**: a copy whose
+`default_retries` returns `7` reports that the generated section is out of sync (the column follows the code), and
+a copy whose function body is a call reports "`#[serde(default = …)]` is not a literal this audit can read".
+
+Ceiling: only string and integer literals are resolved (a default computed from an env var, a join or a `len()` is
+a finding, not a value), the column stays the *absent* value rather than the effective one (an `Option` key's
+default is still the reader's `unwrap_or(…)`), and the structs are scanned line by line rather than parsed.
+
 ## D-238 The state root's path was stated in four places and compared in none (2026-09-27)
 
 D-236 and D-237 held two of the product's facts to the documents that state them (the user config's path, the

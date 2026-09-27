@@ -39,6 +39,9 @@ with `unwrap_or(…)`, so the reader decides — `tool_timeout_s` is unset here 
 doctor surface and the argv parser — a field declaration of another struct with the same name does not count —
 so it names the consumers rather than proving every code path. A key the loader applies when it parses the file
 (`deadline_minutes`) shows no reader here for that reason; `doctor` shows what the resolved session carries.
+And a key whose struct carries `#[serde(default = "fn")]` shows *that* function's value, not the type's: the loader
+calls it when the key is missing, so the column would otherwise be wrong for exactly the keys that have a considered
+default (D-239).
 
 <!-- generated: begin -->
 
@@ -47,12 +50,12 @@ so it names the consumers rather than proving every code path. A key the loader 
 | Key | Type | Absent | Read by | Meaning |
 |---|---|---|---|---|
 | `provider` | `String` | empty | `engine/src/providers/mod.rs`, `engine/src/tools.rs` … (3 files) | The vendor hint: `deepseek` selects that service's defaults (the reasoning echo, the deepseek protocol) while `protocol` is unset, and any other value is a label for a compatible service — the wire is decided by `protocol`/`base_url`, never by this name (D-40, D-229). |
-| `protocol` | `String` | empty | `engine/src/providers/mod.rs` | — |
+| `protocol` | `String` | "openai" | `engine/src/providers/mod.rs` | — |
 | `model` | `String` | empty | `core/src/kernel/instance.rs`, `core/src/kernel/mod.rs` … (13 files) | — |
 | `base_url` | `Option<String>` | unset (the reader applies its own) | `engine/src/providers/mod.rs` | — |
 | `api_key_env` | `Option<String>` | unset (the reader applies its own) | `engine/src/providers/mod.rs`, `engine/src/tools.rs` | — |
-| `timeout` | `i64` | 0 | `core/src/v2/control.rs`, `engine/src/mcp.rs` … (8 files) | — |
-| `max_retries` | `i64` | 0 | `engine/src/reference.rs`, `engine/src/v2/driver.rs` … (3 files) | — |
+| `timeout` | `i64` | 120 | `core/src/v2/control.rs`, `engine/src/mcp.rs` … (8 files) | — |
+| `max_retries` | `i64` | 5 | `engine/src/reference.rs`, `engine/src/v2/driver.rs` … (3 files) | — |
 | `generation_options` | `HashMap<String, Json>` | empty | `engine/src/providers/mod.rs` | — |
 | `context_window` | `Option<u64>` | unset (the reader applies its own) | `core/src/kernel/instance.rs`, `engine/src/providers/anthropic.rs` … (8 files) | Model context window in tokens (drives the /status remaining-context column; None = unknown, shown as "not configured"). |
 | `codex_profile` | `Option<String>` | unset (the reader applies its own) | nothing: D-75: refused at load — an external Codex profile is not part of this release | Codex members only: layer `$CODEX_HOME/<name>.config.toml` by running `codex --profile <name> app-server`. **Not implemented in this release** (DESIGN Q12 excludes an external Codex adaptation): no code path reads it, and a config that sets it is refused at load instead of being ignored (D-75) — configure the member directly with `provider`/`protocol`/`base_url`/`api_key_env`. |
