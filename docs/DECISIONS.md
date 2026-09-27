@@ -18,6 +18,36 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-222 Ten marked claims that the property-by-spec mapping never named (2026-09-27)
+
+`verification/README.md` is the mapping the report sends a reader to: "the property-by-spec mapping is in
+README.md", says `verification/REPORT.md`. D-212 made every name a module marks between its `invariants --` and
+`properties --` markers the business of a *configuration* (a claim nothing lists is a claim nothing checks), and
+`review/verification_catalogue.py` has held that ever since. Nothing asked the other half of the question: whether
+the mapping a reader is sent to says anything about the claim. Measured 2026-09-27: **ten of the 148 marked
+claims appeared nowhere in `verification/README.md`** — all four of `V2Retention`'s substantive claims
+(`EvictionOnlyUnderTheGuards` — the rule itself — and its three state halves `NoReferenceToEvictedFact`,
+`EvidenceIsNeverEvicted`, `OnlyOldFactsAreEvicted`), `V2Grants`' four `TypeOK*` components (`TypeOKGrants`,
+`TypeOKRevision`, `TypeOKOffered`, `TypeOKOps`) and `V2Wait`'s `SatisfiedHoldsConditions` (no spurious wake) and
+`AnswerImpliesResolved` (an answer only joins with a resolved wait). So a reader who met `EvidenceIsNeverEvicted`
+in a control's refutation list, or in the retention row's own prose about *what the controls forget*, could not
+find what the module proves it.
+
+**Fixed**: the three rows now name their claims — the retention row the rule and its three state halves, the
+grants row the composite `TypeOK` beside its four components (D-212's convention), the wait row the two it left
+out — and the audit fails a marked claim that `verification/README.md` never names. Control: `--mapping` on a
+copy with one name deleted reports that name.
+
+**Registered** with the neighbouring rules in `review/README.md`'s row for the audit, in `docs/DEVELOPMENT.md`'s
+hygiene list and in the report's §3 table; the audit's own row was stale on D-220's rule as well, and now states
+both.
+
+Ceiling: the rule asks that the mapping *name* the claim, not that it describe it beside the module that marks it
+— a mention anywhere in the file satisfies it, which is the same leniency the "described there" rule for
+configurations has; the mapping is prose, so a claim named with a typo in the module and not in the mapping is
+invisible; and the check reads the module's markers, so a claim a module marks but never lists in a
+configuration is caught by D-212's rule, not this one.
+
 ## D-221 The release body and the instruction file stated stale test counts (2026-09-27)
 
 D-178 made the acceptance ledger's headline counts a checked fact: `review/test_counts.py` asks the crates for

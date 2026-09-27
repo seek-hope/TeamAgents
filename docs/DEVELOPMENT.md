@@ -73,7 +73,9 @@ audits — each one a claim the tree makes about itself, each with the decision 
   `verify-model*` targets that drive them, and the report's counts — the configurations, the negative controls
   and the quoted Kani harness count — against the lists and the proofs in the tree (D-185), and its §0 re-run
   heading's commit against the newest change to the material a re-run covers (D-202: the heading named a commit
-  that predated `MC_retention.cfg`).
+  that predated `MC_retention.cfg`), that every marked claim is listed by a configuration that runs its module
+  (D-212/D-215) and named in `verification/README.md` (D-222), and that every module is the spec of at least one
+  counterexample configuration (D-220).
 * **the shell, before any of that**: it rejects non-English characters (the two documented exceptions), tracked
   compile caches, Python caches and SQLite temporaries, and checks the syntax of `install.sh`.
 

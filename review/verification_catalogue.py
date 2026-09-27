@@ -35,6 +35,14 @@ listed itself and its components beside it (V2Grants' four `TypeOK*`, V2Store's 
 name is visibly checked.
 
 **D-220 added the rule that every module has to be *refutable*.** A module that no counterexample configuration
+**D-222 added the rule that the mapping has to name every claim.** The report sends a reader to
+`verification/README.md` for what a module proves, and ten of the 148 marked claims were absent from it (measured
+2026-09-27): all four of `V2Retention`'s substantive claims (the rule itself, and the three state halves),
+`V2Grants`' four `TypeOK*` components and `V2Wait`'s `SatisfiedHoldsConditions`/`AnswerImpliesResolved`. Every
+one is named in the mapping now, and a claim the mapping never mentions fails this audit — the reader's half of
+the same question D-212 asked about configurations.
+
+**D-220 added the rule that every module has to be *refutable*.** A module that no counterexample configuration
 runs is a set of claims nothing refutes — the same gap as a claim nothing lists, one level up. V2Artifact,
 V2Wait and V2Grants were the last three modules without one (measured 2026-09-27), and V2Wait's own refutation
 had existed before the fix: `review/fix-notes-verification-2026-09-24.md` records finding V-W1's counterexample
@@ -160,6 +168,7 @@ def main(argv) -> int:
     drivers = {name: body for name, body in recipes.items() if name.startswith("verify-model")}
     report = (REPO / args.report).read_text(encoding="utf-8")
     mapping = (REPO / args.mapping).read_text(encoding="utf-8")
+    mapping_text = mapping   # the mapping's *text*: `mapping` is reused below for the cfg → spec table
     findings, notes = [], []
     if not drivers:
         findings.append(f"no `verify-model*` target in {args.makefile}: this audit's rule has stopped applying")
@@ -331,6 +340,15 @@ def main(argv) -> int:
         if missing:
             findings.append(f"{tla}/{spec} marks {', '.join(missing)} as its invariants or properties, and no "
                             "configuration that runs it lists them: a claim nothing checks")
+        # (D-222) ... and the mapping has to name every one. The report sends a reader to `verification/README.md`
+        # for what a module proves, and ten of the 148 marked claims were absent from it (measured 2026-09-27):
+        # all four of V2Retention's substantive claims, V2Grants' four `TypeOK*` components and V2Wait's
+        # `SatisfiedHoldsConditions`/`AnswerImpliesResolved`. A name a configuration lists and the mapping never
+        # mentions is a claim a reader cannot look up.
+        unnamed = sorted(name for name in claimed if name not in mapping_text)
+        if unnamed:
+            findings.append(f"{tla}/{spec} marks {', '.join(unnamed)}, which {args.mapping} never names: the "
+                            "mapping is what the report sends a reader to for what a module proves (D-222)")
     # (D-219) A variable no action ever changes is a constant of the model: every claim over it is either
     # trivially true or trivially false, so nothing checks it. The class was found by the survey that wrote
     # this rule (measured 2026-09-27): six variables across three modules had no writer at all — V2Compress'
