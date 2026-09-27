@@ -1,0 +1,24 @@
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r6-formal/work/twelve-deliverables.D.1/units/intervals/intervals.py:5:    def merge(self, ranges, gap=0):
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r6-formal/work/twelve-deliverables.D.1/units/intervals/test_intervals.py:5:def test_merge_orders_joins_and_keeps_real_gaps():
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r6-formal/work/twelve-deliverables.D.1/units/intervals/test_intervals.py:7:    assert I.merge([[5, 7], [1, 3], [-1, 0]]) == [(-1, 3), (5, 7)]
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r6-formal/work/twelve-deliverables.D.1/units/intervals/test_intervals.py:8:    assert I.merge([]) == []
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r6-formal/work/twelve-deliverables.D.1/units/intervals/test_intervals.py:9:    assert I.merge([[1, 1]]) == [(1, 1)]
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r6-formal/work/twelve-deliverables.D.1/units/intervals/test_intervals.py:11:def test_merge_gap_counts_missing_integers():
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r6-formal/work/twelve-deliverables.D.1/units/intervals/test_intervals.py:12:    assert I.merge([[1, 2], [4, 5]]) == [(1, 2), (4, 5)]
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r6-formal/work/twelve-deliverables.D.1/units/intervals/test_intervals.py:13:    assert I.merge([[1, 2], [4, 5]], 1) == [(1, 5)]
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r6-formal/work/twelve-deliverables.D.1/units/intervals/test_intervals.py:14:    assert I.merge([[1, 2], [3, 4]]) == [(1, 4)]
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r6-formal/work/twelve-deliverables.D.1/units/intervals/test_intervals.py:15:    assert I.merge([[10, 12], [0, 1], [5, 6]], 3) == [(0, 12)]
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r6-formal/work/twelve-deliverables.D.1/units/intervals/test_intervals.py:17:def test_merge_ignores_nested_and_backwards():
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r6-formal/work/twelve-deliverables.D.1/units/intervals/test_intervals.py:18:    assert I.merge([[0, 10], [2, 3]]) == [(0, 10)]
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r6-formal/work/twelve-deliverables.D.1/units/intervals/test_intervals.py:19:    assert I.merge([[7, 9], [0, 1]]) == [(0, 1), (7, 9)]
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r6-formal/work/twelve-deliverables.D.1/units/ranges/ranges.py:2:    def merge(self, *args, **kwargs):
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r6-formal/work/twelve-deliverables.D.1/units/ranges/test_ranges.py:3:def test_merge():
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r6-formal/work/twelve-deliverables.D.1/units/ranges/test_ranges.py:4:    assert I.merge([[5,7],[1,3],[2,4]]) == [(1,4),(5,7)]
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r6-formal/work/twelve-deliverables.D.1/units/ranges/test_ranges.py:5:    assert I.merge([]) == []
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r6-formal/work/twelve-deliverables.D.1/units/ranges/test_ranges.py:6:    assert I.merge([[1,1]]) == [(1,1)]
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r6-formal/work/twelve-deliverables.D.1/units/schedule/test_schedule.py:2:def test_slots_merges_and_splits():
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r6-formal/work/twelve-deliverables.D.1/units/schedule/schedule.py:10:    merged = [list(ordered[0])]
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r6-formal/work/twelve-deliverables.D.1/units/schedule/schedule.py:12:        prev_lo, prev_hi = merged[-1]
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r6-formal/work/twelve-deliverables.D.1/units/schedule/schedule.py:15:                merged[-1][1] = hi
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r6-formal/work/twelve-deliverables.D.1/units/schedule/schedule.py:17:            merged.append([lo, hi])
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r6-formal/work/twelve-deliverables.D.1/units/schedule/schedule.py:18:    return [(lo, hi) for lo, hi in merged]

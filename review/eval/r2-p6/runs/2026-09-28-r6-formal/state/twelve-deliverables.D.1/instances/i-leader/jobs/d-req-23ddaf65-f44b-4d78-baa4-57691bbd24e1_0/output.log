@@ -1,0 +1,27 @@
+===== git status --porcelain (tracked changes) =====
+ M docs/DECISIONS.md
+ M review/eval/r2-p6/anatomy.py
+ M review/eval_manifests.py
+ M review/eval_surface.py
+?? review/eval/r2-p6/design-r6.md
+?? review/eval/r2-p6/manifest-r6.json
+?? review/eval/r2-p6/runs/2026-09-28-r6-formal/
+
+===== git diff --stat =====
+ docs/DECISIONS.md            |  34 ++++++++++++++
+ review/eval/r2-p6/anatomy.py | 107 ++++++++++++++++++++++++++++++++++++++++++-
+ review/eval_manifests.py     |   2 +-
+ review/eval_surface.py       |   2 +-
+ 4 files changed, 141 insertions(+), 4 deletions(-)
+
+===== tracked files changed vs HEAD =====
+docs/DECISIONS.md
+review/eval/r2-p6/anatomy.py
+review/eval_manifests.py
+review/eval_surface.py
+
+===== any test/check/data file modified? (expect empty) =====
+NONE
+
+===== ranges lastfailed cache =====
+{}

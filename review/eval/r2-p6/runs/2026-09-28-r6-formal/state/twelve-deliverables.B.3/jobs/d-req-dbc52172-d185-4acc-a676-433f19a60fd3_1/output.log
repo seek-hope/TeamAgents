@@ -1,0 +1,10 @@
+===== alpha =====
+alpha ok
+exit=0
+===== beta =====
+beta ok
+exit=0
+===== chain =====
+....                                                                     [100%]
+4 passed in 0.05s
+exit=0

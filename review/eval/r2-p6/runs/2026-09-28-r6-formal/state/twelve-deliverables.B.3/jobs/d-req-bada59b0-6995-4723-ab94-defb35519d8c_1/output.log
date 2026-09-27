@@ -1,0 +1,12 @@
+parse quoted: ['a,b', '2', 'x']
+parse 2col: None
+parse 4col: None
+total line-total: 2
+total bad raises: ValueError
+flags mixed: {'values': {'k': ['v']}, 'flags': {'a': True, 'b': True}, 'positional': ['p', '--z']}
+flags empty key: {'values': {'m': ['1']}, 'flags': {'k': True}, 'positional': []}
+merge neg gap: [(1, 2), (4, 5)]
+subtract normalize: [(1, 1), (7, 7)]
+total_length overlap: 6
+slug accent: cafe-deja-vu
+slug blank: untitled untitled

@@ -1,0 +1,30 @@
+remaining cache dirs: 0
+--- csvfix
+2 passed in 0.01s
+--- rules
+1 passed in 0.02s
+--- ledger
+2 passed in 0.01s
+--- schedule
+2 passed in 0.01s
+--- intervals
+7 passed in 0.02s
+--- flags
+8 passed in 0.02s
+--- measure
+1 passed in 0.01s
+--- slugify
+1 passed in 0.01s
+--- ranges
+1 passed in 0.01s
+--- alpha
+alpha ok
+--- beta
+beta ok
+--- chain
+4 passed in 0.05s
+ALL_OK=1
+remaining cache dirs: 0
+REPORT.md
+units
+VERIFY.log

@@ -1,0 +1,9 @@
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r6-formal/work/twelve-deliverables.D.1/units/slugify
+'Hello, World!' -> 'hello-world'
+'  --A@@B-- ' -> 'a-b'
+'***' -> 'untitled'
+'' -> 'untitled'
+'---' -> 'untitled'
+'a_b c' -> 'a-b-c'
+'Ünïcode Ño' -> 'ünïcode-ño'
+'x' -> 'x'

@@ -1,0 +1,14 @@
+csvfix rc=0 2 passed in 0.01s
+rules rc=0 1 passed in 0.01s
+ledger rc=0 2 passed in 0.01s
+schedule rc=0 2 passed in 0.01s
+intervals rc=0 7 passed in 0.02s
+flags rc=0 8 passed in 0.02s
+measure rc=0 1 passed in 0.01s
+slugify rc=0 1 passed in 0.01s
+ranges rc=0 1 passed in 0.01s
+alpha rc=0 alpha ok
+beta rc=0 beta ok
+chain rc=0 4 passed in 0.01s
+OVERALL_FAIL=0
+REPORT.md

@@ -1,0 +1,7 @@
+/bin/bash: line 28: cd: units/chain: No such file or directory
+no git
+1f0e7de8576609ad5c16555ed11ccfeb  data/orders.csv
+7eb466eeb5c79c05802011e31446cb24  tests/test_stage1.py
+865c75b7346e8bd421bd679d8ec33d5d  tests/test_stage2.py
+8b4c0e337230c6b2571b6b002788775b  tests/test_stage3.py
+0c40705a7eac99bcf9b9ba56d11d034b  tests/test_stage4.py

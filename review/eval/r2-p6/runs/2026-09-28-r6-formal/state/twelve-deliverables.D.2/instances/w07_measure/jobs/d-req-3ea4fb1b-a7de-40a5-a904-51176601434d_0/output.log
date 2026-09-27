@@ -1,0 +1,6 @@
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r6-formal/work/twelve-deliverables.D.2/units/measure
+150.0 3.0 2.0 0.0 -0.2
+ValueError 'ft' illegal unit: 'ft'
+ValueError 'M' illegal unit: 'M'
+ValueError '' illegal unit: ''
+ValueError 'm ' illegal unit: 'm '

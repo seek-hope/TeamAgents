@@ -1,0 +1,36 @@
+import csv
+
+
+def parse(line):
+    """Parse a CSV line into exactly 3 trimmed fields.
+
+    Quoted fields are handled by the ``csv`` module (so embedded commas
+    survive).  Each field then has surrounding whitespace removed.  A row
+    that does not contain exactly three fields is invalid and returns
+    ``None``.
+    """
+    fields = next(csv.reader([line]))
+    if len(fields) != 3:
+        return None
+    return [f.strip() for f in fields]
+
+
+def total(rows):
+    """Sum the amount (third column) of ``rows``.
+
+    Blank third fields count as ``0``.  Rows without a third column are
+    skipped.  Non-blank, non-numeric amounts are reported as bad data by
+    raising ``ValueError``.
+    """
+    result = 0
+    for r in rows:
+        if r is None or len(r) < 3:
+            continue
+        amount = r[2].strip() if isinstance(r[2], str) else r[2]
+        if amount == "":
+            continue
+        try:
+            result += int(amount)
+        except (TypeError, ValueError):
+            raise ValueError("bad amount: %r" % (r[2],))
+    return result

@@ -1,0 +1,16 @@
+{
+  "phase": "formal",
+  "repeats": 3,
+  "groups": [
+    "B",
+    "D"
+  ],
+  "started": "2026-09-28T05:55:13+0800",
+  "config": "eval-config.toml",
+  "config_sha256": "867a5b245d1177c7d10a021464bb310256876d51cb0f1cb816a6cf31067e6d66",
+  "manifest": "manifest-r6.json",
+  "manifest_sha256": "d3021ccdb190e86f94a706bc6aed994fb4af64a09e9a932906afc9cf8c27cf4c",
+  "manifest_analysis_sha256": "07f85926a836d31dd67763a52b061ac4875c361b1f2fb406bf13bf9479cb7b2c",
+  "harness_sha256": "0fa2de56c477a04a7c7b251337145e096f274172d998876ff4d59d6d0424a96b",
+  "git": "51ac15b5db3ab1fea6a37d50015c1607122c4df9"
+}

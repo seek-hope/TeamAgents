@@ -1,0 +1,1 @@
+{"message":{"role":"assistant","reasoning_content":"","content":"","tool_calls":[{"id":"call_00_ET_dzumOHFnyNDakJwp1RYf9076","type":"function","function":{"name":"shell","arguments":"{\"command\": \"cd units/slugify && python3 -m pytest -q\"}"}}]},"usage":{"prompt":2617,"completion":49,"total":2666},"native":{"protocol":"chat_completions","base":"https://api.deepseek.com/v1"}}

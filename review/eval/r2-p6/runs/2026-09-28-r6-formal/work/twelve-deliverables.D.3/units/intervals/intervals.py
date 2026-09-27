@@ -1,0 +1,35 @@
+"""闭区间工具（整数端点，lo <= hi）。"""
+
+
+class Impl:
+    def merge(self, ranges, gap=0):
+        """合并闭区间：按 lo 升序排序后，若相邻两段之间**缺失的整数个数**
+        （next.lo - prev.hi - 1）小于等于 gap 就合并。返回 [(lo, hi), ...] 升序；空输入返回 []。"""
+        items = sorted((r[0], r[1]) for r in ranges)
+        out = []
+        for lo, hi in items:
+            if out and lo - out[-1][1] - 1 <= gap:
+                if hi > out[-1][1]:
+                    out[-1] = (out[-1][0], hi)
+            else:
+                out.append((lo, hi))
+        return out
+
+    def subtract(self, ranges, hole):
+        """从 ranges 中挖去闭区间 hole：返回剩下的闭区间（升序）。与 hole 不相交的段原样保留，
+        被完全覆盖的段消失，横跨 hole 的段分裂成两段。"""
+        hlo, hhi = hole
+        out = []
+        for lo, hi in self.merge(ranges):
+            if hhi < lo or hlo > hi:
+                out.append((lo, hi))
+                continue
+            if lo <= hlo - 1:
+                out.append((lo, hlo - 1))
+            if hhi + 1 <= hi:
+                out.append((hhi + 1, hi))
+        return out
+
+    def total_length(self, ranges):
+        """ranges 覆盖的整数个数之和（闭区间含端点；重叠只算一次）。"""
+        return sum(hi - lo + 1 for lo, hi in self.merge(ranges))

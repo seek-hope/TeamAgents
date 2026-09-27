@@ -1,0 +1,29 @@
+REPORT.md
+units/alpha/check.py
+units/beta/check.py
+units/chain/tests/test_stage1.py
+units/chain/tests/test_stage2.py
+units/chain/tests/test_stage3.py
+units/chain/tests/test_stage4.py
+units/csvfix/test_csvfix.py
+units/flags/test_flags.py
+units/intervals/test_intervals.py
+units/ledger/test_ledger.py
+units/measure/test_measure.py
+units/ranges/test_ranges.py
+units/rules/test_rules.py
+units/schedule/test_schedule.py
+units/slugify/test_slugify.py
+--- final re-run (exact acceptance commands) ---
+csvfix-ok
+rules-ok
+ledger-ok
+schedule-ok
+intervals-ok
+flags-ok
+measure-ok
+slugify-ok
+ranges-ok
+alpha ok
+beta ok
+chain-ok

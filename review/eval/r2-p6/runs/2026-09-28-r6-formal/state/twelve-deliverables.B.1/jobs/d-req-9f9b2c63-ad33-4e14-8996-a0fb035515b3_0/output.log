@@ -1,0 +1,11 @@
+csv quote: ['a,b', '2', 'x']
+csv wrong cols: None
+csv total: 2
+iv merge nested: [(0, 10)]
+iv merge gap: [(1, 5)]
+iv subtract touch: [(0, 3)]
+iv total: 5
+flags terminator: {'values': {}, 'flags': {}, 'positional': ['--not-a-flag', 'x']}
+flags value-like-switch: {'values': {'k': ['-5']}, 'flags': {}, 'positional': []}
+slots gap boundary: [(0, 90), (120, 150)]
+overlaps touch: False True

@@ -1,0 +1,18 @@
+--- leftover stubs ---
+none
+--- REPORT.md ---
+205 REPORT.md
+--- final full run ---
+csvfix     2 passed in 0.01s
+rules      1 passed in 0.01s
+ledger     2 passed in 0.03s
+schedule   2 passed in 0.01s
+intervals  7 passed in 0.01s
+flags      8 passed in 0.01s
+measure    1 passed in 0.01s
+slugify    1 passed in 0.01s
+ranges     1 passed in 0.01s
+chain      4 passed in 0.02s
+alpha      alpha ok
+beta       beta ok
+OVERALL_FAIL=0

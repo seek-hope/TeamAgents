@@ -1,0 +1,12 @@
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r6-formal/work/twelve-deliverables.B.3/units
+slots touching gap=10: [(0, 10), (20, 30)]
+slots gap=9: [(0, 10), (20, 30)]
+overlaps containment: True
+ranges share point: [(1, 6)]
+ranges adjacent ints: [(1, 4), (5, 7)]
+ledger unknown kind raises: yes
+balance: 70
+rules: True False
+measure: 150.0 3 2.0
+measure bad unit raises: yes
+chain stages import ok

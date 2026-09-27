@@ -1,0 +1,38 @@
+$ cd units/csvfix && python3 -m pytest -q
+/bin/bash: line 30: cd: units/csvfix: No such file or directory
+[exit=1]
+$ cd units/rules && python3 -m pytest -q
+/bin/bash: line 30: cd: units/rules: No such file or directory
+[exit=1]
+$ cd units/ledger && python3 -m pytest -q
+/bin/bash: line 30: cd: units/ledger: No such file or directory
+[exit=1]
+$ cd units/schedule && python3 -m pytest -q
+/bin/bash: line 30: cd: units/schedule: No such file or directory
+[exit=1]
+$ cd units/intervals && python3 -m pytest -q
+/bin/bash: line 30: cd: units/intervals: No such file or directory
+[exit=1]
+$ cd units/flags && python3 -m pytest -q
+/bin/bash: line 30: cd: units/flags: No such file or directory
+[exit=1]
+$ cd units/measure && python3 -m pytest -q
+/bin/bash: line 30: cd: units/measure: No such file or directory
+[exit=1]
+$ cd units/slugify && python3 -m pytest -q
+/bin/bash: line 30: cd: units/slugify: No such file or directory
+[exit=1]
+$ cd units/ranges && python3 -m pytest -q
+/bin/bash: line 30: cd: units/ranges: No such file or directory
+[exit=1]
+$ cd units/alpha && python3 check.py
+/bin/bash: line 30: cd: units/alpha: No such file or directory
+[exit=1]
+$ cd units/beta && python3 check.py
+/bin/bash: line 30: cd: units/beta: No such file or directory
+[exit=1]
+$ cd units/chain && python3 -m pytest -q tests/
+/bin/bash: line 30: cd: units/chain: No such file or directory
+[exit=1]
+=================== summary of exit codes ===================
+0

@@ -1,0 +1,14 @@
+PASS pytest units/csvfix
+PASS pytest units/rules
+PASS pytest units/ledger
+PASS pytest units/schedule
+PASS pytest units/intervals
+PASS pytest units/flags
+PASS pytest units/measure
+PASS pytest units/slugify
+PASS pytest units/ranges
+PASS alpha check.py
+PASS beta check.py
+PASS pytest units/chain tests/
+OVERALL=ALL_PASS
+REPORT.md

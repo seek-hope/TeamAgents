@@ -1,0 +1,46 @@
+=== csvfix ===
+=========================== short test summary info ============================
+FAILED test_csvfix.py::test_parse_trims_and_validates - AssertionError: asser...
+1 failed, 1 passed in 0.02s
+=== rules ===
+=========================== short test summary info ============================
+FAILED test_rules.py::test_all_and_any - AssertionError: assert False is True
+1 failed in 0.03s
+=== ledger ===
+FAILED test_ledger.py::test_apply_and_balance - NotImplementedError
+FAILED test_ledger.py::test_apply_rejects_negative - NotImplementedError
+2 failed in 0.03s
+=== schedule ===
+FAILED test_schedule.py::test_slots_merges_and_splits - NotImplementedError
+FAILED test_schedule.py::test_overlaps - NotImplementedError
+2 failed in 0.04s
+=== intervals ===
+FAILED test_intervals.py::test_subtract_normalizes_its_input_first - NotImple...
+FAILED test_intervals.py::test_total_length_counts_each_integer_once - NotImp...
+7 failed in 0.08s
+=== flags ===
+FAILED test_flags.py::test_values_may_look_like_switches - NotImplementedError
+FAILED test_flags.py::test_empty_input - NotImplementedError
+8 failed in 0.09s
+=== measure ===
+=========================== short test summary info ============================
+FAILED test_measure.py::test_cm - NotImplementedError
+1 failed in 0.03s
+=== slugify ===
+=========================== short test summary info ============================
+FAILED test_slugify.py::test_slug - NotImplementedError
+1 failed in 0.04s
+=== ranges ===
+=========================== short test summary info ============================
+FAILED test_ranges.py::test_merge - NotImplementedError
+1 failed in 0.03s
+=== alpha ===
+           ^^^^^^^^^^^^^^^^^^^^
+AssertionError: -1
+=== beta ===
+           ^^^^^^^^^^^^^^^^^^^^
+AssertionError: 7
+=== chain ===
+FAILED tests/test_stage3.py::test_totals - NotImplementedError
+FAILED tests/test_stage4.py::test_report - NotImplementedError
+4 failed in 0.06s

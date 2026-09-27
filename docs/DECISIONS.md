@@ -20,6 +20,57 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-261 The collaboration gain is in *greening*, not writing — measured, then pre-registered (2026-09-28)
+
+Round 5's verdict (D-259) was that the arms are indistinguishable on the *gate* — time to a fully accepted
+result — and it left the question of whether *any* instrument separates them. A third reading of the *same*
+committed sessions found one, and this entry is careful about which half of it is evidence.
+
+**The exploratory reading** (`review/eval/r2-p6/anatomy.py --units`, per unit, from the committed session):
+
+| `twelve-deliverables` (12 units), 3 runs each | B (solo) | D (team) |
+|---|---|---|
+| last unit **written** | 42.5 / 49.8 / 82.0 s | 25.7 / 41.2 / 49.7 s |
+| all 12 units **verified green** | 65.3 / 98.3 / 148.3 s | **51.6 / 53.5 / 59.5 s** |
+
+The six numbers do not overlap: the team arm's slowest run (59.5 s) is faster than the solo arm's fastest
+(65.3 s). The mechanism is the one D-256 and round 5 measured from the other side: **a solo instance batches
+*writing*** — it put all twelve implementations down within ~7–50 s, and its largest single response carried
+11,248 completion tokens in 40 s (~270 tok/s) — while **greening cannot be batched**, because each unit's
+iteration (write → run → observe → fix) depends on the previous run's result. A team greens one unit per
+worker, concurrently; the solo arm greens them in sequence.
+
+**Decided: pre-register the metric and test it on fresh trials** (`review/eval/r2-p6/design-r6.md`,
+`manifest-r6.json`, both written before the round ran), because the reading above chose its metric *after*
+seeing the data. H7 is stated as a non-overlap on 3 fresh repeats per arm (`max(D) < min(B)`); the metric is
+each arm's **own** evidence that a unit is green — a worker's `task_completed … SUCCEEDED` for D, a pytest
+result reporting passes for B, both read by the same tool — and H8 records that the end-to-end gate still does
+not improve (round 5's verdict stands).
+
+**The pre-registered round's result: H7 is NOT confirmed, and the exploratory separation did not reproduce.**
+Six fresh trials (`runs/2026-09-28-r6-formal/`, all accepted) measured: the team arm's all-units-green at
+**55.1 / 45.5 / 41.2 s** and the solo arm's at **116.8 / 53.3 / 84.5 s**. The rule asked for `max(D) < min(B)`;
+the solo arm's fastest run (53.3 s) is *faster* than the team arm's slowest (55.1 s), so the distributions
+overlap and the round says **not confirmed**. Round 5's six-number non-overlap was, at least in part, three
+lucky draws — which is exactly what pre-registering the round was for, and the entry keeps both readings visible
+rather than reporting the flattering one.
+
+**What survived, stated as the secondary reading it is** (same two batches, paired by repeat index): the team arm
+reached all-units-green earlier in **6 of 6 pairs** (round 5: 53.5/59.5/51.6 against 65.3/98.3/148.3; round 6:
+55.1/45.5/41.2 against 116.8/53.3/84.5), with medians **45.5 s against 84.5 s** and **53.5 s against 98.3 s**
+(≈1.8-1.9×). So the *direction* is reproducible and the *magnitude* is consistent; what is not reproducible is a
+strict separation, because the solo arm's batching occasionally greens everything fast.
+
+**And one honest defect of the instrument, recorded because it nearly hid the result**: the `--units` matcher
+first required a unit's *path* form (`units/x`), which the solo arm's loop-style commands (`for u in csvfix rules
+…`) do not use, so two of round 6's three solo runs read as 3/12 units. The fix is general — a unit is matched as
+a whole word in any command form that also names pytest — and after it the two readings above are complete. The
+pre-registered verdict stands as it was measured, and the fix is reported rather than applied silently.
+
+Ceiling: one model (DeepSeek Flash), one provider, one task, n=3 per arm; the two arms' "green" events come from
+different records (a settlement against a test result) — of the same kind, read the same way, but not identical;
+and the finding is about *when the work is green*, not about its quality, which the frozen checks still decide.
+
 ## D-260 The v2 release is prepared at 0.2.0; pushing the tag is the user's (2026-09-28)
 
 The release checklist in `docs/DEVELOPMENT.md` had one step that was *missing* rather than pending: the workflow

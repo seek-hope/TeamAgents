@@ -1,0 +1,173 @@
+### 1 csvfix    : cd units/csvfix && python3 -m pytest -q -p no:cacheprovider
+============================= test session starts ==============================
+platform linux -- Python 3.13.15, pytest-9.0.3, pluggy-1.6.0 -- /opt/miniconda3/bin/python3
+rootdir: /home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r6-formal/work/twelve-deliverables.D.2/units/csvfix
+plugins: anyio-4.12.1
+collecting ... collected 2 items
+
+test_csvfix.py::test_parse_trims_and_validates PASSED                    [ 50%]
+test_csvfix.py::test_total_skips_blank_and_reports_bad PASSED            [100%]
+
+============================== 2 passed in 0.12s ===============================
+exit=0
+
+### 2 rules     : cd units/rules && python3 -m pytest -q -p no:cacheprovider
+============================= test session starts ==============================
+platform linux -- Python 3.13.15, pytest-9.0.3, pluggy-1.6.0 -- /opt/miniconda3/bin/python3
+rootdir: /home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r6-formal/work/twelve-deliverables.D.2/units/rules
+plugins: anyio-4.12.1
+collecting ... collected 1 item
+
+test_rules.py::test_all_and_any PASSED                                   [100%]
+
+============================== 1 passed in 0.10s ===============================
+exit=0
+
+### 3 ledger    : cd units/ledger && python3 -m pytest -q -p no:cacheprovider
+============================= test session starts ==============================
+platform linux -- Python 3.13.15, pytest-9.0.3, pluggy-1.6.0 -- /opt/miniconda3/bin/python3
+rootdir: /home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r6-formal/work/twelve-deliverables.D.2/units/ledger
+plugins: anyio-4.12.1
+collecting ... collected 2 items
+
+test_ledger.py::test_apply_and_balance PASSED                            [ 50%]
+test_ledger.py::test_apply_rejects_negative PASSED                       [100%]
+
+============================== 2 passed in 0.09s ===============================
+exit=0
+
+### 4 schedule  : cd units/schedule && python3 -m pytest -q -p no:cacheprovider
+============================= test session starts ==============================
+platform linux -- Python 3.13.15, pytest-9.0.3, pluggy-1.6.0 -- /opt/miniconda3/bin/python3
+rootdir: /home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r6-formal/work/twelve-deliverables.D.2/units/schedule
+plugins: anyio-4.12.1
+collecting ... collected 2 items
+
+test_schedule.py::test_slots_merges_and_splits PASSED                    [ 50%]
+test_schedule.py::test_overlaps PASSED                                   [100%]
+
+============================== 2 passed in 0.13s ===============================
+exit=0
+
+### 5 intervals : cd units/intervals && python3 -m pytest -q -p no:cacheprovider
+============================= test session starts ==============================
+platform linux -- Python 3.13.15, pytest-9.0.3, pluggy-1.6.0 -- /opt/miniconda3/bin/python3
+rootdir: /home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r6-formal/work/twelve-deliverables.D.2/units/intervals
+plugins: anyio-4.12.1
+collecting ... collected 7 items
+
+test_intervals.py::test_merge_orders_joins_and_keeps_real_gaps PASSED    [ 14%]
+test_intervals.py::test_merge_gap_counts_missing_integers PASSED         [ 28%]
+test_intervals.py::test_merge_ignores_nested_and_backwards PASSED        [ 42%]
+test_intervals.py::test_subtract_splits_inside PASSED                    [ 57%]
+test_intervals.py::test_subtract_covers_and_touches PASSED               [ 71%]
+test_intervals.py::test_subtract_normalizes_its_input_first PASSED       [ 85%]
+test_intervals.py::test_total_length_counts_each_integer_once PASSED     [100%]
+
+============================== 7 passed in 0.11s ===============================
+exit=0
+
+### 6 flags     : cd units/flags && python3 -m pytest -q -p no:cacheprovider
+============================= test session starts ==============================
+platform linux -- Python 3.13.15, pytest-9.0.3, pluggy-1.6.0 -- /opt/miniconda3/bin/python3
+rootdir: /home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r6-formal/work/twelve-deliverables.D.2/units/flags
+plugins: anyio-4.12.1
+collecting ... collected 8 items
+
+test_flags.py::test_equals_and_space_forms_agree PASSED                  [ 12%]
+test_flags.py::test_switch_when_no_value_follows PASSED                  [ 25%]
+test_flags.py::test_bundled_short_switches PASSED                        [ 37%]
+test_flags.py::test_repeated_key_accumulates_in_order PASSED             [ 50%]
+test_flags.py::test_repeated_switch_stays_true PASSED                    [ 62%]
+test_flags.py::test_positional_and_dash_terminator PASSED                [ 75%]
+test_flags.py::test_values_may_look_like_switches PASSED                 [ 87%]
+test_flags.py::test_empty_input PASSED                                   [100%]
+
+============================== 8 passed in 0.07s ===============================
+exit=0
+
+### 7 measure   : cd units/measure && python3 -m pytest -q -p no:cacheprovider
+============================= test session starts ==============================
+platform linux -- Python 3.13.15, pytest-9.0.3, pluggy-1.6.0 -- /opt/miniconda3/bin/python3
+rootdir: /home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r6-formal/work/twelve-deliverables.D.2/units/measure
+plugins: anyio-4.12.1
+collecting ... collected 1 item
+
+test_measure.py::test_cm PASSED                                          [100%]
+
+============================== 1 passed in 0.14s ===============================
+exit=0
+
+### 8 slugify   : cd units/slugify && python3 -m pytest -q -p no:cacheprovider
+============================= test session starts ==============================
+platform linux -- Python 3.13.15, pytest-9.0.3, pluggy-1.6.0 -- /opt/miniconda3/bin/python3
+rootdir: /home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r6-formal/work/twelve-deliverables.D.2/units/slugify
+plugins: anyio-4.12.1
+collecting ... collected 1 item
+
+test_slugify.py::test_slug PASSED                                        [100%]
+
+============================== 1 passed in 0.10s ===============================
+exit=0
+
+### 9 ranges    : cd units/ranges && python3 -m pytest -q -p no:cacheprovider
+============================= test session starts ==============================
+platform linux -- Python 3.13.15, pytest-9.0.3, pluggy-1.6.0 -- /opt/miniconda3/bin/python3
+rootdir: /home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r6-formal/work/twelve-deliverables.D.2/units/ranges
+plugins: anyio-4.12.1
+collecting ... collected 1 item
+
+test_ranges.py::test_merge PASSED                                        [100%]
+
+============================== 1 passed in 0.09s ===============================
+exit=0
+
+### 10 alpha    : cd units/alpha && python3 check.py
+alpha ok
+exit=0
+
+### 11 beta     : cd units/beta && python3 check.py
+beta ok
+exit=0
+
+### 12 chain    : cd units/chain && python3 -m pytest -q tests/ -p no:cacheprovider
+============================= test session starts ==============================
+platform linux -- Python 3.13.15, pytest-9.0.3, pluggy-1.6.0 -- /opt/miniconda3/bin/python3
+rootdir: /home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r6-formal/work/twelve-deliverables.D.2/units/chain
+plugins: anyio-4.12.1
+collecting ... collected 4 items
+
+tests/test_stage1.py::test_parse PASSED                                  [ 25%]
+tests/test_stage2.py::test_filter PASSED                                 [ 50%]
+tests/test_stage3.py::test_totals PASSED                                 [ 75%]
+tests/test_stage4.py::test_report PASSED                                 [100%]
+
+============================== 4 passed in 0.14s ===============================
+exit=0
+
+=== FINAL CLEAN AGGREGATE RUN (no bytecode, no cache) ===
+--- csvfix
+2 passed in 0.01s
+--- rules
+1 passed in 0.02s
+--- ledger
+2 passed in 0.01s
+--- schedule
+2 passed in 0.01s
+--- intervals
+7 passed in 0.02s
+--- flags
+8 passed in 0.02s
+--- measure
+1 passed in 0.01s
+--- slugify
+1 passed in 0.01s
+--- ranges
+1 passed in 0.01s
+--- alpha
+alpha ok
+--- beta
+beta ok
+--- chain
+4 passed in 0.05s
+ALL_OK=1

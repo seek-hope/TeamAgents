@@ -55,7 +55,7 @@ the log is still a supported way to observe it (and the probes that do assert on
 | `inbox_drained` | `instance_id` | `applied`, `sealed` | `core/src/v2/control.rs:922` | observability only |
 | `input` | `instance_id` | `applied`, `envelope_id` | `core/src/v2/control.rs:1456` | `tui/scripts/pty_v2_smoke.py`, `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs`, `engine/src/providers/anthropic.rs`, `engine/src/providers/responses.rs`, `engine/tests/providers_fake.rs`, `engine/tests/v2_driver.rs`, `engine/tests/v2_mcp.rs`, `engine/tests/v2_spawn_failure.rs`, `engine/tests/v2_supervisor.rs` |
 | `input_queued` | `instance_id` | `envelope_id`, `phase` | `core/src/v2/control.rs:1409` | `engine/src/v2/exec.rs`, `engine/tests/v2_daemon.rs`, `review/dogfood/crash.py`, `review/dogfood/queued_input.py` |
-| `instance_created` | `id` | `instance_id` | `core/src/v2/control.rs:679` | `tui/src/v2app.rs` |
+| `instance_created` | `id` | `instance_id` | `core/src/v2/control.rs:679` | `tui/src/v2app.rs`, `review/eval/r2-p6/anatomy.py` |
 | `instance_lifecycle` | `instance_id` | `lifecycle`, `reason` | `core/src/v2/control.rs:3006` | `tui/scripts/pty_v2_smoke.py`, `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs`, `engine/src/v2/daemon.rs`, `engine/src/v2/exec.rs`, `engine/tests/cli.rs`, `engine/tests/v2_driver.rs`, `engine/tests/v2_supervisor.rs`, `review/dogfood/budget.py`, `review/dogfood/deadline.py`, `review/dogfood/lifecycle_run.py`, `review/dogfood/mcp_http.py` |
 | `instance_reset` | `instance_id` | `closed`, `new_epoch`, `old_epoch`, `reason` | `core/src/v2/control.rs:596` | `engine/src/v2/exec.rs`, `review/dogfood/lifecycle_run.py` |
 | `instance_spawned` | `instance_id` | `spawner`, `task` | `core/src/v2/control.rs:734` | `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs`, `engine/tests/v2_driver.rs` |
@@ -72,7 +72,7 @@ the log is still a supported way to observe it (and the probes that do assert on
 | `response_imported` | `&request_instance` | `decision_id`, `intents`, `phase`, `request_id` | `core/src/v2/control.rs:2572` | `tui/src/v2app.rs`, `engine/tests/v2_driver.rs` |
 | `task_blocked` | `&task` | `operation_id`, `reason`, `task_id` | `core/src/v2/control.rs:2660` | `tui/src/v2app.rs`, `review/dogfood/unknown_outcome.py` |
 | `task_cancelled` | `&assignee` | `reason`, `task_id` | `core/src/v2/control.rs:1273` | `tui/scripts/pty_v2_smoke.py`, `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs` |
-| `task_completed` | `&requester` | `assignee`, `delivered`, `status`, `task_id` | `core/src/v2/control.rs:1206` | `tui/src/v2app.rs`, `engine/tests/v2_driver.rs`, `review/dogfood/providers.py` |
+| `task_completed` | `&requester` | `assignee`, `delivered`, `status`, `task_id` | `core/src/v2/control.rs:1206` | `tui/src/v2app.rs`, `engine/tests/v2_driver.rs`, `review/dogfood/providers.py`, `review/eval/r2-p6/anatomy.py` |
 | `task_delegated` | `assignee` | `envelope_id`, `goal_id`, `requester`, `task_id` | `core/src/v2/control.rs:1045` | `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs`, `review/dogfood/providers.py` |
 | `task_started` | `&assignee` | `task_id` | `core/src/v2/control.rs:1078` | `tui/src/v2app.rs`, `review/dogfood/providers.py` |
 | `wait_satisfied` | `&instance_id` | `wait_id` | `core/src/v2/control.rs:2343` | `engine/tests/v2_driver.rs` |

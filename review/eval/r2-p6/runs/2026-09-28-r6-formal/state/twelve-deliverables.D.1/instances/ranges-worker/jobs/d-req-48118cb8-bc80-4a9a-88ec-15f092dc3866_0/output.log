@@ -1,0 +1,6 @@
+total 16
+drwxr-xr-x  2 rimuru rimuru 4096 Sep 28 03:46 .
+drwxr-xr-x 14 rimuru rimuru 4096 Sep 28 04:52 ..
+-rw-r--r--  1 rimuru rimuru   84 Sep 28 03:46 ranges.py
+-rw-r--r--  1 rimuru rimuru  178 Sep 28 03:46 test_ranges.py
+3.13.15 | packaged by Anaconda, Inc. | (main, Aug 14 2026, 17:26:23) [GCC 14.3.0]

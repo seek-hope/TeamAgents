@@ -1,0 +1,14 @@
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r6-formal/work/twelve-deliverables.D.1/units/intervals
+.......                                                                  [100%]
+7 passed in 0.01s
+ M docs/DECISIONS.md
+ M review/eval/r2-p6/anatomy.py
+ M review/eval_manifests.py
+ M review/eval_surface.py
+?? review/eval/r2-p6/design-r6.md
+?? review/eval/r2-p6/manifest-r6.json
+?? review/eval/r2-p6/runs/2026-09-28-r6-formal/
+total 12
+-rw-r--r-- 1 rimuru rimuru 1517 Sep 28 06:03 intervals.py
+drwxr-xr-x 2 rimuru rimuru 4096 Sep 28 06:03 __pycache__
+-rw-r--r-- 1 rimuru rimuru 1346 Sep 28 03:44 test_intervals.py

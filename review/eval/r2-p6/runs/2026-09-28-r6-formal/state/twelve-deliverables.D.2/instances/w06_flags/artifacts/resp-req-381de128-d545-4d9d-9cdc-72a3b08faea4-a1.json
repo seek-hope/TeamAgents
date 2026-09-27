@@ -1,0 +1,1 @@
+{"message":{"role":"assistant","reasoning_content":"Let me look at the test file.","content":"","tool_calls":[{"id":"call_00_m0AOAdYil6AOicgylRLH7686","type":"function","function":{"name":"glob","arguments":"{\"pattern\": \"units/flags/**\"}"}}]},"usage":{"prompt":2300,"completion":48,"total":2348},"native":{"protocol":"chat_completions","base":"https://api.deepseek.com/v1"}}

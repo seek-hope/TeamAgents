@@ -1,0 +1,1 @@
+{"message":{"role":"assistant","reasoning_content":"","content":"","tool_calls":[{"id":"call_00_ET_UI86kYf2h6PV0gjRaypn8167","type":"function","function":{"name":"shell","arguments":"{\"command\": \"cd units/csvfix && python3 -m pytest -q\"}"}}]},"usage":{"prompt":3353,"completion":49,"total":3402},"native":{"protocol":"chat_completions","base":"https://api.deepseek.com/v1"}}

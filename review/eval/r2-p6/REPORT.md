@@ -106,6 +106,28 @@ ability to batch mechanical work is a genuine strength, not an artifact. A diffe
 take away that ability (a per-response output ceiling, or units so large that one response cannot hold several)
 rather than add units — and that is a design decision for the user, recorded in ACCEPTANCE's Q16 gap.
 
+## Round 6 (2026-09-28, D-261): time to all units verified green — pre-registered, not confirmed
+
+Round 5's verdict was that the arms are indistinguishable on the *gate* (wall clock to a fully accepted result).
+A per-unit re-reading of round 5's own sessions (`anatomy.py --units`) suggested a different instrument: a solo
+instance **writes** every unit almost immediately (it batches) but **greens** them one test round at a time,
+while a team greens one unit per worker, concurrently. Round 6 pre-registered that metric and its rule
+(`design-r6.md`: `max(D) < min(B)` over 3 fresh repeats per arm) before running anything.
+
+| `twelve-deliverables` (12 units), 3 fresh repeats | solo arm: all 12 green | team arm: all 12 green |
+|---|---|---|
+| round 6 (`runs/2026-09-28-r6-formal/`) | 116.8 / **53.3** / 84.5 s | **55.1** / 45.5 / 41.2 s |
+| round 5 (exploratory) | 65.3 / 98.3 / 148.3 s | 51.6 / 53.5 / 59.5 s |
+
+**Not confirmed**: the solo arm's fastest run (53.3 s) is faster than the team arm's slowest (55.1 s), so the
+distributions overlap and round 5's clean six-number separation did not reproduce. Both readings are printed;
+the flattering one is not.
+
+**The secondary reading, labelled as such**: paired by repeat index across both batches, the team arm was earlier
+in **6 of 6 pairs**, with medians 45.5 s against 84.5 s and 53.5 s against 98.3 s (≈1.8–1.9×) — a consistent
+direction and magnitude that a strict non-overlap bar does not capture at n=3 per arm. The frozen checks still
+decide acceptance, and both arms pass them in every repeat; quality is not what this section measures.
+
 ## Cost (real tokens, DeepSeek billing)
 
 | Batch | A | B | C |

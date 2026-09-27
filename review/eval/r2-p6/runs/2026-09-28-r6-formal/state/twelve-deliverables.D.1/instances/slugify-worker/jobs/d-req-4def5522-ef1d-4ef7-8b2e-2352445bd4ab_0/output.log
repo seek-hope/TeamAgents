@@ -1,0 +1,9 @@
+.                                                                        [100%]
+1 passed in 0.01s
+ M docs/DECISIONS.md
+ M review/eval/r2-p6/anatomy.py
+ M review/eval_manifests.py
+ M review/eval_surface.py
+?? review/eval/r2-p6/design-r6.md
+?? review/eval/r2-p6/manifest-r6.json
+?? review/eval/r2-p6/runs/2026-09-28-r6-formal/
