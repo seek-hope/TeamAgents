@@ -18,10 +18,20 @@ in `core|engine|tui/src` outside a `#[cfg(test)] mod`)? — and the documents ha
 
     python3 review/project_config_claim.py
 
+**D-236 added the sibling fact in the same files.** The *user* config's path is stated in five places — the
+README, the user guide, the config reference, the install guide and `install.sh`, which **writes** the very file
+the product reads — and the code builds it as `xdg_config_home().join(APP).join("config.toml")`. The audit now
+derives `<APP>/config.toml` from that function (and reports if its shape changes, so the rule cannot quietly stop
+reading), requires every one of those five statements to name it, and requires the line that names it to say which
+directory it sits in (`XDG_CONFIG_HOME` or the `~/.config` default). A rename would otherwise leave the installer
+writing a config nothing reads. Controls: `--doc` on a README copy with the path renamed reports the missing path,
+and one with the directory half dropped reports that half.
+
 Ceiling: the negative half is a fixed sentence list, and the positive half is a blacklist of the three
 wordings that were wrong, so a *new* wording that claims the merge is live without matching one of them is
 not caught — review has to keep this list in step with the prose.
 """
+import argparse
 import pathlib
 import re
 import sys
@@ -47,6 +57,22 @@ WIRED_ONLY_PHRASES = [
     ("docs/CONFIG.md", "project file *is* read"),
     ("docs/USER-GUIDE.md", "a cloned project's tools load only with"),
     ("docs/ACCEPTANCE.md", "or a trusted project config"),
+]
+
+# (D-236) The *user* config's path is the sibling fact, stated in the same files and compared by nothing: the
+# code builds `xdg_config_home().join(APP).join("config.toml")`, and five places say where that is — two
+# documents (twice each in the guides), the generated reference and the installer, which *writes* the very file
+# the product reads. A rename of the directory or the file would leave the installer writing a config nothing
+# reads, which is the sort of disagreement no gate looked at (measured 2026-09-27).
+UPATH_SOURCE = REPO / "engine/src/config.rs"
+UPATH_FN = re.compile(r"pub fn user_config_path\(\)[^{]*\{(.*?)\n\}", re.S)
+UPATH_APP = re.compile(r'pub const APP: &str = "([^"]+)"')
+UPATH_FILES = [
+    ("README.md", "the README's install section"),
+    ("docs/USER-GUIDE.md", "the user guide's configuration section"),
+    ("docs/CONFIG.md", "the config reference's first line"),
+    ("docs/INSTALL.md", "the install guide's first-configuration section"),
+    ("install.sh", "the installer, which writes the default config"),
 ]
 
 
@@ -85,6 +111,11 @@ def normalize(text: str) -> str:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--doc", action="append", default=[], metavar="PATH=FILE",
+                        help="read one of the documents from FILE instead (a copy is the control)")
+    args = parser.parse_args()
+    overrides = dict(item.split("=", 1) for item in args.doc)
     calls = production_calls()
     wired = calls > 0
     state = "is" if wired else "is not"
@@ -99,6 +130,23 @@ def main() -> int:
     for path, phrase in WIRED_ONLY_PHRASES:
         if not wired and normalize(phrase) in normalize((REPO / path).read_text()):
             findings.append(f"{path}: {phrase!r} claims the merge is live, but no entry point calls the loader")
+    # D-236: the user config's path, derived from the code, against every place that states it
+    source = UPATH_SOURCE.read_text()
+    app, body = UPATH_APP.search(source), UPATH_FN.search(source)
+    if app is None or body is None or 'join("config.toml")' not in body.group(1) or "join(APP)" not in body.group(1):
+        findings.append("engine/src/config.rs: `user_config_path()` no longer builds `<xdg_config_home>/<APP>/"
+                        "config.toml`, so this audit cannot derive the path it holds the documents to")
+    else:
+        tail = f"{app.group(1)}/config.toml"
+        for path, where in UPATH_FILES:
+            text = pathlib.Path(overrides[path]).read_text() if path in overrides else (REPO / path).read_text()
+            stated = [line for line in text.split("\n") if tail in line]
+            if not stated:
+                findings.append(f"{path} ({where}) does not name the user config path {tail!r}, which is what the "
+                                "code builds: the path is one fact with several statements")
+            elif not any("XDG_CONFIG_HOME" in line or "~/.config" in line for line in stated):
+                findings.append(f"{path}: the line naming {tail!r} does not say which directory it sits in — "
+                                "`XDG_CONFIG_HOME` (or the `~/.config` default) is the other half of the path")
     for finding in findings:
         print("FAIL:", finding)
     if wired and not findings:

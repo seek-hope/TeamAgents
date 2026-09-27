@@ -18,6 +18,30 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-236 The user config's path was stated in five places and compared in none (2026-09-27)
+
+D-235 held the exit codes to the code that produces them. The same shape sits one file over: the **user** config's
+path. The code builds it as `xdg_config_home().join(APP).join("config.toml")` — `APP` is the product's own
+directory name — and five places state where that is: the README's install section, the user guide's
+configuration section, the generated config reference, the install guide, and `install.sh`, which **writes** the
+very file the product reads. Measured 2026-09-27: nothing compared them, so a rename of the directory or the file
+would leave the installer writing a config no run reads, and five documents agreeing on the wrong path.
+
+**Fixed**: `review/project_config_claim.py` — the audit that already holds "the project config is not read" to
+every document that states it — now derives `<APP>/config.toml` from `user_config_path()` (and *reports* when that
+function's shape changes, so the rule cannot quietly stop reading the code) and requires every one of the five
+statements to name it, with the line that names it also saying which directory it sits in (`XDG_CONFIG_HOME`, or
+the `~/.config` default). `--doc` reads a copy, which the audit had no way to do before.
+**Controls**: a README copy with the path renamed reports the missing path; one with the directory half dropped
+reports that half.
+
+Ceiling: only the *tail* is compared verbatim, so the directory half is checked by its presence on the line
+rather than by equality — the documents deliberately use three forms of it (`$XDG_CONFIG_HOME`,
+`${XDG_CONFIG_HOME:-$HOME/.config}`, `~/.config` as the stated default), and which form a sentence uses is a
+matter of context; the file list is fixed, so a *new* document that states the path is not swept in (the
+`docs/DEVELOPMENT.md` recipes and the probes mention the file without claiming where it lives, which is the line
+this draws); and the project-config half of the audit still carries D-133's blacklist ceiling.
+
 ## D-235 The exit-code contract was pinned in code and unchecked in the documents (2026-09-27)
 
 The headless client's exit codes are the product's most machine-read contract: a CI script branches on them.
