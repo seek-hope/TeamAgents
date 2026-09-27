@@ -14,7 +14,10 @@ exploration. The boundaries are in "Boundaries" below and in [REPORT.md](REPORT.
 words, and a recipe whose status was a `grep` for those could pass while a property was violated (D-122). A run
 that prints a `Warning:` is a failure too (D-206): TLC reports an inconsistent model — an `UNCHANGED` list that
 contradicts an assignment, so the action is inert — as a warning and still says `No error has been found`, which is
-how the first version of `V2Jobs` had a counterfactual that silently *verified* instead of refuting.
+how the first version of `V2Jobs` had a counterfactual that silently *verified* instead of refuting. One ordering
+note (D-202): §0 pins the commit the gates were last run at, and the rule that checks it reads the *committed*
+material — so a change to `tla/` or `kani/` lands one commit before the pin that documents its re-run, which is the
+shape D-206 was committed in.
 
 ## Running
 
