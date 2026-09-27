@@ -161,9 +161,10 @@ api_key_env = "ANYSEARCH_API_KEY"
 - `context_window` drives the request budget and the compaction threshold; real models must use their native
   window, and the value and its source are recorded (D-36 in `docs/DECISIONS.md`).
 - `teamagents doctor` checks the config item by item, that every model profile's credential resolves, the
-  state root (stamp, WAL, read/write), the daemon socket path (Linux's 108-byte `sun_path` limit, which a
-  deep state root can cross — D-227), the bubblewrap isolation probe and that the programs named in
-  `[hooks]` are executable; it also lists the `[[checks]]` that will gate every goal. An `sessions/` layout
+  state root (stamp, WAL, read/write) and the paths under it (a directory where `session.sqlite` or
+  `daemon.sock` belongs — D-228), the daemon socket path's length (Linux's 108-byte `sun_path` limit,
+  which a deep state root can cross — D-227), the bubblewrap isolation probe and that the programs named
+  in `[hooks]` are executable; it also lists the `[[checks]]` that will gate every goal. An `sessions/` layout
   from an earlier release is reported explicitly and is never migrated.
 - A `[tools.*]` binding with `kind = "web_search"` needs a credential: `api_key_env` names the environment
   variable it authenticates with. Without it — not configured, or the named variable unset — a search call

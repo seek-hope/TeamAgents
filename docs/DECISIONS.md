@@ -18,6 +18,36 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-228 The two path inversions under a state root were unclassified (2026-09-27)
+
+D-166 fixed one shape — the state root that is a *file* — and D-227 the socket path past `sun_path`. A sweep of
+the neighbouring shapes, run through the real binary on 2026-09-27, found the two **inversions** unclassified:
+
+| The shape | What the product said | What it should have said |
+|---|---|---|
+| a **directory** named `session.sqlite` | `init`/`doctor`: SQLite's `unable to open database file`, the path printed three times and no fix | the database path is a directory; it must be the file that holds the session |
+| a **directory** named `daemon.sock` | `exec`: `connect …: Connection refused (os error 111); start teamagents daemon first` — a diagnosis pointing at the daemon, which is not the problem — while `doctor` reported the root `[ok]` | the socket path is a directory; nothing can bind it |
+| an **ancestor** of the root that is a file | `init`: `create …: Not a directory (os error 20)` | *which* component is a file, and that the root cannot be created under it |
+
+**Fixed with one predicate and the same three callers D-227 used**: `cli::require_state_paths_kind` walks the
+root's ancestors for a file, and refuses a `session.sqlite`/`daemon.sock` that exists but is not a file, in one
+wording each (so a row and a refusal cannot drift apart). `init` refuses such a root; `doctor` reports
+`[FAIL] state root paths` and — in D-166's shape — **replaces** the rows whose advice cannot be followed, so
+SQLite's raw message is gone rather than joined; the client (`ensure_daemon`) and the daemon (`serve`) refuse
+before either tries to use the path.
+
+**Measured after**: `init` exits 1 naming the directory and the fix; `doctor` exits 1 with the one classified
+row (no `unable to open database file` anywhere); `exec` exits 2 with `… is a directory, but that path is the
+daemon's socket — remove the directory and start the session again`, and spawns nothing. **Test**: an
+integration test drives the real binary through both inversions and asserts the messages, the exit codes, the
+row, and that the old misleading advice is *absent* (`start teamagents daemon first`). **Documents**:
+`docs/INSTALL.md`'s troubleshooting table and the user guide's list of what `doctor` checks.
+
+Ceiling: the kind check reads the *conventional* paths (`<state root>/session.sqlite`, `<state root>/daemon.sock`),
+so a non-standard layout is out of scope; it follows symlinks (`is_file`/`is_dir` do), so a symlink to a directory
+is refused as a directory, which is the honest answer for a path that must be a file; and it cannot tell a
+directory the *user* created from one a tool left behind — it names the path and lets the user decide.
+
 ## D-227 A state root too deep for a Unix socket was diagnosed as `[ok]` (2026-09-27)
 
 D-226's ceiling recorded the fragility its TMPDIR experiment stumbled on; this entry closes it. Linux's

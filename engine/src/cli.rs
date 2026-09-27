@@ -43,6 +43,9 @@ pub fn prepare_v2_root(state_root: Option<PathBuf>) -> Result<PathBuf, String> {
     // `init` is where a user meets that — printing the socket path as if it were usable sent them to a later
     // failure whose OS answer names no fix.
     require_socket_path_fits(&root.join("daemon.sock"))?;
+    // D-228: and the paths under the root must have the right kind — a directory named `session.sqlite` or
+    // `daemon.sock` (or an ancestor that is a file) fails later with an error that names no fix.
+    require_state_paths_kind(&root)?;
     let fresh = !root.exists();
     std::fs::create_dir_all(&root).map_err(|e| format!("create {}: {e}", root.display()))?;
     let db = root.join("session.sqlite");
@@ -212,13 +215,19 @@ pub fn doctor(state_root: Option<PathBuf>) -> i32 {
     // layout is only reported (its cleanup belongs to the archived plan's §14/R28)
     let v2_root = state_root.unwrap_or_else(crate::v2_root);
     let v2_db = v2_root.join("session.sqlite");
-    // D-227: the row that would have been green in the probe that found this — a root whose socket path cannot
-    // be bound is a FAIL, because no client and no daemon can use it.
+    // D-227/D-228: the rows that would have been green in the probes that found them — a root whose socket
+    // path cannot be bound, and paths under it whose *kind* is wrong, are FAILs: nothing can use that root.
     match require_socket_path_fits(&v2_root.join("daemon.sock")) {
         Ok(()) => {}
         Err(error) => check(&mut results, "daemon socket", false, error),
     }
-    if v2_root.exists() && !v2_root.is_dir() {
+    // D-228, in D-166's shape: when the paths' kind is wrong, the rows below would report SQLite's raw
+    // `unable to open database file` (three times, and no fix), so this row replaces them rather than joining
+    // them — and `init` refuses the same root with the same words.
+    let mut kind_error = require_state_paths_kind(&v2_root).err();
+    if let Some(error) = kind_error.take() {
+        check(&mut results, "state root paths", false, error);
+    } else if v2_root.exists() && !v2_root.is_dir() {
         // D-166: the root is a *file* (usually the session database itself). The rows below would say "not
         // initialized yet; `teamagents init` creates it" — advice that cannot be followed, because `init`
         // refuses the same path. So this is a FAIL, with the words the other entry points use.
@@ -673,6 +682,56 @@ pub fn require_socket_path_fits(socket: &Path) -> Result<(), String> {
          limit: {} — point XDG_STATE_HOME (or HOME) at a shorter directory and run `teamagents init` again",
         socket.display()
     ))
+}
+
+/// The paths under a state root must have the right *kind* before anything uses them (D-228).
+///
+/// D-166 fixed the state root that is a *file*; these are the two inversions one segment in, both measured
+/// 2026-09-27. A **directory** named `session.sqlite` made `init` fail with SQLite's own
+/// `unable to open database file` — the path printed three times and no fix — and a **directory** named
+/// `daemon.sock` made the client answer `connect …: Connection refused … start teamagents daemon first`, a
+/// diagnosis pointing at the daemon, while `doctor` called that state root `[ok]`. The create path below it is
+/// the third shape: an *ancestor* that is a file makes `create_dir_all` answer `Not a directory (os error 20)`,
+/// which names neither the component nor the fix.
+pub fn require_state_paths_kind(root: &Path) -> Result<(), String> {
+    // 1. an ancestor that is a file: the root cannot be created under it
+    let mut ancestor = root;
+    loop {
+        match ancestor.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => ancestor = parent,
+            _ => break,
+        }
+        if ancestor.exists() && !ancestor.is_dir() {
+            return Err(format!(
+                "{} is a file, so the state root {} cannot be created under it — point --state-root (or \
+                 XDG_STATE_HOME) at a directory that exists, or one whose parents do",
+                ancestor.display(),
+                root.display()
+            ));
+        }
+    }
+    // 2. the database path as a directory: it must be the file that holds the session. (Directories only: an
+    // *existing* `session.sqlite` is a regular file, and a live socket under the same rule is not a file either —
+    // measured while this check first ran, when `!is_file()` refused a legitimate `daemon.sock` and broke three
+    // tests whose daemons were running.)
+    let db = root.join("session.sqlite");
+    if db.is_dir() {
+        return Err(format!(
+            "{} is a directory, but that path is the session database file — remove the directory (or point \
+             --state-root/XDG_STATE_HOME at another one) and run `teamagents init` again",
+            db.display()
+        ));
+    }
+    // 3. the socket path as a directory: nothing can bind it
+    let socket = root.join("daemon.sock");
+    if socket.is_dir() {
+        return Err(format!(
+            "{} is a directory, but that path is the daemon's socket — remove the directory and start the \
+             session again",
+            socket.display()
+        ));
+    }
+    Ok(())
 }
 
 /// The one wording for a `--state-root` that cannot be a state root. The callers that refuse it and the one

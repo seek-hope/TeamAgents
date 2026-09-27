@@ -682,6 +682,9 @@ fn ensure_daemon(request: DaemonRequest<'_>) -> Result<(PathBuf, bool), String> 
     // D-227: and for a root whose socket path crosses Linux's `sun_path` limit — the daemon refuses it too, but
     // the client should not spawn one to read that back (the same reasoning as D-163/D-166 above).
     cli::require_socket_path_fits(&socket)?;
+    // D-228: a directory named `daemon.sock` (or `session.sqlite`) used to answer `Connection refused … start
+    // teamagents daemon first`, which points at the wrong thing.
+    cli::require_state_paths_kind(state_root)?;
     // liveness is a *connection*, not the presence of a socket file: a crashed
     // daemon leaves a stale file that would make bind fail if we kept it
     if socket.exists() {

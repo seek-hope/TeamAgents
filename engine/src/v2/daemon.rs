@@ -65,6 +65,7 @@ where
     // D-227: refuse before binding, so the answer names the limit and the fix instead of the OS's
     // `bind …: path must be shorter than SUN_LEN` (`cli::require_socket_path_fits` holds the boundary).
     crate::cli::require_socket_path_fits(&config.socket)?;
+    crate::cli::require_state_paths_kind(config.socket.parent().unwrap_or(&config.socket))?;
     let supervisor = Arc::new(super::supervisor::start(config.supervisor).await?);
     if let Some(parent) = config.socket.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("socket dir: {e}"))?;

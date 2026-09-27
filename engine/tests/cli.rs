@@ -131,6 +131,54 @@ fn teamagents(args: &[&str], state_home: &std::path::Path, config_home: &std::pa
     text
 }
 
+/// D-228: the two inversions of D-166's mistake — a *directory* where the session database or the socket
+/// belongs. Measured 2026-09-27: `init` answered SQLite's `unable to open database file` (the path three times,
+/// no fix), `exec` answered `Connection refused … start teamagents daemon first` (a diagnosis pointing at the
+/// daemon) and `doctor` called that root `[ok]`. All three now name the shape and the fix.
+#[test]
+fn a_directory_where_the_database_or_socket_belongs_is_refused_with_the_shape_named() {
+    let home = Scratch::new("pathkind");
+    let config_home = home.join("config");
+    std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
+    std::fs::write(
+        config_home.join("teamagents/config.toml"),
+        "[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\napi_key_env = \"TA_PATHKIND_KEY\"\n\
+         base_url = \"http://127.0.0.1:1/v1\"\n",
+    )
+    .unwrap();
+    let run = |state_home: &std::path::Path, args: &[&str]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_teamagents"))
+            .args(args)
+            .env("XDG_STATE_HOME", state_home)
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("TA_PATHKIND_KEY", "test-value")
+            .output()
+            .expect("run cli");
+        let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+        text.push_str(&String::from_utf8_lossy(&output.stderr));
+        (output.status.code(), text)
+    };
+
+    // the session database as a directory
+    let db_root = home.join("db");
+    std::fs::create_dir_all(db_root.join("teamagents/v2/session.sqlite")).unwrap();
+    let (code, text) = run(&db_root, &["init"]);
+    assert_ne!(code, Some(0), "{text}");
+    assert!(text.contains("is a directory, but that path is the session database file"), "{text}");
+    let (code, text) = run(&db_root, &["doctor"]);
+    assert_ne!(code, Some(0), "doctor must fail a root nothing can use: {text}");
+    assert!(text.contains("[FAIL] state root paths"), "{text}");
+    assert!(!text.contains("unable to open database file"), "SQLite's raw message is replaced: {text}");
+
+    // the socket as a directory
+    let sock_root = home.join("sock");
+    std::fs::create_dir_all(sock_root.join("teamagents/v2/daemon.sock")).unwrap();
+    let (code, text) = run(&sock_root, &["exec", "--timeout", "5", "hi"]);
+    assert_eq!(code, Some(2), "{text}");
+    assert!(text.contains("is a directory, but that path is the daemon's socket"), "{text}");
+    assert!(!text.contains("start teamagents daemon first"), "the old advice pointed at the daemon: {text}");
+}
+
 /// D-227: a state root deep enough that `daemon.sock` crosses Linux's `sun_path` limit cannot hold a session.
 /// Measured 2026-09-27: `init` printed the socket path as if it were usable and `doctor` reported the state root
 /// `[ok]`, so the first run was where the user met it — as the daemon's raw `bind …: path must be shorter than
