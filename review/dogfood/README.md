@@ -62,6 +62,18 @@ input, the TUI's keys) and assert product state; their per-item evidence is in `
 looked for choice-dependent assertions, not for weak ones — a probe can be robust to the model and still assert
 too little, and D-187's `stale_check.py` was exactly that until it asked what the model had been told.
 
+**That other half was done 2026-09-27** (D-197): each probe's docstring claim was read against its
+`failures.append` messages. The result is a negative one and it is the point — the assertions cover
+their claims. `crash.py` checks not only that the work completed but that the command ran **exactly
+once** across the crash; `unknown_outcome.py` checks the operation's class, the park, exactly one
+notification and the absence of a success claim; `boundary.py` checks the refused file's **bytes are
+unchanged**; `two_gates.py` and `checks.py` check that the model was told about the runtime check's
+failure; `hooks.py` checks the veto, the reason reaching the model and the two allow-shapes for a
+broken hook; `instructions.py` is built to *flip* when the feature lands. What no reading settles is
+whether a covering assertion is itself strong enough (a tolerance too loose, a count too generous):
+`probes.py --self-check` gates the mechanical part — every probe must be cited by an acceptance row
+or a decision — and the rest stays a reading, stated as such.
+
 **The model set re-run 2026-09-27, at `f521fd4f`** (all 26 in one pass): **24 green, 2 red, and both reds were
 findings rather than flakes.** `stale_check.py` failed on its two assertions about the stale-input verdict, and
 the state it kept showed the runtime doing its job — two `completion_repair` events carrying `class:

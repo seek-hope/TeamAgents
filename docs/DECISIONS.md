@@ -18,6 +18,37 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-197 The probes' assertions were compared with their claims, and the mapping is gated (2026-09-27)
+
+The model-choice sweep (recorded in `review/dogfood/README.md`) answered "does a probe depend on a path the model
+may not take?". Its named ceiling was the other half: a probe can be robust to the model and still assert too
+little — which is exactly what `stale_check.py` was until D-187, where the probe checked the *outcome* the
+product produced and not what the product had told the model. This turn did that half: for each of the 33 probes
+its docstring's claim was read against its `failures.append` messages, looking for a part of the claim no
+assertion covers.
+
+**The result is a negative one, and it is the point of the sweep**: the assertions cover their claims.
+`crash.py` checks not only that the work completed but that the command ran **exactly once** across the crash;
+`unknown_outcome.py` checks the operation's class, the park, exactly one notification and the absence of a
+success claim; `boundary.py` checks the refused foreign database's **bytes are unchanged**; `two_gates.py` and
+`checks.py` check that the model was told about the runtime check's failure; `hooks.py` checks the veto, the
+reason reaching the model *and* the two allow-shapes for a broken hook; `instructions.py` is built to *flip* when
+the feature lands. No probe passed while its claim went unverified.
+
+**The mapping itself is now gated** (`probes.py --self-check`, in `make hygiene`): every probe file must be cited
+by `docs/ACCEPTANCE.md` or `docs/DECISIONS.md` — its entry in `review/dogfood/README.md` is a description, not a
+claim about the product — so a probe that no acceptance row and no decision names fails the gate, and the
+self-check's summary line states the rule. All 33 are cited today, which is why keeping it costs nothing.
+
+**Measured** (2026-09-27): `--self-check` green, its summary now reading "… the citation of every probe by an
+acceptance row or a decision …", and the control firing exactly once when `truncation.py` is removed from *both*
+documents (it is cited in both; removing one is not enough — the first attempt at the control showed that and
+reverting restores green).
+
+Ceiling: the assertion review was a *reading* — a claim can be covered by an assertion that is itself too weak
+(a tolerance too loose, a count too generous), and no script sees that. The mechanical half only says that some
+document claims the probe.
+
 ## D-196 The default target's own text had drifted, and six targets were not even declared (2026-09-27)
 
 `make` with no arguments prints the `help` target (`.DEFAULT_GOAL := help`), so that text is the first thing a

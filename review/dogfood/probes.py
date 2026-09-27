@@ -206,6 +206,15 @@ def self_check() -> int:
         findings.append(f"{missing} is in neither set: nothing runs it (add it, or list it in NOT_PROBES)")
     for extra in sorted(listed - on_disk):
         findings.append(f"{extra} is in a set and the file does not exist")
+    # D-197: a probe is evidence for something outside itself, and the documents that say what it evidences are
+    # the acceptance ledger and the decision log — the probe's own registry entry is a description, not a claim.
+    # A probe neither of them cites is evidence nobody reads; the sweep that looked for that (D-197) found all 33
+    # cited, which is exactly why the rule can be kept cheap now.
+    evidence = "".join((REPO / name).read_text() for name in ("docs/ACCEPTANCE.md", "docs/DECISIONS.md"))
+    for name in sorted(on_disk):
+        if name not in evidence:
+            findings.append(f"{name} is cited by neither docs/ACCEPTANCE.md nor docs/DECISIONS.md: an evidence "
+                            "probe no acceptance row and no decision names is evidence nobody reads")
     # D-176: the docs state how many probes a set holds, and the number rots (it said "seven credential-free
     # ones" while the set had eight). The phrase is the contract: the digits must equal the set size.
     documented = (REPO / "review" / "dogfood" / "README.md").read_text()
@@ -245,8 +254,9 @@ def self_check() -> int:
     for finding in findings:
         print("FAIL:", finding)
     if not findings:
-        print(f"self-check ok: selection, budgets, the stray guard, the documented set sizes and the "
-              f"no-kill-by-pattern rule over {len(SETS)} sets")
+        print(f"self-check ok: selection, budgets, the stray guard, the documented set sizes, the citation "
+              f"of every probe by an acceptance row or a decision, and the no-kill-by-pattern rule over "
+              f"{len(SETS)} sets")
     return 1 if findings else 0
 
 
