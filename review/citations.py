@@ -31,16 +31,30 @@ out of scope — they are runtime artifacts and user-written files, and in a pro
 upstream citations (`docs/loops.md` of another project, a URL) are out of scope too, because the tree cannot
 resolve them — D-109 is the entry that found one of those by hand; and prose that names a file without any
 backticks is not seen at all.
+
+**D-200 added the links a reader clicks.** The backticked citations above are paths a reader retypes; an inline
+markdown link (`[the guide](USER-GUIDE.md#2-configuration)`) is a path a reader *follows*, and relative targets
+were checked by nothing (`readme_zh.py` covers the Chinese README's in-repository links only). Every relative
+inline link in a tracked markdown file must resolve against the linking file's directory, after dropping the
+fragment; absolute URLs, `mailto:` and pure fragments are out of scope, as is a link whose target sits inside a
+code span — the extraction drops code spans and fenced blocks first, because `[](Entitled(i, "shell"))` in a
+TLA+ formula is not a link (the first run of the check reported exactly that as broken, which is how the rule got
+its shape).
 """
 import pathlib
 import re
 import subprocess
 import sys
+import urllib.parse
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 EXCLUDED = ("review/tmp/", "review/eval/")
 PATH_PREFIXES = ("docs/", "engine/", "tui/", "core/", "review/", "verification/", "examples/")
 PATH_SUFFIXES = (".rs", ".py", ".sh", ".toml", ".md", ".json", ".jsonl")
+# an inline markdown link: [label](target), optionally with a title, and never inside a code span or fence
+LINK = re.compile(r"\[([^\]]*)\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
+FENCE = re.compile(r"^\s*(```|~~~)")
+CODE_SPAN = re.compile(r"`[^`]*`")
 QUALIFIED = re.compile(r"`([a-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)+)`")
 PATH_RE = re.compile(r"`([A-Za-z0-9_./-]+(?:" + "|".join(re.escape(s) for s in PATH_SUFFIXES) + r"))`")
 RS_BASENAME = re.compile(r"`([A-Za-z0-9_-]+\.rs)`")
@@ -113,11 +127,45 @@ def scan(name, lines, items, tests, basenames, paths):
     return checked, findings, notes
 
 
+def prose_without_code(text: str) -> list[tuple[int, str]]:
+    """`(line number, text)` for a markdown file with fenced blocks and inline code spans blanked.
+
+    A formula inside a code span can look like a link (`[](Entitled(i, "shell"))` in `V2Authority`'s prose) and a
+    table shown in a fence is an example, not this document's; both are dropped before the links are read.
+    """
+    out, fenced = [], False
+    for number, line in enumerate(text.split("\n"), 1):
+        if FENCE.match(line):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
+        out.append((number, CODE_SPAN.sub("`…`", line)))
+    return out
+
+
+def broken_links(name: str, text: str) -> tuple[int, list]:
+    """`(relative links read, findings)` for `name`: a target that does not exist against its own directory."""
+    out, read = [], 0
+    base = pathlib.Path(name).parent
+    for number, line in prose_without_code(text):
+        for label, target in LINK.findall(line):
+            if target.startswith(("http://", "https://", "mailto:", "#")):
+                continue
+            path = urllib.parse.unquote(target.split("#", 1)[0])
+            if not path:
+                continue
+            read += 1
+            if not (base / path).exists():
+                out.append(f"{name}:{number}: `[{label[:40]}]({target})` names nothing in the tree")
+    return read, out
+
+
 def main():
     files = tracked()
     items, tests, basenames = universe(files)
     paths = set(files)
-    checked = 0
+    checked, links = 0, 0
     findings, notes = [], []
     for name in files:
         if not name.endswith((".md", ".rs")) or name.startswith(EXCLUDED):
@@ -127,12 +175,17 @@ def main():
         checked += seen
         findings += found
         notes += noted
+        if name.endswith(".md"):
+            read, broken = broken_links(name, text)
+            links += read
+            findings += broken
     for note in notes:
         print(f"note: {note}")
     for finding in findings:
         print(finding)
     print(f"\n{checked} citations checked against {len(basenames)} files, {len(tests)} tests and "
-          f"{len(items)} items: {len(findings)} unexplained, {len(notes)} recorded as removed")
+          f"{len(items)} items, plus {links} relative link(s): {len(findings)} unexplained, "
+          f"{len(notes)} recorded as removed")
     return 1 if findings else 0
 
 

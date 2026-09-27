@@ -18,6 +18,31 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-200 The links a reader clicks were checked by nothing (2026-09-27)
+
+`review/citations.py` (D-110) resolves the *backticked* citations in the tracked markdown — the paths and test
+names a reader retypes — and `review/readme_zh.py` (D-134) holds `README.zh-CN.md` to `README.md`'s
+in-repository links. The links a reader **clicks** were nobody's job: an inline `[label](target)` whose relative
+target no longer exists renders as a dead link, and nothing in the gate would say so. Measured 2026-09-27: the
+tree has **79 relative inline links** across 21 tracked markdown files, and all of them resolve — which is the
+reason to add the check after the fact rather than because something was already broken.
+
+**Guarded**: every relative inline link in a tracked markdown file must resolve against the linking file's
+directory, after the fragment is dropped. Absolute URLs, `mailto:` and pure fragments are out of scope (the tree
+cannot resolve them), and so is a link-shaped construct inside a code span or a fenced block: the extraction
+drops those first. That last rule was learned by writing the check — the first version read
+`[](Entitled(i, "shell") => <>("shell" \in offered[i]))` in `V2Authority`'s prose as a link to `Entitled(i,` and
+reported it broken; the formula sits inside a code span, and the repaired extraction reports 79 links where the
+naive one reported 80. The same discipline as D-199's fenced-block skip, one document category over.
+
+**Measured** (2026-09-27): the audit is green — "443 citations checked … plus 79 relative link(s): 0
+unexplained" — and its two controls behave: renaming the design baseline's target to `DESIGN-MOVED.md` in
+`docs/DEVELOPMENT.md` reports "`[design baseline](DESIGN-MOVED.md)` names nothing in the tree", while the same
+`[](nowhere.md)` written inside an inline code span or a fenced block is correctly not seen.
+
+Ceiling: a link that resolves but points at the wrong document passes, and the check does not verify a target's
+*anchor* (`USER-GUIDE.md#2-configuration`) — fragments are dropped, because the headings they name are prose.
+
 ## D-199 The table-shape rule belonged to every table, not just the ledger's two (2026-09-27)
 
 D-198 fixed three rows of `docs/ACCEPTANCE.md`'s tables and gave those two a shape check. The class was never

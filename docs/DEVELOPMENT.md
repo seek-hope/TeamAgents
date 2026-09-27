@@ -38,7 +38,8 @@ audits — each one a claim the tree makes about itself, each with the decision 
   newest-first, each with a body (D-107); `review/decision_queue.py` keeps the user's decision queue
   complete — an entry that asks for the user's word must appear in `docs/ACCEPTANCE.md`'s known gaps or
   `docs/PRODUCT-COMPARISON.md` §2, or name the later decision that closed it (D-195); `review/citations.py` resolves every backticked citation in tracked
-  markdown, a qualified name or a repository path, unless the line records it as removed (D-110);
+  markdown, a qualified name or a repository path, unless the line records it as removed (D-110), and since D-200 every relative inline *link* too;
+
   `review/decision_citations.py` resolves every `D-<n>` to a heading or to one of the earlier rules the index
   table keeps in force (D-170); `review/readme_zh.py` holds `README.zh-CN.md` to `README.md` on the heading
   skeleton, the in-repository links and the CLI surface (D-134); `review/doc_flags.py` holds the three user-facing documents (the README, the user guide and the install guide) and the parsers against the CLI's own help text — a documented flag must exist, a parsed flag must be advertised, and a line marked as history is a note (D-135/D-136/D-190); `review/exec_report.py` does the same for the five `--json` reports (D-154) and
