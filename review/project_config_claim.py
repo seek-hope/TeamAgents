@@ -27,9 +27,25 @@ directory it sits in (`XDG_CONFIG_HOME` or the `~/.config` default). A rename wo
 writing a config nothing reads. Controls: `--doc` on a README copy with the path renamed reports the missing path,
 and one with the directory half dropped reports that half.
 
-Ceiling: the negative half is a fixed sentence list, and the positive half is a blacklist of the three
-wordings that were wrong, so a *new* wording that claims the merge is live without matching one of them is
-not caught — review has to keep this list in step with the prose.
+**D-238 added the other path the product builds.** D-236's sibling one directory over: the *state root*. The code
+builds `<xdg_state_home>/<APP>/v2` (`engine/src/lib.rs::v2_root()` joins a version segment onto `state_dir()`,
+which joins `APP` onto `xdg_state_home()`), and four places tell a user where a session's state lives — the
+README's `--state-root` row, the user guide's state-root section (twice), the Chinese README's translated row,
+and the install guide's uninstall note, which names the app directory one level up. The audit derives the tail
+and the directory half (`XDG_STATE_HOME`, or the `~/.local/state` default) from those functions, *reports* when
+either stops reading, and requires each statement to name the tail with one of the two directory names on the
+same line. **Controls**: `--doc README.md=<copy with `v2` renamed>` reports the missing path, one with
+`XDG_STATE_HOME` swapped for `XDG_CONFIG_HOME` reports the half, `--doc docs/INSTALL.md=<copy without the state
+line>` reports the app directory, and `--doc engine/src/lib.rs=<copy without the join>` reports that the path
+cannot be derived.
+
+Ceiling: the negative half is a fixed sentence list and the positive half a blacklist of the three wordings
+that were wrong, so a *new* wording that claims the merge is live without matching one of them is not caught —
+review has to keep that list in step with the prose. The two paths (D-236, D-238) compare the tail verbatim and
+the directory half by the presence of one of two names on the line, so a document may state a path with a
+different home variable and pass; and their file lists are fixed, so a *new* document that states either path is
+not swept in (the Chinese README is in the state-root list because a path is not translated, and the acceptance
+ledger's dated migration sentence is deliberately not held).
 """
 import argparse
 import pathlib
@@ -75,6 +91,25 @@ UPATH_FILES = [
     ("install.sh", "the installer, which writes the default config"),
 ]
 
+# (D-238) The other path this product builds, in the same spirit: the *state root* is `<state home>/<APP>/<v2>`,
+# `engine/src/lib.rs::v2_root()` joining a version segment onto `state_dir()` (which joins `APP` onto
+# `xdg_state_home()`), and the README, the user guide, the Chinese README and the install guide's uninstall note
+# all tell a user where a session's state lives. Measured 2026-09-27: nothing compared them, so renaming the
+# version segment (or the app directory) would leave every document pointing at a directory no run touches —
+# `doctor`, `install.sh` and the docs would all agree on the wrong place.
+SROOT_SOURCE = REPO / "engine/src/lib.rs"
+SROOT_FN = re.compile(r"fn v2_root\(\)[^{]*\{(.*?)\n\}", re.S)
+SROOT_JOIN = re.compile(r'join\("([^"]+)"\)')
+SROOT_XDG = re.compile(r"pub fn xdg_state_home\(\)[^{]*\{(.*?)\n\}", re.S)
+SROOT_ENV = re.compile(r'env_path\("([^"]+)"\)')
+# (file, whether it states the whole root or only the app directory the state sits in, where it lives)
+SROOT_FILES = [
+    ("README.md", True, "the --state-root row"),
+    ("docs/USER-GUIDE.md", True, "the state-root section"),
+    ("README.zh-CN.md", True, "the translated --state-root row"),
+    ("docs/INSTALL.md", False, "the uninstall note, which names the directory the state sits in"),
+]
+
 
 def production_calls() -> int:
     """Call sites of the loader in the product's own code, its own definition subtracted.
@@ -110,6 +145,11 @@ def normalize(text: str) -> str:
     return re.sub(r"\s+", " ", text.replace("*", " ")).strip()
 
 
+def read(path: str, overrides: dict[str, str]) -> str:
+    """A tracked file, or the copy `--doc` names for it (the control)."""
+    return pathlib.Path(overrides[path]).read_text() if path in overrides else (REPO / path).read_text()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--doc", action="append", default=[], metavar="PATH=FILE",
@@ -131,7 +171,7 @@ def main() -> int:
         if not wired and normalize(phrase) in normalize((REPO / path).read_text()):
             findings.append(f"{path}: {phrase!r} claims the merge is live, but no entry point calls the loader")
     # D-236: the user config's path, derived from the code, against every place that states it
-    source = UPATH_SOURCE.read_text()
+    source = read(str(UPATH_SOURCE.relative_to(REPO)), overrides)
     app, body = UPATH_APP.search(source), UPATH_FN.search(source)
     if app is None or body is None or 'join("config.toml")' not in body.group(1) or "join(APP)" not in body.group(1):
         findings.append("engine/src/config.rs: `user_config_path()` no longer builds `<xdg_config_home>/<APP>/"
@@ -139,14 +179,35 @@ def main() -> int:
     else:
         tail = f"{app.group(1)}/config.toml"
         for path, where in UPATH_FILES:
-            text = pathlib.Path(overrides[path]).read_text() if path in overrides else (REPO / path).read_text()
-            stated = [line for line in text.split("\n") if tail in line]
+            stated = [line for line in read(path, overrides).split("\n") if tail in line]
             if not stated:
                 findings.append(f"{path} ({where}) does not name the user config path {tail!r}, which is what the "
                                 "code builds: the path is one fact with several statements")
             elif not any("XDG_CONFIG_HOME" in line or "~/.config" in line for line in stated):
                 findings.append(f"{path}: the line naming {tail!r} does not say which directory it sits in — "
                                 "`XDG_CONFIG_HOME` (or the `~/.config` default) is the other half of the path")
+    # D-238: the state root, derived from `v2_root()`/`state_dir()`/`xdg_state_home()`, against every statement
+    v2fn = SROOT_FN.search(read(str(SROOT_SOURCE.relative_to(REPO)), overrides))
+    xdg = SROOT_XDG.search(source)
+    segment = SROOT_JOIN.search(v2fn.group(1)) if v2fn else None
+    env = SROOT_ENV.search(xdg.group(1)) if xdg else None
+    parts = SROOT_JOIN.findall(xdg.group(1)) if xdg else []
+    default = "~/" + "/".join(parts) if parts else None
+    if app is None or segment is None or env is None or default is None:
+        findings.append("engine/src/lib.rs: `v2_root()` no longer reads as `state_dir().join(\"…\")` (or "
+                        "`xdg_state_home()`/`APP` changed shape), so this audit cannot derive the state root's "
+                        "path — teach it the new shape")
+    else:
+        for path, whole, where in SROOT_FILES:
+            want = f"{app.group(1)}/{segment.group(1)}" if whole else f"/{app.group(1)}"
+            label = f"state root {want!r}" if whole else f"state directory {want!r}"
+            stated = [line for line in read(path, overrides).split("\n") if want in line]
+            if not stated:
+                findings.append(f"{path} ({where}) does not name the {label}, which is what `v2_root()` builds: "
+                                "the path is one fact with several statements")
+            elif not any(env.group(1) in line or default in line for line in stated):
+                findings.append(f"{path}: the line naming {want!r} does not say where it sits — "
+                                f"`{env.group(1)}` (or the `{default}` default) is the other half of the path")
     for finding in findings:
         print("FAIL:", finding)
     if wired and not findings:

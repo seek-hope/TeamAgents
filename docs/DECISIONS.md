@@ -18,6 +18,34 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-238 The state root's path was stated in four places and compared in none (2026-09-27)
+
+D-236 and D-237 held two of the product's facts to the documents that state them (the user config's path, the
+default profile's key). The **state root** is the other path the product builds: `engine/src/lib.rs::v2_root()`
+joins a version segment onto `config::state_dir()`, which joins `APP` (= `teamagents`) onto
+`xdg_state_home()` — so the default is `$XDG_STATE_HOME/teamagents/v2`. Four places tell a user where a session's
+state lives: the README's `--state-root` row, the user guide's state-root section (twice: the socket probe and
+the root itself), the Chinese README's translated row, and the install guide's uninstall note, which names the
+app directory one level up (`${XDG_STATE_HOME:-$HOME/.local/state}/teamagents`). Measured 2026-09-27: nothing
+compared them, so renaming the version segment (or the app directory) would leave every document pointing at a
+directory no run touches — and the documents would agree with each other about the wrong place.
+
+**Fixed**: `review/project_config_claim.py` — the audit that already holds the project-config claim (D-133) and
+the user config's path (D-236) — derives the tail from `v2_root()` and the directory half (the `XDG_STATE_HOME`
+name and the `~/.local/state` default) from `xdg_state_home()`, *reports* when either stops reading, and requires
+each statement to name the tail with one of the two directory names on the same line; a file that states only the
+app directory (the install guide's uninstall note) is held to that shorter tail. **Controls**: a README copy with
+the version segment renamed reports the missing path; one with `XDG_STATE_HOME` swapped for `XDG_CONFIG_HOME`
+reports the directory half; an install guide without its state line reports the app directory; and a
+`v2_root()` copy without the join reports that the path cannot be derived (all four re-run above).
+
+Ceiling: only the tail is compared verbatim, and the directory half by the presence of one of two names on the
+line, so a document may state the path with a different home variable and pass; the file list is fixed, so a
+*new* document that states the path is not swept in — the acceptance ledger's dated migration sentence
+(`default $XDG_STATE_HOME/teamagents/v2`) is deliberately not held, because it describes a release that is not
+this tree; and the Chinese README is in the list because a path is not translated, which is the one thing
+`review/readme_zh.py` does not compare.
+
 ## D-237 The default profile's key was one fact in three layers and compared in none (2026-09-27)
 
 D-236 held the user config's *path* to the five places that state it. The `init` **default profile** one file over
