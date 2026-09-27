@@ -20,10 +20,11 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 
 ## D-218 The task model's claims were unfalsifiable, and two of them were vacuous (2026-09-27)
 
-Every other modelled surface carries counterfactual constants and negative controls (V2Jobs four, V2Retention
-four, V2Inbox five, V2DiskFull four, V2Authority three, V2Coordinator three, V2Store one) and `V2Task.tla` — the
-module behind delegation, settlement and the `budget_goal` rule — carried none: no configuration refuted any of
-its eleven claims, and the one refutation the fix ledger rests on had been *renamed away*.
+Eight of the fifteen modules already carried counterfactual constants and negative controls (V2Control six,
+V2Inbox five, V2Retention four, V2Jobs four, V2DiskFull four, V2Authority three, V2Coordinator three, V2Store
+one); six carried none, and `V2Task.tla` — the module behind delegation, settlement and the `budget_goal` rule —
+was one of the six, even though the fix ledger *rests on a refutation of it*, and that refutation had been
+**renamed away**.
 `review/fix-notes-verification-2026-09-24.md` records finding V-G1 as "the expected-counterexample configuration
 `MC_task_contract.cfg`, renamed since to `MC_task.cfg`": the pre-fix shape became the positive configuration, so
 after the fix nothing refuted `RegisteredWorkNeedsAnActiveGoal` — the property the finding *is about* — and the
@@ -76,7 +77,9 @@ modules have them.
 Ceiling: a control is a configuration of the same module with one counterfactual constant TRUE, not an
 independently written buggy spec, so it shows a claim is *falsifiable* — not that the mistake it names ever
 shipped (for V-G1 it did, and the fix ledger is that evidence); the 2 tasks / 2 instances / 2 goals product stays
-unproven (searched, never exhausted); and the model is still not the code (REPORT.md §5).
+unproven (searched, never exhausted); six modules still carry no control at all (V2Artifact, V2Wait, V2Compress,
+V2Daemon, V2Checks, V2Grants), so their claims are enumerated exhaustively but no configuration is shown to
+refute them — the same gap this entry closed for V2Task; and the model is still not the code (REPORT.md §5).
 
 ## D-217 The release path had never been run, and its smoke was half-isolated (2026-09-27)
 
