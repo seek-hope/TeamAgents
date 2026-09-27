@@ -18,6 +18,36 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-195 The user's decision queue had fallen three entries behind (2026-09-27)
+
+Every turn of this campaign ends with the decision queue for the user, and its authoritative copies are
+`docs/ACCEPTANCE.md`'s "Known gaps" section and `docs/PRODUCT-COMPARISON.md` §2. Both are prose, and neither had
+kept up: of the ten decision entries that ask the reader for a decision, the three newest were missing — D-192
+(retention's rule now has a checked specification, which was D-75's stated reason for deferring it), D-191
+(collection runs at a driver's boot and nowhere else, so the cadence is the open question) and D-174 (whose
+deferred half D-191 then implemented, leaving its entry still reading as open). A reader of the queue could not
+know that the analysis had moved; the *reports* of the previous turns knew, because they were written by hand
+from the same material.
+
+**`review/decision_queue.py`** (in `make hygiene`) keeps the queue complete now: a decision entry that asks for
+a decision in the audit's own words — the two phrases are in its docstring, deliberately not here — must be
+cited by one of the two queue documents, or name a *later* decision as the one that closed it (`Closed by
+D-191` is how the one closed item says so).
+
+**Fixed in the same change**: the retention bullet now carries D-192 ("those conditions have a checked
+specification … so what remains is the decision and not the analysis"); a new bullet carries D-191's cadence
+(the mechanism summarized, and the cadence itself left to be chosen); and D-174's entry states what closed it.
+The wording here avoids the audit's own phrases on purpose: an entry that quotes them would be asked to appear in
+the queue, which is the rule working as written.
+
+**Measured** (2026-09-27): the audit reports ten decision entries asking for a decision, every one of them
+either in the queue or naming what closed it. Controls, each on a copy: removing the new cadence bullet from the queue text fails
+with D-191 unnamed, and removing D-174's closing note fails with D-174 unnamed.
+
+Ceiling: the phrase is the contract, so an entry that asks for a decision in other words is invisible here, and
+the audit cannot judge whether a queue line is *true* — only that the decision is represented. What it replaces
+is the manual cross-read that found these three late.
+
 ## D-194 The audit that found the ungated audit is now the gate for that class (2026-09-27)
 
 D-193 found that `review/config_keys.py` — the detector behind four findings — was run by no make target, and it
@@ -774,7 +804,7 @@ artifact collection was invisible.
 holds any (count and size, `<state root>/instances/*/artifacts`), saying what *is* done (per-member pruning of
 oversized tool output), what is kept (response artifacts as evidence) and what is not (unreferenced artifacts
 are not collected). The guide's §6 cleanup bullet carries the same facts. Implementing the collection is a
-deletion path through user-visible files, so it stays a recorded gap until the user's word — the same treatment
+deletion path through user-visible files, so it stays a recorded gap until the user's word — the same treatment. **Closed by D-191**: the deletion path exists now (a driver's boot claims unreferenced artifacts, deletes their bytes and collects the rows), and only the cadence stays open
 `[retention]` got in D-75. New test `cli::doctor_reports_the_artifact_footprint` (a row with the numbers when
 artifacts exist, no row on a fresh root).
 

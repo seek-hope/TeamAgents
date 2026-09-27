@@ -35,7 +35,9 @@ audits — each one a claim the tree makes about itself, each with the decision 
 `review/hygiene_catalogue.py` fails when a script the build runs is missing from this list (D-184):
 
 * **the documents**: `review/decisions_log.py` keeps `docs/DECISIONS.md`'s shape — one heading per entry,
-  newest-first, each with a body (D-107); `review/citations.py` resolves every backticked citation in tracked
+  newest-first, each with a body (D-107); `review/decision_queue.py` keeps the user's decision queue
+  complete — an entry that asks for the user's word must appear in `docs/ACCEPTANCE.md`'s known gaps or
+  `docs/PRODUCT-COMPARISON.md` §2, or name the later decision that closed it (D-195); `review/citations.py` resolves every backticked citation in tracked
   markdown, a qualified name or a repository path, unless the line records it as removed (D-110);
   `review/decision_citations.py` resolves every `D-<n>` to a heading or to one of the earlier rules the index
   table keeps in force (D-170); `review/readme_zh.py` holds `README.zh-CN.md` to `README.md` on the heading

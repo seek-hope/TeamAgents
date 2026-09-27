@@ -141,7 +141,7 @@ amended (D-49/D-50).
   daemon"`, as `docs/USER-GUIDE.md` §1 now says. A `teamagents daemon --stop` (or a protocol command) would be
   new surface, and it would have to answer the identity question a pid file raises on its own (a stale pid that
   now belongs to an unrelated process) with the machinery the runner already has for A15. It needs the user's
-  word. The same holds for a state root's leftover *runners*: a killed session leaves one per in-flight job on purpose (the live partner of §6.2/§6.3), a user can only retire it by reopening that session, and this machine carried 1,397 of them (D-153) — a lever that stops a state root's runners is the same new surface, with the same identity question.
+  word. The same holds for a state root's leftover *runners*: a killed session leaves one per in-flight job on purpose (the live partner of §6.2/§6.3), a user can only retire it by reopening that session — and a lever that stops a state root's runners is the same new surface, with the same identity question. Alongside that product question sits a **host** one, and it is now measured rather than estimated (D-189, re-runnable with `python3 review/host_cleanup.py` outside a sandbox): this machine carries **1,398** pre-fix runners, **1,397 of them orphaned**, all older than 6.5 h, holding 5.3 GiB and burning **13.5 cores continuously** (664.6 CPU-hours so far). Their class decides whether stopping one is safe: 1,238 `settled-journal`, 70 `unknown-outcome`, 19 `dir-gone`, 72 `unfinished` and 1 `live-parent` — and that last one is the user's own session's runner, so the conservative stop is the 1,256 `settled-journal` + `dir-gone` processes, one `kill <pid>` per pid, on the user's word.
 
 - **The published release is the earlier implementation, and shares the tree's version.** `review/install_check.py` verifies the
   documented install path end to end (mechanics and the refusal above), and the published `v0.1.2` artifact it installs is the
@@ -189,7 +189,16 @@ amended (D-49/D-50).
   checks) and read by nothing — `doctor` used to print them as `[ok ]`, and since D-75 it prints a WARN
   saying they are not applied and nothing is deleted. Implementing it means deleting data under
   conditions that need their own verification (never evict a live reference or evaluation evidence),
-  so it needs the user's word before it lands.
+  so it needs the user's word before it lands — **and since D-192 those conditions have a checked
+  specification** (`verification/tla/V2Retention.tla` with four refuted controls), so what remains is the
+  decision and not the analysis.
+
+- **Artifact collection runs when a driver boots, and nowhere else.** DESIGN §4.3 says collection is
+  "scheduled separately" without naming the schedule, and D-191 implemented the mechanism — claim an
+  unreferenced artifact in one transaction, delete its bytes outside it, collect the row — at a driver's
+  boot. A state root whose last driver never boots again therefore keeps its `DELETING` rows and their
+  bytes, which the `doctor` artifact row states. A cadence — an interval, or a maintenance verb to run on
+  demand — is the user's call; the rule it must obey is the one D-192 modeled for retention, its sibling.
 
 - **A settled goal has no product surface to open a new one** (found while auditing the authority surface,
   2026-09-25; verified by `engine/tests/v2_supervisor.rs::a_settled_goal_leaves_a_later_delegation_without_an_active_goal`):

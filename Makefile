@@ -200,6 +200,7 @@ hygiene: language-check
 	python3 review/flag_fields.py
 	python3 review/config_keys.py
 	python3 review/decisions_log.py
+	python3 review/decision_queue.py
 	python3 review/citations.py
 	python3 review/decision_citations.py
 	python3 review/silent_skips.py
