@@ -115,6 +115,9 @@ def fields():
 
 
 def readers(key: str) -> list:
+    # (D-240) A masked key's mentions are another struct's same-named field, so it has no reader of its own.
+    if key in config_keys.MASKED:
+        return []
     found = []
     for root in ["core/src", "engine/src", "tui/src"]:
         for path in sorted((REPO / root).rglob("*.rs")):
@@ -142,7 +145,7 @@ def section():
                               "Absent column would state the type default while the loader fills the function's "
                               "value (D-239); teach it that function's shape")
         who = readers(key)
-        known = config_keys.KNOWN_UNSERVED.get(key)
+        known = config_keys.unserved_reason(key)
         if who:
             shown = ", ".join(f"`{one}`" for one in who[:2])
             read_by = shown + (f" … ({len(who)} files)" if len(who) > 2 else "")

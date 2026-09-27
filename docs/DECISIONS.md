@@ -18,6 +18,39 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-240 `[models.*].max_retries` is accepted and never applied (2026-09-27)
+
+Every model profile carries `max_retries: i64`, whose absent value D-239 had just made the reference state
+honestly (5), and nothing reads it. Measured 2026-09-27 by tracing every mention in the three crates: the driver's
+retry budget comes from `DriverConfig.max_retries`, which `engine/src/v2/supervisor.rs` fills from the *session's*
+config — `engine/src/cli.rs` passes the literal `max_retries: 2` — and the remaining mentions belong to
+`ReferenceConfig` (the eval-only reference loop). A user who writes `max_retries = 9` therefore gets 2 retries and
+no word about it: the D-75 class (a key accepted, validated and silently ignored). The audit that exists for that
+class missed it for a name-based reason — its reader search found `config.max_retries` and
+`self.config.max_retries`, which are *another struct's* field of the same name — and `docs/CONFIG.md` named
+`engine/src/reference.rs` and `engine/src/v2/driver.rs` as its readers, i.e. the reference pointed a user at code
+that does not read their key.
+
+**Fixed (the reporting half; the key's fate is the user's call)**: `review/config_keys.py` gained a `MASKED`
+table — the fields whose only mentions are a same-named foreign field — recording the receivers those mentions
+use; such a field is reported in its own `masked:` bucket *and* checked, so a mention with any other receiver (the
+natural way to wire the key) is a finding and the entry cannot outlive the gap it records. The field's own doc
+comment in `core/src/models.rs` says it is accepted but not applied, and `config_reference.py`'s `readers()`
+returns nothing for a masked key, so `docs/CONFIG.md`'s row now reads `nothing: D-240: …` with that warning in its
+Meaning column instead of naming two structs that are not it. **Controls**: `--doc engine/src/v2/driver.rs=<copy
+where the driver takes the profile's value>` reports the new receiver `profile` and exits 1; the base run reports
+the masked bucket and stays green.
+
+Ceiling: the three fates D-75's rule allows ("made to work, refused with a pointer, or reported as not in
+effect") are not equivalent here, so the choice needs the user's word. Wiring it means deciding a bound — a
+user-set retry count is a bounded-resource policy (DESIGN Q10) and A19 pins the retry shape at `max_retries = 2`
+— and it needs a lookup the supervisor does not have today (the instance's catalog entry, since `KernelProfile`
+carries no retry count); refusing it is a load error for a config that writes the key today; and reporting it in
+`doctor` is not possible while the field is an `i64` with a serde default, because a row cannot tell "the user
+declared this" from "the struct filled it in" (D-102's `instruction_files` could, since an empty list is
+visible). The masked bucket is curated: the search still cannot tell a same-named foreign field from a reader, so
+a *new* key of that shape stays invisible until it is recorded.
+
 ## D-239 The generated config reference stated the wrong "Absent" value for three keys (2026-09-27)
 
 `docs/CONFIG.md`'s Absent column is documented as the value a key holds when it is missing, and it was computed

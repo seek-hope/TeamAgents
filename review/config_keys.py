@@ -30,11 +30,22 @@ really is included from that template (so the rule cannot quietly stop reading),
 the template *and* in every statement. **Controls**: `--doc examples/config.minimal.toml=<copy without the key>`
 reports the template half; `--doc README.md=<copy with the key renamed>` reports the statement half.
 
+**D-240 added the fields the name-based search over-counts.** A same-named field of *another* struct reads as a
+reader of the config key, which is how `[models.*].max_retries` stayed invisible: the key is accepted, validated
+and never applied — `engine/src/cli.rs` passes the session's own `max_retries: 2`, and the mentions the search
+found belong to `ReferenceConfig`/`DriverConfig`. Such a field is recorded in `MASKED` with the receivers those
+foreign mentions use, reported in its own bucket (the first number of the summary line stays the unserved count),
+and *checked*: a mention with any other receiver — the natural way to wire the key — is a finding, so the entry
+cannot outlive the gap it records. `--doc PATH=FILE` reads a copy of any crate file, which is the control
+(`--doc engine/src/v2/driver.rs=<copy where the driver takes the profile's value>` reports the new receiver).
+
 Ceiling: only the *key* is compared — the model name, the context window and the reasoning effort the same
 sentences carry are prose; the statement list is fixed, so a *new* document that names the key is not swept in
 (`docs/TOOLS.md` names it too and is left out deliberately: it is generated, and its writer's catalogue already
-reads the tool that says it); and the comparison is name-based, so a preference reached through a differently
-named accessor in `default_model_key` would be missed.
+reads the tool that says it); the comparison is name-based, so a preference reached through a differently named
+accessor in `default_model_key` would be missed; and the masked bucket is curated too — the search cannot tell a
+same-named foreign field from a reader by itself, so a *new* key of that shape is reported as served until it is
+recorded here.
 """
 import argparse
 import pathlib
@@ -66,6 +77,25 @@ KNOWN_UNSERVED = {
     "retention": "D-75: the [retention] table is parsed and reported as not applied; retention is a known gap",
     "deadline_minutes": "applied by the loader: config.rs turns it into each goal's absolute deadline",
 }
+
+# (D-240) A field the name-based search *over*-counts: every use it finds outside the plumbing is a same-named
+# field of *another* struct, so the field looks served while nothing reads the config key. Each entry records the
+# receivers those foreign uses have — a mention with any other receiver (the natural way to wire the key) is a
+# finding, so the entry cannot outlive the gap it records. Measured 2026-09-27: `[models.*].max_retries` is
+# accepted, validated and never applied; the driver's budget is the session's own constant (`engine/src/cli.rs`
+# passes `max_retries: 2`), so a user's `max_retries = 9` changes nothing — the D-75 class, masked by
+# `ReferenceConfig`/`DriverConfig`'s same-named field.
+MASKED = {
+    "max_retries": ({"config", "self.config"},
+                    "D-240: never applied — the driver's budget is the session's own constant, not this key"),
+}
+
+
+def unserved_reason(field: str):
+    """The recorded reason a field has no read site of its own, or None when it is not one of the unread keys."""
+    if field in KNOWN_UNSERVED:
+        return KNOWN_UNSERVED[field]
+    return MASKED[field][1] if field in MASKED else None
 
 
 def uses_field(text: str, field: str) -> bool:
@@ -171,7 +201,7 @@ def main() -> int:
     overrides = dict(item.split("=", 1) for item in args.doc)
     roots = ["core/src", "engine/src", "tui/src"]
     files = [p for root in roots for p in (REPO / root).rglob("*.rs")]
-    findings, allowed, drift = [], [], []
+    findings, allowed, drift, masked, masked_drift = [], [], [], [], []
 
     def read(rel: str) -> str:
         """A tracked text input, or the copy `--doc` names for it (the control)."""
@@ -209,19 +239,35 @@ def main() -> int:
                 drift.append(f"{path} ({where}) does not name {key!r}, the key the code prefers and the template "
                              "ships: the default profile is one fact with several statements")
     for field in config_fields():
-        reads = []
+        reads, receivers = [], set()
         for path in files:
             rel = str(path.relative_to(REPO))
             if rel in PLUMBING:
                 continue
-            if uses_field(path.read_text(errors="replace"), field):
+            text = read(rel)
+            if uses_field(text, field):
                 reads.append(rel)
+                receivers |= set(re.findall(rf"([A-Za-z_][\w.]*)\.{re.escape(field)}\b", text))
+        if field in MASKED:
+            # The uses above are another struct's same-named field; the key itself has no reader (D-240).
+            expected, _ = MASKED[field]
+            if receivers != expected:
+                masked_drift.append(f"{field}: now mentioned through {sorted(receivers - expected) or receivers}; it "
+                                    f"was recorded as read only through {sorted(expected)} — either the key was wired "
+                                    "(then it is no longer unserved and this entry must go) or a new same-named field "
+                                    "appeared (D-240)")
+            masked.append(field)
+            continue
         if reads:
             continue
         (allowed if field in KNOWN_UNSERVED else findings).append(field)
     print(f"{len(config_fields())} config fields scanned; {len(findings)} unserved, {len(allowed)} known")
     for field in findings:
         print(f"  unserved: {field} — accepts a value, no code outside the loader/doctor reads it")
+    for field in masked:
+        print(f"  masked: {field} — {MASKED[field][1]}")
+    for finding in masked_drift:
+        print(f"  masked: {finding}")
     for finding in drift:
         print(f"  default profile: {finding} (D-237)")
     known = set(config_fields()) | HAND_READ
@@ -242,7 +288,7 @@ def main() -> int:
     if args.list_known:
         for field in allowed:
             print(f"  known: {field} ({KNOWN_UNSERVED[field]})")
-    return 1 if findings or drift else 0
+    return 1 if findings or drift or masked_drift else 0
 
 
 if __name__ == "__main__":

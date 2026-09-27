@@ -37,6 +37,9 @@ pub struct ModelProfile {
     pub api_key_env: Option<String>,
     #[serde(default = "default_timeout")]
     pub timeout: i64,
+    /// Transport retries the driver may add to one request. **Accepted but not applied in this release** (D-240):
+    /// the session's retry budget is its own constant, so this key changes nothing yet — `docs/CONFIG.md` lists it
+    /// with that reason and `docs/ACCEPTANCE.md` carries the open question (wire it, refuse it, or report it).
     #[serde(default = "default_retries")]
     pub max_retries: i64,
     #[serde(default)]
