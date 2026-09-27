@@ -18,6 +18,29 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-234 The audit index stated counts that no longer held (2026-09-27)
+
+`review/README.md` is the page a reviewer reads to know what each audit does; its `citations.py` row states two
+counts of the current tree — "79 relative links resolve today" and "(418 commands, 22 distinct targets, 19
+declared on 2026-09-27 …)". D-223 had just given the audit the rule that its own *docstring* counts are
+recomputed; the *row* had no such rule, and both numbers had moved: measured 2026-09-27, this run reports **81**
+relative links and **462** commands over **25** distinct targets, **21** of them declared — the row's three
+absence records plus `verify-model-wide-sim`, which D-215's entry records as a rename.
+
+**Fixed**: the numbers are corrected, and the audit now recomputes both sentences and compares them with the page
+(exact, like its docstring's counts: the same tree prints the same numbers), which the row's sentence now says.
+The absence list in that sentence gained the fourth name its own count implies.
+
+**And the audit's history was mis-dated**: its D-201 paragraph said "Measured 2026-09-27: 19 tracked markdown
+files carry **389** `make <target>` citations …" — a measurement of the day that rule was written, which *is*
+today, so it read as a statement about the current tree. It now says "Measured when it was added", which keeps the
+historical number where it belongs and leaves the recomputed ones to the sentence above it.
+
+Ceiling: the rule reads the two specific sentences of that one row, so a *new* numeric claim in a row is not
+swept in — the page states counts in several places, and some are deliberately snapshots of something else (the
+`codex_surface.py` row's token count is a count of the local `codex` binary's help, dated to the day it was
+taken); and because the numbers are recomputed, they change whenever the tree does, which is what makes them true.
+
 ## D-233 The TUI's geometry had no probe, and the sentence listing the credential-free probes was stale (2026-09-27)
 
 `make pty` boots the interface at one size (36×96) and asserts the text on screen; nothing drove the two things a

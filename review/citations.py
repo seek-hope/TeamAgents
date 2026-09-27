@@ -45,7 +45,7 @@ its shape).
 over from a link: the reader pastes it, and if the target was renamed or removed the shell answers "make: *** No
 rule to make target". Nothing watched it — `build_references.py` reads the Makefile's own two lists (D-196) and
 its own Limits paragraph delegates documents to this file, which resolved paths and links but not commands.
-Measured 2026-09-27: 19 tracked markdown files carry **389** `make <target>` citations (356 inside inline code
+Measured when it was added: 19 tracked markdown files carried **389** `make <target>` citations (356 inside inline code
 spans, 33 as a line of a fenced block); they name 20 distinct targets, 18 of which the Makefile declares, and the
 two that are not are both absence records (below). The check is added after the fact, not because something was
 broken. The declared list is `build_references.phony_targets`, so the two audits cannot disagree about what the
@@ -268,7 +268,7 @@ def broken_links(name: str, text: str) -> tuple[int, list]:
     return read, out
 
 
-def make_citations(name: str, lines: list, declared: set) -> tuple[int, list, list]:
+def make_citations(name: str, lines: list, declared: set) -> tuple[int, list, list, set]:
     """`(commands read, findings, notes)` for the `make <target>` commands `name` tells a reader to run.
 
     Only the two shapes a reader pastes count: an inline code span whose whole content is a `make` command, and a
@@ -276,7 +276,7 @@ def make_citations(name: str, lines: list, declared: set) -> tuple[int, list, li
     gone, or that is discussing the Makefile's declarations (a table header marking a removal counts, as in
     `scan`), is a note rather than a finding.
     """
-    read, findings, notes = 0, [], []
+    read, findings, notes, targets = 0, [], [], set()
     fenced = False
     for number, line in enumerate(lines, start=1):
         if FENCE.match(line):
@@ -301,11 +301,12 @@ def make_citations(name: str, lines: list, declared: set) -> tuple[int, list, li
         absent = DECLARATION_TALK in context or any(marker in context for marker in GONE_MARKERS)
         for target in commands:
             read += 1
+            targets.add(target)
             if target in declared:
                 continue
             message = f"{name}:{number}: `make {target}` names no `.PHONY` target"
             (notes if absent else findings).append(message)
-    return read, findings, notes
+    return read, findings, notes, targets
 
 
 def main():
@@ -315,6 +316,7 @@ def main():
     declared = set(phony_targets((REPO / "Makefile").read_text(errors="replace")))
     modules = tla_members()
     numbers = sections()
+    cited_targets = set()
     checked, links, made, refs, markdown, rust = 0, 0, 0, 0, 0, 0
     findings, notes = [], []
     for stale in sorted(set(EXTERNAL_SECTIONS) - set(files)):
@@ -338,8 +340,9 @@ def main():
             read, broken = broken_links(name, text)
             links += read
             findings += broken
-            commands, missing, records = make_citations(name, text.split("\n"), declared)
+            commands, missing, records, cited = make_citations(name, text.split("\n"), declared)
             made += commands
+            cited_targets |= cited
             findings += missing
             notes += records
     # (D-223) the counts this docstring states are compared with the tree, the way verification_catalogue's are:
@@ -357,13 +360,34 @@ def main():
             if said != real:
                 findings.append(f"this script's docstring says {said} {label}, the tree has {real}: a count in the "
                                 "prose that describes an audit has to be one the audit recomputes (D-223)")
+    # (D-234) The index page states the same counts in prose, and nothing read them: its row said "79 relative
+    # links resolve today" and "418 commands, 22 distinct targets, 19 declared" while the audit had moved to 81
+    # and 462 (measured 2026-09-27). The page is what a reviewer trusts about the audits, so its two sentences are
+    # held to what this run computes — the same rule the docstring above follows (D-208/D-223), one file over.
+    page = (REPO / "review" / "README.md").read_text(errors="replace")
+    declared_cited = len({target for target in cited_targets if target in declared})
+    for pattern, what, real in (
+        (r"(\d+) relative links resolve today", "relative links", (links,)),
+        (r"(\d+) commands, (\d+) distinct targets, (\d+) declared", "make citations",
+         (made, len(cited_targets), declared_cited)),
+    ):
+        stated = re.search(pattern, page)
+        if stated is None:
+            findings.append(f"review/README.md no longer states the {what} count in the form this audit reads, "
+                            "so the page and the run cannot be compared")
+        elif tuple(int(group) for group in stated.groups()) != real:
+            said = ", ".join(str(group) for group in stated.groups())
+            findings.append(f"review/README.md says {what} = {said}, this run has "
+                            f"{', '.join(str(value) for value in real)}: the page's sentences have to be numbers "
+                            "the audit recomputes (D-234)")
     for note in notes:
         print(f"note: {note}")
     for finding in findings:
         print(finding)
     print(f"\n{checked} citations checked against {len(basenames)} files, {len(tests)} tests and "
-          f"{len(items)} items, plus {links} relative link(s), {made} `make` command(s) and {refs} `§`-section "
-          f"reference(s): {len(findings)} unexplained, {len(notes)} recorded as removed")
+          f"{len(items)} items, plus {links} relative link(s), {made} `make` command(s) over "
+          f"{len(cited_targets)} distinct target(s) and {refs} `§`-section reference(s): {len(findings)} "
+          f"unexplained, {len(notes)} recorded as removed")
     return 1 if findings else 0
 
 
