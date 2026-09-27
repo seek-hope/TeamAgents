@@ -44,6 +44,24 @@ python3 review/dogfood/probes.py --only checks.py --set models
 env -u DEEPSEEK_API_KEY -u KIMI_API_KEY python3 review/dogfood/probes.py   # the offline set needs no credential
 ```
 
+**The model-choice sweep 2026-09-27** (after D-187/D-196): a probe that needs the model to *do* one particular
+thing is a latent flake unless either the prompt makes that thing necessary or the probe classifies what
+happened instead. Read probe by probe, the model set handles it in exactly those two ways, and the one place
+that cannot is recorded:
+
+| Probe | What it needs from the model | How that is secured |
+|---|---|---|
+| `team_ring.py` | hire exactly two teammates and `send` one token to a named id | the prompt states both actions and the ids verbatim (`HIRE`/`RELAY`), so the alternative is not a path the model can take |
+| `providers.py` | spawn a worker on the Kimi catalog entry and delegate one file | numbered instructions naming the key and the exact content; failures name the shape ("the worker did not run the Kimi entry") |
+| `workspace.py` | spawn a worker with `workspace = git_worktree` and delegate one file | numbered instructions naming the policy; failures name the missing artifact |
+| `skills.py`, `hooks.py`, `web.py`, `mcp.py` | call one bound tool (`skill`, a shell call the hook vetoes, `web_fetch`, the MCP tool) | the answer is only obtainable through the tool, so not calling it cannot produce a passing run; the failures say so ("no `skill` call for canary is in the conversation", "an answer without one is a guess") |
+| `authority.py` | report that the worker could not run a command, then run it after the grant | the premise is retried once and, when it still fails, the probe reports which shape it saw (D-143) — the only model-set probe whose premise is not made necessary by its prompt |
+
+The remaining probes drive the product through its own entry points (a cancel, a deadline, a crash, a queued
+input, the TUI's keys) and assert product state; their per-item evidence is in `docs/ACCEPTANCE.md`. This sweep
+looked for choice-dependent assertions, not for weak ones — a probe can be robust to the model and still assert
+too little, and D-187's `stale_check.py` was exactly that until it asked what the model had been told.
+
 **The model set re-run 2026-09-27, at `f521fd4f`** (all 26 in one pass): **24 green, 2 red, and both reds were
 findings rather than flakes.** `stale_check.py` failed on its two assertions about the stale-input verdict, and
 the state it kept showed the runtime doing its job — two `completion_repair` events carrying `class:
