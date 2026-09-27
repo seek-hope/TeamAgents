@@ -1,0 +1,34 @@
+=== csvfix ===
+..                                                                       [100%]
+2 passed in 0.02s
+=== rules ===
+.                                                                        [100%]
+1 passed in 0.02s
+=== ledger ===
+..                                                                       [100%]
+2 passed in 0.02s
+=== schedule ===
+..                                                                       [100%]
+2 passed in 0.02s
+=== intervals ===
+.......                                                                  [100%]
+7 passed in 0.03s
+=== flags ===
+........                                                                 [100%]
+8 passed in 0.02s
+=== measure ===
+.                                                                        [100%]
+1 passed in 0.01s
+=== slugify ===
+.                                                                        [100%]
+1 passed in 0.01s
+=== ranges ===
+.                                                                        [100%]
+1 passed in 0.01s
+=== alpha ===
+alpha ok
+=== beta ===
+beta ok
+=== chain ===
+....                                                                     [100%]
+4 passed in 0.05s

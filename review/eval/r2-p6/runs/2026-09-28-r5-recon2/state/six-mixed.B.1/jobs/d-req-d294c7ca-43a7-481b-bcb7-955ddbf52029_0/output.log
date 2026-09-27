@@ -1,0 +1,17 @@
+== measure ==
+.                                                                        [100%]
+1 passed in 0.02s
+== slugify ==
+.                                                                        [100%]
+1 passed in 0.01s
+== ranges ==
+.                                                                        [100%]
+1 passed in 0.03s
+== alpha ==
+alpha ok
+== beta ==
+beta ok
+== chain ==
+....                                                                     [100%]
+4 passed in 0.12s
+ALL_ACCEPTANCE_PASS

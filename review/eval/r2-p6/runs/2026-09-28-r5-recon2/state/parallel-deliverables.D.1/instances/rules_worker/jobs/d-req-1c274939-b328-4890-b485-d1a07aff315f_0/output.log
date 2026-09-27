@@ -1,0 +1,6 @@
+/bin/bash: line 28: cd: rules: No such file or directory
+exit=1
+total 12
+-rw-r--r-- 1 rimuru rimuru  784 Sep 28 04:37 engine.py
+drwxr-xr-x 2 rimuru rimuru 4096 Sep 28 04:37 __pycache__
+-rw-r--r-- 1 rimuru rimuru  319 Sep 24 15:32 test_rules.py

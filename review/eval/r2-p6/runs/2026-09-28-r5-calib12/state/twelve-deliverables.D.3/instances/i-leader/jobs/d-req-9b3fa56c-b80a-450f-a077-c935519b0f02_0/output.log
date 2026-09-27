@@ -1,0 +1,14 @@
+-rw-r--r-- 1 rimuru rimuru 8178 Sep 28 05:36 REPORT.md
+units/csvfix -> EXIT=0 :: 2 passed in 0.01s
+units/rules -> EXIT=0 :: 1 passed in 0.01s
+units/ledger -> EXIT=0 :: 2 passed in 0.01s
+units/schedule -> EXIT=0 :: 2 passed in 0.01s
+units/intervals -> EXIT=0 :: 7 passed in 0.01s
+units/flags -> EXIT=0 :: 8 passed in 0.02s
+units/measure -> EXIT=0 :: 1 passed in 0.01s
+units/slugify -> EXIT=0 :: 1 passed in 0.01s
+units/ranges -> EXIT=0 :: 1 passed in 0.01s
+units/alpha -> EXIT=0 :: alpha ok
+units/beta -> EXIT=0 :: beta ok
+units/chain -> EXIT=0 :: 4 passed in 0.03s
+OVERALL_FAIL=0

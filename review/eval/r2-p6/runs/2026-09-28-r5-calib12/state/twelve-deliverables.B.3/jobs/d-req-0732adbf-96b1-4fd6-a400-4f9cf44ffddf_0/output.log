@@ -1,0 +1,17 @@
+-rw-r--r-- 1 rimuru rimuru 6157 Sep 28 05:19 REPORT.md
+--- test/acceptance files untouched (mtimes) ---
+-rw-r--r-- 1 rimuru rimuru   76 Sep 24 15:15 units/alpha/check.py
+-rw-r--r-- 1 rimuru rimuru   73 Sep 24 15:15 units/beta/check.py
+-rw-r--r-- 1 rimuru rimuru  229 Sep 24 16:07 units/chain/tests/test_stage1.py
+-rw-r--r-- 1 rimuru rimuru  184 Sep 24 16:07 units/chain/tests/test_stage2.py
+-rw-r--r-- 1 rimuru rimuru  195 Sep 24 16:07 units/chain/tests/test_stage3.py
+-rw-r--r-- 1 rimuru rimuru   93 Sep 24 16:07 units/chain/tests/test_stage4.py
+-rw-r--r-- 1 rimuru rimuru  302 Sep 24 15:32 units/csvfix/test_csvfix.py
+-rw-r--r-- 1 rimuru rimuru 1504 Sep 28 03:44 units/flags/test_flags.py
+-rw-r--r-- 1 rimuru rimuru 1346 Sep 28 03:44 units/intervals/test_intervals.py
+-rw-r--r-- 1 rimuru rimuru  505 Sep 28 03:44 units/ledger/test_ledger.py
+-rw-r--r-- 1 rimuru rimuru  284 Sep 28 03:46 units/measure/test_measure.py
+-rw-r--r-- 1 rimuru rimuru  178 Sep 28 03:46 units/ranges/test_ranges.py
+-rw-r--r-- 1 rimuru rimuru  319 Sep 24 15:32 units/rules/test_rules.py
+-rw-r--r-- 1 rimuru rimuru  295 Sep 28 03:44 units/schedule/test_schedule.py
+-rw-r--r-- 1 rimuru rimuru  195 Sep 28 03:46 units/slugify/test_slugify.py

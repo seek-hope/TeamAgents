@@ -1,0 +1,9 @@
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r5-calib12/work/twelve-deliverables.D.3/units/flags
+['--k='] -> {'values': {'k': ['']}, 'flags': {}, 'positional': []}
+['--k', '-'] -> {'values': {'k': ['-']}, 'flags': {}, 'positional': []}
+['-', '--', '-', 'x'] -> {'values': {}, 'flags': {}, 'positional': ['-', '-', 'x']}
+['--k', 'a', '--k=b', '--k', 'c'] -> {'values': {'k': ['a', 'b', 'c']}, 'flags': {}, 'positional': []}
+['--k', '--k', 'v'] -> {'values': {'k': ['v']}, 'flags': {'k': True}, 'positional': []}
+['-a', '-b', 'pos', '--', '-c'] -> {'values': {}, 'flags': {'a': True, 'b': True}, 'positional': ['pos', '-c']}
+['--k', '--', 'x'] -> {'values': {}, 'flags': {'k': True}, 'positional': ['x']}
+['--mode', '-5', '--other'] -> {'values': {'mode': ['-5']}, 'flags': {'other': True}, 'positional': []}

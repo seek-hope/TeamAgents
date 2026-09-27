@@ -1,0 +1,92 @@
+===== units/measure/measure.py =====
+class Impl:
+    _FACTORS = {"m": 100, "cm": 1, "mm": 0.1}
+
+    def to_cm(self, value, unit):
+        try:
+            factor = self._FACTORS[unit]
+        except KeyError:
+            raise ValueError("unknown unit: %r" % (unit,))
+        return value * factor
+
+
+if __name__ == "__main__":
+    _I = Impl()
+    _VAL, _UNIT = 0, "m"
+    print(_I.to_cm(_VAL, _UNIT))
+
+===== units/slugify/slugify.py =====
+import re
+
+
+class Impl:
+    def slugify(self, text):
+        slug = re.sub(r"[^a-z0-9]+", "-", str(text).lower())
+        slug = slug.strip("-")
+        return slug or "untitled"
+
+===== units/ranges/ranges.py =====
+class Impl:
+    def merge(self, ranges):
+        """Merge overlapping/adjacent closed integer intervals.
+
+        Returns a list of tuples sorted by start; [] for empty input.
+        """
+        result = []
+        for start, end in ranges:
+            if start > end:
+                start, end = end, start
+            result.append((start, end))
+        result.sort()
+        merged = []
+        for start, end in result:
+            if merged and start <= merged[-1][1]:
+                if end > merged[-1][1]:
+                    merged[-1] = (merged[-1][0], end)
+            else:
+                merged.append((start, end))
+        return merged
+
+===== units/alpha/alpha.py =====
+def add(a, b):
+    return a + b
+
+===== units/beta/beta.py =====
+def mul(a, b):
+    return a * b
+
+===== units/chain/stage1.py =====
+import csv
+
+
+def parse_orders(path):
+    """Parse a CSV with header id,qty,price into int-valued dict rows."""
+    rows = []
+    with open(path, newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            rows.append({
+                "id": int(row["id"]),
+                "qty": int(row["qty"]),
+                "price": int(row["price"]),
+            })
+    return rows
+
+===== units/chain/stage2.py =====
+def filter_orders(rows):
+    """Keep only rows with qty > 0."""
+    return [row for row in rows if row["qty"] > 0]
+
+===== units/chain/stage3.py =====
+def total_by_price(rows):
+    """Sum qty grouped by price."""
+    totals = {}
+    for row in rows:
+        totals[row["price"]] = totals.get(row["price"], 0) + row["qty"]
+    return totals
+
+===== units/chain/stage4.py =====
+def report(totals):
+    """Render "price:qty\\n" lines sorted ascending by price."""
+    return "".join(f"{price}:{totals[price]}\n" for price in sorted(totals))
+

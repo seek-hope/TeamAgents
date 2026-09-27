@@ -20,6 +20,88 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-259 Round 5's verdict: the race cannot separate the arms, and the mechanism is measured (2026-09-28)
+
+Round 5's pre-registration (`review/eval/r2-p6/design-r5.md`) said a candidate is a **race task** only if the
+calibration's `median(solo) >= 1.5 x median(team)`, and that the formal round runs only from a race task. The
+calibration ran (`runs/2026-09-28-r5-calib12/`, 3 repeats × {B, D} × `twelve-deliverables`, the primary
+candidate): **B 102.7 s median** (79.5–153.9) against **D 131.3 s median** (92.7–732.2), both 3/3 accepted —
+ratio **0.78**. The two six-unit candidates were measured in the pilots (133.5 s against 125.1 s; 64.6 s against
+85.0 s) and qualify neither. **No race task exists, so the formal round is not run** — the pre-registration's own
+rule, not a judgement made after the fact.
+
+**What the four batches (29 real trials) measured, and it is more useful than a bound would have been:**
+
+1. **No success difference anywhere**: every arm passes every check on all three multi-unit tasks.
+2. **Both arms are flat in unit count**, so adding units does not separate them. B batches mechanically
+   independent units into a few responses (twelve units done with 16 `edit` calls inside 9–17 requests, 79.5 s in
+   its best run), and D's orchestration is flat too (twelve `spawn`/`delegate` calls in about two responses,
+   `anatomy.py`'s buckets) — but D also pays the parallel phase *and* the leader's integration, and it carries a
+   tail when a member stalls (732.2 s once).
+3. **The distributions overlap**: B's own spread on one task (79.5–153.9 s) is wider than any difference between
+   the arms, so a wall-clock rule would be a coin flip on every repeat — which the design's criteria resolve as
+   "not confirmed", never as equivalence (DESIGN §16).
+4. The team arm **costs 2–3× the tokens** (502–565k against 133–349k on the twelve-unit task).
+
+**Decided: this is the answer to Q16's second half, and the next experiment must take away the solo arm's
+batching rather than add units to it.** A criterion that separates these arms has to cap what one response can
+carry (a per-response output ceiling) or use units so large that a single response cannot hold several — both are
+*experiment designs*, and both change what the harness measures, so the user's word is needed before either is
+built. Until then the honest status of Q16 is: **H1 (no regression) passed; H2 (a reproducible collaboration
+gain) not confirmed, now with a measured mechanism instead of an open question.**
+
+Side effects of the round, all kept because they are product work in their own right: the two six-unit tasks and
+the twelve-unit composition (proven units, frozen tests, validated in both states), `freeze.py` and `run.py`
+carrying per-task bounds and a bounded runner log, `review/eval/r2-p6/anatomy.py` as a re-runnable measurement,
+and the three contract-text fixes the measurements forced (D-255's condition text, D-257's timer rule, D-258's
+recovery clause and the runtime's settlement rule for every member).
+
+Ceiling: one model (DeepSeek Flash) and one provider, on a host carrying the standing runner load (load average
+129–199 during these batches), so absolute wall clocks are not machine-independent — the *comparison* is what
+they are for; and two calibration batches were killed mid-run by the runner's unbounded output buffering, which
+is now a file-backed log (the surviving batches are the record).
+
+## D-258 The delegation race, measured twice, and the recovery clause that moved it (2026-09-28)
+
+Round 5's material (D-257) needed a treatment that does not lose to its own waits. Two reconnaissance batches
+measured the same four tasks once per arm, and the second one is what the fix changed.
+
+**The first reconnaissance (D-257)**, with the product as it stood: the leader spawned six workers in one
+response and four units settled inside a minute, but two members ended their turns without settling and the
+leader's wait carried **no timer at all** — so the trial ran to its 900 s bound and failed, against B's 90.8 s.
+
+**The second** (`runs/2026-09-28-r5-recon2/`, after the timer rule of D-257 and the recovery clause below):
+**all 8 trials pass**, and on the race task the wait is satisfied by fact at 36.8 s with all six units settled;
+the leader then spends about 45 s integrating them.
+
+| task | B | D | ratio |
+|---|---|---|---|
+| `six-deliverables` | 121.9 s ok | **82.2 s ok** | 1.48x |
+| `six-mixed` | 64.6 s ok | 85.0 s ok | — |
+| `multi-step` (control) | 9.2 s ok | 24.6 s ok | — |
+| `parallel-deliverables` (control) | 54.4 s ok | 337.6 s ok | — |
+
+**Decided: the delegator is told what to do when a member abandons its task.** The `delegate` description now
+says that an assignee which ends its turn without settling produces no result, that the delegator waits with
+`timer_seconds` set (D-257), and — added here — that the part is then the delegator's again: re-delegate it as a
+new task or do it yourself, and never report unverified work as success. This is the product's own documented
+recovery (USER-GUIDE §4) moved to where the decision is made; it is contract text, visible to every arm, so no
+group's treatment moves and no eval-surface pin changes.
+
+**The calibration is a measurement, and one sample per arm is not one.** B's own wall clock on the race task
+spreads over 90.8–121.9 s across the two batches — wider than the difference the race criterion is asked to
+resolve — so the criterion is restated on the **median of three repeats per arm per candidate** (`CALIB`,
+`runs/2026-09-28-r5-calib/`) with its threshold unchanged at 1.5x, and that restatement is written into
+`design-r5.md` *before* `CALIB` ran and before any formal trial. `design-r5.md` is the pre-registration; the
+verdict it produces (a bound frozen in `manifest-r5.json` and a formal round, or the measured negative) is
+recorded in its round-5 section and in ACCEPTANCE's Q16 row.
+
+Ceiling: one model (DeepSeek Flash) and one provider; wall clock is what a race measures, not the quality of the
+work; the control task `parallel-deliverables` still shows the old loss mode in miniature (337.6 s against B's
+54.4 s, from a timer the model set for ~300 s), which is the *model's* choice under the product's contract text
+and not something this entry claims to have fixed; and the race tasks reuse unit material, so they measure
+orchestration rather than novel difficulty.
+
 ## D-257 Round 5's race material, and the reconnaissance that found the loss mode instead (2026-09-28)
 
 Round 5 asks the question the four recorded rounds could not: does the collaboration *mechanism* pay when the

@@ -1,0 +1,9 @@
+PWD=/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r5-recon2/work/parallel-deliverables.B.1
+--- csvfix ---
+..                                                                       [100%]
+2 passed in 0.06s
+csvfix OK
+--- rules ---
+.                                                                        [100%]
+1 passed in 0.03s
+rules OK

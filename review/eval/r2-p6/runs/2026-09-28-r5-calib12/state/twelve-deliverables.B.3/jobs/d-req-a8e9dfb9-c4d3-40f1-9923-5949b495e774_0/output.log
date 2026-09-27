@@ -1,0 +1,59 @@
+### csvfix
+..                                                                       [100%]
+2 passed in 0.02s
+exit=0
+
+### rules
+.                                                                        [100%]
+1 passed in 0.01s
+exit=0
+
+### ledger
+..                                                                       [100%]
+2 passed in 0.02s
+exit=0
+
+### schedule
+..                                                                       [100%]
+2 passed in 0.02s
+exit=0
+
+### intervals
+.......                                                                  [100%]
+7 passed in 0.04s
+exit=0
+
+### flags
+........                                                                 [100%]
+8 passed in 0.03s
+exit=0
+
+### measure
+.                                                                        [100%]
+1 passed in 0.02s
+exit=0
+
+### slugify
+.                                                                        [100%]
+1 passed in 0.01s
+exit=0
+
+### ranges
+.                                                                        [100%]
+1 passed in 0.01s
+exit=0
+
+### alpha
+alpha ok
+exit=0
+
+### beta
+beta ok
+exit=0
+
+### chain
+....                                                                     [100%]
+4 passed in 0.02s
+exit=0
+
+OVERALL_FAIL=0

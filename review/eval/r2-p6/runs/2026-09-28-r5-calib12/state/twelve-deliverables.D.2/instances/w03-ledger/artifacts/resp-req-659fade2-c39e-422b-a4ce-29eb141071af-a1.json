@@ -1,0 +1,1 @@
+{"message":{"role":"assistant","reasoning_content":"Passes. Settle success.","content":"Implement"},"usage":{"prompt":3181,"completion":9,"total":3190},"native":{"protocol":"chat_completions","base":"https://api.deepseek.com/v1"}}

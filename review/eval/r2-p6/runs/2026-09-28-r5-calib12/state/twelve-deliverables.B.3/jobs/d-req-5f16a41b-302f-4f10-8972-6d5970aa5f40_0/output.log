@@ -1,0 +1,82 @@
+===== csvfix/impl.py =====
+     1	def parse(line):
+     2	    """BUG: 不处理引号、不裁剪空白、不校验列数。"""
+     3	    return line.split(",")
+     4	
+     5	def total(rows):
+     6	    """BUG: 空字段当作 0 但不报错，且把第三列当成金额。"""
+     7	    return sum(int(r[2]) for r in rows if len(r) > 2 and r[2])
+===== csvfix/test_csvfix.py =====
+     1	import impl
+     2	
+     3	def test_parse_trims_and_validates():
+     4	    assert impl.parse(' a , 2 , x ') == ["a", "2", "x"]
+     5	    assert impl.parse('a,2') is None  # 列数不是 3 时返回 None
+     6	
+     7	def test_total_skips_blank_and_reports_bad():
+     8	    rows = [["a", "1", "2"], ["b", "2", ""]]
+     9	    assert impl.total(rows) == 2
+===== rules/engine.py =====
+     1	def evaluate(rules, facts):
+     2	    """STUB: 必须实现 all/any 两种规则。"""
+     3	    return False
+===== rules/test_rules.py =====
+     1	import engine
+     2	
+     3	def test_all_and_any():
+     4	    facts = {"a": True, "b": False}
+     5	    assert engine.evaluate({"all": ["a"]}, facts) is True
+     6	    assert engine.evaluate({"all": ["a", "b"]}, facts) is False
+     7	    assert engine.evaluate({"any": ["b", "a"]}, facts) is True
+     8	    assert engine.evaluate({"any": ["b"]}, facts) is False
+===== ledger/ledger.py =====
+     1	"""一个只关心单个账户的小账本。"""
+     2	
+     3	
+     4	class Ledger:
+     5	    def apply(self, rows, op):
+     6	        """rows 是 [(kind, account, cents), ...]，返回**该账户**的行（保持原顺序）。
+     7	        kind 只有 "deposit" 与 "withdraw"；金额为负时抛 ValueError。"""
+     8	        raise NotImplementedError
+     9	
+    10	
+    11	def balance(rows, account):
+    12	    """返回该账户的净额：deposit 相加、withdraw 相减；没有该账户的行时返回 0。"""
+    13	    raise NotImplementedError
+===== ledger/test_ledger.py =====
+     1	from ledger import Ledger, balance
+     2	def test_apply_and_balance():
+     3	    L = Ledger()
+     4	    rows = L.apply([("deposit","a",100),("withdraw","a",30),("deposit","b",5)], "a")
+     5	    assert rows == [("deposit","a",100),("withdraw","a",30)], rows
+     6	    assert balance(rows, "a") == 70
+     7	    assert balance(rows, "b") == 0
+     8	def test_apply_rejects_negative():
+     9	    L = Ledger()
+    10	    try:
+    11	        L.apply([("deposit","a",-1)], "a")
+    12	    except ValueError:
+    13	        pass
+    14	    else:
+    15	        raise AssertionError("negative accepted")
+===== schedule/schedule.py =====
+     1	"""闭区间的时间段工具。"""
+     2	
+     3	
+     4	def slots(ranges, minutes):
+     5	    """合并闭区间：两段之间的空隙（next_lo - prev_hi）小于 minutes 视为同一段。
+     6	    返回按起点升序的合并结果；空输入返回 []。"""
+     7	    raise NotImplementedError
+     8	
+     9	
+    10	def overlaps(a, b):
+    11	    """两个闭区间是否有交叠；端点正好相接（如 (0,10) 与 (10,20)）不算交叠。"""
+    12	    raise NotImplementedError
+===== schedule/test_schedule.py =====
+     1	from schedule import slots, overlaps
+     2	def test_slots_merges_and_splits():
+     3	    assert slots([(0,60),(30,90),(120,150)], 30) == [(0,90),(120,150)]
+     4	    assert slots([(0,10)], 5) == [(0,10)]
+     5	def test_overlaps():
+     6	    assert overlaps((0,10),(5,20)) is True
+     7	    assert overlaps((0,10),(10,20)) is False

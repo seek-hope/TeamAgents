@@ -1,0 +1,9 @@
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r5-calib12/work/twelve-deliverables.D.3/units/rules
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r5-calib12/work/twelve-deliverables.D.3/units/rules
+module: /home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r5-calib12/work/twelve-deliverables.D.3/units/rules/engine.py
+64b2db1b2162748eeaaf905bf8b4a4d5  engine.py
+12b10bdc4b1b2188c37fe54ebdfd64f0  test_rules.py
+--- ACCEPTANCE ---
+.                                                                        [100%]
+1 passed in 0.02s
+EXIT=0

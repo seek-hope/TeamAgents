@@ -1,0 +1,32 @@
+fixture exists: yes
+UNCHANGED  ./alpha/check.py
+UNCHANGED  ./beta/check.py
+UNCHANGED  ./chain/tests/test_stage1.py
+UNCHANGED  ./chain/tests/test_stage2.py
+UNCHANGED  ./chain/tests/test_stage3.py
+UNCHANGED  ./chain/tests/test_stage4.py
+UNCHANGED  ./csvfix/test_csvfix.py
+UNCHANGED  ./flags/test_flags.py
+UNCHANGED  ./intervals/test_intervals.py
+UNCHANGED  ./ledger/test_ledger.py
+UNCHANGED  ./measure/test_measure.py
+UNCHANGED  ./ranges/test_ranges.py
+UNCHANGED  ./rules/test_rules.py
+UNCHANGED  ./schedule/test_schedule.py
+UNCHANGED  ./slugify/test_slugify.py
+--- test/check tree in work ---
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r5-calib12/work/twelve-deliverables.D.1/units/alpha/check.py
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r5-calib12/work/twelve-deliverables.D.1/units/beta/check.py
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r5-calib12/work/twelve-deliverables.D.1/units/chain/tests/test_stage1.py
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r5-calib12/work/twelve-deliverables.D.1/units/chain/tests/test_stage2.py
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r5-calib12/work/twelve-deliverables.D.1/units/chain/tests/test_stage3.py
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r5-calib12/work/twelve-deliverables.D.1/units/chain/tests/test_stage4.py
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r5-calib12/work/twelve-deliverables.D.1/units/csvfix/test_csvfix.py
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r5-calib12/work/twelve-deliverables.D.1/units/flags/test_flags.py
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r5-calib12/work/twelve-deliverables.D.1/units/intervals/test_intervals.py
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r5-calib12/work/twelve-deliverables.D.1/units/ledger/test_ledger.py
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r5-calib12/work/twelve-deliverables.D.1/units/measure/test_measure.py
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r5-calib12/work/twelve-deliverables.D.1/units/ranges/test_ranges.py
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r5-calib12/work/twelve-deliverables.D.1/units/rules/test_rules.py
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r5-calib12/work/twelve-deliverables.D.1/units/schedule/test_schedule.py
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r5-calib12/work/twelve-deliverables.D.1/units/slugify/test_slugify.py

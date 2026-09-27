@@ -1,0 +1,31 @@
+--- csvfix ---
+['a,b', '2', 'x']
+None
+5
+0
+--- rules ---
+False
+True False
+--- ledger ---
+ValueError ok
+-5
+--- schedule ---
+[]
+False
+--- intervals ---
+[(0, 10)]
+[(1, 1), (7, 7)]
+--- flags ---
+{'values': {}, 'flags': {}, 'positional': ['--x', '-']}
+{'values': {'k': ['-5']}, 'flags': {}, 'positional': []}
+--- measure ---
+2.0 150.0
+--- slugify ---
+a-b 'untitled'
+--- ranges ---
+[(1, 5), (8, 9)]
+--- chain e2e ---
+[{'id': 1, 'qty': 2, 'price': 10}, {'id': 2, 'qty': 0, 'price': 5}, {'id': 3, 'qty': 3, 'price': 7}, {'id': 4, 'qty': 1, 'price': 7}]
+[{'id': 1, 'qty': 2, 'price': 10}, {'id': 3, 'qty': 3, 'price': 7}, {'id': 4, 'qty': 1, 'price': 7}]
+{10: 2, 7: 4}
+'7:4\n10:2\n'

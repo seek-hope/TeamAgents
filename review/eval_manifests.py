@@ -36,15 +36,20 @@ import sys
 REPO = pathlib.Path(__file__).resolve().parents[1]
 EVAL = REPO / "review/eval/r2-p6"
 MANIFESTS = ["manifest.json", "manifest-r2.json", "manifest-r3.json", "manifest-r4.json",
-             "manifest-r5-recon.json"]
+             "manifest-r5-recon.json", "manifest-r5-calib12.json"]
 # The pins the manifests carry: the analysis and the driver (the latter is not pinned by any manifest, and is
 # checked for the same reason — it is the code that ran the trials).
 SCRIPTS = ["analyze.py", "run.py"]
 
 
+def is_cache(path: pathlib.Path) -> bool:
+    """A build artefact, not fixture material (D-259: a stray `__pycache__` moved a frozen digest once)."""
+    return path.suffix == ".pyc" or "__pycache__" in path.parts
+
+
 def tree_digest(path: pathlib.Path) -> str:
     h = hashlib.sha256()
-    for file in sorted(p for p in path.rglob("*") if p.is_file()):
+    for file in sorted(p for p in path.rglob("*") if p.is_file() and not is_cache(p)):
         h.update(str(file.relative_to(path)).encode())
         h.update(file.read_bytes())
     return h.hexdigest()

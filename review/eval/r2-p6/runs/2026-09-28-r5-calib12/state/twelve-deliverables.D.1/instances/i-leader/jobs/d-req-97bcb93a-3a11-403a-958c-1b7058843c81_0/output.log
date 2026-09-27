@@ -1,0 +1,337 @@
+=============== csvfix/impl.py
+def parse(line):
+    """Split on commas, trim surrounding whitespace of every field.
+
+    Returns None when the resulting column count is not 3, otherwise the
+    list of 3 trimmed strings.
+    """
+    fields = [f.strip() for f in line.split(",")]
+    if len(fields) != 3:
+        return None
+    return fields
+
+
+def total(rows):
+    """Sum the third (amount) column as int.
+
+    Rows whose third field is blank or absent are skipped, never an error.
+    """
+    total = 0
+    for r in rows:
+        if len(r) < 3:
+            continue
+        value = r[2].strip()
+        if not value:
+            continue
+        total += int(value)
+    return total
+
+=============== rules/engine.py
+def evaluate(rules, facts):
+    """Evaluate a rule dict against a facts dict.
+
+    ``rules`` is a mapping with either:
+
+    * key ``"all"``: a list of fact names; the result is True iff every
+      named fact is truthy in ``facts``.
+    * key ``"any"``: a list of fact names; the result is True iff at least
+      one named fact is truthy in ``facts``.
+
+    Missing fact names count as falsy. The result is always a real Python
+    ``bool`` so that identity checks (``is True`` / ``is False``) hold.
+    """
+    if "all" in rules:
+        return bool(all(facts.get(name) for name in rules["all"]))
+    if "any" in rules:
+        return bool(any(facts.get(name) for name in rules["any"]))
+    raise ValueError("rules must contain either 'all' or 'any'")
+
+=============== ledger/ledger.py
+"""一个只关心单个账户的小账本。"""
+
+
+class Ledger:
+    def apply(self, rows, op):
+        """rows 是 [(kind, account, cents), ...]，返回**该账户**的行（保持原顺序）。
+        kind 只有 "deposit" 与 "withdraw"；金额为负时抛 ValueError。"""
+        for kind, account, cents in rows:
+            if cents < 0:
+                raise ValueError("negative amount: %r" % (cents,))
+        return [row for row in rows if row[1] == op]
+
+
+def balance(rows, account):
+    """返回该账户的净额：deposit 相加、withdraw 相减；没有该账户的行时返回 0。"""
+    total = 0
+    for kind, acct, cents in rows:
+        if acct != account:
+            continue
+        if kind == "deposit":
+            total += cents
+        elif kind == "withdraw":
+            total -= cents
+    return total
+
+=============== schedule/schedule.py
+"""闭区间的时间段工具。"""
+
+
+def slots(ranges, minutes):
+    """合并闭区间：两段之间的空隙（next_lo - prev_hi）小于 minutes 视为同一段。
+    返回按起点升序的合并结果；空输入返回 []。"""
+    ordered = sorted((lo, hi) for lo, hi in ranges)
+    if not ordered:
+        return []
+
+    merged = [ordered[0]]
+    for next_lo, next_hi in ordered[1:]:
+        prev_lo, prev_hi = merged[-1]
+        if next_lo - prev_hi < minutes:
+            # 空隙严格小于 minutes -> 合并；空隙等于 minutes 时保持分离。
+            if next_hi > prev_hi:
+                merged[-1] = (prev_lo, next_hi)
+        else:
+            merged.append((next_lo, next_hi))
+
+    return [(lo, hi) for lo, hi in merged]
+
+
+def overlaps(a, b):
+    """两个闭区间是否有交叠；端点正好相接（如 (0,10) 与 (10,20)）不算交叠。"""
+    a_lo, a_hi = a
+    b_lo, b_hi = b
+    return a_lo < b_hi and b_lo < a_hi
+
+=============== intervals/intervals.py
+"""闭区间工具（整数端点，lo <= hi）。"""
+
+
+class Impl:
+    def _normalize(self, ranges):
+        """把输入规整为按 lo 升序、每段 lo <= hi 的列表（不做合并）。"""
+        result = []
+        for r in ranges:
+            lo, hi = r
+            if lo > hi:
+                lo, hi = hi, lo
+            result.append((lo, hi))
+        result.sort(key=lambda p: (p[0], p[1]))
+        return result
+
+    def merge(self, ranges, gap=0):
+        """合并闭区间：按 lo 升序排序后，若相邻两段之间**缺失的整数个数**
+        （next.lo - prev.hi - 1）小于等于 gap 就合并。返回 [(lo, hi), ...] 升序；空输入返回 []。"""
+        normalized = self._normalize(ranges)
+        if not normalized:
+            return []
+        merged = [normalized[0]]
+        for lo, hi in normalized[1:]:
+            prev_lo, prev_hi = merged[-1]
+            # 缺失整数个数；负数表示重叠/嵌套
+            missing = lo - prev_hi - 1
+            if missing <= gap:
+                merged[-1] = (prev_lo, max(prev_hi, hi))
+            else:
+                merged.append((lo, hi))
+        return merged
+
+    def subtract(self, ranges, hole):
+        """从 ranges 中挖去闭区间 hole：返回剩下的闭区间（升序）。与 hole 不相交的段原样保留，
+        被完全覆盖的段消失，横跨 hole 的段分裂成两段。"""
+        hole_lo, hole_hi = hole
+        if hole_lo > hole_hi:
+            hole_lo, hole_hi = hole_hi, hole_lo
+        result = []
+        for lo, hi in self.merge(ranges, 0):
+            if hi < hole_lo or lo > hole_hi:
+                # 完全不相交，原样保留
+                result.append((lo, hi))
+            else:
+                # 若 hole 完全覆盖该段，则该段消失
+                if lo < hole_lo:
+                    result.append((lo, hole_lo - 1))
+                if hi > hole_hi:
+                    result.append((hole_hi + 1, hi))
+        return result
+
+    def total_length(self, ranges):
+        """ranges 覆盖的整数个数之和（闭区间含端点；重叠只算一次）。"""
+        return sum(hi - lo + 1 for lo, hi in self.merge(ranges, 0))
+
+=============== flags/flags.py
+"""命令行风格的参数解析。"""
+
+
+class Impl:
+    def parse(self, argv):
+        """返回 {"values": {...}, "flags": {...}, "positional": [...]}：
+        - 不以 "-" 开头、或正好是 "-" 的项，按出现顺序进 positional。
+        - `--` 之后的所有项都是位置参数（`--` 自己不出现在结果里）。
+        - `--key=value` 与 `--key value` 都是键值对，键是 key。
+        - `--key` 后面没有可用值（到结尾，或后面紧跟另一个 "--" 开头的项）时它是开关。
+        - `-abc` 是三个开关 a、b、c。
+        - values 的每个值是**列表**，重复的键按出现顺序累积；开关重复出现仍是 True。"""
+        values = {}
+        flags = {}
+        positional = []
+
+        def add_value(key, value):
+            values.setdefault(key, []).append(value)
+
+        i = 0
+        n = len(argv)
+        while i < n:
+            item = argv[i]
+
+            if item == "--":
+                positional.extend(argv[i + 1:])
+                break
+
+            if not item.startswith("-") or item == "-":
+                positional.append(item)
+                i += 1
+                continue
+
+            if item.startswith("--"):
+                body = item[2:]
+                if "=" in body:
+                    key, value = body.split("=", 1)
+                    add_value(key, value)
+                    i += 1
+                    continue
+                key = body
+                nxt = argv[i + 1] if i + 1 < n else None
+                if nxt is not None and not nxt.startswith("--"):
+                    add_value(key, nxt)
+                    i += 2
+                else:
+                    flags[key] = True
+                    i += 1
+                continue
+
+            # single dash, multiple characters: bundle of short switches
+            for ch in item[1:]:
+                flags[ch] = True
+            i += 1
+
+        return {"values": values, "flags": flags, "positional": positional}
+
+=============== measure/measure.py
+class Impl:
+    def to_cm(self, value, unit):
+        if unit == "m":
+            return value * 100
+        elif unit == "cm":
+            return value
+        elif unit == "mm":
+            return value / 10
+        else:
+            raise ValueError(f"unsupported unit: {unit!r}")
+
+=============== slugify/slugify.py
+import re
+
+
+class Impl:
+    def slugify(self, text):
+        """Convert text into a URL-friendly slug.
+
+        Lowercases the text, collapses every run of non-alphanumeric
+        characters into a single "-", strips leading/trailing "-", and
+        returns "untitled" when nothing meaningful remains.
+        """
+        slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+        return slug or "untitled"
+
+=============== ranges/ranges.py
+class Impl:
+    def merge(self, ranges):
+        """Merge closed integer intervals.
+
+        Intervals are sorted by start, then merged whenever the next interval
+        starts at or before the current interval's end (``next.lo <= cur.hi``),
+        which covers both overlapping and touching intervals.
+
+        Returns a list of ``(lo, hi)`` tuples sorted by start.
+        """
+        if not ranges:
+            return []
+
+        merged = []
+        for lo, hi in sorted(ranges, key=lambda r: r[0]):
+            if merged and lo <= merged[-1][1]:
+                prev_lo, prev_hi = merged[-1]
+                if hi > prev_hi:
+                    merged[-1] = (prev_lo, hi)
+            else:
+                merged.append((lo, hi))
+        return merged
+
+=============== alpha/alpha.py
+def add(a, b):
+    return a + b
+
+=============== beta/beta.py
+def mul(a, b):
+    return a * b
+
+=============== chain/stage1.py
+"""Stage 1: read the orders CSV into a list of int-valued dicts."""
+
+import csv
+
+
+def parse_orders(path):
+    """Read the CSV at *path* (header ``id,qty,price``).
+
+    Returns a list of ``{"id": int, "qty": int, "price": int}`` dicts, one per
+    data row, in file order.
+    """
+    rows = []
+    with open(path, newline="", encoding="utf-8") as fh:
+        reader = csv.DictReader(fh)
+        for record in reader:
+            rows.append(
+                {
+                    "id": int(record["id"]),
+                    "qty": int(record["qty"]),
+                    "price": int(record["price"]),
+                }
+            )
+    return rows
+
+=============== chain/stage2.py
+"""Stage 2: keep only orders with a positive quantity."""
+
+
+def filter_orders(rows):
+    """Return the subset of *rows* whose ``qty`` is greater than zero.
+
+    Input order is preserved.
+    """
+    return [row for row in rows if row["qty"] > 0]
+
+=============== chain/stage3.py
+"""Stage 3: aggregate quantities by price."""
+
+
+def total_by_price(rows):
+    """Return ``{price: sum(qty)}`` over *rows*."""
+    totals = {}
+    for row in rows:
+        price = row["price"]
+        totals[price] = totals.get(price, 0) + row["qty"]
+    return totals
+
+=============== chain/stage4.py
+"""Stage 4: render the aggregated totals as a report string."""
+
+
+def report(totals):
+    """Format *totals* as one ``"price:total"`` line per price.
+
+    Lines are sorted by price ascending and each line is terminated by ``"\\n"``.
+    """
+    lines = ["%d:%d" % (price, totals[price]) for price in sorted(totals)]
+    return "".join(line + "\n" for line in lines)
+

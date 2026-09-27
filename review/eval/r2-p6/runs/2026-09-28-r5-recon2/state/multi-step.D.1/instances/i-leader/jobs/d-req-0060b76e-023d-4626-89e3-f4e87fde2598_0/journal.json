@@ -1,0 +1,1 @@
+{"job_id":"d-req-0060b76e-023d-4626-89e3-f4e87fde2598:0","state":"FAILED","command_hash":"9be01c83a89bbb07d5e457b1700b0e5372d7fabb779e26e1cb0b588bb089685d","pid":216,"start_ticks":54537241,"boot_id":"cf3a562a-e242-410d-bf05-ff7af990fd40","exit_code":1,"signal":null,"started_ms":1790541386387,"finished_ms":1790541386597,"starts":1,"cancel_saved":false}

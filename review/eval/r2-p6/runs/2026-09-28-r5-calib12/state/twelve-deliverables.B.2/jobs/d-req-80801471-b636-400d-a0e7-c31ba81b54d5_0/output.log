@@ -1,0 +1,36 @@
+== 1 csvfix ==
+..                                                                       [100%]
+2 passed in 0.01s
+== 2 rules ==
+.                                                                        [100%]
+1 passed in 0.01s
+== 3 ledger ==
+..                                                                       [100%]
+2 passed in 0.01s
+== 4 schedule ==
+..                                                                       [100%]
+2 passed in 0.01s
+== 5 intervals ==
+.......                                                                  [100%]
+7 passed in 0.05s
+== 6 flags ==
+........                                                                 [100%]
+8 passed in 0.01s
+== 7 measure ==
+.                                                                        [100%]
+1 passed in 0.01s
+== 8 slugify ==
+.                                                                        [100%]
+1 passed in 0.01s
+== 9 ranges ==
+.                                                                        [100%]
+1 passed in 0.01s
+== 10 alpha ==
+alpha ok
+== 11 beta ==
+beta ok
+== 12 chain ==
+....                                                                     [100%]
+4 passed in 0.02s
+== REPORT.md ==
+-rw-r--r-- 1 rimuru rimuru 9619 Sep 28 05:17 REPORT.md

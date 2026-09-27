@@ -1,0 +1,10 @@
+measure 1.5m: 150 3cm: 3 20mm: 2
+measure ft -> ValueError: unsupported unit: 'ft'
+slugify: 'hello-world' 'a-b' 'untitled'
+ranges: [(1, 4), (5, 7)] [] [(1, 1)]
+ranges adjacent [[1,2],[3,4]]: [(1, 2), (3, 4)]
+ranges contained [[1,10],[3,4]]: [(1, 10)]
+stage1: [{'id': 1, 'qty': 2, 'price': 10}, {'id': 2, 'qty': 0, 'price': 5}, {'id': 3, 'qty': 3, 'price': 7}, {'id': 4, 'qty': 1, 'price': 7}]
+stage2: [{'id': 1, 'qty': 2, 'price': 10}, {'id': 3, 'qty': 3, 'price': 7}, {'id': 4, 'qty': 1, 'price': 7}]
+stage3: {10: 2, 7: 4}
+stage4: '7:4\n10:2\n'

@@ -1180,6 +1180,14 @@ impl<P: Provider> Driver<P> {
         for why in &unreadable {
             eprintln!("teamagents: instruction file not read: {why}");
         }
+        // D-258: the settlement rule reaches **every** member, and it is the runtime that says it. Measured by
+        // round 5's calibration: members ended turns with their task still open four times out of six in one
+        // trial, and whoever delegated the work learns an outcome only from a settlement (§5.3) — so the rule
+        // belongs in the prompt the runtime composes, not only in whatever the delegator happened to write.
+        const SETTLEMENT_RULE: &str = "Settlement rule: if a task is assigned to you, never end a turn leaving it \
+open — settle it with the `finish` tool (SUCCEEDED, FAILED, or BLOCKED with the reason), because the instance \
+that delegated it learns the outcome only from a settlement.";
+        profile.instructions = format!("{}\n\n{SETTLEMENT_RULE}", profile.instructions);
         if !rules.is_empty() {
             profile.instructions = format!("{}\n\n{rules}", profile.instructions);
         }

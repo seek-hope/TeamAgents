@@ -1,0 +1,19 @@
+csv quote: ['a,b', '2', 'x']
+csv bad cols: None None
+csv total skip blank: 2
+csv bad raises: bad amount: 'x'
+rules all+any: True
+rules missing key: False
+rules empty all/any: True False
+rules no clause: False
+ledger filter: [('deposit', 'a', 100)]
+ledger b balance: 0
+ledger other-acct negative raises: negative amount: -5
+slots touching: [(0, 10), (10, 20)]
+overlaps nested: True True
+iv merge gap default: [(1, 4)]
+iv subtract left/right: [(4, 10)] [(0, 6)]
+iv total overlap: 11
+flags multi --: {'values': {}, 'flags': {}, 'positional': ['--x', '--']}
+flags short after long: {'values': {'mode': ['-abc']}, 'flags': {}, 'positional': []}
+flags dash only: {'values': {}, 'flags': {}, 'positional': ['-']}

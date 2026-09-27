@@ -1,0 +1,27 @@
+total 20
+drwxr-xr-x  3 rimuru rimuru 4096 Sep 28 05:21 .
+drwxr-xr-x  6 rimuru rimuru 4096 Sep 28 05:20 ..
+-rw-r--r--  1 rimuru rimuru 5791 Sep 28 05:21 REPORT.md
+drwxr-xr-x 14 rimuru rimuru 4096 Sep 28 04:52 units
+--- REPORT head ---
+# REPORT — twelve independent deliverables
+
+All 12 units were implemented/fixed independently. No test or acceptance file
+(`test_*.py`, `check.py`) was modified — verified byte-for-byte against the
+original fixture with `diff -q` (all 15 files `UNCHANGED`).
+--- impl files present ---
+csvfix/impl.py           ok
+rules/engine.py          ok
+ledger/ledger.py         ok
+schedule/schedule.py     ok
+intervals/intervals.py   ok
+flags/flags.py           ok
+measure/measure.py       ok
+slugify/slugify.py       ok
+ranges/ranges.py         ok
+alpha/alpha.py           ok
+beta/beta.py             ok
+chain/stage1.py          ok
+chain/stage2.py          ok
+chain/stage3.py          ok
+chain/stage4.py          ok

@@ -1,0 +1,44 @@
+== git ==
+ M ../../../../../../../docs/DECISIONS.md
+ M ../../../../../../../engine/src/v2/driver.rs
+ M ../../../../../../citations.py
+ M ../../../../../../dogfood/instructions.py
+ M ../../../../run.py
+ M ../../../../../../../verification/REPORT.md
+?? ../../../../design-r5.md
+?? ../../../../manifest-r5-calib12.json
+?? ../../
+?? ../../../2026-09-28-r5-recon2/
+true
+== mtimes ==
+units/chain/stage3.py
+units/chain/stage4.py
+units/chain/stage1.py
+units/chain/stage2.py
+units/flags/flags.py
+-rw-r--r-- 1 rimuru rimuru   32 05:35:13 units/alpha/alpha.py
+-rw-r--r-- 1 rimuru rimuru   76 15:15:59 units/alpha/check.py
+-rw-r--r-- 1 rimuru rimuru   32 05:35:13 units/beta/beta.py
+-rw-r--r-- 1 rimuru rimuru   73 15:15:59 units/beta/check.py
+-rw-r--r-- 1 rimuru rimuru  939 05:35:20 units/chain/stage1.py
+-rw-r--r-- 1 rimuru rimuru  431 05:35:20 units/chain/stage2.py
+-rw-r--r-- 1 rimuru rimuru  498 05:35:20 units/chain/stage3.py
+-rw-r--r-- 1 rimuru rimuru  459 05:35:20 units/chain/stage4.py
+-rw-r--r-- 1 rimuru rimuru 1177 05:35:18 units/csvfix/impl.py
+-rw-r--r-- 1 rimuru rimuru  302 15:32:41 units/csvfix/test_csvfix.py
+-rw-r--r-- 1 rimuru rimuru 2062 05:35:19 units/flags/flags.py
+-rw-r--r-- 1 rimuru rimuru 1504 03:44:22 units/flags/test_flags.py
+-rw-r--r-- 1 rimuru rimuru 1679 05:35:17 units/intervals/intervals.py
+-rw-r--r-- 1 rimuru rimuru 1346 03:44:22 units/intervals/test_intervals.py
+-rw-r--r-- 1 rimuru rimuru  851 05:35:16 units/ledger/ledger.py
+-rw-r--r-- 1 rimuru rimuru  505 03:44:19 units/ledger/test_ledger.py
+-rw-r--r-- 1 rimuru rimuru  545 05:35:14 units/measure/measure.py
+-rw-r--r-- 1 rimuru rimuru  284 03:46:11 units/measure/test_measure.py
+-rw-r--r-- 1 rimuru rimuru  669 05:35:14 units/ranges/ranges.py
+-rw-r--r-- 1 rimuru rimuru  178 03:46:11 units/ranges/test_ranges.py
+-rw-r--r-- 1 rimuru rimuru 1187 05:35:14 units/rules/engine.py
+-rw-r--r-- 1 rimuru rimuru  319 15:32:41 units/rules/test_rules.py
+-rw-r--r-- 1 rimuru rimuru  826 05:35:16 units/schedule/schedule.py
+-rw-r--r-- 1 rimuru rimuru  295 03:44:19 units/schedule/test_schedule.py
+-rw-r--r-- 1 rimuru rimuru  159 05:35:14 units/slugify/slugify.py
+-rw-r--r-- 1 rimuru rimuru  195 03:46:11 units/slugify/test_slugify.py

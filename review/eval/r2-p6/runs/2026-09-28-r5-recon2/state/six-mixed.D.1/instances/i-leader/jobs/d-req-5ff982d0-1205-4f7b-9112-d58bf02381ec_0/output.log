@@ -1,0 +1,42 @@
+== measure ==
+.                                                                        [100%]
+1 passed in 0.01s
+exit=0
+== slugify ==
+.                                                                        [100%]
+1 passed in 0.01s
+exit=0
+== ranges ==
+.                                                                        [100%]
+1 passed in 0.01s
+exit=0
+== alpha ==
+alpha ok
+exit=0
+== beta ==
+beta ok
+exit=0
+== chain ==
+....                                                                     [100%]
+4 passed in 0.03s
+exit=0
+== cleanup ==
+./alpha/alpha.py
+./alpha/check.py
+./beta/beta.py
+./beta/check.py
+./chain/data/orders.csv
+./chain/stage1.py
+./chain/stage2.py
+./chain/stage3.py
+./chain/stage4.py
+./chain/tests/test_stage1.py
+./chain/tests/test_stage2.py
+./chain/tests/test_stage3.py
+./chain/tests/test_stage4.py
+./measure/measure.py
+./measure/test_measure.py
+./ranges/ranges.py
+./ranges/test_ranges.py
+./slugify/slugify.py
+./slugify/test_slugify.py

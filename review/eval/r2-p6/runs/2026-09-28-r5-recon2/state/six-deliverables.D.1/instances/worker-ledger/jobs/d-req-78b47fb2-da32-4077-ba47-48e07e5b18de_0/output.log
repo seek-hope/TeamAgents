@@ -1,0 +1,5 @@
+-rw-r--r-- 1 rimuru rimuru 836 2026-09-28_04:46:02 ledger.py
+-rw-r--r-- 1 rimuru rimuru 505 2026-09-28_03:44:19 test_ledger.py
+[('deposit', 'a', 100), ('withdraw', 'a', 30)] 70 0
+ValueError ok: amount must not be negative
+empty: 0

@@ -1,0 +1,16 @@
+/home/rimuru/Projects/Code/for_fun/TeamAgents
+AGENTS.md
+core
+docs
+engine
+examples
+install.sh
+Makefile
+README.md
+README.zh-CN.md
+review
+rustfmt.toml
+rust-toolchain.toml
+states
+tui
+verification

@@ -1,0 +1,94 @@
+===== units/measure/measure.py =====
+class Impl:
+    # Number of centimeters in one unit of each supported unit.
+    _CM_PER_UNIT = {
+        "m": 100,
+        "cm": 1,
+        "mm": 0.1,
+    }
+
+    def to_cm(self, value, unit):
+        """Convert ``value`` expressed in ``unit`` to an integer number of cm.
+
+        Supported units are 'm', 'cm' and 'mm'. ``value`` may be an int or a
+        float. Any other unit raises ``ValueError``.
+        """
+        try:
+            factor = self._CM_PER_UNIT[unit]
+        except KeyError:
+            raise ValueError("unsupported unit: {!r}".format(unit)) from None
+        # Round to guard against binary floating point representation noise
+        # (e.g. 20 * 0.1 == 2.0000000000000004) and return an exact int.
+        return int(round(value * factor))
+===== units/slugify/slugify.py =====
+import re
+
+
+class Impl:
+    def slugify(self, text):
+        slug = re.sub(r"[^a-z0-9]+", "-", str(text).lower())
+        slug = slug.strip("-")
+        return slug or "untitled"
+===== units/ranges/ranges.py =====
+class Impl:
+    def merge(self, ranges):
+        """Merge closed integer intervals that overlap.
+
+        Returns a list of (start, end) tuples sorted by start.
+        Note: per the frozen acceptance test, merely adjacent intervals
+        (e.g. [1,4] and [5,7]) are NOT merged; only overlapping ones are.
+        """
+        intervals = sorted((int(a), int(b)) for a, b in ranges)
+        merged = []
+        for start, end in intervals:
+            if merged and start <= merged[-1][1]:
+                prev_start, prev_end = merged[-1]
+                merged[-1] = (prev_start, max(prev_end, end))
+            else:
+                merged.append((start, end))
+        return merged
+===== units/alpha/alpha.py =====
+def add(a, b):
+    return a + b
+===== units/beta/beta.py =====
+def mul(a, b):
+    return a * b
+===== units/chain/stage1.py =====
+import csv
+
+
+def parse_orders(path):
+    """Read the orders CSV and return one dict per row, in file order.
+
+    Each dict has the keys "id", "qty" and "price" with int values.
+    """
+    rows = []
+    with open(path, newline="", encoding="utf-8") as fh:
+        reader = csv.DictReader(fh)
+        for raw in reader:
+            rows.append(
+                {
+                    "id": int(raw["id"]),
+                    "qty": int(raw["qty"]),
+                    "price": int(raw["price"]),
+                }
+            )
+    return rows
+===== units/chain/stage2.py =====
+def filter_orders(rows):
+    """Keep only the rows whose qty is greater than zero."""
+    return [row for row in rows if row["qty"] > 0]
+===== units/chain/stage3.py =====
+def total_by_price(rows):
+    """Map each price to the total qty of the rows sharing that price."""
+    totals = {}
+    for row in rows:
+        price = row["price"]
+        totals[price] = totals.get(price, 0) + row["qty"]
+    return totals
+===== units/chain/stage4.py =====
+def report(totals):
+    """Render "price:total\\n" lines ordered by price ascending."""
+    return "".join(
+        "%d:%d\n" % (price, totals[price]) for price in sorted(totals)
+    )

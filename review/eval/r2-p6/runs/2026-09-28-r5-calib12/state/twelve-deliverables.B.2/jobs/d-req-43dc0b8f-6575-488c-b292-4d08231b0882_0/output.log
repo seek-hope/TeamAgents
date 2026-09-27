@@ -1,0 +1,16 @@
+csv quoted: ['a,b', '2', 'x']
+csv bad cols: None None
+csv escaped quote: ['he said "hi"', '1', '2']
+csv total: 2
+csv bad amount -> ValueError
+flags: {'values': {'k': ['v']}, 'flags': {'a': True, 'b': True}, 'positional': ['x', '--y', 'z']}
+flags switch then value: {'values': {'other': ['fast']}, 'flags': {'mode': True}, 'positional': []}
+flags single-dash value: {'values': {'k': ['-5']}, 'flags': {}, 'positional': []}
+merge nested: [(0, 10)]
+merge gap1: [(1, 5)]
+subtract touch right: [(0, 3)]
+subtract normalize: [(1, 1), (7, 7)]
+total_length overlap: 5
+slots gap==minutes splits: [(0, 90), (120, 150)]
+overlaps touching: False
+rules all/any: False True True False False

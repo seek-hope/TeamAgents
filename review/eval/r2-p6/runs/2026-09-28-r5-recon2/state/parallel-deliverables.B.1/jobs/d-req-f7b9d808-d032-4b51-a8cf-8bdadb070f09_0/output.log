@@ -1,0 +1,7 @@
+WS=/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r5-recon2/work/parallel-deliverables.B.1/rules
+--- csvfix ---
+/bin/bash: line 28: cd: /home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r5-recon2/work/parallel-deliverables.B.1/rules/csvfix: No such file or directory
+csvfix exit=1
+--- rules ---
+/bin/bash: line 28: cd: /home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r5-recon2/work/parallel-deliverables.B.1/rules/rules: No such file or directory
+rules exit=1

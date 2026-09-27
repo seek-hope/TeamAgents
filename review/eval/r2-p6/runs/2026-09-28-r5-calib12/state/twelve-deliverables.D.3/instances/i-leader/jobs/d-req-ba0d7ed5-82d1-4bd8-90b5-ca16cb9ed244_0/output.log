@@ -1,0 +1,46 @@
+===== csvfix =====
+..                                                                       [100%]
+2 passed in 0.01s
+EXIT=0
+===== rules =====
+.                                                                        [100%]
+1 passed in 0.01s
+EXIT=0
+===== ledger =====
+..                                                                       [100%]
+2 passed in 0.01s
+EXIT=0
+===== schedule =====
+..                                                                       [100%]
+2 passed in 0.01s
+EXIT=0
+===== intervals =====
+.......                                                                  [100%]
+7 passed in 0.01s
+EXIT=0
+===== flags =====
+........                                                                 [100%]
+8 passed in 0.02s
+EXIT=0
+===== measure =====
+.                                                                        [100%]
+1 passed in 0.01s
+EXIT=0
+===== slugify =====
+.                                                                        [100%]
+1 passed in 0.01s
+EXIT=0
+===== ranges =====
+.                                                                        [100%]
+1 passed in 0.01s
+EXIT=0
+===== alpha =====
+alpha ok
+EXIT=0
+===== beta =====
+beta ok
+EXIT=0
+===== chain =====
+....                                                                     [100%]
+4 passed in 0.04s
+EXIT=0

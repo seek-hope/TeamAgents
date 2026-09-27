@@ -1,0 +1,50 @@
+"""命令行风格的参数解析。"""
+
+
+class Impl:
+    def parse(self, argv):
+        """返回 {"values": {...}, "flags": {...}, "positional": [...]}：
+        - 不以 "-" 开头、或正好是 "-" 的项，按出现顺序进 positional。
+        - `--` 之后的所有项都是位置参数（`--` 自己不出现在结果里）。
+        - `--key=value` 与 `--key value` 都是键值对，键是 key。
+        - `--key` 后面没有可用值（到结尾，或后面紧跟另一个 "--" 开头的项）时它是开关。
+        - `-abc` 是三个开关 a、b、c。
+        - values 的每个值是**列表**，重复的键按出现顺序累积；开关重复出现仍是 True。"""
+        values = {}
+        flags = {}
+        positional = []
+
+        i = 0
+        n = len(argv)
+        while i < n:
+            item = argv[i]
+
+            if item == "--":
+                # 终止符：其后所有项都是位置参数，`--` 本身不出现。
+                positional.extend(argv[i + 1:])
+                break
+
+            if item.startswith("--"):
+                body = item[2:]
+                if "=" in body:
+                    key, val = body.split("=", 1)
+                    values.setdefault(key, []).append(val)
+                else:
+                    key = body
+                    nxt = argv[i + 1] if i + 1 < n else None
+                    if nxt is not None and not nxt.startswith("--"):
+                        # 下一个项可作为值（即使看起来像开关，如 "-5"）。
+                        values.setdefault(key, []).append(nxt)
+                        i += 1
+                    else:
+                        flags[key] = True
+            elif item.startswith("-") and item != "-":
+                # `-abc` 是一组短开关。
+                for ch in item[1:]:
+                    flags[ch] = True
+            else:
+                positional.append(item)
+
+            i += 1
+
+        return {"values": values, "flags": flags, "positional": positional}

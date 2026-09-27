@@ -1,0 +1,2 @@
+/bin/bash: line 28: cd: /home/rimuru/Projects/Code/for_fun/TeamAgents/units/csvfix: No such file or directory
+EXIT=1

@@ -1,0 +1,7 @@
+total 16
+drwxr-xr-x 2 rimuru rimuru 4096 Sep 28 03:44 .
+drwxr-xr-x 8 rimuru rimuru 4096 Sep 28 03:44 ..
+-rw-r--r-- 1 rimuru rimuru  483 Sep 28 03:44 ledger.py
+-rw-r--r-- 1 rimuru rimuru  505 Sep 28 03:44 test_ledger.py
+Python 3.13.15
+pytest 9.0.3

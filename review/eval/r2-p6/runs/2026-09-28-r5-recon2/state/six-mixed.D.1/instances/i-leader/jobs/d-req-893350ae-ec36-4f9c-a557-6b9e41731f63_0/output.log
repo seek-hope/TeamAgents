@@ -1,0 +1,40 @@
++ cd units/measure
++ python3 -m pytest -q
+.                                                                        [100%]
+1 passed in 0.01s
++ echo MEASURE_EXIT=0
+MEASURE_EXIT=0
++ cd ../slugify
++ python3 -m pytest -q
+.                                                                        [100%]
+1 passed in 0.02s
++ echo SLUGIFY_EXIT=0
+SLUGIFY_EXIT=0
++ cd ../ranges
++ python3 -m pytest -q
+.                                                                        [100%]
+1 passed in 0.02s
++ echo RANGES_EXIT=0
+RANGES_EXIT=0
++ cd ../alpha
++ python3 check.py
+alpha ok
++ echo ALPHA_EXIT=0
+ALPHA_EXIT=0
++ cd ../beta
++ python3 check.py
+beta ok
++ echo BETA_EXIT=0
+BETA_EXIT=0
++ cd ../chain
++ python3 -m pytest -q tests/
+....                                                                     [100%]
+4 passed in 0.09s
++ echo CHAIN_EXIT=0
+CHAIN_EXIT=0
++ __ta_rc=0
+++ builtin pwd
++ PWD=/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r5-recon2/work/six-mixed.D.1/units/chain
++ mv /home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r5-recon2/state/six-mixed.D.1/instances/i-leader/shell/host/state.sh.tmp /home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r5-recon2/state/six-mixed.D.1/instances/i-leader/shell/host/state.sh
++ printf '%s\n' /home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r5-recon2/work/six-mixed.D.1/units/chain
++ exit 0

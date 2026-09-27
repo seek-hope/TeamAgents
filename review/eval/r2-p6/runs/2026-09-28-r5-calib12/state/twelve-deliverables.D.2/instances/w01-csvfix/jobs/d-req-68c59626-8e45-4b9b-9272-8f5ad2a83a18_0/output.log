@@ -1,0 +1,10 @@
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r5-calib12/work/twelve-deliverables.D.2/units/csvfix
+import impl$
+$
+def test_parse_trims_and_validates():$
+    assert impl.parse(' a , 2 , x ') == ["a", "2", "x"]$
+    assert impl.parse('a,2') is None  # M-eM-^HM-^WM-fM-^UM-0M-dM-8M-^MM-fM-^XM-/ 3 M-fM-^WM-6M-hM-?M-^TM-eM-^[M-^^ None$
+$
+def test_total_skips_blank_and_reports_bad():$
+    rows = [["a", "1", "2"], ["b", "2", ""]]$
+    assert impl.total(rows) == 2$

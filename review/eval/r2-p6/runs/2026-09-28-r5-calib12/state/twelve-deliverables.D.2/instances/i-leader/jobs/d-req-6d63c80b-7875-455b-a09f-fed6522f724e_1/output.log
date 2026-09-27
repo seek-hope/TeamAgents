@@ -1,0 +1,32 @@
+ M docs/DECISIONS.md
+ M engine/src/v2/driver.rs
+ M review/citations.py
+ M review/dogfood/instructions.py
+ M review/eval/r2-p6/run.py
+ M verification/REPORT.md
+?? review/eval/r2-p6/design-r5.md
+?? review/eval/r2-p6/manifest-r5-calib12.json
+?? review/eval/r2-p6/runs/2026-09-28-r5-calib12/
+?? review/eval/r2-p6/runs/2026-09-28-r5-recon2/
+?? review/eval/r2-p6/tasks/twelve-deliverables/
+---diff stat---
+ docs/DECISIONS.md              | 41 +++++++++++++++++++++++++++++++++++++++++
+ engine/src/v2/driver.rs        |  8 ++++++++
+ review/citations.py            |  2 +-
+ review/dogfood/instructions.py | 11 +++++++++--
+ review/eval/r2-p6/run.py       | 13 ++++++++++---
+ verification/REPORT.md         | 10 +++++-----
+ 6 files changed, 74 insertions(+), 11 deletions(-)
+(no git repo means empty above)
+--- test-file integrity ---
+8d5ddb899fec22f5616a12c186fef11e  units/csvfix/test_csvfix.py
+cc08d7b4882d3e9bb4420b94dc4b393c  units/flags/test_flags.py
+c8b297b9b6056dc59918aca6ecbd4614  units/intervals/test_intervals.py
+41631e53011e44facbaf54dfc0071e16  units/ledger/test_ledger.py
+a4f90684a074e3b05871d2070e4dac2a  units/measure/test_measure.py
+eadf571f10300547ace8238a0f75251e  units/ranges/test_ranges.py
+12b10bdc4b1b2188c37fe54ebdfd64f0  units/rules/test_rules.py
+e31e5e52c586a8e7f763257fbc92c06b  units/schedule/test_schedule.py
+4001d5c1399427f02d803349e20db829  units/slugify/test_slugify.py
+4391d9cc813f85ff330ee11e11b65d9c  units/alpha/check.py
+35422f37953fbf37963d3672f88eae31  units/beta/check.py

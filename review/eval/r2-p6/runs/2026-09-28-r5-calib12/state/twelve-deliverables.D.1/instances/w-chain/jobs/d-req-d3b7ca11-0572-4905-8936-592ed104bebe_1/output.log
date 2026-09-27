@@ -1,0 +1,18 @@
+id,qty,price
+1,2,10
+2,0,5
+3,3,7
+4,1,7
+---
+=== stage1.py ===
+def parse_orders(*args, **kwargs):
+    raise NotImplementedError
+=== stage2.py ===
+def filter_orders(*args, **kwargs):
+    raise NotImplementedError
+=== stage3.py ===
+def total_by_price(*args, **kwargs):
+    raise NotImplementedError
+=== stage4.py ===
+def report(*args, **kwargs):
+    raise NotImplementedError

@@ -1,0 +1,12 @@
+/bin/bash: line 28: cd: units/rules: No such file or directory
+ M docs/DECISIONS.md
+ M engine/src/v2/driver.rs
+ M review/citations.py
+ M review/dogfood/instructions.py
+ M review/eval/r2-p6/run.py
+ M verification/REPORT.md
+?? review/eval/r2-p6/design-r5.md
+?? review/eval/r2-p6/manifest-r5-calib12.json
+?? review/eval/r2-p6/runs/2026-09-28-r5-calib12/
+?? review/eval/r2-p6/runs/2026-09-28-r5-recon2/
+?? review/eval/r2-p6/tasks/twelve-deliverables/

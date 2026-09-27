@@ -1,0 +1,6 @@
+parse quoted: ['a,b', '2', 'x']
+parse 4cols: None
+total bad raises: ValueError ok
+slots empty: []
+overlaps nested: True
+measure bad unit -> ValueError ok

@@ -114,6 +114,10 @@ def judgement(systems: list, doctor_row: str) -> list:
             failures.append(f"request {index + 1}'s system prompt does not carry the canary: {text[:120]!r}")
         if f"instruction file:" not in text:
             failures.append(f"request {index + 1}'s system prompt has no heading naming the file: {text[:120]!r}")
+    for index, text in enumerate(systems):
+        # D-258: the runtime's own settlement rule reaches every member as well, and only a real prompt shows it
+        if "Settlement rule:" not in text:
+            failures.append(f"request {index + 1}'s system prompt does not carry the settlement rule: {text[:120]!r}")
     if not any(MEMBER_MARKER in text for text in systems):
         failures.append("no child's prompt was seen, so 'every member' is not what this run checked")
     if "[ok  ] instruction files" not in doctor_row or "reach every member's prompt" not in doctor_row:
@@ -124,8 +128,9 @@ def judgement(systems: list, doctor_row: str) -> list:
 def self_check() -> int:
     """Exercise `judgement` on the measured shapes and on the pre-D-246 shape it must report."""
     findings = []
-    good = [f"{MEMBER_MARKER}: you are a worker\n\n<!-- instruction file: /rules.md -->\n{CANARY}: say canary",
-            f"<!-- instruction file: /rules.md -->\n{CANARY}: say canary"]
+    rule = "Settlement rule: settle a task you were given, or say why not"
+    good = [f"{MEMBER_MARKER}: you are a worker\n\n{rule}\n\n<!-- instruction file: /rules.md -->\n{CANARY}: say canary",
+            f"{rule}\n\n<!-- instruction file: /rules.md -->\n{CANARY}: say canary"]
     row = "[ok  ] instruction files          2 file(s), 84 byte(s) reach every member's prompt"
     if judgement(good, row):
         findings.append("the shapes this build produces must pass")
@@ -135,6 +140,8 @@ def self_check() -> int:
         findings.append("the pre-D-246 shape (no rules in the prompt) must be reported")
     if not judgement(good, "[WARN] instruction files  1 declared, not applied"):
         findings.append("a doctor row that does not promise the delivery must be reported")
+    if not judgement([good[0].replace(rule, "settle later"), good[1]], row):
+        findings.append("a prompt without the settlement rule must be reported (D-258)")
     for finding in findings:
         print(f"FAIL: {finding}")
     if not findings:

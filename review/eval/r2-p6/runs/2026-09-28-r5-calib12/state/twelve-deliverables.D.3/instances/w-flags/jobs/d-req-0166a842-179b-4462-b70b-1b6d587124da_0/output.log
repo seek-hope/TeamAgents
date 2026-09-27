@@ -1,0 +1,22 @@
+07edf2bc2445551aa24d467a4ed09baca7cff1b8e76aa0760453440b0e521960  test_flags.py
+541e767273514d2e2886517f4cd67fa9344adb2df2fa9cfd1a59272996b5563b  flags.py
+=== python3 -m pytest -q ===
+........                                                                 [100%]
+8 passed in 0.01s
+EXIT=0
+total 56
+drwxr-xr-x 14 rimuru rimuru 4096 Sep 28 04:52 .
+drwxr-xr-x  3 rimuru rimuru 4096 Sep 28 04:52 ..
+drwxr-xr-x  3 rimuru rimuru 4096 Sep 28 05:35 alpha
+drwxr-xr-x  3 rimuru rimuru 4096 Sep 28 05:35 beta
+drwxr-xr-x  6 rimuru rimuru 4096 Sep 28 05:35 chain
+drwxr-xr-x  4 rimuru rimuru 4096 Sep 28 05:35 csvfix
+drwxr-xr-x  4 rimuru rimuru 4096 Sep 28 05:35 flags
+drwxr-xr-x  4 rimuru rimuru 4096 Sep 28 05:35 intervals
+drwxr-xr-x  4 rimuru rimuru 4096 Sep 28 05:35 ledger
+drwxr-xr-x  4 rimuru rimuru 4096 Sep 28 05:35 measure
+drwxr-xr-x  4 rimuru rimuru 4096 Sep 28 05:35 ranges
+drwxr-xr-x  4 rimuru rimuru 4096 Sep 28 05:35 rules
+drwxr-xr-x  4 rimuru rimuru 4096 Sep 28 05:35 schedule
+drwxr-xr-x  4 rimuru rimuru 4096 Sep 28 05:35 slugify
+units

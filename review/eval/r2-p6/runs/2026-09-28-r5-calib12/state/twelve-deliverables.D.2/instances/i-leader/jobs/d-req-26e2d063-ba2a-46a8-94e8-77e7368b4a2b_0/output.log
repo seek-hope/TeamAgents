@@ -1,0 +1,196 @@
+===== units/csvfix/impl.py =====
+def parse(line):
+    """Split ``line`` on commas into exactly three trimmed fields.
+
+    Each field is stripped of surrounding whitespace.  When the line does not
+    consist of exactly three fields (too few or too many), ``None`` is
+    returned instead of a partial/oversized row.
+    """
+    fields = line.split(",")
+    if len(fields) != 3:
+        return None
+    return [field.strip() for field in fields]
+
+
+def total(rows):
+    """Sum the amount column of ``rows``.
+
+    Rows whose amount is blank or missing (row shorter than the amount
+    position) contribute nothing.  Amounts are converted to ``int``.
+    """
+    amount_index = 2
+    total_amount = 0
+    for row in rows:
+        if row is None or len(row) <= amount_index:
+            continue  # amount missing
+        amount = row[amount_index]
+        if amount is None:
+            continue
+        amount = str(amount).strip()
+        if not amount:
+            continue  # blank amount
+        total_amount += int(amount)
+    return total_amount
+
+===== units/rules/engine.py =====
+def evaluate(rules, facts):
+    """Evaluate a rule against facts.
+
+    Semantics:
+      {"all": [keys]} -> True iff every key is truthy in facts (vacuously True when empty)
+      {"any": [keys]} -> True iff at least one key is truthy in facts (False when empty)
+    A missing key counts as falsy.
+    """
+    if "all" in rules:
+        return all(bool(facts.get(k)) for k in rules["all"])
+    if "any" in rules:
+        return any(bool(facts.get(k)) for k in rules["any"])
+    raise ValueError("unknown rule: %r" % (rules,))
+
+===== units/ledger/ledger.py =====
+"""一个只关心单个账户的小账本。"""
+
+
+class Ledger:
+    def apply(self, rows, op):
+        """rows 是 [(kind, account, cents), ...]，返回**该账户**的行（保持原顺序）。
+        kind 只有 "deposit" 与 "withdraw"；金额为负时抛 ValueError。"""
+        for kind, account, cents in rows:
+            if cents < 0:
+                raise ValueError("negative amount: %r" % (cents,))
+        return [(kind, account, cents) for kind, account, cents in rows if account == op]
+
+
+def balance(rows, account):
+    """返回该账户的净额：deposit 相加、withdraw 相减；没有该账户的行时返回 0。"""
+    total = 0
+    for kind, acct, cents in rows:
+        if acct != account:
+            continue
+        if kind == "deposit":
+            total += cents
+        elif kind == "withdraw":
+            total -= cents
+    return total
+
+===== units/schedule/schedule.py =====
+"""闭区间的时间段工具。"""
+
+
+def slots(ranges, minutes):
+    """合并闭区间：两段之间的空隙（next_lo - prev_hi）小于 minutes 视为同一段。
+    返回按起点升序的合并结果；空输入返回 []。"""
+    if not ranges:
+        return []
+    ordered = sorted((lo, hi) for lo, hi in ranges)
+    merged = []
+    cur_lo, cur_hi = ordered[0]
+    for lo, hi in ordered[1:]:
+        if lo - cur_hi < minutes:
+            if hi > cur_hi:
+                cur_hi = hi
+        else:
+            merged.append((cur_lo, cur_hi))
+            cur_lo, cur_hi = lo, hi
+    merged.append((cur_lo, cur_hi))
+    return merged
+
+
+def overlaps(a, b):
+    """两个闭区间是否有交叠；端点正好相接（如 (0,10) 与 (10,20)）不算交叠。"""
+    a_lo, a_hi = a
+    b_lo, b_hi = b
+    return a_lo < b_hi and b_lo < a_hi
+
+===== units/intervals/intervals.py =====
+"""闭区间工具（整数端点，lo <= hi）。"""
+
+
+class Impl:
+    def _normalize(self, ranges):
+        """把输入统一成 (lo, hi) 元组并按 lo 升序排序。"""
+        return sorted((int(lo), int(hi)) for lo, hi in ranges)
+
+    def merge(self, ranges, gap=0):
+        """合并闭区间：按 lo 升序排序后，若相邻两段之间**缺失的整数个数**
+        （next.lo - prev.hi - 1）小于等于 gap 就合并。返回 [(lo, hi), ...] 升序；空输入返回 []。"""
+        merged = []
+        for lo, hi in self._normalize(ranges):
+            if merged and lo - merged[-1][1] - 1 <= gap:
+                if hi > merged[-1][1]:
+                    merged[-1] = (merged[-1][0], hi)
+            else:
+                merged.append((lo, hi))
+        return merged
+
+    def subtract(self, ranges, hole):
+        """从 ranges 中挖去闭区间 hole：返回剩下的闭区间（升序）。与 hole 不相交的段原样保留，
+        被完全覆盖的段消失，横跨 hole 的段分裂成两段。"""
+        hlo, hhi = int(hole[0]), int(hole[1])
+        result = []
+        for lo, hi in self.merge(ranges):
+            if hi < hlo or lo > hhi:          # 与 hole 不相交，原样保留
+                result.append((lo, hi))
+                continue
+            if lo < hlo:                       # 左侧残余
+                result.append((lo, hlo - 1))
+            if hi > hhi:                       # 右侧残余
+                result.append((hhi + 1, hi))
+        return result
+
+    def total_length(self, ranges):
+        """ranges 覆盖的整数个数之和（闭区间含端点；重叠只算一次）。"""
+        return sum(hi - lo + 1 for lo, hi in self.merge(ranges))
+
+===== units/flags/flags.py =====
+"""命令行风格的参数解析。"""
+
+
+class Impl:
+    def parse(self, argv):
+        """返回 {"values": {...}, "flags": {...}, "positional": [...]}：
+        - 不以 "-" 开头、或正好是 "-" 的项，按出现顺序进 positional。
+        - `--` 之后的所有项都是位置参数（`--` 自己不出现在结果里）。
+        - `--key=value` 与 `--key value` 都是键值对，键是 key。
+        - `--key` 后面没有可用值（到结尾，或后面紧跟另一个 "--" 开头的项）时它是开关。
+        - `-abc` 是三个开关 a、b、c。
+        - values 的每个值是**列表**，重复的键按出现顺序累积；开关重复出现仍是 True。"""
+        values = {}
+        flags = {}
+        positional = []
+
+        i = 0
+        n = len(argv)
+        while i < n:
+            item = argv[i]
+
+            if item == "--":
+                # 终止符：其后所有项都是位置参数，`--` 本身不出现。
+                positional.extend(argv[i + 1:])
+                break
+
+            if item.startswith("--"):
+                body = item[2:]
+                if "=" in body:
+                    key, val = body.split("=", 1)
+                    values.setdefault(key, []).append(val)
+                else:
+                    key = body
+                    nxt = argv[i + 1] if i + 1 < n else None
+                    if nxt is not None and not nxt.startswith("--"):
+                        # 下一个项可作为值（即使看起来像开关，如 "-5"）。
+                        values.setdefault(key, []).append(nxt)
+                        i += 1
+                    else:
+                        flags[key] = True
+            elif item.startswith("-") and item != "-":
+                # `-abc` 是一组短开关。
+                for ch in item[1:]:
+                    flags[ch] = True
+            else:
+                positional.append(item)
+
+            i += 1
+
+        return {"values": values, "flags": flags, "positional": positional}
+

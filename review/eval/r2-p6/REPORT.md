@@ -71,6 +71,41 @@ tasks × {B, D} = 48 trials) was **not** run, because measurement 1 says it cann
 task set. The next step the pilot points at is the *cost* — the wait-condition contract and the per-turn
 orchestration overhead — and the task set that would need it, not more trials of a set both arms pass.
 
+## Round 5 (2026-09-28, D-256-D-258): the delegation race, measured and not confirmed
+
+Round 4 showed the directive *elicits* delegation. Round 5 asked whether delegation **pays**, by racing the two
+arms against a wall-clock bound. Three candidate tasks were built (two six-unit, one twelve-unit; the units are
+proven material from the recorded rounds), the treatment gained the two things the measurements demanded — the
+user's grant of `shell@workspace` to every member (D-256) and the delegator's timer + recovery contract text
+(D-257/D-258) — and every member's prompt gained the runtime's settlement rule (D-258). Four batches measured
+it; `design-r5.md` is the pre-registration, and its calibration is the median of three repeats per arm.
+
+| task (units) | B | D | ratio |
+|---|---|---|---|
+| `six-deliverables` (6) | 127.0 / 145.3 / **133.5** s, 3/3 ok | **125.1** s (pilot 82.2) | ~1.1x |
+| `twelve-deliverables` (12) | 102.7 / 153.9 / **79.5** s, 3/3 ok | 92.7 / **732.2** / 131.3 s, 3/3 ok | 0.78x |
+| `six-mixed` (6) | 64.6 s (pilot 56.2) | 85.0 s (pilot 78.7) | 0.76x |
+| controls (`multi-step`, `parallel-deliverables`) | 9.2 / 54.4 s | 24.6 / 337.6 s | — |
+
+**Verdict: no candidate met the pre-declared criterion (median solo >= 1.5 x median team), so the formal round
+was not run, and H2 stays not confirmed — with a mechanism this time, not a shrug:**
+
+1. **Neither arm shows a success difference** on any of these tasks: both pass every check in every repeat.
+2. **Both arms are nearly flat in unit count, so size does not separate them.** B batches mechanically
+   independent units into a few responses (twelve units done with 16 `edit` calls in 9-17 requests), and the
+   team arm's orchestration is flat too (twelve `spawn`/`delegate` calls in about two responses) — but it also
+   pays the parallel phase *and* the leader's own integration, and it has a long tail when a member stalls
+   (732.2 s once, against B's 79.5-153.9 s range on the same task).
+3. **The arms' wall-clock distributions overlap** — B's own spread on one task (79.5-153.9 s, median 102.7) is
+   wider than any difference between the arms — so a bound-based rule separating them would be a coin flip on
+   every repeat, which the pre-registered criteria resolve as *not confirmed*, never as equivalence.
+4. The team arm's **cost** is 2-3x the tokens (502-565k against 133-349k on the twelve-unit task).
+
+What that leaves: a wall-clock race cannot separate these arms on this harness and this model; the solo arm's
+ability to batch mechanical work is a genuine strength, not an artifact. A different experiment would have to
+take away that ability (a per-response output ceiling, or units so large that one response cannot hold several)
+rather than add units — and that is a design decision for the user, recorded in ACCEPTANCE's Q16 gap.
+
 ## Cost (real tokens, DeepSeek billing)
 
 | Batch | A | B | C |

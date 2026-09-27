@@ -1,0 +1,9 @@
+=== alpha/alpha.py ===
+def add(a, b):
+    return a + b
+=== git status (if repo) ===
+(not a git repo or no changes tracked)
+=== beta listing ===
+beta.py
+check.py
+__pycache__

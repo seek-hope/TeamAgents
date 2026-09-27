@@ -1,0 +1,2 @@
+./units/slugify/slugify.py
+./units/slugify/test_slugify.py

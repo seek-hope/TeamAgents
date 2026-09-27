@@ -1,0 +1,10 @@
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r5-recon2/work/six-deliverables.B.1/units
+/home/rimuru/Projects/Code/for_fun/TeamAgents
+csvfix     /bin/bash: line 28: cd: units/csvfix: No such file or directory
+rules      /bin/bash: line 28: cd: units/rules: No such file or directory
+ledger     /bin/bash: line 28: cd: units/ledger: No such file or directory
+schedule   /bin/bash: line 28: cd: units/schedule: No such file or directory
+intervals  /bin/bash: line 28: cd: units/intervals: No such file or directory
+flags      /bin/bash: line 28: cd: units/flags: No such file or directory
+---
+ls: cannot access 'REPORT.md': No such file or directory

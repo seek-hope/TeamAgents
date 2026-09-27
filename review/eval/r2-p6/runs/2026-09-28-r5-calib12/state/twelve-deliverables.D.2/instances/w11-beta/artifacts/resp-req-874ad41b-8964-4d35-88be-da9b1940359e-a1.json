@@ -1,0 +1,1 @@
+{"message":{"role":"assistant","reasoning_content":"Let me look at beta.py.","content":"","tool_calls":[{"id":"call_00_kIDfidk9tH9831qVfch31432","type":"function","function":{"name":"read_file","arguments":"{\"path\": \"units/beta/beta.py\"}"}}]},"usage":{"prompt":2015,"completion":50,"total":2065},"native":{"protocol":"chat_completions","base":"https://api.deepseek.com/v1"}}

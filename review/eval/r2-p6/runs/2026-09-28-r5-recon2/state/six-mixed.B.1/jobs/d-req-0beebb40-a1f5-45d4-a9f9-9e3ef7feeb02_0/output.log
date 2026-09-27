@@ -1,0 +1,15 @@
+total 20
+drwxr-xr-x 3 rimuru rimuru 4096 Sep 28 04:48 .
+drwxr-xr-x 9 rimuru rimuru 4096 Sep 28 04:47 ..
+-rw-r--r-- 1 rimuru rimuru 4171 Sep 28 04:48 REPORT.md
+drwxr-xr-x 8 rimuru rimuru 4096 Sep 28 03:46 units
+--- tests/acceptance mtimes (should predate my edits) ---
+2026-09-28 03:46:11.587336281 +0800 /home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r5-recon2/work/six-mixed.B.1/units/measure/test_measure.py
+2026-09-28 03:46:11.587773918 +0800 /home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r5-recon2/work/six-mixed.B.1/units/ranges/test_ranges.py
+2026-09-28 03:46:11.587574776 +0800 /home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r5-recon2/work/six-mixed.B.1/units/slugify/test_slugify.py
+2026-09-24 15:15:59.837229770 +0800 /home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r5-recon2/work/six-mixed.B.1/units/alpha/check.py
+2026-09-24 15:15:59.837299045 +0800 /home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r5-recon2/work/six-mixed.B.1/units/beta/check.py
+2026-09-24 16:07:45.816546820 +0800 /home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r5-recon2/work/six-mixed.B.1/units/chain/tests/test_stage1.py
+2026-09-24 16:07:45.816559588 +0800 /home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r5-recon2/work/six-mixed.B.1/units/chain/tests/test_stage2.py
+2026-09-24 16:07:45.816579228 +0800 /home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r5-recon2/work/six-mixed.B.1/units/chain/tests/test_stage3.py
+2026-09-24 16:07:45.816591365 +0800 /home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-28-r5-recon2/work/six-mixed.B.1/units/chain/tests/test_stage4.py

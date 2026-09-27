@@ -1,0 +1,17 @@
+/home/rimuru/Projects/Code/for_fun/TeamAgents
+c72110c2 D-258 (material half): a delegator learns what to do when an assignee abandons its task
+3a433f53 Pin the verification report's §0 to the commit that added the timer rule (the gates were re-run there: 23/23 configurations, 70/70 refuted controls, 3/3 Kani harnesses, no TLC count moved)
+f754ff33 D-257: round 5's race material and the reconnaissance that found the loss mode instead
+3975bba9 D-256: the delegation cost, measured — members that cannot execute, and the user's grant as round 5's treatment half
+35678dae Pin the verification report's §0 to the commit that carried the wait contract (the gates were re-run there: 23/23 configurations, 70/70 refuted controls, 3/3 Kani harnesses, no TLC count moved)
+274c8c50 D-255: the delegation wait contract says which condition wakes a delegator
+d5e783eb Round 4 (D-254): the collaboration treatment becomes the instruction shape, and its pilot measures the cost
+936f484d The help text advertises `artifacts` (a silent patch miss: the verb was wired but never listed, while `--help` is what a user reads first)
+f3f1dce0 D-253 (the read half): a census must never under-report, and the read-only open now says so
+3acaf5c4 Pin the verification report's §0 to the commit that carried the maintenance-pass rule (the gates were re-run there: 23/23 configurations in 6 m 56 s, 70/70 refuted controls in 5 m 17 s, no TLC warning)
+===
+c72110c2 D-258 (material half): a delegator learns what to do when an assignee abandons its task
+3a433f53 Pin the verification report's §0 to the commit that added the timer rule (the gates were re-run there: 23/23 configurations, 70/70 refuted controls, 3/3 Kani harnesses, no TLC count moved)
+f754ff33 D-257: round 5's race material and the reconnaissance that found the loss mode instead
+3975bba9 D-256: the delegation cost, measured — members that cannot execute, and the user's grant as round 5's treatment half
+35678dae Pin the verification report's §0 to the commit that carried the wait contract (the gates were re-run there: 23/23 configurations, 70/70 refuted controls, 3/3 Kani harnesses, no TLC count moved)

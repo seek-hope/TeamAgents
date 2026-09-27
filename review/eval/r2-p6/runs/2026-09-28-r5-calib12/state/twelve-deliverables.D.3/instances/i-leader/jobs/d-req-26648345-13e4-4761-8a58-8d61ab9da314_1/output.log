@@ -1,0 +1,351 @@
+===== units/csvfix/impl.py =====
+import csv
+import io
+
+N_COLS = 3
+
+
+def parse(line):
+    """Parse one CSV line into exactly 3 trimmed fields.
+
+    - Quoted fields are supported (standard CSV quoting rules).
+    - Leading/trailing whitespace around each field is stripped.
+    - Returns None when the line does not have exactly 3 columns
+      (or when the line cannot be parsed as CSV at all).
+    """
+    if line is None:
+        return None
+    try:
+        row = next(csv.reader(io.StringIO(line)))
+    except (csv.Error, StopIteration):
+        return None
+    fields = [f.strip() for f in row]
+    if len(fields) != N_COLS:
+        return None
+    return fields
+
+
+def total(rows):
+    """Sum the amount column (third field) of parsed rows.
+
+    Blank amount fields are skipped (not counted as 0 and not an error).
+    Rows that are missing the amount column are skipped as well.
+    """
+    acc = 0
+    for r in rows:
+        if not r or len(r) < N_COLS:
+            continue
+        value = r[2]
+        if value is None:
+            continue
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                continue
+        acc += int(value)
+    return acc
+===== units/rules/engine.py =====
+def _lookup(facts, key):
+    """Return the truthiness of ``key`` in ``facts``.
+
+    Missing keys count as False instead of raising, so a rule can safely
+    reference facts that were not supplied.
+    """
+    if isinstance(facts, dict):
+        return bool(facts.get(key, False))
+    raise TypeError("facts must be a mapping")
+
+
+def evaluate(rules, facts):
+    """Evaluate a rule against a set of facts.
+
+    Supported rule shapes (a dict with exactly one of the keys below):
+
+    * ``{"all": [key, ...]}`` -> True when every referenced fact is truthy
+      (an empty list is vacuously True).
+    * ``{"any": [key, ...]}`` -> True when at least one referenced fact is
+      truthy (an empty list is False).
+
+    Facts is a mapping of name -> value; values are interpreted by truthiness.
+
+    Returns a real ``bool`` so callers can use identity checks.
+    """
+    if not isinstance(rules, dict):
+        raise TypeError("rules must be a mapping")
+
+    if "all" in rules:
+        return all(_lookup(facts, key) for key in rules["all"])
+    if "any" in rules:
+        return any(_lookup(facts, key) for key in rules["any"])
+
+    raise ValueError("rule must contain either 'all' or 'any'")
+===== units/ledger/ledger.py =====
+"""一个只关心单个账户的小账本。"""
+
+
+class Ledger:
+    def apply(self, rows, op):
+        """rows 是 [(kind, account, cents), ...]，返回**该账户**的行（保持原顺序）。
+        kind 只有 "deposit" 与 "withdraw"；金额为负时抛 ValueError。"""
+        for kind, account, cents in rows:
+            if cents < 0:
+                raise ValueError("amount must not be negative: %r" % (cents,))
+        return [row for row in rows if row[1] == op]
+
+
+def balance(rows, account):
+    """返回该账户的净额：deposit 相加、withdraw 相减；没有该账户的行时返回 0。"""
+    total = 0
+    for kind, acct, cents in rows:
+        if acct != account:
+            continue
+        if kind == "deposit":
+            total += cents
+        elif kind == "withdraw":
+            total -= cents
+    return total
+===== units/schedule/schedule.py =====
+"""闭区间的时间段工具。"""
+
+
+def slots(ranges, minutes):
+    """合并闭区间：两段之间的空隙（next_lo - prev_hi）小于 minutes 视为同一段。
+    返回按起点升序的合并结果；空输入返回 []。"""
+    if not ranges:
+        return []
+    ordered = sorted((tuple(r) for r in ranges), key=lambda r: (r[0], r[1]))
+    merged = [ordered[0]]
+    for lo, hi in ordered[1:]:
+        prev_lo, prev_hi = merged[-1]
+        if lo - prev_hi < minutes:
+            if hi > prev_hi:
+                merged[-1] = (prev_lo, hi)
+        else:
+            merged.append((lo, hi))
+    return merged
+
+
+def overlaps(a, b):
+    """两个闭区间是否有交叠；端点正好相接（如 (0,10) 与 (10,20)）不算交叠。"""
+    a_lo, a_hi = a
+    b_lo, b_hi = b
+    return a_lo < b_hi and b_lo < a_hi
+===== units/intervals/intervals.py =====
+"""闭区间工具（整数端点，lo <= hi）。"""
+
+
+class Impl:
+    def merge(self, ranges, gap=0):
+        """合并闭区间：按 lo 升序排序后，若相邻两段之间**缺失的整数个数**
+        （next.lo - prev.hi - 1）小于等于 gap 就合并。返回 [(lo, hi), ...] 升序；空输入返回 []。"""
+        normalized = [tuple(r) for r in ranges]
+        if not normalized:
+            return []
+        normalized.sort(key=lambda r: (r[0], r[1]))
+        merged = [list(normalized[0])]
+        for lo, hi in normalized[1:]:
+            prev_lo, prev_hi = merged[-1]
+            missing = lo - prev_hi - 1
+            if missing <= gap:
+                if hi > prev_hi:
+                    merged[-1][1] = hi
+            else:
+                merged.append([lo, hi])
+        return [(lo, hi) for lo, hi in merged]
+
+    def subtract(self, ranges, hole):
+        """从 ranges 中挖去闭区间 hole：返回剩下的闭区间（升序）。与 hole 不相交的段原样保留，
+        被完全覆盖的段消失，横跨 hole 的段分裂成两段。"""
+        h_lo, h_hi = hole
+        result = []
+        for lo, hi in self.merge(ranges):
+            if hi < h_lo or lo > h_hi:
+                # 与 hole 不相交
+                result.append((lo, hi))
+                continue
+            if lo < h_lo:
+                result.append((lo, h_lo - 1))
+            if hi > h_hi:
+                result.append((h_hi + 1, hi))
+        return result
+
+    def total_length(self, ranges):
+        """ranges 覆盖的整数个数之和（闭区间含端点；重叠只算一次）。"""
+        return sum(hi - lo + 1 for lo, hi in self.merge(ranges))
+===== units/flags/flags.py =====
+"""命令行风格的参数解析。"""
+
+
+class Impl:
+    def parse(self, argv):
+        """返回 {"values": {...}, "flags": {...}, "positional": [...]}：
+        - 不以 "-" 开头、或正好是 "-" 的项，按出现顺序进 positional。
+        - `--` 之后的所有项都是位置参数（`--` 自己不出现在结果里）。
+        - `--key=value` 与 `--key value` 都是键值对，键是 key。
+        - `--key` 后面没有可用值（到结尾，或后面紧跟另一个 "--" 开头的项）时它是开关。
+        - `-abc` 是三个开关 a、b、c。
+        - values 的每个值是**列表**，重复的键按出现顺序累积；开关重复出现仍是 True。"""
+        values = {}
+        flags = {}
+        positional = []
+
+        i = 0
+        n = len(argv)
+        only_positional = False
+
+        while i < n:
+            token = argv[i]
+
+            if only_positional:
+                positional.append(token)
+            elif token == "--":
+                # 终止符本身不进入结果，其后的所有项都是位置参数。
+                only_positional = True
+            elif token.startswith("--"):
+                body = token[2:]
+                if "=" in body:
+                    key, value = body.split("=", 1)
+                    values.setdefault(key, []).append(value)
+                elif i + 1 < n and not argv[i + 1].startswith("--"):
+                    # 下一个项可用作值（即使它看起来像单短横的开关）。
+                    values.setdefault(body, []).append(argv[i + 1])
+                    i += 1
+                else:
+                    flags[body] = True
+            elif token.startswith("-") and token != "-":
+                # 单短横：`-abc` 展开为开关 a、b、c。
+                for ch in token[1:]:
+                    flags[ch] = True
+            else:
+                # 不以 "-" 开头，或正好是 "-"。
+                positional.append(token)
+
+            i += 1
+
+        return {"values": values, "flags": flags, "positional": positional}
+===== units/measure/measure.py =====
+"""Length unit conversion helpers."""
+
+# Factor: multiply a value in the given unit by this to get centimeters.
+_TO_CM = {
+    "m": 100.0,
+    "cm": 1.0,
+    "mm": 0.1,
+}
+
+
+class Impl:
+    def to_cm(self, value, unit):
+        """Convert ``value`` expressed in ``unit`` (m, cm or mm) to centimeters.
+
+        Raises ValueError for unsupported units.
+        """
+        try:
+            factor = _TO_CM[unit]
+        except (KeyError, TypeError):
+            raise ValueError("unsupported unit: {!r}".format(unit))
+        return value * factor
+===== units/slugify/slugify.py =====
+import re
+
+
+class Impl:
+    def slugify(self, text):
+        slug = re.sub(r"[^a-z0-9]+", "-", str(text).lower())
+        return slug.strip("-") or "untitled"
+===== units/ranges/ranges.py =====
+class Impl:
+    def merge(self, ranges):
+        """Merge overlapping closed intervals.
+
+        Intervals are given as [start, end] pairs. Closed intervals that
+        share at least one point (including a single endpoint) are merged.
+        Returns a list of (start, end) tuples sorted by start; an empty
+        input yields an empty list.
+        """
+        result = []
+        for start, end in sorted((r[0], r[1]) for r in ranges):
+            if result and start <= result[-1][1]:
+                if end > result[-1][1]:
+                    result[-1] = (result[-1][0], end)
+            else:
+                result.append((start, end))
+        return result
+===== units/alpha/alpha.py =====
+def add(a, b):
+    return a + b
+===== units/beta/beta.py =====
+def mul(a, b):
+    return a * b
+===== units/chain/stage1.py =====
+"""Stage 1: parse the raw orders CSV into a list of order dicts.
+
+The CSV has a header row (``id,qty,price``) followed by one order per line.
+Every field is an integer, and the returned list preserves the file order.
+Orders with ``qty == 0`` are kept here; dropping them is stage 2's job.
+"""
+
+import csv
+
+
+def parse_orders(path):
+    """Read ``path`` and return ``[{"id": int, "qty": int, "price": int}, ...]``.
+
+    The header line is consumed but not emitted, and blank lines are ignored.
+    """
+    orders = []
+    with open(path, newline="") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            if row is None or row.get("id") in (None, ""):
+                continue
+            orders.append(
+                {
+                    "id": int(row["id"]),
+                    "qty": int(row["qty"]),
+                    "price": int(row["price"]),
+                }
+            )
+    return orders
+===== units/chain/stage2.py =====
+"""Stage 2: keep only the orders that actually have a quantity.
+
+An order with ``qty == 0`` contributes nothing downstream, so it is dropped.
+Input and output are both lists of ``{"id", "qty", "price"}`` dicts and the
+relative order of the surviving orders is preserved.
+"""
+
+
+def filter_orders(rows):
+    """Return the orders from ``rows`` whose ``qty`` is greater than zero."""
+    return [row for row in rows if row["qty"] > 0]
+===== units/chain/stage3.py =====
+"""Stage 3: aggregate the surviving orders by unit price.
+
+The result maps each distinct ``price`` to the total quantity ordered at that
+price, e.g. orders ``(price=10, qty=2)`` and ``(price=7, qty=3)`` plus
+``(price=7, qty=1)`` produce ``{10: 2, 7: 4}``.
+"""
+
+
+def total_by_price(rows):
+    """Return ``{price: total_qty}`` for the orders in ``rows``."""
+    totals = {}
+    for row in rows:
+        price = row["price"]
+        totals[price] = totals.get(price, 0) + row["qty"]
+    return totals
+===== units/chain/stage4.py =====
+"""Stage 4: render the price totals as the final report text.
+
+Each ``price: total`` pair goes on its own line, sorted by price ascending, and
+the report always ends with a trailing newline.  For ``{10: 2, 7: 4}`` the
+report is ``"7:4\\n10:2\\n"``.
+"""
+
+
+def report(totals):
+    """Return the sorted, newline-terminated text for a ``{price: qty}`` map."""
+    return "".join(
+        "{0}:{1}\n".format(price, totals[price]) for price in sorted(totals)
+    )

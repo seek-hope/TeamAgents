@@ -1,0 +1,5 @@
+total 16
+drwxr-xr-x 2 rimuru rimuru 4096 Sep 28 04:48 .
+drwxr-xr-x 8 rimuru rimuru 4096 Sep 28 03:46 ..
+-rw-r--r-- 1 rimuru rimuru   32 Sep 28 04:48 alpha.py
+-rw-r--r-- 1 rimuru rimuru   76 Sep 24 15:15 check.py

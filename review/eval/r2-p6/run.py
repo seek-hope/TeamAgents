@@ -121,11 +121,18 @@ def main() -> int:
                        "--timeout", str(bound),
                        "--max-steps", str(manifest["limits"]["reference_max_steps"])]
                 started = time.time()
-                proc = subprocess.run(cmd, cwd=REPO, capture_output=True, text=True, env=env,
-                                      timeout=bound + 300)
+                # D-258: a trial's child is *chatty* (a delegated trial runs seven instances), and buffering its
+                # whole stdout in this process cost two calibration batches their lives on a loaded host. The log
+                # goes to a file — it is evidence, and it is what the record's tail is read from — so the runner's
+                # memory no longer grows with the trial's output.
+                runner_log = out / f"{tag}.runner.log"
+                with runner_log.open("w", encoding="utf-8") as sink:
+                    proc = subprocess.run(cmd, cwd=REPO, stdout=sink, stderr=subprocess.STDOUT, text=True, env=env,
+                                          timeout=bound + 300)
                 wall = time.time() - started
+                tail = runner_log.read_text(encoding="utf-8", errors="replace")[-2000:]
                 record = {"task": task["id"], "group": group, "repeat": repeat, "wall_s": round(wall, 1),
-                          "runner_rc": proc.returncode, "runner_stderr": proc.stderr[-2000:]}
+                          "runner_rc": proc.returncode, "runner_log": runner_log.name, "runner_tail": tail}
                 if result_file.exists():
                     record.update(json.loads(result_file.read_text(encoding="utf-8")))
                 else:

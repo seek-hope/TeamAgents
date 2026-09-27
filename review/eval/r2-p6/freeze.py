@@ -26,9 +26,19 @@ sys.path.insert(0, str(HERE.parents[1]))  # review/, where eval_surface.py lives
 import eval_surface  # the decoder behind D-182: the surface pin is computed from the harness, never copied
 
 
+def is_cache(path: pathlib.Path) -> bool:
+    """True for a file or path component that is a build artefact rather than fixture material."""
+    return path.suffix == ".pyc" or "__pycache__" in path.parts
+
+
 def digest_tree(path: pathlib.Path) -> str:
+    """A fixture's digest, over its *source* files.
+
+    D-259: pytest's byte-cache is not material. A stray `__pycache__` inside a fixture (created by anything that
+    runs a unit test where the fixture lives) moved a frozen digest once, and the digest a manifest pins must not
+    depend on whether somebody ran pytest there."""
     h = hashlib.sha256()
-    for file in sorted(p for p in path.rglob("*") if p.is_file()):
+    for file in sorted(p for p in path.rglob("*") if p.is_file() and not is_cache(p)):
         h.update(str(file.relative_to(path)).encode())
         h.update(file.read_bytes())
     return h.hexdigest()

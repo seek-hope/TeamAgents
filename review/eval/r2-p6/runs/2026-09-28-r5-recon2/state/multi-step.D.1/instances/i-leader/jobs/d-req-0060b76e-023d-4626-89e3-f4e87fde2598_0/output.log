@@ -1,0 +1,6 @@
+--- alpha/check.py ---
+cat: alpha/check.py: No such file or directory
+--- beta/check.py ---
+cat: beta/check.py: No such file or directory
+--- final run ---
+/bin/bash: line 28: cd: alpha: No such file or directory
