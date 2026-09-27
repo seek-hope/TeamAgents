@@ -18,6 +18,47 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-217 The release path had never been run, and its smoke was half-isolated (2026-09-27)
+
+D-216 fixed the workflow line that would have stopped a tag and left behind two *readings* of it — a rule that the
+files the workflow copies exist and a five-step checklist — ending with "the machinery itself is sound and
+re-runnable". Nothing ran the steps: `review/build_references.py` can only say that the workflow's copied files
+exist, and a checklist is prose. The release path now has a rehearsal, `review/release_rehearsal.py`
+(`make release-rehearsal`), which runs the version gate, builds both binaries with the workflow's own flags
+(`--locked --release --target x86_64-unknown-linux-musl` plus `CARGO_PROFILE_RELEASE_STRIP=symbols`) and the same
+`--bin` names, packages the archive from the workflow's own file list, writes SHA256SUMS over the archive and the
+installer, and then runs the workflow's smoke — install from the exact archive, `init`, the TUI executable —
+printing the version it would require and the archive's size. Nothing is published, and the tag half of the version
+gate (`GITHUB_REF_NAME = v<version>`) fires only on a tag push, so it is reported, not exercised.
+
+**Measured 2026-09-27**: cold **5 m 26 s**, warm **3.5 s** (the release profile is its own cache, so the second run
+rebuilds nothing and only packages and smokes); the archive is 5,712 KiB and carries two `static-pie linked, … stripped` binaries (the
+engine's 11.0 MiB, the TUI's 1.1 MiB); the smoke came out green — the installer's SHA-256 check passed,
+`install.sh --archive … --bin-dir …` installed both binaries, `init` wrote `config.toml` and prepared its state
+root, and `teamagents --help` and `teamagents version` ran from the archive before it was even packed.
+
+**The first run failed, and the failure was the rehearsal's while the finding was the workflow's.** Everything
+passed up to `init`, which exited 1 with `attempt to write a readonly database` on
+`~/.local/state/teamagents/v2/session.sqlite` — ruled out as probe error before anything else: the workflow's smoke
+isolates `XDG_CONFIG_HOME` only, so `init` prepared its *state root* under the runner's real `HOME`, which this
+sandbox makes read-only; pointing `XDG_STATE_HOME` into the scratch makes the same binary exit 0 and write
+`state/teamagents/v2/session.sqlite`. So the step was half-isolated — hermetic for the config, not for the state,
+which works on a runner only because the runner's `HOME` happens to be writable. The workflow's two smoke lines now
+set `XDG_STATE_HOME` too and assert the state root landed in the scratch, so the step the rehearsal runs is the step
+CI runs, and the smoke cannot leave a state root in the runner's home.
+
+**Registered**: the target is `.PHONY`, named in `make help` and described in `docs/DEVELOPMENT.md`'s release
+checklist and its evidence table; `review/README.md` carries the row; and because a make target runs the script,
+`review/hygiene_catalogue.py`'s rule that every root-level `review/*.py` is run by a target or listed as hand-run is
+satisfied without an exemption. A cold run is minutes, so the target is standalone like the probes, never part of
+`make check`.
+
+Ceiling: the machine differs from `ubuntu-latest`, so the result is evidence about the *steps*, not about the
+runner's image or a user's glibc; publishing (the tag, `.github/release-notes.md`, the upload, `gh release create`)
+is not rehearsed at all; the version *check* runs but no tag is present, so the tag-name equality is read from the
+workflow rather than exercised; and the rehearsal proves the steps run on this tree, not that the archive holds
+everything a user needs.
+
 ## D-216 The release could not be cut: the workflow copied a file the tree no longer carries (2026-09-27)
 
 Releasing is the one product-facing step left, and the known gap that records it says "the machinery itself is sound

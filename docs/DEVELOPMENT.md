@@ -204,7 +204,7 @@ paging/capping logic changes, update the specs and `v2_invariants` and re-run th
 | Providers | `engine/src/providers/*`: exactly one transport attempt and failure classification only, retries belong to the runtime; config and catalog live in `engine/src/config.rs` (user catalog parsing, `[hooks]`/`[retention]` validation) | `engine/tests/providers_fake.rs`, `engine/tests/providers_stall.rs`, `engine/src/config.rs` unit tests |
 | Model calls and the kernel | `core/src/kernel/*` (I/O-free request/response/observation conversion), `engine/src/reference.rs` (the group A direct reference loop) | `core/tests/kernel_properties.rs`, `engine/tests/reference_loop.rs` |
 | Conversation UI and the real terminal | `tui/src/v2app.rs` (state and keys), `tui/src/v2ui.rs` (rendering; `geometry()` also feeds mouse hit-testing), `tui/src/wrap.rs` | `tui/tests/v2app_tests.rs`, `make pty` |
-| Install, self-check, release | `install.sh`, `init`/`doctor` in `engine/src/cli.rs`, `.github/workflows/release.yml` | `engine/tests/install.rs`, `engine/tests/cli.rs`, release-archive smoke test |
+| Install, self-check, release | `install.sh`, `init`/`doctor` in `engine/src/cli.rs`, `.github/workflows/release.yml` | `engine/tests/install.rs`, `engine/tests/cli.rs`, the release-archive smoke test, `make release-rehearsal` |
 
 Rust paths in the table are relative to each crate's `src/`. The TUI reaches the engine only through the
 daemon socket (`tui/src/daemon_client.rs`): it never reads the database and never executes anything in its
@@ -269,6 +269,9 @@ need; when upgrading one, update only the affected lock files and re-run the int
    exact archive (install, `init` writing a config, and the TUI binary executable), and publishes the assets.
    `review/build_references.py` reads the same workflow and fails on a file it copies that the repository does not
    carry — D-216 found the one that did, which would have stopped the release at that step.
+   The same path can be run before the tag without publishing: `make release-rehearsal` (D-217) runs the version
+   gate, the musl-static release build of both binaries, the archive, the checksums and the smoke against the tree,
+   and prints the archive's size. A build, not a check — a cold run is minutes, so it stays out of `make check`.
 4. **Afterwards, flip the caveats.** Four places say the latest release is the earlier implementation:
    `docs/INSTALL.md`'s note, `README.md`, `README.zh-CN.md` and `docs/ACCEPTANCE.md`'s known gap. With the release
    serving this tree, `review/release_artifact.py` *fails until they are removed*, and its statement list is the

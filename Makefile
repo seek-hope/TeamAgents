@@ -5,7 +5,7 @@ CARGO_FLAGS ?= --offline --locked
 
 .PHONY: help check fmt fmt-check lint test build pty probe-offline probe-models hygiene language-check \
         check-nobwrap check-broken-sandbox verify-tools verify-model verify-model-all \
-        verify-model-counterexamples verify-model-wide verify-model-sim verify-kani
+        verify-model-counterexamples verify-model-wide verify-model-sim verify-kani release-rehearsal
 
 help:
 	@echo 'make check     format, Clippy, regression tests and repository hygiene (offline by default)'
@@ -13,6 +13,7 @@ help:
 	@echo 'make check-broken-sandbox  ... with a bwrap that cannot start a sandbox (Ubuntu 24.04 default, D-114)'
 	@echo 'make fmt       format the three crates'
 	@echo 'make build     build the CLI and the TUI'
+	@echo 'make release-rehearsal  rehearse the release workflow locally, short of publishing (a musl release build; minutes)'
 	@echo 'make pty       real-terminal smoke check with an isolated config (needs Python 3)'
 	@echo 'make probe-offline  the credential-free dogfood probes: the real product, no model, no credential'
 	@echo 'make probe-models   the model-requiring probes: every live half, one after another (~7 min)'
@@ -56,6 +57,14 @@ test:
 build:
 	cargo build $(CARGO_FLAGS) --manifest-path engine/Cargo.toml --bin teamagents
 	cargo build $(CARGO_FLAGS) --manifest-path tui/Cargo.toml --bin teamagents-tui
+
+# The release path, short of publishing (D-217): the version gate, the musl-static release build of both binaries,
+# the archive the workflow packages, SHA256SUMS over it and the installer, and the workflow's own smoke — install
+# from the exact archive, `init` writing a config and a state root, the TUI executable. A build, not a check: the
+# release profile is its own cache and full musl release builds cost minutes. `review/build_references.py` (in
+# `make hygiene`) covers the files the workflow copies; this covers that the steps themselves run.
+release-rehearsal:
+	python3 review/release_rehearsal.py
 
 # CI's condition, reproducible locally (D-113): the GitHub runner has no bubblewrap, so the sandboxed shell
 # cannot start there. `review/nobwrap_path.py` builds a PATH with every tool except bwrap, and the whole gate
