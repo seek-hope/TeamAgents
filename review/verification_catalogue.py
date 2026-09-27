@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The formal-verification material, against the targets that drive it and the report that counts it (D-185).
 
-`verification/tla/` holds sixteen TLA+ modules and sixty-seven configurations — and **these numbers are
+`verification/tla/` holds seventeen TLA+ modules and seventy-three configurations — and **these numbers are
 checked against the directory by this script's own rule**, because the sentence that said "forty" was the
 kind of count nothing looked at (the module count in this line and the two the report states are all
 compared with what the tree holds); `verification/REPORT.md`

@@ -7,9 +7,10 @@ in [README.md](README.md); the fix ledger is in
 
 ## 0. Gate status (re-run 2026-09-27 at `546d4c8b`)
 
-* `make verify-model-all` was re-run on this tree: all **18** configurations report `No error has been found`,
-  in 4 m 15 s (the newest three are the retention rule, D-192, the task model's second task, D-218, and the
-  approval window, D-225 — 14,225 states / 3,136 distinct). The largest is **`MC_task.cfg`** with 5,721,401 states generated / 606,904 distinct (its one-instance two-task sibling `MC_task_two.cfg` 612,802 / 56,074); `MC.cfg`
+* `make verify-model-all` was re-run on this tree: all **19** configurations report `No error has been found`,
+  in 7 m 21 s (the newest four are the retention rule, D-192, the task model's second task, D-218, the
+  approval window, D-225 — 14,225 states / 3,136 distinct — and the config trust gate, D-244, which is
+  exhaustive in 9 s: 353,217 states generated / 25,376 distinct). The largest is **`MC_task.cfg`** with 5,721,401 states generated / 606,904 distinct (its one-instance two-task sibling `MC_task_two.cfg` 612,802 / 56,074); `MC.cfg`
   itself generates 84,877 / 18,384, and the smallest, `MC_store.cfg`, 48 / 13; the job handshake's
   `MC_jobs.cfg` generates 207 / 64 the inbox's `MC_inbox.cfg` 793 / 211 the write-failure latch's
   `MC_diskfull.cfg` 63 / 22 and the coordinator lock's `MC_coordinator.cfg` 51 / 16. Every count that predates this
@@ -17,7 +18,7 @@ in [README.md](README.md); the fix ledger is in
   reason these numbers describe the *material*, not a machine. (The line once called `MC.cfg` the largest and
   quoted `MC_task`'s numbers for it — a mis-attribution no gate looked at, found by re-running the target and
   reading its output per configuration, D-159.)
-* `make verify-model-counterexamples` was re-run: all **48** negative controls are refuted, each naming its
+* `make verify-model-counterexamples` was re-run: all **53** negative controls are refuted, each naming its
   property (`AuthorizedEffectsOnly`, `InputLandsAtTheBoundary`, `NoRequestAfterDeadline`, `NoTurnWithoutWork`
   twice, `SettlementFollowsATurnAfterTheLanding`, `NoForeignAdoption`, three temporal refutations, the
   four retention guards: `NoReferenceToEvictedFact`, `EvidenceIsNeverEvicted` and `OnlyOldFactsAreEvicted`
@@ -26,7 +27,9 @@ in [README.md](README.md); the fix ledger is in
   `CoverageNeverLifted`, `RequestClosesOnce`, `ReceiptsAreStable`, `LogMonotone`, `NoResyncInThisVersion` and
   `RoundsAreMonotone`, the three D-220 added: `GcClaimsOnlyUnreferencedLive`, `ResolvedWaitIsAnswered` and
   `OfferedToolsAreAuthorized`, and the four D-225 added: `NoLateEffect`, `ApprovalDecisionIsFinal`,
-  `TerminalOperationHasNoPendingApproval` and `ParkedHasAnApprovalRow`), in 2 m 48 s.
+  `TerminalOperationHasNoPendingApproval` and `ParkedHasAnApprovalRow`, and the five D-244 added:
+  `NothingFromTheProjectUntrusted`, `UserDefinitionsNeverOverridden`, `PolicyClassesStayTheUsers`,
+  `TrustOnlyFromTheUser` and `RefusalsAreNamed`), in 5 m 25 s.
 * The wall clocks above are upper bounds, not machine-independent figures: they were measured while this
   machine carried a load average of about 140 on 20 cores (the standing host-cleanup item), and TLC is
   CPU-bound. The probe in A32 now records the same conditions next to its numbers for the same reason (D-188).
@@ -110,14 +113,17 @@ in [README.md](README.md); the fix ledger is in
 
 **What can be claimed**:
 
-- The safety properties of fifteen surfaces (control plane, artifacts/GC, waits/wakeups,
+- The safety properties of seventeen surfaces (control plane, artifacts/GC, waits/wakeups,
   tasks/delegation/goal settlement, compression, the daemon protocol, the required checks, the authority
-  layer, the user's authority surface, session-store identity and — added 2026-09-27, D-192 — the
+  layer, the user's authority surface, session-store identity, and — added 2026-09-27, D-225 — the approval
+  window, and — added 2026-09-27, D-192 — the
   retention rule, which is a spec *before* its implementation: the code it describes does not exist yet — and,
   added 2026-09-27, D-206, the job handshake with its recovery verdict, and — added 2026-09-27, D-207 — the
   inbox: the exactly-once application, the sequence order, the bound, the stale-epoch seal and the drain's
   identity check, the write-failure latch with its park — added 2026-09-27, D-208 — and, added 2026-09-27,
-  D-210, the coordinator lock with its fork window)
+  D-210, the coordinator lock with its fork window, and, added 2026-09-27, D-244, the repository-local
+  config's trust gate: what a cloned repository may contribute, never silently dropped and never able to
+  grant itself the opt-in)
   hold under exhaustive TLC checking of the **abstract model**; liveness holds only under the explicitly
   stated weak fairness assumptions.
 - The same invariants are recomputed against the **real `core::v2::Control`** by the executable
@@ -163,6 +169,7 @@ in [README.md](README.md); the fix ledger is in
 | Protocol model | `tla/V2Compress.tla` (8, three counterfactual constants since D-219) | 8,467 states | as above; the three controls via `make verify-model-counterexamples` |
 | Protocol model | `tla/V2Daemon.tla` (10, three counterfactual constants since D-219) | 51,713 states | as above; the three controls via `make verify-model-counterexamples` |
 | Protocol model | `tla/V2Checks.tla` (8, one counterfactual constant since D-219) | 469 states | as above; the control via `make verify-model-counterexamples` |
+| Protocol model | `tla/V2Trust.tla` (6 claims, five counterfactual constants since D-244) | 353,217 states generated / 25,376 distinct (9 s) | as above; the five controls via `make verify-model-counterexamples` |
 | Protocol model | `tla/V2Authority.tla` (11 invariants + 5 properties, three negative controls) | 270,288 states generated / 35,950 distinct | as above; controls via `make verify-model-counterexamples` |
 | Protocol model | `tla/V2Store.tla` (6 invariants + 3 properties, one negative control) | 48 states generated / 13 distinct | as above; control via `make verify-model-counterexamples` |
 | Protocol model (wide) | `MC_wide.cfg` (2 instances / 2 operations) | 275,004,673 states / 11 min 25 s (historical run of `d37e1b4`, before the 2026-09-25 history rewrite). The spec has changed since (D-63/D-64/D-65/D-71 add instance fields, the deadline flag and the committed-tail rule), so that number is history: re-runs in this round reached about 170M / 250M states, and the D-71 re-run reached **36.5M states generated / 7.6M distinct / 29 min, 4.6M still queued, no violation** before it was stopped under the turn's time bound. The wide configuration stays the slow, best-effort target; the small two-instance configurations carry the per-instance checks in `make verify-model-all` | `make verify-model-wide` |
