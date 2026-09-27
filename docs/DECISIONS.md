@@ -18,6 +18,45 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-206 The job handshake had no model, and the recipes could not see a broken one (2026-09-27)
+
+DESIGN's A10 and A11 are confirmed protocol properties — "at most one authorized executor; an unverifiable start
+is never guessed as 'not executed'" and "reconnect when verifiable, otherwise record unknown; never restart just
+because a PID is missing" — and they had two authorities (the runner's own tests, and `review/dogfood/
+job_identity.py` with the crash probes) but no model. `verification/tla/V2Jobs.tla` is the twelfth module: the
+journal's phases (READY → START_ACCEPTED → RUNNING → terminal), the acceptance persisted *before* the spawn
+(§6.2: `NoEffectBeforeAccept`, `EffectImpliesAcceptedStart`), a duplicate GO as a no-op (`AtMostOneExecutor`,
+over the journal's own `starts` counter), CANCEL before the start as final (`LateGoIsRejected`), the recovery
+read as one atomic snapshot of journal *and* effect (`UnverifiableStartIsNeverGuessedNotRun`,
+`NotRunMeansNoEffect`), and `SettledRunnerLeaves` for D-153's rule that a settled job's runner goes away. Four
+negative controls, `MC_jobs_guess_notrun.cfg`, `MC_jobs_double_go.cfg`, `MC_jobs_late_go.cfg` and
+`MC_jobs_spawn_first.cfg`, each forget one rule and must be refuted.
+
+**Measured**: 13 configurations report `No error has been found` in 3 m 56 s, the 18 negative controls are
+refuted in 1 m 36 s, `make verify-kani` still proves its 3 harnesses, and `MC_jobs.cfg` itself is 207 states /
+64 distinct. The same day's other never-re-run gates were run too: `make pty` (`pty v2 smoke: ok`) and
+`make check-nobwrap` — the whole gate with bubblewrap scrubbed from PATH (exit 0), which is A14's CI condition.
+
+**The modelling found a defect in the audit, not in the product — twice.** First, the property failed against a
+*stale* verdict: a "did not run" classification written before the journal advanced was still standing, so the
+read had to become one atomic snapshot of the journal and the effect (a verdict that outlives its read is a
+verdict about a state nobody looked at), which is also what makes `NotRunMeansNoEffect` mean "when it was read"
+— a job read as "did not run" may legitimately be re-armed and run afterwards. Second, the counterfactual that
+must break `NoEffectBeforeAccept` was **inert**: its `UNCHANGED` list still named `effect`, so the conjunction was
+unsatisfiable, the action never fired, and TLC *verified* the control instead of refuting it — reported only as
+`Warning: The variable effect was changed while it is specified as UNCHANGED`. The recipes grepped for the
+success marker (D-122's rule) and for nothing else, so a model that contradicts itself passed the gate. **Both
+targets now fail on a `Warning:` line**, and the rule is controlled on a deliberately inconsistent copy: with
+`runner` left in `StartRunner`'s `UNCHANGED` list, TLC prints the warning *and still says* `No error has been
+found`, and the recipe's check fires; the committed module produces none.
+
+Ceiling: the model abstracts pid, `start_ticks` and `boot_id` into one "the recorded identity verifies" variable
+(which is what the code's comparison decides), assumes the control requests are authenticated (the abstract
+socket name derives from the job token, a transport property), and does not model the deadline, the TERM→KILL
+escalation, the `job_id`/`command_hash` identity refusal or the journal's bytes — those stay with the runner's
+own tests and the live probes. The warning rule sees only what TLC warns about: a model that is wrong in a way
+TLC reports as no error is still a model nobody has refuted.
+
 ## D-205 The install check left its scratch behind (2026-09-27)
 
 Running `review/install_check.py` for D-203 left `/tmp/ta-install-check` in `TMPDIR`, and `leak_guard.strays()` —
