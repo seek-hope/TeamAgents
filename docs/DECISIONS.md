@@ -18,6 +18,35 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-204 A probe required an order its claim does not (2026-09-27)
+
+The model set was re-run on `db90bf52` (all 26 probes in one pass, 941.5 s): **24 green, 2 red**. One red is the
+recorded D-143 gap — `authority.py`, where the worker is offered `shell=yes` after the grant and never runs the
+command (`task=none` after 16 requests, the turn's own deadline ending the probe, which the probe's message states
+itself). The other was a *probe* defect. `stale_check.py` failed on §1's assertion that `out.txt` holds what the
+check wrote (`printf changed > out.txt`): the goal had ended BLOCKED with the model's own report, two check rounds
+had each recorded `class: "stale_inputs"`, no success was claimed, and the file held the model's `original` — the
+model re-wrote its deliverable on the repair turn, so the last writer was the model and not the check. That is an
+*order* the probe's claim ("a check that rewrites its own declared input cannot let the goal settle", A17) never
+required. D-187 had already learned this for the ending, where the probe now asserts both honest endings instead
+of the park reason alone; §1 was the same lesson one assertion over, and it made the probe flip on which ending
+the model chose — green in the post-D-187 five-probe run, where the runtime parked the goal, and red here, where
+the model settled it itself.
+
+**Fixed**: §1 asserts that the file exists and holds one of the two values the scenario writes (`original` from
+the model's deliverable, `changed` from the check's own write); that the check *ran* is read from the runtime's
+own record (a `completion_repair` naming `bound`/`stale_inputs`) in §3, where it already was. The docstring now
+says which writer lands last is not an invariant, and why. Re-run alone after the fix: green in 16.8 s, one
+probe, no daemons, no new scratch.
+
+**Measured**: the pass and both dispositions are recorded in `review/dogfood/README.md`, so a reader of the set's
+latest run is not left to guess which red was the product (D-143, still open) and which was the probe.
+
+Ceiling: the fix makes the probe order-independent, not timeless — it still requires the model to make the check
+run and to leave one of the two values behind, so a run in which the model deletes the file or writes a third
+value still fails, which is intended. And the tally is one pass on one machine: the set's own flakiness (D-143's
+shape) is visible in the count, not hidden by it.
+
 ## D-203 Both READMEs recommended an install that is not this product (2026-09-27)
 
 `docs/INSTALL.md` §1 carries a dated note that the latest published release (`v0.1.2`) is the **earlier

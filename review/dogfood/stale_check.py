@@ -15,8 +15,11 @@ declared input; this probe does it with a real model:
    `bound:stale_inputs`, or settled by the model's own blocked report. No run reports success either way; which
    of the two endings happens is the model's choice, so the assertion is on what must hold in both (D-187).
 
-The artifact decides both halves: the file really exists (the work happened and the check really ran — its
-content is what the check wrote), and the session never claims the goal was done.
+The artifact decides both halves: the file really exists and holds one of the two values the scenario writes,
+and the session never claims the goal was done. Which of the two it holds is not an invariant — the model's
+repair turn rewrites its deliverable, so the last writer is the model's when it settles the goal itself and the
+check's when the runtime parks it (the assertion here said "the check's content" until a round-2 run ended with
+the model's, D-204); that the check ran at all is the runtime's own `stale_inputs` record.
 
     python3 review/dogfood/stale_check.py                  # DeepSeek
     python3 review/dogfood/stale_check.py --provider kimi  # over `responses`
@@ -152,12 +155,20 @@ def main() -> int:
     for kind in ("check_round_registered", "completion_repair", "goal_completed"):
         print(f"  {kind}: {kinds.count(kind)}")
 
-    # 1. the work happened and the check really ran: the file exists and holds what the *check* wrote
+    # 1. the work happened, and the check really ran. Two writers touch out.txt — the model's deliverable and
+    #    the check's own `printf changed` — and which one lands *last* depends on the ending the model chose:
+    #    settling the goal itself means it re-wrote the file on its repair turn (the round-2 run of 2026-09-27
+    #    ends with the model's content), while a runtime park leaves the check's. Both are honest, so the
+    #    assertion is that the file exists holding one of the two values this scenario writes, not which one;
+    #    that the check ran is the runtime's own record, read in §3 below (D-197: an assertion may not require
+    #    an order the claim does not).
     out = workspace / "out.txt"
-    if out.is_file() and out.read_text().strip() == "changed":
-        print("out.txt exists and holds the check's own content: the check ran and rewrote its input")
+    held = out.read_text().strip() if out.is_file() else ""
+    if held in ("changed", "original"):
+        print(f"out.txt holds {held!r}, one of the two values this scenario writes")
     else:
-        failures.append(f"out.txt is missing or holds {out.read_text() if out.is_file() else '(absent)'!r}")
+        failures.append(f"out.txt is missing or holds {held or '(absent)'!r}, neither the model's deliverable "
+                        "nor the check's own content")
     # ...and the model really wrote it first (the write receipt is in the conversation)
     wrote = [entry for entry in facts["entries"] if "out.txt" in entry and '"tool"' in entry.replace(" ", "")]
     if not wrote:

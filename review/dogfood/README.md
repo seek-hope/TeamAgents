@@ -74,6 +74,21 @@ whether a covering assertion is itself strong enough (a tolerance too loose, a c
 `probes.py --self-check` gates the mechanical part — every probe must be cited by an acceptance row
 or a decision — and the rest stays a reading, stated as such.
 
+**The model set re-run 2026-09-27, at `db90bf52`** (all 26 in one pass, 941.5 s): **24 green, 2 red**, and the
+two reds have different dispositions. `stale_check.py` (165.0 s) failed on its assertion that `out.txt` holds
+what the *check* wrote: the goal ended BLOCKED with the model's own report (D-187's path), two check rounds each
+recorded `class: "stale_inputs"`, no success was claimed, and the file held the model's `original` — because the
+model re-wrote its deliverable on the repair turn, so the last writer was the model and not the check. The
+ending was honest and the verdict reached the model, so the *probe* was the defect: it required an order the
+claim does not, and it now asserts that the file holds one of the two values the scenario writes (D-204 — the
+lesson D-187 applied to the ending, one assertion over; re-run alone after the fix, green in 16.8 s).
+`authority.py` (390.6 s) reproduced the recorded D-143 shape instead of passing: after the grant the worker was
+offered `shell=yes` with the tool list and never ran the command — `task=none` after 16 requests, the turn's own
+deadline ending the probe — which is the ACCEPTANCE-recorded gap, and the probe's own message says so rather
+than reporting a surface defect. The pass left **0 daemons and 0 new scratch directories**, and `providers.py`
+(23.1 s, one team spanning DeepSeek and Kimi), `protocols.py` (31.4 s, every wire protocol against a real
+service) and the other 22 are green.
+
 **The model set re-run 2026-09-27, at `f521fd4f`** (all 26 in one pass): **24 green, 2 red, and both reds were
 findings rather than flakes.** `stale_check.py` failed on its two assertions about the stale-input verdict, and
 the state it kept showed the runtime doing its job — two `completion_repair` events carrying `class:
