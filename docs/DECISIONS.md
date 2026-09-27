@@ -18,6 +18,56 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-219 Seven claims in the checked set could not fail (2026-09-27)
+
+The ledger's strength rests on the negative controls: a claim no configuration can refute is a claim nothing
+checks. D-218 closed that gap for `V2Task`; this entry closes a sharper one, found by a survey of every declared
+variable in `verification/tla` that is now a rule in `review/verification_catalogue.py`. **Six variables were
+changed by no action at all**: V2Compress' `lost` and `uncovered`, V2Daemon's `pruned`, `drift` and `shrank`, and
+V2Checks' `rewound`. A variable the model cannot change is a constant, so the claims over it —
+`NoEntryIsEverLost`, `CoverageNeverLifted`, `NoResyncInThisVersion`, `ReceiptsAreStable`, `LogMonotone` and
+`RoundsAreMonotone` — held for want of a step that could break them. Five were monitors written *for* a bug the
+module's guards prevent (`lost` for a summary that deletes its originals, `uncovered` for coverage that lifts,
+`drift` for a receipt that moves, `shrank` for a log that rolls back, `rewound` for a round counter that goes
+backwards) with no step that performs the mistake; the sixth, `pruned`, was deliberate and documented ("this
+version never reclaims events"), which is the same defect in politer words — the invariant stated a guarantee
+that no behaviour could test.
+
+**A seventh claim could not fail for a different reason.** `V2Compress`' `RequestClosesOnce` was a disjunction
+whose two disjuncts together cover `RequestState`, so **`TypeOK` entailed it**: no state and no behaviour could
+refute it, and the rule it names ("no status is rewritten after the request left PENDING") was not modelled at
+all. It is now a monitor (`reopened`) — the module's own idiom for a transition, since TLC will not take
+`[][A]_v` here — and its control refutes it. **Demonstrated**: with `ReopenClosedRequest = TRUE` the old form
+*verifies* (measured: `No error has been found`) while the new form is violated in the same configuration, so
+the difference between a claim and a claim that can fail is measured rather than asserted.
+
+**Fixed with seven counterfactual constants** (TRUE is the mistake; for `pruned` it is the feature the claim
+denies), each with a control that `make verify-model-counterexamples` must refute — measured 2026-09-27 at
+1–3 s apiece, each naming exactly the documented invariant and no TLC warning:
+
+| Control | What it does | Invariant TLC reports |
+|---|---|---|
+| `MC_compress_deletes_originals.cfg` | a summary deletes the entries it covers (writes `lost`) | `NoEntryIsEverLost` |
+| `MC_compress_lifts_coverage.cfg` | a commit lifts coverage instead of growing it (writes `uncovered`) | `CoverageNeverLifted` |
+| `MC_compress_rewrites_closed.cfg` | a late failure rewrites a closed request (writes `reopened`) | `RequestClosesOnce` |
+| `MC_daemon_rewrites_receipt.cfg` | a same-payload replay re-applies and moves the receipt (writes `drift`) | `ReceiptsAreStable` |
+| `MC_daemon_rolls_back_log.cfg` | a compaction drops the oldest version and renumbers (writes `shrank`) | `LogMonotone` |
+| `MC_daemon_reclaims_events.cfg` | events are reclaimed (writes `pruned`) | `NoResyncInThisVersion` |
+| `MC_checks_rewinds_rounds.cfg` | a round resets the counter instead of advancing it (writes `rewound`) | `RoundsAreMonotone` |
+
+**And the rule, so the class cannot come back**: the audit reads every `VARIABLES` block and fails a variable
+whose every assignment is the variable itself, or that is never assigned — a variable no action writes is a
+constant, and every claim over it holds for want of a step. Control: `--tla DIR` reads a copy, and a copy with
+one monitor's writer removed reports it by name (`verification/tla/V2Daemon.tla never changes drift: …`). The
+modules' own headers were corrected with it, where they stated the old, unfalsifiable reading.
+
+Ceiling: the rule reads the *text* of assignments, so a monitor written only by a step no configuration can
+enable still counts as written, and a claim made vacuous by its own formulation rather than by a dead variable
+is not found this way at all — `RequestClosesOnce` was found by hand, and its class (a claim entailed by the type
+invariant) still has no automatic check; the seven controls are configurations of the same modules with one
+counterfactual constant TRUE, so they show the claims are falsifiable, not that the product ever had these
+defects; and `pruned`'s control models reclaiming, which this version deliberately does not do.
+
 ## D-218 The task model's claims were unfalsifiable, and two of them were vacuous (2026-09-27)
 
 Eight of the fifteen modules already carried counterfactual constants and negative controls (V2Control six,

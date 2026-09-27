@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The formal-verification material, against the targets that drive it and the report that counts it (D-185).
 
-`verification/tla/` holds fifteen TLA+ modules and fifty-two configurations — and **these numbers are
+`verification/tla/` holds fifteen TLA+ modules and fifty-nine configurations — and **these numbers are
 checked against the directory by this script's own rule**, because the sentence that said "forty" was the
 kind of count nothing looked at (the module count in this line and the two the report states are all
 compared with what the tree holds); `verification/REPORT.md`
@@ -33,6 +33,17 @@ that nothing lists is a claim nothing checks — `V2Compress`' `RequestClosesOnc
 nothing would have noticed if it did not). The convention the second half implies: a claim that composes others is
 listed itself and its components beside it (V2Grants' four `TypeOK*`, V2Store's `RefusalIsSilent`), so each marked
 name is visibly checked.
+
+**D-219 added the rule that a claim has to be *able* to fail.** A variable no action ever changes is a constant
+of the model, so every claim over it is trivially true or trivially false. Six of them were carrying claims:
+V2Compress' `lost` and `uncovered` (a summary deleting its originals, coverage lifting), V2Daemon's `pruned`,
+`drift` and `shrank` (reclaiming events, rewriting a receipt, rolling the log back) and V2Checks' `rewound` (a
+round counter that goes backwards). Every monitor had been written for a bug and never wired to a step that could
+perform it, so `NoEntryIsEverLost`, `CoverageNeverLifted`, `NoResyncInThisVersion`, `ReceiptsAreStable`,
+`LogMonotone` and `RoundsAreMonotone` could not fail. `--tla DIR` reads a copy of the directory, which is how the
+control is run: a copy with one monitor's writer removed reports it by name. The class reached past the monitors:
+V2Compress' `RequestClosesOnce` was a disjunction whose two disjuncts covered `RequestState`, so `TypeOK` entailed
+it — the transition property it names was not modelled at all.
 
 **D-202 added the provenance the counts rest on.** The report opens with `## 0. Gate status (re-run <date> at
 `<commit>`)`, and the counts below it describe the material *as of that commit* — but nothing held the two
@@ -131,7 +142,10 @@ def main(argv) -> int:
     parser.add_argument("--makefile", default="Makefile")
     parser.add_argument("--report", default="verification/REPORT.md")
     parser.add_argument("--mapping", default="verification/README.md")
+    parser.add_argument("--tla", default=TLA,
+                        help="the TLA+ directory to read (a copy is the control)")
     args = parser.parse_args(argv)
+    tla = args.tla
     makefile_text = (REPO / args.makefile).read_text(encoding="utf-8")
     recipes = target_recipes(makefile_text)
     drivers = {name: body for name, body in recipes.items() if name.startswith("verify-model")}
@@ -147,20 +161,20 @@ def main(argv) -> int:
                                                   makefile_text)}
                         | {spec for body in drivers.values() for spec in SPEC.findall(body)})
     for cfg in named_cfgs:
-        if not (REPO / TLA / cfg).is_file():
-            findings.append(f"{args.makefile} runs a TLC configuration that does not exist: {TLA}/{cfg}")
+        if not (REPO / tla / cfg).is_file():
+            findings.append(f"{args.makefile} runs a TLC configuration that does not exist: {tla}/{cfg}")
     for spec in named_specs:
-        if not (REPO / TLA / spec).is_file():
-            findings.append(f"{args.makefile} names a specification that does not exist: {TLA}/{spec}")
-    on_disk_cfgs = sorted(p.name for p in (REPO / TLA).glob("MC*.cfg"))
+        if not (REPO / tla / spec).is_file():
+            findings.append(f"{args.makefile} names a specification that does not exist: {tla}/{spec}")
+    on_disk_cfgs = sorted(p.name for p in (REPO / tla).glob("MC*.cfg"))
     orphans = [cfg for cfg in on_disk_cfgs if cfg not in named_cfgs]
     if orphans:
-        findings.append(f"{TLA} holds configuration(s) no verify-model target runs: {', '.join(orphans)} — "
+        findings.append(f"{tla} holds configuration(s) no verify-model target runs: {', '.join(orphans)} — "
                         "verification material nothing checks")
-    on_disk_specs = sorted(p.name for p in (REPO / TLA).glob("V2*.tla"))
+    on_disk_specs = sorted(p.name for p in (REPO / tla).glob("V2*.tla"))
     unchecked = [spec for spec in on_disk_specs if spec not in named_specs]
     if unchecked:
-        findings.append(f"{TLA} holds module(s) no configuration is run against: {', '.join(unchecked)} — a "
+        findings.append(f"{tla} holds module(s) no configuration is run against: {', '.join(unchecked)} — a "
                         "model outside the checked set is a claim without a run")
     undescribed = [name for name in on_disk_cfgs + on_disk_specs if name not in mapping]
     if undescribed:
@@ -278,16 +292,16 @@ def main(argv) -> int:
         names = set()
         for key in ("INVARIANTS", "PROPERTIES"):
             block = re.search(rf"^{key}[ \t]*\n((?:[ \t]+\S[^\n]*\n)+)",
-                              (REPO / TLA / cfg).read_text(encoding="utf-8"), re.M)
+                              (REPO / tla / cfg).read_text(encoding="utf-8"), re.M)
             if block:
                 names |= {line.strip() for line in block.group(1).split("\n") if line.strip()}
         checked.setdefault(spec, set()).update(names)
     for spec in on_disk_specs:
         module = spec.removesuffix(".tla")   # the cfgs name modules, the directory lists files
-        text = (REPO / TLA / spec).read_text(encoding="utf-8")
+        text = (REPO / tla / spec).read_text(encoding="utf-8")
         marks = list(MARKER.finditer(text))
         if not marks:
-            findings.append(f"{TLA}/{spec} marks no invariants or properties section, so the audit cannot tell "
+            findings.append(f"{tla}/{spec} marks no invariants or properties section, so the audit cannot tell "
                             "what it claims")
             continue
         claimed = set()
@@ -296,8 +310,41 @@ def main(argv) -> int:
             claimed |= set(DEFN.findall(text[mark.end():stop]))
         missing = sorted(claimed - checked.get(module, set()))
         if missing:
-            findings.append(f"{TLA}/{spec} marks {', '.join(missing)} as its invariants or properties, and no "
+            findings.append(f"{tla}/{spec} marks {', '.join(missing)} as its invariants or properties, and no "
                             "configuration that runs it lists them: a claim nothing checks")
+    # (D-219) A variable no action ever changes is a constant of the model: every claim over it is either
+    # trivially true or trivially false, so nothing checks it. The class was found by the survey that wrote
+    # this rule (measured 2026-09-27): six variables across three modules had no writer at all — V2Compress'
+    # `lost` and `uncovered`, V2Daemon's `pruned`, `drift` and `shrank`, V2Checks' `rewound` — and the claims
+    # built on them (`NoEntryIsEverLost`, `CoverageNeverLifted`, `NoResyncInThisVersion`, `ReceiptsAreStable`,
+    # `LogMonotone`, `RoundsAreMonotone`) could not fail. `pruned` was deliberate ("this version never
+    # reclaims events") and the others were monitors whose writer nobody had wired; both are fixed the same
+    # way, with a counterfactual constant that performs the mistake and a control that refutes the claim.
+    # The check reads the declared `VARIABLES` block and treats an assignment as a write unless its text is
+    # just the variable itself (`v' = v \cup …` counts, `v' = v` does not).
+    declares = re.compile(r"^VARIABLES\s*\n((?:[ \t]+\S[^\n]*\n)+)", re.M)
+    assigns = re.compile(r"^\s*[\\/]*\s*([A-Za-z][A-Za-z0-9_]*)' *= *([^\n]*)", re.M)
+    for spec in on_disk_specs:
+        text = (REPO / tla / spec).read_text(encoding="utf-8")
+        block = declares.search(text)
+        if block is None:
+            findings.append(f"{tla}/{spec} declares no VARIABLES block, so this audit cannot tell whether a "
+                            "claim over one of its variables can fail")
+            continue
+        names = []
+        for line in block.group(1).split("\n"):
+            name = line.split("\\*")[0].strip().rstrip(",")
+            if name:
+                names.append(name)
+        written = {}
+        for name, rhs in assigns.findall(text):
+            written.setdefault(name, []).append(rhs.split("\\*")[0].strip())
+        dead = [name for name in names
+                if not written.get(name) or all(rhs == name for rhs in written[name])]
+        if dead:
+            findings.append(f"{tla}/{spec} never changes {', '.join(dead)}: a variable no action writes is a "
+                            "constant of the model, so every claim over it holds for want of a step that could "
+                            "break it (D-219)")
     # This script's own docstring states counts too, and nothing looked at them: the
     # sentence in it said "forty" while the directory held forty-three (D-208).
     stated = re.search(r"holds ([a-z-]+) TLA\+ modules and ([a-z-]+) configurations", __doc__ or "")
@@ -312,7 +359,7 @@ def main(argv) -> int:
                             f"holds {len(on_disk_specs)}: the prose and the directory have to agree")
         if configs_stated != on_disk:
             findings.append(f"this script's docstring says {stated.group(2)!r} ({configs_stated}) configurations, "
-                            f"{TLA} holds {on_disk}")
+                            f"{tla} holds {on_disk}")
 
     for finding in findings:
         print(f"FAIL: {finding}")

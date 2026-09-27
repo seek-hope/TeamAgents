@@ -19,7 +19,8 @@
 EXTENDS Naturals, FiniteSets
 
 CONSTANTS Checks,      \* required checks, e.g. {"k1","k2"}
-          MaxRounds    \* repair-round budget, e.g. 2
+          MaxRounds,   \* repair-round budget, e.g. 2
+          RewindRounds \* counterfactual (D-219): opening a round resets the counter instead of advancing it
 
 ASSUME Checks # {} /\ MaxRounds > 0
 
@@ -75,12 +76,12 @@ RegisterRound ==
   /\ goalStatus = "ACTIVE"
   /\ ~roundOpen
   /\ round < MaxRounds
-  /\ round' = round + 1
+  /\ round' = IF RewindRounds /\ round > 0 THEN 0 ELSE round + 1
   /\ roundOpen' = TRUE
   /\ openOps' = 1
   /\ result' = [ k \in Checks |-> "none" ]
   /\ upgrades' = upgrades
-  /\ rewound' = rewound
+  /\ rewound' = IF RewindRounds /\ round > 0 THEN TRUE ELSE rewound
   /\ nonSuccessSuccess' = nonSuccessSuccess
   /\ lateRound' = IF candidate = "success" THEN lateRound ELSE TRUE
   /\ UNCHANGED <<candidate, goalStatus, lastVerdict>>

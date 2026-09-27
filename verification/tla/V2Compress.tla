@@ -15,11 +15,24 @@
 (* summary is newer than what it covers" holds by construction; the module      *)
 (* states it as an invariant together with "coverage only grows" and "an entry  *)
 (* is never lost".                                                             *)
+(*                                                                          *)
+(* Counterfactual constants (D-219): each one TRUE is a plausible mistake the  *)
+(* claims must refute, so they are falsifiable rather than merely stated.      *)
+(* `DeleteCoveredEntries` drops the entries a summary covers (the naive        *)
+(* "compression replaces the originals"), `ReopenCoveredEntries` lifts coverage *)
+(* instead of growing it, and `ReopenClosedRequest` lets a late failure rewrite *)
+(* a request that already closed — which is what `RequestClosesOnce` is about. *)
+(* That last claim used to be written as a disjunction over `RequestState`,    *)
+(* i.e. entailed by `TypeOK`: it could not fail, and the rule it states was    *)
+(* unmodelled. It is now a monitor, the module's own idiom for a transition.   *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets
 
 CONSTANTS Slots,   \* entry slots in index order, non-negative, e.g. {0,1,2,3}
-          Reqs     \* compression request slots, e.g. {"r1"}
+          Reqs,    \* compression request slots, e.g. {"r1"}
+          DeleteCoveredEntries,  \* counterfactual: the originals are deleted, not covered
+          ReopenCoveredEntries,  \* counterfactual: a commit lifts coverage of entries it hides
+          ReopenClosedRequest    \* counterfactual: a late failure rewrites a closed request
 
 ASSUME Slots # {} /\ Reqs # {}
 
@@ -36,10 +49,11 @@ VARIABLES
   requestStatus,\* compression request -> status
   reserved,     \* request -> whether its budget reservation is still held
   lost,         \* monitor: slots that lost their entry (must stay {})
-  uncovered     \* monitor: slots that became visible again (must stay {})
+  uncovered,    \* monitor: slots that became visible again (must stay {})
+  reopened      \* monitor: closed requests that a later step rewrote (must stay {})
 
 vars == <<entry, isSummary, summaryOf, requestStatus, reserved>>
-monVars == <<vars, lost, uncovered>>
+monVars == <<vars, lost, uncovered, reopened>>
 
 \* ---------------------------------------------------------- views and guards --
 \* the model-visible view: entries that exist and are not covered
@@ -60,6 +74,7 @@ AppendEntry ==
      /\ isSummary' = [isSummary EXCEPT ![s] = FALSE]
      /\ lost' = lost
      /\ uncovered' = uncovered
+     /\ reopened' = reopened
   /\ UNCHANGED <<summaryOf, requestStatus, reserved>>
 
 \* begin_compression: a compression request opens, reserving budget. The
@@ -70,6 +85,7 @@ BeginCompression(r) ==
   /\ reserved' = [reserved EXCEPT ![r] = TRUE]
   /\ lost' = lost
   /\ uncovered' = uncovered
+  /\ reopened' = reopened
   /\ UNCHANGED <<entry, isSummary, summaryOf>>
 
 \* compress_context: append the summary at the tail, hide every visible entry
@@ -81,25 +97,33 @@ CommitCompression(r, keep) ==
   /\ \E s \in Slots : entry[s] = "none"
   /\ keep \subseteq Slots
   /\ LET s == NextFree
-         covered == { e \in Slots : Visible(e) /\ e < s /\ e \notin keep } IN
+         covered == { e \in Slots : Visible(e) /\ e < s /\ e \notin keep }
+         deleted == IF DeleteCoveredEntries THEN covered ELSE {}
+         relifted == IF ReopenCoveredEntries THEN covered ELSE {} IN
      /\ entry' = [ e \in Slots |-> IF e = s THEN "live"
+                                ELSE IF e \in deleted THEN "none"
+                                ELSE IF e \in relifted THEN "live"
                                 ELSE IF e \in covered THEN "covered"
                                 ELSE entry[e] ]
      /\ isSummary' = [isSummary EXCEPT ![s] = TRUE]
-     /\ summaryOf' = [ e \in Slots |-> IF e \in covered THEN s ELSE summaryOf[e] ]
+     /\ summaryOf' = [ e \in Slots |-> IF e \in relifted THEN nocover
+                                      ELSE IF e \in covered THEN s
+                                      ELSE summaryOf[e] ]
      /\ requestStatus' = [requestStatus EXCEPT ![r] = "COMPLETE"]
      /\ reserved' = [reserved EXCEPT ![r] = FALSE]
-     /\ lost' = lost
-     /\ uncovered' = uncovered
+     /\ lost' = lost \cup deleted
+     /\ uncovered' = uncovered \cup relifted
+     /\ reopened' = reopened
 
 \* fail_compression: the summary never arrived; the request closes and its
 \* reservation releases, the context is untouched (a lost optimization).
 FailCompression(r) ==
-  /\ requestStatus[r] = "PENDING"
+  /\ requestStatus[r] = "PENDING" \/ (ReopenClosedRequest /\ requestStatus[r] = "COMPLETE")
   /\ requestStatus' = [requestStatus EXCEPT ![r] = "FAILED"]
   /\ reserved' = [reserved EXCEPT ![r] = FALSE]
   /\ lost' = lost
   /\ uncovered' = uncovered
+  /\ reopened' = IF requestStatus[r] = "COMPLETE" THEN reopened \cup {r} ELSE reopened
   /\ UNCHANGED <<entry, isSummary, summaryOf>>
 
 \* a reset or termination closes the epoch: the pending compression asks are
@@ -111,6 +135,7 @@ CancelCompression(r) ==
   /\ reserved' = [reserved EXCEPT ![r] = FALSE]
   /\ lost' = lost
   /\ uncovered' = uncovered
+  /\ reopened' = reopened
   /\ UNCHANGED <<entry, isSummary, summaryOf>>
 
 Stutter == UNCHANGED monVars
@@ -131,6 +156,7 @@ Init ==
   /\ reserved = [ r \in Reqs |-> FALSE ]
   /\ lost = {}
   /\ uncovered = {}
+  /\ reopened = {}
 
 Spec == Init /\ [][Next]_monVars
 
@@ -170,9 +196,10 @@ CoveredStaysCoveredByItsSummary ==
 ClosedCompressionReleasesReservation ==
   \A r \in Reqs : requestStatus[r] # "PENDING" => ~reserved[r]
 
-\* a request only ever closes once: no status is rewritten after it left PENDING
-RequestClosesOnce ==
-  \A r \in Reqs : requestStatus[r] \in {"COMPLETE", "FAILED", "CANCELLED"}
-                  \/ requestStatus[r] \in {"none", "PENDING"}
+\* a request only ever closes once: no status is rewritten after it left PENDING.
+\* Stated over a monitor, not as a disjunction over `RequestState`: that form was
+\* entailed by `TypeOK` (the two disjuncts cover the whole type), so it could not
+\* fail while the rule it names was unmodelled (D-219).
+RequestClosesOnce == reopened = {}
 
 =============================================================================

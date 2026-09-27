@@ -13,15 +13,28 @@
 (*                                                                          *)
 (* This version never reclaims events (daemon.rs header: "Events are never     *)
 (* reclaimed in this first version"), so resync_required is always false - the *)
-(* model expresses that faithfully with a `pruned` variable that is never set  *)
-(* true, and states "the watermark never moves past the log" as an invariant.  *)
+(* model expresses that with a `pruned` variable that no ordinary step sets,   *)
+(* and states "the watermark never moves past the log" as an invariant.        *)
+(*                                                                          *)
+(* Counterfactual constants (D-219): each one TRUE is a plausible mistake — or *)
+(* the feature the claim says this version does not have — and turns a claim   *)
+(* that could not fail into one a configuration refutes. `ReplayRewritesReceipt*)
+(* makes a same-payload replay re-apply the command and move its receipt,       *)
+(* `RollbackLog` lets a compaction drop the oldest version and renumber the log *)
+(* (`LogMonotone` is about exactly that), and `ReclaimEvents` reclaims events so *)
+(* a client can need a resync (`NoResyncInThisVersion`). `drift`, `shrank` and  *)
+(* `pruned` had no writer at all before this: every claim over them held for    *)
+(* want of a step that could break it.                                         *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets
 
 CONSTANTS Clients,     \* client slots, e.g. {"c1"}
           Commands,    \* command id slots, e.g. {"x1","x2"}
           Versions,    \* wire versions a client may offer, e.g. {1, 2}
-          MaxLog       \* event log bound (keeps the state space finite)
+          MaxLog,      \* event log bound (keeps the state space finite)
+          ReplayRewritesReceipt,  \* counterfactual: a same-payload replay re-applies and moves the receipt
+          RollbackLog,            \* counterfactual: a compaction drops the oldest version and renumbers
+          ReclaimEvents           \* counterfactual: events are reclaimed, so a resync can be needed
 
 ASSUME Clients # {} /\ Commands # {} /\ Versions # {} /\ MaxLog > 0
 
@@ -85,6 +98,41 @@ ReplayDivergent(c, cmd, payload) ==
   /\ applied[cmd] /\ payload # payloadOf[cmd]
   /\ UNCHANGED monVars
 
+\* Counterfactual (D-219): a same-payload replay re-applies the command — the
+\* client retry that duplicates the effect — and the stored receipt moves with
+\* it. `ReceiptsAreStable` is the claim about that, and `drift` records it.
+ReapplyOnReplay(c, cmd, payload) ==
+  /\ ReplayRewritesReceipt
+  /\ applied[cmd] /\ payload = payloadOf[cmd]
+  /\ logLength < MaxLog
+  /\ logLength' = logLength + 1
+  /\ receipt' = [receipt EXCEPT ![cmd] = logLength + 1]
+  /\ drift' = drift \cup {cmd}
+  /\ shrank' = shrank
+  /\ UNCHANGED <<applied, payloadOf, versionOf, snapshot, cursor, view, pruned>>
+
+\* Counterfactual (D-219): a compaction drops the oldest event and renumbers the
+\* log, so a version that named it is gone — the "versions are never reused or
+\* rolled back" claim (`LogMonotone`) is what forbids this.
+CompactLog ==
+  /\ RollbackLog
+  /\ logLength > 0
+  /\ logLength' = logLength - 1
+  /\ shrank' = TRUE
+  /\ drift' = drift
+  /\ UNCHANGED <<applied, receipt, payloadOf, versionOf, snapshot, cursor, view, pruned>>
+
+\* Counterfactual (D-219): events are reclaimed, so a client whose watermark
+\* predates the reclaim does need a resync — the one thing `NoResyncInThisVersion`
+\* says this version never asks for.
+Reclaim(c) ==
+  /\ ReclaimEvents
+  /\ ~pruned
+  /\ pruned' = TRUE
+  /\ shrank' = shrank
+  /\ drift' = drift
+  /\ UNCHANGED <<logLength, applied, receipt, payloadOf, versionOf, snapshot, cursor, view>>
+
 \* checkpoint (§9): the snapshot and its watermark come from ONE read
 \* transaction, so the client always learns exactly which version its snapshot
 \* is consistent with.
@@ -115,6 +163,9 @@ Next ==
         Submit(c, cmd, p, v)
   \/ \E c \in Clients : \E cmd \in Commands : \E p \in Payloads : Replay(c, cmd, p)
   \/ \E c \in Clients : \E cmd \in Commands : \E p \in Payloads : ReplayDivergent(c, cmd, p)
+  \/ \E c \in Clients : \E cmd \in Commands : \E p \in Payloads : ReapplyOnReplay(c, cmd, p)
+  \/ CompactLog
+  \/ \E c \in Clients : Reclaim(c)
   \/ \E c \in Clients : Checkpoint(c)
   \/ \E c \in Clients : Fetch(c)
   \/ Stutter
