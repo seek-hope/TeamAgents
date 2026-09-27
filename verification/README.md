@@ -35,7 +35,10 @@ make verify-model-counterexamples   # the negative controls (authority surface D
                             # each must be *refuted*, or the property it targets proves nothing
 make verify-model-wide      # wide control-plane configuration (2 instances / 2 operations; tens to hundreds of
                             # millions of states, slow — the 2-instance run is what catches per-instance
-                            # fairness regressions)
+                            # fairness regressions. Beyond a bounded attempt: D-210)
+make verify-model-wide-sim  # the same configuration by random simulation (~4 minutes, 20k behaviors of depth
+                            # 100): the *invariants* only — simulation checks no temporal property — and a
+                            # violation found here is real while absence proves nothing (D-211)
 make verify-kani            # paging arithmetic (needs the Kani toolchain, see below)
 cargo test --offline --manifest-path core/Cargo.toml --test v2_invariants   # spec-to-code correspondence
 ```
@@ -523,8 +526,10 @@ The proven `page_span(total, offset, limit) = min(limit, total - offset)` is the
   never "all executions do".
 - State-space frontier: the wide configuration is 275M states in 11 minutes in the historical run, and a
   one-hour bounded attempt on 2026-09-27 did not reach a verdict (2.9 GB of state store written): the fields and
-  properties added since then put it beyond a bounded attempt. More instances or operations need symmetry,
-  constraints or random simulation (`-simulate`) as a supplement.
+  properties added since then put it beyond a bounded attempt. The supplement named here is implemented as
+  `make verify-model-wide-sim`: 20,000 random behaviors of depth 100, 2,022,792 states checked in ~4 minutes on
+  2026-09-27 with no invariant violated — which is a *search*, not a proof, and it checks no temporal property
+  (the small configurations do that exhaustively). More instances or operations still need symmetry or constraints.
 
 ## Conclusions and ledger
 

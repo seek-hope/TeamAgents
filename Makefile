@@ -5,7 +5,7 @@ CARGO_FLAGS ?= --offline --locked
 
 .PHONY: help check fmt fmt-check lint test build pty probe-offline probe-models hygiene language-check \
         check-nobwrap check-broken-sandbox verify-tools verify-model verify-model-all \
-        verify-model-counterexamples verify-model-wide verify-kani
+        verify-model-counterexamples verify-model-wide verify-model-wide-sim verify-kani
 
 help:
 	@echo 'make check     format, Clippy, regression tests and repository hygiene (offline by default)'
@@ -26,6 +26,7 @@ help:
 	@echo 'make verify-model-all  every TLA+ configuration, exhaustively (~4 min; verification/README.md)'
 	@echo 'make verify-model-counterexamples  the negative controls, every one of which must be refuted'
 	@echo 'make verify-model-wide  the wide control-plane configuration (slow, best effort)'
+	@echo 'make verify-model-wide-sim  the wide configuration by random simulation (minutes; invariants only)'
 	@echo 'make verify-kani  the Kani proofs of the paging arithmetic'
 	@echo 'first run with downloads: make check CARGO_FLAGS=--locked'
 
@@ -183,6 +184,27 @@ verify-model-wide: verify-tools
 		echo "$$out" | grep -E "No error|violation|violated|states generated"; \
 		printf '%s' "$$out" | grep -q "No error has been found" || { \
 			echo "MC_wide.cfg did not verify (see above)" >&2; exit 1; }
+
+# The wide configuration's exhaustive run is beyond a bounded attempt (D-210: one hour, no verdict), so this
+# supplement explores it by random simulation: `num` deep behaviors of depth `depth`, TLC's invariants checked —
+# simulation mode does not check the temporal properties (the small configurations' job) — and, unlike a
+# fingerprint collision, a violation found here is real, while *absence* proves nothing at all (D-211).
+# `SIM_CONFIG` is the control hook: point it at a control whose invariant *is* violated and this target fails.
+SIM_CONFIG ?= MC_wide.cfg
+SIM_TRACES ?= 20000
+SIM_DEPTH  ?= 100
+SIM_SEED   ?= 11
+verify-model-wide-sim: verify-tools
+	@cd verification/tla && out=$$(java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
+		tlc2.TLC -simulate num=$(SIM_TRACES) -depth $(SIM_DEPTH) -seed $(SIM_SEED) \
+			-config $(SIM_CONFIG) V2Control.tla 2>&1); \
+		echo "$$out" | grep -E "states checked|Error|violat|Finished in"; \
+		if printf '%s' "$$out" | grep -qE "Error|violat"; then \
+			echo "$(SIM_CONFIG) found a violation under simulation (see above)" >&2; exit 1; fi; \
+		printf '%s' "$$out" | grep -q "states checked" || { \
+			echo "the simulation printed no progress line: it did not run" >&2; exit 1; }; \
+		if printf '%s' "$$out" | grep -q "Warning:"; then \
+			echo "$(SIM_CONFIG) carried a TLC warning: an inconsistent model is a defect, not a note (see above)" >&2; exit 1; fi
 
 # Repository language rule (AGENTS.md): code and documentation are English only.
 # The two exceptions are README.zh-CN.md (the Chinese README) and the frozen

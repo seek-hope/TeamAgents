@@ -18,6 +18,32 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-211 The wide configuration's supplement was named but not runnable (2026-09-27)
+
+D-210 measured the wide configuration as beyond a bounded exhaustive attempt, and the report's frontier bullet has
+named the ways out since the modelling work began: "more instances or operations need symmetry, constraints or
+random simulation (`-simulate`) as a supplement". None of the three was implemented, so the deep configuration
+produced no signal at all — an hour of CPU and no verdict.
+
+**`make verify-model-wide-sim` is the simulation supplement**: `SIM_TRACES` random behaviors (default 20,000) of
+`SIM_DEPTH` steps (100) from a fixed `SIM_SEED` (11, so the recorded result is reproducible), with TLC's
+*invariants* checked. Measured 2026-09-27: **no invariant violated, 2,022,792 states checked in 3 m 54 s** (one
+worker, load ~65). The space the exhaustive run cannot reach is *searched*, which is exactly what a simulation can
+claim and no more: a violation found here would be real — the control proves the mode finds them, because the same
+target pointed at `MC_control_midturninput.cfg`, whose invariant *is* violated, fails and names it — while
+**absence proves nothing**, and simulation checks **no temporal property** (the one- and two-instance
+configurations do that exhaustively).
+
+The target carries the two rules this repository has learned about TLC recipes: it requires a real progress line, so
+a run that never started cannot pass as one that found nothing, and it fails on a `Warning:` (D-206) — which caught
+the target's own first version, whose java line omitted `-XX:+UseParallelGC` and therefore made TLC warn about the
+garbage collector.
+
+Ceiling: a search is not a proof, and depth 100 bounds every behavior it sees; the seed is fixed for
+reproducibility, so another seed explores other behaviors (the knobs are the target's variables); symmetry and
+constraints remain unimplemented; and the supplement does not make the exhaustive run unnecessary — it is what the
+report calls it, a supplement.
+
 ## D-210 The coordinator lock had no model (2026-09-27)
 
 A33's row said it in as many words — "**Live** (`python3 review/dogfood/boundary.py`, 2026-09-26, no model)" — and
