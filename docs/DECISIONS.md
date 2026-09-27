@@ -18,6 +18,35 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-209 The comparison's provenance was a dated hand check (2026-09-27)
+
+`docs/PRODUCT-COMPARISON.md` is this repository's answer to the user's "reference Codex CLI, pi and hermes": §1
+says what each one offers, and the strength table records *how* each row was derived — "re-checked locally on
+2026-09-26: every claimed verb appears in that help output", "re-derived 2026-09-26: … the row was checked against
+the tree and the docs index". Those were hand checks on a date, and the strongest claims in the table are the
+**negative** ones (Pi has no MCP page and no path containing `mcp`; no path contains `worktree`), which a single
+upstream file falsifies. Nothing re-derived any of them.
+
+**Both halves are re-runnable now, and were re-derived today:**
+
+* `review/codex_surface.py` asks the installed binary: the version the row names (`codex-cli 0.156.1`) is what
+  `codex --version` reports, and all **23** command/flag tokens §1's Codex column claims appear in the six help
+  outputs the row lists. Its control is a copy of the comparison that claims `teleport`: the script reports it.
+* `review/comparison_sources.py` re-derives the upstream halves over the network: Pi's tree (2,168 paths today,
+  `truncated:false`), no `mcp` or `worktree` path in it, its docs index silent on MCP, the subagent example's
+  "max 8, 4 concurrent" and "a separate `pi` process", the README's permission sentence and its `pi-chat` link;
+  Hermes' seven backends, cron, TUI, MCP toolsets, memory providers, session search and trajectory export. Its
+  control is a doctored tree holding an `mcp` path: the broken negative claim is reported.
+
+**Measured**: every claim in the three upstream columns re-derived today, and the only drift is the Pi tree's
+size — 2,168 paths against the 2,162 the row recorded, because the row is a *snapshot* of a moving upstream. That
+is a note, not a finding, and the strength table now says so.
+
+Ceiling: both scripts are run by hand — one needs a local `codex` binary (CI has none), the other the network —
+and the hygiene catalogue lists them with those reasons. They check that the *claims* still hold; they cannot say
+whether a claim is *relevant* (a cell can be true and unimportant), and the Codex half is tied to the binary
+version the row names, so an upgraded binary reports as a finding until the row is re-dated.
+
 ## D-208 The write-failure latch had no model (2026-09-27)
 
 §4.4's answer to a failing disk is a latch, and A31 states it as three rules — new side-effect dispatch stops,

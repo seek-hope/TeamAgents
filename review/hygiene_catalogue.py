@@ -47,6 +47,10 @@ HAND_RUN = {
                                "artifact, run by hand and dated in the acceptance row",
     "review/runner_cost.py": "a one-off cost meter (D-153) whose numbers A12 records; it measures a process, it "
                              "does not assert a product property",
+    "review/codex_surface.py": "asks the local `codex` binary what it offers (D-209): the comparison's Codex "
+                               "column is a statement about that binary, and CI has no Codex to ask",
+    "review/comparison_sources.py": "re-derives the comparison's Pi and Hermes halves from their upstream READMEs, "
+                                    "docs index, file tree and docs page (D-209): it needs the network",
 }
 
 

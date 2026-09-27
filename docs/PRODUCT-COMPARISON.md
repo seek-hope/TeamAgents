@@ -8,10 +8,12 @@ and the last section lists what follows for this repository.
 
 | Reference | Source | Strength |
 |---|---|---|
-| Codex CLI | the installed binary here, `codex-cli 0.156.1` (`codex --help`, `codex exec --help`, `codex mcp --help`, `codex sandbox --help`, `codex debug --help`, `codex app-server --help`) | re-checked locally on 2026-09-26: every claimed verb appears in that help output |
-| Pi | the upstream README, its docs index (`packages/coding-agent/docs/docs.json`) and its file tree (GitHub API, 2,162 paths, `truncated:false`) | re-derived 2026-09-26: the README alone cannot support a **negative** claim, so the row was checked against the tree and the docs index |
-| Hermes | the upstream README (`NousResearch/hermes-agent`) plus the features/tools page of its docs site | re-checked 2026-09-26: seven backends, cron, TUI and MCP toolsets all confirmed there |
+| Codex CLI | the installed binary here, `codex-cli 0.156.1` (`codex --help`, `codex exec --help`, `codex mcp --help`, `codex sandbox --help`, `codex debug --help`, `codex app-server --help`) | **re-checked 2026-09-27 by `review/codex_surface.py`** (run by hand — it needs the local binary): the version this row names is what the binary reports, and all 23 command/flag tokens the Codex column claims appear in the six help outputs below |
+| Pi | the upstream README, its docs index (`packages/coding-agent/docs/docs.json`) and its file tree (GitHub API, `truncated:false`) | **re-derived 2026-09-27 by `review/comparison_sources.py`**: no path contains `mcp` or `worktree`, the docs index mentions MCP nowhere, and the subagent example still says "max 8, 4 concurrent" and "a separate `pi` process". The tree held 2,168 paths on that date (2,162 when this row was written): it grows, so the count is a snapshot and the script reports the drift rather than chasing it |
+| Hermes | the upstream README (`NousResearch/hermes-agent`) plus the features/tools page of its docs site | **re-checked 2026-09-27 by `review/comparison_sources.py`**: the seven backends, cron, the TUI's interrupt-and-redirect, MCP toolsets, memory providers, session search and trajectory export all confirmed there |
 | TeamAgents | this repository: `docs/USER-GUIDE.md`, `docs/DECISIONS.md`, `docs/ACCEPTANCE.md`, `review/dogfood/*` | the evidence in this tree |
+
+The two scripts above are the re-runnable halves of this table: `review/codex_surface.py` asks the installed binary, and `review/comparison_sources.py` re-derives the upstream halves from the network. Both are run by hand (a local binary, the network) and both are listed in the hygiene catalogue for that reason; the dates in the table are theirs.
 
 Pi and Hermes are documented here from their READMEs — they were **not** run, so their rows describe what
 their projects claim. Codex was run (its help output is the evidence above).
