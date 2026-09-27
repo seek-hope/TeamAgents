@@ -8,7 +8,7 @@ in [README.md](README.md); the fix ledger is in
 ## 0. Gate status (re-run 2026-09-27 at `1cdddbd3`)
 
 * `make verify-model-all` was re-run on this tree: all **17** configurations report `No error has been found`,
-  in 4 m 19 s (the newest two are the retention rule, D-192, and the task model's second task, D-218). The largest is **`MC_task.cfg`** with 5,721,401 states generated / 606,904 distinct (its one-instance two-task sibling `MC_task_two.cfg` 612,802 / 56,074); `MC.cfg`
+  in 4 m 17 s (the newest two are the retention rule, D-192, and the task model's second task, D-218). The largest is **`MC_task.cfg`** with 5,721,401 states generated / 606,904 distinct (its one-instance two-task sibling `MC_task_two.cfg` 612,802 / 56,074); `MC.cfg`
   itself generates 84,877 / 18,384, and the smallest, `MC_store.cfg`, 48 / 13; the job handshake's
   `MC_jobs.cfg` generates 207 / 64 the inbox's `MC_inbox.cfg` 793 / 211 the write-failure latch's
   `MC_diskfull.cfg` 63 / 22 and the coordinator lock's `MC_coordinator.cfg` 51 / 16. Every count that predates this
@@ -16,14 +16,15 @@ in [README.md](README.md); the fix ledger is in
   reason these numbers describe the *material*, not a machine. (The line once called `MC.cfg` the largest and
   quoted `MC_task`'s numbers for it — a mis-attribution no gate looked at, found by re-running the target and
   reading its output per configuration, D-159.)
-* `make verify-model-counterexamples` was re-run: all **41** negative controls are refuted, each naming its
+* `make verify-model-counterexamples` was re-run: all **44** negative controls are refuted, each naming its
   property (`AuthorizedEffectsOnly`, `InputLandsAtTheBoundary`, `NoRequestAfterDeadline`, `NoTurnWithoutWork`
   twice, `SettlementFollowsATurnAfterTheLanding`, `NoForeignAdoption`, three temporal refutations, the
   four retention guards: `NoReferenceToEvictedFact`, `EvidenceIsNeverEvicted` and `OnlyOldFactsAreEvicted`
   twice, the four task controls D-218 added: `RegisteredWorkNeedsAnActiveGoal`, `RequestsResolveToActiveGoals`,
-  `DependenciesPointBackwards` and `NoOpenTaskOnDeadAssignee`, and the seven D-219 added: `NoEntryIsEverLost`,
+  `DependenciesPointBackwards` and `NoOpenTaskOnDeadAssignee`, the seven D-219 added: `NoEntryIsEverLost`,
   `CoverageNeverLifted`, `RequestClosesOnce`, `ReceiptsAreStable`, `LogMonotone`, `NoResyncInThisVersion` and
-  `RoundsAreMonotone`), in 3 m 9 s.
+  `RoundsAreMonotone`, and the three D-220 added: `GcClaimsOnlyUnreferencedLive`, `ResolvedWaitIsAnswered` and
+  `OfferedToolsAreAuthorized`), in 2 m 41 s.
 * The wall clocks above are upper bounds, not machine-independent figures: they were measured while this
   machine carried a load average of about 140 on 20 cores (the standing host-cleanup item), and TLC is
   CPU-bound. The probe in A32 now records the same conditions next to its numbers for the same reason (D-188).
@@ -153,8 +154,8 @@ in [README.md](README.md); the fix ledger is in
 | Layer | Evidence | Scale | Re-run |
 |---|---|---|---|
 | Protocol model | `tla/V2Control.tla` (16 invariants + 6 properties, incl. the deadline gate, the committed-tail rule and the landing-attribution rule) | 84,877 states | `make verify-model` |
-| Protocol model | `tla/V2Artifact.tla` (4 + 4) | 241 states | `make verify-model-all` |
-| Protocol model | `tla/V2Wait.tla` (8 + 1 liveness) | 505,905 states | as above |
+| Protocol model | `tla/V2Artifact.tla` (4 + 4, one counterfactual constant since D-220) | 241 states | `make verify-model-all`; the control via `make verify-model-counterexamples` |
+| Protocol model | `tla/V2Wait.tla` (8 + 1 liveness, one counterfactual constant since D-220) | 505,905 states | as above; the control via `make verify-model-counterexamples` |
 | Protocol model | `tla/V2Task.tla` (11, four counterfactual constants since D-218) | `MC_task.cfg` 5,721,401 states; `MC_task_two.cfg` 612,802 states / 56,074 distinct | as above; the four controls via `make verify-model-counterexamples` |
 | Protocol model | `tla/V2Compress.tla` (8, three counterfactual constants since D-219) | 8,467 states | as above; the three controls via `make verify-model-counterexamples` |
 | Protocol model | `tla/V2Daemon.tla` (10, three counterfactual constants since D-219) | 51,713 states | as above; the three controls via `make verify-model-counterexamples` |
@@ -340,6 +341,7 @@ D-87 defect itself.
 | **V-P2** | `import_response` never checked `kind`, so a compression request could be imported as a turn | the walk reached the path and succeeded (the spec requires a refusal) | the control plane refuses `kind != 'turn'`; `import_response_refuses_a_compression_request` |
 | Property fix | `V2Checks` first stated "SUCCEEDED implies the recorded verdict is pass" — a **vacuous** property (an action writes that variable itself) | relaxing `Accept` still "passed" | rewritten to bind the **observed check result**; relaxing it is then immediately refuted |
 | **Seven claims that could not fail** (D-219) | six variables no action ever changed (`V2Compress`' `lost`/`uncovered`, `V2Daemon`'s `pruned`/`drift`/`shrank`, `V2Checks`' `rewound`), carrying `NoEntryIsEverLost`, `CoverageNeverLifted`, `NoResyncInThisVersion`, `ReceiptsAreStable`, `LogMonotone` and `RoundsAreMonotone`; and `V2Compress`' `RequestClosesOnce`, entailed by `TypeOK` | with `ReopenClosedRequest = TRUE` the **old** `RequestClosesOnce` verifies (`No error has been found`) while the rewritten form is refuted in the same configuration | each variable is written by one counterfactual step and each claim has a control that refutes it (seven configurations); the audit rule fails a variable no action writes (`review/verification_catalogue.py`, control `--tla DIR`) |
+| **Three modules nobody could refute** (D-220) | `V2Artifact`, `V2Wait` and `V2Grants` were the spec of no counterexample configuration: every claim they carry was stated and enumerated exhaustively, and none was shown refutable. `V2Wait`'s own refutation had existed — the fix ledger records V-W1 against `MC_wait_contract.cfg`, "renamed since to `MC_wait.cfg`" | with `CloseWithoutAnswer = TRUE` (both non-drain exits close a wait and answer nothing) TLC reports `ResolvedWaitIsAnswered` violated — the property the ledger names for V-W1, refutable again | one counterfactual constant and one control per module (`MC_artifact_gc_ignores_references.cfg` → `GcClaimsOnlyUnreferencedLive`, `MC_wait_closes_without_answering.cfg` → `ResolvedWaitIsAnswered`, `MC_grants_stale_offered_surface.cfg` → `OfferedToolsAreAuthorized`); `review/verification_catalogue.py` now fails a `V2*.tla` that is the spec of no `cfg:spec` pair |
 | Property fix | nested quantifiers in `V2Checks`' `BlockForInfra`/`BlockWhenExhausted` shared a name | parse error | separate quantifier variables |
 
 ## 4. Per-item ledger A01–A36
@@ -440,7 +442,7 @@ alone**, and conversely formal coverage does not excuse an item from sample or r
 ```bash
 make verify-model-all     # exhaustive configurations for the fifteen surfaces (seconds to ~2 min;
                           # the task, grants and authority models are the slow ones)
-make verify-model-counterexamples  # the forty-one negative controls, each must be refuted
+make verify-model-counterexamples  # the forty-four negative controls, each must be refuted
 make verify-model-wide    # wide control-plane configuration (best effort: 275M states / 11 m in the historical
                           # run; a one-hour bounded attempt on 2026-09-27 did not reach a verdict)
 make check                # fmt + clippy -D warnings + 23 suites (including the two code-level layers)

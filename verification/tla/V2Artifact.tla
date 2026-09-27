@@ -8,11 +8,16 @@
 (* The point is the *interleaving*: bytes are persisted before the row is  *)
 (* referenced, a reference and the LIVE flip commit together, and GC may   *)
 (* only claim an artifact that no live owner references.                   *)
+(*                                                                         *)
+(* Counterfactual constant (D-220): `GcIgnoresHolders` TRUE is the collector  *)
+(* that never reads the reference table — the mistake `GcClaimsOnlyUnreferenced*)
+(* Live` exists to catch, and the only thing wrong in its control.           *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets
 
 CONSTANTS Artifacts,  \* artifact slots, e.g. {"a1","a2"}
-          Owners      \* reference owners, e.g. {"r1","r2"}
+          Owners,     \* reference owners, e.g. {"r1","r2"}
+          GcIgnoresHolders  \* counterfactual: GC claims an artifact that still has references
 
 ASSUME Artifacts # {} /\ Owners # {}
 
@@ -62,7 +67,7 @@ AddReference(id, who) ==
 
 \* GC claim: only ownerless, unreferenced LIVE artifacts become DELETING
 GcClaim(id) ==
-  /\ row[id] = "LIVE" /\ holders[id] = {} /\ ~owner[id]
+  /\ row[id] = "LIVE" /\ (GcIgnoresHolders \/ holders[id] = {}) /\ ~owner[id]
   /\ row' = [row EXCEPT ![id] = "DELETING"]
   /\ UNCHANGED <<disk, holders, owner, staged>>
 

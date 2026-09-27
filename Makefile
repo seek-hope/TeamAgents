@@ -136,7 +136,7 @@ verify-model: verify-tools
 # configuration that fell through the `*)` default would silently run the wrong module (the rule
 # `review/verification_catalogue.py` enforces). The control families are matched by prefix, after the
 # exact arms, because shell `case` takes the first match.
-CFG_CASE = case $$cfg in MC.cfg|MC_control_two.cfg) echo V2Control.tla;; MC_artifact.cfg) echo V2Artifact.tla;; MC_wait.cfg) echo V2Wait.tla;; MC_task*) echo V2Task.tla;; MC_compress*) echo V2Compress.tla;; MC_daemon*) echo V2Daemon.tla;; MC_checks*) echo V2Checks.tla;; MC_grants.cfg) echo V2Grants.tla;; MC_authority*) echo V2Authority.tla;; MC_store.cfg|MC_store_adopt.cfg) echo V2Store.tla;; MC_retention*) echo V2Retention.tla;; MC_jobs*) echo V2Jobs.tla;; MC_inbox*) echo V2Inbox.tla;; MC_diskfull*) echo V2DiskFull.tla;; MC_coordinator*) echo V2Coordinator.tla;; MC_control*) echo V2Control.tla;; MC_wide.cfg) echo V2Control.tla;; *) echo V2Artifact.tla;; esac
+CFG_CASE = case $$cfg in MC.cfg|MC_control_two.cfg) echo V2Control.tla;; MC_artifact*) echo V2Artifact.tla;; MC_wait*) echo V2Wait.tla;; MC_task*) echo V2Task.tla;; MC_compress*) echo V2Compress.tla;; MC_daemon*) echo V2Daemon.tla;; MC_checks*) echo V2Checks.tla;; MC_grants*) echo V2Grants.tla;; MC_authority*) echo V2Authority.tla;; MC_store.cfg|MC_store_adopt.cfg) echo V2Store.tla;; MC_retention*) echo V2Retention.tla;; MC_jobs*) echo V2Jobs.tla;; MC_inbox*) echo V2Inbox.tla;; MC_diskfull*) echo V2DiskFull.tla;; MC_coordinator*) echo V2Coordinator.tla;; MC_control*) echo V2Control.tla;; MC_wide.cfg) echo V2Control.tla;; *) echo V2Artifact.tla;; esac
 
 # small exhaustive configurations for every module (seconds; the wide config is verify-model-wide)
 verify-model-all: verify-tools
@@ -177,7 +177,9 @@ verify-model-counterexamples: verify-tools
 		MC_compress_deletes_originals.cfg:V2Compress.tla MC_compress_lifts_coverage.cfg:V2Compress.tla \
 		MC_compress_rewrites_closed.cfg:V2Compress.tla MC_daemon_rewrites_receipt.cfg:V2Daemon.tla \
 		MC_daemon_rolls_back_log.cfg:V2Daemon.tla MC_daemon_reclaims_events.cfg:V2Daemon.tla \
-		MC_checks_rewinds_rounds.cfg:V2Checks.tla; do \
+		MC_checks_rewinds_rounds.cfg:V2Checks.tla \
+		MC_artifact_gc_ignores_references.cfg:V2Artifact.tla MC_wait_closes_without_answering.cfg:V2Wait.tla \
+		MC_grants_stale_offered_surface.cfg:V2Grants.tla; do \
 		cfg=$${pair%%:*}; spec=$${pair##*:}; \
 		echo "== $$cfg (must be refuted) =="; \
 		out=$$(java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \

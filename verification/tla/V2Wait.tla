@@ -20,12 +20,19 @@
 (*  - superseded by user input or an epoch close/reset, which sets the         *)
 (*    instance's PENDING waits to CANCELLED and answers the cancellation.      *)
 (* `ResolvedWaitIsAnswered` is the invariant that keeps both honest.           *)
+(*                                                                          *)
+(* Counterfactual constant (D-220): `CloseWithoutAnswer` TRUE restores exactly *)
+(* the pre-V-W1 shape — both non-drain exits close the wait and answer         *)
+(* nothing — which is the refutation the fix ledger records for that finding    *)
+(* and which no configuration had carried since its old one was renamed into    *)
+(* the positive `MC_wait.cfg`.                                                 *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets
 
 CONSTANTS Waits,      \* wait slots (one row per registered wait), e.g. {"w1"}
           Conds,      \* conditions any wait may name, e.g. {"c1","c2"}
-          Instances   \* instances that can park, e.g. {"L"}
+          Instances,  \* instances that can park, e.g. {"L"}
+          CloseWithoutAnswer  \* counterfactual (D-220): the two non-drain exits close a wait without answering it
 
 ASSUME Waits # {} /\ Conds # {} /\ Instances # {}
 
@@ -100,8 +107,8 @@ ArmWait(w, i, mode, conds, call) ==
   /\ waitOwner' = [waitOwner EXCEPT ![w] = i]
   /\ LET satisfied == HoldsWith(mode, conds, w, facts, timers) IN
      /\ waitState' = [waitState EXCEPT ![w] = IF satisfied THEN "SATISFIED" ELSE "PENDING"]
-     /\ answers' = [answers EXCEPT ![w] = IF satisfied THEN 1 ELSE 0]
-     /\ answerCall' = [answerCall EXCEPT ![w] = IF satisfied THEN call ELSE nocall]
+     /\ answers' = [answers EXCEPT ![w] = IF satisfied /\ ~CloseWithoutAnswer THEN 1 ELSE 0]
+     /\ answerCall' = [answerCall EXCEPT ![w] = IF satisfied /\ ~CloseWithoutAnswer THEN call ELSE nocall]
      /\ phase' = [phase EXCEPT ![i] = IF satisfied THEN "READY" ELSE "WAITING"]
   /\ UNCHANGED <<facts, timers>>
 
@@ -142,8 +149,9 @@ Supersede(i) ==
   /\ phase[i] = "WAITING"
   /\ LET cancelled == { w \in Waits : waitOwner[w] = i /\ waitState[w] = "PENDING" } IN
      /\ waitState' = [ w \in Waits |-> IF w \in cancelled THEN "CANCELLED" ELSE waitState[w] ]
-     /\ answers' = [ w \in Waits |-> IF w \in cancelled THEN 1 ELSE answers[w] ]
-     /\ answerCall' = [ w \in Waits |-> IF w \in cancelled THEN waitCall[w] ELSE answerCall[w] ]
+     /\ answers' = [ w \in Waits |-> IF w \in cancelled /\ ~CloseWithoutAnswer THEN 1 ELSE answers[w] ]
+     /\ answerCall' = [ w \in Waits |->
+                          IF w \in cancelled /\ ~CloseWithoutAnswer THEN waitCall[w] ELSE answerCall[w] ]
   /\ phase' = [phase EXCEPT ![i] = "READY"]
   /\ UNCHANGED <<waitMode, waitConds, waitCall, waitOwner, facts, timers>>
 

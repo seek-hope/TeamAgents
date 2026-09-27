@@ -18,6 +18,38 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-220 Three modules' claims nothing could refute (2026-09-27)
+
+D-219's rule found variables no action ever writes; this entry closes the older and larger gap D-218 named:
+`V2Artifact`, `V2Wait` and `V2Grants` were the specs of **no counterexample configuration**. Their claims were
+enumerated exhaustively by `make verify-model-all` and none was shown *refutable*, which is the property the
+whole control set exists to establish ("a control that verifies means the property says nothing"). For one of
+the three the refutation had existed: `review/fix-notes-verification-2026-09-24.md` records finding V-W1's
+counterexample against `MC_wait_contract.cfg`, "renamed since to `MC_wait.cfg`" — the pre-fix shape became the
+positive configuration, exactly as V-G1's did for `V2Task` (D-218). The wait module's own fixed finding had been
+un-refutable since the day the fix landed.
+
+**Fixed with one counterfactual constant and one control per module**, measured 2026-09-27 (each naming exactly
+the documented invariant, no TLC warning, and every positive configuration's state count unchanged — the check
+that the constant defaults to the modelled behaviour):
+
+| Control | What it does | Invariant TLC reports |
+|---|---|---|
+| `MC_artifact_gc_ignores_references.cfg` | GC never reads the reference table | `GcClaimsOnlyUnreferencedLive` |
+| `MC_wait_closes_without_answering.cfg` | both non-drain exits close the wait and answer nothing — the pre-V-W1 shape, restored | `ResolvedWaitIsAnswered` |
+| `MC_grants_stale_offered_surface.cfg` | the revoke path computes the offered surface from the grant table as it was *before* the revocation | `OfferedToolsAreAuthorized` |
+
+**And the rule, so it cannot recur**: `review/verification_catalogue.py` now fails a `V2*.tla` that is the spec
+of no `cfg:spec` pair — a module no control runs is a set of claims nothing refutes, one level up from D-212's
+"a claim nothing lists". All fifteen modules satisfy it today, and the V2Wait row of `verification/README.md`
+names where the module's own refutation lives again.
+
+Ceiling: the rule asks that a control *exist* for the module, not that every claim has one — per-claim
+falsifiability stays the reviewed statement the README makes beside each control; a control is a configuration of
+the same module with one counterfactual constant TRUE, so it shows a claim is falsifiable rather than that the
+product ever had the defect; and the three constants model mistakes the code's guards prevent, which is what
+makes them counterfactuals rather than regression tests.
+
 ## D-219 Seven claims in the checked set could not fail (2026-09-27)
 
 The ledger's strength rests on the negative controls: a claim no configuration can refute is a claim nothing

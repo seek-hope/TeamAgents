@@ -14,6 +14,10 @@ Re-run commands: `make verify-model-all` (exhaustive configurations for the modu
   expected-counterexample configuration `MC_wait_contract.cfg`, renamed since to `MC_wait.cfg`).
 - **Spec counterexample** (re-runnable before the fix): `Error: Invariant ResolvedWaitAnswersItsCall is
   violated.`, with the trace `ArmWait(PENDING)` → `Supersede` → `CANCELLED` and `answers = 0`.
+  Since D-220 the refutation is re-runnable again: the configuration it lived in was renamed into the *positive*
+  `MC_wait.cfg`, so `ResolvedWaitIsAnswered` went unfalsifiable in between; the counterfactual
+  `CloseWithoutAnswer` and the control `MC_wait_closes_without_answering.cfg` restore the pre-fix shape (both
+  non-drain exits close the wait and answer nothing) and report the same invariant.
 - **Code probe** (before the fix): `cargo test --offline --manifest-path core/Cargo.toml --lib
   wait_call_answer_gap_outside_the_drain_path -- --nocapture` printed `answers_for_wait_1=0` (satisfied at
   registration) and `answers_for_wait_2=0` (superseded).

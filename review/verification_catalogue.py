@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The formal-verification material, against the targets that drive it and the report that counts it (D-185).
 
-`verification/tla/` holds fifteen TLA+ modules and fifty-nine configurations — and **these numbers are
+`verification/tla/` holds fifteen TLA+ modules and sixty-two configurations — and **these numbers are
 checked against the directory by this script's own rule**, because the sentence that said "forty" was the
 kind of count nothing looked at (the module count in this line and the two the report states are all
 compared with what the tree holds); `verification/REPORT.md`
@@ -33,6 +33,15 @@ that nothing lists is a claim nothing checks — `V2Compress`' `RequestClosesOnc
 nothing would have noticed if it did not). The convention the second half implies: a claim that composes others is
 listed itself and its components beside it (V2Grants' four `TypeOK*`, V2Store's `RefusalIsSilent`), so each marked
 name is visibly checked.
+
+**D-220 added the rule that every module has to be *refutable*.** A module that no counterexample configuration
+runs is a set of claims nothing refutes — the same gap as a claim nothing lists, one level up. V2Artifact,
+V2Wait and V2Grants were the last three modules without one (measured 2026-09-27), and V2Wait's own refutation
+had existed before the fix: `review/fix-notes-verification-2026-09-24.md` records finding V-W1's counterexample
+against `MC_wait_contract.cfg`, "renamed since to `MC_wait.cfg`", so the pre-fix shape became the positive
+configuration and the refutation went with it — exactly what had happened to V2Task's V-G1 (D-218). All three
+now carry a counterfactual constant and a control, and this audit fails a `V2*.tla` that is the spec of no
+`cfg:spec` pair.
 
 **D-219 added the rule that a claim has to be *able* to fail.** A variable no action ever changes is a constant
 of the model, so every claim over it is trivially true or trivially false. Six of them were carrying claims:
@@ -268,6 +277,16 @@ def main(argv) -> int:
                 if fnmatch.fnmatchcase(cfg, arm) and cfg in pairs and pairs[cfg] != spec:
                     findings.append(f"{args.makefile}: a mapping block runs {cfg} against {spec}.tla while the "
                                     f"counterexample pairs name {pairs[cfg]}.tla: they have to agree")
+    # (D-220) Falsifiability is per module, not per configuration set: a module no counterexample configuration
+    # runs is a set of claims nothing refutes. Measured 2026-09-27: V2Artifact, V2Wait and V2Grants were the
+    # last three without one — and V2Wait's own refutation (finding V-W1) had existed until its old
+    # configuration was renamed into the positive `MC_wait.cfg`, the same way V2Task lost V-G1's (D-218).
+    controlled = set(pairs.values())
+    for spec in on_disk_specs:
+        if spec.removesuffix(".tla") not in controlled:
+            findings.append(f"{tla}/{spec} is the spec of no counterexample configuration in {args.makefile}: its "
+                            "claims are stated and enumerated exhaustively, but no configuration is shown to "
+                            "refute one of them (D-220)")
     mapping = {}
     for arms in blocks:
         for arm, spec in arms:

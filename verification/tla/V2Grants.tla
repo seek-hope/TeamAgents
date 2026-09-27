@@ -24,13 +24,19 @@
 (*                                                                          *)
 (* The helpers are parameterised by the grant table so an action can talk about *)
 (* the *next* state's surface (TLA+ cannot prime an operator application).      *)
+(*                                                                          *)
+(* Counterfactual constant (D-220): `OfferedLagsRevocation` TRUE makes the      *)
+(* revoke path compute the offered surface from the *old* grant table — the     *)
+(* surface a model is shown still promises a tool whose grant just went away,   *)
+(* which is what `OfferedToolsAreAuthorized` forbids.                          *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets, Sequences
 
 CONSTANTS Instances,   \* e.g. {"leader", "child"}
           Actions,     \* e.g. {"shell", "manage", "delegate", "message"}
           GrantIds,    \* grant slots, e.g. {"g1", ..., "g6"}
-          BaseTools    \* tools that need no grant (the instance's bindings)
+          BaseTools,   \* tools that need no grant (the instance's bindings)
+          OfferedLagsRevocation  \* counterfactual (D-220): the revoke path leaves the offered surface as it was
 
 \* The scope vocabulary the code uses: the shared workspace, the session, and one
 \* scope per instance ("instance:<id>", the scope a spawn derivation targets).
@@ -192,7 +198,7 @@ Revoke(g) ==
      IN grants' = [h \in GrantIds |->
                      IF h \in gone THEN [grants[h] EXCEPT !.live = FALSE] ELSE grants[h]]
   /\ revision' = revision + 1
-  /\ offered' = [i \in Instances |-> EntitledIn(grants', i)]
+  /\ offered' = [i \in Instances |-> EntitledIn(IF OfferedLagsRevocation THEN grants ELSE grants', i)]
   /\ revokedIds' = revokedIds \union SubtreeFor(grants, g)
   /\ UNCHANGED <<ops, staleOps>>
 
