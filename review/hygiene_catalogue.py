@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The scripts `make check` runs, against the page that walks through them (the detector behind D-184).
+"""The scripts `make check` runs, against the page that walks through them (the detector behind D-184/D-194).
 
 Every documented surface here has a catalogue audit — the events, the protocol, the tools, the config keys, the
 CLI flags, the TUI keys — and the audits themselves were the one surface nobody did. `docs/DEVELOPMENT.md` is
@@ -17,6 +17,16 @@ and `test`), every script a recipe invokes with `python3` must be named in `docs
 target that has disappeared is a finding rather than a silent pass. As a note — never a failure — the audit
 prints the `review/*.py` the page names that no target runs: those are the probe and evaluation entry points,
 which are meant to be run by hand.
+
+**D-194 added the other half, and it is the half D-193 was found by.** The rule above says every script a
+target *runs* is documented; nothing said every audit script is *run*. `review/config_keys.py` — the detector
+behind four findings (D-75's three keys and D-102's `instruction_files`) — was run by no target at all, and the
+page's own listing of hand-run scripts did not mention it either; only a person reading the directory could see
+it. So every root-level `review/*.py` must now be either invoked by some make target or listed in `HAND_RUN`
+with its reason, and a `HAND_RUN` entry that a target *does* run is a finding too, so an exemption cannot
+outlive its reason. The two deeper levels were already covered where they live: `review/dogfood/*.py` by
+`probes.py --self-check`, which fails on a file in neither set nor `NOT_PROBES` (D-155), and `review/eval/**`
+is frozen material whose driver is run by hand by design.
 """
 import argparse
 import pathlib
@@ -27,6 +37,17 @@ REPO = pathlib.Path(__file__).resolve().parents[1]
 WALKED = ("hygiene", "test")
 TARGET = re.compile(r"^([A-Za-z0-9_.-]+):")
 INVOCATION = re.compile(r"python3\s+([^\s;|)'\"]+\.py)")
+
+# Root-level audit scripts no make target runs, each with the reason it stays that way. An entry a target *does*
+# run is a finding below, so this list cannot shelter a script that has since been wired up.
+HAND_RUN = {
+    "review/host_cleanup.py": "reads the host's own process table (D-189): it reports nothing from a sandbox "
+                             "and changes nothing, so there is no gate result to check",
+    "review/install_check.py": "downloads the published release and installs it (A36): network and an external "
+                               "artifact, run by hand and dated in the acceptance row",
+    "review/runner_cost.py": "a one-off cost meter (D-153) whose numbers A12 records; it measures a process, it "
+                             "does not assert a product property",
+}
 
 
 def recipe_scripts(makefile: str) -> list[tuple[str, str]]:
@@ -65,6 +86,21 @@ def main(argv) -> int:
                                 "leaves the page describing a smaller build than the one that runs (D-184)")
     named = set(re.findall(r"review/[A-Za-z0-9_./-]+\.py", page))
     run = {script for _, script in invoked}
+    # D-194: every audit script is either gated or listed as hand-run with its reason.
+    audits = {str(path.relative_to(REPO)) for path in (REPO / "review").glob("*.py")}
+    for audit in sorted(audits):
+        if audit in run:
+            if audit in HAND_RUN:
+                findings.append(f"{audit} is listed in HAND_RUN, but a make target runs it — drop the entry so "
+                                "the exemption cannot outlive its reason")
+            continue
+        if audit in HAND_RUN:
+            print(f"note: {audit} is run by hand: {HAND_RUN[audit]}")
+        else:
+            findings.append(f"{audit} is run by no make target and is not listed in HAND_RUN: an audit nobody "
+                            "runs is a rule nobody enforces (D-193 found `review/config_keys.py` that way)")
+    for stale in sorted(set(HAND_RUN) - audits):
+        findings.append(f"HAND_RUN lists {stale}, which is not a root-level `review/*.py` audit anymore")
     for finding in findings:
         print(f"FAIL: {finding}")
     if findings:

@@ -18,6 +18,35 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-194 The audit that found the ungated audit is now the gate for that class (2026-09-27)
+
+D-193 found that `review/config_keys.py` — the detector behind four findings — was run by no make target, and it
+found it by reading the directory: `review/hygiene_catalogue.py` (D-184) checked the *other* direction (every
+script a target runs must be named on the page), and `probes.py --self-check` (D-155) covered the level below
+(a file in `review/dogfood/` that is in neither set nor `NOT_PROBES`), but nothing asked whether an audit
+script is run at all. A rule nobody runs is a rule nobody enforces, and the campaign has now hit that shape
+twice in two turns (the SQLite-version check in D-183, the config-key detector in D-193).
+
+**Changed** (`review/hygiene_catalogue.py`, in `make hygiene`): every root-level `review/*.py` must be either
+invoked by some make target or listed in the audit's `HAND_RUN` with its reason, and a `HAND_RUN` entry that a
+target *does* run is a finding as well, so an exemption cannot outlive its reason. A `HAND_RUN` name that is no
+longer a root-level audit is a finding too. The three entries are the scripts whose non-gating is deliberate:
+`host_cleanup.py` (reads the host's process table, D-189 — it asserts nothing a gate could check),
+`install_check.py` (downloads and installs the published release, A36 — network and an external artifact) and
+`runner_cost.py` (a one-off cost meter whose numbers A12 records, D-153).
+
+**Measured** (2026-09-27): the audit is green and prints the three hand-run notes; the two controls bite, each
+reverted. Removing `python3 review/config_keys.py` from a copy of the Makefile reproduces **D-193's own
+finding** verbatim — "review/config_keys.py is run by no make target and is not listed in HAND_RUN: an audit
+nobody runs is a rule nobody enforces (D-193 found `review/config_keys.py` that way)" — which is the strongest
+form a control can take here: the gate rediscovers the historical defect. Adding `review/leak_guard.py` to
+`HAND_RUN` fails with "is listed in HAND_RUN, but a make target runs it — drop the entry so the exemption cannot
+outlive its reason".
+
+Ceiling: the check is structural — it knows an audit *is invoked*, not that its assertions are strong or that
+its own `--self-check` exists. The deeper levels keep their own guards (`probes.py --self-check` for the probes,
+`verification_catalogue.py` for the formal material), and this one now closes the top level.
+
 ## D-193 The config-key detector was outside the gate, and only looked one way (2026-09-27)
 
 `review/config_keys.py` is the detector behind four real findings — the three keys D-75 made to work, refuse or
