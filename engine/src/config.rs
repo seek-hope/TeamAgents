@@ -200,6 +200,28 @@ fn validate_profiles(catalog: &UserConfig) -> Result<(), String> {
                 PROTOCOLS.join(", ")
             ));
         }
+        // D-229: two more silent misconfigurations, the class D-162 fixed for `protocol`. Measured 2026-09-27:
+        // `base_url = "not a url"` loaded fine and failed at the first call as `permanent model error: chat API:
+        // builder error` — neither the key nor the URL — and `context_window = 0` loaded fine, though a
+        // zero-token window can serve no request (the shape `[limits]` already refuses at load).
+        if let Some(url) = profile.base_url.as_deref().filter(|url| !url.is_empty()) {
+            let usable = match reqwest::Url::parse(url) {
+                Ok(parsed) => matches!(parsed.scheme(), "http" | "https"),
+                Err(_) => false,
+            };
+            if !usable {
+                return Err(format!(
+                    "models.{key}.base_url = {url:?}: the endpoint must be an absolute http(s) URL \
+                     (docs/USER-GUIDE.md §2)"
+                ));
+            }
+        }
+        if profile.context_window == Some(0) {
+            return Err(format!(
+                "models.{key}.context_window = 0: a zero-token window cannot serve a request — leave it unset \
+                 to use the reader's own value, or set the model's real window (docs/USER-GUIDE.md §2)"
+            ));
+        }
     }
     Ok(())
 }
@@ -386,6 +408,35 @@ mod tests {
         assert!(error.contains("codex_profile") && error.contains("not part of this release"), "{error}");
         assert!(error.contains("models.m"), "the message names the profile: {error}");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// D-229: a malformed `base_url` and a zero `context_window` are refused at load with the key named — the
+    /// class D-162 fixed for `protocol`. Measured before this test: the first surfaced at the initial model call
+    /// as `permanent model error: chat API: builder error` (neither the key nor the URL), and the second loaded
+    /// silently even though a zero-token window can serve no request.
+    #[test]
+    fn a_malformed_endpoint_or_a_zero_window_is_refused_at_load() {
+        for (label, text) in [
+            ("a URL with spaces", "[models.m]\nprovider = \"openai\"\nmodel = \"x\"\nbase_url = \"not a url\"\n"),
+            ("a bare host", "[models.m]\nprovider = \"openai\"\nmodel = \"x\"\nbase_url = \"api.example.com\"\n"),
+            (
+                "a non-http scheme",
+                "[models.m]\nprovider = \"openai\"\nmodel = \"x\"\nbase_url = \"ftp://example.com\"\n",
+            ),
+            ("a zero window", "[models.m]\nprovider = \"openai\"\nmodel = \"x\"\ncontext_window = 0\n"),
+        ] {
+            let error = parse_user_config(text).expect_err(label);
+            assert!(error.contains("models.m"), "{label}: {error}");
+            assert!(error.contains("docs/USER-GUIDE.md §2"), "{label} points at the guide: {error}");
+        }
+        // the shapes the documents show still parse: a real endpoint, no endpoint, an empty one (unset), a window
+        for text in [
+            "[models.m]\nprovider = \"openai\"\nmodel = \"x\"\nbase_url = \"https://api.example.com/v1\"\ncontext_window = 1000000\n",
+            "[models.m]\nprovider = \"openai\"\nmodel = \"x\"\n",
+            "[models.m]\nprovider = \"openai\"\nmodel = \"x\"\nbase_url = \"\"\n",
+        ] {
+            parse_user_config(text).expect("the documented shapes parse");
+        }
     }
 
     #[test]

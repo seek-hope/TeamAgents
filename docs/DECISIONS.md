@@ -18,6 +18,38 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-229 Two more model-profile misconfigurations that loaded silently (2026-09-27)
+
+D-162 refused a typo'd `protocol` at load, because the fall-through dispatch quietly spoke the wrong wire; and
+`[limits]` refuses a zero ceiling, because zero would mean "no request ever". A sweep of the neighbouring keys in
+a model profile, run through the real binary on 2026-09-27, found two more that loaded silently:
+
+| The value | What happened | What happens now |
+|---|---|---|
+| `base_url = "not a url"` | loaded fine; the first model call answered `permanent model error: chat API: builder error` — neither the key nor the URL | refused at load: `models.<key>.base_url = "not a url": the endpoint must be an absolute http(s) URL (docs/USER-GUIDE.md §2)` |
+| `context_window = 0` | loaded fine — nothing objected to a window no request can fit | refused at load, in the `[limits]` shape: a zero-token window cannot serve a request; leave it unset or set the model's real window |
+
+Both are refused by `validate_profiles`, the one place the profile's own keys are checked, so `doctor`,
+`init` and every run meet the same words before a request is built. The accepted shapes are pinned beside the
+refusals: an `https://…` endpoint, no endpoint at all, an *empty* `base_url` (unset, which several configs use)
+and a real window all still parse.
+
+**And `provider` was undocumented**, which is why the sweep had to *measure* what an unknown one does rather than
+read it: `models.*.provider` selects the `deepseek` defaults (the reasoning echo, the deepseek protocol) when
+`protocol` is unset and is a free-form label otherwise — `protocol`/`base_url` decide the wire (D-40). The field
+now carries that doc comment, and `docs/CONFIG.md` regenerates with it (`—` became a sentence).
+
+**Measured**: `doctor` reports both refusals as `[FAIL] user config` with the key, the value and the pointer;
+the test asserts the four bad shapes and the three documented ones. A typo'd `provider` remains *accepted* on
+purpose: the provider name is free-form for compatible services, and only `deepseek` selects behaviour, so
+refusing unknown names would refuse the custom services D-40 promises — the strict key is `protocol`, which
+D-162 already refuses.
+
+Ceiling: the URL rule accepts any absolute `http(s)` URL, so a host that resolves nowhere still fails at the
+first call (that failure is honest and classified as a transport error); the window rule refuses exactly `0`, so a
+user-chosen window smaller than the system prompt is still discovered at the first request rather than at load;
+and both checks read the *user* config, so a project config (not read at all, D-133) cannot carry them.
+
 ## D-228 The two path inversions under a state root were unclassified (2026-09-27)
 
 D-166 fixed one shape — the state root that is a *file* — and D-227 the socket path past `sun_path`. A sweep of

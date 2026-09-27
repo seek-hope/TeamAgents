@@ -24,6 +24,9 @@ pub type Json = serde_json::Value;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelProfile {
+    /// The vendor hint: `deepseek` selects that service's defaults (the reasoning echo, the deepseek
+    /// protocol) while `protocol` is unset, and any other value is a label for a compatible service — the
+    /// wire is decided by `protocol`/`base_url`, never by this name (D-40, D-229).
     pub provider: String,
     #[serde(default = "default_protocol")]
     pub protocol: String, // "openai" (legacy) | "chat/completions" | "responses" | "anthropic" | "deepseek"
