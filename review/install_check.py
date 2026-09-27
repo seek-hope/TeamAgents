@@ -10,8 +10,10 @@ something goes wrong — **leaves an existing installation untouched when verifi
     python3 review/install_check.py --offline       # only the local refusal check
 
 It is not part of `make check` (it needs the network and a published release); everything it
-writes stays under a fresh /tmp directory.
+writes stays under a fresh /tmp directory, which is removed at exit unless `--state-dir` named it (D-205: it
+used to leave that directory behind on every run, including the failing one that is its normal verdict today).
 """
+import atexit
 import argparse
 import hashlib
 import json
@@ -81,11 +83,17 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", help="pin a release (leading v accepted)")
     parser.add_argument("--offline", action="store_true", help="only run the local refusal check")
-    parser.add_argument("--state-dir", default="/tmp/ta-install-check")
+    parser.add_argument("--state-dir", help="scratch root (default: a fresh /tmp/ta-install-check, removed at "
+                                            "exit)")
     args = parser.parse_args()
     if not INSTALLER.is_file():
         raise SystemExit(f"{INSTALLER} is missing")
-    scratch = pathlib.Path(args.state_dir)
+    scratch = pathlib.Path(args.state_dir or "/tmp/ta-install-check")
+    # The default scratch is not state anyone keeps: remove it at exit, or one copy per run stays in TMPDIR and
+    # the leak guard counts it (the rule D-131 gave the suite and D-138 the probes). An explicit --state-dir is
+    # left alone, because the caller asked for it.
+    if not args.state_dir:
+        atexit.register(shutil.rmtree, scratch, ignore_errors=True)
     shutil.rmtree(scratch, ignore_errors=True)
     scratch.mkdir(parents=True)
     failures: list[str] = []

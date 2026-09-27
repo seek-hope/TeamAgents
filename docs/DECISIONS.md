@@ -18,6 +18,24 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-205 The install check left its scratch behind (2026-09-27)
+
+Running `review/install_check.py` for D-203 left `/tmp/ta-install-check` in `TMPDIR`, and `leak_guard.strays()` —
+the guard `make test` wraps around the suite (D-131) and the probes harness applies per probe (D-138) — named it.
+The script cleared its scratch at the *start* of every run (`shutil.rmtree` before rebuilding it), so runs did not
+accumulate, but every run left one copy behind: the path is the fixed `/tmp/ta-install-check`, there was no exit
+hook, and today's normal verdict *is* a failure (the published release predates the product, D-203), so no path
+was ever the "cleaned up after" one.
+
+**Fixed** in the pattern `review/dogfood/stale_check.py` established: `--state-dir` has no default, the default
+scratch is registered for removal at exit, and an explicit `--state-dir` is left alone because the caller asked
+for it. Measured: `--offline` now leaves no directory behind, and `--offline --state-dir /tmp/ta-keep-check` keeps
+the one it was given.
+
+Ceiling: no gate covers this for a script the suite does not run — the guard wraps `make test`, so a hand-run
+script is noticed only when somebody looks, which is how this was found — and a blanket textual rule would be
+wrong anyway, because a probe that fails is *supposed* to keep its state as the evidence (D-140).
+
 ## D-204 A probe required an order its claim does not (2026-09-27)
 
 The model set was re-run on `db90bf52` (all 26 probes in one pass, 941.5 s): **24 green, 2 red**. One red is the
