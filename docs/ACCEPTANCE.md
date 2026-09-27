@@ -164,6 +164,11 @@ amended (D-49/D-50).
   next `runners stop` retires the runner with 0 processes left. **What this bullet still carries**: the separate
   stray-*service* lever above (a service a settled command left behind needs its process group signalled, and
   after the group's leader exits `signal_group`'s identity check has nothing to verify — its own decision). Alongside that product question sits a **host** one, and it is now measured rather than estimated (D-189, re-runnable with `python3 review/host_cleanup.py` outside a sandbox): this machine carries **1,398** pre-fix runners, **1,397 of them orphaned**, all older than 6.5 h, holding 5.3 GiB and burning **13.5 cores continuously** (664.6 CPU-hours so far). Their class decides whether stopping one is safe: 1,238 `settled-journal`, 70 `unknown-outcome`, 19 `dir-gone`, 72 `unfinished` and 1 `live-parent` — and that last one is the user's own session's runner, so the conservative stop is the 1,256 `settled-journal` + `dir-gone` processes, one `kill <pid>` per pid, on the user's word.
+  **And a reading of `review/leak_guard.py` is a reading of whichever process table this shell can see**:
+  measured 2026-09-28, one invocation of the same machine reported *no* daemons and *no* runners while the
+  next reported the standing leftover population above, so a "no leaks" line from a single invocation is
+  evidence about *new* leaks under `make test`'s snapshot/audit pair (which is what the gate enforces) and
+  not about the host's leftovers.
 
 - **The published release is the earlier implementation, and shares the tree's version.** `review/install_check.py` verifies the
   documented install path end to end (mechanics and the refusal above), and the published `v0.1.2` artifact it installs is the
