@@ -18,6 +18,35 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-210 The coordinator lock had no model (2026-09-27)
+
+A33's row said it in as many words — "**Live** (`python3 review/dogfood/boundary.py`, 2026-09-26, no model)" — and
+the rule behind it is a *file-descriptor* rule rather than a message one: "one coordinator only, and tools never
+inherit the coordinator lock in a way that blocks recovery". The code carries both halves in one place
+(`engine/src/jobs/mod.rs`): `state_lock` takes an OS lock on `<state root>/coordinator.lock`, and the comment above
+`LOCK_WAIT` explains what a `Command::spawn` does to it — the child forks with the whole descriptor table
+inherited, CLOEXEC closes its copy at `exec`, and until then "the kernel still grants the lock to exactly one
+holder", so a restart that lands in that instant must **wait** rather than report a coordinator that is not really
+there. `V2Coordinator.tla` is the fifteenth module: one coordinator per state root (`AtMostOneCoordinator`), the
+fork window waited out (`TheWindowIsNotMistakenForAHolder`), nothing holding the lock with no coordinator behind it
+(`NoHeldLockWithoutAHolder`), and the poll-pace retry live (`RecoveryIsLive`). Three negative controls
+(`MC_coordinator_report.cfg`, `MC_coordinator_inherit.cfg`, `MC_coordinator_shared.cfg`) forget one rule each.
+
+**Measured**: 16 configurations report `No error has been found` (6 m 54 s, measured while the wide
+configuration's attempt ran beside it), the 30 negative controls are refuted (3 m 18 s), `MC_coordinator.cfg`
+itself is 51 states / 16 distinct, and no run printed a `Warning:` (D-206's rule).
+
+**One modelling correction while writing it**: the first version set a monitor whenever the lock outlived its
+coordinator, which flagged the *legitimate* fork window. The property is a state predicate instead —
+`(references > 0 /\ daemon = "gone") => child = "forked"` — "the only thing that may still hold the lock with no
+coordinator alive is a child in that window", which is what the rule actually says; the counterfactual that keeps
+the child's descriptor past `exec` is what breaks it.
+
+Ceiling: the descriptor table is one counter and there is one child (a shell-job runner, an MCP server or a hook —
+every `Command::spawn` forks the same way); the poll interval, the lock file's path, the OS's lock semantics beyond
+"exactly one holder" and what the child does after `exec` are outside the model, and so is the daemon's shutdown
+path (there is still no `daemon --stop` lever: the user sends a signal, D-150).
+
 ## D-209 The comparison's provenance was a dated hand check (2026-09-27)
 
 `docs/PRODUCT-COMPARISON.md` is this repository's answer to the user's "reference Codex CLI, pi and hermes": §1

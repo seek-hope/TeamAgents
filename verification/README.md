@@ -23,14 +23,15 @@ shape D-206 was committed in.
 
 ```bash
 make verify-model           # small control-plane configuration (seconds)
-make verify-model-all       # small configurations for all fourteen modules (control plane, artifacts, waits,
+make verify-model-all       # small configurations for all fifteen modules (control plane, artifacts, waits,
                             # tasks, compression, daemon, required checks, authority, the user's surface,
-                            # session-store identity, retention, the job handshake, the inbox, the write-failure latch)
+                            # session-store identity, retention, the job handshake, the inbox, the write-failure
+                            # latch, the coordinator lock)
 make verify-model-counterexamples   # the negative controls (authority surface D-61, inbound boundary D-63,
                             # the retry boundary D-64/D-65, the runtime's own closing word D-71, the
                             # landing-attribution rule D-72, the store-identity guard D-87, the four retention
-                            # guards D-192, the four job-handshake rules D-206, the five inbox rules D-207 and the four write-failure
-                            # rules D-208):
+                            # guards D-192, the four job-handshake rules D-206, the five inbox rules D-207, the four write-failure
+                            # rules D-208 and the three coordinator-lock rules D-210):
                             # each must be *refuted*, or the property it targets proves nothing
 make verify-model-wide      # wide control-plane configuration (2 instances / 2 operations; tens to hundreds of
                             # millions of states, slow — the 2-instance run is what catches per-instance
@@ -58,6 +59,7 @@ repository and never enters `make check`. Java is required (this machine uses Op
 | `tla/V2Jobs.tla` + `tla/MC_jobs.cfg` | the job handshake and the recovery verdict (§6.2/§6.3, A10/A11; D-91/D-112/D-153): the journal's phases (READY, START_ACCEPTED, RUNNING, CANCEL_REQUESTED, terminal), the acceptance persisted *before* the spawn (`NoEffectBeforeAccept`, `EffectImpliesAcceptedStart`), a duplicate GO as a no-op (`AtMostOneExecutor`, reading the journal's own `starts` counter), CANCEL before the start as final (`LateGoIsRejected`), and the recovery read — one atomic snapshot of the journal and the effect — that says "did not run" only for a READY journal and records `unknown` for the START_ACCEPTED/RUNNING/CANCEL_REQUESTED band (`UnverifiableStartIsNeverGuessedNotRun`, `NotRunMeansNoEffect`, whose counterexample is the accept-after-spawn shape); `SettledRunnerLeaves` (under weak fairness of the shutdown step) is D-153's rule that a settled job's runner goes away rather than idling forever. The four negative controls `tla/MC_jobs_guess_notrun.cfg`, `tla/MC_jobs_double_go.cfg`, `tla/MC_jobs_late_go.cfg` and `tla/MC_jobs_spawn_first.cfg` each forget one rule — a missing pid read as "did not run", a duplicate GO starting a second command, a late GO after CANCELLED_BEFORE_START starting it anyway, and a command spawned before its acceptance was persisted (which is what makes a run invisible to recovery) — and must each be refuted by `make verify-model-counterexamples`. The model abstracts pid, start_ticks and boot_id into one "the recorded identity verifies" variable and assumes authenticated control requests; the deadline, the TERM→KILL escalation and the identity refusal are the runner's own tests and the live probes (`review/dogfood/job_identity.py`, `crash.py`, `unknown_outcome.py`, `cancel.py`) |
 | `tla/V2Inbox.tla` + `tla/MC_inbox.cfg` | the inbox and the application of an envelope (§5.3, A06, A24; D-63/D-72): an envelope is persisted as accepted, the recipient applies the lowest pending envelope of the current epoch **once** — the append carries the envelope id as its dedup key, so a replay appends nothing (`AtMostOncePerEnvelope`) — in sequence order (`LogIsIncreasing`), a stale-epoch envelope seals instead of leaking into the new epoch (`NoStaleApplication`), nothing accepted is ever silently dropped (`NoSilentLoss`), no send is accepted into a full inbox (`BoundedInbox`, the bound `queue_envelope` checks; a lost marker may legitimately leave more rows pending than the cap), and only the user or the instance itself drains (`DrainIsOwned`). Its five negative controls `tla/MC_inbox_no_dedup.cfg`, `tla/MC_inbox_drop_when_full.cfg`, `tla/MC_inbox_unbounded.cfg`, `tla/MC_inbox_stale_applied.cfg` and `tla/MC_inbox_foreign_drain.cfg` each forget one rule and must be refuted. The model is safety only (no fairness: whether a drain runs is the client's business) |
 | `tla/V2DiskFull.tla` + `tla/MC_diskfull.cfg` | the write-failure latch (§4.4, A31): a step whose submit fails with `StorageFull` latches, the driver stops running steps — the failed step is never retried and new side effects stay stopped (`NoStepRunsWhileLatched`) — success is never faked (`NoFakedSuccess`), the park is retried at poll pace and its reason names the in-flight persistence loss (`LossIsReported`), the latch clears only because that park landed — which needs a write to land (`LatchClearsOnlyWhenWritable`) — and the user resumes once space is freed (`ParkEventuallyLands`, under strong fairness of the park: the retry is live *while writability recurs*, because a single writable moment proves nothing). Its four negative controls `tla/MC_diskfull_keep_driving.cfg`, `tla/MC_diskfull_fake_success.cfg`, `tla/MC_diskfull_park_silently.cfg` and `tla/MC_diskfull_clear_anyway.cfg` each forget one rule and must be refuted |
+| `tla/V2Coordinator.tla` + `tla/MC_coordinator.cfg` | the coordinator lock and its fork window (§6.1, A33): one coordinator per state root (`AtMostOneCoordinator` — the kernel grants the lock to one holder), a restart that lands while only a *tool child's* inherited copy holds it waits for `exec` instead of reporting a coordinator that is not really there (`TheWindowIsNotMistakenForAHolder`), and with no coordinator alive the only thing that may still hold the lock is a child in that window (`NoHeldLockWithoutAHolder` — nothing inherits it past `exec`), with `RecoveryIsLive` for the poll-pace retry. Its three negative controls `tla/MC_coordinator_report.cfg`, `tla/MC_coordinator_inherit.cfg` and `tla/MC_coordinator_shared.cfg` each forget one rule and must be refuted |
 | `tla/V2Wait.tla` + `tla/MC_wait.cfg` | waits/wakeups/timers/supersede: evaluate at registration → parked drain scan → answer in the same transaction when satisfied → cancel/supersede/re-arm |
 | `tla/V2Task.tla` + `tla/MC_task.cfg` | task lifecycle and goal settlement: delegation (dependencies must exist first, the goal must be ACTIVE) → start → settle/cancel → system parking → termination cascade; goal creation, request admission, open operations, settlement and detach |
 | `tla/V2Compress.tla` + `tla/MC_compress.cfg` | context compression (A20): open/submit/fail/cancelled by a closed epoch; summaries append at the tail, coverage only grows and originals are never deleted |
@@ -475,7 +477,8 @@ The proven `page_span(total, offset, limit) = min(limit, total - offset)` is the
   compression (A20), the daemon protocol's command deduplication and snapshot watermark (A28), the
   required-check rounds with repair/blocking (A16), the job handshake with its recovery verdict (A10/A11), and
   the inbox: the exactly-once application of an envelope, the sequence order, the bound, the stale-epoch seal and
-  the drain's identity check (§5.3, A06/A24), and the write-failure latch with the park it retries (§4.4, A31).
+  the drain's identity check (§5.3, A06/A24), the write-failure latch with the park it retries (§4.4, A31), and
+  the coordinator lock with its fork window (§6.1, A33).
 - The inbox model (`V2Inbox`) models one recipient's inbox over three envelopes and two epochs, identifies an
   envelope id with its sequence number (arrivals are ordered), and models one application step per envelope, so
   "at a safe boundary" is a step here and the driver's boundary machinery stays with `V2Control`. Senders and the
@@ -488,6 +491,10 @@ The proven `page_span(total, offset, limit) = min(limit, total - offset)` is the
   and no operation-ledger states after a lost outcome (that story is `V2Control`'s). Its liveness property says
   what the design actually promises: the poll-pace retry is live *while writability recurs*, not that a single
   writable moment is enough — the disk can refill before the next poll.
+- The coordinator-lock model (`V2Coordinator`) abstracts the descriptor table to one counter (how many processes
+  reference the description that holds the lock) and one tool child — a shell-job runner, an MCP server or a hook,
+  which all fork the same way — and it does not model the poll interval, the lock file's path, the OS's own lock
+  semantics beyond "exactly one holder", or what the child does after exec.
 - The job model (`V2Jobs`) abstracts the three identity fields (pid, `start_ticks`, `boot_id`) into one "the
   recorded identity verifies" variable, assumes the control requests are authenticated (the abstract socket name
   is derived from the job token, which is a transport property), and does not model the deadline, the TERM→KILL
