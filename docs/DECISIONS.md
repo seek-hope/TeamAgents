@@ -18,6 +18,40 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-212 The checked set was not held against the modules' own claims (2026-09-27)
+
+Every module in `verification/tla/` marks the section where its invariants and properties live (`\* ---- invariants --`,
+`\* ---- properties --`) and every configuration lists what TLC must check — but nothing held the two against each
+other, so a marked claim could be listed nowhere and never checked. One was: `V2Compress`' `RequestClosesOnce` ("a
+request only ever closes once: no status is rewritten after it left PENDING"). It **holds** (measured: added to
+`MC_compress.cfg`, 8,467 states / 796 distinct, no error) — and `docs/ACCEPTANCE.md`'s A20 row *already* counted it
+as covered ("all eight `V2Compress` properties"), which made that row an over-claim until this decision turned it
+into a fact. Two more instances were the same shape one step over: `V2Grants` defined its four `TypeOK*` invariants
+as copies — one of them (`TypeOKOps`) naming a record field (`effect`) the state had stopped having (`effects`) —
+where composition says it once, and `V2Store`'s `RefusalIsSilent` was checked only through its alias
+`RefusalsWriteNothing`.
+
+**Guarded** (`review/verification_catalogue.py`, in `make hygiene`): every configuration a `verify-model*` recipe
+runs must be mapped to its module *explicitly* by that recipe — a `case` arm, a `cfg:spec` pair or a single-spec
+target — and every name a module marks must be listed by some configuration that runs it. The convention the second
+half implies is stated beside it: a claim that composes others is listed itself and its components beside it, so
+each marked name is visibly checked. Both controls behave: dropping `RequestClosesOnce` from `MC_compress.cfg`
+reports it, and a Makefile copy without `MC_artifact.cfg`'s arm reports the implicit mapping — and with it
+V2Artifact's claims, which is the honest coupling between the two rules.
+
+The mapping itself was the second defect: `verify-model-all` maps a configuration to its module with a `case` whose
+`*)` arm is `V2Artifact.tla`, and `MC_artifact.cfg` was the one configuration relying on it — correct by luck, and a
+new configuration would silently run the wrong module. It has its own arm now, and the rule keeps it that way.
+
+Ceiling: the rule reads the modules' *comment markers*, so a claim defined outside them is invisible (which is why
+adding a marker is part of claiming something), it is name-based (a composition is only covered when its components
+are listed too), and it cannot tell whether a listed claim is the one that matters — that reading is still a
+reading.
+
+**Measured**: 16 configurations report `No error has been found` (3 m 58 s), the 30 negative controls are refuted
+(2 m 4 s), no run printed a `Warning:`, and the three changed configurations verify exactly as before — their state
+spaces are unchanged, because invariants do not change what TLC explores.
+
 ## D-211 The wide configuration's supplement was named but not runnable (2026-09-27)
 
 D-210 measured the wide configuration as beyond a bounded exhaustive attempt, and the report's frontier bullet has

@@ -8,8 +8,7 @@ in [README.md](README.md); the fix ledger is in
 ## 0. Gate status (re-run 2026-09-27 at `8fe99e44`)
 
 * `make verify-model-all` was re-run on this tree: all **16** configurations report `No error has been found`,
-  in 6 m 54 s (this run overlapped the wide configuration's attempt — the frontier row below — so the upper
-  bound is generous) (the twelfth is the retention rule, D-192). The largest is **`MC_task.cfg`** with 5,721,401 states generated / 606,904 distinct; `MC.cfg`
+  in 3 m 58 s (the twelfth is the retention rule, D-192). The largest is **`MC_task.cfg`** with 5,721,401 states generated / 606,904 distinct; `MC.cfg`
   itself generates 84,877 / 18,384, and the smallest, `MC_store.cfg`, 48 / 13; the job handshake's
   `MC_jobs.cfg` generates 207 / 64 the inbox's `MC_inbox.cfg` 793 / 211 the write-failure latch's
   `MC_diskfull.cfg` 63 / 22 and the coordinator lock's `MC_coordinator.cfg` 51 / 16. Every count is identical to the
@@ -21,10 +20,9 @@ in [README.md](README.md); the fix ledger is in
   property (`AuthorizedEffectsOnly`, `InputLandsAtTheBoundary`, `NoRequestAfterDeadline`, `NoTurnWithoutWork`
   twice, `SettlementFollowsATurnAfterTheLanding`, `NoForeignAdoption`, three temporal refutations, and the
   four retention guards: `NoReferenceToEvictedFact`, `EvidenceIsNeverEvicted` and `OnlyOldFactsAreEvicted`
-  twice), in 3 m 18 s.
+  twice), in 2 m 4 s.
 * The wall clocks above are upper bounds, not machine-independent figures: they were measured while this
-  machine carried a load average of about 400 on 20 cores (the standing host-cleanup item, and this run's own
-  companion), and TLC is
+  machine carried a load average of about 140 on 20 cores (the standing host-cleanup item), and TLC is
   CPU-bound. The probe in A32 now records the same conditions next to its numbers for the same reason (D-188).
 * **The Kani layer was re-run on this tree** (2026-09-27; first re-run 2026-09-26, D-132): `make verify-kani`
   reports `Complete - 3 successfully verified harnesses, 0 failures, 3 total` in ~3 s with a cached build
@@ -86,6 +84,16 @@ in [README.md](README.md); the fix ledger is in
   other half of the rule: with no coordinator alive the only thing that may still hold the lock is a child in that
   window, so nothing blocks recovery. Three negative controls forget one rule each and are refuted;
   `MC_coordinator.cfg` is 51 states / 16 distinct, and no run printed a `Warning:`.
+
+* **The checked set is held against the modules' own claims** (2026-09-27, D-212): every configuration a
+  `verify-model*` recipe runs must be mapped to its module explicitly (the small configurations rode a `case`
+  default that would silently run the wrong one, and `MC_artifact.cfg` was relying on it), and every name a module
+  marks between its `invariants --`/`properties --` markers must be listed by a configuration that runs it. The
+  rule found `V2Compress`' `RequestClosesOnce` defined and listed nowhere — a claim nothing checked, which holds
+  (8,467 states / 796 distinct, measured) but which `docs/ACCEPTANCE.md`'s A20 row *already counted as covered*
+  ("all eight `V2Compress` properties"): the row was an over-claim until this decision made it true. It also found
+  `V2Grants`' four `TypeOK*` copies (one describing a field name the state no longer had) and `V2Store`'s
+  `RefusalIsSilent` alias, and closed the Makefile's implicit default.
 
 ## 1. Summary of conclusions
 

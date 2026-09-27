@@ -24,6 +24,16 @@ with the report's own sentences rather than with a generated file, so a list tha
 and every module on disk must be described there too: a new model enters the checked set with a paragraph
 about what it models.
 
+**D-212 added the two halves of one question about the checked set.** Every configuration a `verify-model*` recipe
+runs must be mapped to its module *explicitly* by that recipe (a `case` arm, a `cfg:spec` pair or a single-spec
+target): the small configurations ride a `case` whose default arm would silently run the wrong module, and
+`MC_artifact.cfg` was doing exactly that. And every name a module marks between its `invariants --` and
+`properties --` comment markers must be listed by some configuration that runs the module, because a marked claim
+that nothing lists is a claim nothing checks — `V2Compress`' `RequestClosesOnce` was one (it holds, measured, but
+nothing would have noticed if it did not). The convention the second half implies: a claim that composes others is
+listed itself and its components beside it (V2Grants' four `TypeOK*`, V2Store's `RefusalIsSilent`), so each marked
+name is visibly checked.
+
 **D-202 added the provenance the counts rest on.** The report opens with `## 0. Gate status (re-run <date> at
 `<commit>`)`, and the counts below it describe the material *as of that commit* — but nothing held the two
 against each other. Measured 2026-09-27: the heading named `f521fd4f`, a commit that predates
@@ -52,6 +62,8 @@ KANI_SRC = "verification/kani/src"
 MATERIAL = ("verification/tla", "verification/kani")
 TARGET = re.compile(r"^([A-Za-z0-9_.-]+):")
 CFG = re.compile(r"\b(MC[A-Za-z0-9_]*\.cfg)\b")
+MARKER = re.compile(r"^\s*\\\*[ \t]*-+[ \t]*(invariants|properties)\b", re.M)
+DEFN = re.compile(r"^([A-Z][A-Za-z0-9_]*)\s*==", re.M)
 SPEC = re.compile(r"\b(V2[A-Za-z0-9_]*\.tla)\b")
 PATH_ATTR = re.compile(r'#\[path\s*=\s*"([^"]+)"\]')
 RERUN = re.compile(r"Gate status \(re-run (\d{4}-\d{2}-\d{2}) at `([0-9a-f]{7,40})`\)")
@@ -210,6 +222,61 @@ def main(argv) -> int:
             else:
                 notes.append(f"the re-run heading names `{commit}`, at or after the newest change to the "
                              f"verification material (`{newest[:12]}`)")
+    # (D-212) Two halves of one question: is every configuration mapped to its module *explicitly*, and is every
+    # name a module marks as an invariant or a property listed by a configuration that runs it?
+    arms = {}
+    for name, body in recipes.items():
+        if not name.startswith("verify-model"):
+            continue
+        for group, spec in re.findall(r"([A-Za-z0-9_.|*]+)\)\s*echo\s+(V2[A-Za-z0-9_]*)\.tla", body):
+            for cfg in group.split("|"):
+                if cfg != "*":
+                    arms[cfg] = spec
+        for cfg, spec in re.findall(r"(MC[A-Za-z0-9_]*\.cfg):(V2[A-Za-z0-9_]*)\.tla", body):
+            arms[cfg] = spec
+        specs = set(re.findall(r"\b(V2[A-Za-z0-9_]*)\.tla", body))
+        if len(specs) == 1:
+            for cfg in re.findall(r"-config ([A-Za-z0-9_.]+)", body):
+                arms.setdefault(cfg, specs.pop())
+    for name, body in recipes.items():
+        if not name.startswith("verify-model"):
+            continue
+        for cfg in re.findall(r"for cfg in ([^;]+);", body.replace("$$cfg", "")) or []:
+            pass
+        driven = re.findall(r"for cfg in ([^;]+);", body) or re.findall(r"-config ([A-Za-z0-9_.]+)", body)
+        for entry in driven:
+            for cfg in entry.split():
+                if cfg.endswith(".cfg") and cfg not in arms:
+                    findings.append(f"`{name}` runs {cfg} without an explicit arm naming its module: a new "
+                                    "configuration would fall through the `case` default and run the wrong one")
+    checked = {}
+    for cfg in on_disk_cfgs:
+        spec = arms.get(cfg)
+        if not spec:
+            continue
+        names = set()
+        for key in ("INVARIANTS", "PROPERTIES"):
+            block = re.search(rf"^{key}[ \t]*\n((?:[ \t]+\S[^\n]*\n)+)",
+                              (REPO / TLA / cfg).read_text(encoding="utf-8"), re.M)
+            if block:
+                names |= {line.strip() for line in block.group(1).split("\n") if line.strip()}
+        checked.setdefault(spec, set()).update(names)
+    for spec in on_disk_specs:
+        module = spec.removesuffix(".tla")   # the cfgs name modules, the directory lists files
+        text = (REPO / TLA / spec).read_text(encoding="utf-8")
+        marks = list(MARKER.finditer(text))
+        if not marks:
+            findings.append(f"{TLA}/{spec} marks no invariants or properties section, so the audit cannot tell "
+                            "what it claims")
+            continue
+        claimed = set()
+        for index, mark in enumerate(marks):
+            end = marks[index + 1].start() if index + 1 < len(marks) else len(text)
+            claimed |= set(DEFN.findall(text[mark.end():end]))
+        missing = sorted(claimed - checked.get(module, set()))
+        if missing:
+            findings.append(f"{TLA}/{spec} marks {', '.join(missing)} as its invariants or properties, and no "
+                            "configuration that runs it lists them: a claim nothing checks")
     # This script's own docstring states counts too, and nothing looked at them: the
     # sentence in it said "forty" while the directory held forty-three (D-208).
     stated = re.search(r"holds ([a-z-]+) TLA\+ modules and ([a-z-]+) configurations", __doc__ or "")

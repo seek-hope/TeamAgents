@@ -233,17 +233,14 @@ Next ==
 
 Spec == Init /\ [][Next]_monVars
 
-\* ------------------------------------------------------------------ properties --
+\* ------------------------------------------------------------------ invariants --
 TypeOKGrants == grants \in [GrantIds -> Grant]
 TypeOKRevision == revision \in Nat
 TypeOKOffered ==
   offered \in [Instances -> SUBSET (BaseTools \union {ToolOf(a) : a \in Actions})]
-TypeOKOps == ops \in [Ops -> [stamp : Nat, effect : BOOLEAN]]
-TypeOK ==
-  /\ grants \in [GrantIds -> Grant]
-  /\ revision \in Nat
-  /\ offered \in [Instances -> SUBSET (BaseTools \union {ToolOf(a) : a \in Actions})]
-  /\ ops \in [Ops -> [stamp : Nat, effects : 0..2]]
+TypeOKOps == ops \in [Ops -> [stamp : Nat, effects : 0..2]]
+TypeOK == TypeOKGrants /\ TypeOKRevision /\ TypeOKOffered /\ TypeOKOps
+\* ------------------------------------------------------------------ properties --
 
 \* Every effect is produced by a dispatch that held the authority at that very
 \* step: a live covering grant and a still-current stamped revision (A03/A04).
