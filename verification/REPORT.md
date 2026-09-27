@@ -134,7 +134,7 @@ in [README.md](README.md); the fix ledger is in
 - **Bounded state spaces**: every enumeration runs on an explicitly bounded configuration (finite instances,
   tasks, requests and log lengths) and the frontier is recorded in the README. The task product is the concrete
   example (D-218): 2 tasks with one instance and one goal is exhaustive (612,802 states), while 2 tasks with 2
-  instances and 2 goals did not converge in five minutes (34.2M generated / 7.9M distinct, queue still growing),
+  instances and 2 goals did not converge in five minutes (33.6M generated / 7.9M distinct, queue still growing),
   and the symmetry the README named as the upgrade cut that by only about 1.6× — so it stays a *search* target
   (`make verify-model-sim SIM_CONFIG=MC_task.cfg`), not a proof.
 - **Code outside the model**: provider adapters, MCP, Skills, TUI rendering and hit-testing, shell/bubblewrap

@@ -53,11 +53,12 @@ rewriting the `budget_goal` pick was behaviour-preserving for a single task.
 said a second task "needs symmetry or a stronger abstraction". Symmetry was tried with a sound group — the
 block-preserving permutations of `Tasks \cup Instances \cup Goals`, which TLC accepts only when those constants
 are *model values* (a string-valued constant is refused: `Symmetry function must have model values as domain and
-range`) — and it cut the distinct count by only about 1.6×: 2 tasks / 2 instances / 2 goals reached 34.2M
-generated / 7.9M distinct after five minutes with the queue still growing without it, and 31.5M / 5.0M after
-five minutes with it. Most states are not in general position under the group, so the group's size is not the
-factor a reader might expect. Two instances with two tasks (one goal) and two goals with two tasks (one
-instance) each ran past four minutes as well. That configuration therefore stays a *search* target
+range`; the group was added to a *copy* of the module, since no committed configuration carries one) — and it cut
+the distinct count by only about 1.6×: 2 tasks / 2 instances / 2 goals reached 33.6M generated / 7.9M distinct
+after five minutes with the queue still growing without it, and 31.5M / 5.0M after five minutes with it. Most
+states are not in general position under the group, so the group's size is not the factor a reader might expect.
+Two instances with two tasks (one goal) and two goals with two tasks (one instance) each ran past five minutes as
+well. That configuration therefore stays a *search* target
 (`make verify-model-sim SIM_CONFIG=MC_task.cfg`: 20,000 behaviors, 7,663,011 states, no invariant violated) and
 the upgrade it needs is a stronger abstraction. In the same pass the `budget_goal` pick became exact — the
 *oldest* open task by delegation order, which is what the code's rowid order gives, instead of "some open task"

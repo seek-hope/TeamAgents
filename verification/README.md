@@ -530,12 +530,13 @@ The proven `page_span(total, offset, limit) = min(limit, total - offset)` is the
   `MC_task_two.cfg` adds the second task with one instance and one goal — 612,802 states / 56,074 distinct in 8 s
   on 2026-09-27 — which is what makes the two dependency invariants non-vacuous, since a single task can only
   declare the empty prerequisite. The **whole product** (2 tasks / 2 instances / 2 goals, D-218) stays beyond a
-  bounded attempt: measured 2026-09-27 at 34.2M states generated / 7.9M distinct after five minutes with the
+  bounded attempt: measured 2026-09-27 at 33.6M states generated / 7.9M distinct after five minutes with the
   queue still growing, and the symmetry the report named is *not* enough — a sound block-preserving group over the
-  three constant sets (declared as model values, which TLC requires) cut the distinct count by only about 1.6×
-  (31.5M / 5.0M after five minutes, queue still growing), because most states are not in general position under
-  the group; two tasks with two instances (one goal) and with two goals (one instance) each also ran past four
-  minutes. That configuration needs a stronger abstraction, not symmetry. The simulation supplement searches it
+  three constant sets (declared as model values, which TLC requires; it was added to a copy of this module, since
+  a configuration cannot carry the definition) cut the distinct count by only about 1.6× (31.5M / 5.0M after five
+  minutes, queue still growing), because most states are not in general position under the group; two tasks with
+  two instances (one goal) and with two goals (one instance) each also ran past five minutes. That configuration
+  needs a stronger abstraction, not symmetry. The simulation supplement searches it
   instead — `make verify-model-sim SIM_CONFIG=MC_task.cfg`: 20,000 behaviors of depth 100, **7,663,011 states in
   2 m 13 s** on 2026-09-27 with no invariant violated — which is a search and not a proof, and it checks no
   temporal property.
