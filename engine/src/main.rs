@@ -389,15 +389,27 @@ fn parse_args() -> Args {
     args
 }
 
-fn find_tui_binary() -> Option<PathBuf> {
+/// Where the TUI binary is, or why it is not there. `Err` carries the message the user sees: an explicit
+/// `TEAMAGENTS_TUI` that names nothing is refused with *that* path (D-231) instead of the raw spawn error the
+/// first version reported — `cannot start the TUI: No such file or directory (os error 2)`, which named neither
+/// the variable nor the path, and was worse than the help a user gets when the variable is unset.
+fn find_tui_binary() -> Result<PathBuf, String> {
     if let Some(path) = std::env::var_os("TEAMAGENTS_TUI").filter(|v| !v.is_empty()) {
-        return Some(PathBuf::from(path));
+        let path = PathBuf::from(path);
+        if !path.is_file() {
+            return Err(format!(
+                "TEAMAGENTS_TUI names {}, which is not a file: point it at the teamagents-tui binary, or unset it \
+                 so the CLI looks beside itself",
+                path.display()
+            ));
+        }
+        return Ok(path);
     }
     let exe = std::env::current_exe().ok();
     if let Some(dir) = exe.as_ref().and_then(|p| p.parent()) {
         let sibling = dir.join("teamagents-tui");
-        if sibling.exists() {
-            return Some(sibling);
+        if sibling.is_file() {
+            return Ok(sibling);
         }
     }
     // never search the caller's cwd: picking up a binary from an arbitrary
@@ -409,12 +421,18 @@ fn find_tui_binary() -> Option<PathBuf> {
             root.join("target/release/teamagents-tui"),
             root.join("target/debug/teamagents-tui"),
         ] {
-            if candidate.exists() {
-                return Some(candidate);
+            if candidate.is_file() {
+                return Ok(candidate);
             }
         }
     }
-    tools::which("teamagents-tui")
+    match tools::which("teamagents-tui") {
+        Some(path) => Ok(path),
+        None => Err("teamagents-tui not found. Install teamagents and teamagents-tui from a release into the same \
+                     directory, or point TEAMAGENTS_TUI at the binary.\nFrom source: cargo build --manifest-path \
+                     tui/Cargo.toml; headless use: teamagents exec."
+            .to_string()),
+    }
 }
 
 fn tui_search_roots(exe: Option<&std::path::Path>) -> Vec<PathBuf> {
@@ -425,9 +443,12 @@ fn tui_search_roots(exe: Option<&std::path::Path>) -> Vec<PathBuf> {
 /// client of its socket (§9). The daemon is started detached when no socket is
 /// live, so quitting the TUI never stops the session.
 fn run_tui(args: &Args) -> i32 {
-    let Some(binary) = find_tui_binary() else {
-        eprintln!("teamagents-tui not found. Install teamagents and teamagents-tui from a release into the same directory, or point TEAMAGENTS_TUI at the binary.\nFrom source: cargo build --manifest-path tui/Cargo.toml; headless use: teamagents exec.");
-        return 1;
+    let binary = match find_tui_binary() {
+        Ok(binary) => binary,
+        Err(message) => {
+            eprintln!("{message}");
+            return 1;
+        }
     };
     let state_root = args.state_root.clone().map(PathBuf::from).unwrap_or_else(teamagents_engine::v2_root);
     let socket = match ensure_daemon(DaemonRequest {
@@ -445,7 +466,7 @@ fn run_tui(args: &Args) -> i32 {
             return 1;
         }
     };
-    let mut command = std::process::Command::new(binary);
+    let mut command = std::process::Command::new(&binary);
     command.arg("--daemon").arg(&socket);
     command.arg("--state-root").arg(&state_root);
     // No --cwd here: the workspace belongs to the session the daemon owns, and
@@ -456,7 +477,8 @@ fn run_tui(args: &Args) -> i32 {
     match command.status() {
         Ok(status) => status.code().unwrap_or(1),
         Err(e) => {
-            eprintln!("cannot start the TUI: {e}");
+            // the path is the one thing the OS error cannot tell the user (D-231)
+            eprintln!("cannot start the TUI at {}: {e}", binary.display());
             1
         }
     }

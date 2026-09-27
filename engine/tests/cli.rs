@@ -179,6 +179,29 @@ fn a_directory_where_the_database_or_socket_belongs_is_refused_with_the_shape_na
     assert!(!text.contains("start teamagents daemon first"), "the old advice pointed at the daemon: {text}");
 }
 
+/// D-231: `TEAMAGENTS_TUI` naming a file that is not there is refused with the variable and the path in the
+/// message. Measured 2026-09-27: the value went straight to `Command::new` and the answer was the OS's
+/// `cannot start the TUI: No such file or directory (os error 2)` — worse than the help a user gets when the
+/// variable is unset, because it named neither the variable nor the path it tried.
+#[test]
+fn a_teamagents_tui_that_names_nothing_is_refused_with_the_path() {
+    let home = Scratch::new("tuipath");
+    let missing = home.join("no-such-tui");
+    let output = Command::new(env!("CARGO_BIN_EXE_teamagents"))
+        .env("TEAMAGENTS_TUI", &missing)
+        .env("XDG_STATE_HOME", home.join("state"))
+        .env("XDG_CONFIG_HOME", home.join("config"))
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("run cli");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("TEAMAGENTS_TUI names"), "{stderr}");
+    assert!(stderr.contains(&missing.display().to_string()), "the message names the path: {stderr}");
+    // and nothing was started: no daemon, no state root written
+    assert!(!home.join("state/teamagents").exists(), "the refusal happens before anything starts");
+}
+
 /// D-230: every rejected argument says *why*. Measured 2026-09-27: `teamagents --nonsense` and
 /// `teamagents --timeout abc hi` printed the whole help and never the offending word, so the user had to diff
 /// their command against the usage; and `--state-root ""` (the unset-variable trap) was accepted and silently

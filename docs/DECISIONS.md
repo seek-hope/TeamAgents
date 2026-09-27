@@ -18,6 +18,32 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 
+## D-231 The TUI's own path was the one thing its error could not name (2026-09-27)
+
+`teamagents` starts the TUI by exec'ing `teamagents-tui`, and when the binary is missing the CLI says exactly
+what to do — install both from a release, point `TEAMAGENTS_TUI` at it, or build it (`cargo build --manifest-path
+tui/Cargo.toml`). Setting `TEAMAGENTS_TUI` to a path that is not there produced a **worse** answer than setting
+nothing: measured 2026-09-27, the value went straight to `Command::new` and the failure was the OS's
+`cannot start the TUI: No such file or directory (os error 2)`, naming neither the variable nor the path — so a
+typo was invisible in the one message that had the user's own value to report.
+
+**Fixed**: `find_tui_binary` returns the message rather than an `Option`, and refuses a `TEAMAGENTS_TUI` that
+names no file with the variable *and* the path in it; the search branches now use `is_file` rather than `exists`
+(a directory named `teamagents-tui` used to reach the same opaque spawn failure); and the spawn's own error names
+the path (`cannot start the TUI at <path>: …`) for what only the OS can report — a permission or format failure.
+The empty-variable case is unchanged (an empty `TEAMAGENTS_TUI` is treated as unset, which is the shell's own
+convention).
+
+**Measured**: `TEAMAGENTS_TUI=/nonexistent/tui teamagents` exits 1 with
+`TEAMAGENTS_TUI names /nonexistent/tui, which is not a file: point it at the teamagents-tui binary, or unset it
+so the CLI looks beside itself`, and the test asserts that no state root was written — the refusal happens before
+a daemon or a TUI starts. The two neighbouring messages were already good and are unchanged: the "not found" help
+and the TUI's own "needs a real terminal; for scripts use `teamagents exec`".
+
+Ceiling: the check is `is_file`, so a path that exists but cannot be executed still fails at the spawn — with the
+path now in the message; and the search still never looks in the caller's cwd (P2-7's rule: a binary from an
+arbitrary project directory is local code execution).
+
 ## D-230 A rejected argument never said which one (2026-09-27)
 
 The parser refused an unknown flag, a flag without a value, a repeated flag and a bad number by printing the
