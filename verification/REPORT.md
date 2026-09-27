@@ -5,7 +5,7 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
-## 0. Gate status (re-run 2026-09-27 at `546d4c8b`)
+## 0. Gate status (re-run 2026-09-27 at `6363b312`)
 
 * `make verify-model-all` was re-run on this tree: all **19** configurations report `No error has been found`,
   in 7 m 21 s (the newest four are the retention rule, D-192, the task model's second task, D-218, the
