@@ -20,6 +20,83 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-310 Task 20 is verified: the ninth audited row, and the wait tool's other two condition kinds (2026-09-29)
+
+The product's entry is D-309. This entry is the operator's verification and the phase's measured numbers.
+
+**What the audit found this time.** A23 is "a result arrives before the wait is registered", and the `wait`
+tool's conditions come in four kinds; only two of them had a test. The two new tests drive the other two
+**at registration**: an `envelope` whose state is already `APPLIED`, and an `operation` whose status is already
+terminal, must both evaluate to `Satisfied` in the same transaction that registers the wait — which is A23's own
+claim, and the branch a result arriving early depends on. The delivery is inside `core/src/v2/control.rs`'s
+`#[cfg(test)]` module; no product code changed, and no verification material was touched.
+
+**Verified.** The operator reproduced **both** controls independently: reverting the envelope branch's
+`Some("APPLIED") => ConditionState::Satisfied` to `Pending` fails the first test, and making the operation
+branch never satisfied fails the second — each with `left: "PENDING"`, `right: "SATISFIED"`. Restoring the file
+byte-identically (sha256 `3ac6e946…`, the hash the entry quotes after its own `make fmt` touched only its new
+tests) puts both back to `ok`. `env -u DEEPSEEK_API_KEY make check` `rc=0` (25 green targets) and `make pty` ok,
+and the goal settled only after its own required check passed — the seventeenth of nineteen machine-gated
+deliveries.
+
+**The audit's yield, nine rows in: nine holes.** A33, A18, A13, A19, A15, A25, A31, A22 and A23 — five coverage
+holes, three claim holes and one product defect. The last four rows have all been in the wait/runner machinery,
+which is where the matrix's densest claims live.
+
+**The phase's measured numbers (this commit).** **Nineteen deliveries**, **248,263,952 tokens over 810 model
+requests**, the suites at `core 113 / engine 286 / tui 36`, and an operator cost of twenty verification rounds
+and three resumes. Four of the nineteen defects came from the operator's supervision or its probes; the last ten
+deliveries all came from the claims audit.
+
+**Next card**: continue the audit at the next row. The operator verifies each delivery with its own control, the
+gate and the `make pty` smoke, and states measured numbers with their method.
+
+**Ceiling**: the two tests drive the registration evaluation for those two kinds; the other two kinds and the
+*cycle* half of A23's neighbourhood are covered by their own tests and by `V2Wait`, and nothing here re-checks
+them. The remaining twenty-seven rows are still prose-first.
+
+## D-309 Two of the `wait` tool's four condition kinds had no test; A23's registration rule now covers them (2026-09-29)
+
+**Triage.** D-308 left the row-by-row mandate (A22's ALL mode was that turn's find). Reading the *wait* surface
+for the next row, I checked the tool the model actually sees: `core/src/kernel/types.rs`'s `wait` schema offers
+four condition kinds — `message`, `task`, `operation`, `envelope`. Measured: `grep -rn '"kind": "operation"'` and
+`'"kind": "envelope"'` over `core/src`, `engine/src` and `engine/tests` find **no test at all** (the `message`
+kind has 19 occurrences, `task` 7). So two of the four advertised kinds were unexercised, and with them A23's
+registration rule — "a result that arrived first is never lost" (DESIGN §5.3: registering a wait and checking
+"has the result already arrived" are one transaction) — which the cited
+`control::wait_for_an_arrived_result_is_satisfied_at_registration` drives for a `message` only.
+
+**What the tree does.** `condition_state` (`core/src/v2/control.rs`) implements all four kinds: an `envelope`
+condition is `Satisfied` when that envelope is `APPLIED`, `Pending` when `ACCEPTED`, `Dead` otherwise; an
+`operation` condition is `Satisfied` when the receipt is terminal. Both are pure reads of facts the session
+already holds, so a wait naming a landed envelope or a settled operation is answered where it is registered.
+
+**The change (coverage, not behaviour).** Two tests in `core/src/v2/control.rs`:
+`an_envelope_condition_can_be_satisfied_at_registration` (send a message, drain it, take the APPLIED envelope's
+id, register an ANY wait on `{kind: "envelope", envelope_id}` → `SATISFIED` at registration, phase still
+`READY`) and `an_operation_condition_can_be_satisfied_at_registration` (dispatch a shell intent, complete the
+operation, then register an ANY wait on `{kind: "operation", operation_id}` → the same). A23's row now names both
+and the measured gap. **No product code changed.**
+
+**Evidence** (2026-09-29; the tree is `6dc9b247` plus this uncommitted diff).
+
+| Command | Result |
+|---|---|
+| the measurement: `grep -rn '"kind": "operation"'` / `'"kind": "envelope"'` over the sources and tests | **no matches** before these tests (message 19, task 7) |
+| `cargo test --offline --manifest-path core/Cargo.toml --lib can_be_satisfied_at_registration` | **ok** — 2/2 |
+| pre-fix control (a): the envelope branch's `Some("APPLIED") => ConditionState::Satisfied` reverted to `Pending` | **FAILED**: `an applied envelope satisfies at registration`, `left: "PENDING"`, `right: "SATISFIED"` |
+| pre-fix control (b): the operation branch's `Some(status) if is_terminal_op(status)` made never satisfied | **FAILED**: `a terminal operation satisfies at registration`, `left: "PENDING"`, `right: "SATISFIED"` |
+| both lines restored byte-identically (`diff` clean, `sha256sum` `8208c8bd…` at the restore; rustfmt reformatted the two new tests afterwards and changed nothing else, so the file now hashes `3ac6e946…`) | **ok** |
+| `cargo test --offline --manifest-path core/Cargo.toml --lib` | **ok** — 104/104 |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `python3 review/test_counts.py --write` | `core: 111 -> 113` (the two new tests) |
+
+**Ceiling.** The two kinds are now driven at *registration*; their *sweep* paths (an envelope applied after the
+wait is parked, an operation settling later) still run through the same `condition_state` but are not separately
+tested, and the `timer` and `message`-sender-death interactions are A22's. `condition_state` is a read-only
+function over the session's tables, so a Kani proof would need symbolic SQL rows — the D-295 wall. The model is
+unchanged, so no §0 pin moves; live probes were not re-run and `make pty` and the probe sets were not run.
+
 ## D-308 Task 19 is verified: the eighth audited row — the wait tool's other mode (2026-09-29)
 
 The product's entry is D-307. This entry is the operator's verification and the phase's measured numbers.

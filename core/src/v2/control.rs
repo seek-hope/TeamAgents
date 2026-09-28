@@ -5402,6 +5402,88 @@ mod tests {
         cleanup(&path);
     }
 
+    /// A23's registration rule for the condition kinds nothing drove. The `wait` tool advertises four
+    /// (`message`, `task`, `operation`, `envelope`); measured, `grep -rn '"kind": "operation"|"kind": "envelope"'`
+    /// over the tests and sources found none, so two of the four were unexercised even though the rule is
+    /// kind-independent (DESIGN §5.3: registering a wait and checking "has the result already arrived" are one
+    /// transaction). The applied envelope gets the same assertion the message test makes.
+    #[test]
+    fn an_envelope_condition_can_be_satisfied_at_registration() {
+        let (mut ctl, path) = control("wait-late-envelope");
+        create_instance(&mut ctl, "i1");
+        create_instance(&mut ctl, "i2");
+        grant_message(&mut ctl, "i2", "i1", "a");
+        ctl.submit(
+            cmd("sm-env", "send_message", json!({"recipient": "i1", "text": "done"})),
+            Identity::Instance("i2".into()),
+        )
+        .expect("send");
+        drain(&mut ctl, "i1");
+        let envelope: String = ctl
+            .connection()
+            .query_row(
+                "SELECT id FROM envelopes WHERE recipient = 'i1' AND sender = 'i2' AND kind = 'message' \
+                 AND state = 'APPLIED'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("the applied envelope");
+        let revision: i64 =
+            ctl.connection().query_row("SELECT revision FROM instances WHERE id = 'i1'", [], |row| row.get(0)).unwrap();
+        let wait_id = open_wait(
+            &mut ctl,
+            "env",
+            "i1",
+            revision,
+            json!({"mode": "ANY", "conditions": [{"kind": "envelope", "envelope_id": envelope}]}),
+        );
+        assert_eq!(wait_state(&ctl, &wait_id), "SATISFIED", "an applied envelope satisfies at registration");
+        assert_eq!(phase_of(&ctl, "i1"), "READY", "the instance never parked (A23)");
+        cleanup(&path);
+    }
+
+    /// The same rule for the *operation* condition: a terminal receipt is a fact like any other, so a wait that
+    /// names it is answered where it is registered rather than parking the instance until a sweep.
+    #[test]
+    fn an_operation_condition_can_be_satisfied_at_registration() {
+        let (mut ctl, path) = control("wait-late-operation");
+        create_instance(&mut ctl, "i1");
+        let request = begin_and_complete(&mut ctl, "o", "i1", 0);
+        ctl.submit(
+            cmd(
+                "imp-o",
+                "import_response",
+                json!({"request_id": request, "decision_id": "d-run",
+                       "entry": {"role": "assistant", "content": "run"},
+                       "intents": [{"index": 0, "call_id": "call_0", "name": "shell", "args": {"command": "echo a"}}]}),
+            ),
+            Identity::System,
+        )
+        .expect("import");
+        ctl.submit(
+            cmd(
+                "co-op",
+                "complete_operation",
+                json!({"operation_id": "d-run:0", "status": "SUCCEEDED", "receipt": {"output": "ok"}}),
+            ),
+            Identity::System,
+        )
+        .expect("complete");
+        assert_eq!(phase_of(&ctl, "i1"), "READY");
+        let revision: i64 =
+            ctl.connection().query_row("SELECT revision FROM instances WHERE id = 'i1'", [], |row| row.get(0)).unwrap();
+        let wait_id = open_wait(
+            &mut ctl,
+            "op",
+            "i1",
+            revision,
+            json!({"mode": "ANY", "conditions": [{"kind": "operation", "operation_id": "d-run:0"}]}),
+        );
+        assert_eq!(wait_state(&ctl, &wait_id), "SATISFIED", "a terminal operation satisfies at registration");
+        assert_eq!(phase_of(&ctl, "i1"), "READY", "the instance never parked (A23)");
+        cleanup(&path);
+    }
+
     #[test]
     fn pending_wait_wakes_in_the_same_transaction_as_the_fact() {
         let (mut ctl, path) = control("wait-wake");
