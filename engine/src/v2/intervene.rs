@@ -116,9 +116,22 @@ pub fn execute(options: &InterventionOptions) -> Result<Json, (i32, String)> {
             let rows = instances(&mut client)?;
             let row = resolve_prefix(&rows, "id", id, "instance", "teamagents instances")?;
             let resolved = row["id"].as_str().unwrap_or_default().to_string();
+            // D-277: a user action is one logical operation per *invocation*, so its command id must be unique
+            // per invocation. The control plane is idempotent by command id — that is exactly what the
+            // bootstrap's own fixed ids buy (and they keep it) — so one fixed id per (instance, lifecycle) made
+            // the *second* `resume` return the first one's recorded reply and print it as a fresh success
+            // (`i-leader: ACTIVE / READY`) while the instance stayed PARKED: the lever `exec` itself tells a
+            // stuck user to run, lying the second time it is used (measured 2026-09-28; the TUI's panel already
+            // sends these with a fresh id, main.rs). `pause` has the same shape — pause → resume → pause has to
+            // really pause. `TERMINATED` keeps its (instance, action) id: termination is final, so a repeat
+            // cannot have a different effect and its recorded reply stays true.
+            let command_id = match lifecycle {
+                "TERMINATED" => format!("lifecycle-{resolved}-{lifecycle}"),
+                _ => format!("lifecycle-{resolved}-{lifecycle}-{}", uuid::Uuid::new_v4()),
+            };
             let result = client
                 .command(
-                    &format!("lifecycle-{resolved}-{lifecycle}"),
+                    &command_id,
                     "set_lifecycle",
                     json!({"instance_id": resolved, "lifecycle": lifecycle,
                            "reason": format!("{lifecycle} by the user (teamagents instances)")}),

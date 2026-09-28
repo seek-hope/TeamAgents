@@ -699,6 +699,94 @@ async fn a_settlement_is_read_against_the_runs_own_goal_not_the_sessions_active_
     handle.shutdown().await.expect("shutdown");
 }
 
+/// D-277: `instances resume` is a user *action*, and a user action is one logical operation per invocation. Its
+/// command id was fixed per (instance, lifecycle) — `lifecycle-<id>-<lifecycle>` — and the control plane dedups
+/// by command id, so the *second* resume returned the first one's recorded reply and printed it as a fresh
+/// success (`i-leader: ACTIVE / READY`) while the instance stayed parked: the lever `exec` itself tells a stuck
+/// user to run (`instances resume --id i-leader`), lying the second time it is used (measured 2026-09-28, D-276's
+/// phase, on a session whose leader had parked twice).
+///
+/// The state between the two invocations is set by the *test's* own fresh `set_lifecycle` command, never by the
+/// lever under test: a park is cleared by a resume, but the resumed turn re-runs its interrupted request and parks
+/// again within milliseconds, so the state right after a resume is not a stable observation. Driving the real
+/// binary against a real daemon this way is deterministic, needs no model call, and asserts the *effect* of the
+/// second invocation rather than the sentence it prints.
+#[tokio::test]
+async fn a_second_resume_is_a_new_operation_not_the_first_ones_recorded_reply() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let (root, handle) = boot("exec-resume-twice", HashMap::new()).await;
+    let state = root.dir.join("state");
+    let socket = state.join("daemon.sock");
+    // the real binary, the user's own lever, off the runtime's thread (the daemon serves it on this runtime)
+    let lever = |verb: &str| {
+        let state = state.clone();
+        let verb = verb.to_string();
+        tokio::task::spawn_blocking(move || {
+            let output = std::process::Command::new(env!("CARGO_BIN_EXE_teamagents"))
+                .args(["instances", &verb, "--id", "i-leader", "--state-root"])
+                .arg(&state)
+                .output()
+                .expect("run the instances lever");
+            (output.status.code(), String::from_utf8_lossy(&output.stdout).into_owned())
+        })
+    };
+    async fn leader_lifecycle(socket: &Path) -> String {
+        let mut client = Client::connect(socket).await;
+        let checkpoint = client.call("checkpoint", json!({})).await;
+        checkpoint["result"]["snapshot"]["instances"]
+            .as_array()
+            .and_then(|rows| rows.iter().find(|row| row["id"] == json!("i-leader")))
+            .and_then(|row| row["lifecycle"].as_str())
+            .unwrap_or("")
+            .to_string()
+    }
+    let mut setup = Client::connect(&socket).await;
+    async fn set(client: &mut Client, lifecycle: &str) -> Json {
+        let command_id = format!("setup-{lifecycle}-{}", uuid::Uuid::new_v4());
+        let params = json!({"instance_id": "i-leader", "lifecycle": lifecycle, "reason": "test setup"});
+        client.command(&command_id, "set_lifecycle", params).await
+    }
+
+    // `resume`: the same instance is resumed twice, with the lever's own state read in between
+    let paused = set(&mut setup, "PAUSED").await;
+    assert_eq!(paused["ok"], json!(true), "{paused}");
+    assert_eq!(leader_lifecycle(&socket).await, "PAUSED", "the setup transition is carried out");
+
+    let (code, printed) = lever("resume").await.expect("resume task");
+    assert_eq!(code, Some(0), "{printed}");
+    assert!(printed.contains("i-leader: ACTIVE"), "{printed}");
+    assert_eq!(leader_lifecycle(&socket).await, "ACTIVE", "the first resume is carried out");
+
+    let paused = set(&mut setup, "PAUSED").await;
+    assert_eq!(paused["ok"], json!(true), "{paused}");
+    assert_eq!(leader_lifecycle(&socket).await, "PAUSED", "the instance is not ACTIVE again");
+    let (code, printed) = lever("resume").await.expect("resume task");
+    assert_eq!(code, Some(0), "{printed}");
+    assert!(printed.contains("i-leader: ACTIVE"), "the sentence a user reads: {printed}");
+    assert_eq!(
+        leader_lifecycle(&socket).await,
+        "ACTIVE",
+        "the second resume must be a new command, not the first one's recorded reply ({printed})"
+    );
+
+    // `pause` is the same shape: pause → resume → pause has to really pause
+    let (code, printed) = lever("pause").await.expect("pause task");
+    assert_eq!(code, Some(0), "{printed}");
+    assert_eq!(leader_lifecycle(&socket).await, "PAUSED", "the first pause is carried out ({printed})");
+    let active = set(&mut setup, "ACTIVE").await;
+    assert_eq!(active["ok"], json!(true), "{active}");
+    assert_eq!(leader_lifecycle(&socket).await, "ACTIVE", "the instance runs again");
+    let (code, printed) = lever("pause").await.expect("pause task");
+    assert_eq!(code, Some(0), "{printed}");
+    assert!(printed.contains("i-leader: PAUSED"), "the sentence a user reads: {printed}");
+    assert_eq!(
+        leader_lifecycle(&socket).await,
+        "PAUSED",
+        "the second pause must be a new command, not the first one's recorded reply ({printed})"
+    );
+    handle.shutdown().await.expect("shutdown");
+}
+
 /// A goal the *runtime* blocks (its required checks never pass) is not a success
 /// either: `exec` must report it and exit non-zero. The runtime's own block note is
 /// what the instance stops on — an assistant-shaped one was exactly what a naive

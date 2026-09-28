@@ -20,6 +20,117 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-278 Task 4 is verified by the operator, and its run found the next two work items: an invalid wire at the repair boundary, and a gate that is not deterministic (2026-09-28)
+
+The phase's third work item was the lifecycle lever D-276 assigned (the product's entry is D-277). This entry is
+the operator's record of the verification, of the two defects that task's own run exposed, and of the cards that
+follow.
+
+**Verified.** The operator ran, on the tree the run left: the pre-fix control (the new test against `HEAD`'s
+`engine/src/v2/intervene.rs` **fails** `left: "PAUSED", right: "ACTIVE"` in 0.02 s while the client printed
+`i-leader: ACTIVE / READY` — the recorded reply of the first resume presented as a fresh success — and the test
+passes in 0.08 s after the file is restored byte-identically, `diff -q` clean), `env -u DEEPSEEK_API_KEY make
+check` `rc=0`, and `make pty` ok.
+
+**Defect A — the repair boundary can build a wire a strict service refuses.** Task 4's run ended with its
+`finish` refused by the required check (`make check` exit 2) and the repair turn **dead**: the repair request
+failed permanently with
+`chat API 400: Messages with role 'tool' must be a response to a preceding message with 'tool_calls'` and the
+instance parked, so the work could never be settled by the runtime. The product's own change (a command id in
+`intervene.rs`) cannot produce that body; the shape is in the request *view* the runtime assembles at the
+completion boundary — the event log shows `response_imported` (intents 0, `COMPLETION_PENDING`),
+`check_round_registered` round 1, `operation_completed` FAILED, `completion_repair`, then the repair
+`request_began` failing at `attempt_recorded`/`request_failed`. A tool result whose assistant `tool_calls`
+message is not in the same view is exactly what the strict gateway names, so the candidates are the runtime's
+own synthesis of tool answers (`answer_dangling_calls`), the completion/repair path that closes a turn, and the
+masking/readback route that replaces old outputs. It is the next card, and it matters beyond this session: the
+runtime tells a real model its turn is unfinished and then cannot send the message that says so.
+
+**Defect B — `make check` is not deterministic under load.** In one day of gate runs three results came out of
+the same tree: `v2_supervisor::a_user_opened_goal_lets_a_later_delegation_charge_somewhere` **FAILED** inside the
+runtime's own required check (`left: Some(2), right: Some(1)`, "the worker runs the second instruction's task"),
+`hooks::tests::hooks_receive_the_event_name_and_json_on_stdin` **FAILED** inside the product's own gate run with
+`cannot start …/hook.sh: Text file busy (os error 26)`, and the whole gate then went green three times
+(`env -u DEEPSEEK_API_KEY make check` rc=0 twice, once with the credential exported), with the supervisor test
+passing 3/3 standalone in 0.11 s each. Both failures are timing/concurrency shapes (a spawned script a sibling
+thread is still writing; a counted request the test reads before the runtime has settled it), and both are the
+kind of test this repository otherwise insists on. It is a *phase-critical* defect: `make check` is the required
+check, so a flake refuses an honest settlement — which is exactly what happened to task 4 — and a red gate that
+is sometimes wrong is worse than no gate for a loop that is supposed to trust it.
+
+**The phase's own state, recorded.** Task 4's goal (`goal-task4`, 12M ceiling) is still `ACTIVE` at 9.65M with
+the instance parked on the permanent model error above; the delivery was therefore verified by the operator and
+not by the runtime's own check, exactly as D-276 recorded for task 3 — the second time that has happened, so the
+operator's verification is now the phase's normal path when a run ends on a defect it found rather than on its
+own settlement.
+
+**Ceiling**: both defects are *named and measured*, not fixed — the operator has the failing message, the event
+sequence and the standalone controls, but neither has been reproduced deterministically in a test yet, which is
+the first half of each fix. The flakiness may also be an artefact of this machine's load (the phase itself runs
+cargo builds beside the gate), which the cards must keep in mind rather than assume.
+
+## D-277 `instances resume` and `instances pause` send one command id per invocation (2026-09-28)
+
+The operator's measurement at `d9688726` (this session, the real binary against a real daemon): `teamagents
+instances resume --id i-leader` printed `i-leader: ACTIVE / READY`, exit 0, while `instances list --json` and the
+daemon's checkpoint both still said `PARKED`; a raw `set_lifecycle` on the same socket with a *fresh* command id
+did resume it. Cause: `intervene.rs` built the id as `lifecycle-<instance>-<lifecycle>` — one fixed id per
+(instance, lifecycle) — and the control plane is idempotent by command id (`control.rs::submit_inner` returns the
+stored receipt when the payload hash matches, which is what the bootstrap's own fixed ids buy), so the *second*
+resume was deduplicated and the client printed the first one's recorded reply as a fresh success. The lever
+`exec` itself tells a stuck user to run (its parked-leader message names `instances resume --id i-leader`, and the
+guide repeats it in the park recipe and the failure table) therefore lied the second time it was used — a claim
+the code does not back, the same class as D-273's.
+
+**Fixed**: the two levers whose effect can legitimately be asked twice — `PAUSED` and `ACTIVE`, the `pause →
+resume → pause` pair — carry a fresh command id per invocation (`lifecycle-<instance>-<lifecycle>-<uuid>`), which
+is the shape the TUI's own panel already sends for all three lifecycle levers (`lc-{uuid}`, `main.rs`). Nothing
+else moved: the control plane's dedup rule, the protocol, the persisted schema and the bootstrap's fixed ids are
+untouched. `TERMINATED` keeps its `(instance, action)` id: termination is final, so a repeat cannot have a
+different effect and its recorded reply stays true.
+
+**The neighbouring levers, and why they were left alone.** `terminate`: final, so a repeat's recorded reply is
+still true (see above). `tasks cancel` (`cancel-{task}`): `cancel_task` on a task that is already terminal answers
+`{"already_terminal": true, …}`, and task ids are never reused (nothing in this tree deletes a task — there is no
+`DELETE FROM tasks` anywhere), so a fixed id and a fresh one are equivalent; a fresh id would only have changed the
+answer's shape. `goals open` (`goal-open-{id}`): the goal id *is* the subject, opening a *new* goal already
+carries a new id, and re-opening the same id is refused by design — a settled goal cannot be reopened (D-268/D-270)
+— so a fresh command id would turn the repeat into `create_goal`'s `INSERT INTO goals` unique-constraint error
+instead of any better answer. `approvals`: the TUI's `decide-{approval_id}-{decision}` is single-shot by design (a
+decision is consumed), and no CLI lever in this file sends one. The only shape that was a lie is the pair that can
+really be asked twice, and that is what changed.
+
+**Evidence** (2026-09-28, this tree: `d9688726` plus this uncommitted diff).
+
+| Command | Result |
+|---|---|
+| `cargo test --offline --manifest-path engine/Cargo.toml --test v2_daemon a_second_resume_is_a_new_operation_not_the_first_ones_recorded_reply` | **ok**, 1 passed in 0.08 s, five consecutive runs: the real binary is driven against a real daemon twice per lever (setup transition by the test's own fresh id, then the lever, twice) and the *effect* is asserted — both the second `resume` and the second `pause` really change the lifecycle |
+| pre-fix control: the same test with `engine/src/v2/intervene.rs` exactly as at `HEAD` (saved first, restored byte-identically — `diff -q` reports identical) | **FAILED**: `left: "PAUSED", right: "ACTIVE"` with the printed sentence `i-leader: ACTIVE / READY` — the first resume's recorded reply printed as a fresh success, with no effect, which is the operator's measurement reproduced in 0.02 s. The line that decides it is the id expression itself (pre-fix `&format!("lifecycle-{resolved}-{lifecycle}")`, `intervene.rs:121`) |
+| `cargo test --offline --manifest-path engine/Cargo.toml --lib` / `--test v2_daemon` | **ok**, 85 and 31 passed |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in the condition this session runs in (no credential exported) |
+| `make language-check` | rc=0 |
+| `python3 review/test_counts.py --write` | `engine: 275 -> 276` in `docs/ACCEPTANCE.md`, `AGENTS.md` and `.github/release-notes.md` (the new test) |
+
+The park-shaped form of this test was tried first and is not kept: a park *is* cleared by a resume, but the
+resumed turn re-runs its interrupted request and parks again within milliseconds, so the lifecycle right after a
+resume is not a stable observation (that form failed once in seven runs on exactly that race). Setting the
+non-active state by the test's own fresh command makes the assertion about the lever's effect, not about a
+transient state.
+
+One of the four full gate runs made on this tree failed in the hooks test that writes a script and spawns it
+(Text file busy, os error 26) — a race in a module this diff does not touch; two reruns of the whole gate were
+green, and the recorded green run is one of them.
+
+**Ceiling**: the command id is now per invocation, so a client that loses the reply and re-runs the same
+invocation issues a *new* operation — harmless for these two levers (`set_lifecycle` is idempotent in effect) but
+it does mean a lost reply is no longer deduplicated for them; that is the price of the second invocation being
+real, and it is the price the TUI's panel already pays. `terminate` deliberately keeps the old shape, so a repeat
+there is still a recorded reply. Nothing here audits other surfaces that derive a command id from user input
+outside these two levers; the TUI's own `lc-{uuid}`/`ct-{uuid}`/`decide-…` shapes were read, not changed. The
+`--json` report still carries the client's own lifecycle word plus the instance row read *before* the command
+(D-177's shape), so a repeat invocation's report is now backed by a real transition, but the row it prints is
+still the pre-change one.
+
 ## D-276 Task 3's delivery is verified by the operator, and two lessons the phase's own runs taught (2026-09-28)
 
 The self-refine session's second work item was the multi-goal hang D-274 recorded; the product's own entry is
