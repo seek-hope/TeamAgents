@@ -187,8 +187,13 @@ make verify-kani        # Kani proofs for the paging arithmetic (needs the Kani 
 cargo test --offline --locked --manifest-path core/Cargo.toml --test v2_invariants
 ```
 
-These targets are not part of `make check` (they need Java/Kani and the first run downloads TLC). TLC's
-`verification/tla/states/` and Kani's `target/` are regenerable intermediates that `.gitignore` excludes.
+These targets are not part of `make check` (they need Java/Kani and the first run downloads TLC). Each TLC
+invocation gets its own meta directory under the ignored `review/tmp/tla/` and removes it when the run returns
+(D-293): TLC's default is a timestamped directory under `verification/tla/states/` and it *refuses to start* if
+that directory already exists (a leftover from an interrupted or same-second run), so no run may share one.
+TLC's `verification/tla/states/` (leftovers from before D-293 only) and Kani's `target/` are regenerable
+intermediates that `.gitignore` excludes; a `verification/tla/states/` in a working tree is stale scratch that
+may be deleted.
 The models cover protocol-level properties only: they are not a refinement proof, liveness depends on weak
 fairness assumptions and every enumeration is bounded. When the command set, the phase machine or the
 paging/capping logic changes, update the specs and `v2_invariants` and re-run the affected targets.
@@ -250,7 +255,10 @@ as real-model or real-provider acceptance.
   regression instead of adding a mirrored test.
 - `review/tmp/` is the ignored probe and scratch area. Durable conclusions go into a dated `review/*.md`,
   evaluation evidence into `review/eval/r2-p6/runs/`; Python caches, temporary databases, nested Git
-  repositories and full copies of old sources are never committed.
+  repositories and full copies of old sources are never committed. The TLA+ targets put their per-run meta
+  directories under `review/tmp/tla/` and remove each one when the run returns (D-293), so nothing there
+  survives a target unless it was killed mid-run — a `review/tmp/tla/` or `verification/tla/states/` left
+  behind is scratch and may be deleted.
 
 ## Dependencies, toolchain and releases
 

@@ -126,11 +126,16 @@ verify-tools:
 # A positive target must *require* the success marker: TLC prints "Error: … violated." and still exits 0, so a
 # recipe whose status is a `grep` for lines that include violations can pass while a property is broken (D-122).
 verify-model: verify-tools
-	@cd verification/tla && out=$$(java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
-		tlc2.TLC -config MC.cfg -fp 64 -workers 4 V2Control.tla 2>&1); \
+	@cd verification/tla && meta="$(TLA_METADIR)/MC.cfg-$$$$"; rm -rf "$$meta"; \
+		out=$$(java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
+			tlc2.TLC -config MC.cfg -fp 64 -workers 4 -metadir "$$meta" V2Control.tla 2>&1); status=$$?; rm -rf "$$meta"; \
 		echo "$$out" | grep -E "No error|violation|violated|states generated"; \
-		printf '%s' "$$out" | grep -q "No error has been found" || { \
-			echo "MC.cfg did not verify (see above)" >&2; exit 1; }
+		if printf '%s' "$$out" | grep -q "No error has been found"; then :; \
+		elif printf '%s' "$$out" | grep -q "states generated"; then \
+			echo "MC.cfg did not verify (see above)" >&2; exit 1; \
+		else \
+			echo "MC.cfg did not run: TLC exited $$status without a verdict (see the tail)" >&2; \
+			echo "$$out" | tail -5 >&2; exit 1; fi
 
 # The module each configuration runs, in one place: the exhaustive target and `verify-model-sim` both
 # expand this, so they cannot disagree, and it must name *every* configuration in the directory — a
@@ -139,17 +144,30 @@ verify-model: verify-tools
 # exact arms, because shell `case` takes the first match.
 CFG_CASE = case $$cfg in MC.cfg|MC_control_two.cfg) echo V2Control.tla;; MC_artifact*) echo V2Artifact.tla;; MC_wait*) echo V2Wait.tla;; MC_task*) echo V2Task.tla;; MC_approval*) echo V2Approval.tla;; MC_compress*) echo V2Compress.tla;; MC_daemon*) echo V2Daemon.tla;; MC_checks*) echo V2Checks.tla;; MC_trust*) echo V2Trust.tla;; MC_prompt*) echo V2Prompt.tla;; MC_retry*) echo V2Retry.tla;; MC_grants*) echo V2Grants.tla;; MC_authority*) echo V2Authority.tla;; MC_store.cfg|MC_store_adopt.cfg) echo V2Store.tla;; MC_retention*) echo V2Retention.tla;; MC_jobs*) echo V2Jobs.tla;; MC_inbox*) echo V2Inbox.tla;; MC_diskfull*) echo V2DiskFull.tla;; MC_coordinator*) echo V2Coordinator.tla;; MC_workspace*) echo V2Workspace.tla;; MC_concurrency*) echo V2Concurrency.tla;; MC_control*) echo V2Control.tla;; MC_wide.cfg) echo V2Control.tla;; *) echo V2Artifact.tla;; esac
 
+# (D-293) TLC's meta directory is `states/` under the spec's directory, suffixed with the *run's timestamp*, and
+# `FileUtil.makeMetaDir` asserts that directory does not already exist (`!dir.exists()`, then `mkdirs()`): a
+# leftover from an interrupted — or merely fast, in the same second — run makes TLC refuse to start, and the
+# counterexample target used to read a run that never started as "the property may be vacuous". Every invocation
+# gets its own meta directory under the ignored scratch root, removed as soon as TLC returns, so the targets are
+# independent of each other and of anything left behind, and the tracked tree keeps no TLC state.
+TLA_METADIR = $(CURDIR)/review/tmp/tla
+
 # small exhaustive configurations for every module (seconds; the wide config is verify-model-wide)
 verify-model-all: verify-tools
 	@cd verification/tla && for cfg in MC.cfg MC_control_two.cfg MC_artifact.cfg MC_wait.cfg MC_task.cfg MC_task_two.cfg MC_approval.cfg MC_compress.cfg MC_daemon.cfg MC_daemon_stop.cfg MC_checks.cfg MC_grants.cfg MC_authority.cfg MC_store.cfg MC_retention.cfg MC_jobs.cfg MC_inbox.cfg MC_diskfull.cfg MC_coordinator.cfg MC_trust.cfg MC_prompt.cfg MC_retry.cfg MC_workspace.cfg MC_concurrency.cfg; do \
 		echo "== $$cfg =="; \
+		meta="$(TLA_METADIR)/$$cfg-$$$$"; rm -rf "$$meta"; \
 		out=$$(java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
-			tlc2.TLC -config $$cfg -fp 64 -workers 4 $$( $(CFG_CASE) ) 2>&1); \
+			tlc2.TLC -config $$cfg -fp 64 -workers 4 -metadir "$$meta" $$( $(CFG_CASE) ) 2>&1); status=$$?; rm -rf "$$meta"; \
 		echo "$$out" | grep -E "No error|violation|violated|states generated"; \
-		printf '%s' "$$out" | grep -q "No error has been found" || { \
-			echo "$$cfg did not verify (see above)" >&2; exit 1; }; \
 		if printf '%s' "$$out" | grep -q "Warning:"; then \
 			echo "$$cfg carried a TLC warning: an inconsistent model is a defect, not a note (see above)" >&2; exit 1; fi; \
+		if printf '%s' "$$out" | grep -q "No error has been found"; then :; \
+		elif printf '%s' "$$out" | grep -q "states generated"; then \
+			echo "$$cfg did not verify (see above)" >&2; exit 1; \
+		else \
+			echo "$$cfg did not run: TLC exited $$status without a verdict (see the tail)" >&2; \
+			echo "$$out" | tail -5 >&2; exit 1; fi; \
 	done
 
 # The authority, inbound-boundary and store-identity claims must be *falsifiable*
@@ -207,13 +225,19 @@ verify-model-counterexamples: verify-tools
 		MC_retry_parks_early.cfg:V2Retry.tla; do \
 		cfg=$${pair%%:*}; spec=$${pair##*:}; \
 		echo "== $$cfg (must be refuted) =="; \
+		meta="$(TLA_METADIR)/$$cfg-$$$$"; rm -rf "$$meta"; \
 		out=$$(java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
-			tlc2.TLC -config $$cfg -fp 64 -workers 4 $$spec 2>&1); \
-		echo "$$out" | grep -E "is violated|properties were violated" || { \
-			echo "$$cfg verified instead of refuting: the property it should break may be vacuous" >&2; \
-			echo "$$out" | tail -5 >&2; exit 1; }; \
+			tlc2.TLC -config $$cfg -fp 64 -workers 4 -metadir "$$meta" $$spec 2>&1); status=$$?; rm -rf "$$meta"; \
 		if printf '%s' "$$out" | grep -q "Warning:"; then \
 			echo "$$cfg carried a TLC warning: an inconsistent model is a defect, not a note (see above)" >&2; exit 1; fi; \
+		if printf '%s' "$$out" | grep -qE "is violated|properties were violated"; then \
+			echo "$$out" | grep -E "is violated|properties were violated"; \
+		elif printf '%s' "$$out" | grep -q "states generated"; then \
+			echo "$$cfg verified instead of refuting: the property it should break may be vacuous" >&2; \
+			echo "$$out" | tail -5 >&2; exit 1; \
+		else \
+			echo "$$cfg did not run: TLC exited $$status without a verdict (a start failure, not a vacuous property)" >&2; \
+			echo "$$out" | tail -8 >&2; exit 1; fi; \
 	done
 
 
@@ -228,11 +252,16 @@ verify-kani:
 			echo "the Kani proofs did not all succeed (see above)" >&2; exit 1; }
 
 verify-model-wide: verify-tools
-	@cd verification/tla && out=$$(java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
-		tlc2.TLC -config MC_wide.cfg -fp 64 -workers 8 V2Control.tla 2>&1); \
+	@cd verification/tla && meta="$(TLA_METADIR)/MC_wide.cfg-$$$$"; rm -rf "$$meta"; \
+		out=$$(java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
+			tlc2.TLC -config MC_wide.cfg -fp 64 -workers 8 -metadir "$$meta" V2Control.tla 2>&1); status=$$?; rm -rf "$$meta"; \
 		echo "$$out" | grep -E "No error|violation|violated|states generated"; \
-		printf '%s' "$$out" | grep -q "No error has been found" || { \
-			echo "MC_wide.cfg did not verify (see above)" >&2; exit 1; }
+		if printf '%s' "$$out" | grep -q "No error has been found"; then :; \
+		elif printf '%s' "$$out" | grep -q "states generated"; then \
+			echo "MC_wide.cfg did not verify (see above)" >&2; exit 1; \
+		else \
+			echo "MC_wide.cfg did not run: TLC exited $$status without a verdict (see the tail)" >&2; \
+			echo "$$out" | tail -5 >&2; exit 1; fi
 
 # Two configurations are beyond a bounded exhaustive attempt — the wide control-plane one (D-210: an hour, no
 # verdict) and the task one, whose second task diverges at 43M states without converging — so this supplement
@@ -247,14 +276,15 @@ SIM_TRACES ?= 20000
 SIM_DEPTH  ?= 100
 SIM_SEED   ?= 11
 verify-model-sim: verify-tools
-	@cd verification/tla && cfg=$(SIM_CONFIG); out=$$(java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
-		tlc2.TLC -simulate num=$(SIM_TRACES) -depth $(SIM_DEPTH) -seed $(SIM_SEED) \
-			-config $$cfg $$( $(CFG_CASE) ) 2>&1); \
+	@cd verification/tla && cfg=$(SIM_CONFIG); meta="$(TLA_METADIR)/$$cfg-sim-$$$$"; rm -rf "$$meta"; \
+		out=$$(java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
+			tlc2.TLC -simulate num=$(SIM_TRACES) -depth $(SIM_DEPTH) -seed $(SIM_SEED) \
+				-config $$cfg -metadir "$$meta" $$( $(CFG_CASE) ) 2>&1); status=$$?; rm -rf "$$meta"; \
 		echo "$$out" | grep -E "states checked|violated|Error|Finished in"; \
 		if printf '%s' "$$out" | grep -qE "is violated|properties were violated"; then \
 			echo "$$cfg found a violation under simulation (see above)" >&2; exit 1; fi; \
 		if printf '%s' "$$out" | grep -q "Error"; then \
-			echo "$$cfg did not run under simulation: its module or constants were refused (see above)" >&2; exit 1; fi; \
+			echo "$$cfg did not run under simulation: its module, constants or meta directory were refused, exit $$status (see above)" >&2; exit 1; fi; \
 		printf '%s' "$$out" | grep -q "states checked" || { \
 			echo "the simulation printed no progress line: it did not run" >&2; exit 1; }; \
 		if printf '%s' "$$out" | grep -q "Warning:"; then \

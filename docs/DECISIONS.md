@@ -20,6 +20,105 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-294 Task 12 is verified: the formal targets no longer lie about a TLC that never started (2026-09-28)
+
+The product's entry is D-293. This entry is the operator's verification, and the card itself came from the
+operator's own supervision rather than from the product's triage — the first of the phase's cards that did.
+
+**What was wrong, and what the fix is.** The operator's batch of the three formal targets in one shell failed
+inside `verify-model-counterexamples` at `MC_concurrency_skips_an_event.cfg`: TLC never started (`FileUtil
+.makeMetaDir` asserts the timestamped `states/` directory does not exist, and the previous target had just used
+it) and the recipe read a run without a violation as "the property it should break may be vacuous" — a lie in the
+one direction that matters, because the target is where a claim's refutability is decided. The fix gives every
+invocation its own meta directory under the ignored `review/tmp/tla/` (removed when TLC returns, so the tracked
+tree keeps no TLC state) and makes the failure rule **verdict-based**: a violation line means refuted,
+`states generated` without one means genuinely vacuous, and anything else is reported as what it is — `did not
+run: TLC exited <status> without a verdict`. D-293 records the same for the positive targets and for
+`verify-model-wide`/`verify-model-sim`, and `docs/DEVELOPMENT.md` now says a `verification/tla/states/` in a tree
+is stale scratch that may be deleted.
+
+**Verified by the operator.** The sequence that had failed — `make verify-model-all` and then
+`make verify-model-counterexamples` in one shell — is `rc=0`/`rc=0` on this tree. The operator's own control for
+the *message* half: with an unwritable meta directory (`make verify-model-counterexamples
+TLA_METADIR=/proc/ta-nope`) the target fails with `MC_authority_badview.cfg did not run: TLC exited 1 without a
+verdict (a start failure, not a vacuous property)` and `rc=2` — the old recipe would have called that a possibly
+vacuous property. The product's own pre-fix control reproduced the original condition exactly (HEAD's Makefile
+plus seeded `states/<timestamp>` directories → `rc≠0` with the lie, then restored byte-identically by sha256), and
+the operator's runs left no new directory under `verification/tla/states/` (the five leftovers from the product's
+own 23:39 runs were untouched) while `review/tmp/tla/` was empty afterwards — each invocation cleaned up after
+itself. `env -u DEEPSEEK_API_KEY make check` `rc=0` (25 green targets; the catalogue confirms 24 configurations,
+73 controls and 3 harnesses) and `make pty` ok.
+
+**The phase's numbers.** Eleven deliveries, **132.4M tokens over 601 model requests**, ten settled by the
+runtime's own required check, and an operator cost of twelve verification-and-commit rounds and three resumes.
+Two of the eleven defects were found by the operator's supervision rather than by a card (this one and the
+multi-goal hang), which is what "periodic supervision" is for.
+
+**Next card: the remaining formal gap, the pure functions.** `verification/REPORT.md`'s unproven list says the
+functions beyond the paging arithmetic — `prepare_request`'s view, `interpret_response`'s classification and
+`args_hash` — are "only reached by bounded enumeration", and it records why the first attempt at more did not
+converge (serde_json turns coordinate comparisons into a symbolic `memcmp`). The card is to take one of them, try
+a Kani harness on the invariant that function really has (not a tautology), and either deliver the proof or
+record the measured ceiling — the same discipline the concurrency card used, and the same section-0 obligations
+if the harness changes what a re-run must cover.
+
+**Ceiling**: this entry verifies a *harness*, so its proof is the runs above, not a property of the product; and
+the fix's own ceiling is the one D-293 states — a TLC that fails to start is now reported honestly, which is all
+a harness can do. The five stale `states/` directories the product's control seeded are untracked scratch and go
+with this commit.
+
+## D-293 The TLA+ targets own their meta directories, and a TLC that never started is a run failure (2026-09-28)
+
+**The defect, measured by the operator at `650440ff`.** The three formal targets shared TLC's default meta
+directory: `FileUtil.makeMetaDir` builds `states/<yy-MM-dd-HH-mm-ss>` under the spec's directory and **asserts
+that directory does not already exist** before `mkdirs()`. A leftover from an interrupted run — or, on a fast
+machine, from a run that started in the same second — made TLC refuse to start
+("TLC could not make a directory … for the disk files it needs to write"), and the counterexample target's rule
+read *any* run without a violation line as `verified instead of refuting: the property it should break may be
+vacuous`. So the harness lied in the direction that matters: a TLC that never started was reported as a property
+that proves nothing. The operator saw `make verify-model-all && make verify-model-counterexamples` fail at
+`MC_concurrency_skips_an_event.cfg` with that message and the `makeMetaDir` stack; re-running the same target on
+the same tree refuted all 73 controls.
+
+**Reproduced deterministically before the fix.** With `HEAD`'s Makefile restored byte-identically and
+`verification/tla/states/` pre-seeded with the next thirteen seconds' timestamp directories,
+`make verify-model-counterexamples` failed on its **first** control with
+`MC_authority_badview.cfg verified instead of refuting: the property it should break may be vacuous` and the tail
+showing `util.Assert.check` → `FileUtil.makeMetaDir` → "Trying to run TLC again will probably fix this problem" —
+the operator's failure, without a race.
+
+**The fix (Makefile only).** `TLA_METADIR = $(CURDIR)/review/tmp/tla` (the ignored scratch root, D-131's
+convention), and every TLC invocation in `verify-model`, `verify-model-all`, `verify-model-counterexamples`,
+`verify-model-wide` and `verify-model-sim` runs with `-metadir "$(TLA_METADIR)/<cfg>-$$"` — unique per
+invocation, because the shell's `$$` distinguishes it from any other run of the same configuration — and removes
+that directory as soon as TLC returns. So (a) the three targets run back to back, (b) two runs never share a meta
+directory, and (c) no TLC state is left anywhere: `review/tmp/tla/` is empty after a target and
+`verification/tla/states/` is not even created any more. The **failure rule** is now verdict-based in the
+counterexamples recipe: a violation line means refuted; `states generated` without one means genuinely
+`verified instead of refuting`; neither means `did not run: TLC exited <status> without a verdict (a start
+failure, not a vacuous property)`, with the tail. The positive targets got the same two-way distinction
+(`did not verify` only when TLC actually ran), and the `Warning:` and `No error has been found` rules are
+unchanged. The configuration and control **lists** were not touched.
+
+**Evidence** (2026-09-28; the tree is `650440ff` plus this uncommitted diff).
+
+| Command | Result |
+|---|---|
+| three targets back to back, twice, in one shell | **all six runs rc=0**: `verify-model-all` 24/24 `No error has been found` each time; `verify-model-counterexamples` 73 controls, 73 refuted, 0 "did not run" each time; `verify-kani` `Complete - 3 successfully verified harnesses, 0 failures, 3 total` each time; 224 s for all six |
+| the same run with the pre-fix leftovers *still present* (`verification/tla/states/` holding the 13 seeded directories) | **rc=0**, 73/73 refuted, and the leftovers untouched — the condition that broke the old target no longer reaches it |
+| honesty branch, forced deterministically (`make verify-model-counterexamples TLA_METADIR=/dev/null`) | **rc≠0** with `MC_authority_badview.cfg did not run: TLC exited 1 without a verdict (a start failure, not a vacuous property)` — not "may be vacuous", not "refuted"; `make verify-model TLA_METADIR=/dev/null` says `MC.cfg did not run …` |
+| pre-fix control: `HEAD`'s Makefile + seeded `states/<timestamp>` directories | **rc≠0** and the lie: `MC_authority_badview.cfg verified instead of refuting: the property it should break may be vacuous`, tail `util.Assert.check … FileUtil.makeMetaDir`; the fixed Makefile was then restored byte-identically (`sha256sum` `a87becc2…`) |
+| `git status` / tree check after the runs | `review/tmp/tla/` empty, no `verification/tla/states/`, no tracked file added by a run |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+
+**Ceiling.** The harness still decides from TLC's *output*, so a TLC that dies mid-run **after** printing a
+violation line would be counted as refuted (the `-metadir` change removes the known start failure; D-122's rule
+is what makes a verdict line the thing to read). The lists, the `Warning:` rule and the whole-set counts are
+untouched, so `review/verification_catalogue.py` still counts 24 configurations / 73 controls / 21 modules.
+`verification/tla/states/` directories left in an old working tree are stale scratch and may be deleted (the
+cleanup notes in `docs/DEVELOPMENT.md` now say so); this tree has none. `make pty` and the probe sets were not
+run.
+
 ## D-292 Task 11 is verified: A28's concurrency claim is now checked by TLC, not asserted (2026-09-28)
 
 The product's entry is D-291. This entry is the operator's verification — the strongest the phase has produced,
