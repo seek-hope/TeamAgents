@@ -72,7 +72,7 @@ the log is still a supported way to observe it (and the probes that do assert on
 | `response_imported` | `&request_instance` | `decision_id`, `intents`, `phase`, `request_id` | `core/src/v2/control.rs:2572` | `tui/src/v2app.rs`, `engine/tests/v2_driver.rs` |
 | `task_blocked` | `&task` | `operation_id`, `reason`, `task_id` | `core/src/v2/control.rs:2660` | `tui/src/v2app.rs`, `review/dogfood/unknown_outcome.py` |
 | `task_cancelled` | `&assignee` | `reason`, `task_id` | `core/src/v2/control.rs:1273` | `tui/scripts/pty_v2_smoke.py`, `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs`, `engine/tests/v2_supervisor.rs` |
-| `task_completed` | `&requester` | `assignee`, `delivered`, `status`, `task_id` | `core/src/v2/control.rs:1206` | `tui/src/v2app.rs`, `engine/tests/v2_driver.rs`, `review/dogfood/providers.py`, `review/eval/r2-p6/anatomy.py` |
+| `task_completed` | `&requester` | `assignee`, `delivered`, `status`, `task_id` | `core/src/v2/control.rs:1206` | `tui/src/v2app.rs`, `engine/tests/v2_driver.rs`, `engine/tests/v2_supervisor.rs`, `review/dogfood/providers.py`, `review/eval/r2-p6/anatomy.py` |
 | `task_delegated` | `assignee` | `envelope_id`, `goal_id`, `requester`, `task_id` | `core/src/v2/control.rs:1045` | `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs`, `review/dogfood/providers.py` |
 | `task_started` | `&assignee` | `task_id` | `core/src/v2/control.rs:1078` | `tui/src/v2app.rs`, `review/dogfood/providers.py` |
 | `wait_satisfied` | `&instance_id` | `wait_id` | `core/src/v2/control.rs:2343` | `engine/tests/v2_driver.rs` |

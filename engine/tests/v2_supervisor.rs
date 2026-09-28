@@ -186,6 +186,24 @@ async fn wait_event(handle: &SupervisorHandle, kind: &str, timeout_ms: u64) -> J
     panic!("event {kind} did not arrive within {timeout_ms}ms");
 }
 
+/// The settlement of one task: the durable fact a per-instance *request count*
+/// cannot give, because the settling worker's own turn continues with one more
+/// request (`response_imported … READY`, measured) and the count is 1 or 2 by timing.
+async fn wait_task_settled(handle: &SupervisorHandle, task_id: &str, timeout_ms: u64) -> Json {
+    for _ in 0..(timeout_ms / 25) {
+        if let Ok(events) = handle.events(0).await {
+            if let Some(event) = events
+                .iter()
+                .find(|e| e["kind"] == json!("task_completed") && e["payload"]["task_id"] == json!(task_id))
+            {
+                return event.clone();
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("task {task_id} did not settle within {timeout_ms}ms");
+}
+
 #[tokio::test]
 async fn spawned_worker_settles_and_the_leader_completes() {
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
@@ -927,15 +945,11 @@ async fn a_user_opened_goal_lets_a_later_delegation_charge_somewhere() {
         Step::Message(finish_call("the later work is delegated")),
     ];
     let worker = vec![Step::Message(finish_call("did the later work"))];
-    let seen: Seen = Arc::new(Mutex::new(HashMap::new()));
     let root = root("user-opened-goal");
     std::fs::create_dir_all(root.dir.join("ws")).unwrap();
     let handle = start(config(
         &root,
-        factory_with_log(
-            HashMap::from([("i-leader".to_string(), leader), ("i-worker".to_string(), worker)]),
-            seen.clone(),
-        ),
+        factory(HashMap::from([("i-leader".to_string(), leader), ("i-worker".to_string(), worker)])),
     ))
     .await
     .expect("start");
@@ -961,21 +975,16 @@ async fn a_user_opened_goal_lets_a_later_delegation_charge_somewhere() {
         .expect("the user opens a goal");
     // the second instruction can now charge its work somewhere
     handle.input("i-leader", "now delegate some work").await.expect("input");
-    for _ in 0..1200 {
-        let worker_ran = seen.lock().unwrap().get("i-worker").map(Vec::len).unwrap_or(0) >= 1;
-        let later = second_control(&root)
-            .connection()
-            .query_row("SELECT COUNT(*) FROM tasks WHERE id = 't-late'", [], |row| row.get::<_, i64>(0))
-            .unwrap_or(0);
-        if worker_ran && later > 0 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
+    // The fact this test is about is the worker *settling* the delegated task. A
+    // per-instance request count cannot carry it: the settling worker's own turn
+    // continues with one more request (`response_imported … READY`, measured), so the
+    // count is 1 or 2 depending on whether the test reads before or after that turn —
+    // which is how this test flaked (D-278). Wait for the runtime's settlement event,
+    // then read the settled rows.
+    let settled = wait_task_settled(&handle, "t-late", 20_000).await;
     // read everything first, shut the session down, and only then assert: a failed assertion inside a running
     // session leaves the supervisor's task alive and the test *hangs* instead of failing (measured here)
     let control = second_control(&root);
-    let worker_requests = seen.lock().unwrap().get("i-worker").map(Vec::len);
     let goal_row: Option<(Option<String>, String, String)> = control
         .connection()
         .query_row(
@@ -985,8 +994,12 @@ async fn a_user_opened_goal_lets_a_later_delegation_charge_somewhere() {
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .ok();
-    let later_goal: Option<String> =
-        control.connection().query_row("SELECT goal_id FROM tasks WHERE id = 't-late'", [], |row| row.get(0)).ok();
+    let later_task: Option<(String, String, String)> = control
+        .connection()
+        .query_row("SELECT goal_id, status, assignee FROM tasks WHERE id = 't-late'", [], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .ok();
     drop(control);
     handle.shutdown().await.expect("shutdown");
     match previous {
@@ -995,12 +1008,20 @@ async fn a_user_opened_goal_lets_a_later_delegation_charge_somewhere() {
     }
     assert_eq!(closed["payload"]["status"], json!("SUCCEEDED"), "{closed}");
     assert_eq!(opened["goal_id"], json!("goal-later"), "{opened}");
-    assert_eq!(worker_requests, Some(1), "the worker runs the second instruction's task");
+    assert_eq!(settled["payload"]["status"], json!("SUCCEEDED"), "{settled}");
+    assert_eq!(
+        settled["payload"]["assignee"],
+        json!("i-worker"),
+        "the worker runs the second instruction's task: {settled}"
+    );
     let (attached, status, checks) = goal_row.expect("the leader's active goal");
     assert_eq!(attached.as_deref(), Some("goal-later"));
     assert_eq!(status, "ACTIVE");
     assert!(checks.contains("later-tests"), "the user's required check rides on the goal: {checks}");
-    assert_eq!(later_goal.as_deref(), Some("goal-later"), "the later task is charged to the user's goal");
+    let (later_goal, later_status, later_assignee) = later_task.expect("the later task row");
+    assert_eq!(later_goal, "goal-later", "the later task is charged to the user's goal");
+    assert_eq!(later_status, "SUCCEEDED", "the later task settled");
+    assert_eq!(later_assignee, "i-worker", "and the worker ran it");
 }
 
 #[tokio::test]

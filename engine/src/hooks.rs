@@ -22,6 +22,37 @@ fn configured(argv: &[String]) -> Option<Vec<String>> {
     (!first.trim().is_empty()).then(|| argv.to_vec())
 }
 
+/// Spawn one hook command, retrying the platform's `ETXTBSY` window.
+///
+/// `execve` refuses a file some process still has open for writing, and a hook
+/// script is a file that can be transiently busy while it is written or replaced —
+/// including in this repository's own tests, where a script written on one thread
+/// is still a live writer in a child another thread forked (measured: 6169 refusals
+/// in 50 000 write-then-exec iterations beside eight forking threads, first at
+/// iteration 10). The window is microseconds, so a short bounded retry is the
+/// platform's own answer; without it a hook that was merely being replaced is
+/// dropped and only a stderr line says so.
+fn spawn_hook(argv: &[String], event: &str, capture_stderr: bool) -> std::io::Result<std::process::Child> {
+    let deadline = std::time::Instant::now() + Duration::from_millis(250);
+    loop {
+        let mut command = std::process::Command::new(&argv[0]);
+        command
+            .args(&argv[1..])
+            .arg(event)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(if capture_stderr { std::process::Stdio::piped() } else { std::process::Stdio::null() });
+        match command.spawn() {
+            Err(error)
+                if error.kind() == std::io::ErrorKind::ExecutableFileBusy && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            other => return other,
+        }
+    }
+}
+
 pub struct Hooks {
     command: Vec<String>,
     pre_tool: Vec<String>,
@@ -56,14 +87,7 @@ impl Hooks {
             return None;
         }
         let body = json!({"event": "pre_tool", "session_id": self.session_id, "payload": payload}).to_string();
-        let mut child = match std::process::Command::new(&self.pre_tool[0])
-            .args(&self.pre_tool[1..])
-            .arg("pre_tool")
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-        {
+        let mut child = match spawn_hook(&self.pre_tool, "pre_tool", true) {
             Ok(child) => child,
             Err(error) => {
                 eprintln!("pre_tool hook: cannot start {:?}: {error}", self.pre_tool);
@@ -144,14 +168,7 @@ impl Hooks {
         let event = event.to_string();
         let body = json!({"event": event, "session_id": self.session_id, "payload": payload}).to_string();
         std::thread::spawn(move || {
-            let mut child = match std::process::Command::new(&command[0])
-                .args(&command[1..])
-                .arg(&event)
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-            {
+            let mut child = match spawn_hook(&command, &event, false) {
                 Ok(child) => child,
                 Err(error) => {
                     eprintln!("hook {event}: cannot start {command:?}: {error}");
@@ -268,6 +285,43 @@ mod tests {
 
         // no hook configured -> nothing to run
         assert!(Hooks::from_config(&teamagents_core::models::UserConfig::default(), "s1").is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Flake 2 of D-278, made deterministic: `execve` refuses a script some process
+    /// still holds open for writing (`ETXTBSY`), and a script written on one thread is
+    /// exactly that for a child another thread forked while it was being written. Here
+    /// the test holds the writer itself, so the refusal is not a race but the state the
+    /// fix is about. Pre-fix the one spawn is refused, `fire` drops the event and the
+    /// output never lands; the retry gets it once the writer closes.
+    #[test]
+    fn a_transiently_busy_hook_script_is_retried_not_dropped() {
+        let dir = std::env::temp_dir().join(format!("ta-hook-busy-{}", uuid::Uuid::new_v4()));
+        let out = dir.join("busy.txt");
+        let hook = script(&dir, "busy.sh", &format!("printf '%s\\n' \"$1\" > {}\n", out.display()));
+        // a live writer on the script, released after the spawn has had its window
+        let writer = std::fs::OpenOptions::new().write(true).open(&hook).unwrap();
+        let closer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(120));
+            drop(writer);
+        });
+
+        let mut config = teamagents_core::models::UserConfig::default();
+        config.hooks.notify = vec![hook];
+        let hooks = Hooks::from_config(&config, "s1").expect("configured hook");
+        hooks.fire("tool_call", json!({"tool": "edit_file"}));
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut text = String::new();
+        while std::time::Instant::now() < deadline {
+            text = std::fs::read_to_string(&out).unwrap_or_default();
+            if text.contains("tool_call") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        closer.join().unwrap();
+        assert!(text.starts_with("tool_call\n"), "the retried hook ran: {text:?}");
         let _ = std::fs::remove_dir_all(dir);
     }
 }

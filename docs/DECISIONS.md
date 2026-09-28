@@ -20,6 +20,110 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-282 Task 6 is verified: the gate is deterministic again, and one of the two fixes is a product fix (2026-09-28)
+
+The product's entry is D-281 (the supervisor test raced its own read; a hook spawn dropped `ETXTBSY`). This entry
+is the operator's verification and the phase's current numbers.
+
+**What the two fixes actually are — they are not the same kind of change.**
+
+* *The hooks one is a product fix.* `engine/src/hooks.rs` gained `spawn_hook`, which retries the
+  `ExecutableFileBusy` error kind for up to 250 ms; before it, a hook script that was merely being *replaced*
+  while a child had it open was dropped with nothing but a stderr line — the flake was the symptom, the dropped
+  hook was the defect. The new unit test holds a live writer on the script for 120 ms, so the refusal is
+  deterministic instead of a race.
+* *The supervisor one is a test fix.* The old loop read a per-instance request count that can legitimately be 1
+  or 2 (a settling worker's turn continues with one more request — the product's own instrumented run shows
+  `task_completed` then `response_imported … READY`, and the *product* behaviour is correct). The test now waits
+  for the `task_completed` event and asserts the settled facts.
+
+**Verified by the operator, three ways.**
+
+* *A deterministic control for the hooks fix* (the flake itself is too rare to loop): with the retry condition
+  turned into one that never matches, `hooks::tests::a_transiently_busy_hook_script_is_retried_not_dropped`
+  **fails** at `hooks.rs:324`; restored byte-identically (`diff -q`), the three `hooks::` tests pass.
+* *My own load loop for the supervisor fix*: 20 runs beside six `yes` threads, **0 failed** (the product's own
+  loop measured 3/25 pre-fix and 0/30 post-fix, which is the control this fix cannot have in one machine state).
+* *The gate, and again by the runtime*: `goal-task6` settled `SUCCEEDED` only after its required check round 1
+  ran and passed, and the operator's `env -u DEEPSEEK_API_KEY make check` is `rc=0` (25 green targets) with
+  `make pty` ok. This is the **third** of five deliveries whose settlement was machine-gated (D-273, D-279,
+  D-281); D-275 and D-277 needed the operator's verification because their runs ended on ceilings or on the
+  repair 400.
+
+**The ceiling, learned twice more.** Task 6 finished at 11,794,108 of its 12,000,000 tokens — just inside — while
+tasks 3 and 4 hit theirs, and the tasks that *find* a defect spend most of their budget on forensics and repeated
+gate runs rather than on the change. The phase's per-goal ceiling is therefore raised to 24,000,000 tokens (same
+150-minute deadline), which is the operating number the cards assume from here.
+
+**The phase so far.** Five deliveries committed (D-273 hermetic gate, D-275 multi-goal settlement, D-277 lifecycle
+command ids, D-279 request-view pairing, D-281 the two flakes), **40.73M tokens over 311 model requests**, three
+goals settled by the runtime's own gate, two settled by the operator because their runs ended on ceilings, and an
+operator cost of six verification-and-commit rounds plus three resumes. The suites now report
+`core 108 / engine 278 / tui 36`. The next cards stay as D-280 listed them: the `goals open` line that reports
+`(0 required check(s))` for a goal the daemon gave a check to, and the reporting half of a budget-exhausted goal
+that is presented as the one in force.
+
+**Ceiling**: "deterministic again" is a claim about the *shapes* fixed here (a count that can grow; a spawn that
+can be refused), not a proof that the suite has no other race — the third flake, if it appears, gets its own
+card and its own mechanisms. The hooks retry is bounded at 250 ms by choice; a script that is busy longer than
+that is reported exactly as before.
+
+## D-281 The two gate flakes are a test that raced its own read and a hook spawn that dropped `ETXTBSY` (2026-09-28)
+
+This is the card D-278's Defect B named. `make check` is the required check, so a flake refuses an honest
+settlement; both failures were measured first and both mechanisms are now pinned by tests.
+
+**Flake 1 — the supervisor test read a request count that can still grow.** Reproduced under load (six
+`yes` threads): `engine/tests/v2_supervisor.rs::a_user_opened_goal_lets_a_later_delegation_charge_somewhere`
+failed **3/25** runs, always `left: Some(2)`, `right: Some(1)`. The old loop broke as soon as the worker had
+made **one** request and the `t-late` row existed, then read the per-instance provider count once for its
+`assert_eq!(worker_requests, Some(1))`. An instrumented run shows the read is the race: at break the worker was
+already at `Some(2)`, and the event log shows `task_completed {task_id: "t-late", status: "SUCCEEDED", assignee:
+"i-worker", delivered: true}` followed by `response_imported … phase READY` — the settling worker's own turn
+continues with one more request, so the count is 1 or 2 by timing. That is real product behaviour (a turn
+continues after its task settles), not a duplicate dispatch, so the count was the wrong thing to assert.
+**Fixed**: the test now waits for the runtime's `task_completed` event for `t-late` and asserts the settled
+facts — the event's `status`/`assignee` and the task row `goal_id`/`status`/`assignee` — and no longer keeps a
+provider log at all (`factory` replaces `factory_with_log`). Post-fix: **0/30** under the same load.
+
+**Flake 2 — a freshly written hook script is transiently `ETXTBSY`.** The mechanism: `execve` refuses a file
+some process still has open for writing, and a script written on one thread is a live writer in a child another
+thread forked while it was being written (the test binary runs many tests in one process). Proven standalone,
+without the repo: a 50 000-iteration loop that writes and then execs one script while eight threads fork
+`/bin/true` got **6169** `ETXTBSY` refusals (first at iteration 10) with the write fd closed before every
+`exec`; the same loop with a bounded retry dropped **0**. The repository had no retry to copy (the comment that
+once referenced one lives in a former `engine/tests/process_leaks.rs`, which does not exist here).
+**Fixed**: `engine/src/hooks.rs` gains `spawn_hook`, which retries the `ExecutableFileBusy` error kind for
+up to 250 ms in 2 ms steps, and both spawn sites (`Hooks::fire` and `Hooks::deny_reason`) use it; a spawn
+failure with any other kind, or after the deadline, is reported exactly as before. The window is microseconds;
+a hook that is merely being replaced must not be dropped with only a stderr line. A new unit test,
+`hooks::tests::a_transiently_busy_hook_script_is_retried_not_dropped`, holds a live writer on the script for
+120 ms so the refusal is deterministic rather than a race.
+
+**Evidence** (2026-09-28, this tree: `8a7b3263` plus this uncommitted diff).
+
+| Command | Result |
+|---|---|
+| pre-fix loop: `cargo test --test v2_supervisor a_user_opened_goal_lets_a_later_delegation_charge_somewhere` × 25 beside six `yes` threads | **3 failed** with `left: Some(2)` / `right: Some(1)` |
+| post-fix: the same loop × 30 under the same load | **0 failed** |
+| standalone mechanism probe (`/tmp/etxtbsy-exp`, 50 000 write+exec iterations, eight forking threads) | **6169** `ETXTBSY` (os error 26), first at iteration 10; with the retry logic, 0 dropped execs |
+| pre-fix control: the new hooks test against `HEAD`'s `engine/src/hooks.rs` (its inline `.spawn()` restored, test kept; fixed file saved and restored byte-identically, `sha256sum` `b5bf8def…`) | **FAILED**: `the retried hook ran: ""` — the one spawn was refused and the event dropped |
+| `cargo test --lib hooks::` × 12 under load | **0 failed** (all three hooks tests green each run) |
+| `cargo test --lib` (whole engine lib) × 4 under load | **0 failed**, no `Text file busy` |
+| `cargo test --test v2_supervisor a_user_opened_goal_lets_a_later_delegation_charge_somewhere -- --exact` post-fix | **ok** in 0.11 s |
+| `python3 review/event_catalogue.py --write` | `docs/EVENTS.md`'s `task_completed` row gains this test as a reader (it now waits on that event) |
+| `python3 review/config_reference.py --write` | `docs/CONFIG.md`'s `kind` row counts 15 files instead of 14 — `engine/src/hooks.rs` now matches the audit's name search for `kind` (the error kind it checks) |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `python3 review/test_counts.py --write` | `engine: 277 -> 278` (the new retry test); `core` unchanged at 108 |
+
+**Ceiling**: the retry is bounded at 250 ms — a writer held longer still drops the hook, exactly as before and
+with the same stderr line, so this removes a microsecond window, not the possibility of a genuinely busy
+script. Flake 1's fix asserts the settled state and therefore no longer pins "the worker was asked exactly
+once"; the continuation request is real behaviour the other tests cover. Flake 1's control is the load loop
+(3/25 → 0/30), not a reverted line, because the flake was the test's own read. The gate was run credential-free;
+`make pty`, the probe sets and the formal gates were not re-run (neither change touches the TUI or
+`verification/`).
+
 ## D-280 Task 5 is verified end to end on the state that failed, and the phase's own operating cost is recorded (2026-09-28)
 
 The product's entry for the fourth delivery is D-279 (the request view now pairs every tool answer with its own
