@@ -9,6 +9,7 @@ pub mod authority;
 pub mod daemon;
 pub mod driver;
 pub mod exec;
+pub mod goals;
 pub mod intervene;
 pub mod runners;
 pub mod storage;

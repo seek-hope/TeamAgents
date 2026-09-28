@@ -211,7 +211,7 @@ async fn handle(request: &Json, supervisor: &SupervisorHandle, session_db: &Path
     let method = request.get("method").and_then(|v| v.as_str()).unwrap_or("");
     let params = request.get("params").cloned().unwrap_or(json!({}));
     match method {
-        "checkpoint" | "events" | "history" | "tasks" | "grants" | "approvals" => {
+        "checkpoint" | "events" | "history" | "tasks" | "grants" | "approvals" | "goals" => {
             match read_only(session_db, session_id, |conn| read_method(method, &params, conn)) {
                 Ok(result) => reply(true, result),
                 Err(error) => reply(false, json!(error)),
@@ -429,6 +429,39 @@ fn read_method(method: &str, params: &Json, conn: &rusqlite::Connection) -> Resu
                                       "tool": intent["name"].as_str().unwrap_or(""), "preview": preview}));
             }
             Ok(json!({"approvals": approvals}))
+        }
+        // D-267: every goal a session carries, with the instance each is attached to. The checkpoint reports
+        // *one* goal (the active one, D-266) because every client needs a single "the goal"; a user opening the
+        // next goal needs the list — which one is active, which have settled, and what limits each carries —
+        // and nothing else in the protocol exposed it.
+        "goals" => {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT g.id, g.status, g.deadline, g.limits_json, g.known_usage_json, g.unknown_usage,
+                            (SELECT GROUP_CONCAT(i.id, ',') FROM instances i WHERE i.active_goal_id = g.id)
+                     FROM goals g
+                     -- the goal the session is *working on* is the one an instance is attached to (D-266: a
+                     -- user-opened goal attaches to the leader); then the active ones, newest first
+                     ORDER BY EXISTS(SELECT 1 FROM instances i WHERE i.active_goal_id = g.id) DESC,
+                              (g.status = 'ACTIVE') DESC, g.rowid DESC",
+                )
+                .map_err(|e| format!("goals prepare: {e}"))?;
+            let rows = stmt
+                .query_map([], |row| {
+                    let attached: Option<String> = row.get(6)?;
+                    Ok(json!({
+                        "id": row.get::<_, String>(0)?,
+                        "status": row.get::<_, String>(1)?,
+                        "deadline": row.get::<_, Option<f64>>(2)?,
+                        "limits": serde_json::from_str::<Json>(&row.get::<_, String>(3)?).unwrap_or(json!({})),
+                        "known_usage": serde_json::from_str::<Json>(&row.get::<_, String>(4)?).unwrap_or(json!({})),
+                        "unknown_usage": row.get::<_, i64>(5)?,
+                        "attached_instances": attached.map(|list| list.split(',').map(str::to_string).collect::<Vec<_>>()).unwrap_or_default(),
+                    }))
+                })
+                .map_err(|e| format!("goals query: {e}"))?;
+            let goals: Vec<Json> = rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("goals rows: {e}"))?;
+            Ok(json!({"goals": goals}))
         }
         // The grant view is what the user's authority surface reads and the
         // only thing a revoke can name (D-61): the id, who issued it and where

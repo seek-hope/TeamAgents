@@ -50,7 +50,8 @@ the handler re-checks who may do this rather than trusting the request.
 | `history` | `instance_id`, `limit` | `entries`, `envelope_id`, `epoch`, `idx`, `instance_id`, `kind`, `message` | `engine/src/v2/daemon.rs:364` |
 | `tasks` | — | `assignee`, `goal_id`, `id`, `status`, `tasks` | `engine/src/v2/daemon.rs:392` |
 | `approvals` | — | `approvals`, `id`, `operation_id`, `preview`, `tool` | `engine/src/v2/daemon.rs:408` |
-| `grants` | — | `action`, `grants`, `id`, `issuer`, `parent_grant_id`, `resource_scope`, `revision`, `revoked`, `subject` | `engine/src/v2/daemon.rs:439` |
+| `goals` | — | `attached_instances`, `deadline`, `goals`, `id`, `known_usage`, `limits`, `status`, `unknown_usage` | `engine/src/v2/daemon.rs:437` |
+| `grants` | — | `action`, `grants`, `id`, `issuer`, `parent_grant_id`, `resource_scope`, `revision`, `revoked`, `subject` | `engine/src/v2/daemon.rs:472` |
 
 ### Commands (executed by the control plane)
 
@@ -125,6 +126,10 @@ literals in `engine/src/v2/daemon.rs`; this table is that list. A row is one lit
 | `tasks` arm | `tasks` |
 | `approvals` arm | `id`, `operation_id`, `tool`, `preview` |
 | `approvals` arm | `approvals` |
+| `goals` arm | `id`, `status`, `deadline`, `limits`, `known_usage`, `unknown_usage`, `attached_instances` |
+| `goals` arm | — |
+| `goals` arm | — |
+| `goals` arm | `goals` |
 | `grants` arm | `id`, `issuer`, `subject`, `action`, `resource_scope`, `parent_grant_id`, `revoked` |
 | `grants` arm | `grants`, `revision` |
 

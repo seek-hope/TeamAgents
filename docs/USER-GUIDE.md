@@ -487,6 +487,10 @@ teamagents instances pause  --id i-worker-1    # stop driving it at the next saf
 teamagents instances terminate --id i-worker-1 --yes   # deliberate: retires it and its workspace
 teamagents tasks                        # id, status, assignee, goal
 teamagents tasks cancel --id t-prose    # releases a delegator waiting on a task that can only wait
+teamagents goals                        # the goals this session carries, and what is attached to them
+teamagents goals open --id g2 --attach i-leader --check 'tests=python3 -m pytest -q'
+                                        # after a goal settles: open the next one, attached to the Leader,
+                                        # with your own required checks (§8) and an optional --deadline
 ```
 
 - **`tasks cancel` is the lever for a stuck delegation**: if a member's model ends its turn without settling

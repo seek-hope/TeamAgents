@@ -7,7 +7,7 @@ model probe sets and the three formal gates).
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 107 / engine 272 / tui 35 test targets) and `make pty` passes; both are
+`make check` is green (core 107 / engine 273 / tui 35 test targets) and `make pty` passes; both are
 preconditions for every item below. `make check` includes `make language-check`, which fails on non-English
 characters outside the two documented exceptions (`README.zh-CN.md` and the frozen material under
 `review/eval`).
@@ -234,6 +234,11 @@ amended (D-49/D-50).
   new goal" — which no model-facing tool can do — say what is true instead. What is still missing is the
   **CLI lever** (`teamagents goals [list|open]`, and its own `goals` read: the checkpoint carries one goal,
   not a list), and the *design* question — may the Leader open goals itself, with budget-bearing limits? —
+  **D-267 then closed the *user's* half of it**: `teamagents goals [list|open]` — with the `goals` read the
+  picker needs (the checkpoint carries one goal object, not a list, and its order is attached-first) — so a
+  user can open and attach the next goal after one settles and keep working in the same session. The
+  *design* question this entry names (may the Leader open goals itself? the runtime opens none by itself) is
+  untouched and still the user's call.
   stays the user's call.
 - **A model that stops settling its task leaves a visible wait, and the runtime does not resolve it** (the
   remaining ceiling of D-65, measured again 2026-09-25): a plain reply ends the instance's turn (that is the

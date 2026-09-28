@@ -73,7 +73,7 @@ default (D-239).
 | `mcp_transport` | `Option<String>` | unset (the reader applies its own) | `engine/src/bound.rs` | — |
 | `mcp_execution` | `Option<String>` | unset (the reader applies its own) | `engine/src/bound.rs` | Local MCP execution boundary: workspace (default) or explicit host. |
 | `mcp_network` | `bool` | false | `engine/src/bound.rs` | Network access for workspace-sandboxed MCP processes. |
-| `command` | `Option<String>` | unset (the reader applies its own) | `core/src/v2/control.rs`, `engine/src/bound.rs` … (15 files) | The `kind = "mcp"` service's argv over stdio (the default transport) — required for that kind and transport, refused at load otherwise (D-232). |
+| `command` | `Option<String>` | unset (the reader applies its own) | `core/src/v2/control.rs`, `engine/src/bound.rs` … (16 files) | The `kind = "mcp"` service's argv over stdio (the default transport) — required for that kind and transport, refused at load otherwise (D-232). |
 | `args` | `Vec<String>` | empty | `core/src/kernel/mod.rs`, `core/src/v2/control.rs` … (12 files) | — |
 | `url` | `Option<String>` | unset (the reader applies its own) | `engine/src/bound.rs`, `engine/src/reference.rs` … (3 files) | The `kind = "mcp"` service's endpoint over the `http` transport — required there, and an absolute http(s) URL (D-232). |
 | `bearer_token_env_var` | `Option<String>` | unset (the reader applies its own) | `engine/src/bound.rs` | Bearer token for the http transport: names the environment variable the secret is read from — the token itself never lands in this file. |
@@ -92,8 +92,8 @@ default (D-239).
 | `instruction_files` | `Vec<String>` | empty | `engine/src/v2/driver.rs` | Files whose text is appended to **every** member's system prompt (the leader's and each child's), in this order, each under a heading naming the file: read per turn, so an edit lands on the next turn, and a file that cannot be read is named by `doctor` and on the daemon's log rather than skipped in silence (D-102 recorded the promise, D-246 delivers it). |
 | `retention` | `Retention` | the Retention default | `engine/src/v2/driver.rs`, `engine/src/v2/supervisor.rs` | — |
 | `hooks` | `Hooks` | the Hooks default | `engine/src/hooks.rs`, `engine/src/v2/driver.rs` | — |
-| `checks` | `Vec<CheckSpec>` | empty | `core/src/v2/control.rs`, `engine/src/v2/exec.rs` … (3 files) | Acceptance checks the user predefines for every goal (DESIGN §8, Q11): the runtime runs them in the isolated shell at the completion boundary, so a goal cannot be reported as done while a check fails. They are the user's own machine contracts, never conditions a model extracted. |
-| `limits` | `GoalLimits` | the GoalLimits default | `tui/src/v2app.rs` | Usage and wall-clock ceilings every goal this session creates carries (§8, A18/A35): the goal's `max_total_tokens` refuses a new request once the settled usage would pass it, and its deadline refuses one past that moment. Both are the user's own bounds; a session with neither runs until the user stops it (see `docs/USER-GUIDE.md` §2.2). |
+| `checks` | `Vec<CheckSpec>` | empty | `core/src/v2/control.rs`, `engine/src/v2/exec.rs` … (4 files) | Acceptance checks the user predefines for every goal (DESIGN §8, Q11): the runtime runs them in the isolated shell at the completion boundary, so a goal cannot be reported as done while a check fails. They are the user's own machine contracts, never conditions a model extracted. |
+| `limits` | `GoalLimits` | the GoalLimits default | `engine/src/v2/goals.rs`, `tui/src/v2app.rs` | Usage and wall-clock ceilings every goal this session creates carries (§8, A18/A35): the goal's `max_total_tokens` refuses a new request once the settled usage would pass it, and its deadline refuses one past that moment. Both are the user's own bounds; a session with neither runs until the user stops it (see `docs/USER-GUIDE.md` §2.2). |
 
 ### `[limits]`
 
@@ -106,8 +106,8 @@ default (D-239).
 
 | Key | Type | Absent | Read by | Meaning |
 |---|---|---|---|---|
-| `id` | `String` | empty | `core/src/kernel/instance.rs`, `core/src/v2/control.rs` … (18 files) | Stable id, used in failures, receipts and repair feedback. |
-| `command` | `String` | empty | `core/src/v2/control.rs`, `engine/src/bound.rs` … (15 files) | The command, executed through the same shell tool the model uses. |
+| `id` | `String` | empty | `core/src/kernel/instance.rs`, `core/src/v2/control.rs` … (19 files) | Stable id, used in failures, receipts and repair feedback. |
+| `command` | `String` | empty | `core/src/v2/control.rs`, `engine/src/bound.rs` … (16 files) | The command, executed through the same shell tool the model uses. |
 | `timeout` | `Option<u64>` | unset (the reader applies its own) | `core/src/v2/control.rs`, `engine/src/mcp.rs` … (8 files) | Seconds; absent means the shell tool's own default. |
 | `network` | `bool` | false | `core/src/v2/control.rs`, `engine/src/mcp.rs` … (3 files) | Run with network access (the sandbox is offline by default). |
 | `inputs` | `Vec<String>` | empty | `core/src/v2/control.rs`, `engine/src/v2/driver.rs` | Workspace-relative inputs the check reads. |

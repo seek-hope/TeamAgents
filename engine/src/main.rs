@@ -12,6 +12,9 @@ usage: teamagents [--cwd DIR] [--state-root PATH] [--model KEY] [--full-auto]\n\
   teamagents authority grant --subject ID --action A --scope S [--parent G]\n\
   teamagents authority revoke --grant ID        revoke that grant and everything derived from it\n\
   teamagents approvals [list] [--json]          the approvals a session is waiting on\n\
+  teamagents goals [list] [--json]              the goals the session carries (D-267)\n\
+  teamagents goals open --id ID [--attach X]    open the next goal, optionally attached to an instance,\n\
+      [--check ID=COMMAND]… [--deadline MIN]    with the user's own required checks and a deadline\n\
   teamagents approvals approve --id ID          approve that call, once (bound to its arguments)\n\
   teamagents approvals deny --id ID             deny it; the operation fails closed\n\
   teamagents instances [list] [--json]          the session's instances\n\
@@ -111,6 +114,11 @@ pub struct Args {
     pub confirmed: bool,
     /// D-248: `daemon --stop` — stop the session's daemon (as opposed to starting one).
     pub daemon_stop: bool,
+    /// D-267: `goals open --attach INSTANCE` — attach the new goal to that instance, which is what makes a later
+    /// delegation charge to it (D-266).
+    pub attach: Option<String>,
+    /// D-267: `goals open --deadline MINUTES` — a deadline for the new goal, measured from now (§8).
+    pub deadline_minutes: Option<u64>,
 }
 
 fn parse_args() -> Args {
@@ -148,6 +156,8 @@ fn parse_args() -> Args {
         daemon_stop: false,
         stream_json: false,
         service_stop: false,
+        attach: None,
+        deadline_minutes: None,
     };
     let mut i = 0;
     while i < argv.len() {
@@ -249,7 +259,7 @@ fn parse_args() -> Args {
                 i += 1;
             }
             "serve" | "init" | "doctor" | "validate" | "sessions" | "version" | "exec" | "authority" | "approvals"
-            | "instances" | "tasks" | "runners" | "artifacts" => {
+            | "instances" | "tasks" | "runners" | "artifacts" | "goals" => {
                 if args.command.is_some() {
                     reject("two entry points were given: pick one (teamagents --help lists them)");
                 }
@@ -271,7 +281,9 @@ fn parse_args() -> Args {
             "--json"
                 if matches!(
                     args.command.as_deref(),
-                    Some("exec" | "authority" | "approvals" | "instances" | "tasks" | "runners" | "artifacts")
+                    Some(
+                        "exec" | "authority" | "approvals" | "instances" | "tasks" | "runners" | "artifacts" | "goals"
+                    )
                 ) =>
             {
                 if args.exec_json {
@@ -312,7 +324,12 @@ fn parse_args() -> Args {
                 args.service_stop = true;
                 i += 1;
             }
-            "--id" if matches!(args.command.as_deref(), Some("approvals" | "instances" | "tasks" | "runners")) => {
+            "--id"
+                if matches!(
+                    args.command.as_deref(),
+                    Some("approvals" | "instances" | "tasks" | "runners" | "goals")
+                ) =>
+            {
                 if args.approval_id.is_some() {
                     given_twice("--id");
                 }
@@ -345,6 +362,27 @@ fn parse_args() -> Args {
                         .cloned()
                         .filter(|v| !v.is_empty() && !v.starts_with('-'))
                         .unwrap_or_else(|| needs_a_value("--action")),
+                );
+                i += 2;
+            }
+            "--attach" if args.command.as_deref() == Some("goals") => {
+                if args.attach.is_some() {
+                    given_twice("--attach");
+                }
+                args.attach = Some(
+                    argv.get(i + 1)
+                        .cloned()
+                        .filter(|v| !v.is_empty() && !v.starts_with('-'))
+                        .unwrap_or_else(|| needs_a_value("--attach")),
+                );
+                i += 2;
+            }
+            "--deadline" if args.command.as_deref() == Some("goals") => {
+                if args.deadline_minutes.is_some() {
+                    given_twice("--deadline");
+                }
+                args.deadline_minutes = Some(
+                    argv.get(i + 1).and_then(|v| v.parse::<u64>().ok()).unwrap_or_else(|| needs_a_value("--deadline")),
                 );
                 i += 2;
             }
@@ -405,7 +443,7 @@ fn parse_args() -> Args {
                 args.timeout = Some(parsed);
                 i += 2;
             }
-            "--check" if args.command.as_deref() == Some("exec") => {
+            "--check" if matches!(args.command.as_deref(), Some("exec" | "goals")) => {
                 args.checks.push(
                     argv.get(i + 1)
                         .cloned()
@@ -690,6 +728,56 @@ fn run_approvals(args: &Args) -> i32 {
 }
 
 /// `teamagents instances`: the §5.4 instance levers, headless (D-68).
+/// `teamagents goals`: the user's goal surface (D-267) — which goals the session carries, and how to open the
+/// next one. A settled goal cannot be reopened, so this is the lever a session longer than one goal needs.
+fn run_goals(args: &Args) -> i32 {
+    use teamagents_engine::v2::goals::{GoalCommand, GoalOptions};
+    let state_root = args.state_root.clone().map(PathBuf::from).unwrap_or_else(teamagents_engine::v2_root);
+    let verb = args.positional.as_deref().unwrap_or("list");
+    let command = match verb {
+        "list" => {
+            if args.approval_id.is_some() || args.attach.is_some() {
+                eprintln!("goals list takes no --id/--attach; use `goals open --id ID [--attach INSTANCE]`");
+                return 2;
+            }
+            GoalCommand::List
+        }
+        "open" => {
+            let Some(id) = args.approval_id.clone() else {
+                eprintln!("goals open needs --id ID (any name you will recognize later)");
+                return 2;
+            };
+            // --check ID=COMMAND, repeatable: the user's own required checks on the new goal (§8)
+            let mut required_checks = Vec::new();
+            for spec in &args.checks {
+                let Some((check_id, command)) = spec.split_once('=') else {
+                    eprintln!("goals open --check wants ID=COMMAND, got {spec:?}");
+                    return 2;
+                };
+                if check_id.is_empty() || command.trim().is_empty() {
+                    eprintln!("goals open --check wants a non-empty id and command, got {spec:?}");
+                    return 2;
+                }
+                required_checks.push(serde_json::json!({"id": check_id, "command": command}));
+            }
+            let deadline = args.deadline_minutes.map(|minutes| teamagents_core::models::now() + (minutes * 60) as f64);
+            GoalCommand::Open { id, attach: args.attach.clone(), required_checks, deadline }
+        }
+        other => {
+            eprintln!(
+                "goals: unknown command {other:?}; use `teamagents goals [list]` or \
+                 `goals open --id ID [--attach INSTANCE] [--check ID=COMMAND]… [--deadline MINUTES]`"
+            );
+            return 2;
+        }
+    };
+    teamagents_engine::v2::goals::run(GoalOptions {
+        socket: state_root.join("daemon.sock"),
+        command,
+        json_out: args.exec_json,
+    })
+}
+
 fn run_instances(args: &Args) -> i32 {
     use teamagents_engine::v2::intervene::{InterventionCommand, InterventionOptions};
     let state_root = args.state_root.clone().map(PathBuf::from).unwrap_or_else(teamagents_engine::v2_root);
@@ -1048,6 +1136,7 @@ fn main() {
         Some("exec") => run_exec(&args),
         Some("authority") => run_authority(&args),
         Some("approvals") => run_approvals(&args),
+        Some("goals") => run_goals(&args),
         Some("instances") => run_instances(&args),
         Some("tasks") => run_tasks(&args),
         Some("runners") => run_runners(&args),

@@ -20,6 +20,43 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-267 `teamagents goals`: the user can open the next goal, so a session is not one-goal-only (2026-09-28)
+
+D-266 fixed the bug *under* the gap ("a settled goal has no product surface to open a new one") but left the
+surface itself unwritten: `create_goal` is an ordinary user command the daemon forwards, and no product path sent
+it, so a session's work was still bounded to whatever goal the bootstrap had opened. **Decided: the CLI lever,
+plus the read it needs** — the same shape as the authority surface (D-61) and the cancel tool (D-265): surface
+for a capability the design already gives the **user**.
+
+* **`teamagents goals [list]`** prints every goal a session carries — id, status, deadline, the limits it was
+  opened with, settled and unknown usage, and **which instances are attached to it** — with `--json` for scripts.
+* **`teamagents goals open --id ID [--attach INSTANCE] [--check ID=COMMAND]… [--deadline MINUTES]`** opens the
+  next goal. Attaching is what makes a later delegation charge to it (D-266); `--check` carries the user's own
+  required checks (§8: `create_goal` refuses `limits.required_checks` from anyone but the user or the project
+  bootstrap, so this is the surface where that promise becomes usable); `--deadline` is measured from now (§8).
+* **A new `goals` read** carries the list: the checkpoint reports *one* goal object (the active one, D-266)
+  because every client needs "the goal" — a picker needs all of them. Its order is **attached first**, then
+  active, then newest, because the goal a session is *working on* is the one an instance points at: opening and
+  attaching a second goal moves that pointer, so the boot goal keeps its row and loses the attachment.
+
+**Evidence.** `engine/tests/cli.rs::the_goal_surface_lists_and_opens_goals_through_the_daemon` drives the real
+binary against a real daemon: no session is a usage error that names the fix; the boot goal is listed as
+`ACTIVE` and attached to the leader; `goals open` with a malformed `--check` and without `--id` are usage errors;
+opening `goal-second` attached to `i-leader` with `--check later-tests=true` exits 0; and the next list shows two
+goals with the *attached* one first, carrying the user's check, while the boot goal keeps its row and no longer
+holds the pointer. The write itself is the control plane's existing `create_goal` (authorized, validated and
+evented like any other user command) — this is a client, not a new authority.
+
+**What that closes, and what it does not.** The known gap's *user* half is closed: after a goal settles, a user
+can open and attach the next one and keep working in the same session. The *design* question the gap names —
+whether the **Leader** may open goals itself, which would let a model start budget-bearing work — stays the
+user's call and is untouched here. The runtime still opens no goal on its own, exactly as the design says.
+
+Ceiling: verified through a real daemon with a stub provider, not with a model in the loop; `goals list` reports
+what the database holds (it does not summarize usage against limits); and the ordering rule is asserted only in
+the two-goal shape the test builds — a session with several attached goals would list them all, but "which one is
+live" is a property of the instances, not of the list.
+
 ## D-266 A session is no longer one-goal-only for the user: delegation charges the *active* goal (2026-09-28)
 
 The known gap said "a settled goal has no product surface to open a new one", and reading it as *missing product
@@ -1743,7 +1780,7 @@ the A01–A36 table.
 | `§12.2` | sandbox, environment and credential hygiene | `§2` (the decision-review boundary: model credentials never enter the tool environment) and `§7` (tools, credentials, skills) |
 | `§12.3` | workspace policies (shared / isolated / git worktree) | `§5.1` |
 | `§14` | one owner per behaviour; the v2 state-root layout | `§10` (module organisation) and `§4.1` (one database per session) |
-| `§11` | the load probes | `§13` (performance experiments) |
+| `§8` | the load probes | `§13` (performance experiments) |
 
 Two sites cite a rule the design deliberately does not carry — the `[permissions] trust_project_tools` opt-in
 (the project-config merge is not read, D-133) and the legacy-layout cleanup inventory — and now say "the archived

@@ -2196,6 +2196,137 @@ fn the_authority_surface_grants_and_revokes_through_the_daemon() {
     std::fs::remove_dir_all(&root).expect("the state root goes away with its daemon");
 }
 
+/// D-267: the user's goal surface, through the real binary and a real daemon. A session is anchored to a goal and
+/// a settled goal cannot be reopened, so without a lever "what do I do next in this session?" had no answer a user
+/// could act on: `create_goal` is an ordinary user command the daemon forwards, but nothing in the product sent it
+/// (and until D-266 a goal opened this way could not be charged either).
+#[test]
+fn the_goal_surface_lists_and_opens_goals_through_the_daemon() {
+    let root = Scratch::new("goals");
+    let (config_home, state, ws) = (root.join("config"), root.join("root"), root.join("ws"));
+    std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
+    std::fs::create_dir_all(&ws).unwrap();
+    std::fs::write(
+        config_home.join("teamagents/config.toml"),
+        "[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\n\
+         api_key_env = \"TA_GOALS_KEY\"\nbase_url = \"http://127.0.0.1:1/v1\"\n",
+    )
+    .unwrap();
+    let env = |command: &mut Command| {
+        command
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("XDG_STATE_HOME", root.join("state"))
+            .env("TA_GOALS_KEY", "test-value");
+    };
+    let goals = |args: &[&str]| -> (i32, String, String) {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_teamagents"));
+        env(&mut command);
+        let output = command.args(args).arg("--state-root").arg(&state).output().expect("run goals");
+        (
+            output.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    };
+    let json = |text: &str| -> serde_json::Value { serde_json::from_str(text).expect("JSON report") };
+
+    // no session yet: the surface says so instead of writing into the void
+    let (code, _, stderr) = goals(&["goals"]);
+    assert_eq!(code, 2, "{stderr}");
+    assert!(stderr.contains("start one with"), "the error points at a session: {stderr}");
+
+    let mut daemon = Command::new(env!("CARGO_BIN_EXE_teamagents"));
+    env(&mut daemon);
+    let daemon = daemon
+        .args(["daemon", "--state-root"])
+        .arg(&state)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("start the daemon");
+    let _guard = Daemon(daemon);
+    let socket = state.join("daemon.sock");
+    for _ in 0..400 {
+        if socket.exists() && std::os::unix::net::UnixStream::connect(&socket).is_ok() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    // wait for the bootstrap's own goal
+    let mut listed = serde_json::Value::Null;
+    for _ in 0..400 {
+        let (code, out, _) = goals(&["goals", "--json"]);
+        if code == 0 {
+            listed = json(&out);
+            if !listed["goals"].as_array().map(|g| g.is_empty()).unwrap_or(true) {
+                break;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let boot = listed["goals"].as_array().cloned().unwrap_or_default();
+    assert_eq!(boot.len(), 1, "the bootstrap opens exactly one goal: {listed}");
+    assert_eq!(boot[0]["status"], serde_json::json!("ACTIVE"), "{listed}");
+    assert_eq!(
+        boot[0]["attached_instances"],
+        serde_json::json!(["i-leader"]),
+        "the boot goal is attached to the leader: {listed}"
+    );
+    // (opening and attaching a second goal moves the instance's pointer — asserted where it happens, below)
+    let first = boot[0]["id"].as_str().unwrap_or_default().to_string();
+
+    // a usage error stays a usage error
+    let (code, _, stderr) = goals(&["goals", "open", "--id", "g2", "--check", "no-equals-sign"]);
+    assert_eq!(code, 2, "{stderr}");
+    assert!(stderr.contains("ID=COMMAND"), "{stderr}");
+    let (code, _, stderr) = goals(&["goals", "open"]);
+    assert_eq!(code, 2, "{stderr}");
+    assert!(stderr.contains("needs --id"), "{stderr}");
+
+    // 1. open the next goal, attached to the leader, carrying the user's own required check
+    let (code, out, stderr) = goals(&[
+        "goals",
+        "open",
+        "--id",
+        "goal-second",
+        "--attach",
+        "i-leader",
+        "--check",
+        "later-tests=true",
+        "--json",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(json(&out)["goal_id"], serde_json::json!("goal-second"), "{out}");
+
+    // 2. the list carries both, names the active one, and says what is attached to what
+    let (code, out, stderr) = goals(&["goals", "--json"]);
+    assert_eq!(code, 0, "{stderr}");
+    let report = json(&out);
+    let rows = report["goals"].as_array().cloned().unwrap_or_default();
+    assert_eq!(rows.len(), 2, "the settled-or-not pair the session now carries: {report}");
+    let second = rows.iter().find(|g| g["id"] == serde_json::json!("goal-second")).expect("the opened goal");
+    assert_eq!(second["status"], serde_json::json!("ACTIVE"), "{report}");
+    assert_eq!(second["attached_instances"], serde_json::json!(["i-leader"]), "{report}");
+    assert_eq!(
+        second["limits"]["required_checks"][0]["id"],
+        serde_json::json!("later-tests"),
+        "the user's check rides on the goal: {report}"
+    );
+    // the *live* goal is the first row: the one an instance is attached to (attaching moves that pointer, so the
+    // boot goal keeps its row and loses the attachment — which is why the order is "attached first", not "newest")
+    assert_eq!(rows[0]["id"], serde_json::json!("goal-second"), "{report}");
+    let boot_row = rows.iter().find(|g| g["id"] == serde_json::json!(first)).expect("the boot goal");
+    assert_eq!(boot_row["attached_instances"], serde_json::json!([]), "{report}");
+
+    // 3. the plain-text form names the goal, its attachments and its checks
+    let (code, out, stderr) = goals(&["goals"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(out.contains("goal-second"), "{out}");
+    assert!(!out.contains("later-tests"), "the text form counts checks rather than listing them: {out}");
+    assert!(out.contains("checks: 1"), "{out}");
+    assert!(out.contains("attached: i-leader"), "{out}");
+}
+
 /// `[limits]` in the user config bounds every goal the session creates (D-64): the
 /// usage ceiling travels on the goal's `limits` and the deadline is an absolute
 /// timestamp the bootstrap derives from the configured minutes. The daemon really
