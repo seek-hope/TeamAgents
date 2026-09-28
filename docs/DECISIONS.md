@@ -20,6 +20,88 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-302 Task 16 is verified: the fifth audited row, and the fifth hole (2026-09-29)
+
+The product's entry is D-301. This entry is the operator's verification and the phase's measured numbers.
+
+**What the audit found this time.** A15 ("Environment identity") claims the runner "persists **and verifies** pid
++ boot_id + start_ticks". The *persistence* and the *live* identity are driven by the other runner tests and by
+`review/dogfood/job_identity.py`, but the **refusal** — a pid that has been recycled (the number exists, the
+process is not the job's) and a journal from another boot — was driven by nothing, and that is the half that keeps
+a cancel from killing an unrelated process. The delivery adds
+`jobs_runner::a_journal_whose_process_identity_moved_is_refused_not_signalled`: it takes a harmless `sleep` in its
+own group, derives the real boot id and start ticks, then calls the **public** `jobs::signal_group` with signal 0
+(which delivers nothing, so the guard is exercised without signalling) — accepted for the matching identity,
+refused for `start_ticks + 1` and refused for another boot id, both with "identity changed" in the message.
+
+**Verified.** The operator dropped the identity guard in `engine/src/jobs/mod.rs` (the same control the product
+used) and the new test fails at `jobs_runner.rs:552` on "a recycled pid must be refused"; restoring the file
+byte-identically (sha256 `2b093aae…`, unchanged) puts it back to `ok`. `env -u DEEPSEEK_API_KEY make check`
+`rc=0` (25 green targets) and `make pty` ok, and the goal settled only after its own required check passed — the
+thirteenth of fifteen machine-gated deliveries.
+
+**The audit's yield, five rows in: five holes.** A33 (a signal claimed, never driven), A18 (a published sentence
+the gate never honoured), A13 (a race the cited tests could not reach), A19 (a half named in the row's own title
+with no test), A15 (the "and verifies" half of a row whose other half was driven). Two of the five were already
+correct behaviour and needed coverage; three were holes in what a reader was told. Every one of the five was
+found by reading a row *against its citations*, which is a check no audit in `review/` performs.
+
+**The phase's measured numbers (this commit).** **Fifteen deliveries**, **182,437,542 tokens over 699 model
+requests**, the suites at `core 109 / engine 284 / tui 36`, and an operator cost of sixteen verification rounds
+and three resumes. Four of the fifteen defects came from the operator's supervision or its probes; the last six
+deliveries all came from the claims audit.
+
+**Next card**: continue the audit at the next row, the same discipline. The operator keeps verifying each
+delivery with its own control, the gate and the `make pty` smoke, and keeps stating measured numbers.
+
+**Ceiling**: the test drives the guard through `signal 0` on processes the test owns; it does not prove that no
+*other* path reaches `kill` without the guard (the code's own comment says the runner never signals a pid taken
+from outside, and that is a claim about callers, which this test does not audit). The remaining thirty-one rows
+are still prose-first.
+
+## D-301 A15's "verifies" half was claimed and never driven; the identity guard now has a test (2026-09-29)
+
+**Triage.** D-300 left the row-by-row mandate, so I took the next unaudited row. Before choosing A15 I read and
+rejected: A01 ("a single Leader completes a goal (and the team it builds runs)" — the headless path and the
+delegation runs are cited with their dates and raw evidence, and the web half names its probe); A02/A03/A04 (the
+ring, the grants and the queued-then-revoked timing each cite a named unit test *and* say explicitly when the
+timing stays with the tests); A07/A08/A09/A10/A11 (each names the test or probe that drives its shape, including
+A08's crash window, which waits for `operation_completed` before crashing); and A14's own claim, whose suite
+numbers are dated by their decision. **A15** is shape-driven ("the runner persists and verifies pid + boot_id +
+start_ticks") and load-bearing: it is the rule behind "we never signal a stranger".
+
+**What the cited evidence actually asserts.** A15 cites the runner tests and the live probe
+(`review/dogfood/job_identity.py`): the journal's `start_ticks` matches `/proc/<pid>/stat`, its `boot_id` matches
+the machine, a duplicate GO leaves `starts` at 1 with the same pid, and a guessed token is refused. All of that
+is the *recording* and the *liveness* half. The *verification* half is
+`engine/src/jobs/mod.rs`'s `signal_group`, which re-reads `/proc` and refuses with "process identity changed,
+refusing to signal" when `boot_id` or `start_ticks` no longer match — grep found that string only in the code and
+in a probe fixture, never in a test. So the rule that keeps a cancel from killing a *recycled* pid was unexercised.
+
+**The change (coverage, not behaviour).** A new test in `engine/tests/jobs_runner.rs`,
+`a_journal_whose_process_identity_moved_is_refused_not_signalled`: a harmless child in its own process group, a
+journal naming it — the matching identity is accepted (`kill(-pid, 0)` delivers nothing), a recycled pid
+(`start_ticks + 1`) is refused with the code's own words, and a journal from another boot is refused too. A15's
+row now names the test and says which half it drives. **No product code changed** — `git status engine/src/jobs/`
+is empty after the work.
+
+**Evidence** (2026-09-29; the tree is `HEAD` plus this uncommitted diff).
+
+| Command | Result |
+|---|---|
+| `cargo test --offline --manifest-path engine/Cargo.toml --test jobs_runner a_journal_whose_process_identity_moved_is_refused_not_signalled -- --exact` | **ok** (0.00 s) |
+| pre-fix control: the identity guard in `engine/src/jobs/mod.rs`'s `signal_group` dropped (`if journal.boot_id != boot_id()? \|\| journal.start_ticks != Some(start_ticks(pid)?) {` replaced with `if false {`) | **FAILED**: `a recycled pid must be refused: ()` — `expect_err` received `Ok(())`, i.e. the signal-0 probe reached the group of a *different* process |
+| the line restored byte-identically (`diff` clean, `sha256sum` `2b093aae…`) | **ok** — and `engine/src/jobs/` is unchanged against `HEAD`, so no code change ships |
+| `cargo test --offline --manifest-path engine/Cargo.toml --test jobs_runner` | **ok** — 16/16 |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `python3 review/test_counts.py --write` | `engine: 283 -> 284` (the new test) |
+
+**Ceiling.** The test drives the guard with signal 0, so it proves the *refusal* and the acceptance of a matching
+identity; it does not deliver a real signal (a real SIGTERM to a group the test owns would end the test's own
+process). It also covers the two identity conjuncts (`start_ticks`, `boot_id`) but not the `pid`-missing branch
+(`no verifiable process`), which the runner's own tests reach through journals without a pid. The live probe was
+not re-run. `make pty` and the probe sets were not run.
+
 ## D-300 Task 15 is verified: the fourth audited row, and the fourth hole (2026-09-29)
 
 The product's entry is D-299. This entry is the operator's verification and the phase's measured numbers.

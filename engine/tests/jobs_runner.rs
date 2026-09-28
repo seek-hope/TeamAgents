@@ -512,3 +512,52 @@ async fn wait_gone(dir: &Path, timeout_ms: u64) -> bool {
     }
     false
 }
+
+/// A15's *verification* half: the runner re-reads `/proc` before it signals, so a journal whose pid has been
+/// recycled (the number exists, the process is not the job's) is refused rather than signalled. The row claims
+/// the runner "persists **and verifies** pid + boot_id + start_ticks"; the persistence and the live identity are
+/// driven by the other runner tests and the probe, and nothing drove the refusal — the half that keeps a cancel
+/// from killing an unrelated process. Signal 0 delivers nothing, so the guard is driven without signalling.
+#[test]
+fn a_journal_whose_process_identity_moved_is_refused_not_signalled() {
+    use std::os::unix::process::CommandExt;
+    // a harmless process in its own group, so `kill(-pid, 0)` can answer "this group exists"
+    let mut child = std::process::Command::new("sleep")
+        .arg("300")
+        .process_group(0)
+        .spawn()
+        .expect("spawn a harmless child in its own group");
+    let pid = child.id();
+    let real_boot = teamagents_engine::jobs::boot_id().expect("boot id");
+    let real_ticks = teamagents_engine::jobs::start_ticks(pid).expect("start ticks");
+    let journal = |boot: String, ticks: Option<u64>| teamagents_engine::jobs::Journal {
+        job_id: "op-identity".into(),
+        state: "RUNNING".into(),
+        command_hash: "h".into(),
+        pid: Some(pid),
+        start_ticks: ticks,
+        boot_id: boot,
+        exit_code: None,
+        signal: None,
+        started_ms: None,
+        finished_ms: None,
+        starts: 1,
+        cancel_saved: false,
+    };
+    // the matching identity is accepted (and signal 0 delivers nothing)
+    teamagents_engine::jobs::signal_group(&journal(real_boot.clone(), Some(real_ticks)), 0)
+        .expect("the recorded identity is the process the journal names");
+    // a recycled pid: the same number, a different process
+    let moved = teamagents_engine::jobs::signal_group(&journal(real_boot.clone(), Some(real_ticks + 1)), 0)
+        .expect_err("a recycled pid must be refused");
+    assert!(moved.contains("identity changed"), "{moved}");
+    // the same pid after a reboot is a different process as well
+    let rebooted = teamagents_engine::jobs::signal_group(
+        &journal("00000000-0000-0000-0000-000000000000".into(), Some(real_ticks)),
+        0,
+    )
+    .expect_err("a journal from another boot must be refused");
+    assert!(rebooted.contains("identity changed"), "{rebooted}");
+    let _ = child.kill();
+    let _ = child.wait();
+}
