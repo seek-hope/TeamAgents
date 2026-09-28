@@ -311,6 +311,29 @@ async fn go_past_the_deadline_is_refused_and_runs_nothing() {
     client::shutdown(&dir).await.expect("shutdown");
 }
 
+/// A13's completion race, and the design line behind it (`docs/DESIGN.md`: "cancellation never overwrites a real
+/// effect that happened"): a CANCEL that arrives after the command settled changes nothing — the journal keeps
+/// its outcome, its exit code and its single start. The cancel arm acts only on `READY` (before any start) or on
+/// a live child, so a settled job's cancel is a no-op; the pre-start and deadline races have their own tests
+/// above. Nothing drove this half before: the cited `jobs_runner::cancel_*` cannot even reach it, because the
+/// command is already gone.
+#[tokio::test]
+async fn a_cancel_after_the_command_settled_never_overwrites_the_outcome() {
+    runner_bin();
+    let dir = root("cancel-settled");
+    client::spawn(&dir, &spec("op-settled", "true", future(30_000))).await.expect("spawn");
+    client::go(&dir).await.expect("go");
+    assert_eq!(wait_terminal(&dir, 10_000).await, "SUCCEEDED");
+    let before = client::status(&dir).await.expect("status before the cancel");
+    let cancelled = client::cancel(&dir).await.expect("a cancel after the command settled");
+    assert_eq!(cancelled.state, "SUCCEEDED", "a settled command's cancel must not overwrite its outcome");
+    let after = client::status(&dir).await.expect("status after the cancel");
+    assert_eq!(after.state, "SUCCEEDED");
+    assert_eq!(after.exit_code, before.exit_code, "the settled exit code stands");
+    assert_eq!(after.starts, before.starts, "and no second start was recorded");
+    client::shutdown(&dir).await.expect("shutdown");
+}
+
 #[tokio::test]
 async fn runner_crash_after_accept_recovers_as_outcome_unknown() {
     runner_bin();

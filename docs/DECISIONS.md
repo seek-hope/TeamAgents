@@ -20,6 +20,90 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-298 Task 14 is verified: the third audited acceptance row, and the third real hole (2026-09-29)
+
+The product's entry is D-297. This entry is the operator's verification and the phase's measured numbers.
+
+**What the audit found this time.** A13 ("Cancel / timeout / completion races") cited `jobs_runner::cancel_*`
+among its evidence, but the *completion race* half — the design's own line, "cancellation never overwrites a real
+effect that happened" — had no test at all, and the cited tests cannot reach it: they drive cancels against a
+`READY` job or a live child, so a cancel that arrives *after* the command settled is never exercised. The
+delivery adds `jobs_runner::a_cancel_after_the_command_settled_never_overwrites_the_outcome` (spawn, let the
+command settle `SUCCEEDED`, cancel, then assert the journal still reads `SUCCEEDED` with the same exit code and
+the same start count) and makes the row's citation list say what covers which half — the timeout half is now
+named (`deadline_cancels_a_stuck_command`, `go_past_the_deadline_is_refused_and_runs_nothing`) instead of being
+folded into "cancel_*". No product code changed.
+
+**Verified.** The operator reproduced the pre-fix control independently: the runner's cancel arm's terminal
+no-op replaced by the same guard the product used (`} else if self.journal.state != "READY" {`, its signal call
+dropped) makes the new test fail with `left: "CANCEL_REQUESTED"`, `right: "SUCCEEDED"` — the exact defect the
+design line forbids — and restoring the file byte-identically puts the test back to `ok`. The restored file's
+sha256 is `f31f53388cad…`, the same value the product's entry quotes, so the operator's restore and the
+product's are the same bytes. `env -u DEEPSEEK_API_KEY make check` `rc=0` (25 green targets) and `make pty` ok,
+and the goal settled only after its own required check passed — the eleventh of thirteen machine-gated
+deliveries.
+
+**The audit's yield so far is the story.** Three of the matrix's thirty-six rows have been audited (A33's two
+signals, A18's ceiling sentence, A13's completion race) and **each one had a real hole** — a claim half, a
+published sentence, an untested race. That is the strongest argument for continuing this card: the matrix is the
+document a reader trusts most, and its rows are prose that only prose checks.
+
+**The phase's measured numbers (this commit).** **Thirteen deliveries**, **159,212,972 tokens over 654 model
+requests**, the suites at `core 109 / engine 282 / tui 36`, and an operator cost of fourteen verification rounds
+and three resumes. Four of the thirteen defects were found by the operator's supervision or its own probes
+rather than by a card.
+
+**Next card**: continue the audit, one row per turn, preferring rows whose cited evidence is a probe or a shape.
+The operator will keep verifying each delivery the same way — the control, the gate, and the `make pty` smoke.
+
+**Ceiling**: a row's audit proves that the *cited* evidence covers the claim, not that the claim is the right
+claim; and the new test pins the runner's current behaviour, so a future change that lets a settled cancel
+overwrite an outcome has to be caught by the same test — which is the point, but it is a test, not a model. The
+other thirty-three rows are still prose-first.
+
+## D-297 A13's timeout half was uncited and its completion race untested; the design's line now has a test (2026-09-29)
+
+**Triage.** The only open item in `docs/ACCEPTANCE.md`'s Known gaps is the goal close/cancel lever, which is
+protocol surface the user owns, and `docs/PRODUCT-COMPARISON.md` §2's list is reserved the same way; D-296 left
+this mandate card. So I continued D-288's claims audit. Before A13 I checked and rejected: A06 ("a message
+applied across a restart" — the restart half *is* covered by evidence the row cites: the formal
+`V2Inbox::AtMostOncePerEnvelope`, "a replay after a lost `APPLIED` marker appends nothing", while
+`submit_input_applies_context_once_per_envelope` covers the same-session dedup, so the row is not false); A22
+("ALL/ANY wait cycles" — `V2Wait`'s `HoldsWith` implements the distinction and the row cites that model); and
+A31/A32/A34/A35, which the previous pass read and found supported.
+
+**The finding.** A13's claim names three nouns — "Cancel / timeout / completion races" — and its cited offline
+evidence was `jobs_runner::cancel_*` plus `v2_driver::user_cancel_stops_a_running_job`. The glob covers exactly
+two tests (`cancel_before_start_persists_and_rejects_late_go`, `cancel_running_stops_the_process_group`); the
+**timeout** half lives in `deadline_cancels_a_stuck_command` and `go_past_the_deadline_is_refused_and_runs_nothing`,
+which no citation reaches. Worse, the **completion** race had no test at all: `docs/DESIGN.md`'s own line for A13
+is "cancellation never overwrites a real effect that happened", the runner's cancel arm implements it (it acts only
+on `READY` or on a live child, so a settled journal is left alone), and nothing drove it — the pre-start and
+deadline races have tests, the settled one did not.
+
+**The change (coverage, not behaviour).** A new test in `engine/tests/jobs_runner.rs`,
+`a_cancel_after_the_command_settled_never_overwrites_the_outcome`: run `true` to `SUCCEEDED`, then `cancel`, and
+assert the journal still says `SUCCEEDED` with the same `exit_code` and the same `starts`. A13's row now cites it
+and the two deadline tests, so each noun of its claim has the evidence it names. **No product code changed** —
+`git status engine/src/jobs/runner.rs` is empty after the work, and only the test file and the row moved.
+
+**Evidence** (2026-09-29; the tree is `HEAD` plus this uncommitted diff).
+
+| Command | Result |
+|---|---|
+| `cargo test --offline --manifest-path engine/Cargo.toml --test jobs_runner a_cancel_after_the_command_settled_never_overwrites_the_outcome -- --exact` | **ok** (0.07 s) |
+| `cargo test --offline --manifest-path engine/Cargo.toml --test jobs_runner` | **ok** — 15/15, the new test beside the two deadline tests the row now cites |
+| pre-fix control: the cancel arm's terminal no-op removed in `engine/src/jobs/runner.rs` — the guard `} else if self.child.is_some() {` replaced by `} else if self.journal.state != "READY" {` and its `signal_group` call dropped, so a settled cancel marks `CANCEL_REQUESTED` | **FAILED**: `assertion left == right failed: a settled command's cancel must not overwrite its outcome`, `left: "CANCEL_REQUESTED"`, `right: "SUCCEEDED"` — the defect the design line forbids, caught by the new test |
+| the same two lines restored byte-identically (`diff` clean, `sha256sum` `f31f5338…`) | **ok** — and the file is unchanged against `HEAD`, so no code change ships |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `python3 review/test_counts.py --write` | `engine: 281 -> 282` (the new test) |
+
+**Ceiling.** The test pins the settled journal's outcome, exit code and start count; it does not exercise the
+*timing* window in which a cancel and a completion interleave (the arm's guard decides from the journal state, and
+`V2Jobs` has no clock, so the deadline and the race are code-test territory rather than model territory). The
+timeout half stays covered by the two deadline tests, which A13 now cites; nothing here claims a new property.
+`make pty` and the probe sets were not run.
+
 ## D-296 Task 13 is verified: the Kani frontier is measured, and the operator's own entry had an unmeasured number (2026-09-29)
 
 The product's entry is D-295. This entry is the operator's verification of a *measured ceiling* — the outcome the
