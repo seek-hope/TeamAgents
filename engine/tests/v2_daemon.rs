@@ -861,6 +861,26 @@ async fn a_blocked_goal_is_not_reported_as_a_success() {
     handle.shutdown().await.expect("shutdown");
 }
 
+/// The outcome contract's third arm, through the whole surface: a model that reports `failed` closes its goal
+/// `FAILED`, and the run is a failure — not a success, not a reply, not a timeout. Its `blocked` sibling is
+/// above this one; before this test the string `"status": "failed"` appeared in no test (D-317).
+#[tokio::test]
+async fn a_failed_goal_is_not_reported_as_a_success() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let failed = json!({"role": "assistant", "content": "",
+        "tool_calls": [{"id": "finish-1", "type": "function",
+                        "function": {"name": "finish",
+                                     "arguments": json!({"status": "failed", "summary": "it did not land"}).to_string()}}]});
+    let scripts = HashMap::from([("i-leader".to_string(), vec![failed])]);
+    let (root, handle) = boot("exec-failed", scripts).await;
+    let (socket, workspace) = (root.dir.join("state/daemon.sock"), root.dir.join("ws"));
+    let run = headless(exec_options(&socket, &workspace, "try it", Vec::new())).await;
+    assert_eq!(run.end, End::Failed, "{}", run.report);
+    assert_eq!(run.report["goal_status"], json!("FAILED"));
+    assert_eq!(run.end.exit_code(run.checks_ok), 1);
+    handle.shutdown().await.expect("shutdown");
+}
+
 /// A turn the runtime closes with nothing to settle is not the member's reply:
 /// the goal settled in an earlier run, so this run's `finish` only ends the turn
 /// (`close_completion`) and the runtime says so. Reporting that closing word as a

@@ -921,6 +921,15 @@ fn finish_call_blocked(summary: &str) -> Json {
                                         "arguments": json!({"status": "blocked", "summary": summary}).to_string()}}]})
 }
 
+/// The outcome contract's third arm (§8): the model reports its own failure. `blocked` has this helper's sibling
+/// and `success` is the default; `failed` had no end-to-end arm in any test.
+fn finish_call_failed(summary: &str) -> Json {
+    json!({"role": "assistant", "content": "",
+           "tool_calls": [{"id": format!("finish-{}", uuid::Uuid::new_v4()), "type": "function",
+                           "function": {"name": "finish",
+                                        "arguments": json!({"status": "failed", "summary": summary}).to_string()}}]})
+}
+
 async fn wait_event_where(kind: &str, handle: &DriverHandle, timeout_ms: u64, pred: impl Fn(&Json) -> bool) -> Json {
     for _ in 0..(timeout_ms / 25) {
         if let Ok(events) = handle.events(0).await {
@@ -1365,6 +1374,34 @@ async fn blocked_candidate_never_runs_the_checks() {
         wait_event_where("goal_completed", &handle, 15_000, |e| e["payload"]["status"] == json!("BLOCKED")).await;
     assert_eq!(closed["payload"]["completion"]["outcome"], json!("blocked"));
     assert!(no_event(&handle, "check_round_registered").await);
+    handle.shutdown().await.expect("shutdown");
+}
+
+/// The third arm of the outcome contract (§8): a Leader whose model reports `failed` closes its goal `FAILED`,
+/// and — like the `blocked` arm beside this one — its checks never run, because only a claimed `success` is
+/// verified. The kernel's parse of the status is a unit test and the report maps a FAILED goal to a failed run;
+/// the *end-to-end* arm (a model closing a goal `failed`) had none: `"status": "failed"` appeared in no test.
+#[tokio::test]
+async fn a_failed_candidate_closes_the_goal_failed_and_never_runs_the_checks() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let root = root("outcome-failed");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let script = vec![Step::Message(finish_call_failed("the migration did not land"))];
+    let mut config = root.config(ScriptedProvider { script: Mutex::new(script.into()) });
+    // a check that leaves a witness if it runs: a failed candidate must not run it at all
+    config.goal_limits = json!({"required_checks": [{"id": "tests", "command": "touch ran"}]});
+    let handle = start(config).await.expect("start");
+    handle.input("migrate").await.expect("input");
+    let closed =
+        wait_event_where("goal_completed", &handle, 15_000, |e| e["payload"]["status"] == json!("FAILED")).await;
+    assert_eq!(closed["payload"]["completion"]["outcome"], json!("failed"), "{closed}");
+    assert!(no_event(&handle, "check_round_registered").await);
+    assert!(
+        !root.dir.join("ws").join("ran").exists(),
+        "a candidate that admits undelivered work is never upgraded by checks (§8)"
+    );
+    let snapshot = handle.snapshot().await.unwrap();
+    assert_eq!(snapshot["instance"]["phase"], json!("READY"));
     handle.shutdown().await.expect("shutdown");
 }
 

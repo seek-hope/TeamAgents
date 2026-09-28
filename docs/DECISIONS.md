@@ -20,6 +20,89 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-318 Task 24 is verified: the outcome contract's third arm had no end-to-end test (2026-09-29)
+
+The product's entry is D-317. This entry is the operator's verification and the phase's measured numbers.
+
+**What the card was, and what it found.** It was the first candidate of the previous row's own ceiling: `finish`
+offers `status: success|blocked|failed`, the outcome contract's three arms, and the string `"status": "failed"`
+appeared in **no test**. The delivery closes the arm twice over: at the daemon level, a model reporting `failed`
+closes the goal `FAILED` and the headless run ends `End::Failed` with exit code 1 and `goal_status: "FAILED"` —
+not a success, not a reply, not a timeout; and at the driver level the goal closes `FAILED` while the configured
+required checks **never run** (the check that would `touch ran` leaves no witness), which is the same shape as
+the `blocked` arm beside it: only a claimed *success* is verified.
+
+**Verified.** The operator's own control is the classification itself: making `complete_goal`'s fall-through arm
+map a candidate's `failed` outcome to `SUCCEEDED` fails **both** new tests — the daemon one with
+`left: Completed`, `right: Failed` and `goal_status: "SUCCEEDED"` in the report (the faked success the contract
+forbids), and the driver one by timing out while waiting for a `FAILED` close — and restoring the file
+byte-identically (sha256 `3ac6e946…`, unchanged) puts both back to `ok`. `env -u DEEPSEEK_API_KEY make check`
+`rc=0` (25 green targets) and `make pty` ok, and the goal settled only after its own required check passed — the
+twenty-first of twenty-three machine-gated deliveries.
+
+**The audit's yield.** Twelve cards (eleven rows plus the numbers sweep) have produced **thirteen findings**: six
+coverage (A33, A19, A15, A22, A23, and this outcome arm), six claims (A18, A13, A25, A14, A11, A01) and one
+product defect (A31); two of the thirteen fixed an audit rather than a document.
+
+**The phase's measured numbers (this commit).** **Twenty-three deliveries**, **320,240,818 tokens over 914 model
+requests**, the suites at `core 113 / engine 286 / tui 36`, and an operator cost of twenty-four verification
+rounds and three resumes. Four of the twenty-three defects came from the operator's supervision or its probes.
+
+**Next card**: the other candidate the row handed over — the `wait` tool's `message` condition kind and its
+delivery semantics — and then the remaining rows. The operator keeps verifying each delivery with its own
+control, the gate and the `make pty` smoke.
+
+**Ceiling**: the new tests pin the failing arm through two surfaces and the "checks never run" rule; the *report*
+mapping for other terminal combinations (a blocked goal with a failed check, say) is covered by the neighbouring
+tests, and nothing here re-checks them. The remaining twenty-five rows are still prose-first.
+
+## D-317 The outcome contract's third arm: a model that reports `failed` now ends a goal end to end (2026-09-29)
+
+**The candidate, and what I rejected.** D-316's ceiling offered two. I took **(a) `finish`'s `status: failed`**:
+it is the *outcome contract*'s third arm — a run either settles, fails, or is unfinished — and the arm the
+matrix's exit-code contract claims ("`1` failed or unfinished"). I rejected **(b) the `wait` tool's `message`
+condition kind** because triage showed the *kind* is driven: A23's registration test registers a `message`
+condition (with a `from`), A02/A05's neighbourhood covers delivery, and the probe covers the ring. What is
+genuinely missing there is the **`from`-less "any sender" form** the tool's own description advertises (the tests
+hold **0** `{"kind": "message"}` conditions without a `from`, from the D-315 triage) — recorded below rather than
+fixed, because its rows are A22/A23 (already audited) and its claim lives in the tool schema, not in a row.
+
+**What the evidence actually asserted.** The `failed` *parse* is covered — `core/src/kernel/mod.rs`'s test feeds
+`{"status":"failed"}` and asserts `Outcome::Failed` — and the report maps a goal closed `FAILED` to a failed run
+(`v2::exec::tests::exit_codes_follow_the_documented_contract` uses a FAILED goal). The **`blocked`** arm has
+*two* end-to-end tests: `v2_daemon::a_blocked_goal_is_not_reported_as_a_success` (not exit 0) and
+`v2_driver::blocked_candidate_never_runs_the_checks` (§8: the checks never run). The **`failed`** arm had none:
+`"status": "failed"` appeared in **no** test, so nothing drove a model closing its goal `failed`.
+
+**The change (coverage, not behaviour).** Two tests, each mirroring its `blocked` sibling:
+`v2_daemon::a_failed_goal_is_not_reported_as_a_success` (a scripted `finish` with `status: failed` →
+`end=failed`, `goal_status=FAILED`, exit 1, not a reply, not a timeout) and
+`v2_driver::a_failed_candidate_closes_the_goal_failed_and_never_runs_the_checks` (the goal closes `FAILED`, the
+`goal_completed` payload's `completion.outcome` is `failed`, no `check_round_registered`, and a check whose
+command would leave a witness never ran — §8: only a claimed `success` is verified). The matrix's exit-code
+contract row cites both now. **No product code changed**: the §8 gate and the status mapping were already
+correct, and the two controls below show what breaking them does.
+
+**Evidence** (2026-09-29; the tree is `c189c2ff` plus this uncommitted diff).
+
+| Command | Result |
+|---|---|
+| `cargo test --offline --manifest-path engine/Cargo.toml --test v2_daemon a_failed_goal_is_not_reported_as_a_success -- --exact` | **ok** (0.32 s) |
+| `cargo test --offline --manifest-path engine/Cargo.toml --test v2_driver a_failed_candidate_closes_the_goal_failed_and_never_runs_the_checks -- --exact` | **ok** (0.05 s) |
+| the suites | `v2_daemon` **32/32**, `v2_driver` **39/39** |
+| control (a): the driver's §8 gate narrowed — `if outcome == "success"` → `if outcome != "blocked"` (a failed candidate runs its checks) | **FAILED**: `assertion failed: no_event(&handle, "check_round_registered")`; the line was restored byte-identically (`diff` clean) and `engine/src/v2/driver.rs` is unchanged against `HEAD` |
+| control (b): `complete_goal`'s mapping changed — `_ => "FAILED"` → `_ => "SUCCEEDED"` (a faked success) | **FAILED**: the report printed `"end":"completed"`, `"goal_status":"SUCCEEDED"`, `left: Completed`, `right: Failed`; the line was restored byte-identically |
+| `python3 review/test_counts.py --write` | `engine: 286 -> 288` (the two new tests) |
+| **the knock-on, caught by D-313's own audit**: A14's row stated the counts it had *measured* ("…step printed core 113 / engine 286 / tui 36"), which went stale the moment these two tests landed | `review/test_counts.py` **FAILED** on it (`…the clause before it does not phrase it as history`); A14 now says "…step **then** printed …" — a dated measurement phrased as history — and the audit is green again |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+
+**Ceiling.** The two tests cover the model's `failed` arm end to end: the close, the exit code and §8's
+check-gating. Still open and recorded: the wait tool's **`from`-less `message` condition** (0 tests; its rows
+A22/A23 are audited, and its claim lives in the tool schema rather than in a matrix row); and the *live* halves
+of the other rows, untouched. This turn's own tests moved the suites, which is what made A14's dated measurement
+stale — a reminder that D-313's audit is what keeps a *dated* number honest as history rather than
+current-sounding.
+
 ## D-316 Task 23 is verified: the eleventh audited row, and A01's team half had no offline citation (2026-09-29)
 
 The product's entry is D-315. This entry is the operator's verification and the phase's measured numbers.
