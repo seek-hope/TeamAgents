@@ -20,6 +20,60 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-272 The product is judged ready for the self-refine phase, and its provider wiring is validated (2026-09-28)
+
+The user extended the goal: once the product can carry it, **TeamAgents itself** must continue the
+productization/engineering work, driven through its own CLI with a private gateway entry for
+`DeepSeek-V4.1-Flash` (chat-completions wire, thinking mode at high effort), the operator supervising
+periodically and helping only where the product is stuck.
+
+**The judgment.** The campaign's remaining list is no longer unfinished engineering: A01–A36 all have automated
+evidence and none is ⚠ (`docs/ACCEPTANCE.md`), `make check` is green (core 107 / engine 274 / tui 36) with
+`make pty`, **16/16 offline probes pass in 137.5 s** and the release path is rehearsed green (`0.2.0` packages,
+installs and runs from this tree; 5,927 KiB archive). The three formal gates were last re-run at `63e45e0e`
+and nothing in the re-run material (`core/src/kernel/types.rs`, `verification/tla`, `verification/kani`) has
+changed since — D-270/D-271 touched neither, so no re-run is owed (D-202). What remains is the **user's
+decision queue** (15 entries: the release tag, Q16's wording, the wait semantics, the worker-shell default,
+artifact bytes, sessions beyond one-per-state-root, interrupt-and-redirect, sandbox backends, automations,
+memory, the offered-surface record, `view_image`, …) — decisions, not work. So the loop takes over the work
+that needs no decision, and the queue stays the user's.
+
+**Decided: the phase's provider entry is the operator's own config, kept outside the repository, and the
+credential never lands in a file.** The entry is `provider = "deepseek"`, `protocol = "deepseek"` (the
+thinking-mode wire, whose assistant tool calls must echo `reasoning_content`, D-70), `model =
+"DeepSeek-V4.1-Flash"`, `base_url = "https://llmapi.paratera.com/v1"`, `api_key_env = "TA_SELF_KEY"` and
+`generation_options = { reasoning_effort = "high" }` — the options map is merged verbatim into the
+chat-completions body (`providers::chat_completions`), and the key is read from the environment only, because
+the repository's rule is that credentials are read from the environment or the machine's own stores and are
+never written into the repository, prompts, events or logs. `[limits]` bounds every goal the session creates
+(D-64/D-268), so a phase task carries a ceiling and a deadline by construction, and the leader is granted
+`shell@workspace` by the operator the way round 5's harness granted it (D-256) — the bootstrap's default
+authority is `manage`/`delegate`/`message` only (D-61).
+
+**Evidence (measured 2026-09-28).** The gateway answers `GET /v1/models` with 200 and lists
+`DeepSeek-V4.1-Flash`; one chat-completions call returns `reasoning_content` with
+`completion_tokens_details.reasoning_tokens`, and the **streaming** shape the product actually speaks
+(`stream: true` + `stream_options.include_usage`) returns `reasoning_content` deltas, a usage chunk and
+`[DONE]`. Then the product ran a real turn through its own CLI on that entry:
+`teamagents exec --json --timeout 180 --cwd <scratch> --check true "…"` printed
+`end=completed`, `goal_status=SUCCEEDED`, `verification=[{command:"true", ok:true}]` and exited 0 in 4.2 s —
+one model request, goal usage 2958 prompt + 272 completion = 3230 tokens — and `doctor` resolved the profile
+and the session's limits (`deepseek/DeepSeek-V4.1-Flash`; `goal limits max_total_tokens=200000,
+deadline_minutes=20`).
+
+**Open before the first task, stated rather than hidden.** The model's **native context window** is not
+declared where this tree can read it: `GET /v1/models` carries no window field, `GET /v1/models/<id>` answers
+403 for this key, and the only window the tree records is `deepseek-flash`'s user-confirmed 1,000,000 (D-36).
+With `context_window` unset the product reports "not configured" and *no* compaction trigger exists, so a long
+phase task would meet the real ceiling as a classified overflow instead of compacting below it. The phase
+therefore starts with the window value the user's existing confirmation covers, recorded as such, unless the
+user says the 4.1 model differs.
+
+Ceiling: this entry records the *judgment and the wiring*, not a task; no self-refine task has been run
+against the repository yet, so nothing here claims the loop produces acceptable work on its own — the first
+bounded task (a ceiling, a deadline, a `--check` gate and an operator review of the diff) is what tests that,
+and the operator still owns the commits, the gates and every answer to the decision queue above.
+
 ## D-271 The repair-round test waits for the goal's terminal state (2026-09-28)
 
 At HEAD, `make check` was **not** green. `engine/tests/v2_driver.rs::a_repair_round_names_the_failed_check_and_its_reason`
