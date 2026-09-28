@@ -20,6 +20,87 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-284 Task 7 is verified, and it is the first task the product chose for itself (2026-09-28)
+
+The product's entry is D-283 (`goals open` reports the checks the goal got). This entry is the operator's
+verification and the phase's numbers.
+
+**The card was a mandate, not a task**: for the first time the turn was "triage the repository's own backlog and
+do the highest-value decision-free item", with two measured candidates named as a floor. The product took the
+first (`goals open` reporting) rather than the second (a budget-exhausted goal presented as the one in force),
+and its triage is in the summary — so the phase now has one data point for its own *choice*, not only for its
+execution. The delivery is four lines of client code, one extended test, and the entry: the smallest change of
+the six so far, and the first one that needed no forensics at all.
+
+**Verified.** The operator's control: with `engine/src/v2/goals.rs` reverted to `HEAD`, the extended test fails
+at `engine/tests/cli.rs:2328` — `assertion left == right failed: the report carries the goal's own checks:
+{… "checks":1 …}` while the goal holds the session's check beside the one the client asked for — and after the
+file is restored byte-identically (`diff -q`) the test passes. `env -u DEEPSEEK_API_KEY make check` `rc=0` (25
+green targets) and `make pty` ok, both the operator's. And `goal-task7` settled `SUCCEEDED` only after its own
+required check round 1 ran and passed: the **fourth** of six deliveries whose settlement was machine-gated
+(D-273, D-279, D-281, D-283), against D-275 and D-277 which the operator verified because their runs ended on a
+ceiling and on the repair 400.
+
+**The phase's numbers.** Six deliveries committed, **48.83M tokens over 349 model requests** across two sessions,
+four goals settled by the runtime's own gate, and an operator cost of seven verification-and-commit rounds and
+three resumes. The pattern worth keeping: a task that *finds* its defect costs 6–12M tokens, one that is handed
+a fully measured defect costs 4–8M, and this one — handed a *candidate list* and asked to choose — cost 8.1M and
+produced the smallest, cleanest change so far. The suites stay at `core 108 / engine 278 / tui 36` (the test was
+extended, not added).
+
+**Next cards**, in the operator's order: the second candidate on task 7's list (the reporting half of a
+budget-exhausted goal — `docs/ACCEPTANCE.md`'s Known gaps carries the measurements, and the lever half is the
+user's); then, if the product's triage names nothing better, a *self-audit* card — run the repository's own
+audits and the acceptance ledger against the tree and fix the first real divergence found, which is the shape
+that has produced every defect so far.
+
+**Ceiling**: four of six settlements machine-gated is progress, not a guarantee — the two operator-verified ones
+ended on a ceiling and on a transport-level defect, both of which can recur. Nothing here says the loop's *own*
+triage will keep choosing well: one data point, on a card that still named two candidates.
+
+## D-283 `goals open` reports the checks the goal got, not the ones the client asked for (2026-09-28)
+
+**Triage.** The queue holds two measured, decision-free candidates (D-280/D-282): this line, and the reporting
+half of a budget-exhausted goal that still reads as the goal in force. Everything else is reserved or delivered:
+`docs/PRODUCT-COMPARISON.md` §2's list (sessions beyond one state root, interrupt-and-redirect, sandbox backends,
+automations, memory, MCP management, config overrides) is each a question for the user or low value, and
+`docs/ACCEPTANCE.md`'s Known gaps carry three delivered bullets plus the release tag, which only the user can
+cut. The budget-exhausted *lever* is explicitly new protocol surface and is in the queue for the user; its
+reporting half is decision-free but wider (it asks what "in force" means across `goals list`, the `exec`
+attribution and the TUI). So the smallest correctly-bounded item is the `goals open` line, which D-282 already
+named as the next card: it is a client-side honesty defect of exactly the class this repository's audits exist
+for. I took it.
+
+**The defect.** `engine/src/v2/goals.rs`'s `Open` report carried `"checks": required_checks.len()` — the number of
+`--check` flags *this client* sent. But the daemon unions the session's configured `[[checks]]` into every goal a
+client opens (`apply_session_goal_limits` in `engine/src/v2/daemon.rs`, D-268; the same rule bounds the client's
+ceiling and deadline). A goal opened with no `--check` in a session with one configured check really carries
+that check, and the client printed `opened goal … (0 required check(s))` — the operator watched `goals list`
+report the check the CLI had just announced as absent.
+
+**The fix.** After the `create_goal` receipt, read the goal back through the existing `goals` read (D-267, the
+same read `goals list` uses) and report `limits.required_checks` from that row: an absent key means the goal
+carries none, and a read that cannot name the goal is an error rather than a guess, so the number printed is
+always one the record carries. Nothing else moved — no flag, no new read method, no new protocol or persisted
+surface, and the printed line keeps its shape. The repo re-run of `goals open --id X` replays the deterministic
+`goal-open-X` command id, so even the error path is recoverable.
+
+**Evidence** (2026-09-28, this tree: `e7e443da` plus this uncommitted diff).
+
+| Command | Result |
+|---|---|
+| `cargo test --offline --manifest-path engine/Cargo.toml --test cli the_goal_surface_lists_and_opens_goals_through_the_daemon -- --exact` | **ok** — against a real daemon and a config carrying one `[[checks]]`, the JSON report says `checks: 2` (one asked-for plus the session's unioned `session-tests`), and a later open with no `--check` prints `opened goal goal-third (1 required check(s))` |
+| pre-fix control: `engine/src/v2/goals.rs` exactly as at `HEAD` (saved first, restored byte-identically, `sha256sum` `08249bfe…`) | **FAILED** at the new assertion: the report carried `"checks":1` for a goal that got 2 — the same false claim, now on the record |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `python3 review/test_counts.py` | unchanged: no test function added (the assertions extend the existing integration test) |
+
+**Ceiling**: the fix makes the *count* true; the daemon also fills in the session's ceiling and
+`deadline_minutes` when the client leaves them out, and the `goals open` line still does not echo them — that is
+a gap, not a false claim (nothing is printed about them), and echoing them would change the line's shape. The
+read-back adds one local round trip on the same connection; if it fails, the command exits 1 with a message that
+says the goal *did* open — which a user can act on because the command id is deterministic. `make pty`, the
+probe sets and the formal gates were not run.
+
 ## D-282 Task 6 is verified: the gate is deterministic again, and one of the two fixes is a product fix (2026-09-28)
 
 The product's entry is D-281 (the supervisor test raced its own read; a hook spawn dropped `ETXTBSY`). This entry

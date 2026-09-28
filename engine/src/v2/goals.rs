@@ -75,8 +75,21 @@ pub fn execute(options: &GoalOptions) -> Result<Json, (i32, String)> {
             let result = client
                 .command(&format!("goal-open-{id}"), "create_goal", params)
                 .map_err(|error| (1, format!("goals open: the session refused it: {error}")))?;
+            // D-283: the daemon unions the session's configured required checks into every goal a
+            // client opens (D-268), so what the goal *got* is not what this client asked for. Report
+            // the goal's own `required_checks` from the existing `goals` read (D-267) instead of
+            // `required_checks.len()`, which printed `(0 required check(s))` for a goal that carries
+            // the session's check. No new read and no new surface: the same read `goals list` uses.
+            let view = client.call("goals", json!({})).map_err(|error| {
+                (1, format!("goals open: {id} opened, but the goals read could not report its checks: {error}"))
+            })?;
+            let row = view["goals"]
+                .as_array()
+                .and_then(|rows| rows.iter().find(|row| row["id"] == json!(id)))
+                .ok_or_else(|| (1, format!("goals open: {id} opened, but the goals read does not carry it")))?;
+            let checks = row["limits"]["required_checks"].as_array().map(Vec::len).unwrap_or(0);
             Ok(json!({"session_id": session["session_id"], "state_root": session["state_root"],
-                      "goal_id": id, "attached": attach, "checks": required_checks.len(), "result": result}))
+                      "goal_id": id, "attached": attach, "checks": checks, "result": result}))
         }
     }
 }

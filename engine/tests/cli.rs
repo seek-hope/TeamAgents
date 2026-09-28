@@ -2322,6 +2322,10 @@ fn the_goal_surface_lists_and_opens_goals_through_the_daemon() {
     ]);
     assert_eq!(code, 0, "{stderr}");
     assert_eq!(json(&out)["goal_id"], serde_json::json!("goal-second"), "{out}");
+    // D-283: the report says what the goal *got*. One --check was asked for and the session's own
+    // `session-tests` is unioned in by the daemon (D-268), so the goal carries two; before this the
+    // report echoed the asked-for count.
+    assert_eq!(json(&out)["checks"], serde_json::json!(2), "the report carries the goal's own checks: {out}");
 
     // 2. the list carries both, names the active one, and says what is attached to what
     let (code, out, stderr) = goals(&["goals", "--json"]);
@@ -2397,6 +2401,12 @@ fn the_goal_surface_lists_and_opens_goals_through_the_daemon() {
     assert!(stderr.contains("no active goal is attached to i-leader"), "the advisory names the state: {stderr}");
     assert!(stderr.contains("teamagents goals open"), "and the lever: {stderr}");
     assert!(stderr.contains("--attach i-leader"), "and what to attach it to: {stderr}");
+
+    // D-283: the shape the operator watched — a goal opened with no --check at all still carries the
+    // session's configured check, and the plain line must report it instead of "(0 required check(s))".
+    let (code, out, stderr) = goals(&["goals", "open", "--id", "goal-third", "--attach", "i-leader"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(out.contains("opened goal goal-third (1 required check(s))"), "{out}");
 }
 
 /// `[limits]` in the user config bounds every goal the session creates (D-64): the
