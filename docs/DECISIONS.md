@@ -20,6 +20,87 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-308 Task 19 is verified: the eighth audited row — the wait tool's other mode (2026-09-29)
+
+The product's entry is D-307. This entry is the operator's verification and the phase's measured numbers.
+
+**What the audit found this time.** A22 ("wait cycles and timers") is modelled by `V2Wait`, and its two mode rules
+are `HoldsWith`'s `conds ⊆ held` for ALL and `held ≠ {}` for ANY. Every wait test in `core/src/v2/control.rs`
+registered **ANY**, so both `mode == "ALL"` clauses of `evaluate_wait` — the satisfaction clause
+(`… (mode == "ALL" && all) …`) and the dead-branch clause (`… (mode == "ALL" && dead > 0) …`) — were never
+driven. Two tests now drive them: an ALL wait must not wake when one of two conditions arrives (the drain reports
+`woken: []`) and the transaction that applies the *second* one must wake it; and one dead branch makes an ALL wait
+unfillable where ANY needs every branch dead — with the report only *flagging* it (A22's "the report flags,
+nothing is auto-cancelled"). The `control.rs` diff is inside its `#[cfg(test)]` module, and `V2Wait` is unchanged
+because the code already matched it, so no section-0 obligation follows.
+
+**Verified.** The operator reproduced **both** controls independently: (a) the satisfaction clause as
+`mode == "ALL" && any` makes the first test fail with `woken: ["w-d-x"]` where `[]` is required; (b) the blocked
+clause as ANY's `dead == conditions.len()` for ALL makes the second fail with `left: 0`, `right: 1` — the ALL wait
+with one dead branch was not reported. Restoring the file byte-identically (sha256 `6a9a195e…`, unchanged) puts
+both back to `ok`. `env -u DEEPSEEK_API_KEY make check` `rc=0` (25 green targets) and `make pty` ok, and the goal
+settled only after its own required check passed — the sixteenth of eighteen machine-gated deliveries.
+
+**The audit's yield, eight rows in: eight holes.** A33, A18, A13, A19, A15, A25, A31 and A22 — four coverage
+holes, three claim holes and one product defect. The last two rows (A31, A22) were the two most load-bearing in
+their neighbourhoods, which is what the card's preference order asked for.
+
+**The phase's measured numbers (this commit).** **Eighteen deliveries**, **232,534,236 tokens over 785 model
+requests**, the suites at `core 111 / engine 286 / tui 36`, and an operator cost of nineteen verification rounds
+and three resumes. Four of the eighteen defects came from the operator's supervision or its probes; the last nine
+deliveries all came from the claims audit.
+
+**Next card**: continue the audit at the next row, the same discipline; the operator verifies each delivery with
+its own control, the gate and the `make pty` smoke.
+
+**Ceiling**: the two tests drive `evaluate_wait`'s mode rules through the real control entry; the *timer* half of
+A22 and the cycle detection the row's title also names are covered by their existing tests and by `V2Wait`, and
+nothing here re-checks them. The remaining twenty-eight rows are still prose-first.
+
+## D-307 A22's ALL half was never driven; the wait tool's other mode has its two tests now (2026-09-29)
+
+**Triage.** D-306 left the row-by-row mandate. I read and rejected: A16 (its headless half names five asserted
+facts), A21 (every branch names its test, including the existing `undelivered` one), A36 (it even names its own
+failing product assertion), A12/A24/A26/A27/A34/A35 (each branch names the test that drives it) — and took
+**A22** ("ALL/ANY wait cycles and timers") because its *title* names two modes and its cited evidence is a shape.
+
+**What the cited evidence actually asserts.** A22 cites `blocked_report_flags_dead_waits_not_cycles` and
+`a_due_timer_closes_the_wait`. The first is thorough — a live *cycle* among instances is not a deadlock, and a
+dead sender's wait is reported while nothing is auto-cancelled — but **every wait it registers is
+`"mode": "ANY"`**. Measured: `grep -rn '"mode": "ALL"'` over `core/src`, `engine/src`, `engine/tests` and
+`tui/src` finds only the tool schema's enum, no test; so the code's clause `mode == "ALL" && all`
+(`evaluate_wait`, `core/src/v2/control.rs`) and its ALL dead rule `dead > 0` were unexercised, while `V2Wait`'s
+`HoldsWith` — the model the row cites — defines exactly those two rules ("ALL = every named fact (or the due
+timer), ANY = one named fact (or the due timer)").
+
+**The change (coverage, not behaviour).** Two tests in `core/src/v2/control.rs`:
+
+- `an_all_wait_needs_every_condition`: an ALL wait on two message senders stays `PENDING` when the first message
+  lands (`woken: []`, phase `WAITING`) and is woken by the same transaction that applies the second
+  (`woken: ["w-d-x"]`, `SATISFIED`, `READY`).
+- `an_all_wait_is_blocked_by_any_dead_condition`: with both senders live nothing is flagged; one terminated
+  sender makes the wait unfillable and `blocked_report` names it — for ALL one dead branch is enough, where ANY
+  needs every branch dead (the companion test's rule).
+
+A22's row now cites both and says the two it already cited are all-ANY. **No product code changed.**
+
+**Evidence** (2026-09-29; the tree is `1f28f6a0` plus this uncommitted diff).
+
+| Command | Result |
+|---|---|
+| `cargo test --offline --manifest-path core/Cargo.toml --lib an_all_wait` | **ok** — 2/2 |
+| pre-fix control (a): the satisfaction clause reverted to `mode == "ALL" && any` (ALL satisfied by one branch) | **FAILED**: `one of two branches must not wake an ALL wait: {"woken":["w-d-x"], …}`, `left: ["w-d-x"]`, `right: []` |
+| pre-fix control (b): the blocked clause reverted to ANY's `dead == conditions.len()` for ALL | **FAILED**: `[]`, `left: 0`, `right: 1` — the ALL wait with one dead branch was not reported |
+| both lines restored byte-identically (`diff` clean, `sha256sum` `6a9a195e…`) | **ok** |
+| `cargo test --offline --manifest-path core/Cargo.toml --lib` | **ok** — 102/102 |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `python3 review/test_counts.py --write` | `core: 109 -> 111` (the two new tests) |
+
+**Ceiling.** The two mode rules are now driven at the code level and are modelled by `V2Wait` (unchanged, so no
+§0 pin moves); the cycle-detection *graph algorithm* stays outside the model, as the row already says. Not
+driven: an ALL wait combined with a timer, and an ALL wait whose dead branch becomes live again (a terminated
+sender does not come back). The live probes were not re-run; `make pty` and the probe sets were not run.
+
 ## D-306 Task 18 is verified: the audit's first *product* defect, not just a missing test (2026-09-29)
 
 The product's entry is D-305. This entry is the operator's verification and the phase's measured numbers, and it

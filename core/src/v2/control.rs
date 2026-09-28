@@ -5840,6 +5840,84 @@ mod tests {
         cleanup(&path);
     }
 
+    /// A22's *ALL* half. Every wait test above registers `ANY`, so the clause `mode == "ALL" && all` was never
+    /// driven — `V2Wait`'s `HoldsWith` is `conds ⊆ held` for ALL and `held ≠ {}` for ANY, and the section's rule
+    /// is "the branch mode" (§5.3). One of two conditions must not wake an ALL wait; the transaction that applies
+    /// the second one must.
+    #[test]
+    fn an_all_wait_needs_every_condition() {
+        let (mut ctl, path) = control("wait-all");
+        create_instance(&mut ctl, "i1");
+        create_instance(&mut ctl, "i2");
+        create_instance(&mut ctl, "i3");
+        grant_message(&mut ctl, "i2", "i1", "a");
+        grant_message(&mut ctl, "i3", "i1", "b");
+        let wait_id = open_wait(
+            &mut ctl,
+            "x",
+            "i1",
+            0,
+            json!({"mode": "ALL", "conditions": [{"kind": "message", "from": "i2"},
+                                                 {"kind": "message", "from": "i3"}]}),
+        );
+        assert_eq!(wait_state(&ctl, &wait_id), "PENDING");
+        // the first of the two arrives: an ALL wait is not satisfied by one branch
+        ctl.submit(
+            cmd("sm-all-1", "send_message", json!({"recipient": "i1", "text": "first"})),
+            Identity::Instance("i2".into()),
+        )
+        .expect("send");
+        let drained = drain(&mut ctl, "i1");
+        assert_eq!(drained["woken"], json!([]), "one of two branches must not wake an ALL wait: {drained}");
+        assert_eq!(wait_state(&ctl, &wait_id), "PENDING");
+        assert_eq!(phase_of(&ctl, "i1"), "WAITING");
+        // the second arrives: the same drain that applies it wakes the wait
+        ctl.submit(
+            cmd("sm-all-2", "send_message", json!({"recipient": "i1", "text": "second"})),
+            Identity::Instance("i3".into()),
+        )
+        .expect("send");
+        let drained = drain(&mut ctl, "i1");
+        assert_eq!(drained["woken"], json!([wait_id.clone()]), "{drained}");
+        assert_eq!(wait_state(&ctl, &wait_id), "SATISFIED");
+        assert_eq!(phase_of(&ctl, "i1"), "READY");
+        cleanup(&path);
+    }
+
+    /// The other half of A22's ALL rule: for ALL, *one* dead branch makes the wait unfillable (`dead > 0`),
+    /// where ANY needs every branch dead (`dead == conditions.len()`) — the difference the row's title names and
+    /// the companion `blocked_report_flags_dead_waits_not_cycles` (all-ANY) never reached.
+    #[test]
+    fn an_all_wait_is_blocked_by_any_dead_condition() {
+        let (mut ctl, path) = control("wait-all-blocked");
+        create_instance(&mut ctl, "i1");
+        create_instance(&mut ctl, "i2");
+        create_instance(&mut ctl, "i3");
+        let wait_id = open_wait(
+            &mut ctl,
+            "y",
+            "i1",
+            0,
+            json!({"mode": "ALL", "conditions": [{"kind": "message", "from": "i2"},
+                                                 {"kind": "message", "from": "i3"}]}),
+        );
+        // both senders are live and neither has sent yet: nothing is blocked
+        let report = ctl.submit(cmd("br-all-0", "blocked_report", json!({})), Identity::User).expect("report");
+        assert_eq!(report["blocked"], json!([]), "{report}");
+        // one sender dies: its branch can never fire, and for ALL that is enough
+        ctl.submit(
+            cmd("sl-all", "set_lifecycle", json!({"instance_id": "i2", "lifecycle": "TERMINATED"})),
+            Identity::User,
+        )
+        .expect("terminate");
+        let report = ctl.submit(cmd("br-all-1", "blocked_report", json!({})), Identity::User).expect("report");
+        let blocked = report["blocked"].as_array().unwrap();
+        assert_eq!(blocked.len(), 1, "{blocked:?}");
+        assert_eq!(blocked[0]["wait_id"], json!(wait_id.clone()));
+        assert_eq!(wait_state(&ctl, &wait_id), "PENDING", "the report flags, nothing is auto-cancelled (A22)");
+        cleanup(&path);
+    }
+
     #[test]
     fn user_input_supersedes_a_pending_wait() {
         let (mut ctl, path) = control("wait-input");
