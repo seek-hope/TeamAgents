@@ -162,7 +162,9 @@ pub struct UserConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct GoalLimits {
-    /// Usage ceiling in tokens (provider-reported and unknown usage included).
+    /// Usage ceiling in tokens, counted from provider-reported usage, live reservations and each request's
+    /// estimate; usage a provider never reported stays the goal's `unknown_usage` counter and does not charge
+    /// the ceiling (D-287).
     #[serde(default)]
     pub max_total_tokens: Option<u64>,
     /// Wall-clock ceiling in minutes, counted from the moment the goal is created.

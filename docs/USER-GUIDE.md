@@ -247,7 +247,7 @@ Every goal this session creates can be bounded in cost and in time (D-64):
 
 ```toml
 [limits]
-max_total_tokens = 2000000   # optional: usage ceiling (provider-reported + unknown usage)
+max_total_tokens = 2000000   # optional: usage ceiling (provider-reported usage + each request's estimate)
 deadline_minutes = 45        # optional: wall clock, counted from the moment the goal is created
 ```
 

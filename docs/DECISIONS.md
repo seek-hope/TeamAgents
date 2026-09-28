@@ -20,6 +20,87 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-288 Task 9 is verified: the claims audit found a published sentence the gate never honoured (2026-09-28)
+
+The product's entry is D-287 (the usage-ceiling sentence claimed unknown usage is charged; the gate never did).
+This entry is the operator's verification, and it is the phase's first delivery whose subject was *prose*.
+
+**What was wrong, and which side was wrong.** `core/src/models.rs`'s `GoalLimits.max_total_tokens` doc — which
+`review/config_reference.py` publishes verbatim into `docs/CONFIG.md`, and which `docs/USER-GUIDE.md` echoed in
+its config comment — said the ceiling counts "provider-reported **and unknown usage**". The gate counts
+`known.total + reserved + est` (`control.rs`'s budget admission), and `verification/tla/V2Control.tla`'s
+`BudgetFits(e) == goal.known + ReservedTotal + e <= TokenLimit` says the same; DESIGN §8's own words are that
+"settlement from real usage and unknown usage are all *kept*" and that incomplete provider billing "is never
+turned into a false promise that the ceiling can never be exceeded". So the **sentence** was the outlier, not the
+gate, and the fix is the design-mandated direction: correct the claim in all three places and pin the arithmetic
+with a test whose counterfactual is the old prose's reading. No behaviour changed — the runtime diff is a
+`#[cfg(test)]` test plus a doc comment — and no formal re-run is owed (nothing in `core/src/kernel/types.rs`,
+`verification/tla` or `verification/kani` moved); the correction *strengthens* the code-to-model correspondence
+rather than trading it away.
+
+**Verified.** The operator's control: with the gate's `projected` changed to charge as if unknown usage counted,
+`unknown_usage_does_not_charge_the_ceiling` **fails** at `control.rs:6489` on the `budget_refused` assertion;
+restored byte-identically (`diff -q`), it passes. `env -u DEEPSEEK_API_KEY make check` `rc=0` (25 green targets)
+and `make pty` ok, both the operator's. `goal-task9` settled `SUCCEEDED` only after its own required check round
+1 ran and passed — the **sixth of eight** deliveries whose settlement was machine-gated (D-273, D-279, D-281,
+D-283, D-285, D-287), against D-275 and D-277, which ended on a ceiling and on the repair 400.
+
+**The phase's numbers.** Eight deliveries, **68.43M tokens over 424 model requests**, six goals settled by the
+runtime's own gate, and an operator cost of nine verification-and-commit rounds and three resumes. The suites
+report `core 109 / engine 280 / tui 36`.
+
+**Next card: the same audit, aimed at the acceptance matrix.** The richest untouched hunting ground is
+`docs/ACCEPTANCE.md`'s A-matrix: each row cites evidence, and a row whose *cited* evidence does not actually
+cover the claim the row makes is a false claim no audit can see. The card is to take one row, check its citations
+against what those tests and probes really assert, and make the row (or the missing coverage) true — again with
+the design as the authority and a stop-and-report instead of a behaviour change the design does not mandate.
+
+**Ceiling**: this entry verifies one sentence, not the corpus — the matrix has 36 rows and the guide has many
+promises, so the audit is a series of cards, not a sweep. The corrected sentence is checked by
+`config_reference.py`'s generation link and by the new test; a reader of `docs/CONFIG.md` sees the truth only
+after the next regeneration, which hygiene enforces.
+
+## D-287 The config's usage-ceiling sentence claimed unknown usage is charged; the gate never did (2026-09-28)
+
+**The claim audited.** `core/src/models.rs`'s `max_total_tokens` field — the source `review/config_reference.py`
+copies into `docs/CONFIG.md` — read "Usage ceiling in tokens (provider-reported and unknown usage included)", and
+`docs/USER-GUIDE.md` §2.2's TOML sample echoed it (`# optional: usage ceiling (provider-reported + unknown
+usage)`). Nothing could see it: the audits check that the generated table matches the structs, never that the
+sentence is true, and no test pinned the gate's arithmetic.
+
+**What the tree does.** `reserve_budget` (`core/src/v2/control.rs`) admits a request while
+`known_usage.total + reserved + est <= max_total_tokens`. `unknown_usage` — a *count* of attempts whose usage a
+provider never reported — is not an input, so incomplete billing can overshoot the ceiling afterwards, which is
+the design's own statement: `docs/DESIGN.md` §8 says "settlement from real usage and unknown usage are all kept"
+and "incomplete provider billing is never turned into a false promise that the ceiling can never be exceeded";
+`verification/tla/V2Control.tla`'s `BudgetFits` and `AdmissionGate` admit on `known + reserved + estimate` only;
+and the gate's own comment says "unknown usage stays a visible counter". The claim was the wrong half: adding the
+counter to a token projection would even add a count to a token sum.
+
+**The change.** The sentence now says what the gate does — provider-reported usage, live reservations and each
+request's estimate charge the ceiling, and usage a provider never reported stays the goal's `unknown_usage`
+counter instead of charging it (D-287 named in the doc comment). `docs/CONFIG.md` is regenerated from that field
+and `docs/USER-GUIDE.md`'s comment no longer implies otherwise. The missing check is
+`control::unknown_usage_does_not_charge_the_ceiling`: a goal with `max_total_tokens = 1000` loses one attempt to
+unknown usage (counter 1, settled usage 0) and then admits a request whose estimate is exactly the ceiling —
+which holds only while the unknown attempt is not charged.
+
+**Evidence** (2026-09-28, this tree: `ceae756e` plus this uncommitted diff).
+
+| Command | Result |
+|---|---|
+| `cargo test --offline --manifest-path core/Cargo.toml --lib unknown_usage_does_not_charge_the_ceiling` | **ok** — the request is admitted (`MODEL_PENDING`) with the counter at 1 and settled usage at 0 |
+| pre-fix control: `reserve_budget` made to charge the unknown counter the way the old prose described it (the goal's `unknown_usage` added to the projection; two lines, saved first and restored byte-identically, then rustfmt reformatted the new test and changed nothing else; `sha256sum` now `df8e5bd6…`) | **FAILED**: `budget_refused: true`, reason `goal g1 budget exceeded: known 0 + reserved 0 + est 1000 > max 1000` — the comment's version of the gate refuses the request |
+| `python3 review/config_reference.py --write` | `docs/CONFIG.md`'s `max_total_tokens` row carries the corrected sentence |
+| `python3 review/test_counts.py --write` | `core: 108 -> 109` (the new test) |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+
+**Ceiling**: the audit checked one sentence; the *other* places a ceiling is described (the TUI status line, the
+`exec` report, `docs/DESIGN.md` §8) were read and already agree with the gate. The test pins the arithmetic at
+the exact boundary (`est == max`) with one unknown attempt; it does not enumerate provider billing shapes beyond
+that, and it does not assert that overshoot *happens* (only that the ceiling does not preclude it). `make pty`,
+the probe sets and the formal gates were not run.
+
 ## D-286 Task 8 is verified: the reporting half of the exhausted-goal gap, and the lever stays the user's (2026-09-28)
 
 The product's entry is D-285 (`goals list` says when a goal cannot accept work, and why). This entry is the

@@ -6449,6 +6449,74 @@ mod tests {
         cleanup(&path);
     }
 
+    /// The ceiling counts provider-reported usage, the request's estimate and live reservations only — the
+    /// design's own gate (`BudgetFits`/`AdmissionGate` in `verification/tla/V2Control.tla`, and §8: "settlement
+    /// from real usage and unknown usage are all kept", "incomplete provider billing is never turned into a
+    /// false promise that the ceiling can never be exceeded"). Usage a provider never reported moves the goal's
+    /// `unknown_usage` counter and does **not** charge the ceiling, which is why incomplete billing can
+    /// overshoot it afterwards. The documents said the opposite ("usage ceiling … provider-reported and unknown
+    /// usage included", `core/src/models.rs` → `docs/CONFIG.md`), so nothing pinned the gate's arithmetic; the
+    /// control for this test is the gate as the old prose described it (unknown usage added to the projection),
+    /// under which the request below is refused.
+    #[test]
+    fn unknown_usage_does_not_charge_the_ceiling() {
+        let (mut ctl, path) = control("unknown-budget");
+        create_instance(&mut ctl, "i1");
+        ctl.submit(
+            cmd("g1", "create_goal", json!({"id": "g1", "instance_id": "i1", "limits": {"max_total_tokens": 1000}})),
+            Identity::User,
+        )
+        .expect("goal");
+        // r1 reserves 200 and is then lost: its usage is unknown, so the counter moves and settled usage stays 0
+        ctl.submit(
+            cmd(
+                "b1",
+                "begin_request",
+                json!({"instance_id": "i1", "request_id": "r1", "revision": 1, "est_prompt_tokens": 200}),
+            ),
+            Identity::Instance("i1".into()),
+        )
+        .expect("begin");
+        ctl.submit(
+            cmd(
+                "a1",
+                "record_attempt",
+                json!({"attempt_id": "at1", "request_id": "r1", "status": "FAILED", "error_class": "lost",
+                       "unknown_usage": true}),
+            ),
+            Identity::System,
+        )
+        .expect("lost attempt");
+        ctl.submit(cmd("c1", "cancel_request", json!({"request_id": "r1"})), Identity::User).expect("cancel");
+        let unknown: i64 = ctl
+            .connection()
+            .query_row("SELECT unknown_usage FROM goals WHERE id = 'g1'", [], |row| row.get(0))
+            .unwrap();
+        let known: String = ctl
+            .connection()
+            .query_row("SELECT known_usage_json FROM goals WHERE id = 'g1'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(unknown, 1, "one attempt's usage is unknown");
+        assert_eq!(known, json!(crate::kernel::Usage::default()).to_string(), "and none of it is settled usage");
+        // an estimate exactly at the ceiling still fits (0 known + 0 reserved + 1000 <= 1000); a gate that
+        // counted the unknown attempt would refuse it
+        let revision: i64 =
+            ctl.connection().query_row("SELECT revision FROM instances WHERE id = 'i1'", [], |row| row.get(0)).unwrap();
+        let begun = ctl
+            .submit(
+                cmd(
+                    "b2",
+                    "begin_request",
+                    json!({"instance_id": "i1", "request_id": "r2", "revision": revision, "est_prompt_tokens": 1000}),
+                ),
+                Identity::Instance("i1".into()),
+            )
+            .expect("begin");
+        assert!(begun.get("budget_refused").is_none(), "unknown usage is not a charge: {begun}");
+        assert_eq!(begun["phase"], json!("MODEL_PENDING"), "{begun}");
+        cleanup(&path);
+    }
+
     #[test]
     fn fail_request_closes_and_parks_without_losing_input() {
         let (mut ctl, path) = control("fail");
