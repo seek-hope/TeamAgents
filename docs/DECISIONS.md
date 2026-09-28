@@ -20,6 +20,82 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-324 Task 27 is verified: the orphan-test class again, and a calibration for a sweep (2026-09-29)
+
+The product's entry is D-323. This entry is the operator's verification and the phase's measured numbers.
+
+**What the audit found.** A20 ("Restart after long-context compaction") cited a *glob*
+(`control::compression_*`) and one driver test, and the fallback arm was in fact driven — by a test no document
+named. The arm: a summary that cannot be written never blocks the turn (the originals stay in the view, so it
+continues **uncompressed**); the failed summary's reservation is released, its request closed and the attempt
+recorded; and **three consecutive failures trip the breaker** (the driver's own comment labels it "R22/A20 circuit
+breaker") so the next turn goes straight to the model. The row now cites
+`v2_driver::failed_summaries_fall_back_uncompressed_and_break_after_three`.
+
+**Verified.** The operator reproduced the product's measurement: at `HEAD` the test's name appears only in its own
+file (`git grep -l`). The operator's own control disables the breaker (`>= 3` → `>= 30` in `over_threshold`) and
+the *cited* test fails with `left: 4`, `right: 3` on the `compression_failed` count — the fourth turn attempted a
+fourth summary — and restoring the file byte-identically (sha256 `8347ff76…`, `git status` clean of it) puts it
+back to `ok`. `env -u DEEPSEEK_API_KEY make check` `rc=0` (25 green targets) and `make pty` ok, and the goal
+settled only after its own required check passed — the twenty-fourth of twenty-six machine-gated deliveries.
+
+**A calibration the operator will use.** The entry also measured that **155** test names are named by no document
+at all — most of them covered by *glob* citations such as `control::compression_*`, which the citation audit does
+not expand. That number is the size of the orphan-test class, and it is recorded here for a future sweep card
+(each name would need a row, decision or probe to cite it, or a documented reason it stands alone).
+
+**The audit's yield.** Fifteen cards have produced **sixteen findings**: seven coverage, eight claims and one
+product defect; two of the sixteen fixed an audit rather than a document. The claim holes now have five shapes:
+a contradicted sentence, a citation that does not cover the claim, a stale number, an orphan test (twice: A16 and
+A20) and a glob citation that hides which test a claim rests on.
+
+**The phase's measured numbers (this commit).** **Twenty-six deliveries**, **373,143,289 tokens over 983 model
+requests**, the suites at `core 114 / engine 288 / tui 36`, and an operator cost of twenty-seven verification
+rounds and three resumes. Four of the twenty-six defects came from the operator's supervision or its probes.
+
+**Next card**: the row-by-row audit continues (twenty-three rows unaudited), with the orphan/glob class available
+as a sweep whenever the operator prefers a mechanical card — the 155-name measurement is its starting point, and
+the glob citation style is what makes most of those names invisible to the audit that exists.
+
+**Ceiling**: the row now cites the test that drives the fallback and the breaker; the *glob* citation
+(`control::compression_*`) still stands for the rest of the compaction tests, and nothing here enumerates what
+it covers. The remaining twenty-three rows are still prose-first.
+
+## D-323 A20's breaker had a thorough test that no row, decision or document named (2026-09-29)
+
+**The sweep.** I listed every `#[test]`/`#[tokio::test]` in the suites and the in-crate tests (391) and checked
+which no document names (155 — most are covered by *glob* citations such as `control::compression_*`, which the
+sweep counts as named). The orphans worth attention are the ones asserting a *rule*; for this row,
+`v2_driver::failed_summaries_fall_back_uncompressed_and_break_after_three`.
+
+**The row and the hole.** A20 ("Restart after long-context compaction") cites `control::compression_*`, the
+restart test and the eight `V2Compress` properties; all of that checks out. But the row's own subject has a second
+half it never mentioned, and no row, decision or probe document named it: **a summary that cannot be written must
+not block the turn**. The orphaned test drives it thoroughly — three failed summaries, every turn still running
+with the view *uncompressed* and the originals in place; each failure releasing its reservation and closing its
+request; the recorded requests are exactly 8 (4 turns + 3 failed summaries + 1 breaker-skipped turn); the fourth
+turn goes straight to the model — and the driver's own field comment labels the rule **"R22/A20 circuit
+breaker"**, so the code already claims it under the row's ID.
+
+**The change (the citation, not the code).** A20's evidence cell now names the fallback/breaker half and that
+test. No product or test code changed, and `engine/src/v2/driver.rs` is unchanged against `HEAD`.
+
+**Evidence** (2026-09-29; the tree is `03a4b673` plus this uncommitted diff).
+
+| Command | Result |
+|---|---|
+| the orphan measurement: a grep for `failed_summaries_fall_back_uncompressed_and_break_after_three` across `docs/`, `review/` and `verification/` | **no mention** before this row edit |
+| pre-fix control: the breaker disabled — `if self.compact_failures >= 3` → `>= 30` in `over_threshold` | the *cited* test **FAILED**: `left: 4`, `right: 3` on the `compression_failed` count (the fourth turn attempted a fourth summary); the line was restored byte-identically (`diff` clean) |
+| `cargo test --offline --manifest-path engine/Cargo.toml --test v2_driver failed_summaries_fall_back_uncompressed_and_break_after_three -- --exact` after the restore | **ok** (0.16 s) |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+
+**Ceiling.** The L2 *threshold* itself (over 90% of the native window minus the output reserve; an unknown window
+never triggers) is exercised only from the *triggering* side by these tests — a test asserting that a context
+*under* the threshold is never compacted (no wasted summary call) is a lead I did not take this turn. The
+store-side half (a compression request closed by an epoch reset never applies) is the formal properties' and the
+row cites them; nothing about the fallback/breaker's *code* changed, so this is a documentation gap closed, not a
+behaviour one.
+
 ## D-322 Task 26 is verified: an orphan test — evidence no document pointed to (2026-09-29)
 
 The product's entry is D-321. This entry is the operator's verification and the phase's measured numbers.
