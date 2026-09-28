@@ -20,6 +20,95 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-320 Task 25 is verified: the wait tool's anonymous `message` condition, and a control that taught something (2026-09-29)
+
+The product's entry is D-319. This entry is the operator's verification and the phase's measured numbers.
+
+**What the card asked, and what the tree answered.** Two questions: is a `message` condition satisfied by a
+*delivered* message driven end to end, and does a task result satisfy a `message` condition (the interaction
+D-255's entry raises)? The tree answered both: the first is driven by `control::pending_wait_wakes_in_the_same_transaction_as_the_fact`
+and A23's registration test, and the second is pinned for the **named-sender** case by
+`control::a_delegated_result_does_not_satisfy_a_message_condition`. The remaining hole was the **anonymous**
+condition (`from` absent, "any chat message"), which now has its own test: a delivered task result does **not**
+wake such a wait (`delivered: true`, `woken: []`, still `PENDING`/`WAITING`) and a chat message then does
+(`woken: [wait_id]`, `SATISFIED`). The `control.rs` diff is inside `#[cfg(test)]`; no behaviour changed and the
+design settles the question, so nothing went back to the user's queue.
+
+**Verified.** The operator reproduced the failing control — the anonymous arm made unsatisfiable
+(`(applied, true)` → `(0, true)`) — which fails the new test with `woken: []` against `["w-d-x"]`, and restored the
+file byte-identically (sha256 `60ee66e2…` as it stands now). `env -u DEEPSEEK_API_KEY make check` `rc=0` (25 green
+targets) and `make pty` ok, and the goal settled only after its own required check passed — the twenty-second of
+twenty-four machine-gated deliveries.
+
+**A control that taught something, and a hash that describes a moment.** The product's *first* control — flipping
+the anonymous arm's `kind = 'message'` to `'task_result'` — **passed**, and it reported that as a measurement
+rather than dressing it up: the drain re-checks a `message` condition only when a *message* arrives, so the wake is
+driven by the arriving fact's kind and the `condition_state` filter is a second line of defence. It discarded that
+control and used the unsatisfiable arm instead. Its entry then quotes the hash of the file **at the restore**
+(`3f8c6b29…`) while the file's current hash is `60ee66e2…` — the sentence is true as written (it describes the
+restore), but the file was edited again afterwards, and a hash is a statement about the moment it was taken. That
+is the same drift D-309's entry called out explicitly, and it is worth one line here because it is this phase's
+own subject.
+
+**The audit's yield.** Thirteen cards have produced **fourteen findings**: seven coverage (A33, A19, A15, A22,
+A23, the outcome contract's third arm, and the anonymous `message` condition), six claims (A18, A13, A25, A14,
+A11, A01) and one product defect (A31); two of the fourteen fixed an audit rather than a document.
+
+**The phase's measured numbers (this commit).** **Twenty-four deliveries**, **342,195,277 tokens over 943 model
+requests**, the suites at `core 114 / engine 288 / tui 36`, and an operator cost of twenty-five verification
+rounds and three resumes. Four of the twenty-four defects came from the operator's supervision or its probes.
+
+**Next card**: back to the row-by-row audit — twenty-five rows are unaudited — with the two most recent cards'
+ceilings available as candidates whenever a row is thin.
+
+**Ceiling**: the new test drives the anonymous condition's *wake* path; the interaction the card asked about is
+pinned for the named case and now for the anonymous one, but the drain's "re-check only on a message" rule is
+still only observed through tests, not modelled (`V2Wait` covers satisfaction, not which arrival triggers the
+re-evaluation). The remaining twenty-five rows are still prose-first.
+
+## D-319 The `wait` tool's anonymous `message` condition has a test now; the card's two questions answered (2026-09-29)
+
+**The two questions, answered from the tree rather than memory.**
+
+1. *Is a `message` condition that a delivered message satisfies driven end to end, including the boundary where a
+   message lands and a wait registers in the same turn?* **Yes.**
+   `control::pending_wait_wakes_in_the_same_transaction_as_the_fact` wakes a registered wait in the transaction
+   that applies the message; A23's `control::wait_for_an_arrived_result_is_satisfied_at_registration` registers
+   the wait *after* the message landed and sees it satisfied at registration; the kind appears 17 times in the
+   control tests and once each in `v2_supervisor`/`v2_driver` (through the wait tool-call path), and the live ring
+   probe (`review/dogfood/team_ring.py`, 2026-09-26) drives it with a real model.
+2. *The D-255 notice — "`message` matching `task_result`" — pinned?* **Yes**, by
+   `control::a_delegated_result_does_not_satisfy_a_message_condition`: the delegation's outcome arrives as an
+   envelope of `kind='task_result'` (the test counts it in the DB) and the `message` condition stays `PENDING`
+   with `woken: []`. The design settles the direction, and the test pins it; nothing here needed choosing.
+
+**So the hole was the third thing in the same neighbourhood: the anonymous form** of the `message` kind —
+`{"kind": "message"}` with no `from`, which the tool's own description advertises as "a chat message from that
+instance — **any sender when omitted**". Measured: the tests held **0** such conditions, and `condition_state`'s
+`None` arm (any `APPLIED` `message` envelope to the instance in its epoch) was unexercised.
+
+**The change (coverage, not behaviour).** `core/src/v2/control.rs`'s new test
+`a_message_condition_without_a_sender_takes_any_chat_message_and_still_not_a_task_result`: a bare
+`{"kind": "message"}` wait is **not** satisfied by a completed delegation's `task_result` (the same boundary the
+named form pins, an envelope of a different kind) and **is** satisfied by a chat message from an instance the wait
+never named (`i3`), woken in the transaction that drains it. A23's row now cites it. **No product code changed.**
+
+**Evidence** (2026-09-29; the tree is `c8c90141` plus this uncommitted diff).
+
+| Command | Result |
+|---|---|
+| `cargo test --offline --manifest-path core/Cargo.toml --lib a_message_condition_without_a_sender` | **ok** (0.01 s) |
+| pre-fix control: the `None` arm made unsatisfiable — `(applied, true)` → `(0, true)` | **FAILED**: `woken: []` (left) vs `["w-d-x"]` (right); the line was restored byte-identically (`diff` clean, `sha256sum` `3f8c6b29…`) |
+| the *first* control I tried: the `None` arm's `kind = 'message'` flipped to `kind = 'task_result'` | **passed**, and that is itself a measurement: the drain re-checks a `message` condition only when a *message* arrives, so part (a)'s task result satisfied the flipped query without touching my assertions — the wake is driven by the arriving fact's kind, and `condition_state`'s filter is a second line of defence. I discarded that control and used the unsatisfiable-arm one |
+| `python3 review/test_counts.py --write` | `core: 113 -> 114` (the new test) |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+
+**Ceiling.** The test drives the anonymous condition through the control plane (registration, the fact-kind
+gate and the drain); it does not re-drive the *live* ring (dated 2026-09-26, unchanged) and it does not add a
+second *condition* to the anonymous form (the ALL/ANY mode interaction is A22's, audited). Nothing else in the
+`message` kind's semantics is claimed; the `from`-less form was the last advertised variant without a test.
+D-255's two-kind boundary is *not* a gap — it was already pinned, which is the card's question 2 answered.
+
 ## D-318 Task 24 is verified: the outcome contract's third arm had no end-to-end test (2026-09-29)
 
 The product's entry is D-317. This entry is the operator's verification and the phase's measured numbers.

@@ -5600,6 +5600,54 @@ mod tests {
         cleanup(&path);
     }
 
+    /// The `message` condition's *other* form, which the tool's own description advertises ("a chat message from
+    /// that instance — **any sender when omitted**") and which nothing drove: every wait test names a `from`.
+    /// Two things have to hold for the anonymous form, and `condition_state`'s `None` arm implements both — any
+    /// instance's chat message satisfies it, and a delegated task's result (an envelope of `kind='task_result'`,
+    /// D-255) still does not, named sender or not.
+    #[test]
+    fn a_message_condition_without_a_sender_takes_any_chat_message_and_still_not_a_task_result() {
+        let (mut ctl, path) = control("wait-any-sender");
+        create_instance(&mut ctl, "i1");
+        create_instance(&mut ctl, "i2");
+        create_instance(&mut ctl, "i3");
+        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1"})), Identity::User).expect("goal");
+        ctl.submit(
+            cmd("gd-1", "issue_grant", json!({"subject": "i1", "action": "delegate", "resource_scope": "instance:i2"})),
+            Identity::User,
+        )
+        .expect("grant delegate");
+        ctl.submit(
+            cmd("dt-1", "delegate_task", json!({"task_id": "t1", "assignee": "i2", "goal_id": "g1"})),
+            Identity::Instance("i1".into()),
+        )
+        .expect("delegate");
+        let wait_id = open_wait(&mut ctl, "x", "i1", 0, json!({"mode": "ANY", "conditions": [{"kind": "message"}]}));
+        assert_eq!(phase_of(&ctl, "i1"), "WAITING");
+        // (a) the delegated outcome arrives as a task result and must not satisfy it
+        let done = ctl
+            .submit(
+                cmd("ct-1", "complete_task", json!({"task_id": "t1", "status": "SUCCEEDED", "summary": "ok"})),
+                Identity::Instance("i2".into()),
+            )
+            .expect("complete");
+        assert_eq!(done["delivered"], json!(true));
+        assert_eq!(done["woken"], json!([]), "a task result is not a chat message, named sender or not");
+        assert_eq!(wait_state(&ctl, &wait_id), "PENDING");
+        assert_eq!(phase_of(&ctl, "i1"), "WAITING");
+        // (b) any instance's chat message satisfies it — this one is from i3, which the wait never named
+        grant_message(&mut ctl, "i3", "i1", "a");
+        ctl.submit(
+            cmd("sm-1", "send_message", json!({"recipient": "i1", "text": "anyone"})),
+            Identity::Instance("i3".into()),
+        )
+        .expect("send");
+        let drained = drain(&mut ctl, "i1");
+        assert_eq!(drained["woken"], json!([wait_id.clone()]), "{drained}");
+        assert_eq!(wait_state(&ctl, &wait_id), "SATISFIED");
+        cleanup(&path);
+    }
+
     /// The other half of the same contract (D-255): `BLOCKED` is a *report*, not
     /// a settlement — the assignee may still be unblocked and settle the same
     /// task — so a task condition stays pending; the documented release is
