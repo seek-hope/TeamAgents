@@ -657,6 +657,48 @@ async fn headless_runs_report_their_own_outcome_not_an_earlier_settlement() {
     handle.shutdown().await.expect("shutdown");
 }
 
+/// D-275: a settlement is read against the goal this run's turn was working on, not against the session's single
+/// goal. A session carrying an *older* ACTIVE goal beside the run's own (D-267/D-268) makes the checkpoint report
+/// that older goal once the run's goal settles, so the client read its own committed settlement as
+/// not-yet-committed and waited out the caller's deadline — the worst kind of wrong answer for a CI job
+/// (measured in this repository's self-refine session, 2026-09-28: `goal-s-main` ACTIVE and detached beside a
+/// settled `goal-task2`, and the run was still waiting fourteen minutes later). The runtime's closing entry
+/// names its goal (`goal-close-<goal_id>`), so the client can confirm the settlement without touching the
+/// checkpoint's single-goal semantics.
+#[tokio::test]
+async fn a_settlement_is_read_against_the_runs_own_goal_not_the_sessions_active_one() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let scripts = HashMap::from([("i-leader".to_string(), vec![finish_call("done over the wire")])]);
+    let (root, handle) = boot("exec-two-goals", scripts).await;
+    let (socket, workspace) = (root.dir.join("state/daemon.sock"), root.dir.join("ws"));
+    // the boot goal (`goal-s-test`) stays ACTIVE and detached when a second goal attaches to the leader: that is
+    // the goal the checkpoint reports once this run's own goal has settled, and it is not this run's outcome
+    let mut client = Client::connect(&socket).await;
+    let opened =
+        client.command("open-run-goal", "create_goal", json!({"id": "g-run", "instance_id": "i-leader"})).await;
+    assert_eq!(opened["ok"], json!(true), "{opened}");
+    let checkpoint = client.call("checkpoint", json!({})).await;
+    assert_eq!(checkpoint["result"]["snapshot"]["goal"]["status"], json!("ACTIVE"), "{checkpoint}");
+    let options = ExecOptions { timeout_s: 10, ..exec_options(&socket, &workspace, "finish it", Vec::new()) };
+    let started = std::time::Instant::now();
+    let run = headless(options).await;
+    assert_eq!(run.end, End::Completed, "{}", run.report);
+    assert_eq!(run.report["goal_status"], json!("SUCCEEDED"), "{}", run.report);
+    assert_eq!(run.report["end"], json!("completed"));
+    assert_eq!(run.end.exit_code(run.checks_ok), 0);
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "the settlement is reported, not waited out ({}s)",
+        started.elapsed().as_secs()
+    );
+    // the session still carries the older goal, and it is still ACTIVE: the state the client had to look past
+    let goals = client.call("goals", json!({})).await;
+    let rows = goals["result"]["goals"].as_array().cloned().unwrap_or_default();
+    assert!(rows.iter().any(|goal| goal["id"] == json!("g-run") && goal["status"] == json!("SUCCEEDED")), "{goals}");
+    assert!(rows.iter().any(|goal| goal["id"] == json!("goal-s-test") && goal["status"] == json!("ACTIVE")), "{goals}");
+    handle.shutdown().await.expect("shutdown");
+}
+
 /// A goal the *runtime* blocks (its required checks never pass) is not a success
 /// either: `exec` must report it and exit non-zero. The runtime's own block note is
 /// what the instance stops on — an assistant-shaped one was exactly what a naive

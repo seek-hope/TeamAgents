@@ -20,6 +20,109 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-276 Task 3's delivery is verified by the operator, and two lessons the phase's own runs taught (2026-09-28)
+
+The self-refine session's second work item was the multi-goal hang D-274 recorded; the product's own entry is
+D-275, and this entry is the operator's record of what it delivered, how it was verified, and what the phase
+learned.
+
+**What it delivered.** `exec` now confirms a settlement against the goal its own closing entry names
+(`Attribution::closing_goal` reads `goal-close-<goal_id>`/`goal-block-<goal_id>`) and looks that goal's status up
+in the session's `goals` list (`status_of_goal`), instead of asking the checkpoint for "the" goal. A real
+socket-level regression test in `engine/tests/v2_daemon.rs` builds the shape (an older `ACTIVE` goal beside the
+run's own, the run's goal settling) and asserts the report, the exit code and that the run returns inside its
+deadline.
+
+**How it was verified, and why the operator had to do it.** The run never settled: it hit its 6,000,000-token
+ceiling *after* the work was in the tree (`budget_refused`, the instance `PARKED`), so the goal's own required
+check never ran and no settlement gated the delivery. The operator therefore ran, on the tree as left:
+`env -u DEEPSEEK_API_KEY make check` (the condition CI and this session run in), the pre-fix control — the new
+test against `HEAD`'s `engine/src/v2/exec.rs`, which **fails** `left: Timeout, right: Completed` in 10.15 s with
+`end: "timeout"` and `goal_status: null` in the report, and passes in 0.32 s after the file is restored
+byte-identically (`diff -q`) — and `make pty`. All three are green now.
+
+**Lesson 1: the decision entry is part of the gate.** The product's evidence table claims
+`env -u DEEPSEEK_API_KEY make check` `rc=0`, and that was true when it ran the gate — but the entry was written
+*after* that run, and the entry itself moves numbers `review/` audits recompute (its own `make` references and
+citations). On the tree the run left, hygiene therefore failed with two findings
+(`this script's docstring says 494 make commands, the tree has 497` and the same in `review/README.md`), which the
+operator fixed by updating the two numbers the audit points at — never by weakening the audit. So a task card for
+this repository must say: **write the decision entry first, then run the gate, and re-run it after any further
+edit**; a green gate measured before the last edit is not a green gate.
+
+**Lesson 2: the ceiling is a per-task budget, and 6M is still too small.** Three tasks ran: task 1 (free-form
+triage) exhausted 2M *before* producing work and parked with the budget reason; task 2 (the bounded fix) finished
+inside 4.34M; task 3 exhausted 6M *after* the work. The cost driver is the growing context re-sent every request,
+not the size of the change. The phase's per-goal ceiling is therefore raised to 12,000,000 tokens and 180 minutes,
+and every card ends with the instruction to settle as soon as the gate is green instead of adding further
+verification the card did not ask for.
+
+**Next candidate work, measured this turn.** `teamagents goals open --id ID --attach X` prints
+`opened goal … (0 required check(s))` while the goal it just opened carries the session's configured check (the
+daemon unions it in, D-268) — the client reports what it asked for, not what the goal got. Small, decision-free,
+and evidence-shaped; it is the next card if the product's own triage does not name something better.
+
+**Ceiling**: one entry cannot show that the loop's *verification* habits improve — the two lessons above are
+process fixes for the cards the operator writes, and both cost a task each to learn. The delivery itself is
+verified as described, but by the operator, not by the runtime's own required check; nothing here says the loop
+can be left to settle its own work without the gate.
+
+## D-275 `exec` confirms a settlement against the goal its own closing entry names, not the session's single goal (2026-09-28)
+
+D-274 recorded the hang this fixes. A headless run whose goal settles did not recognise its own settlement in a
+session that carries more than one goal, and waited out its own `--timeout`: measured in the self-refine session,
+`goal-task2` settled `SUCCEEDED` (the `goal_completed` event, `detached: 1`) and the client printed no report and
+wrote no `verification.json` for the fourteen minutes until the operator stopped the session, which then exited
+on the lost socket. The client's confirmation read asked the *checkpoint* for "the" goal's status
+(`snapshot["snapshot"]["goal"]["status"]` → `goal_now`) and handed it to `Attribution::read`, whose rule is
+"settled unless that status is `ACTIVE`, because the settlement commits its event and the status in one
+transaction, so `ACTIVE` means the checkpoint has not caught up". The checkpoint's single goal is the *session's*
+active goal — D-266's ordering, the active goal wins and then the newest — which with one goal is the run's goal
+and with several can be another goal entirely: here the older, still-`ACTIVE`, detached `goal-s-main`. So a
+settlement that was committed *and* in the run's own history (the closing entry `goal-close-goal-task2`, after the
+run's own input) was read as `Pending` on every pass, for ever. A session can carry several goals since
+D-267/D-268, and the unit test beside the function pinned the one-goal reading — which is why this is a product
+defect and not a test's.
+
+**Fixed in the client**, which is where this decision belongs: `Attribution` gained `closing_goal(entry)` — the
+runtime builds a settlement's envelope as `goal-close-<goal_id>` / `goal-block-<goal_id>`
+(`control.rs::complete_goal`/`block_goal`), so the closing entry *names* its goal — and `read` now takes the
+session's goal list (`goals` read method) instead of the checkpoint's single status: the settlement is confirmed
+against the status of the goal its own entry names (`status_of_goal`), read off the same list the D-270 advisory
+already reads. A status that still reads `ACTIVE` is still "decide on the next pass", and a goal the list does not
+carry is not guessed either. D-71/D-72's rule is untouched: the closing entry must still be the first turn-ending
+entry after *this run's* input, and a settlement or reply recorded before that input landed is still somebody
+else's. The polling loop fetches the list only on the passes where the instance is `READY` — the same passes that
+already read the history — and the now-unused single-goal read is deleted. No protocol, no persisted schema, no
+checkpoint semantics and no runtime change: the checkpoint still reports the session's active goal (D-266), and
+"this run's goal" is now the goal the settlement itself names.
+
+**Evidence** (2026-09-28, this tree: `3bb6b6a1` plus this uncommitted diff).
+
+| Command | Result |
+|---|---|
+| `cargo test --offline --manifest-path engine/Cargo.toml --test v2_daemon a_settlement_is_read_against_the_runs_own_goal_not_the_sessions_active_one` | **ok**, 1 passed in 0.32 s: the run reports `end=completed`, `goal_status=SUCCEEDED`, exit 0, inside its 10 s deadline, while the session still carries the older `ACTIVE` goal `goal-s-test` |
+| pre-fix control: the same test with `engine/src/v2/exec.rs` exactly as at `HEAD` (saved first, restored byte-identically — `diff -q` reports identical) | **FAILED** after 10.17 s with `left: Timeout, right: Completed`: the run waited out its own deadline about a settlement that was committed and in its own history — D-274's fourteen-minute hang, deterministic and in ten seconds |
+| `cargo test --offline --manifest-path engine/Cargo.toml --lib an_outcome_before_the_runs_own_input_is_not_its_outcome` | **ok**: the D-72 pins (a settlement before the input is not mine; the first ending after it is) plus the new ones (an older `ACTIVE` goal beside the run's own; a `goal-block-*` note read the same way; a status that is `ACTIVE` or missing from the list stays `Pending`) |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in the condition this session runs in (no credential exported): fmt-check, clippy `-D warnings` on all targets, the three crates' suites and the hygiene catalogue |
+| `make language-check` | rc=0 |
+
+The suites' count moved with the new test, so the numbers `review/test_counts.py` recomputes were updated with it:
+`python3 review/test_counts.py --write` reports `engine: 274 -> 275` in `docs/ACCEPTANCE.md`, `AGENTS.md` and
+`.github/release-notes.md` (core 107 / engine 275 / tui 36). The ledger's "checked on 2026-09-27" full-pass date
+is deliberately *not* moved: this turn did not re-run `make pty`, the probe sets or the formal gates.
+
+**Ceiling**: the confirmation is only as good as the `goals` list carrying the goal the closing entry names — a
+goal that were ever absent from it (nothing in this tree deletes a goal: there is no `DELETE FROM goals` anywhere)
+would keep the run at `Pending`, i.e. the conservative reading is also a possible hang, just not this one. The
+status still comes from the goal's own row rather than from the settlement event's payload, so the report's
+`goal_status` is the row's status, as it was before. A settled pass now makes two socket reads (`history` and
+`goals`) where it made one plus a checkpoint field; the extra round trip's cost is not measured. What is proven is
+the client's own decision on a two-goal session driven through a real socket, the runtime untouched; the operator's
+live session is history, not a re-run, and `make check` proves the gate, not the product's behaviour against a real
+model. D-274's ceiling stands where it touches this: the phase still owns the commits and the gate re-runs, and
+nothing here claims the loop can pick its own work without a bounded card.
+
 ## D-274 The self-refine phase runs, and its first delivered task exposed a multi-goal hang (2026-09-28)
 
 D-272 judged the product ready to carry its own productization work and validated the provider entry; this entry

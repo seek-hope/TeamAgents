@@ -231,13 +231,25 @@ impl Attribution {
     /// The runtime's own word for a settlement, told apart from a closed turn by
     /// the envelope the runtime generated for it (`goal-close-*`, `goal-block-*`).
     fn settles_a_goal(entry: &Json) -> bool {
-        entry["kind"] == json!("runtime")
-            && entry["envelope_id"]
-                .as_str()
-                .is_some_and(|id| id.starts_with("goal-close-") || id.starts_with("goal-block-"))
+        entry["kind"] == json!("runtime") && Attribution::closing_goal(entry).is_some()
     }
 
-    fn read(envelope: &str, goal_status: Option<&str>, history: &[Json]) -> Attribution {
+    /// The goal a settlement's own word is about: the runtime builds that envelope as `goal-close-<goal_id>` /
+    /// `goal-block-<goal_id>` (`control.rs::complete_goal`/`block_goal`), so the closing entry *names* its goal.
+    /// That is what lets this run confirm its own settlement without asking the checkpoint about "the" goal,
+    /// which can be a different goal once a session carries more than one (D-275).
+    fn closing_goal(entry: &Json) -> Option<&str> {
+        let id = entry["envelope_id"].as_str()?;
+        id.strip_prefix("goal-close-").or_else(|| id.strip_prefix("goal-block-"))
+    }
+
+    /// `goals` is the session's goal list (`goals` read method), `history` this run's view of the conversation.
+    /// The settlement is confirmed against the status of the goal its own closing entry names — never against the
+    /// checkpoint's *single* goal, which is the session's active goal (D-266) and, in a session that carries an
+    /// older active goal beside this run's own (D-267/D-268), is another goal entirely: the run then read a
+    /// settlement that was committed and in its own history as not-yet-committed and waited out its deadline
+    /// (measured 2026-09-28, D-275).
+    fn read(envelope: &str, goals: &Json, history: &[Json]) -> Attribution {
         let Some(mine) = history.iter().position(|entry| entry["envelope_id"].as_str() == Some(envelope)) else {
             // the input has not landed yet (a turn was in flight when it arrived):
             // nothing the session did in the meantime is its outcome
@@ -247,11 +259,11 @@ impl Attribution {
             return Attribution::Pending;
         };
         if Attribution::settles_a_goal(end) {
-            // the settlement's own word was written in the same transaction as the
-            // goal's status, so a checkpoint that still says ACTIVE has simply not
-            // caught up: decide on the next pass instead of guessing a status
-            return match goal_status {
-                Some(status) if status != "ACTIVE" => Attribution::Settled(status.to_string()),
+            // the settlement's own word was written in the same transaction as its goal's status, so a status
+            // that still reads ACTIVE has simply not caught up: decide on the next pass instead of guessing one
+            let status = Attribution::closing_goal(end).and_then(|goal_id| status_of_goal(goals, goal_id));
+            return match status {
+                Some(status) if status != "ACTIVE" => Attribution::Settled(status),
                 _ => Attribution::Pending,
             };
         }
@@ -298,6 +310,15 @@ fn unchargeable_goal_advisory(goals: &Json, instance: &str) -> Option<String> {
          inside it will be refused. Open the next goal with `teamagents goals open --id ID --attach {instance}` \
          (or `g` in the TUI's instances panel) and run this input again."
     ))
+}
+
+/// The status of one *named* goal, read off the session's goal list (`goals` read method) — the same list the
+/// advisory above reads, and for the same reason: the checkpoint's single goal cannot answer a question about a
+/// named goal once a session carries more than one (D-266/D-275).
+fn status_of_goal(goals: &Json, goal_id: &str) -> Option<String> {
+    let rows = goals["goals"].as_array()?;
+    let goal = rows.iter().find(|goal| goal["id"].as_str() == Some(goal_id))?;
+    goal["status"].as_str().map(str::to_string)
 }
 
 /// The runtime's own words for a fact that ends *this* run while its turn can never finish: a request it
@@ -527,11 +548,14 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
         // What *this* run's input produced (D-72): its own entry, and the first
         // turn-ending entry after it. A settlement or a reply that happened before
         // this input landed belongs to another turn, however the instance looks now.
-        let goal_now = snapshot["snapshot"]["goal"]["status"].as_str().or_else(|| snapshot["goal"]["status"].as_str());
+        // D-275: the settlement is confirmed against the goal its own closing entry names, read off the `goals`
+        // list, never against the checkpoint's single goal — that one is the session's active goal (D-266) and a
+        // session can carry an older active goal beside this run's own, which made this run read its own
+        // committed settlement as not-yet-committed and wait out the caller's deadline.
         let mut attribution = Attribution::Pending;
         if settled {
-            if let Ok(entries) = client.history(&instance) {
-                attribution = Attribution::read(&envelope, goal_now, &entries);
+            if let (Ok(entries), Ok(goals)) = (client.history(&instance), client.call("goals", json!({}))) {
+                attribution = Attribution::read(&envelope, &goals, &entries);
             }
         }
         match &attribution {
@@ -1064,6 +1088,10 @@ mod tests {
     /// is one snapshot, so the rule is positional: find this run's entry, then read
     /// the first turn-ending entry after it — a settlement or a reply that happened
     /// before this input landed belongs to the turn the input was not part of.
+    ///
+    /// D-275: a settlement is confirmed against the status of the goal the runtime's own closing entry names
+    /// (`goal-close-<goal_id>`), read off the `goals` list — never against the session's single goal, which is
+    /// one goal of a session that may carry several.
     #[test]
     fn an_outcome_before_the_runs_own_input_is_not_its_outcome() {
         let user = |envelope: &str, text: &str| json!({"kind": "user", "envelope_id": envelope, "message": {"role": "user", "content": text}});
@@ -1076,13 +1104,14 @@ mod tests {
                            "message": {"role": "user", "content": "runtime: goal g1 closed as SUCCEEDED"}});
         let turn_close = json!({"kind": "runtime", "envelope_id": "turn-close-i-leader",
                                 "message": {"role": "user", "content": "runtime: turn closed"}});
+        let goals = |status: &str| json!({"goals": [{"id": "g1", "status": status}]});
 
         // the run's input never landed: nothing in the conversation is its outcome
         let queued = vec![user("env-old", "first question"), reply("first answer")];
-        assert_eq!(Attribution::read("env-mine", Some("ACTIVE"), &queued), Attribution::Pending);
+        assert_eq!(Attribution::read("env-mine", &goals("ACTIVE"), &queued), Attribution::Pending);
         // …even when an earlier turn settled the goal on its way out
         let settled_earlier = vec![reply("first answer"), close.clone(), user("env-mine", "second question")];
-        assert_eq!(Attribution::read("env-mine", Some("SUCCEEDED"), &settled_earlier), Attribution::Pending);
+        assert_eq!(Attribution::read("env-mine", &goals("SUCCEEDED"), &settled_earlier), Attribution::Pending);
 
         // this run's own turn: tool traffic does not end it, its reply does
         let mine = vec![
@@ -1094,7 +1123,7 @@ mod tests {
             reply("the answer to the second question"),
         ];
         assert_eq!(
-            Attribution::read("env-mine", Some("SUCCEEDED"), &mine),
+            Attribution::read("env-mine", &goals("SUCCEEDED"), &mine),
             Attribution::Reply("the answer to the second question".to_string())
         );
         // a later turn's entries are not mine either: the first ending after my
@@ -1103,25 +1132,39 @@ mod tests {
         later.push(user("env-someone-else", "third question"));
         later.push(reply("an answer to somebody else"));
         assert_eq!(
-            Attribution::read("env-mine", Some("SUCCEEDED"), &later),
+            Attribution::read("env-mine", &goals("SUCCEEDED"), &later),
             Attribution::Reply("the answer to the second question".to_string())
         );
 
-        // the settlement this run caused: the note follows its own entry, and the
-        // status comes from the checkpoint (a checkpoint that has not caught up yet
-        // is not a licence to guess)
+        // the settlement this run caused: the note follows its own entry, and its status is the status of the
+        // goal that note names — a goal whose row still reads ACTIVE has not caught up yet, and one the list does
+        // not carry at all is not guessed either
         let settled = vec![user("env-old", "first"), reply("first answer"), user("env-mine", "second"), close.clone()];
         assert_eq!(
-            Attribution::read("env-mine", Some("SUCCEEDED"), &settled),
+            Attribution::read("env-mine", &goals("SUCCEEDED"), &settled),
             Attribution::Settled("SUCCEEDED".into())
         );
-        assert_eq!(Attribution::read("env-mine", Some("ACTIVE"), &settled), Attribution::Pending);
+        assert_eq!(Attribution::read("env-mine", &goals("ACTIVE"), &settled), Attribution::Pending);
+        assert_eq!(Attribution::read("env-mine", &json!({"goals": []}), &settled), Attribution::Pending);
+        // D-275, the state that made the run wait out its deadline: a session carrying an older ACTIVE goal
+        // beside this run's own. The closing note names its own goal, so the settlement is read…
+        let two_goals = json!({"goals": [{"id": "g-old", "status": "ACTIVE"}, {"id": "g1", "status": "SUCCEEDED"}]});
+        assert_eq!(Attribution::read("env-mine", &two_goals, &settled), Attribution::Settled("SUCCEEDED".into()));
+        // …and a *blocked* goal's note is read the same way, from the goal it names
+        let blocked = json!({"kind": "runtime", "envelope_id": "goal-block-g1",
+                             "message": {"role": "user", "content": "runtime: goal g1 blocked: checks"}});
+        let block_history = vec![user("env-mine", "second"), blocked];
+        let blocked_goals = json!({"goals": [{"id": "g-old", "status": "ACTIVE"}, {"id": "g1", "status": "BLOCKED"}]});
+        assert_eq!(
+            Attribution::read("env-mine", &blocked_goals, &block_history),
+            Attribution::Settled("BLOCKED".into())
+        );
         // a closed turn is the runtime's word too, but it settles nothing
         let closed = vec![user("env-mine", "second"), turn_close];
-        assert_eq!(Attribution::read("env-mine", Some("SUCCEEDED"), &closed), Attribution::Closed);
+        assert_eq!(Attribution::read("env-mine", &goals("SUCCEEDED"), &closed), Attribution::Closed);
         // a bare tool call is not an answer (D-49)
         let calling = vec![user("env-mine", "second"), call];
-        assert_eq!(Attribution::read("env-mine", Some("ACTIVE"), &calling), Attribution::Pending);
+        assert_eq!(Attribution::read("env-mine", &goals("ACTIVE"), &calling), Attribution::Pending);
     }
 
     /// The exit code comes from the marker the wrapper prints, not from
