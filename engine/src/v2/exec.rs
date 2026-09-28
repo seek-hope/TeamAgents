@@ -941,8 +941,8 @@ fn leader_instance(checkpoint: &Json) -> Option<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::{
-        capped, leader_instance, parked_fate, parse_check_result, run_checks, run_fate, socket_lost, timeout_line,
-        unchargeable_goal_advisory, Attribution, End,
+        capped, leader_instance, parked_fate, parse_check_result, resolve_prefix, run_checks, run_fate, socket_lost,
+        timeout_line, unchargeable_goal_advisory, Attribution, End,
     };
     use serde_json::json;
     use std::path::Path;
@@ -1220,5 +1220,30 @@ mod tests {
         assert_eq!(checks.len(), 2);
         assert!(checks.iter().all(|check| check["ok"] == json!(true)), "{checks:?}");
         assert_eq!(checks[0]["exit_code"], json!(0));
+    }
+
+    /// A25's "prefix decision", as the surfaces actually share it: `approvals`, `authority`, `instances` and
+    /// `tasks` all take an id through `resolve_prefix`, so the rule is one unit test rather than four. The branch
+    /// nothing drove is the middle one: two ids that share a prefix must be *refused with both named* — resolving
+    /// to whichever row came first is how a user decides the wrong approval.
+    #[test]
+    fn an_id_resolves_by_a_unique_prefix_and_refuses_an_ambiguous_one() {
+        let rows = vec![json!({"id": "ap-12ab34"}), json!({"id": "ap-12cd56"}), json!({"id": "t-99"})];
+        let one = resolve_prefix(&rows, "id", "t-9", "approval", "teamagents approvals").expect("a unique prefix");
+        assert_eq!(one["id"], json!("t-99"));
+        let unknown = resolve_prefix(&rows, "id", "ap-nope", "approval", "teamagents approvals").unwrap_err();
+        assert_eq!(unknown.0, 2);
+        assert!(unknown.1.contains("no approval id starts with"), "{unknown:?}");
+        let ambiguous = resolve_prefix(&rows, "id", "ap-12", "approval", "teamagents approvals").unwrap_err();
+        assert_eq!(ambiguous.0, 2);
+        assert!(
+            ambiguous.1.contains("matches 2 approval ids")
+                && ambiguous.1.contains("ap-12ab34")
+                && ambiguous.1.contains("ap-12cd56")
+                && ambiguous.1.contains("give more characters"),
+            "{ambiguous:?}"
+        );
+        let empty = resolve_prefix(&rows, "id", "  ", "approval", "teamagents approvals").unwrap_err();
+        assert!(empty.1.contains("needs an id"), "{empty:?}");
     }
 }

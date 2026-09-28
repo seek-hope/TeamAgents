@@ -20,6 +20,89 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-304 Task 17 is verified: the sixth audited row, and the sixth hole (2026-09-29)
+
+The product's entry is D-303. This entry is the operator's verification and the phase's measured numbers.
+
+**What the audit found this time.** A25's approvals surface "decides a parked operation" and the row's evidence
+included the CLI test — but the *id rule* the surface actually shares (`resolve_prefix`, behind `approvals`,
+`authority`, `instances` and `tasks`) had no test of its **ambiguity** branch: two ids sharing a prefix must be
+refused with both named and "give more characters", because resolving to whichever row came first is how a user
+decides the wrong approval. The daemon test also decided by a *full* id rather than the short prefix a human
+types, so nothing drove the resolution end to end either. The delivery adds one unit test over all four branches
+of `resolve_prefix` (unique prefix, unknown, ambiguous with both ids in the message, empty) and changes the
+daemon test to decide by an eight-character prefix and assert the report names the id it resolved to. Reading
+`exec.rs`'s diff confirms the only change there is inside its `#[cfg(test)]` module — no product behaviour moved.
+
+**Verified.** The operator reproduced the pre-fix control independently: `id.starts_with(wanted)` reverted to an
+exact match makes **both** fail — the unit test at its unique-prefix case, and the daemon test with
+`assertion left == right failed: no approval id starts with "ap-d-req"; teamagents approvals shows the ids` — and
+restoring the file byte-identically (sha256 `597ec9dd…`, unchanged) puts both back to `ok`.
+`env -u DEEPSEEK_API_KEY make check` `rc=0` (25 green targets) and `make pty` ok, and the goal settled only after
+its own required check passed — the fourteenth of sixteen machine-gated deliveries.
+
+**The audit's yield, six rows in: six holes.** A33, A18, A13, A19, A15 and now A25 — three of them were correct
+behaviour that needed coverage, three were holes in what a reader was told. Six for six is no longer a surprise;
+it is what a document whose citations are only checked for *existence* should be expected to contain.
+
+**The phase's measured numbers (this commit).** **Sixteen deliveries**, **195,526,028 tokens over 723 model
+requests**, the suites at `core 109 / engine 285 / tui 36`, and an operator cost of seventeen verification rounds
+and three resumes. Four of the sixteen defects came from the operator's supervision or its probes; the last seven
+deliveries all came from the claims audit.
+
+**Next card**: continue the audit at the next row; the operator keeps verifying each delivery with its own
+control, the gate and the `make pty` smoke, and keeps stating measured numbers.
+
+**Ceiling**: the unit test drives the helper directly and the daemon test drives one surface through it; the other
+three surfaces (`authority`, `instances`, `tasks`) still rely on their own tests reaching the same branch, and
+nothing here proves they all do. The remaining thirty rows are still prose-first.
+
+## D-303 The shared id rule behind `approvals` had an ambiguity branch nothing drove (2026-09-29)
+
+**Triage.** D-302 left the row-by-row mandate, so I took the next unaudited row and picked **A25** ("MCP
+approval / cancellation / unknown outcome"): it is probe- and shape-driven (the TUI probe, the approvals CLI
+against a real daemon, `V2Approval` with its four refuted controls) and load-bearing — the approval surface is
+where a user authorises an effect. Reading it, I checked its sub-claims against their evidence: the TUI probe
+drives **both** decisions (`approval.py --decision approve|deny`, keys `a`/`d`); the approvals CLI test asserts
+the list, a typo refusal, the decision and the goal's completion; the sandbox/host modes, the network switch, the
+two timeouts, the service binding, the HTTP transport and the model's four controls each name their evidence. The
+claim that did not hold up was "**prefix decision**": the test decided with the *full* id (which is trivially a
+prefix), so the rule the surface actually rests on had never been driven.
+
+**What the tree does.** Every client surface that takes an id — `approvals`, `authority`, `instances`, `tasks` —
+resolves it through one function, `resolve_prefix` (`engine/src/v2/exec.rs`), whose own doc comment promises that
+they "refuse an unknown **or ambiguous** name with the same words". It has four branches: empty → "needs an id";
+one match → the row; no match → "no … id starts with …"; **many matches → refused with both ids named and "give
+more characters"**. The daemon test drove the full-id match and the no-match refusal; the ambiguity branch — two
+pending approvals sharing a prefix — was exercised by nothing, and resolving to whichever row came first is
+exactly how a user decides the wrong approval.
+
+**The change (coverage, not behaviour).** Two tests: the daemon test
+`v2_daemon::the_approvals_cli_lists_and_decides_a_parked_operation` now decides by a **short unique prefix**
+(`approval_id.chars().take(8)`, i.e. `ap-d-req`) and asserts the report names the id it resolved to, so the CLI's
+prefix path is driven end to end; and a new unit test in `engine/src/v2/exec.rs`'s test module,
+`an_id_resolves_by_a_unique_prefix_and_refuses_an_ambiguous_one`, covers all four branches of the shared rule,
+including the ambiguity refusal naming both ids. A25's row now says both. **The product code is unchanged** —
+`resolve_prefix` itself is untouched, and only its `mod tests` gained the unit test.
+
+**Evidence** (2026-09-29; the tree is `HEAD` plus this uncommitted diff).
+
+| Command | Result |
+|---|---|
+| `cargo test --offline --manifest-path engine/Cargo.toml --lib an_id_resolves_by_a_unique_prefix_and_refuses_an_ambiguous_one` | **ok** |
+| `cargo test --offline --manifest-path engine/Cargo.toml --test v2_daemon the_approvals_cli_lists_and_decides_a_parked_operation -- --exact` | **ok** (0.24 s) — the decision goes in by `ap-d-req` and the report names the full id |
+| pre-fix control: the prefix rule in `resolve_prefix` reverted — `id.starts_with(wanted)` → `id == wanted` (an exact match, the defect both tests exist for) | **FAILED twice**: the unit test at its unique-prefix case, and the daemon test with `assertion left == right failed: no approval id starts with "ap-d-req"; \`teamagents approvals\` shows the ids` — the CLI refused the prefix |
+| the line restored byte-identically (`diff` clean, `sha256sum` `597ec9dd…`) | **ok** — the only change `exec.rs` ships is the unit test in its `mod tests` |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `python3 review/test_counts.py --write` | `engine: 284 -> 285` (the new unit test; the daemon test kept its count) |
+
+**Ceiling.** The ambiguity branch is unit-tested rather than end-to-end (two pending approvals in one session
+would need a second parked shell call; the shared function's four branches are the rule the five surfaces take an
+id through). The prefix decision is driven with an eight-character prefix of a generated id, not with the
+shortest possible unique prefix. `resolve_prefix` is pure but not formally proven: symbolically modelling its
+JSON rows and strings is the wall D-295 measured. The live probes were not re-run; `make pty` and the probe sets
+were not run.
+
 ## D-302 Task 16 is verified: the fifth audited row, and the fifth hole (2026-09-29)
 
 The product's entry is D-301. This entry is the operator's verification and the phase's measured numbers.

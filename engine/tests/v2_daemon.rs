@@ -414,14 +414,19 @@ async fn the_approvals_cli_lists_and_decides_a_parked_operation() {
             .await;
     assert_eq!(code, 2, "{err}");
     assert!(err.contains("no approval id starts with"), "{err}");
-    // and the decision goes through the same write surface the TUI uses
+    // and the decision goes through the same write surface the TUI uses — by a *short prefix*, the way a human
+    // types it (D-302): the surface resolves a unique prefix, and the report names the id it resolved to
+    let prefix: String = approval_id.chars().take(8).collect();
+    assert!(approval_id.starts_with(&prefix), "{approval_id}");
     let (code, out, err) = approvals(
-        vec!["approvals".into(), "approve".into(), "--id".into(), approval_id.clone(), "--json".into()],
+        vec!["approvals".into(), "approve".into(), "--id".into(), prefix, "--json".into()],
         state_root.clone(),
     )
     .await;
     assert_eq!(code, 0, "{err}");
-    assert_eq!(serde_json::from_str::<Json>(&out).expect("JSON")["decision"], json!("approve"), "{out}");
+    let decided: Json = serde_json::from_str(&out).expect("JSON");
+    assert_eq!(decided["decision"], json!("approve"), "{out}");
+    assert_eq!(decided["approval_id"], json!(approval_id), "the prefix must resolve to that approval: {out}");
     let (status, _) = wait_goal(&mut client, since).await;
     assert_eq!(status, "SUCCEEDED", "the approved call was dispatched and the turn continued");
     let (code, out, _) = approvals(vec!["approvals".into()], state_root.clone()).await;
