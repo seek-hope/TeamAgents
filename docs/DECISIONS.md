@@ -20,6 +20,83 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-312 Task 21 is verified: the tenth audited row, and a stale number the audits cannot see (2026-09-29)
+
+The product's entry is D-311. This entry is the operator's verification and the phase's measured numbers.
+
+**What the audit found this time.** A14's row quoted `make check-nobwrap`'s result as "the three suites are green
+(core 100 / engine 220 / tui 33)" — D-113's numbers, quoted as the current outcome of a target nothing
+recomputes: `review/test_counts.py` holds only the *ledger's own* sentence to the suites, so a number in an
+acceptance row is prose no audit can contradict. The delivery runs the target and states what it printed
+(**core 113 / engine 286 / tui 36**), keeping the old numbers as the history they are.
+
+**Verified.** The operator ran the cited target itself: `make check-nobwrap` is `rc=0` in **2 m 05 s** on this
+machine, and its own `test_counts` step printed `the ledger's counts match the suites: core 113 / engine 286 /
+tui 36` — the row's claim reproduced independently, not transcribed. `env -u DEEPSEEK_API_KEY make check` `rc=0`
+(25 green targets) and `make pty` ok, and the goal settled only after its own required check passed — the
+eighteenth of twenty machine-gated deliveries.
+
+**The audit's yield, ten rows in: ten holes.** Five coverage (A33, A19, A15, A22, A23), four claims (A18, A13,
+A25, A14) and one product defect (A31). A14 adds a *class* to the list: a number that was true when written, in a
+sentence nothing recomputes — the same rot D-176/D-178/D-221 found in the ledger's headline and in the release
+body, still present one document further out.
+
+**The phase's measured numbers (this commit).** **Twenty deliveries**, **265,866,932 tokens over 837 model
+requests**, the suites at `core 113 / engine 286 / tui 36`, and an operator cost of twenty-one verification rounds
+and three resumes. Four of the twenty defects came from the operator's supervision or its probes; the last
+eleven deliveries all came from the claims audit.
+
+**Next card**: the stale-number class is mechanical enough to sweep — find every suite-count or measured-number
+quotation in `docs/ACCEPTANCE.md` that no audit recomputes, re-derive each from the target it names, and keep the
+old value as history. Failing that, continue the row-by-row audit. The operator verifies each delivery with its
+own control, the gate and the `make pty` smoke.
+
+**Ceiling**: the sweep would re-derive the *numbers* a row quotes, not the claims around them; and the counts a
+row states are only as fresh as the run that produced them, which is why the ledger keeps its own checked line.
+The remaining twenty-six rows are still prose-first.
+
+## D-311 A14's suite numbers were D-113's and nothing recomputed them; the row states the measured counts now (2026-09-29)
+
+**Triage.** D-310 left the row-by-row mandate. I took **A14** ("bubblewrap unavailable") — it is probe/shape-cited
+and load-bearing for the CI-condition story (the GitHub runner has no usable `bwrap`), and its evidence is two
+`make` targets rather than a unit test. Before it I read and rejected A01/A02/A03/A04 (each branch names its
+test), A05, A06 (its restart half is the formal property the row cites), A07/A08/A09/A10/A11 (each names the test
+or probe that drives its shape), and A12/A16/A17/A20/A21/A24/A26/A27/A28/A29/A30/A32/A34/A35/A36 (each branch
+names its driving test; some were audited in earlier turns).
+
+**The finding.** A14's parenthetical read "with it the three suites are green (**core 100 / engine 220 / tui
+33**)" — numbers from D-113's era, **undated**, and *no audit recomputes them*: `review/test_counts.py` checks
+the ledger's line, `AGENTS.md` and the release notes, not a row's prose. So the row carried a stale count a
+reader would take as current. Measured by running the row's *own* cited evidence: `make check-nobwrap` →
+**rc=0 in 1 m 23 s**, and inside that run its `review/test_counts.py` step printed **core 113 / engine 286 /
+tui 36** — the row was stale by 13 core, 66 engine and 3 tui tests. I also ran the row's other cited target,
+`make check-broken-sandbox` (D-114) → **rc=0 in 1 m 23 s**, so the row's *behavioural* claims (the refusal half
+asserted on every machine, the third machine condition covered) hold; only the numbers had drifted.
+
+**The change (the claim, not the code).** A14's sentence now states the measured counts with the date and the
+measurement ("measured 2026-09-29 by running the target itself (rc=0 in 1 m 23 s), whose own
+`review/test_counts.py` step printed core 113 / engine 286 / tui 36"), says they are the ledger's counts that the
+run recomputes, and records what they were when D-113 wrote the row. **No product or test code changed, and the
+counts stay a dated measurement rather than a second silent source of truth.**
+
+**Evidence** (2026-09-29; the tree is `3441c1f0` plus this uncommitted diff).
+
+| Command | Result |
+|---|---|
+| `make check-nobwrap` — the row's own evidence | **rc=0**, 1 m 23 s; its ledger step printed `core 113 / engine 286 / tui 36` |
+| `make check-broken-sandbox` — the row's D-114 evidence | **rc=0**, 1 m 23 s |
+| the command whose output contradicts the old wording: `python3 review/test_counts.py` | `the ledger's counts match the suites: core 113 / engine 286 / tui 36` — against the row's `100 / 220 / 33` |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+
+**Ceiling.** The counts will move again as tests are added; the row now dates them and points at the
+recomputation, so the next drift is visible rather than silent, but no audit *fails* when it happens — turning
+that into a checked number would mean teaching `review/test_counts.py` to read every row, which is the user's
+call about the audit's scope, not this card's. A lead found while triaging, for the next row: the `finish`
+tool's `status: failed` value is parsed by the kernel and a goal closed FAILED is reported as a failed run (its
+report half has a unit test with a FAILED goal), but no test drives a model closing a goal FAILED end to end
+and no A-row claims it — `"status": "failed"` appears in no test. `make pty`, the probes and the
+model-requiring halves were not run.
+
 ## D-310 Task 20 is verified: the ninth audited row, and the wait tool's other two condition kinds (2026-09-29)
 
 The product's entry is D-309. This entry is the operator's verification and the phase's measured numbers.
