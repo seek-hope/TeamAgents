@@ -20,6 +20,35 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-268 A goal a client opens is bounded the way the bootstrap bounds its own (2026-09-28)
+
+D-267 gave the user a lever to open the next goal, and in doing so **broke D-64**: "`[limits]` in the user config
+bounds **every** goal the session creates" — the ceiling, the configured required checks and the deadline were
+supplied by `driver::bootstrap` alone, so a goal opened through `teamagents goals open` carried **none of them**.
+The check that would have caught it is the one thing a client cannot supply: the *session's* config.
+
+**Decided: the session applies its own limits, not the client.** The daemon holds `config::goal_limits` (the same
+value the bootstrap derives) and now applies it to any `create_goal` that arrives through its socket:
+
+* the session's `max_total_tokens` and its `deadline_minutes` (converted to the absolute timestamp the core takes,
+  exactly as `driver::bootstrap` converts it, so the two goal-creating paths cannot disagree) fill in only what
+  the command left out — a user who names their own keeps it, and the daemon serves **user** commands only, so
+  "the client" *is* the user;
+* the session's configured `[[checks]]` are **unioned** with the command's rather than replaced, because a
+  client must not be able to drop a check the user's config requires;
+* the bootstrap path is untouched: it already sends its limits, so merging the session's own value under them is
+  a no-op (the same ids dedup), and it also bypasses this handler (it submits in-process).
+
+**Evidence.** `engine/tests/cli.rs::the_goal_surface_lists_and_opens_goals_through_the_daemon` now runs a daemon
+whose config carries `[limits] max_total_tokens = 400000`, `deadline_minutes = 15` and a `[[checks]]` entry, and
+asserts that the goal opened through the CLI carries the ceiling, **both** checks (the config's and the one the
+CLI named) and an absolute deadline.
+
+Ceiling: the merge is by key and by check id — a client that sends a *different* ceiling replaces the session's,
+which is right for the user but means the daemon is not an enforcement point for a hostile client on the same
+socket (the socket is the session's identity, §6.1, and this product's clients are the user's own); the deadline
+is only applied when the command carries none, so a client that computes its own deadline wins.
+
 ## D-267 `teamagents goals`: the user can open the next goal, so a session is not one-goal-only (2026-09-28)
 
 D-266 fixed the bug *under* the gap ("a settled goal has no product surface to open a new one") but left the

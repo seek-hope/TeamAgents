@@ -45,13 +45,13 @@ the handler re-checks who may do this rather than trusting the request.
 
 | Method | Parameters | Reply keys | Answered at |
 |---|---|---|---|
-| `checkpoint` | — | `snapshot`, `watermark` | `engine/src/v2/daemon.rs:348` |
-| `events` | `since` | `events`, `resync_required`, `watermark` | `engine/src/v2/daemon.rs:355` |
-| `history` | `instance_id`, `limit` | `entries`, `envelope_id`, `epoch`, `idx`, `instance_id`, `kind`, `message` | `engine/src/v2/daemon.rs:364` |
-| `tasks` | — | `assignee`, `goal_id`, `id`, `status`, `tasks` | `engine/src/v2/daemon.rs:392` |
-| `approvals` | — | `approvals`, `id`, `operation_id`, `preview`, `tool` | `engine/src/v2/daemon.rs:408` |
-| `goals` | — | `attached_instances`, `deadline`, `goals`, `id`, `known_usage`, `limits`, `status`, `unknown_usage` | `engine/src/v2/daemon.rs:437` |
-| `grants` | — | `action`, `grants`, `id`, `issuer`, `parent_grant_id`, `resource_scope`, `revision`, `revoked`, `subject` | `engine/src/v2/daemon.rs:472` |
+| `checkpoint` | — | `snapshot`, `watermark` | `engine/src/v2/daemon.rs:391` |
+| `events` | `since` | `events`, `resync_required`, `watermark` | `engine/src/v2/daemon.rs:398` |
+| `history` | `instance_id`, `limit` | `entries`, `envelope_id`, `epoch`, `idx`, `instance_id`, `kind`, `message` | `engine/src/v2/daemon.rs:407` |
+| `tasks` | — | `assignee`, `goal_id`, `id`, `status`, `tasks` | `engine/src/v2/daemon.rs:435` |
+| `approvals` | — | `approvals`, `id`, `operation_id`, `preview`, `tool` | `engine/src/v2/daemon.rs:451` |
+| `goals` | — | `attached_instances`, `deadline`, `goals`, `id`, `known_usage`, `limits`, `status`, `unknown_usage` | `engine/src/v2/daemon.rs:480` |
+| `grants` | — | `action`, `grants`, `id`, `issuer`, `parent_grant_id`, `resource_scope`, `revision`, `revoked`, `subject` | `engine/src/v2/daemon.rs:515` |
 
 ### Commands (executed by the control plane)
 
@@ -118,6 +118,7 @@ literals in `engine/src/v2/daemon.rs`; this table is that list. A row is one lit
 | `read_snapshot` | `instances`, `goal` |
 | `read_snapshot` | `status`, `known_usage`, `unknown_usage`, `limits`, `deadline` |
 | `read_events` | `sequence`, `kind`, `scope`, `payload` |
+| `apply_session_goal_limits` | — |
 | `checkpoint` arm | `snapshot`, `watermark` |
 | `events` arm | `events`, `watermark`, `resync_required` |
 | `history` arm | `epoch`, `idx`, `kind`, `envelope_id`, `message` |

@@ -74,6 +74,7 @@ where
         state_root: state_root.to_string_lossy().into_owned(),
         workspace: config.supervisor.workspace.to_string_lossy().into_owned(),
         permissions: config.supervisor.permissions.clone(),
+        goal_limits: config.supervisor.goal_limits.clone(),
     });
     // D-227: refuse before binding, so the answer names the limit and the fix instead of the OS's
     // `bind …: path must be shorter than SUN_LEN` (`cli::require_socket_path_fits` holds the boundary).
@@ -127,6 +128,10 @@ struct SessionFacts {
     state_root: String,
     workspace: String,
     permissions: String,
+    /// D-268: the session's `[limits]`/`[[checks]]` (`config::goal_limits`), applied to **every** goal the session
+    /// creates (D-64) — including one a client opens later, which until this existed carried no ceiling and no
+    /// required check because only the bootstrap supplied them.
+    goal_limits: Json,
 }
 
 async fn accept_loop(
@@ -231,6 +236,10 @@ async fn handle(request: &Json, supervisor: &SupervisorHandle, session_db: &Path
             let command_id = request.get("command_id").and_then(|v| v.as_str()).unwrap_or("");
             if command_id.is_empty() {
                 return reply(false, json!(format!("method {method:?} needs a command_id")));
+            }
+            let mut params = params;
+            if method == "create_goal" {
+                apply_session_goal_limits(&mut params, &facts.goal_limits);
             }
             let command = Command { command_id: command_id.to_string(), method: method.to_string(), params };
             match supervisor.submit_user(command).await {
@@ -339,6 +348,40 @@ fn read_events(conn: &rusqlite::Connection, since: i64) -> Result<Vec<Json>, Str
 fn watermark(conn: &rusqlite::Connection) -> Result<i64, String> {
     conn.query_row("SELECT COALESCE(MAX(sequence), 0) FROM events", [], |row| row.get(0))
         .map_err(|e| format!("watermark: {e}"))
+}
+
+/// D-268: a goal a *client* opens is bounded the way the bootstrap bounds its own (D-64: "`[limits]` in the user
+/// config bounds every goal the session creates"). The session's ceiling and deadline fill in only what the
+/// command left out — a client that names its own keeps them — and the session's configured required checks are
+/// **unioned** with the command's, because both are the user's: a client must not be able to drop a check the
+/// user's config requires. `deadline_minutes` is converted here exactly as `driver::bootstrap` converts it, so
+/// the two goal-creating paths cannot disagree.
+fn apply_session_goal_limits(params: &mut Json, session_limits: &Json) {
+    let mut limits = params.get("limits").cloned().filter(Json::is_object).unwrap_or_else(|| json!({}));
+    if let Some(max) = session_limits.get("max_total_tokens") {
+        if limits.get("max_total_tokens").is_none() {
+            limits["max_total_tokens"] = max.clone();
+        }
+    }
+    let configured = session_limits.get("required_checks").and_then(Json::as_array).cloned().unwrap_or_default();
+    if !configured.is_empty() {
+        let mut merged = configured;
+        for check in limits.get("required_checks").and_then(Json::as_array).cloned().unwrap_or_default() {
+            let id = check.get("id").and_then(Json::as_str).unwrap_or("");
+            if !merged.iter().any(|existing| existing.get("id").and_then(Json::as_str) == Some(id)) {
+                merged.push(check);
+            }
+        }
+        limits["required_checks"] = Json::Array(merged);
+    }
+    if !limits.as_object().map(|map| map.is_empty()).unwrap_or(true) {
+        params["limits"] = limits;
+    }
+    if params.get("deadline").is_none() {
+        if let Some(minutes) = session_limits.get("deadline_minutes").and_then(Json::as_u64) {
+            params["deadline"] = json!(teamagents_core::models::now() + (minutes * 60) as f64);
+        }
+    }
 }
 
 fn read_method(method: &str, params: &Json, conn: &rusqlite::Connection) -> Result<Json, String> {

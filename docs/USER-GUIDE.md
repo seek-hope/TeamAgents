@@ -491,6 +491,7 @@ teamagents goals                        # the goals this session carries, and wh
 teamagents goals open --id g2 --attach i-leader --check 'tests=python3 -m pytest -q'
                                         # after a goal settles: open the next one, attached to the Leader,
                                         # with your own required checks (§8) and an optional --deadline
+                                        # the session's [limits]/[[checks]] bound it too (D-64/D-268)
 ```
 
 - **`tasks cancel` is the lever for a stuck delegation**: if a member's model ends its turn without settling

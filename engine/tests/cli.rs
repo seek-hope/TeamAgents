@@ -2209,7 +2209,9 @@ fn the_goal_surface_lists_and_opens_goals_through_the_daemon() {
     std::fs::write(
         config_home.join("teamagents/config.toml"),
         "[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\n\
-         api_key_env = \"TA_GOALS_KEY\"\nbase_url = \"http://127.0.0.1:1/v1\"\n",
+         api_key_env = \"TA_GOALS_KEY\"\nbase_url = \"http://127.0.0.1:1/v1\"\n\
+         [limits]\nmax_total_tokens = 400000\ndeadline_minutes = 15\n\
+         [[checks]]\nid = \"session-tests\"\ncommand = \"true\"\n",
     )
     .unwrap();
     let env = |command: &mut Command| {
@@ -2307,10 +2309,20 @@ fn the_goal_surface_lists_and_opens_goals_through_the_daemon() {
     let second = rows.iter().find(|g| g["id"] == serde_json::json!("goal-second")).expect("the opened goal");
     assert_eq!(second["status"], serde_json::json!("ACTIVE"), "{report}");
     assert_eq!(second["attached_instances"], serde_json::json!(["i-leader"]), "{report}");
+    let checks = second["limits"]["required_checks"].as_array().cloned().unwrap_or_default();
+    let ids: Vec<&str> = checks.iter().filter_map(|c| c["id"].as_str()).collect();
+    assert!(ids.contains(&"later-tests"), "the check the CLI named rides on the goal: {report}");
+    // D-268: the *session's* configured ceiling and checks bound a goal a client opens too (D-64) — the bootstrap
+    // is not the only path that creates goals any more
     assert_eq!(
-        second["limits"]["required_checks"][0]["id"],
-        serde_json::json!("later-tests"),
-        "the user's check rides on the goal: {report}"
+        second["limits"]["max_total_tokens"],
+        serde_json::json!(400000),
+        "the session's ceiling travels to a client-opened goal: {report}"
+    );
+    assert!(ids.contains(&"session-tests"), "the session's configured check is unioned in: {report}");
+    assert!(
+        second["deadline"].as_f64().is_some(),
+        "the session's deadline_minutes becomes an absolute deadline: {report}"
     );
     // the *live* goal is the first row: the one an instance is attached to (attaching moves that pointer, so the
     // boot goal keeps its row and loses the attachment — which is why the order is "attached first", not "newest")
