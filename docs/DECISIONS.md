@@ -20,6 +20,95 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-316 Task 23 is verified: the eleventh audited row, and A01's team half had no offline citation (2026-09-29)
+
+The product's entry is D-315. This entry is the operator's verification and the phase's measured numbers.
+
+**What the audit found this time.** A01 is "a single Leader completes a goal (and **the team it builds runs**)".
+Its central claim turned out to be driven (a `cli` test covers the doctor note the row also makes), but two things
+about the evidence were not: the "team runs" half was cited from a **real-model** delegation run whose raw evidence
+sits in `review/tmp/dogfood/` — an **ignored** directory, so nothing a reader or CI can reproduce — and the run's
+number (16.3 s) carried **no date**. The row now cites
+`v2_supervisor::spawned_worker_settles_and_the_leader_completes` for the offline shape and dates the delegation run
+(2026-09-25, D-59), keeping the raw evidence named as what it is.
+
+**Verified.** The operator read the cited test's body — the leader `spawn`s a worker, `delegate`s `t-answer`,
+`wait`s on the task and `finish`es, while the worker's own `finish` settles the delegated task, and the test
+asserts `goal_completed: SUCCEEDED` plus the task's status — and ran it: `ok` in 0.06 s on this tree. The operator
+also confirmed `.gitignore:12` ignores `/review/tmp/`, which is precisely why an offline citation was needed. The
+product's own control checks the committed row (`HEAD`) for both additions and finds both absent
+(`cites an offline team test? False`, `a date next to the delegation number? False`). `env -u
+DEEPSEEK_API_KEY make check` `rc=0` (25 green targets) and `make pty` ok, and the goal settled only after its own
+required check passed — the twentieth of twenty-two machine-gated deliveries.
+
+**The audit's yield, eleven rows and one sweep: twelve findings.** Coverage: A33, A19, A15, A22, A23. Claims:
+A18, A13, A25, A14, A11 and A01 (twice — no offline citation, no date). Product defect: A31. Audit fixes rather
+than document fixes: two (D-293, D-313). A01 is also the first row whose *central* claim the audit found fully
+driven — its holes were in the evidence, not the claim — which is what the "prefer a row whose evidence is a
+probe or a shape" preference was meant to surface.
+
+**The phase's measured numbers (this commit).** **Twenty-two deliveries**, **303,453,176 tokens over 891 model
+requests**, the suites at `core 113 / engine 286 / tui 36`, and an operator cost of twenty-three verification
+rounds and three resumes. Four of the twenty-two defects came from the operator's supervision or its probes; the
+last thirteen deliveries all came from the claims audit and its sweep.
+
+**Next card**: the row's own ceiling names the next candidates — `finish`'s `status: failed` (no test drives a
+model closing a goal FAILED end to end; the string appears in no test) and the `wait` tool's `message` condition
+kind — so the audit continues with a candidate the audit itself handed over.
+
+**Ceiling**: the row now cites a scripted shape for the team half, which proves the *machinery* runs; the
+real-model run remains the evidence that a model uses it, and it is dated rather than re-run. The remaining
+twenty-five rows are still prose-first.
+
+## D-315 A01's "team it builds runs" half had no offline citation, and its delegation number no date (2026-09-29)
+
+**The row.** A01 ("A single Leader completes a goal (and the team it builds runs)") is the matrix's most
+leaned-on row — every scenario below it rests on it — and it had not been audited. What its evidence *actually*
+asserts: `v2_driver::end_to_end_shell_then_finish` drives one instance to a scripted completion (goal
+`SUCCEEDED`, the marker written, phase `READY`, usage billed, `response_imported` and `operation_completed` in
+the log) offline; the headless entry tests cover the CLI path; the web half is dated (2026-09-26) and carries a
+committed guard test; "three real DeepSeek tasks (2026-09-23)" is dated. Two gaps did not survive the reading:
+
+- **The "team it builds runs" half's only evidence was a live run** whose number — "16.3 s" — carried **no date**
+  and whose only pointer was `review/tmp/dogfood/`, the **ignored scratch directory**: a fresh clone has no such
+  evidence, and the number reads as a result from today.
+- **The offline team path was not cited at all**, though it exists and needs no credential:
+  `v2_supervisor::spawned_worker_settles_and_the_leader_completes`.
+
+**The change (the claim and its citations, not the code).** The row now dates the run and names the decision that
+recorded it — "measured 2026-09-25, D-59; raw evidence under `review/tmp/dogfood/`" — and cites the offline
+supervisor test. I read that test before citing it: the leader spawns `i-worker`, delegates `t-answer`, waits on
+the task and finishes; the worker's own turn settles the task (`finish_call("4")`); the goal closes `SUCCEEDED`
+and the `tasks` row is `SUCCEEDED`. D-59's entry records exactly A01's run (three instances, both delegated tasks
+`SUCCEEDED`, both `[[checks]]` commands passing, the whole flow in 16.3 s, `review/tmp/dogfood/`). **No product or
+test code changed.**
+
+**Evidence** (2026-09-29; the tree is `96972279` plus this uncommitted diff).
+
+| Command | Result |
+|---|---|
+| the pre-fix control: the committed row (`HEAD`'s `docs/ACCEPTANCE.md`) checked for the two things the fix adds | **both absent**: `cites an offline team test? False`; `a date next to the delegation number? False` — the row's delegation item read "a real delegation run: 3 instances, … 16.3 s (`review/tmp/dogfood/`)" |
+| the same check on the fixed row | **both present**: `cites the offline team test? True`, `a date next to the number? True`; the working file is byte-identical to the saved fixed copy (`diff` clean) |
+| `python3 review/requirement_trace.py` / `review/markdown_tables.py` | 36 matrix rows, 137 tables, all consistent after the edit |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+
+**Leads recorded, not fixed (no A-row claims them).** Sweeping the tool-schema surfaces for this row found two
+*variants* that no test drives and no A-row claims: `finish`'s `status: failed` (the kernel parses it and the
+report maps a goal closed FAILED to a failed run — unit-tested with a FAILED goal status — but no test drives a
+model closing a goal FAILED end to end; `"status": "failed"` appears in no test) and the `wait` tool's `message`
+condition **without** `from` (the "any sender when omitted" form its own description advertises: the tests
+contain **0** `{"kind": "message"}` conditions without a `from`, and `condition_state`'s branch for it is
+unexercised). Both belong to the wait surface's rows (A22/A23, already audited) or to no row at all, so I
+recorded them rather than stretching a row whose claim does not cover them: the matrix has no row for the tool
+schemas' variants as such, and D-313's audit checks only the suite-count class.
+
+**Ceiling.** The fix is prose and citation; nothing about the *live* run changed, and the raw evidence is still an
+ignored scratch directory (the *decision* now names it and dates it, which is the repository's convention). The
+audits cannot see a *missing* offline citation: they check that a cited name resolves and that the suite-count
+triple matches, not that a claim's halves each name some evidence — so this class stays prose, and the two leads
+above are the proof. `make pty` and the credential-free probes were not re-run for this row (A01's live halves
+need no re-run to be honest once dated).
+
 ## D-314 Task 22 is verified: the stale-number class is now checkable, and the sweep found one undated row (2026-09-29)
 
 The product's entry is D-313. This entry is the operator's verification and the phase's measured numbers.
