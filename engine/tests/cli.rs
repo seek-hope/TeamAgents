@@ -2218,7 +2218,10 @@ fn the_goal_surface_lists_and_opens_goals_through_the_daemon() {
         command
             .env("XDG_CONFIG_HOME", &config_home)
             .env("XDG_STATE_HOME", root.join("state"))
-            .env("TA_GOALS_KEY", "test-value");
+            .env("TA_GOALS_KEY", "test-value")
+            // the goal carries required checks, and a check runs through the runner: point it at the built binary
+            // (the rule `jobs_runner.rs` follows) or the daemon would fail the check and settle the goal FAILED
+            .env("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
     };
     let goals = |args: &[&str]| -> (i32, String, String) {
         let mut command = Command::new(env!("CARGO_BIN_EXE_teamagents"));
@@ -2330,13 +2333,50 @@ fn the_goal_surface_lists_and_opens_goals_through_the_daemon() {
     let boot_row = rows.iter().find(|g| g["id"] == serde_json::json!(first)).expect("the boot goal");
     assert_eq!(boot_row["attached_instances"], serde_json::json!([]), "{report}");
 
-    // 3. the plain-text form names the goal, its attachments and its checks
+    // 3. the plain-text form names the goal, its attachments and its checks (read *before* the removal below,
+    // which detaches the leader: the text form reports the attachments the record holds at read time)
     let (code, out, stderr) = goals(&["goals"]);
     assert_eq!(code, 0, "{stderr}");
     assert!(out.contains("goal-second"), "{out}");
     assert!(!out.contains("later-tests"), "the text form counts checks rather than listing them: {out}");
     assert!(out.contains("checks: 1"), "{out}");
     assert!(out.contains("attached: i-leader"), "{out}");
+
+    // D-270: once no active goal is attached to the leader, `exec` says so *before* the turn spends anything. The
+    // runtime still opens no goal for a later input (that is the design's own known gap), so without this line the
+    // user reads the refusal inside the model's answer and blames the model. Settling `goal-second` detaches the
+    // leader, and the still-ACTIVE boot goal points at nobody — the exact shape where the checkpoint's single goal
+    // object would have reported the *boot* goal and hid the state, which is why the advisory reads the `goals`
+    // list instead (D-267's ordering exists for the same reason).
+    let mut rpc = Rpc::connect(&socket);
+    let settled = rpc.command(
+        "settle-goal-second",
+        "complete_goal",
+        serde_json::json!({"goal_id": "goal-second", "instance_id": "i-leader", "status": "SUCCEEDED",
+                           "summary": "the probe settles it to test the advisory"}),
+    );
+    assert_eq!(settled["ok"], serde_json::json!(true), "{settled}");
+    let (code, out, stderr) = goals(&["goals", "--json"]);
+    assert_eq!(code, 0, "{stderr}");
+    let after = json(&out);
+    // the premise: the goal is terminal and the leader is detached from it (`complete_goal` derives the status
+    // from the instance's last model completion, and there is none with a stub provider, so it reads FAILED — the
+    // advisory keys on the attachment, not on the status, so the assertion follows the record rather than
+    // assuming SUCCEEDED). Settling detaches, so the row is found by id, not by the list's position.
+    let settled = after["goals"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|g| g["id"] == serde_json::json!("goal-second")))
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    assert_ne!(settled["status"], serde_json::json!("ACTIVE"), "{after}");
+    assert_eq!(settled["attached_instances"], serde_json::json!([]), "{after}");
+    let mut exec = Command::new(env!("CARGO_BIN_EXE_teamagents"));
+    env(&mut exec);
+    let output = exec.args(["exec", "--state-root"]).arg(&state).arg("say something").output().expect("run exec");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("no active goal is attached to i-leader"), "the advisory names the state: {stderr}");
+    assert!(stderr.contains("teamagents goals open"), "and the lever: {stderr}");
+    assert!(stderr.contains("--attach i-leader"), "and what to attach it to: {stderr}");
 }
 
 /// `[limits]` in the user config bounds every goal the session creates (D-64): the

@@ -1395,7 +1395,8 @@ async fn a_repair_round_names_the_failed_check_and_its_reason() {
     let root = root("checks-repair-summary");
     std::fs::create_dir_all(root.dir.join("ws")).unwrap();
     std::fs::write(root.dir.join("ws").join("input.txt"), "original").unwrap();
-    // two rounds, so the first failure repairs (the second would exhaust the budget and block)
+    // two rounds: the first completion attempt's check fails as stale and sends the work back for repair; the
+    // second answer reaches a settling turn (round 2's check no longer sees a changed input — see the wait below)
     let script = vec![Step::Message(finish_call("claimed done")), Step::Message(finish_call("done again"))];
     let mut config = root.config(ScriptedProvider { script: Mutex::new(script.into()) });
     config.goal_limits = json!({"required_checks": [{"id": "bound", "command": "printf changed > input.txt",
@@ -1412,6 +1413,14 @@ async fn a_repair_round_names_the_failed_check_and_its_reason() {
     assert!(verdict.contains("bound"), "the verdict names the check: {verdict}");
     assert!(verdict.contains("input.txt changed since the check ran"), "and its reason: {verdict}");
     assert!(verdict.contains("stale_inputs"), "and its class: {verdict}");
+    // The verdict is read from the transcript while the *second* round is already under way (the scripted provider
+    // answers at once, so the next check dispatches immediately), and a shutdown there lands on a job in flight —
+    // refused with "driver shutdown with a job in flight". Wait for the goal's terminal state the way the sibling
+    // `required_checks_exhausted_parks_the_goal_blocked` does, so the shutdown is deterministic. Round 2's check
+    // *passes*: it rewrites the declared input to the bytes it already holds, so the stale-inputs verdict does not
+    // fire twice and the goal settles `SUCCEEDED`.
+    let completed = wait_event_where("goal_completed", &handle, 20_000, |_| true).await;
+    assert_eq!(completed["payload"]["status"], json!("SUCCEEDED"));
     handle.shutdown().await.expect("shutdown");
 }
 

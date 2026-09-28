@@ -20,6 +20,71 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-271 The repair-round test waits for the goal's terminal state (2026-09-28)
+
+At HEAD, `make check` was **not** green. `engine/tests/v2_driver.rs::a_repair_round_names_the_failed_check_and_its_reason`
+failed deterministically, standalone and inside the full gate, with `shutdown: "driver shutdown with a job in
+flight"` (three runs, ~0.1 s each) — a state the ledger's headline line ("`make check` is green") claimed did not
+exist. The cause is a race in the **test**, not in the product: it asserted round 1's verdict and then shut the
+driver down, and by then the scripted provider had already produced round 2's answer, so the driver had dispatched
+round 2's required check. `driver::await_job` refuses a shutdown that lands on a job in flight (§6.4 — the lever
+that stops a process group is not this one, D-88), so the shutdown failed on the very job the test never waited
+for. The product's own record was correct throughout, which the events show: round 1's check rewrites its declared
+input (`class: stale_inputs`, the verdict under test), round 2's check rewrites it to the bytes it already holds,
+so the second round passes and the goal settles `SUCCEEDED` — not the block the test's inline comment predicted
+("the second would exhaust the budget and block").
+
+**Decided: the test waits for the goal's terminal state before shutting down** — the shape its sibling
+`required_checks_exhausted_parks_the_goal_blocked` already uses — and asserts the settlement it observes
+(`SUCCEEDED`); the misleading inline comment is corrected to what the events say. No product code moved.
+
+**Evidence.** Three consecutive runs pass (`test result: ok`, 0.17–0.25 s), and the whole engine suite is green
+(`cargo test --offline --manifest-path engine/Cargo.toml`: 85 lib + the integration targets). The failure and the
+round-2 outcome were established with a temporary `DIAG` dump of the event log and the snapshot (goal `SUCCEEDED`,
+both `check_round_registered` rounds present, `completion_repair` only for round 1), which is not committed; the
+one-line cause is visible in the same dump without any product-side probe.
+
+Ceiling: the wait asserts the goal's *terminal state*, not that the driver is idle — idleness is what the shutdown
+actually needs. A future change that leaves a different job in flight after the settlement would resurface as the
+same refusal; the fix removes the race the test hit, it does not make "no job in flight" checkable. The ledger's
+headline numbers are re-derived by `review/test_counts.py`, which the same gate runs.
+
+## D-270 `exec` says up front when nothing can be charged to a goal (2026-09-28)
+
+D-266/D-267/D-269 gave the user a lever to open the next goal, which made the *round trip* between two goals
+work — and left a way to read the product wrong. A settled goal detaches its instance (`complete_goal`,
+`block_goal`, both in `core/src/v2/control.rs`), and the runtime deliberately opens no goal for a later input
+(the remaining half of the known gap in `docs/ACCEPTANCE.md`). So the next `exec` still runs a turn: the leader
+works, tries to `delegate`, and the control plane refuses it — `delegate_task.goal_id required: requester has no
+active goal`. That sentence lands **inside the model's answer**, where the user reads it as the model failing at
+its job rather than as a state the user can fix in one command.
+
+**Decided: the headless client names the state before it spends anything.** `exec` reads the `goals` list and
+prints one advisory on stderr when no ACTIVE goal is *attached* to the leader — the delegation's own predicate,
+read off the same list D-267 built for the picker. `--json`'s report is untouched (the advisory is stderr, the
+same shape as the parked-leader line already there), the runtime is unchanged, and the message names the lever
+(`teamagents goals open --id ID --attach <leader>`, or `g` in the TUI panel).
+
+The predicate is deliberately *not* "the checkpoint's goal is settled": the checkpoint carries one goal object
+and answers the *session's* active goal, which can be a goal no instance points at — the exact shape this
+decision's test builds (the boot goal stays `ACTIVE` with nobody attached after the second goal settles). The
+first draft keyed on that status and did not fire; the review that caught it is why the list is the source. A
+session with no goals at all is the bootstrap's own instant (`daemon::serve` starts the supervisor before it
+binds the socket, so a client never sees it) and stays silent.
+
+**Evidence.** `engine/src/v2/exec.rs::tests::the_unchargeable_advisory_follows_the_leaders_own_attachment` pins
+the predicate on crafted lists (empty, active-and-attached, settled, active-but-unattached, another instance's
+attachment, and an active goal attached to the leader wherever it sorts), and
+`engine/tests/cli.rs::the_goal_surface_lists_and_opens_goals_through_the_daemon` drives it through the real
+binary and a real daemon: it opens and attaches a second goal, settles it, confirms the record shows it
+terminal and detached, and then asserts `exec`'s stderr names the state, the `goals open` lever and the
+`--attach i-leader` argument — before the unreachable provider is ever contacted.
+
+Ceiling: the advisory covers the state the design's own gap names (no chargeable goal). It does *not* cover a
+leader attached to an ACTIVE goal whose deadline has passed: that path refuses the request with a reason `exec`
+already reports (`run_fate`, A35), so it is not silent; and the advisory is only printed by the headless client
+— the TUI shows the same state through its goal region without this sentence.
+
 ## D-269 The TUI gets the goal lever too: `g` in the instances panel (2026-09-28)
 
 D-267 put the user's goal lever behind a CLI flag, and the design names the TUI as the surface a user *is inside*

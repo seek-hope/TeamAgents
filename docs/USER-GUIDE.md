@@ -356,7 +356,10 @@ pre_tool = ["/home/you/bin/policy.sh"]            # policy hook before tool call
   job can use. Budget, task and grant panels all read the same facts.
   A goal that has settled cannot be reopened, so the next one is opened from the instances panel (`g`, attached
   to the selected instance) or headlessly with `teamagents goals open --id … --attach …` (D-267/D-269); the
-  session's `[limits]`/`[[checks]]` bound it, applied by the daemon (D-268).
+  session's `[limits]`/`[[checks]]` bound it, applied by the daemon (D-268). A headless run whose leader is
+  attached to no active goal says so on **stderr before it submits anything** (D-270), because a turn still runs
+  but a delegation inside it is refused — the sentence names the `goals open --attach` lever, so the refusal is
+  not read as the model failing.
 - Goal and task completion goes through the runtime's completion gate: `finish` only accepts honest
   outcomes, and the required checks you define must really pass.
 - **Required checks** come from `[[checks]]` in your config (§2.1) and are carried on the goal itself

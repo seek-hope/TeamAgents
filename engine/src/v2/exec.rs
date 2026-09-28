@@ -271,6 +271,35 @@ pub struct ExecRun {
     pub checks_ok: bool,
 }
 
+/// D-270: the advisory a run prints *before* it submits anything, when the leader's turn cannot charge work to a
+/// goal. A session whose goal has settled still runs a turn — the runtime deliberately opens no goal for a later
+/// input (the known gap in ACCEPTANCE) — but a `delegate` inside that turn is refused by the control plane
+/// ("requester has no active goal"), and the user reads the refusal as the model's own failure. The predicate is
+/// the delegation's own: an ACTIVE goal must be *attached* to the leader. The checkpoint's single goal object
+/// cannot answer it (it reports the session's active goal, which may be one no instance points at — the state
+/// D-267's ordering exists for), so the run reads the `goals` list. A session with no goals at all is the
+/// bootstrap's own instant, not a state to warn about: it stays silent.
+fn unchargeable_goal_advisory(goals: &Json, instance: &str) -> Option<String> {
+    let rows = goals["goals"].as_array()?;
+    if rows.is_empty() {
+        return None;
+    }
+    let chargeable = rows.iter().any(|goal| {
+        goal["status"] == json!("ACTIVE")
+            && goal["attached_instances"]
+                .as_array()
+                .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some(instance)))
+    });
+    if chargeable {
+        return None;
+    }
+    Some(format!(
+        "exec: no active goal is attached to {instance}, so the turn can still run local work but a delegation \
+         inside it will be refused. Open the next goal with `teamagents goals open --id ID --attach {instance}` \
+         (or `g` in the TUI's instances panel) and run this input again."
+    ))
+}
+
 /// The runtime's own words for a fact that ends *this* run while its turn can never finish: a request it
 /// refused before it began (a goal budget ceiling, A18; a passed goal deadline, A35 — D-97), an instance the
 /// user retired mid-run (D-98), or a reset that took the turn's epoch away (D-100). `None` for every other
@@ -351,6 +380,15 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
         client.call("checkpoint", json!({})).map_err(|error| socket_lost("reading the checkpoint", &error))?;
     let (instance, lifecycle) = leader_instance(&checkpoint)
         .ok_or_else(|| (2, format!("exec: the session has no usable leader instance: {checkpoint}")))?;
+    // D-270: say it *before* the turn spends anything. A session whose goal has settled still runs a turn — the
+    // runtime deliberately opens no goal for a later input (ACCEPTANCE's known gap) — but nothing can be charged,
+    // so a delegation inside that turn is refused and the user reads it as the model's failure. The runtime is
+    // unchanged: this is the same advisory shape as the parked-leader line below, on stderr so `--json`'s report
+    // stays what it was.
+    let goals = client.call("goals", json!({})).unwrap_or(Json::Null);
+    if let Some(advisory) = unchargeable_goal_advisory(&goals, &instance) {
+        eprintln!("{advisory}");
+    }
     // A parked or paused leader will not run the input: saying so beats
     // submitting work that sits in a queue nobody is draining until the caller's
     // own deadline expires (the user resumes it in the TUI, §5.4). A *terminated*
@@ -880,7 +918,7 @@ fn leader_instance(checkpoint: &Json) -> Option<(String, String)> {
 mod tests {
     use super::{
         capped, leader_instance, parked_fate, parse_check_result, run_checks, run_fate, socket_lost, timeout_line,
-        Attribution, End,
+        unchargeable_goal_advisory, Attribution, End,
     };
     use serde_json::json;
     use std::path::Path;
@@ -951,6 +989,39 @@ mod tests {
         assert_eq!(leader_instance(&only), Some(("i-other".to_string(), "ACTIVE".to_string())));
         let none = json!({"instances": [{"id": "i-x", "lifecycle": "TERMINATED"}]});
         assert_eq!(leader_instance(&none), None);
+    }
+
+    /// D-270: the advisory's predicate is the delegation's own — an ACTIVE goal *attached* to the leader — and it
+    /// is read off the `goals` list, not the checkpoint's single goal object, because the two disagree exactly in
+    /// the shape D-267 built: a session whose live goal settled while an earlier goal is still ACTIVE but attached
+    /// to nobody (the state the test `the_goal_surface_lists_and_opens_goals_through_the_daemon` drives).
+    #[test]
+    fn the_unchargeable_advisory_follows_the_leaders_own_attachment() {
+        // the bootstrap's instant: no goals yet is not a state to warn about
+        assert_eq!(unchargeable_goal_advisory(&json!({}), "i-leader"), None);
+        assert_eq!(unchargeable_goal_advisory(&json!({"goals": []}), "i-leader"), None);
+        // the ordinary chargeable turn
+        let attached = json!({"goals": [{"id": "g", "status": "ACTIVE", "attached_instances": ["i-leader"]}]});
+        assert_eq!(unchargeable_goal_advisory(&attached, "i-leader"), None);
+        // a settled goal detached the leader: the turn runs, but nothing can be charged
+        let settled = json!({"goals": [{"id": "g", "status": "FAILED", "attached_instances": []}]});
+        let advisory = unchargeable_goal_advisory(&settled, "i-leader").expect("a settled goal warns");
+        assert!(advisory.contains("no active goal is attached to i-leader"), "{advisory}");
+        assert!(advisory.contains("teamagents goals open --id ID --attach i-leader"), "{advisory}");
+        // an ACTIVE goal nobody points at is not chargeable, and another instance's attachment is not the leader's
+        let elsewhere = json!({"goals": [
+            {"id": "boot", "status": "ACTIVE", "attached_instances": []},
+            {"id": "second", "status": "FAILED", "attached_instances": []},
+        ]});
+        assert!(unchargeable_goal_advisory(&elsewhere, "i-leader").is_some(), "{elsewhere}");
+        let worker_only = json!({"goals": [{"id": "g", "status": "ACTIVE", "attached_instances": ["i-worker"]}]});
+        assert!(unchargeable_goal_advisory(&worker_only, "i-leader").is_some(), "{worker_only}");
+        // a second, attached goal makes the turn chargeable again, wherever the row sorts
+        let reopened = json!({"goals": [
+            {"id": "boot", "status": "ACTIVE", "attached_instances": []},
+            {"id": "second", "status": "ACTIVE", "attached_instances": ["i-leader"]},
+        ]});
+        assert_eq!(unchargeable_goal_advisory(&reopened, "i-leader"), None, "{reopened}");
     }
 
     /// A daemon that stops under a run is a supported thing to do (D-150), so the client says what it means

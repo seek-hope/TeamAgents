@@ -7,7 +7,7 @@ model probe sets and the three formal gates).
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 107 / engine 273 / tui 36 test targets) and `make pty` passes; both are
+`make check` is green (core 107 / engine 274 / tui 36 test targets) and `make pty` passes; both are
 preconditions for every item below. `make check` includes `make language-check`, which fails on non-English
 characters outside the two documented exceptions (`README.zh-CN.md` and the frozen material under
 `review/eval`).
@@ -219,29 +219,27 @@ amended (D-49/D-50).
 
 - **The collection *cadence* is delivered (D-253); what remains open is the *release policy*, and the measurement that makes it a question.** DESIGN §4.4 schedules artifact collection and history retention "separately" and protects "live references and evaluation evidence"; D-191 implemented the mechanism — claim an unreferenced object in one transaction, delete its bytes outside it, collect the row — at a driver's boot, so the gap recorded here said a state root "whose last driver never boots again therefore keeps its `DELETING` rows and their bytes" and that "a cadence — an interval, or a maintenance verb to run on demand — is the user's call". **Delivered**: `teamagents artifacts [list|gc]` (credential-free probe `python3 review/dogfood/artifacts.py`, in `make probe-offline`; deterministic half `cli::artifacts_census_and_gc_free_what_nothing_references`). `list` is the census the user could not get before — each artifact's kind, size, completeness, the fact that owns it and whether its bytes are really on disk (it opens the store the ordinary way, because a read-only open of a write-ahead-log database can answer *stale* without its shared-memory file: measured, the same root reported zero artifacts with the file present and none without; a root this process cannot write falls back to a read-only open that refuses by name when it cannot attach the log) — and `gc` runs exactly the two commands a boot runs (`artifact_gc_claim` then `artifact_collect`, with the byte removal between them, outside any transaction), reporting what it claimed, freed and skipped. **It takes §6.1's coordinator lock itself**, so a maintenance pass and a driver can never write together: beside a live session it refuses with the coordinator named and the lever to stop it (`teamagents daemon --stop`, D-248 — whose next boot sweeps anyway). **And the probe measures why `gc` then has nothing to do**: every artifact a real session stages carries an `owner` (`driver.rs`: a model response's request, a tool output's operation), nothing in the tree ever clears it, and the claim's reference clauses ask for `owner_ref IS NULL` — so a scripted session's 300 KB tool output left **3 LIVE artifacts, 0 claimable**, the sweep reported `collected: []` and the catalog bytes did not move (3 of 3 still on disk). The model says the same thing structurally: in `V2Artifact.tla` a LIVE artifact with no holder exists only under the counterfactual `GcIgnoresHolders`, whose control is what keeps the claim refutable. So the open question is a **policy**, not a mechanism: should artifact bytes expire with the retention window the user already configures (`[retention] history_days` — §9 calls them "ordinary history", and D-245 sweeps events under exactly that rule and the `EVIDENCE` guard), or under a knob of their own? **Needs the user's word**; until then `gc` is the recovery half (a `DELETING` row a crash left half-done) plus the census, and the bytes stay.
 
-- **A settled goal has no product surface to open a new one** (found while auditing the authority surface,
-  2026-09-25; verified by `engine/tests/v2_supervisor.rs::a_settled_goal_leaves_a_later_delegation_without_an_active_goal`):
-  `delegate_task` requires an ACTIVE goal, the kernel offers no create-goal tool, and the runtime creates no
-  goal when a later user input arrives — so the *second* instruction of a session cannot build a team, and the
-  model is told to "create a new goal (create_goal) before delegating" without a way to do it (the command
-  exists in the protocol; only a hand-written client can send it). The test pins the current behaviour: the
-  second input leaves exactly one goal, `SUCCEEDED`, the delegation receipt names the closed goal, and the
-  worker never runs. Whether the runtime should open a goal per user input, or the Leader should be given a
-  tool to open one, is a design decision (D-42/D-56 touch it) that needs the user's word. **D-266 fixed the bug under it**: the driver hard-coded the session's boot goal id instead of charging the
-  delegating instance's active goal, so a goal the user opened could never be charged — measured, and now
-  fixed (the arms omit `goal_id` and the control plane resolves the requester's active goal; the
-  checkpoint's single-goal read now prefers the active one). The two texts that told a model to "create a
-  new goal" — which no model-facing tool can do — say what is true instead. What is still missing is the
-  **CLI lever** (`teamagents goals [list|open]`, and its own `goals` read: the checkpoint carries one goal,
-  not a list), and the *design* question — may the Leader open goals itself, with budget-bearing limits? —
-  **D-267 then closed the *user's* half of it**: `teamagents goals [list|open]` — with the `goals` read the
-  picker needs (the checkpoint carries one goal object, not a list, and its order is attached-first) — so a
-  user can open and attach the next goal after one settles and keep working in the same session. The
-  *design* question this entry names (may the Leader open goals itself? the runtime opens none by itself) is
-  **And since D-269 the TUI has the same lever** (`g` in the instances panel, opening the next goal attached
-  to the selection), which the design's §5.4 names as the user's surface; the daemon bounds it with the
-  session's `[limits]`/`[[checks]]` (D-268), so the panel needs no configuration of its own.
-  untouched and still the user's call.
+- **A settled goal had no product surface to open a new one — the user's half is now closed by D-266–D-270; the
+  design question stays.** (Found while auditing the authority surface, 2026-09-25; verified by
+  `engine/tests/v2_supervisor.rs::a_settled_goal_leaves_a_later_delegation_without_an_active_goal`.)
+  `delegate_task` requires an ACTIVE goal, the kernel offers no create-goal tool, and the runtime creates no goal
+  when a later user input arrives — so the *second* instruction of a session could not build a team, and the model
+  was told to "create a new goal (create_goal) before delegating" without a way to do it (the command exists in
+  the protocol; only a hand-written client could send it). The test pins that behaviour: the second input leaves
+  exactly one goal, `SUCCEEDED`, the delegation receipt names the closed goal, and the worker never runs.
+  **What closed the user's half:** **D-266** fixed the bug under it (the driver hard-coded the session's boot goal
+  id instead of charging the delegating instance's active goal, so a goal the user opened could never be charged —
+  the arms now omit `goal_id`, the control plane resolves the requester's active goal, and the checkpoint's
+  single-goal read prefers the active one); **D-267** added the lever (`teamagents goals [list|open]`, with the
+  `goals` read the picker needs — the checkpoint carries one goal object, not a list, ordered attached-first — and
+  `--attach` to point the leader at the new goal); **D-268** bounded a client-opened goal with the same
+  `[limits]`/`[[checks]]` the bootstrap applies to its own; **D-269** put the same lever in the TUI (`g` in the
+  instances panel); and **D-270** made `exec` say on stderr when no ACTIVE goal is attached to the leader, so the
+  in-turn delegation refusal is not read as the model's failure. The two texts that told a model to "create a new
+  goal" — which no model-facing tool can do — say what is true instead. **What is still open is the *design*
+  question this entry names**: may the **Leader** open goals itself, i.e. start budget-bearing work without the
+  user? The runtime still opens no goal on its own, exactly as the design says, and that choice needs the user's
+  word (D-42/D-56 touch it).
   stays the user's call.
 - **A model that stops settling its task leaves a visible wait, and the runtime does not resolve it** (the
   remaining ceiling of D-65, measured again 2026-09-25): a plain reply ends the instance's turn (that is the
