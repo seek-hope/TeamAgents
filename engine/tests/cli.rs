@@ -308,6 +308,15 @@ fn doctor_reports_which_retention_keys_apply() {
 /// `doctor`'s WARN sent the user back to `init`, the command that had just failed. The same run found the
 /// sibling shape D-228 had not covered: a *directory* where the daemon's log goes, which `exec` answered with a
 /// bare `cannot open …/daemon.log: Is a directory (os error 21)`.
+///
+/// D-273: the scratch config below is this test's own and names a variable the test sets
+/// (`TA_UNCREATABLE_KEY`), because the child's outcome must not depend on what the operator's shell exports
+/// (AGENTS.md's rule for this crate's integration tests). Without it the `daemon` case read the *starter*
+/// config `init` had just written — which names `DEEPSEEK_API_KEY` — and `daemon` builds its provider (the
+/// credential included) before it reports the state root, so on a shell with no credential it answered
+/// `missing API key env DEEPSEEK_API_KEY` instead of the state-root sentence this test is about, which is the
+/// shape `.github/workflows/ci.yml` runs in. The assertions are unchanged: every entry point still refuses the
+/// root, names the reason and names the flag.
 #[test]
 fn an_uncreatable_state_root_names_the_flag_from_every_entry_point() {
     let home = Scratch::new("uncreatable");
@@ -315,13 +324,22 @@ fn an_uncreatable_state_root_names_the_flag_from_every_entry_point() {
     // a self-referential symlink: every process, root included, gets ELOOP from creating anything under it
     std::os::unix::fs::symlink("loop", home.join("loop")).unwrap();
     let root = home.join("loop/root");
+    let config_home = home.join("config");
+    std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
+    std::fs::write(
+        config_home.join("teamagents/config.toml"),
+        "[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\napi_key_env = \"TA_UNCREATABLE_KEY\"\n\
+         base_url = \"http://127.0.0.1:1/v1\"\n",
+    )
+    .unwrap();
     let run = |args: &[&str]| {
         let output = Command::new(env!("CARGO_BIN_EXE_teamagents"))
             .args(args)
             .arg("--state-root")
             .arg(&root)
             .env("XDG_STATE_HOME", home.join("state"))
-            .env("XDG_CONFIG_HOME", home.join("config"))
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("TA_UNCREATABLE_KEY", "test-value")
             .output()
             .expect("run cli");
         (output.status.code(), String::from_utf8_lossy(&output.stderr).into_owned())
@@ -338,7 +356,8 @@ fn an_uncreatable_state_root_names_the_flag_from_every_entry_point() {
         .args(["doctor", "--state-root"])
         .arg(&root)
         .env("XDG_STATE_HOME", home.join("state"))
-        .env("XDG_CONFIG_HOME", home.join("config"))
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env("TA_UNCREATABLE_KEY", "test-value")
         .output()
         .expect("run doctor");
     let text = String::from_utf8_lossy(&doctor.stdout).into_owned();
@@ -354,7 +373,8 @@ fn an_uncreatable_state_root_names_the_flag_from_every_entry_point() {
         .arg(&log_root)
         .arg("hi")
         .env("XDG_STATE_HOME", home.join("state"))
-        .env("XDG_CONFIG_HOME", home.join("config"))
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env("TA_UNCREATABLE_KEY", "test-value")
         .output()
         .expect("run cli");
     let text = String::from_utf8_lossy(&output.stderr).into_owned();

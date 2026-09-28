@@ -20,6 +20,114 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-274 The self-refine phase runs, and its first delivered task exposed a multi-goal hang (2026-09-28)
+
+D-272 judged the product ready to carry its own productization work and validated the provider entry; this entry
+records the phase actually running, its first delivery, and the defect that running it exposed — which is the
+next task.
+
+**How the phase runs (the operator's parameters, outside the repository).** One operator config
+(`$XDG_CONFIG_HOME/teamagents/config.toml`, outside the tree, credential by environment only), one daemon
+started with `--full-auto` on this repository as its workspace and a state root under `/tmp`, `make check` as a
+`[[checks]]` entry so **every goal the session opens is machine-gated** (the goal cannot settle while that
+fails), and `[limits]` as a per-task budget (raised from 2,000,000 to 6,000,000 tokens and 90 to 120 minutes
+after the first task, see below). A `git bundle` of the whole history was taken before the first task, so any
+damage to the worktree is recoverable independent of the agent's own commits. The operator supervises by
+reading the session database read-only, the daemon's `TEAMAGENTS_LOG_SURFACE=1` surface witness (every request
+shows `shell=yes` and the tool list the leader was offered) and the `exec --stream-json` log.
+
+**Task 1 (free-form triage: "find the highest-value decision-free work") — a real finding and a real budget
+lesson.** The product independently found the defect D-273 fixes (the gate was not hermetic; it reproduced the
+failure, read the mechanism out of the code and reached the state-root/provider ordering), but it spent the
+whole ceiling on triage before making a single edit: the run ended `end=failed` with the instance **PARKED** —
+`goal goal-s-main budget exceeded: known 1926270 + reserved 0 + est 94724 > max 2000000` — exit 1, the refusal
+reported as the refusal (A18/D-97) instead of a timeout, and the worktree untouched (`git status` clean). So the
+ceiling is a *per-task* budget in practice, 2M tokens is too small for a task that lets the model read this
+repository's documents itself, and a task card has to bound the reading (task 2's text carried the operator's
+measurements precisely so it would not re-derive them).
+
+**Task 2 (the bounded fix) — delivered and machine-gated.** The product made the fix D-273 records (the test
+writes its own scratch config), kept every assertion, and settled `SUCCEEDED` only after the runtime's own
+required check (`make check`, run at the completion boundary in this shell, which carries no credential) passed
+round 1 — the settlement is therefore gated by the gate, not by the model's claim. The operator verified
+independently: `env -u DEEPSEEK_API_KEY make check` (the condition CI runs) and `make check` with the credential
+exported, both green, and `make pty` green; the goal's usage was 4,344,763 of 6,000,000 tokens.
+
+**The phase's first real run exposed a new defect, and it is the next task.** In a session that carries more
+than one goal, `exec` does not recognize its own settlement and waits out its own `--timeout`. Measured here:
+after `goal-task2` settled `SUCCEEDED` (the `goal_completed` event, `detached: 1`, written at 18:19:21) the
+client wrote **no** `verification.json`, printed no report and its event stream had no further line for ten
+minutes (18:19:21 → 18:29:10, still running) until the operator stopped the session. The cause is in `exec`'s
+own confirmation read, not in the settlement: `engine/src/v2/exec.rs` asks the *checkpoint* for "the" goal's
+status (`snapshot["goal"]["status"]`) and this session's checkpoint reports the older, still-`ACTIVE`, detached
+`goal-s-main` — D-266's ordering, where the session's active goal wins over the newest — so the settlement word
+that *is* in the run's history is read as "not committed yet" (`Attribution::Pending`) and the run never ends.
+The session's own state says the work finished (`goal-task2` `SUCCEEDED`, the leader `READY` and detached), which
+is exactly what a headless caller is supposed to be told. Reachable only since a session can carry several goals
+(D-267/D-268) — the shape this phase's own use creates — and the unit test in `exec.rs` pins the current
+reading as correct for the one-goal shape it was written in. It is a product defect, not a test's; assigning it
+is the next task.
+
+**Ceiling**: one delivered task and one defect is a thin record for a phase. The operator still owns the commits,
+the gate re-runs and every answer in the decision queue; the hang's fix may have to decide what "this run's goal"
+means when a session carries several (the instance's attachment, the goal id the settlement names, or the
+`goals` read D-267 added), which is a design choice inside `exec`, and nothing here claims the loop can pick its
+own work without a bounded card yet.
+
+## D-273 The uncreatable-state-root test writes its own config, so the gate no longer needs the operator's credential (2026-09-28)
+
+`make check` was red on a shell that exports no credential and green on the operator's, on the same tree
+(`97f5b875`): `engine/tests/cli.rs::an_uncreatable_state_root_names_the_flag_from_every_entry_point` failed its
+`daemon` case with `["daemon"]: the reason is stated: daemon: missing API key env DEEPSEEK_API_KEY`, and the
+very same command passed with `DEEPSEEK_API_KEY` exported. The test's own first case is the cause. It runs
+`init`, and `init` writes the **starter** config — `examples/config.minimal.toml`'s text, which names
+`DEEPSEEK_API_KEY` — before it reports the broken root; the `daemon` case then loads that config, and
+`cli.rs::daemon_boot` builds its provider (the credential included, the §7 preflight) *before* it looks at
+`--state-root`, so with the variable absent the assertion (`engine/tests/cli.rs:332` before this change) read the
+credential sentence instead of the state-root sentence it is about. The assertion is about the root, so the test's outcome
+depended on what the operator's shell happened to export. CI runs in exactly the condition that exposed it:
+`.github/workflows/ci.yml` runs `make test` with no credential anywhere in the workflow, so the repository's own
+gate could not be green there while this test read the environment. The defect is the gate's hermeticity, and
+the test is where it shows; the product's order of preflights is deliberate and is not changed here.
+
+**Fixed**: the test writes its own scratch config — `[models.leader_main]` with `api_key_env =
+"TA_UNCREATABLE_KEY"` and a refused `base_url` (`http://127.0.0.1:1/v1`) — and passes that variable to every
+child it spawns. That is the shape `AGENTS.md` states for this crate's integration tests and the rest of
+`cli.rs` already uses (`TA_PATHKIND_KEY`, `TA_REFUSE_KEY`, `TA_SKILLS_KEY`, …): a test that spawns the product
+supplies the environment the child reads instead of inheriting the operator's. `init` now finds an existing
+config (`kept the existing config … (not overwritten)`) and still fails on the root; `daemon` and `exec` resolve
+a provider whose credential *is* present and reach the state-root refusal. No product code moved and no
+assertion changed: `init`, `daemon`, `exec` and `doctor` still have to refuse the root, name the reason and name
+the flag, and the test's name still says what it checks. Exactly the one test the measurement named was touched;
+no sweep.
+
+Writing this entry moved the counts `review/citations.py` recomputes and compares with the prose that states
+them, so the numbers that audit points at were updated with it — its docstring's citations 774 → 775, `make`
+commands 484 → 490 and `§`-section references 954 → 956, and `review/README.md`'s command sentence 484 → 490 —
+rather than weakening the audit (D-223/D-234's rule).
+
+**Evidence** (2026-09-28, this tree: `97f5b875` plus this uncommitted diff).
+
+| Command | Result |
+|---|---|
+| `env -u DEEPSEEK_API_KEY cargo test --offline --manifest-path engine/Cargo.toml --test cli an_uncreatable_state_root_names_the_flag_from_every_entry_point` | **ok**, 1 passed (0.04 s); on the pre-fix tree it failed with `["daemon"]: the reason is stated: daemon: missing API key env DEEPSEEK_API_KEY` (this session's first credential-free gate run and the operator's re-run of this test both print that line) |
+| the same command with `DEEPSEEK_API_KEY=sk-not-a-real-key` (a placeholder, never a real credential) | **ok**, 1 passed; the child's outcome no longer depends on that variable |
+| control: the variable the test's own config names dropped from the `run` closure (one line, then restored) | the test **fails** with `["daemon"]: the reason is stated: daemon: missing API key env TA_UNCREATABLE_KEY`, so the assertion is live and sensitive to the mechanism it claims independence from; `diff -q` against the saved copy reports the restore byte-identical |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** in 83 s — fmt-check, clippy `-D warnings` on all targets, the three crates' suites (`test_counts.py`: "the ledger's counts match the suites: core 107 / engine 274 / tui 36"), `review/leak_guard.py`'s snapshot/audit pair and the hygiene catalogue's audits |
+| `make check` with `DEEPSEEK_API_KEY` set to the same placeholder | **rc=0** in 83 s — the two conditions agree, which is what D-272's "`make check` is green" line means |
+| `make language-check` | rc=0 (also reached through `make hygiene`, which depends on it) |
+
+**Ceiling**: this removes the credential dependence the measurement named in **this** test (the only failure of
+`env -u DEEPSEEK_API_KEY cargo test --manifest-path engine/Cargo.toml`, 35 of 36 `cli` tests plus the lib tests
+green). It is not a sweep: a future test that reads another ambient variable would still pass locally on a
+machine that exports it and fail in CI, and CI — which exports no credential — is the only place that shows it.
+Nothing here makes the *product* hermetic either: `daemon` still answers `missing API key env …` before it
+reports an unusable `--state-root` when the config names a variable the environment does not carry, which is
+exactly the order that made this test environment-dependent; whether that precedence should be reversed (the
+other three entry points answer the root first) is a product question this decision does not decide. No formal
+re-run is owed: `core/src/kernel/types.rs`, `verification/tla` and `verification/kani` are untouched, so
+`verification/REPORT.md`'s §0 heading stays at the commit that last changed that material (D-202).
+
 ## D-272 The product is judged ready for the self-refine phase, and its provider wiring is validated (2026-09-28)
 
 The user extended the goal: once the product can carry it, **TeamAgents itself** must continue the
