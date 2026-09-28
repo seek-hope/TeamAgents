@@ -304,7 +304,11 @@ fn read_snapshot(conn: &rusqlite::Connection) -> Result<Json, String> {
     }
     let goal: Option<(String, String, i64, String, Option<f64>)> = conn
         .query_row(
-            "SELECT status, known_usage_json, unknown_usage, limits_json, deadline FROM goals LIMIT 1",
+            // D-266: a session can now carry more than one goal (the boot goal plus one the user opened), and
+            // `LIMIT 1` without an order returned an arbitrary row — a client could be shown the settled goal
+            // while an active one existed. The active goal wins; among those (and among settled ones) the newest.
+            "SELECT status, known_usage_json, unknown_usage, limits_json, deadline FROM goals
+             ORDER BY (status = 'ACTIVE') DESC, rowid DESC LIMIT 1",
             [],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
         )
@@ -472,5 +476,6 @@ ids you delegated, with a short timer, instead of polling: a member's outcome ar
 chat message, and an assignee that ends its turn without settling will never wake you — that part is then yours,
 so re-delegate it as a new task or do it yourself. Check the finished work with one gate rather than re-running
 every part's command in turn. Report completion with the finish tool. Keep task descriptions specific, include
-acceptance criteria, and never bypass runtime permissions. Work is anchored to an active goal: when the current
-goal is settled, create a new goal before delegating further work.";
+acceptance criteria, and never bypass runtime permissions. Work is anchored to an active goal, and a settled goal
+cannot be reopened: when it is settled, report that further work needs a new goal from the user (the
+runtime opens none by itself) instead of retrying a delegation that has nowhere to be charged.";

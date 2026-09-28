@@ -281,7 +281,7 @@ pub fn collaboration_tool_schemas(actions: &[&str]) -> Vec<Json> {
                 "type": "function",
                 "function": {
                     "name": DELEGATE_TOOL,
-                    "description": "Delegate a task to another instance with a narrow return path: the assignee can settle exactly this task back to you, nothing more. The task is charged to the delegating instance's active goal, which must still be open — create a new goal first when the previous one is settled. To be woken by its outcome, wait on {kind:'task',task_id:'<id>'} **with timer_seconds set**: the settlement arrives as a task result, not as a chat message, and an assignee that ends its turn without settling produces no result at all. When that happens, that part is yours again: re-delegate it as a new task or do it yourself, and never report work you did not verify as success.",
+                    "description": "Delegate a task to another instance with a narrow return path: the assignee can settle exactly this task back to you, nothing more. The task is charged to the delegating instance's active goal; when that goal is settled no further task can be charged, and reopening one is the user's (`teamagents goals open`), so report that instead of retrying. To be woken by its outcome, wait on {kind:'task',task_id:'<id>'} **with timer_seconds set**: the settlement arrives as a task result, not as a chat message, and an assignee that ends its turn without settling produces no result at all. When that happens, that part is yours again: re-delegate it as a new task or do it yourself, and never report work you did not verify as success.",
                     "parameters": {
                         "type": "object",
                         "properties": {

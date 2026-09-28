@@ -7,7 +7,7 @@ model probe sets and the three formal gates).
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 107 / engine 271 / tui 35 test targets) and `make pty` passes; both are
+`make check` is green (core 107 / engine 272 / tui 35 test targets) and `make pty` passes; both are
 preconditions for every item below. `make check` includes `make language-check`, which fails on non-English
 characters outside the two documented exceptions (`README.zh-CN.md` and the frozen material under
 `review/eval`).
@@ -227,7 +227,14 @@ amended (D-49/D-50).
   exists in the protocol; only a hand-written client can send it). The test pins the current behaviour: the
   second input leaves exactly one goal, `SUCCEEDED`, the delegation receipt names the closed goal, and the
   worker never runs. Whether the runtime should open a goal per user input, or the Leader should be given a
-  tool to open one, is a design decision (D-42/D-56 touch it) that needs the user's word.
+  tool to open one, is a design decision (D-42/D-56 touch it) that needs the user's word. **D-266 fixed the bug under it**: the driver hard-coded the session's boot goal id instead of charging the
+  delegating instance's active goal, so a goal the user opened could never be charged — measured, and now
+  fixed (the arms omit `goal_id` and the control plane resolves the requester's active goal; the
+  checkpoint's single-goal read now prefers the active one). The two texts that told a model to "create a
+  new goal" — which no model-facing tool can do — say what is true instead. What is still missing is the
+  **CLI lever** (`teamagents goals [list|open]`, and its own `goals` read: the checkpoint carries one goal,
+  not a list), and the *design* question — may the Leader open goals itself, with budget-bearing limits? —
+  stays the user's call.
 - **A model that stops settling its task leaves a visible wait, and the runtime does not resolve it** (the
   remaining ceiling of D-65, measured again 2026-09-25): a plain reply ends the instance's turn (that is the
   fix — the pre-fix clause asked **169 model requests / 1,226,717 prompt tokens / 181 context entries in ~15

@@ -908,6 +908,101 @@ async fn a_users_grant_reaches_the_workers_surface_at_the_next_request() {
 /// This pins the *current* behaviour so that changing it is deliberate. Whether the
 /// runtime should open a goal per user input, or the Leader should be given a way to
 /// open one, is a design decision for the user (recorded in docs/ACCEPTANCE.md).
+/// D-266: the other side of the test below. A settled goal leaves later delegation with nowhere to charge —
+/// and until now **no product surface could open a goal**: the command is in the protocol and the daemon forwards
+/// it as an ordinary user command (`goals open`, the CLI added with this entry), but nothing in the product sent
+/// it. Here the *user* opens a goal, attaches it to the leader, and gives it a required check: the later
+/// delegation then charges to it and the worker runs.
+#[tokio::test]
+async fn a_user_opened_goal_lets_a_later_delegation_charge_somewhere() {
+    // the check the user predefines is a real shell command, and a check runs through the runner: an
+    // integration test must point the runner at the built binary (the same rule `jobs_runner.rs` follows)
+    let previous = std::env::var_os("TEAMAGENTS_RUNNER_BIN");
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let leader = vec![
+        Step::Message(finish_call("first goal done")),
+        Step::Message(json!({"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "delegate",
+             "arguments": json!({"assignee": "i-worker", "task_id": "t-late", "description": "later work"}).to_string()}}]})),
+        Step::Message(finish_call("the later work is delegated")),
+    ];
+    let worker = vec![Step::Message(finish_call("did the later work"))];
+    let seen: Seen = Arc::new(Mutex::new(HashMap::new()));
+    let root = root("user-opened-goal");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let handle = start(config(
+        &root,
+        factory_with_log(
+            HashMap::from([("i-leader".to_string(), leader), ("i-worker".to_string(), worker)]),
+            seen.clone(),
+        ),
+    ))
+    .await
+    .expect("start");
+    handle.input("i-leader", "do the first thing").await.expect("input");
+    let closed = wait_event(&handle, "goal_completed", 20_000).await;
+    handle
+        .submit_user(cmd(
+            "late-worker",
+            "create_instance",
+            json!({"id": "i-worker", "workspace_ref": root.dir.join("ws")}),
+        ))
+        .await
+        .expect("create the worker");
+    // the user's own lever: open a goal, attach it to the leader, and predefine a required check on it
+    let opened = handle
+        .submit_user(cmd(
+            "goals-open",
+            "create_goal",
+            json!({"id": "goal-later", "instance_id": "i-leader",
+                   "limits": {"required_checks": [{"id": "later-tests", "command": "true"}]}}),
+        ))
+        .await
+        .expect("the user opens a goal");
+    // the second instruction can now charge its work somewhere
+    handle.input("i-leader", "now delegate some work").await.expect("input");
+    for _ in 0..1200 {
+        let worker_ran = seen.lock().unwrap().get("i-worker").map(Vec::len).unwrap_or(0) >= 1;
+        let later = second_control(&root)
+            .connection()
+            .query_row("SELECT COUNT(*) FROM tasks WHERE id = 't-late'", [], |row| row.get::<_, i64>(0))
+            .unwrap_or(0);
+        if worker_ran && later > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    // read everything first, shut the session down, and only then assert: a failed assertion inside a running
+    // session leaves the supervisor's task alive and the test *hangs* instead of failing (measured here)
+    let control = second_control(&root);
+    let worker_requests = seen.lock().unwrap().get("i-worker").map(Vec::len);
+    let goal_row: Option<(Option<String>, String, String)> = control
+        .connection()
+        .query_row(
+            "SELECT i.active_goal_id, g.status, g.limits_json FROM instances i JOIN goals g ON g.id = i.active_goal_id
+             WHERE i.id = 'i-leader'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .ok();
+    let later_goal: Option<String> =
+        control.connection().query_row("SELECT goal_id FROM tasks WHERE id = 't-late'", [], |row| row.get(0)).ok();
+    drop(control);
+    handle.shutdown().await.expect("shutdown");
+    match previous {
+        Some(value) => std::env::set_var("TEAMAGENTS_RUNNER_BIN", value),
+        None => std::env::remove_var("TEAMAGENTS_RUNNER_BIN"),
+    }
+    assert_eq!(closed["payload"]["status"], json!("SUCCEEDED"), "{closed}");
+    assert_eq!(opened["goal_id"], json!("goal-later"), "{opened}");
+    assert_eq!(worker_requests, Some(1), "the worker runs the second instruction's task");
+    let (attached, status, checks) = goal_row.expect("the leader's active goal");
+    assert_eq!(attached.as_deref(), Some("goal-later"));
+    assert_eq!(status, "ACTIVE");
+    assert!(checks.contains("later-tests"), "the user's required check rides on the goal: {checks}");
+    assert_eq!(later_goal.as_deref(), Some("goal-later"), "the later task is charged to the user's goal");
+}
+
 #[tokio::test]
 async fn a_settled_goal_leaves_a_later_delegation_without_an_active_goal() {
     let leader = vec![
@@ -994,14 +1089,18 @@ async fn a_settled_goal_leaves_a_later_delegation_without_an_active_goal() {
         .collect();
     assert_eq!(goals.len(), 1, "no new goal is created for the second input: {goals:?}");
     assert_eq!(goals[0].1, "SUCCEEDED", "{goals:?}");
+    // D-266: the refusal now names the real cause. Before the fix the driver charged a *hard-coded* goal id, so
+    // the model was told "goal goal-s-test is not active; create a new goal" — pointing at a goal that was
+    // already closed and at a step no model-facing tool can take. With the arms resolving the requester's
+    // *active* goal, the same situation reads as what it is: the requester has none.
     let refusal = results
         .iter()
-        .find(|entry| entry.contains("not active"))
+        .find(|entry| entry.contains("no active goal"))
         .cloned()
         .unwrap_or_else(|| panic!("no delegation refusal in the receipts: {results:?}"));
     assert!(
-        refusal.contains("is not active") && refusal.contains("create_goal"),
-        "the refusal says the goal is closed and names the missing step: {refusal}"
+        refusal.contains("delegate_task.goal_id required: requester has no active goal"),
+        "the refusal names the missing goal: {refusal}"
     );
     assert_eq!(seen.lock().unwrap().get("i-worker").map(Vec::len), None, "the worker never runs: no task reached it");
     handle.shutdown().await.expect("shutdown");

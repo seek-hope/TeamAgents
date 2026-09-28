@@ -2205,9 +2205,14 @@ that delegated it learns the outcome only from a settlement.";
             teamagents_core::kernel::DELEGATE_TOOL => {
                 let task_id =
                     args["task_id"].as_str().map(str::to_string).unwrap_or_else(|| format!("t-{operation_id}"));
+                // D-266: the task is charged to the delegating instance's **active goal** (the `delegate`
+                // description's own promise, §5.3). Until this was fixed the driver hard-coded the session's
+                // auto-named goal, so a goal the *user* opened and attached could never be charged and the
+                // delegation was refused with "goal goal-<session> is not active" — measured in the test below.
+                // Omitting the id lets the control plane resolve the requester's active goal, and refuse with
+                // its own message when there is none.
                 let mut params = json!({"task_id": task_id, "assignee": args["assignee"],
-                                        "description": args["description"],
-                                        "goal_id": format!("goal-{}", self.config.session_id)});
+                                        "description": args["description"]});
                 if let Some(acceptance) = args.get("acceptance_refs") {
                     params["acceptance_refs"] = acceptance.clone();
                 }
@@ -2253,8 +2258,7 @@ that delegated it learns the outcome only from a settlement.";
                                         "profile": {"model": profile.model, "instructions": profile.instructions,
                                                     "tools": profile.tools, "options": profile.options,
                                                     "context_window": profile.context_window},
-                                        "workspace_ref": workspace_path,
-                                        "goal_id": format!("goal-{}", self.config.session_id)});
+                                        "workspace_ref": workspace_path}); // the spawner's active goal charges the child's task
                 if let Some(task) = args.get("task") {
                     params["task"] = task.clone();
                 }

@@ -20,6 +20,47 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-266 A session is no longer one-goal-only for the user: delegation charges the *active* goal (2026-09-28)
+
+The known gap said "a settled goal has no product surface to open a new one", and reading it as *missing product
+surface for a designed capability* (D-265's lesson) turned up a **bug** underneath: the driver hard-coded the goal
+id in its collaboration arms — `goal_id: format!("goal-{}", session_id)` — instead of charging the delegating
+instance's **active** goal, which is what the `delegate` tool description promises and what §5.3 says. Measured
+by writing the test for the capability: after the *user* created a goal and attached it to the leader, the next
+instruction's delegation was refused with **`goal goal-s-test is not active; create a new goal (create_goal)
+before delegating`** — the *boot* goal's id, from the driver's own constant — while the task table stayed empty.
+So a goal the user opened could never be charged, however it was attached.
+
+**Fixed: the arms omit `goal_id` and the control plane resolves the requester's active goal** (its own rule, with
+its own message when there is none). `spawn`'s task registration is the same one line. **And the checkpoint's goal
+read had to follow**: it was `SELECT … FROM goals LIMIT 1`, which with two goals returns an arbitrary row, so a
+client could be shown the settled goal while an active one existed — it now prefers the active goal and, among
+equals, the newest.
+
+**Both texts that told a model to do the impossible are corrected.** `LEADER_INSTRUCTIONS` said "when the current
+goal is settled, create a new goal before delegating further work" and the `delegate` description said "create a
+new goal first when the previous one is settled" — but no model-facing tool opens a goal (`create_goal` is a
+user/project command; the check-predefinement rule in it is user-only by design). They now say that a settled goal
+cannot be reopened and that the next goal comes from the user (`teamagents goals open`, once the CLI below
+exists), instead of instructing a retry that can only fail.
+
+**Evidence.** `engine/tests/v2_supervisor.rs::a_user_opened_goal_lets_a_later_delegation_charge_somewhere`: the
+user opens a goal with a required check, attaches it to the leader, and the next instruction's delegation is
+charged to **that** goal (asserted on the task's `goal_id`), the worker runs, the goal stays `ACTIVE` and carries
+the user's check. The whole engine suite is green on the change.
+
+**What remains, named rather than half-done.** The *CLI* lever `teamagents goals [list|open]` is not written yet:
+the protocol path works (the daemon forwards `create_goal` as an ordinary user command), but a user cannot reach
+it from the product, and `goals list` needs **its own read** — the checkpoint carries a single goal object, which
+is now explicitly the active one but is not a list. That is the next step, and with it the known gap's "no
+product surface" half closes for the *user*; whether the *Leader* may open goals itself (which would let a model
+start budget-bearing work) stays the design question ACCEPTANCE records, and this entry does not decide it.
+
+Ceiling: the flow is verified by scripted sessions, not by a real model; the checkpoint's new ordering is
+exercised only through the single-goal sessions the existing daemon tests build, so the multi-goal *client* path
+is enabled and unverified; and the CLI's absence means the capability is reachable only by a protocol client
+today.
+
 ## D-265 The delegator gets its own exit from a task it delegated (2026-09-28)
 
 The measurements left one product hole with a lever on the *delegator's* side: a member that ends its turn

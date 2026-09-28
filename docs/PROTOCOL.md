@@ -45,12 +45,12 @@ the handler re-checks who may do this rather than trusting the request.
 
 | Method | Parameters | Reply keys | Answered at |
 |---|---|---|---|
-| `checkpoint` | — | `snapshot`, `watermark` | `engine/src/v2/daemon.rs:344` |
-| `events` | `since` | `events`, `resync_required`, `watermark` | `engine/src/v2/daemon.rs:351` |
-| `history` | `instance_id`, `limit` | `entries`, `envelope_id`, `epoch`, `idx`, `instance_id`, `kind`, `message` | `engine/src/v2/daemon.rs:360` |
-| `tasks` | — | `assignee`, `goal_id`, `id`, `status`, `tasks` | `engine/src/v2/daemon.rs:388` |
-| `approvals` | — | `approvals`, `id`, `operation_id`, `preview`, `tool` | `engine/src/v2/daemon.rs:404` |
-| `grants` | — | `action`, `grants`, `id`, `issuer`, `parent_grant_id`, `resource_scope`, `revision`, `revoked`, `subject` | `engine/src/v2/daemon.rs:435` |
+| `checkpoint` | — | `snapshot`, `watermark` | `engine/src/v2/daemon.rs:348` |
+| `events` | `since` | `events`, `resync_required`, `watermark` | `engine/src/v2/daemon.rs:355` |
+| `history` | `instance_id`, `limit` | `entries`, `envelope_id`, `epoch`, `idx`, `instance_id`, `kind`, `message` | `engine/src/v2/daemon.rs:364` |
+| `tasks` | — | `assignee`, `goal_id`, `id`, `status`, `tasks` | `engine/src/v2/daemon.rs:392` |
+| `approvals` | — | `approvals`, `id`, `operation_id`, `preview`, `tool` | `engine/src/v2/daemon.rs:408` |
+| `grants` | — | `action`, `grants`, `id`, `issuer`, `parent_grant_id`, `resource_scope`, `revision`, `revoked`, `subject` | `engine/src/v2/daemon.rs:439` |
 
 ### Commands (executed by the control plane)
 
