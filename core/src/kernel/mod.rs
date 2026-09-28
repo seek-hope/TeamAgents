@@ -280,6 +280,65 @@ mod tests {
         assert_eq!(already_paired.messages[3]["tool_call_id"], json!("wait-1"));
     }
 
+    /// A call id can repeat within one conversation, and then each answer must
+    /// stay with the call it actually answers. The runtime's own required-check
+    /// round names its synthetic call `check-<round>-<position>` and the round
+    /// counter is per goal, so two goals in one instance both produce
+    /// `check-1-0` — measured in the operator's session DB (goal-task2 at
+    /// entries 151/152, goal-task4 at 343/344). Pairing by id alone let the
+    /// first assistant steal the *second* call's answer, leaving the second
+    /// assistant answered by a synthesized note and the wire with two tool
+    /// messages for one call; a real DeepSeek request built from that shape
+    /// died with `HTTP 400: Messages with role 'tool' must be a response to a
+    /// preceding message with 'tool_calls'`.
+    #[test]
+    fn a_reused_call_id_keeps_each_answer_with_its_own_call() {
+        let kernel = kernel();
+        let round = |id: &str, content: &str| {
+            ContextEntry::new(
+                id,
+                EntryKind::Assistant,
+                json!({"role": "assistant", "content": content,
+                       "tool_calls": [{"id": "check-1-0", "type": "function",
+                                       "function": {"name": "shell", "arguments": "{\"command\":\"true\"}"}}]}),
+            )
+        };
+        let answer = |id: &str, content: &str| {
+            ContextEntry::new(
+                id,
+                EntryKind::ToolResult,
+                json!({"role": "tool", "tool_call_id": "check-1-0", "content": content}),
+            )
+        };
+        let entries = vec![
+            kernel.user_entry("first goal", "e1"),
+            round("e2", "runtime required-check round 1 for goal-one"),
+            answer("e3", "first round output"),
+            ContextEntry::new(
+                "e4",
+                EntryKind::Runtime,
+                json!({"role": "user", "content": "runtime: goal-one closed as SUCCEEDED"}),
+            ),
+            kernel.user_entry("second goal", "e5"),
+            round("e6", "runtime required-check round 1 for goal-two"),
+            answer("e7", "second round output"),
+        ];
+        let request = kernel.prepare_request(&entries, "req-reused");
+        let roles: Vec<&str> = request.messages.iter().map(|message| message["role"].as_str().unwrap_or("")).collect();
+        // system, user, assistant(call), tool(answer), runtime, user, assistant(call), tool(answer):
+        // exactly one answer per call, each next to the call it answers
+        assert_eq!(
+            roles,
+            vec!["system", "user", "assistant", "tool", "user", "user", "assistant", "tool"],
+            "{:?}",
+            request.messages
+        );
+        assert_eq!(request.messages[3]["content"], json!("first round output"));
+        assert_eq!(request.messages[7]["content"], json!("second round output"));
+        assert_eq!(request.messages[3]["tool_call_id"], json!("check-1-0"));
+        assert_eq!(request.messages[7]["tool_call_id"], json!("check-1-0"));
+    }
+
     #[test]
     fn a_sole_wait_call_is_the_wait_output() {
         let kernel = kernel();

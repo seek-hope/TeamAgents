@@ -1077,6 +1077,85 @@ async fn the_check_repair_path_keeps_the_transcript_wire_valid() {
     handle.shutdown().await.expect("shutdown");
 }
 
+/// A call id can repeat within one conversation and every answer must still
+/// ride with the call it answers. The runtime's required-check round names its
+/// synthetic call `check-<round>-<position>` and the round counter is per goal,
+/// so two goals in one instance both produce `check-1-0` — the shape measured
+/// in the operator's session DB (goal-task2 entries 151/152, goal-task4
+/// 343/344). Pairing the wire view by id alone let the first round claim the
+/// second round's answer, so the next request carried two `tool` messages for
+/// one call and a synthesized answer for the other; a real DeepSeek run
+/// returned HTTP 400 (`Messages with role 'tool' must be a response to a
+/// preceding message with 'tool_calls'`) and parked. The scripted provider
+/// cannot see the wire, so this asserts every *request view* the runtime sent —
+/// the duplicate included — is a valid chat transcript.
+#[tokio::test]
+async fn a_reused_check_call_id_keeps_every_request_wire_valid() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let root = root("checks-wire-reused");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let script = vec![
+        Step::Message(finish_call("first goal done")),
+        Step::Message(finish_call("second goal done")),
+        Step::Message(reply("ack")),
+    ];
+    let (provider, log) = recording(script);
+    let mut config = root.config_with(provider);
+    config.goal_limits = json!({"required_checks": [{"id": "always", "command": "true"}]});
+    let handle = start(config).await.expect("start");
+    handle.input("do the first goal").await.expect("input");
+    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    // the second goal runs its own round 1, so its synthetic call is `check-1-0`
+    // again — the same id the first goal's round already used
+    let mut control = second_control(&root);
+    control
+        .submit(
+            cmd(
+                "mk-goal-two",
+                "create_goal",
+                json!({"id": "goal-two", "instance_id": "i-main",
+                       "limits": {"required_checks": [{"id": "always", "command": "true"}]}}),
+            ),
+            teamagents_core::v2::Identity::User,
+        )
+        .expect("second goal");
+    drop(control);
+    handle.input("do the second goal").await.expect("input");
+    wait_event_count(&handle, "goal_completed", 2, 20_000).await;
+    // one more turn: its request view holds both check rounds, so the duplicate
+    // call id is what the wire sees
+    handle.input("summarize").await.expect("input");
+    for _ in 0..400 {
+        if recorded(&log).len() >= 3 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let requests = recorded(&log);
+    let reused = requests.iter().any(|request| {
+        request["messages"]
+            .as_array()
+            .map(|messages| {
+                messages
+                    .iter()
+                    .filter(|message| {
+                        message["role"] == json!("assistant")
+                            && message["tool_calls"]
+                                .as_array()
+                                .is_some_and(|calls| calls.iter().any(|call| call["id"] == json!("check-1-0")))
+                    })
+                    .count()
+            })
+            .unwrap_or(0)
+            >= 2
+    });
+    assert!(reused, "the reused check id must reach a request view ({} recorded)", requests.len());
+    for (index, request) in requests.iter().enumerate() {
+        assert_wire_valid(request["messages"].as_array().unwrap_or_else(|| panic!("request {index} without messages")));
+    }
+    handle.shutdown().await.expect("shutdown");
+}
+
 /// A model that forgets the `status` field used to close the goal as FAILED
 /// (a failure it never claimed) and skip the required checks entirely — a real
 /// DeepSeek run did exactly that. The runtime now hands the problem back, the

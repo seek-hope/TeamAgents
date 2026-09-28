@@ -7,7 +7,7 @@ model probe sets and the three formal gates).
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 107 / engine 276 / tui 36 test targets) and `make pty` passes; both are
+`make check` is green (core 108 / engine 277 / tui 36 test targets) and `make pty` passes; both are
 preconditions for every item below. `make check` includes `make language-check`, which fails on non-English
 characters outside the two documented exceptions (`README.zh-CN.md` and the frozen material under
 `review/eval`).
@@ -129,6 +129,19 @@ amended (D-49/D-50).
   created, so a refused argument has no side effect).
 
 ## Known gaps (found while auditing the documented surface, 2026-09-25)
+
+- **A goal whose budget is exhausted stays `ACTIVE` for ever, and the user has no lever to close it.** Found by
+  running the product (D-278/D-280, 2026-09-28): the self-refine session's own state root carries three such
+  goals — `goal-s-main` `ACTIVE` at 1,926,270 of a 2,000,000 ceiling, `goal-task3` `ACTIVE` at 5,994,688 of
+  6,000,000 and `goal-task4` `ACTIVE` at 9,648,008 of 12,000,000 — each detached from every instance, each
+  unable to accept a new request (A18's gate refuses it and parks the instance with the ceiling as the reason),
+  and each still listed as the status `goals list` reports. Only the Leader's own `complete_goal`/`block_goal` can
+  settle a goal, and a parked instance with an exhausted goal has no path back to either, so a session
+  accumulates goals that are `ACTIVE` in the record and dead in fact. The **reporting** half is decision-free
+  and is the phase's own card (a goal that cannot accept work should not be presented as the one in force); a
+  **cancel/close lever** for the user is new protocol surface — `create_goal` has no counterpart and `goals` has
+  no verb — so which shape it takes, and whether the runtime should instead close a goal whose ceiling is
+  reached rather than parking its instance for ever, **needs the user's word** (D-267 owns the goal surface).
 
 - ~~**Nothing stops a service a settled command left behind.**~~ **Delivered since D-251.** D-41's explicit-only cleanup now has its lever: `teamagents runners stop --service --yes [--id JOB]` signals the process group the command created (the group id is the journal's recorded child, and the runner makes that child its group leader with `.process_group(0)`), and the listing's `service` column shows how many processes the group still holds. The gap's own suggested shape — "re-open a job directory and issue one best-effort, identity-verified `signal_group`, the path the runner already has for `OUTCOME_UNKNOWN`" — does **not** work for the case it names, which is why the rule is different: `signal_group` re-verifies the recorded child (A15), and a *settled* job's child is gone by definition (the code that can rely on the id says so: "the direct child is not reaped yet, so its group ID cannot be reused", `tools.rs`). After the reap the kernel may hand the pid out again, so the anchor here is **when the group's members were born**: a terminal journal, the same boot, at least one live member, and every member predating the job's own end — a reused id cannot pass, because its members are newer. It refuses a job that is not settled (a running command is work, not a leftover) and needs `--yes`, because it signals processes rather than asking a runner. Measured live (`python3 review/dogfood/runners.py`, credential-free, in `make probe-offline`): a scripted `sh -c '… sleep 30 & …'` leaves one member, the census says `service: 1`, the stop without `--yes` is exit 2, the stop with it reports `service stopped: 1 process(es)`, and the probe's own `/proc` check — not the verb's — sees that member gone while the census drops to 0; the refusal on a job that is still running is measured in the same run. Deterministic half (with the runner still alive *and* already retired): `jobs_runner::the_runners_verb_stops_the_service_a_settled_command_left_behind`, `a_service_stop_refuses_a_job_that_is_not_settled`, and the identity rule alone against a forged journal (`jobs::tests::a_group_whose_members_are_newer_than_the_job_is_never_signalled` — the reuse shape no test can arrange for real). Formally `V2Jobs`' `OnlyTheJobsOwnGroupIsSignalled` and `NoLiveCommandWasSignalled`, each refuted by its own control. Out of reach **by design**: a service that daemonized itself (`setsid`) leaves the group and the product does not hunt it (the same `ponytail:` note the synchronous shell path carries).
 

@@ -251,20 +251,25 @@ fn pair_tool_results(messages: &[Json]) -> Vec<Json> {
         if ids.is_empty() {
             continue;
         }
-        let mut answered: Vec<&str> = Vec::with_capacity(ids.len());
+        // One answer per call: an id can repeat within a conversation (the
+        // runtime's own `check-<round>-<position>` is per goal, so two goals
+        // reuse `check-1-0`), and pairing by membership alone let an earlier
+        // assistant claim a *later* call's answer — the wire then carried two
+        // tool messages for one call and a synthesized answer for the other, and
+        // DeepSeek rejected the request (400, a real session). Claiming the
+        // first unplaced answer for each id keeps every answer with its own call.
+        let mut pending: Vec<&str> = ids.clone();
         for (later, candidate) in messages.iter().enumerate().skip(index + 1) {
             if placed[later] || candidate["role"] != json!("tool") {
                 continue;
             }
-            if let Some(id) = candidate["tool_call_id"].as_str() {
-                if ids.contains(&id) {
-                    out.push(candidate.clone());
-                    placed[later] = true;
-                    answered.push(id);
-                }
-            }
+            let Some(id) = candidate["tool_call_id"].as_str() else { continue };
+            let Some(at) = pending.iter().position(|call| *call == id) else { continue };
+            out.push(candidate.clone());
+            placed[later] = true;
+            pending.remove(at);
         }
-        for id in ids.iter().filter(|id| !answered.contains(id)) {
+        for id in pending {
             out.push(json!({"role": "tool", "tool_call_id": id,
                             "content": NO_TOOL_RESULT}));
         }

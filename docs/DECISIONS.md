@@ -20,6 +20,104 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-280 Task 5 is verified end to end on the state that failed, and the phase's own operating cost is recorded (2026-09-28)
+
+The product's entry for the fourth delivery is D-279 (the request view now pairs every tool answer with its own
+call, so a reused `check-<round>-<position>` id cannot orphan a `tool` message). This entry is the operator's
+verification — the strongest the phase has produced — and the phase's own numbers.
+
+**Verified three ways.**
+
+* *The control, on the code.* Reverting `core/src/kernel/instance.rs` to `HEAD` makes the product's new unit test
+  fail with the invalid view printed in full: `system, user, assistant(call check-1-0), tool("first round
+  output"), tool("second round output"), user, user, assistant(call check-1-0),
+  tool("[no tool result follows: …]")` — the first assistant claiming the *second* round's answer, two `tool`
+  messages for one call, the second call answered by the runtime's placeholder. Restored byte-identically
+  (`diff -q`), the test passes.
+* *End to end, on the state that failed.* The session kept at `/tmp/ta-self/root-repo` is the one whose repair
+  request died twice with `chat API 400: Messages with role 'tool' must be a response to a preceding message with
+  'tool_calls'` (`req-e4cf57bb…`, `req-b2d1746b…`, the same `est_prompt_tokens` both times). With the fixed
+  binary, starting a daemon on that root and resuming the instance produced `attempt_recorded COMPLETE
+  selected:true`, `response_imported intents:1`, the tool operation `SUCCEEDED` and the *next* request `PENDING` —
+  the same bytes of session state that could not be sent now are, and the turn continues. This is the check the
+  synthetic tests cannot make, and it is why the operator keeps a broken session instead of only a description.
+* *The gate, and this time by the runtime.* `goal-task5` settled `SUCCEEDED` only after the runtime's own required
+  check round 1 (`make check`) ran and passed at the completion boundary — the **first** of the phase's four
+  deliveries whose settlement was machine-gated rather than operator-verified. The operator also ran
+  `env -u DEEPSEEK_API_KEY make check` (`rc=0`, 25 green targets) and `make pty` (ok) on the tree as left.
+
+**What a reader must not mistake.** The `exec` client's own report for that run says `end: "failed"`,
+`instance_lifecycle: "PARKED"`, `failure: "permanent model error: model stream: error decoding response body"` —
+because the *client's* run ended on a gateway transport hiccup half an hour before the goal settled, and a park
+ends the client's run while the goal's own attempt continues after a resume. That is D-72's rule doing its job
+(the report is about *its* turn, not about the goal), but it is worth writing down: the same numbers read as
+"the goal failed" if the distinction is not known. The hiccup itself is not a defect — a mid-stream decode error
+after text has been emitted is a permanent attempt failure by design — it is the phase's **operating cost**:
+two such parks in the phase's ~2.5 hours of agent time, each cleared by one `instances resume` and nothing else.
+
+**The phase's numbers so far.** Four deliveries committed (D-273, D-275, D-277, D-279), two more defects named
+and measured (D-278's A, now fixed, and B), **28.94M tokens over 243 model requests** across two sessions, four
+goals settled or still active, one goal parked, and an operator cost of four verification-and-commit rounds plus
+three resumes. The next cards, in the order the operator would take them: **B, the flaky `make check`** (the
+older session's own investigation already saw the mechanism at the assertion — the worker made *two* requests
+where the test expects one, `assert_eq!(worker_requests, Some(1))` — so the card can hand that over); the
+`goals open` line that reports `(0 required check(s))` for a goal the daemon gave the session's check; and the
+budget-exhausted goals that stay `ACTIVE` for ever with no lever to close them (a reporting half that is
+decision-free, and a cancel lever that would be new surface and therefore the user's call).
+
+**Ceiling**: this entry verifies *this* fix, not the phase's reliability — one of four deliveries settled by the
+runtime's own gate, and the flaky gate is still the phase's weakest link. The end-to-end check used the same
+gateway and the same repository; nothing here says the view is valid for every wire family, only that the
+collision shape that broke a real DeepSeek request is gone.
+
+## D-279 The request view pairs every tool answer with its own call, so a reused check call id cannot orphan a `tool` message (2026-09-28)
+
+This is the card D-278's Defect A named: the completion/repair boundary built a request a strict service
+refuses — `chat API 400: Messages with role 'tool' must be a response to a preceding message with 'tool_calls'`
+— the repair turn died and the instance parked, so the goal could never settle. The card left the shape in the
+session kept at `/tmp/ta-self/root-repo`, and this entry is that shape, the fix, and the controls.
+
+**The shape (read from the DB, deterministically).** Every `context_entries` row of `i-leader` in epoch 0 is
+well-formed on its own: a `tool` row always follows the assistant row that called it. The defect is in the
+*kernel's request view* (`core/src/kernel/instance.rs`, `pair_tool_results`, reached from `prepare_request`),
+which paired each assistant message with its answers by **id membership in the whole conversation**. The runtime
+names its synthetic required-check call `check-<round>-<position>` (`core/src/v2/control.rs`,
+`register_check_runs`), and the round counter is *per goal*, so two goals in one instance both produce
+`check-1-0`: entries 151/152 carry goal-task2's round 1, entries 343/344 carry goal-task4's round 1. Pairing by
+membership let the *first* assistant (`check-1-0` at 151) claim **both** answers — the second round's tool
+result was pulled up next to the first round's — and the second assistant was answered by the runtime's own
+synthesized `[no tool result follows: …]` note. The view then carried two `tool` messages for one call, and the
+later one is exactly what the gateway names: a `tool` message that is not a response to a preceding message with
+`tool_calls`. The repair request (`req-e4cf57bb…`) was built from that view and failed permanently; a resume
+rebuilt the identical view (`req-b2d1746b…`, the same `est_prompt_tokens`) and failed the same way.
+
+**Fixed**: `pair_tool_results` now claims the first *unplaced* answer for each call id and stops there — one
+answer per call, each next to the call it answers. Nothing else moved: the masking/compaction design, the wire
+protocol, the persisted schema and the control plane's own call-id naming are untouched; only the view's pairing
+changed. A repeated id is legal on the wire when each occurrence's answer stays its own, which the session
+itself shows — goal-task2's `check-1-0` sat in the conversation for hours of turns before a later answer was
+paired to the wrong call.
+
+**Evidence** (2026-09-28, this tree: `8a7b3263` plus this uncommitted diff).
+
+| Command | Result |
+|---|---|
+| `cargo test --offline --manifest-path core/Cargo.toml --lib a_reused_call_id_keeps_each_answer_with_its_own_call` | **ok** — a deterministic, no-model view test: two `check-1-0` rounds in one conversation each keep their own answer |
+| pre-fix control: the same test with `core/src/kernel/instance.rs` exactly as at `HEAD` (saved first, restored byte-identically — `sha256sum` equal) | **FAILED**, left `[system, user, assistant, tool, tool, user, user, assistant, tool]` / right `[system, user, assistant, tool, user, user, assistant, tool]`: two answers on the first call, a synthesized answer on the second |
+| `cargo test --offline --manifest-path engine/Cargo.toml --test v2_driver a_reused_check_call_id_keeps_every_request_wire_valid` | **ok** — a scripted provider drives two goals in one instance (the second attached with `create_goal`), then one more turn; every request view the runtime sent is asserted wire-valid |
+| the same engine test pre-fix (same restored `instance.rs`) | **FAILED**: `a tool message answered an unknown call: "check-1-0" in []` — the operator's 400, on the runtime's own request view, not only on the stored transcript |
+| the operator's conversation replayed through the fixed pairing (345 visible entries, `i-leader` epoch 0) | valid view: 176 `tool` answers, each assistant's consecutive answer group exactly its own call ids |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition (no credential exported) |
+| `python3 review/test_counts.py --write` | `core: 107 -> 108`, `engine: 276 -> 277` (the two new tests) |
+| `python3 review/citations.py` | the counts it states were moved by this entry and re-stated from its own run |
+
+**Ceiling**: the fix keeps every request wire-valid; it does not stop the runtime from *reusing* a check call id
+across goals, which the card explicitly left alone (the persisted shape stays). A duplicate id whose first
+occurrence were genuinely unanswered would still let that occurrence claim a later call's answer —
+misattributed, but wire-valid — and no such shape exists in the session or in the tests. The live session was
+not re-run; the reproduction is the two tests plus the replay of its own `context_entries`. `make pty`, the
+probe sets and the formal gates were not re-run (this change touches neither the TUI nor `verification/`).
+
 ## D-278 Task 4 is verified by the operator, and its run found the next two work items: an invalid wire at the repair boundary, and a gate that is not deterministic (2026-09-28)
 
 The phase's third work item was the lifecycle lever D-276 assigned (the product's entry is D-277). This entry is
