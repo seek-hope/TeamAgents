@@ -20,6 +20,90 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-300 Task 15 is verified: the fourth audited row, and the fourth hole (2026-09-29)
+
+The product's entry is D-299. This entry is the operator's verification and the phase's measured numbers.
+
+**What the audit found this time.** A19 is "Truncated stream and connection loss", and its cited evidence reached
+only the *truncation* half (`truncated_stream_before_output_is_transient`,
+`truncated_stream_after_visible_output_is_permanent`) and the *stall* half (`providers_stall::*`): the two ways a
+connection is actually lost — nothing listening at all, and an established connection the peer drops before any
+response line — were claimed by the row's title and driven by nothing. The delivery adds
+`providers_fake::a_lost_connection_is_transient`, which puts both shapes through the real send path and pins their
+class as `Transient` (a `Permanent` here would park the driver on a network blip), and rewrites the row's
+evidence list to name each half. The behaviour was already correct — the test's own note records that both
+classes measured `Transient` before it existed — so this is coverage, not a fix, exactly like A33's SIGINT half.
+
+**Verified.** The operator reproduced the control independently: forcing every send-path error to `Permanent`
+in `engine/src/providers/chat_completions.rs` makes the new test fail with `left: Permanent`,
+`right: Transient` on the refused connect — the defect the row's claim forbids — and restoring the file
+byte-identically (sha256 `e1fc46ec…`, unchanged from before the control) puts it back to `ok`.
+`env -u DEEPSEEK_API_KEY make check` `rc=0` (25 green targets) and `make pty` ok, and the goal settled only after
+its own required check passed — the twelfth of fourteen machine-gated deliveries.
+
+**The audit's yield, four rows in.** A33 (two signals claimed, one driven), A18 (a published sentence the gate
+never honoured), A13 (a race the cited tests could not reach), A19 (a half named in the row's own title that no
+test drove). **Four of four found a real hole.** The pattern is consistent enough to state: an acceptance row is a
+sentence a reader trusts, and its citations are checked for *existence* by the audits, never for *coverage*.
+
+**The phase's measured numbers (this commit).** **Fourteen deliveries**, **170,898,742 tokens over 677 model
+requests**, the suites at `core 109 / engine 283 / tui 36`, and an operator cost of fifteen verification rounds
+and three resumes. Four of the fourteen defects came from the operator's supervision or its probes, and ten from
+cards; every delivery of the last five turns came from the claims audit.
+
+**Next card**: continue the audit at the next row. The operator keeps verifying each delivery the same way — the
+control, the gate, the `make pty` smoke — and states measured numbers with their method.
+
+**Ceiling**: the test pins two loss shapes; a TLS failure, a mid-response stall and a half-closed socket are
+covered elsewhere or not at all, and the row now says which is which rather than implying the title covers them
+all. The audit closes *claims*, not behaviour: two of the four rows it has audited were already correct.
+
+## D-299 A19's connection-loss half was claimed and never driven; it now has a test (2026-09-29)
+
+**Triage.** D-298 left the row-by-row mandate, so I took the next unaudited row with probe/shape evidence.
+Before choosing A19 I checked and rejected: A24 ("a late result after a reset" — its two cited formals,
+`V2Control::NoReceiptAcrossEpochs` and `V2Inbox::NoStaleApplication`, resolve in the modules and the stale-epoch
+control `MC_inbox_stale_applied.cfg` is in the refuted set, while
+`control::late_receipt_after_reset_lands_on_the_old_epoch_only` drives the code half); A20 ("restart after
+long-context compaction" — the eight `V2Compress` properties count out in `MC_compress.cfg` and
+`v2_driver::long_context_compacts_before_the_turn_and_survives_a_restart` exists); and the rows the earlier
+passes already read. **A19** is load-bearing — it is the retry/park story's evidence — and its claim names two
+failure modes.
+
+**What the cited evidence actually asserts.** `providers_fake::truncated_stream_before_output_is_transient` and
+its companion send **valid headers and then close the body early** — an EOF the provider classifies by whether
+visible output arrived; `providers_stall::*` covers a keep-alive-only stream and the stall clock;
+`V2Control::SelectionIsComplete` and the two driver tests pin the retry *shape*; `review/dogfood/truncation.py`
+truncates before and after visible text over a real socket. **None of them drives a connection loss** — a connect
+that never establishes, or a peer that drops an established connection — which is half of what the row's title
+claims. The branch exists: `engine/src/providers/chat_completions.rs`'s send maps `is_timeout() || is_connect()
+|| is_request()` to `Transient` (and a body-read failure to `Transient` "model stream: …"), so a lost connection
+is retried rather than parked.
+
+**The change (coverage, not behaviour).** A new test in `engine/tests/providers_fake.rs`,
+`a_lost_connection_is_transient`, drives both ways the connection is actually lost: nothing listening at all (the
+connect fails) and an established connection the peer drops before any response line. Both must be `Transient`.
+A19's row now cites it, and the truncation pair, so each noun of its claim names its evidence. **No product code
+changed** — `git status engine/src/providers/` is empty after the work.
+
+**Evidence** (2026-09-29; the tree is `HEAD` plus this uncommitted diff).
+
+| Command | Result |
+|---|---|
+| throwaway probe before the test existed (a connect to a dropped listener, and an accept-then-drop server) | both classes were **`Transient`** — the claim held; the cited evidence simply never reached it |
+| `cargo test --offline --manifest-path engine/Cargo.toml --test providers_fake a_lost_connection_is_transient -- --exact` | **ok** (0.01 s) |
+| `cargo test --offline --manifest-path engine/Cargo.toml --test providers_fake` | **ok** — 30/30 |
+| pre-fix control: the send classification narrowed in `engine/src/providers/chat_completions.rs` — `if e.is_timeout() \|\| e.is_connect() \|\| e.is_request() {` reverted to `if e.is_timeout() {` | **FAILED**: `left: Permanent`, `right: Transient`, `ProviderError { class: Permanent, message: "chat API: error sending request …" }` — a lost connection parked instead of retrying |
+| the line restored byte-identically (`diff` clean, `sha256sum` `e1fc46ec…`) | **ok** — and the file is unchanged against `HEAD`, so no code change ships |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `python3 review/test_counts.py --write` | `engine: 282 -> 283` (the new test) |
+
+**Ceiling.** The test drives the send path's transport errors (a refused connect, a peer that drops before any
+response line). It does not force a reset *mid-body* after headers, so the body-read path's `Transient` "model
+stream: …" is still covered only by the truncation tests' clean EOF — a future round could drive that with a
+reset (`SO_LINGER 0`) if the fake server grows the knob. The probe was removed after it measured; no property is
+claimed. `make pty` and the probe sets were not run.
+
 ## D-298 Task 14 is verified: the third audited acceptance row, and the third real hole (2026-09-29)
 
 The product's entry is D-297. This entry is the operator's verification and the phase's measured numbers.

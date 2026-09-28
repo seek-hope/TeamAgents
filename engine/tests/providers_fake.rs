@@ -936,3 +936,34 @@ fn chat_completions_max_tokens_clamps_to_the_remaining_context_window() {
     assert_eq!(request_body(&server)["max_tokens"], 2000);
     rt.block_on(server.task).unwrap();
 }
+
+/// A19's *connection loss* half: a transport error is retryable, not permanent — the peer never answered, so
+/// nothing was billed and nothing about the request is wrong. The cited evidence reaches only *truncated*
+/// streams (valid headers, then an early EOF the provider classifies by visible output) and *stalls* (a
+/// keep-alive-only stream and its clock); this drives the two ways a connection is actually lost: nothing
+/// listening at all, and an established connection the peer drops before any response line. Both must land in
+/// the send path's `Transient` (`chat API: …`) rather than `Permanent`, or the driver would park on a network
+/// blip. Measured before the test existed: both classes were `Transient`.
+#[test]
+fn a_lost_connection_is_transient() {
+    let rt = runtime();
+    // (a) nothing listens: the connect itself fails
+    let listener = rt.block_on(TcpListener::bind("127.0.0.1:0")).unwrap();
+    let dead = listener.local_addr().unwrap();
+    drop(listener);
+    let provider = ChatCompletions::new(format!("http://{dead}"), "k", Duration::from_secs(5)).unwrap();
+    let refused = run(&rt, &provider, &request()).unwrap_err();
+    assert_eq!(refused.class, ErrorClass::Transient, "a refused connection is retryable: {refused:?}");
+    // (b) an established connection the peer drops before any response line
+    let listener = rt.block_on(TcpListener::bind("127.0.0.1:0")).unwrap();
+    let addr = listener.local_addr().unwrap();
+    let dropper = rt.spawn(async move {
+        if let Ok((socket, _)) = listener.accept().await {
+            drop(socket);
+        }
+    });
+    let provider = ChatCompletions::new(format!("http://{addr}"), "k", Duration::from_secs(5)).unwrap();
+    let lost = run(&rt, &provider, &request()).unwrap_err();
+    assert_eq!(lost.class, ErrorClass::Transient, "a dropped connection is retryable: {lost:?}");
+    rt.block_on(dropper).unwrap();
+}
