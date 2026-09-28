@@ -20,6 +20,81 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-326 Task 28 is verified: A20's sibling — A30's "DB write boundaries" named three orphan tests (2026-09-29)
+
+The product's entry is D-325. This entry is the operator's verification and the phase's measured numbers.
+
+**What the audit found.** A30's title names *two* boundaries, and the row cited only the artifact half (plus the
+boot collector). The **DB write boundary** — "a state change that spans rows commits as one transaction" — is
+pinned by three tests, and **none of the three was named by any row, decision or probe document**:
+`control::publish_list_inside_commands_is_atomic` (the artifact reference and its LIVE flip commit together),
+`control::spawn_registers_everything_in_one_transaction` (a spawn's instance, task and return-path grant) and
+`control::register_check_runs_commits_the_round_atomically` (a check round's round, runs and reservation — which
+also pins that the user cannot register rounds directly). The row now cites all three.
+
+**Verified.** The operator reproduced the orphan measurement: at `HEAD`, `git grep -l` for each name across
+`docs/`, `review/` and `verification/` returns **nothing**. The operator's own control drops the
+`register_check_runs` identity guard (`if !matches!(identity, Identity::System)` → `if false`) and the cited test
+fails with `assertion failed: ctl.submit(cmd("cr-u", "register_check_runs", …` — the user's registration
+succeeded — and the file is restored byte-identically (sha256 `60ee66e2…`, `git status` clean of it).
+`env -u DEEPSEEK_API_KEY make check` `rc=0` (25 green targets) and `make pty` ok, and the goal settled only after
+its own required check passed — the twenty-fifth of twenty-seven machine-gated deliveries.
+
+**The phase passes a round number.** **One thousand model requests** and **386,579,790 tokens** have produced
+twenty-seven deliveries across two sessions, with twenty-five of their settlements gated by the runtime's own
+required check. The audit's yield is **seventeen findings from sixteen cards** — seven coverage, nine claims and
+one product defect — and two of the seventeen fixed an audit rather than a document. The orphan-test class has now
+appeared three times (A16, A20 and A30's three names), which is what makes the 155-name measurement in D-324 worth
+a sweep card.
+
+**The phase's measured numbers (this commit).** **Twenty-seven deliveries**, **386,579,790 tokens over 1,000
+model requests**, the suites at `core 114 / engine 288 / tui 36`, and an operator cost of twenty-eight verification
+rounds and three resumes. Four of the twenty-seven defects came from the operator's supervision or its probes.
+
+**Next card**: the row-by-row audit continues (twenty-two rows unaudited). The operator will keep preferring rows
+whose citations are globs or whose titles name two things, since that is where both orphan cards came from.
+
+**Ceiling**: the three tests pin the rule for those three write paths; other multi-row writes (a wait's
+registration, a goal's close) may be pinned by their own tests without being cited here, and the row does not
+claim to enumerate them. The remaining twenty-two rows are still prose-first.
+
+## D-325 A30's "DB write boundaries" half had three tests that no document named (2026-09-29)
+
+**The row and what its evidence asserts.** A30 ("Artifact and DB write boundaries") cites
+`control::artifact_staging_gc_and_publication_ordering` (the staging/LIVE/GC order, and the collector's refusal
+to touch a STAGING or still-referenced row), the eight `V2Artifact` properties and the boot-collector test — all
+artifact-specific, and all verified in earlier passes. But the title names a **second** half, "DB write
+boundaries", and nothing in the row's evidence said what that boundary is.
+
+**The hole.** Three tests drive exactly that rule — a state change that spans rows commits as **one
+transaction** — and **no row, decision or probe document named any of them** (measured by grep over `docs/`,
+`review/` and `verification/`):
+
+- `control::publish_list_inside_commands_is_atomic` — "the reference and the LIVE flip commit in one transaction
+  (§4.3)", the publish inside a user command;
+- `control::spawn_registers_everything_in_one_transaction` — a spawn's instance, task and return-path grant;
+- `control::register_check_runs_commits_the_round_atomically` — a check round's round, runs and reservation, plus
+  the driver-internal identity guard ("the user cannot register rounds directly").
+
+**The change (the citation, not the code).** A30's evidence cell now names the boundary and those three tests, so
+the row's title and its evidence agree on both halves. No product or test code changed.
+
+**Evidence** (2026-09-29; the tree is `8bc1cac6` plus this uncommitted diff).
+
+| Command | Result |
+|---|---|
+| the orphan measurement: greps for the three test names across `docs/`, `review/` and `verification/` | **no mention** of any of them before this row edit |
+| pre-fix control: the `register_check_runs` identity guard dropped — `if !matches!(identity, Identity::System)` → `if false` | the *cited* test **FAILED**: `assertion failed: ctl.submit(cmd("cr-u", "register_check_runs", …` — with the guard gone the user's registration succeeded; the line was restored byte-identically (`diff` clean, `core/src/v2/control.rs` unchanged) |
+| `cargo test --offline --manifest-path core/Cargo.toml --lib register_check_runs_commits_the_round_atomically` after the restore | **ok** (0.01 s) |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+
+**Ceiling.** The three tests assert the *committed* state — their atomicity is structural in the SQL transaction,
+with no fault injected, so a *rollback* under a failed later step is not driven for these three (the nearest
+fault-injection test is `tools.rs`'s `batch_commit_rolls_back_when_a_later_rename_fails`, which the orphan sweep
+also lists as named by no document — a lead for a later turn). The pre-fix control exercises the identity guard,
+one of the cited test's assertions; the transaction itself has no single revertible line, which is why the control
+is on that assertion rather than on the atomicity.
+
 ## D-324 Task 27 is verified: the orphan-test class again, and a calibration for a sweep (2026-09-29)
 
 The product's entry is D-323. This entry is the operator's verification and the phase's measured numbers.
