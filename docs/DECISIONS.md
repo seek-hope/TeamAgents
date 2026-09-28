@@ -20,6 +20,113 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-292 Task 11 is verified: A28's concurrency claim is now checked by TLC, not asserted (2026-09-28)
+
+The product's entry is D-291. This entry is the operator's verification — the strongest the phase has produced,
+because the change is *inside* the re-run material — plus the phase's numbers and the next card.
+
+**What was delivered.** `verification/tla/V2Concurrency.tla`: readers that hold a cursor and the view they were
+handed, beside the single writer, with the environment (which reader runs, and when) non-deterministic and *no*
+fairness for readers — a stalled client is one that never runs, which is what makes the claim say something.
+Three claims: the commit's guard names no reader (`WriterProgressesDespiteAStalledReader`, under weak fairness of
+the writer's own step only), a reader that follows its cursor sees the committed prefix
+(`ReadersSeeTheCommittedPrefix`), and never past it (`NoReaderSeesUncommitted`). Three controls, each flipping
+exactly one counterfactual constant: `MC_concurrency_writer_waits.cfg` (the commit waits for every reader),
+`MC_concurrency_skips_an_event.cfg` (a read hands over a committed event that is not the next one) and
+`MC_concurrency_reads_ahead.cfg` (a read hands over an event the writer has not committed). The module states in
+its own header what it does *not* model (pages, sockets, buffers, the accept loop, the storage queue) and anchors
+each claim to code (`engine/src/v2/daemon.rs`, `engine/src/v2/storage.rs`). A28's row and the unproven list were
+updated to say what is covered and what is not, and the Makefile, the catalogue and `verification/README.md` list
+the new configuration and its controls.
+
+**Verified by the operator, on the formal material itself.** `make verify-model-all`: **24/24** configurations
+`No error has been found`, the new `MC_concurrency.cfg` exhaustive in under a second (85 states generated / 30
+distinct) and every pre-existing count byte-identical to the D-253 run (`MC_task.cfg` 5,721,401 / 606,904;
+`MC_daemon.cfg` 1,694,761 / 135,750). `make verify-model-counterexamples`: **73/73** controls refuted, `rc=0` —
+and the operator ran `MC_concurrency_skips_an_event.cfg` alone to see the refutation itself (TLC's trace fires
+`ReadOutOfOrder` and hands `r1` the event `2` where its cursor's next is `1`). `make verify-kani`:
+`Complete - 3 successfully verified harnesses, 0 failures, 3 total`. `env -u DEEPSEEK_API_KEY make check` `rc=0`
+(25 green targets) and `make pty` ok. The three numbers the product's entry states (24 configurations, 73
+controls, 3 harnesses) are the ones the operator's own runs produced, not a transcription.
+
+**One observation about the gate, recorded rather than hidden.** The operator's *first* batch — the three targets
+in one shell — failed inside `make verify-model-counterexamples` at `MC_concurrency_skips_an_event.cfg` with TLC's
+`Trying to run TLC again will probably fix this problem` (the `states/` metadir a just-finished
+`verify-model-all` had left behind), and the target's harness read a TLC that never started as "verified instead
+of refuting: the property it should break may be vacuous". The re-run refuted all 73 and the standalone run
+refutes that control, so the control is sound and the *target* is what is fragile: it shares one metadir and
+misreads a startup failure as a vacuous property. That is a candidate card (give each run its own meta
+directory, or clear it first, so a green `verify-model-counterexamples` cannot be an artefact and a red one
+cannot be a lie).
+
+**The phase's numbers.** Ten deliveries, **106.5M tokens over 543 model requests**, and an operator cost of
+eleven verification-and-commit rounds and three resumes. This is the first delivery that touched the re-run
+material, so it is also the first whose §0 obligations were discharged in full: the three targets re-run with
+their results recorded, and the §0 heading in `verification/REPORT.md` moved to the commit that made the change
+(a follow-up commit pins the heading, the way D-266's pin did, because a heading cannot name the commit it is
+in).
+
+**Next cards.** First the metadir fragility above, because it is what makes a formal gate trustworthy (and it is
+small); then the remaining formal gap in the unproven list — the pure functions reached only by bounded
+enumeration (`prepare_request`'s view, `interpret_response`'s classification, `args_hash`), where a Kani harness
+either converges on a real invariant or the attempt is recorded as a measured ceiling.
+
+**Ceiling**: `V2Concurrency` checks the *ordering* claim A28 makes, not the daemon's whole concurrency story —
+bytes, buffers and the accept loop are outside it, as the module's own header says, and the daemon's real socket
+behaviour is covered by tests and probes, not by this model. A28's row now names both.
+
+## D-291 The daemon's readers beside its single writer are modelled, and A28 stops being structural (2026-09-28)
+
+**The gap, in the repository's own words.** `verification/REPORT.md`'s unproven list, item 6: "`Control::submit`
+is serialized on a single connection (a single writer) and the model does not cover interleavings across
+connections; the daemon's concurrent read and write connections appear only in A28's structural statement that a
+slow client cannot block the writer, without an exhaustive interleaving." A28 is an acceptance row, so the claim
+was asserted in `docs/ACCEPTANCE.md` with a live probe and a structural sentence, and no state space enumerated it.
+
+**The model.** `verification/tla/V2Concurrency.tla` + `MC_concurrency.cfg` (two readers, a committed log `1..3`):
+each reader holds a cursor into the log and a view of what it was handed; the writer's commit step names no
+reader, and reader steps are deliberately **not** fair — a stalled client is one that never runs. Three claims,
+each with a control that must be refuted:
+
+| Claim | Meaning | Control |
+|---|---|---|
+| `WriterProgressesDespiteAStalledReader` (temporal, weak fairness on the writer's own step) | the log fills however far behind a reader stays | `MC_concurrency_writer_waits.cfg`: the commit waits for every reader to catch up, so a stalled client starves the writer → `Error: Temporal properties were violated` (29 states / 13 distinct) |
+| `ReadersSeeTheCommittedPrefix` | the i-th event a reader was handed is the i-th the writer committed — nothing lost or reordered on the way | `MC_concurrency_skips_an_event.cfg`: a read hands over a different committed event → `Invariant ReadersSeeTheCommittedPrefix is violated` (21 / 16) |
+| `NoReaderSeesUncommitted` | a reader's cursor cannot run past the committed log | `MC_concurrency_reads_ahead.cfg`: a read hands over an uncommitted event → `Invariant NoReaderSeesUncommitted is violated` (35 / 21) |
+
+**Not a tautology.** The temporal claim is where vacuity could hide, so it is stated under weak fairness of the
+writer's *own* step only and nothing is assumed about readers; the control that adds a reader guard is refuted,
+which is the evidence that the claim rests on that guard being absent rather than on the `MaxEvents` bound.
+
+**Wired in** so the material is driven and counted: the `CFG_CASE` mapping and both target lists in the
+`Makefile`; the module/configuration counts in `review/verification_catalogue.py`'s docstring (twenty-one /
+ninety-eight); the spec table and the counterexample list in `verification/README.md`; A28's row in
+`docs/ACCEPTANCE.md`; and the unproven item above. `docs/DEVELOPMENT.md` said "all sixteen modules" (already
+stale); it says twenty-one now.
+
+**Evidence** (2026-09-28; the gates ran on the working tree this entry is in, whose base is `95d79ee3`).
+
+| Command | Result |
+|---|---|
+| `make verify-model-all` | **rc=0**, all **24** configurations `No error has been found`; the new `MC_concurrency.cfg` is exhaustive in under a second (85 states generated / 30 distinct) and every pre-existing count is byte-identical to the D-253 run (`MC_task.cfg` 5,721,401 / 606,904; `MC_daemon.cfg` 1,694,761 / 135,750) |
+| `make verify-model-counterexamples` | **rc=0**, all **73** controls refuted, each naming its claim — the three new ones above |
+| `make verify-kani` | **rc=0**, `Complete - 3 successfully verified harnesses, 0 failures, 3 total` |
+| `python3 review/verification_catalogue.py` | 98 configurations and 21 modules, all named, described and mapped |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+
+The three targets took 1 m 49 s together here (59 s + 49 s + 1 s), faster than the D-266 entry's ≈12 min; the
+counts, not the clock, are what describe the material. One operational note for the next run: a TLC process
+killed mid-flight (or the direct runs made while drafting this) leaves `verification/tla/states/`, and the next
+`make verify-model-counterexamples` then fails at `FileUtil.makeMetaDir` with "Trying to run TLC again will
+probably fix this problem"; `rm -rf verification/tla/states` clears it, which is what the second run above did.
+
+**Ceiling and provenance.** The model abstracts a client into a cursor plus order: pages, sockets, the accept loop
+and the storage worker's queue are outside it, and it models one writer, so two writers racing is assumed away
+(the store's single write connection with its 5 s `busy_timeout` is a code fact, not a rule this model checks).
+The §0 heading names `95d79ee3`, the base commit of the tree the gates ran on — the material itself is in this
+uncommitted diff, so the pin commit that names it follows (D-202's ordering, the shape D-206 was committed in),
+and the heading says so. `make pty` and the probe sets were not run.
+
 ## D-290 Task 10 is verified: A33 claimed two signals, only one was ever driven (2026-09-28)
 
 The product's entry is D-289. This entry is the operator's verification and the phase's numbers, and it turns the

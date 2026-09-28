@@ -23,19 +23,19 @@ shape D-206 was committed in.
 
 ```bash
 make verify-model           # small control-plane configuration (seconds)
-make verify-model-all       # small configurations for all twenty modules (control plane, artifacts, waits,
+make verify-model-all       # small configurations for all twenty-one modules (control plane, artifacts, waits,
                             # tasks, compression, daemon (its protocol and the D-248 stop lever), required
                             # checks, authority, the user's surface,
                             # session-store identity, retention, the job handshake, the inbox, the write-failure
                             # latch, the coordinator lock, the config trust gate, what a prompt carries,
-                            # the retry budget, the member workspace)
+                            # the retry budget, the member workspace, the daemon's concurrent readers)
 make verify-model-counterexamples   # the negative controls (authority surface D-61, inbound boundary D-63,
                             # the retry boundary D-64/D-65, the runtime's own closing word D-71, the
                             # landing-attribution rule D-72, the store-identity guard D-87, the four retention
                             # guards D-192, the four job-handshake rules D-206, the five inbox rules D-207, the four write-failure
                             # rules D-208, the three coordinator-lock rules D-210, the five trust-gate
-                            # rules D-244, the three prompt-composition rules D-246 and the three retry-budget
-                            # rules D-247):
+                            # rules D-244, the three prompt-composition rules D-246, the three retry-budget
+                            # rules D-247 and the three concurrency rules D-291):
                             # each must be *refuted*, or the property it targets proves nothing
 make verify-model-wide      # wide control-plane configuration (2 instances / 2 operations; tens to hundreds of
                             # millions of states, slow — the 2-instance run is what catches per-instance
@@ -81,6 +81,7 @@ repository and never enters `make check`. Java is required (this machine uses Op
 | `tla/V2Grants.tla` + `tla/MC_grants.cfg` | authority (§5.1/§6.1, A03/A04; D-58/D-59/D-60): the session's bootstrap grants, narrowing by an instance (manage covers message/delegate), the spawn-derived delegate grant, revocation with the parent tree cascade and the revision bump, the dispatch re-check, and the rule that the model-visible tool surface only offers what the instance's grants back. `tla/MC_grants_stale_offered_surface.cfg` is its counterfactual control (D-220): the revoke path computes the surface from the grant table as it was before the revocation, so a model is still shown a tool whose grant went away, which `OfferedToolsAreAuthorized` refutes. Its type claim is the composite `TypeOK`, listed beside its four components `TypeOKGrants`, `TypeOKRevision`, `TypeOKOffered` and `TypeOKOps` (D-212's convention: a claim that composes others is listed itself and its parts beside it) |
 | `tla/V2Store.tla` + `tla/MC_store.cfg` | session-store identity (A34; D-87): opening a state root either owns the file or refuses it — a foreign program's tables are never stamped as ours, a refusal writes nothing, and a database interrupted between its schema batch and its stamp is completed rather than stranded. `tla/MC_store_adopt.cfg` is its negative control |
 | `tla/V2Authority.tla` + `tla/MC_authority.cfg` | the user's authority surface (D-61): the view a client reads (and the id a revoke must name), the pair table the surface refuses against, a grant the user writes (optionally derived from one it holds), revocation by a nameable id with the subtree cascade, the surface as a *cached* per-request variable, and the dispatch re-check with a surface that may lag. Its three negative-control configurations (`MC_authority_badview.cfg`, `MC_authority_trustsurface.cfg`, `MC_authority_stalesurface.cfg`) are run by `make verify-model-counterexamples` and must each be refuted |
+| `tla/V2Concurrency.tla` + `tla/MC_concurrency.cfg` | the daemon's concurrent readers beside its single writer (§9/§4.1, A28; D-291): a reader holds a cursor into the writer's committed log and is handed events in order, while the writer's commit guard names no reader — so a slow or stalled client never holds a commit back (`WriterProgressesDespiteAStalledReader`, a temporal claim under weak fairness of the writer's own step, where reader steps are deliberately not fair: a stalled client is one that never runs), a reader that follows its cursor was handed exactly the committed prefix, so nothing on the way was lost or reordered (`ReadersSeeTheCommittedPrefix`), and it never sees past the writer (`NoReaderSeesUncommitted`). Its three counterfactual controls: `tla/MC_concurrency_writer_waits.cfg` (the commit waits for every reader to catch up, so a stalled client starves the writer → the temporal claim), `tla/MC_concurrency_skips_an_event.cfg` (a read hands over a committed event that is not the cursor's next one → `ReadersSeeTheCommittedPrefix`) and `tla/MC_concurrency_reads_ahead.cfg` (a read hands over an event the writer has not committed → `NoReaderSeesUncommitted`). Measured 2026-09-28: exhaustive in under a second (85 states generated / 30 distinct). What it is not: pages, sockets, the accept loop or the storage worker's queue — the gap-free `events(since)` page is `V2Daemon`'s (D-249) and a full inbox's bound is `V2Inbox`'s — and it models one writer, so two writers racing is outside it. |
 
 Two control-plane configurations exist: `MC.cfg` (one instance, the default in `make verify-model-all`) and
 `MC_control_two.cfg` (two instances, the same domains — the small check that makes a *per-instance* fairness or

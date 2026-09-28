@@ -137,11 +137,11 @@ verify-model: verify-tools
 # configuration that fell through the `*)` default would silently run the wrong module (the rule
 # `review/verification_catalogue.py` enforces). The control families are matched by prefix, after the
 # exact arms, because shell `case` takes the first match.
-CFG_CASE = case $$cfg in MC.cfg|MC_control_two.cfg) echo V2Control.tla;; MC_artifact*) echo V2Artifact.tla;; MC_wait*) echo V2Wait.tla;; MC_task*) echo V2Task.tla;; MC_approval*) echo V2Approval.tla;; MC_compress*) echo V2Compress.tla;; MC_daemon*) echo V2Daemon.tla;; MC_checks*) echo V2Checks.tla;; MC_trust*) echo V2Trust.tla;; MC_prompt*) echo V2Prompt.tla;; MC_retry*) echo V2Retry.tla;; MC_grants*) echo V2Grants.tla;; MC_authority*) echo V2Authority.tla;; MC_store.cfg|MC_store_adopt.cfg) echo V2Store.tla;; MC_retention*) echo V2Retention.tla;; MC_jobs*) echo V2Jobs.tla;; MC_inbox*) echo V2Inbox.tla;; MC_diskfull*) echo V2DiskFull.tla;; MC_coordinator*) echo V2Coordinator.tla;; MC_workspace*) echo V2Workspace.tla;; MC_control*) echo V2Control.tla;; MC_wide.cfg) echo V2Control.tla;; *) echo V2Artifact.tla;; esac
+CFG_CASE = case $$cfg in MC.cfg|MC_control_two.cfg) echo V2Control.tla;; MC_artifact*) echo V2Artifact.tla;; MC_wait*) echo V2Wait.tla;; MC_task*) echo V2Task.tla;; MC_approval*) echo V2Approval.tla;; MC_compress*) echo V2Compress.tla;; MC_daemon*) echo V2Daemon.tla;; MC_checks*) echo V2Checks.tla;; MC_trust*) echo V2Trust.tla;; MC_prompt*) echo V2Prompt.tla;; MC_retry*) echo V2Retry.tla;; MC_grants*) echo V2Grants.tla;; MC_authority*) echo V2Authority.tla;; MC_store.cfg|MC_store_adopt.cfg) echo V2Store.tla;; MC_retention*) echo V2Retention.tla;; MC_jobs*) echo V2Jobs.tla;; MC_inbox*) echo V2Inbox.tla;; MC_diskfull*) echo V2DiskFull.tla;; MC_coordinator*) echo V2Coordinator.tla;; MC_workspace*) echo V2Workspace.tla;; MC_concurrency*) echo V2Concurrency.tla;; MC_control*) echo V2Control.tla;; MC_wide.cfg) echo V2Control.tla;; *) echo V2Artifact.tla;; esac
 
 # small exhaustive configurations for every module (seconds; the wide config is verify-model-wide)
 verify-model-all: verify-tools
-	@cd verification/tla && for cfg in MC.cfg MC_control_two.cfg MC_artifact.cfg MC_wait.cfg MC_task.cfg MC_task_two.cfg MC_approval.cfg MC_compress.cfg MC_daemon.cfg MC_daemon_stop.cfg MC_checks.cfg MC_grants.cfg MC_authority.cfg MC_store.cfg MC_retention.cfg MC_jobs.cfg MC_inbox.cfg MC_diskfull.cfg MC_coordinator.cfg MC_trust.cfg MC_prompt.cfg MC_retry.cfg MC_workspace.cfg; do \
+	@cd verification/tla && for cfg in MC.cfg MC_control_two.cfg MC_artifact.cfg MC_wait.cfg MC_task.cfg MC_task_two.cfg MC_approval.cfg MC_compress.cfg MC_daemon.cfg MC_daemon_stop.cfg MC_checks.cfg MC_grants.cfg MC_authority.cfg MC_store.cfg MC_retention.cfg MC_jobs.cfg MC_inbox.cfg MC_diskfull.cfg MC_coordinator.cfg MC_trust.cfg MC_prompt.cfg MC_retry.cfg MC_workspace.cfg MC_concurrency.cfg; do \
 		echo "== $$cfg =="; \
 		out=$$(java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
 			tlc2.TLC -config $$cfg -fp 64 -workers 4 $$( $(CFG_CASE) ) 2>&1); \
@@ -201,6 +201,8 @@ verify-model-counterexamples: verify-tools
 		MC_prompt_members_use_their_profile.cfg:V2Prompt.tla \
 		MC_prompt_rules_frozen_at_start.cfg:V2Prompt.tla \
 		MC_prompt_ignore_unreadable.cfg:V2Prompt.tla \
+		MC_concurrency_writer_waits.cfg:V2Concurrency.tla MC_concurrency_skips_an_event.cfg:V2Concurrency.tla \
+		MC_concurrency_reads_ahead.cfg:V2Concurrency.tla \
 		MC_retry_session_constant.cfg:V2Retry.tla MC_retry_off_by_one.cfg:V2Retry.tla \
 		MC_retry_parks_early.cfg:V2Retry.tla; do \
 		cfg=$${pair%%:*}; spec=$${pair##*:}; \

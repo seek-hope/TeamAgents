@@ -5,10 +5,10 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
-## 0. Gate status (re-run 2026-09-28 at `63e45e0e`)
+## 0. Gate status (re-run 2026-09-28 at `95d79ee3`)
 
-* `make verify-model-all` was re-run on this tree: all **23** configurations report `No error has been found`,
-  in 6 m 56 s (the newest nine are the retention rule, D-192, the task model's second task, D-218, the
+* `make verify-model-all` was re-run on this tree: all **24** configurations report `No error has been found`,
+  in 59 s (the newest eleven are the retention rule, D-192, the task model's second task, D-218, the
   approval window, D-225 — 14,225 states / 3,136 distinct — the config trust gate, D-244, which is
   exhaustive in 9 s (353,217 states generated / 25,376 distinct), and what a member's prompt carries, D-246,
   exhaustive in 2 s (612 states / 210 distinct); the retry budget, D-247, exhaustive in 1 s (63 states /
@@ -17,9 +17,10 @@ in [README.md](README.md); the fix ledger is in
   `events(since)` rule the same daemon module claims, D-249 — `MC_daemon.cfg` is now exhaustive in 12 s
   (1,694,761 states generated / 135,750 distinct), including the transition property
   `HandoversAreTheFullRange`, the member's *workspace* — `MC_workspace.cfg` is exhaustive in 2 s (40 states
-  generated / 10 distinct) and carries the merge and retirement rules D-252 pinned — and the coordinator lock's
+  generated / 10 distinct) and carries the merge and retirement rules D-252 pinned — the coordinator lock's
   second kind of holder, D-253's maintenance pass (`MC_coordinator.cfg` is exhaustive in 2 s, 125 states
-  generated / 39 distinct)). The largest is **`MC_task.cfg`** with 5,721,401 states generated / 606,904 distinct (its one-instance two-task sibling `MC_task_two.cfg` 612,802 / 56,074); `MC.cfg`
+  generated / 39 distinct) — and the daemon's concurrent readers beside its single writer, D-291
+  (`MC_concurrency.cfg` is exhaustive in under a second, 85 states generated / 30 distinct)). The largest is **`MC_task.cfg`** with 5,721,401 states generated / 606,904 distinct (its one-instance two-task sibling `MC_task_two.cfg` 612,802 / 56,074); `MC.cfg`
   itself generates 84,877 / 18,384, and the smallest, `MC_store.cfg`, 48 / 13; the job handshake's
   `MC_jobs.cfg` generates 621 / 149 the inbox's `MC_inbox.cfg` 793 / 211 the write-failure latch's
   `MC_diskfull.cfg` 63 / 22 and the coordinator lock's `MC_coordinator.cfg` 51 / 16. Every count that predates this
@@ -27,6 +28,20 @@ in [README.md](README.md); the fix ledger is in
   reason these numbers describe the *material*, not a machine. (The line once called `MC.cfg` the largest and
   quoted `MC_task`'s numbers for it — a mis-attribution no gate looked at, found by re-running the target and
   reading its output per configuration, D-159.)
+* **D-291 added the daemon's concurrency model and re-ran all three targets (2026-09-28).** The unproven list's
+  item 6 said A28's "a slow client cannot block the writer" was a structural statement with no exhaustive
+  interleaving; it is now `verification/tla/V2Concurrency.tla` — readers with cursors beside the single writer,
+  whose commit guard names no reader. All **24** configurations report `No error has been found` (the newest is
+  `MC_concurrency.cfg`, exhaustive in under a second, 85 states generated / 30 distinct), all **73** negative
+  controls are refuted — the three new ones are `MC_concurrency_writer_waits.cfg` (the commit waits for every
+  reader, so a stalled client starves the writer: `WriterProgressesDespiteAStalledReader`, a temporal
+  refutation) and `MC_concurrency_skips_an_event.cfg` / `MC_concurrency_reads_ahead.cfg`
+  (`ReadersSeeTheCommittedPrefix` and `NoReaderSeesUncommitted`) — and `make verify-kani` reports
+  `Complete - 3 successfully verified harnesses, 0 failures, 3 total`. Every count that predates this entry is
+  byte-identical to the D-253 run below (`MC_daemon.cfg` 1,694,761 / 135,750; `MC_task.cfg` 5,721,401 /
+  606,904, unchanged with the concurrency configuration's 85 / 30 beside them); the three targets took 1 m 49 s
+  together on this machine, which is a property of the machine, not of the material. This material is in the
+  working tree this heading names; the material lands with the pin commit that follows it (D-202's ordering).
 * **This section was re-run for D-255, D-257, D-258, D-265 and again for D-266 (2026-09-28), each time with
   the result *no change*.** Each of those commits touched
   `core/src/kernel/types.rs` — the `wait`/`delegate` descriptions — which is a Kani subject
@@ -39,7 +54,7 @@ in [README.md](README.md); the fix ledger is in
   above moved to D-266's commit. D-257, D-258 and D-266 added sentences to the same descriptions and D-265
   added a third tool's schema, all in the same file, and every one of them reported the same numbers — which is
   the whole of their difference.
-* `make verify-model-counterexamples` was re-run: all **70** negative controls are refuted, each naming its
+* `make verify-model-counterexamples` was re-run: all **73** negative controls are refuted, each naming its
   property (`AuthorizedEffectsOnly`, `InputLandsAtTheBoundary`, `NoRequestAfterDeadline`, `NoTurnWithoutWork`
   twice, `SettlementFollowsATurnAfterTheLanding`, `NoForeignAdoption`, three temporal refutations, the
   four retention guards: `NoReferenceToEvictedFact`, `EvidenceIsNeverEvicted` and `OnlyOldFactsAreEvicted`
@@ -60,7 +75,10 @@ in [README.md](README.md); the fix ledger is in
   `OnlyTheJobsOwnGroupIsSignalled` (the service stop never signals a group the kernel gave the same id to) and
   `NoLiveCommandWasSignalled`, and the three D-252 added: `UncommittedWorkIsNeverMerged`,
   `NoMergeWhileATurnRuns` and `RetirementNeverBuriesWork`, and the one D-253 added, `SweepWaitsForTheSession`
-  — the maintenance pass taking the state root's lock beside a live session), in 5 m 17 s.
+  — the maintenance pass taking the state root's lock beside a live session — and the three D-291 added:
+  `ReadersSeeTheCommittedPrefix` and `NoReaderSeesUncommitted` (the two state halves of "a reader that follows
+  its cursor sees exactly the committed log") and `WriterProgressesDespiteAStalledReader` (the temporal half,
+  a stalled client never holding a commit back)), in 49 s.
 * The wall clocks above are upper bounds, not machine-independent figures: they were measured while this
   machine carried a load average of about 140 on 20 cores (the standing host-cleanup item), and TLC is
   CPU-bound. The probe in A32 now records the same conditions next to its numbers for the same reason (D-188).
@@ -476,10 +494,15 @@ alone**, and conversely formal coverage does not excuse an item from sample or r
    log's head survives an aging that would otherwise take it; `[retention] archived_days` stays unapplied —
    one session per state root, A33 — and `doctor` says so). What remains unproven is the usual ceiling: the
    model is not a refinement proof, so the correspondence is bounded-enumeration-plus-test, not a theorem.
-6. **Concurrency**: `Control::submit` is serialized on a single connection (a single writer) and the model
-   does not cover interleavings across connections; the daemon's concurrent read and write connections appear
-   only in A28's structural statement that a slow client cannot block the writer, without an exhaustive
-   interleaving.
+6. **Concurrency**: the daemon's concurrent readers beside its single writer are modelled now (D-291:
+   `verification/tla/V2Concurrency.tla` — a slow or stalled reader never holds a commit back
+   (`WriterProgressesDespiteAStalledReader`), and a reader that follows its cursor sees exactly the committed
+   log and never past it (`ReadersSeeTheCommittedPrefix` / `NoReaderSeesUncommitted`), each with a refuted
+   control). What is **not** covered: `Control::submit`'s serialization is the single write connection the store
+   holds (`core/src/v2/store.rs` opens one writer with a 5 s `busy_timeout`; readers get their own), not a rule
+   this model checks — the module enumerates readers beside one writer, so two writers racing is outside it; and
+   bytes on the wire, socket buffers, the accept loop and the storage worker's queue are abstracted into "a
+   reader runs or it does not".
 7. **Pure-function layer**: the paging arithmetic has a Kani machine proof and the proven `page_span` is the
    published function (`page_output` calls it), with two properties holding for **every `usize`**. What is not
    covered: (a) `page_output`'s argument parsing goes through serde_json, where symbolic coordinates degrade
