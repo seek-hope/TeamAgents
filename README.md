@@ -215,7 +215,8 @@ them): `Enter` send, `Ctrl+J` newline (and `Shift+Enter` where the terminal repo
 multi-line draft and recall the prompts you sent (500 deep, the draft comes back when you walk past the
 newest), `Ctrl+W` deletes the word before the caret and `Ctrl+←`/`Ctrl+→` jump by word, `PageUp`/`PageDown`
 (and the mouse wheel) scroll the conversation, `Tab` switch the
-conversation target, `Ctrl+N` cycle the
+conversation target, `p`/`r`/`t` pause, resume or terminate the selected instance and `g` open the next
+goal attached to it, `Ctrl+N` cycle the
 views (conversation → instances → tasks → topology → back), `Ctrl+A` pending approvals, `Esc` back,
 `Ctrl+C`/`Ctrl+D` quit. In the instances panel `Enter` sets the conversation target, `p` pauses, `r` resumes
 and `t` terminates (with confirmation); in the tasks panel `c` cancels a task; in the approvals panel

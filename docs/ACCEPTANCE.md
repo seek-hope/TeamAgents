@@ -7,7 +7,7 @@ model probe sets and the three formal gates).
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 107 / engine 273 / tui 35 test targets) and `make pty` passes; both are
+`make check` is green (core 107 / engine 273 / tui 36 test targets) and `make pty` passes; both are
 preconditions for every item below. `make check` includes `make language-check`, which fails on non-English
 characters outside the two documented exceptions (`README.zh-CN.md` and the frozen material under
 `review/eval`).
@@ -238,6 +238,9 @@ amended (D-49/D-50).
   picker needs (the checkpoint carries one goal object, not a list, and its order is attached-first) — so a
   user can open and attach the next goal after one settles and keep working in the same session. The
   *design* question this entry names (may the Leader open goals itself? the runtime opens none by itself) is
+  **And since D-269 the TUI has the same lever** (`g` in the instances panel, opening the next goal attached
+  to the selection), which the design's §5.4 names as the user's surface; the daemon bounds it with the
+  session's `[limits]`/`[[checks]]` (D-268), so the panel needs no configuration of its own.
   untouched and still the user's call.
   stays the user's call.
 - **A model that stops settling its task leaves a visible wait, and the runtime does not resolve it** (the

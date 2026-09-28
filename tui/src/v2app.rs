@@ -153,6 +153,13 @@ pub enum V2Effect {
     CancelTask {
         task_id: String,
     },
+    /// D-269: open the next goal, attached to the selected instance — the panel's own path to the lever the CLI
+    /// got in D-267. A settled goal cannot be reopened, so a session longer than one goal needs this; the
+    /// *session's* `[limits]`/`[[checks]]` bound the new goal, applied by the daemon (D-268), so the panel needs
+    /// no configuration of its own.
+    OpenGoal {
+        attach: String,
+    },
     Quit,
 }
 
@@ -684,6 +691,12 @@ impl V2App {
             }
             KeyCode::Char('p') => self.lifecycle_selected("PAUSED"),
             KeyCode::Char('r') => self.lifecycle_selected("ACTIVE"),
+            // D-269: opening a goal is not destructive, so it needs no confirmation; it moves the instance's
+            // goal pointer (D-266), which is exactly what makes later delegation charge to the new goal
+            KeyCode::Char('g') => {
+                let attach = self.instances.get(self.instance_sel)?.id.clone();
+                Some(V2Effect::OpenGoal { attach })
+            }
             // termination is irreversible for the session: confirm first (§5.4)
             KeyCode::Char('t') => {
                 if let Some(instance) = self.instances.get(self.instance_sel) {
@@ -999,7 +1012,7 @@ impl V2App {
                 if terminated {
                     "Enter set conversation target · up/down select · Ctrl+N next · Esc back".to_string()
                 } else {
-                    "Enter set conversation target · p pause · r resume · t terminate · up/down select · Ctrl+N next · Esc back"
+                    "Enter set conversation target · p pause · r resume · t terminate · g open the next goal · up/down select · Ctrl+N next · Esc back"
                         .to_string()
                 }
             }

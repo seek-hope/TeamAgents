@@ -354,6 +354,9 @@ pre_tool = ["/home/you/bin/policy.sh"]            # policy hook before tool call
 - User-side intervention: switch instances, pause/resume/cancel and approve or deny tool requests in the
   TUI — or headlessly with `teamagents instances` / `teamagents tasks` (§4.2), which is what a script or a CI
   job can use. Budget, task and grant panels all read the same facts.
+  A goal that has settled cannot be reopened, so the next one is opened from the instances panel (`g`, attached
+  to the selected instance) or headlessly with `teamagents goals open --id … --attach …` (D-267/D-269); the
+  session's `[limits]`/`[[checks]]` bound it, applied by the daemon (D-268).
 - Goal and task completion goes through the runtime's completion gate: `finish` only accepts honest
   outcomes, and the required checks you define must really pass.
 - **Required checks** come from `[[checks]]` in your config (§2.1) and are carried on the goal itself

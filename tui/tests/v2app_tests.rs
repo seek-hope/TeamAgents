@@ -531,6 +531,25 @@ fn instances_panel_pauses_resumes_and_switches_the_conversation() {
     assert_eq!(app.active_instance().unwrap().id, "i-worker");
 }
 
+/// D-269: the instances panel opens the next goal, attached to the selection — the TUI's own path to the lever
+/// the CLI got in D-267 (`g`). The daemon applies the session's `[limits]`/`[[checks]]` (D-268), so the panel
+/// sends nothing but the id and the instance; and a panel with nothing selected yields no effect.
+#[test]
+fn instances_panel_opens_the_next_goal_attached_to_the_selection() {
+    let mut app = app();
+    cycle_to(&mut app, View::Instances);
+    let leader = app.instances[0].id.clone();
+    let worker = app.instances[1].id.clone();
+    app.instance_sel = 0;
+    let effect = app.handle_key(key(KeyCode::Char('g'))).expect("open-goal effect");
+    assert_eq!(effect, V2Effect::OpenGoal { attach: leader });
+    app.instance_sel = 1;
+    let effect = app.handle_key(key(KeyCode::Char('g'))).expect("open-goal effect");
+    assert_eq!(effect, V2Effect::OpenGoal { attach: worker });
+    // the hint line advertises the key (the keys audit holds the two together)
+    assert!(app.footer_hint().contains("g open the next goal"), "{}", app.footer_hint());
+}
+
 #[test]
 fn termination_requires_an_explicit_confirmation() {
     let mut app = app();

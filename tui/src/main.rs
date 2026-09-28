@@ -255,6 +255,18 @@ fn run_v2_effect(effect: V2Effect, client: &mut DaemonClient, app: &mut V2App) {
                 Err(e) => app.command_failed(&e),
             }
         }
+        // D-269: the panel opens the next goal attached to the selected instance. The daemon applies the
+        // session's `[limits]`/`[[checks]]` to it (D-268), so the TUI decides nothing about budgets; the id is
+        // readable on purpose, because a user names it again in `teamagents goals` or when re-attaching.
+        V2Effect::OpenGoal { attach } => {
+            let id = format!("goal-{}-{}", attach, &uuid::Uuid::new_v4().simple().to_string()[..8]);
+            let command_id = format!("goal-open-{id}");
+            let result = client.command(&command_id, "create_goal", json!({"id": id, "instance_id": attach}));
+            match result {
+                Ok(_) => v2_sync_checkpoint(client, app),
+                Err(e) => app.command_failed(&e),
+            }
+        }
         V2Effect::Quit => {}
     }
 }
