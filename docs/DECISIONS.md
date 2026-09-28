@@ -20,6 +20,79 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-322 Task 26 is verified: an orphan test — evidence no document pointed to (2026-09-29)
+
+The product's entry is D-321. This entry is the operator's verification and the phase's measured numbers.
+
+**What the audit found, and a new class.** A16's row is §8's required checks, and its evidence covered the *repair*
+arm (a failed check sends the work back, bounded, then blocks). The **other** arm is that a check which *cannot
+run* — a refused dispatch, or a runner that never started — is **not model-repairable**: the goal parks at once
+with the classes named and **no repair round is spent**. That arm was driven by a test that already existed —
+`v2_driver::check_dispatch_refused_parks_without_burning_repair_rounds` — but **no row, decision or document named
+it**. So this row's hole is the mirror image of the others: not a claim without evidence, but **evidence without a
+claim**, and the row now cites it.
+
+**Verified.** The operator reproduced the product's measurement: `git grep -l` for the test's name at `HEAD`
+returns only its own file (`engine/tests/v2_driver.rs`) — no document named it — and the test's body asserts
+exactly what the row now says (the park reason carries `dispatch_refused`, and `no_event(completion_repair)`, i.e.
+no repair round is spent); the operator also ran it (`ok` in 0.04 s on this tree). `env -u DEEPSEEK_API_KEY make
+check` `rc=0` (25 green targets) and `make pty` ok, and the goal settled only after its own required check passed
+— the twenty-third of twenty-five machine-gated deliveries.
+
+**The audit's yield.** Fourteen cards have produced **fifteen findings**: seven coverage, seven claims and one
+product defect; two of the fifteen fixed an audit rather than a document. The claim holes now have three shapes:
+a sentence the code contradicts (A18), a citation that does not cover the claim (A13, A19, A15), a number that
+went stale (A14, A11), and now an **orphan test** nothing cites (A16).
+
+**The phase's measured numbers (this commit).** **Twenty-five deliveries**, **359,962,948 tokens over 966 model
+requests**, the suites at `core 114 / engine 288 / tui 36`, and an operator cost of twenty-six verification rounds
+and three resumes. Four of the twenty-five defects came from the operator's supervision or its probes.
+
+**Next card**: back to the row-by-row audit (twenty-four rows unaudited). An orphan-test sweep is also a candidate
+now that the class is named — every test the documents do not cite — but it is a bigger, more mechanical card and
+the operator would rather spend the next slot on a row.
+
+**Ceiling**: the row now names the test that drives the refused-dispatch arm; the *other* infrastructure failures
+it also describes (a runner that never started) come from the same code path but are not driven by that test, and
+the row says so rather than implying they are. The remaining twenty-four rows are still prose-first.
+
+## D-321 §8's bounded handling had a test that no row, decision or document named (2026-09-29)
+
+**The row, and what its evidence asserts.** A16 ("A required check fails") is the matrix's checks-gate row. Its
+evidence drives the *repairable* path end to end (`required_checks_failure_repairs_then_passes`,
+`required_checks_exhausted_parks_the_goal_blocked`, `configured_checks_gate_the_goal_through_the_config_edge` and
+the live `checks.py` on both protocols), the *headless* half
+(`v2_daemon::a_runtime_blocked_goal_is_not_reported_as_a_reply`, whose five facts I re-read: exit 1,
+`goal_status: BLOCKED`, `reply: null`, the settlement event's `blocked_by: runtime`, the tail entry of kind
+`runtime`) and the two-gates half (`two_gates.py`). All of that checks out — the claim is proven.
+
+**The hole beside it.** The same gate has a second arm, and its test was **orphaned**: §8's *bounded handling* —
+"infrastructure failures are not model-repairable ... the model cannot fix a refused dispatch or a runner that
+never started — park instead of burning repair rounds", the driver's own comment quoting §8 — is driven by
+`v2_driver::check_dispatch_refused_parks_without_burning_repair_rounds` (a check with no `shell@workspace` grant →
+class `dispatch_refused` in the park reason → **no** `completion_repair`). Measured: a grep for that test name
+over `docs/*.md`, `review/` and `verification/` found **no mention** — no A-row, no decision, no probe document.
+Its behaviour was written down only in its own doc comment, so nothing a reader audits pointed at it.
+
+**The change (the citation, not the code).** A16's evidence cell now names the bounded-handling arm and that
+test, so the checks gate's two arms — repaired, and not-repairable-and-parked-at-once — are both cited from the
+row a reader trusts. No product or test code changed.
+
+**Evidence** (2026-09-29; the tree is `5a81e94d` plus this uncommitted diff).
+
+| Command | Result |
+|---|---|
+| the orphan measurement: a grep for `check_dispatch_refused_parks_without_burning_repair_rounds` across `docs/`, `review/` and `verification/` | **no mention** before this row edit |
+| pre-fix control: the driver's infra matcher dropped — `let infra = failures.iter().any(...)` → `let infra = false;` | the *cited* test **FAILED** (panicked in the wait helper after 20 s: with no short-circuit the goal entered repair rounds instead of parking, so no `goal_blocked` arrived); the line was restored byte-identically (`diff` clean) and `engine/src/v2/driver.rs` is unchanged against `HEAD` |
+| `cargo test --offline --manifest-path engine/Cargo.toml --test v2_driver check_dispatch_refused_parks_without_burning_repair_rounds -- --exact` after the restore | **ok** (0.05 s) |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+
+**Ceiling.** The matcher accepts two classes (`dispatch_refused`, `spawn`); only the first is tested. Making a
+check's *runner* fail to spawn needs the process-wide `TEAMAGENTS_RUNNER_BIN` override, which every sibling test
+that spawns a runner also reads, so a test that broke it would break them under the parallel harness — I left the
+`spawn` arm untested and say so rather than writing a flaky test. The rest of A16's claim was already proven; the
+finding is that the *gate's other arm* was unclaimed, which is a documentation gap, not a behaviour one.
+
 ## D-320 Task 25 is verified: the wait tool's anonymous `message` condition, and a control that taught something (2026-09-29)
 
 The product's entry is D-319. This entry is the operator's verification and the phase's measured numbers.
