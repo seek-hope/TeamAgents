@@ -20,6 +20,105 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-306 Task 18 is verified: the audit's first *product* defect, not just a missing test (2026-09-29)
+
+The product's entry is D-305. This entry is the operator's verification and the phase's measured numbers, and it
+marks a step change: the seventh audited row produced a real behaviour bug.
+
+**What the audit found.** A31's row (write failure / disk full) says the runner side is covered by the job
+runner's `TEAMAGENTS_JOB_TEST_HOOKS` — and **no test in the tree used `fault-writes`**; the only user was a
+separate copy of the backend under `engine/examples/probe/`, which no target runs. Reading that code for the
+test found the defect underneath the claim: the runner's reply computed `receipt_saved` as `!self.fail_writes`,
+so the *simulated* fault was honest but a **real** write failure — `EACCES`, a full disk — was reported as a
+**saved receipt**. A31's own citation forbids exactly that (`V2DiskFull`'s `NoFakedSuccess`, "incomplete provider
+billing is never turned into a false promise"): a runner that cannot write must not report what disk did not
+take. The fix tracks a `journal_saved` flag from the actual `atomic_json` outcome (a successful write sets it,
+the simulated fault and a real error clear it) and the reply reports that.
+
+**Verified.** The operator's control is the pre-fix reply expression restored: the new test
+`jobs_runner::a_write_fault_is_never_reported_as_a_saved_receipt` then fails its *real*-failure half with
+`{"…","cancel_saved":false},"receipt_saved":true` — the faked success the design forbids, reproduced on a job
+directory made unwritable — and restoring the file byte-identically (sha256 `c36a4dca…`, unchanged) puts it back
+to `ok`. `env -u DEEPSEEK_API_KEY make check` `rc=0` (25 green targets) and `make pty` ok, and the goal settled
+only after its own required check passed — the fifteenth of seventeen machine-gated deliveries.
+
+**The audit's yield, seven rows in: seven holes, and now one product bug.** A33, A18, A13, A19, A15, A25 and
+A31. Three were correct behaviour missing coverage, three were holes in what a reader was told, and A31 was a
+faked success in the runner's own reply. The progression matters: the first five rows were claims, the sixth was
+a shared rule, and the seventh was code. The audit is finding behaviour, not only prose.
+
+**The phase's measured numbers (this commit).** **Seventeen deliveries**, **216,666,076 tokens over 759 model
+requests**, the suites at `core 109 / engine 286 / tui 36`, and an operator cost of eighteen verification rounds
+and three resumes. Four of the seventeen defects came from the operator's supervision or its probes; the last
+eight deliveries all came from the claims audit, and one of those (A31) changed product code.
+
+**Next card**: continue the audit at the next row, the same discipline — and expect more of them to be code, now
+that rows whose citations are *shortcuts* (a parenthetical, a backtick, "covered by") are the ones left.
+
+**Ceiling**: the fix makes the *reply* honest about the last journal write; the other runner responses report the
+journal the runner holds, and the daemon's own latch is `V2DiskFull`'s (modelled and tested separately). The
+remaining twenty-nine rows are still prose-first, and the row that produced this fix now cites the test rather
+than the parenthetical.
+
+## D-305 A31's runner side was untested, and a real write failure was reported as a saved receipt (2026-09-29)
+
+**Triage.** D-304 left the row-by-row mandate. I picked **A31** ("Write failure / disk full") — shape-driven
+(the four `V2DiskFull` controls) and load-bearing, since the write-failure latch is the disk-full story. Before
+it I re-read and rejected A16 (the headless half names five asserted facts), A17 (the `stale_inputs` class, the
+repair verdict and the `inputs` plumbing each name their test), A22 (`V2Wait`'s `HoldsWith` implements the
+ALL/ANY distinction the row cites), A29, A30 and A34 (each branch names the test that drives it).
+
+**What the cited evidence actually asserts.** A31 cites
+`control::disk_full_is_classified_at_the_submit_boundary` and
+`v2_driver::disk_full_stops_dispatch_reports_and_resumes_after_parking` — the *store* boundary, driven through a
+page cap that makes SQLite return a real `SQLITE_FULL` — plus the four controls. Its parenthetical says the
+runner side is covered by `TEAMAGENTS_JOB_TEST_HOOKS`. Measured: **no test in this tree used `fault-writes`**;
+its only user is `engine/examples/probe/`'s *separate copy* of the backend ("deliberately separate from the
+production backend"), which no `make` target and no `review/` script runs (`docs/DEVELOPMENT.md` documents only a
+manual `cargo build --example probe`). So the runner's write-failure path was unexercised, and the document's
+"the runner's own tests" held only for the crash-injection half of the hook.
+
+**The defect the missing coverage exposed.** With the job directory made unwritable — a *real* `EACCES` on
+`atomic_json`, the same class as a full disk — the runner's `cancel` reply was:
+
+`{"ok":true, …, "journal":{…, "state":"CANCEL_REQUESTED", "cancel_saved":false}, "receipt_saved":true}`
+
+while `journal.json` on disk still said `RUNNING`. The reply's `receipt_saved` was computed from the
+*simulated*-fault flag (`!self.fail_writes`), so **every real failure was reported as a saved receipt** — the
+faked success `V2DiskFull`'s `NoFakedSuccess` (A31's own citation) forbids, and the ordering rule DESIGN §6.4
+rests on ("the terminal receipt is saved atomically first, imported afterwards"). The simulated fault was honest
+by construction; reality was not.
+
+**The fix (the design's rule, implemented).** `Runner` gained `journal_saved`; `persist()` sets it to the
+*actual* outcome (the simulated fault and an `atomic_json` error both set `false`, a successful write sets
+`true`), and every reply reports `"receipt_saved": self.journal_saved`. No protocol surface was added — the field
+already existed and only its source changed — and the change is one product file.
+
+**Coverage.** A new test, `jobs_runner::a_write_fault_is_never_reported_as_a_saved_receipt`, drives both faults:
+the documented hook (arm `fault-writes`, so the cancel's write is refused → `cancel_saved: false` **and**
+`receipt_saved: false`) and a *real* `EACCES` (the job directory `chmod 0500` after the command started, then
+cancel → the same two facts, and the journal on disk still `RUNNING`). A31's row now names the test and the
+faked-success finding.
+
+**Evidence** (2026-09-29; the tree is `018aaf4c` plus this uncommitted diff).
+
+| Command | Result |
+|---|---|
+| the measurement that found it: a read-only job directory, then `client::inject(dir, "cancel")` | reply `"receipt_saved": true` with `journal.json` on disk still `state=RUNNING, cancel_saved=false` — a faked success |
+| `cargo test --offline --manifest-path engine/Cargo.toml --test jobs_runner a_write_fault_is_never_reported_as_a_saved_receipt -- --exact` | **ok** (0.25 s) after the fix |
+| the same test with the reply reverted to `!self.fail_writes` (the defect, one line) | **FAILED**: `a real failure must not be reported as a save: {…"receipt_saved":true}`, `left: Bool(true)`, `right: Bool(false)`; restored byte-identically (`sha256sum` `c36a4dca…`) |
+| `cargo test --offline --manifest-path engine/Cargo.toml --test jobs_runner` | **ok** — 17/17 |
+| the four `V2DiskFull` controls re-run (`MC_diskfull_keep_driving/fake_success/park_silently/clear_anyway.cfg`) | each still refutes its property — `NoStepRunsWhileLatched`, **`NoFakedSuccess`**, `LossIsReported`, `LatchClearsOnlyWhenWritable is violated` — so the fixed behaviour is the model's own rule, not a new decision |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `python3 review/test_counts.py --write` | `engine: 285 -> 286` (the new test) |
+
+**Ceiling.** The store-level fault injection stays a page-cap trick (no mount privileges are assumed), and the
+runner's *other* write sites (`output.log`, the receipt file) are not separately fault-injected — `persist`
+covers the journal, which is what `receipt_saved` reports. `engine/examples/probe/runner.rs` still carries the
+old `!fail_writes` expression; it is a probe copy, not the product, and nothing runs it, so I left it (a future
+round may delete or re-point it). The model is unchanged, so `verification/tla`'s §0 pin does not move. The live
+probes were not re-run; `make pty` and the probe sets were not run.
+
 ## D-304 Task 17 is verified: the sixth audited row, and the sixth hole (2026-09-29)
 
 The product's entry is D-303. This entry is the operator's verification and the phase's measured numbers.

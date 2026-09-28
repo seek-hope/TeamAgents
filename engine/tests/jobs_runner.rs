@@ -561,3 +561,63 @@ fn a_journal_whose_process_identity_moved_is_refused_not_signalled() {
     let _ = child.kill();
     let _ = child.wait();
 }
+
+/// A31's runner side. The row's parenthetical says the write fault is covered by "the job runner's
+/// `TEAMAGENTS_JOB_TEST_HOOKS`", and until this test the only `fault-writes` user was
+/// `engine/examples/probe/`'s *separate copy* of the backend, which no target runs. Both faults are one rule
+/// (V2DiskFull's `NoFakedSuccess`, A31's own citation): a runner that cannot write must not report what disk did
+/// not take. The simulated fault was honest by construction; a *real* failure was not — the reply read
+/// `!self.fail_writes`, so an `EACCES` (or a full disk) was reported as a saved receipt (D-305).
+#[tokio::test]
+async fn a_write_fault_is_never_reported_as_a_saved_receipt() {
+    use serde_json::json;
+    use std::os::unix::fs::PermissionsExt;
+    runner_bin();
+    // The var is read by the runner at startup; another test in this binary arms the same hook, and nothing
+    // removes it, so this test leaves it set rather than toggling it.
+    std::env::set_var("TEAMAGENTS_JOB_TEST_HOOKS", "1");
+
+    // (a) the documented fault hook
+    let hook = root("write-fault-hook");
+    client::spawn(&hook, &spec("op-hook", "sleep 300", future(300_000))).await.expect("spawn");
+    let armed = client::inject(&hook, "fault-writes").await.expect("arm the write fault");
+    assert_eq!(armed["ok"], json!(true), "{armed}");
+    // `receipt_saved` is what the last journal *write* did, so it is the reply to the method that writes — the
+    // cancel's tombstone — that has to be honest
+    let cancelled = client::inject(&hook, "cancel").await.expect("cancel");
+    assert_eq!(cancelled["journal"]["cancel_saved"], json!(false), "disk did not take the intent: {cancelled}");
+    assert_eq!(cancelled["receipt_saved"], json!(false), "the armed fault must not be reported as a save: {cancelled}");
+
+    // (b) a real write failure: the job directory made unwritable, so every `atomic_json` from here fails with
+    // `EACCES` exactly as it would on a full disk
+    let real = root("write-fault-real");
+    client::spawn(&real, &spec("op-real", "sleep 300", future(300_000))).await.expect("spawn");
+    client::go(&real).await.expect("go");
+    let mode = std::fs::metadata(&real).expect("job dir").permissions().mode();
+    let mut locked = std::fs::metadata(&real).expect("job dir").permissions();
+    locked.set_mode(0o500);
+    std::fs::set_permissions(&real, locked).expect("make the job directory unwritable");
+    let reply = client::inject(&real, "cancel").await.expect("cancel under a real write failure");
+    assert_eq!(reply["receipt_saved"], json!(false), "a real failure must not be reported as a save: {reply}");
+    assert_eq!(reply["journal"]["cancel_saved"], json!(false), "{reply}");
+    let on_disk = client::persisted_journal(&real).expect("the journal disk really holds");
+    assert_eq!(on_disk.state, "RUNNING", "disk kept the last state it took: {on_disk:?}");
+    let mut open = std::fs::metadata(&real).expect("job dir").permissions();
+    open.set_mode(mode);
+    std::fs::set_permissions(&real, open).expect("restore the job directory");
+
+    // stop what is left: the command outlives its runner (A12), so kill it and let the runner reap it (a sparse
+    // poll — a dense one starves the runner's own tick, measured) before this test's scratch root goes away
+    for (job, reply) in [(&hook, &cancelled), (&real, &reply)] {
+        if let Some(pid) = reply["journal"]["pid"].as_u64() {
+            let _ = std::process::Command::new("kill").args(["-9", &pid.to_string()]).status();
+        }
+        for _ in 0..20 {
+            if client::status(job).await.map(|journal| journal.terminal()).unwrap_or(false) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+        let _ = client::shutdown(job).await;
+    }
+}

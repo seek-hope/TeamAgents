@@ -65,6 +65,11 @@ struct Runner {
     idle_tick: Duration,
     fail_writes: bool,
     test_hooks: bool,
+    /// Whether the last journal write landed: what every reply reports as `receipt_saved`. A runner that cannot
+    /// write must not report what disk did not take (V2DiskFull's `NoFakedSuccess`, A31), and a *real*
+    /// `atomic_json` failure (`EACCES`, a full disk) is the same fact as the simulated fault — before D-305 the
+    /// reply read `!self.fail_writes`, so a real failure was reported as a saved receipt.
+    journal_saved: bool,
 }
 
 impl Runner {
@@ -73,11 +78,15 @@ impl Runner {
             // Simulated disk failure: the volatile tombstone still flips in
             // memory, cancel_saved reports honestly that disk did not take it.
             self.journal.cancel_saved = false;
+            self.journal_saved = false;
             return;
         }
         match atomic_json(&self.root.join("journal.json"), &self.journal) {
-            Ok(()) => {}
-            Err(_) => self.journal.cancel_saved = false,
+            Ok(()) => self.journal_saved = true,
+            Err(_) => {
+                self.journal.cancel_saved = false;
+                self.journal_saved = false;
+            }
         }
     }
 
@@ -175,7 +184,7 @@ impl Runner {
             }
             other => return Err(format!("unknown runner method {other:?}")),
         }
-        Ok(json!({"ok": true, "journal": self.journal, "receipt_saved": !self.fail_writes}))
+        Ok(json!({"ok": true, "journal": self.journal, "receipt_saved": self.journal_saved}))
     }
 
     /// Child reaping + deadline/cancel escalation, called on every tick.
@@ -298,6 +307,7 @@ pub async fn serve(root: &Path) -> Result<(), String> {
         idle_tick: idle_tick(),
         fail_writes: false,
         test_hooks: std::env::var(TEST_HOOKS_ENV).is_ok(),
+        journal_saved: true,
     };
     runner.persist();
     let listener = UnixListener::bind_addr(&super::socket_addr(&runner.spec.token)?)
