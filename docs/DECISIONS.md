@@ -20,6 +20,98 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-314 Task 22 is verified: the stale-number class is now checkable, and the sweep found one undated row (2026-09-29)
+
+The product's entry is D-313. This entry is the operator's verification and the phase's measured numbers.
+
+**What the sweep did.** All thirty-six A-rows and the matrix's other tables were walked for numbers that read as
+present-tense results: **twenty** numeric rows, of which nineteen already name a date and **A11 did not** (its date
+comes from D-152's entry). Two numbers were recomputable by a cheap, offline target and were re-derived by running
+it (the ledger's and the release body's "`make pty` passes"); the rest need credentials or a live service and were
+**not** re-run — each names when it was measured, which is the honest form of a number that cannot be recomputed
+here; and one number is a design bound (A03's 600 s probe bound) and was left alone. The acceptance diff is two
+lines.
+
+**And the class itself is now checkable.** `review/test_counts.py` no longer holds only the ledger's headline and
+the two statement files: **every** `core N / engine N / tui N` occurrence in those documents must be the current
+triple, unless the clause *immediately before* it phrases the old value as history (`were`/`was`/`when`/`before`/
+`then`/`previously`). The clause boundary is deliberate: a line carrying both the current numbers and a historical
+pair cannot launder the current one, and a date does not excuse a stale triple.
+
+**Verified.** The operator's own control on a *statement* file: corrupting the release body's triple to
+`core 999 / engine 286 / tui 36` makes the audit fail with the new rule's message (naming the file, the line and
+the missing history phrasing, D-313) beside the older D-221 statement check, and restoring the file
+byte-identically makes the audit pass again. `env -u DEEPSEEK_API_KEY make check` `rc=0` (25 green targets,
+`review/test_counts.py` inside it) and `make pty` ok, and the goal settled only after its own required check
+passed — the nineteenth of twenty-one machine-gated deliveries.
+
+**The audit's yield.** Ten rows audited plus this sweep: eleven cards, eleven findings — five coverage holes
+(A33, A19, A15, A22, A23), five claim holes (A18, A13, A25, A14 and A11's undated number) and one product defect
+(A31). Two of the eleven fixed the *audit* rather than a document (D-293's metadir honesty, D-313's triple rule),
+which is the strongest form a finding can take: the next instance is caught by a gate.
+
+**The phase's measured numbers (this commit).** **Twenty-one deliveries**, **288,651,569 tokens over 870 model
+requests**, the suites at `core 113 / engine 286 / tui 36`, and an operator cost of twenty-two verification rounds
+and three resumes. Four of the twenty-one defects came from the operator's supervision or its probes; the last
+twelve deliveries all came from the claims audit and its sweep.
+
+**Next card**: back to the row-by-row audit (twenty-six rows are unaudited), with the numbers sweep now enforced
+by a gate rather than by prose.
+
+**Ceiling**: the audit holds suite-count triples only; a row's timings, process counts and "N of them" are still
+prose, and each new one needs the same by-hand treatment (a date, or a re-run of the cheap target that produced
+it). The sweep also did not re-run anything credentialed, so the nineteen dated measurements are dated, not fresh.
+
+## D-313 The matrix's numbers sweep: one undated row, one un-recomputed claim, and the class made checkable (2026-09-29)
+
+**The sweep.** All 36 A-rows and the matrix's other tables were walked for numbers that read as present-tense
+results (suite counts, wall-clock times, "N tests/runs/processes"), and each was classified:
+
+- **(a) recomputable by a cheap, offline target — 2 instances.** The ledger's "`make pty` passes" and the release
+  body's "plus `make pty`" were the only ones nothing recomputed: `review/test_counts.py` holds the *suite counts*
+  in the ledger, `AGENTS.md` and the release body (D-221), and A14's were fixed by D-311. Measured:
+  `make pty` → **rc=0, 41 s, `pty v2 smoke: ok`** (credential-free). The ledger now states that measurement next
+  to the claim.
+- **(b) live or credentialed measurements — every remaining numeric row (19 of the 20).** A01's three real
+  DeepSeek tasks, A02/A03's authority probe, A09's crash probe, A12's host census, A13's cancel probe, A16/A17's
+  checks probes, A18's budget probe, A19's socket runs, A21's TUI probes, A25/A26/A27's MCP/skills/providers
+  probes, A28's reconnect probe, A32's load probe, A33's boundary probe and A35's deadline probe were **not**
+  re-run (no credentials, and the card forbids it). Nineteen of the twenty numeric rows already name a date
+  ("measured 2026-09-26", "2026-09-25/26", "re-measured 2026-09-27", …), which is what makes them honest rather
+  than current-sounding. **A11 was the exception**: its one number — the graceful-stop probe's "0.3 s" — sat in a
+  row with *no date anywhere*, so it read as a result from today. Fixed with the date its own cited decision
+  carries (D-152, 2026-09-26).
+- **(c) design bounds rather than measurements — left in place.** A03's "bounded at 600 s each" (the probe's
+  per-turn timebox), A12's "30 s cadence"/"50 ms tick" (the runner's tunables), A19's `Retry-After: 30 s` (a
+  provider header), the Contract row's "reported in <30 s" (a test's assertion bound) and A35's "59 s ahead" (the
+  probe's configured deadline) are limits, not results, so dating them would be wrong.
+
+**The class made checkable — the cheap audit this sweep earned.** `review/test_counts.py` held the ledger's
+baseline line and *the first* occurrence in `AGENTS.md`/the release body to the suites; a **row** stating the same
+triple was unchecked — that is exactly how A14 drifted. Every `core N / engine N / tui N` occurrence in those
+documents is checked now, and one that differs must phrase itself as history **in the past tense**
+("were … when …"), which is what D-311's fix does. A *date* deliberately does not excuse a stale triple — a
+sentence can carry today's date and still present yesterday's count — and the marker is looked for only in the
+clause immediately before the number, so a line carrying both the current and a historical pair cannot launder
+the current one.
+
+**Evidence** (2026-09-29; the tree is `4e590a46` plus this uncommitted diff).
+
+| Command | Result |
+|---|---|
+| the sweep itself (a script over the A-rows and the other tables: numbers + whether the row names a date) | 20 numeric rows; 19 named a date, **A11** did not; the other tables' only undated number (a test bound) is class (c) |
+| `make pty` | **rc=0**, 41 s, `pty v2 smoke: ok` — the ledger's claim, measured |
+| `python3 review/test_counts.py` | **rc=0** on the tree, including A14's past-tense historical pair |
+| control: A14's *current* triple corrupted to `core 999 / engine 286 / tui 36` (no past-tense marker) | **FAIL**: `docs/ACCEPTANCE.md:62 states core 999 / engine 286 / tui 36, the suites have core 113 / engine 286 / tui 36, and the clause before it does not phrase it as history "were … when …" (D-313)`; the file was restored byte-identically (`diff` clean) and the audit passes again |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+
+**Ceiling.** The new check is a *heuristic*, and its limit is stated in the script: it fires on the exact
+`core N / engine N / tui N` shape in three documents, so a row in another document, or a differently shaped
+number ("the three suites", "113 tests", "16.3 s"), is still prose — and a stale triple phrased in the past tense
+by mistake would pass. Widening it to every number in every document is a scope decision with a real
+false-positive cost (histories are *supposed* to quote old values), so I left that to the prose and said why.
+The class-(b) measurements were not re-run and no date was invented: A11's came from D-152's entry.
+
 ## D-312 Task 21 is verified: the tenth audited row, and a stale number the audits cannot see (2026-09-29)
 
 The product's entry is D-311. This entry is the operator's verification and the phase's measured numbers.

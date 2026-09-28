@@ -24,6 +24,13 @@ judge a run against. Measured 2026-09-27: **both were stale, and each stale diff
 said `core 91 / engine 136 / tui 29` and the instruction file `core 100 / engine 220 / tui 33`, against the
 ledger's `core 101 / engine 244 / tui 35`. One fact, three statements, one checked: the script now holds every
 document in `STATEMENTS` to the ledger's numbers, so `--write` keeps all three current together.
+
+**D-313 extended it to *every* occurrence of the triple.** D-311 found a row quoting D-113's counts as what a
+target prints today; the two `STATEMENTS` were held to the ledger, but a *row* was not. Every `core N / engine
+N / tui N` in the ledger and the statements is checked now, and one that differs is allowed only when its own
+line marks it as history in the past tense ("were"/"was"/"when"/"before"/"then"/"previously") — the
+repository's convention is to keep the old value as history rather than to delete it, which is what the row does.
+A *date* does not excuse a stale triple: a sentence can carry today's date and still present yesterday's count.
 """
 import argparse
 import pathlib
@@ -40,6 +47,36 @@ BASELINE = re.compile(r"`make check` is green \(core (\d+) / engine (\d+) / tui 
 # how the check would otherwise go quiet — and `--write` updates all of them at once.
 STATEMENTS = (REPO / ".github" / "release-notes.md", REPO / "AGENTS.md")
 COUNTS = re.compile(r"core (\d+) / engine (\d+) / tui (\d+)")
+# A triple that is not the suites' current numbers is allowed only where its line says so: a date,
+# or a word that marks it as history (see the docstring's D-313 note).
+HISTORY = re.compile(r"\bwere\b|\bwas\b|\bwhen\b|\bbefore\b|\bthen\b|\bpreviously\b")
+
+
+def marked_as_history(line, start):
+    """Whether the clause immediately before a triple marks it as a past measurement.
+
+    The marker has to sit in the same clause, so a line that carries both the current numbers and a historical
+    pair (D-311's row) cannot launder the current one: only the text between the last clause boundary and the
+    triple is searched.
+    """
+    window = line[:start]
+    for boundary in (". ", "; ", "| ", ": "):
+        if boundary in window:
+            window = window.rsplit(boundary, 1)[-1]
+    return bool(HISTORY.search(window))
+
+
+def stale_statements(path, wanted):
+    """Every stated triple in `path` that is neither current nor marked as history."""
+    findings = []
+    for number, line in enumerate(path.read_text().split("\n"), 1):
+        for match in COUNTS.finditer(line):
+            stated = f"core {match.group(1)} / engine {match.group(2)} / tui {match.group(3)}"
+            if stated != wanted and not marked_as_history(line, match.start()):
+                findings.append(f"{path.relative_to(REPO)}:{number} states {stated}, the suites have "
+                                f"{wanted}, and the clause before it does not phrase it as history \"were … "
+                                f"when …\" (D-313): update it, or write the old value in the past tense")
+    return findings
 
 
 def counted() -> dict:
@@ -113,6 +150,8 @@ def main(argv):
             findings.append(f"{name} states core {stated.group(1)} / engine {stated.group(2)} / "
                             f"tui {stated.group(3)}, the ledger {wanted}: the release body and the instruction "
                             "file are read as the baseline too (D-221)")
+    for path in [ledger, *statements]:
+        findings.extend(stale_statements(path, wanted))
     if findings:
         for finding in findings:
             print(f"FAIL: {finding}")
