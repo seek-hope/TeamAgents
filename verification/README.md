@@ -485,6 +485,17 @@ The proven `page_span(total, offset, limit) = min(limit, total - offset)` is the
   `core/tests/kernel_properties.rs`).
 - `cap_tool_output`'s 24000-character threshold would need 24000 levels of unwinding, which Kani cannot do; it
   is covered by concrete tests at boundary lengths.
+- The **remaining pure functions** (`args_hash`, `estimated_tokens`, `cap_tool_output`, and the view and
+  classification the crate does not compile in) are not proven, and D-295 measured where a harness on the ones
+  it does reach stops: `args_hash`'s shape claim (64 lowercase hex characters) runs into SHA-256 over the
+  serialized symbolic input (measured 2026-09-28 — `cargo kani --harness args_hash_is_64_lowercase_hex` ran
+  144 s, then CBMC reported "CBMC appears to have run out of memory" in the propositional reduction, over
+  358,973 SSA steps and 18,102 VCCs), a bound on `estimated_tokens` over a symbolic integer was still executing
+  serde_json's serialization after 900 s, and `cap_tool_output`'s identity branch over a four-byte symbolic
+  string was still unwinding `chars().count()` and checking allocations after 300 s. The wall is the symbolic
+  string/heap layer rather than the arithmetic — which is why the heap-free `usize` proofs do converge. The
+  probes were removed rather than left in the crate, where a harness that cannot converge would fail this
+  target; a proof here needs a stubbed or hand-modelled serializer.
 - Toolchain: Kani 0.68.0 with CBMC 6.11.0; Kani installs the nightly it pins (this machine uses
   `nightly-2026-08-21`).
 

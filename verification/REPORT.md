@@ -5,8 +5,23 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
-## 0. Gate status (re-run 2026-09-28 at `63bf3c79`)
+## 0. Gate status (re-run 2026-09-28 at `4550a0e5`)
 
+* **D-295 measured the pure-function layer's remaining reach and changed no material.** The unproven item 7
+  below named three functions "only reached by bounded enumeration"; a Kani harness on the one this crate can
+  reach directly, `args_hash`, does not converge for a measurable reason: its shape claim (a SHA-256 hex string is
+  64 lowercase hex characters) puts the whole proof inside SHA-256 over the *serialized symbolic* input —
+  measured 2026-09-28, `cargo kani --harness args_hash_is_64_lowercase_hex` ran 144 s and CBMC then failed with
+  "CBMC appears to have run out of memory" in the propositional reduction, over a 358,973-step program
+  expression and 18,102 VCCs (6,035 after simplification). Two neighbours were measured the same way: a bound on
+  `estimated_tokens` over a symbolic integer was still symbolically executing serde_json's serialization after
+  900 s, and `cap_tool_output`'s identity branch over a four-byte symbolic string was still unwinding
+  the `chars().count()` loop it calls and checking allocations after 300 s. The wall is the symbolic
+  string/heap layer, not the arithmetic — which is exactly why the paging proofs (heap-free `usize`) do
+  converge. The three probes were removed, so `verification/kani` still holds exactly its three proofs, and the
+  three targets were re-run on this tree with every count unchanged: `verify-model-all` 24/24, all **73** negative
+  controls refuted, and `make verify-kani` `Complete - 3 successfully verified harnesses, 0 failures, 3 total`.
+  This is a measurement, not a proof: nothing in the pure-function layer beyond the paging arithmetic is claimed.
 * `make verify-model-all` was re-run on this tree: all **24** configurations report `No error has been found`,
   in 59 s (the newest eleven are the retention rule, D-192, the task model's second task, D-218, the
   approval window, D-225 — 14,225 states / 3,136 distinct — the config trust gate, D-244, which is
@@ -510,7 +525,17 @@ alone**, and conversely formal coverage does not excuse an item from sample or r
    enumerated over concrete values; (b) `cap_tool_output`'s 24000-character threshold cannot be expanded and
    likewise only has concrete tests at boundary lengths; (c) the remaining pure functions
    (`prepare_request`'s view, `interpret_response`'s classification, `args_hash`) are only reached by bounded
-   enumeration. Lean 4 was not adopted: it is an interactive theorem prover that needs the elan toolchain and
+   enumeration, and D-295 measured how far a Kani harness on the one this crate reaches directly gets:
+   `args_hash`'s shape claim (a SHA-256 hex string is 64 lowercase hex characters) spends the whole budget
+   inside SHA-256 over the serialized symbolic input — measured 2026-09-28,
+   `cargo kani --harness args_hash_is_64_lowercase_hex` ran 144 s and then CBMC failed ("CBMC appears to have
+   run out of memory") in the propositional reduction, over 358,973 SSA steps and 18,102 VCCs (6,035 after
+   simplification); a bound on `estimated_tokens` over a symbolic integer was still executing serde_json's
+   serialization after 900 s; and `cap_tool_output`'s identity branch over a four-byte symbolic string was still
+   unwinding the `chars().count()` loop it calls and checking allocations after 300 s. The wall is the symbolic
+   string/heap layer — the same bloat as (a) — so a proof here needs a stubbed or modelled serializer rather
+   than more time; the three probes were removed, so the crate keeps exactly the proofs that converge.
+   Lean 4 was not adopted: it is an interactive theorem prover that needs the elan toolchain and
    hand-written proof scripts, and this round prioritised one more protocol surface, the code-level
    correspondence and applying Kani where it converges on the published function; the upgrade path is in the
    README's later phases.

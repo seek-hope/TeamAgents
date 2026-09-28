@@ -20,6 +20,114 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-296 Task 13 is verified: the Kani frontier is measured, and the operator's own entry had an unmeasured number (2026-09-29)
+
+The product's entry is D-295. This entry is the operator's verification of a *measured ceiling* — the outcome the
+card allowed when a proof does not converge — plus a correction of the operator's own record.
+
+**What task 13 established.** Of the three pure functions the unproven list names, only `args_hash` is reachable
+by the crate Kani compiles (`verification/kani` compiles `core/src/kernel/types.rs` through `#[path]`; the other
+two live in `core/src/kernel/instance.rs` and drag the whole kernel in). The invariant it chose — SHA-256 hex is
+64 lowercase characters, for a symbolic scalar inside the args object — is non-vacuous, and three probes reached
+no verdict: CBMC out of memory after 144 s / 358,973 SSA on the `args_hash` shape, serde_json's number
+serialization still symexing, and `chars().count()` unwinding plus allocation checks at a 300 s timeout. The
+probes were **removed** rather than left in the crate, because a harness that cannot converge would fail
+`make verify-kani`'s own contract; the measurements went into the unproven list and `verification/README.md`, so
+what used to be silence is now a documented frontier with a next-round idea (stub or hand-model the serializer).
+No material changed, so there is no pin commit — and D-295 says why.
+
+**The operator reproduced the central claim and found the mechanism.** A probe of the operator's own (the same
+non-vacuous shape, a symbolic `u64` inside a `json!` object, `timeout 300 cargo kani --lib --harness …`) reached
+**no verdict** in five minutes, and CBMC's tail says why: it is unwinding the platform's getrandom loop
+(iteration 484) and hashbrown's bucket lookup — the random-seeded heap hasher behind serde_json's preserve_order
+feature, not the hash arithmetic. That is a
+sharper reason than "the serialization layer", and it names the next round's lever (a `BTreeMap`-backed
+representation, Kani stubbing of the hash, or a pure model of the text an estimate comes from). The probe was
+removed and the crate verified byte-identical by sha256 (`8cb2f577…`).
+
+**Also verified.** `make verify-model-all` **24/24** `No error has been found` and
+`make verify-model-counterexamples` **73/73** refuted, both `rc=0`, run back to back in one shell (D-293's fix
+holding); `make verify-kani` **3/3**; `env -u DEEPSEEK_API_KEY make check` `rc=0` (25 green targets) and
+`make pty` ok.
+
+**A correction of the operator's own record.** D-294 states the phase's totals as "132.4M tokens over 601 model
+requests". Those were **not measured**: the measured values at that commit are **127.94M tokens / 588 requests**
+(the two sessions' goal usage summed, minus the goal that had not started). The number is corrected in D-294, and
+the method is written here because it is the operator's turn to have made the mistake this phase keeps fixing — a
+claim the record does not back. Every operator entry from here states measured numbers and says how they were
+taken.
+
+**The phase's numbers (measured, this commit).** **Twelve deliveries**, **141,579,993 tokens over 618 model
+requests**, ten settled by the runtime's own required check (D-275 and D-277 were operator-verified because
+their runs ended on a ceiling and on the repair 400), and an operator cost of thirteen verification rounds and
+three resumes. Three of the twelve defects were found by the operator's supervision rather than by a card (the
+multi-goal hang, the TLC metadir lie, and the acceptance row that claimed two signals), which is what periodic
+supervision is for. The suites report `core 109 / engine 281 / tui 36`.
+
+**Next card.** A mandate card again, because the phase has twice produced its best work when it chose: triage the
+repository's remaining decision-free backlog and take the highest-value item; if the triage finds nothing
+better, continue D-288's claims audit row by row at `docs/ACCEPTANCE.md`, preferring rows whose cited evidence is
+a *probe* or a *shape* rather than a unit test (that is where A33's missing SIGINT half hid). The standing
+obligations apply: the design is the authority, a behaviour change it does not mandate is a stop-and-report, and
+any change inside the re-run material carries the three targets and the section-0 pin.
+
+**Ceiling**: this entry verifies measurements about a tool, not a property of the product; the Kani frontier
+stays open and is now at least stated with reasons. A later round that takes the `BTreeMap`/stubbing route could
+still deliver the proof, and nothing here claims otherwise.
+
+## D-295 A Kani harness on `args_hash` was tried and measured not to converge; nothing beyond the paging arithmetic is claimed (2026-09-28)
+
+**The choice.** `verification/REPORT.md`'s unproven item 7 names the pure functions beyond the paging
+arithmetic — `prepare_request`'s view, `interpret_response`'s classification, `args_hash` — as "only reached by
+bounded enumeration". `verification/kani` compiles `core/src/kernel/types.rs` through `#[path]` with only a
+`models::now` shim and its dependencies are serde/serde_json/sha2, so of the three `args_hash` is the one the
+crate reaches directly (the other two live in `core/src/kernel/instance.rs` and would drag the whole kernel in).
+Its documented claim is a shape — "SHA-256 hex of the canonical JSON args" — so the invariant is: 64 lowercase
+hex characters, for every input.
+
+**The measurement (outcome b).** A harness asserting exactly that for a symbolic `u64` inside a `json!` object
+did not produce a verdict:
+
+| Probe (temporary, removed afterwards) | Result |
+|---|---|
+| `cargo kani --harness args_hash_is_64_lowercase_hex` in `verification/kani` | 144 s, then **CBMC failed — "CBMC appears to have run out of memory"** in the propositional reduction, over 358,973 SSA steps and 18,102 VCCs (6,035 after simplification) |
+| `cargo kani --harness estimated_tokens_bounds_the_ascii_text_it_estimates` (a symbolic `i64`; the estimate must not undercount the text nor exceed it) | still executing serde_json's number serialization when a 900 s timeout fired |
+| `cargo kani --harness a_tool_output_within_the_cap_comes_back_unchanged` (a four-byte symbolic `&str`) | still unwinding `chars().count()`'s loop and checking allocations when a 300 s timeout fired |
+
+The wall is the same one item 7's (a) records: the symbolic string/heap/serialization layer, not arithmetic —
+which is exactly why the three proofs that do converge are the heap-free `usize` ones. The probes were **removed
+rather than left in the crate**: a harness that cannot converge would fail `make verify-kani`, whose contract is
+that all harnesses pass. So no material changed and nothing is claimed. The invariant I chose is non-vacuous (a
+truncated or mis-formatted digest — `format!("{:x}", &digest[..16])` — would produce 32 characters and fail the
+assertion), but a probe that never reached a verdict is evidence about the tool, not about the code, and it is
+recorded as such.
+
+**What the documents now say.** The unproven list's item 7 carries the measurement instead of "only reached by
+bounded enumeration"; `verification/README.md`'s honest-boundaries list gains it beside the `page_output` and
+`cap_tool_output` ceilings; and the §0 heading names `4550a0e5`, the commit this tree is at, because the three
+targets were re-run there. **No material changed, so there is no pin commit to follow**: D-202's rule moves the
+heading when `tla/` or `kani/` changes, and neither did.
+
+**The targets, re-run on this tree** (2026-09-28).
+
+| Command | Result |
+|---|---|
+| `make verify-model-all` | **rc=0** — 24/24 `No error has been found` (61 s) |
+| `make verify-model-counterexamples` | **rc=0** — 73/73 refuted, 0 "did not run" (51 s) |
+| `make verify-kani` | **rc=0** — `Complete - 3 successfully verified harnesses, 0 failures, 3 total` (1 s, cached) |
+| tree check afterwards | no `verification/tla/states/`, `review/tmp/tla/` empty |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+
+No acceptance row cites the paging proof or `args_hash` (the mapping is `verification/README.md`'s property
+table), so no A-row evidence changed.
+
+**What remains unproven.** Everything in the pure-function layer except the paging arithmetic — now with
+measured reasons rather than silence: SHA-256 over symbolic input for `args_hash`; serde_json's serialization
+and `memcmp` for `estimated_tokens`, `page_output`'s argument parsing, and the view and classification the crate
+does not compile in; `chars().count()` and allocation checks for `cap_tool_output`. A later round would need to
+stub or hand-model the serializer (Kani's stubbing, or a small pure model of the text an estimate is taken
+from) rather than spend more time on the same shape. `make pty` and the probe sets were not run.
+
 ## D-294 Task 12 is verified: the formal targets no longer lie about a TLC that never started (2026-09-28)
 
 The product's entry is D-293. This entry is the operator's verification, and the card itself came from the
@@ -49,7 +157,7 @@ own 23:39 runs were untouched) while `review/tmp/tla/` was empty afterwards — 
 itself. `env -u DEEPSEEK_API_KEY make check` `rc=0` (25 green targets; the catalogue confirms 24 configurations,
 73 controls and 3 harnesses) and `make pty` ok.
 
-**The phase's numbers.** Eleven deliveries, **132.4M tokens over 601 model requests**, ten settled by the
+**The phase's numbers.** Eleven deliveries, **127.94M tokens over 588 model requests**, ten settled by the
 runtime's own required check, and an operator cost of twelve verification-and-commit rounds and three resumes.
 Two of the eleven defects were found by the operator's supervision rather than by a card (this one and the
 multi-goal hang), which is what "periodic supervision" is for.
