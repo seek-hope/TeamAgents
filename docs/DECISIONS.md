@@ -20,6 +20,88 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-290 Task 10 is verified: A33 claimed two signals, only one was ever driven (2026-09-28)
+
+The product's entry is D-289. This entry is the operator's verification and the phase's numbers, and it turns the
+next card back to formal verification, which the user's revised goal makes mandatory for any design that can
+carry it.
+
+**What the audit found.** The A33 row says the stop a user can perform reaches the designed shutdown because
+"SIGINT and SIGTERM both exit 0 with `stopping...` and remove the socket" — and the daemon's own startup message
+advertises Ctrl-C. Only **SIGTERM** was ever driven (`cli::a_daemon_stops_gracefully_on_sigterm`); the SIGINT arm
+(`cli.rs`'s `ctrl_c()` branch of the shutdown `select!`) was cited by nothing, so the row's other half was a
+claim no test could fail. The fix adds the missing coverage rather than weakening the row: the contract is one
+shared helper and each signal is now a test of its own (`…_on_sigterm`, `…_on_sigint`); no product code changed.
+
+**Verified.** The operator's control: removing the `ctrl_c()` arm from the daemon's shutdown `select!` makes
+`a_daemon_stops_gracefully_on_sigint` **fail** with `left: None, right: Some(0)` — killed by the default action
+instead of the designed shutdown, exactly what the new test's doc comment predicts; restored byte-identically
+(`diff -q`), both signal tests pass. `env -u DEEPSEEK_API_KEY make check` `rc=0` (25 green targets) and `make pty`
+ok. `goal-task10` settled `SUCCEEDED` only after its own required check round 1 ran and passed — the **seventh of
+nine** deliveries whose settlement was machine-gated (D-273, D-279, D-281, D-283, D-285, D-287, D-289), against
+D-275 and D-277.
+
+**The phase's numbers.** Nine deliveries, **90.02M tokens over 492 model requests**, seven goals settled by the
+runtime's own gate, and an operator cost of ten verification-and-commit rounds and three resumes. The suites
+report `core 109 / engine 281 / tui 36`.
+
+**Next card: a formal-verification gap, because the user's revised goal makes it mandatory.** The candidate the
+operator has measured in `verification/REPORT.md`'s unproven list (§5) is *concurrency*: "`Control::submit` is
+serialized on a single connection (a single writer) and the model does not cover interleavings across
+connections; the daemon's concurrent read and write connections appear only in A28's structural statement that a
+slow client cannot block the writer, without an exhaustive interleaving". A28 is therefore *asserted*, not
+checked, while it is exactly the kind of rule this repository models elsewhere. The card: model the daemon's
+concurrent readers and its writer so that A28's claim becomes an invariant with a refuted control, wire the
+configuration into `verification/`'s catalogue, and discharge the **§0 obligations** — the three formal targets
+re-run (`make verify-model-all`, `make verify-model-counterexamples`, `make verify-kani`) with their results in
+the entry, the §0 heading in `verification/REPORT.md` moved to the commit that did it, and the unproven list
+updated to say what is now covered and what is still not.
+
+**Ceiling**: the row is now checked for what it claims, but "the stop is graceful" is still verified on this
+machine's scheduler and signals, not in the model — `V2Coordinator` covers the lock, not the signal path. And the
+concurrency card is the largest of the phase's cards so far: a new model, its controls and the formal re-runs are
+the kind of work this repository has done by hand across many decisions, not in one turn, so the card allows a
+turn that ends with the model added and the gates re-run rather than with everything the report could
+eventually say.
+
+## D-289 A33 claimed both of the daemon's stop signals reach the shutdown; only SIGTERM was ever driven (2026-09-28)
+
+**What I audited.** A33 ("Two daemons / stale lock") is load-bearing — it holds the coordinator/lock surface and
+the user's stop lever, and its evidence is a shape plus a live probe. Its second half claims: "SIGTERM — what
+`kill <pid>` sends, the only signal available for the detached daemon a client starts — reaches the designed
+shutdown (**SIGINT and SIGTERM both exit 0 with `stopping...` and remove the socket**, in 0.1 s)". The cited
+evidence was `cli::a_daemon_stops_gracefully_on_sigterm` (D-150), and that test sends exactly one signal:
+SIGTERM.
+
+**What the tree actually does.** The `daemon` verb in `engine/src/cli.rs` selects on Ctrl-C (the SIGINT arm) and
+on `SignalKind::terminate()` (SIGTERM) into one shutdown, and the message the daemon prints when it starts names
+both stops. So the claim was *true*, but the SIGINT arm was exercised by nothing: the claim rested on a
+behaviour no test pinned, which is exactly the class this card hunts.
+
+**What I changed (coverage, not the claim).** The stop contract now lives once in `engine/tests/cli.rs`'s
+`daemon_stops_gracefully_when_signalled` (start the real binary, wait for the socket, `kill -s <SIG> <pid>`,
+assert exit 0, bounded, socket removed, `stopping...` on stderr) and is driven twice:
+`a_daemon_stops_gracefully_on_sigterm` keeps its name so D-150's citation still resolves, and the new
+`a_daemon_stops_gracefully_on_sigint` drives Ctrl-C's signal. A33's row now cites both, and the citation says
+why.
+
+**Evidence** (2026-09-28, this tree: `0f63be50` plus this uncommitted diff).
+
+| Command | Result |
+|---|---|
+| `cargo test --offline --manifest-path engine/Cargo.toml --test cli a_daemon_stops_gracefully` | **ok** — 2 tests, SIGTERM and SIGINT, each asserting the same contract |
+| pre-fix control: `engine/src/cli.rs` with the Ctrl-C arm of the shutdown `select!` deleted (one line; saved first and restored byte-identically, `sha256sum` `54a7ec5f…`) | **FAILED**: `a_daemon_stops_gracefully_on_sigint` — `left: None, right: Some(0)`, `ExitStatus(unix_wait_status(2))` (SIGINT killed the daemon by default action and left the socket); the SIGTERM test still passed, which is the over-claim in one run |
+| `python3 review/test_counts.py --write` | `engine: 280 -> 281` (the new test) |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+
+**Ceiling**: the audit covered one row. What I checked and rejected before taking it: every cited test name in
+A01-A36 (module-qualified) resolves to a real test in the file its prefix implies (a script check); every cited
+probe is in a `probes.py` set and every cited probe flag exists in its argparse (both scripted); every `MC_*.cfg`
+a row says must be refuted is in the `verify-model-counterexamples` list, and the rows' "all N `V2X` properties"
+counts match their configurations; and I read the cited tests for A05, A12, A18, A21, A23, A25, A26, A29, A30,
+A31, A32, A34, A35 and A36 without finding a claim their evidence does not carry. A33 was the one mismatch: a
+claim about two signals whose evidence drove one. `make pty`, the probe sets and the formal gates were not run.
+
 ## D-288 Task 9 is verified: the claims audit found a published sentence the gate never honoured (2026-09-28)
 
 The product's entry is D-287 (the usage-ceiling sentence claimed unknown usage is charged; the gate never did).

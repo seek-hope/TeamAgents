@@ -2702,10 +2702,14 @@ fn a_tiny_configured_ceiling_parks_the_session_instead_of_running_it() {
 /// **SIGTERM**. It has to reach the same shutdown Ctrl-C does; before this the daemon died by default action,
 /// skipping the designed shutdown ("freezes new dispatch, persists pending work and then stops itself") and
 /// leaving its socket behind.
-#[test]
-fn a_daemon_stops_gracefully_on_sigterm() {
+///
+/// D-288: A33 claimed *both* signals it advertises reach that shutdown ("SIGINT and SIGTERM both exit 0 with
+/// `stopping...` and remove the socket") and the message the daemon prints when it starts names Ctrl-C too, but
+/// only SIGTERM was ever driven — the SIGINT arm (`cli.rs`'s `ctrl_c()`) was cited by nothing. The contract
+/// lives here once so each signal is a test of its own.
+fn daemon_stops_gracefully_when_signalled(signal: &str) {
     use std::io::Read;
-    let root = Scratch::new("daemon-term");
+    let root = Scratch::new(&format!("daemon-signal-{}", signal.to_lowercase()));
     let (config_home, state) = (root.join("config"), root.join("state/teamagents/v2"));
     std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
     std::fs::write(
@@ -2735,18 +2739,32 @@ fn a_daemon_stops_gracefully_on_sigterm() {
     }
     assert!(socket.exists(), "the daemon must listen before it is signalled");
 
-    // SIGTERM by pid — what `kill <pid>` sends. The daemon is this test's own child, so no pattern is needed.
-    let signalled = Command::new("kill").arg(daemon.id().to_string()).status().expect("send SIGTERM");
-    assert!(signalled.success(), "kill must reach the daemon");
+    // by pid — what `kill <pid>` / Ctrl-C sends. The daemon is this test's own child, so no pattern is needed.
+    let signalled =
+        Command::new("kill").args(["-s", signal, &daemon.id().to_string()]).status().expect("send the signal");
+    assert!(signalled.success(), "kill -s {signal} must reach the daemon");
     let started = std::time::Instant::now();
     let status = daemon.wait().expect("the daemon exits");
-    assert_eq!(status.code(), Some(0), "a SIGTERM stop is the designed shutdown, not a signal death: {status:?}");
+    assert_eq!(status.code(), Some(0), "a {signal} stop is the designed shutdown, not a signal death: {status:?}");
     assert!(started.elapsed() < std::time::Duration::from_secs(20), "the stop must be bounded");
     assert!(!socket.exists(), "the shutdown removes the socket: {socket:?}");
     let mut stderr = String::new();
     daemon.stderr.take().unwrap().read_to_string(&mut stderr).unwrap();
     assert!(stderr.contains("stopping..."), "the shutdown says what it is doing: {stderr}");
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_daemon_stops_gracefully_on_sigterm() {
+    daemon_stops_gracefully_when_signalled("TERM");
+}
+
+/// D-288: the other signal A33's claim names — Ctrl-C in the foreground, which the startup message advertises.
+/// Without the `ctrl_c()` arm the default action kills the process (no exit code) and leaves the socket, so this
+/// test fails rather than passing on a weaker assertion.
+#[test]
+fn a_daemon_stops_gracefully_on_sigint() {
+    daemon_stops_gracefully_when_signalled("INT");
 }
 
 /// D-253: the artifact census and the on-demand half of §4.3's collection — the cadence §4.4 left at a driver's
