@@ -99,7 +99,7 @@ default (D-239).
 
 | Key | Type | Absent | Read by | Meaning |
 |---|---|---|---|---|
-| `max_total_tokens` | `Option<u64>` | unset (the reader applies its own) | `core/src/v2/control.rs`, `engine/src/v2/daemon.rs` … (3 files) | Usage ceiling in tokens (provider-reported and unknown usage included). |
+| `max_total_tokens` | `Option<u64>` | unset (the reader applies its own) | `core/src/v2/control.rs`, `engine/src/v2/daemon.rs` … (4 files) | Usage ceiling in tokens (provider-reported and unknown usage included). |
 | `deadline_minutes` | `Option<u64>` | unset (the reader applies its own) | nothing: applied by the loader: config.rs turns it into each goal's absolute deadline | Wall-clock ceiling in minutes, counted from the moment the goal is created. |
 
 ### `[[checks]]`

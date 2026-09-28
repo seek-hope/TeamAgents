@@ -2409,6 +2409,111 @@ fn the_goal_surface_lists_and_opens_goals_through_the_daemon() {
     assert!(out.contains("opened goal goal-third (1 required check(s))"), "{out}");
 }
 
+/// D-284, the reporting half of the budget-exhausted-goal gap in `docs/ACCEPTANCE.md`: a goal the runtime will
+/// refuse used to read exactly like one taking work — `ACTIVE`, the status column's only word — while the
+/// `goals` read already carried the numbers that show it. The plain line now carries the goal's budget and,
+/// when the record proves it, why it cannot accept a new request: A18's ceiling (known usage leaves no room for
+/// even a one-token request) and A35's deadline. No lever, no new read, and no new field in the JSON report.
+#[test]
+fn a_goal_that_cannot_accept_work_is_not_presented_as_in_force() {
+    let root = Scratch::new("goals-exhausted");
+    let (config_home, state, ws) = (root.join("config"), root.join("root"), root.join("ws"));
+    std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
+    std::fs::create_dir_all(&ws).unwrap();
+    std::fs::write(
+        config_home.join("teamagents/config.toml"),
+        "[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\n\
+         api_key_env = \"TA_GOALS_KEY\"\nbase_url = \"http://127.0.0.1:1/v1\"\n\
+         [limits]\nmax_total_tokens = 5000000\n",
+    )
+    .unwrap();
+    let env = |command: &mut Command| {
+        command
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("XDG_STATE_HOME", root.join("state"))
+            .env("TA_GOALS_KEY", "test-value")
+            .env("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    };
+    let goals = |args: &[&str]| -> (i32, String, String) {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_teamagents"));
+        env(&mut command);
+        let output = command.args(args).arg("--state-root").arg(&state).output().expect("run goals");
+        (
+            output.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    };
+    let json = |text: &str| -> serde_json::Value { serde_json::from_str(text).expect("JSON report") };
+
+    let mut daemon = Command::new(env!("CARGO_BIN_EXE_teamagents"));
+    env(&mut daemon);
+    let daemon = daemon
+        .args(["daemon", "--state-root"])
+        .arg(&state)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("start the daemon");
+    let _guard = Daemon(daemon);
+    let socket = state.join("daemon.sock");
+    for _ in 0..400 {
+        if socket.exists() && std::os::unix::net::UnixStream::connect(&socket).is_ok() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+
+    // the record these three goals need, made through the ordinary user command: no model, no tokens spent
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
+    let mut rpc = Rpc::connect(&socket);
+    let exhausted = rpc.command(
+        "mk-exhausted",
+        "create_goal",
+        serde_json::json!({"id": "goal-exhausted", "limits": {"max_total_tokens": 0}}),
+    );
+    assert_eq!(exhausted["ok"], serde_json::json!(true), "{exhausted}");
+    let expired =
+        rpc.command("mk-expired", "create_goal", serde_json::json!({"id": "goal-expired", "deadline": now - 60.0}));
+    assert_eq!(expired["ok"], serde_json::json!(true), "{expired}");
+    let live = rpc.command(
+        "mk-live",
+        "create_goal",
+        serde_json::json!({"id": "goal-live", "limits": {"max_total_tokens": 1000000}}),
+    );
+    assert_eq!(live["ok"], serde_json::json!(true), "{live}");
+
+    let (code, out, stderr) = goals(&["goals"]);
+    assert_eq!(code, 0, "{stderr}");
+    let line = |id: &str| {
+        out.lines().find(|l| l.contains(id)).unwrap_or_else(|| panic!("no line for {id}: {out}")).to_string()
+    };
+    assert!(
+        line("goal-exhausted").contains("cannot accept new work: ceiling reached (0/0)"),
+        "the ceiling the runtime refuses on is shown: {out}"
+    );
+    assert!(
+        line("goal-expired").contains("cannot accept new work: deadline passed"),
+        "the passed deadline the runtime refuses on is shown: {out}"
+    );
+    let live = line("goal-live");
+    assert!(!live.contains("cannot accept new work"), "a goal with room is not marked: {live}");
+    assert!(live.contains("tokens: 0/1000000"), "and its budget is visible: {live}");
+
+    // the JSON report keeps the read's own field names: the marker is what a client renders, not protocol
+    let (code, out, stderr) = goals(&["goals", "--json"]);
+    assert_eq!(code, 0, "{stderr}");
+    for row in json(&out)["goals"].as_array().cloned().unwrap_or_default() {
+        let mut keys: Vec<&str> = row.as_object().expect("a goal row").keys().map(String::as_str).collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            ["attached_instances", "deadline", "id", "known_usage", "limits", "status", "unknown_usage"],
+            "the goal row's shape is unchanged: {row}"
+        );
+    }
+}
+
 /// `[limits]` in the user config bounds every goal the session creates (D-64): the
 /// usage ceiling travels on the goal's `limits` and the deadline is an absolute
 /// timestamp the bootstrap derives from the configured minutes. The daemon really

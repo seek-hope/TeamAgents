@@ -20,6 +20,93 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-286 Task 8 is verified: the reporting half of the exhausted-goal gap, and the lever stays the user's (2026-09-28)
+
+The product's entry is D-285 (`goals list` says when a goal cannot accept work, and why). This entry is the
+operator's verification and the phase's numbers.
+
+**What the delivery is, and what it deliberately is not.** The plain `goals list` line now carries each goal's
+budget (`used/max`) and, for an `ACTIVE` goal the *record* proves the runtime would refuse, the reason: A18's
+ceiling (`known_usage.total >= limits.max_total_tokens`) and A35's deadline (`now > deadline`). Everything it
+shows is computed client-side from fields the `goals` read already carries — no new read, no new field in the
+JSON report, no new verb — and the reasoning is careful where it could have been sloppy: `unknown_usage` is
+deliberately not an input because the budget gate itself leaves it out of the sum, and a *partly* used ceiling is
+not called a refusal because whether the next request fits depends on an estimate the client does not have (the
+operator's card said the same: guessing there would be the same dishonesty the fix removes). The **lever** — a
+way for the user to close a dead goal — is not in this change and stays in `docs/ACCEPTANCE.md`'s Known gaps,
+where it belongs.
+
+**Verified.** The operator's control: with `engine/src/v2/goals.rs` reverted to `HEAD`, the new test fails at
+`engine/tests/cli.rs:2491` (the line does not carry `cannot accept new work: ceiling reached (0/0)`), and after
+the file is restored byte-identically (`diff -q`) it passes. `env -u DEEPSEEK_API_KEY make check` `rc=0` (25
+green targets) and `make pty` ok, both the operator's. `goal-task8` settled `SUCCEEDED` only after its own
+required check round 1 ran and passed: the **fifth of seven** deliveries whose settlement was machine-gated
+(D-273, D-279, D-281, D-283, D-285), against D-275 and D-277 which the operator verified because their runs ended
+on a ceiling and on the repair 400.
+
+**The phase's numbers.** Seven deliveries committed, **58.76M tokens over 389 model requests** across two
+sessions, five goals settled by the runtime's own gate, and an operator cost of eight verification-and-commit
+rounds and three resumes. The suites report `core 108 / engine 280 / tui 36`.
+
+**Next card: an audit of the documents' *claims*.** Every defect this phase has fixed came from a claim the code
+did not back (a gate that needed a credential, a settlement read from the wrong goal, a lever that lied the
+second time, a view that could be invalid, a check count that echoed the question, a goal presented as in
+force). The card is therefore: pick assertions in the acceptance ledger, the user guide and the design that
+nothing checks — the ones only prose carries — and find one that is false or overstated against the tree; then
+make the *claim* or the *missing check* right, with evidence. If the honest resolution would be a behaviour
+change the design does not already mandate, stop and report it instead, because that is the user's.
+
+**Ceiling**: the new line's inputs are the read's own fields, so it is as honest as the read — a goal that cannot
+accept work for a reason *not* in those fields (a park the goal itself cannot see, an instance-side refusal)
+still reads as `ACTIVE` with a budget, which is all the client can prove. Nothing here closes a goal, and the
+three dead goals in the operator's session are still `ACTIVE` in the record.
+
+## D-285 `goals list` says when a goal cannot accept work, and why (2026-09-28)
+
+This is the second candidate D-284 left in the queue: the reporting half of the budget-exhausted-goal gap in
+`docs/ACCEPTANCE.md`. Three goals in the operator's own session are `ACTIVE` in the record and dead in fact —
+`goal-s-main` at 1,926,270 of a 2,000,000 ceiling, `goal-task3` at 5,994,688 of 6,000,000 and `goal-task4` at
+9,648,008 of 12,000,000 — and A18's gate refuses their requests and parks the instance with the ceiling as the
+reason, while `goals list` printed the same `ACTIVE` it prints for a goal that is taking work.
+
+**What decides it (the record's own inputs).** The `goals` read already serves everything needed: `limits`
+(`max_total_tokens`, `deadline`), `known_usage` and `unknown_usage`. The two conditions are the runtime's own
+gates, recomputed from those fields and nothing else:
+
+- A18's ceiling: `known_usage.total >= limits.max_total_tokens` — with no room for even a one-token request, and
+  every real request's estimate is positive, `reserve_budget` refuses it (`known + reserved + est > max`).
+- A35's deadline: `now > deadline`, which is the gate's own `goal_deadline_passed`.
+
+`unknown_usage` is deliberately *not* an input: the budget gate leaves it out of the sum (it is a visible
+counter, not a charge), so counting it would overstate the ceiling. A partly-used ceiling is deliberately *not*
+a refusal: whether the next request fits depends on an estimate the client does not have, and guessing one would
+be the same dishonesty this entry fixes. So `goal-s-main` — 73,730 tokens of headroom but a deadline long past —
+is marked for the deadline and still shows its budget, and `goal-task4` — 2.35M of headroom and a live deadline —
+is **not** marked, because on that record it can still accept work.
+
+**The change (client-side rendering only).** `engine/src/v2/goals.rs`'s plain `goals list` line now appends the
+goal's budget (`tokens: used/max`, when a ceiling is set) and, for an `ACTIVE` goal the record shows a refusal
+for, `cannot accept new work: deadline passed` or `ceiling reached (used/max)`. A settled goal carries no marker:
+it is not presented as in force and already says what it is. The JSON report and both reads are untouched — no
+new field name, no new read method, no flag and no lever; the marker is what a client renders.
+
+**Evidence** (2026-09-28, this tree: `1c9af9c7` plus this uncommitted diff).
+
+| Command | Result |
+|---|---|
+| `cargo test --offline --manifest-path engine/Cargo.toml --lib goals::` | **ok** — the unit test runs the operator's own numbers: `goal-s-main` → `deadline passed` + `1926270/2000000`; a 10/10 ceiling → `ceiling reached (10/10)`; `goal-task5` (room, live deadline) → nothing; a settled goal → nothing |
+| `cargo test --offline --manifest-path engine/Cargo.toml --test cli a_goal_that_cannot_accept_work_is_not_presented_as_in_force -- --exact` | **ok** — real daemon, real binary, no model: a `max_total_tokens: 0` goal says `ceiling reached (0/0)`, a goal with a past `deadline` says `deadline passed`, a goal with room is unmarked and shows `tokens: 0/1000000`, and every JSON row still carries exactly the read's seven field names |
+| pre-fix control: `engine/src/v2/goals.rs` exactly as at `HEAD` (saved first, restored byte-identically — `diff` clean — then one later edit corrected this entry's own number in a doc comment; `sha256sum` now `211c1701…`) | **FAILED**: the four lines printed `goal-exhausted  ACTIVE  …  checks: 0` and `goal-expired  ACTIVE  …  deadline: 1790600607` — the operator's exact shape, with nothing saying either is refused |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `python3 review/test_counts.py --write` | `engine: 278 -> 280` (the unit test and the integration test) |
+| `python3 review/config_reference.py --write` | `docs/CONFIG.md`'s `max_total_tokens` row counts 4 files instead of 3 — `engine/src/v2/goals.rs` now matches the audit's name search for that key (it reads the goal's own limits) |
+
+**Ceiling**: a client still cannot say "this goal will refuse your *next* request" for a partly-used ceiling —
+the estimate is not in the read, and adding it would be a read change the user owns; it shows the budget
+instead. The lever half of the gap (closing or cancelling an unusable goal) stays in the queue for the user. The
+marker is plain-text only, because the card holds the JSON report's field names to the read's shape. `make pty`,
+the probe sets and the formal gates were not run.
+
 ## D-284 Task 7 is verified, and it is the first task the product chose for itself (2026-09-28)
 
 The product's entry is D-283 (`goals open` reports the checks the goal got). This entry is the operator's

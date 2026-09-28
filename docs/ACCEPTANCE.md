@@ -7,7 +7,7 @@ model probe sets and the three formal gates).
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 108 / engine 278 / tui 36 test targets) and `make pty` passes; both are
+`make check` is green (core 108 / engine 280 / tui 36 test targets) and `make pty` passes; both are
 preconditions for every item below. `make check` includes `make language-check`, which fails on non-English
 characters outside the two documented exceptions (`README.zh-CN.md` and the frozen material under
 `review/eval`).
@@ -137,8 +137,10 @@ amended (D-49/D-50).
   unable to accept a new request (A18's gate refuses it and parks the instance with the ceiling as the reason),
   and each still listed as the status `goals list` reports. Only the Leader's own `complete_goal`/`block_goal` can
   settle a goal, and a parked instance with an exhausted goal has no path back to either, so a session
-  accumulates goals that are `ACTIVE` in the record and dead in fact. The **reporting** half is decision-free
-  and is the phase's own card (a goal that cannot accept work should not be presented as the one in force); a
+  accumulates goals that are `ACTIVE` in the record and dead in fact. The **reporting** half is decision-free and
+  **delivered since D-285**: `goals list` now shows each goal's usage against its ceiling and, for an `ACTIVE`
+  goal the record shows a refusal for, says why it cannot accept a new request (A18's ceiling, A35's deadline) —
+  no lever, no new read, no new field in the JSON report; a
   **cancel/close lever** for the user is new protocol surface — `create_goal` has no counterpart and `goals` has
   no verb — so which shape it takes, and whether the runtime should instead close a goal whose ceiling is
   reached rather than parking its instance for ever, **needs the user's word** (D-267 owns the goal surface).
