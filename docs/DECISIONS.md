@@ -20,6 +20,93 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-336 Task 33 is verified: the client's resume cursor is pinned by the test the row never named (2026-09-29)
+
+The product's entry is D-335. This entry is the operator's verification and the phase's measured numbers.
+
+**What the operator verified.** (1) The cited file test pins the flag, not the cursor:
+`tui/tests/reconnect.rs`'s `the_client_reconnects_after_the_daemon_restarts` asserts only that a call to the dead
+daemon fails and marks the client disconnected, and that a call after the rebind succeeds and clears the flag —
+no `since` assertion appears in it. (2) The orphan test exists and drives the row's other half:
+`tui/src/daemon_client.rs`'s `daemon_client::tests::lost_connection_marks_disconnected_and_reconnect_resumes`
+requires the resumed frame to carry `"since": 3`. (3) The orphan claim holds at the tree it received: a
+repository-wide search over every `*.md` at `0bcea572` names that test **nowhere**, and the row names it now.
+(4) The operator's own control: `tui/src/daemon_client.rs`'s resume (sha256 of the file before the edit
+`2502235f…`) changed from the client's watermark to 0; the named test **FAILED** with `left: Number(0)`,
+`right: Number(3)` at `src/daemon_client.rs:315`, and the line restored byte-identically (sha256 `2502235f…`,
+`git diff` clean) puts it back to **ok**.
+
+**The one number the operator corrected.** D-335's evidence table reported 901 citations after the row edit.
+Re-measured on the tree this commit freezes: **905** (81 relative links, 598 `make`, 997 `§`-references, 0
+unexplained) — 901 was an intermediate value of the docstring while the row was still being edited. The table now
+states the measured value; this entry is the re-measurement.
+
+**Evidence** (2026-09-29; the tree is `0bcea572` plus this uncommitted diff).
+
+| Command | Result |
+|---|---|
+| reading `tui/tests/reconnect.rs`'s cited test | the disconnected flag before and after a rebind; no `since` assertion |
+| reading `tui/src/daemon_client.rs`'s orphan test | requires the resumed frame to carry `"since": 3` |
+| a repository-wide search over every `*.md` at `0bcea572` | that test name appears in no markdown file (the row names it now) |
+| the operator's control (the resume's watermark → 0) | the named test **FAILED**: `left: Number(0)`, `right: Number(3)` at `src/daemon_client.rs:315` |
+| restoring the control byte-identically | sha256 `2502235f…`; `git diff` clean; the test **ok** again |
+| `python3 review/citations.py` | 905 citations / 81 relative links / 598 `make` commands / 997 `§`-references, 0 unexplained |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `make pty` | ok |
+
+**The audit's yield.** Twenty-one cards have produced twenty-two findings: ten coverage holes, eleven claim holes
+and one product defect. Nineteen rows are audited; seventeen remain.
+
+**The phase's measured numbers (this commit).** **Thirty-two deliveries**, **428,859,687 tokens over 1,093 model
+requests**, the suites at `core 115 / engine 288 / tui 36`, and an operator cost of thirty-three verification
+rounds and three resumes.
+
+**Next card**: seventeen rows remain. This card's shape is worth hunting — a row whose citation is a *file*
+rather than a test: the file may pin a neighbouring half, while the test that pins the claimed half sits unnamed.
+
+**Ceiling**: the operator did not re-run the live probe (`tui_reconnect.py`) or the `V2Concurrency` model; their
+dated numbers stand. D-335's orphan survey is left as recorded (149 names by its extraction, 155 by D-324's); the
+operator verified the one name this row now claims, not the whole survey.
+
+## D-335 A28's client half cited the flag test; the test that pins its resume cursor was named nowhere (2026-09-29)
+
+**What the row claims and what its citations cover.** A28 ("Disconnect, slow client, reconnect") claims the
+client's half: it says it is disconnected and a new daemon brings it back. It cites
+`v2_daemon::handshake_checkpoint_command_and_goal_completion` and `reconnect_backfills_events_after_the_watermark`
+(the *daemon* backfills after a watermark), the live probe `tui_reconnect.py`, and — for the client's own
+reconnect — the *file* `tui/tests/reconnect.rs`.
+
+**What that file's test asserts.** `the_client_reconnects_after_the_daemon_restarts` drives a real socket that
+dies and rebinds and pins the *flag*: a call to the dead daemon fails and `client.disconnected` is true; after the
+rebind a call succeeds and the flag clears. It never asserts *what the client asks for when it resumes*.
+
+**The test that does, named by no markdown file in this tree.** My reproduction of D-324's sweep (149 names by my
+extraction, 407 test names in total; D-324 measured 155 by its own) puts
+`daemon_client::tests::lost_connection_marks_disconnected_and_reconnect_resumes` in `tui/src/daemon_client.rs`
+among the orphans — and it asserts the row's *cursor* half: after a scripted drop it checks the flag, then the
+resumed `poll_events` advances the watermark 3→4 and, the assertion nothing else in the tree makes, the resumed
+frame carries **`since: 3`** — the client resumes after its own watermark and never re-reads from scratch.
+
+**The change.** A28's row now names that test, says what it asserts, and says what the cited file test pins
+instead (the flag on either side of a rebind). No product or test code changed: the rule is implemented and was
+tested — the citation was incomplete. Naming it removes one name from the orphan set (154 by D-324's method);
+D-324's dated 155-name measurement is left as it stands, as a record of that moment.
+
+**Evidence** (2026-09-29; HEAD `0bcea572` plus this uncommitted diff).
+
+| Command | Result |
+|---|---|
+| the orphan sweep (test names vs every `*.md`) | 407 test names, 149 named by no markdown file; the A28 name among them |
+| counter-control: `tui/src/daemon_client.rs`'s resume changed from `json!({"since": self.watermark})` to `json!({"since": 0})` | `cargo test --offline --lib lost_connection` **FAILED**: `daemon_client::tests::lost_connection_marks_disconnected_and_reconnect_resumes` panicked at `src/daemon_client.rs:315`, `left: Number(0)`, `right: Number(3)`; the line was restored byte-identically (`diff` clean) |
+| the same test after the restore | passes |
+| `python3 review/citations.py` after the row edit | 905 citations / 81 links / 598 `make` / 997 `§`, 0 unexplained; the docstring updated 900→904 (the entry first said 901 — the operator's re-measurement, D-336) |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+
+**Ceiling.** No behaviour change and no defect: the client resumes from its watermark, and now a row says which
+test proves it. A28's other halves — the live probe's dated numbers, the latency measurements (D-85) and the
+`V2Concurrency` model with its three refuted controls (D-291) — are unchanged; I did not re-run the probe or the
+model.
+
 ## D-334 Task 32 is verified: the glob's one test is not the boot failure, and the operator's control says the new citation bears the claim (2026-09-29)
 
 The product's entry is D-333. This entry is the operator's verification and the phase's measured numbers.
