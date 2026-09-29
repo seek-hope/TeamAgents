@@ -20,6 +20,95 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-340 Task 35 is verified: A04's controls do refute those rules, and the operator's re-measurement corrected one claim in the entry (2026-09-29)
+
+The product's entry is D-339. This entry is the operator's verification and the phase's measured numbers.
+
+**What the operator verified.** (1) The third control, re-run from the operator's side:
+`MC_grants_stale_offered_surface.cfg` under this tree's TLC reports `Error: Invariant OfferedToolsAreAuthorized is
+violated.` — the rule D-339 added to A04's row. (2) The other two controls, run by the operator one card earlier
+(D-338): `MC_authority_trustsurface.cfg` reports `AuthorizedEffectsOnly is violated.` and
+`MC_authority_stalesurface.cfg` a temporal violation. (3) The finding's negative half: **no** ACCEPTANCE row named
+any `MC_grants*` control at `15a0130f` (0 hits across the matrix), which is what the card was for.
+
+**The one correction the re-measurement forced.** D-339 said the two properties "were named by **no row, decision
+or document in the matrix**". Re-measured at `15a0130f`: `OfferedToolsAreAuthorized` is named in **A02's own
+row** (as `V2Grants::OfferedToolsAreAuthorized`, beside the correspondence test), and `StaleSurfaceCatchesUp` is
+named in A03's row, put there by D-337 the same day — and older decision entries name both. The substantive
+finding survives (no row named the *control*; A04's sentence named no control), but the "named nowhere" half was
+wrong; the entry now says exactly what the greps return.
+
+**Evidence** (2026-09-29; the tree is `15a0130f` plus this uncommitted diff).
+
+| Command | Result |
+|---|---|
+| `MC_grants_stale_offered_surface.cfg` under TLC, run by the operator | `Error: Invariant OfferedToolsAreAuthorized is violated.` |
+| `MC_authority_trustsurface.cfg` / `MC_authority_stalesurface.cfg` (operator's runs, D-338) | violated / temporal violation |
+| grep for `MC_grants` across `docs/ACCEPTANCE.md` at `15a0130f` | 0 hits — the finding stands |
+| grep for the two property names in the matrix at `15a0130f` | `OfferedToolsAreAuthorized` in A02's row; `StaleSurfaceCatchesUp` in A03's (D-337) — the correction |
+| `python3 review/citations.py` | **945 citations / 81 relative links / 606 `make` commands / 1002 `§`-references, 0 unexplained** — the frozen tree's counts, this entry's own text included |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `make pty` | ok |
+
+**The audit's yield.** Twenty-three cards have produced twenty-four findings: ten coverage holes, thirteen claim
+holes and one product defect. Twenty-one rows are audited; fifteen remain.
+
+**The phase's measured numbers (this commit).** **Thirty-four deliveries**, **434,538,200 tokens over 1,135 model
+requests**, the suites at `core 115 / engine 288 / tui 36`, and an operator cost of thirty-five verification rounds
+and three resumes.
+
+**Next card**: the fifteen remaining audit rows are not next. The user has delegated the open decision queue to the
+operator, so the loop's next work items are the decided implementations, with the audit resuming after them.
+
+**Ceiling**: the operator re-ran the one new control and the two of D-338, and read the matrix greps; the full
+`make verify-model-all` and `make verify-model-counterexamples` sweeps remain the phase's recorded runs, and A04's
+own live queued-then-revoked witness is still absent — the row says so itself.
+
+## D-339 A04's aggregate formal claim named no control; two of the rules its controls refute were in no row (2026-09-29)
+
+**What the row claims.** A04 ("A queued action meets a revocation") is the row D-337 pointed at: its whole formal
+evidence is "Formally, `V2Authority`/`V2Grants` cover the dispatch re-check (`AuthorizedEffectsOnly`), and `make
+verify-model-counterexamples` refutes the controls that trust a stale or too-wide surface (D-60)". It names one
+property and no control at all.
+
+**What the tree actually has** (measured 2026-09-29). Three controls model a surface that is stale, and therefore
+wider than the entitlement — the row's prose is faithful, and I checked that before changing anything:
+
+| control | constant | what its own comment says | refutes |
+|---|---|---|---|
+| `MC_authority_trustsurface.cfg` | `TrustSurface = TRUE` | "the worker's shell is still on its cached surface after the user revoked the grant, and an operation prepared after that revocation takes effect" | `AuthorizedEffectsOnly` (the one property the row names) |
+| `MC_authority_stalesurface.cfg` | `RefreshSurface = FALSE` | "the model-visible surface is computed once and never recomputed" | `StaleSurfaceCatchesUp` |
+| `MC_grants_stale_offered_surface.cfg` | `OfferedLagsRevocation = TRUE` | the offered surface is built from the grant table as it was *before* the revocation, "so a model is still shown `shell` after the grant that covered it went away" | `OfferedToolsAreAuthorized` — run: `Error: Invariant OfferedToolsAreAuthorized is violated.` |
+
+No row named the `MC_grants*` control at all — the only pointer to it was this unnamed aggregate — and the two
+properties were not new names to the matrix even so: `OfferedToolsAreAuthorized` is named in A02's own row (as
+`V2Grants::OfferedToolsAreAuthorized`, with the correspondence test), and `StaleSurfaceCatchesUp` entered A03's
+row the same day with D-337. What was missing was A04's *own* naming of the property each of its controls
+refutes; the operator's re-measurement corrected this sentence (D-340). I also checked the converse reading and it does not hold: no cfg constant or rule in
+`V2Grants.tla`/`V2Authority.tla` models a surface wider than the grants *other than* through staleness (no
+`OverWide`/`wider` material exists), so the control set above is exactly what the sentence gestures at.
+
+**The change.** A04's formal sentence now names the three controls, each one's shape and the property it refutes,
+and marks that the queued-then-revoked timing itself still rests on the two unit tests. No product, test or
+verification file changed: the claim was true in aggregate and uncheckable in detail.
+
+**Evidence** (2026-09-29; HEAD `15a0130f` plus this uncommitted diff).
+
+| Command | Result |
+|---|---|
+| TLC on `MC_grants_stale_offered_surface.cfg` (`V2Grants.tla`) | `Error: Invariant OfferedToolsAreAuthorized is violated.` — a property named by no row before this one |
+| TLC on `MC_authority_trustsurface.cfg` / `MC_authority_stalesurface.cfg` (recorded in D-337, same day) | `AuthorizedEffectsOnly is violated.` / `StaleSurfaceCatchesUp` — the second named by no row |
+| `grep` for `MC_grants` across the matrix, and for `too wide`/`wider`/`OverWide` across the cfgs and both modules | no row names any `MC_grants*` control; no rule or control models a too-wide-but-not-stale surface |
+| `python3 review/citations.py` after the row edit, and after D-340's | 945 citations / 81 links / 606 `make` / 1002 `§`, 0 unexplained (937/603/1002 before the operator's entry); the docstring moved 925→945 across both |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+
+**Ceiling.** A claim-precision fix, with a measured correction of my own first reading: the "stale or too-wide"
+prose is accurate, so the defect is the missing names, not the adjectives. I reverted no line, so there is no
+byte-identical restore here — the control is the refutation runs and the greps above. `verification/tla` was read
+and run, not modified (`git status` shows no change there). A04 still has no live witness of the queued-then-revoked
+timing; the row says so in its own words, and a probe for that shape would be a coverage change this card did not
+need.
+
 ## D-338 Task 34 is verified: the two misattributed controls really do refute A04's rule, and the operator's own TLC runs say so (2026-09-29)
 
 The product's entry is D-337. This entry is the operator's verification and the phase's measured numbers.
