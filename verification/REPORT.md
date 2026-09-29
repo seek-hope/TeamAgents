@@ -5,7 +5,7 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
-## 0. Gate status (re-run 2026-09-29 at `76926407`)
+## 0. Gate status (re-run 2026-09-29 at `0af627b6`)
 
 * **This round (2026-09-29) added the goal-cancel lever's rule and re-ran all three targets on that tree.**
   `make verify-model-all`: all **24** configurations `No error has been found` (rc 0).
