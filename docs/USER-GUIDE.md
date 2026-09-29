@@ -354,8 +354,11 @@ pre_tool = ["/home/you/bin/policy.sh"]            # policy hook before tool call
 - User-side intervention: switch instances, pause/resume/cancel and approve or deny tool requests in the
   TUI — or headlessly with `teamagents instances` / `teamagents tasks` (§4.2), which is what a script or a CI
   job can use. Budget, task and grant panels all read the same facts.
-  A goal that has settled cannot be reopened, so the next one is opened from the instances panel (`g`, attached
-  to the selected instance) or headlessly with `teamagents goals open --id … --attach …` (D-267/D-269); the
+  A goal whose ceiling or deadline is gone refuses new work and parks the instance that asked, so the way out
+  is `teamagents goals cancel --id …` (D-341/D-344): the goal settles `CANCELLED` and the instance the refusal
+  parked runs again. A goal that has settled cannot be reopened, so the next one is opened from the instances
+  panel (`g`, attached to the selected instance) or headlessly with `teamagents goals open --id … --attach …`
+  (D-267/D-269); the
   session's `[limits]`/`[[checks]]` bound it, applied by the daemon (D-268). A headless run whose leader is
   attached to no active goal says so on **stderr before it submits anything** (D-270), because a turn still runs
   but a delegation inside it is refused — the sentence names the `goals open --attach` lever, so the refusal is
@@ -498,6 +501,9 @@ teamagents goals open --id g2 --attach i-leader --check 'tests=python3 -m pytest
                                         # after a goal settles: open the next one, attached to the Leader,
                                         # with your own required checks (§8) and an optional --deadline
                                         # the session's [limits]/[[checks]] bound it too (D-64/D-268)
+teamagents goals cancel --id g-spent    # close a goal nothing can spend (its ceiling or deadline is gone):
+                                        # it settles CANCELLED and the instance its refusal parked runs again
+                                        # (D-341/D-344); a goal still carrying running work is refused
 ```
 
 - **`tasks cancel` is the lever for a stuck delegation**: if a member's model ends its turn without settling

@@ -152,26 +152,28 @@ def main() -> int:
         help_text = help_out.stdout + help_out.stderr
         # a usage line, on whichever stream the release chose (the current tree prints
         # `--help` to stdout and a *usage error* to stderr)
-        # A usage/help screen either way: the current tree prints an English `usage:` line,
-        # while the published release's help is not in English at all (see the gap below), so
-        # this looks for the entry-point list a help screen must carry instead of the word.
+        # A usage/help screen either way: a help screen must carry the entry-point list, so
+        # this looked for that rather than for one exact word while older releases differed.
         if help_out.returncode != 0 or "teamagents" not in help_text or "--help" not in help_text:
             failures.append("the installed binary does not print its help")
         # the TUI must refuse a session-less start instead of pretending
         tui = subprocess.run([str(bin_dir / "teamagents-tui")], capture_output=True, text=True)
         if tui.returncode == 0:
             failures.append("teamagents-tui started with no session and no terminal")
-        # …and the artifact must be *the documented product*. The released v0.1.2 is the
-        # earlier implementation: a Chinese help that still offers validate/sessions/
-        # --plain/--resume/--team, none of which the documented surface has (D-52/D-73).
-        # Installing "the latest release" therefore does not install what the docs
-        # describe, and the tree's own version already names that older release.
+        # …and the artifact must be *the documented product*. Since D-343 the newest release
+        # (v0.2.0) is built from this tree, so the check asserts the positive: the help must
+        # offer none of the verbs D-52/D-73 removed and must name the entry points the
+        # documented surface serves.
         stale = [entry for entry in ("validate", "sessions prune", "--plain", "--team SPEC") if entry in help_text]
+        missing = [entry for entry in ("exec", "goals", "instances") if entry not in help_text]
         if stale:
             failures.append(
-                f"the published v{version} predates the documented product: its help still offers "
-                f"{stale} and is not the current surface - release the tree under a new version "
-                f"(see ACCEPTANCE's known gaps) before this path installs what the docs describe"
+                f"the published v{version} still offers {stale}, verbs the documented surface removed - "
+                f"it is not the product the docs describe"
+            )
+        elif missing:
+            failures.append(
+                f"the installed help does not name {missing}, entry points the documented surface serves"
             )
         else:
             print(f"  [product] the installed help describes the current surface")

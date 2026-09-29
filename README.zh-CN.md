@@ -69,9 +69,8 @@
 
 ### 安装最新版（推荐）
 
-> **注意（2026-09-27）：** 最新发行版（`v0.1.2`）是**早期实现**，不是本文档所描述的产品——它的帮助里仍有本版本已移除的子命令。
-> 在 v2 发行版发布之前，请按下文从源码构建，或阅读[安装指南](docs/INSTALL.md)（其中带有同样的说明）；
-> `python3 review/install_check.py` 会重新对比两者。
+> **注意（2026-09-29）：** 最新发行版（`v0.2.0`）就是本文档所描述的产品——由本仓库切出的 v2 版本（D-343）；
+> `python3 review/install_check.py` 会对着已发布的产物重新核对安装路径，[安装指南](docs/INSTALL.md)中说明与之一致。
 
 仓库和 [发行版](https://github.com/seek-hope/TeamAgents/releases/latest) 已公开，无需登录 GitHub，
 也无需 Rust 工具链。安装程序会自动选取最新版本、校验 SHA-256，并将两个程序安装到 `~/.local/bin`：

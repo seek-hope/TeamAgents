@@ -28,6 +28,8 @@ CONSTANTS Instances,       \* {"L"} or {"L","W"}
           AllowMidTurnInput, \* counterfactual: apply input while a request is in flight (pre-D-63)
           PerInstanceFairness, \* counterfactual: fairness as one disjunction over instances (pre-D-63)
           IgnoreDeadline,  \* counterfactual: a runtime that ignores the goal deadline (A35)
+          ReleaseOnCancel, \* counterfactual: a runtime that closes a spent goal and leaves the instance its
+                           \* refusal parked where it was (D-341/D-344)
           ReaskAfterReply, \* counterfactual: re-open a turn when the last word is the model's own (D-65)
           RuntimeTailIsWork, \* counterfactual: treat the runtime's own closing note as unaddressed (D-71)
           MaxEpoch,        \* bound on ResetInstance (keeps the state graph finite)
@@ -300,7 +302,10 @@ FailRequest(i) ==
 \* completion decision of a request (`complete_goal`'s candidate, the check round's
 \* finish), so a settlement cannot be produced out of thin air or by an input alone.
 SettleGoal(i, status) ==
-  /\ Alive(i) /\ status \in {"SUCCEEDED", "FAILED", "BLOCKED", "CANCELLED"}
+  \* CANCELLED is not in this set: the runtime settles what it concluded (SUCCEEDED/FAILED/BLOCKED), while
+  \* CANCELLED comes only from the user's own cancel (CancelGoal), which is what the code does (complete_goal
+  \* and block_goal never write it).
+  /\ Alive(i) /\ status \in {"SUCCEEDED", "FAILED", "BLOCKED"}
   /\ goal.status = "ACTIVE"
   /\ inst[i].tail = "assistant"
   /\ NonTerminalOps(i) = {}                       \* no open operation survives a close
@@ -308,6 +313,23 @@ SettleGoal(i, status) ==
   /\ goal' = [goal EXCEPT !.status = status]
   /\ inst' = [inst EXCEPT ![i].phase = "READY", ![i].tail = "runtime",
                               ![i].settledAfterTurn = inst[i].afterLanding]
+  /\ UNCHANGED <<requests, attempts, ops, approvals, dead>>
+
+\* D-341/D-344: the user's lever on a goal nothing can spend. A goal whose ceiling or deadline is gone stays
+\* ACTIVE for ever, refusing new work (A18's gate) and still listed (A18's known gap); the instance its refusal
+\* parked has no path back. This is the user's cancel: the goal goes terminal and the instances the refusal
+\* parked are released, so the session keeps its workers. `set_lifecycle` keeps resume with the user, so this
+\* does too — and `ReleaseOnCancel = FALSE` is the counterfactual that closes the goal and leaves them parked.
+CancelGoal ==
+  /\ goal.status = "ACTIVE"
+  /\ \A i \in Instances : inst[i].activeReq = nil           \* no running work
+  /\ \A r \in UsedReqs : requests[r].status # "PENDING"
+  /\ \A o \in Ops : ops[o].status \notin OpNonTerminal
+  /\ goal' = [goal EXCEPT !.status = "CANCELLED"]
+  /\ inst' = [ j \in Instances |->
+                 IF ReleaseOnCancel /\ inst[j].lifecycle = "PARKED"
+                   THEN [inst[j] EXCEPT !.lifecycle = "ACTIVE"]
+                   ELSE inst[j] ]
   /\ UNCHANGED <<requests, attempts, ops, approvals, dead>>
 
 \* reset: new epoch closes the old execution, reservations released (A24)
@@ -362,7 +384,8 @@ Next ==
   \/ \E i \in Instances : Recover(i)
   \/ \E i \in Instances : CancelRequest(i)
   \/ \E i \in Instances : FailRequest(i)
-  \/ \E i \in Instances : SettleGoal(i, CHOOSE x \in {"SUCCEEDED", "FAILED", "BLOCKED", "CANCELLED"} : TRUE)
+  \/ \E i \in Instances : SettleGoal(i, CHOOSE x \in {"SUCCEEDED", "FAILED", "BLOCKED"} : TRUE)
+  \/ CancelGoal
   \/ \E i \in Instances : ResetInstance(i)
   \/ \E i \in Instances : \E l \in {"ACTIVE", "PAUSED", "PARKED", "TERMINATED"} : SetLifecycle(i, l)
   \/ Stutter   \* the system is open-ended: an idle step is always possible
@@ -511,6 +534,14 @@ QueuedInputEntersTheContext ==
 NoRequestAfterDeadline ==
   [][ \A i \in Instances : (inst[i].phase # "MODEL_PENDING" /\ inst'[i].phase = "MODEL_PENDING") =>
         ~goal.deadlinePassed ]_vars
+
+\* D-341/D-344: closing a goal nothing can spend gives the session its workers back — the step that makes the
+\* goal CANCELLED may not leave an instance parked behind it. Every positive config sets `ReleaseOnCancel =
+\* TRUE`; the control that drops it must be refuted. (One goal per session in this model, so the release is
+\* stated over every instance; the code releases the instances that goal\'s refusal parked.)
+CancelledGoalReleasesParkedInstances ==
+  [][ (goal.status # "CANCELLED" /\ goal' = [goal EXCEPT !.status = "CANCELLED"])
+      => \A i \in Instances : inst'[i].lifecycle # "PARKED" ]_vars
 
 \* §6.1: an advancing executor always holds the current revision
 StaleExecutorRejected ==

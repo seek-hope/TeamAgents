@@ -7,7 +7,7 @@ model probe sets and the three formal gates).
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 115 / engine 288 / tui 36 test targets) and `make pty` passes — re-measured 2026-09-29: `pty v2 smoke: ok`, rc 0, 41 s, credential-free; both are
+`make check` is green (core 117 / engine 289 / tui 36 test targets) and `make pty` passes — re-measured 2026-09-29: `pty v2 smoke: ok`, rc 0, 41 s, credential-free; both are
 preconditions for every item below. `make check` includes `make language-check`, which fails on non-English
 characters outside the two documented exceptions (`README.zh-CN.md` and the frozen material under
 `review/eval`).
@@ -130,20 +130,29 @@ amended (D-49/D-50).
 
 ## Known gaps (found while auditing the documented surface, 2026-09-25)
 
-- **A goal whose budget is exhausted stays `ACTIVE` for ever, and the user has no lever to close it.** Found by
+- ~~**A goal whose budget is exhausted stays `ACTIVE` for ever, and the user has no lever to close it.**~~
+  **Delivered since D-344** (the operator's decision, D-341). The gap, in the record's own words, was found by
   running the product (D-278/D-280, 2026-09-28): the self-refine session's own state root carries three such
   goals — `goal-s-main` `ACTIVE` at 1,926,270 of a 2,000,000 ceiling, `goal-task3` `ACTIVE` at 5,994,688 of
   6,000,000 and `goal-task4` `ACTIVE` at 9,648,008 of 12,000,000 — each detached from every instance, each
   unable to accept a new request (A18's gate refuses it and parks the instance with the ceiling as the reason),
-  and each still listed as the status `goals list` reports. Only the Leader's own `complete_goal`/`block_goal` can
-  settle a goal, and a parked instance with an exhausted goal has no path back to either, so a session
-  accumulates goals that are `ACTIVE` in the record and dead in fact. The **reporting** half is decision-free and
-  **delivered since D-285**: `goals list` now shows each goal's usage against its ceiling and, for an `ACTIVE`
-  goal the record shows a refusal for, says why it cannot accept a new request (A18's ceiling, A35's deadline) —
-  no lever, no new read, no new field in the JSON report; a
-  **cancel/close lever** for the user is new protocol surface — `create_goal` has no counterpart and `goals` has
-  no verb — so which shape it takes, and whether the runtime should instead close a goal whose ceiling is
-  reached rather than parking its instance for ever, **needs the user's word** (D-267 owns the goal surface).
+  and each still listed as the status `goals list` reports; only the Leader's own `complete_goal`/`block_goal`
+  could settle a goal, and a parked instance with an exhausted goal had no path back to either. The
+  **reporting** half is decision-free and **delivered since D-285**: `goals list` shows each goal's usage
+  against its ceiling and, for an `ACTIVE` goal the record shows a refusal for, says why it cannot accept a new
+  request (A18's ceiling, A35's deadline). The **lever** is `teamagents goals cancel --id ID`: the control
+  plane's `cancel_goal` settles the goal terminal — `CANCELLED`, the one status of the lifecycle's four that
+  reports the user's own decision rather than a runtime conclusion — and releases the instances that goal's
+  refusal parked, so the session keeps its workers. It answers what it cannot do with a reason (`goal X is not
+  in this session`; `goal X is SUCCEEDED, not ACTIVE: a settled goal cannot be cancelled`; `goal X still carries
+  running work …`) and stays with the user, exactly as `set_lifecycle` does: the system may park, never resume.
+  Pinned by `control::cancel_goal_closes_a_spent_goal_and_releases_the_instance_it_parked`,
+  `control::cancel_goal_refuses_running_work_a_settled_goal_and_an_unknown_id`,
+  `cli::goals_cancel_closes_a_spent_goal_and_the_parked_leader_works_again` (the real binary against a real
+  daemon) and formally by `V2Control::CancelledGoalReleasesParkedInstances`, whose control
+  `MC_control_cancel.cfg` `make verify-model-counterexamples` must refute. Whether the *runtime* should also
+  close a goal whose ceiling is reached instead of parking its instance for ever stays the user's word (D-267
+  owns the goal surface), as does a re-attach.
 
 - ~~**Nothing stops a service a settled command left behind.**~~ **Delivered since D-251.** D-41's explicit-only cleanup now has its lever: `teamagents runners stop --service --yes [--id JOB]` signals the process group the command created (the group id is the journal's recorded child, and the runner makes that child its group leader with `.process_group(0)`), and the listing's `service` column shows how many processes the group still holds. The gap's own suggested shape — "re-open a job directory and issue one best-effort, identity-verified `signal_group`, the path the runner already has for `OUTCOME_UNKNOWN`" — does **not** work for the case it names, which is why the rule is different: `signal_group` re-verifies the recorded child (A15), and a *settled* job's child is gone by definition (the code that can rely on the id says so: "the direct child is not reaped yet, so its group ID cannot be reused", `tools.rs`). After the reap the kernel may hand the pid out again, so the anchor here is **when the group's members were born**: a terminal journal, the same boot, at least one live member, and every member predating the job's own end — a reused id cannot pass, because its members are newer. It refuses a job that is not settled (a running command is work, not a leftover) and needs `--yes`, because it signals processes rather than asking a runner. Measured live (`python3 review/dogfood/runners.py`, credential-free, in `make probe-offline`): a scripted `sh -c '… sleep 30 & …'` leaves one member, the census says `service: 1`, the stop without `--yes` is exit 2, the stop with it reports `service stopped: 1 process(es)`, and the probe's own `/proc` check — not the verb's — sees that member gone while the census drops to 0; the refusal on a job that is still running is measured in the same run. Deterministic half (with the runner still alive *and* already retired): `jobs_runner::the_runners_verb_stops_the_service_a_settled_command_left_behind`, `a_service_stop_refuses_a_job_that_is_not_settled`, and the identity rule alone against a forged journal (`jobs::tests::a_group_whose_members_are_newer_than_the_job_is_never_signalled` — the reuse shape no test can arrange for real). Formally `V2Jobs`' `OnlyTheJobsOwnGroupIsSignalled` and `NoLiveCommandWasSignalled`, each refuted by its own control. Out of reach **by design**: a service that daemonized itself (`setsid`) leaves the group and the product does not hunt it (the same `ponytail:` note the synchronous shell path carries).
 
@@ -181,15 +190,22 @@ amended (D-49/D-50).
   evidence about *new* leaks under `make test`'s snapshot/audit pair (which is what the gate enforces) and
   not about the host's leftovers.
 
-- **The published release is the earlier implementation, and shares the tree's version.** `review/install_check.py` verifies the
-  documented install path end to end (mechanics and the refusal above), and the published `v0.1.2` artifact it installs is the
-  *pre-v2* product: its `--help` is not in English and still offers `validate`, `sessions prune`, `--plain`, `--resume` and
-  `--team`, none of which the documented surface has (D-52/D-73 removed them), so "install the latest release" does not install
-  what the README and `docs/USER-GUIDE.md` describe. **The version bump that step needed is done (D-260)**: the three crates
-  and their lock files now say `0.2.0` (`cargo check --locked` green on all three), so `v0.2.0` is a tag the workflow accepts —
-  the only remaining step is pushing it, which is the user's decision, and the four caveat statements stay until it is pushed. The machinery **was broken until D-216**: the workflow's package step copied `TeamAgents-Implementation-Plan.zh-CN.md`, a file the v2 tree does not carry, so a tag would have failed there under `set -eu` before building anything — fixed, and `review/build_references.py` now checks every file the workflow copies. With that fixed, the machinery is re-runnable **and, since D-217, rehearsed rather than read**: `.github/workflows/release.yml` builds musl-static binaries,
-  packages the docs and `install.sh`, checksums them, smoke-installs the exact archive and publishes the assets, and `make release-rehearsal` (`review/release_rehearsal.py`, D-217) runs all of that except the publish against this tree — version gate, musl release build, archive, checksums and smoke — measured 2026-09-27 at **5 m 26 s** cold with a **5,712 KiB** archive and a green smoke, and that run found the smoke half-isolated (it set only `XDG_CONFIG_HOME`, so `init` prepared its state root under the runner's real home; both smoke lines set `XDG_STATE_HOME` now); cutting the
-  release is the user's decision (D-203; `review/release_artifact.py` now holds the same fact to both READMEs, which had recommended this install with no caveat). Until then `docs/INSTALL.md` says the install docs describe the tree, not the artifact.
+- ~~**The published artifact was an earlier generation of the product, and shared the tree's version.**~~
+  **Delivered (D-343, 2026-09-29): the release is cut from this tree and the four caveat statements came out with
+  it.** `review/install_check.py` verifies the documented install path end to end (mechanics and the refusal
+  above), and the published `v0.2.0` artifact is built from the v2 layout, so "install the latest release" now
+  installs what the README and `docs/USER-GUIDE.md` describe. The history that made it a gap stays in the record:
+  the workflow's package step copied `TeamAgents-Implementation-Plan.zh-CN.md`, a file the v2 tree does not carry,
+  so a tag would have failed there under `set -eu` before building anything — fixed in D-216, and
+  `review/build_references.py` now checks every file the workflow copies. With that fixed the machinery was
+  **rehearsed rather than read** (D-217): `.github/workflows/release.yml` builds musl-static binaries, packages
+  the docs and `install.sh`, checksums them, smoke-installs the exact archive and publishes the assets, and `make
+  release-rehearsal` (`review/release_rehearsal.py`) runs all of that except the publish against this tree —
+  version gate, musl release build, archive, checksums and smoke; the run on the released commit produced a
+  **6,024 KiB** archive and a green install-and-run smoke. The audit's direction since: `review/release_artifact.py`
+  reads the tags in this clone and now requires the documents to **not** claim that the published release is
+  another generation — with `v0.2.0` the newest tag, those four statements are gone, and the audit fails if one
+  comes back.
 
 - ~~**A worktree member's branch has no merge surface.**~~ **Delivered since D-252.** `teamagents instances merge --id ID` brings a `git_worktree` member's branch into the session's own working tree. The branch name is read from the member's own record (`<state root>/instances/<id>/workspace.json`, written when the instance was prepared, D-76) instead of being guessed or asked of git, and the merge is a *local* git operation on the session's tree — not a session-state transition — so it runs in the client and the daemon is only read (for the member's live phase). Three refusals, each naming what it found: the member is in the middle of a turn (a running member is writing the very files the merge would bring in — wait for it, pause it, or cancel its task); the member's checkout still holds uncommitted changes (the merge carries the *branch*, so that work would be left behind — the workspace module's "nothing in a member's directory is dropped silently" rule, the same one retirement applies to deletion); and the instance has no branch at all (a shared/isolated member, or the session's leader, which works in the session's own tree). A merge that ends in conflicts is reported with git's own message and left **in progress** to resolve or abort; the member's branch is untouched. Evidence: the real binary against a real daemon and a real repository — `v2_daemon::the_instances_merge_lever_brings_a_worktree_members_branch_into_the_session_tree` measures the mid-turn refusal, the merge itself (the member's committed file landing in the session tree, under a `merged by the user` commit), the dirty-checkout refusal and the leader refusal — and the live half is `review/dogfood/workspace.py`, which since D-252 merges through the product's own lever instead of the by-hand `git merge` it used to run (measured 2026-09-28 with DeepSeek: exit 0, the branch named, the member's `report.md` in the session tree, and the worktree retired by the running supervisor). Formally `tla/V2Workspace.tla` pins `UncommittedWorkIsNeverMerged`, `NoMergeWhileATurnRuns` and `RetirementNeverBuriesWork`, each refuted by its own control. What stays open next to it: nothing merges *back* into a member, and a conflict is still the user's to resolve (the design lets a Leader do the same work through `shell@workspace`).
 

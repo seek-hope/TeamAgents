@@ -91,14 +91,15 @@ the handler re-checks who may do this rather than trusting the request.
 | `register_check_runs` | `checks`, `goal_id`, `instance_id`, `round` | yes | `core/src/v2/control.rs:157` |
 | `repair_completion` | `failures`, `goal_id`, `instance_id`, `round` | yes | `core/src/v2/control.rs:158` |
 | `block_goal` | `goal_id`, `instance_id`, `reason` | yes | `core/src/v2/control.rs:159` |
-| `close_completion` | `instance_id` | no | `core/src/v2/control.rs:160` |
-| `artifact_abandon` | `id` | yes | `core/src/v2/control.rs:161` |
-| `set_lifecycle` | `instance_id`, `lifecycle`, `reason` | yes | `core/src/v2/control.rs:162` |
-| `artifact_stage` | `digest`, `id`, `kind`, `owner_ref`, `owner_scope`, `size`, `storage_ref` | no | `core/src/v2/control.rs:163` |
-| `artifact_publish` | `id` | no | `core/src/v2/control.rs:164` |
-| `artifact_gc_claim` | `limit` | no | `core/src/v2/control.rs:165` |
-| `artifact_collect` | `id` | no | `core/src/v2/control.rs:166` |
-| `prune_history` | `days`, `evidence`, `now` | no | `core/src/v2/control.rs:167` |
+| `cancel_goal` | `goal_id` | yes | `core/src/v2/control.rs:160` |
+| `close_completion` | `instance_id` | no | `core/src/v2/control.rs:161` |
+| `artifact_abandon` | `id` | yes | `core/src/v2/control.rs:162` |
+| `set_lifecycle` | `instance_id`, `lifecycle`, `reason` | yes | `core/src/v2/control.rs:163` |
+| `artifact_stage` | `digest`, `id`, `kind`, `owner_ref`, `owner_scope`, `size`, `storage_ref` | no | `core/src/v2/control.rs:164` |
+| `artifact_publish` | `id` | no | `core/src/v2/control.rs:165` |
+| `artifact_gc_claim` | `limit` | no | `core/src/v2/control.rs:166` |
+| `artifact_collect` | `id` | no | `core/src/v2/control.rs:167` |
+| `prune_history` | `days`, `evidence`, `now` | no | `core/src/v2/control.rs:168` |
 
 ### Every field the protocol carries in one object, and where it is built
 

@@ -2409,6 +2409,137 @@ fn the_goal_surface_lists_and_opens_goals_through_the_daemon() {
     assert!(out.contains("opened goal goal-third (1 required check(s))"), "{out}");
 }
 
+/// D-341/D-344: the user's lever on a goal nothing can spend — A18's known gap. A goal whose ceiling or
+/// deadline is gone stays `ACTIVE` for ever, refusing new work and still listed as the status `goals list`
+/// reports, and the instance its refusal parked has no path back; `goals cancel --id ID` is the missing half.
+/// It settles the goal terminal (`CANCELLED`) and releases the instances that goal's refusal parked, and it
+/// answers what it cannot do with a reason instead of failing silently.
+#[test]
+fn goals_cancel_closes_a_spent_goal_and_the_parked_leader_works_again() {
+    let root = Scratch::new("goals-cancel");
+    let (config_home, state, ws) = (root.join("config"), root.join("root"), root.join("ws"));
+    std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
+    std::fs::create_dir_all(&ws).unwrap();
+    std::fs::write(
+        config_home.join("teamagents/config.toml"),
+        "[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\n\
+         api_key_env = \"TA_CANCEL_KEY\"\nbase_url = \"http://127.0.0.1:1/v1\"\ntimeout = 5\n",
+    )
+    .unwrap();
+    let env = |command: &mut Command| {
+        command
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("XDG_STATE_HOME", root.join("state"))
+            .env("TA_CANCEL_KEY", "test-value");
+    };
+    let mut daemon = Command::new(env!("CARGO_BIN_EXE_teamagents"));
+    env(&mut daemon);
+    let daemon = daemon
+        .args(["daemon", "--state-root"])
+        .arg(&state)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("start the daemon");
+    let mut daemon_guard = Daemon(daemon);
+    let socket = state.join("daemon.sock");
+    for _ in 0..200 {
+        if socket.exists() && std::os::unix::net::UnixStream::connect(&socket).is_ok() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let report = |args: &[&str]| -> (i32, String, String) {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_teamagents"));
+        env(&mut command);
+        let output = command.args(args).arg("--state-root").arg(&state).output().expect("run the CLI");
+        (
+            output.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    };
+    let json = |text: &str| -> serde_json::Value { serde_json::from_str(text).expect("JSON report") };
+    let instance = |report: &serde_json::Value, id: &str| -> serde_json::Value {
+        report["instances"]
+            .as_array()
+            .and_then(|rows| rows.iter().find(|row| row["id"] == id))
+            .cloned()
+            .unwrap_or_default()
+    };
+    let goal = |report: &serde_json::Value, id: &str| -> serde_json::Value {
+        report["goals"].as_array().and_then(|rows| rows.iter().find(|row| row["id"] == id)).cloned().unwrap_or_default()
+    };
+
+    // the premise: the session's leader exists and can work
+    let (code, out, stderr) = report(&["instances", "--json"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(instance(&json(&out), "i-leader")["lifecycle"], serde_json::json!("ACTIVE"), "{out}");
+
+    // the user's own goal on the leader, then the park a spent goal's refusal causes (the driver parks
+    // through `set_lifecycle` with the reason; the user's own park reaches the same state)
+    let (code, out, stderr) = report(&["goals", "open", "--id", "g-cancel", "--attach", "i-leader"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(out.contains("opened goal g-cancel"), "{out}");
+    let mut rpc = Rpc::connect(&socket);
+    let parked = rpc.command(
+        "park-leader",
+        "set_lifecycle",
+        serde_json::json!({"instance_id": "i-leader", "lifecycle": "PARKED",
+                           "reason": "goal g-cancel ceiling spent"}),
+    );
+    assert_eq!(parked["ok"], serde_json::json!(true), "{parked}");
+    let (code, out, stderr) = report(&["instances", "--json"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(instance(&json(&out), "i-leader")["lifecycle"], serde_json::json!("PARKED"), "{out}");
+
+    // the lever: the goal closes, the leader is released
+    let (code, out, stderr) = report(&["goals", "cancel", "--id", "g-cancel"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(out.contains("cancelled goal g-cancel"), "{out}");
+    assert!(out.contains("released i-leader"), "{out}");
+    let (code, out, stderr) = report(&["goals", "--json"]);
+    assert_eq!(code, 0, "{stderr}");
+    let after = json(&out);
+    assert_eq!(goal(&after, "g-cancel")["status"], serde_json::json!("CANCELLED"), "{after}");
+    assert_eq!(goal(&after, "g-cancel")["attached_instances"], serde_json::json!([]), "{after}");
+    // and the instance it parked accepts new work again (ACTIVE is what the dispatch gate requires)
+    let (code, out, stderr) = report(&["instances", "--json"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(instance(&json(&out), "i-leader")["lifecycle"], serde_json::json!("ACTIVE"), "{out}");
+    let (code, _, stderr) = report(&["goals", "open", "--id", "g-next", "--attach", "i-leader"]);
+    assert_eq!(code, 0, "{stderr}");
+
+    // the receipt rule the surface already has: the command id is derived from the goal, so a second run
+    // replays the stored success rather than releasing twice
+    let (code, out, stderr) = report(&["goals", "cancel", "--id", "g-cancel"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(out.contains("cancelled goal g-cancel"), "{out}");
+
+    // what it cannot do, it says with a reason: an id nothing resolves to, a goal another path settled, and a
+    // missing --id (usage, not the session's refusal)
+    let (code, _, stderr) = report(&["goals", "cancel", "--id", "ghost"]);
+    assert_eq!(code, 1, "{stderr}");
+    assert!(stderr.contains("not in this session"), "{stderr}");
+    let (code, _, stderr) = report(&["goals", "open", "--id", "g-closed", "--attach", "i-leader"]);
+    assert_eq!(code, 0, "{stderr}");
+    let settled = rpc.command(
+        "settle-g-closed",
+        "complete_goal",
+        serde_json::json!({"goal_id": "g-closed", "instance_id": "i-leader"}),
+    );
+    assert_eq!(settled["ok"], serde_json::json!(true), "{settled}");
+    let (code, _, stderr) = report(&["goals", "cancel", "--id", "g-closed"]);
+    assert_eq!(code, 1, "{stderr}");
+    assert!(stderr.contains("not ACTIVE"), "{stderr}");
+    let (code, _, stderr) = report(&["goals", "cancel"]);
+    assert_eq!(code, 2, "{stderr}");
+    assert!(stderr.contains("needs --id"), "{stderr}");
+
+    daemon_guard.stop();
+    std::fs::remove_dir_all(&root).expect("the state root goes away with its daemon");
+}
+
 /// D-284, the reporting half of the budget-exhausted-goal gap in `docs/ACCEPTANCE.md`: a goal the runtime will
 /// refuse used to read exactly like one taking work — `ACTIVE`, the status column's only word — while the
 /// `goals` read already carried the numbers that show it. The plain line now carries the goal's budget and,

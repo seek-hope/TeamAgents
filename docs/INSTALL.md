@@ -5,13 +5,10 @@ neither Rust, Python nor Node.js. Model services require your own credentials.
 
 ## 1. Download and install
 
-> **Note (2026-09-26):** the latest published release (`v0.1.2`) is the **earlier implementation** — its help
-> offers `validate`, `sessions prune`, `--plain`, `--resume` and `--team`, and it predates the v2 product this
-> guide describes. The release machinery is in place (`.github/workflows/release.yml` builds, checksums and
-> smoke-installs the archive), so a v2 release only needs a version bump and a tag; until one is published,
-> build the product from source (`make build`) to get what is documented here. `python3 review/install_check.py`
-> verifies this install path end to end (including that a corrupted archive is refused without touching an
-> existing installation).
+> **Note (2026-09-29):** the latest published release (`v0.2.0`) **is** this product generation — the v2 tree and
+> the surface this guide describes, cut from this repository by D-343. `python3 review/install_check.py`
+> verifies the path end to end against that artifact (download, SHA-256, both binaries and the refusal of a
+> corrupted archive), and `make build` still produces the same binaries from source.
 
 
 Run the [install command from the README](../README.md#latest-release-recommended): it picks the latest

@@ -23,6 +23,11 @@ pub enum GoalCommand {
     /// delegation charge to it (D-266) — and optionally carrying the user's own required checks (§8: only the
     /// user or the project bootstrap predefines them).
     Open { id: String, attach: Option<String>, required_checks: Vec<Json>, deadline: Option<f64> },
+    /// Close a goal the user names (D-341/D-344): a goal whose ceiling or deadline is spent stays `ACTIVE`
+    /// for ever, refusing new work and still listed; the instance its refusal parked has no path back, so
+    /// before this the user's only way out was to abandon the session. The verb settles the goal terminal
+    /// (`CANCELLED`) and releases the instances that goal's refusal parked.
+    Cancel { id: String },
 }
 
 pub struct GoalOptions {
@@ -90,6 +95,18 @@ pub fn execute(options: &GoalOptions) -> Result<Json, (i32, String)> {
             let checks = row["limits"]["required_checks"].as_array().map(Vec::len).unwrap_or(0);
             Ok(json!({"session_id": session["session_id"], "state_root": session["state_root"],
                       "goal_id": id, "attached": attach, "checks": checks, "result": result}))
+        }
+        GoalCommand::Cancel { id } => {
+            if id.is_empty() {
+                return Err((2, "goals cancel needs a non-empty --id".into()));
+            }
+            // the goal id is the command's own identity: a replayed cancel under the same id returns the
+            // stored receipt, and a *different* goal under a replayed id is refused by the receipt check
+            let result = client
+                .command(&format!("goal-cancel-{id}"), "cancel_goal", json!({"goal_id": id}))
+                .map_err(|error| (1, format!("goals cancel: the session refused it: {error}")))?;
+            Ok(json!({"session_id": session["session_id"], "state_root": session["state_root"],
+                      "goal_id": id, "result": result}))
         }
     }
 }
@@ -179,6 +196,17 @@ fn print_report(options: &GoalOptions, report: &Json) {
                     },
                 );
             }
+        }
+        GoalCommand::Cancel { id } => {
+            let released: Vec<String> = report["result"]["released"]
+                .as_array()
+                .map(|list| list.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+                .unwrap_or_default();
+            println!(
+                "cancelled goal {}{}",
+                report["goal_id"].as_str().unwrap_or(id),
+                if released.is_empty() { String::new() } else { format!("; released {}", released.join(", ")) },
+            );
         }
         GoalCommand::Open { id, .. } => {
             println!(

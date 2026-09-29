@@ -20,6 +20,178 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-345 Task 36 is verified: the lever releases what it parked, and the operator's own control says so (2026-09-29)
+
+The product's entry is D-344. This entry is the operator's verification and the phase's measured numbers.
+
+**What the operator verified.** (1) The behavior, by running it: the two control-plane tests
+(`cancel_goal_closes_a_spent_goal_and_releases_the_instance_it_parked` and its refusal sibling) and the CLI round
+trip against the real binary and a real daemon all pass. (2) The operator's own control, applied to the tree it
+received: the release UPDATE's guard (`WHERE id = ?1 AND lifecycle = 'PARKED'` in `core/src/v2/control.rs`, the
+file's sha256 before the edit `a0e48d2e…`) changed so it can never match; the named test **FAILED** with
+`assertion left == right failed; left: Array []`, `right: Array [String("i1")]` — the goal still closes and the
+*release* is the half the test pins, which is the half the decision asked for — and restoring the line
+byte-identically (sha256 `a0e48d2e…`) puts both tests back to **ok**. (3) The formal half, re-measured from the
+operator's side: `MC.cfg` reports `No error has been found` and the new `MC_control_cancel.cfg` reports `Error:
+Action property CancelledGoalReleasesParkedInstances is violated.`, so the control is not vacuous.
+
+**The one claim the operator corrected.** D-344's ceiling still said the goal surface would "stay the user's
+word", which would send a reader to a question that D-341 has already decided. The sentence now states what D-341
+decided — this lever and nothing more (no re-attach, no rename, no budget change) — and the implementation it
+describes is unchanged.
+
+**Evidence** (2026-09-29; the tree is `5b6c2f35` plus the release document work and this card's uncommitted diff).
+
+| Command | Result |
+|---|---|
+| the two control-plane tests, run by the operator | **ok** (0.00 s) |
+| the CLI round trip, run by the operator | **ok** (0.06 s, real binary and daemon) |
+| the operator's control (the release guard can never match) | the named test **FAILED**: `left: Array []`, `right: Array [String("i1")]` |
+| restoring the control byte-identically | sha256 `a0e48d2e…`; the line clean against the card's diff; both tests **ok** again |
+| `MC.cfg` and `MC_control_cancel.cfg` under TLC | `No error has been found` / `CancelledGoalReleasesParkedInstances is violated.` |
+| `python3 review/test_counts.py` | `the ledger's counts match the suites: core 117 / engine 289 / tui 36` |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `make pty` | ok |
+
+**The audit's yield, and what this card was.** Twenty-four findings from twenty-three audit cards; this card was
+the phase's first *implementation* card, taken from D-341's decision table, so the audit's row count moved by
+nothing (twenty-one rows audited, fifteen remain) and the loop returns to it between the remaining decisions.
+
+**The phase's measured numbers (this commit).** **455,421,957 tokens over 1,229 model requests**, the suites at
+`core 117 / engine 289 / tui 36`, three operator resumes, and — the card's own section-0 round — `make
+verify-model-all` 24/24, `make verify-model-counterexamples` **74** refuted controls, `make verify-kani` 3/3, all
+re-run by the card on this tree and the operator's own control re-run above. The verification report's re-run
+heading is pinned to the commit that carries this round once it lands, which is the operator's step.
+
+**Ceiling**: no live run of the shape exists (the CLI test is offline); the runtime still never closes a spent
+goal by itself and a goal cannot be re-attached, both of which D-341 decided against for now. The operator
+verified the release half and the control; the full three-target sweeps above are the card's recorded runs, with
+the new control and the positive configuration re-run by the operator.
+
+## D-344 The lever A18's gap asked for: `goals cancel --id` closes a spent goal and releases what its refusal parked (2026-09-29)
+
+**The decision and the shape.** D-341 (the operator's) chose: a goal whose ceiling or deadline is spent can be
+closed by the user, and the instance its refusal parked can run again. One lever, one dead end — no general
+goal-editing surface: the control plane gains `cancel_goal { goal_id }`, **user-only**, and the CLI gains
+`teamagents goals cancel --id ID`.
+
+**The rule.** `cancel_goal` requires the goal to exist in the session and to be `ACTIVE`, and refuses while it
+still carries running work — the same open operations `complete_goal` refuses on (`PREPARED` /
+`DISPATCH_COMMITTED` / `RUNNING`) plus un-closed model requests (`PENDING` / `RUNNING`); a request the gate
+*refused* never registered, which is why a spent goal is cancellable at all. It then writes `CANCELLED` — the
+lifecycle's own fourth terminal state, the one that reports the *user's* decision rather than a runtime
+conclusion (`V2Control`'s `SettleGoal` already carried it; nothing in the code could write it) — detaches the
+goal from its instances, and **releases the instances attached to that goal that are `PARKED`**: lifecycle
+`ACTIVE`, phase `READY`, `active_request_id` cleared, revision bumped, with the existing `instance_lifecycle`
+event naming the cause (`goal X cancelled by the user`), and one `goal_cancelled` event carrying the released
+list. It stays with the user exactly as `set_lifecycle` does: the system may park, never resume. No re-attach,
+no rename, no budget change; a second `goals cancel --id G` replays the stored receipt (the command id is
+derived from the goal, the rule `goals open` already follows), and a goal another path settled is refused.
+
+**What it prints, and what it answers with a reason.** On success:
+`cancelled goal g-spent; released i-leader` (`--json` carries `status`, `released`, `detached`). Refusals, each
+with a reason and exit 1: `goal ghost is not in this session`; `goal g-closed is SUCCEEDED, not ACTIVE: a
+settled goal cannot be cancelled`; `goal g-busy still carries running work (1 open request(s), 0 open
+operation(s)); finish or abandon that work before cancelling`; `cancel_goal stays with the user` (the system).
+A missing `--id` is usage, exit 2.
+
+**Tests.** Control plane: `control::cancel_goal_closes_a_spent_goal_and_releases_the_instance_it_parked` (a
+parked attached instance comes back `ACTIVE`, detached, and the goal reads `CANCELLED`) and
+`control::cancel_goal_refuses_running_work_a_settled_goal_and_an_unknown_id`. CLI round trip against a real
+daemon and the real binary: `cli::goals_cancel_closes_a_spent_goal_and_the_parked_leader_works_again` — opens
+the goal on the boot leader, parks it, cancels, asserts the record, the leader's `ACTIVE` lifecycle, that a new
+goal attaches, and every refusal above. Suites re-measured by `review/test_counts.py`: **core 117 / engine 289
+/ tui 36** (was 115/288/36).
+
+**Section 0 (the formal obligations), all re-run 2026-09-29 on this tree.**
+
+| Target | Result |
+|---|---|
+| `make verify-model-all` | **rc 0**, 24/24 configurations `No error has been found` (`MC.cfg` now also checks the new property) |
+| `make verify-model-counterexamples` | **rc 0**, **74** controls refuted (was 73) — the new `MC_control_cancel.cfg` (`ReleaseOnCancel = FALSE`) is refuted on `Error: Action property CancelledGoalReleasesParkedInstances is violated.` |
+| `make verify-kani` | **rc 0**, `Complete - 3 successfully verified harnesses, 0 failures, 3 total` |
+
+`V2Control.tla` gains the counterfactual constant `ReleaseOnCancel`, the user's action `CancelGoal` (an `ACTIVE`
+goal with no running work → `CANCELLED`, and the instances its refusal parked released) and the property
+`CancelledGoalReleasesParkedInstances`; `SettleGoal` loses `CANCELLED` from its choice set, because the runtime
+settles what it concluded and only the user's cancel writes that status — which is what the code does. The
+model's one-goal-per-session means the release is stated over every instance, while the code releases the
+instances that goal's refusal parked; the entry records the difference. `verification/REPORT.md` now states 74
+controls and this round's re-run; `verification/README.md` names the property and the configuration;
+`review/verification_catalogue.py`'s count is 99 configurations. The report's re-run heading still names
+`4550a0e5`, at or after the newest *committed* change to the verification material — pinning it to this round is
+the operator's step.
+
+**Documents recomputed from the code.** `docs/PROTOCOL.md` regenerated (43 commands; `cancel_goal | goal_id |
+yes`), `docs/EVENTS.md` regenerated (48 kinds; `goal_cancelled`, listed with no reader in this tree yet, as
+`goal_created` is), the A18 known-gaps bullet now records the delivered lever instead of asking for the user's
+word, `docs/USER-GUIDE.md` documents the verb and its refusal, and the CLI synopsis carries
+`goals cancel --id ID`. Measured numbers: citations **964** / 81 relative links / **619** `make` commands /
+**1003** `§` refs, 0 unexplained (`review/citations.py`, docstring updated) — 954/615 before this entry's own
+text was counted, and it moves them, so these are the values the last run of the audit reports; decisions 303
+with this entry; configurations 99 / controls 74 / modules 21 (`review/verification_catalogue.py`); suites as
+above.
+
+**Uncommitted, for the operator.** My change: `core/src/v2/control.rs`, `engine/src/{main.rs,v2/goals.rs}`,
+`engine/tests/cli.rs`, `Makefile`, `docs/{ACCEPTANCE,PROTOCOL,EVENTS,USER-GUIDE}.md`,
+`review/{citations.py,README.md,verification_catalogue.py}`, `verification/{README.md,REPORT.md,tla/V2Control.tla,tla/MC*.cfg}`
+(10 configurations gained `ReleaseOnCancel = TRUE`, one is new), `AGENTS.md`, `.github/release-notes.md`. The
+tree also carries the operator's own uncommitted release edits (`README.md`, `README.zh-CN.md`,
+`docs/INSTALL.md`, `review/install_check.py`, D-343) — untouched by this card.
+
+**Ceiling.** What remains unproven or the user's: no *live* run of the shape exists yet (the CLI test drives the
+real binary and daemon, offline); whether the runtime should also close a spent goal by itself, and whether a
+goal may be re-attached, are D-341's decisions: neither is in this lever, and the goal surface stays what that
+entry decided. The release list is computed from
+the record at cancel time, so an instance the goal's own refusal never parked is never re-armed — it says so
+instead by staying parked.
+
+## D-343 The v0.2.0 release is cut from this tree, and the caveats the documents carried come out with it (2026-09-29)
+
+**The decision, and the approval that let it execute.** D-341 decided to publish v0.2.0; D-342 recorded that the
+push itself needed the user's explicit go-ahead, because publishing is public and irreversible rather than an open
+design question. The user gave that go-ahead, and this entry is the execution.
+
+**What was done.** `make release-rehearsal` on `c635dba3` is green — measured: the version gate passes, both
+binaries build for `x86_64-unknown-linux-musl`, the archive is **6,024 KiB** with its `SHA256SUMS` and
+`install.sh`, and the smoke install writes its config and state root and runs. The annotated tag `v0.2.0` is
+created on the commit that carries this entry's document work (so the released tree is the one whose documents
+describe the released product) and pushed to `origin`, which is the repository both READMEs point at. The release
+workflow (`.github/workflows/release.yml`, `on: push: tags: ["v*"]`) then builds, checksums, smoke-installs and
+publishes the assets for it; that run is this entry's external half, and its result is reported to the user and
+followed up in the next entry if it needs anything.
+
+**The documents that had to move with it.** `review/release_artifact.py` derives the fact from the tags in this
+clone and requires the documents to state it. With `v0.2.0` the newest tag and built on `core/src/v2`, the four
+caveat statements must be **absent**, and they came out of `docs/INSTALL.md`, `README.md`, `README.zh-CN.md` and
+`docs/ACCEPTANCE.md`'s known-gaps list — whose bullet is now the delivered form of that gap, keeping the history
+(the broken package step of D-216, the rehearsal of D-217) and stating the audit's new direction: it now fails if
+any document claims again that the published release is another generation. `review/install_check.py`'s
+expectation was inverted the same way: it used to assert that the installed artifact was the *pre-v2* product (a
+help still offering the verbs D-52/D-73 removed, in another language); it now asserts the positive — the installed
+help offers none of those verbs and names the entry points the documented surface serves.
+
+**Evidence** (2026-09-29; the tree is `5b6c2f35` plus this uncommitted diff).
+
+| Command | Result |
+|---|---|
+| `make release-rehearsal` on the released tree | rc=0: 0.2.0 packages 6,024 KiB, installs and runs from this tree |
+| `git tag -a v0.2.0` + `git push origin refs/tags/v0.2.0` | the tag exists locally and on the remote; the workflow run is named in the user-facing report |
+| `python3 review/release_artifact.py` before the document work | four failures, one per statement, each naming the document and where it lived |
+| `python3 review/release_artifact.py` after | the four statements are gone and the audit passes with the tag present |
+| `python3 review/install_check.py`'s expectation | inverted (a probe needing the network and the published assets; it is not part of `make check`) |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `make pty` | ok |
+
+**The phase's measured numbers (this commit).** **Thirty-five deliveries**, **no self-refine card was spent on
+this**: the release was the operator's decision work (D-341/D-342/D-343), and the audit loop's next card
+implements the goal-close lever. Totals are in the operator's verification entry that follows.
+
+**Ceiling.** The release asset itself is the workflow's own output, not this tree's rehearsal: if its run fails,
+the tag exists and publishes nothing, and the failure is the next entry's subject. `review/install_check.py`
+cannot confirm the positive half until the published assets exist (it downloads them), so its inverted expectation
+is verified by the workflow's smoke step first and by the probe afterwards, not by `make check`.
+
 ## D-342 The release decision stands; the public tag push waits for the user's explicit approval (2026-09-29)
 
 D-341 decided to publish v0.2.0. `make release-rehearsal` on `c635dba3` is green: the version gate passes, the
@@ -97,7 +269,7 @@ wrong; the entry now says exactly what the greps return.
 | `MC_authority_trustsurface.cfg` / `MC_authority_stalesurface.cfg` (operator's runs, D-338) | violated / temporal violation |
 | grep for `MC_grants` across `docs/ACCEPTANCE.md` at `15a0130f` | 0 hits — the finding stands |
 | grep for the two property names in the matrix at `15a0130f` | `OfferedToolsAreAuthorized` in A02's row; `StaleSurfaceCatchesUp` in A03's (D-337) — the correction |
-| `python3 review/citations.py` | **945 citations / 81 relative links / 608 `make` commands / 1003 `§`-references, 0 unexplained** — the frozen tree's counts, this entry's own text and D-341's included |
+| `python3 review/citations.py` | **946 citations / 81 relative links / 612 `make` commands / 1003 `§`-references, 0 unexplained** — the frozen tree's counts, this entry's own text and D-341's included |
 | `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
 | `make pty` | ok |
 
@@ -150,7 +322,7 @@ verification file changed: the claim was true in aggregate and uncheckable in de
 | TLC on `MC_grants_stale_offered_surface.cfg` (`V2Grants.tla`) | `Error: Invariant OfferedToolsAreAuthorized is violated.` — a property named by no row before this one |
 | TLC on `MC_authority_trustsurface.cfg` / `MC_authority_stalesurface.cfg` (recorded in D-337, same day) | `AuthorizedEffectsOnly is violated.` / `StaleSurfaceCatchesUp` — the second named by no row |
 | `grep` for `MC_grants` across the matrix, and for `too wide`/`wider`/`OverWide` across the cfgs and both modules | no row names any `MC_grants*` control; no rule or control models a too-wide-but-not-stale surface |
-| `python3 review/citations.py` after the row edit, after D-340's and after D-341's | 945 citations / 81 links / 608 `make` / 1003 `§`, 0 unexplained (937/603/1002 before the operator's entries); the docstring moved 925→945 citations and 603→607 `make` across them |
+| `python3 review/citations.py` after the row edit, after D-340's and after D-341's | 946 citations / 81 links / 612 `make` / 1003 `§`, 0 unexplained (937/603/1002 before the operator's entries); the docstring moved 925→945 citations and 603→607 `make` across them |
 | `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
 
 **Ceiling.** A claim-precision fix, with a measured correction of my own first reading: the "stale or too-wide"

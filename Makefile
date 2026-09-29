@@ -176,7 +176,8 @@ verify-model-all: verify-tools
 verify-model-counterexamples: verify-tools
 	@cd verification/tla && for pair in \
 		MC_authority_badview.cfg:V2Authority.tla MC_authority_trustsurface.cfg:V2Authority.tla \
-		MC_authority_stalesurface.cfg:V2Authority.tla MC_control_midturninput.cfg:V2Control.tla \
+		MC_authority_stalesurface.cfg:V2Authority.tla MC_control_cancel.cfg:V2Control.tla \
+		MC_control_midturninput.cfg:V2Control.tla \
 		MC_control_two_disjunction.cfg:V2Control.tla MC_control_deadline.cfg:V2Control.tla \
 		MC_control_reask.cfg:V2Control.tla MC_control_runtimeTail.cfg:V2Control.tla \
 		MC_control_landing.cfg:V2Control.tla MC_store_adopt.cfg:V2Store.tla \

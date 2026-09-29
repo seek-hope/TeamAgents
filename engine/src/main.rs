@@ -15,6 +15,7 @@ usage: teamagents [--cwd DIR] [--state-root PATH] [--model KEY] [--full-auto]\n\
   teamagents goals [list] [--json]              the goals the session carries (D-267)\n\
   teamagents goals open --id ID [--attach X]    open the next goal, optionally attached to an instance,\n\
       [--check ID=COMMAND]… [--deadline MIN]    with the user's own required checks and a deadline\n\
+  teamagents goals cancel --id ID               close that goal and release the instance its refusal parked\n\
   teamagents approvals approve --id ID          approve that call, once (bound to its arguments)\n\
   teamagents approvals deny --id ID             deny it; the operation fails closed\n\
   teamagents instances [list] [--json]          the session's instances\n\
@@ -763,10 +764,22 @@ fn run_goals(args: &Args) -> i32 {
             let deadline = args.deadline_minutes.map(|minutes| teamagents_core::models::now() + (minutes * 60) as f64);
             GoalCommand::Open { id, attach: args.attach.clone(), required_checks, deadline }
         }
+        "cancel" => {
+            let Some(id) = args.approval_id.clone() else {
+                eprintln!("goals cancel needs --id ID (the goal to close)");
+                return 2;
+            };
+            if args.attach.is_some() || !args.checks.is_empty() || args.deadline_minutes.is_some() {
+                eprintln!("goals cancel takes only --id: it closes the goal and releases what its refusal parked");
+                return 2;
+            }
+            GoalCommand::Cancel { id }
+        }
         other => {
             eprintln!(
-                "goals: unknown command {other:?}; use `teamagents goals [list]` or \
-                 `goals open --id ID [--attach INSTANCE] [--check ID=COMMAND]… [--deadline MINUTES]`"
+                "goals: unknown command {other:?}; use `teamagents goals [list]`, \
+                 `goals open --id ID [--attach INSTANCE] [--check ID=COMMAND]… [--deadline MINUTES]`, or \
+                 `goals cancel --id ID`"
             );
             return 2;
         }

@@ -157,6 +157,7 @@ fn dispatch(
         "register_check_runs" => register_check_runs(tx, session_id, params, identity),
         "repair_completion" => repair_completion(tx, session_id, params, identity),
         "block_goal" => block_goal(tx, session_id, params, identity),
+        "cancel_goal" => cancel_goal(tx, session_id, params, identity),
         "close_completion" => close_completion(tx, session_id, params),
         "artifact_abandon" => artifact_abandon(tx, session_id, params),
         "set_lifecycle" => set_lifecycle(tx, session_id, params, identity),
@@ -3470,6 +3471,100 @@ fn close_completion(tx: &Connection, session_id: &str, params: &Json) -> Result<
 /// Goal completion (§4.2, §8): the open-operation check, goal result and the
 /// outward event commit atomically. The candidate comes from the decision
 /// that proposed it — never re-taken from the model.
+/// The user's lever on a goal nothing can spend (D-341/D-344, A18's known gap).
+/// A goal whose ceiling or deadline is gone stays `ACTIVE` for ever, detached
+/// from every instance, refusing new work (the budget and deadline gates) and
+/// still listed by `goals list`; the instance its refusal parked has no path
+/// back, so the user's only way out was to abandon the session. This closes the
+/// goal terminal — `CANCELLED`, the state the goal lifecycle already carries
+/// (`V2Control.tla`'s `SettleGoal`, and the only one of the four that reports
+/// the user's own decision rather than a runtime conclusion) — and releases the
+/// instances that goal's refusal parked, so the session keeps its workers. It
+/// stays with the user, exactly as `set_lifecycle` does: the system may park,
+/// never resume.
+fn cancel_goal(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
+    if !matches!(identity, Identity::User) {
+        return Err("cancel_goal stays with the user".into());
+    }
+    let goal_id = params["goal_id"].as_str().ok_or("cancel_goal.goal_id required")?;
+    let status: Option<String> = tx
+        .query_row(
+            "SELECT status FROM goals WHERE id = ?1 AND session_id = ?2",
+            rusqlite::params![goal_id, session_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("cancel_goal {goal_id}: {e}"))?;
+    let status = status.ok_or_else(|| format!("goal {goal_id} is not in this session"))?;
+    if status != "ACTIVE" {
+        return Err(format!("goal {goal_id} is {status}, not ACTIVE: a settled goal cannot be cancelled"));
+    }
+    // "Running work" is what `complete_goal` refuses on, plus the requests a
+    // turn is actually occupying. A request the gate *refused* never registered
+    // (`begin_request`'s deadline/budget refusals), which is why a spent goal is
+    // cancellable at all.
+    let open: i64 = tx
+        .query_row(
+            "SELECT COUNT(*) FROM operations WHERE goal_id = ?1 AND status IN ('PREPARED', 'DISPATCH_COMMITTED', 'RUNNING')",
+            [goal_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("goal open ops: {e}"))?;
+    let running: i64 = tx
+        .query_row(
+            "SELECT COUNT(*) FROM model_requests WHERE goal_id = ?1 AND status IN ('PENDING', 'RUNNING')",
+            [goal_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("goal open requests: {e}"))?;
+    if open > 0 || running > 0 {
+        return Err(format!(
+            "goal {goal_id} still carries running work ({running} open request(s), {open} open operation(s)); \
+             finish or abandon that work before cancelling"
+        ));
+    }
+    // The instances this goal's refusal parked: attached to it, and PARKED.
+    // Read before the detach, which is what clears the attachment.
+    let parked: Vec<String> = {
+        let mut stmt = tx
+            .prepare(
+                "SELECT id FROM instances WHERE session_id = ?1 AND active_goal_id = ?2
+                 AND lifecycle = 'PARKED' ORDER BY id",
+            )
+            .map_err(|e| format!("cancel_goal parked: {e}"))?;
+        let rows = stmt
+            .query_map(rusqlite::params![session_id, goal_id], |row| row.get(0))
+            .map_err(|e| format!("cancel_goal parked: {e}"))?;
+        rows.collect::<Result<Vec<String>, _>>().map_err(|e| format!("cancel_goal parked: {e}"))?
+    };
+    tx.execute("UPDATE goals SET status = 'CANCELLED' WHERE id = ?1", [goal_id])
+        .map_err(|e| format!("goal cancel: {e}"))?;
+    let detached = detach_goal(tx, goal_id)?;
+    let mut released: Vec<String> = Vec::new();
+    for instance in &parked {
+        let changed = tx
+            .execute(
+                "UPDATE instances SET lifecycle = 'ACTIVE', phase = 'READY', active_request_id = NULL,
+                                      revision = revision + 1
+                 WHERE id = ?1 AND lifecycle = 'PARKED'",
+                [instance],
+            )
+            .map_err(|e| format!("release {instance}: {e}"))?;
+        if changed == 1 {
+            event(
+                tx,
+                session_id,
+                "instance_lifecycle",
+                instance,
+                &json!({"lifecycle": "ACTIVE", "reason": format!("goal {goal_id} cancelled by the user")}),
+            )?;
+            released.push(instance.clone());
+        }
+    }
+    event(tx, session_id, "goal_cancelled", goal_id, &json!({"goal_id": goal_id, "released": released}))?;
+    Ok(json!({"goal_id": goal_id, "status": "CANCELLED", "released": released, "detached": detached}))
+}
+
 fn complete_goal(tx: &Connection, session_id: &str, params: &Json) -> Result<Json, String> {
     let goal_id = params["goal_id"].as_str().ok_or("complete_goal.goal_id required")?;
     let instance_id = params["instance_id"].as_str().ok_or("complete_goal.instance_id required")?;
@@ -6981,6 +7076,90 @@ mod tests {
             .expect("recomplete");
         assert_eq!(again["already_closed"], json!(true));
         cleanup(&path);
+    }
+
+    #[test]
+    fn cancel_goal_closes_a_spent_goal_and_releases_the_instance_it_parked() {
+        // A18's gap: a goal whose ceiling or deadline is gone stays ACTIVE for
+        // ever and the instance its refusal parked has no path back. The user's
+        // lever closes the goal (CANCELLED) and gives the instance back.
+        let (mut ctl, path) = control("goal-cancel");
+        create_instance(&mut ctl, "i1");
+        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1", "instance_id": "i1"})), Identity::User).expect("goal");
+        // the refusal path parks the instance, as the driver does when the gate
+        // answers `deadline_refused` (set_lifecycle by the system)
+        ctl.submit(
+            cmd(
+                "p1",
+                "set_lifecycle",
+                json!({"instance_id": "i1", "lifecycle": "PARKED", "reason": "goal g1 deadline passed"}),
+            ),
+            Identity::System,
+        )
+        .expect("park");
+        assert_eq!(lifecycle_of(&ctl, "i1"), "PARKED");
+        let closed = ctl.submit(cmd("cg-1", "cancel_goal", json!({"goal_id": "g1"})), Identity::User).expect("cancel");
+        assert_eq!(closed["status"], json!("CANCELLED"));
+        assert_eq!(closed["released"], json!(["i1"]));
+        assert_eq!(closed["detached"], json!(1));
+        assert_eq!(goal_status_of(&ctl, "g1"), "CANCELLED");
+        // the instance accepts new work again, and the goal no longer owns it
+        assert_eq!(lifecycle_of(&ctl, "i1"), "ACTIVE");
+        assert_eq!(phase_of(&ctl, "i1"), "READY");
+        let attached: Option<String> = ctl
+            .connection()
+            .query_row("SELECT active_goal_id FROM instances WHERE id = ?1", ["i1"], |row| row.get(0))
+            .unwrap();
+        assert_eq!(attached, None);
+        // a second cancel says why instead of repeating the release
+        let again = ctl.submit(cmd("cg-2", "cancel_goal", json!({"goal_id": "g1"})), Identity::User).unwrap_err();
+        assert!(again.contains("not ACTIVE"), "{again}");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn cancel_goal_refuses_running_work_a_settled_goal_and_an_unknown_id() {
+        let (mut ctl, path) = control("goal-cancel-refuse");
+        create_instance(&mut ctl, "i1");
+        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1", "instance_id": "i1"})), Identity::User).expect("goal");
+        // an id nothing resolves to
+        let unknown = ctl.submit(cmd("cg-x", "cancel_goal", json!({"goal_id": "ghost"})), Identity::User).unwrap_err();
+        assert!(unknown.contains("not in this session"), "{unknown}");
+        // a turn in flight is running work: the request never closes, so the goal
+        // cannot be closed under it
+        ctl.submit(
+            cmd("b-1", "begin_request", json!({"instance_id": "i1", "request_id": "r1", "revision": 1})),
+            Identity::Instance("i1".into()),
+        )
+        .expect("begin"); // the attach above bumped the revision
+        let busy = ctl.submit(cmd("cg-busy", "cancel_goal", json!({"goal_id": "g1"})), Identity::User).unwrap_err();
+        assert!(busy.contains("running work"), "{busy}");
+        assert_eq!(goal_status_of(&ctl, "g1"), "ACTIVE");
+        // the system may park but never resume, and may not cancel either
+        let system = ctl.submit(cmd("cg-sys", "cancel_goal", json!({"goal_id": "g1"})), Identity::System).unwrap_err();
+        assert!(system.contains("stays with the user"), "{system}");
+        // a settled goal is not ACTIVE to cancel
+        ctl.submit(cmd("fr-1", "fail_request", json!({"request_id": "r1", "reason": "crash"})), Identity::System)
+            .expect("fail");
+        ctl.submit(
+            cmd("bg-1", "block_goal", json!({"goal_id": "g1", "instance_id": "i1", "reason": "no way forward"})),
+            Identity::System,
+        )
+        .expect("block");
+        let settled =
+            ctl.submit(cmd("cg-settled", "cancel_goal", json!({"goal_id": "g1"})), Identity::User).unwrap_err();
+        assert!(settled.contains("not ACTIVE"), "{settled}");
+        cleanup(&path);
+    }
+
+    fn lifecycle_of(ctl: &Control, instance: &str) -> String {
+        ctl.connection()
+            .query_row("SELECT lifecycle FROM instances WHERE id = ?1", [instance], |row| row.get(0))
+            .unwrap()
+    }
+
+    fn goal_status_of(ctl: &Control, goal: &str) -> String {
+        ctl.connection().query_row("SELECT status FROM goals WHERE id = ?1", [goal], |row| row.get(0)).unwrap()
     }
 
     fn revision_of(ctl: &Control, instance: &str) -> i64 {
