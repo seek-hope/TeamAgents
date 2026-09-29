@@ -276,6 +276,16 @@ deadlock. Only a closed set with no runnable or externally-fulfillable path is r
 are never cancelled automatically. Registering a wait and checking "has the result already arrived" happen in
 one transaction, so a wakeup is never lost.
 
+The three condition kinds stay apart (D-341/D-348): a delegated outcome is a *task result*, so it satisfies a
+`{kind:'task'}` condition and never a `{kind:'message'}` one, and a task the assignee settled `BLOCKED` is not
+a settlement either, so the wait stays pending on it. The runtime never wakes a delegator because an assignee
+has gone idle: an assignee whose turn ends without settling leaves its task open, no fact satisfies the
+condition, and the task is not dead for it. A delegator waiting on delegated work therefore does what the two
+tool descriptions say — it sets its own `timer_seconds`, and when that timer fires it re-checks the task
+statuses and cancels the task it no longer needs (`cancel_task`, the delegator's own lever, D-265), which *does*
+satisfy a `{kind:'task'}` condition; the wait is otherwise ended by a real settlement or the timer, never by
+silence.
+
 ### 5.4 Lifecycle and user intervention
 
 Instance ids are never reused; a reset bumps the context epoch and invalidates old execution input. Termination

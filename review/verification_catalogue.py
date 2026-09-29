@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The formal-verification material, against the targets that drive it and the report that counts it (D-185).
 
-`verification/tla/` holds twenty-one TLA+ modules and ninety-nine configurations — and **these numbers are
+`verification/tla/` holds twenty-one TLA+ modules and one-hundred-and-two configurations — and **these numbers are
 checked against the directory by this script's own rule**, because the sentence that said "forty" was the
 kind of count nothing looked at (the module count in this line and the two the report states are all
 compared with what the tree holds); `verification/REPORT.md`
@@ -135,6 +135,20 @@ def number(word: str) -> int:
     if word in NUMBER_UNITS:
         return NUMBER_UNITS[word]
     if "-" in word:
+        parts = word.split("-")
+        # three digits arrived with D-348 (`one-hundred-and-two` configurations): the rule that
+        # this docstring states its own counts has to keep working for them, not be weakened
+        if "hundred" in parts:
+            head = NUMBER_UNITS.get(parts[0], -1)
+            if head < 0:
+                return -1
+            rest = parts[parts.index("hundred") + 1 :]
+            if rest and rest[0] == "and":
+                rest = rest[1:]
+            if not rest:
+                return head * 100
+            tail = number("-".join(rest))
+            return head * 100 + tail if tail >= 0 else -1
         tens, _, units = word.partition("-")
         if tens in NUMBER_TENS and units in NUMBER_UNITS:
             return NUMBER_TENS[tens] + NUMBER_UNITS[units]

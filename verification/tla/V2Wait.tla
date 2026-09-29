@@ -32,7 +32,12 @@ EXTENDS Naturals, FiniteSets
 CONSTANTS Waits,      \* wait slots (one row per registered wait), e.g. {"w1"}
           Conds,      \* conditions any wait may name, e.g. {"c1","c2"}
           Instances,  \* instances that can park, e.g. {"L"}
-          CloseWithoutAnswer  \* counterfactual (D-220): the two non-drain exits close a wait without answering it
+          CloseWithoutAnswer, \* counterfactual (D-220): the two non-drain exits close a wait without answering it
+          TaskSettled,        \* the condition standing for a delegated task's settlement (a task result)
+          MessageCond,        \* the condition standing for a chat message from a sender
+          WidenMessageToTaskResults, \* D-255(a)/D-341: a runtime that lets a task result satisfy a message condition
+          WakeOnReport,              \* D-255(b)/D-341: a runtime that treats a reported BLOCKED as a settlement
+          WakeOnIdle                 \* D-257/D-341: a runtime that wakes a delegator whose assignee went idle
 
 ASSUME Waits # {} /\ Conds # {} /\ Instances # {}
 
@@ -52,10 +57,12 @@ VARIABLES
   facts,      \* condition -> whether its fact already happened (monotone)
   timers,     \* wait slot -> whether its timer already fired (monotone)
   answers,    \* wait slot -> 1 once a wake answer joined the context
-  answerCall  \* wait slot -> the call id that answer used
+  answerCall, \* wait slot -> the call id that answer used
+  reported,   \* the delegated task was reported BLOCKED (a report, not a settlement)
+  idle        \* the assignee ended its turn without settling (it went idle)
 
 vars == <<phase, waitState, waitMode, waitConds, waitCall, waitOwner,
-          facts, timers, answers, answerCall>>
+          facts, timers, answers, answerCall, reported, idle>>
 
 \* ------------------------------------------- evaluation at a given fact set --
 \* The mode rule of §5.3: ALL = every named fact (or the due timer), ANY = one
@@ -110,7 +117,7 @@ ArmWait(w, i, mode, conds, call) ==
      /\ answers' = [answers EXCEPT ![w] = IF satisfied /\ ~CloseWithoutAnswer THEN 1 ELSE 0]
      /\ answerCall' = [answerCall EXCEPT ![w] = IF satisfied /\ ~CloseWithoutAnswer THEN call ELSE nocall]
      /\ phase' = [phase EXCEPT ![i] = IF satisfied THEN "READY" ELSE "WAITING"]
-  /\ UNCHANGED <<facts, timers>>
+  /\ UNCHANGED <<facts, timers, reported, idle>>
 
 \* Environment: a message is delivered / a task or operation reaches a terminal
 \* status. The code applies such facts through commands that sweep in the same
@@ -119,10 +126,33 @@ ArmWait(w, i, mode, conds, call) ==
 \* operation, an expired approval) are closed by the parked drain instead.
 FactAppears(c) ==
   /\ ~facts[c]
-  /\ LET f == [facts EXCEPT ![c] = TRUE] IN
+  /\ LET f == IF c = TaskSettled /\ WidenMessageToTaskResults
+                THEN [facts EXCEPT ![TaskSettled] = TRUE, ![MessageCond] = TRUE]
+                ELSE [facts EXCEPT ![c] = TRUE] IN
      /\ facts' = f
      /\ Sweep(f, timers)
-  /\ UNCHANGED <<waitMode, waitConds, waitCall, waitOwner, timers>>
+  /\ UNCHANGED <<waitMode, waitConds, waitCall, waitOwner, timers, reported, idle>>
+
+\* D-255(b)/D-341: the assignee settles the task BLOCKED. That is a *report* — the assignee may still be
+\* unblocked and settle the same task later — so it is no fact and wakes nobody; `WakeOnReport` is the
+\* counterfactual in which the old question was answered "yes".
+ReportBlocked ==
+  /\ ~reported
+  /\ LET f == IF WakeOnReport THEN [facts EXCEPT ![TaskSettled] = TRUE] ELSE facts IN
+     /\ reported' = TRUE
+     /\ facts' = f
+     /\ IF WakeOnReport THEN Sweep(f, timers) ELSE UNCHANGED <<waitState, phase, answers, answerCall>>
+  /\ UNCHANGED <<waitMode, waitConds, waitCall, waitOwner, timers, idle>>
+
+\* D-257/D-341: the assignee ends its turn without settling, then goes idle. An idle assignee leaves its task
+\* open: no fact appears and the wait stays pending — `WakeOnIdle` is the counterfactual answer.
+AssigneeGoesIdle ==
+  /\ ~idle
+  /\ LET f == IF WakeOnIdle THEN [facts EXCEPT ![TaskSettled] = TRUE] ELSE facts IN
+     /\ idle' = TRUE
+     /\ facts' = f
+     /\ IF WakeOnIdle THEN Sweep(f, timers) ELSE UNCHANGED <<waitState, phase, answers, answerCall>>
+  /\ UNCHANGED <<waitMode, waitConds, waitCall, waitOwner, timers, reported>>
 
 \* Environment: the clock reaches a wait's timer (fire_timer, poll granularity).
 ClockTicks(w) ==
@@ -130,7 +160,7 @@ ClockTicks(w) ==
   /\ LET t == [timers EXCEPT ![w] = TRUE] IN
      /\ timers' = t
      /\ Sweep(facts, t)
-  /\ UNCHANGED <<waitMode, waitConds, waitCall, waitOwner, facts>>
+  /\ UNCHANGED <<waitMode, waitConds, waitCall, waitOwner, facts, reported, idle>>
 
 \* The parked drain (driver §5.3/A23): every satisfiable pending wait of the
 \* session closes in one transaction. Its guard is the poll loop's state; the
@@ -139,7 +169,7 @@ Drain(i) ==
   /\ phase[i] = "WAITING"
   /\ \E w \in Waits : waitOwner[w] = i /\ waitState[w] = "PENDING"
   /\ Sweep(facts, timers)
-  /\ UNCHANGED <<waitMode, waitConds, waitCall, waitOwner, facts, timers>>
+  /\ UNCHANGED <<waitMode, waitConds, waitCall, waitOwner, facts, timers, reported, idle>>
 
 \* Supersede (§5.3/§5.4): user input, an epoch close or a reset cancels the
 \* instance's pending waits, answers each of them (a cancelled wait never
@@ -153,7 +183,7 @@ Supersede(i) ==
      /\ answerCall' = [ w \in Waits |->
                           IF w \in cancelled /\ ~CloseWithoutAnswer THEN waitCall[w] ELSE answerCall[w] ]
   /\ phase' = [phase EXCEPT ![i] = "READY"]
-  /\ UNCHANGED <<waitMode, waitConds, waitCall, waitOwner, facts, timers>>
+  /\ UNCHANGED <<waitMode, waitConds, waitCall, waitOwner, facts, timers, reported, idle>>
 
 \* A new wait row replaces a resolved one (the code keeps one row per decision):
 \* the slot is reusable only while its instance is not parked on it.
@@ -167,7 +197,7 @@ Retire(w) ==
   /\ waitOwner' = [waitOwner EXCEPT ![w] = "none"]
   /\ answers' = [answers EXCEPT ![w] = 0]
   /\ answerCall' = [answerCall EXCEPT ![w] = nocall]
-  /\ UNCHANGED <<phase, facts, timers>>
+  /\ UNCHANGED <<phase, facts, timers, reported, idle>>
 
 \* An idle step keeps the model open-ended (TLC then reports no false deadlock).
 Stutter == UNCHANGED vars
@@ -181,6 +211,8 @@ Next ==
   \/ \E i \in Instances : Drain(i)
   \/ \E i \in Instances : Supersede(i)
   \/ \E w \in Waits : Retire(w)
+  \/ ReportBlocked
+  \/ AssigneeGoesIdle
   \/ Stutter
 
 Init ==
@@ -194,6 +226,8 @@ Init ==
   /\ timers = [ w \in Waits |-> FALSE ]
   /\ answers = [ w \in Waits |-> 0 ]
   /\ answerCall = [ w \in Waits |-> nocall ]
+  /\ reported = FALSE
+  /\ idle = FALSE
 
 \* The parked drain is the wait's liveness source: while an instance is WAITING
 \* with a pending wait, the driver keeps sweeping (engine/v2/driver.rs), so that
@@ -244,7 +278,21 @@ PendingImpliesParked ==
 UnusedSlotHasNoAnswer ==
   \A w \in Waits : waitState[w] = "none" => answers[w] = 0
 
-\* ------------------------------------------------------------------ properties --
+\* ---------------------------------------------------------------- properties --
+\* The three rules the user decided on 2026-09-29 (D-341), written into DESIGN §5.3 by D-348. Each is a step
+\* property: the step that produces the fact must be the *right* step.
+\* (a) a task's settlement is a task fact: it never satisfies a message condition.
+MessageStaysAMessage ==
+  [][ (facts[TaskSettled]' /\ ~facts[TaskSettled]) => facts[MessageCond]' = facts[MessageCond] ]_vars
+
+\* (b) a reported BLOCKED is a report, not a settlement.
+ReportsAreNotSettlements ==
+  [][ (reported' /\ ~reported) => facts[TaskSettled]' = facts[TaskSettled] ]_vars
+
+\* (c) an assignee that goes idle settles nothing, so the wait stays pending (`NoStrandedPending` is the
+\* liveness half and `SatisfiedHoldsConditions` keeps the answer honest).
+IdleIsNotASettlement ==
+  [][ (idle' /\ ~idle) => facts[TaskSettled]' = facts[TaskSettled] ]_vars
 \* A23 liveness: a pending wait whose conditions hold is closed — SATISFIED by
 \* the parked drain, or CANCELLED when new input/epoch supersedes it. Nothing
 \* stays pending forever while its conditions hold.

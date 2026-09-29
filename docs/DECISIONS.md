@@ -20,6 +20,128 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-349 Task 37 is verified: each new control refutes the mistake it names, and the design says the rule (2026-09-29)
+
+The product's entry is D-348. This entry is the operator's verification and the phase's measured numbers.
+
+**What the operator verified.** (1) The model, by running it: `MC_wait.cfg` reports `Model checking completed. No
+error has been found.` and each new control is refuted on the property D-348 names —
+`MC_wait_widens_a_message.cfg` on `MessageStaysAMessage`, `MC_wait_wakes_on_report.cfg` on
+`ReportsAreNotSettlements`, `MC_wait_wakes_on_idle.cfg` on `IdleIsNotASettlement` — with no TLC warning, so the
+three step properties are falsifiable rather than vacuous. (2) The pins, by running them: the three named tests
+pass, the new `control::an_idle_assignee_leaves_the_wait_pending` beside
+`a_delegated_result_does_not_satisfy_a_message_condition` and
+`a_blocked_settlement_does_not_satisfy_a_task_condition_but_cancelling_does`. (3) The sentence: DESIGN §5.3 states
+the three rules in the tools' own vocabulary and says what a delegator does instead of waiting forever (its own
+`timer_seconds`, then re-check the statuses and `cancel_task`), which is the decision D-341 took.
+
+**The honest finding the card recorded, confirmed.** Its first model declared `phase` — and then `answers` /
+`answerCall` — `UNCHANGED` while the sweep it calls writes them, and the harness's warning rule failed the run at
+61 of 77 controls; the fix is in the table above, and the operator's runs are at zero warnings, which is what that
+rule demands. The second finding (the catalogue's count grammar had to read hundreds now that configurations
+reached 102) is a strengthening of the rule that the script states its own counts, not a weakening of it.
+
+**Evidence** (2026-09-29; the tree is `ab6b4066` plus this card's uncommitted diff).
+
+| Command | Result |
+|---|---|
+| `MC_wait.cfg` under TLC, run by the operator | `Model checking completed. No error has been found.` |
+| the three new controls, run by the operator | each refuted on its named property, no TLC warning |
+| the three named tests | **3 passed** (0.02 s) |
+| reading DESIGN §5.3 | the three rules and the delegator's own lever, in one paragraph |
+| `python3 review/test_counts.py` | `core 118 / engine 289 / tui 36` |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `make pty` | ok |
+
+**The phase's measured numbers (this commit).** **473,897,884 tokens over 1,295 model requests**, the suites at
+`core 118 / engine 289 / tui 36`, three operator resumes; the audit's yield stands at twenty-four findings from
+twenty-three audit cards, and two implementation cards have landed from D-341's table (the goal-cancel lever,
+D-344, and this wait contract, D-348).
+
+**Next card**: D-143's per-request offered-surface record — the store's format stamp moves with it — and then
+Q16's pre-registered experiment.
+
+**Ceiling**: the operator ran the four wait configurations and the three tests, not the full three-target sweeps
+(the card's own round is recorded in D-348: 24/24 configurations, 77/77 refuted controls, 3/3 Kani). The wait's
+live shape with a real model is the measured 575.6 s gap of D-255 and the probes that record it, not re-run here.
+The report's re-run heading is pinned to this card's commit in the following commit, which is the operator's step.
+
+## D-348 The delegator's wait: the three settled answers are now the design's, each pinned and modelled (2026-09-29)
+
+**The decision.** D-341 answered all three questions **no**: a `message` condition does not also match a
+`task_result` (a result is a settlement, a message is a message), a reported `BLOCKED` does not satisfy a task
+condition (a report is not a settlement), and the runtime does not wake a delegator whose task's assignee has
+gone idle (there is no automatic wake, and an abandoned task is not dead for a task condition). The code already
+behaved this way and the tool prose already said so; what was missing was the design sentence, one pin, the
+model, and the record.
+
+**What was written.** `docs/DESIGN.md` §5.3 states the three rules in the vocabulary the tools and the model
+already use, and says in the same paragraph what a delegator does instead of waiting forever: it sets its own
+`timer_seconds`, and when the timer fires it re-checks the task statuses and cancels the task it no longer needs
+(`cancel_task`, D-265), which *does* satisfy a `{kind:'task'}` condition — the wait is otherwise ended by a real
+settlement or the timer, never by silence. `docs/USER-GUIDE.md` carries the same contract beside the measured
+575.6 s gap that produced the question (D-255).
+
+**The pins.** Two clauses were already driven, so the entry names them rather than copying them:
+`control::a_delegated_result_does_not_satisfy_a_message_condition` (a settlement does not satisfy a message
+condition) and `control::a_blocked_settlement_does_not_satisfy_a_task_condition_but_cancelling_does` (a report
+leaves the wait pending; the cancel satisfies it), with the prose pin
+`kernel::tests::the_wait_and_delegate_descriptions_name_the_condition_that_wakes_a_delegator`. The third clause
+had none, so `control::an_idle_assignee_leaves_the_wait_pending` was added — the assignee parks without settling
+and the wait is still `PENDING`, the task still `RUNNING`, while its sibling `task_completion_wakes_the_waiter`
+drives the case that does wake. Suites re-measured by `review/test_counts.py`: **core 118 / engine 289 / tui 36**.
+
+**The model.** `verification/tla/V2Wait.tla` now carries the contract: the constants `TaskSettled` and
+`MessageCond` (roles named from the existing condition set, so no configuration's state space grows), the three
+counterfactual constants `WidenMessageToTaskResults` / `WakeOnReport` / `WakeOnIdle`, the actions
+`ReportBlocked` and `AssigneeGoesIdle` (each inert unless its counterfactual is set), and the three step
+properties `MessageStaysAMessage`, `ReportsAreNotSettlements` and `IdleIsNotASettlement`. `MC_wait.cfg` proves
+all three; each has its own refuted control, measured 2026-09-29:
+
+| control | refutes |
+|---|---|
+| `MC_wait_widens_a_message.cfg` (`WidenMessageToTaskResults = TRUE`) | `Error: Action property MessageStaysAMessage is violated.` |
+| `MC_wait_wakes_on_report.cfg` (`WakeOnReport = TRUE`) | `Error: Action property ReportsAreNotSettlements is violated.` |
+| `MC_wait_wakes_on_idle.cfg` (`WakeOnIdle = TRUE`) | `Error: Action property IdleIsNotASettlement is violated.` |
+
+**Section 0, all three targets re-run 2026-09-29 on this tree.** `make verify-model-all` **rc 0**, 24/24
+configurations `No error has been found`, no TLC warning; `make verify-model-counterexamples` **rc 0**, **77**
+controls refuted (was 74), no TLC warning; `make verify-kani` **rc 0**, `Complete - 3 successfully verified
+harnesses, 0 failures, 3 total`. `verification/REPORT.md` states 77 controls and this round; `verification/README.md`
+names the three properties and their controls; the catalogue reports 102 configurations / 77 controls / 21 modules.
+The re-run heading is the operator's to pin (the catalogue notes it names `76926407`, at or after the newest
+committed change to the verification material).
+
+**Two findings from the work itself, both honest.** (1) The harness's own rule caught a real modelling bug I had
+just written: my first `ReportBlocked`/`AssigneeGoesIdle` declared `phase` — and then `answers`/`answerCall` —
+`UNCHANGED` while the sweep they call writes them, so TLC warned "the variable … was changed while it is
+specified as UNCHANGED", and the target's "an inconsistent model is a defect, not a note" rule failed the run
+at 61 of 77 controls. Both actions now hand `waitState`, `phase`, `answers` and `answerCall` to the sweep in one
+branch and assert them unchanged in the other; the re-run is the table above, at 0 warnings. (2) The count
+`102` cannot be written in the grammar `review/verification_catalogue.py` parses ("holds N TLA+ modules and N
+configurations", words only), so its `number()` now reads hundreds (`one-hundred-and-two`): the rule that the
+script states its own counts was *strengthened* rather than dropped when the count crossed a hundred.
+
+**The record closed.** The D-341 table's row for "D-255/D-257/D-265, the delegator's wait" now says delivered
+(D-348) instead of waiting for a card; D-255's two "Left open" sentences and D-257's now name the decision and
+the delivery; and ACCEPTANCE's two open sentences — the `BLOCKED`/kind halves in the Q16 row and the runtime-wake
+half in the known gaps — record the answers and where each is written and pinned.
+
+**Numbers** (measured): citations **986** / 81 relative links / **633** `make` commands / **1009** `§` refs with
+0 unexplained (`review/citations.py`, docstring updated) — 978/629/1006 before this entry's own text was
+counted, and it moves them, so these are the values the last run of the audit reports; 307 decisions with this
+entry; 102 configurations / 77 controls / 21 modules; 164 markdown tables; suites core 118 / engine 289 / tui 36.
+
+**Uncommitted, for the operator.** `core/src/v2/control.rs`, `docs/{DESIGN,USER-GUIDE,ACCEPTANCE,DECISIONS}.md`,
+`Makefile`, `review/{citations.py,verification_catalogue.py}`, `review/README.md`,
+`verification/{README.md,REPORT.md,tla/V2Wait.tla,tla/MC_wait.cfg,tla/MC_wait_closes_without_answering.cfg}` and
+the three new controls, `AGENTS.md`, `.github/release-notes.md`.
+
+**Ceiling.** The rules are prose plus a pin plus a model — the model abstracts conditions to "a fact landed", so
+what it proves is the *prohibition* (no wrong fact satisfies, no idle/report wakes) and not the code's own
+condition matching; the pins carry that half. No live run yet shows a real model naming the right condition: the
+D-255 entry's own ceiling stands ("pinned prose is not measured model behaviour").
+
 ## D-347 The pin fixed the pushed state's CI, and the operator decided not to re-cut for a document-only difference (2026-09-29)
 
 **The CI the push started, and what it caught.** Both pushed commits failed the repository's own Rust CI
@@ -299,7 +421,7 @@ implementation exists.
 | D-191, the artifact cadence | **no timer**: the boot sweep plus the on-demand `artifacts gc` verb is the policy, and the daemon sweeps once at startup too | a small card |
 | D-192, `archived_days` | **keep it accepted-and-reported, not applied** — measuring first showed what the entry already says: one session per state root (A33) means there is no archived set to walk, so the key has nothing to delete; `doctor`, `docs/CONFIG.md` and `docs/USER-GUIDE.md` say so, and it becomes meaningful with multi-session | none (the earlier "implement it" was based on a premise the measurement corrected) |
 | D-143, the offered surface | **persist it, bounded**: per model request, the tool names offered and whether the dispatch was authorized | a card (the store's format stamp moves) |
-| D-255/D-257/D-265, the delegator's wait | **no automatic wake, and the condition kinds stay apart**: a `message` condition stays a message, a reported `BLOCKED` stays a report; the delegator's own cancel tool (D-265) and its timer are the mechanism | a card that writes the rule into DESIGN §5.3 and pins it |
+| D-255/D-257/D-265, the delegator's wait | **no automatic wake, and the condition kinds stay apart**: a `message` condition stays a message, a reported `BLOCKED` stays a report; the delegator's own cancel tool (D-265) and its timer are the mechanism | **delivered (D-348)**: the rule is written into DESIGN §5.3, pinned by tests, and carried by `V2Wait` with a control per clause |
 | D-61, the worker's shell | **no change**: no shell by default, and the Leader still cannot hand out its own shell authority — the boundary stays the design's | none, unless the refusal should name the grant command (a small card) |
 | D-259/D-264, Q16 | **run the experiment the measured mechanism points to** — a per-response output ceiling that takes the solo arm's batching away — pre-registered, and keep all three readings in the record instead of re-labelling the requirement | a card on the evaluation harness |
 | D-249, D-150, D-96 | already closed by their own entries: the stream report was implemented, `daemon --stop` shipped in D-248, and D-96 quotes the user's words | none |
@@ -3597,9 +3719,10 @@ pinned by `kernel::the_cancel_description_states_who_may_close_and_what_it_relea
 (`docs/TOOLS.md`, 18 tools now) is regenerated, and `docs/USER-GUIDE.md` §4 names the lever.
 
 **This is the delegator's half, and only that half.** Whether the *runtime* should wake a delegator whose
-assignee has gone idle — or treat an abandoned task as dead for a wait condition — stays the open design
-question of D-255 ("Left open") and ACCEPTANCE's known gaps: it changes §5.3's wait semantics and would need
-`V2Wait`'s model and its controls updated, which is why it waits for the user's word. A delegator-side tool
+assignee has gone idle — or treat an abandoned task as dead for a wait condition — was D-255's open design
+question ("Left open") and ACCEPTANCE's known gaps; **the user's word came on 2026-09-29 (D-341: no) and D-348
+delivered it** — the rule is in §5.3, pinned by `control::an_idle_assignee_leaves_the_wait_pending`, and
+`V2Wait` carries it with a control that must be refuted (`MC_wait_wakes_on_idle.cfg`). A delegator-side tool
 needs none of that: the state machine it reaches is the one already modelled, and the *actor* it authorizes is
 the one the design names.
 
@@ -3917,11 +4040,13 @@ timer fires. This is the same kind of change D-255 made (contract text, not sema
 *every* arm — B and D read the same tool schemas — so no group's treatment moves and no eval-surface pin changes
 (those pin the harness's instruction templates and the tool *names*).
 
-**Left open, and both need the user's word** — the reconnaissance is the measurement behind both of ACCEPTANCE's
-older gaps: should the **runtime** wake a delegator whose task's assignee has gone idle (or treat an abandoned
-task as dead for a task condition)? And should a **delegator-facing `task cancel` tool** exist — the control plane
-already authorizes the *requester* to close its own task (§5.3) but no model-facing tool exposes it, so a leader
-has no lever on a member that abandoned its work. Round 5's treatment uses only what the product already offers.
+**Left open then, both answered since**: the reconnaissance is the measurement behind both of ACCEPTANCE's older
+gaps. Should the **runtime** wake a delegator whose task's assignee has gone idle (or treat an abandoned task as
+dead for a task condition)? **No — the user decided on 2026-09-29 (D-341) and D-344 wrote it down**: an idle
+assignee leaves its task open and the wait pending, and the delegator's own timer plus `cancel_task` is the
+mechanism. And should a **delegator-facing `task cancel` tool** exist — the control plane already authorizes the
+*requester* to close its own task (§5.3) but no model-facing tool exposed it? **Yes, and D-265 shipped it**
+(`cancel_task`, offered with the `delegate` grant). Round 5's treatment uses only what the product already offers.
 
 **The bound rule, fixed before the formal round** (from D-256's arithmetic and the reconnaissance's inputs): for
 a race task, `bound = floor((solo_median + team_median) / 2)`, and a task counts as a race task only if
@@ -4028,13 +4153,17 @@ user's `cancel_task` satisfies the same wait, which is USER-GUIDE §4's document
 pinned by `kernel::the_wait_and_delegate_descriptions_name_the_condition_that_wakes_a_delegator`, and
 `review/tool_catalogue.py` holds `docs/TOOLS.md` to the schemas.
 
-**Left open, and both need the user's word** (they change §5.3's wait semantics, so each needs `V2Wait`'s model
-and the recorded controls updated, not just a patch): **(a)** should a `message` condition also match a
+**Left open then, and both answered "no" since** (they change §5.3's wait semantics, so each needs `V2Wait`'s
+model and the recorded controls updated, not just a patch): **(a)** should a `message` condition also match a
 `task_result` from that sender — a result *is* a message in a reader's sense, but it blurs the two kinds the
 vocabulary keeps apart; **(b)** should a reported `BLOCKED` satisfy a task condition — it is a *report*, not a
 settlement (the assignee may still be unblocked and settle the same task), yet nothing else wakes the delegator
 at that moment, and §5.4's "directly adjusting a worker's task notifies the relevant delegator" is the same
-question from the other side.
+question from the other side. **The user's word is D-341 (2026-09-29) and D-348 delivered it**: §5.3 states both
+rules, the pins are `control::a_delegated_result_does_not_satisfy_a_message_condition` and
+`control::a_blocked_settlement_does_not_satisfy_a_task_condition_but_cancelling_does`, and `V2Wait` now carries
+the kind separation and the report rule with a control each (`MC_wait_widens_a_message.cfg`,
+`MC_wait_wakes_on_report.cfg`).
 
 Ceiling: pinned prose is not measured model behaviour. The change makes the *correct* condition the one the tool
 surface recommends; whether a real model then names it is what a re-run of the D arm would show, and this entry

@@ -306,6 +306,12 @@ pre_tool = ["/home/you/bin/policy.sh"]            # policy hook before tool call
   until the timer fires. Both tool descriptions say so. A due timer releases a wait exactly as a fact does, so
   only the gap in the log shows which happened: in the round-4 pilot a delegator that named `message from
   <worker>` was released by its timer **575.6 s** after the settlement it was waiting for (D-255).
+  The same three answers are the design's (D-341, D-348), and none of them is a wake the runtime owes you: a
+  task an assignee reported `BLOCKED` leaves the wait pending, and an assignee that stops talking — its turn
+  ends without settling, or it parks — is not a settlement either, so waiting longer never tells you. When your
+  timer fires, re-check the task statuses and `teamagents tasks cancel --id <task>` (or the delegator's own
+  `cancel_task`) what you no longer need: a cancelled task *does* satisfy a `{kind:'task'}` condition and wakes
+  the delegator.
 - **When delegating pays, measured (D-262).** The same twelve-unit job was run two ways, three times each
   (`review/eval/r2-p6/REPORT.md`): a team reached *every unit verified green* in 41–60 s against a single
   instance's 65–148 s, and it was earlier in **6 of 6 paired repeats** — but end to end (one accepted

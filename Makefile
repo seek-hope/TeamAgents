@@ -213,6 +213,8 @@ verify-model-counterexamples: verify-tools
 		MC_approval_keeps_pending_on_close.cfg:V2Approval.tla \
 		MC_approval_parks_without_a_row.cfg:V2Approval.tla \
 		MC_artifact_gc_ignores_references.cfg:V2Artifact.tla MC_wait_closes_without_answering.cfg:V2Wait.tla \
+		MC_wait_widens_a_message.cfg:V2Wait.tla MC_wait_wakes_on_report.cfg:V2Wait.tla \
+		MC_wait_wakes_on_idle.cfg:V2Wait.tla \
 		MC_grants_stale_offered_surface.cfg:V2Grants.tla \
 		MC_trust_models_always_merge.cfg:V2Trust.tla MC_trust_project_overrides_user.cfg:V2Trust.tla \
 		MC_trust_project_sets_policy.cfg:V2Trust.tla MC_trust_project_grants_itself.cfg:V2Trust.tla \

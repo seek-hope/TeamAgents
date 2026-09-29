@@ -27,7 +27,7 @@ in [README.md](README.md); the fix ledger is in
   the `chars().count()` loop it calls and checking allocations after 300 s. The wall is the symbolic
   string/heap layer, not the arithmetic — which is exactly why the paging proofs (heap-free `usize`) do
   converge. The three probes were removed, so `verification/kani` still holds exactly its three proofs, and the
-  three targets were re-run on this tree with every count unchanged: `verify-model-all` 24/24, all **74** negative
+  three targets were re-run on this tree with every count unchanged: `verify-model-all` 24/24, all **77** negative
   controls refuted, and `make verify-kani` `Complete - 3 successfully verified harnesses, 0 failures, 3 total`.
   This is a measurement, not a proof: nothing in the pure-function layer beyond the paging arithmetic is claimed.
 * `make verify-model-all` was re-run on this tree: all **24** configurations report `No error has been found`,
@@ -55,7 +55,7 @@ in [README.md](README.md); the fix ledger is in
   item 6 said A28's "a slow client cannot block the writer" was a structural statement with no exhaustive
   interleaving; it is now `verification/tla/V2Concurrency.tla` — readers with cursors beside the single writer,
   whose commit guard names no reader. All **24** configurations report `No error has been found` (the newest is
-  `MC_concurrency.cfg`, exhaustive in under a second, 85 states generated / 30 distinct), all **74** negative
+  `MC_concurrency.cfg`, exhaustive in under a second, 85 states generated / 30 distinct), all **77** negative
   controls are refuted — the three new ones are `MC_concurrency_writer_waits.cfg` (the commit waits for every
   reader, so a stalled client starves the writer: `WriterProgressesDespiteAStalledReader`, a temporal
   refutation) and `MC_concurrency_skips_an_event.cfg` / `MC_concurrency_reads_ahead.cfg`
@@ -77,7 +77,7 @@ in [README.md](README.md); the fix ledger is in
   above moved to D-266's commit. D-257, D-258 and D-266 added sentences to the same descriptions and D-265
   added a third tool's schema, all in the same file, and every one of them reported the same numbers — which is
   the whole of their difference.
-* `make verify-model-counterexamples` was re-run: all **74** negative controls are refuted, each naming its
+* `make verify-model-counterexamples` was re-run: all **77** negative controls are refuted, each naming its
   property (`AuthorizedEffectsOnly`, `InputLandsAtTheBoundary`, `NoRequestAfterDeadline`, `NoTurnWithoutWork`
   twice, `SettlementFollowsATurnAfterTheLanding`, `NoForeignAdoption`, three temporal refutations, the
   four retention guards: `NoReferenceToEvictedFact`, `EvidenceIsNeverEvicted` and `OnlyOldFactsAreEvicted`
@@ -104,9 +104,10 @@ in [README.md](README.md); the fix ledger is in
   a stalled client never holding a commit back)), and the one D-344 added: `CancelledGoalReleasesParkedInstances`
   — closing a goal nothing can spend must give back the instance its refusal parked, the lever A18's known gap
   asks for; `MC.cfg` verifies the same property with `ReleaseOnCancel = TRUE`, and `MC_control_cancel.cfg` sets
-  it `FALSE` and is refuted on it (`Error: Action property CancelledGoalReleasesParkedInstances is violated.`) —
-  the round was re-run for this: all 74 controls refuted, `verify-model-all` 24/24 and `make verify-kani`
-  `Complete - 3 successfully verified harnesses, 0 failures, 3 total`, all three rc 0 on 2026-09-29.
+  it `FALSE` and is refuted on it (`Error: Action property CancelledGoalReleasesParkedInstances is violated.`).
+  The round after it (D-348, the wait contract's three settled rules) adds three more refuted controls and the
+  same re-run: `verify-model-all` **24/24**, all **77** controls refuted, and `make verify-kani`
+  `Complete - 3 successfully verified harnesses, 0 failures, 3 total` — all three rc 0 on 2026-09-29.
 * The wall clocks above are upper bounds, not machine-independent figures: they were measured while this
   machine carried a load average of about 140 on 20 cores (the standing host-cleanup item), and TLC is
   CPU-bound. The probe in A32 now records the same conditions next to its numbers for the same reason (D-188).

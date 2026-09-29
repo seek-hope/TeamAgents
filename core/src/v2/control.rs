@@ -5485,6 +5485,10 @@ mod tests {
         format!("w-d-{tag}")
     }
 
+    fn task_status_of(ctl: &Control, task_id: &str) -> String {
+        ctl.connection().query_row("SELECT status FROM tasks WHERE id = ?1", [task_id], |row| row.get(0)).unwrap()
+    }
+
     fn wait_state(ctl: &Control, wait_id: &str) -> String {
         ctl.connection().query_row("SELECT status FROM waits WHERE id = ?1", [wait_id], |row| row.get(0)).unwrap()
     }
@@ -5686,6 +5690,59 @@ mod tests {
     /// on a real session before this test existed: a delegator parked on
     /// `{kind:'message',from:<worker>}` slept until its ~600 s timer while both
     /// settlements sat APPLIED in its inbox (round 4's pilot, `design-r4.md`).
+    /// D-257's third question, decided "no" (D-341/D-348): the runtime does not wake a delegator because its
+    /// assignee has gone idle, and an abandoned task is not dead for a task condition. The delegator's own
+    /// lever is the timer it sets plus `cancel_task` (D-265). This is `task_completion_wakes_the_waiter`'s
+    /// negative, taken one step further — the assignee answers in prose, then parks — and the cancel half is
+    /// the same rule `a_blocked_settlement_does_not_satisfy_a_task_condition_but_cancelling_does` drives.
+    #[test]
+    fn an_idle_assignee_leaves_the_wait_pending() {
+        let (mut ctl, path) = control("wait-idle");
+        create_instance(&mut ctl, "i1");
+        create_instance(&mut ctl, "i2");
+        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1"})), Identity::User).expect("goal");
+        ctl.submit(
+            cmd("dt-1", "delegate_task", json!({"task_id": "t1", "assignee": "i2", "goal_id": "g1"})),
+            Identity::User,
+        )
+        .expect("delegate");
+        ctl.submit(cmd("st-1", "start_task", json!({"task_id": "t1"})), Identity::Instance("i2".into()))
+            .expect("start");
+        let wait_id = open_wait(
+            &mut ctl,
+            "x",
+            "i1",
+            0,
+            json!({"mode": "ANY", "conditions": [{"kind": "task", "task_id": "t1"}]}),
+        );
+        assert_eq!(phase_of(&ctl, "i1"), "WAITING");
+        // the assignee finishes a turn with a prose reply (no settlement) and parks — both mean "it stopped
+        // talking", and neither is a fact the wait named
+        ctl.submit(
+            cmd(
+                "pr-2",
+                "set_lifecycle",
+                json!({"instance_id": "i2", "lifecycle": "PARKED", "reason": "turn ended without a settlement"}),
+            ),
+            Identity::System,
+        )
+        .expect("park");
+        assert_eq!(wait_state(&ctl, &wait_id), "PENDING", "no automatic wake for an idle assignee");
+        assert_eq!(phase_of(&ctl, "i1"), "WAITING");
+        assert_eq!(task_status_of(&ctl, "t1"), "RUNNING", "an idle assignee leaves its task open");
+        // the delegator's own lever ends it, and that does wake the wait
+        let cancelled = ctl
+            .submit(
+                cmd("cx-1", "cancel_task", json!({"task_id": "t1", "reason": "the assignee went idle"})),
+                Identity::User,
+            )
+            .expect("cancel");
+        assert_eq!(cancelled["woken"], json!([wait_id.clone()]));
+        assert_eq!(wait_state(&ctl, &wait_id), "SATISFIED");
+        assert_eq!(phase_of(&ctl, "i1"), "READY");
+        cleanup(&path);
+    }
+
     #[test]
     fn a_delegated_result_does_not_satisfy_a_message_condition() {
         let (mut ctl, path) = control("wait-msgkind");
